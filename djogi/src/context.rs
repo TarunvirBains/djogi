@@ -68,12 +68,9 @@
 
 use crate::auth::AuthContext;
 use crate::pg::connection::PgConnection;
-use crate::pg::decode::{FromPgRow, try_get_scalar};
 use crate::pg::pool::DjogiPool;
-use crate::query::stream::{DEFAULT_FETCH_SIZE, RawCursorStream, build_raw_stream};
 use crate::{DbError, DjogiError};
 use futures::FutureExt;
-use postgres_types::FromSql;
 use postgres_types::ToSql;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
@@ -269,18 +266,29 @@ impl DjogiContext {
     ///
     /// Returns `Some(&pool)` iff the context was created via `from_pool()`.
     /// Returns `None` if this is a transaction context.
-    pub fn pool(&self) -> Option<&DjogiPool> {
+    pub(crate) fn pool(&self) -> Option<&DjogiPool> {
         match &self.inner {
             ContextInner::Pool(pool) => Some(pool),
             ContextInner::Transaction(_) => None,
         }
     }
 
+    /// Clone the underlying pool when this context is pool-backed.
+    ///
+    /// Returns `None` for transaction-backed contexts. Use this when a
+    /// higher-level API needs to own a pool handle, such as a long-lived
+    /// delta-refresh subscription or a sibling context for cross-context
+    /// cache tests. Ordinary CRUD code should keep passing `&mut
+    /// DjogiContext` directly.
+    pub fn share_pool(&self) -> Option<DjogiPool> {
+        self.pool().cloned()
+    }
+
     /// Get a mutable reference to the inner connection if this context is transaction-backed.
     ///
     /// Returns `Some(&mut conn)` iff the context was created via `from_connection()`.
     /// Returns `None` if this is a pool context.
-    pub fn conn(&mut self) -> Option<&mut PgConnection> {
+    pub(crate) fn conn(&mut self) -> Option<&mut PgConnection> {
         match &mut self.inner {
             ContextInner::Pool(_) => None,
             ContextInner::Transaction(conn) => Some(conn),
@@ -846,137 +854,6 @@ impl DjogiContext {
 }
 
 impl DjogiContext {
-    /// Execute ad-hoc SQL and decode every returned row into `T`.
-    ///
-    /// Use this when Djogi's `QuerySet` surface is too restrictive for a
-    /// one-off projection or join but you still want Djogi-managed
-    /// connection / transaction dispatch and `DjogiError` mapping.
-    ///
-    /// `binds` are positional Postgres parameters for `$1`, `$2`, …
-    /// in `sql`, passed in the same order they appear in the statement.
-    /// If this method is called inside [`atomic()`](crate::transaction::atomic),
-    /// it reuses the active transaction / savepoint connection rather than
-    /// escaping to a separate pool checkout.
-    ///
-    /// `T: FromPgRow` means callers can pass either a `#[model]`-derived
-    /// struct or any hand-written row shape that implements
-    /// [`FromPgRow`](crate::FromPgRow).
-    pub async fn raw_query<T: FromPgRow>(
-        &mut self,
-        sql: &str,
-        binds: &[&(dyn ToSql + Sync)],
-    ) -> Result<Vec<T>, DjogiError> {
-        let rows = self.query_all(sql, binds).await?;
-        rows.iter().map(T::from_pg_row).collect()
-    }
-
-    /// Execute ad-hoc SQL and return the raw `tokio_postgres::Row`s.
-    ///
-    /// This is the escape hatch for multi-column SELECTs that don't fit
-    /// the typed [`raw_query`](Self::raw_query) shape — e.g. catalog
-    /// inspection (`pg_class`, `pg_attribute`, `information_schema.*`),
-    /// admin tooling, parity tests. Callers decode columns positionally
-    /// via `row.try_get::<_, T>(i)`.
-    ///
-    /// Inside [`atomic()`](crate::transaction::atomic), the rows come
-    /// from the active transaction / savepoint connection.
-    pub async fn raw_rows(
-        &mut self,
-        sql: &str,
-        binds: &[&(dyn ToSql + Sync)],
-    ) -> Result<Vec<Row>, DjogiError> {
-        self.query_all(sql, binds).await
-    }
-
-    /// Execute ad-hoc SQL expected to return exactly one row decoded as `T`.
-    ///
-    /// This is the single-row sibling of [`raw_query`](Self::raw_query):
-    /// use it for hand-written SELECTs where `QuerySet::get()` cannot
-    /// express the projection but the result shape still matches a
-    /// `FromPgRow` decoder.
-    ///
-    /// `binds` map positionally to `$1`, `$2`, … in `sql`. When called
-    /// inside [`atomic()`](crate::transaction::atomic), the query runs on
-    /// the active transaction / savepoint connection.
-    ///
-    /// `T` may be a `#[model]` type or a custom struct with a manual
-    /// [`FromPgRow`](crate::FromPgRow) impl for an ad-hoc row shape.
-    pub async fn raw_fetch_one<T: FromPgRow>(
-        &mut self,
-        sql: &str,
-        binds: &[&(dyn ToSql + Sync)],
-    ) -> Result<T, DjogiError> {
-        let row = self
-            .query_opt(sql, binds)
-            .await?
-            .ok_or_else(|| DjogiError::not_found("<raw>"))?;
-        T::from_pg_row(&row)
-    }
-
-    /// Execute ad-hoc SQL expected to return exactly one scalar column.
-    ///
-    /// This is the escape hatch for statements such as
-    /// `SELECT COUNT(*) ...` or `SELECT EXISTS (...)`. The first column of
-    /// the single returned row is decoded as `T`.
-    ///
-    /// `binds` are positional Postgres parameters for `$1`, `$2`, …
-    /// in `sql`. Inside [`atomic()`](crate::transaction::atomic), this
-    /// method respects the active transaction / savepoint automatically.
-    pub async fn raw_scalar<T>(
-        &mut self,
-        sql: &str,
-        binds: &[&(dyn ToSql + Sync)],
-    ) -> Result<T, DjogiError>
-    where
-        T: for<'a> FromSql<'a> + Send + 'static,
-    {
-        let row = self
-            .query_opt(sql, binds)
-            .await?
-            .ok_or_else(|| DjogiError::not_found("<raw>"))?;
-        try_get_scalar(&row, 0)
-    }
-
-    /// Execute ad-hoc DML / DDL and return the affected-row count.
-    ///
-    /// Use this for `INSERT`, `UPDATE`, `DELETE`, or other statements
-    /// outside the typed `QuerySet` surface. `binds` map positionally to
-    /// `$1`, `$2`, … in `sql`, and calls inside
-    /// [`atomic()`](crate::transaction::atomic) reuse the active
-    /// transaction / savepoint connection.
-    pub async fn raw_execute(
-        &mut self,
-        sql: &str,
-        binds: &[&(dyn ToSql + Sync)],
-    ) -> Result<u64, DjogiError> {
-        self.execute(sql, binds).await
-    }
-
-    /// Execute a SQL statement via the **simple query protocol** (no bind
-    /// parameters, no server-side prepare).
-    ///
-    /// Use this for DDL statements that Postgres cannot prepare (`CREATE ROLE`,
-    /// `DROP DATABASE`, multi-statement scripts, etc.). Unlike
-    /// [`raw_execute`](Self::raw_execute), which routes through
-    /// `prepare_cached`, this method sends the statement directly via
-    /// `batch_execute` and accepts no bind parameters — the caller is
-    /// responsible for ensuring the SQL contains no user-supplied values that
-    /// need escaping.
-    ///
-    /// Returns `Ok(())` on success.
-    ///
-    /// # When to use
-    ///
-    /// - DDL that Postgres refuses to prepare (`CREATE ROLE`, `ALTER SYSTEM`,
-    ///   session-management statements that must run as simple queries).
-    /// - Tests and migrations that issue a single, trusted DDL string with no
-    ///   runtime values.
-    ///
-    /// For parameterised DML prefer [`raw_execute`](Self::raw_execute).
-    pub async fn raw_ddl(&mut self, sql: &str) -> Result<(), DjogiError> {
-        self.batch_execute(sql).await
-    }
-
     /// Idempotently create a Postgres enum type.
     ///
     /// Postgres does not support `CREATE TYPE … IF NOT EXISTS` for enum
@@ -1087,78 +964,6 @@ impl DjogiContext {
         sql.push_str("); EXCEPTION WHEN duplicate_object THEN NULL; END ");
         sql.push_str(TAG);
         self.batch_execute(&sql).await
-    }
-
-    /// Stream rows from an ad-hoc SQL query using a Postgres named cursor.
-    ///
-    /// Returns a [`RawCursorStream`] that yields
-    /// `Result<tokio_postgres::Row, DjogiError>`. The caller decodes each row
-    /// using `Row::get` or a custom `FromPgRow` impl.
-    ///
-    /// `sql` may be any `SELECT` statement. `binds` are positional Postgres
-    /// parameters for `$1`, `$2`, … in the same order they appear in `sql`.
-    ///
-    /// # Transaction requirement
-    ///
-    /// Named Postgres cursors are transaction-local. This method requires
-    /// `self` to be backed by an active transaction (i.e. called inside an
-    /// [`atomic()`](crate::transaction::atomic) scope). Calling it on a
-    /// pool-backed context returns
-    /// `Err(DjogiError::StreamOutsideTransaction)` immediately.
-    ///
-    /// # Fetch size
-    ///
-    /// Default is `1000` rows per `FETCH` round trip. Use
-    /// [`raw_stream_with_fetch_size`](Self::raw_stream_with_fetch_size) to
-    /// override.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use futures::StreamExt;
-    ///
-    /// atomic(&pool, |ctx| Box::pin(async move {
-    ///     let mut stream = ctx.raw_stream(
-    ///         "SELECT id, title FROM posts WHERE published = $1",
-    ///         &[&true],
-    ///     ).await?;
-    ///
-    ///     while let Some(row) = stream.next().await {
-    ///         let row = row?;
-    ///         let id: i64 = row.get("id");
-    ///         let title: String = row.get("title");
-    ///         // …
-    ///     }
-    ///     Ok(())
-    /// })).await?;
-    /// ```
-    pub async fn raw_stream<'ctx>(
-        &'ctx mut self,
-        sql: &str,
-        binds: &[&(dyn ToSql + Sync)],
-    ) -> Result<RawCursorStream<'ctx>, DjogiError> {
-        build_raw_stream(self, sql, binds, DEFAULT_FETCH_SIZE).await
-    }
-
-    /// Stream rows from an ad-hoc SQL query with a custom fetch size.
-    ///
-    /// Like [`raw_stream`](Self::raw_stream) but lets the caller choose the
-    /// number of rows retrieved per `FETCH` round trip. `fetch_size` must be
-    /// at least `1`; passing `0` returns `Err(DjogiError::Validation)`.
-    ///
-    /// Same transaction invariant as [`raw_stream`](Self::raw_stream).
-    pub async fn raw_stream_with_fetch_size<'ctx>(
-        &'ctx mut self,
-        sql: &str,
-        binds: &[&(dyn ToSql + Sync)],
-        fetch_size: u32,
-    ) -> Result<RawCursorStream<'ctx>, DjogiError> {
-        if fetch_size == 0 {
-            return Err(DjogiError::Validation(
-                "raw_stream fetch_size must be at least 1".to_owned(),
-            ));
-        }
-        build_raw_stream(self, sql, binds, fetch_size).await
     }
 
     /// Set the active tenant ID for this context by issuing

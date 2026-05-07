@@ -627,7 +627,7 @@ mod tests {
 
     fn id_column_heerid() -> ColumnSchema {
         ColumnSchema {
-            default_sql: Some("generate_id()".to_string()),
+            default_sql: Some("heerid_next()".to_string()),
             ..col("id", "BIGINT", false)
         }
     }

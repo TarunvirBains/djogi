@@ -36,6 +36,11 @@ outbox-kafka = ["outbox"]
 # outbox-nats — NATS publisher stub (via async-nats). Same deferral.
 outbox-nats = ["outbox"]
 
+# notify — reserved feature flag for the operational notify/listen path.
+# Defined here before CI or sibling branches reference it so feature lists stay
+# stable during the raw-SQL harness stack.
+notify = []
+
 # spatial — gates the GeoPoint primitive and the spatial query surface
 # (SpatialExpr, within_km, order_by_distance). Requires PostGIS installed
 # in the target Postgres database; no extra Rust dependencies are pulled in
@@ -85,6 +90,7 @@ hmac.workspace = true
 subtle.workspace = true
 libc.workspace = true
 phf.workspace = true
+trait-variant.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
@@ -101,6 +107,56 @@ required-features = ["outbox"]
 [[test]]
 name = "integration"
 path = "../tests/integration/smoke.rs"
+harness = true
+
+[[test]]
+name = "raw_execute_pin"
+path = "../tests/pin/raw_execute_pin.rs"
+harness = true
+
+[[test]]
+name = "raw_query_pin"
+path = "../tests/pin/raw_query_pin.rs"
+harness = true
+
+[[test]]
+name = "raw_rows_pin"
+path = "../tests/pin/raw_rows_pin.rs"
+harness = true
+
+[[test]]
+name = "raw_fetch_one_pin"
+path = "../tests/pin/raw_fetch_one_pin.rs"
+harness = true
+
+[[test]]
+name = "raw_scalar_pin"
+path = "../tests/pin/raw_scalar_pin.rs"
+harness = true
+
+[[test]]
+name = "raw_ddl_pin"
+path = "../tests/pin/raw_ddl_pin.rs"
+harness = true
+
+[[test]]
+name = "raw_stream_pin"
+path = "../tests/pin/raw_stream_pin.rs"
+harness = true
+
+[[test]]
+name = "raw_stream_with_fetch_size_pin"
+path = "../tests/pin/raw_stream_with_fetch_size_pin.rs"
+harness = true
+
+[[test]]
+name = "raw_pool_access_pin"
+path = "../tests/pin/raw_pool_access_pin.rs"
+harness = true
+
+[[test]]
+name = "raw_sql_compile_fail"
+path = "../tests/compile_fail/raw_sql.rs"
 harness = true
 
 [[test]]
@@ -149,11 +205,6 @@ path = "../tests/integration/phase5_zero_from_joined_pg_row.rs"
 harness = true
 
 [[test]]
-name = "phase5_zero_raw_in_atomic"
-path = "../tests/integration/phase5_zero_raw_in_atomic.rs"
-harness = true
-
-[[test]]
 name = "phase5_postgres_native"
 path = "../tests/integration/phase5_postgres_native.rs"
 harness = true
@@ -190,7 +241,7 @@ harness = true
 
 [[test]]
 name = "phase7_zero_indexes_live"
-path = "../tests/integration/phase7_zero_indexes_live.rs"
+path = "../tests/internal/phase7_zero_indexes_live.rs"
 harness = true
 
 [[test]]
@@ -224,6 +275,11 @@ path = "../tests/integration/phase7_zero2_visage_traversal_live.rs"
 harness = true
 
 [[test]]
+name = "phase7_zero2_visage_traversal_shape"
+path = "../tests/internal/phase7_zero2_visage_traversal_shape.rs"
+harness = true
+
+[[test]]
 name = "phase7_zero2_select_narrowing_live"
 path = "../tests/integration/phase7_zero2_select_narrowing_live.rs"
 harness = true
@@ -234,13 +290,18 @@ path = "../tests/integration/phase7_zero2_ensure_enum_type_live.rs"
 harness = true
 
 [[test]]
+name = "phase7_zero2_ensure_enum_type_catalog_live"
+path = "../tests/internal/phase7_zero2_ensure_enum_type_catalog_live.rs"
+harness = true
+
+[[test]]
 name = "phase7_t4_runner_live"
-path = "../tests/integration/phase7_t4_runner_live.rs"
+path = "../tests/internal/phase7_t4_runner_live.rs"
 harness = true
 
 [[test]]
 name = "phase7_t5_repair_verify_live"
-path = "../tests/integration/phase7_t5_repair_verify_live.rs"
+path = "../tests/internal/phase7_t5_repair_verify_live.rs"
 harness = true
 
 [[test]]
@@ -255,17 +316,17 @@ harness = true
 
 [[test]]
 name = "phase7_t7_policy_attune_live"
-path = "../tests/integration/phase7_t7_policy_attune_live.rs"
+path = "../tests/internal/phase7_t7_policy_attune_live.rs"
 harness = true
 
 [[test]]
 name = "phase7_t8_seed_docs_live"
-path = "../tests/integration/phase7_t8_seed_docs_live.rs"
+path = "../tests/internal/phase7_t8_seed_docs_live.rs"
 harness = true
 
 [[test]]
 name = "phase7_t9_pk_flip_live"
-path = "../tests/integration/phase7_t9_pk_flip_live.rs"
+path = "../tests/internal/phase7_t9_pk_flip_live.rs"
 harness = true
 
 [[test]]
@@ -274,23 +335,28 @@ path = "../tests/integration/phase7_t10_sync_models_live.rs"
 harness = true
 
 [[test]]
+name = "phase7_t10_sync_models_catalog_live"
+path = "../tests/internal/phase7_t10_sync_models_catalog_live.rs"
+harness = true
+
+[[test]]
 name = "phase7_t10_sync_models_parity"
-path = "../tests/integration/phase7_t10_sync_models_parity.rs"
+path = "../tests/internal/phase7_t10_sync_models_parity.rs"
 harness = true
 
 [[test]]
 name = "phase7_5_backfill_live"
-path = "../tests/integration/phase7_5_backfill_live.rs"
+path = "../tests/internal/phase7_5_backfill_live.rs"
 harness = true
 
 [[test]]
 name = "phase7_5_pr7_exclusion_generated_live"
-path = "../tests/integration/phase7_5_pr7_exclusion_generated_live.rs"
+path = "../tests/internal/phase7_5_pr7_exclusion_generated_live.rs"
 harness = true
 
 [[test]]
 name = "phase7_5_t111_rls_fk_tenant_key_live"
-path = "../tests/integration/phase7_5_t111_rls_fk_tenant_key_live.rs"
+path = "../tests/internal/phase7_5_t111_rls_fk_tenant_key_live.rs"
 harness = true
 
 [[test]]
@@ -300,12 +366,12 @@ harness = true
 
 [[test]]
 name = "phase8_zero_pool_bench"
-path = "../tests/integration/phase8_zero_pool_bench.rs"
+path = "../tests/internal/phase8_zero_pool_bench.rs"
 harness = true
 
 [[test]]
 name = "phase8_zero_pool_live"
-path = "../tests/integration/phase8_zero_pool_live.rs"
+path = "../tests/internal/phase8_zero_pool_live.rs"
 harness = true
 
 [[test]]
@@ -319,8 +385,18 @@ path = "../tests/integration/phase8_zero_tree_query_live.rs"
 harness = true
 
 [[test]]
+name = "phase8_zero_tree_query_rls_live"
+path = "../tests/internal/phase8_zero_tree_query_rls_live.rs"
+harness = true
+
+[[test]]
 name = "phase8_zero_cluster_c_spatial_live"
 path = "../tests/integration/phase8_zero_cluster_c_spatial_live.rs"
+harness = true
+
+[[test]]
+name = "phase8_zero_cluster_c_spatial_scalar_live"
+path = "../tests/internal/phase8_zero_cluster_c_spatial_scalar_live.rs"
 harness = true
 
 [[test]]
@@ -330,7 +406,7 @@ harness = true
 
 [[test]]
 name = "phase8_zero_cluster_c_bench"
-path = "../tests/integration/phase8_zero_cluster_c_bench.rs"
+path = "../tests/internal/phase8_zero_cluster_c_bench.rs"
 harness = true
 
 [[test]]
@@ -380,7 +456,7 @@ harness = true
 
 [[test]]
 name = "phase8_on_commit_pool_warn"
-path = "../tests/integration/phase8_on_commit_pool_warn.rs"
+path = "../tests/internal/phase8_on_commit_pool_warn.rs"
 harness = true
 
 [[test]]
@@ -390,7 +466,7 @@ harness = true
 
 [[test]]
 name = "phase8_zero_db_reset_replays_phase_zero"
-path = "../tests/integration/phase8_zero_db_reset_replays_phase_zero.rs"
+path = "../tests/internal/phase8_zero_db_reset_replays_phase_zero.rs"
 harness = true
 
 [[test]]
@@ -405,12 +481,12 @@ harness = true
 
 [[test]]
 name = "phase8_set_role_transaction_scoped"
-path = "../tests/integration/phase8_set_role_transaction_scoped.rs"
+path = "../tests/internal/phase8_set_role_transaction_scoped.rs"
 harness = true
 
 [[test]]
 name = "phase8_set_role_set_tenant_ordering"
-path = "../tests/integration/phase8_set_role_set_tenant_ordering.rs"
+path = "../tests/internal/phase8_set_role_set_tenant_ordering.rs"
 harness = true
 
 [[test]]
@@ -420,7 +496,7 @@ harness = true
 
 [[test]]
 name = "phase8_djogi_verify_cli"
-path = "../tests/integration/phase8_djogi_verify_cli.rs"
+path = "../tests/internal/phase8_djogi_verify_cli.rs"
 harness = true
 
 # ── Phase 8δ T7.3 — cache modifier integration ───────────────────────────────

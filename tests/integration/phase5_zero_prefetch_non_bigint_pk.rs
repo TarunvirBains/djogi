@@ -1,27 +1,25 @@
-//! Phase 5-Zero T3 fixup: prefetch null-probe type safety for non-BIGINT PKs.
-//!
-//! Regression coverage for a Codex-flagged blocker in the T3 landing:
-//! `prefetch_loader` decoded the target's `id` column as `Option<i64>`
-//! to distinguish a LEFT JOIN miss from a real row. That probe works
-//! for the default `HeerId` (BIGINT) but silently fails for
-//! `pk = Serial` (INTEGER decode of `Option<i64>` errors) and
-//! `pk = RanjId` (UUID is not convertible to `i64`). With
-//! `.unwrap_or(true)`, the decode error was treated as "target absent"
-//! — dropping every joined target on non-BIGINT-PK models.
-//!
-//! The fixup decodes `Option<Target::Pk>` instead; this file exercises
-//! both the happy path (target present) and the "target absent"
-//! path (LEFT JOIN miss on a nullable FK) against a Serial-PK target
-//! to pin that the type-agnostic probe returns correct results on both
-//! branches and would regress loudly if a future refactor re-introduced
-//! the `Option<i64>` shape.
-//!
-//! Serial (`i32`) is chosen over RanjId for the fixture because it
-//! requires no additional DDL dependencies beyond the HeeRanjId schema
-//! the harness already installs and exercises the same class of bug
-//! (non-`i64` PK decode) with a smaller setup surface.
-
-#![allow(deprecated)]
+// Phase 5-Zero T3 fixup: prefetch null-probe type safety for non-BIGINT PKs.
+//
+// Regression coverage for a Codex-flagged blocker in the T3 landing:
+// `prefetch_loader` decoded the target's `id` column as `Option<i64>`
+// to distinguish a LEFT JOIN miss from a real row. That probe works
+// for the default `HeerId` (BIGINT) but silently fails for
+// `pk = Serial` (INTEGER decode of `Option<i64>` errors) and
+// `pk = RanjId` (UUID is not convertible to `i64`). With
+// `.unwrap_or(true)`, the decode error was treated as "target absent"
+// — dropping every joined target on non-BIGINT-PK models.
+//
+// The fixup decodes `Option<Target::Pk>` instead; this file exercises
+// both the happy path (target present) and the "target absent"
+// path (LEFT JOIN miss on a nullable FK) against a Serial-PK target
+// to pin that the type-agnostic probe returns correct results on both
+// branches and would regress loudly if a future refactor re-introduced
+// the `Option<i64>` shape.
+//
+// Serial (`i32`) is chosen over RanjId for the fixture because it
+// requires no additional DDL dependencies beyond the HeeRanjId schema
+// the harness already installs and exercises the same class of bug
+// (non-`i64` PK decode) with a smaller setup surface.
 
 use djogi::prelude::*;
 
@@ -58,38 +56,6 @@ pub struct Item {
 // Fixture helpers
 // ---------------------------------------------------------------------------
 
-/// Install the two test tables. Runs via the `#[djogi_test]` harness,
-/// which already installed the HeeRanjId schema and seeded node_id.
-/// `CREATE TABLE IF NOT EXISTS` keeps this idempotent across the
-/// per-test databases the harness provisions.
-async fn setup_tables(ctx: &mut djogi::DjogiContext) {
-    ctx.__execute_for_macros(
-        "CREATE TABLE IF NOT EXISTS t3_fixup_categories (
-            id         SERIAL      PRIMARY KEY,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            name       TEXT        NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create categories table");
-
-    ctx.__execute_for_macros(
-        "CREATE TABLE IF NOT EXISTS t3_fixup_items (
-            id                    BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at            TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at            TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            label                 TEXT        NOT NULL,
-            category_id           INTEGER     NOT NULL    REFERENCES t3_fixup_categories(id) ON DELETE CASCADE,
-            secondary_category_id INTEGER                 REFERENCES t3_fixup_categories(id) ON DELETE SET NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create items table");
-}
-
 /// Build an `Item` with the required sentinel framework fields. `Item`
 /// carries `no_default` because `ForeignKey<T>` intentionally does not
 /// implement `Default` — same pattern as Phase 3's `vehicle_for_insert`.
@@ -114,10 +80,8 @@ fn item_for_insert(label: &str, category: &Category, secondary: Option<&Category
 /// `row.get(ItemRelated::category())` returned `None` despite the join
 /// matching a real row. The fixup makes the probe type-agnostic and
 /// this path returns the resolved `&Category`.
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Category, Item])]
 async fn prefetch_resolves_serial_pk_target(mut ctx: djogi::DjogiContext) {
-    setup_tables(&mut ctx).await;
-
     let category = Category::create(
         &mut ctx,
         Category {
@@ -154,10 +118,8 @@ async fn prefetch_resolves_serial_pk_target(mut ctx: djogi::DjogiContext) {
 /// returned `None`, but the assertion pins the behaviour so a future
 /// refactor (e.g. one that drops the null probe entirely in favour of
 /// `from_pg_row`-on-every-row) cannot silently regress it.
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Category, Item])]
 async fn prefetch_nullable_fk_to_serial_pk_target_is_none(mut ctx: djogi::DjogiContext) {
-    setup_tables(&mut ctx).await;
-
     let primary = Category::create(
         &mut ctx,
         Category {

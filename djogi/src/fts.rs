@@ -94,6 +94,10 @@ impl std::fmt::Display for TsVector {
     }
 }
 
+impl crate::descriptor::DjogiSqlType for TsVector {
+    const SQL_TYPE: &'static str = "TSVECTOR";
+}
+
 impl ToSql for TsVector {
     fn to_sql(
         &self,
@@ -191,6 +195,10 @@ impl std::fmt::Display for TsQuery {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
+}
+
+impl crate::descriptor::DjogiSqlType for TsQuery {
+    const SQL_TYPE: &'static str = "TSQUERY";
 }
 
 impl ToSql for TsQuery {

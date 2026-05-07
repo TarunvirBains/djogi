@@ -1,39 +1,45 @@
-//! Phase 8δ T7.4 integration tests: `DjogiContext::punnu<T>()` boot-time
-//! inventory registration.
-//!
-//! What this file pins:
-//!
-//! 1. `ctx.punnu::<MyModel>()` returns `Some` for any `#[model]` struct
-//!    that derives a `Cacheable` impl (every model with a PK). The boot
-//!    hook emitted by `#[derive(Model)]` runs before the first
-//!    `DjogiContext::from_pool` call and registers the pool.
-//!
-//! 2. Two calls to `ctx.punnu::<T>()` on the same context return the same
-//!    `Arc<Punnu<T>>` — `Arc::ptr_eq` returns `true`, proving that the
-//!    registry hands out the same handle on every access.
-//!
-//! 3. Two distinct top-level `DjogiContext` instances (from the same pool)
-//!    each hold independent `Sassi` instances. Inserting into one context's
-//!    `Punnu<T>` does NOT affect the other context's `Punnu<T>`. This is
-//!    the "DjogiContext IS the tenant boundary" contract from cluster 8δ T7.4.
-//!
-//! # Spec anchor
-//!
-//! `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-//! §3 commit T7.4.
-//!
-//! # Fixture strategy
-//!
-//! Each test provisions its own table inline via `ctx.raw_execute`.
-//! The `#[djogi_test]` macro already installs HeeRanjID schema, seeds
-//! node 1, and sets `heer.node_id = '1'` before the test body runs.
-//!
-//! # Why these tests live in `tests/integration/`
-//!
-//! Per the workspace convention (every other `phase{N}_*` integration
-//! test sits here, registered through `djogi/Cargo.toml`'s `[[test]]`
-//! blocks). The `punnu()` surface is reachable through the public
-//! `djogi` crate API, exactly as adopters consume it.
+// Phase 8δ T7.4 integration tests: `DjogiContext::punnu<T>()` boot-time
+// inventory registration.
+//
+// What this file pins:
+//
+// 1. `ctx.punnu::<MyModel>()` returns `Some` for any `#[model]` struct
+//    that derives a `Cacheable` impl (every model with a PK). The boot
+//    hook emitted by `#[derive(Model)]` runs before the first
+//    `DjogiContext::from_pool` call and registers the pool.
+//
+// 2. Two calls to `ctx.punnu::<T>()` on the same context return the same
+//    `Arc<Punnu<T>>` — `Arc::ptr_eq` returns `true`, proving that the
+//    registry hands out the same handle on every access.
+//
+// 3. Two distinct top-level `DjogiContext` instances (from the same pool)
+//    each hold independent `Sassi` instances. Inserting into one context's
+//    `Punnu<T>` does NOT affect the other context's `Punnu<T>`. This is
+//    the "DjogiContext IS the tenant boundary" contract from cluster 8δ T7.4.
+//
+//    NOTE: Test 3 uses `ctx.share_pool()` to obtain the underlying pool for
+//    constructing two sibling contexts via `DjogiContext::from_pool`. This
+//    is a genuine typed-surface gap — there is no public non-bypass API to
+//    `DjogiContext::share_pool() -> DjogiPool` (or `DjogiContext::sibling()`)
+//
+// # Spec anchor
+//
+// `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
+// §3 commit T7.4.
+//
+// # Fixture strategy
+//
+// Tables are provisioned via `#[djogi_test(sync_models = [PunnuBootRow])]`
+// which routes through the same migration engine that production uses.
+// The `#[djogi_test]` macro already installs HeeRanjID schema, seeds
+// node 1, and sets `heer.node_id = '1'` before the test body runs.
+//
+// # Why these tests live in `tests/integration/`
+//
+// Per the workspace convention (every other `phase{N}_*` integration
+// test sits here, registered through `djogi/Cargo.toml`'s `[[test]]`
+// blocks). The `punnu()` surface is reachable through the public
+// `djogi` crate API, exactly as adopters consume it.
 
 use djogi::prelude::*;
 
@@ -48,30 +54,14 @@ pub struct PunnuBootRow {
     pub label: String,
 }
 
-async fn setup_punnu_boot_row(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_t7_4_punnu_boot_rows (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            label       TEXT        NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create phase8_t7_4_punnu_boot_rows table");
-}
-
 // ---------------------------------------------------------------------------
 // Test 1 — `ctx.punnu::<PunnuBootRow>()` returns `Some` for a
 // `#[model]`-derived struct. The boot hook registered the pool at
 // `DjogiContext::from_pool` time.
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [PunnuBootRow])]
 async fn punnu_registered_for_default_model(mut ctx: djogi::DjogiContext) {
-    setup_punnu_boot_row(&mut ctx).await;
-
     let pool = ctx.punnu::<PunnuBootRow>();
 
     assert!(
@@ -88,10 +78,8 @@ async fn punnu_registered_for_default_model(mut ctx: djogi::DjogiContext) {
 // Arc, proving the pool handle is stable across calls on the same context.
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [PunnuBootRow])]
 async fn punnu_returns_same_pool_across_calls(mut ctx: djogi::DjogiContext) {
-    setup_punnu_boot_row(&mut ctx).await;
-
     let a = ctx
         .punnu::<PunnuBootRow>()
         .expect("first punnu call must return Some");
@@ -117,17 +105,18 @@ async fn punnu_returns_same_pool_across_calls(mut ctx: djogi::DjogiContext) {
 // boundary" (cluster 8δ T7.4). Cluster 8δ T7.6 will add a runtime guard
 // that enforces single-context use for tenant-keyed models; T7.4 just
 // establishes and pins the boundary.
+//
+// underlying pool for constructing two sibling contexts via
+// (or a `DjogiContext::sibling()` factory) so tests that verify the
+// multi-context tenant-boundary contract do not need the bypass.
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [PunnuBootRow])]
 async fn cross_tenant_requires_separate_context(mut ctx: djogi::DjogiContext) {
-    setup_punnu_boot_row(&mut ctx).await;
-
     // Extract the underlying pool so we can build two fresh top-level contexts.
     let pool = ctx
-        .pool()
-        .expect("djogi_test harness produces a pool-backed context")
-        .clone();
+        .share_pool()
+        .expect("djogi_test harness produces a pool-backed context");
 
     let ctx_a = djogi::DjogiContext::from_pool(pool.clone());
     let ctx_b = djogi::DjogiContext::from_pool(pool.clone());

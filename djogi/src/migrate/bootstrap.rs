@@ -7,10 +7,10 @@
 //! Postgres database to be brought to a state where any descriptor-driven
 //! migration can apply. That state is two pieces:
 //!
-//! 1. **HeeRanjID schema** — `generate_id()` / `generate_ranj_id()` /
+//! 1. **HeeRanjID schema** — `heerid_next()` / `ranjid_next()` /
 //!    the `heer_*` tables / the `current_heer_node_id` GUC reader.
 //!    Every model that uses `HeerId` or `RanjId` as primary key
-//!    references `DEFAULT generate_id()` in its `CREATE TABLE` DDL,
+//!    references `DEFAULT heerid_next()` in its `CREATE TABLE` DDL,
 //!    so the function must exist before the first descriptor-driven
 //!    migration runs.
 //!
@@ -23,7 +23,7 @@
 //! Pre-Track-0, only the test harness `setup_test_db_with_extensions`
 //! installed these — the CLI / production / example paths hit a virgin
 //! DB and failed on the very first migration that referenced
-//! `DEFAULT generate_id()`. The example papered over the gap with
+//! `DEFAULT heerid_next()`. The example papered over the gap with
 //! hand-rolled `ctx.raw_ddl(...)` for HeeRanjID + PostGIS install.
 //!
 //! Track 0 lifts that bootstrap into this module:
@@ -422,6 +422,7 @@ pub(crate) fn compose_phase_zero(
 /// - [`BootstrapError::Db`] when `batch_execute` fails. The
 ///   `step: "phase_zero"` discriminator distinguishes this from
 ///   future per-step error classes if the function is split later.
+#[allow(clippy::disallowed_methods)]
 pub async fn run_phase_zero<C>(
     client: &C,
     database: &str,

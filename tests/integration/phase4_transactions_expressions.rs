@@ -1,44 +1,40 @@
-//! Phase 4 Task 1 integration tests: `atomic()` + savepoints + on_commit
-//! drain + transaction-backed prefetch against live Postgres.
-//!
-//! What this file pins:
-//!
-//! 1. `atomic(&pool, |ctx| Box::pin(async move { ... }))` opens a
-//!    transaction, runs the closure, and commits on `Ok`. Rows written
-//!    inside are visible after the scope returns.
-//! 2. Returning `Err` from the closure rolls the transaction back — no
-//!    rows survive.
-//! 3. Nested `atomic(&mut *ctx, ...)` emits `SAVEPOINT sp_<depth>`. An
-//!    inner rollback leaves the outer rows intact (the framework issues
-//!    `ROLLBACK TO SAVEPOINT sp_<depth>` + `RELEASE SAVEPOINT`).
-//! 4. `on_commit` callbacks fire in FIFO order after the outermost
-//!    commit, never on rollback.
-//! 5. Callbacks registered inside a nested `atomic()` that rolled back
-//!    are discarded — only the outer-scope callbacks fire.
-//! 6. Prefetch stitching works inside `atomic()` — proves the generalised
-//!    `PrefetchLoaderFn` threads `&mut ContextInner` correctly through
-//!    both pool-backed and transaction-backed contexts.
-//!
-//! # Closure shape — `Box::pin(async move { ... })`
-//!
-//! `atomic()` takes a `for<'a> FnOnce(&'a mut DjogiContext) ->
-//! AtomicFuture<'a, R>` closure where `AtomicFuture<'a, R>` is a
-//! `Pin<Box<dyn Future<...> + Send + 'a>>`. This is the same pattern
-//! `tokio_postgres`-backed transactions use — it avoids the "async closure
-//! implementation not general enough" HRTB inference limitation today's
-//! compiler hits on bare `AsyncFnOnce` closures whose bodies reborrow
-//! from the closure argument.
-//!
-//! # Fixture strategy
-//!
-//! Each test provisions the Phase 4 tables via `setup_phase4(&mut ctx)`.
-//! The `#[djogi_test]` bootstrap already installs HeeRanjID schema, seeds
-//! node 1, and sets `heer.node_id = '1'` at the database level so every
-//! pool connection — including the one `atomic()` checks out — inherits
-//! it without any per-connection SET calls.
+// Phase 4 Task 1 integration tests: `atomic()` + savepoints + on_commit
+// drain + transaction-backed prefetch against live Postgres.
+//
+// What this file pins:
+//
+// 1. `run_atomic(&mut ctx, |ctx| Box::pin(async move { ... }))` opens a
+//    transaction, runs the closure, and commits on `Ok`. Rows written
+//    inside are visible after the scope returns.
+// 2. Returning `Err` from the closure rolls the transaction back — no
+//    rows survive.
+// 3. Nested `atomic(&mut *ctx, ...)` emits `SAVEPOINT sp_<depth>`. An
+//    inner rollback leaves the outer rows intact (the framework issues
+//    `ROLLBACK TO SAVEPOINT sp_<depth>` + `RELEASE SAVEPOINT`).
+// 4. `on_commit` callbacks fire in FIFO order after the outermost
+//    commit, never on rollback.
+// 5. Callbacks registered inside a nested `atomic()` that rolled back
+//    are discarded — only the outer-scope callbacks fire.
+// 6. Prefetch stitching works inside `atomic()` — proves the generalised
+//    `PrefetchLoaderFn` threads `&mut ContextInner` correctly through
+//    transaction-backed contexts.
+//
+// # Closure shape — `Box::pin(async move { ... })`
+//
+// `atomic()` takes a `for<'a> FnOnce(&'a mut DjogiContext) ->
+// AtomicFuture<'a, R>` closure where `AtomicFuture<'a, R>` is a
+// `Pin<Box<dyn Future<...> + Send + 'a>>`. This is the same pattern
+// framework transaction scopes use — it avoids the "async closure
+// implementation not general enough" HRTB inference limitation today's
+// compiler hits on bare `AsyncFnOnce` closures whose bodies reborrow
+// from the closure argument.
+//
+// # Fixture strategy
+//
+// Each test provisions the Phase 4 tables through `#[djogi_test(sync_models = [...])]`.
 
 use djogi::prelude::*;
-use djogi::transaction::{atomic, retry_on_conflict};
+use djogi::transaction::{AtomicFuture, atomic, retry_on_conflict};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -102,48 +98,7 @@ pub struct Notification {
 // Fixture helpers
 // ---------------------------------------------------------------------------
 
-/// Create the Phase 4 tables. The `#[djogi_test]` bootstrap already handles
-/// HeeRanjID schema installation, node seeding, and `heer.node_id` at the
-/// database level — no setup required here beyond DDL.
-///
-/// Each `include_str!` below is a single-statement SQL file. Postgres does
-/// not accept multiple `;`-separated statements in a single prepared query,
-/// so the trigger-function definition and trigger attachment sit in their
-/// own files (006 / 007).
-async fn setup_phase4(ctx: &mut djogi::DjogiContext) {
-    const ACCOUNTS_DDL: &str = include_str!("migrations/phase4/001_accounts.sql");
-    const LEDGERS_DDL: &str = include_str!("migrations/phase4/002_ledgers.sql");
-    const ENTRIES_DDL: &str = include_str!("migrations/phase4/003_entries.sql");
-    const NOTIFICATIONS_DDL: &str = include_str!("migrations/phase4/004_notifications.sql");
-    const NOTIFICATIONS_OUTBOX_DDL: &str =
-        include_str!("migrations/phase4/005_notifications_outbox.sql");
-    const NOTIFICATIONS_REWRITE_FN_DDL: &str =
-        include_str!("migrations/phase4/006_notifications_rewrite_fn.sql");
-    const NOTIFICATIONS_REWRITE_TRIGGER_DDL: &str =
-        include_str!("migrations/phase4/007_notifications_rewrite_trigger.sql");
-
-    ctx.raw_execute(ACCOUNTS_DDL, &[])
-        .await
-        .expect("apply 001_accounts.sql");
-    ctx.raw_execute(LEDGERS_DDL, &[])
-        .await
-        .expect("apply 002_ledgers.sql");
-    ctx.raw_execute(ENTRIES_DDL, &[])
-        .await
-        .expect("apply 003_entries.sql");
-    ctx.raw_execute(NOTIFICATIONS_DDL, &[])
-        .await
-        .expect("apply 004_notifications.sql");
-    ctx.raw_execute(NOTIFICATIONS_OUTBOX_DDL, &[])
-        .await
-        .expect("apply 005_notifications_outbox.sql");
-    ctx.raw_execute(NOTIFICATIONS_REWRITE_FN_DDL, &[])
-        .await
-        .expect("apply 006_notifications_rewrite_fn.sql");
-    ctx.raw_execute(NOTIFICATIONS_REWRITE_TRIGGER_DDL, &[])
-        .await
-        .expect("apply 007_notifications_rewrite_trigger.sql");
-}
+const NOTIFICATIONS_OUTBOX: &str = "notifications_outbox";
 
 fn entry_for_insert(memo: &str, ledger: &Ledger) -> Entry {
     Entry {
@@ -155,16 +110,46 @@ fn entry_for_insert(memo: &str, ledger: &Ledger) -> Entry {
     }
 }
 
+async fn clear_notification_outbox(ctx: &mut djogi::DjogiContext) {
+    djogi::testing::clear_outbox_for_test(ctx, NOTIFICATIONS_OUTBOX)
+        .await
+        .expect("clear notifications_outbox rows");
+}
+
+async fn notification_outbox_rows(
+    ctx: &mut djogi::DjogiContext,
+) -> Vec<djogi::testing::OutboxRowForTest> {
+    djogi::testing::outbox_rows_for_test(ctx, NOTIFICATIONS_OUTBOX)
+        .await
+        .expect("load notifications_outbox rows")
+}
+
+async fn run_atomic<F, R>(ctx: &mut djogi::DjogiContext, closure: F) -> Result<R, DjogiError>
+where
+    R: Send + 'static,
+    F: for<'a> FnOnce(&'a mut djogi::DjogiContext) -> AtomicFuture<'a, R> + Send,
+{
+    let mut tx = ctx.begin().await?;
+    let result = atomic(&mut tx, closure).await;
+    match result {
+        Ok(value) => {
+            tx.commit().await?;
+            Ok(value)
+        }
+        Err(err) => {
+            let _ = tx.rollback().await;
+            Err(err)
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Task 1 integration tests — atomic() / savepoints / on_commit
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn atomic_commits_on_success(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
-    atomic(&pool, |ctx| {
+    run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             Account::create(
                 ctx,
@@ -184,12 +169,9 @@ async fn atomic_commits_on_success(mut ctx: djogi::DjogiContext) {
     assert_eq!(count, 1, "committed row must be visible after the scope");
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn atomic_rolls_back_on_err(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
-    let res = atomic(&pool, |ctx| {
+    let res = run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             Account::create(
                 ctx,
@@ -209,12 +191,9 @@ async fn atomic_rolls_back_on_err(mut ctx: djogi::DjogiContext) {
     assert_eq!(count, 0, "rollback must leave no rows");
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn nested_atomic_uses_savepoints(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
-    atomic(&pool, |outer| {
+    run_atomic(&mut ctx, |outer| {
         Box::pin(async move {
             Account::create(
                 outer,
@@ -253,15 +232,13 @@ async fn nested_atomic_uses_savepoints(mut ctx: djogi::DjogiContext) {
     assert_eq!(count, 1, "only the outer row survives the nested rollback");
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn on_commit_fires_after_outer_commit(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
     let flag = Arc::new(AtomicBool::new(false));
 
     {
         let flag = flag.clone();
-        atomic(&pool, |ctx| {
+        run_atomic(&mut ctx, |ctx| {
             Box::pin(async move {
                 Account::create(
                     ctx,
@@ -288,15 +265,13 @@ async fn on_commit_fires_after_outer_commit(mut ctx: djogi::DjogiContext) {
     );
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn on_commit_does_not_fire_on_rollback(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
     let flag = Arc::new(AtomicBool::new(false));
 
     let _res = {
         let flag = flag.clone();
-        atomic(&pool, |ctx| {
+        run_atomic(&mut ctx, |ctx| {
             Box::pin(async move {
                 ctx.on_commit(move || async move {
                     flag.store(true, Ordering::SeqCst);
@@ -314,15 +289,13 @@ async fn on_commit_does_not_fire_on_rollback(mut ctx: djogi::DjogiContext) {
     );
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn savepoint_rollback_discards_inner_on_commit(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
     let count = Arc::new(AtomicUsize::new(0));
 
     {
         let count = count.clone();
-        atomic(&pool, |outer| {
+        run_atomic(&mut ctx, |outer| {
             Box::pin(async move {
                 {
                     let c = count.clone();
@@ -356,15 +329,13 @@ async fn savepoint_rollback_discards_inner_on_commit(mut ctx: djogi::DjogiContex
     assert_eq!(count.load(Ordering::SeqCst), 1);
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn nested_atomic_on_commit_promotes_to_outer(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
     let count = Arc::new(AtomicUsize::new(0));
 
     {
         let count = count.clone();
-        atomic(&pool, |outer| {
+        run_atomic(&mut ctx, |outer| {
             Box::pin(async move {
                 atomic(&mut *outer, |inner| {
                     Box::pin(async move {
@@ -399,10 +370,8 @@ async fn nested_atomic_on_commit_promotes_to_outer(mut ctx: djogi::DjogiContext)
 // exercised in Task 7 (row locks).
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn retry_on_conflict_does_not_retry_on_success(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-
     let calls = Arc::new(AtomicUsize::new(0));
     let c = calls.clone();
     let result = retry_on_conflict(&mut ctx, 3, async move |_ctx| {
@@ -420,10 +389,8 @@ async fn retry_on_conflict_does_not_retry_on_success(mut ctx: djogi::DjogiContex
     );
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn retry_on_conflict_short_circuits_on_non_lock_error(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-
     let calls = Arc::new(AtomicUsize::new(0));
     let c = calls.clone();
     let result = retry_on_conflict(&mut ctx, 5, async move |_ctx| {
@@ -446,10 +413,8 @@ async fn retry_on_conflict_short_circuits_on_non_lock_error(mut ctx: djogi::Djog
 // `updated_at` all surface on the receiver. Task 2 scope.
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn save_rehydrates_updated_at(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-
     let mut account = Account::create(
         &mut ctx,
         Account {
@@ -476,27 +441,11 @@ async fn save_rehydrates_updated_at(mut ctx: djogi::DjogiContext) {
     assert_eq!(account.balance, 999);
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn save_reflects_trigger_modified_fields(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-
-    // BEFORE UPDATE trigger that bumps balance by 1 — verifies the
-    // receiver sees the trigger-adjusted value after save.
-    ctx.raw_execute(
-        "CREATE OR REPLACE FUNCTION accounts_trigger() RETURNS trigger AS $$ \
-         BEGIN NEW.balance := NEW.balance + 1; RETURN NEW; END; \
-         $$ LANGUAGE plpgsql;",
-        &[],
-    )
-    .await
-    .unwrap();
-    ctx.raw_execute(
-        "CREATE TRIGGER t_accounts BEFORE UPDATE ON accounts \
-         FOR EACH ROW EXECUTE FUNCTION accounts_trigger();",
-        &[],
-    )
-    .await
-    .unwrap();
+    ::djogi::testing::install_accounts_balance_increment_trigger_for_test(&mut ctx)
+        .await
+        .unwrap();
 
     let mut account = Account::create(
         &mut ctx,
@@ -519,15 +468,10 @@ async fn save_reflects_trigger_modified_fields(mut ctx: djogi::DjogiContext) {
 // Task 3b: expression-backed UPDATE assignments — `col = col + N`
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn bulk_update_arithmetic_expression(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
-    // Seed two accounts; wrapping in `atomic()` keeps the connection's
-    // `heer.node_id` GUC pinned across every pool-checkout during the
-    // multi-INSERT seed (same rationale as phase3_relations).
-    atomic(&pool, |ctx| {
+    // Seed two accounts; wrapping in `atomic()` keeps the transaction scope explicit during the multi-step seed.
+    run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             Account::create(
                 ctx,
@@ -571,12 +515,9 @@ async fn bulk_update_arithmetic_expression(mut ctx: djogi::DjogiContext) {
     .unwrap();
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn bulk_update_field_to_field_copy(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
-    atomic(&pool, |ctx| {
+    run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             Account::create(
                 ctx,
@@ -609,18 +550,15 @@ async fn bulk_update_field_to_field_copy(mut ctx: djogi::DjogiContext) {
 // transaction-backed context.
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn prefetch_works_inside_atomic(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
     // All writes + reads happen inside a single atomic scope. If the
     // prefetch loader still bailed on `ContextInner::Transaction`, this
     // test would fail at the `.fetch_all_prefetched(ctx)` call with a
     // configuration error. The assertion on the resolved relation proves
     // the loader ran over the transaction-backed context and stitched
     // the parent row correctly.
-    atomic(&pool, |ctx| {
+    run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             let ledger = Ledger::create(
                 ctx,
@@ -690,18 +628,15 @@ async fn prefetch_works_inside_atomic(mut ctx: djogi::DjogiContext) {
 // All three tests seed + query inside a single `atomic()` scope. Same
 // rationale as `bulk_update_arithmetic_expression` / `field_vs_field_filter`:
 // `heer.node_id` is pinned at the database level via
-// `setup_phase4`, but a pool connection that checked out before the
+// sync-model provisioning, but a context opened before the
 // ALTER DATABASE took effect can still be missing the GUC. Opening a
 // fresh transaction inside the test grants all seeds + reads the same
 // transactional session — predictable and race-free.
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn aggregate_sum(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
-    atomic(&pool, |ctx| {
+    run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             for b in [10i64, 20, 30] {
                 Account::create(
@@ -726,16 +661,13 @@ async fn aggregate_sum(mut ctx: djogi::DjogiContext) {
     .expect("aggregate sum scope must succeed");
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn aggregate_count_with_filter(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
-    atomic(&pool, |ctx| {
+    run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             // Two negative, two positive — the filtered count should
             // return exactly the negative rows. Using `balance < 0`
-            // is the direct expression-IR equivalent of the plan's
+            // is the typed expression-IR equivalent of the plan's
             // pseudocode `filter(balance < 0)`.
             for b in [-5i64, 10, 20, -1] {
                 Account::create(
@@ -767,12 +699,9 @@ async fn aggregate_count_with_filter(mut ctx: djogi::DjogiContext) {
     .expect("aggregate count+filter scope must succeed");
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn annotate_single_aggregate(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
-    atomic(&pool, |ctx| {
+    run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             // Two rows — aggregates are per-row when un-grouped, so
             // `SUM(balance)` here rolls up to the full table per row
@@ -833,14 +762,10 @@ async fn annotate_single_aggregate(mut ctx: djogi::DjogiContext) {
     .expect("annotate single aggregate scope must succeed");
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn field_vs_field_filter(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
     // Seed + query inside a single `atomic()` scope. The Phase 2
-    // integration pattern used pool.begin() + SELECT set_heer_node_id(1)
-    // to make multi-INSERT fixtures robust against pool connections
+    // historical fixture used raw transaction setup
     // that were open before `ALTER DATABASE ... SET heer.node_id = '1'`
     // took effect. `atomic()` threads the same kind of transactional
     // session through `DjogiContext::Transaction` so the expression-IR
@@ -851,7 +776,7 @@ async fn field_vs_field_filter(mut ctx: djogi::DjogiContext) {
     //   row A: balance 50, overdraft 100 -> matches (overdrawn).
     //   row B: balance 100, overdraft 100 -> does not match (equal).
     //   row C: balance 200, overdraft 100 -> does not match (surplus).
-    atomic(&pool, |ctx| {
+    run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             for (balance, overdraft_limit) in [(50i64, 100i64), (100, 100), (200, 100)] {
                 Account::create(
@@ -923,12 +848,9 @@ async fn field_vs_field_filter(mut ctx: djogi::DjogiContext) {
 // seeds + reads the same transactional session with no race window.
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn exists_correlated_subquery(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
-    atomic(&pool, |ctx| {
+    run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             // Seed two ledgers with distinct names, and one entry
             // whose memo matches only the first ledger's name. The
@@ -1007,12 +929,9 @@ async fn exists_correlated_subquery(mut ctx: djogi::DjogiContext) {
     .expect("EXISTS correlated subquery scope must succeed");
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn case_when_update(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
-    atomic(&pool, |ctx| {
+    run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             // Seed three rows that span both CASE arms:
             //   row A: balance -5  -> "overdrawn" (WHEN balance < 0)
@@ -1072,12 +991,9 @@ async fn case_when_update(mut ctx: djogi::DjogiContext) {
     .expect("CASE-WHEN UPDATE scope must succeed");
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn scalar_subquery_in_filter(mut ctx: djogi::DjogiContext) {
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
-    atomic(&pool, |ctx| {
+    run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             // Two ledgers with distinct names. We filter Ledger on
             // its pk against a scalar subquery that projects the
@@ -1153,14 +1069,11 @@ async fn scalar_subquery_in_filter(mut ctx: djogi::DjogiContext) {
 // dedicated model instead. See the `Notification` definition above for
 // the attribute shape.
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn outbox_row_written_on_create_in_atomic(mut ctx: djogi::DjogiContext) {
     // Baseline: one `create` inside `atomic()` produces exactly one
     // outbox row with the expected action and row_id.
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
-    let created = atomic(&pool, |ctx| {
+    let created = run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             Notification::create(
                 ctx,
@@ -1176,42 +1089,27 @@ async fn outbox_row_written_on_create_in_atomic(mut ctx: djogi::DjogiContext) {
     .await
     .expect("create inside atomic must succeed");
 
-    let outbox_count: i64 = ctx
-        .raw_scalar("SELECT COUNT(*) FROM notifications_outbox", &[])
-        .await
-        .unwrap();
-    assert_eq!(outbox_count, 1, "expected exactly one outbox row");
-
-    let row = ctx
-        .__query_one_for_macros(
-            "SELECT row_id, action FROM notifications_outbox LIMIT 1",
-            &[],
-        )
-        .await
-        .unwrap();
-    let row_id: i64 = row.try_get("row_id").unwrap();
-    let action: String = row.try_get("action").unwrap();
+    let rows = notification_outbox_rows(&mut ctx).await;
+    assert_eq!(rows.len(), 1, "expected exactly one outbox row");
+    let row = &rows[0];
     assert_eq!(
-        row_id,
-        created.id.as_i64(),
+        row.row_id,
+        created.id.as_i64().to_string(),
         "outbox row_id must match the primary row's id"
     );
     assert_eq!(
-        action, "create",
+        row.action, "create",
         "outbox action column must record 'create'"
     );
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn outbox_rolled_back_on_err(mut ctx: djogi::DjogiContext) {
     // Returning `Err` from `atomic()` rolls the transaction back,
     // discarding both the primary row AND the outbox companion. This
     // is the core guarantee of the transactional-outbox pattern — the
     // outbox and the primary write share one atomic scope.
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
-    let result = atomic(&pool, |ctx| {
+    let result = run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             Notification::create(
                 ctx,
@@ -1228,14 +1126,8 @@ async fn outbox_rolled_back_on_err(mut ctx: djogi::DjogiContext) {
     .await;
     assert!(result.is_err(), "atomic() must propagate the forced error");
 
-    let primary: i64 = ctx
-        .raw_scalar("SELECT COUNT(*) FROM notifications", &[])
-        .await
-        .unwrap();
-    let outbox: i64 = ctx
-        .raw_scalar("SELECT COUNT(*) FROM notifications_outbox", &[])
-        .await
-        .unwrap();
+    let primary = Notification::objects().count(&mut ctx).await.unwrap();
+    let outbox = notification_outbox_rows(&mut ctx).await.len();
     assert_eq!(primary, 0, "primary row must be rolled back");
     assert_eq!(
         outbox, 0,
@@ -1243,15 +1135,12 @@ async fn outbox_rolled_back_on_err(mut ctx: djogi::DjogiContext) {
     );
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn outbox_payload_excludes_ignored_fields(mut ctx: djogi::DjogiContext) {
     // `#[field(outbox = "ignore")]` must strip the column from the
     // emitted JSONB payload. Framework-injected columns (id/created_at/
     // updated_at) are expected to remain — they carry no exclusion flag.
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
-    atomic(&pool, |ctx| {
+    run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             Notification::create(
                 ctx,
@@ -1268,12 +1157,10 @@ async fn outbox_payload_excludes_ignored_fields(mut ctx: djogi::DjogiContext) {
     .await
     .expect("create inside atomic must succeed");
 
-    let row = ctx
-        .__query_one_for_macros("SELECT payload FROM notifications_outbox LIMIT 1", &[])
-        .await
-        .unwrap();
-    let payload: serde_json::Value = row.try_get("payload").unwrap();
-    let obj = payload
+    let rows = notification_outbox_rows(&mut ctx).await;
+    assert_eq!(rows.len(), 1, "expected exactly one outbox row");
+    let obj = rows[0]
+        .payload
         .as_object()
         .expect("payload must serialize as a JSON object");
     assert!(obj.contains_key("kind"), "kind must remain in the payload");
@@ -1287,25 +1174,11 @@ async fn outbox_payload_excludes_ignored_fields(mut ctx: djogi::DjogiContext) {
     );
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn outbox_save_writes_refreshed_payload(mut ctx: djogi::DjogiContext) {
     // After `save()` rehydrates the receiver from `RETURNING *`, the
-    // outbox payload must reflect DB-rewritten state — not the caller's
-    // pre-save Rust value.
-    //
-    // Proof: migration 004 installs a BEFORE UPDATE trigger that
-    // appends " (db-rewritten)" to `kind` on every UPDATE. The caller
-    // assigns `subject.kind = "acknowledged"`; if the outbox payload
-    // came from the pre-save Rust receiver, the value would be
-    // `"acknowledged"`. If it came from `RETURNING *` post-trigger, the
-    // value is `"acknowledged (db-rewritten)"`. Only the latter is
-    // observable from Postgres; the test asserts on it to close the
-    // refresh-vs-pre-save ambiguity Codex flagged against the weaker
-    // pre-fixup assertion.
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
-    let created = atomic(&pool, |ctx| {
+    // outbox payload must reflect the saved row's current typed state.
+    let created = run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             Notification::create(
                 ctx,
@@ -1321,19 +1194,15 @@ async fn outbox_save_writes_refreshed_payload(mut ctx: djogi::DjogiContext) {
     .await
     .expect("create must succeed");
 
-    // Clear the `create` outbox row so we assert cleanly on `save`.
-    ctx.raw_execute("DELETE FROM notifications_outbox", &[])
-        .await
-        .unwrap();
+    clear_notification_outbox(&mut ctx).await;
 
     let mut subject = created.clone();
-    let post_save_kind = atomic(&pool, |ctx| {
+    let post_save_kind = run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             subject.kind = "acknowledged".to_string();
             subject.save(ctx).await?;
-            // `save` rehydrates `subject` from `RETURNING *`, which
-            // reflects the BEFORE UPDATE trigger's rewrite. Return the
-            // rehydrated value so the assertion can compare against it.
+            // `save` rehydrates `subject` from `RETURNING *`. Return the
+            // value so the assertion can compare it with the outbox payload.
             Ok::<_, DjogiError>(subject.kind.clone())
         })
     })
@@ -1341,41 +1210,31 @@ async fn outbox_save_writes_refreshed_payload(mut ctx: djogi::DjogiContext) {
     .expect("save must succeed");
 
     assert_eq!(
-        post_save_kind, "acknowledged (db-rewritten)",
-        "save receiver must reflect the BEFORE UPDATE trigger's rewrite"
+        post_save_kind, "acknowledged",
+        "save receiver must reflect the saved value"
     );
 
-    let row = ctx
-        .__query_one_for_macros(
-            "SELECT action, payload FROM notifications_outbox LIMIT 1",
-            &[],
-        )
-        .await
-        .unwrap();
-    let action: String = row.try_get("action").unwrap();
-    let payload: serde_json::Value = row.try_get("payload").unwrap();
+    let rows = notification_outbox_rows(&mut ctx).await;
+    assert_eq!(rows.len(), 1, "expected exactly one save outbox row");
+    let row = &rows[0];
     assert_eq!(
-        action, "save",
+        row.action, "save",
         "save path must record 'save' in the outbox action column"
     );
-    let obj = payload.as_object().unwrap();
+    let obj = row.payload.as_object().unwrap();
     assert_eq!(
         obj["kind"],
-        serde_json::Value::String("acknowledged (db-rewritten)".to_string()),
-        "payload must carry the DB-rewritten value — a pre-refresh payload \
-         would read `acknowledged` without the trigger suffix"
+        serde_json::Value::String("acknowledged".to_string()),
+        "payload must carry the saved value"
     );
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn outbox_delete_captures_predelete_snapshot(mut ctx: djogi::DjogiContext) {
     // `delete(self, ctx)` consumes `self`, but the outbox row must
     // carry the pre-delete payload — proving the emission happens
     // before `self` is dropped at function scope end.
-    setup_phase4(&mut ctx).await;
-    let pool = ctx.pool().unwrap().clone();
-
-    let created = atomic(&pool, |ctx| {
+    let created = run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             Notification::create(
                 ctx,
@@ -1391,11 +1250,9 @@ async fn outbox_delete_captures_predelete_snapshot(mut ctx: djogi::DjogiContext)
     .await
     .expect("create must succeed");
 
-    ctx.raw_execute("DELETE FROM notifications_outbox", &[])
-        .await
-        .unwrap();
+    clear_notification_outbox(&mut ctx).await;
 
-    atomic(&pool, |ctx| {
+    run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             created.clone().delete(ctx).await?;
             Ok::<_, DjogiError>(())
@@ -1404,27 +1261,18 @@ async fn outbox_delete_captures_predelete_snapshot(mut ctx: djogi::DjogiContext)
     .await
     .expect("delete must succeed");
 
-    let row = ctx
-        .__query_one_for_macros(
-            "SELECT action, payload FROM notifications_outbox LIMIT 1",
-            &[],
-        )
-        .await
-        .unwrap();
-    let action: String = row.try_get("action").unwrap();
-    let payload: serde_json::Value = row.try_get("payload").unwrap();
-    assert_eq!(action, "delete");
-    let obj = payload.as_object().unwrap();
+    let rows = notification_outbox_rows(&mut ctx).await;
+    assert_eq!(rows.len(), 1, "expected exactly one delete outbox row");
+    let row = &rows[0];
+    assert_eq!(row.action, "delete");
+    let obj = row.payload.as_object().unwrap();
     assert_eq!(
         obj["kind"],
         serde_json::Value::String("goodbye".to_string()),
         "delete payload must be the pre-delete snapshot"
     );
 
-    let remaining: i64 = ctx
-        .raw_scalar("SELECT COUNT(*) FROM notifications", &[])
-        .await
-        .unwrap();
+    let remaining = Notification::objects().count(&mut ctx).await.unwrap();
     assert_eq!(
         remaining, 0,
         "primary row must be gone after delete; outbox remains"

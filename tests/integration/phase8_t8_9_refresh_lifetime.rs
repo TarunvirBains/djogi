@@ -1,51 +1,51 @@
-//! Phase 8δ T8.9 integration tests: `DeltaRefreshHandle<T>` lifetime audit —
-//! owned substrate captures across thread boundary.
-//!
-//! # What this file pins
-//!
-//! 1. **`refresh_handle_survives_tokio_spawn`** — proves the handle is `Send`:
-//!    constructs a handle in the test's main async scope, moves it into
-//!    `tokio::spawn(async move { ... })`, calls `update().await` from the
-//!    spawned task, and asserts the tick succeeded. If the handle were not
-//!    `Send` this test would not compile.
-//!
-//! 2. **`refresh_handle_survives_pool_drop_in_main`** — pins pool clone
-//!    independence. `DjogiPool` is `Arc`-internal; the fetcher captures its
-//!    own clone at `refresh_into` construction time. Dropping the original
-//!    pool handle in the caller's scope decrements the refcount but the
-//!    fetcher's clone keeps the pool alive. `handle.update().await` must
-//!    succeed after `drop(original_pool)`.
-//!
-//! 3. **`refresh_handle_send_sync_compile_check`** — compile-time regression
-//!    guard for `Send + Sync`. A zero-body `fn requires_send_sync<T: Send + Sync>()`
-//!    witness prevents any future refactor from silently breaking the bounds
-//!    without a build error.
-//!
-//! # Why these three tests belong together
-//!
-//! Together they form the "lifetime audit" for the owned-substrate invariant
-//! landed in T8.3: a `DjogiDeltaFetcher<T>` holds no borrowed references —
-//! only owned, `'static` values — so `DeltaRefreshHandle<T>` can freely cross
-//! thread and lifetime boundaries. If T8.3's invariant were accidentally broken
-//! (e.g. a borrowed `DjogiContext` added to the fetcher), Test 1 and Test 3
-//! would fail to compile, surfacing the regression before it reaches production.
-//!
-//! # Spec anchor
-//!
-//! `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-//! §3 commit T8.9.
-//!
-//! # Fixture strategy
-//!
-//! A fresh model type (`LifetimeRow`) with its own table
-//! (`phase8_t8_9_lifetime_rows`) is used throughout. A separate type avoids
-//! `inventory` descriptor dedup conflicts with `FetcherTickRow` /
-//! `KnobRow` / etc. from other test binaries that register the same
-//! singleton `ModelDescriptor` under their respective type names.
-//!
-//! Each test provisions its own table inline via `ctx.raw_execute`. The
-//! `#[djogi_test]` macro installs the HeeRanjID schema, seeds node 1, and sets
-//! `heer.node_id = '1'` before the test body runs.
+// Phase 8δ T8.9 integration tests: `DeltaRefreshHandle<T>` lifetime audit —
+// owned substrate captures across thread boundary.
+//
+// # What this file pins
+//
+// 1. **`refresh_handle_survives_tokio_spawn`** — proves the handle is `Send`:
+//    constructs a handle in the test's main async scope, moves it into
+//    `tokio::spawn(async move { ... })`, calls `update().await` from the
+//    spawned task, and asserts the tick succeeded. If the handle were not
+//    `Send` this test would not compile.
+//
+// 2. **`refresh_handle_survives_pool_drop_in_main`** — pins pool clone
+//    independence. `DjogiPool` is `Arc`-internal; the fetcher captures its
+//    own clone at `refresh_into` construction time. Dropping the original
+//    pool handle in the caller's scope decrements the refcount but the
+//    fetcher's clone keeps the pool alive. `handle.update().await` must
+//    succeed after `drop(original_pool)`.
+//
+// 3. **`refresh_handle_send_sync_compile_check`** — compile-time regression
+//    guard for `Send + Sync`. A zero-body `fn requires_send_sync<T: Send + Sync>()`
+//    witness prevents any future refactor from silently breaking the bounds
+//    without a build error.
+//
+// # Why these three tests belong together
+//
+// Together they form the "lifetime audit" for the owned-substrate invariant
+// landed in T8.3: a `DjogiDeltaFetcher<T>` holds no borrowed references —
+// only owned, `'static` values — so `DeltaRefreshHandle<T>` can freely cross
+// thread and lifetime boundaries. If T8.3's invariant were accidentally broken
+// (e.g. a borrowed `DjogiContext` added to the fetcher), Test 1 and Test 3
+// would fail to compile, surfacing the regression before it reaches production.
+//
+// # Typed-surface gaps
+//
+// Tests 1 and 2 call `ctx.share_pool()` to obtain a `DjogiPool` for `refresh_into`.
+//
+// Test 3 is fully clean (compile-only check, no DB interaction beyond setup).
+//
+// # Spec anchor
+//
+// `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
+// §3 commit T8.9.
+//
+// # Fixture strategy
+//
+// Tables are provisioned via `#[djogi_test(sync_models = [LifetimeRow])]`
+// which routes through the same migration engine that production uses.
+// Each test gets its own fresh database so no TRUNCATE is needed.
 
 use djogi::prelude::*;
 
@@ -60,25 +60,6 @@ use djogi::prelude::*;
 #[derive(Debug, Clone)]
 pub struct LifetimeRow {
     pub label: String,
-}
-
-async fn setup_lifetime_rows(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_t8_9_lifetime_rows (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            label       TEXT        NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create phase8_t8_9_lifetime_rows table");
-
-    // Truncate between runs so rows from an earlier test do not bleed through.
-    ctx.raw_execute("TRUNCATE phase8_t8_9_lifetime_rows", &[])
-        .await
-        .expect("truncate phase8_t8_9_lifetime_rows");
 }
 
 // ── Test 1 — handle is Send: moves into tokio::spawn ─────────────────────────
@@ -99,23 +80,23 @@ async fn setup_lifetime_rows(ctx: &mut djogi::DjogiContext) {
 /// 2. `update().await` works from a thread other than the one that constructed
 ///    the handle (exercising the "no thread-affinity" property of the owned
 ///    substrate).
-#[djogi::djogi_test]
+///
+#[djogi::djogi_test(sync_models = [LifetimeRow])]
 async fn refresh_handle_survives_tokio_spawn(mut ctx: djogi::DjogiContext) {
-    setup_lifetime_rows(&mut ctx).await;
-
     // Insert one row so the tick returns a non-trivial result.
-    ctx.raw_execute(
-        "INSERT INTO phase8_t8_9_lifetime_rows (id, created_at, updated_at, label) \
-         VALUES (generate_id(), now(), now(), 'spawn-test')",
-        &[],
+    LifetimeRow::create(
+        &mut ctx,
+        LifetimeRow {
+            label: "spawn-test".into(),
+            ..Default::default()
+        },
     )
     .await
     .expect("insert spawn-test row");
 
     let pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
 
     let punnu = ctx
         .punnu::<LifetimeRow>()
@@ -163,24 +144,24 @@ async fn refresh_handle_survives_tokio_spawn(mut ctx: djogi::DjogiContext) {
 /// This test is a runtime pin for the "fetcher owns the pool" contract from
 /// T8.3. A regression that stored a raw pointer or a borrowed reference to
 /// the pool would cause a use-after-free or borrow-check error here.
-#[djogi::djogi_test]
+///
+#[djogi::djogi_test(sync_models = [LifetimeRow])]
 async fn refresh_handle_survives_pool_drop_in_main(mut ctx: djogi::DjogiContext) {
-    setup_lifetime_rows(&mut ctx).await;
-
     // Insert one row so the tick is meaningful.
-    ctx.raw_execute(
-        "INSERT INTO phase8_t8_9_lifetime_rows (id, created_at, updated_at, label) \
-         VALUES (generate_id(), now(), now(), 'pool-drop-test')",
-        &[],
+    LifetimeRow::create(
+        &mut ctx,
+        LifetimeRow {
+            label: "pool-drop-test".into(),
+            ..Default::default()
+        },
     )
     .await
     .expect("insert pool-drop-test row");
 
     // Clone the pool; the fetcher will capture this clone by value.
     let original_pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
 
     let punnu = ctx
         .punnu::<LifetimeRow>()
@@ -230,10 +211,8 @@ async fn refresh_handle_survives_pool_drop_in_main(mut ctx: djogi::DjogiContext)
 ///
 /// The test body is intentionally empty beyond the compile-time assertion;
 /// runtime verification is covered by Tests 1 and 2.
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [LifetimeRow])]
 async fn refresh_handle_send_sync_compile_check(mut ctx: djogi::DjogiContext) {
-    setup_lifetime_rows(&mut ctx).await;
-
     // Compile-time witness: this call resolves only if
     // `sassi::DeltaRefreshHandle<LifetimeRow>: Send + Sync`.
     fn requires_send_sync<T: Send + Sync>() {}
@@ -242,4 +221,5 @@ async fn refresh_handle_send_sync_compile_check(mut ctx: djogi::DjogiContext) {
     // No runtime assertions needed — the compile-time check is sufficient.
     // The test is included in the harness so it appears in `cargo test` output
     // as an explicit regression guard, not just an implicit compile artifact.
+    let _ = &mut ctx;
 }

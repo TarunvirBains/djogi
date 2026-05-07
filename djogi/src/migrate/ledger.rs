@@ -63,6 +63,7 @@
 
 use sha2::{Digest, Sha256};
 
+use crate::__bypass::RawAccessExt as _;
 use crate::context::DjogiContext;
 use crate::error::{DbError, DjogiError};
 

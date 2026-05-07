@@ -18,6 +18,7 @@
 //!   herd so the `cluster-sightings` demo finds real density hotspots.
 
 use anyhow::{Context, Result};
+use djogi::__bypass::{RawAccessExt as _, RawPoolAccessExt as _};
 use djogi::pg::pool::DjogiPool;
 use djogi::prelude::*;
 use djogi::transaction::atomic;
@@ -155,7 +156,7 @@ pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
         .context("apply seeds/countries.sql")?;
 
     let pool = ctx
-        .pool()
+        .raw_pool()
         .ok_or_else(|| anyhow::anyhow!("ctx must be pool-backed for seed"))?
         .clone();
 

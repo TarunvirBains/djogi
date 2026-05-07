@@ -49,6 +49,7 @@ use std::io::Write;
 use serde::Serialize;
 use tokio_postgres::error::SqlState;
 
+use djogi::__bypass::RawAccessExt as _;
 use djogi::DjogiError;
 use djogi::config::DjogiConfig;
 use djogi::context::DjogiContext;

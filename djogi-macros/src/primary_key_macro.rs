@@ -364,6 +364,10 @@ pub fn expand(input: TokenStream) -> TokenStream {
             }
         }
 
+        impl ::djogi::descriptor::DjogiSqlType for #name {
+            const SQL_TYPE: &'static str = #sql_type;
+        }
+
         // `impl Default` lets adopter code use the custom PK type as an
         // ambient field on a `#[model]` struct. The macro-emitted model
         // `Default` impl assigns `Default::default()` to every user field;

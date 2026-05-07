@@ -65,6 +65,7 @@
 //! [`execute_backfill`]; the two functions differ only in whether the
 //! starting row count is read from disk.
 
+use crate::__bypass::RawPoolAccessExt as _;
 use crate::context::DjogiContext;
 use crate::error::{DbError, DjogiError};
 use crate::live_migrate::state::{self, PlanStatus};
@@ -413,7 +414,7 @@ async fn drive_chunks(
     validate_predicate_template(predicate_template)?;
 
     let pool = ctx
-        .pool()
+        .raw_pool()
         .ok_or_else(|| {
             DjogiError::Db(DbError::other(
                 "execute_backfill / resume_backfill require a pool-backed DjogiContext; \

@@ -34,6 +34,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::__bypass::RawAccessExt as _;
 use crate::context::DjogiContext;
 use crate::error::DjogiError;
 

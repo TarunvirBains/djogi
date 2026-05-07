@@ -36,6 +36,7 @@
 
 use time::OffsetDateTime;
 
+use crate::__bypass::RawAccessExt as _;
 use crate::context::DjogiContext;
 use crate::error::{DbError, DjogiError};
 use crate::live_migrate::plan::PlanClassification;

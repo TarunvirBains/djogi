@@ -1,45 +1,46 @@
-//! Phase 8δ T7.3 integration tests: `QuerySet::cache(&punnu)` opt-in
-//! modifier.
-//!
-//! What this file pins:
-//!
-//! 1. After `.cache(&punnu).fetch_all(&mut ctx).await`, the bound
-//!    `sassi::Punnu` contains every fetched row — `punnu.len() ==
-//!    fetched.len()`. The post-fetch hook fires once per row in the
-//!    materialised `Vec<T>`.
-//! 2. `.cache(&punnu).first(&mut ctx).await` inserts only the row
-//!    actually returned to the caller — exactly one entry lands in
-//!    the pool when `Some(_)` came back, zero on `None`.
-//! 3. The cache modifier is **purely additive** at the SQL level:
-//!    a queryset with `.cache(&p)` produces the same `Debug`
-//!    projection (and therefore the same accumulator-visible SQL
-//!    structure) as the same chain without `.cache(&p)`. The plan
-//!    explicitly forbids new instrumentation just for this assertion
-//!    (granular plan §3 commit T7.3 "tests" bullet), so the comparison
-//!    runs against the existing `std::fmt::Debug` impl, which
-//!    intentionally does NOT include `cache_target` in its
-//!    projection — see `djogi/src/query/queryset.rs` Debug impl
-//!    docs for why that exclusion is the load-bearing parity
-//!    contract.
-//!
-//! # Spec anchor
-//!
-//! `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-//! §3 commit T7.3 ("Test names + assertions" bullet, lines 141–144).
-//! Spec §664 — `.cache(&punnu)` modifier is opt-in. Phase 8 plan §374.
-//!
-//! # Fixture strategy
-//!
-//! Each test provisions its own table inline via `ctx.raw_execute`.
-//! The `#[djogi_test]` macro already installs HeeRanjID schema, seeds
-//! node 1, and sets `heer.node_id = '1'` before the test body runs.
-//!
-//! # Why these tests live in `tests/integration/`
-//!
-//! Per the workspace convention (every other `phase{N}_*` integration
-//! test sits here, registered through `djogi/Cargo.toml`'s `[[test]]`
-//! blocks). The cache modifier surface is reachable through the
-//! public `djogi` crate API, exactly as adopters consume it.
+// Phase 8δ T7.3 integration tests: `QuerySet::cache(&punnu)` opt-in
+// modifier.
+//
+// What this file pins:
+//
+// 1. After `.cache(&punnu).fetch_all(&mut ctx).await`, the bound
+//    `sassi::Punnu` contains every fetched row — `punnu.len() ==
+//    fetched.len()`. The post-fetch hook fires once per row in the
+//    materialised `Vec<T>`.
+// 2. `.cache(&punnu).first(&mut ctx).await` inserts only the row
+//    actually returned to the caller — exactly one entry lands in
+//    the pool when `Some(_)` came back, zero on `None`.
+// 3. The cache modifier is **purely additive** at the SQL level:
+//    a queryset with `.cache(&p)` produces the same `Debug`
+//    projection (and therefore the same accumulator-visible SQL
+//    structure) as the same chain without `.cache(&p)`. The plan
+//    explicitly forbids new instrumentation just for this assertion
+//    (granular plan §3 commit T7.3 "tests" bullet), so the comparison
+//    runs against the existing `std::fmt::Debug` impl, which
+//    intentionally does NOT include `cache_target` in its
+//    projection — see `djogi/src/query/queryset.rs` Debug impl
+//    docs for why that exclusion is the load-bearing parity
+//    contract.
+//
+// # Spec anchor
+//
+// `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
+// §3 commit T7.3 ("Test names + assertions" bullet, lines 141–144).
+// Spec §664 — `.cache(&punnu)` modifier is opt-in. Phase 8 plan §374.
+//
+// # Fixture strategy
+//
+// Tables are provisioned via `#[djogi_test(sync_models = [CacheRow])]`
+// which routes through the same migration engine that production uses.
+// The `#[djogi_test]` macro already installs HeeRanjID schema, seeds
+// node 1, and sets `heer.node_id = '1'` before the test body runs.
+//
+// # Why these tests live in `tests/integration/`
+//
+// Per the workspace convention (every other `phase{N}_*` integration
+// test sits here, registered through `djogi/Cargo.toml`'s `[[test]]`
+// blocks). The cache modifier surface is reachable through the
+// public `djogi` crate API, exactly as adopters consume it.
 
 use djogi::cache::Punnu;
 use djogi::prelude::*;
@@ -66,29 +67,13 @@ pub struct CacheRow {
     pub note: String,
 }
 
-async fn setup_cache_row(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE phase8_t7_3_cache_rows (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            note        TEXT        NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create phase8_t7_3_cache_rows table");
-}
-
 // ---------------------------------------------------------------------------
 // Test 1 — `.cache(&p).fetch_all()` populates the bound Punnu with
 // every fetched row.
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [CacheRow])]
 async fn cache_modifier_populates_punnu_on_fetch_all(mut ctx: djogi::DjogiContext) {
-    setup_cache_row(&mut ctx).await;
-
     // Seed three rows. Row count is the assertion subject.
     for note in ["first", "second", "third"] {
         CacheRow::create(
@@ -136,10 +121,8 @@ async fn cache_modifier_populates_punnu_on_fetch_all(mut ctx: djogi::DjogiContex
 // the `Some(_)` branch and skips the `None` branch.
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [CacheRow])]
 async fn cache_modifier_first_inserts_only_returned_row(mut ctx: djogi::DjogiContext) {
-    setup_cache_row(&mut ctx).await;
-
     // Seed two rows so `first` has something to pick.
     for note in ["alpha", "beta"] {
         CacheRow::create(
@@ -188,10 +171,8 @@ async fn cache_modifier_first_inserts_only_returned_row(mut ctx: djogi::DjogiCon
 // queryset's structural state (filter / order / limit / etc.).
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [CacheRow])]
 async fn cache_modifier_does_not_change_sql_emit(mut ctx: djogi::DjogiContext) {
-    setup_cache_row(&mut ctx).await;
-
     let pool: Punnu<CacheRow> = Punnu::<CacheRow>::builder().build();
 
     // Build two structurally identical querysets — same filter, same
@@ -236,9 +217,9 @@ async fn cache_modifier_does_not_change_sql_emit(mut ctx: djogi::DjogiContext) {
     // bounded-mitigation Codex implicitly accepted by ALLOW-WITH-
     // CONCERNS rather than BLOCK.
     //
-    // TODO(8δ T7.x): expose `__sql_for_test()` on `QuerySet` behind
-    // `#[cfg(any(test, feature = "testing"))]` and re-anchor this
-    // parity assertion on the rendered SQL string.
+    // TODO(8δ T7.x): expose a test-only SQL renderer on `QuerySet`
+    // behind `#[cfg(any(test, feature = "testing"))]` and re-anchor
+    // this parity assertion on the rendered SQL string.
     let plain_dbg = format!("{:?}", plain);
     let cached_dbg = format!("{:?}", cached);
     assert_eq!(

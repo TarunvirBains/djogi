@@ -1,44 +1,45 @@
-//! Phase 8δ T7.5 integration tests: `on_commit` cache invalidation hooks.
-//!
-//! What this file pins:
-//!
-//! 1. `save_invalidates_on_commit` — after `Model::save` inside `atomic`, the
-//!    entry that was pre-inserted into the bound `Punnu` is gone after commit
-//!    (the `on_commit` hook fired and called `Punnu::invalidate`).
-//!
-//! 2. `save_does_not_invalidate_on_rollback` — when the `atomic` closure
-//!    returns `Err`, the `on_commit` hook is dropped along with the queued
-//!    callbacks and the Punnu entry survives (never invalidated).
-//!
-//! 3. `delete_invalidates_on_commit` — analogous to test 1, but exercises
-//!    the `Model::delete` path with `InvalidationReason::OnDelete`.
-//!
-//! 4. `nested_savepoint_save_invalidates_only_on_outer_commit` — calling
-//!    `Model::save` inside a nested `atomic` (savepoint) only fires the
-//!    invalidation at outermost commit, not at savepoint RELEASE.
-//!
-//! # Fixture strategy
-//!
-//! Each test provisions its own table inline via `ctx.raw_execute`.
-//! The `#[djogi_test]` macro already installs HeeRanjID schema, seeds
-//! node 1, and sets `heer.node_id = '1'` before the test body runs.
-//!
-//! The `on_commit` hook captures `ctx.punnu::<T>()` (the Arc<Punnu<T>> from
-//! the transaction-backed context inside `atomic`). To observe the post-commit
-//! state, tests capture the Arc into an outer `Arc<std::sync::Mutex<...>>`
-//! before the atomic closure returns.
-//!
-//! # Why these tests live in `tests/integration/`
-//!
-//! Per the workspace convention: every other `phase{N}_*` integration test
-//! sits here, registered through `djogi/Cargo.toml`'s `[[test]]` blocks.
-//! The cache invalidation surface is reachable through the public `djogi`
-//! crate API, exactly as adopters consume it.
-//!
-//! # Spec anchor
-//!
-//! `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-//! §3 commit T7.5.
+// Phase 8δ T7.5 integration tests: `on_commit` cache invalidation hooks.
+//
+// What this file pins:
+//
+// 1. `save_invalidates_on_commit` — after `Model::save` inside `atomic`, the
+//    entry that was pre-inserted into the bound `Punnu` is gone after commit
+//    (the `on_commit` hook fired and called `Punnu::invalidate`).
+//
+// 2. `save_does_not_invalidate_on_rollback` — when the `atomic` closure
+//    returns `Err`, the `on_commit` hook is dropped along with the queued
+//    callbacks and the Punnu entry survives (never invalidated).
+//
+// 3. `delete_invalidates_on_commit` — analogous to test 1, but exercises
+//    the `Model::delete` path with `InvalidationReason::OnDelete`.
+//
+// 4. `nested_savepoint_save_invalidates_only_on_outer_commit` — calling
+//    `Model::save` inside a nested `atomic` (savepoint) only fires the
+//    invalidation at outermost commit, not at savepoint RELEASE.
+//
+// # Fixture strategy
+//
+// Tables are provisioned via `#[djogi_test(sync_models = [InvalRow])]`
+// which routes through the same migration engine that production uses.
+// The `#[djogi_test]` macro already installs HeeRanjID schema, seeds
+// node 1, and sets `heer.node_id = '1'` before the test body runs.
+//
+// The `on_commit` hook captures `ctx.punnu::<T>()` (the Arc<Punnu<T>> from
+// the transaction-backed context inside `atomic`). To observe the post-commit
+// state, tests capture the Arc into an outer `Arc<std::sync::Mutex<...>>`
+// before the atomic closure returns.
+//
+// # Why these tests live in `tests/integration/`
+//
+// Per the workspace convention: every other `phase{N}_*` integration test
+// sits here, registered through `djogi/Cargo.toml`'s `[[test]]` blocks.
+// The cache invalidation surface is reachable through the public `djogi`
+// crate API, exactly as adopters consume it.
+//
+// # Spec anchor
+//
+// `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
+// §3 commit T7.5.
 
 use djogi::DjogiError;
 use djogi::prelude::*;
@@ -55,20 +56,6 @@ pub struct InvalRow {
     pub note: String,
 }
 
-async fn setup_inval_row(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_t7_5_inval_rows (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            note        TEXT        NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create phase8_t7_5_inval_rows table");
-}
-
 // ---------------------------------------------------------------------------
 // Test 1 — `Model::save` enqueues on_commit invalidation.
 //
@@ -79,13 +66,11 @@ async fn setup_inval_row(ctx: &mut djogi::DjogiContext) {
 //  c. After the atomic commits, assert the Punnu entry is gone.
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
-async fn save_invalidates_on_commit(mut ctx: djogi::DjogiContext) {
-    setup_inval_row(&mut ctx).await;
+#[djogi::djogi_test(sync_models = [InvalRow])]
+async fn save_invalidates_on_commit(ctx: djogi::DjogiContext) {
     let pool = ctx
-        .pool()
-        .expect("djogi_test gives a pool-backed context")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must be pool-backed");
 
     // Step a: create the row so the DB has it (needed for save() to succeed).
     let row = atomic(&pool, |tx| {
@@ -174,13 +159,11 @@ async fn save_invalidates_on_commit(mut ctx: djogi::DjogiContext) {
 //  c. After rollback, the Punnu entry must still be present.
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
-async fn save_does_not_invalidate_on_rollback(mut ctx: djogi::DjogiContext) {
-    setup_inval_row(&mut ctx).await;
+#[djogi::djogi_test(sync_models = [InvalRow])]
+async fn save_does_not_invalidate_on_rollback(ctx: djogi::DjogiContext) {
     let pool = ctx
-        .pool()
-        .expect("djogi_test gives a pool-backed context")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must be pool-backed");
 
     // Create the row.
     let row = atomic(&pool, |tx| {
@@ -262,13 +245,11 @@ async fn save_does_not_invalidate_on_rollback(mut ctx: djogi::DjogiContext) {
 //  c. After commit, Punnu entry must be gone.
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
-async fn delete_invalidates_on_commit(mut ctx: djogi::DjogiContext) {
-    setup_inval_row(&mut ctx).await;
+#[djogi::djogi_test(sync_models = [InvalRow])]
+async fn delete_invalidates_on_commit(ctx: djogi::DjogiContext) {
     let pool = ctx
-        .pool()
-        .expect("djogi_test gives a pool-backed context")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must be pool-backed");
 
     // Create the row.
     let row = atomic(&pool, |tx| {
@@ -350,13 +331,11 @@ async fn delete_invalidates_on_commit(mut ctx: djogi::DjogiContext) {
 //  c. Commit the outer. Now the on_commit hook fires and entry is gone.
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
-async fn nested_savepoint_save_invalidates_only_on_outer_commit(mut ctx: djogi::DjogiContext) {
-    setup_inval_row(&mut ctx).await;
+#[djogi::djogi_test(sync_models = [InvalRow])]
+async fn nested_savepoint_save_invalidates_only_on_outer_commit(ctx: djogi::DjogiContext) {
     let pool = ctx
-        .pool()
-        .expect("djogi_test gives a pool-backed context")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must be pool-backed");
 
     // Create the row.
     let row = atomic(&pool, |tx| {

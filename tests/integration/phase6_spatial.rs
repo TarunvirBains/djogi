@@ -1,31 +1,31 @@
-//! Phase 6 integration tests — descriptor population (T2) and query-surface
-//! IR shape (T3).
-//!
-//! ## T2: Descriptor population for GeoPoint fields
-//!
-//! Verifies that the `#[derive(Model)]` / `#[model]` macro pair correctly
-//! populates the `ModelDescriptor` when a model declares a `GeoPoint` field:
-//!
-//! 1. `geography_sql_type_on_location_field` — the `location` field descriptor
-//!    has `sql_type == FieldSqlType::Geography { subtype: GeographySubtype::Point, srid: 4326 }`.
-//! 2. `gist_index_in_descriptor_for_geopoint_field` — `ModelDescriptor::indexes`
-//!    contains exactly one `IndexSpec` for the `location` column, with
-//!    `index_type == IndexType::Gist`.
-//! 3. `gist_index_name_follows_convention` — the index name matches the
-//!    `<table>_<column>_gix` naming convention.
-//! 4. `non_spatial_model_has_empty_indexes` — a plain non-spatial model has no
-//!    entries in `ModelDescriptor::indexes` (regression guard).
-//!
-//! ## T3: Spatial query-surface IR shape
-//!
-//! Verifies the Condition / OrderExpr routing without a live database:
-//!
-//! 5. `within_km_returns_condition_expr` — `within_km` returns `Condition::Expr`
-//!    for IR uniformity with the Phase 4 expression substrate.
-//! 6. `order_by_distance_returns_order_expr` — `order_by_distance` returns an
-//!    `OrderExpr` that the `order_by` closure accepts.
-//!
-//! All T2 and T3 tests are DB-free. Live-PostGIS CRUD tests are T4's scope.
+// Phase 6 integration tests — descriptor population (T2) and query-surface
+// IR shape (T3).
+//
+// ## T2: Descriptor population for GeoPoint fields
+//
+// Verifies that the `#[derive(Model)]` / `#[model]` macro pair correctly
+// populates the `ModelDescriptor` when a model declares a `GeoPoint` field:
+//
+// 1. `geography_sql_type_on_location_field` — the `location` field descriptor
+//    has `sql_type == FieldSqlType::Geography { subtype: GeographySubtype::Point, srid: 4326 }`.
+// 2. `gist_index_in_descriptor_for_geopoint_field` — `ModelDescriptor::indexes`
+//    contains exactly one `IndexSpec` for the `location` column, with
+//    `index_type == IndexType::Gist`.
+// 3. `gist_index_name_follows_convention` — the index name matches the
+//    `<table>_<column>_gix` naming convention.
+// 4. `non_spatial_model_has_empty_indexes` — a plain non-spatial model has no
+//    entries in `ModelDescriptor::indexes` (regression guard).
+//
+// ## T3: Spatial query-surface IR shape
+//
+// Verifies the Condition / OrderExpr routing without a live database:
+//
+// 5. `within_km_returns_condition_expr` — `within_km` returns `Condition::Expr`
+//    for IR uniformity with the Phase 4 expression substrate.
+// 6. `order_by_distance_returns_order_expr` — `order_by_distance` returns an
+//    `OrderExpr` that the `order_by` closure accepts.
+//
+// All T2 and T3 tests are DB-free. Live-PostGIS CRUD tests are T4's scope.
 
 use djogi::prelude::*;
 
@@ -245,9 +245,9 @@ fn queryset_with_spatial_filter_and_ordering_composes_without_panic() {
 // ---------------------------------------------------------------------------
 //
 // These tests require a live PostgreSQL 18 instance with the PostGIS 3.x
-// extension installable by the test role. `setup_phase6` provisions the
-// extension and the `places` table inline via `ctx.raw_ddl`
-// (idempotent — safe to call at the start of every test).
+// extension installable by the test role. The harness provisions PostGIS
+// and `sync_models` materialises the `places` table from the typed model
+// descriptor.
 //
 // ## Tests
 //
@@ -276,44 +276,6 @@ fn place(name: &str, lat: f64, lon: f64) -> Place {
     }
 }
 
-/// Provision PostGIS and the `places` table in the per-test database.
-///
-/// Called at the start of each T4 live-DB test. All statements are guarded
-/// with `IF NOT EXISTS` so the helper is idempotent across multiple calls
-/// within the same per-test DB lifetime.
-///
-/// Two separate `raw_ddl` calls are used because `raw_ddl` wraps
-/// `batch_execute` (the Postgres simple-query protocol), which accepts
-/// multi-statement strings. The extension must be installed before the table
-/// DDL runs because `GEOGRAPHY` is a PostGIS type.
-#[cfg(feature = "spatial")]
-async fn setup_phase6(ctx: &mut djogi::DjogiContext) {
-    // Install the PostGIS extension. This must succeed before any GEOGRAPHY
-    // column or ST_* function is used. `raw_ddl` uses the simple-query
-    // protocol (batch_execute), which accepts DDL that prepared statements
-    // cannot handle (e.g., CREATE EXTENSION).
-    ctx.raw_ddl("CREATE EXTENSION IF NOT EXISTS postgis")
-        .await
-        .expect("install postgis extension");
-
-    // Create the places table and its spatial index in one batch.
-    // Column order matches the #[model] injection order: id, created_at,
-    // updated_at, then user-defined columns (name, location).
-    ctx.raw_ddl(
-        "CREATE TABLE IF NOT EXISTS places (
-             id         BIGINT       PRIMARY KEY DEFAULT generate_id(),
-             created_at TIMESTAMPTZ  NOT NULL    DEFAULT now(),
-             updated_at TIMESTAMPTZ  NOT NULL    DEFAULT now(),
-             name       TEXT         NOT NULL,
-             location   GEOGRAPHY(Point, 4326) NOT NULL
-         );
-         CREATE INDEX IF NOT EXISTS places_location_gix
-             ON places USING GIST(location);",
-    )
-    .await
-    .expect("create places table and spatial index");
-}
-
 /// EWKB codec round-trip through a live Postgres GEOGRAPHY(Point, 4326) column.
 ///
 /// Creates a Place row via the ORM path (`Place::create`), reloads it via
@@ -326,10 +288,8 @@ async fn setup_phase6(ctx: &mut djogi::DjogiContext) {
 /// A 1e-9 tolerance covers any f64 representation noise; PostGIS stores
 /// GEOGRAPHY as IEEE 754 double-precision, so the round-trip should be exact.
 #[cfg(feature = "spatial")]
-#[djogi::djogi_test]
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [Place])]
 async fn geopoint_crud_round_trip(mut ctx: djogi::DjogiContext) {
-    setup_phase6(&mut ctx).await;
-
     let sfo = djogi::GeoPoint::new(37.6189, -122.3750).unwrap();
     let created = Place::create(&mut ctx, place("SFO", 37.6189, -122.3750))
         .await
@@ -365,10 +325,8 @@ async fn geopoint_crud_round_trip(mut ctx: djogi::DjogiContext) {
 /// geodetic distance calculation (which differs slightly from Haversine) while
 /// remaining far below the SFO-JFK distance.
 #[cfg(feature = "spatial")]
-#[djogi::djogi_test]
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [Place])]
 async fn within_km_filters_correctly(mut ctx: djogi::DjogiContext) {
-    setup_phase6(&mut ctx).await;
-
     Place::create(&mut ctx, place("SFO", 37.6189, -122.3750))
         .await
         .expect("create SFO");
@@ -428,10 +386,8 @@ async fn within_km_filters_correctly(mut ctx: djogi::DjogiContext) {
 /// The assertion uses `std::cmp::min` to remain correct if ID generation
 /// order ever changes.
 #[cfg(feature = "spatial")]
-#[djogi::djogi_test]
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [Place])]
 async fn order_by_distance_is_deterministic(mut ctx: djogi::DjogiContext) {
-    setup_phase6(&mut ctx).await;
-
     let center = djogi::GeoPoint::new(0.0, 0.0).unwrap();
 
     // Create north first — its PK will be lower (IDs are time-ordered).

@@ -52,6 +52,10 @@ use crate::auth::AuthError;
 #[derive(Debug, Clone, Default)]
 pub struct PasswordHash(String);
 
+impl crate::descriptor::DjogiSqlType for PasswordHash {
+    const SQL_TYPE: &'static str = "TEXT";
+}
+
 impl PasswordHash {
     /// Hash a plaintext password using Argon2id with the `argon2` crate's
     /// default parameters.

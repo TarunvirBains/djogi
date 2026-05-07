@@ -1,5 +1,5 @@
-//! Phase 8-Zero Cluster C C3 — live-Postgres checks for typed window-only
-//! annotations and derived-table filtering.
+// Phase 8-Zero Cluster C C3 — live-Postgres checks for typed window-only
+// annotations and derived-table filtering.
 
 use djogi::prelude::*;
 
@@ -9,21 +9,6 @@ pub struct WindowElephant {
     pub herd_id: i64,
     pub score: i64,
     pub label: String,
-}
-
-async fn setup_window_elephants(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_ddl(
-        "CREATE TABLE IF NOT EXISTS window_elephants_p8c (
-             id         BIGINT       PRIMARY KEY DEFAULT generate_id(),
-             created_at TIMESTAMPTZ  NOT NULL    DEFAULT now(),
-             updated_at TIMESTAMPTZ  NOT NULL    DEFAULT now(),
-             herd_id    BIGINT       NOT NULL,
-             score      BIGINT       NOT NULL,
-             label      TEXT         NOT NULL
-         );",
-    )
-    .await
-    .expect("window elephant table DDL must succeed");
 }
 
 fn elephant(herd_id: i64, score: i64, label: &str) -> WindowElephant {
@@ -45,9 +30,8 @@ async fn seed_elephants(ctx: &mut djogi::DjogiContext, rows: &[(i64, i64, &str)]
     }
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [WindowElephant])]
 async fn row_number_qualify_returns_top_three_per_herd(mut ctx: djogi::DjogiContext) {
-    setup_window_elephants(&mut ctx).await;
     seed_elephants(
         &mut ctx,
         &[
@@ -88,9 +72,8 @@ async fn row_number_qualify_returns_top_three_per_herd(mut ctx: djogi::DjogiCont
     }
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [WindowElephant])]
 async fn rank_and_dense_rank_handle_ties_differently(mut ctx: djogi::DjogiContext) {
-    setup_window_elephants(&mut ctx).await;
     seed_elephants(
         &mut ctx,
         &[(9, 100, "tie-a"), (9, 100, "tie-b"), (9, 90, "next")],

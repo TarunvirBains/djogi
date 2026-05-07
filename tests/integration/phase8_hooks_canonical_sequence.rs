@@ -1,40 +1,40 @@
-//! Phase 8α T1.7 — Canonical-sequence integration test.
-//!
-//! Pins the full six-hook ordering through a single create → save →
-//! delete pipeline:
-//!
-//!     before_create → INSERT  → after_create
-//!     before_save   → UPDATE  → after_save
-//!     before_delete → DELETE  → after_delete
-//!
-//! T1.4 / T1.5 / T1.6 each pin one CRUD terminal in isolation. This
-//! file proves the three terminals cooperate — that no rebinding,
-//! shadowing, or branch-folding regression in any one of them
-//! disturbs the relative ordering when all six hooks fire across one
-//! row's lifecycle.
-//!
-//! Phase 8 §D3 lines 118-129 fix the canonical sequence as
-//! `before_<verb> → SQL → outbox → after_<verb> → on_commit drain`
-//! for each of {create, save, delete}. The vec assertion below pins
-//! the verb-level interleaving without depending on the inter-step
-//! outbox / on_commit framing (those are pinned by T1.4–T1.6
-//! individually).
-//!
-//! # Why `OnceLock<Mutex<Vec<&'static str>>>`
-//!
-//! Per the spec (cluster-8alpha-granular.md lines 549–599) and the
-//! `feedback_log_codex_findings.md` Phase 8α design, the recorder is
-//! `static ORDER: OnceLock<Mutex<Vec<&'static str>>>`. `OnceLock` gives
-//! us safe lazy init, `Mutex` makes the push interior-mutable across
-//! the six `&self` / `&mut self` hook bodies, and the contained
-//! `Vec<&'static str>` is the simplest possible append-only log.
-//!
-//! `static mut` would be UB; `tokio::task_local!` (used by T1.5 / T1.6)
-//! is overkill for a single-test file with no shared model. If a
-//! future test in this file declares a second model, the recorder
-//! must be scoped via separate `OnceLock`s or via `task_local!` to
-//! avoid cross-test interference; see the file-header note in
-//! `phase8_hooks_save.rs` for the established convention.
+// Phase 8α T1.7 — Canonical-sequence integration test.
+//
+// Pins the full six-hook ordering through a single create → save →
+// delete pipeline:
+//
+//     before_create → INSERT  → after_create
+//     before_save   → UPDATE  → after_save
+//     before_delete → DELETE  → after_delete
+//
+// T1.4 / T1.5 / T1.6 each pin one CRUD terminal in isolation. This
+// file proves the three terminals cooperate — that no rebinding,
+// shadowing, or branch-folding regression in any one of them
+// disturbs the relative ordering when all six hooks fire across one
+// row's lifecycle.
+//
+// Phase 8 §D3 lines 118-129 fix the canonical sequence as
+// `before_<verb> → SQL → outbox → after_<verb> → on_commit drain`
+// for each of {create, save, delete}. The vec assertion below pins
+// the verb-level interleaving without depending on the inter-step
+// outbox / on_commit framing (those are pinned by T1.4–T1.6
+// individually).
+//
+// # Why `OnceLock<Mutex<Vec<&'static str>>>`
+//
+// Per the spec (cluster-8alpha-granular.md lines 549–599) and the
+// `feedback_log_codex_findings.md` Phase 8α design, the recorder is
+// `static ORDER: OnceLock<Mutex<Vec<&'static str>>>`. `OnceLock` gives
+// us safe lazy init, `Mutex` makes the push interior-mutable across
+// the six `&self` / `&mut self` hook bodies, and the contained
+// `Vec<&'static str>` is the simplest possible append-only log.
+//
+// `static mut` would be UB; `tokio::task_local!` (used by T1.5 / T1.6)
+// is overkill for a single-test file with no shared model. If a
+// future test in this file declares a second model, the recorder
+// must be scoped via separate `OnceLock`s or via `task_local!` to
+// avoid cross-test interference; see the file-header note in
+// `phase8_hooks_save.rs` for the established convention.
 
 use djogi::prelude::*;
 use std::sync::{Mutex, OnceLock};
@@ -96,24 +96,8 @@ impl djogi::hooks::ModelHooks for Probe {
     }
 }
 
-async fn setup_canonical_probes(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE phase8_hooks_canonical_probes (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            value       INTEGER     NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create phase8_hooks_canonical_probes table");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Probe])]
 async fn canonical_sequence_create_save_delete(mut ctx: djogi::DjogiContext) {
-    setup_canonical_probes(&mut ctx).await;
-
     // Defensive reset — `OnceLock` is process-global, so if cargo
     // ever runs this test more than once in a single process (e.g.
     // under a future hot-reload harness) we want a clean log each

@@ -1246,7 +1246,9 @@ where
 
     let mut acc = SqlAccumulator::new("SELECT ");
     gaq.keys.push_select_columns(&mut acc);
-    gaq.aggregates.push_columns_bare(&mut acc);
+    let has_key_columns = acc.sql() != "SELECT ";
+    gaq.aggregates
+        .push_columns_bare_after(&mut acc, has_key_columns);
 
     acc.push_sql(" FROM ");
     acc.push_sql(T::table_name());
@@ -2580,6 +2582,14 @@ mod tests {
         };
         let acc = build_grouped_annotated_select(&gaq);
         let sql = acc.sql();
+        assert!(
+            !sql.contains("SELECT ,"),
+            "unit-key grouping sets must not emit a leading SELECT comma: {sql}"
+        );
+        assert!(
+            sql.starts_with("SELECT (SUM(amount))::BIGINT AS __djogi_agg_0 FROM fakes AS t"),
+            "unit-key grouping sets must start with the aggregate projection, got: {sql}"
+        );
         assert!(
             sql.contains("GROUPING SETS ((org_id), (region))"),
             "expected GROUPING SETS clause, got: {sql}"

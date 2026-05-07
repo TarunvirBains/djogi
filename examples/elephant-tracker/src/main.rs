@@ -123,6 +123,7 @@ enum DemoCmd {
     },
 }
 
+#[allow(clippy::disallowed_methods)]
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()

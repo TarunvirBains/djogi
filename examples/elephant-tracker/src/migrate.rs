@@ -30,6 +30,7 @@
 //! connections, no manual driver-task spawn.
 
 use anyhow::{Context, Result};
+use djogi::__bypass::{RawAccessExt as _, RawPoolAccessExt as _};
 use djogi::{DjogiContext, DjogiError};
 
 /// All DDL the example needs, in dependency order.
@@ -90,7 +91,7 @@ pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
 /// connections inherit the GUC even before `post_connect` fires.
 async fn install_phase_zero(ctx: &mut DjogiContext) -> Result<()> {
     let pool = ctx
-        .pool()
+        .raw_pool()
         .ok_or_else(|| anyhow::anyhow!("migrate must be invoked against a pool-backed context"))?
         .clone();
 
@@ -102,7 +103,7 @@ async fn install_phase_zero(ctx: &mut DjogiContext) -> Result<()> {
     let mut extensions = std::collections::BTreeSet::new();
     extensions.insert("postgis".to_string());
 
-    pool.with_client(|client| {
+    pool.raw_with_client(|client| {
         Box::pin(async move {
             djogi::migrate::bootstrap::run_phase_zero(
                 client,

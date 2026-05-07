@@ -1,0 +1,10 @@
+error[E0624]: method `pool` is private
+ --> $WORKSPACE/tests/compile_fail/raw_sql/pool_without_bypass.rs
+  |
+  |         let _ = ctx.pool();
+  |                     ^^^^ private method
+  |
+ ::: src/context.rs
+  |
+  |     pub(crate) fn pool(&self) -> Option<&DjogiPool> {
+  |     ----------------------------------------------- private method defined here

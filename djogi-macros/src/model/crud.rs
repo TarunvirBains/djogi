@@ -68,7 +68,7 @@
 //! - Column name == Rust field name (snake_case). This matches the injection
 //!   convention in `inject.rs` and the `FromRow` impl in `from_row.rs`.
 //! - `create` omits `id`, `created_at`, and `updated_at` from the `INSERT`
-//!   columns — the Postgres defaults (`generate_id()`, `now()`) populate them.
+//!   columns — the Postgres defaults (`heerid_next()`, `now()`) populate them.
 //!   `RETURNING *` sends the full row back so the returned `Self` has all
 //!   fields populated from the database.
 //! - `save` sets all user fields plus `updated_at = now()`. Only user fields
@@ -2206,7 +2206,7 @@ pub fn expand(
                             caller = %__caller,
                             "insecure method bypasses tenant scope",
                         );
-                        ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+                        ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
                         if rows.is_empty() {
                             return ::std::result::Result::Ok(::std::vec::Vec::new());
                         }
@@ -2328,7 +2328,7 @@ pub fn expand(
                             caller = %__caller,
                             "insecure method bypasses tenant scope",
                         );
-                        ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+                        ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
                         if rows.is_empty() {
                             return ::std::result::Result::Ok(::std::vec::Vec::new());
                         }
@@ -2412,7 +2412,7 @@ pub fn expand(
                             caller = %__caller,
                             "insecure method bypasses tenant scope",
                         );
-                        ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+                        ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
                         <Self as ::djogi::model::Model>::get(ctx, id).await
                     }
                 }
@@ -2447,7 +2447,7 @@ pub fn expand(
                             caller = %__caller,
                             "insecure method bypasses tenant scope",
                         );
-                        ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+                        ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
                         <Self as ::djogi::model::Model>::create(ctx, value).await
                     }
                 }
@@ -2481,7 +2481,7 @@ pub fn expand(
                             caller = %__caller,
                             "insecure method bypasses tenant scope",
                         );
-                        ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+                        ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
                         <Self as ::djogi::model::Model>::save(self, ctx).await
                     }
                 }
@@ -2514,7 +2514,7 @@ pub fn expand(
                             caller = %__caller,
                             "insecure method bypasses tenant scope",
                         );
-                        ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+                        ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
                         <Self as ::djogi::model::Model>::delete(self, ctx).await
                     }
                 }
@@ -2593,7 +2593,7 @@ pub fn expand(
                             caller = %__caller,
                             "insecure method bypasses tenant scope",
                         );
-                        ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+                        ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
                         Self::bulk_update(ctx, ids, closure).await
                     }
                 }

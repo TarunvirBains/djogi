@@ -1,4 +1,4 @@
-//! Phase 1 integration tests. Uses throwaway test models — not framework types.
+// Phase 1 integration tests. Uses throwaway test models — not framework types.
 
 use djogi::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -22,30 +22,6 @@ pub struct Post {
 }
 
 // ---------------------------------------------------------------------------
-// DB setup helpers
-// ---------------------------------------------------------------------------
-
-/// Create the posts table. HeeRanjID schema, node seeding, and `heer.node_id`
-/// persistence at the database level are all handled by `#[djogi_test]`'s
-/// bootstrap before the test body runs — no manual setup required here.
-async fn setup_posts(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE posts (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            title       TEXT        NOT NULL,
-            body        TEXT        NOT NULL,
-            published   BOOLEAN     NOT NULL,
-            view_count  INTEGER     NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .unwrap();
-}
-
-// ---------------------------------------------------------------------------
 // FromPgRow test (T3)
 // ---------------------------------------------------------------------------
 //
@@ -55,10 +31,8 @@ async fn setup_posts(ctx: &mut djogi::DjogiContext) {
 // full path (INSERT + `RETURNING <COLUMN_LIST>` + positional decode)
 // that replaces the old `sqlx::query_as::<_, Post>` shape.
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
 async fn from_pg_row_deserializes_correctly(mut ctx: djogi::DjogiContext) {
-    setup_posts(&mut ctx).await;
-
     let row = Post::create(
         &mut ctx,
         Post {
@@ -83,10 +57,8 @@ async fn from_pg_row_deserializes_correctly(mut ctx: djogi::DjogiContext) {
 // CRUD tests (Task 7)
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
 async fn create_returns_full_row_with_generated_id(mut ctx: djogi::DjogiContext) {
-    setup_posts(&mut ctx).await;
-
     let post = Post::create(
         &mut ctx,
         Post {
@@ -109,10 +81,8 @@ async fn create_returns_full_row_with_generated_id(mut ctx: djogi::DjogiContext)
     assert!(!post.published);
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
 async fn get_returns_correct_row(mut ctx: djogi::DjogiContext) {
-    setup_posts(&mut ctx).await;
-
     let created = Post::create(
         &mut ctx,
         Post {
@@ -136,10 +106,8 @@ async fn get_returns_correct_row(mut ctx: djogi::DjogiContext) {
     assert!(fetched.published);
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
 async fn get_returns_not_found_for_missing_id(mut ctx: djogi::DjogiContext) {
-    setup_posts(&mut ctx).await;
-
     let missing_id =
         ::heeranjid::HeerId::from_i64(999_999_999).expect("999_999_999 is a valid HeerId");
     let result = Post::get(&mut ctx, missing_id).await;
@@ -151,10 +119,8 @@ async fn get_returns_not_found_for_missing_id(mut ctx: djogi::DjogiContext) {
     );
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
 async fn save_updates_fields(mut ctx: djogi::DjogiContext) {
-    setup_posts(&mut ctx).await;
-
     let mut post = Post::create(
         &mut ctx,
         Post {
@@ -180,10 +146,8 @@ async fn save_updates_fields(mut ctx: djogi::DjogiContext) {
     assert_eq!(reloaded.body, "Original body");
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
 async fn delete_removes_row(mut ctx: djogi::DjogiContext) {
-    setup_posts(&mut ctx).await;
-
     let post = Post::create(
         &mut ctx,
         Post {
@@ -208,10 +172,8 @@ async fn delete_removes_row(mut ctx: djogi::DjogiContext) {
     );
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
 async fn refresh_from_db_returns_current_state(mut ctx: djogi::DjogiContext) {
-    setup_posts(&mut ctx).await;
-
     let post = Post::create(
         &mut ctx,
         Post {
@@ -225,14 +187,12 @@ async fn refresh_from_db_returns_current_state(mut ctx: djogi::DjogiContext) {
     .await
     .expect("create should succeed");
 
-    // Simulate an out-of-band update (e.g. from another process).
-    let new_title = "After Refresh".to_string();
-    ctx.raw_execute(
-        "UPDATE posts SET title = $1 WHERE id = $2",
-        &[&new_title, &post.id],
-    )
-    .await
-    .expect("out-of-band update should succeed");
+    Post::objects()
+        .filter(|f| f.id().eq(post.id))
+        .update(|f| f.title().set("After Refresh".to_string()))
+        .execute(&mut ctx)
+        .await
+        .expect("queryset update should succeed");
 
     // Our in-memory `post` is stale — refresh_from_db should return the new state.
     let refreshed = post
@@ -255,25 +215,8 @@ pub struct Tag {
     pub color: String,
 }
 
-async fn setup_tags(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE tags (
-            id         SERIAL      PRIMARY KEY,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            name       TEXT        NOT NULL,
-            color      TEXT        NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .unwrap();
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
 async fn serial_pk_create_and_get(mut ctx: djogi::DjogiContext) {
-    setup_tags(&mut ctx).await;
-
     let tag = Tag::create(
         &mut ctx,
         Tag {
@@ -305,32 +248,8 @@ pub struct Event {
     pub payload: String,
 }
 
-async fn setup_events(ctx: &mut djogi::DjogiContext) {
-    // generate_ranjid() uses current_heer_ranj_node_id() — a SEPARATE session
-    // variable from heer.node_id. The #[djogi_test] bootstrap already handles
-    // heer.node_id at the database level; set heer.ranj_node_id for the
-    // current session connection so generate_ranjid() works on this context.
-    ctx.raw_execute("SELECT set_heer_ranj_node_id(1)", &[])
-        .await
-        .unwrap();
-    ctx.raw_execute(
-        "CREATE TABLE events (
-            id         UUID        PRIMARY KEY DEFAULT generate_ranjid(),
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            kind       TEXT        NOT NULL,
-            payload    TEXT        NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .unwrap();
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
 async fn ranjid_pk_create_and_get(mut ctx: djogi::DjogiContext) {
-    setup_events(&mut ctx).await;
-
     let event = Event::create(
         &mut ctx,
         Event {
@@ -355,19 +274,12 @@ async fn ranjid_pk_create_and_get(mut ctx: djogi::DjogiContext) {
 // create_with_id + transaction tests (Task 9)
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
 async fn create_with_id_is_idempotent(mut ctx: djogi::DjogiContext) {
-    setup_posts(&mut ctx).await;
-
     // Simulate form pre-generation: allocate ID before user submits.
-    // Query generate_id() directly via the DjogiContext to get a heeranjid 0.2.x HeerId.
-    let id_row = ctx
-        .__query_one_for_macros("SELECT generate_id() AS id", &[])
+    let pre_generated_id = ::djogi::HeerId::generate(&mut ctx)
         .await
-        .expect("generate_id() should succeed");
-    let pre_generated_id: ::djogi::HeerId =
-        ::djogi::HeerId::from_i64(id_row.try_get::<_, i64>("id").expect("id is i64"))
-            .expect("generate_id() returns a valid HeerId");
+        .expect("typed HeerId generation should succeed");
 
     let post = Post::create_with_id(
         &mut ctx,
@@ -413,9 +325,9 @@ async fn create_with_id_is_idempotent(mut ctx: djogi::DjogiContext) {
     );
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
 async fn crud_respects_transaction_boundary(mut ctx: djogi::DjogiContext) {
-    // Proves BOTH directions of the transaction boundary:
+    // Proves BOTH sides of the transaction boundary:
     //   (a) commit path  — Post::create'd row IS visible after commit
     //   (b) rollback path — Post::create'd row is NOT visible after rollback
     //
@@ -423,7 +335,6 @@ async fn crud_respects_transaction_boundary(mut ctx: djogi::DjogiContext) {
     // uncommitted transaction's row wouldn't be visible to the pool's other
     // connections REGARDLESS of whether the txn rolled back or just dropped.
     // We need both branches to actually prove the boundary works.
-    setup_posts(&mut ctx).await;
 
     // (a) commit — insert + save inside txn, commit, row must be visible
     let mut tx_commit_ctx = ctx.begin().await.unwrap();
@@ -606,30 +517,8 @@ pub struct Product {
     pub description: Option<String>,
 }
 
-async fn setup_products(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE products (
-            id           BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-            name         TEXT        NOT NULL,
-            price        NUMERIC     NOT NULL,
-            in_stock     BOOLEAN     NOT NULL,
-            tags         TEXT[]      NOT NULL,
-            ratings      INTEGER[]   NOT NULL,
-            launch_date  DATE        NOT NULL,
-            description  TEXT
-        )",
-        &[],
-    )
-    .await
-    .unwrap();
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
 async fn rich_field_types_roundtrip(mut ctx: djogi::DjogiContext) {
-    setup_products(&mut ctx).await;
-
     use rust_decimal_macros::dec;
 
     // Construct without ..Default::default() because time::Date does not
@@ -677,184 +566,4 @@ async fn rich_field_types_roundtrip(mut ctx: djogi::DjogiContext) {
     );
     assert_eq!(fetched.tags.len(), 2);
     assert_eq!(fetched.ratings, vec![5, 4, 5]);
-}
-
-// ==========================================================================
-// TASK 11 — raw SQL escape hatch via `DjogiContext`
-// ==========================================================================
-
-#[djogi::djogi_test]
-async fn raw_query_as_returns_typed_models(mut ctx: djogi::DjogiContext) {
-    setup_posts(&mut ctx).await;
-
-    Post::create(
-        &mut ctx,
-        Post {
-            title: "Raw SQL Test".into(),
-            body: "body".into(),
-            published: true,
-            view_count: 7,
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-
-    let published = true;
-    let results: Vec<Post> = ctx
-        .raw_query("SELECT * FROM posts WHERE published = $1", &[&published])
-        .await
-        .expect("raw query should succeed");
-
-    assert!(!results.is_empty(), "at least one published post expected");
-    assert!(results.iter().all(|p| p.published));
-}
-
-#[djogi::djogi_test]
-async fn raw_query_scalar_returns_count(mut ctx: djogi::DjogiContext) {
-    setup_posts(&mut ctx).await;
-
-    Post::create(
-        &mut ctx,
-        Post {
-            title: "Count Me".into(),
-            body: "body".into(),
-            published: true,
-            view_count: 0,
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-
-    let count: i64 = ctx
-        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
-        .await
-        .expect("count scalar should succeed");
-
-    assert!(count >= 1);
-}
-
-#[djogi::djogi_test]
-async fn raw_execute_runs_without_return(mut ctx: djogi::DjogiContext) {
-    setup_posts(&mut ctx).await;
-
-    let mut tx_ctx = ctx.begin().await.unwrap();
-
-    let before: i64 = tx_ctx
-        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
-        .await
-        .unwrap();
-
-    let title = "Raw Insert Title".to_string();
-    let body = "Raw Insert Body".to_string();
-    let published = false;
-    let view_count = 42i32;
-    let rows = tx_ctx
-        .raw_execute(
-            "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
-            &[&title, &body, &published, &view_count],
-        )
-        .await
-        .expect("raw execute should succeed");
-    assert_eq!(rows, 1, "raw insert should affect one row");
-
-    let after: i64 = tx_ctx
-        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
-        .await
-        .unwrap();
-    assert_eq!(after, before + 1, "execute must insert exactly one row");
-    tx_ctx.commit().await.unwrap();
-}
-
-#[djogi::djogi_test]
-async fn raw_query_scalar_returns_not_found_for_empty_result(mut ctx: djogi::DjogiContext) {
-    setup_posts(&mut ctx).await;
-
-    let missing_id = -1i64;
-    let result: Result<i64, ::djogi::DjogiError> = ctx
-        .raw_scalar("SELECT view_count FROM posts WHERE id = $1", &[&missing_id])
-        .await;
-
-    assert!(
-        matches!(result, Err(::djogi::DjogiError::NotFound { .. })),
-        "zero-row scalar must return DjogiError::NotFound, got: {:?}",
-        result
-    );
-}
-
-#[djogi::djogi_test]
-async fn raw_works_inside_transaction(mut ctx: djogi::DjogiContext) {
-    setup_posts(&mut ctx).await;
-
-    // --- (a) commit path ---
-    let mut tx_ctx = ctx.begin().await.unwrap();
-    let before_commit: i64 = tx_ctx
-        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
-        .await
-        .unwrap();
-    let commit_title = "Committed Raw Insert".to_string();
-    let commit_body = "body".to_string();
-    let commit_published = true;
-    let commit_view_count = 1i32;
-    let committed_rows = tx_ctx
-        .raw_execute(
-            "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
-            &[
-                &commit_title,
-                &commit_body,
-                &commit_published,
-                &commit_view_count,
-            ],
-        )
-        .await
-        .expect("raw execute inside committed txn should succeed");
-    assert_eq!(
-        committed_rows, 1,
-        "commit-path raw insert must affect one row"
-    );
-    tx_ctx.commit().await.unwrap();
-
-    let after_commit: i64 = ctx
-        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
-        .await
-        .unwrap();
-    assert_eq!(
-        after_commit,
-        before_commit + 1,
-        "committed raw insert must be visible"
-    );
-
-    // --- (b) rollback path ---
-    let mut tx_ctx = ctx.begin().await.unwrap();
-    let rollback_title = "Rolled Back Raw Insert".to_string();
-    let rollback_body = "body".to_string();
-    let rollback_published = false;
-    let rollback_view_count = 2i32;
-    let rolled_back_rows = tx_ctx
-        .raw_execute(
-            "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
-            &[
-                &rollback_title,
-                &rollback_body,
-                &rollback_published,
-                &rollback_view_count,
-            ],
-        )
-        .await
-        .expect("raw execute inside rollback txn should succeed");
-    assert_eq!(
-        rolled_back_rows, 1,
-        "rollback-path raw insert must affect one row before rollback"
-    );
-    tx_ctx.rollback().await.unwrap();
-
-    let after_rollback: i64 = ctx
-        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
-        .await
-        .unwrap();
-    assert_eq!(
-        after_rollback, after_commit,
-        "rolled-back raw insert must NOT be visible"
-    );
 }

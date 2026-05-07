@@ -1,39 +1,37 @@
-//! Phase 8α T2.6 integration tests: `#[model(soft_deletable)]` opt-in
-//! (supersedes T2.3's `#[derive(SoftDeletable)]`) + manual
-//! `QuerySet::not_deleted()` helper.
-//!
-//! What this file pins:
-//!
-//! 1. `#[model(soft_deletable)]` emits an `impl ::djogi::SoftDeletable
-//!    for #ident` block whose `deleted_at()` getter returns
-//!    `Option<DateTime>` copied from the adopter-declared
-//!    `deleted_at: Option<DateTime>` field (Path B per Phase 8 v3
-//!    line 866).
-//! 2. `QuerySet::<M>::not_deleted()` (where `M: SoftDeletable`)
-//!    composes a `deleted_at IS NULL` leaf onto the condition tree.
-//!    Calling it on a queryset that returns mixed live/trashed rows
-//!    narrows the result to the live rows only.
-//! 3. **Counter-test:** the default `objects()` chain (without
-//!    `.not_deleted()`) returns trashed rows alongside live ones.
-//!    This pins the spec-locked deferral at line 971 — automatic
-//!    default-filter composition is deferred to Phase 8γ T6 once the
-//!    `Q<T>` substrate lands. When 8γ T6 ships, this test breaks
-//!    loudly so the implementer can flip the assertion (to one row)
-//!    instead of silently changing the framework's default behaviour.
-//!
-//! # One model per test — coherence
-//!
-//! `impl SoftDeletable for T` is a coherent impl: only one per `T`
-//! per crate. Tests that need separate fixture data declare separate
-//! model types over distinct tables. Tests that share fixture data
-//! reuse the same model + table.
-//!
-//! # Fixture strategy
-//!
-//! Each test provisions its own table inline via
-//! `ctx.raw_execute(...)`. `#[djogi::djogi_test]` already installs
-//! HeeRanjID schema, seeds node 1, and sets `heer.node_id = '1'`
-//! before the test body runs.
+// Phase 8α T2.6 integration tests: `#[model(soft_deletable)]` opt-in
+// (supersedes T2.3's `#[derive(SoftDeletable)]`) + manual
+// `QuerySet::not_deleted()` helper.
+//
+// What this file pins:
+//
+// 1. `#[model(soft_deletable)]` emits an `impl ::djogi::SoftDeletable
+//    for #ident` block whose `deleted_at()` getter returns
+//    `Option<DateTime>` copied from the adopter-declared
+//    `deleted_at: Option<DateTime>` field (Path B per Phase 8 v3
+//    line 866).
+// 2. `QuerySet::<M>::not_deleted()` (where `M: SoftDeletable`)
+//    composes a `deleted_at IS NULL` leaf onto the condition tree.
+//    Calling it on a queryset that returns mixed live/trashed rows
+//    narrows the result to the live rows only.
+// 3. **Counter-test:** the default `objects()` chain (without
+//    `.not_deleted()`) returns trashed rows alongside live ones.
+//    This pins the spec-locked deferral at line 971 — automatic
+//    default-filter composition is deferred to Phase 8γ T6 once the
+//    `Q<T>` substrate lands. When 8γ T6 ships, this test breaks
+//    loudly so the implementer can flip the assertion (to one row)
+//    instead of silently changing the framework's default behaviour.
+//
+// # One model per test — coherence
+//
+// `impl SoftDeletable for T` is a coherent impl: only one per `T`
+// per crate. Tests that need separate fixture data declare separate
+// model types over distinct tables. Tests that share fixture data
+// reuse the same model + table.
+//
+// # Fixture strategy
+//
+// Each test provisions its model through `sync_models`, then exercises
+// the typed model, queryset, and trait APIs only.
 
 use djogi::SoftDeletable;
 use djogi::prelude::*;
@@ -50,25 +48,8 @@ pub struct SoftGetter {
     pub deleted_at: Option<djogi::DateTime>,
 }
 
-async fn setup_soft_getter(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE soft_getter (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            note        TEXT        NOT NULL,
-            deleted_at  TIMESTAMPTZ
-        )",
-        &[],
-    )
-    .await
-    .expect("create soft_getter table");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [SoftGetter])]
 async fn softdeletable_getter_round_trip(mut ctx: djogi::DjogiContext) {
-    setup_soft_getter(&mut ctx).await;
-
     let when = OffsetDateTime::now_utc();
     let row = SoftGetter::create(
         &mut ctx,
@@ -124,25 +105,8 @@ pub struct SoftFilter {
     pub deleted_at: Option<djogi::DateTime>,
 }
 
-async fn setup_soft_filter(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE soft_filter (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            note        TEXT        NOT NULL,
-            deleted_at  TIMESTAMPTZ
-        )",
-        &[],
-    )
-    .await
-    .expect("create soft_filter table");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [SoftFilter])]
 async fn softdeletable_not_deleted_filter_excludes_deleted(mut ctx: djogi::DjogiContext) {
-    setup_soft_filter(&mut ctx).await;
-
     let _live = SoftFilter::create(
         &mut ctx,
         SoftFilter {
@@ -211,25 +175,8 @@ pub struct SoftDefault {
     pub deleted_at: Option<djogi::DateTime>,
 }
 
-async fn setup_soft_default(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE soft_default (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            note        TEXT        NOT NULL,
-            deleted_at  TIMESTAMPTZ
-        )",
-        &[],
-    )
-    .await
-    .expect("create soft_default table");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [SoftDefault])]
 async fn softdeletable_default_query_includes_deleted_pre_8gamma(mut ctx: djogi::DjogiContext) {
-    setup_soft_default(&mut ctx).await;
-
     let _live = SoftDefault::create(
         &mut ctx,
         SoftDefault {

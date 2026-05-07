@@ -1,62 +1,62 @@
-//! Phase 8δ T8.6 integration tests: SoftDeletable-derived tombstones in
-//! the delta-sync fetcher.
-//!
-//! # What this file pins
-//!
-//! 1. **`softdelete_produces_tombstone`** — creates a soft-deletable model,
-//!    inserts a live row, runs a first tick to populate the Punnu, then
-//!    soft-deletes the row (sets `deleted_at` and calls `save()`). A second
-//!    tick sees the deleted row via its `updated_at` watermark, routes it to
-//!    the tombstone set via `__delta_should_tombstone()`, and the Punnu entry
-//!    is evicted (`punnu.get(id) == None`).
-//!
-//! 2. **`deleted_row_is_tombstoned_not_silently_dropped`** — anti-regression
-//!    test pinning spec §415. Inserts 1 live + 1 pre-deleted row. Runs a full-
-//!    scan tick and verifies that `applied == 1` (only the live row was
-//!    upserted) while `punnu.get(deleted_id) == None` (the deleted row was
-//!    tombstoned, not silently dropped by a `deleted_at IS NULL` SQL filter).
-//!
-//!    **Discrimination caveat:** at the integration-test boundary, the
-//!    tombstone path and a hypothetical `deleted_at IS NULL` SQL filter
-//!    produce identical observable outcomes — both yield `applied == 1`
-//!    (only the live row counted) and `punnu.get(deleted_id) == None`
-//!    (deleted row absent from cache). The test cannot conclusively
-//!    distinguish the two paths from outside the fetcher; a structural
-//!    SQL-log assertion would be the strongest pin but is out of scope
-//!    for integration tests. What this test DOES pin is the structural
-//!    contract: the deleted row reaches the fetcher's output (as a
-//!    tombstone, not a live item) — a regression that completely dropped
-//!    the row at SQL would also break Pattern 2/3 paths landing in T8.7
-//!    and T8.8 (those tombstones merge with Pattern 1's into the same
-//!    `HashSet` before `DeltaResult::new`), so this test serves as a
-//!    forward-compat guard rail for the merge contract too.
-//!
-//! 3. **`non_soft_deletable_model_returns_empty_tombstones`** — backward-
-//!    compat check. A plain (non-`soft_deletable`) model's delta tick returns
-//!    `applied == N` (all rows as live items) with no tombstones — the Punnu
-//!    contains all inserted rows after the tick.
-//!
-//! # Granular-plan reframing
-//!
-//! The granular plan §3 T8.6 calls this "tombstone Pattern 1 — Tracked-
-//! derived". That name is wrong for djogi's surface: `Tracked<T>` is a per-
-//! field dirty wrapper (partial UPDATE emission). The actual soft-delete trait
-//! is `SoftDeletable: Model` (`djogi/src/compose.rs`). This commit reframes
-//! the task as "SoftDeletable-derived tombstones". The semantic intent is
-//! identical; only the trait name differs.
-//!
-//! # Spec anchor
-//!
-//! `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-//! §3 T8.6.
-//!
-//! # Fixture strategy
-//!
-//! Each test provisions its own table inline via `ctx.raw_execute`. The
-//! `#[djogi_test]` macro installs HeeRanjID schema, seeds node 1, and sets
-//! `heer.node_id = '1'` before the test body runs. Separate model types
-//! (separate tables) avoid coherence conflicts between `impl SoftDeletable`
-//! for distinct model types in the same crate.
+// Phase 8δ T8.6 integration tests: SoftDeletable-derived tombstones in
+// the delta-sync fetcher.
+//
+// # What this file pins
+//
+// 1. **`softdelete_produces_tombstone`** — creates a soft-deletable model,
+//    inserts a live row, runs a first tick to populate the Punnu, then
+//    soft-deletes the row (sets `deleted_at` and calls `save()`). A second
+//    tick sees the deleted row via its `updated_at` watermark, routes it to
+//    the tombstone set via `__delta_should_tombstone()`, and the Punnu entry
+//    is evicted (`punnu.get(id) == None`).
+//
+// 2. **`deleted_row_is_tombstoned_not_silently_dropped`** — anti-regression
+//    test pinning spec §415. Inserts 1 live + 1 pre-deleted row. Runs a full-
+//    scan tick and verifies that `applied == 1` (only the live row was
+//    upserted) while `punnu.get(deleted_id) == None` (the deleted row was
+//    tombstoned, not silently dropped by a `deleted_at IS NULL` SQL filter).
+//
+//    **Discrimination caveat:** at the integration-test boundary, the
+//    tombstone path and a hypothetical `deleted_at IS NULL` SQL filter
+//    produce identical observable outcomes — both yield `applied == 1`
+//    (only the live row counted) and `punnu.get(deleted_id) == None`
+//    (deleted row absent from cache). The test cannot conclusively
+//    distinguish the two paths from outside the fetcher; a structural
+//    SQL-log assertion would be the strongest pin but is out of scope
+//    for integration tests. What this test DOES pin is the structural
+//    contract: the deleted row reaches the fetcher's output (as a
+//    tombstone, not a live item) — a regression that completely dropped
+//    the row at SQL would also break Pattern 2/3 paths landing in T8.7
+//    and T8.8 (those tombstones merge with Pattern 1's into the same
+//    `HashSet` before `DeltaResult::new`), so this test serves as a
+//    forward-compat guard rail for the merge contract too.
+//
+// 3. **`non_soft_deletable_model_returns_empty_tombstones`** — backward-
+//    compat check. A plain (non-`soft_deletable`) model's delta tick returns
+//    `applied == N` (all rows as live items) with no tombstones — the Punnu
+//    contains all inserted rows after the tick.
+//
+// # Granular-plan reframing
+//
+// The granular plan §3 T8.6 calls this "tombstone Pattern 1 — Tracked-
+// derived". That name is wrong for djogi's surface: `Tracked<T>` is a per-
+// field dirty wrapper (partial UPDATE emission). The actual soft-delete trait
+// is `SoftDeletable: Model` (`djogi/src/compose.rs`). This commit reframes
+// the task as "SoftDeletable-derived tombstones". The semantic intent is
+// identical; only the trait name differs.
+//
+// # Spec anchor
+//
+// `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
+// §3 T8.6.
+//
+// # Fixture strategy
+//
+// Tables are provisioned via `#[djogi_test(sync_models = [...])]` which
+// routes through the same migration engine that production uses. Each test
+// gets its own fresh database so no TRUNCATE is needed. Separate model types
+// (separate tables) avoid coherence conflicts between `impl SoftDeletable`
+// for distinct model types in the same crate.
 
 use djogi::prelude::*;
 use time::OffsetDateTime;
@@ -73,25 +73,6 @@ pub struct SoftDeleteRow {
     pub deleted_at: Option<djogi::DateTime>,
 }
 
-async fn setup_soft_delete_row(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_t8_6_sd_row (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            label       TEXT        NOT NULL,
-            deleted_at  TIMESTAMPTZ
-        )",
-        &[],
-    )
-    .await
-    .expect("create phase8_t8_6_sd_row table");
-
-    ctx.raw_execute("TRUNCATE phase8_t8_6_sd_row", &[])
-        .await
-        .expect("truncate phase8_t8_6_sd_row");
-}
-
 // ── Fixture model 2 — non-soft-deletable (backward compat) ───────────────────
 //
 // Reuses the FetcherTickRow table from T8.5. Defining a new model here over
@@ -105,24 +86,6 @@ pub struct PlainRow {
     pub label: String,
 }
 
-async fn setup_plain_row(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_t8_6_plain_row (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            label       TEXT        NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create phase8_t8_6_plain_row table");
-
-    ctx.raw_execute("TRUNCATE phase8_t8_6_plain_row", &[])
-        .await
-        .expect("truncate phase8_t8_6_plain_row");
-}
-
 // ── Test 1 — soft-delete produces tombstone in Punnu ─────────────────────────
 
 /// Inserts a live row, populates it into the Punnu via a first delta tick,
@@ -134,10 +97,9 @@ async fn setup_plain_row(ctx: &mut djogi::DjogiContext) {
 ///
 /// - `result.applied == 0` — no live items in the delta (only tombstones).
 /// - `punnu.get(deleted_id) == None` — the row was evicted.
-#[djogi::djogi_test]
+///
+#[djogi::djogi_test(sync_models = [SoftDeleteRow])]
 async fn softdelete_produces_tombstone(mut ctx: djogi::DjogiContext) {
-    setup_soft_delete_row(&mut ctx).await;
-
     // Insert a live row.
     let mut row = SoftDeleteRow::create(
         &mut ctx,
@@ -153,9 +115,8 @@ async fn softdelete_produces_tombstone(mut ctx: djogi::DjogiContext) {
     let deleted_id = row.id;
 
     let pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
 
     let punnu = ctx
         .punnu::<SoftDeleteRow>()
@@ -234,10 +195,9 @@ async fn softdelete_produces_tombstone(mut ctx: djogi::DjogiContext) {
 /// expectation is updated, forcing an explicit acknowledgment. The
 /// `softdelete_produces_tombstone` test provides the stronger proof by
 /// verifying end-to-end Punnu eviction via the tombstone path.
-#[djogi::djogi_test]
+///
+#[djogi::djogi_test(sync_models = [SoftDeleteRow])]
 async fn deleted_row_is_tombstoned_not_silently_dropped(mut ctx: djogi::DjogiContext) {
-    setup_soft_delete_row(&mut ctx).await;
-
     // Insert a live row.
     let _live = SoftDeleteRow::create(
         &mut ctx,
@@ -250,34 +210,26 @@ async fn deleted_row_is_tombstoned_not_silently_dropped(mut ctx: djogi::DjogiCon
     .await
     .expect("create live row should succeed");
 
-    // Insert a pre-deleted row directly via raw SQL so we can set deleted_at
-    // at INSERT time (bypassing Model::create which ignores the column).
-    // Use now() - INTERVAL '1 second' so updated_at is in the past; both rows
-    // will be fetched by a full-scan tick (since=None).
-    let deleted_id: djogi::HeerId = {
-        let row = ctx
-            .raw_query::<SoftDeleteRow>(
-                "INSERT INTO phase8_t8_6_sd_row
-                     (id, created_at, updated_at, label, deleted_at)
-                 VALUES
-                     (generate_id(),
-                      now() - INTERVAL '1 second',
-                      now() - INTERVAL '1 second',
-                      'pre-deleted',
-                      now() - INTERVAL '1 second')
-                 RETURNING id, created_at, updated_at, label, deleted_at",
-                &[],
-            )
-            .await
-            .expect("insert pre-deleted row should succeed");
-        assert_eq!(row.len(), 1, "expected 1 row from INSERT RETURNING");
-        row[0].id
-    };
+    let mut deleted = SoftDeleteRow::create(
+        &mut ctx,
+        SoftDeleteRow {
+            label: "pre-deleted".into(),
+            deleted_at: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create pre-deleted row should succeed");
+    deleted.deleted_at = Some(OffsetDateTime::now_utc());
+    deleted
+        .save(&mut ctx)
+        .await
+        .expect("mark pre-deleted row as deleted");
+    let deleted_id = deleted.id;
 
     let pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
 
     let punnu = ctx
         .punnu::<SoftDeleteRow>()
@@ -329,10 +281,9 @@ async fn deleted_row_is_tombstoned_not_silently_dropped(mut ctx: djogi::DjogiCon
 ///
 /// After a full-scan tick with N rows, `result.applied == N` and all rows are
 /// resident in the Punnu.
-#[djogi::djogi_test]
+///
+#[djogi::djogi_test(sync_models = [PlainRow])]
 async fn non_soft_deletable_model_returns_empty_tombstones(mut ctx: djogi::DjogiContext) {
-    setup_plain_row(&mut ctx).await;
-
     // Insert 2 plain rows.
     let row_a = PlainRow::create(
         &mut ctx,
@@ -355,9 +306,8 @@ async fn non_soft_deletable_model_returns_empty_tombstones(mut ctx: djogi::Djogi
     .expect("create plain-b should succeed");
 
     let pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
 
     let punnu = ctx
         .punnu::<PlainRow>()

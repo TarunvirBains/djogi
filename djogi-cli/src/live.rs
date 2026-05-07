@@ -50,6 +50,7 @@ use std::process::ExitCode;
 use std::str::FromStr;
 
 use clap::Subcommand;
+use djogi::__bypass::RawAccessExt as _;
 use djogi::config::DjogiConfig;
 use djogi::context::DjogiContext;
 use djogi::live_migrate::{

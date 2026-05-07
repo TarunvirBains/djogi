@@ -27,9 +27,9 @@
 //! );
 //! ```
 //!
-//! # Why `BIGSERIAL`, not `BIGINT DEFAULT generate_id()`
+//! # Why `BIGSERIAL`, not `BIGINT DEFAULT heerid_next()`
 //!
-//! 1. The audit DB may not have HeeRanjId's `generate_id()` extension
+//! 1. The audit DB may not have HeeRanjId's `heerid_next()` extension
 //!    installed — the audit DB is operationally separate and we do
 //!    not want to require the operator to install a sibling extension
 //!    in two databases.
@@ -56,6 +56,7 @@
 //! - v3 plan §453 (audit table schema), §469 (T9 cluster boundary).
 //! - CLAUDE.md "Three-Database Architecture".
 
+use crate::__bypass::RawAccessExt as _;
 use crate::context::DjogiContext;
 use crate::error::DjogiError;
 

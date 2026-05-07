@@ -129,6 +129,7 @@
 //! When `self.filter.is_some()` a `tracing::warn!` fires per tick to surface
 //! the gap. In practice this warn never fires today (filter always `None`).
 
+use crate::__bypass::RawAccessExt as _;
 use crate::auth::AuthContext;
 use crate::cache::DjogiDeltaSyncMeta;
 use crate::pg::decode::FromPgRow;

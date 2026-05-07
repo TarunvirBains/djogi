@@ -17,14 +17,10 @@ categories = ["database", "development-tools::procedural-macro-helpers"]
 proc-macro = true
 
 [features]
-# Mirror of `djogi`'s `spatial` feature so the cfg-recognition
-# attribute on macro-test fixtures (e.g.,
-# `#[cfg(feature = "spatial")]` in `tests/compile_pass/phase6_spatial_*.rs`
-# fixtures) doesn't trip the `unexpected_cfgs` lint when running
-# `cargo test -p djogi-macros --test compile_pass`. The macro crate
-# itself has no spatial-specific code paths — the flag exists purely
-# so trybuild fixtures using cfg gates compile cleanly.
-spatial = []
+# Mirror of `djogi`'s `spatial` feature so cfg-gated trybuild fixtures
+# compile against the same public API surface they enable locally.
+# The macro crate itself has no spatial-specific code paths.
+spatial = ["djogi/spatial"]
 
 [dependencies]
 syn.workspace = true

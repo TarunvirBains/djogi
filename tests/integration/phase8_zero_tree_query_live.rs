@@ -1,28 +1,29 @@
-//! Phase 8-Zero Cluster B5 (T14) — Live integration tests for the
-//! `RecursiveQuerySet<T>` surface against a real Postgres 18.
-//!
-//! Drives every public terminal end-to-end:
-//!
-//! - `tree_descendants` / `tree_ancestors` (single-edge sugar via
-//!   `#[model(tree_edge = "...")]`)
-//! - `QuerySet::tree_descendants` / `tree_ancestors` (explicit-path API
-//!   for models with multiple self-FKs or no `tree_edge`)
-//! - `RecursiveQuerySet::with_max_depth`
-//! - `RecursiveQuerySet::filter` / `order_by`
-//! - `RecursiveQuerySet::search_breadth_first_by` / `search_depth_first_by`
-//! - `RecursiveQuerySet::fetch_all` / `count` / `exists` / `first`
-//! - `RecursiveQuerySet::fetch_all_with_paths`
-//! - `Model::full_ancestors`
-//!
-//! Each test runs inside `#[djogi::djogi_test]` which provisions a
-//! per-test database, so the tests are mutually independent and parallel-
-//! safe. Each test creates its own table inside that database — there is
-//! no shared schema state across tests.
-//!
-//! The model fixtures intentionally use distinct table names per test
-//! file group (`phase8_tree_*`) so a future combined run with
-//! `phase8_zero_materialize_closure_live` does not collide on table
-//! definitions inside the inventory.
+// Phase 8-Zero Cluster B5 (T14) — Live integration tests for the
+// `RecursiveQuerySet<T>` surface against a real Postgres 18.
+//
+// Drives every public terminal end-to-end:
+//
+// - `tree_descendants` / `tree_ancestors` (single-edge sugar via
+//   `#[model(tree_edge = "...")]`)
+// - `QuerySet::tree_descendants` / `tree_ancestors` (explicit-path API
+//   for models with multiple self-FKs or no `tree_edge`)
+// - `RecursiveQuerySet::with_max_depth`
+// - `RecursiveQuerySet::filter` / `order_by`
+// - `RecursiveQuerySet::search_breadth_first_by` / `search_depth_first_by`
+// - `RecursiveQuerySet::fetch_all` / `count` / `exists` / `first`
+// - `RecursiveQuerySet::fetch_all_with_paths`
+// - `Model::full_ancestors`
+//
+// Each ordinary test runs inside `#[djogi::djogi_test(sync_models = [...])]`
+// which provisions a per-test database and model schema, so the tests are
+// mutually independent and parallel-safe. The RLS role/policy probe lives in
+// `tests/internal/phase8_zero_tree_query_rls_live.rs` because it requires
+// raw session-role and catalog setup outside the ordinary typed test surface.
+//
+// The model fixtures intentionally use distinct table names per test
+// file group (`phase8_tree_*`) so a future combined run with
+// `phase8_zero_materialize_closure_live` does not collide on table
+// definitions inside the inventory.
 
 use djogi::prelude::*;
 
@@ -62,151 +63,6 @@ pub struct PedigreeNode {
 #[derive(Debug, Clone)]
 pub struct OrphanNode {
     pub name: String,
-}
-
-// ── Tenant-keyed tree (RLS isolation test) ──────────────────────────────────
-
-/// Tenant-keyed tree node. `tenant_key = "org_id"` activates RLS in
-/// the test fixture; recursive walks must not leak across tenants.
-#[model(
-    table = "phase8_tree_tenant_node",
-    pk = HeerId,
-    tree_edge = "parent_id",
-    tenant_key = "org_id"
-)]
-#[derive(Debug, Clone)]
-pub struct TenantTreeNode {
-    pub org_id: i64,
-    pub name: String,
-    pub parent_id: Option<ForeignKey<TenantTreeNode>>,
-}
-
-// ── DDL helpers ─────────────────────────────────────────────────────────────
-
-async fn setup_tree_node(ctx: &mut DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_tree_node (
-             id          BIGINT PRIMARY KEY DEFAULT generate_id(),
-             created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             name        TEXT NOT NULL,
-             parent_id   BIGINT REFERENCES phase8_tree_node(id) ON DELETE CASCADE
-         )",
-        &[],
-    )
-    .await
-    .expect("CREATE TABLE phase8_tree_node");
-}
-
-async fn setup_pedigree_node(ctx: &mut DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_tree_pedigree (
-             id          BIGINT PRIMARY KEY DEFAULT generate_id(),
-             created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             name        TEXT NOT NULL,
-             mother_id   BIGINT REFERENCES phase8_tree_pedigree(id) ON DELETE SET NULL,
-             father_id   BIGINT REFERENCES phase8_tree_pedigree(id) ON DELETE SET NULL
-         )",
-        &[],
-    )
-    .await
-    .expect("CREATE TABLE phase8_tree_pedigree");
-}
-
-async fn setup_orphan_node(ctx: &mut DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_tree_orphan (
-             id          BIGINT PRIMARY KEY DEFAULT generate_id(),
-             created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             name        TEXT NOT NULL
-         )",
-        &[],
-    )
-    .await
-    .expect("CREATE TABLE phase8_tree_orphan");
-}
-
-/// Provision the tenant-keyed tree node with RLS enabled and a
-/// restricted role grant, mirroring the production-style harness in
-/// `phase5_postgres_native::setup_tenant_post`. Restricted-role
-/// `SET LOCAL ROLE` is required because superuser connections bypass
-/// RLS regardless of `FORCE ROW LEVEL SECURITY`.
-async fn setup_tenant_tree_node(ctx: &mut DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_tree_tenant_node (
-             id          BIGINT PRIMARY KEY DEFAULT generate_id(),
-             created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             org_id      BIGINT NOT NULL,
-             name        TEXT NOT NULL,
-             parent_id   BIGINT REFERENCES phase8_tree_tenant_node(id) ON DELETE CASCADE
-         )",
-        &[],
-    )
-    .await
-    .expect("CREATE TABLE phase8_tree_tenant_node");
-
-    ctx.raw_execute(
-        "ALTER TABLE phase8_tree_tenant_node ENABLE ROW LEVEL SECURITY",
-        &[],
-    )
-    .await
-    .expect("enable RLS");
-    ctx.raw_execute(
-        "ALTER TABLE phase8_tree_tenant_node FORCE ROW LEVEL SECURITY",
-        &[],
-    )
-    .await
-    .expect("force RLS");
-    ctx.raw_execute(
-        "CREATE POLICY phase8_tree_tenant_iso ON phase8_tree_tenant_node \
-         USING (org_id = current_setting('app.tenant_id', true)::bigint)",
-        &[],
-    )
-    .await
-    .expect("create RLS policy");
-
-    let role_exists: bool = ctx
-        .raw_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'djogi_rls_test_user')",
-            &[],
-        )
-        .await
-        .expect("check role");
-    if !role_exists {
-        ctx.raw_ddl("CREATE ROLE djogi_rls_test_user")
-            .await
-            .expect("create role");
-    }
-    ctx.raw_execute(
-        "GRANT SELECT, INSERT ON phase8_tree_tenant_node TO djogi_rls_test_user",
-        &[],
-    )
-    .await
-    .expect("grant table");
-    ctx.raw_execute("GRANT USAGE ON SCHEMA public TO djogi_rls_test_user", &[])
-        .await
-        .expect("grant schema");
-    ctx.raw_execute(
-        "GRANT EXECUTE ON FUNCTION generate_id() TO djogi_rls_test_user",
-        &[],
-    )
-    .await
-    .expect("grant generate_id");
-    ctx.raw_execute("GRANT SELECT ON heer_nodes TO djogi_rls_test_user", &[])
-        .await
-        .expect("grant heer_nodes");
-    ctx.raw_execute(
-        "GRANT SELECT, INSERT, UPDATE ON heer_node_state TO djogi_rls_test_user",
-        &[],
-    )
-    .await
-    .expect("grant heer_node_state");
-    ctx.raw_execute("GRANT SELECT ON heer_config TO djogi_rls_test_user", &[])
-        .await
-        .expect("grant heer_config");
 }
 
 // ── Seed helpers ────────────────────────────────────────────────────────────
@@ -251,10 +107,8 @@ async fn seed_pedigree(
 
 // ── 1. Single-tree descendants walk ─────────────────────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [TreeNode])]
 async fn single_tree_descendants_walk(mut ctx: DjogiContext) {
-    setup_tree_node(&mut ctx).await;
-
     // Build a 5-deep chain: root → l1 → l2 → l3 → l4 → l5.
     let root = seed_tree_node(&mut ctx, "root", None).await;
     let l1 = seed_tree_node(&mut ctx, "l1", Some(&root)).await;
@@ -294,10 +148,8 @@ async fn single_tree_descendants_walk(mut ctx: DjogiContext) {
 
 // ── 2. Forest with multiple roots ───────────────────────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [TreeNode])]
 async fn forest_multiple_roots(mut ctx: DjogiContext) {
-    setup_tree_node(&mut ctx).await;
-
     // Tree A: a1 → a2.
     let a1 = seed_tree_node(&mut ctx, "a1", None).await;
     let _a2 = seed_tree_node(&mut ctx, "a2", Some(&a1)).await;
@@ -321,21 +173,15 @@ async fn forest_multiple_roots(mut ctx: DjogiContext) {
 
 // ── 3. Cycle detection terminates ───────────────────────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [TreeNode])]
 async fn cycle_detection_terminates(mut ctx: DjogiContext) {
-    setup_tree_node(&mut ctx).await;
-
     // Insert two NULL-parent rows, then UPDATE to create a cycle:
     // a → b → a (b's parent = a, a's parent = b). The CYCLE id clause
     // on the recursive CTE detects the revisit and stops.
-    let a = seed_tree_node(&mut ctx, "a", None).await;
+    let mut a = seed_tree_node(&mut ctx, "a", None).await;
     let b = seed_tree_node(&mut ctx, "b", Some(&a)).await;
-    ctx.raw_execute(
-        "UPDATE phase8_tree_node SET parent_id = $1 WHERE id = $2",
-        &[&b.id, &a.id],
-    )
-    .await
-    .expect("introduce cycle");
+    a.parent_id = Some(ForeignKey::new(b.id));
+    a.save(&mut ctx).await.expect("introduce cycle");
 
     // Walk descendants of `a` — without CYCLE detection this would
     // recurse forever. With it, Postgres marks the cycle and the outer
@@ -368,10 +214,8 @@ async fn cycle_detection_terminates(mut ctx: DjogiContext) {
 
 // ── 4. Multi-self-FK explicit edge selection ────────────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [PedigreeNode])]
 async fn two_self_fks_explicit_edge(mut ctx: DjogiContext) {
-    setup_pedigree_node(&mut ctx).await;
-
     // Pedigree:
     //   - mom (no parents)
     //   - dad (no parents)
@@ -415,125 +259,10 @@ async fn two_self_fks_explicit_edge(mut ctx: DjogiContext) {
     );
 }
 
-// ── 5. RLS tenant isolation on tree descendants ────────────────────────────
+// ── 5. with_max_depth truncates exactly at N ────────────────────────────────
 
-#[djogi::djogi_test]
-async fn rls_tenant_isolation_descendants(mut ctx: DjogiContext) {
-    setup_tenant_tree_node(&mut ctx).await;
-
-    // Capture the pool so we can run multiple atomic scopes with
-    // distinct tenants.
-    let pool = ctx
-        .pool()
-        .expect("ctx must be pool-backed for this test")
-        .clone();
-
-    // ── Tenant A: insert a 3-node chain a-root → a-l1 → a-l2 ──────────────
-    let a_root_id: HeerId = djogi::transaction::atomic(&pool, |tx| {
-        Box::pin(async move {
-            tx.raw_execute("SET LOCAL ROLE djogi_rls_test_user", &[])
-                .await?;
-            tx.set_tenant("1000").await?;
-            let root = TenantTreeNode::create(
-                tx,
-                TenantTreeNode {
-                    id: <HeerId as PrimaryKey>::sentinel(),
-                    created_at: DateTime::UNIX_EPOCH,
-                    updated_at: DateTime::UNIX_EPOCH,
-                    org_id: 1000,
-                    name: "a-root".into(),
-                    parent_id: None,
-                },
-            )
-            .await?;
-            let l1 = TenantTreeNode::create(
-                tx,
-                TenantTreeNode {
-                    id: <HeerId as PrimaryKey>::sentinel(),
-                    created_at: DateTime::UNIX_EPOCH,
-                    updated_at: DateTime::UNIX_EPOCH,
-                    org_id: 1000,
-                    name: "a-l1".into(),
-                    parent_id: Some(ForeignKey::new(root.id)),
-                },
-            )
-            .await?;
-            let _l2 = TenantTreeNode::create(
-                tx,
-                TenantTreeNode {
-                    id: <HeerId as PrimaryKey>::sentinel(),
-                    created_at: DateTime::UNIX_EPOCH,
-                    updated_at: DateTime::UNIX_EPOCH,
-                    org_id: 1000,
-                    name: "a-l2".into(),
-                    parent_id: Some(ForeignKey::new(l1.id)),
-                },
-            )
-            .await?;
-            Ok::<_, DjogiError>(root.id)
-        })
-    })
-    .await
-    .expect("tenant A seed");
-
-    // ── Tenant B: insert one row b-root with the SAME id-as-string text ───
-    // (different bigint id from a-root because generate_id is called per
-    // INSERT). The point is RLS hides every tenant-A row from tenant B.
-    djogi::transaction::atomic(&pool, |tx| {
-        Box::pin(async move {
-            tx.raw_execute("SET LOCAL ROLE djogi_rls_test_user", &[])
-                .await?;
-            tx.set_tenant("2000").await?;
-            let _ = TenantTreeNode::create(
-                tx,
-                TenantTreeNode {
-                    id: <HeerId as PrimaryKey>::sentinel(),
-                    created_at: DateTime::UNIX_EPOCH,
-                    updated_at: DateTime::UNIX_EPOCH,
-                    org_id: 2000,
-                    name: "b-root".into(),
-                    parent_id: None,
-                },
-            )
-            .await?;
-            Ok::<_, DjogiError>(())
-        })
-    })
-    .await
-    .expect("tenant B seed");
-
-    // ── Tenant B walks the tree rooted at tenant A's root id ──────────────
-    // RLS must hide every tenant-A row, so the walk yields zero rows
-    // even though `a_root_id` exists physically in the table.
-    let leaked = djogi::transaction::atomic(&pool, |tx| {
-        Box::pin(async move {
-            tx.raw_execute("SET LOCAL ROLE djogi_rls_test_user", &[])
-                .await?;
-            tx.set_tenant("2000").await?;
-            TenantTreeNode::tree_descendants(a_root_id)
-                .expect("tree_edge resolves")
-                .fetch_all(tx)
-                .await
-        })
-    })
-    .await
-    .expect("tenant B walk");
-
-    assert!(
-        leaked.is_empty(),
-        "tenant B must see zero rows — RLS should hide tenant A's tree; \
-         got {} rows: {:?}",
-        leaked.len(),
-        leaked.iter().map(|n| &n.name).collect::<Vec<_>>()
-    );
-}
-
-// ── 6. with_max_depth truncates exactly at N ────────────────────────────────
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [TreeNode])]
 async fn with_max_depth_truncates_exactly_at_n(mut ctx: DjogiContext) {
-    setup_tree_node(&mut ctx).await;
-
     // 4-deep: root → d1 → d2 → d3.
     let root = seed_tree_node(&mut ctx, "root", None).await;
     let d1 = seed_tree_node(&mut ctx, "d1", Some(&root)).await;
@@ -553,12 +282,10 @@ async fn with_max_depth_truncates_exactly_at_n(mut ctx: DjogiContext) {
     assert_eq!(names, vec!["d1", "d2", "root"]);
 }
 
-// ── 7. Composed filter + order_by + every terminal ─────────────────────────
+// ── 6. Composed filter + order_by + every terminal ─────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [TreeNode])]
 async fn composed_filter_order_count_exists_first(mut ctx: DjogiContext) {
-    setup_tree_node(&mut ctx).await;
-
     let root = seed_tree_node(&mut ctx, "root", None).await;
     let _alpha = seed_tree_node(&mut ctx, "alpha", Some(&root)).await;
     let _beta = seed_tree_node(&mut ctx, "beta", Some(&root)).await;
@@ -598,12 +325,10 @@ async fn composed_filter_order_count_exists_first(mut ctx: DjogiContext) {
     );
 }
 
-// ── 8. tree_ancestors walks upward ─────────────────────────────────────────
+// ── 7. tree_ancestors walks upward ─────────────────────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [TreeNode])]
 async fn tree_ancestors_walks_upward(mut ctx: DjogiContext) {
-    setup_tree_node(&mut ctx).await;
-
     // Chain: a → b → c (c's parent = b, b's parent = a).
     let a = seed_tree_node(&mut ctx, "a", None).await;
     let b = seed_tree_node(&mut ctx, "b", Some(&a)).await;
@@ -623,12 +348,10 @@ async fn tree_ancestors_walks_upward(mut ctx: DjogiContext) {
     assert_eq!(names, vec!["a", "b", "c"]);
 }
 
-// ── 9. SEARCH BREADTH FIRST orders by depth ────────────────────────────────
+// ── 8. SEARCH BREADTH FIRST orders by depth ────────────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [TreeNode])]
 async fn search_breadth_first_orders_by_depth(mut ctx: DjogiContext) {
-    setup_tree_node(&mut ctx).await;
-
     // Two-level fan-out:
     //   root
     //     ├─ l1a
@@ -679,10 +402,8 @@ async fn search_breadth_first_orders_by_depth(mut ctx: DjogiContext) {
 
 // ── 10. SEARCH DEPTH FIRST traverses one chain at a time ──────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [TreeNode])]
 async fn search_depth_first_traverses_chains(mut ctx: DjogiContext) {
-    setup_tree_node(&mut ctx).await;
-
     // Same fan-out as the BFS test.
     let root = seed_tree_node(&mut ctx, "root", None).await;
     let l1a = seed_tree_node(&mut ctx, "l1a", Some(&root)).await;
@@ -732,10 +453,8 @@ async fn search_depth_first_traverses_chains(mut ctx: DjogiContext) {
 
 // ── 11. fetch_all_with_paths returns edge column names ────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [PedigreeNode])]
 async fn fetch_all_with_paths_returns_edge_names(mut ctx: DjogiContext) {
-    setup_pedigree_node(&mut ctx).await;
-
     // Three-generation pedigree:
     //   gma (no parents) — grandmother
     //   gpa (no parents) — grandfather
@@ -806,10 +525,8 @@ async fn fetch_all_with_paths_returns_edge_names(mut ctx: DjogiContext) {
 
 // ── 12. full_ancestors preserves multiplicity through two edges ───────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [PedigreeNode])]
 async fn full_ancestors_two_edges_preserves_multiplicity(mut ctx: DjogiContext) {
-    setup_pedigree_node(&mut ctx).await;
-
     // A linebreeding pedigree where the SAME ancestor reaches the
     // child via TWO distinct paths:
     //   common (no parents) — the shared ancestor
@@ -860,10 +577,8 @@ async fn full_ancestors_two_edges_preserves_multiplicity(mut ctx: DjogiContext) 
 
 // ── 13. full_ancestors with zero self-FKs errors descriptively ────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [OrphanNode])]
 async fn full_ancestors_zero_self_fks_errors(mut ctx: DjogiContext) {
-    setup_orphan_node(&mut ctx).await;
-
     // Insert one orphan row so there's a non-zero source — the helper's
     // empty-edges guard fires before the SQL builder, so even a
     // populated table errors when the model has no self-FK.

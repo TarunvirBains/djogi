@@ -1,48 +1,48 @@
-//! Phase 8-Zero Cluster B5 (T14c) — Smoke benchmarks for tree-recursive
-//! query surface against a real Postgres 18.
-//!
-//! These are *not* perf guarantees. They are smoke bounds + grep-able
-//! runtime numbers that back the scalability claim ("the framework
-//! supports the production tree-query pattern at non-trivial scale").
-//! Three benchmarks:
-//!
-//! 1. **`bench_1000_node_tree_descendants`** — 1000-node single-root
-//!    tree; time `tree_descendants` to completion. Confirms the
-//!    recursive-CTE path scales from the unit-test fixtures' 5-row
-//!    trees to four-orders-of-magnitude larger fixtures without
-//!    blowing up.
-//!
-//! 2. **`bench_50_deep_chain_with_paths`** — 50-deep chain; time
-//!    `fetch_all_with_paths`. Targets the path-accumulator
-//!    `array_append` chain — a deep walk grows the `text[]` path
-//!    column linearly, and we want to confirm the per-step append
-//!    stays cheap.
-//!
-//! 3. **`bench_5000_pedigree_materialize_closure`** — 5000-row
-//!    pedigree (every node has 2 self-FKs, fanout simulating real
-//!    ancestry). Times `materialize_closure` from empty closure
-//!    table to fully populated. The headline number that backs the
-//!    scalability claim — closure-table materialisation is the
-//!    production-scale answer for tree queries (see Risk 10 in the
-//!    Phase 8-Zero scalability lens).
-//!
-//! ## Running
-//!
-//! ```bash
-//! cargo test --test phase8_zero_tree_query_bench -p djogi --all-features \
-//!     --release -- --test-threads=1 --nocapture
-//! ```
-//!
-//! Debug-mode runs also pass — the soft caps below are loose enough —
-//! but the printed runtime is host-sensitive and not a perf claim.
-//!
-//! ## Why `tests/`, not `benches/`
-//!
-//! Same rationale as `phase8_zero_pool_bench`: cargo's `[[bench]]`
-//! harness pulls in nightly criterion-style infra we don't want for a
-//! v0.1.0 smoke check. Stuffing the timing logic into ordinary
-//! `#[djogi_test]` bodies keeps the test surface single-tracked and
-//! reuses the per-test-database harness.
+// Phase 8-Zero Cluster B5 (T14c) — Smoke benchmarks for tree-recursive
+// query surface against a real Postgres 18.
+//
+// These are *not* perf guarantees. They are smoke bounds + grep-able
+// runtime numbers that back the scalability claim ("the framework
+// supports the production tree-query pattern at non-trivial scale").
+// Three benchmarks:
+//
+// 1. **`bench_1000_node_tree_descendants`** — 1000-node single-root
+//    tree; time `tree_descendants` to completion. Confirms the
+//    recursive-CTE path scales from the unit-test fixtures' 5-row
+//    trees to four-orders-of-magnitude larger fixtures without
+//    blowing up.
+//
+// 2. **`bench_50_deep_chain_with_paths`** — 50-deep chain; time
+//    `fetch_all_with_paths`. Targets the path-accumulator
+//    `array_append` chain — a deep walk grows the `text[]` path
+//    column linearly, and we want to confirm the per-step append
+//    stays cheap.
+//
+// 3. **`bench_5000_pedigree_materialize_closure`** — 5000-row
+//    pedigree (every node has 2 self-FKs, fanout simulating real
+//    ancestry). Times `materialize_closure` from empty closure
+//    table to fully populated. The headline number that backs the
+//    scalability claim — closure-table materialisation is the
+//    production-scale answer for tree queries (see Risk 10 in the
+//    Phase 8-Zero scalability lens).
+//
+// ## Running
+//
+// ```bash
+// cargo test --test phase8_zero_tree_query_bench -p djogi --all-features \
+//     --release -- --test-threads=1 --nocapture
+// ```
+//
+// Debug-mode runs also pass — the soft caps below are loose enough —
+// but the printed runtime is host-sensitive and not a perf claim.
+//
+// ## Why `tests/`, not `benches/`
+//
+// Same rationale as `phase8_zero_pool_bench`: cargo's `[[bench]]`
+// harness pulls in nightly criterion-style infra we don't want for a
+// v0.1.0 smoke check. Stuffing the timing logic into ordinary
+// `#[djogi_test]` bodies keeps the test surface single-tracked and
+// reuses the per-test-database harness.
 
 use std::time::{Duration, Instant};
 
@@ -50,14 +50,26 @@ use djogi::prelude::*;
 
 // ── Models ──────────────────────────────────────────────────────────────────
 
-#[model(table = "phase8_bench_tree", pk = HeerId, tree_edge = "parent_id")]
+#[model(
+    table = "phase8_bench_tree",
+    pk = HeerId,
+    tree_edge = "parent_id",
+    indexes(index(fields = [parent_id]))
+)]
 #[derive(Debug, Clone)]
 pub struct BenchTree {
     pub label: i32,
     pub parent_id: Option<ForeignKey<BenchTree>>,
 }
 
-#[model(table = "phase8_bench_pedigree", pk = HeerId)]
+#[model(
+    table = "phase8_bench_pedigree",
+    pk = HeerId,
+    indexes(
+        index(fields = [mother_id]),
+        index(fields = [father_id])
+    )
+)]
 #[derive(Debug, Clone)]
 pub struct BenchPedigree {
     pub label: i32,
@@ -65,7 +77,12 @@ pub struct BenchPedigree {
     pub father_id: Option<ForeignKey<BenchPedigree>>,
 }
 
-#[model(table = "phase8_bench_pedigree_closure", pk = HeerId, no_default)]
+#[model(
+    table = "phase8_bench_pedigree_closure",
+    pk = HeerId,
+    no_default,
+    indexes(unique(fields = [pedigree_id, ancestor_id, depth]))
+)]
 #[derive(Debug, Clone)]
 pub struct BenchPedigreeAncestry {
     pub pedigree_id: ForeignKey<BenchPedigree>,
@@ -113,83 +130,58 @@ const fn scale(release: usize, debug: usize) -> usize {
     }
 }
 
+fn bench_tree(label: i32, parent_id: Option<HeerId>) -> BenchTree {
+    BenchTree {
+        id: <HeerId as PrimaryKey>::sentinel(),
+        created_at: DateTime::UNIX_EPOCH,
+        updated_at: DateTime::UNIX_EPOCH,
+        label,
+        parent_id: parent_id.map(ForeignKey::new),
+    }
+}
+
+fn bench_pedigree(
+    label: i32,
+    mother_id: Option<HeerId>,
+    father_id: Option<HeerId>,
+) -> BenchPedigree {
+    BenchPedigree {
+        id: <HeerId as PrimaryKey>::sentinel(),
+        created_at: DateTime::UNIX_EPOCH,
+        updated_at: DateTime::UNIX_EPOCH,
+        label,
+        mother_id: mother_id.map(ForeignKey::new),
+        father_id: father_id.map(ForeignKey::new),
+    }
+}
+
 // ── 1. 1000-node tree descendants ──────────────────────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [BenchTree])]
 async fn bench_1000_node_tree_descendants(mut ctx: DjogiContext) {
     banner("bench_1000_node_tree_descendants");
     let n = scale(1000, 100);
 
-    ctx.raw_execute(
-        "CREATE TABLE phase8_bench_tree (
-             id          BIGINT PRIMARY KEY DEFAULT generate_id(),
-             created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             label       INTEGER NOT NULL,
-             parent_id   BIGINT REFERENCES phase8_bench_tree(id) ON DELETE CASCADE
-         )",
-        &[],
-    )
-    .await
-    .expect("create table");
-    ctx.raw_execute(
-        "CREATE INDEX phase8_bench_tree_parent_idx ON phase8_bench_tree(parent_id)",
-        &[],
-    )
-    .await
-    .expect("create index");
-
-    // Seed via three round trips — fan-out shape: every non-root row
-    // has `parent_id = parent.id WHERE parent.label = child.label / 4`
-    // in label space, the classic 4-ary tree. Step 1 inserts the root
-    // (`label = 0`); step 2 inserts every other label with
-    // `parent_id = NULL`; step 3 resolves parents via a single
-    // UPDATE/JOIN over the now-committed labels. See the rationale
-    // below the root insert for why the parent resolution is split
-    // into its own statement.
-    let root: i64 = ctx
-        .raw_scalar(
-            "INSERT INTO phase8_bench_tree (label) VALUES (0) RETURNING id",
-            &[],
-        )
+    // Fan-out shape: every non-root row has parent label `child.label / 4`.
+    let root = BenchTree::create(&mut ctx, bench_tree(0, None))
         .await
         .expect("seed root");
+    let mut ids = vec![root.id];
+    for label in 1..(n as i32) {
+        let parent_id = ids[(label / 4) as usize];
+        let row = BenchTree::create(&mut ctx, bench_tree(label, Some(parent_id)))
+            .await
+            .expect("seed tree row");
+        ids.push(row.id);
+    }
 
-    // Two-phase seed: insert every label with `parent_id = NULL` in one
-    // round trip, then a single UPDATE/JOIN resolves every non-root
-    // row's parent via label arithmetic. Splitting INSERT and UPDATE
-    // is load-bearing — a single `INSERT...SELECT` with a self-
-    // referential `(SELECT id FROM phase8_bench_tree WHERE label = g/4)`
-    // would only see rows committed *before* the statement, leaving
-    // every batch's first label-arithmetic-collision orphaned (and
-    // its entire subtree unreachable from the root). Two phases cost
-    // two round trips instead of `ceil(log_4(n))` and produce a
-    // correctly connected 4-ary tree without depth-by-depth fragility.
-    let _ = root;
-    ctx.raw_execute(
-        "INSERT INTO phase8_bench_tree (label) \
-         SELECT g FROM generate_series(1::int, $1::int - 1) AS g",
-        &[&(n as i32)],
-    )
-    .await
-    .expect("seed labels");
-    ctx.raw_execute(
-        "UPDATE phase8_bench_tree AS child \
-         SET parent_id = parent.id \
-         FROM phase8_bench_tree AS parent \
-         WHERE child.label > 0 AND parent.label = child.label / 4",
-        &[],
-    )
-    .await
-    .expect("set parent_id from label arithmetic");
-
-    let total: i64 = ctx
-        .raw_scalar("SELECT COUNT(*)::bigint FROM phase8_bench_tree", &[])
+    let total = BenchTree::objects()
+        .count(&mut ctx)
         .await
         .expect("count seeded");
     println!("seeded {total} rows; benching tree_descendants from root");
 
-    let root_id = HeerId::from_i64(root).expect("valid HeerId");
+    let root_id = root.id;
     let start = Instant::now();
     let walk = BenchTree::tree_descendants(root_id)
         .expect("tree_edge resolves")
@@ -221,49 +213,25 @@ async fn bench_1000_node_tree_descendants(mut ctx: DjogiContext) {
 
 // ── 2. 50-deep chain with paths ───────────────────────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [BenchTree])]
 async fn bench_50_deep_chain_with_paths(mut ctx: DjogiContext) {
     banner("bench_50_deep_chain_with_paths");
     let depth = scale(50, 10);
 
-    ctx.raw_execute(
-        "CREATE TABLE phase8_bench_tree (
-             id          BIGINT PRIMARY KEY DEFAULT generate_id(),
-             created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             label       INTEGER NOT NULL,
-             parent_id   BIGINT REFERENCES phase8_bench_tree(id) ON DELETE CASCADE
-         )",
-        &[],
-    )
-    .await
-    .expect("create table");
-
     // Seed a single 50-deep chain. Each row's parent is the previous
-    // row by label. Looped INSERTs because each step depends on the
-    // previous row's id. (A recursive CTE INSERT could collapse this
-    // to one round trip, but at 50 rows the loop dominates only a few
-    // hundred ms even on a slow host.)
-    let root: i64 = ctx
-        .raw_scalar(
-            "INSERT INTO phase8_bench_tree (label) VALUES (0) RETURNING id",
-            &[],
-        )
+    // row by label.
+    let root = BenchTree::create(&mut ctx, bench_tree(0, None))
         .await
         .expect("seed root");
-    let mut prev = root;
+    let mut prev = root.id;
     for label in 1..(depth as i32) {
-        let next: i64 = ctx
-            .raw_scalar(
-                "INSERT INTO phase8_bench_tree (label, parent_id) VALUES ($1, $2) RETURNING id",
-                &[&label, &prev],
-            )
+        let next = BenchTree::create(&mut ctx, bench_tree(label, Some(prev)))
             .await
-            .expect("seed chain");
-        prev = next;
+            .expect("seed chain row");
+        prev = next.id;
     }
 
-    let root_id = HeerId::from_i64(root).expect("valid HeerId");
+    let root_id = root.id;
     let start = Instant::now();
     let walk = BenchTree::tree_descendants(root_id)
         .expect("tree_edge resolves")
@@ -296,51 +264,10 @@ async fn bench_50_deep_chain_with_paths(mut ctx: DjogiContext) {
 
 // ── 3. 5000-pedigree closure materialisation ──────────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [BenchPedigree, BenchPedigreeAncestry])]
 async fn bench_5000_pedigree_materialize_closure(mut ctx: DjogiContext) {
     banner("bench_5000_pedigree_materialize_closure");
     let n = scale(5000, 250);
-
-    ctx.raw_execute(
-        "CREATE TABLE phase8_bench_pedigree (
-             id          BIGINT PRIMARY KEY DEFAULT generate_id(),
-             created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             label       INTEGER NOT NULL,
-             mother_id   BIGINT REFERENCES phase8_bench_pedigree(id) ON DELETE SET NULL,
-             father_id   BIGINT REFERENCES phase8_bench_pedigree(id) ON DELETE SET NULL
-         )",
-        &[],
-    )
-    .await
-    .expect("create pedigree");
-    ctx.raw_execute(
-        "CREATE INDEX phase8_bench_pedigree_mother_idx ON phase8_bench_pedigree(mother_id)",
-        &[],
-    )
-    .await
-    .expect("create mother index");
-    ctx.raw_execute(
-        "CREATE INDEX phase8_bench_pedigree_father_idx ON phase8_bench_pedigree(father_id)",
-        &[],
-    )
-    .await
-    .expect("create father index");
-    ctx.raw_execute(
-        "CREATE TABLE phase8_bench_pedigree_closure (
-             id           BIGINT PRIMARY KEY DEFAULT generate_id(),
-             created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-             updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-             pedigree_id  BIGINT NOT NULL REFERENCES phase8_bench_pedigree(id) ON DELETE CASCADE,
-             ancestor_id  BIGINT NOT NULL REFERENCES phase8_bench_pedigree(id) ON DELETE CASCADE,
-             depth        INTEGER NOT NULL,
-             path_count   BIGINT NOT NULL DEFAULT 1,
-             UNIQUE (pedigree_id, ancestor_id, depth)
-         )",
-        &[],
-    )
-    .await
-    .expect("create closure table");
 
     // Seed 2 ancestors + (n - 2) descendants where each descendant
     // picks its mother/father from rows seeded at strictly lower
@@ -348,51 +275,27 @@ async fn bench_5000_pedigree_materialize_closure(mut ctx: DjogiContext) {
     // pedigree: oldest ancestors at small labels, newest individuals
     // at large labels, every individual has both parents at lower
     // labels.
-    //
-    // Three-step seed (same shape as the tree bench above) — split
-    // is load-bearing for the same reason: a single
-    // `INSERT...SELECT` with `(SELECT id FROM phase8_bench_pedigree
-    // WHERE label = ...)` subqueries would only see rows committed
-    // *before* the statement, leaving every label past the two
-    // roots with `mother_id` / `father_id` resolved to NULL. Because
-    // both columns are nullable (the SQL schema needs ON DELETE SET
-    // NULL semantics), that failure mode is silent — the bench
-    // would still run, but against a dramatically thinner DAG than
-    // intended. The two-phase split (insert with NULLs, then UPDATE
-    // via JOIN over committed labels) guarantees both parents
-    // resolve for every non-root individual.
-    ctx.raw_execute(
-        "INSERT INTO phase8_bench_pedigree (label) VALUES (0), (1)",
-        &[],
-    )
-    .await
-    .expect("seed two roots");
-    ctx.raw_execute(
-        "INSERT INTO phase8_bench_pedigree (label) \
-         SELECT g FROM generate_series(2::int, $1::int) AS g",
-        &[&((n - 1) as i32)],
-    )
-    .await
-    .expect("seed descendant labels");
-    // mother = g - 2, father = g - 1 (the % g in the original was a
-    // no-op since the dividend is always < g for g >= 2). Single
-    // UPDATE over the now-committed labels resolves both parents in
-    // one round trip.
-    ctx.raw_execute(
-        "UPDATE phase8_bench_pedigree AS child \
-         SET mother_id = mother.id, father_id = father.id \
-         FROM phase8_bench_pedigree AS mother, \
-              phase8_bench_pedigree AS father \
-         WHERE child.label >= 2 \
-           AND mother.label = child.label - 2 \
-           AND father.label = child.label - 1",
-        &[],
-    )
-    .await
-    .expect("set mother_id + father_id from label arithmetic");
+    let first = BenchPedigree::create(&mut ctx, bench_pedigree(0, None, None))
+        .await
+        .expect("seed first root");
+    let second = BenchPedigree::create(&mut ctx, bench_pedigree(1, None, None))
+        .await
+        .expect("seed second root");
+    let mut ids = vec![first.id, second.id];
+    for label in 2..(n as i32) {
+        let mother_id = ids[(label - 2) as usize];
+        let father_id = ids[(label - 1) as usize];
+        let row = BenchPedigree::create(
+            &mut ctx,
+            bench_pedigree(label, Some(mother_id), Some(father_id)),
+        )
+        .await
+        .expect("seed pedigree row");
+        ids.push(row.id);
+    }
 
-    let total: i64 = ctx
-        .raw_scalar("SELECT COUNT(*)::bigint FROM phase8_bench_pedigree", &[])
+    let total = BenchPedigree::objects()
+        .count(&mut ctx)
         .await
         .expect("count seeded");
     println!("seeded {total} pedigree rows; benching materialize_closure");

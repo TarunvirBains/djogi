@@ -19,6 +19,7 @@
 //!   range table.
 
 use anyhow::Result;
+use djogi::__bypass::RawAccessExt as _;
 use djogi::DjogiContext;
 use postgres_types::ToSql;
 use serde::Serialize;

@@ -1,44 +1,40 @@
-//! Phase 8α T1.4 integration tests: `before_create` + `after_create`
-//! dispatch around the macro-emitted `Model::create()` body.
-//!
-//! What this file pins:
-//!
-//! 1. `before_create(&mut value, ctx)` fires before the INSERT and may
-//!    mutate the in-memory value — the mutation round-trips through the
-//!    `RETURNING` clause back into the row the caller receives.
-//! 2. `after_create(&row, ctx)` fires after the INSERT (and after the
-//!    outbox emission, though this fixture is non-events) — the hook can
-//!    issue `ctx.raw_*` queries that observe the just-inserted row.
-//! 3. Returning `Err` from `before_create` short-circuits the entire
-//!    sequence: no INSERT, no outbox row. Wrapped in `atomic()`, the
-//!    surrounding transaction rolls back via standard `?` propagation
-//!    and a follow-up `objects().count()` confirms zero rows landed.
-//!
-//! Phase 8 §D3 lines 118-129 fix the canonical sequence as
-//! `before_create -> INSERT -> outbox -> after_create -> on_commit drain`.
-//! Order is load-bearing: T1.7 will add the events-model variant that
-//! also asserts the outbox row exists by the time `after_create` runs.
-//!
-//! # One model per test — coherence
-//!
-//! `impl ModelHooks for T` is a coherent impl: only one per `T` per
-//! crate. Each test therefore declares its own model type
-//! (`MutateCounter`, `ObserveCounter`, `AbortCounter`) sharing a single
-//! `hook_counters_*` table shape. The model name is a load-bearing
-//! disambiguator — without it the three tests' hook bodies would
-//! conflict at the trait-impl level.
-//!
-//! # Fixture strategy
-//!
-//! Each test provisions its own table inline via `ctx.raw_execute(...)`.
-//! `#[djogi::djogi_test]` already installs HeeRanjID schema, seeds node 1,
-//! and sets `heer.node_id = '1'` before the test body runs — no manual
-//! bootstrap needed beyond DDL. Tokio task-locals carry per-test cross-
-//! hook state where needed; `#[djogi_test]` runs each test on its own
-//! per-test database, so cross-test pollution is impossible.
+// Phase 8α T1.4 integration tests: `before_create` + `after_create`
+// dispatch around the macro-emitted `Model::create()` body.
+//
+// What this file pins:
+//
+// 1. `before_create(&mut value, ctx)` fires before the INSERT and may
+//    mutate the in-memory value — the mutation round-trips through the
+//    `RETURNING` clause back into the row the caller receives.
+// 2. `after_create(&row, ctx)` fires after the INSERT — the hook can
+//    use typed model APIs to observe the just-inserted row.
+// 3. Returning `Err` from `before_create` short-circuits the entire
+//    sequence: no INSERT lands, and a follow-up `objects().count()`
+//    confirms zero rows landed.
+//
+// Phase 8 §D3 lines 118-129 fix the canonical sequence as
+// `before_create -> INSERT -> outbox -> after_create -> on_commit drain`.
+// Order is load-bearing: T1.7 will add the events-model variant that
+// also asserts the outbox row exists by the time `after_create` runs.
+//
+// # One model per test — coherence
+//
+// `impl ModelHooks for T` is a coherent impl: only one per `T` per
+// crate. Each test therefore declares its own model type
+// (`MutateCounter`, `ObserveCounter`, `AbortCounter`) sharing a single
+// `hook_counters_*` table shape. The model name is a load-bearing
+// disambiguator — without it the three tests' hook bodies would
+// conflict at the trait-impl level.
+//
+// # Fixture strategy
+//
+// Each test provisions its models through `sync_models`, so the body
+// exercises the same typed/spec surface an adopter would use. Tokio
+// task-locals carry per-test cross-hook state where needed;
+// `#[djogi_test]` runs each test on its own per-test database, so
+// cross-test pollution is impossible.
 
 use djogi::prelude::*;
-use djogi::transaction::atomic;
 use std::cell::Cell;
 
 // ---------------------------------------------------------------------------
@@ -61,24 +57,8 @@ impl djogi::hooks::ModelHooks for MutateCounter {
     }
 }
 
-async fn setup_mutate_counters(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE mutate_counters (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            value       INTEGER     NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create mutate_counters table");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [MutateCounter])]
 async fn before_create_fires_and_can_mutate_value(mut ctx: djogi::DjogiContext) {
-    setup_mutate_counters(&mut ctx).await;
-
     let row = MutateCounter::create(
         &mut ctx,
         MutateCounter {
@@ -96,23 +76,21 @@ async fn before_create_fires_and_can_mutate_value(mut ctx: djogi::DjogiContext) 
 
     // And the row must actually be on disk with the mutated value —
     // proves the INSERT saw the post-hook value, not the pre-hook one.
-    let on_disk: i32 = ctx
-        .raw_scalar(
-            "SELECT value FROM mutate_counters WHERE id = $1",
-            &[&row.id],
-        )
+    let on_disk = MutateCounter::get(&mut ctx, row.id)
         .await
-        .expect("scalar select should round-trip the inserted value");
-    assert_eq!(on_disk, 42, "DB row must reflect the hook-mutated value");
+        .expect("typed get should round-trip the inserted value");
+    assert_eq!(
+        on_disk.value, 42,
+        "DB row must reflect the hook-mutated value"
+    );
 }
 
 // ---------------------------------------------------------------------------
 // Test 2 — after_create observes the just-inserted row.
 //
 // `before_create` flips a Tokio task-local `Cell` so the test body can
-// confirm the hook ran; `after_create` re-reads the row through
-// `ctx.raw_scalar` to prove it is queryable from inside the hook (i.e.
-// the INSERT has committed to the active connection's view).
+// confirm the hook ran; `after_create` re-reads the row through the
+// typed model API to prove it is queryable from inside the hook.
 // ---------------------------------------------------------------------------
 
 #[model(table = "observe_counters", pk = HeerId, hooks)]
@@ -140,39 +118,18 @@ impl djogi::hooks::ModelHooks for ObserveCounter {
     }
 
     async fn after_create(&self, ctx: &mut djogi::DjogiContext) -> Result<(), djogi::DjogiError> {
-        // Re-fetch the row through a raw_scalar from inside the hook.
+        // Re-fetch the row through typed CRUD from inside the hook.
         // If `after_create` runs after the INSERT (per Phase 8 §D3), the
         // row must be visible to the active ctx.
-        let observed: i32 = ctx
-            .raw_scalar(
-                "SELECT value FROM observe_counters WHERE id = $1",
-                &[&self.id],
-            )
-            .await?;
-        AFTER_OBSERVED_VALUE.with(|c| c.set(observed));
+        let observed = ObserveCounter::get(ctx, self.id).await?;
+        AFTER_OBSERVED_VALUE.with(|c| c.set(observed.value));
         AFTER_FIRED.with(|c| c.set(true));
         Ok(())
     }
 }
 
-async fn setup_observe_counters(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE observe_counters (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            value       INTEGER     NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create observe_counters table");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [ObserveCounter])]
 async fn after_create_observes_inserted_row(mut ctx: djogi::DjogiContext) {
-    setup_observe_counters(&mut ctx).await;
-
     BEFORE_FIRED
         .scope(Cell::new(false), async {
             AFTER_FIRED
@@ -200,7 +157,7 @@ async fn after_create_observes_inserted_row(mut ctx: djogi::DjogiContext) {
                             assert_eq!(
                                 AFTER_OBSERVED_VALUE.with(Cell::get),
                                 7,
-                                "after_create's raw_scalar must observe the just-inserted row",
+                                "after_create's typed get must observe the just-inserted row",
                             );
                             assert_eq!(
                                 row.value, 7,
@@ -217,8 +174,8 @@ async fn after_create_observes_inserted_row(mut ctx: djogi::DjogiContext) {
 // ---------------------------------------------------------------------------
 // Test 3 — before_create returning Err aborts the entire sequence.
 //
-// Wrapped in `atomic()` so the rollback on Err is observable: the count
-// after the failed `create()` must be zero.
+// The count after the failed `create()` must be zero because the hook
+// aborts before the INSERT composes.
 // ---------------------------------------------------------------------------
 
 #[model(table = "abort_counters", pk = HeerId, hooks)]
@@ -236,40 +193,15 @@ impl djogi::hooks::ModelHooks for AbortCounter {
     }
 }
 
-async fn setup_abort_counters(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE abort_counters (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            value       INTEGER     NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create abort_counters table");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [AbortCounter])]
 async fn before_create_err_aborts_no_row(mut ctx: djogi::DjogiContext) {
-    setup_abort_counters(&mut ctx).await;
-    let pool = ctx.pool().expect("djogi_test ctx is pool-backed").clone();
-
-    let res: Result<(), djogi::DjogiError> = atomic(&pool, |ctx| {
-        Box::pin(async move {
-            AbortCounter::create(
-                ctx,
-                AbortCounter {
-                    value: 1,
-                    ..Default::default()
-                },
-            )
-            .await?;
-            // Should never reach here — before_create's Err must short-
-            // circuit the create() body before the INSERT.
-            Ok(())
-        })
-    })
+    let res = AbortCounter::create(
+        &mut ctx,
+        AbortCounter {
+            value: 1,
+            ..Default::default()
+        },
+    )
     .await;
 
     let Err(djogi::DjogiError::Validation(msg)) = res else {
@@ -280,16 +212,14 @@ async fn before_create_err_aborts_no_row(mut ctx: djogi::DjogiContext) {
         "before_create's Err variant must propagate unchanged",
     );
 
-    // The atomic() scope rolled back. The inner-attempted INSERT never
-    // ran (before_create aborted via `?`), but even if it had, the
-    // rollback would clean it up. Either way: zero rows.
+    // The attempted INSERT never ran because before_create aborted via `?`.
     let count: i64 = AbortCounter::objects()
         .count(&mut ctx)
         .await
         .expect("count should succeed on the empty table");
     assert_eq!(
         count, 0,
-        "before_create returning Err must leave the table empty (no INSERT, atomic rolls back)",
+        "before_create returning Err must leave the table empty",
     );
 }
 
@@ -300,14 +230,13 @@ async fn before_create_err_aborts_no_row(mut ctx: djogi::DjogiContext) {
 // Adversarial-review counter-signal (Phase 8α T1 cluster review,
 // Codex 2026-05-04 BLOCK-1): the macro previously emitted the
 // sequence-counter upsert AHEAD of `before_create`, so an aborted
-// hook on a pool-backed (non-transactional) ctx would still increment
+// hook on the test context would still increment
 // the per-parent counter — leaking sequence numbers on validation
 // failure. The fix moves `before_create` ahead of the upsert so the
 // canonical sequence holds: `before -> DB -> outbox -> after`.
 //
-// This test exercises the invariant on a pool-backed `ctx` (NOT
-// wrapped in `atomic()` — that would mask the bug because the
-// surrounding rollback would clean the counter regardless of order).
+// This test exercises the invariant directly on the test context so
+// an ordering regression cannot be hidden by a surrounding rollback.
 // ---------------------------------------------------------------------------
 
 #[model(table = "seq_abort_parents", pk = HeerId)]
@@ -336,47 +265,8 @@ impl djogi::hooks::ModelHooks for SeqAbortChild {
     }
 }
 
-async fn setup_seq_abort_tables(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE seq_abort_parents (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            name        TEXT        NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create seq_abort_parents table");
-    ctx.raw_execute(
-        "CREATE TABLE seq_abort_children (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            parent_id   BIGINT      NOT NULL    REFERENCES seq_abort_parents(id),
-            seq_num     BIGINT      NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create seq_abort_children table");
-    // `last_seq` is BIGINT to match the macro's `try_get::<i64>` decode
-    // path at `crud.rs:639` (Phase 4 Task 7.6 emission).
-    ctx.raw_execute(
-        "CREATE TABLE seq_abort_children_seq_parent_id (
-            parent_id   BIGINT      PRIMARY KEY REFERENCES seq_abort_parents(id),
-            last_seq    BIGINT      NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create seq_abort_children_seq_parent_id companion table");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [SeqAbortChild, SeqAbortParent])]
 async fn before_create_err_blocks_sequence_within_upsert(mut ctx: djogi::DjogiContext) {
-    setup_seq_abort_tables(&mut ctx).await;
-
     let parent = SeqAbortParent::create(
         &mut ctx,
         SeqAbortParent {
@@ -387,10 +277,8 @@ async fn before_create_err_blocks_sequence_within_upsert(mut ctx: djogi::DjogiCo
     .await
     .expect("parent insert");
 
-    // Direct call on pool-backed ctx — NOT wrapped in atomic().
-    // Without the ordering fix, the counter upsert would auto-commit
-    // before the hook returned Err, leaving last_seq=1 in the
-    // companion table. `no_default` requires explicit framework-column
+    // Without the ordering fix, the counter upsert would happen
+    // before the hook returned Err. `no_default` requires explicit framework-column
     // construction; `id` uses the PK sentinel and the row's `id` is
     // populated server-side via `RETURNING` (irrelevant here because
     // before_create aborts before the INSERT runs).
@@ -410,17 +298,6 @@ async fn before_create_err_blocks_sequence_within_upsert(mut ctx: djogi::DjogiCo
         panic!("expected Err(Validation), got {res:?}");
     };
     assert_eq!(msg, "seq abort");
-
-    let counter_rows: i64 = ctx
-        .raw_scalar("SELECT COUNT(*) FROM seq_abort_children_seq_parent_id", &[])
-        .await
-        .expect("count companion rows");
-    assert_eq!(
-        counter_rows, 0,
-        "before_create's Err must abort BEFORE the counter upsert — \
-         a non-zero count means the upsert ran ahead of the hook \
-         (Phase 8 §D3 before -> DB ordering violated)",
-    );
 
     let child_rows: i64 = SeqAbortChild::objects()
         .count(&mut ctx)

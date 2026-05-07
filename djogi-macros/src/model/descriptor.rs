@@ -20,7 +20,7 @@
 use crate::model::attrs::{
     FieldAttrs, FieldSqlTypeCategory, FtsSpec, ModelAttrs, PkStrategy,
     RelationKind as MacroRelationKind, detect_relation, field_sql_type_category,
-    on_delete_str_to_tokens, rust_type_to_sql, unwrap_option,
+    on_delete_str_to_tokens, rust_type_to_sql, unwrap_option, unwrap_schema_type,
 };
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -293,7 +293,7 @@ fn try_expand(
             // `Option<…>` layer so nullable FK fields are recognized.
             let relation = detect_relation(&field.ty);
 
-            let (inner_ty, nullable) = unwrap_option(&field.ty);
+            let (inner_ty, nullable) = unwrap_schema_type(&field.ty);
 
             // For relation fields the SQL column type is the target's PK
             // type, not the Rust wrapper type. Phase 6's migration emitter
@@ -303,8 +303,11 @@ fn try_expand(
             // best-effort scalar mapping. A future amendment (Phase 6)
             // can extend this to look the target PK type up via a second
             // `ModelDescriptor` pass.
-            let sql_type_str = rust_type_to_sql(&inner_ty).unwrap_or("TEXT");
-            let sql_type = sql_str_to_tokens(sql_type_str);
+            let sql_type = if relation.is_some() {
+                sql_str_to_tokens("TEXT")
+            } else {
+                field_sql_type_tokens(&inner_ty)
+            };
             let unique = fa.unique;
             let indexed = fa.index || fa.index_method.is_some();
             let max_length = match fa.max_length {
@@ -1055,6 +1058,17 @@ fn build_projection_map_tokens(
 
     let entries: Vec<TokenStream> = pairs.iter().map(|(s, e)| quote! { (#s, #e) }).collect();
     quote! { &[ #(#entries,)* ] }
+}
+
+fn field_sql_type_tokens(ty: &syn::Type) -> TokenStream {
+    match rust_type_to_sql(ty) {
+        Some(sql) => sql_str_to_tokens(sql),
+        None => quote! {
+            ::djogi::FieldSqlType::Custom(
+                <#ty as ::djogi::descriptor::DjogiSqlType>::SQL_TYPE
+            )
+        },
+    }
 }
 
 fn sql_str_to_tokens(s: &str) -> TokenStream {

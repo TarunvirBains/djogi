@@ -23,6 +23,7 @@ mod jsonb_schema;
 mod many_to_many;
 mod model;
 mod primary_key_macro;
+mod raw_bypass;
 mod reverse_relation;
 mod syn_util;
 mod testing;
@@ -109,6 +110,17 @@ pub fn model(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_derive(Model, attributes(field))]
 pub fn derive_model(_input: TokenStream) -> TokenStream {
     TokenStream::new()
+}
+
+/// Brings `djogi::__bypass::{RawAccessExt, RawPoolAccessExt}` into scope
+/// for the decorated item, unlocking direct access to djogi's raw SQL escape
+/// hatches at explicit, auditable sites.
+#[proc_macro_attribute]
+pub fn deliberately_bypass_convention_with_raw_sql(
+    attr: TokenStream,
+    item: TokenStream,
+) -> TokenStream {
+    raw_bypass::expand(attr.into(), item.into()).into()
 }
 
 /// Emit a reverse one-to-many accessor on a model.

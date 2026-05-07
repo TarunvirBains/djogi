@@ -7,9 +7,11 @@ Spec: [`docs/spec/models.md`](../spec/models.md) — Phase 5 enum type support.
 `#[derive(DjogiEnum)]` turns a plain Rust enum into a Postgres-native enum
 type. One derive emits both the `postgres_types` codec (so the value round-trips
 as a Postgres TEXT/ENUM wire string) and an `inventory::submit!` of an
-`EnumDescriptor` (so the Phase 7 migration differ can emit
-`CREATE TYPE ... AS ENUM (...)` alongside your schema). Single source of truth
-— add a variant once, and both the codec and the descriptor stay in sync.
+`EnumDescriptor` (so the migration projection can emit
+`CREATE TYPE ... AS ENUM (...)` alongside your schema). It also implements
+Djogi's SQL-type bridge so model fields of that enum project to the named
+Postgres enum type. Single source of truth — add a variant once, and the
+codec, descriptor, and model projection stay in sync.
 
 ---
 
@@ -25,10 +27,9 @@ as a Postgres TEXT/ENUM wire string) and an `inventory::submit!` of an
   explicitly every time.
 - `FromSql` returns `EnumDecodeError` when the wire string does not match any
   known variant — no silent unknown-variant handling.
-- DDL (`CREATE TYPE ... AS ENUM (...)`) is not emitted by Phase 5. The
-  migration differ in Phase 7 picks up the `EnumDescriptor` metadata and
-  generates DDL at that point. For now, hand-write the Postgres enum type
-  before the migration that references it.
+- DDL (`CREATE TYPE ... AS ENUM (...)`) is emitted by the migration projection
+  from `EnumDescriptor` metadata before tables reference the enum type. Ordinary
+  `#[djogi_test(sync_models = [...])]` tests do not need hand-written enum DDL.
 
 ---
 

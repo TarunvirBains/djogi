@@ -1,0 +1,12 @@
+error[E0624]: method `with_client` is private
+ --> $WORKSPACE/tests/compile_fail/raw_sql/with_client_without_bypass.rs
+  |
+  |       let _ = pool.with_client(|_client| Box::pin(async { Ok(()) }));
+  |                    ^^^^^^^^^^^ private method
+  |
+ ::: src/pg/pool.rs
+  |
+  | /     pub(crate) async fn with_client<F, R>(&self, f: F) -> Result<R, DjogiError>
+  | |     where
+  | |         F: for<'a> FnOnce(&'a mut tokio_postgres::Client) -> ClientFuture<'a, R>,
+  | |_________________________________________________________________________________- private method defined here

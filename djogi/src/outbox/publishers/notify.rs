@@ -34,6 +34,7 @@
 //! silently truncate on the wire. For large payloads, use a broker-backed
 //! publisher instead.
 
+use crate::__bypass::RawAccessExt as _;
 use crate::context::DjogiContext;
 use crate::outbox::publisher::{PublishError, Publisher};
 use crate::outbox::worker::OutboxRow;

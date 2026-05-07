@@ -39,7 +39,7 @@ Rust struct — the tsvector column is database-managed.
 
 ### The generated migration DDL
 
-Phase 6's migration differ will emit the following DDL for the model above:
+Djogi's migration projection emits the following DDL for the model above:
 
 ```sql
 ALTER TABLE book
@@ -51,10 +51,9 @@ ALTER TABLE book
 CREATE INDEX book_search_gin ON book USING GIN (search);
 ```
 
-Until Phase 6 ships, hand-apply the DDL in your migration files. The fixture
-at `tests/integration/migrations/phase5/011_fts_book.sql` shows the canonical
-shape. Use `ctx.raw_ddl(SQL)` (not `ctx.raw_execute`) to apply multi-statement
-migration files.
+`#[djogi_test(sync_models = [Book])]` uses the same projection path, so ordinary
+tests do not need raw DDL fixtures for the generated `search` column or GIN
+index.
 
 ---
 
@@ -196,27 +195,32 @@ Djogi always emits a GIN index on the generated `search` column. GIN indexes
 are the right choice for `@@` queries on static or infrequently-updated
 tsvector data: they are slower to write than GiST but faster to query.
 
-The index is named `{table}_search_gin` by convention. Phase 6's migration
-differ creates it alongside the column.
+The index is named `{table}_search_gin` by convention. Djogi's migration
+projection creates it alongside the column.
 
 ---
 
 ## FTS in raw SQL
 
 When `QuerySet` cannot express a query — e.g., multi-table FTS across a
-JOIN, or using `plainto_tsquery` instead of `to_tsquery` — fall back to
-raw SQL via `ctx.raw_query` / `ctx.__query_all_for_macros`:
+JOIN, or using `plainto_tsquery` instead of `to_tsquery` — use the deliberate
+raw SQL bypass. The bypass must be attached to the enclosing item and include
+a `JUSTIFICATION` comment; see
+[`raw-sql-escape-hatches.md`](../spec/raw-sql-escape-hatches.md).
 
 ```rust
-let rows = ctx
-    .__query_all_for_macros(
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): multi-table FTS ranking is not exposed by QuerySet.
+async fn ranked_book_search(mut ctx: DjogiContext) -> Result<Vec<BookSearchRow>, DjogiError> {
+    ctx.raw_query(
         "SELECT b.id, b.title, ts_rank(b.search, q) AS score \
          FROM book b, to_tsquery('english', $1) q \
          WHERE b.search @@ q \
          ORDER BY score DESC",
         &[&"planet & earth" as &(dyn ToSql + Sync)],
     )
-    .await?;
+    .await
+}
 ```
 
 The `search` column is a real Postgres column — it works in any SQL context.
@@ -232,10 +236,9 @@ later phases:
   body. Planned for Phase 8.
 - **Custom generated column name** — always `"search"` today. A
   `column = "..."` override in `fts(...)` lands in Phase 8.
-- **Migration differ wiring** — Phase 6 consumes `FtsDescriptor` to emit
-  `ALTER TABLE` DDL. Until then, apply the DDL by hand.
 - **`plainto_tsquery` / `phraseto_tsquery` builders** — only `to_tsquery`
-  is surfaced today. Use raw SQL for the other query-construction functions.
+  is surfaced today. Use the deliberate raw SQL bypass for the other
+  query-construction functions.
 
 ---
 

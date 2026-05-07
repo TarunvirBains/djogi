@@ -1,42 +1,42 @@
-//! Phase 8δ T8.5 integration tests: `DjogiDeltaFetcher::fetch_delta` — real
-//! SQL path with watermark filter.
-//!
-//! # What this file pins
-//!
-//! 1. **`fetcher_returns_rows_matching_watermark`** — inserts 5 rows with
-//!    staggered `updated_at` timestamps; calls `handle.update().await` with a
-//!    `since` pointing at the 3rd row. Verifies the fetcher returns exactly rows
-//!    3, 4, 5 (those with `updated_at >= since`).
-//!
-//! 2. **`fetcher_uses_owned_pool_clone`** — constructs a `DeltaRefreshHandle`
-//!    then drops the *original* `DjogiPool`. `handle.update()` still works
-//!    because the fetcher captured an independent clone of the pool.
-//!
-//! 3. **`fetcher_constructs_fresh_context_per_tick`** — calls
-//!    `handle.update().await` twice consecutively. Verifies both succeed and
-//!    return correct data, exercising the "fresh context per tick" path.
-//!
-//! 4. **`fetcher_runs_under_captured_auth`** — creates a `refresh_into` with
-//!    one `AuthContext`, then modifies a *copy* of the auth in the caller.
-//!    The fetcher returns only rows accessible under the snapshot auth (does
-//!    not use the modified copy). This pins the "auth-locked-to-subscription"
-//!    contract from spec §677. For models without tenant-key RLS the
-//!    observable difference is the `ctx.auth()` value; we verify that the
-//!    fetcher can complete ticks without panicking under auth and that the
-//!    correct rows are returned.
-//!
-//! # Spec anchor
-//!
-//! `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-//! §3 commit T8.5.
-//!
-//! # Fixture strategy
-//!
-//! Each test provisions its own table inline via `ctx.raw_execute`. The
-//! `#[djogi_test]` macro installs HeeRanjID schema, seeds node 1, and sets
-//! `heer.node_id = '1'` before the test body runs. Timestamp staggering uses
-//! explicit SQL `now() - INTERVAL '…'` so we get strictly monotonic
-//! `updated_at` values even when the test runs fast.
+// Phase 8δ T8.5 integration tests: `DjogiDeltaFetcher::fetch_delta` — real
+// SQL path with watermark filter.
+//
+// # What this file pins
+//
+// 1. **`fetcher_returns_rows_matching_watermark`** — inserts 5 rows with
+//    staggered `updated_at` timestamps; calls `handle.update().await` with a
+//    `since` pointing at the 3rd row. Verifies the fetcher returns exactly rows
+//    3, 4, 5 (those with `updated_at >= since`).
+//
+// 2. **`fetcher_uses_owned_pool_clone`** — constructs a `DeltaRefreshHandle`
+//    then drops the *original* `DjogiPool`. `handle.update()` still works
+//    because the fetcher captured an independent clone of the pool.
+//
+// 3. **`fetcher_constructs_fresh_context_per_tick`** — calls
+//    `handle.update().await` twice consecutively. Verifies both succeed and
+//    return correct data, exercising the "fresh context per tick" path.
+//
+// 4. **`fetcher_runs_under_captured_auth`** — creates a `refresh_into` with
+//    one `AuthContext`, then modifies a *copy* of the auth in the caller.
+//    The fetcher returns only rows accessible under the snapshot auth (does
+//    not use the modified copy). This pins the "auth-locked-to-subscription"
+//    contract from spec §677. For models without tenant-key RLS the
+//    observable difference is the `ctx.auth()` value; we verify that the
+//    fetcher can complete ticks without panicking under auth and that the
+//    correct rows are returned.
+//
+// # Spec anchor
+//
+// `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
+// §3 commit T8.5.
+//
+// # Fixture strategy
+//
+// Tables are provisioned via `#[djogi_test(sync_models = [FetcherTickRow])]`
+// which routes through the same migration engine that production uses.
+// The `#[djogi_test]` macro installs HeeRanjID schema, seeds node 1, and sets
+// `heer.node_id = '1'` before the test body runs. Each test gets its own
+// fresh database so no TRUNCATE is needed between tests.
 
 use djogi::prelude::*;
 
@@ -53,25 +53,6 @@ pub struct FetcherTickRow {
     pub label: String,
 }
 
-async fn setup_fetcher_tick_rows(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_t8_5_fetcher_rows (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            label       TEXT        NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create phase8_t8_5_fetcher_rows table");
-
-    // Truncate between runs so rows from earlier tests do not bleed across.
-    ctx.raw_execute("TRUNCATE phase8_t8_5_fetcher_rows", &[])
-        .await
-        .expect("truncate phase8_t8_5_fetcher_rows");
-}
-
 // ── Test 1 — watermark filter ────────────────────────────────────────────────
 
 /// Tests that the delta-sync watermark SQL filter advances correctly:
@@ -86,26 +67,25 @@ async fn setup_fetcher_tick_rows(ctx: &mut djogi::DjogiContext) {
 ///
 /// This exercises the real `WHERE <watermark_col> >= $N` path in
 /// `DjogiDeltaFetcher::fetch_delta`.
-#[djogi::djogi_test]
+///
+#[djogi::djogi_test(sync_models = [FetcherTickRow])]
 async fn fetcher_returns_rows_matching_watermark(mut ctx: djogi::DjogiContext) {
-    setup_fetcher_tick_rows(&mut ctx).await;
-
-    // Insert 3 "old" rows (5 seconds in the past).
+    // Insert 3 baseline rows.
     for i in 1i64..=3 {
-        let label = format!("old-row{i}");
-        ctx.raw_execute(
-            "INSERT INTO phase8_t8_5_fetcher_rows (id, created_at, updated_at, label) \
-             VALUES (generate_id(), now() - INTERVAL '5 seconds', now() - INTERVAL '5 seconds', $1)",
-            &[&label],
+        FetcherTickRow::create(
+            &mut ctx,
+            FetcherTickRow {
+                label: format!("old-row{i}"),
+                ..Default::default()
+            },
         )
         .await
-        .expect("insert old row");
+        .expect("create old row");
     }
 
     let pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
 
     let punnu = ctx
         .punnu::<FetcherTickRow>()
@@ -126,17 +106,19 @@ async fn fetcher_returns_rows_matching_watermark(mut ctx: djogi::DjogiContext) {
         applied = tick_1.applied
     );
 
-    // Insert 2 "new" rows with timestamps 1 second in the future so they
-    // land strictly after the old rows' watermark.
+    // Insert 2 new rows after the first tick so their DB-generated
+    // `updated_at` values land after the recorded watermark.
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     for i in 1i64..=2 {
-        let label = format!("new-row{i}");
-        ctx.raw_execute(
-            "INSERT INTO phase8_t8_5_fetcher_rows (id, created_at, updated_at, label) \
-             VALUES (generate_id(), now() + INTERVAL '1 second', now() + INTERVAL '1 second', $1)",
-            &[&label],
+        FetcherTickRow::create(
+            &mut ctx,
+            FetcherTickRow {
+                label: format!("new-row{i}"),
+                ..Default::default()
+            },
         )
         .await
-        .expect("insert new row");
+        .expect("create new row");
     }
 
     // Second tick: since=max(old watermark) → SQL WHERE updated_at >= $since.
@@ -170,23 +152,23 @@ async fn fetcher_returns_rows_matching_watermark(mut ctx: djogi::DjogiContext) {
 
 /// Build a DeltaRefreshHandle, then drop the ORIGINAL pool. The handle must
 /// still work because the fetcher captured its own clone of the pool.
-#[djogi::djogi_test]
+///
+#[djogi::djogi_test(sync_models = [FetcherTickRow])]
 async fn fetcher_uses_owned_pool_clone(mut ctx: djogi::DjogiContext) {
-    setup_fetcher_tick_rows(&mut ctx).await;
-
     // Insert one row so the tick returns something.
-    ctx.raw_execute(
-        "INSERT INTO phase8_t8_5_fetcher_rows (id, created_at, updated_at, label) \
-         VALUES (generate_id(), now(), now(), 'pooltest')",
-        &[],
+    FetcherTickRow::create(
+        &mut ctx,
+        FetcherTickRow {
+            label: "pooltest".into(),
+            ..Default::default()
+        },
     )
     .await
     .expect("insert pool-clone test row");
 
     let original_pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
 
     let punnu = ctx
         .punnu::<FetcherTickRow>()
@@ -221,26 +203,26 @@ async fn fetcher_uses_owned_pool_clone(mut ctx: djogi::DjogiContext) {
 /// second tick uses the recorded watermark as `since`. The test verifies the
 /// second tick succeeds (proving the connection from tick 1 was released and a
 /// new connection was acquired for tick 2) and returns at least 1 row.
-#[djogi::djogi_test]
+///
+#[djogi::djogi_test(sync_models = [FetcherTickRow])]
 async fn fetcher_constructs_fresh_context_per_tick(mut ctx: djogi::DjogiContext) {
-    setup_fetcher_tick_rows(&mut ctx).await;
-
     // Insert 2 rows.
     for i in 1i64..=2 {
         let label = format!("tick-row{i}");
-        ctx.raw_execute(
-            "INSERT INTO phase8_t8_5_fetcher_rows (id, created_at, updated_at, label) \
-             VALUES (generate_id(), now(), now(), $1)",
-            &[&label],
+        FetcherTickRow::create(
+            &mut ctx,
+            FetcherTickRow {
+                label,
+                ..Default::default()
+            },
         )
         .await
         .expect("insert tick-test row");
     }
 
     let pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
 
     let punnu = ctx
         .punnu::<FetcherTickRow>()
@@ -309,26 +291,26 @@ async fn fetcher_constructs_fresh_context_per_tick(mut ctx: djogi::DjogiContext)
 /// under captured auth" — which proves the fetcher accepts and applies
 /// the auth without crashing. A meaningful pin of §677 awaits either RLS
 /// integration tests or a mock-fetcher that records ctx.auth() per tick.
-#[djogi::djogi_test]
+///
+#[djogi::djogi_test(sync_models = [FetcherTickRow])]
 async fn fetcher_runs_under_captured_auth(mut ctx: djogi::DjogiContext) {
-    setup_fetcher_tick_rows(&mut ctx).await;
-
     // Insert 3 rows.
     for i in 1i64..=3 {
         let label = format!("auth-row{i}");
-        ctx.raw_execute(
-            "INSERT INTO phase8_t8_5_fetcher_rows (id, created_at, updated_at, label) \
-             VALUES (generate_id(), now(), now(), $1)",
-            &[&label],
+        FetcherTickRow::create(
+            &mut ctx,
+            FetcherTickRow {
+                label,
+                ..Default::default()
+            },
         )
         .await
         .expect("insert auth-test row");
     }
 
     let pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
 
     let punnu = ctx
         .punnu::<FetcherTickRow>()

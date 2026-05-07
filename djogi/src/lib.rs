@@ -48,6 +48,8 @@
 #[cfg(test)]
 extern crate self as djogi;
 
+#[doc(hidden)]
+pub mod __bypass;
 pub mod apps;
 pub mod array;
 pub mod auth;
@@ -265,8 +267,8 @@ pub use descriptor::{
 // the symbol does not appear in default-feature builds or `cargo doc` output
 // when PostGIS support is not requested.
 pub use djogi_macros::{
-    DjogiEnum, JsonbSchema, apps, many_to_many, primary_key, reverse_one_to_many,
-    reverse_one_to_one, trait_impl,
+    DjogiEnum, JsonbSchema, apps, deliberately_bypass_convention_with_raw_sql, many_to_many,
+    primary_key, reverse_one_to_many, reverse_one_to_one, trait_impl,
 };
 #[cfg(feature = "spatial")]
 pub use geo::GeoPoint;
