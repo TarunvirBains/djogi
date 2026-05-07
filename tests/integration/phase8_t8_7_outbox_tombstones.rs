@@ -10,9 +10,9 @@
 //! `events` has no outbox table, so a regression that ran the poll
 //! unconditionally would fail on the missing relation.
 //!
-//! Outbox table schema mirrors Phase 4:
-//! `(id BIGINT PK DEFAULT generate_id(), row_id BIGINT, action TEXT,
-//! payload JSONB, created_at TIMESTAMPTZ DEFAULT now())`.
+//! Tables are provisioned via `#[djogi_test(sync_models = [...])]`.
+//! For `#[model(events)]` fixtures, `sync_models` must synthesize the
+//! framework-owned `<table>_outbox` companion table.
 
 use djogi::prelude::*;
 
@@ -21,40 +21,6 @@ use djogi::prelude::*;
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct EventRow {
     pub label: String,
-}
-
-async fn setup_event_row(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_t8_7_evt_row (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            label       TEXT        NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create phase8_t8_7_evt_row table");
-
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_t8_7_evt_row_outbox (
-            id         BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            row_id     BIGINT      NOT NULL,
-            action     TEXT        NOT NULL,
-            payload    JSONB       NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )",
-        &[],
-    )
-    .await
-    .expect("create phase8_t8_7_evt_row_outbox table");
-
-    ctx.raw_execute("TRUNCATE phase8_t8_7_evt_row", &[])
-        .await
-        .expect("truncate phase8_t8_7_evt_row");
-    ctx.raw_execute("TRUNCATE phase8_t8_7_evt_row_outbox", &[])
-        .await
-        .expect("truncate phase8_t8_7_evt_row_outbox");
 }
 
 // Fixture 1b — events-enabled with the default PK (HeerIdDesc).
@@ -66,46 +32,6 @@ pub struct EventDescRow {
     pub label: String,
 }
 
-async fn setup_event_desc_row(ctx: &mut djogi::DjogiContext) {
-    // No top-level `generate_id_desc()` function ships with HeerRanjId
-    // 0.3.x — the desc form is composed via `heerid_to_desc(generate_id())`.
-    // djogi's projection layer assumes the singleton helper exists in
-    // production deployments; for this integration fixture we inline
-    // the composition so the test runs against the live HeerRanjId
-    // schema as installed.
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_t8_7_evt_desc_row (
-            id          BIGINT      PRIMARY KEY DEFAULT heerid_to_desc(generate_id()),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            label       TEXT        NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create phase8_t8_7_evt_desc_row table");
-
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_t8_7_evt_desc_row_outbox (
-            id         BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            row_id     BIGINT      NOT NULL,
-            action     TEXT        NOT NULL,
-            payload    JSONB       NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )",
-        &[],
-    )
-    .await
-    .expect("create phase8_t8_7_evt_desc_row_outbox table");
-
-    ctx.raw_execute("TRUNCATE phase8_t8_7_evt_desc_row", &[])
-        .await
-        .expect("truncate phase8_t8_7_evt_desc_row");
-    ctx.raw_execute("TRUNCATE phase8_t8_7_evt_desc_row_outbox", &[])
-        .await
-        .expect("truncate phase8_t8_7_evt_desc_row_outbox");
-}
-
 // ── Fixture model 2 — non-events, backward-compat sentinel ──────────────────
 #[model(table = "phase8_t8_7_plain_row", pk = HeerId)]
 #[derive(Debug, Clone)]
@@ -113,32 +39,12 @@ pub struct PlainRow {
     pub label: String,
 }
 
-async fn setup_plain_row(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_t8_7_plain_row (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            label       TEXT        NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create phase8_t8_7_plain_row table");
-
-    ctx.raw_execute("TRUNCATE phase8_t8_7_plain_row", &[])
-        .await
-        .expect("truncate phase8_t8_7_plain_row");
-}
-
 // ── Test 1 — outbox 'delete' row propagates to Punnu tombstone ──────────────
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [EventRow])]
 async fn hard_delete_propagates_via_outbox_to_tombstone(mut ctx: djogi::DjogiContext) {
-    setup_event_row(&mut ctx).await;
     let pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
 
     // Inside a transaction so the outbox-create INSERT lands atomically
     // with the row insert. Only the outbox-delete row matters for the
@@ -190,13 +96,13 @@ async fn hard_delete_propagates_via_outbox_to_tombstone(mut ctx: djogi::DjogiCon
     .await
     .expect("delete EventRow + outbox emit");
 
-    let outbox_delete_count: i64 = ctx
-        .raw_scalar(
-            "SELECT COUNT(*) FROM phase8_t8_7_evt_row_outbox WHERE action = 'delete'",
-            &[],
-        )
+    let outbox_rows = djogi::testing::outbox_rows_for_test(&mut ctx, "phase8_t8_7_evt_row_outbox")
         .await
-        .expect("count outbox delete rows");
+        .expect("read EventRow outbox rows");
+    let outbox_delete_count = outbox_rows
+        .iter()
+        .filter(|row| row.action == "delete")
+        .count();
     assert_eq!(
         outbox_delete_count, 1,
         "outbox must hold exactly one 'delete' row after hard-delete"
@@ -225,13 +131,11 @@ async fn hard_delete_propagates_via_outbox_to_tombstone(mut ctx: djogi::DjogiCon
 // the gate fix in `t_id_decodes_from_outbox_bigint` plus the cast in
 // `cast_row_id_to_t_id`; without either, this model's tombstones would
 // never propagate and the cache entry would survive.
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [EventDescRow])]
 async fn hard_delete_propagates_for_default_heerid_desc_pk(mut ctx: djogi::DjogiContext) {
-    setup_event_desc_row(&mut ctx).await;
     let pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
 
     let row = djogi::transaction::atomic(&pool, |inner| {
         Box::pin(async move {
@@ -280,13 +184,11 @@ async fn hard_delete_propagates_for_default_heerid_desc_pk(mut ctx: djogi::Djogi
 }
 
 // ── Test 2 — non-events model: outbox path is gated off ─────────────────────
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [PlainRow])]
 async fn non_events_model_no_outbox_poll(mut ctx: djogi::DjogiContext) {
-    setup_plain_row(&mut ctx).await;
     let pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
 
     let row = PlainRow::create(
         &mut ctx,
