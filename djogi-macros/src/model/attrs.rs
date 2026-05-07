@@ -2808,6 +2808,54 @@ pub fn unwrap_option(ty: &syn::Type) -> (syn::Type, bool) {
     (ty.clone(), false)
 }
 
+/// Strip `Tracked<T>` → returns the inner type.
+///
+/// Detection follows the same last-segment convention as relation wrappers:
+/// `Tracked<T>`, `djogi::Tracked<T>`, `::djogi::Tracked<T>`, and
+/// `djogi::prelude::Tracked<T>` all route through this helper. The caller is
+/// responsible for combining this with [`unwrap_option`] when computing SQL
+/// nullability.
+#[allow(dead_code)]
+pub fn unwrap_tracked(ty: &syn::Type) -> Option<syn::Type> {
+    if let syn::Type::Path(syn::TypePath { path, .. }) = ty
+        && let Some(last) = path.segments.last()
+        && last.ident == "Tracked"
+        && let syn::PathArguments::AngleBracketed(args) = &last.arguments
+        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+    {
+        return Some(inner.clone());
+    }
+    None
+}
+
+/// Strip the transparent wrappers that affect schema shape.
+///
+/// `Option<T>` marks the SQL column nullable. `Tracked<T>` is a dirty-tracking
+/// wrapper whose storage type is `T`; it does not itself affect nullability.
+/// Both wrappers can appear together, so `Tracked<Option<String>>` projects as
+/// `TEXT NULL` and `Option<Tracked<String>>` does the same.
+#[allow(dead_code)]
+pub fn unwrap_schema_type(ty: &syn::Type) -> (syn::Type, bool) {
+    let mut current = ty.clone();
+    let mut nullable = false;
+
+    loop {
+        let (inner, was_option) = unwrap_option(&current);
+        if was_option {
+            current = inner;
+            nullable = true;
+            continue;
+        }
+
+        if let Some(inner) = unwrap_tracked(&current) {
+            current = inner;
+            continue;
+        }
+
+        return (current, nullable);
+    }
+}
+
 /// True if `path` is one of the three canonical prelude `Option` forms:
 /// bare `Option`, `std::option::Option`, or `core::option::Option`.
 fn is_prelude_option_path(path: &syn::Path) -> bool {
@@ -2904,7 +2952,7 @@ pub fn field_sql_type_category(ty: &syn::Type) -> FieldSqlTypeCategory {
 
 #[cfg(test)]
 mod tests {
-    use super::rust_type_to_sql;
+    use super::{rust_type_to_sql, unwrap_schema_type};
     use syn::parse_quote;
 
     /// Phase 7 T10 — `Jsonb<T>` for any `T: JsonbSchema` must lower to
@@ -3000,6 +3048,19 @@ mod tests {
         // a caller concern. The string-based fallback then matches the
         // `_ if s.starts_with("Option<") => None` arm.
         assert_eq!(rust_type_to_sql(&optioned), None);
+    }
+
+    #[test]
+    fn schema_type_unwraps_tracked_option_for_nullable_storage() {
+        let tracked_option: syn::Type = parse_quote!(Tracked<Option<String>>);
+        let (inner, nullable) = unwrap_schema_type(&tracked_option);
+        assert!(nullable);
+        assert_eq!(rust_type_to_sql(&inner), Some("TEXT"));
+
+        let option_tracked: syn::Type = parse_quote!(Option<djogi::Tracked<String>>);
+        let (inner, nullable) = unwrap_schema_type(&option_tracked);
+        assert!(nullable);
+        assert_eq!(rust_type_to_sql(&inner), Some("TEXT"));
     }
 
     // GH issue #37 — `ForeignKey<T>` / `OneToOneField<T>` columns route

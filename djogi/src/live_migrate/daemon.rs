@@ -70,6 +70,7 @@
 
 use std::time::Duration;
 
+use crate::__bypass::RawAccessExt as _;
 use crate::context::DjogiContext;
 use crate::error::{DbError, DjogiError};
 use crate::live_migrate::backfill::BackfillError;

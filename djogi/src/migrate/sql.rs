@@ -1524,7 +1524,7 @@ mod tests {
 
     fn id_column_heerid() -> ColumnSchema {
         ColumnSchema {
-            default_sql: Some("generate_id()".to_string()),
+            default_sql: Some("heerid_next()".to_string()),
             ..col("id", "BIGINT", false)
         }
     }
@@ -1601,7 +1601,7 @@ mod tests {
         assert!(sql.up.starts_with("CREATE TABLE \"users\" ("));
         assert!(
             sql.up
-                .contains("\"id\" BIGINT NOT NULL DEFAULT generate_id()")
+                .contains("\"id\" BIGINT NOT NULL DEFAULT heerid_next()")
         );
         assert!(sql.up.contains("\"name\" TEXT"));
         assert!(sql.up.contains("PRIMARY KEY (\"id\")"));

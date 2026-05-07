@@ -49,6 +49,7 @@
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
+use djogi::__bypass::RawAccessExt as _;
 use djogi::DjogiContext;
 use djogi::prelude::*;
 use postgres_types::ToSql;

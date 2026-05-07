@@ -78,6 +78,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use djogi::__bypass::RawAccessExt as _;
 use djogi::config::DjogiConfig;
 use djogi::migrate::{
     FilesystemBucket, SNAPSHOT_FILENAME, app_dirname, derive_per_database_url, migrations_root,

@@ -58,5 +58,5 @@ serde_json.workspace = true
 # `[[test]]` entry below registers the subdirectory layout.
 [[test]]
 name = "phase8_djogi_analyze_recommendations"
-path = "tests/integration/phase8_djogi_analyze_recommendations.rs"
+path = "tests/internal/phase8_djogi_analyze_recommendations.rs"
 harness = true

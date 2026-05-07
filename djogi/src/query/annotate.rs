@@ -123,6 +123,15 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
     /// Push this annotation in grouped annotate contexts.
     fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize);
 
+    /// Push this annotation in grouped annotate contexts, choosing whether
+    /// this slot needs a leading SELECT-list separator.
+    fn push_column_bare_after(
+        &self,
+        acc: &mut SqlAccumulator,
+        slot: usize,
+        has_previous_columns: bool,
+    );
+
     /// Decode this annotation from `row`.
     fn decode_column(
         &self,
@@ -167,6 +176,13 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     /// Every push here begins with a comma; callers already pushed the key
     /// columns as the leading SELECT columns.
     fn push_columns_bare(&self, acc: &mut SqlAccumulator);
+
+    /// Push grouped aggregate SELECT-list columns after an optional key list.
+    ///
+    /// `group_by_sets` uses the unit key `()`, so it has no typed key columns
+    /// to emit before the aggregate list. In that shape the first aggregate
+    /// must not prepend `, `.
+    fn push_columns_bare_after(&self, acc: &mut SqlAccumulator, has_previous_columns: bool);
 
     /// Decode the annotation columns from `row` into [`Self::Decoded`].
     ///
@@ -226,7 +242,18 @@ where
     }
 
     fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize) {
-        acc.push_sql(", ");
+        self.push_column_bare_after(acc, slot, true);
+    }
+
+    fn push_column_bare_after(
+        &self,
+        acc: &mut SqlAccumulator,
+        slot: usize,
+        has_previous_columns: bool,
+    ) {
+        if has_previous_columns {
+            acc.push_sql(", ");
+        }
         crate::query::sql::emit_aggregate_with_cast(acc, &self.node);
         acc.push_sql(" AS ");
         acc.push_sql(aggregate_alias(slot));
@@ -261,7 +288,19 @@ macro_rules! impl_window_annotation_slot {
             }
 
             fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize) {
-                self.push_column(acc, slot);
+                self.push_column_bare_after(acc, slot, true);
+            }
+
+            fn push_column_bare_after(
+                &self,
+                acc: &mut SqlAccumulator,
+                _slot: usize,
+                has_previous_columns: bool,
+            ) {
+                if has_previous_columns {
+                    acc.push_sql(", ");
+                }
+                self.push_annotated_column(acc);
             }
 
             fn decode_column(
@@ -309,7 +348,19 @@ macro_rules! impl_window_annotation_slot_generic_v {
             }
 
             fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize) {
-                self.push_column(acc, slot);
+                self.push_column_bare_after(acc, slot, true);
+            }
+
+            fn push_column_bare_after(
+                &self,
+                acc: &mut SqlAccumulator,
+                _slot: usize,
+                has_previous_columns: bool,
+            ) {
+                if has_previous_columns {
+                    acc.push_sql(", ");
+                }
+                self.push_annotated_column(acc);
             }
 
             fn decode_column(
@@ -369,7 +420,11 @@ where
     }
 
     fn push_columns_bare(&self, acc: &mut SqlAccumulator) {
-        self.push_column_bare(acc, 0);
+        self.push_columns_bare_after(acc, true);
+    }
+
+    fn push_columns_bare_after(&self, acc: &mut SqlAccumulator, has_previous_columns: bool) {
+        self.push_column_bare_after(acc, 0, has_previous_columns);
     }
 
     fn decode_tuple(
@@ -396,6 +451,8 @@ impl IntoAggregateTuple for () {
     fn push_columns(&self, _acc: &mut SqlAccumulator) {}
 
     fn push_columns_bare(&self, _acc: &mut SqlAccumulator) {}
+
+    fn push_columns_bare_after(&self, _acc: &mut SqlAccumulator, _has_previous_columns: bool) {}
 
     fn decode_tuple(
         &self,
@@ -441,8 +498,12 @@ macro_rules! impl_into_aggregate_tuple {
             }
 
             fn push_columns_bare(&self, acc: &mut SqlAccumulator) {
+                self.push_columns_bare_after(acc, true);
+            }
+
+            fn push_columns_bare_after(&self, acc: &mut SqlAccumulator, has_previous_columns: bool) {
                 $(
-                    self.$slot.push_column_bare(acc, $slot);
+                    self.$slot.push_column_bare_after(acc, $slot, has_previous_columns || $slot > 0);
                 )+
             }
 

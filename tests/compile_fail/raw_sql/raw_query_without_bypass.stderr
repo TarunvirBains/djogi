@@ -1,0 +1,13 @@
+error[E0599]: no method named `raw_query` found for struct `DjogiContext` in the current scope
+ --> $WORKSPACE/tests/compile_fail/raw_sql/raw_query_without_bypass.rs
+  |
+  |         let _ = ctx.raw_query::<Never>("SELECT 1", &[]).await;
+  |                     ^^^^^^^^^ method not found in `DjogiContext`
+  |
+  = help: items from traits can only be used if the trait is in scope
+help: the following traits which provide `raw_query` are implemented but not in scope; perhaps you want to import one of them
+  |
+1 + use djogi::__bypass::RawAccessExt;
+  |
+1 + use djogi::__bypass::RawAccessExtBase;
+  |

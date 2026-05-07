@@ -60,6 +60,7 @@ pub struct PgConnection {
     obj: Object,
 }
 
+#[allow(clippy::disallowed_methods)]
 impl PgConnection {
     /// Wrap a `deadpool_postgres::Object` in a `PgConnection`.
     ///

@@ -1,75 +1,74 @@
-//! Phase 8δ T8.10 integration tests: cluster-exit integration — auth locked to
-//! subscription + end-to-end happy-path.
-//!
-//! # What this file pins
-//!
-//! 1. **`refresh_into_e2e_happy_path`** — full insert / save / soft-delete
-//!    cycle through real refresh ticks. Pins the complete cluster-8δ contract:
-//!    full-scan tick returns all live rows; delta tick applies new inserts and
-//!    routes soft-deleted rows to tombstones.
-//!
-//! 2. **`refresh_into_auth_locked_to_subscription`** — structural proof that
-//!    the `AuthContext` captured at `refresh_into` time is the auth used
-//!    per-tick (not whatever caller-side auth holds at tick time). Closes the
-//!    gap that T8.5 test 4 admitted.
-//!
-//!    **Option C** is used here rather than Option B (RLS-backed filtering).
-//!    The `djogi` test role is a Postgres superuser; Postgres superusers
-//!    **always** bypass row security even when `FORCE ROW LEVEL SECURITY` is
-//!    set on a table (`rolsuper = t` → `BYPASSRLS` is implied). `FORCE ROW
-//!    LEVEL SECURITY` only re-applies RLS to the *table owner* when the owner
-//!    is a normal role, not a superuser. Since the fetcher connects as the
-//!    `djogi` superuser, RLS-based row-count filtering cannot be observed at
-//!    integration-test level without switching to a restricted role inside the
-//!    fetch transaction — which would require production-code changes outside
-//!    T8.10 scope.
-//!
-//!    **What Option C proves instead:** two handles constructed with different
-//!    `AuthContext` values each complete ticks successfully, and the auth set
-//!    on the fetcher at construction time is the one observable inside the tick
-//!    (proven via `ctx.auth().tenant_id` plumbing through `auto_set_tenant` +
-//!    `ctx.applied_tenant_id()`). The structural proof that auth IS captured by
-//!    value (not by reference) is the `'static` bound on `DeltaPunnuFetcher<T>`
-//!    and the `DjogiDeltaFetcher::auth: AuthContext` owned field verified in
-//!    T8.3–T8.5.
-//!
-//!    **GH issue for full RLS test:** [GH #129] — full RLS proof via a
-//!    dedicated `djogi_fetcher_test_user` non-superuser role that is
-//!    explicitly switched to inside the fetcher's transaction via a new
-//!    optional `with_role(role_name)` knob on `DeltaRefreshHandle` or via
-//!    a test-only `DjogiPool` configured with a restricted role. Deferred to
-//!    Phase 8ε / Phase 9 scope.
-//!
-//! 3. **`refresh_into_cancel_stops_ticks`** — `handle.cancel()` stops the
-//!    periodic refresh loop. After cancel, manual `handle.update()` still
-//!    succeeds (cancel only signals the background periodic task; the explicit
-//!    update path does not check the cancel flag). The test pins sassi's
-//!    canonical post-cancel behavior: periodic ticks stop, on-demand ticks
-//!    continue.
-//!
-//! # Spec anchors
-//!
-//! - spec §677 — auth-locked-to-subscription contract (Test 2)
-//! - spec §430 — acceptance criterion: delta tick applies incremental changes
-//!   after a full-scan baseline (Test 1)
-//! - `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md` §3 T8.10
-//!
-//! # RLS setup choice
-//!
-//! Test 2 uses **Option C** (scoped-down structural proof) because the `djogi`
-//! test user is a Postgres superuser and superusers unconditionally bypass
-//! row security (`BYPASSRLS` is implied by `rolsuper = t`). `FORCE ROW LEVEL
-//! SECURITY` applies the policy to the table owner when the owner is a NORMAL
-//! role — it does not override the superuser bypass. A complete RLS-filtered
-//! proof requires switching to a restricted role inside the fetcher's
-//! transaction, which is outside T8.10 scope. See GH issue filed above.
-//!
-//! # Fixture strategy
-//!
-//! Each test provisions its own table inline via `ctx.raw_execute`. Separate
-//! model types (separate tables) avoid descriptor dedup conflicts with other
-//! test binaries. `#[djogi_test]` installs HeeRanjID schema, seeds node 1, and
-//! sets `heer.node_id = '1'` before the test body runs.
+// Phase 8δ T8.10 integration tests: cluster-exit integration — auth locked to
+// subscription + end-to-end happy-path.
+//
+// # What this file pins
+//
+// 1. **`refresh_into_e2e_happy_path`** — full insert / save / soft-delete
+//    cycle through real refresh ticks. Pins the complete cluster-8δ contract:
+//    full-scan tick returns all live rows; delta tick applies new inserts and
+//    routes soft-deleted rows to tombstones.
+//
+// 2. **`refresh_into_auth_locked_to_subscription`** — structural proof that
+//    the `AuthContext` captured at `refresh_into` time is the auth used
+//    per-tick (not whatever caller-side auth holds at tick time). Closes the
+//    gap that T8.5 test 4 admitted.
+//
+//    **Option C** is used here rather than Option B (RLS-backed filtering).
+//    The `djogi` test role is a Postgres superuser; Postgres superusers
+//    **always** bypass row security even when `FORCE ROW LEVEL SECURITY` is
+//    set on a table (`rolsuper = t` → `BYPASSRLS` is implied). `FORCE ROW
+//    LEVEL SECURITY` only re-applies RLS to the *table owner* when the owner
+//    is a normal role, not a superuser. Since the fetcher connects as the
+//    `djogi` superuser, RLS-based row-count filtering cannot be observed at
+//    integration-test level without switching to a restricted role inside the
+//    fetch transaction — which would require production-code changes outside
+//    T8.10 scope.
+//
+//    **What Option C proves instead:** two handles constructed with different
+//    `AuthContext` values each complete ticks successfully, and the auth set
+//    on the fetcher at construction time is the one observable inside the tick
+//    (proven via `ctx.auth().tenant_id` plumbing through `auto_set_tenant` +
+//    `ctx.applied_tenant_id()`). The structural proof that auth IS captured by
+//    value (not by reference) is the `'static` bound on `DeltaPunnuFetcher<T>`
+//    and the `DjogiDeltaFetcher::auth: AuthContext` owned field verified in
+//    T8.3–T8.5.
+//
+//    **GH issue for full RLS test:** [GH #129] — full RLS proof via a
+//    dedicated `djogi_fetcher_test_user` non-superuser role that is
+//    explicitly switched to inside the fetcher's transaction via a new
+//    optional `with_role(role_name)` knob on `DeltaRefreshHandle` or via
+//    a test-only `DjogiPool` configured with a restricted role. Deferred to
+//    Phase 8ε / Phase 9 scope.
+//
+// 3. **`refresh_into_cancel_stops_ticks`** — `handle.cancel()` stops the
+//    periodic refresh loop. After cancel, manual `handle.update()` still
+//    succeeds (cancel only signals the background periodic task; the explicit
+//    update path does not check the cancel flag). The test pins sassi's
+//    canonical post-cancel behavior: periodic ticks stop, on-demand ticks
+//    continue.
+//
+// # Spec anchors
+//
+// - spec §677 — auth-locked-to-subscription contract (Test 2)
+// - spec §430 — acceptance criterion: delta tick applies incremental changes
+//   after a full-scan baseline (Test 1)
+// - `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md` §3 T8.10
+//
+// # RLS setup choice
+//
+// Test 2 uses **Option C** (scoped-down structural proof) because the `djogi`
+// test user is a Postgres superuser and superusers unconditionally bypass
+// row security (`BYPASSRLS` is implied by `rolsuper = t`). `FORCE ROW LEVEL
+// SECURITY` applies the policy to the table owner when the owner is a NORMAL
+// role — it does not override the superuser bypass. A complete RLS-filtered
+// proof requires switching to a restricted role inside the fetcher's
+// transaction, which is outside T8.10 scope. See GH issue filed above.
+//
+// # Fixture strategy
+//
+// Tables are provisioned via `#[djogi_test(sync_models = [...])]` which
+// routes through the same migration engine that production uses. Each test
+// gets its own fresh database so no TRUNCATE is needed.
 
 use djogi::prelude::*;
 use time::OffsetDateTime;
@@ -87,26 +86,6 @@ pub struct E2ERow {
     pub deleted_at: Option<djogi::DateTime>,
 }
 
-async fn setup_e2e_rows(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_t8_10_e2e_rows (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            label       TEXT        NOT NULL,
-            active      BOOLEAN     NOT NULL    DEFAULT true,
-            deleted_at  TIMESTAMPTZ
-        )",
-        &[],
-    )
-    .await
-    .expect("create phase8_t8_10_e2e_rows table");
-
-    ctx.raw_execute("TRUNCATE phase8_t8_10_e2e_rows", &[])
-        .await
-        .expect("truncate phase8_t8_10_e2e_rows");
-}
-
 // ── Fixture model 2 — plain model for auth-locked test (Option C) ────────────
 //
 // Auth-locked test uses a plain model (no tenant_key). The auth-locking
@@ -121,49 +100,12 @@ pub struct AuthRow {
     pub label: String,
 }
 
-async fn setup_auth_rows(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_t8_10_auth_rows (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            owner_uid   BIGINT      NOT NULL,
-            label       TEXT        NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create phase8_t8_10_auth_rows table");
-
-    ctx.raw_execute("TRUNCATE phase8_t8_10_auth_rows", &[])
-        .await
-        .expect("truncate phase8_t8_10_auth_rows");
-}
-
 // ── Fixture model 3 — plain model for cancel test ────────────────────────────
 
 #[model(table = "phase8_t8_10_cancel_rows", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct CancelRow {
     pub label: String,
-}
-
-async fn setup_cancel_rows(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_t8_10_cancel_rows (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            label       TEXT        NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create phase8_t8_10_cancel_rows table");
-
-    ctx.raw_execute("TRUNCATE phase8_t8_10_cancel_rows", &[])
-        .await
-        .expect("truncate phase8_t8_10_cancel_rows");
 }
 
 // ── Test 1 — full insert / save / soft-delete end-to-end ────────────────────
@@ -189,10 +131,9 @@ async fn setup_cancel_rows(ctx: &mut djogi::DjogiContext) {
 ///
 /// Pins spec §430 (incremental delta applies after a full-scan baseline) and
 /// the full cluster-exit contract.
-#[djogi::djogi_test]
+///
+#[djogi::djogi_test(sync_models = [E2ERow])]
 async fn refresh_into_e2e_happy_path(mut ctx: djogi::DjogiContext) {
-    setup_e2e_rows(&mut ctx).await;
-
     // ── Insert 3 initial rows ────────────────────────────────────────────────
     let mut initial_rows = Vec::with_capacity(3);
     for i in 1i64..=3 {
@@ -213,9 +154,8 @@ async fn refresh_into_e2e_happy_path(mut ctx: djogi::DjogiContext) {
 
     let to_delete_id = initial_rows[0].id;
     let pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
     let punnu = ctx.punnu::<E2ERow>().expect("punnu registered for E2ERow");
     let auth =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
@@ -241,34 +181,25 @@ async fn refresh_into_e2e_happy_path(mut ctx: djogi::DjogiContext) {
         );
     }
 
-    // ── Insert 2 more rows with future timestamps ────────────────────────────
-    // Timestamps 1 second in the future ensure these rows are strictly after
+    // ── Insert 2 more rows after tick 1 ──────────────────────────────────────
+    // A short pause keeps the DB-generated `updated_at` values strictly after
     // the tick-1 watermark, so tick 2 picks them up via the watermark filter.
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     let mut new_row_ids = Vec::with_capacity(2);
     for i in 1i64..=2 {
         let label = format!("new-{i}");
-        ctx.raw_execute(
-            "INSERT INTO phase8_t8_10_e2e_rows \
-                 (id, created_at, updated_at, label, active) \
-             VALUES \
-                 (generate_id(), now() + INTERVAL '1 second', \
-                  now() + INTERVAL '1 second', $1, true)",
-            &[&label],
+        let row = E2ERow::create(
+            &mut ctx,
+            E2ERow {
+                label,
+                active: true,
+                deleted_at: None,
+                ..Default::default()
+            },
         )
         .await
-        .expect("insert new row");
-
-        let rows = ctx
-            .raw_query::<E2ERow>(
-                "SELECT id, created_at, updated_at, label, active, deleted_at \
-                 FROM phase8_t8_10_e2e_rows \
-                 WHERE label = $1",
-                &[&label],
-            )
-            .await
-            .expect("fetch new row by label");
-        assert_eq!(rows.len(), 1, "expected 1 row for label {label}");
-        new_row_ids.push(rows[0].id);
+        .expect("create new row");
+        new_row_ids.push(row.id);
     }
 
     // ── Soft-delete row 1 ────────────────────────────────────────────────────
@@ -363,54 +294,37 @@ async fn refresh_into_e2e_happy_path(mut ctx: djogi::DjogiContext) {
 ///    on `handle_a`'s tick (the fetcher captured `auth_a` by value via Clone;
 ///    the in-scope variable is unrelated).
 ///
-/// # Why not RLS-backed (Option B)?
-///
-/// The `djogi` test role is a Postgres superuser. Superusers unconditionally
-/// bypass row security (`rolsuper = t` implies `BYPASSRLS`). Even with
-/// `FORCE ROW LEVEL SECURITY` on the table, a superuser-owned connection
-/// skips the policy entirely — the tick would return all rows regardless of
-/// `app.tenant_id`. A full RLS-backed proof requires either:
-/// (a) a `with_role(role_name)` knob on `DeltaRefreshHandle` that injects
-///     `SET LOCAL ROLE` inside the fetcher's transaction (out of T8.10 scope), or
-/// (b) a dedicated `DjogiPool` built with a non-superuser DSN (out of scope).
-/// This is tracked in GH #129 (filed as part of T8.10 deliverable).
-///
-/// The structural proof provided here closes the gap T8.5 test 4 admitted:
-/// the auth IS captured by value (proven by `DjogiDeltaFetcher::auth: AuthContext`
-/// field ownership and the `'static` bound on `DeltaPunnuFetcher<T>`), and
-/// each subscription carries an independent snapshot.
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [AuthRow])]
 async fn refresh_into_auth_locked_to_subscription(mut ctx: djogi::DjogiContext) {
-    setup_auth_rows(&mut ctx).await;
-
     // Insert 5 rows (owned by user 1) and 3 rows (owned by user 2).
     for i in 1i64..=5 {
-        let label = format!("user1-row-{i}");
-        ctx.raw_execute(
-            "INSERT INTO phase8_t8_10_auth_rows \
-                 (id, created_at, updated_at, owner_uid, label) \
-             VALUES (generate_id(), now(), now(), 1, $1)",
-            &[&label],
+        AuthRow::create(
+            &mut ctx,
+            AuthRow {
+                owner_uid: 1,
+                label: format!("user1-row-{i}"),
+                ..Default::default()
+            },
         )
         .await
         .unwrap_or_else(|e| panic!("insert user1 row {i}: {e:?}"));
     }
     for i in 1i64..=3 {
-        let label = format!("user2-row-{i}");
-        ctx.raw_execute(
-            "INSERT INTO phase8_t8_10_auth_rows \
-                 (id, created_at, updated_at, owner_uid, label) \
-             VALUES (generate_id(), now(), now(), 2, $1)",
-            &[&label],
+        AuthRow::create(
+            &mut ctx,
+            AuthRow {
+                owner_uid: 2,
+                label: format!("user2-row-{i}"),
+                ..Default::default()
+            },
         )
         .await
         .unwrap_or_else(|e| panic!("insert user2 row {i}: {e:?}"));
     }
 
     let pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
     let punnu_a = ctx
         .punnu::<AuthRow>()
         .expect("punnu registered for AuthRow");
@@ -525,27 +439,25 @@ async fn refresh_into_auth_locked_to_subscription(mut ctx: djogi::DjogiContext) 
 /// The periodic-loop stop itself cannot be directly observed from outside
 /// sassi internals without a timing harness; we document the mechanism and
 /// pin the on-demand behavior that IS directly observable.
-#[djogi::djogi_test]
+///
+#[djogi::djogi_test(sync_models = [CancelRow])]
 async fn refresh_into_cancel_stops_ticks(mut ctx: djogi::DjogiContext) {
-    setup_cancel_rows(&mut ctx).await;
-
     // Insert 2 rows so ticks return non-trivial results.
     for i in 1i64..=2 {
-        let label = format!("cancel-row-{i}");
-        ctx.raw_execute(
-            "INSERT INTO phase8_t8_10_cancel_rows \
-                 (id, created_at, updated_at, label) \
-             VALUES (generate_id(), now(), now(), $1)",
-            &[&label],
+        CancelRow::create(
+            &mut ctx,
+            CancelRow {
+                label: format!("cancel-row-{i}"),
+                ..Default::default()
+            },
         )
         .await
         .expect("insert cancel-test row");
     }
 
     let pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
     let punnu = ctx
         .punnu::<CancelRow>()
         .expect("punnu registered for CancelRow");

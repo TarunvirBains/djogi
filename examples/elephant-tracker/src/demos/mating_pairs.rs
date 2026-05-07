@@ -138,6 +138,7 @@
 //! data without further code changes.
 
 use anyhow::Result;
+use djogi::__bypass::RawAccessExt as _;
 use djogi::DjogiContext;
 use djogi::prelude::*;
 use postgres_types::ToSql;

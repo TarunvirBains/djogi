@@ -1,4 +1,4 @@
-//! Phase 2 QuerySet integration tests.
+// Phase 2 QuerySet integration tests.
 
 use djogi::prelude::*;
 
@@ -21,33 +21,10 @@ pub struct Post {
     pub score: Option<i32>,
 }
 
-/// Install HeeRanjId schema + seed node 1 + create `posts_p2`. HeeRanjID
-/// schema, node seeding, and `heer.node_id` database-level setting are all
-/// handled by `#[djogi_test]`'s bootstrap — this only creates the table.
-async fn setup(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE posts_p2 (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            title       TEXT        NOT NULL,
-            body        TEXT        NOT NULL,
-            published   BOOLEAN     NOT NULL,
-            view_count  INTEGER     NOT NULL,
-            score       INTEGER
-        )",
-        &[],
-    )
-    .await
-    .unwrap();
-}
-
 // ── Task 5: lazy builder compile surface ──────────────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn objects_returns_empty_queryset(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
-
     // `T::objects()` resolves and returns a lazy builder. No SQL has been
     // emitted or executed — Task 5 deliberately ships without terminal
     // methods.
@@ -84,11 +61,7 @@ async fn objects_returns_empty_queryset(mut ctx: djogi::DjogiContext) {
 // exercises exactly one terminal on a filter/composition that surfaces a
 // distinct branch of the SQL emitter or terminal-method contract.
 
-/// Seed four deterministic posts. Uses `raw_execute` inside a transaction
-/// so `generate_id()` works on the same connection that already has
-/// heer.node_id set (inherits from ALTER DATABASE done by djogi_test bootstrap).
 async fn seed_posts(ctx: &mut djogi::DjogiContext) {
-    let mut tx = ctx.begin().await.unwrap();
     // `score` is a nullable companion column used by the NULLS-ordering
     // test; seeding it with a distinct value per row lets that test assert
     // a deterministic sort order once a fifth NULL-bearing row is added.
@@ -99,30 +72,43 @@ async fn seed_posts(ctx: &mut djogi::DjogiContext) {
         ("gamma", false, 200, 30),
         ("delta", true, 25, 40),
     ] {
-        let title_s = title.to_string();
-        let body_s = "body".to_string();
-        tx.raw_execute(
-            "INSERT INTO posts_p2 (title, body, published, view_count, score) \
-             VALUES ($1, $2, $3, $4, $5)",
-            &[&title_s, &body_s, &published, &views, &score],
-        )
-        .await
-        .unwrap();
+        create_post(ctx, title, "body", published, views, Some(score))
+            .await
+            .unwrap();
     }
-    tx.commit().await.unwrap();
 }
 
-#[djogi::djogi_test]
+async fn create_post(
+    ctx: &mut djogi::DjogiContext,
+    title: &str,
+    body: &str,
+    published: bool,
+    view_count: i32,
+    score: Option<i32>,
+) -> Result<Post, DjogiError> {
+    Post::create(
+        ctx,
+        Post {
+            title: title.to_string(),
+            body: body.to_string(),
+            published,
+            view_count,
+            score,
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
 async fn fetch_all_no_filter(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
     let rows = Post::objects().fetch_all(&mut ctx).await.unwrap();
     assert_eq!(rows.len(), 4);
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn fetch_all_with_filter(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
     let rows = Post::objects()
         .filter(|f| f.published().eq(true))
@@ -132,9 +118,8 @@ async fn fetch_all_with_filter(mut ctx: djogi::DjogiContext) {
     assert_eq!(rows.len(), 3);
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn fetch_one_exact_match(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
     let row = Post::objects()
         .filter(|f| f.title().eq("alpha".to_string()))
@@ -144,9 +129,8 @@ async fn fetch_one_exact_match(mut ctx: djogi::DjogiContext) {
     assert_eq!(row.title, "alpha");
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn fetch_one_zero_rows_is_not_found(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
     let err = Post::objects()
         .filter(|f| f.title().eq("nonexistent".to_string()))
@@ -156,9 +140,8 @@ async fn fetch_one_zero_rows_is_not_found(mut ctx: djogi::DjogiContext) {
     assert!(matches!(err, DjogiError::NotFound { .. }));
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn fetch_one_multiple_rows_is_multiple_objects(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
     let err = Post::objects()
         .filter(|f| f.published().eq(true))
@@ -168,9 +151,8 @@ async fn fetch_one_multiple_rows_is_multiple_objects(mut ctx: djogi::DjogiContex
     assert!(matches!(err, DjogiError::MultipleObjects { .. }));
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn first_returns_some_or_none(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
     let some = Post::objects()
         .filter(|f| f.published().eq(true))
@@ -187,9 +169,8 @@ async fn first_returns_some_or_none(mut ctx: djogi::DjogiContext) {
     assert!(none.is_none());
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn count_returns_row_count(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
     let n = Post::objects().count(&mut ctx).await.unwrap();
     assert_eq!(n, 4);
@@ -201,9 +182,8 @@ async fn count_returns_row_count(mut ctx: djogi::DjogiContext) {
     assert_eq!(n2, 3);
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn exists_returns_bool(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
     assert!(
         Post::objects()
@@ -221,9 +201,8 @@ async fn exists_returns_bool(mut ctx: djogi::DjogiContext) {
     );
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn none_short_circuits_every_terminal(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
 
     // `fetch_all` -> Ok(vec![])
@@ -255,9 +234,8 @@ async fn none_short_circuits_every_terminal(mut ctx: djogi::DjogiContext) {
     assert!(matches!(none_err, DjogiError::NotFound { .. }));
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn limit_offset_paginate(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
     let page1 = Post::objects()
         .order_by(|f| f.title().asc())
@@ -278,9 +256,8 @@ async fn limit_offset_paginate(mut ctx: djogi::DjogiContext) {
     assert_ne!(page1[0].title, page2[0].title);
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn nested_and_or(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
     let rows = Post::objects()
         .filter(|f| f.published().eq(true).and_with(f.view_count().gte(50i32)))
@@ -292,9 +269,8 @@ async fn nested_and_or(mut ctx: djogi::DjogiContext) {
     assert_eq!(rows.len(), 2);
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn in_list_and_between(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
 
     let by_title = Post::objects()
@@ -317,14 +293,12 @@ async fn in_list_and_between(mut ctx: djogi::DjogiContext) {
     assert_eq!(by_views.len(), 2);
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn filter_struct_matches_closure_results(mut ctx: djogi::DjogiContext) {
     // Task 8 parity check: `filter_struct` (programmatic) and `filter`
     // (closure) must produce structurally equivalent filters for the
     // same set of lookups.
     use std::collections::BTreeSet;
-
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
 
     let closure_rows = Post::objects()
@@ -358,12 +332,11 @@ async fn filter_struct_matches_closure_results(mut ctx: djogi::DjogiContext) {
     assert_eq!(struct_rows.len(), 2);
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn filter_struct_empty_is_identity(mut ctx: djogi::DjogiContext) {
     // A filter with zero setters should not AND anything onto the
     // queryset — terminal fetch should see every row `seed_posts`
     // inserted.
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
 
     let empty = PostFilter::new();
@@ -375,10 +348,9 @@ async fn filter_struct_empty_is_identity(mut ctx: djogi::DjogiContext) {
     assert_eq!(rows.len(), 4);
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn filter_struct_single_clause_unwraps_to_leaf(mut ctx: djogi::DjogiContext) {
     // A single-clause filter should emit SQL equivalent to a bare leaf.
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
 
     let closure_rows = Post::objects()
@@ -397,9 +369,8 @@ async fn filter_struct_single_clause_unwraps_to_leaf(mut ctx: djogi::DjogiContex
 
 // ── Task 9: bulk update / delete ──────────────────────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn bulk_update_sets_values_and_returns_count(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
 
     let n = Post::objects()
@@ -418,9 +389,8 @@ async fn bulk_update_sets_values_and_returns_count(mut ctx: djogi::DjogiContext)
     assert_eq!(bumped, 3);
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn bulk_update_none_short_circuits(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
 
     let n = Post::objects()
@@ -442,9 +412,8 @@ async fn bulk_update_none_short_circuits(mut ctx: djogi::DjogiContext) {
     assert_eq!(zeroed, 0, "none().update() must not touch any row");
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn bulk_delete_removes_rows_and_returns_count(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
 
     let n = Post::objects()
@@ -465,23 +434,20 @@ async fn bulk_delete_removes_rows_and_returns_count(mut ctx: djogi::DjogiContext
     assert_eq!(gamma_left, 0);
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn bulk_update_stamps_updated_at(mut ctx: djogi::DjogiContext) {
     // Contract: bulk update must always stamp `updated_at = now()`, even
     // when the user did not set it themselves.
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
 
-    // Every freshly-inserted row has updated_at = created_at (both default
-    // to `now()` in the same INSERT).
-    let all_equal: i64 = ctx
-        .raw_scalar(
-            "SELECT COUNT(*) FROM posts_p2 WHERE updated_at = created_at",
-            &[],
-        )
-        .await
-        .unwrap();
-    assert_eq!(all_equal, 4);
+    let initial_rows = Post::objects().fetch_all(&mut ctx).await.unwrap();
+    assert_eq!(
+        initial_rows
+            .iter()
+            .filter(|row| row.updated_at == row.created_at)
+            .count(),
+        4
+    );
 
     // Sleep a tick so `now()` advances past the insert time at the
     // microsecond level. Postgres's `now()` is statement-start time; a
@@ -496,45 +462,39 @@ async fn bulk_update_stamps_updated_at(mut ctx: djogi::DjogiContext) {
         .unwrap();
     assert_eq!(n, 1);
 
-    // The bumped row's `updated_at` now exceeds its `created_at`.
-    let bumped: i64 = ctx
-        .raw_scalar(
-            "SELECT COUNT(*) FROM posts_p2 WHERE title = 'alpha' AND updated_at > created_at",
-            &[],
-        )
+    let bumped = Post::objects()
+        .filter(|f| f.title().eq("alpha".to_string()))
+        .fetch_one(&mut ctx)
         .await
         .unwrap();
-    assert_eq!(
-        bumped, 1,
+    assert!(
+        bumped.updated_at > bumped.created_at,
         "bulk update must stamp updated_at = now() on touched rows"
     );
 
-    // Unaffected rows still have updated_at = created_at.
-    let untouched: i64 = ctx
-        .raw_scalar(
-            "SELECT COUNT(*) FROM posts_p2 WHERE title <> 'alpha' AND updated_at = created_at",
-            &[],
-        )
+    let untouched = Post::objects()
+        .exclude(|f| f.title().eq("alpha".to_string()))
+        .fetch_all(&mut ctx)
         .await
         .unwrap();
-    assert_eq!(untouched, 3);
+    assert_eq!(
+        untouched
+            .iter()
+            .filter(|row| row.updated_at == row.created_at)
+            .count(),
+        3
+    );
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn distinct_on_and_plain(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
-    // Add duplicate titles so DISTINCT ON has real work to do. Use
-    // raw_execute inside a begin/commit block.
-    let mut tx = ctx.begin().await.unwrap();
-    tx.raw_execute(
-        "INSERT INTO posts_p2 (title, body, published, view_count) \
-         VALUES ('dup', 'x', true, 1), ('dup', 'y', true, 2)",
-        &[],
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    create_post(&mut ctx, "dup", "x", true, 1, None)
+        .await
+        .unwrap();
+    create_post(&mut ctx, "dup", "y", true, 2, None)
+        .await
+        .unwrap();
 
     let rows = Post::objects()
         .distinct_on(|f| f.title())
@@ -578,9 +538,8 @@ async fn distinct_on_and_plain(mut ctx: djogi::DjogiContext) {
 // ── Task 10: edge-case sweep ──────────────────────────────────────────────
 
 /// `in_list(vec![])` must match zero rows.
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn in_list_empty_returns_zero_rows(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
 
     let rows = Post::objects()
@@ -599,9 +558,8 @@ async fn in_list_empty_returns_zero_rows(mut ctx: djogi::DjogiContext) {
 }
 
 /// `not_in_list(vec![])` must match every row.
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn not_in_list_empty_returns_all_rows(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
 
     let n = Post::objects()
@@ -613,24 +571,21 @@ async fn not_in_list_empty_returns_all_rows(mut ctx: djogi::DjogiContext) {
 }
 
 /// `contains(...)` must escape LIKE wildcards (`%`, `_`, `\`) in user input.
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn string_contains_escapes_percent_and_underscore(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
 
     // Add the target row (contains both wildcard characters verbatim) plus
     // two negative-control rows that a broken escape would falsely match.
-    let mut tx = ctx.begin().await.unwrap();
-    tx.raw_execute(
-        "INSERT INTO posts_p2 (title, body, published, view_count) VALUES \
-         ('50% off_deal', 'b', true, 1), \
-         ('50 off regular', 'b', true, 1), \
-         ('xdeal', 'b', true, 1)",
-        &[],
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    create_post(&mut ctx, "50% off_deal", "b", true, 1, None)
+        .await
+        .unwrap();
+    create_post(&mut ctx, "50 off regular", "b", true, 1, None)
+        .await
+        .unwrap();
+    create_post(&mut ctx, "xdeal", "b", true, 1, None)
+        .await
+        .unwrap();
 
     let total = Post::objects().count(&mut ctx).await.unwrap();
     assert_eq!(total, 7, "4 seeded + 3 extras must all be present");
@@ -653,9 +608,8 @@ async fn string_contains_escapes_percent_and_underscore(mut ctx: djogi::DjogiCon
 }
 
 /// `.exclude(|f| ...)` must wrap the inner filter in SQL `NOT`.
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn exclude_wraps_in_not(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
 
     let n = Post::objects()
@@ -670,9 +624,8 @@ async fn exclude_wraps_in_not(mut ctx: djogi::DjogiContext) {
 }
 
 /// Successive `.order_by(...)` calls **stack** (Django semantics), not last-wins.
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn order_by_stacks_across_multiple_calls(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
 
     let rows = Post::objects()
@@ -692,21 +645,13 @@ async fn order_by_stacks_across_multiple_calls(mut ctx: djogi::DjogiContext) {
 }
 
 /// `nulls_first()` / `nulls_last()` must render the corresponding SQL modifier.
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn order_by_nulls_first_renders(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
 
-    // Insert a fifth row with `score = NULL`.
-    let mut tx = ctx.begin().await.unwrap();
-    tx.raw_execute(
-        "INSERT INTO posts_p2 (title, body, published, view_count, score) \
-         VALUES ('nullrow', 'b', true, 0, NULL)",
-        &[],
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    create_post(&mut ctx, "nullrow", "b", true, 0, None)
+        .await
+        .unwrap();
 
     // `NULLS FIRST` — the NULL-score row floats to the top of an ASC ordering.
     let first_rows = Post::objects()
@@ -747,9 +692,8 @@ async fn order_by_nulls_first_renders(mut ctx: djogi::DjogiContext) {
 }
 
 /// `filter(...).update(|_| vec![])` must short-circuit to `Ok(0)`.
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Post])]
 async fn bulk_update_empty_assignments_short_circuits(mut ctx: djogi::DjogiContext) {
-    setup(&mut ctx).await;
     seed_posts(&mut ctx).await;
 
     let n = Post::objects()
@@ -775,15 +719,11 @@ async fn bulk_update_empty_assignments_short_circuits(mut ctx: djogi::DjogiConte
         "seeded view_count values must survive a short-circuited update"
     );
 
-    let unstamped: i64 = ctx
-        .raw_scalar(
-            "SELECT COUNT(*) FROM posts_p2 WHERE updated_at = created_at",
-            &[],
-        )
-        .await
-        .unwrap();
     assert_eq!(
-        unstamped, 4,
+        rows.iter()
+            .filter(|row| row.updated_at == row.created_at)
+            .count(),
+        4,
         "updated_at must still equal created_at — no UPDATE fired"
     );
 }

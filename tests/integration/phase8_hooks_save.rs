@@ -1,45 +1,41 @@
-//! Phase 8α T1.5 integration tests: `before_save` + `after_save` dispatch
-//! around the macro-emitted `Model::save()` body.
-//!
-//! What this file pins:
-//!
-//! 1. `before_save(self, ctx)` fires before the UPDATE composes and may
-//!    mutate the in-memory `*self` — the mutation round-trips through the
-//!    `RETURNING` clause back into the post-save state of `self`.
-//! 2. `after_save(&*self, ctx)` fires after the outbox emission AND after
-//!    `*self = row` rehydration. The hook therefore sees server-side
-//!    defaults / triggers / sequence-bumped values, not the pre-call
-//!    in-memory state.
-//! 3. Returning `Err` from `before_save` short-circuits the entire
-//!    sequence: no UPDATE composes, no outbox row is written. Wrapped in
-//!    `atomic()`, the surrounding transaction rolls back via standard `?`
-//!    propagation; a follow-up re-fetch confirms the row is unchanged.
-//! 4. Shape B (version-aware) `LockConflict` early-return path skips
-//!    `after_save` — the UPDATE didn't actually mutate the row, so
-//!    `after_save` would observe stale state.
-//!
-//! Phase 8 §D3 lines 118-129 fix the canonical sequence as
-//! `before_save -> UPDATE -> outbox -> after_save -> on_commit drain`.
-//! Order is load-bearing: T1.7 will add the events-model variant that
-//! also asserts the outbox row exists by the time `after_save` runs.
-//!
-//! # One model per test — coherence
-//!
-//! `impl ModelHooks for T` is a coherent impl: only one per `T` per
-//! crate. Each test therefore declares its own model type sharing a
-//! single `hook_save_*` table shape. Test 4 is version-aware (uses
-//! `#[field(version)]`) and therefore has a slightly different shape.
-//!
-//! # Fixture strategy
-//!
-//! Each test provisions its own table inline via `ctx.raw_execute(...)`.
-//! `#[djogi::djogi_test]` already installs HeeRanjID schema, seeds node 1,
-//! and sets `heer.node_id = '1'` before the test body runs. Tokio
-//! task-locals carry per-test cross-hook state where needed; each test
-//! runs on its own per-test database.
+// Phase 8α T1.5 integration tests: `before_save` + `after_save` dispatch
+// around the macro-emitted `Model::save()` body.
+//
+// What this file pins:
+//
+// 1. `before_save(self, ctx)` fires before the UPDATE composes and may
+//    mutate the in-memory `*self` — the mutation round-trips through the
+//    `RETURNING` clause back into the post-save state of `self`.
+// 2. `after_save(&*self, ctx)` fires after the outbox emission AND after
+//    `*self = row` rehydration. The hook therefore sees server-side
+//    defaults / triggers / sequence-bumped values, not the pre-call
+//    in-memory state.
+// 3. Returning `Err` from `before_save` short-circuits the entire
+//    sequence: no UPDATE composes, no outbox row is written; a follow-up
+//    typed re-fetch confirms the row is unchanged.
+// 4. Shape B (version-aware) `LockConflict` early-return path skips
+//    `after_save` — the UPDATE didn't actually mutate the row, so
+//    `after_save` would observe stale state.
+//
+// Phase 8 §D3 lines 118-129 fix the canonical sequence as
+// `before_save -> UPDATE -> outbox -> after_save -> on_commit drain`.
+// Order is load-bearing: T1.7 will add the events-model variant that
+// also asserts the outbox row exists by the time `after_save` runs.
+//
+// # One model per test — coherence
+//
+// `impl ModelHooks for T` is a coherent impl: only one per `T` per
+// crate. Each test therefore declares its own model type sharing a
+// single `hook_save_*` table shape. Test 4 is version-aware (uses
+// `#[field(version)]`) and therefore has a slightly different shape.
+//
+// # Fixture strategy
+//
+// Each test provisions its models through `sync_models`. Tokio task-locals
+// carry per-test cross-hook state where needed; each test runs on its
+// own per-test database.
 
 use djogi::prelude::*;
-use djogi::transaction::atomic;
 use std::cell::Cell;
 
 // ---------------------------------------------------------------------------
@@ -91,24 +87,8 @@ impl djogi::hooks::ModelHooks for SaveRecorder {
     }
 }
 
-async fn setup_save_recorders(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE save_recorders (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            value       INTEGER     NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create save_recorders table");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [SaveRecorder])]
 async fn before_save_fires_pre_update(mut ctx: djogi::DjogiContext) {
-    setup_save_recorders(&mut ctx).await;
-
     SR_NEXT_ORDINAL
         .scope(Cell::new(1), async {
             SR_BEFORE_AT
@@ -157,8 +137,7 @@ async fn before_save_fires_pre_update(mut ctx: djogi::DjogiContext) {
 
 // ---------------------------------------------------------------------------
 // Test 2 — before_save returning Err aborts the UPDATE. Wrapped in
-// atomic() so the rollback is observable: the row's value must remain
-// unchanged after the failed save().
+// the row's value must remain unchanged after the failed save().
 // ---------------------------------------------------------------------------
 
 #[model(table = "save_aborts", pk = HeerId, hooks)]
@@ -176,27 +155,9 @@ impl djogi::hooks::ModelHooks for SaveAbort {
     }
 }
 
-async fn setup_save_aborts(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE save_aborts (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            value       INTEGER     NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create save_aborts table");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [SaveAbort])]
 async fn before_save_err_aborts(mut ctx: djogi::DjogiContext) {
-    setup_save_aborts(&mut ctx).await;
-    let pool = ctx.pool().expect("djogi_test ctx is pool-backed").clone();
-
-    // Insert a row with value=1, OUTSIDE the atomic() so it survives
-    // when the inner transaction rolls back.
+    // Insert a row with value=1 before attempting the failing update.
     let row = SaveAbort::create(
         &mut ctx,
         SaveAbort {
@@ -208,19 +169,11 @@ async fn before_save_err_aborts(mut ctx: djogi::DjogiContext) {
     .expect("create should succeed");
     let row_id = row.id;
 
-    // Attempt to mutate the row inside an atomic(). before_save returns
-    // Err — the UPDATE never composes, the outer atomic() rolls back via
-    // `?` propagation.
-    let res: Result<(), djogi::DjogiError> = atomic(&pool, |ctx| {
-        Box::pin(async move {
-            let mut loaded = SaveAbort::get(ctx, row_id).await?;
-            loaded.value = 999;
-            loaded.save(ctx).await?;
-            // Should never reach here — before_save's Err short-circuits.
-            Ok(())
-        })
-    })
-    .await;
+    let mut loaded = SaveAbort::get(&mut ctx, row_id)
+        .await
+        .expect("typed get should reload the row");
+    loaded.value = 999;
+    let res = loaded.save(&mut ctx).await;
 
     let Err(djogi::DjogiError::Validation(msg)) = res else {
         panic!("expected Err(DjogiError::Validation(_)), got {res:?}");
@@ -230,15 +183,13 @@ async fn before_save_err_aborts(mut ctx: djogi::DjogiContext) {
         "before_save's Err variant must propagate unchanged",
     );
 
-    // Re-fetch the row outside the rolled-back atomic. The DB value must
-    // still be 1: before_save aborted before the UPDATE composed, so
-    // even without the atomic() rollback there was no UPDATE to undo.
-    let on_disk: i32 = ctx
-        .raw_scalar("SELECT value FROM save_aborts WHERE id = $1", &[&row_id])
+    // Re-fetch the row. The DB value must still be 1: before_save
+    // aborted before the UPDATE composed.
+    let on_disk = SaveAbort::get(&mut ctx, row_id)
         .await
         .expect("re-fetch should succeed");
     assert_eq!(
-        on_disk, 1,
+        on_disk.value, 1,
         "before_save returning Err must leave the DB row unchanged",
     );
 }
@@ -275,24 +226,8 @@ impl djogi::hooks::ModelHooks for SaveRehydrate {
     }
 }
 
-async fn setup_save_rehydrates(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE save_rehydrates (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            value       INTEGER     NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create save_rehydrates table");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [SaveRehydrate])]
 async fn after_save_sees_rehydrated_row(mut ctx: djogi::DjogiContext) {
-    setup_save_rehydrates(&mut ctx).await;
-
     SH_PRE_SAVE_UPDATED_AT_NS
         .scope(Cell::new(0), async {
             SH_AFTER_OBSERVED_NS
@@ -389,25 +324,8 @@ impl djogi::hooks::ModelHooks for SaveLock {
     }
 }
 
-async fn setup_save_locks(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE save_locks (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            value       INTEGER     NOT NULL,
-            revision    INTEGER     NOT NULL    DEFAULT 0
-        )",
-        &[],
-    )
-    .await
-    .expect("create save_locks table");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [SaveLock])]
 async fn before_save_lockconflict_branch_propagates(mut ctx: djogi::DjogiContext) {
-    setup_save_locks(&mut ctx).await;
-
     SL_BEFORE_COUNT
         .scope(Cell::new(0), async {
             SL_AFTER_COUNT
@@ -474,12 +392,11 @@ async fn before_save_lockconflict_branch_propagates(mut ctx: djogi::DjogiContext
                     // Sanity check: the DB row's revision is still 1
                     // (clone_a's bump), proving clone_b's UPDATE matched
                     // zero rows.
-                    let db_revision: i32 = ctx
-                        .raw_scalar("SELECT revision FROM save_locks WHERE id = $1", &[&row.id])
+                    let reloaded = SaveLock::get(&mut ctx, row.id)
                         .await
-                        .expect("revision scalar select");
+                        .expect("typed get should reload final row");
                     assert_eq!(
-                        db_revision, 1,
+                        reloaded.revision, 1,
                         "DB revision must still be 1 — clone_b's UPDATE matched zero rows",
                     );
                 })

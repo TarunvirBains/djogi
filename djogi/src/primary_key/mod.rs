@@ -139,7 +139,7 @@ pub trait PrimaryKey: Sized + 'static {
     /// Postgres column type, e.g. `"BIGINT"` / `"UUID"` / `"INTEGER"`.
     const SQL_TYPE: &'static str;
 
-    /// Column `DEFAULT` clause, e.g. `"generate_id()"` / `"heerid_next_desc()"`.
+    /// Column `DEFAULT` clause, e.g. `"heerid_next()"` / `"heerid_next_desc()"`.
     /// `None` when no server-side default is installed — for example
     /// `Serial`, where the column is a plain `INTEGER`.
     const DEFAULT_SQL: Option<&'static str>;

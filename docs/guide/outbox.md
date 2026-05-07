@@ -36,14 +36,19 @@ Each events-model needs a `<table>_outbox` table shaped like:
 
 ```sql
 CREATE TABLE notifications_outbox (
-    id          BIGINT PRIMARY KEY DEFAULT generate_id(),
-    row_id      BIGINT NOT NULL,
-    action      TEXT NOT NULL,       -- 'create' | 'save' | 'delete'
-    payload     JSONB NOT NULL,
-    emitted_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    published_at TIMESTAMPTZ
+    id            BIGINT PRIMARY KEY DEFAULT heerid_next(),
+    row_id        BIGINT NOT NULL,    -- matches the source table PK type
+    action        TEXT NOT NULL,      -- 'create' | 'save' | 'delete'
+    payload       JSONB NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    state         TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (state IN ('pending', 'processing', 'published', 'failed')),
+    leased_until  TIMESTAMPTZ,
+    retry_count   INTEGER NOT NULL DEFAULT 0,
+    failed_reason TEXT
 );
-CREATE INDEX ON notifications_outbox (published_at) WHERE published_at IS NULL;
+CREATE INDEX ON notifications_outbox (state, created_at)
+    WHERE state = 'pending';
 ```
 
 (DDL side-channel emission to `target/djogi_outbox/*.sql` is deferred

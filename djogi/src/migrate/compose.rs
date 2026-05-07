@@ -1622,7 +1622,7 @@ mod tests {
                 },
                 columns: vec![ColumnSchema {
                     check: None,
-                    default_sql: Some("generate_id_desc()".to_string()),
+                    default_sql: Some("heerid_next_desc()".to_string()),
                     foreign_key: None,
                     generated: None,
                     identity: None,
@@ -2941,7 +2941,7 @@ mod tests {
                         },
                         columns: vec![ColumnSchema {
                             check: None,
-                            default_sql: Some("generate_id_desc()".to_string()),
+                            default_sql: Some("heerid_next_desc()".to_string()),
                             foreign_key: None,
                             generated: None,
                             identity: None,

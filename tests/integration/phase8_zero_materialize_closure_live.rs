@@ -1,33 +1,32 @@
-//! Phase 8-Zero Cluster B5 (T13b live) — Live integration tests for
-//! `Model::materialize_closure` against a real Postgres 18.
-//!
-//! Drives the full closure-helper surface end-to-end:
-//!
-//! - Self-pair triples at depth 0 (every source row appears as its
-//!   own ancestor).
-//! - Multi-edge multiplicity counting (`UNION ALL` inside the
-//!   recursive term + `GROUP BY` in the outer SELECT).
-//! - Idempotency on rerun (`ON CONFLICT … DO UPDATE SET path_count =
-//!   EXCLUDED.path_count` REPLACES, never adds).
-//! - `with_max_depth` truncation.
-//! - `with_roots(...)` subset walk.
-//! - Zero-self-FK descriptive error.
-//!
-//! Each test uses `#[djogi::djogi_test]` for per-database isolation.
-//! Closure tables are CREATEd inside the test body so adopters see a
-//! realistic "you wire your own table, the helper populates it"
-//! workflow — matching what the doc-comments in
-//! [`djogi::query::closure`] describe.
-//!
-//! # Why `phase8_closure_*` and not `phase8_tree_*`
-//!
-//! The closure source-models intentionally use a different table-name
-//! prefix from the tree-query live tests. Each `#[djogi_test]` gets a
-//! per-test database, so cross-file table collisions do not happen at
-//! runtime; the prefix split is defensive against the inventory-side
-//! descriptor registry that *is* process-global, so two `#[model]`
-//! invocations against the same table-name string would warn at
-//! startup.
+// Phase 8-Zero Cluster B5 (T13b live) — Live integration tests for
+// `Model::materialize_closure` against a real Postgres 18.
+//
+// Drives the full closure-helper surface end-to-end:
+//
+// - Self-pair triples at depth 0 (every source row appears as its
+//   own ancestor).
+// - Multi-edge multiplicity counting (`UNION ALL` inside the
+//   recursive term + `GROUP BY` in the outer SELECT).
+// - Idempotency on rerun (`ON CONFLICT … DO UPDATE SET path_count =
+//   EXCLUDED.path_count` REPLACES, never adds).
+// - `with_max_depth` truncation.
+// - `with_roots(...)` subset walk.
+// - Zero-self-FK descriptive error.
+//
+// Each test uses `#[djogi::djogi_test(sync_models = [...])]` for
+// per-database isolation. Closure-table uniqueness is declared through model
+// metadata so `materialize_closure` can exercise its typed `ON CONFLICT`
+// contract without setup DDL in the test body.
+//
+// # Why `phase8_closure_*` and not `phase8_tree_*`
+//
+// The closure source-models intentionally use a different table-name
+// prefix from the tree-query live tests. Each `#[djogi_test]` gets a
+// per-test database, so cross-file table collisions do not happen at
+// runtime; the prefix split is defensive against the inventory-side
+// descriptor registry that *is* process-global, so two `#[model]`
+// invocations against the same table-name string would warn at
+// startup.
 
 use djogi::prelude::*;
 
@@ -40,7 +39,12 @@ pub struct ClosureTreeNode {
     pub parent_id: Option<ForeignKey<ClosureTreeNode>>,
 }
 
-#[model(table = "phase8_closure_tree_node_closure", pk = HeerId, no_default)]
+#[model(
+    table = "phase8_closure_tree_node_closure",
+    pk = HeerId,
+    no_default,
+    indexes(unique(fields = [tree_node_id, ancestor_id, depth]))
+)]
 #[derive(Debug, Clone)]
 pub struct ClosureTreeNodeAncestry {
     pub tree_node_id: ForeignKey<ClosureTreeNode>,
@@ -75,7 +79,12 @@ pub struct ClosurePedigree {
     pub father_id: Option<ForeignKey<ClosurePedigree>>,
 }
 
-#[model(table = "phase8_closure_pedigree_ancestry", pk = HeerId, no_default)]
+#[model(
+    table = "phase8_closure_pedigree_ancestry",
+    pk = HeerId,
+    no_default,
+    indexes(unique(fields = [pedigree_id, ancestor_id, depth]))
+)]
 #[derive(Debug, Clone)]
 pub struct ClosurePedigreeAncestry {
     pub pedigree_id: ForeignKey<ClosurePedigree>,
@@ -108,7 +117,12 @@ pub struct ClosureOrphan {
     pub name: String,
 }
 
-#[model(table = "phase8_closure_orphan_ancestry", pk = HeerId, no_default)]
+#[model(
+    table = "phase8_closure_orphan_ancestry",
+    pk = HeerId,
+    no_default,
+    indexes(unique(fields = [orphan_id, ancestor_id, depth]))
+)]
 #[derive(Debug, Clone)]
 pub struct ClosureOrphanAncestry {
     pub orphan_id: ForeignKey<ClosureOrphan>,
@@ -131,103 +145,6 @@ impl djogi::query::ClosureModel for ClosureOrphanAncestry {
     fn path_count_column() -> &'static str {
         "path_count"
     }
-}
-
-// ── DDL helpers ─────────────────────────────────────────────────────────────
-
-async fn setup_tree_node(ctx: &mut DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_closure_tree_node (
-             id          BIGINT PRIMARY KEY DEFAULT generate_id(),
-             created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             name        TEXT NOT NULL,
-             parent_id   BIGINT REFERENCES phase8_closure_tree_node(id) ON DELETE CASCADE
-         )",
-        &[],
-    )
-    .await
-    .expect("CREATE TABLE phase8_closure_tree_node");
-
-    // The closure table MUST carry `UNIQUE (source, ancestor, depth)` —
-    // `ON CONFLICT (...)` matches against this constraint. Missing it
-    // surfaces as Postgres 42P10 from `materialize_closure`.
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_closure_tree_node_closure (
-             id           BIGINT PRIMARY KEY DEFAULT generate_id(),
-             created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-             updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-             tree_node_id BIGINT NOT NULL REFERENCES phase8_closure_tree_node(id) ON DELETE CASCADE,
-             ancestor_id  BIGINT NOT NULL REFERENCES phase8_closure_tree_node(id) ON DELETE CASCADE,
-             depth        INTEGER NOT NULL,
-             path_count   BIGINT NOT NULL DEFAULT 1,
-             UNIQUE (tree_node_id, ancestor_id, depth)
-         )",
-        &[],
-    )
-    .await
-    .expect("CREATE TABLE closure");
-}
-
-async fn setup_pedigree(ctx: &mut DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_closure_pedigree (
-             id          BIGINT PRIMARY KEY DEFAULT generate_id(),
-             created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             name        TEXT NOT NULL,
-             mother_id   BIGINT REFERENCES phase8_closure_pedigree(id) ON DELETE SET NULL,
-             father_id   BIGINT REFERENCES phase8_closure_pedigree(id) ON DELETE SET NULL
-         )",
-        &[],
-    )
-    .await
-    .expect("CREATE TABLE phase8_closure_pedigree");
-
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_closure_pedigree_ancestry (
-             id           BIGINT PRIMARY KEY DEFAULT generate_id(),
-             created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-             updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-             pedigree_id  BIGINT NOT NULL REFERENCES phase8_closure_pedigree(id) ON DELETE CASCADE,
-             ancestor_id  BIGINT NOT NULL REFERENCES phase8_closure_pedigree(id) ON DELETE CASCADE,
-             depth        INTEGER NOT NULL,
-             path_count   BIGINT NOT NULL DEFAULT 1,
-             UNIQUE (pedigree_id, ancestor_id, depth)
-         )",
-        &[],
-    )
-    .await
-    .expect("CREATE TABLE pedigree closure");
-}
-
-async fn setup_orphan(ctx: &mut DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_closure_orphan (
-             id          BIGINT PRIMARY KEY DEFAULT generate_id(),
-             created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             name        TEXT NOT NULL
-         )",
-        &[],
-    )
-    .await
-    .expect("CREATE TABLE phase8_closure_orphan");
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_closure_orphan_ancestry (
-             id           BIGINT PRIMARY KEY DEFAULT generate_id(),
-             created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-             updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-             orphan_id    BIGINT NOT NULL REFERENCES phase8_closure_orphan(id) ON DELETE CASCADE,
-             ancestor_id  BIGINT NOT NULL REFERENCES phase8_closure_orphan(id) ON DELETE CASCADE,
-             depth        INTEGER NOT NULL,
-             path_count   BIGINT NOT NULL DEFAULT 1,
-             UNIQUE (orphan_id, ancestor_id, depth)
-         )",
-        &[],
-    )
-    .await
-    .expect("CREATE TABLE orphan closure");
 }
 
 // ── Seed helpers ────────────────────────────────────────────────────────────
@@ -276,57 +193,51 @@ async fn seed_pedigree_node(
 /// returning `(tree_node_id, ancestor_id, depth, path_count)` tuples
 /// sorted for deterministic comparison.
 async fn closure_rows_tree(ctx: &mut DjogiContext) -> Vec<(i64, i64, i32, i64)> {
-    let rows = ctx
-        .raw_rows(
-            "SELECT tree_node_id, ancestor_id, depth, path_count \
-             FROM phase8_closure_tree_node_closure \
-             ORDER BY tree_node_id, ancestor_id, depth",
-            &[],
-        )
+    let rows = ClosureTreeNodeAncestry::objects()
+        .fetch_all(ctx)
         .await
         .expect("closure read");
-    rows.iter()
+    let mut rows: Vec<_> = rows
+        .iter()
         .map(|r| {
             (
-                r.get::<_, i64>(0),
-                r.get::<_, i64>(1),
-                r.get::<_, i32>(2),
-                r.get::<_, i64>(3),
+                r.tree_node_id.key().as_i64(),
+                r.ancestor_id.key().as_i64(),
+                r.depth,
+                r.path_count,
             )
         })
-        .collect()
+        .collect();
+    rows.sort();
+    rows
 }
 
 /// Fetch every row of the pedigree closure table, returning
 /// `(pedigree_id, ancestor_id, depth, path_count)` tuples.
 async fn closure_rows_pedigree(ctx: &mut DjogiContext) -> Vec<(i64, i64, i32, i64)> {
-    let rows = ctx
-        .raw_rows(
-            "SELECT pedigree_id, ancestor_id, depth, path_count \
-             FROM phase8_closure_pedigree_ancestry \
-             ORDER BY pedigree_id, ancestor_id, depth",
-            &[],
-        )
+    let rows = ClosurePedigreeAncestry::objects()
+        .fetch_all(ctx)
         .await
         .expect("pedigree closure read");
-    rows.iter()
+    let mut rows: Vec<_> = rows
+        .iter()
         .map(|r| {
             (
-                r.get::<_, i64>(0),
-                r.get::<_, i64>(1),
-                r.get::<_, i32>(2),
-                r.get::<_, i64>(3),
+                r.pedigree_id.key().as_i64(),
+                r.ancestor_id.key().as_i64(),
+                r.depth,
+                r.path_count,
             )
         })
-        .collect()
+        .collect();
+    rows.sort();
+    rows
 }
 
 // ── 1. Self-pairs at depth 0 ───────────────────────────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [ClosureTreeNode, ClosureTreeNodeAncestry])]
 async fn closure_populates_self_pairs_at_depth_zero(mut ctx: DjogiContext) {
-    setup_tree_node(&mut ctx).await;
-
     let root = seed_tree(&mut ctx, "root", None).await;
     let l1 = seed_tree(&mut ctx, "l1", Some(&root)).await;
     let l2 = seed_tree(&mut ctx, "l2", Some(&l1)).await;
@@ -355,10 +266,8 @@ async fn closure_populates_self_pairs_at_depth_zero(mut ctx: DjogiContext) {
 
 // ── 2. Two edges record distinct path counts ───────────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [ClosurePedigree, ClosurePedigreeAncestry])]
 async fn closure_two_edges_records_distinct_paths(mut ctx: DjogiContext) {
-    setup_pedigree(&mut ctx).await;
-
     // Linebreeding pedigree where `common` is reachable via TWO paths:
     //   common → mom (mother) → child (mother)
     //   common → dad (father) → child (father)
@@ -391,10 +300,8 @@ async fn closure_two_edges_records_distinct_paths(mut ctx: DjogiContext) {
 
 // ── 3. Idempotent on rerun ─────────────────────────────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [ClosureTreeNode, ClosureTreeNodeAncestry])]
 async fn closure_idempotent_on_rerun(mut ctx: DjogiContext) {
-    setup_tree_node(&mut ctx).await;
-
     let root = seed_tree(&mut ctx, "root", None).await;
     let _l1 = seed_tree(&mut ctx, "l1", Some(&root)).await;
     let _l2 = seed_tree(&mut ctx, "l2", Some(&_l1)).await;
@@ -428,10 +335,8 @@ async fn closure_idempotent_on_rerun(mut ctx: DjogiContext) {
 
 // ── 4. with_max_depth truncates the closure ────────────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [ClosureTreeNode, ClosureTreeNodeAncestry])]
 async fn closure_max_depth_truncates(mut ctx: DjogiContext) {
-    setup_tree_node(&mut ctx).await;
-
     // root → l1 → l2 → l3.
     let root = seed_tree(&mut ctx, "root", None).await;
     let l1 = seed_tree(&mut ctx, "l1", Some(&root)).await;
@@ -455,10 +360,8 @@ async fn closure_max_depth_truncates(mut ctx: DjogiContext) {
 
 // ── 5. with_roots walks only the requested subset ─────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [ClosureTreeNode, ClosureTreeNodeAncestry])]
 async fn closure_with_roots_walks_subset(mut ctx: DjogiContext) {
-    setup_tree_node(&mut ctx).await;
-
     let root = seed_tree(&mut ctx, "root", None).await;
     let l1 = seed_tree(&mut ctx, "l1", Some(&root)).await;
     let l2 = seed_tree(&mut ctx, "l2", Some(&l1)).await;
@@ -493,10 +396,8 @@ async fn closure_with_roots_walks_subset(mut ctx: DjogiContext) {
 
 // ── 6. Zero self-FKs errors descriptively ─────────────────────────────────
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [ClosureOrphan, ClosureOrphanAncestry])]
 async fn closure_zero_edges_errors_descriptively(mut ctx: DjogiContext) {
-    setup_orphan(&mut ctx).await;
-
     // Insert one orphan row so the source table is non-empty — the
     // self-FK guard fires before the SQL builder, so a populated
     // table still errors when the source model has no self-FK.

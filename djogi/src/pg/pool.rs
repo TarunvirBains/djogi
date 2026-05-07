@@ -284,6 +284,7 @@ impl DjogiPool {
     /// connections and is at max capacity, this waits until one is available
     /// (deadpool default: indefinitely; bound the wait via
     /// [`DjogiPoolBuilder::timeout`]).
+    #[allow(clippy::disallowed_methods)]
     pub(crate) async fn get(&self) -> Result<PgConnection, DjogiError> {
         let obj = self.inner.get().await.map_err(map_pool_err)?;
         Ok(PgConnection::new(obj))
@@ -375,7 +376,8 @@ impl DjogiPool {
     ///     })
     /// }).await?;
     /// ```
-    pub async fn with_client<F, R>(&self, f: F) -> Result<R, DjogiError>
+    #[allow(clippy::disallowed_methods)]
+    pub(crate) async fn with_client<F, R>(&self, f: F) -> Result<R, DjogiError>
     where
         F: for<'a> FnOnce(&'a mut tokio_postgres::Client) -> ClientFuture<'a, R>,
     {

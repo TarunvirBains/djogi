@@ -1,50 +1,50 @@
-//! Phase 8δ T8.8 integration tests: `DeltaRefreshHandle` knobs — always-on
-//! LRU eviction warn and adopter reachability of `with_eviction_recovery` /
-//! `with_periodic_full_refresh`.
-//!
-//! # What this file pins
-//!
-//! 1. **`lru_warn_one_shot_per_subscription`** — creates a `Punnu` with
-//!    `lru_size: 1`, starts a `refresh_into` subscription, and inserts 2 rows
-//!    into the backing table. The first full-scan tick applies both rows to the
-//!    Punnu, causing an LRU eviction. The second tick's `fetch_delta` drains
-//!    the events receiver via `try_recv`, observes `LruEvict`, and emits a
-//!    one-shot `tracing::warn!` on `djogi::cache`. A third tick does NOT emit
-//!    the warn again (one-shot flag already set).
-//!
-//! 2. **`with_eviction_recovery_method_reachable`** — verifies that
-//!    `qs.refresh_into(...).with_eviction_recovery(true)` compiles and returns
-//!    `DeltaRefreshHandle<T>`. Sassi owns the runtime behavior; djogi only
-//!    verifies the method is reachable through its public surface.
-//!
-//! 3. **`with_periodic_full_refresh_method_reachable`** — verifies that
-//!    `qs.refresh_into(...).with_periodic_full_refresh(NonZeroUsize::new(10))`
-//!    compiles and returns `DeltaRefreshHandle<T>`.
-//!
-//! # Spec anchor
-//!
-//! `docs/spec/` §674 — DeltaRefreshHandle knobs. Production-stability
-//! motivation: silent LRU thrashing degrades cache hit rate without notifying
-//! adopters; the always-on warn surfaces undersized `lru_size` configs before
-//! they cause observable performance regressions (`feedback_decision_priorities.md`
-//! — production stability > simplicity).
-//!
-//! # Implementation choice
-//!
-//! Knob 1 (always-on LRU warn) uses Option B: `try_recv` per tick + `AtomicBool`
-//! one-shot flag inside `DjogiDeltaFetcher`. No separate spawned task is needed.
-//! Knobs 2 + 3 are sassi-native; djogi's `refresh_into` returns
-//! `DeltaRefreshHandle<T>` directly so the methods are reachable with no
-//! djogi-side wrappers.
-//!
-//! # Tracing capture
-//!
-//! Tests that assert on log output install a `tracing_test` global subscriber
-//! inline (via `tracing_test::internal`) rather than the `#[traced_test]`
-//! proc-macro attribute. The global buffer is append-only — each test snapshots
-//! the buffer length before its call and inspects only the new bytes appended
-//! since the snapshot. Tests are run with `--test-threads=1` to prevent
-//! concurrent writes from scrambling the buffer.
+// Phase 8δ T8.8 integration tests: `DeltaRefreshHandle` knobs — always-on
+// LRU eviction warn and adopter reachability of `with_eviction_recovery` /
+// `with_periodic_full_refresh`.
+//
+// # What this file pins
+//
+// 1. **`lru_warn_one_shot_per_subscription`** — creates a `Punnu` with
+//    `lru_size: 1`, starts a `refresh_into` subscription, and inserts 2 rows
+//    into the backing table. The first full-scan tick applies both rows to the
+//    Punnu, causing an LRU eviction. The second tick's `fetch_delta` drains
+//    the events receiver via `try_recv`, observes `LruEvict`, and emits a
+//    one-shot `tracing::warn!` on `djogi::cache`. A third tick does NOT emit
+//    the warn again (one-shot flag already set).
+//
+// 2. **`with_eviction_recovery_method_reachable`** — verifies that
+//    `qs.refresh_into(...).with_eviction_recovery(true)` compiles and returns
+//    `DeltaRefreshHandle<T>`. Sassi owns the runtime behavior; djogi only
+//    verifies the method is reachable through its public surface.
+//
+// 3. **`with_periodic_full_refresh_method_reachable`** — verifies that
+//    `qs.refresh_into(...).with_periodic_full_refresh(NonZeroUsize::new(10))`
+//    compiles and returns `DeltaRefreshHandle<T>`.
+//
+// # Spec anchor
+//
+// `docs/spec/` §674 — DeltaRefreshHandle knobs. Production-stability
+// motivation: silent LRU thrashing degrades cache hit rate without notifying
+// adopters; the always-on warn surfaces undersized `lru_size` configs before
+// they cause observable performance regressions (`feedback_decision_priorities.md`
+// — production stability > simplicity).
+//
+// # Implementation choice
+//
+// Knob 1 (always-on LRU warn) uses Option B: `try_recv` per tick + `AtomicBool`
+// one-shot flag inside `DjogiDeltaFetcher`. No separate spawned task is needed.
+// Knobs 2 + 3 are sassi-native; djogi's `refresh_into` returns
+// `DeltaRefreshHandle<T>` directly so the methods are reachable with no
+// djogi-side wrappers.
+//
+// # Tracing capture
+//
+// Tests that assert on log output install a `tracing_test` global subscriber
+// inline (via `tracing_test::internal`) rather than the `#[traced_test]`
+// proc-macro attribute. The global buffer is append-only — each test snapshots
+// the buffer length before its call and inspects only the new bytes appended
+// since the snapshot. Tests are run with `--test-threads=1` to prevent
+// concurrent writes from scrambling the buffer.
 
 use djogi::prelude::*;
 use std::num::NonZeroUsize;
@@ -59,24 +59,6 @@ use std::num::NonZeroUsize;
 #[derive(Debug, Clone)]
 pub struct KnobRow {
     pub label: String,
-}
-
-async fn setup_knob_row(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE IF NOT EXISTS phase8_t8_8_knob_row (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            label       TEXT        NOT NULL
-        )",
-        &[],
-    )
-    .await
-    .expect("create phase8_t8_8_knob_row table");
-
-    ctx.raw_execute("TRUNCATE phase8_t8_8_knob_row", &[])
-        .await
-        .expect("truncate phase8_t8_8_knob_row");
 }
 
 // ── Tracing capture helpers ───────────────────────────────────────────────────
@@ -138,26 +120,24 @@ fn logs_since(since: usize) -> String {
 /// - Tick 3 (watermark): `try_recv` at START of `fetch_delta` drains the channel,
 ///   sees `LruEvict` from Tick 2 → djogi warn fires.
 /// - Tick 4 + 5: another eviction cycle, but one-shot flag set → no second warn.
-#[djogi::djogi_test]
+///
+#[djogi::djogi_test(sync_models = [KnobRow])]
 async fn lru_warn_one_shot_per_subscription(mut ctx: djogi::DjogiContext) {
-    setup_knob_row(&mut ctx).await;
-
     let since = init_log_capture();
 
-    // Insert row A with a timestamp 5 seconds in the past so it lands at a
-    // lower watermark than row B (inserted later at now()+1s).
-    ctx.raw_execute(
-        "INSERT INTO phase8_t8_8_knob_row (id, created_at, updated_at, label) \
-         VALUES (generate_id(), now() - INTERVAL '5 seconds', now() - INTERVAL '5 seconds', 'row-A')",
-        &[],
+    KnobRow::create(
+        &mut ctx,
+        KnobRow {
+            label: "row-A".into(),
+            ..Default::default()
+        },
     )
     .await
-    .expect("insert row-A");
+    .expect("create row-A");
 
     let pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
 
     // Build a standalone Punnu with lru_size=1. After Tick 1 loads row A, the
     // Punnu is at full capacity. Tick 2 inserts row B, which evicts row A and
@@ -196,14 +176,17 @@ async fn lru_warn_one_shot_per_subscription(mut ctx: djogi::DjogiContext) {
          logs so far: {logs_after_tick_1:?}"
     );
 
-    // ── Insert row B with a future timestamp so it passes the watermark filter.
-    ctx.raw_execute(
-        "INSERT INTO phase8_t8_8_knob_row (id, created_at, updated_at, label) \
-         VALUES (generate_id(), now() + INTERVAL '1 second', now() + INTERVAL '1 second', 'row-B')",
-        &[],
+    // Insert row B after Tick 1 so it passes the watermark filter.
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    KnobRow::create(
+        &mut ctx,
+        KnobRow {
+            label: "row-B".into(),
+            ..Default::default()
+        },
     )
     .await
-    .expect("insert row-B");
+    .expect("create row-B");
 
     // ── Tick 2 — watermark filter fetches row B, evicts row A ───────────────
     //
@@ -275,15 +258,18 @@ async fn lru_warn_one_shot_per_subscription(mut ctx: djogi::DjogiContext) {
 
     // ── Tick 4 + 5 — one-shot flag already set → no second djogi warn ────────
     //
-    // Insert row C (further future timestamp) so Tick 4 has data and produces
-    // another eviction. The one-shot flag must prevent a second djogi warn.
-    ctx.raw_execute(
-        "INSERT INTO phase8_t8_8_knob_row (id, created_at, updated_at, label) \
-         VALUES (generate_id(), now() + INTERVAL '2 seconds', now() + INTERVAL '2 seconds', 'row-C')",
-        &[],
+    // Insert row C after Tick 3 so Tick 4 has data and produces another
+    // eviction. The one-shot flag must prevent a second djogi warn.
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    KnobRow::create(
+        &mut ctx,
+        KnobRow {
+            label: "row-C".into(),
+            ..Default::default()
+        },
     )
     .await
-    .expect("insert row-C");
+    .expect("create row-C");
 
     // Tick 4: another eviction (row B evicted by row C). Sassi's warn may fire
     // again (sassi has its own flag per subscription, so it should NOT repeat
@@ -318,14 +304,12 @@ async fn lru_warn_one_shot_per_subscription(mut ctx: djogi::DjogiContext) {
 /// only that the method is reachable through the `refresh_into` return type
 /// without a djogi-side wrapper. This test is a compile-pass verification —
 /// it calls the method and asserts the returned type is usable as a handle.
-#[djogi::djogi_test]
+///
+#[djogi::djogi_test(sync_models = [KnobRow])]
 async fn with_eviction_recovery_method_reachable(mut ctx: djogi::DjogiContext) {
-    setup_knob_row(&mut ctx).await;
-
     let pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
 
     let punnu = ctx
         .punnu::<KnobRow>()
@@ -353,14 +337,12 @@ async fn with_eviction_recovery_method_reachable(mut ctx: djogi::DjogiContext) {
 /// Sassi owns the runtime behavior of periodic full refreshes. Djogi's
 /// contract is that the method is reachable through the `refresh_into` return
 /// type without a djogi-side wrapper.
-#[djogi::djogi_test]
+///
+#[djogi::djogi_test(sync_models = [KnobRow])]
 async fn with_periodic_full_refresh_method_reachable(mut ctx: djogi::DjogiContext) {
-    setup_knob_row(&mut ctx).await;
-
     let pool = ctx
-        .pool()
-        .expect("djogi_test context must have a pool")
-        .clone();
+        .share_pool()
+        .expect("djogi_test context must have a pool");
 
     let punnu = ctx
         .punnu::<KnobRow>()

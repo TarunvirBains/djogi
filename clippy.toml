@@ -1,0 +1,9 @@
+disallowed-methods = [
+    { path = "tokio_postgres::Client::query", reason = "Use djogi's typed query/raw-bypass policy; ordinary tests must use Model::objects()" },
+    { path = "tokio_postgres::Client::execute", reason = "Use djogi's typed mutation/raw-bypass policy; ordinary tests must use Model create/save/delete APIs" },
+    { path = "tokio_postgres::Client::batch_execute", reason = "Use djogi's migration/test-sync helpers or an explicitly documented internal substrate allow" },
+    { path = "tokio_postgres::Client::query_one", reason = "Same as `query`" },
+    { path = "tokio_postgres::Client::query_opt", reason = "Same as `query`" },
+    { path = "tokio_postgres::connect", reason = "Do not connect outside djogi's pool except in documented framework substrate code" },
+    { path = "deadpool::managed::Pool::get", reason = "Use djogi::transaction::atomic and the typed Model surface" },
+]

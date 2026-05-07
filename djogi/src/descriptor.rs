@@ -114,6 +114,17 @@ pub enum FieldSqlType {
     Custom(&'static str),
 }
 
+/// Schema-type bridge for user-defined scalar wrappers.
+///
+/// The model macro maps built-in Rust field types directly to
+/// [`FieldSqlType`] variants. For adopter-defined scalar types whose SQL type
+/// is declared by another Djogi macro, such as [`crate::primary_key!`] custom
+/// IDs or [`crate::DjogiEnum`] enums, the macro falls back to this associated
+/// constant and emits [`FieldSqlType::Custom`].
+pub trait DjogiSqlType {
+    const SQL_TYPE: &'static str;
+}
+
 impl std::fmt::Display for FieldSqlType {
     /// Used by `djogi docs` — produces clean SQL type names (`TEXT`, not
     /// `Text` or `Custom("BYTEA")`). Never change this to forward to

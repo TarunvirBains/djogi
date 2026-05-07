@@ -1,33 +1,15 @@
-//! Smoke test: verify we can connect to Postgres and run a basic query.
+// Smoke test: verify the typed Djogi test harness can create schema and
+// round-trip a model against Postgres.
 
 // figment::Error is a large external type we cannot shrink; these closures
 // return Result<(), figment::Error> as required by figment::Jail::expect_with.
-#![allow(clippy::result_large_err)]
-
 use djogi::config::DjogiConfig;
+use djogi::prelude::*;
 
-#[djogi::djogi_test]
-async fn connects_to_postgres(mut ctx: djogi::DjogiContext) {
-    let row = ctx
-        .__query_one_for_macros("SELECT 1::integer AS val", &[])
-        .await
-        .expect("failed to run SELECT 1");
-    let val: i32 = row.try_get("val").expect("val column should be i32");
-    assert_eq!(val, 1);
-}
-
-#[djogi::djogi_test]
-async fn postgres_version_is_18(mut ctx: djogi::DjogiContext) {
-    let row = ctx
-        .__query_one_for_macros("SELECT version() AS v", &[])
-        .await
-        .expect("failed to get version");
-    let version: String = row.try_get("v").expect("v column should be text");
-    assert!(
-        version.contains("PostgreSQL 18"),
-        "Expected PostgreSQL 18, got: {}",
-        version
-    );
+#[model(table = "smoke_widgets", pk = HeerId)]
+#[derive(Debug, Clone)]
+pub struct SmokeWidget {
+    pub name: String,
 }
 
 #[test]
@@ -59,13 +41,25 @@ fn database_url_env_overrides_toml() {
     });
 }
 
-#[djogi::djogi_test]
-async fn heeranjid_generates_id(mut ctx: djogi::DjogiContext) {
-    // HeeRanjID schema is already installed and node seeded by #[djogi_test] bootstrap.
-    let row = ctx
-        .__query_one_for_macros("SELECT generate_id() AS id", &[])
+#[djogi::djogi_test(sync_models = [SmokeWidget])]
+async fn typed_model_round_trip_uses_postgres(mut ctx: djogi::DjogiContext) {
+    let created = SmokeWidget::create(
+        &mut ctx,
+        SmokeWidget {
+            name: "typed-smoke".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create SmokeWidget");
+
+    assert!(
+        created.id.as_i64() > 0,
+        "DB-generated HeerId must be positive"
+    );
+
+    let reloaded = SmokeWidget::get(&mut ctx, created.id)
         .await
-        .expect("failed to call generate_id()");
-    let id: i64 = row.try_get("id").expect("id column should be i64");
-    assert!(id > 0, "Expected positive HeerId, got: {}", id);
+        .expect("get SmokeWidget");
+    assert_eq!(reloaded.name, "typed-smoke");
 }

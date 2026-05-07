@@ -83,7 +83,7 @@ After implementation work, run `cargo fmt --all` and `cargo clippy --all-targets
 
 Djogi is a Model-first framework — narrow in scope, deep within that scope. It targets **Postgres 18 and later, exclusively** (permanent design decisions — JSONB, HeeRanjId, advisory locks, transactional DDL, `RETURNING`, and latest Postgres features all depend on it; earlier versions explicitly unsupported per `docs/spec/decisions.md`). It does **not** wrap or compete with:
 - **Any web framework (Axum, Warp, Actix, Rocket, Poem, …)** — HTTP routing/middleware/extraction. Djogi's core is web-framework-agnostic; per-framework integrations (extractors that surface `DjogiContext`/`AuthContext` from request state, optional router-merging helpers) ship as opt-in sub-feature flags (`axum`, `warp`, `actix`, etc.). Adopters pick whichever HTTP layer fits their app and enable the matching flag — or none, if they wire integration manually.
-- **`tokio-postgres` + `deadpool-postgres`** — Djogi wraps these into a typed ORM layer (`Model`, `QuerySet`, `FromPgRow`, `ConditionBuilder`) but never hides them — `DjogiContext::raw_query` / `raw_execute` route directly to the underlying `tokio_postgres::Client` and remain the always-available escape hatch.
+- **`tokio-postgres` + `deadpool-postgres`** — Djogi wraps these into a typed ORM layer (`Model`, `QuerySet`, `FromPgRow`, `ConditionBuilder`). Raw SQL remains available as a deliberate escape hatch, gated by the raw SQL bypass harness described in [`docs/spec/raw-sql-escape-hatches.md`](docs/spec/raw-sql-escape-hatches.md).
 - **HeeRanjId** — ID generation. Djogi calls `generate_id()` / `generate_ids(n)` / `generate_ranj_id()`.
 - **Tokio** — async runtime. Used as-is.
 
@@ -105,7 +105,56 @@ Proc macro testing: use `trybuild` for compile-fail cases, `macrotest` for expan
 
 `QuerySet<T>` is lazy — nothing hits the DB until a terminal method (`.fetch_all()`, `.fetch_one()`, etc.). It accumulates a typed `Condition` enum tree. The `ConditionBuilder` walks this tree and emits positional `$n` parameters via `pg::accumulator::SqlAccumulator`, which collects raw SQL fragments + bound values for `tokio_postgres::Client::query`. Djogi owns this layer directly — no third-party query builder.
 
-For queries beyond `QuerySet`, `DjogiContext::raw_query` / `raw_execute` (taking positional `&[&(dyn ToSql + Sync)]` binds) are always available as escape hatches.
+## Raw SQL is djogi's `unsafe`
+
+Raw SQL in djogi is treated culturally the way `unsafe` is in Rust: not
+banned, but always conscious. The mechanism enforces this at compile
+time; the convention enforces it in code review.
+
+**The mechanism.** The raw SQL escape hatches (`raw_execute`,
+`raw_query`, `raw_rows`, `raw_fetch_one`, `raw_scalar`, `raw_ddl`,
+`raw_stream`, `raw_stream_with_fetch_size`) live on the
+`djogi::__bypass::RawAccessExt` trait and are unreachable from
+`DjogiContext` without the bypass attribute. `pool()`, `conn()`,
+`with_client`, and `batch_execute` are similarly gated. Direct use of
+`tokio_postgres::Client` or `deadpool_postgres::Pool` is gated by a
+workspace `clippy::disallowed_methods` lint.
+
+**The bypass attribute.** To use any raw escape - typically in a
+dedicated pin test under `tests/pin/`, or in a deliberately
+unidiomatic helper - decorate the enclosing item:
+
+    #[djogi::deliberately_bypass_convention_with_raw_sql]
+    // JUSTIFICATION (djogi#234): citext column needs case-insensitive
+    // equality; QuerySet doesn't expose LOWER(col) equality yet.
+    async fn my_test(mut ctx: DjogiContext) { ... }
+
+**The `// JUSTIFICATION (djogi#<n>):` convention.** Every use of the
+attribute under `tests/` MUST be paired with a `JUSTIFICATION` comment
+syntactically attached to the decorated item, validated by
+`cargo xtask check-justifications`. The
+issue number references **djogi's** tracker (`djogi#<n>` is GitHub
+cross-repo notation), not your application's - reaching for raw_*
+signals a gap in djogi's typed surface, and that gap belongs to djogi
+to fix.
+
+**Pin tests** under `tests/pin/` use `JUSTIFICATION (PIN): exercises
+raw_<api> itself` instead of an issue number. Pin tests are the
+legitimate carve-out - one per raw API.
+
+**Ordinary tests.** Every other integration test under
+`tests/integration/` must exercise the typed surface: `Model::create`,
+`Model::save`, `Model::delete`, `Model::objects()`,
+`djogi::transaction::atomic`, and `#[djogi::djogi_test(sync_models = [...])]`.
+This repository's tests may not manually reference `djogi::__bypass`; use
+the bypass attribute so the use site stays auditable.
+
+**No ergonomic raw SQL.** djogi will not ship a fluent `ctx.raw().execute(...)`
+shortcut or a `RawSqlBuilder`. Every reach for raw SQL walks through the
+verbose attribute and the justification. Friction is the design.
+
+The harness has no runtime grep gate; the type system, clippy, and the
+xtask validator are the enforcement. See [`docs/spec/raw-sql-escape-hatches.md`](docs/spec/raw-sql-escape-hatches.md).
 
 ### Migration System
 

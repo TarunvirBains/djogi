@@ -66,8 +66,10 @@ pub struct OutboxRow {
     /// `mark_failed` to target the exact row.
     pub id: HeerId,
 
-    /// Primary key of the source application row that triggered this event.
-    pub row_id: i64,
+    /// Primary key of the source application row that triggered this event,
+    /// decoded as text so non-BIGINT source primary keys can flow through the
+    /// worker without losing type information in the database.
+    pub row_id: String,
 
     /// The CRUD action that produced this outbox entry. Matches the
     /// `OutboxAction::as_sql_str()` values: `"create"`, `"save"`, or `"delete"`.
@@ -165,7 +167,7 @@ pub async fn claim_pending(
             LIMIT $1 \
             FOR UPDATE SKIP LOCKED \
          ) \
-         RETURNING id, row_id, action, payload, created_at"
+         RETURNING id, row_id::text, action, payload, created_at"
     );
 
     let batch_size_i64 = batch_size as i64;
@@ -177,7 +179,7 @@ pub async fn claim_pending(
         let id_raw: i64 = row.try_get(0).map_err(|e| {
             DjogiError::Db(DbError::other(format!("claim_pending: decode id: {e}")))
         })?;
-        let row_id: i64 = row.try_get(1).map_err(|e| {
+        let row_id: String = row.try_get(1).map_err(|e| {
             DjogiError::Db(DbError::other(format!("claim_pending: decode row_id: {e}")))
         })?;
         let action: String = row.try_get(2).map_err(|e| {

@@ -1,5 +1,5 @@
 [workspace]
-members = ["djogi", "djogi-macros", "djogi-cli", "djogi-shell", "examples/elephant-tracker"]
+members = ["djogi", "djogi-macros", "djogi-cli", "djogi-shell", "examples/elephant-tracker", "xtask"]
 # Local sibling-repo symlinks (per `reference_sibling_repos.md`) live alongside
 # this workspace as `*-reference` directories. They are gitignored and may
 # point at sibling Rust workspaces (e.g. `sassi-reference -> ../sassi`).
@@ -51,9 +51,10 @@ heeranjid = { version = "0.3.6", features = ["postgres"] }
 # Proc macro
 syn = { version = "2", features = ["full", "extra-traits"] }
 quote = "1"
-proc-macro2 = "1"
+proc-macro2 = { version = "1", features = ["span-locations"] }
 inventory = "0.3"
 darling = "0.20"
+trait-variant = "0.1"
 
 # CLI
 clap = { version = "4", features = ["derive"] }

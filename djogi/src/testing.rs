@@ -59,8 +59,11 @@
 //! in production is negligible, but its entry points are meaningless outside
 //! tests.
 
+#![allow(clippy::disallowed_methods)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::__bypass::RawAccessExt as _;
 use crate::apps::AppRegistry;
 use crate::descriptor::{EnumDescriptor, ModelDescriptor};
 use crate::migrate::diff::{Classification, SchemaOperation};
@@ -601,6 +604,124 @@ pub async fn sync_models(
     for plan in &plans {
         execute_plan(ctx, plan).await?;
     }
+    Ok(())
+}
+
+/// Install the narrow trigger fixture used by the phase4 `save()` integration
+/// test.
+///
+/// This is intentionally not a general-purpose SQL fixture loader. The test
+/// body needs to prove that `Model::save` rehydrates trigger-mutated fields
+/// through `UPDATE ... RETURNING *`, but creating a Postgres trigger is schema
+/// setup rather than typed Djogi behavior. Keeping the raw DDL inside the
+/// framework test harness avoids reopening raw SQL escape hatches in ordinary
+/// integration tests.
+#[doc(hidden)]
+pub async fn install_accounts_balance_increment_trigger_for_test(
+    ctx: &mut DjogiContext,
+) -> Result<(), DjogiError> {
+    ctx.raw_ddl(
+        "CREATE OR REPLACE FUNCTION accounts_balance_increment_trigger() \
+         RETURNS trigger AS $$ \
+         BEGIN NEW.balance := NEW.balance + 1; RETURN NEW; END; \
+         $$ LANGUAGE plpgsql;",
+    )
+    .await?;
+    ctx.raw_ddl("DROP TRIGGER IF EXISTS t_accounts_balance_increment ON accounts;")
+        .await?;
+    ctx.raw_ddl(
+        "CREATE TRIGGER t_accounts_balance_increment \
+         BEFORE UPDATE ON accounts \
+         FOR EACH ROW EXECUTE FUNCTION accounts_balance_increment_trigger();",
+    )
+    .await
+}
+
+/// Minimal outbox row shape used by integration tests.
+///
+/// Runtime outbox tables are framework-owned tables, not ordinary
+/// `#[model]` tables: they carry `id` and `created_at`, but intentionally do
+/// not carry the usual `updated_at` framework column. Tests that need to
+/// inspect outbox rows should use this helper shape instead of declaring a
+/// fake model for `{table}_outbox`.
+#[derive(Debug, Clone)]
+#[doc(hidden)]
+pub struct OutboxRowForTest {
+    /// Primary key of the outbox row itself.
+    pub id: crate::types::HeerId,
+    /// Primary key of the source row, decoded as text to match worker APIs.
+    pub row_id: String,
+    /// CRUD action: `create`, `save`, or `delete`.
+    pub action: String,
+    /// Serialized source-row payload after `outbox = "ignore"` filtering.
+    pub payload: serde_json::Value,
+    /// Worker state, usually `pending` immediately after emission.
+    pub state: String,
+}
+
+fn validate_outbox_table_for_test(table: &str) -> Result<(), DjogiError> {
+    crate::ident::check_plain_ident(table, false).map_err(|error| {
+        DjogiError::Db(DbError::other(format!(
+            "invalid outbox table name {table:?}: {error:?}"
+        )))
+    })
+}
+
+/// Read all rows from a framework-owned outbox table for integration tests.
+#[doc(hidden)]
+pub async fn outbox_rows_for_test(
+    ctx: &mut DjogiContext,
+    table: &str,
+) -> Result<Vec<OutboxRowForTest>, DjogiError> {
+    validate_outbox_table_for_test(table)?;
+    let sql = format!(
+        "SELECT id, row_id::text, action, payload, state \
+         FROM {table} \
+         ORDER BY created_at, id"
+    );
+    let rows = ctx.raw_rows(&sql, &[]).await?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id_raw: i64 = row
+            .try_get(0)
+            .map_err(|e| DjogiError::Db(DbError::other(format!("outbox id decode: {e}"))))?;
+        let id = crate::types::HeerId::from_i64(id_raw).map_err(|e| {
+            DjogiError::Db(DbError::other(format!(
+                "outbox id is not a valid HeerId {id_raw}: {e}"
+            )))
+        })?;
+        let row_id = row
+            .try_get(1)
+            .map_err(|e| DjogiError::Db(DbError::other(format!("outbox row_id decode: {e}"))))?;
+        let action = row
+            .try_get(2)
+            .map_err(|e| DjogiError::Db(DbError::other(format!("outbox action decode: {e}"))))?;
+        let payload = row
+            .try_get(3)
+            .map_err(|e| DjogiError::Db(DbError::other(format!("outbox payload decode: {e}"))))?;
+        let state = row
+            .try_get(4)
+            .map_err(|e| DjogiError::Db(DbError::other(format!("outbox state decode: {e}"))))?;
+
+        out.push(OutboxRowForTest {
+            id,
+            row_id,
+            action,
+            payload,
+            state,
+        });
+    }
+
+    Ok(out)
+}
+
+/// Delete all rows from a framework-owned outbox table for integration tests.
+#[doc(hidden)]
+pub async fn clear_outbox_for_test(ctx: &mut DjogiContext, table: &str) -> Result<(), DjogiError> {
+    validate_outbox_table_for_test(table)?;
+    ctx.raw_execute(&format!("DELETE FROM {table}"), &[])
+        .await?;
     Ok(())
 }
 

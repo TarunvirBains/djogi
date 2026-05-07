@@ -120,8 +120,14 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Raw SQL bypass justifications
+        run: cargo xtask check-justifications
+
+      - name: Raw SQL ordinary test surface
+        run: cargo xtask check-test-surface
+
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --features spatial,outbox,notify,testing -- -D warnings
 
       # cargo-deny only runs when dependencies actually change. The license
       # / advisory check is deterministic given the lockfile, so re-running
@@ -173,6 +179,23 @@ jobs:
         # PostGIS is a runtime dep, not a compile dep). Tracked in
         # issue #80.
         run: cargo test --workspace --exclude elephant-tracker -- --test-threads=1
+
+      - name: Raw SQL bypass pin tests
+        run: >
+          cargo test -p djogi --features testing
+          --test raw_execute_pin
+          --test raw_query_pin
+          --test raw_rows_pin
+          --test raw_fetch_one_pin
+          --test raw_scalar_pin
+          --test raw_ddl_pin
+          --test raw_stream_pin
+          --test raw_stream_with_fetch_size_pin
+          --test raw_pool_access_pin
+          -- --test-threads=1
+
+      - name: Raw SQL compile-fail gate
+        run: cargo test -p djogi --test raw_sql_compile_fail --features testing
 
   # MSRV gate — verifies the code still compiles on the toolchain
   # declared in `workspace.package.rust-version`. The main `check`

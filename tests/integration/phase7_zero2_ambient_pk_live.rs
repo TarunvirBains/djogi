@@ -1,24 +1,24 @@
-//! Phase 7-Zero-2 T4 live + descriptor coverage for ambient PK fields.
-//!
-//! Two independent guarantees are exercised here:
-//!
-//! 1. **Descriptor emission.** Built-in PK-shaped types used outside the
-//!    framework-injected `id` slot lower to the same
-//!    [`FieldSqlType`](djogi::FieldSqlType) the PK-slot field would —
-//!    `HeerId` / `HeerIdRecencyBiased` → `BigInt`,
-//!    `RanjId` / `RanjIdRecencyBiased` → `Uuid`. These four assertions
-//!    run purely off `Model::descriptor()` and do not touch the database
-//!    (the `#[djogi::djogi_test]` harness still spins up a database so
-//!    the assertions live next to the live round-trip test below — this
-//!    keeps every Phase 7-Zero-2 T4 check in one file and matches the
-//!    `phase7_zero2_custom_pk_live.rs` layout).
-//!
-//! 2. **Live round-trip.** A model with one ambient `HeerId` column and
-//!    one ambient `RanjId` column round-trips through `tokio-postgres` /
-//!    `postgres-types` without any PK-slot codec arm: the macro's
-//!    generic user-field path is the same path used for any other
-//!    scalar, and `heeranjid`'s own `ToSql` / `FromSql` impls do the
-//!    wire work.
+// Phase 7-Zero-2 T4 live + descriptor coverage for ambient PK fields.
+//
+// Two independent guarantees are exercised here:
+//
+// 1. **Descriptor emission.** Built-in PK-shaped types used outside the
+//    framework-injected `id` slot lower to the same
+//    [`FieldSqlType`](djogi::FieldSqlType) the PK-slot field would —
+//    `HeerId` / `HeerIdRecencyBiased` → `BigInt`,
+//    `RanjId` / `RanjIdRecencyBiased` → `Uuid`. These four assertions
+//    run purely off `Model::descriptor()` and do not touch the database
+//    (the `#[djogi::djogi_test]` harness still spins up a database so
+//    the assertions live next to the live round-trip test below — this
+//    keeps every Phase 7-Zero-2 T4 check in one file and matches the
+//    `phase7_zero2_custom_pk_live.rs` layout).
+//
+// 2. **Live round-trip.** A model with one ambient `HeerId` column and
+//    one ambient `RanjId` column round-trips through `tokio-postgres` /
+//    `postgres-types` without any PK-slot codec arm: the macro's
+//    generic user-field path is the same path used for any other
+//    scalar, and `heeranjid`'s own `ToSql` / `FromSql` impls do the
+//    wire work.
 
 use djogi::prelude::*;
 use djogi::types::{HeerId, HeerIdRecencyBiased, RanjId, RanjIdRecencyBiased};
@@ -97,38 +97,8 @@ pub struct LiveAmbient {
     pub label: String,
 }
 
-async fn setup_live(ctx: &mut DjogiContext) {
-    // `heerid_next_desc()` is the descending-order single-row wrapper that
-    // `HeerIdDesc::DEFAULT_SQL` points at (see
-    // `djogi/src/primary_key/builtins.rs`). heeranjid installs all its
-    // functions in the `public` schema — there is no `heer.*` namespace —
-    // so qualify nothing and invoke it bare.
-    ctx.raw_execute(
-        "CREATE TABLE phase7_zero2_t4_live_ambient_pk (
-            id           BIGINT      PRIMARY KEY DEFAULT heerid_next_desc(),
-            created_at   TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at   TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            from_heerid  BIGINT      NOT NULL,
-            to_ranjid    UUID        NOT NULL,
-            label        TEXT        NOT NULL
-         )",
-        &[],
-    )
-    .await
-    .expect("CREATE TABLE must succeed");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [LiveAmbient])]
 async fn ambient_heerid_and_ranjid_columns_round_trip(mut ctx: DjogiContext) {
-    setup_live(&mut ctx).await;
-    // `#[djogi_test]` seeds `heer.node_id` at the database level but not
-    // `heer.ranj_node_id` — the latter is a separate session GUC. Seed it
-    // explicitly before any `RanjId::generate*` call (same pattern as
-    // `phase7_zero2_primary_key_generate.rs`).
-    ctx.raw_execute("SELECT set_heer_ranj_node_id(1)", &[])
-        .await
-        .expect("set_heer_ranj_node_id(1) must succeed");
-
     // Pre-generate the two ambient PK values server-side so the test
     // exercises the same `generate_*` paths the framework uses for the
     // `id` slot, just wired onto user columns instead.

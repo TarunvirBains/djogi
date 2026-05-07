@@ -187,7 +187,7 @@ pub struct ColumnSchema {
 
     /// `DEFAULT` expression — raw SQL. Empty `None` denotes no
     /// default. For PK columns with a server-generated default
-    /// (`generate_id()`, `gen_random_uuid()`, ...), this is set
+    /// (`heerid_next()`, `gen_random_uuid()`, ...), this is set
     /// from the descriptor's PK kind via the projection.
     pub default_sql: Option<String>,
 
@@ -645,16 +645,16 @@ pub struct PrimaryKeySchema {
 /// Concrete PK strategy. Mirrors [`crate::descriptor::PkType`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PkKindSchema {
-    /// 64-bit time-ordered, ascending — `BIGINT DEFAULT generate_id()`.
+    /// 64-bit time-ordered, ascending — `BIGINT DEFAULT heerid_next()`.
     HeerId,
     /// 64-bit recency-biased — most-recent-first BTree scans without
     /// a secondary descending index. `BIGINT DEFAULT
-    /// generate_id_desc()`.
+    /// heerid_next_desc()`.
     HeerIdRecencyBiased,
-    /// 128-bit UUIDv8 ascending — `UUID DEFAULT generate_ranj_id()`.
+    /// 128-bit UUIDv8 ascending — `UUID DEFAULT ranjid_next()`.
     RanjId,
     /// 128-bit UUIDv8 recency-biased — `UUID DEFAULT
-    /// generate_ranj_id_desc()`.
+    /// ranjid_next_desc()`.
     RanjIdRecencyBiased,
     /// Postgres `IDENTITY` integer — for lookup / reference tables.
     Serial,

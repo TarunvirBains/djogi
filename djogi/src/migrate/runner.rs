@@ -56,6 +56,7 @@ use std::time::Instant;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
+use crate::__bypass::RawAccessExt as _;
 use crate::config::MigrateConfig;
 use crate::context::DjogiContext;
 use crate::error::{DbError, DjogiError};

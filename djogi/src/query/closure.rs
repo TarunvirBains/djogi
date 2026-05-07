@@ -117,7 +117,7 @@
 //!
 //! ```sql
 //! CREATE TABLE <closure_table> (
-//!     id           BIGINT PRIMARY KEY DEFAULT generate_id(),
+//!     id           BIGINT PRIMARY KEY DEFAULT heerid_next(),
 //!     <source>     <PK type> NOT NULL REFERENCES <source_table>(id) ON DELETE CASCADE,
 //!     <ancestor>   <PK type> NOT NULL REFERENCES <source_table>(id) ON DELETE CASCADE,
 //!     <depth>      INTEGER NOT NULL,

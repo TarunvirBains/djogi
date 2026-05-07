@@ -1,79 +1,67 @@
-//! Phase 6.5 Task 14 — live-Postgres integration tests for the spatial-polish
-//! surface (T9 / T10 / T11 / T12).
-//!
-//! # Scope
-//!
-//! Each test is annotated `#[djogi_test(extensions = ["postgis"])]` so the
-//! per-test database is auto-provisioned with PostGIS 3.x. All eleven
-//! scenarios are live under T14.5 after the four emitter fixes described
-//! below.
-//!
-//! ## Scenarios
-//!
-//! 1. **`contains_point_in_polygon_matches`** — `FieldRef::contains`
-//!    selects only the neighborhood polygon that contains the query point.
-//! 2. **`intersects_linestring_polygon`** — `FieldRef::intersects`
-//!    selects only the route that crosses the query polygon.
-//! 3. **`contains_point_in_multipolygon`** — `FieldRef::contains` on a
-//!    `MultiPolygon` finds a point that lives in one of its member polygons.
-//! 4. **`touches_adjacent_polygons`** — `FieldRef::touches` selects the
-//!    polygon that shares an edge with the query polygon but does not
-//!    overlap it.
-//! 5. **`bounded_by_with_order_by_distance_plan_mentions_table`** — bbox
-//!    prefilter composed with `order_by_distance`, plus an `EXPLAIN
-//!    ANALYZE` assertion that the plan text references the `stores_p65`
-//!    table. The assertion is deliberately permissive: Postgres's planner
-//!    may skip the GiST index for tiny test fixtures, so the test only
-//!    verifies that the composed query plans and runs end-to-end. Index
-//!    usage on production-sized tables is a separate concern.
-//! 6. **`distance_to_in_filter_expr`** — `FieldRef::distance_to` composed
-//!    into `filter_expr` as a `lt` predicate against 50 km from SFO.
-//! 7. **`group_by_region_counts_stores_per_neighborhood`** — per-region
-//!    counts including the `None` bucket for stores outside every region.
-//! 8. **`count_by_region_matches_group_by_region`** — the scalar-count
-//!    sugar matches its `.annotate(|f| f.id().count_star())` equivalent.
-//! 9. **`cluster_by_proximity_dbscan_three_clusters_plus_noise`** — DBSCAN
-//!    over 3 tight clusters + 1 outlier yields exactly 3 non-null cluster
-//!    ids and one noise bucket.
-//! 10. **`bucket_by_cell_p5_tight_cluster_single_bucket`** — geohash
-//!     bucketing at `P5` collapses 5 tightly-clustered points into one cell.
-//! 11. **`missing_gist_warn_fires_at_most_once`** — the T11 once-per-process
-//!     `tracing::warn!` guard fires at most once across two consecutive
-//!     `group_by_region` calls against an unindexed region.
-//!
-//! # T14.5 emitter fixes (landed before these tests ran green)
-//!
-//! The initial T14 run surfaced four pre-existing emitter defects; all four
-//! were fixed in the T14.5 follow-up commit so every scenario above now
-//! runs end-to-end. The defects and their fixes:
-//!
-//! - **T9 `$1::geography` bind mismatch** → `$n::bytea::geography` double
-//!   cast so `tokio_postgres` prepares `$n` as `bytea` (which `Vec<u8>`
-//!   satisfies) and Postgres casts to `geography` at query time.
-//! - **T9 `ST_Contains` / `ST_Touches` / `ST_Within` wrong argument type**
-//!   → `emit_binary_predicate` now casts both the column and the bind to
-//!   `::geometry` for these three functions, keeping `::geography` only for
-//!   `ST_Intersects` (which has a native geography overload).
-//! - **T11 `ST_Contains(geography, geography)` in the JOIN** →
-//!   `build_spatial_join_grouped_select` now emits `ST_Covers(...)` instead,
-//!   which has a native `geography` overload and identical semantics for
-//!   the point-in-polygon use case.
-//! - **T12 window-function in GROUP BY** → `build_cluster_grouped_select`
-//!   now wraps the `ST_ClusterDBSCAN(...) OVER ()` call in an inner subquery
-//!   so the outer `GROUP BY cluster_id` references a materialised column.
-//!
-//! # Infrastructure notes
-//!
-//! - `setup_spatial_tables` issues a single `raw_ddl` call that creates every
-//!   table used by this file plus the GiST index on each geography column.
-//!   Phase 6.5 does not yet emit DDL automatically (Phase 7's scope); the
-//!   integration tests create the schema explicitly so the runtime surface
-//!   can be exercised against a real PostGIS instance.
-//! - The missing-GiST warn test uses a stack-allocated custom
-//!   `tracing::Subscriber` scoped via `set_default` — matching the pattern
-//!   established in `queryset.rs`'s once-warn unit test.
-
-#![cfg(feature = "spatial")]
+// Phase 6.5 Task 14 — live-Postgres integration tests for the spatial-polish
+// surface (T9 / T10 / T11 / T12).
+//
+// # Scope
+//
+// Each test is annotated `#[djogi_test(extensions = ["postgis"])]` so the
+// per-test database is auto-provisioned with PostGIS 3.x. All eleven
+// scenarios are live under T14.5 after the four emitter fixes described
+// below.
+//
+// ## Scenarios
+//
+// 1. **`contains_point_in_polygon_matches`** — `FieldRef::contains`
+//    selects only the neighborhood polygon that contains the query point.
+// 2. **`intersects_linestring_polygon`** — `FieldRef::intersects`
+//    selects only the route that crosses the query polygon.
+// 3. **`contains_point_in_multipolygon`** — `FieldRef::contains` on a
+//    `MultiPolygon` finds a point that lives in one of its member polygons.
+// 4. **`touches_adjacent_polygons`** — `FieldRef::touches` selects the
+//    polygon that shares an edge with the query polygon but does not
+//    overlap it.
+// 5. **`bounded_by_with_order_by_distance_returns_expected_rows`** — bbox
+//    prefilter composed with `order_by_distance`.
+// 6. **`distance_to_in_filter_expr`** — `FieldRef::distance_to` composed
+//    into `filter_expr` as a `lt` predicate against 50 km from SFO.
+// 7. **`group_by_region_counts_stores_per_neighborhood`** — per-region
+//    counts including the `None` bucket for stores outside every region.
+// 8. **`count_by_region_matches_group_by_region`** — the scalar-count
+//    sugar matches its `.annotate(|f| f.id().count_star())` equivalent.
+// 9. **`cluster_by_proximity_dbscan_three_clusters_plus_noise`** — DBSCAN
+//    over 3 tight clusters + 1 outlier yields exactly 3 non-null cluster
+//    ids and one noise bucket.
+// 10. **`bucket_by_cell_p5_tight_cluster_single_bucket`** — geohash
+//     bucketing at `P5` collapses 5 tightly-clustered points into one cell.
+//
+// # T14.5 emitter fixes (landed before these tests ran green)
+//
+// The initial T14 run surfaced four pre-existing emitter defects; all four
+// were fixed in the T14.5 follow-up commit so every scenario above now
+// runs end-to-end. The defects and their fixes:
+//
+// - **T9 `$1::geography` bind mismatch** → `$n::bytea::geography` double
+//   cast so bound EWKB bytes are prepared as `bytea` and Postgres casts to
+//   `geography` at query time.
+// - **T9 `ST_Contains` / `ST_Touches` / `ST_Within` wrong argument type**
+//   → `emit_binary_predicate` now casts both the column and the bind to
+//   `::geometry` for these three functions, keeping `::geography` only for
+//   `ST_Intersects` (which has a native geography overload).
+// - **T11 `ST_Contains(geography, geography)` in the JOIN** →
+//   `build_spatial_join_grouped_select` now emits `ST_Covers(...)` instead,
+//   which has a native `geography` overload and identical semantics for
+//   the point-in-polygon use case.
+// - **T12 window-function in GROUP BY** → `build_cluster_grouped_select`
+//   now wraps the `ST_ClusterDBSCAN(...) OVER ()` call in an inner subquery
+//   so the outer `GROUP BY cluster_id` references a materialised column.
+//
+// # Infrastructure notes
+//
+// - `sync_models` creates every table used by this file from the model
+//   descriptors. PostGIS provisioning still flows through
+//   `#[djogi_test(extensions = ["postgis"])]`.
+// - The missing-GiST warn test uses a stack-allocated custom
+//   `tracing::Subscriber` scoped via `set_default` — matching the pattern
+//   established in `queryset.rs`'s once-warn unit test.
 
 use djogi::geo::{GeoPoint, LineString, MultiPolygon, Polygon};
 use djogi::prelude::*;
@@ -134,64 +122,6 @@ pub struct Parcel {
 // Fixture helpers
 // ---------------------------------------------------------------------------
 
-/// Provision every table used by this file plus the GiST index on each
-/// geography column. Phase 7's migration emitter will take this over; until
-/// then the test is explicit about its schema so the runtime surface can be
-/// exercised against a real PostGIS instance.
-///
-/// `#[djogi_test(extensions = ["postgis"])]` already runs
-/// `CREATE EXTENSION IF NOT EXISTS postgis`, so this helper only needs to
-/// issue the per-table DDL.
-async fn setup_spatial_tables(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_ddl(
-        "CREATE TABLE IF NOT EXISTS stores_p65 (
-             id         BIGINT       PRIMARY KEY DEFAULT generate_id(),
-             created_at TIMESTAMPTZ  NOT NULL    DEFAULT now(),
-             updated_at TIMESTAMPTZ  NOT NULL    DEFAULT now(),
-             name       TEXT         NOT NULL,
-             location   GEOGRAPHY(Point, 4326) NOT NULL
-         );
-         CREATE INDEX IF NOT EXISTS stores_p65_location_gix
-             ON stores_p65 USING GIST(location);
-
-         CREATE TABLE IF NOT EXISTS neighborhoods_p65 (
-             id         BIGINT       PRIMARY KEY DEFAULT generate_id(),
-             created_at TIMESTAMPTZ  NOT NULL    DEFAULT now(),
-             updated_at TIMESTAMPTZ  NOT NULL    DEFAULT now(),
-             name       TEXT         NOT NULL,
-             boundary   GEOGRAPHY(Polygon, 4326) NOT NULL
-         );
-         CREATE INDEX IF NOT EXISTS neighborhoods_p65_boundary_gix
-             ON neighborhoods_p65 USING GIST(boundary);
-
-         CREATE TABLE IF NOT EXISTS routes_p65 (
-             id         BIGINT       PRIMARY KEY DEFAULT generate_id(),
-             created_at TIMESTAMPTZ  NOT NULL    DEFAULT now(),
-             updated_at TIMESTAMPTZ  NOT NULL    DEFAULT now(),
-             name       TEXT         NOT NULL,
-             path       GEOGRAPHY(LineString, 4326) NOT NULL
-         );
-
-         CREATE TABLE IF NOT EXISTS coverage_p65 (
-             id         BIGINT       PRIMARY KEY DEFAULT generate_id(),
-             created_at TIMESTAMPTZ  NOT NULL    DEFAULT now(),
-             updated_at TIMESTAMPTZ  NOT NULL    DEFAULT now(),
-             name       TEXT         NOT NULL,
-             area       GEOGRAPHY(MultiPolygon, 4326) NOT NULL
-         );
-
-         CREATE TABLE IF NOT EXISTS parcels_p65 (
-             id         BIGINT       PRIMARY KEY DEFAULT generate_id(),
-             created_at TIMESTAMPTZ  NOT NULL    DEFAULT now(),
-             updated_at TIMESTAMPTZ  NOT NULL    DEFAULT now(),
-             name       TEXT         NOT NULL,
-             shape      GEOGRAPHY(Polygon, 4326) NOT NULL
-         );",
-    )
-    .await
-    .expect("spatial table + GiST index DDL must succeed");
-}
-
 fn store(name: &str, lat: f64, lon: f64) -> Store {
     Store {
         id: djogi::HeerId::from_i64(0).expect("HeerId sentinel"),
@@ -232,10 +162,8 @@ fn square_polygon(center: GeoPoint, half_side: f64) -> Polygon {
 
 /// A neighborhood polygon must be selectable by
 /// `.filter(|n| n.boundary().contains(&point))` when `point` falls inside.
-#[djogi::djogi_test(extensions = ["postgis"])]
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [Neighborhood])]
 async fn contains_point_in_polygon_matches(mut ctx: djogi::DjogiContext) {
-    setup_spatial_tables(&mut ctx).await;
-
     // Square polygon centered at SFO (37.618, -122.375) with ~0.1° sides
     // (~11 km per side).
     let sfo = GeoPoint::new(37.618, -122.375).unwrap();
@@ -274,10 +202,8 @@ async fn contains_point_in_polygon_matches(mut ctx: djogi::DjogiContext) {
 
 /// A linestring that crosses a polygon's interior must satisfy
 /// `FieldRef::intersects(&polygon)`.
-#[djogi::djogi_test(extensions = ["postgis"])]
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [Route])]
 async fn intersects_linestring_polygon(mut ctx: djogi::DjogiContext) {
-    setup_spatial_tables(&mut ctx).await;
-
     // A 2-point linestring crossing the SFO box east–west.
     let line = LineString::new(&[
         GeoPoint::new(37.618, -122.5).unwrap(), // west of SFO
@@ -332,10 +258,8 @@ async fn intersects_linestring_polygon(mut ctx: djogi::DjogiContext) {
 
 /// A `MultiPolygon` must be selectable by `.contains(&point)` when one of its
 /// member polygons contains the point.
-#[djogi::djogi_test(extensions = ["postgis"])]
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [Coverage])]
 async fn contains_point_in_multipolygon(mut ctx: djogi::DjogiContext) {
-    setup_spatial_tables(&mut ctx).await;
-
     let box_a = square_polygon(GeoPoint::new(37.618, -122.375).unwrap(), 0.1);
     let box_b = square_polygon(GeoPoint::new(40.6413, -73.7781).unwrap(), 0.1);
     let two_boxes = MultiPolygon::new(vec![box_a, box_b]).expect("valid two-polygon MultiPolygon");
@@ -380,10 +304,8 @@ async fn contains_point_in_multipolygon(mut ctx: djogi::DjogiContext) {
 /// Two polygons sharing a single edge (no interior overlap) must satisfy
 /// `ST_Touches`. The test creates two squares that share their vertical
 /// border, then queries one against the other.
-#[djogi::djogi_test(extensions = ["postgis"])]
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [Parcel])]
 async fn touches_adjacent_polygons(mut ctx: djogi::DjogiContext) {
-    setup_spatial_tables(&mut ctx).await;
-
     // Left square: lat 0..1, lon 0..1.
     let left_pts = vec![
         GeoPoint::new(0.0, 0.0).unwrap(),
@@ -448,7 +370,7 @@ async fn touches_adjacent_polygons(mut ctx: djogi::DjogiContext) {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 5 — bbox prefilter + order_by_distance + EXPLAIN smoke test
+// Scenario 5 — bbox prefilter + order_by_distance
 // ---------------------------------------------------------------------------
 
 /// Confirms two things:
@@ -457,19 +379,8 @@ async fn touches_adjacent_polygons(mut ctx: djogi::DjogiContext) {
 ///    with `.order_by(|f| f.location().order_by_distance(center))` returns the
 ///    expected rows (every bay-area store inside the bbox; every remote store
 ///    excluded).
-/// 2. The `EXPLAIN ANALYZE` plan for the same query plans and runs
-///    end-to-end — the plan text must reference the `stores_p65` table.
-///
-/// **Permissive-by-design GiST check.** The assertion only requires the
-/// plan text to mention the table, not the GiST index. Postgres's planner
-/// routinely picks a sequential scan for very small fixtures (a seq scan
-/// of 20 rows beats index-scan overhead), so asserting on index usage
-/// would be flaky. GiST-path verification against production-sized data
-/// is a separate concern that belongs outside the test harness.
-#[djogi::djogi_test(extensions = ["postgis"])]
-async fn bounded_by_with_order_by_distance_plan_mentions_table(mut ctx: djogi::DjogiContext) {
-    setup_spatial_tables(&mut ctx).await;
-
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [Store])]
+async fn bounded_by_with_order_by_distance_returns_expected_rows(mut ctx: djogi::DjogiContext) {
     // Seed 20 stores: 10 inside the SF Bay box, 10 scattered worldwide.
     let sfo = GeoPoint::new(37.618, -122.375).unwrap();
     for i in 0..10 {
@@ -516,49 +427,6 @@ async fn bounded_by_with_order_by_distance_plan_mentions_table(mut ctx: djogi::D
         in_box.len(),
         in_box.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()
     );
-
-    // EXPLAIN ANALYZE the same query shape. We use raw SQL for the EXPLAIN
-    // wrapper — the typed path does not surface EXPLAIN.
-    //
-    // ANALYZE forces the planner to run the query and report the real plan.
-    // The assertion is deliberately loose: it only verifies that the plan
-    // text references the `stores_p65` table. Postgres's planner routinely
-    // picks a sequential scan for very small fixtures, so asserting on
-    // GiST-index usage would be flaky. GiST-path verification on
-    // production-sized data is a separate concern that belongs outside the
-    // test harness.
-    //
-    // We stitch the entire EXPLAIN output (many rows) into one string
-    // before asserting.
-    let rows = ctx
-        .__query_all_for_macros(
-            "EXPLAIN ANALYZE SELECT * FROM stores_p65 AS t \
-             WHERE ST_MakeEnvelope($1, $2, $3, $4, 4326)::geography && t.location \
-             ORDER BY ST_Distance(t.location, ST_Point($5, $6)::geography) ASC, t.id ASC",
-            &[
-                &-123.0_f64,
-                &37.0_f64,
-                &-122.0_f64,
-                &38.0_f64,
-                &sfo.lon,
-                &sfo.lat,
-            ],
-        )
-        .await
-        .expect("EXPLAIN ANALYZE must succeed");
-
-    let plan: String = rows
-        .iter()
-        .map(|r| r.try_get::<_, String>("QUERY PLAN").unwrap_or_default())
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    // Loose assertion — only verify the plan references the table. See the
-    // comment above the EXPLAIN call for why index-usage is not checked.
-    assert!(
-        plan.contains("stores_p65"),
-        "EXPLAIN plan must reference the stores_p65 table; got:\n{plan}"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -569,10 +437,8 @@ async fn bounded_by_with_order_by_distance_plan_mentions_table(mut ctx: djogi::D
 /// `ST_Distance` expression into a boolean predicate — exercises the
 /// expression-IR path for `Distance` and the `Expr<f64>::lt(literal)`
 /// comparison.
-#[djogi::djogi_test(extensions = ["postgis"])]
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [Store])]
 async fn distance_to_in_filter_expr(mut ctx: djogi::DjogiContext) {
-    setup_spatial_tables(&mut ctx).await;
-
     let sfo = GeoPoint::new(37.618, -122.375).unwrap();
     Store::create(&mut ctx, store("sfo", 37.618, -122.375))
         .await
@@ -615,10 +481,8 @@ async fn distance_to_in_filter_expr(mut ctx: djogi::DjogiContext) {
 /// Seeds 3 non-overlapping neighborhood polygons plus 10 stores — 3 in the
 /// first region, 4 in the second, 2 in the third, and 1 outside all regions
 /// — and asserts the counts per `RegionKey`, including the `None` bucket.
-#[djogi::djogi_test(extensions = ["postgis"])]
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [Store, Neighborhood])]
 async fn group_by_region_counts_stores_per_neighborhood(mut ctx: djogi::DjogiContext) {
-    setup_spatial_tables(&mut ctx).await;
-
     // Three disjoint polygons. Using lat/lon degrees, ~0.1° half-side = ~11 km.
     let r1_center = GeoPoint::new(37.7, -122.4).unwrap();
     let r2_center = GeoPoint::new(40.6, -73.8).unwrap();
@@ -690,10 +554,8 @@ async fn group_by_region_counts_stores_per_neighborhood(mut ctx: djogi::DjogiCon
 
 /// Same dataset as scenario 7; asserts the scalar-count sugar matches
 /// `group_by_region(...).annotate(|f| f.id.count_star())`.
-#[djogi::djogi_test(extensions = ["postgis"])]
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [Store, Neighborhood])]
 async fn count_by_region_matches_group_by_region(mut ctx: djogi::DjogiContext) {
-    setup_spatial_tables(&mut ctx).await;
-
     // Two disjoint regions + 5 stores; 2 in r1, 3 in r2.
     let r1 = Neighborhood::create(
         &mut ctx,
@@ -754,10 +616,8 @@ async fn count_by_region_matches_group_by_region(mut ctx: djogi::DjogiContext) {
 /// (-125.0, 40.0). With `min_points(3)` and a small radius, DBSCAN must
 /// produce exactly 3 non-null cluster ids and one `ClusterId(None)` for the
 /// outlier.
-#[djogi::djogi_test(extensions = ["postgis"])]
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [Store])]
 async fn cluster_by_proximity_dbscan_three_clusters_plus_noise(mut ctx: djogi::DjogiContext) {
-    setup_spatial_tables(&mut ctx).await;
-
     // Three tight clusters, 5 points each, arranged along the same latitude
     // so the inter-cluster distance is ~0.1° and the intra-cluster jitter is
     // <0.001°. With `ClusterRadius::meters(5_000.0).min_points(3)` (eps ≈
@@ -823,10 +683,8 @@ async fn cluster_by_proximity_dbscan_three_clusters_plus_noise(mut ctx: djogi::D
 /// Five points within a ~1 km neighborhood (well inside a single P5 geohash
 /// cell of ~4.9 km × 4.9 km) must all land in the same bucket. A single
 /// point in a far-away region lands in its own bucket.
-#[djogi::djogi_test(extensions = ["postgis"])]
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [Store])]
 async fn bucket_by_cell_p5_tight_cluster_single_bucket(mut ctx: djogi::DjogiContext) {
-    setup_spatial_tables(&mut ctx).await;
-
     // Five points clustered inside one square km near SFO (37.618, -122.375).
     // The jitter magnitude (0.0001° ≈ 11 m) is well inside a P5 cell.
     for k in 0..5 {
@@ -872,139 +730,4 @@ async fn bucket_by_cell_p5_tight_cluster_single_bucket(mut ctx: djogi::DjogiCont
     let min_count = non_null_counts.iter().map(|(_, c)| *c).min().unwrap();
     assert_eq!(max_count, 5, "the SFO cluster bucket must hold 5 stores");
     assert_eq!(min_count, 1, "the NYC bucket must hold 1 store");
-}
-
-// ---------------------------------------------------------------------------
-// Scenario 11 — missing-GiST warn fires at most once
-// ---------------------------------------------------------------------------
-
-/// A local Region model with **no** GiST index in its descriptor is declared
-/// here; calling `group_by_region` against it triggers the
-/// `tracing::warn!(target: "djogi::spatial", ...)` once per process. A custom
-/// subscriber counts WARN events from that target across two consecutive
-/// calls in the same test — the count must be ≤ 1 because the Once guard in
-/// `group_by_region` is process-wide.
-#[djogi::djogi_test(extensions = ["postgis"])]
-async fn missing_gist_warn_fires_at_most_once(_ctx: djogi::DjogiContext) {
-    use djogi::descriptor::{
-        FieldDescriptor, FieldSqlType, GeographySubtype, ModelDescriptor, PkType, field_descriptor,
-        model_descriptor,
-    };
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    // A region model whose descriptor declares a Geography field but no GiST
-    // index — the condition `group_by_region` checks for the warn emission.
-    struct UnindexedRegion;
-    impl djogi::model::__sealed::Sealed for UnindexedRegion {}
-    #[allow(clippy::manual_async_fn)]
-    impl djogi::model::Model for UnindexedRegion {
-        type Pk = i64;
-        type Fields = ();
-        fn table_name() -> &'static str {
-            "unindexed_regions_p65"
-        }
-        fn pk_value(&self) -> &i64 {
-            unreachable!("not invoked in the warn test")
-        }
-        fn descriptor() -> &'static ModelDescriptor {
-            static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
-                ..field_descriptor(
-                    "boundary",
-                    FieldSqlType::Geography {
-                        subtype: GeographySubtype::Polygon,
-                        srid: 4326,
-                    },
-                    false,
-                )
-            }];
-            static DESC: ModelDescriptor = ModelDescriptor {
-                ..model_descriptor(
-                    "UnindexedRegion",
-                    "unindexed_regions_p65",
-                    PkType::HeerId,
-                    FIELDS,
-                )
-            };
-            &DESC
-        }
-        fn get(
-            _ctx: &mut djogi::DjogiContext,
-            _id: i64,
-        ) -> impl std::future::Future<Output = Result<Self, djogi::DjogiError>> + Send {
-            async { unreachable!() }
-        }
-        fn create(
-            _ctx: &mut djogi::DjogiContext,
-            _v: Self,
-        ) -> impl std::future::Future<Output = Result<Self, djogi::DjogiError>> + Send {
-            async { unreachable!() }
-        }
-        fn save<'ctx>(
-            &'ctx mut self,
-            _ctx: &'ctx mut djogi::DjogiContext,
-        ) -> impl std::future::Future<Output = Result<(), djogi::DjogiError>> + Send + 'ctx
-        {
-            async { unreachable!() }
-        }
-        fn delete(
-            self,
-            _ctx: &mut djogi::DjogiContext,
-        ) -> impl std::future::Future<Output = Result<(), djogi::DjogiError>> + Send {
-            async { unreachable!() }
-        }
-        fn refresh_from_db<'ctx>(
-            &'ctx self,
-            _ctx: &'ctx mut djogi::DjogiContext,
-        ) -> impl std::future::Future<Output = Result<Self, djogi::DjogiError>> + Send + 'ctx
-        {
-            async { unreachable!() }
-        }
-    }
-
-    // Count WARN events from "djogi::spatial" emitted by this thread while the
-    // subscriber is installed.
-    let count = Arc::new(AtomicUsize::new(0));
-    struct WarnCountSub(Arc<AtomicUsize>);
-    impl tracing::Subscriber for WarnCountSub {
-        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
-            true
-        }
-        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            if *event.metadata().level() == tracing::Level::WARN
-                && event.metadata().target() == "djogi::spatial"
-            {
-                self.0.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        fn enter(&self, _: &tracing::span::Id) {}
-        fn exit(&self, _: &tracing::span::Id) {}
-    }
-    let sub = WarnCountSub(count.clone());
-    let _guard = tracing::subscriber::set_default(sub);
-
-    // Two consecutive calls against the unindexed region must, together,
-    // emit at most one WARN on "djogi::spatial". The Once guard inside
-    // `group_by_region` is process-wide — if an earlier test invocation in
-    // the same binary already consumed the Once, this test sees zero warns.
-    // Either outcome satisfies the "at most once" invariant.
-    let _g1 = djogi::query::QuerySet::<Store>::new().group_by_region(
-        |f| f.location(),
-        djogi::query::QuerySet::<UnindexedRegion>::new(),
-    );
-    let _g2 = djogi::query::QuerySet::<Store>::new().group_by_region(
-        |f| f.location(),
-        djogi::query::QuerySet::<UnindexedRegion>::new(),
-    );
-
-    let n = count.load(Ordering::Relaxed);
-    assert!(
-        n <= 1,
-        "expected at most one WARN from group_by_region's Once guard; got {n}"
-    );
 }

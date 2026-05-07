@@ -256,8 +256,8 @@ pub fn render_model_page(desc: &ModelDescriptor) -> String {
     // Codex round-1 A-3 — the T8 docs contract requires a `Default`
     // column. `FieldDescriptor` itself does not carry a default-SQL
     // string; the projection layer (`migrate::projection`) injects
-    // the PK column's `generate_id()` / `generate_id_desc()` /
-    // `generate_ranj_id()` / `generate_ranj_id_desc()` /
+    // the PK column's `heerid_next()` / `heerid_next_desc()` /
+    // `ranjid_next()` / `ranjid_next_desc()` /
     // `<custom>` default at the snapshot boundary. The renderer
     // mirrors that policy so the generated reference page reflects
     // what the operator will actually see on the live table — for
@@ -436,7 +436,7 @@ fn display_index_target(target: &IndexTarget) -> String {
 ///
 /// The descriptor surface intentionally does NOT carry a per-column
 /// default-SQL string — Phase 1 / Phase 5 chose to push the
-/// PK-default expansion (`generate_id()`, `generate_id_desc()`, …)
+/// PK-default expansion (`heerid_next()`, `heerid_next_desc()`, …)
 /// down into the projection layer instead so the snapshot stays the
 /// single source of truth for `default_sql`. The renderer mirrors
 /// that policy here: the `id` column's default is derived from the
@@ -663,17 +663,17 @@ mod tests {
         assert!(body.contains("WHERE `deleted_at IS NULL`"));
     }
 
-    /// Codex round-1 A-3 — the `Default` column must surface the
-    /// PK column's `generate_id_desc()` (or whichever PK kind the
-    /// model declares) and an em-dash for every other field.
+    /// The `Default` column surfaces the PK column's
+    /// `heerid_next_desc()` (or whichever PK kind the model declares)
+    /// and an em-dash for every other field.
     #[test]
     fn render_model_page_default_column_renders_pk_default_and_em_dash() {
-        let user = fixture_users(); // PkType::HeerIdDesc → generate_id_desc()
+        let user = fixture_users(); // PkType::HeerIdDesc → heerid_next_desc()
         let body = render_model_page(&user);
         // The PK row carries the matching DEFAULT expression.
         assert!(
-            body.contains("`generate_id_desc()`"),
-            "PK default must render as `generate_id_desc()` for HeerIdDesc; \
+            body.contains("`heerid_next_desc()`"),
+            "PK default must render as `heerid_next_desc()` for HeerIdDesc; \
              body was:\n{body}",
         );
         // The non-PK row (`email`) carries an em-dash.
@@ -686,13 +686,13 @@ mod tests {
             "non-PK rows must render Default as em-dash; got:\n{email_row}",
         );
 
-        // A `PkType::HeerId` model emits `generate_id()` (ascending
+        // A `PkType::HeerId` model emits `heerid_next()` (ascending
         // variant — projection-side parity).
         let post = fixture_global_post();
         let body = render_model_page(&post);
         assert!(
-            body.contains("`generate_id()`"),
-            "PK default must render as `generate_id()` for HeerId; \
+            body.contains("`heerid_next()`"),
+            "PK default must render as `heerid_next()` for HeerId; \
              body was:\n{body}",
         );
     }

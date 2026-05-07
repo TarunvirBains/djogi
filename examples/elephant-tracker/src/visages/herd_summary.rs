@@ -25,6 +25,7 @@
 //! callers request it; no denormalisation drift.
 
 use crate::models::Herd;
+use djogi::__bypass::RawAccessExt as _;
 use djogi::prelude::*;
 
 /// Cheap projection of [`Herd`]. Constructed via `HerdSummary::from(&herd)`

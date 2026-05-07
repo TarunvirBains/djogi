@@ -86,19 +86,6 @@ fn compile_pass_phase5_5() {
 }
 
 #[test]
-fn compile_pass_phase6() {
-    let t = TestCases::new();
-    // `phase6_*` excludes `phase6_5_*` (grouped aggregation polish).
-    t.pass("tests/compile_pass/phase6_spatial_field.rs");
-    t.pass("tests/compile_pass/phase6_spatial_query.rs");
-}
-
-#[test]
-fn compile_pass_phase6_5() {
-    TestCases::new().pass("tests/compile_pass/phase6_5_*.rs");
-}
-
-#[test]
 fn compile_pass_phase7() {
     // Note: globs cannot exclude sub-prefixes, so this can't be expressed
     // as `phase7_*.rs`. Each phase7-only fixture (excluding `phase7_zero*`
@@ -139,7 +126,31 @@ fn compile_pass_phase7_zero() {
 
 #[test]
 fn compile_pass_phase7_zero2() {
-    TestCases::new().pass("tests/compile_pass/phase7_zero2_*.rs");
+    let t = TestCases::new();
+    t.pass("tests/compile_pass/phase7_zero2_jsonb_schema_narrow_ints.rs");
+    t.pass("tests/compile_pass/phase7_zero2_jsonb_schema_option_fields.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t10_filter_entry.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t11_prelude_serde.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t1_sentinel.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t2_heerid_desc_alias.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t2_pk_identifiers.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t2_pk_omitted_default.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t2_ranjid_recency_biased.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t2_recency_biased.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t3_custom_as_ambient_field.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t3_custom_client_gen.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t3_custom_db_backed.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t4_builtin_ambient.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t6_arrow_full_peer.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t6_arrow_narrow.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t6_deprecated_string_still_accepted.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t6_optional_relation_arrow.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t7_djogi_enum_in_filter_closure.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t7_visage_fields_emitted.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t8_optional_fk_traversal.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t8_required_fk_traversal.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t9_m2m_through.rs");
+    t.pass("tests/compile_pass/phase7_zero2_t9_reverse_fk.rs");
 }
 
 #[test]

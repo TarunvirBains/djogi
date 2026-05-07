@@ -1,42 +1,41 @@
-//! Phase 8α T2.4 integration tests: `#[model(auditable)]` opt-in.
-//!
-//! What this file pins:
-//!
-//! 1. `#[model(auditable)]` emits an `impl ::djogi::Auditable for #ident`
-//!    block whose `created_by()` getter returns `Option<&str>` borrowed
-//!    from the adopter-declared `created_by: Option<String>` field.
-//! 2. The attribute does **not** inject the field — the adopter declares
-//!    it explicitly (Path B per Phase 8 v3 line 866; preserved across
-//!    the T2.2→T2.4 surface pivot).
-//! 3. The `Auditable` trait is convention-sealed only; the macro routes
-//!    the impl through the public `::djogi::Auditable` re-export, not
-//!    through `::djogi::__private::*`.
-//! 4. The macro-emitted `__djogi_auditable_populate` helper runs from
-//!    `Model::create` between `auto_set_tenant` and the user
-//!    `before_create` hook (spec lines 1032 / 990). It captures
-//!    `format!("{}", ctx.auth().user_id)` (Display, not Debug) when
-//!    auth is present; leaves `created_by = None` when auth is absent
-//!    (no warn-on-null per spec line 1049); never clobbers a user-set
-//!    value (`if self.created_by.is_none()` guard, spec line 1062).
-//!
-//! # 2026-05-03 surface pivot
-//!
-//! T2.2 (commit 939b9ab) shipped `#[derive(Auditable)]` as the opt-in;
-//! T2.4 supersedes it with `#[model(auditable)]` per spec line 1037
-//! (locked 2026-05-03, lens). Tests 1+2 below port the T2.2 success
-//! cases to the new attribute surface; tests 3-5 are new for T2.4.
-//!
-//! # One model per test — coherence
-//!
-//! `impl Auditable for T` is a coherent impl: only one per `T` per crate.
-//! Each test therefore declares its own model type sharing a single
-//! `audit_*` table shape.
-//!
-//! # Fixture strategy
-//!
-//! Each test provisions its own table inline via `ctx.raw_execute(...)`.
-//! `#[djogi::djogi_test]` already installs HeeRanjID schema, seeds node
-//! 1, and sets `heer.node_id = '1'` before the test body runs.
+// Phase 8α T2.4 integration tests: `#[model(auditable)]` opt-in.
+//
+// What this file pins:
+//
+// 1. `#[model(auditable)]` emits an `impl ::djogi::Auditable for #ident`
+//    block whose `created_by()` getter returns `Option<&str>` borrowed
+//    from the adopter-declared `created_by: Option<String>` field.
+// 2. The attribute does **not** inject the field — the adopter declares
+//    it explicitly (Path B per Phase 8 v3 line 866; preserved across
+//    the T2.2→T2.4 surface pivot).
+// 3. The `Auditable` trait is convention-sealed only; the macro routes
+//    the impl through the public `::djogi::Auditable` re-export, not
+//    through `::djogi::__private::*`.
+// 4. The macro-emitted `__djogi_auditable_populate` helper runs from
+//    `Model::create` between `auto_set_tenant` and the user
+//    `before_create` hook (spec lines 1032 / 990). It captures
+//    `format!("{}", ctx.auth().user_id)` (Display, not Debug) when
+//    auth is present; leaves `created_by = None` when auth is absent
+//    (no warn-on-null per spec line 1049); never clobbers a user-set
+//    value (`if self.created_by.is_none()` guard, spec line 1062).
+//
+// # 2026-05-03 surface pivot
+//
+// T2.2 (commit 939b9ab) shipped `#[derive(Auditable)]` as the opt-in;
+// T2.4 supersedes it with `#[model(auditable)]` per spec line 1037
+// (locked 2026-05-03, lens). Tests 1+2 below port the T2.2 success
+// cases to the new attribute surface; tests 3-5 are new for T2.4.
+//
+// # One model per test — coherence
+//
+// `impl Auditable for T` is a coherent impl: only one per `T` per crate.
+// Each test therefore declares its own model type sharing a single
+// `audit_*` table shape.
+//
+// # Fixture strategy
+//
+// Each test provisions its model through `sync_models`, then exercises
+// the typed model and trait APIs only.
 
 use djogi::Auditable;
 use djogi::auth::AuthContext;
@@ -57,25 +56,8 @@ pub struct AuditPresent {
     pub created_by: Option<String>,
 }
 
-async fn setup_audit_present(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE audit_present (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            note        TEXT        NOT NULL,
-            created_by  TEXT
-        )",
-        &[],
-    )
-    .await
-    .expect("create audit_present table");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [AuditPresent])]
 async fn auditable_getter_returns_created_by(mut ctx: djogi::DjogiContext) {
-    setup_audit_present(&mut ctx).await;
-
     let row = AuditPresent::create(
         &mut ctx,
         AuditPresent {
@@ -125,25 +107,8 @@ pub struct AuditAbsent {
     pub created_by: Option<String>,
 }
 
-async fn setup_audit_absent(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE audit_absent (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            note        TEXT        NOT NULL,
-            created_by  TEXT
-        )",
-        &[],
-    )
-    .await
-    .expect("create audit_absent table");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [AuditAbsent])]
 async fn created_by_returns_none_when_unset(mut ctx: djogi::DjogiContext) {
-    setup_audit_absent(&mut ctx).await;
-
     let row = AuditAbsent::create(
         &mut ctx,
         AuditAbsent {
@@ -179,25 +144,8 @@ pub struct AuditWithAuth {
     pub created_by: Option<String>,
 }
 
-async fn setup_audit_with_auth(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE audit_with_auth (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            note        TEXT        NOT NULL,
-            created_by  TEXT
-        )",
-        &[],
-    )
-    .await
-    .expect("create audit_with_auth table");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [AuditWithAuth])]
 async fn created_by_populated_with_auth(mut ctx: djogi::DjogiContext) {
-    setup_audit_with_auth(&mut ctx).await;
-
     // Construct a HeerId via `from_i64` so we know the exact Display
     // form. The populator emits `format!("{}", a.user_id)` so the
     // captured string is whatever `<HeerId as Display>::fmt` produces.
@@ -242,21 +190,6 @@ pub struct AuditNoAuth {
     pub created_by: Option<String>,
 }
 
-async fn setup_audit_no_auth(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE audit_no_auth (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            note        TEXT        NOT NULL,
-            created_by  TEXT
-        )",
-        &[],
-    )
-    .await
-    .expect("create audit_no_auth table");
-}
-
 /// Helper: ensure the `tracing_test` global subscriber is installed and return
 /// the byte length of the global log buffer at this point. Mirrors the pattern
 /// in `tests/integration/phase5_5_auth.rs::init_log_capture`.
@@ -278,10 +211,8 @@ fn logs_since(since: usize) -> String {
     std::str::from_utf8(&buf[since..]).unwrap_or("").to_owned()
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [AuditNoAuth])]
 async fn created_by_null_without_auth(mut ctx: djogi::DjogiContext) {
-    setup_audit_no_auth(&mut ctx).await;
-
     // Snapshot the log buffer BEFORE the create so we only inspect lines
     // emitted by the populator path.
     let since = init_log_capture();
@@ -335,25 +266,8 @@ pub struct AuditOverride {
     pub created_by: Option<String>,
 }
 
-async fn setup_audit_override(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_execute(
-        "CREATE TABLE audit_override (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            note        TEXT        NOT NULL,
-            created_by  TEXT
-        )",
-        &[],
-    )
-    .await
-    .expect("create audit_override table");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [AuditOverride])]
 async fn created_by_user_override_wins(mut ctx: djogi::DjogiContext) {
-    setup_audit_override(&mut ctx).await;
-
     // Attach auth so the populator WOULD capture user_id if the guard
     // were missing — this proves the guard, not the absence of auth.
     let user_id = HeerId::from_i64(99).expect("valid HeerId");

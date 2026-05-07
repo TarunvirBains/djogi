@@ -669,8 +669,27 @@ where
                     })
                 },
             )?;
+            if m.has_outbox {
+                let outbox = project_outbox_table(m, &type_to_pk_sql);
+                insert_unique(
+                    &mut tables,
+                    outbox.table.clone(),
+                    outbox,
+                    |existing, duplicate| {
+                        Err(ProjectionError::DuplicateTableInBucket {
+                            bucket: bucket.clone(),
+                            table: duplicate.table.clone(),
+                            first_type: existing.table.clone(),
+                            second_type: format!("{}::outbox", m.type_name),
+                        })
+                    },
+                )?;
+            }
             for idx in m.indexes {
                 indexes.push(project_index(idx, m.table_name));
+            }
+            if let Some(fts) = &m.fts {
+                indexes.push(project_fts_index(m.table_name, fts));
             }
         }
         indexes.sort_by(|a, b| {
@@ -722,11 +741,14 @@ fn project_model(
     type_to_pk_sql: &BTreeMap<&str, String>,
     deferrability_by_field: &BTreeMap<(&str, &str), (bool, bool)>,
 ) -> TableSchema {
-    let columns: Vec<ColumnSchema> = m
+    let mut columns: Vec<ColumnSchema> = m
         .fields
         .iter()
         .map(|f| project_column(f, m, type_to_table, type_to_pk_sql, deferrability_by_field))
         .collect();
+    if let Some(fts) = &m.fts {
+        columns.push(project_fts_column(fts));
+    }
 
     let primary_key = project_primary_key(&m.pk_type);
 
@@ -751,6 +773,139 @@ fn project_model(
         rls_enabled: m.tenant_key.is_some(),
         table: m.table_name.to_string(),
         tenant_key: m.tenant_key.map(|s| s.to_string()),
+    }
+}
+
+fn project_fts_column(fts: &FtsDescriptor) -> ColumnSchema {
+    ColumnSchema {
+        check: None,
+        default_sql: None,
+        foreign_key: None,
+        generated: Some(GeneratedColumnSchema {
+            expression: fts_generated_expression(fts),
+            stored: true,
+        }),
+        identity: None,
+        index_type: None,
+        indexed: false,
+        max_length: None,
+        name: fts.column.to_string(),
+        nullable: true,
+        on_delete: None,
+        outbox_exclude: false,
+        rationale: None,
+        relation_kind: None,
+        renamed_from: None,
+        sequence_within: None,
+        sql_type: "TSVECTOR".to_string(),
+        unique: false,
+    }
+}
+
+fn fts_generated_expression(fts: &FtsDescriptor) -> String {
+    let sources = crate::fts::parse_source_columns(fts.source)
+        .expect("macro-emitted FtsDescriptor source columns are validated");
+    let source_expr = sources
+        .iter()
+        .map(|column| quote_ident_expr(column))
+        .collect::<Vec<_>>()
+        .join(" || ' ' || ");
+    format!("to_tsvector('{}', {source_expr})", fts.dictionary)
+}
+
+fn quote_ident_expr(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 2);
+    out.push('"');
+    for b in name.as_bytes() {
+        if *b == b'"' {
+            out.push('"');
+            out.push('"');
+        } else {
+            out.push(*b as char);
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn project_outbox_table(
+    m: &ModelDescriptor,
+    type_to_pk_sql: &BTreeMap<&str, String>,
+) -> TableSchema {
+    let row_id_sql_type = type_to_pk_sql
+        .get(m.type_name)
+        .cloned()
+        .unwrap_or_else(|| pk_sql_type_text(&m.pk_type));
+    let table = format!("{}_outbox", m.table_name);
+
+    TableSchema {
+        app: m.app.map(|s| s.to_string()),
+        columns: vec![
+            outbox_column("id", "BIGINT", Some("heerid_next()")),
+            outbox_column("row_id", &row_id_sql_type, None),
+            outbox_column("action", "TEXT", None),
+            outbox_column("payload", "JSONB", None),
+            outbox_column("created_at", "TIMESTAMPTZ", Some("now()")),
+            outbox_column("state", "TEXT", Some("'pending'"))
+                .with_check("state IN ('pending', 'processing', 'published', 'failed')"),
+            outbox_column("leased_until", "TIMESTAMPTZ", None).nullable(),
+            outbox_column("retry_count", "INTEGER", Some("0")),
+            outbox_column("failed_reason", "TEXT", None).nullable(),
+        ],
+        exclusion_constraints: Vec::new(),
+        fts: None,
+        is_through: false,
+        moved_from_app: None,
+        partition: None,
+        primary_key: PrimaryKeySchema {
+            columns: vec!["id".to_string()],
+            kind: PkKindSchema::HeerId,
+        },
+        rationale: None,
+        renamed_from: None,
+        rls_enabled: false,
+        table,
+        tenant_key: None,
+    }
+}
+
+fn outbox_column(name: &str, sql_type: &str, default_sql: Option<&str>) -> ColumnSchema {
+    ColumnSchema {
+        check: None,
+        default_sql: default_sql.map(str::to_string),
+        foreign_key: None,
+        generated: None,
+        identity: None,
+        index_type: None,
+        indexed: false,
+        max_length: None,
+        name: name.to_string(),
+        nullable: false,
+        on_delete: None,
+        outbox_exclude: false,
+        rationale: None,
+        relation_kind: None,
+        renamed_from: None,
+        sequence_within: None,
+        sql_type: sql_type.to_string(),
+        unique: false,
+    }
+}
+
+trait OutboxColumnExt {
+    fn nullable(self) -> Self;
+    fn with_check(self, check: &str) -> Self;
+}
+
+impl OutboxColumnExt for ColumnSchema {
+    fn nullable(mut self) -> Self {
+        self.nullable = true;
+        self
+    }
+
+    fn with_check(mut self, check: &str) -> Self {
+        self.check = Some(check.to_string());
+        self
     }
 }
 
@@ -1002,10 +1157,10 @@ fn project_primary_key(pk: &PkType) -> PrimaryKeySchema {
 
 pub(crate) fn pk_default_sql(pk: &PkType) -> Option<String> {
     match pk {
-        PkType::HeerId => Some("generate_id()".to_string()),
-        PkType::HeerIdDesc => Some("generate_id_desc()".to_string()),
-        PkType::RanjId => Some("generate_ranj_id()".to_string()),
-        PkType::RanjIdDesc => Some("generate_ranj_id_desc()".to_string()),
+        PkType::HeerId => Some("heerid_next()".to_string()),
+        PkType::HeerIdDesc => Some("heerid_next_desc()".to_string()),
+        PkType::RanjId => Some("ranjid_next()".to_string()),
+        PkType::RanjIdDesc => Some("ranjid_next_desc()".to_string()),
         PkType::Serial => None,
         PkType::None => None,
         PkType::Composite(_) => None,
@@ -1020,6 +1175,41 @@ fn project_fts(f: &FtsDescriptor) -> FtsSchema {
         dictionary: f.dictionary.to_string(),
         source: f.source.to_string(),
     }
+}
+
+fn project_fts_index(table: &str, fts: &FtsDescriptor) -> IndexSchema {
+    IndexSchema {
+        extension_dependency: None,
+        include: Vec::new(),
+        index_type: IndexTypeSchema::Gin,
+        kind: IndexKindSchema::NonUnique,
+        name: fts_index_name(table, fts.column),
+        nulls_not_distinct: false,
+        predicate: None,
+        requires_out_of_transaction: false,
+        table: table.to_string(),
+        target: IndexTargetSchema::Columns(vec![IndexColumnSchema {
+            name: fts.column.to_string(),
+            nulls: IndexNullsOrderSchema::Default,
+            opclass: None,
+            order: IndexOrderSchema::Asc,
+        }]),
+    }
+}
+
+fn fts_index_name(table: &str, column: &str) -> String {
+    let full = format!("{table}_{column}_gin");
+    if full.len() <= 63 {
+        return full;
+    }
+
+    use std::hash::{BuildHasher, BuildHasherDefault, Hasher};
+    let mut h =
+        BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default().build_hasher();
+    h.write(full.as_bytes());
+    let digest = format!("{:08x}", h.finish() as u32);
+    let stem: String = full.as_bytes()[..54].iter().map(|b| *b as char).collect();
+    format!("{stem}_{digest}")
 }
 
 fn project_partition(p: &PartitionSpec) -> PartitionSchema {
@@ -1578,7 +1768,27 @@ mod tests {
     }
 
     #[test]
-    fn pk_default_sql_is_generate_id_desc_for_heer_id_desc() {
+    fn pk_default_sql_uses_canonical_heeranjid_functions() {
+        assert_eq!(
+            pk_default_sql(&PkType::HeerId).as_deref(),
+            Some("heerid_next()")
+        );
+        assert_eq!(
+            pk_default_sql(&PkType::HeerIdDesc).as_deref(),
+            Some("heerid_next_desc()")
+        );
+        assert_eq!(
+            pk_default_sql(&PkType::RanjId).as_deref(),
+            Some("ranjid_next()")
+        );
+        assert_eq!(
+            pk_default_sql(&PkType::RanjIdDesc).as_deref(),
+            Some("ranjid_next_desc()")
+        );
+    }
+
+    #[test]
+    fn pk_default_sql_is_heerid_next_desc_for_heer_id_desc_projection() {
         static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
             ..field_descriptor("id", FieldSqlType::BigInt, false)
         }];
@@ -1594,7 +1804,172 @@ mod tests {
         )
         .expect("ok");
         let id_col = &buckets[&empty_global()].models["widgets"].columns[0];
-        assert_eq!(id_col.default_sql.as_deref(), Some("generate_id_desc()"));
+        assert_eq!(id_col.default_sql.as_deref(), Some("heerid_next_desc()"));
+    }
+
+    #[test]
+    fn fts_projection_synthesizes_generated_column_and_gin_index() {
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                ..field_descriptor("title", FieldSqlType::Text, false)
+            },
+            FieldDescriptor {
+                ..field_descriptor("body", FieldSqlType::Text, false)
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            fts: Some(FtsDescriptor {
+                column: "search",
+                source: "title, body",
+                dictionary: "english",
+            }),
+            ..synth_model("book", "Book")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+
+        let global = &buckets[&empty_global()];
+        let table = &global.models["book"];
+        let search = table
+            .columns
+            .iter()
+            .find(|column| column.name == "search")
+            .expect("generated search column");
+        assert_eq!(search.sql_type, "TSVECTOR");
+        assert_eq!(
+            search.generated.as_ref().map(|g| g.expression.as_str()),
+            Some("to_tsvector('english', \"title\" || ' ' || \"body\")")
+        );
+        assert!(search.generated.as_ref().is_some_and(|g| g.stored));
+
+        assert_eq!(global.indexes.len(), 1);
+        let index = &global.indexes[0];
+        assert_eq!(index.name, "book_search_gin");
+        assert_eq!(index.index_type, IndexTypeSchema::Gin);
+        assert_eq!(
+            index.target,
+            IndexTargetSchema::Columns(vec![IndexColumnSchema {
+                name: "search".to_string(),
+                nulls: IndexNullsOrderSchema::Default,
+                opclass: None,
+                order: IndexOrderSchema::Asc,
+            }])
+        );
+    }
+
+    #[test]
+    fn outbox_projection_synthesizes_sibling_table_for_heerid_pk() {
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
+        }];
+        let m = ModelDescriptor {
+            pk_type: PkType::HeerId,
+            fields: FIELDS,
+            has_outbox: true,
+            ..synth_model("widgets", "Widget")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let models = &buckets[&empty_global()].models;
+        let names: Vec<&str> = models.keys().map(String::as_str).collect();
+        assert_eq!(names, vec!["widgets", "widgets_outbox"]);
+
+        let outbox = &models["widgets_outbox"];
+        assert_eq!(outbox.table, "widgets_outbox");
+        assert_eq!(outbox.columns[0].name, "id");
+        assert_eq!(outbox.columns[0].sql_type, "BIGINT");
+        assert_eq!(
+            outbox.columns[0].default_sql.as_deref(),
+            Some("heerid_next()")
+        );
+        assert_eq!(outbox.columns[1].name, "row_id");
+        assert_eq!(outbox.columns[1].sql_type, "BIGINT");
+        assert_eq!(outbox.columns[2].name, "action");
+        assert_eq!(outbox.columns[2].sql_type, "TEXT");
+        assert_eq!(outbox.columns[3].name, "payload");
+        assert_eq!(outbox.columns[3].sql_type, "JSONB");
+        assert_eq!(outbox.columns[4].name, "created_at");
+        assert_eq!(outbox.columns[4].sql_type, "TIMESTAMPTZ");
+        assert_eq!(outbox.columns[4].default_sql.as_deref(), Some("now()"));
+        assert_eq!(outbox.columns[5].name, "state");
+        assert_eq!(outbox.columns[5].sql_type, "TEXT");
+        assert_eq!(outbox.columns[5].default_sql.as_deref(), Some("'pending'"));
+        assert_eq!(
+            outbox.columns[5].check.as_deref(),
+            Some("state IN ('pending', 'processing', 'published', 'failed')"),
+        );
+        assert_eq!(outbox.columns[6].name, "leased_until");
+        assert!(outbox.columns[6].nullable);
+        assert_eq!(outbox.columns[7].name, "retry_count");
+        assert_eq!(outbox.columns[7].default_sql.as_deref(), Some("0"));
+        assert_eq!(outbox.columns[8].name, "failed_reason");
+        assert!(outbox.columns[8].nullable);
+    }
+
+    #[test]
+    fn outbox_projection_uses_uuid_row_id_for_ranjid_pk() {
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("id", FieldSqlType::Uuid, false)
+        }];
+        let m = ModelDescriptor {
+            pk_type: PkType::RanjId,
+            fields: FIELDS,
+            has_outbox: true,
+            ..synth_model("events", "Event")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let outbox = &buckets[&empty_global()].models["events_outbox"];
+        assert_eq!(outbox.columns[1].name, "row_id");
+        assert_eq!(outbox.columns[1].sql_type, "UUID");
+    }
+
+    #[test]
+    fn outbox_projection_uses_custom_row_id_sql_type() {
+        const CUSTOM_PK: crate::descriptor::CustomPrimaryKeyKind =
+            crate::descriptor::CustomPrimaryKeyKind {
+                type_name: "crate::ids::WidgetId",
+                sql_type: "CITEXT",
+                default_sql: "make_widget_id()",
+            };
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("id", FieldSqlType::Citext, false)
+        }];
+        let m = ModelDescriptor {
+            pk_type: PkType::Custom(CUSTOM_PK),
+            fields: FIELDS,
+            has_outbox: true,
+            ..synth_model("custom_widgets", "CustomWidget")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let outbox = &buckets[&empty_global()].models["custom_widgets_outbox"];
+        assert_eq!(outbox.columns[1].name, "row_id");
+        assert_eq!(outbox.columns[1].sql_type, "CITEXT");
     }
 
     /// #86 — Serial PK must emit auto-increment IDENTITY clause via

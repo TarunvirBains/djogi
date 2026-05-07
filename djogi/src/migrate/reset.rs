@@ -529,6 +529,7 @@ enum HistoricalCaptureError {
 /// Only `Applied` / `Faked` / `Baseline` rows participate — `Pending`,
 /// `Failed`, `RolledBack` do not represent migrations whose effect
 /// the live DB carries forward.
+#[allow(clippy::disallowed_methods)]
 async fn capture_historical_apply_order(
     database_url: &str,
 ) -> Result<BTreeMap<(BucketKey, String), u64>, HistoricalCaptureError> {
@@ -674,6 +675,7 @@ fn build_replay_plan(
 /// maintenance database, issues both statements via `batch_execute`
 /// (the simple-query protocol — Postgres refuses to prepare DROP /
 /// CREATE DATABASE), and returns once both succeed.
+#[allow(clippy::disallowed_methods)]
 async fn drop_and_create_database(maintenance_url: &str, database: &str) -> Result<(), ResetError> {
     let (client, conn) = tokio_postgres::connect(maintenance_url, NoTls)
         .await

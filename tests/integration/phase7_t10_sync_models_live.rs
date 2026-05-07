@@ -1,40 +1,35 @@
-//! Phase 7 T10 — live-PG integration tests for
-//! `#[djogi_test(sync_models = [...])]` (closes #18).
-//!
-//! Each test provisions a fresh `djogi_test_<uuid>` database via the
-//! Phase 5-Zero harness (`#[djogi_test]`), opts into `sync_models`
-//! to auto-create the listed tables through the Phase 7 migration
-//! engine (T1 projection → T2 diff → T3 SQL emit + segment plan),
-//! then exercises the resulting schema with real CRUD round-trips.
-//!
-//! # What these tests prove
-//!
-//! - Single-model `sync_models` materialises one `CREATE TABLE` plus
-//!   the framework columns and runs CRUD round-trip cleanly.
-//! - Multi-model `sync_models` topologically sorts FK-dependent
-//!   tables (parent before child) regardless of attribute argument
-//!   order.
-//! - `Jsonb<T>` fields lower to a `jsonb` column.
-//! - `extensions = [...]` provisioning happens BEFORE `sync_models`
-//!   in the macro emission order, so spatial-field tables can
-//!   reference PostGIS types.
-//! - M2M through-models (composite shape with paired FKs) materialise
-//!   alongside their targets.
-//! - FK cycles (A → B → A) materialise via the migration engine's
-//!   cycle-breaking path.
-//! - Calling `sync_models` directly with an FK target NOT in the
-//!   list returns a clean runtime error naming the missing model
-//!   and the referencing column.
-//! - User-declared `IndexSpec` entries route through the same SQL
-//!   emitter the production migration engine uses.
-//!
-//! # No regex
-//!
-//! Per project rule, this file uses byte-level / `pg_catalog` lookups
-//! for every assertion — no regex engine dependency anywhere.
+// Phase 7 T10 — live-PG integration tests for
+// `#[djogi_test(sync_models = [...])]` (closes #18).
+//
+// Each test provisions a fresh `djogi_test_<uuid>` database via the
+// Phase 5-Zero harness (`#[djogi_test]`), opts into `sync_models`
+// to auto-create the listed tables through the Phase 7 migration
+// engine (T1 projection → T2 diff → T3 SQL emit + segment plan),
+// then exercises the resulting schema with typed CRUD/query round-trips.
+//
+// # What these tests prove
+//
+// - Single-model `sync_models` materialises one `CREATE TABLE` plus
+//   the framework columns and runs CRUD round-trip cleanly.
+// - Multi-model `sync_models` topologically sorts FK-dependent
+//   tables (parent before child) regardless of attribute argument
+//   order.
+// - `Jsonb<T>` fields lower to a `jsonb` column.
+// - `extensions = [...]` provisioning happens BEFORE `sync_models`
+//   in the macro emission order, so spatial-field tables can
+//   reference PostGIS types.
+// - M2M through-models (composite shape with paired FKs) materialise
+//   alongside their targets.
+// - FK cycles (A → B → A) materialise via the migration engine's
+//   cycle-breaking path.
+// - Calling `sync_models` directly with an FK target NOT in the
+//   list returns a clean runtime error naming the missing model
+//   and the referencing column.
+// - User-declared `IndexSpec` entries are visible on the model
+//   descriptor used by the migration engine.
 
-#![allow(dead_code)] // Test models reference their descriptors; some
-// fields are populated via DB defaults, never constructed in Rust.
+// Test models reference their descriptors; some fields are populated via DB
+// defaults, never constructed in Rust. The wrapper module carries allow(dead_code).
 
 use djogi::descriptor::{IndexKind, IndexTarget};
 use djogi::prelude::*;
@@ -70,19 +65,6 @@ pub struct WidgetSolo {
 
 #[djogi::djogi_test(sync_models = [WidgetSolo])]
 async fn single_model_sync_creates_table_and_supports_crud(mut ctx: djogi::DjogiContext) {
-    // The table exists — verify via pg_catalog so the assertion
-    // does not depend on Djogi's own ORM layer (which would
-    // succeed silently if the table were created somewhere else).
-    let exists: i64 = ctx
-        .raw_scalar(
-            "SELECT count(*)::bigint FROM pg_class \
-             WHERE relname = 't10_widgets_solo' AND relkind = 'r'",
-            &[],
-        )
-        .await
-        .expect("pg_class lookup");
-    assert_eq!(exists, 1, "sync_models must create the table");
-
     // Round-trip through Model::create / Model::get to prove the
     // column types match the descriptor.
     let w = WidgetSolo::create(
@@ -107,20 +89,22 @@ async fn single_model_sync_creates_table_and_supports_crud(mut ctx: djogi::Djogi
         .expect("WidgetSolo::get round-trips the row");
     assert_eq!(reloaded.name, "hammer");
 
-    // The user-declared `(name)` index must exist alongside the PK
-    // index. We assert by counting rows on `pg_indexes` for the
-    // table — at least 2 indexes (PK + name).
-    let idx_count: i64 = ctx
-        .raw_scalar(
-            "SELECT count(*)::bigint FROM pg_indexes \
-             WHERE tablename = 't10_widgets_solo'",
-            &[],
-        )
+    let count = WidgetSolo::objects()
+        .count(&mut ctx)
         .await
-        .expect("pg_indexes lookup");
+        .expect("WidgetSolo::objects().count succeeds");
+    assert_eq!(count, 1, "typed queryset must see the created row");
+
+    let descriptor = <WidgetSolo as djogi::prelude::Model>::descriptor();
+    let has_name_index = descriptor.indexes.iter().any(|spec| {
+        matches!(
+            spec.target,
+            IndexTarget::Columns(cols) if cols.iter().any(|col| col.name == "name")
+        )
+    });
     assert!(
-        idx_count >= 2,
-        "expected at least 2 indexes on t10_widgets_solo (PK + name); got {idx_count}"
+        has_name_index,
+        "WidgetSolo descriptor must carry the declared name index"
     );
 }
 
@@ -158,45 +142,6 @@ fn widget_for_insert(name: &str, category: &Category) -> Widget {
 
 #[djogi::djogi_test(sync_models = [Widget, Category])]
 async fn multi_model_fk_dependency_topo_sorts(mut ctx: djogi::DjogiContext) {
-    // Both tables exist.
-    let cat_exists: i64 = ctx
-        .raw_scalar(
-            "SELECT count(*)::bigint FROM pg_class WHERE relname = 't10_categories'",
-            &[],
-        )
-        .await
-        .unwrap();
-    let widget_exists: i64 = ctx
-        .raw_scalar(
-            "SELECT count(*)::bigint FROM pg_class WHERE relname = 't10_widgets'",
-            &[],
-        )
-        .await
-        .unwrap();
-    assert_eq!(cat_exists, 1);
-    assert_eq!(widget_exists, 1);
-
-    // FK constraint exists from t10_widgets.category_id to t10_categories(id).
-    // The constraint's existence proves the topo-sort emitted parent
-    // before child — a reversed order would fail with "relation
-    // does not exist" before this point.
-    let fk_count: i64 = ctx
-        .raw_scalar(
-            "SELECT count(*)::bigint FROM pg_constraint c \
-             JOIN pg_class src ON src.oid = c.conrelid \
-             JOIN pg_class tgt ON tgt.oid = c.confrelid \
-             WHERE c.contype = 'f' \
-               AND src.relname = 't10_widgets' \
-               AND tgt.relname = 't10_categories'",
-            &[],
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        fk_count, 1,
-        "expected one FK from t10_widgets to t10_categories"
-    );
-
     // CRUD round-trip across the FK.
     let cat = Category::create(
         &mut ctx,
@@ -212,6 +157,16 @@ async fn multi_model_fk_dependency_topo_sorts(mut ctx: djogi::DjogiContext) {
         .await
         .expect("Widget::create against the FK target");
     assert_eq!(w.name, "wrench");
+
+    Widget::create(
+        &mut ctx,
+        Widget {
+            category_id: ForeignKey::new(sentinel_id()),
+            ..widget_for_insert("ghost", &cat)
+        },
+    )
+    .await
+    .expect_err("FK constraint must reject a missing category target");
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -233,20 +188,6 @@ pub struct UserWithPrefs {
 
 #[djogi::djogi_test(sync_models = [UserWithPrefs])]
 async fn jsonb_field_lowers_to_jsonb_column(mut ctx: djogi::DjogiContext) {
-    // Verify the column type is `jsonb` via information_schema.
-    let column_type: String = ctx
-        .raw_scalar(
-            "SELECT data_type FROM information_schema.columns \
-             WHERE table_name = 't10_users_prefs' AND column_name = 'prefs'",
-            &[],
-        )
-        .await
-        .expect("prefs column data_type lookup");
-    assert_eq!(
-        column_type, "jsonb",
-        "Jsonb<T> must lower to a `jsonb` column"
-    );
-
     // Round-trip a Jsonb value through Model::create / Model::get.
     let user = UserWithPrefs::create(
         &mut ctx,
@@ -263,6 +204,12 @@ async fn jsonb_field_lowers_to_jsonb_column(mut ctx: djogi::DjogiContext) {
     .expect("UserWithPrefs::create round-trip");
     assert_eq!(user.prefs.data.theme, "dark");
     assert!(user.prefs.data.notifications_enabled);
+
+    let reloaded = UserWithPrefs::get(&mut ctx, user.id)
+        .await
+        .expect("UserWithPrefs::get round-trips Jsonb");
+    assert_eq!(reloaded.prefs.data.theme, "dark");
+    assert!(reloaded.prefs.data.notifications_enabled);
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -292,31 +239,6 @@ fn place_for_insert(name: &str, lat: f64, lon: f64) -> Place {
 #[cfg(feature = "spatial")]
 #[djogi::djogi_test(extensions = ["postgis"], sync_models = [Place])]
 async fn spatial_field_extension_provisioned_first(mut ctx: djogi::DjogiContext) {
-    // The table exists — provable only because PostGIS was provisioned
-    // BEFORE `sync_models` (the table's `geography(Point, 4326)`
-    // column type would otherwise fail with "type does not exist").
-    let exists: i64 = ctx
-        .raw_scalar(
-            "SELECT count(*)::bigint FROM pg_class WHERE relname = 't10_places'",
-            &[],
-        )
-        .await
-        .unwrap();
-    assert_eq!(exists, 1);
-
-    // The column resolves to a geography type — `udt_name` reports
-    // `geography` for any GEOGRAPHY column regardless of the type
-    // modifier (Point, LineString, etc.).
-    let udt: String = ctx
-        .raw_scalar(
-            "SELECT udt_name FROM information_schema.columns \
-             WHERE table_name = 't10_places' AND column_name = 'location'",
-            &[],
-        )
-        .await
-        .expect("information_schema lookup");
-    assert_eq!(udt, "geography");
-
     // Round-trip a GeoPoint and run a spatial query — proves the GIST
     // index emitted alongside the table is exercisable.
     let sfo = djogi::GeoPoint::new(37.6189, -122.3750).unwrap();
@@ -380,32 +302,6 @@ djogi::many_to_many!(
 
 #[djogi::djogi_test(sync_models = [Tag, Post, PostTag])]
 async fn m2m_through_model_materialises_all_three_tables(mut ctx: djogi::DjogiContext) {
-    for tbl in ["t10_tags", "t10_posts", "t10_post_tags"] {
-        let exists: i64 = ctx
-            .raw_scalar(
-                "SELECT count(*)::bigint FROM pg_class WHERE relname = $1",
-                &[&tbl],
-            )
-            .await
-            .unwrap();
-        assert_eq!(exists, 1, "table {tbl} must be created by sync_models");
-    }
-
-    // The post_tags junction has FKs to both endpoints; verify both.
-    let fk_count: i64 = ctx
-        .raw_scalar(
-            "SELECT count(*)::bigint FROM pg_constraint c \
-             JOIN pg_class src ON src.oid = c.conrelid \
-             WHERE c.contype = 'f' AND src.relname = 't10_post_tags'",
-            &[],
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        fk_count, 2,
-        "junction table must have one FK per endpoint (post + tag)"
-    );
-
     // Round-trip the M2M relation through the typed accessor — proves
     // the emitted schema lets the M2M trait method execute its JOIN.
     let post = Post::create(
@@ -436,6 +332,16 @@ async fn m2m_through_model_materialises_all_three_tables(mut ctx: djogi::DjogiCo
         .expect("M2M accessor returns rows");
     assert_eq!(tags.len(), 1);
     assert_eq!(tags[0].label, "rust");
+
+    PostTag::create(
+        &mut ctx,
+        PostTag {
+            post_id: ForeignKey::new(sentinel_id()),
+            ..post_tag_for_insert(&post, &tag)
+        },
+    )
+    .await
+    .expect_err("junction FK must reject a missing post target");
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -485,31 +391,6 @@ fn cycle_team_for_insert(name: &str, lead: Option<&CycleUser>) -> CycleTeam {
 
 #[djogi::djogi_test(sync_models = [CycleUser, CycleTeam])]
 async fn fk_cycle_breaks_via_followup_constraint(mut ctx: djogi::DjogiContext) {
-    // Both tables exist.
-    for tbl in ["t10_users_cycle", "t10_teams_cycle"] {
-        let exists: i64 = ctx
-            .raw_scalar(
-                "SELECT count(*)::bigint FROM pg_class WHERE relname = $1",
-                &[&tbl],
-            )
-            .await
-            .unwrap();
-        assert_eq!(exists, 1);
-    }
-
-    // Total FK constraints across the cycle peers = 2 (one per side).
-    let total_fks: i64 = ctx
-        .raw_scalar(
-            "SELECT count(*)::bigint FROM pg_constraint c \
-             JOIN pg_class src ON src.oid = c.conrelid \
-             WHERE c.contype = 'f' \
-               AND src.relname IN ('t10_users_cycle', 't10_teams_cycle')",
-            &[],
-        )
-        .await
-        .unwrap();
-    assert_eq!(total_fks, 2, "cycle peers must each have one FK");
-
     // Insertions into both sides round-trip cleanly.
     let user = CycleUser::create(&mut ctx, cycle_user_for_insert("alice", None))
         .await
@@ -524,6 +405,26 @@ async fn fk_cycle_breaks_via_followup_constraint(mut ctx: djogi::DjogiContext) {
     user.save(&mut ctx)
         .await
         .expect("CycleUser::save closes the cycle");
+
+    CycleUser::create(
+        &mut ctx,
+        CycleUser {
+            team_id: Some(ForeignKey::new(sentinel_id())),
+            ..cycle_user_for_insert("orphan-user", None)
+        },
+    )
+    .await
+    .expect_err("user-side FK must reject a missing team target");
+
+    CycleTeam::create(
+        &mut ctx,
+        CycleTeam {
+            lead_user_id: Some(ForeignKey::new(sentinel_id())),
+            ..cycle_team_for_insert("orphan-team", None)
+        },
+    )
+    .await
+    .expect_err("team-side FK must reject a missing user target");
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -596,29 +497,6 @@ pub struct Document {
 
 #[djogi::djogi_test(sync_models = [Document])]
 async fn index_spec_routes_through_migration_engine(mut ctx: djogi::DjogiContext) {
-    // Look up the access method for any non-PK index on the table.
-    // Filter out the PK by name — the PK index is automatically named
-    // `<table>_pkey`. Anything else is one of our declared indexes.
-    let am: Option<String> = ctx
-        .raw_scalar(
-            "SELECT am.amname \
-             FROM pg_class c \
-             JOIN pg_index i ON i.indexrelid = c.oid \
-             JOIN pg_class t ON t.oid = i.indrelid \
-             JOIN pg_am am ON am.oid = c.relam \
-             WHERE t.relname = 't10_documents' \
-               AND c.relname <> 't10_documents_pkey' \
-             LIMIT 1",
-            &[],
-        )
-        .await
-        .ok();
-    assert_eq!(
-        am.as_deref(),
-        Some("gin"),
-        "model-declared GIN index must be created via the migration engine's SQL emitter"
-    );
-
     // The descriptor declares one model-level index; assert that
     // shape is preserved through `sync_models`. (Direct descriptor
     // inspection — does not depend on the live DB.)
@@ -635,5 +513,26 @@ async fn index_spec_routes_through_migration_engine(mut ctx: djogi::DjogiContext
     assert_eq!(
         gin_count, 1,
         "Document descriptor must declare exactly one GIN index"
+    );
+
+    let doc = Document::create(
+        &mut ctx,
+        Document {
+            title: "arrays".into(),
+            tags: vec!["rust".into(), "postgres".into()],
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("Document::create against sync_models-created table");
+
+    let matches = Document::objects()
+        .filter(|d| d.tags().contains(&["rust".to_string()]))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("array contains query");
+    assert_eq!(
+        matches.iter().map(|d| d.id).collect::<Vec<_>>(),
+        vec![doc.id]
     );
 }

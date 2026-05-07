@@ -3777,7 +3777,7 @@ mod tests {
             columns: vec![
                 ColumnSchema {
                     check: None,
-                    default_sql: Some("generate_id()".to_string()),
+                    default_sql: Some("heerid_next()".to_string()),
                     foreign_key: None,
                     generated: None,
                     identity: None,
