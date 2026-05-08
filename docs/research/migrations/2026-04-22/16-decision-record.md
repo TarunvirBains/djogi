@@ -268,7 +268,7 @@ All three contradictions in `13-gap-analysis-vs-current-spec.md §Part IV` (C-01
 3. **After team review:** the proposal gets merged into the canonical spec docs, which means:
    - `docs/spec/migrations.md` §10 rewrite
    - New rows in `docs/spec/decisions.md`
-   - Phase 7 plan (`docs/superpowers/plans/2026-04-18-phase7-migration-system-v2.md`) amendments
+   - Phase 7 plan (the local Phase 7 migration-system v2 implementation plan) amendments
 
 4. **Phase 7 implementation (T1–T8 per the v2 plan)** proceeds against the finalized spec.
 

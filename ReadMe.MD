@@ -48,9 +48,10 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 
 - **Phase 7.5** — Live-migration substrate + protected-data field attributes. `live_migrate::{plan, plan_file, state, classify}` substrate with `OnlineSafetyClassification` enum (`OnlineSafe` / `FastLockDestructiveGuarded` / `ExpandContract` / `OfflineOnly`, `#[non_exhaustive]`); `pg_volatility` introspection module; backfill engine with chunk-loop SQL pattern, plan resume, daemon-mode runner (T7+T8+T9). Operator surface (T10+T14+T15): `djogi live` CLI commands, spatial cfg gating, `db cleanup-test-dbs`, daemon-mode resume. `#[field(protect = "...")]` and related field-level RLS / audit attributes; `ProtectedFieldMetadata` descriptor surface; macro parsing via raw attribute walking. EXCLUSION + stored-generated descriptor extension: `ExclusionConstraintSpec`, `GeneratedColumnSpec`, `ExclusionElement` types; `ColumnSchema.generated`, `TableSchema.exclusion_constraints` snapshot fields with `#[serde(default)]` for back-compat; `SchemaOperation::{AddExclusionConstraint, DropExclusionConstraint}`; classifier routes EXCLUDE-on-populated and stored-generated-add to `OfflineOnly` (Pg18 has no NOT VALID for EXCLUDE); empty-table fast-path; macro cross-attribute validation rejects `generated` + `default` together with span-precise diagnostic. T13 (catalog drift detection / runtime-vs-spec divergence audit) deferred to Phase 8 or a dedicated bug-fix sprint.
 
-**Coming** — design-locked but not yet implemented:
+**In flight / coming** — partially merged or design-locked, but not release-complete:
 
-- Phase 8+ — Rhai shell.
+- **Phase 8** — 8α–8ζ implementation clusters are on `main`; 8η predicate/cache correctness and Phase 8.5 publish housekeeping remain before the v0.1.0 publish gate. See the [implementation plan](./docs/spec/implementation-plan.md).
+- **Phase 9** — Rhai shell, analyzer, and model-aware operational tooling.
 - Phase 10 — [Maahi](./docs/spec/maahi/index.md) admin console (Dioxus full-stack; visage-scope-driven RBAC; opt-in via `djogi = { features = ["admin"] }` which pulls in the `djogi-maahi` crate carve-out).
 
 ## What Djogi Owns

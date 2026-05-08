@@ -12,9 +12,9 @@ Djogi already has:
 
 - `docs/spec/migrations.md` — the canonical 0.1.0 migration spec
 - `docs/spec/decisions.md` — locked cross-cutting decisions
-- `docs/superpowers/specs/2026-04-22-phase7-migration-system-design.md` — Phase 7 architectural design
-- `docs/superpowers/plans/2026-04-18-phase7-migration-system-v2.md` — current implementation plan
-- `docs/superpowers/research/2026-04-20-migration-runner-matrix.md` — the existing comparison matrix (doc-level, not source-level)
+- Local Phase 7 migration-system design notes — Phase 7 architectural design
+- Local Phase 7 migration-system v2 implementation plan — current implementation plan
+- Local migration-runner comparison matrix — the existing comparison matrix (doc-level, not source-level)
 
 **What this document adds:** the existing matrix is built from framework documentation and blog posts. This proposal is built from reading the actual source code of 11 mature migration systems, which are cloned locally as reference repos inside the Djogi workspace. Every claim in this document is backed by a file path and (where applicable) a line number from one of those clones.
 

@@ -56,9 +56,8 @@ special attention to:
 
 ## How to Read This Document
 
-This proposal is designed to be read alongside `docs/spec/migrations.md` and the Phase 7
-design/plan pair (`docs/superpowers/specs/2026-04-22-phase7-migration-system-design.md` and
-`docs/superpowers/plans/2026-04-18-phase7-migration-system-v2.md`). Each section in Parts I
+This proposal is designed to be read alongside `docs/spec/migrations.md` and the tracked
+Phase 7 migration research bundle in `docs/research/migrations/2026-04-22/`. Each section in Parts I
 and II is structured as: current plan summary, proposed design, rationale, tradeoffs. Team
 members already familiar with the Phase 7 docs can skim the "Current plan" sub-sections and
 focus on "Proposed" and "Rationale." Part III (Lifecycle Walkthrough) is the most persuasive

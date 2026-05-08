@@ -3,7 +3,7 @@
 **Status:** Proposal for review
 **Date:** 2026-04-22
 **Authority:** Supersedes `docs/spec/migrations.md` §10.1 once accepted; clarifies Phase 7 design doc
-(`docs/superpowers/specs/2026-04-22-phase7-migration-system-design.md`).
+(the local Phase 7 migration-system design notes).
 **Reading order:** Start at Part I (P0 recommendations) for the critical path. Part II (P1)
 follows for items that must land in v0.1 but are not blocking Phase 7 coding. Part III (P2)
 captures deferred items. Part IV lists explicit rejections. Part V is the spec-update manifest.
@@ -126,7 +126,7 @@ code, or test. Every occurrence of `_sqlx_migrations` in the repository is a C-0
 must be resolved before Phase 7 T1 begins.
 
 **Rationale:** `docs/spec/migrations.md` §10.1 implies `_sqlx_migrations` by referencing
-sqlx's built-in runner (C-01). `docs/superpowers/plans/2026-04-18-phase7-migration-system-v2.md`
+sqlx's built-in runner (C-01). The local Phase 7 migration-system v2 implementation plan
 §Ledger shape uses `djogi_schema_migrations` in the DDL. These two documents conflict on the
 name (C-02). The Phase 7 v2 plan is authoritative. The name `djogi_schema_migrations` follows
 the pattern of other framework-owned tables (`djogi__crud_log`, `djogi__events`), is
@@ -203,7 +203,7 @@ constant in `djogi/src/migrate/runner.rs`. Lock in `docs/spec/decisions.md`.
 **Priority:** P0
 
 **Recommendation:** The `djogi_schema_migrations` ledger DDL MUST use the following finalized
-schema. This supersedes the draft in `docs/superpowers/plans/2026-04-18-phase7-migration-system-v2.md`
+schema. This supersedes the draft in the local Phase 7 migration-system v2 implementation plan
 §Ledger shape:
 
 ```sql
@@ -504,8 +504,8 @@ state undermines the core invariant.
 
 **Rationale:** `topics/05-transactional-vs-non-transactional.md` §Approaches establishes that
 the directive-based opt-out is the correct mechanism (used by Diesel via `metadata.toml`,
-Django via `atomic = False`, and implied in the Djogi design). `docs/superpowers/specs/2026-04-22-phase7-migration-system-design.md` §Transaction Boundary Decision confirms the structured-detection-first
-approach. `docs/superpowers/plans/2026-04-18-phase7-migration-system-v2.md` §Generated file
+Django via `atomic = False`, and implied in the Djogi design). The local Phase 7 migration-system design notes §Transaction Boundary Decision confirms the structured-detection-first
+approach. The local Phase 7 migration-system v2 implementation plan §Generated file
 headers shows `-- Execution-Mode: transactional` in generated files but does not yet define
 the `-- djogi:no-transaction` override directive syntax. The gap analysis (G-05) identifies
 this as unspecified in both SPEC-M and P7V2.
@@ -551,7 +551,7 @@ Add directive specification to `docs/spec/migrations.md` §10.4.
 **Rationale:** `topics/06-out-of-order-and-baseline.md` §The out-of-order problem establishes
 the scenario: two developers branch, both write migrations with adjacent version numbers, one
 merges first and is deployed. The merged-second migration has a lower version number than what
-was already applied. `docs/superpowers/specs/2026-04-22-phase7-migration-system-design.md`
+was already applied. The local Phase 7 migration-system design notes
 §Out-of-Order Policy states: "local/dev: allow by default, but record and warn loudly;
 CI/prod: reject by default." This is the correct tiered policy. No surveyed Rust system
 implements this — Djogi would be the only one.
@@ -601,7 +601,7 @@ follows Flyway's semantics as documented in `topics/06-out-of-order-and-baseline
 
 **Rationale:** `topics/06-out-of-order-and-baseline.md` §Comparison matrix: baseline / fake /
 stamp documents that all systems with any adoption story converge on a per-migration or
-floor-setting stamp primitive. `docs/superpowers/specs/2026-04-22-phase7-migration-system-design.md`
+floor-setting stamp primitive. The local Phase 7 migration-system design notes
 §Baseline Adoption states: "Baseline adoption is mandatory. Adoption of an existing database
 must not require manual inserts into the ledger table." I-25 confirms this as validated.
 
@@ -665,7 +665,7 @@ enum SchemaDelta {
 }
 ```
 
-**Rationale:** `docs/superpowers/plans/2026-04-18-phase7-migration-system-v2.md` §Canonical Scope
+**Rationale:** the local Phase 7 migration-system v2 implementation plan §Canonical Scope
 lists the full differ surface: enum types, extensions, partition metadata, explicit rename operations
 (`RenameColumn`, `RenameTable`), composite unique constraints, and JSONB index metadata. The current
 `SchemaDelta` enum in SPEC-M §10.6 lacks `RenameColumn`, `RenameTable`, `CreateEnum`, `AlterEnum`,
@@ -716,7 +716,7 @@ be updated to "detects drift and emits diagnostic — file generation requires `
 **Rationale:** `topics/12-rust-ecosystem-contrast.md` §build.rs IDE-churn risk identifies
 that `build.rs` writing files to `migrations/` on every `cargo build` causes editors to
 re-read the directory on every build, triggering unnecessary file watches and LSP re-indexing.
-More importantly, `docs/superpowers/specs/2026-04-22-phase7-migration-system-design.md` §Ledger
+More importantly, the local Phase 7 migration-system design notes §Ledger
 and Snapshot Model states: "`build.rs` may read the snapshot. It must never mutate it." Mutating
 the snapshot is the action that should be gated; but file-write from `build.rs` also produces
 intermediate migration files that may exist transiently without being reviewed. The separation
@@ -771,7 +771,7 @@ explicitly: rollback must operate on temporal application order, not on version 
 If 0008 was applied after 0009 (out-of-order), rolling back 0009 first would leave the database
 in a state where 0008's `_down.sql` may reference objects 0009's `_up.sql` created. Version
 string sort would produce the wrong rollback order. Gap G-07 is the formal citation.
-`docs/superpowers/specs/2026-04-22-phase7-migration-system-design.md` §Reversibility Decision
+the local Phase 7 migration-system design notes §Reversibility Decision
 states rollback is supported but does not specify ordering — this recommendation closes that gap.
 
 **Resolves:** G-07 (rollback ordering under out-of-order apply).
@@ -909,8 +909,8 @@ decision.
 
 **Rationale:** `topics/07-rename-handling.md` establishes that heuristic rename detection is
 unsafe (Prisma's rename heuristic is acknowledged as wrong by Prisma's own team). Explicit
-annotation is Django's approach and the correct design. `docs/superpowers/specs/2026-04-22-phase7-migration-system-design.md`
-§Rename Decision and `docs/superpowers/plans/2026-04-18-phase7-migration-system-v2.md` §Canonical
+annotation is Django's approach and the correct design. The local Phase 7 migration-system design notes
+§Rename Decision and the local Phase 7 migration-system v2 implementation plan §Canonical
 Scope both reference `#[model(renamed_from = "...")]`. Gap G-13 identifies that this annotation
 appears in Phase 7 documents but is not yet in the base spec.
 
@@ -1197,7 +1197,7 @@ For nested paths, Djogi generates the appropriate nested `->` and `->>` operator
 fields can have path-based indexes and that no surveyed Rust system handles these. Gap G-15
 identifies this as a Phase 7 scope item. The `IndexSpec::extension_dependency` and
 `IndexSpec::requires_out_of_transaction` fields are already referenced in
-`docs/superpowers/plans/2026-04-18-phase7-migration-system-v2.md` §In Scope for Phase 7
+the local Phase 7 migration-system v2 implementation plan §In Scope for Phase 7
 (under "Phase 6 `IndexSpec::requires_out_of_transaction`" and "Phase 6 `IndexSpec::extension_dependency`").
 
 **Resolves:** G-15 (JSONB subfield index descriptor representation).
