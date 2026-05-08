@@ -49,6 +49,7 @@
 use crate::jsonb::Jsonb;
 use crate::model::Model;
 use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
+use crate::query::predicate::PortablePredicate;
 use std::marker::PhantomData;
 
 /// Typed reference to a model column.
@@ -339,6 +340,1268 @@ pub mod __macro_support {
             // A bad prefix (reserved keyword) must still be rejected.
             assert!(try_make_with_prefix("select", "name").is_err());
         }
+    }
+}
+
+// ── Phase 8eta PR2a — DjogiField root field wrapper ─────────────────────────
+//
+// `DjogiField<M, V>` is the root field wrapper that PR3 will flip the
+// `{Model}Fields` macro accessors over to. It carries both halves Djogi
+// needs:
+//
+// - `portable: sassi::Field<M, V>` — the in-memory predicate accessor
+//   `PunnuScope::filter_basic` evaluates against `&M`.
+// - `sql: FieldRef<M, V>` — the path-aware SQL handle the existing emitter
+//   already understands.
+//
+// PR2a is deliberately **additive**: the type and its methods exist, but
+// nothing in the framework constructs `DjogiField` values yet. PR3 flips
+// the generated root accessors; PR2b/PR2d wire SQL emission; PR4 hooks the
+// cache boundary. Splitting this way keeps every PR independently
+// compilable.
+//
+// # Why not just expose raw `sassi::Field<M, V>`?
+//
+// Two reasons. First, `sassi::Field::new("any_string", arbitrary_extractor)`
+// is `pub` — downstream code can construct a `Field` whose name doesn't
+// match any real column on `M`. Routing every Djogi root predicate through
+// `DjogiField` lets PR2a's [`PortablePredicate::from_djogi_field`] enforce
+// the trusted-provenance invariant at the wrapper boundary. Second, raw
+// Sassi string predicates have **case-sensitive** `contains` semantics
+// while existing Djogi `FieldRef::contains` is **case-insensitive**.
+// Exposing Sassi fields directly would silently flip those semantics on
+// adopters porting between in-memory and SQL filters. `DjogiField` keeps
+// the existing Djogi spelling and routes case-sensitive matching through
+// explicit `contains_case_sensitive` / `explicit_pg_predicate()` opt-ins.
+
+/// Trusted-construction marker for portable predicates.
+///
+/// Constructed only by `DjogiField` / `DjogiPresentField` predicate methods
+/// inside this module. Carrying the marker as an argument to
+/// [`PortablePredicate::from_djogi_field`] makes the trusted-provenance
+/// invariant visible to the type checker — crate-internal code that
+/// accidentally imports `sassi::BasicPredicate` and tries to wrap it would
+/// have to construct a `DjogiFieldProvenance` first, which is unreachable
+/// outside this module.
+///
+/// The struct deliberately has a private field so even crate-internal code
+/// outside `crate::query::field` cannot fabricate an instance.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct DjogiFieldProvenance {
+    // Private field — only `mint_provenance()` can populate it.
+    _seal: (),
+}
+
+#[doc(hidden)]
+impl DjogiFieldProvenance {
+    /// Mint a fresh provenance marker. Module-private — only the
+    /// `DjogiField` / `DjogiPresentField` predicate-builder methods below
+    /// reach this constructor. Crate-internal code outside `query::field`
+    /// is blocked because the function is `fn(...)` rather than `pub(...) fn`,
+    /// and the struct's only field is private.
+    fn mint_provenance() -> Self {
+        Self { _seal: () }
+    }
+}
+
+/// Marker trait for value types whose direct portable ordering methods
+/// (`gt`/`gte`/`lt`/`lte`/`between`) are exposed on
+/// [`DjogiField<M, V>`](DjogiField).
+///
+/// # What and why
+///
+/// Djogi exposes ordering only on types whose Rust ordering matches the
+/// SQL ordering Djogi emits. Implementing the trait is the explicit opt-in
+/// — PR2a populates it for the safe scalar types Djogi already binds
+/// through `IntoFilterValue` (signed integers + Decimal + HeerId/RanjId
+/// families), and adopter newtypes that satisfy the bind/clone bounds can
+/// add an impl per type.
+///
+/// # Deliberate exclusions
+///
+/// - **`String`**: Postgres text ordering depends on the database's
+///   collation, which doesn't match Rust's byte-lexicographic `Ord`.
+///   Adopters who want database-locale text ordering reach for
+///   `explicit_pg_predicate().gt(...)` until a future phase pins
+///   collation-aware portable ordering.
+/// - **`f32` / `f64`**: SQL `NULLS FIRST/LAST` and IEEE-754 NaN ordering
+///   diverge from Rust's `PartialOrd` semantics. A future phase may add a
+///   collation-pinned float ordering with explicit NaN handling.
+/// - **`Option<U>`**: Rust's `Option` ordering (`None < Some(_)`) doesn't
+///   match SQL three-valued NULL semantics. Callers use `.some().gt(v)`
+///   instead.
+/// - **No blanket impl**: a `impl<T: PartialOrd + ToSql + …>` would
+///   silently include `Option<U>` and any future foreign type.
+///
+/// # Adopter extension
+///
+/// Custom scalar types that bind through `postgres_types::ToSql` and whose
+/// Rust `Ord` matches the SQL ordering Djogi emits can opt in:
+///
+/// ```ignore
+/// impl djogi::query::DjogiPortableOrd for MyType {}
+/// ```
+///
+/// `MyType` must already satisfy `PartialOrd + postgres_types::ToSql + Clone +
+/// Send + Sync + 'static`. If it does not satisfy the bind/clone surface,
+/// PR2d's generated SQL lowering returns `UnsupportedFieldType`.
+pub trait DjogiPortableOrd:
+    PartialOrd + postgres_types::ToSql + Clone + Send + Sync + 'static
+{
+}
+
+// Explicit impls for built-in scalar types whose Rust ordering matches the
+// SQL ordering Djogi emits. PR2a opts these in; PR3 populates the
+// generated `DjogiField` ordering callsites once macros flip.
+//
+// Coverage rationale per type:
+// - Signed integers `i8`/`i16`/`i32`/`i64`: Postgres int2/int4/int8 ordering
+//   is numeric and matches Rust `Ord`. `i8` directly satisfies
+//   `postgres_types::ToSql` (binds as int2 with range-checked widening).
+// - `u32`: directly satisfies `postgres_types::ToSql` (binds as `oid`).
+//   `u8` / `u16` do not have shipped `ToSql` impls, so they cannot enter
+//   `DjogiPortableOrd`'s `ToSql` supertrait; adopters who model fields
+//   as `u8` / `u16` widen at the column type or reach the legacy
+//   `IntoFilterValue` widening through `FieldRef` / `explicit_pg_predicate`.
+// - `time::OffsetDateTime` / `time::Date`: monotone numeric encoding under
+//   Postgres' `timestamptz` / `date`.
+// - `uuid::Uuid`: byte-lexicographic and matches Rust `Ord`.
+// - HeerId / RanjId families: time-ordered identifiers; Rust `Ord` matches
+//   Postgres bigint / uuid byte ordering by construction.
+// - `rust_decimal::Decimal`: numeric ordering under Postgres `numeric`.
+//
+// Deliberately omitted: `bool` (no ordering callers), `String`, `f32`,
+// `f64`, `Option<U>`, `u8`, `u16`. See trait docs.
+
+impl DjogiPortableOrd for i8 {}
+impl DjogiPortableOrd for i16 {}
+impl DjogiPortableOrd for i32 {}
+impl DjogiPortableOrd for i64 {}
+impl DjogiPortableOrd for u32 {}
+impl DjogiPortableOrd for time::OffsetDateTime {}
+impl DjogiPortableOrd for time::Date {}
+impl DjogiPortableOrd for uuid::Uuid {}
+impl DjogiPortableOrd for crate::HeerId {}
+impl DjogiPortableOrd for crate::RanjId {}
+impl DjogiPortableOrd for crate::HeerIdDesc {}
+impl DjogiPortableOrd for crate::RanjIdDesc {}
+impl DjogiPortableOrd for rust_decimal::Decimal {}
+
+/// Djogi root field wrapper.
+///
+/// Carries the Sassi `Field<M, V>` (used by Punnu in-memory evaluation) and
+/// the Djogi `FieldRef<M, V>` (used by SQL emission) so one root accessor
+/// can compose portable predicates and database queries from the same
+/// closure shape.
+///
+/// PR2a defines the type and its method surface. PR3 will flip macro-
+/// generated `{Model}Fields` accessors from `FieldRef` over to `DjogiField`.
+/// Until that flip, `DjogiField` is reachable through the public re-export
+/// in [`crate::query`](crate::query) but is not the return type of any
+/// generated accessor.
+///
+/// # Method semantics
+///
+/// | Method family            | Receiver                       | Returns                      |
+/// |--------------------------|--------------------------------|------------------------------|
+/// | `eq`, `neq`              | `DjogiField<M, V>`             | `PortablePredicate<M>`       |
+/// | `gt`/`gte`/`lt`/`lte`    | `DjogiField<M, V>` where `V: DjogiPortableOrd` | `PortablePredicate<M>` |
+/// | `between`                | `DjogiField<M, V>` where `V: DjogiPortableOrd` | `PortablePredicate<M>` |
+/// | `in_`/`not_in`           | `DjogiField<M, V>`             | `PortablePredicate<M>`       |
+/// | `is_null`/`is_not_null`  | `DjogiField<M, Option<U>>`     | `PortablePredicate<M>`       |
+/// | `some()`                 | `DjogiField<M, Option<U>>`     | `DjogiPresentField<M, U>`    |
+/// | `contains`/`icontains`   | `DjogiField<M, String>`        | `PortablePredicate<M>` (ASCII-stable case-insensitive) |
+/// | `starts_with`/`ends_with`| `DjogiField<M, String>`        | `PortablePredicate<M>` (ASCII-stable case-insensitive) |
+/// | `*_case_sensitive` family| `DjogiField<M, String>`        | `PortablePredicate<M>`       |
+/// | `iexact`                 | `DjogiField<M, String>`        | `PortablePredicate<M>`       |
+/// | `explicit_pg_predicate()`| `DjogiField<M, V>`             | `ExplicitPgPredicateField<M, V>` |
+/// | non-predicate SQL helpers| `DjogiField<M, V>`             | forwarded to `FieldRef`      |
+///
+/// PostgreSQL-specific predicates (regex, JSONB path, FTS, spatial, array
+/// operators, expression-producing predicates) are reached through
+/// [`DjogiField::explicit_pg_predicate`] and return ordinary
+/// [`Condition`] / [`crate::expr::Expr<bool>`] values. They are valid
+/// database queries but rejected by cache/refresh boundaries — see the
+/// `ExplicitPgPredicateField` docs for the rationale and routing.
+pub struct DjogiField<M: Model, V> {
+    portable: sassi::Field<M, V>,
+    sql: FieldRef<M, V>,
+}
+
+/// Optional-value present-only predicate view.
+///
+/// Returned by [`DjogiField::some`] on `DjogiField<M, Option<U>>`. Exposes
+/// the same `eq`/`neq`/`in_`/`not_in`/`gt`/`gte`/`lt`/`lte`/`between`
+/// surface as `DjogiField<M, U>`, but every predicate evaluates `None` as
+/// `false` and emits SQL that excludes NULL rows.
+///
+/// PR2a defines the type so portable optional comparisons compose through
+/// the Djogi `&`/`|` operators rather than dropping back to raw Sassi
+/// predicates. PR2b/PR2d add the matching SQL emission.
+pub struct DjogiPresentField<M: Model, V> {
+    portable: sassi::PresentField<M, V>,
+    sql: FieldRef<M, V>,
+}
+
+/// PostgreSQL-specific predicate view of a root field.
+///
+/// Returned by [`DjogiField::explicit_pg_predicate`]. Exposes the existing
+/// `FieldRef` predicate surface that is **not** portable to Punnu —
+/// regex/iregex, database-locale string pattern predicates, JSONB path /
+/// typed predicates, array operators, all current spatial/PostGIS
+/// predicates, and expression-only predicate chains. The wrapper deliberately
+/// returns ordinary `Condition` / `Expr<bool>` values (not
+/// `PortablePredicate<M>`) so cache and refresh boundaries reject them
+/// through PR4's portability gate.
+///
+/// The `explicit_pg_predicate()` name was chosen over `.sql()` / `.db()` /
+/// `.pg()` because adopters reading `f.title().contains("rust")` should not
+/// infer that ordinary database queries require a route — only PostgreSQL-
+/// specific semantics do.
+///
+/// PR2a forwards the existing `FieldRef` predicate surface. PR3 widens the
+/// set as the macro flip reveals additional methods.
+pub struct ExplicitPgPredicateField<M: Model, V> {
+    sql: FieldRef<M, V>,
+}
+
+// `Copy` / `Clone` impls are manual rather than derive: derive would impose
+// `M: Copy` / `V: Copy` (because `DjogiField<M, V>` carries
+// `sassi::Field<M, V>` whose `PhantomData<(M, V)>` field "owns" the type
+// parameters in the derive's view). Manual impls match the existing
+// `FieldRef<M, V>` pattern: every real-data field is `Copy`, so the wrapper
+// is `Copy` regardless of `M` / `V`.
+
+impl<M: Model, V> Copy for DjogiField<M, V> {}
+impl<M: Model, V> Clone for DjogiField<M, V> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<M: Model, V> std::fmt::Debug for DjogiField<M, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DjogiField")
+            .field("column", &self.sql.column())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<M: Model, V> Copy for DjogiPresentField<M, V> {}
+impl<M: Model, V> Clone for DjogiPresentField<M, V> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<M: Model, V> std::fmt::Debug for DjogiPresentField<M, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DjogiPresentField")
+            .field("column", &self.sql.column())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<M: Model, V> Copy for ExplicitPgPredicateField<M, V> {}
+impl<M: Model, V> Clone for ExplicitPgPredicateField<M, V> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<M: Model, V> std::fmt::Debug for ExplicitPgPredicateField<M, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExplicitPgPredicateField")
+            .field("column", &self.sql.column())
+            .finish_non_exhaustive()
+    }
+}
+
+// ── DjogiField — common accessors ─────────────────────────────────────────
+
+impl<M: Model, V> DjogiField<M, V> {
+    /// Return the underlying portable `sassi::Field<M, V>`.
+    ///
+    /// **Crate-private internal accessor.** Direct Sassi `Field` string
+    /// methods have case-sensitive semantics that don't match Djogi's
+    /// portable ASCII-stable case-insensitive contract. The framework's
+    /// SQL emitter and in-crate test helpers use this accessor; adopter
+    /// code should compose through `DjogiField` methods instead.
+    ///
+    /// PR2d's macro-emitted `Model::__djogi_emit_field_predicate` overrides
+    /// receive a `&FieldPredicate<Self>` directly and never unpack a
+    /// `DjogiField`, so this accessor stays `pub(crate)` rather than `pub`
+    /// to keep the trusted-construction surface tight.
+    #[doc(hidden)]
+    pub(crate) fn __portable_field(self) -> sassi::Field<M, V> {
+        self.portable
+    }
+
+    /// Return the underlying SQL `FieldRef<M, V>`.
+    ///
+    /// **Crate-private internal accessor.** The wrapper exposes
+    /// non-predicate SQL helpers (`as_expr`, ordering, aggregates, etc.)
+    /// directly through forwarded methods on `DjogiField`; adopters do
+    /// not need to reach for the inner ref. Only PR2b's in-crate SQL
+    /// walker and in-crate test helpers consume this accessor.
+    ///
+    /// PR2d's macro-emitted overrides spell columns through bare `&'static`
+    /// names threaded into the helper signatures (`emit_value::<M, V>(acc,
+    /// ctx, "column", "=", field)`); they never reach for `__sql_field` to
+    /// extract a `FieldRef`, so `pub(crate)` is sufficient.
+    #[doc(hidden)]
+    pub(crate) fn __sql_field(self) -> FieldRef<M, V> {
+        self.sql
+    }
+
+    /// Enter the PostgreSQL-specific predicate surface for this root field.
+    ///
+    /// Predicates produced through this view (regex, ILIKE database-locale
+    /// patterns, JSONB path, FTS, spatial, array operators, expression
+    /// predicates) emit valid SQL but are rejected by Djogi cache and
+    /// refresh boundaries because they cannot be evaluated in Punnu.
+    ///
+    /// This is the **only** root-field route to PostgreSQL-specific
+    /// predicate methods — direct names like `regex` / JSONB path / etc.
+    /// are not exposed on `DjogiField` itself. Adopters reading
+    /// `f.title().contains("rust")` get the portable ASCII-stable case-
+    /// insensitive contains; database-locale `ILIKE` lives on
+    /// `f.title().explicit_pg_predicate().contains("é")`.
+    #[must_use = "ExplicitPgPredicateField is lazy — drop it and the predicate is omitted"]
+    pub fn explicit_pg_predicate(self) -> ExplicitPgPredicateField<M, V> {
+        ExplicitPgPredicateField { sql: self.sql }
+    }
+
+    // ── Non-predicate SQL helpers — forward directly to FieldRef ────────────
+    //
+    // These helpers are SQL-only by nature and don't enter the portable
+    // predicate boundary. Forwarding lets adopters stay on `DjogiField`
+    // for the entire chain rather than threading `FieldRef` back out.
+
+    /// Promote into the expression IR — see [`FieldRef::as_expr`].
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn as_expr(self) -> crate::expr::Expr<V> {
+        self.sql.as_expr()
+    }
+
+    /// Ascending ordering for this column. Forwarded from [`FieldRef::asc`].
+    #[must_use = "order expressions are inert until passed to `order_by`"]
+    pub fn asc(self) -> crate::query::order::OrderExpr {
+        self.sql.asc()
+    }
+
+    /// Descending ordering for this column. Forwarded from [`FieldRef::desc`].
+    #[must_use = "order expressions are inert until passed to `order_by`"]
+    pub fn desc(self) -> crate::query::order::OrderExpr {
+        self.sql.desc()
+    }
+
+    /// Internal accessor — column name, mirrors [`FieldRef::column`].
+    #[doc(hidden)]
+    pub fn column(self) -> &'static str {
+        self.sql.column()
+    }
+}
+
+impl<M: Model, V: IntoFilterValue> DjogiField<M, V> {
+    /// Build a typed `SET column = value` assignment.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn set(self, value: V) -> crate::query::update::UpdateAssignment {
+        self.sql.set(value)
+    }
+
+    /// Build an expression-backed `SET column = <expr>` assignment.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn set_expr(self, expr: crate::expr::Expr<V>) -> crate::query::update::UpdateAssignment {
+        self.sql.set_expr(expr)
+    }
+}
+
+impl<M: Model, V> DjogiField<M, V> {
+    /// `COUNT(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn count(self) -> crate::expr::AggregateExpr<i64> {
+        self.sql.count()
+    }
+
+    /// `COUNT(*)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn count_star(self) -> crate::expr::AggregateExpr<i64> {
+        self.sql.count_star()
+    }
+
+    /// `ARRAY_AGG(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn array_agg(self) -> crate::expr::AggregateExpr<Vec<V>> {
+        self.sql.array_agg()
+    }
+}
+
+impl<M: Model, V: crate::expr::arithmetic::Numeric> DjogiField<M, V> {
+    /// `SUM(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn sum(self) -> crate::expr::AggregateExpr<V> {
+        self.sql.sum()
+    }
+
+    /// `AVG(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn avg(self) -> crate::expr::AggregateExpr<f64> {
+        self.sql.avg()
+    }
+
+    /// `STDDEV_POP(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn stddev_pop(self) -> crate::expr::AggregateExpr<f64> {
+        self.sql.stddev_pop()
+    }
+
+    /// `STDDEV_SAMP(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn stddev_samp(self) -> crate::expr::AggregateExpr<f64> {
+        self.sql.stddev_samp()
+    }
+
+    /// `STDDEV(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn stddev(self) -> crate::expr::AggregateExpr<f64> {
+        self.sql.stddev()
+    }
+
+    /// `VARIANCE(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn variance(self) -> crate::expr::AggregateExpr<f64> {
+        self.sql.variance()
+    }
+}
+
+impl<M: Model, V: IntoFilterValue> DjogiField<M, V> {
+    /// `MIN(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn min(self) -> crate::expr::AggregateExpr<V> {
+        self.sql.min()
+    }
+
+    /// `MAX(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn max(self) -> crate::expr::AggregateExpr<V> {
+        self.sql.max()
+    }
+}
+
+// ── DjogiField — equality and membership predicates ────────────────────────
+//
+// Bounds match the Sassi `Field<T, V>::eq/neq/in_/not_in` impls plus the
+// Djogi SQL bind requirement. PR2a returns `PortablePredicate<M>`
+// directly so user code reads as `f.col().eq(v)` without an
+// `into_portable_predicate()` step.
+
+impl<M: Model, V> DjogiField<M, V>
+where
+    V: PartialEq + postgres_types::ToSql + Clone + Send + Sync + 'static,
+{
+    /// `column = value`. Portable: evaluates in Punnu and emits SQL.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: V) -> PortablePredicate<M> {
+        let inner = self.portable.eq(value);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// `column <> value`. Portable: evaluates in Punnu and emits SQL.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: V) -> PortablePredicate<M> {
+        let inner = self.portable.neq(value);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// `column IN (v1, …)`. Portable.
+    ///
+    /// An empty list lowers to SQL `FALSE` and Punnu `false`. Generic over
+    /// any `IntoIterator<Item = V>` so callers can pass `Vec<V>`,
+    /// `&[V]::iter().copied()`, or a custom range without preallocating.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn in_<I: IntoIterator<Item = V>>(self, values: I) -> PortablePredicate<M> {
+        let inner = self.portable.in_(values.into_iter().collect());
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// `column NOT IN (v1, …)`. Portable.
+    ///
+    /// An empty list lowers to SQL `TRUE` and Punnu `true`.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I: IntoIterator<Item = V>>(self, values: I) -> PortablePredicate<M> {
+        let inner = self.portable.not_in(values.into_iter().collect());
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+}
+
+// ── DjogiField — ordering predicates (DjogiPortableOrd opt-in) ────────────
+//
+// Ordering is exposed only on types that opted into `DjogiPortableOrd`. The
+// trait is sealed by absence of a blanket impl + the explicit per-type list
+// above, which is what keeps `Option<U>` and unsupported foreign scalars
+// out. Adopters that need `String` / `f32` / `f64` ordering reach for
+// `explicit_pg_predicate().gt(...)` until a future phase pins
+// collation/NaN parity.
+
+impl<M: Model, V> DjogiField<M, V>
+where
+    V: DjogiPortableOrd,
+{
+    /// `column > value`. Portable: requires `V: DjogiPortableOrd`.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn gt(self, value: V) -> PortablePredicate<M> {
+        let inner = self.portable.gt(value);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// `column >= value`. Portable: requires `V: DjogiPortableOrd`.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn gte(self, value: V) -> PortablePredicate<M> {
+        let inner = self.portable.gte(value);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// `column < value`. Portable: requires `V: DjogiPortableOrd`.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn lt(self, value: V) -> PortablePredicate<M> {
+        let inner = self.portable.lt(value);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// `column <= value`. Portable: requires `V: DjogiPortableOrd`.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn lte(self, value: V) -> PortablePredicate<M> {
+        let inner = self.portable.lte(value);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// `column BETWEEN low AND high` (inclusive). Portable: requires
+    /// `V: DjogiPortableOrd`.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn between(self, low: V, high: V) -> PortablePredicate<M> {
+        let inner = self.portable.between(low, high);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+}
+
+// ── DjogiField — Option<U> predicates ──────────────────────────────────────
+//
+// Null tests apply on every `Option<U>` regardless of `U`'s bind/clone
+// surface. `some()` returns the present-only view that exposes ordinary
+// value comparisons. Direct ordering on `Option<U>` is **not** exposed —
+// Rust `Option` ordering doesn't match SQL three-valued NULL semantics.
+
+impl<M: Model, U: Send + Sync + 'static> DjogiField<M, Option<U>> {
+    /// `column IS NULL`. Portable.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn is_null(self) -> PortablePredicate<M> {
+        let inner = self.portable.is_null();
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// `column IS NOT NULL`. Portable.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn is_not_null(self) -> PortablePredicate<M> {
+        let inner = self.portable.is_not_null();
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// Enter the present-only predicate view.
+    ///
+    /// `some().eq(v)` evaluates `Some(v)` and emits SQL `column = $1` —
+    /// `None` evaluates to `false` in Punnu and SQL `NULL` excludes the
+    /// row through three-valued logic.
+    pub fn some(self) -> DjogiPresentField<M, U> {
+        // Reuse the same column for the present-view's SQL handle. The
+        // column was already validated at the parent `DjogiField`'s
+        // construction site (`__make_djogi_field` runs `__make_field_ref`,
+        // which calls `assert_plain_ident`); re-running validation here
+        // would either be a no-op (for bare columns — the only shape
+        // `__make_djogi_field` produces) or panic on the previously
+        // interned path strings, so we reuse the validated string
+        // directly through the crate-private `FieldRef::new`.
+        DjogiPresentField {
+            portable: self.portable.some(),
+            sql: FieldRef::<M, U>::new(self.sql.column()),
+        }
+    }
+}
+
+// ── DjogiField<M, String> — portable string predicates ─────────────────────
+//
+// These mirror existing `FieldRef<M, String>` predicate names so adopter
+// code keeps reading the same way. The SEMANTICS are pinned by the v3 plan:
+// portable case-insensitive predicates use ASCII-stable folding (matches
+// sassi PR1's `icontains`/`istarts_with`/`iends_with`/`iexact` evaluators),
+// portable case-sensitive predicates spell their case-sensitivity
+// explicitly. Database-locale Unicode folding (existing `FieldRef::contains`
+// behaviour) lives only on `explicit_pg_predicate()`.
+
+impl<M: Model> DjogiField<M, String> {
+    /// Case-insensitive substring match (ASCII-stable). Portable.
+    ///
+    /// Use [`explicit_pg_predicate().contains`](ExplicitPgPredicateField::contains)
+    /// for database-locale `ILIKE` semantics.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn contains(self, needle: &str) -> PortablePredicate<M> {
+        let inner = self.portable.icontains(needle);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// Alias for [`contains`](Self::contains) — Django naming parity.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn icontains(self, needle: &str) -> PortablePredicate<M> {
+        self.contains(needle)
+    }
+
+    /// Case-insensitive prefix match (ASCII-stable). Portable.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn starts_with(self, prefix: &str) -> PortablePredicate<M> {
+        let inner = self.portable.istarts_with(prefix);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// Alias for [`starts_with`](Self::starts_with) — Django naming parity.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn istarts_with(self, prefix: &str) -> PortablePredicate<M> {
+        self.starts_with(prefix)
+    }
+
+    /// Case-insensitive suffix match (ASCII-stable). Portable.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn ends_with(self, suffix: &str) -> PortablePredicate<M> {
+        let inner = self.portable.iends_with(suffix);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// Alias for [`ends_with`](Self::ends_with) — Django naming parity.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn iends_with(self, suffix: &str) -> PortablePredicate<M> {
+        self.ends_with(suffix)
+    }
+
+    /// Case-sensitive substring match. Portable.
+    ///
+    /// New explicit name introduced by Phase 8eta — adopters opt into the
+    /// case-sensitive shape rather than getting it implicitly. Sassi's
+    /// `Field::contains` is case-sensitive; this method threads that
+    /// through.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn contains_case_sensitive(self, needle: &str) -> PortablePredicate<M> {
+        let inner = self.portable.contains(needle);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// Case-sensitive prefix match. Portable.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn starts_with_case_sensitive(self, prefix: &str) -> PortablePredicate<M> {
+        let inner = self.portable.starts_with(prefix);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// Case-sensitive suffix match. Portable.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn ends_with_case_sensitive(self, suffix: &str) -> PortablePredicate<M> {
+        let inner = self.portable.ends_with(suffix);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// Case-insensitive equality (ASCII-stable). Portable.
+    ///
+    /// Maps to the Sassi `iexact` operator and lowers to a no-wildcard
+    /// `COLLATE "C" ILIKE` comparison in SQL. Database-locale equality
+    /// remains available through
+    /// [`explicit_pg_predicate().iexact`](ExplicitPgPredicateField::iexact)
+    /// once PR3 widens the explicit-PG surface.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn iexact(self, value: &str) -> PortablePredicate<M> {
+        let inner = self.portable.iexact(value);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// `STRING_AGG(column, sep)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn string_agg(self, sep: impl Into<String>) -> crate::expr::AggregateExpr<String> {
+        self.sql.string_agg(sep)
+    }
+}
+
+impl<M: Model> DjogiField<M, bool> {
+    /// `BOOL_AND(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn bool_and(self) -> crate::expr::AggregateExpr<bool> {
+        self.sql.bool_and()
+    }
+
+    /// `BOOL_OR(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn bool_or(self) -> crate::expr::AggregateExpr<bool> {
+        self.sql.bool_or()
+    }
+}
+
+// ── DjogiPresentField — present-only predicates ────────────────────────────
+//
+// Mirrors the Sassi `PresentField<T, V>` surface. Every method evaluates
+// `None` as `false` in Punnu and emits SQL that excludes NULL rows through
+// three-valued logic.
+
+impl<M: Model, U> DjogiPresentField<M, U>
+where
+    U: PartialEq + postgres_types::ToSql + Clone + Send + Sync + 'static,
+{
+    /// `column IS NOT NULL AND column = value`. Portable.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: U) -> PortablePredicate<M> {
+        let inner = self.portable.eq(value);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// `column IS NOT NULL AND column <> value`. Portable.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: U) -> PortablePredicate<M> {
+        let inner = self.portable.neq(value);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// `column IS NOT NULL AND column IN (v1, …)`. Portable.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn in_<I: IntoIterator<Item = U>>(self, values: I) -> PortablePredicate<M> {
+        let inner = self.portable.in_(values.into_iter().collect());
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// `column IS NOT NULL AND column NOT IN (v1, …)`. Portable.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I: IntoIterator<Item = U>>(self, values: I) -> PortablePredicate<M> {
+        let inner = self.portable.not_in(values.into_iter().collect());
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+}
+
+impl<M: Model, U> DjogiPresentField<M, U>
+where
+    U: DjogiPortableOrd,
+{
+    /// `column IS NOT NULL AND column > value`. Portable.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn gt(self, value: U) -> PortablePredicate<M> {
+        let inner = self.portable.gt(value);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// `column IS NOT NULL AND column >= value`. Portable.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn gte(self, value: U) -> PortablePredicate<M> {
+        let inner = self.portable.gte(value);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// `column IS NOT NULL AND column < value`. Portable.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn lt(self, value: U) -> PortablePredicate<M> {
+        let inner = self.portable.lt(value);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// `column IS NOT NULL AND column <= value`. Portable.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn lte(self, value: U) -> PortablePredicate<M> {
+        let inner = self.portable.lte(value);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+
+    /// `column IS NOT NULL AND low <= column <= high`. Portable.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn between(self, low: U, high: U) -> PortablePredicate<M> {
+        let inner = self.portable.between(low, high);
+        PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+}
+
+// ── ExplicitPgPredicateField — PostgreSQL-specific surface ─────────────────
+//
+// PR2a forwards the existing `FieldRef` PostgreSQL-specific predicate
+// methods. Coverage matches what `FieldRef` already exposes for the
+// receiver type — the goal in PR2a is API completeness so PR3 can flip the
+// macro emission without leaving callers stranded. PR3 widens or trims as
+// the macro flip surfaces additional methods.
+
+impl<M: Model, V> ExplicitPgPredicateField<M, V>
+where
+    V: IntoFilterValue,
+{
+    /// `column = value` — equality through database-locale comparison
+    /// rules. Forwarded from [`FieldRef::eq`].
+    ///
+    /// In PR2a this returns the same SQL shape as the portable `eq`, but
+    /// keeping the route explicit lets PR3 preserve the cache-invalid
+    /// rejection path for adopters who reach for this method
+    /// deliberately.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: V) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// `column <> value` — forwarded from [`FieldRef::neq`].
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: V) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// `column > value` — forwarded from [`FieldRef::gt`]. Database-locale
+    /// ordering.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn gt(self, value: V) -> Condition {
+        self.sql.gt(value)
+    }
+
+    /// `column >= value` — forwarded from [`FieldRef::gte`].
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn gte(self, value: V) -> Condition {
+        self.sql.gte(value)
+    }
+
+    /// `column < value` — forwarded from [`FieldRef::lt`].
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn lt(self, value: V) -> Condition {
+        self.sql.lt(value)
+    }
+
+    /// `column <= value` — forwarded from [`FieldRef::lte`].
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn lte(self, value: V) -> Condition {
+        self.sql.lte(value)
+    }
+
+    /// `column BETWEEN low AND high` — forwarded from
+    /// [`FieldRef::between`].
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn between(self, low: V, high: V) -> Condition {
+        self.sql.between(low, high)
+    }
+
+    /// Case-insensitive equality through database-locale `LOWER(...)`.
+    /// Forwarded from [`FieldRef::iexact`]. Distinct from the portable
+    /// ASCII-stable `DjogiField::iexact`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn iexact(self, value: V) -> Condition {
+        self.sql.iexact(value)
+    }
+}
+
+impl<M: Model, V: IntoFilterValue> ExplicitPgPredicateField<M, V> {
+    /// `column IN (v1, …)`. Forwarded from [`FieldRef::in_list`].
+    ///
+    /// Named `in_list` to match the `FieldRef` naming convention rather
+    /// than `in_` — the explicit-PG view is intentionally close to the
+    /// existing SQL surface.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_list<I: IntoIterator<Item = V>>(self, values: I) -> Condition {
+        self.sql.in_list(values)
+    }
+
+    /// `column NOT IN (v1, …)`. Forwarded from [`FieldRef::not_in_list`].
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in_list<I: IntoIterator<Item = V>>(self, values: I) -> Condition {
+        self.sql.not_in_list(values)
+    }
+}
+
+impl<M: Model, V> ExplicitPgPredicateField<M, V> {
+    /// `column IS NULL` — forwarded from [`FieldRef::is_null`].
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn is_null(self) -> Condition {
+        self.sql.is_null()
+    }
+
+    /// `column IS NOT NULL` — forwarded from [`FieldRef::is_not_null`].
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn is_not_null(self) -> Condition {
+        self.sql.is_not_null()
+    }
+}
+
+// String-only PostgreSQL-specific surface. Mirrors the existing
+// `FieldRef<M, String>` block: database-locale `ILIKE` family + Postgres
+// POSIX regex.
+
+impl<M: Model> ExplicitPgPredicateField<M, String> {
+    /// Case-insensitive substring match through Postgres `ILIKE` and the
+    /// database's text collation. Forwarded from [`FieldRef::contains`].
+    ///
+    /// Distinct from `DjogiField::contains` (ASCII-stable, portable).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contains(self, value: impl Into<String>) -> Condition {
+        self.sql.contains(value)
+    }
+
+    /// Alias for [`contains`](Self::contains).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn icontains(self, value: impl Into<String>) -> Condition {
+        self.sql.icontains(value)
+    }
+
+    /// Case-insensitive prefix match through Postgres `ILIKE`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn starts_with(self, value: impl Into<String>) -> Condition {
+        self.sql.starts_with(value)
+    }
+
+    /// Alias for [`starts_with`](Self::starts_with).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn istarts_with(self, value: impl Into<String>) -> Condition {
+        self.sql.istarts_with(value)
+    }
+
+    /// Case-insensitive suffix match through Postgres `ILIKE`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn ends_with(self, value: impl Into<String>) -> Condition {
+        self.sql.ends_with(value)
+    }
+
+    /// Alias for [`ends_with`](Self::ends_with).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn iends_with(self, value: impl Into<String>) -> Condition {
+        self.sql.iends_with(value)
+    }
+
+    /// Postgres POSIX regex match — `column ~ $1`. Forwarded from
+    /// [`FieldRef::regex`]. Server-side; no Rust regex engine is involved.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn regex(self, value: impl Into<String>) -> Condition {
+        self.sql.regex(value)
+    }
+
+    /// Postgres POSIX regex match (case-insensitive) — `column ~* $1`.
+    /// Forwarded from [`FieldRef::iregex`].
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn iregex(self, value: impl Into<String>) -> Condition {
+        self.sql.iregex(value)
+    }
+}
+
+impl<M: Model, V: IntoArrayFilterValue + Clone + 'static> ExplicitPgPredicateField<M, Vec<V>> {
+    /// Postgres array contains (`@>`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contains(self, values: &[V]) -> Condition {
+        self.sql.contains(values)
+    }
+
+    /// Postgres array contained-by (`<@`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contained_by(self, values: &[V]) -> Condition {
+        self.sql.contained_by(values)
+    }
+
+    /// Postgres array overlap (`&&`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn overlap(self, values: &[V]) -> Condition {
+        self.sql.overlap(values)
+    }
+}
+
+impl<M: Model, V: IntoArrayFilterValue + Clone + 'static> DjogiField<M, Vec<V>> {
+    /// `array_length(column, 1)`.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn len(self) -> crate::expr::Expr<i32> {
+        self.sql.len()
+    }
+
+    /// Whether this array field has no elements.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn is_empty(self) -> crate::expr::Expr<bool> {
+        self.len().eq(0)
+    }
+}
+
+impl<M: Model, T> ExplicitPgPredicateField<M, Jsonb<T>> {
+    /// Navigate to a JSONB sub-path.
+    #[must_use = "JsonbPathRef is lazy — dropping one silently omits the filter"]
+    pub fn path<V>(self, dotted: &'static str) -> crate::jsonb::JsonbPathRef<M, V> {
+        self.sql.path(dotted)
+    }
+
+    /// Enter the compile-time typed JSONB path tree.
+    #[must_use = "typed path handles are lazy — dropping one silently omits the filter"]
+    pub fn typed(self) -> T::Path<M>
+    where
+        T: crate::jsonb::JsonbSchema,
+    {
+        self.sql.typed()
+    }
+}
+
+impl<M: Model, T> ExplicitPgPredicateField<M, Option<Jsonb<T>>> {
+    /// Navigate to a JSONB sub-path on a nullable JSONB column.
+    #[must_use = "JsonbPathRef is lazy — dropping one silently omits the filter"]
+    pub fn path<V>(self, dotted: &'static str) -> crate::jsonb::JsonbPathRef<M, V> {
+        self.sql.path(dotted)
+    }
+
+    /// Enter the compile-time typed JSONB path tree on a nullable JSONB column.
+    #[must_use = "typed path handles are lazy — dropping one silently omits the filter"]
+    pub fn typed(self) -> T::Path<M>
+    where
+        T: crate::jsonb::JsonbSchema,
+    {
+        self.sql.typed()
+    }
+}
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model> ExplicitPgPredicateField<M, crate::geo::GeoPoint> {
+    /// PostGIS radius predicate (`ST_DWithin`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn within_km(self, center: crate::geo::GeoPoint, km: f64) -> Condition {
+        self.sql.within_km(center, km)
+    }
+
+    /// PostGIS distance expression (`ST_Distance`).
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn distance_to(self, center: &crate::geo::GeoPoint) -> crate::expr::Expr<f64> {
+        self.sql.distance_to(center)
+    }
+}
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model> DjogiField<M, crate::geo::GeoPoint> {
+    /// Order by distance from `center`.
+    #[must_use = "order expressions are inert until passed to `order_by`"]
+    pub fn order_by_distance(self, center: crate::geo::GeoPoint) -> crate::query::order::OrderExpr {
+        self.sql.order_by_distance(center)
+    }
+
+    /// `ST_MakeLine` aggregate over point rows.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn make_line(self) -> crate::expr::AggregateExpr<crate::geo::LineString> {
+        self.sql.make_line()
+    }
+}
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model> ExplicitPgPredicateField<M, Option<crate::geo::GeoPoint>> {
+    /// PostGIS radius predicate on nullable points.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn within_km(self, center: crate::geo::GeoPoint, km: f64) -> Condition {
+        self.sql.within_km(center, km)
+    }
+}
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model> DjogiField<M, Option<crate::geo::GeoPoint>> {
+    /// Order by distance from `center`, with Postgres NULL ordering semantics.
+    #[must_use = "order expressions are inert until passed to `order_by`"]
+    pub fn order_by_distance(self, center: crate::geo::GeoPoint) -> crate::query::order::OrderExpr {
+        self.sql.order_by_distance(center)
+    }
+}
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model, G: crate::geo::GeographyValue> ExplicitPgPredicateField<M, G> {
+    /// PostGIS `ST_Contains` predicate.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contains<O: crate::geo::GeographyValue>(self, other: &O) -> Condition {
+        self.sql.contains(other)
+    }
+
+    /// PostGIS `ST_Intersects` predicate.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn intersects<O: crate::geo::GeographyValue>(self, other: &O) -> Condition {
+        self.sql.intersects(other)
+    }
+
+    /// PostGIS `ST_Touches` predicate.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn touches<O: crate::geo::GeographyValue>(self, other: &O) -> Condition {
+        self.sql.touches(other)
+    }
+
+    /// PostGIS shape `ST_Within` predicate.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn within<O: crate::geo::GeographyValue>(self, other: &O) -> Condition {
+        self.sql.within(other)
+    }
+
+    /// PostGIS bounding-box expression predicate.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn bounded_by(
+        self,
+        min_lat: f64,
+        min_lon: f64,
+        max_lat: f64,
+        max_lon: f64,
+    ) -> crate::expr::Expr<bool> {
+        self.sql.bounded_by(min_lat, min_lon, max_lat, max_lon)
+    }
+}
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model, G: crate::geo::GeographyValue> DjogiField<M, G> {
+    /// `ST_ConvexHull(ST_Collect(...))` aggregate.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn convex_hull(self) -> crate::expr::AggregateExpr<crate::geo::Polygon> {
+        self.sql.convex_hull()
+    }
+
+    /// `ST_Centroid(ST_Collect(...))` aggregate.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn centroid(self) -> crate::expr::AggregateExpr<crate::geo::GeoPoint> {
+        self.sql.centroid()
+    }
+
+    /// `ST_Collect(...)` aggregate.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn collect(self) -> crate::expr::AggregateExpr<crate::geo::MultiPoint> {
+        self.sql.collect()
+    }
+
+    /// `ST_Extent(...)` aggregate.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn extent(self) -> crate::expr::AggregateExpr<crate::geo::Polygon> {
+        self.sql.extent()
+    }
+
+    /// `ST_3DExtent(...)` aggregate.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn extent_3d(self) -> crate::expr::AggregateExpr<crate::geo::Polygon> {
+        self.sql.extent_3d()
+    }
+}
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model> DjogiField<M, crate::geo::Polygon> {
+    /// `ST_Union(...)` aggregate.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn union(self) -> crate::expr::AggregateExpr<crate::geo::MultiPolygon> {
+        self.sql.union()
+    }
+
+    /// `ST_Collect(...)` polygon aggregate.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn polygon_agg(self) -> crate::expr::AggregateExpr<crate::geo::MultiPolygon> {
+        self.sql.polygon_agg()
+    }
+
+    /// `ST_ClusterIntersecting(...)` aggregate.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn cluster_intersecting(self) -> crate::expr::AggregateExpr<Vec<crate::geo::MultiPolygon>> {
+        self.sql.cluster_intersecting()
+    }
+
+    /// `ST_ClusterWithin(...)` aggregate.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn cluster_within(
+        self,
+        distance: f64,
+    ) -> crate::expr::AggregateExpr<Vec<crate::geo::MultiPolygon>> {
+        self.sql.cluster_within(distance)
+    }
+
+    /// `ST_MemUnion(...)` aggregate.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn mem_union(self) -> crate::expr::AggregateExpr<crate::geo::MultiPolygon> {
+        self.sql.mem_union()
+    }
+}
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model> DjogiField<M, crate::geo::LineString> {
+    /// `ST_Polygonize(...)` aggregate.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn polygonize(self) -> crate::expr::AggregateExpr<crate::geo::MultiPolygon> {
+        self.sql.polygonize()
+    }
+
+    /// `ST_LineAgg(...)` aggregate.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn line_agg(self) -> crate::expr::AggregateExpr<crate::geo::MultiLineString> {
+        self.sql.line_agg()
+    }
+}
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model> DjogiField<M, crate::geo::MultiPolygon> {
+    /// `ST_Union(...)` aggregate.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn union(self) -> crate::expr::AggregateExpr<crate::geo::MultiPolygon> {
+        self.sql.union()
+    }
+
+    /// `ST_MemUnion(...)` aggregate.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn mem_union(self) -> crate::expr::AggregateExpr<crate::geo::MultiPolygon> {
+        self.sql.mem_union()
+    }
+
+    /// `ST_ClusterIntersecting(...)` aggregate.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn cluster_intersecting(self) -> crate::expr::AggregateExpr<Vec<crate::geo::MultiPolygon>> {
+        self.sql.cluster_intersecting()
+    }
+
+    /// `ST_ClusterWithin(...)` aggregate.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn cluster_within(
+        self,
+        distance: f64,
+    ) -> crate::expr::AggregateExpr<Vec<crate::geo::MultiPolygon>> {
+        self.sql.cluster_within(distance)
+    }
+}
+
+// ── Macro-construction support ─────────────────────────────────────────────
+//
+// `__make_djogi_field` is the single entry point macro-emitted code uses to
+// stamp a `DjogiField<M, V>` for one column. PR3 routes every generated
+// `{Model}Fields` accessor through this function, so the trusted-construction
+// invariants flow through one validation gate.
+
+#[doc(hidden)]
+pub mod djogi_field_macro_support {
+    //! Macro-only entry points for `DjogiField` construction.
+    //!
+    //! Same conventions as [`super::__macro_support`]: items are `pub` so
+    //! cross-crate macro emission can reach them; the double-underscore
+    //! prefix and `#[doc(hidden)]` marker signal that downstream code must
+    //! not call them directly.
+
+    use super::{__macro_support::__make_field_ref, DjogiField, FieldRef};
+    use crate::model::Model;
+
+    /// Construct a [`DjogiField<M, V>`] for one root column.
+    ///
+    /// `column` is the bare physical column name (no relation/path prefix
+    /// — relation/visage traversal is SQL-only and uses a different
+    /// constructor in PR3). `extract` is the `fn(&M) -> &V` pointer that
+    /// the macro stamps from the model's struct definition.
+    ///
+    /// The function:
+    ///
+    /// - Validates `column` through the same identifier gate
+    ///   [`__make_field_ref`] uses, rejecting reserved keywords / metadata
+    ///   bytes / over-long names at construction time.
+    /// - Constructs a `sassi::Field<M, V>` with the same `column` string
+    ///   so portable predicates and SQL emission target the same column
+    ///   name by construction.
+    /// - Constructs a `FieldRef<M, V>` through the same intern path the
+    ///   shipped macro already uses.
+    ///
+    /// **Function pointer, not closure.** `extract: fn(&M) -> &V` keeps
+    /// `DjogiField` `Copy` without captured state; computed/projected
+    /// values that need captured state are non-portable in 8eta and reach
+    /// the database through `explicit_pg_predicate()` or a generated
+    /// SQL-only handle.
+    #[doc(hidden)]
+    pub fn __make_djogi_field<M, V>(column: &'static str, extract: fn(&M) -> &V) -> DjogiField<M, V>
+    where
+        M: Model,
+    {
+        let sql: FieldRef<M, V> = __make_field_ref::<M, V>(None, column);
+        let portable = ::sassi::Field::<M, V>::new(column, extract);
+        DjogiField { portable, sql }
     }
 }
 
@@ -2336,6 +3599,146 @@ mod tests {
         ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx
         {
             async { unimplemented!() }
+        }
+    }
+
+    #[derive(Debug)]
+    struct FakeRow {
+        id: i64,
+        age: i64,
+        title: String,
+        maybe_age: Option<i64>,
+    }
+
+    impl crate::model::__sealed::Sealed for FakeRow {}
+    #[allow(clippy::manual_async_fn)]
+    impl crate::model::Model for FakeRow {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "fake_rows"
+        }
+        fn pk_value(&self) -> &i64 {
+            &self.id
+        }
+        fn descriptor() -> &'static crate::descriptor::ModelDescriptor {
+            unimplemented!()
+        }
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: i64,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx
+        {
+            async { unimplemented!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx
+        {
+            async { unimplemented!() }
+        }
+    }
+
+    #[test]
+    fn djogi_field_eq_returns_portable_sassi_leaf() {
+        let f =
+            djogi_field_macro_support::__make_djogi_field::<FakeRow, i64>("age", |row| &row.age);
+        let predicate = f.eq(42).into_inner();
+
+        match predicate {
+            sassi::BasicPredicate::Field(field) => {
+                assert_eq!(field.field_name(), "age");
+                assert_eq!(field.op(), sassi::LookupOp::Eq);
+                assert_eq!(field.value_as::<i64>(), Some(&42));
+            }
+            other => panic!("expected Field predicate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn djogi_field_optional_eq_and_some_eq_use_planned_payloads() {
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<i64>>(
+            "maybe_age",
+            |row| &row.maybe_age,
+        );
+
+        match f.eq(None).into_inner() {
+            sassi::BasicPredicate::Field(field) => {
+                assert_eq!(field.field_name(), "maybe_age");
+                assert_eq!(field.op(), sassi::LookupOp::Eq);
+                assert_eq!(field.value_as::<Option<i64>>(), Some(&None));
+            }
+            other => panic!("expected optional Eq field predicate, got {other:?}"),
+        }
+
+        match f.some().eq(7).into_inner() {
+            sassi::BasicPredicate::Field(field) => {
+                assert_eq!(field.field_name(), "maybe_age");
+                assert_eq!(field.op(), sassi::LookupOp::Eq);
+                assert_eq!(field.value_as::<i64>(), Some(&7));
+            }
+            other => panic!("expected present Eq field predicate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn djogi_field_null_checks_stay_portable() {
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<i64>>(
+            "maybe_age",
+            |row| &row.maybe_age,
+        );
+
+        match f.is_null().into_inner() {
+            sassi::BasicPredicate::Field(field) => {
+                assert_eq!(field.field_name(), "maybe_age");
+                assert_eq!(field.op(), sassi::LookupOp::IsNull);
+                assert_eq!(field.value_as::<()>(), Some(&()));
+            }
+            other => panic!("expected IsNull field predicate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn djogi_field_string_contains_routes_to_portable_case_contract() {
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, String>("title", |row| {
+            &row.title
+        });
+
+        match f.contains("Rust").into_inner() {
+            sassi::BasicPredicate::Field(field) => {
+                assert_eq!(field.field_name(), "title");
+                assert_eq!(field.op(), sassi::LookupOp::IContains);
+                assert_eq!(field.value_as::<String>(), Some(&"Rust".to_string()));
+            }
+            other => panic!("expected IContains field predicate, got {other:?}"),
+        }
+
+        match f.contains_case_sensitive("Rust").into_inner() {
+            sassi::BasicPredicate::Field(field) => {
+                assert_eq!(field.field_name(), "title");
+                assert_eq!(field.op(), sassi::LookupOp::Contains);
+                assert_eq!(field.value_as::<String>(), Some(&"Rust".to_string()));
+            }
+            other => panic!("expected Contains field predicate, got {other:?}"),
         }
     }
 

@@ -303,6 +303,46 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
         false
     }
 
+    /// Framework-internal: emit a portable field predicate as SQL.
+    ///
+    /// Phase 8eta PR2a installs the default that returns
+    /// [`crate::query::PortablePredicateError::UnsupportedModel`] so
+    /// hand-written `Model` impls (test stubs, internal fixtures with
+    /// `type Fields = ()`) keep compiling without claiming to support
+    /// portable SQL lowering. PR2d's macro override replaces this default
+    /// on every PK-backed `#[model]`-emitted impl with a generated
+    /// `(field_name, LookupOp)` dispatch that calls into the
+    /// `crate::query::portable::emit::*` helpers.
+    ///
+    /// # Why on `Model` rather than a separate trait?
+    ///
+    /// The direct-`Q<T>` walker in PR2b iterates `Q::Portable` leaves
+    /// generically over `T: Model`. A separate `PortableSqlEmit<T>` trait
+    /// would require every existing test fixture and adopter `Model` impl
+    /// to add a stub implementation before PR2b could compile — PRs
+    /// would not be bisectable. Putting the hook on `Model` with a safe
+    /// default keeps the trait surface unified and preserves bisection.
+    ///
+    /// # Adopter contract
+    ///
+    /// Adopters do **not** override this method directly — `#[derive(Model)]`
+    /// emits the override on every macro-generated impl. Hand-written
+    /// `impl Model` blocks (which are themselves discouraged outside of
+    /// internal test fixtures because `__sealed::Sealed` is private) keep
+    /// the default and surface a typed error if a portable predicate
+    /// against the model ever reaches SQL emission.
+    #[doc(hidden)]
+    fn __djogi_emit_field_predicate(
+        acc: &mut crate::pg::accumulator::SqlAccumulator,
+        field: &crate::types::FieldPredicate<Self>,
+        ctx: crate::query::SqlEmitContext,
+    ) -> Result<(), crate::query::PortablePredicateError> {
+        let _ = (acc, field, ctx);
+        Err(crate::query::PortablePredicateError::UnsupportedModel {
+            model: ::core::any::type_name::<Self>(),
+        })
+    }
+
     /// Walk **every** self-FK edge declared on this model upward —
     /// the multi-edge sibling of [`Model::tree_ancestors`]. Phase
     /// 8-Zero Cluster B3 (T13a).

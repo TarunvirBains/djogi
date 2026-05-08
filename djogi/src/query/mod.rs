@@ -45,6 +45,18 @@ pub mod filter;
 pub mod grouped;
 pub(crate) mod lock;
 pub mod order;
+// Phase 8eta PR2a — Djogi-owned portable predicate substrate.
+//
+// `predicate` is the public re-export module for `PortablePredicate<T>` and
+// the (PR2b-populated) `Predicate<T>` shell. `portable` is hidden because
+// PR2b's macro-emitted `Model::__djogi_emit_field_predicate` overrides have
+// to name `SqlEmitContext` and `PortablePredicateError` from a path
+// reachable cross-crate; `pub(crate)` would not survive cross-crate macro
+// expansion, while `#[doc(hidden)] pub` plus the `__private::query::*` route
+// in `lib.rs` does. See `query/portable.rs` for the rationale.
+#[doc(hidden)]
+pub mod portable;
+pub mod predicate;
 pub mod q;
 pub mod queryset;
 pub mod recursive;
@@ -70,9 +82,36 @@ pub use closure::{ClosureModel, MaterializeClosureOptions, MaterializeClosureRep
 // calls out — adopter code that needs to name the type uses
 // `crate::query::internal::Condition` (the unstable namespace below)
 // or composes via `Q<T>` instead.
-pub use field::{FieldRef, IntoFilterValue, OptionalRelationRef};
+// Phase 8eta PR2a — Djogi root field wrapper surface.
+//
+// `DjogiField`, `DjogiPresentField`, `ExplicitPgPredicateField`, and the
+// `DjogiPortableOrd` trait are introduced additively in PR2a so the
+// public re-export tree compiles before macros and SQL emitters flip in
+// PR2b/PR2c/PR2d. `FieldRef` / `IntoFilterValue` / `OptionalRelationRef`
+// remain re-exported as before — generated `{Model}Fields` accessors still
+// return `FieldRef` until PR3 flips the macro emission.
+pub use field::{
+    DjogiField, DjogiPortableOrd, DjogiPresentField, ExplicitPgPredicateField, FieldRef,
+    IntoFilterValue, OptionalRelationRef,
+};
 pub use filter::{FilterClause, Lookup, ModelFilter};
 pub use order::{Direction, NullsOrder, OrderExpr};
+// Phase 8eta PR2a — public predicate-wrapper surface.
+//
+// `PortablePredicate<T>` is the trusted-Djogi-provenance wrapper that flows
+// through PR2b's direct-`Q<T>` SQL emitter and PR4's cache boundary.
+// `Predicate<T>` is the PR2b operator-matrix shell. `IntoPortablePredicate`
+// is the sealed trait Djogi-owned root field methods consume (currently
+// implemented only for `PortablePredicate<T>`).
+pub use predicate::{IntoPortablePredicate, PortablePredicate, Predicate};
+// Hidden re-exports for macro-emitted code and PR2b's direct-SQL walker.
+// `SqlEmitContext` and `PortablePredicateError` appear in the public
+// `Model::__djogi_emit_field_predicate` hook signature and in PR2d's
+// generated overrides; routing them through `__private` (see `lib.rs`)
+// keeps adopter code from naming them while letting macro-expanded
+// `impl Model for {Model}` blocks compile.
+#[doc(hidden)]
+pub use portable::{PortablePredicateError, SqlEmitContext};
 pub use q::{ArrayPredicate, IntoQ, Q};
 pub use queryset::{DistinctMode, IntoDistinctColumns, QuerySet};
 pub use recursive::{RecursiveDirection, RecursiveQuerySet};
@@ -126,5 +165,40 @@ mod tests {
     fn basic_predicate_reachable_from_djogi_query() {
         let _: sassi::BasicPredicate<()> = sassi::BasicPredicate::True;
         let _: crate::query::BasicPredicate<()> = crate::query::BasicPredicate::True;
+    }
+
+    /// Phase 8eta PR2a — re-export contract for the Djogi predicate
+    /// substrate. The `pub use predicate::{...}` and `pub use field::{...}`
+    /// lines above must remain in place; PR2b's macro emission, PR4's
+    /// cache boundary, and adopter `impl DjogiPortableOrd` callsites all
+    /// reach these names through `crate::query::*`. Compile-only — every
+    /// `use` line is the contract.
+    #[test]
+    fn phase8eta_pr2a_predicate_substrate_reachable_from_djogi_query() {
+        #[allow(unused_imports)]
+        use crate::query::{
+            DjogiField, DjogiPortableOrd, DjogiPresentField, ExplicitPgPredicateField,
+            IntoPortablePredicate, PortablePredicate, Predicate,
+        };
+
+        // `DjogiPortableOrd` reachable as a public trait. The bound check
+        // is compile-only — PR2a's listed scalar impls are exercised by
+        // this generic helper.
+        fn assert_djogi_portable_ord<T: DjogiPortableOrd>() {}
+        assert_djogi_portable_ord::<i64>();
+        assert_djogi_portable_ord::<crate::HeerId>();
+        assert_djogi_portable_ord::<rust_decimal::Decimal>();
+    }
+
+    /// Hidden re-exports for macro-emitted code: `SqlEmitContext` and
+    /// `PortablePredicateError`. These are reached through
+    /// `::djogi::__private::query` from generated `impl Model` blocks; this
+    /// test covers the in-crate path.
+    #[test]
+    fn phase8eta_pr2a_hidden_emit_context_reachable() {
+        let _: crate::query::SqlEmitContext = crate::query::SqlEmitContext::root();
+        let _: crate::query::SqlEmitContext = crate::query::SqlEmitContext::joined("posts");
+        // Compile-only: variant exists.
+        let _ = crate::query::PortablePredicateError::UnsupportedModel { model: "Test" };
     }
 }

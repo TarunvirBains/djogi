@@ -221,12 +221,20 @@ fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Resu
         }),
     };
 
+    // Sassi 0.1.0-beta added a `fields: CacheableFieldsMode` field on
+    // `CacheableDeriveOptions`. Djogi-macros only consumes the
+    // `generate_delta_sync_cacheable_impl` codegen (which does not read
+    // `fields`), so the default `Generated` mode is correct here — picking
+    // up `..Default::default()` rather than naming the variant explicitly
+    // keeps this file decoupled from any future additive changes to
+    // `CacheableDeriveOptions`.
     let options = sassi_codegen::CacheableDeriveOptions {
         watermark_field: Some(sassi_codegen::WatermarkField::new(
             &watermark_name,
             watermark_span,
         )),
         type_name: None,
+        ..Default::default()
     };
 
     let delta_sync_impl =
