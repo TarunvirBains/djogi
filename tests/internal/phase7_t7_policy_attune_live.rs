@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 #[djogi::deliberately_bypass_convention_with_raw_sql]
-// JUSTIFICATION (djogi#133): internal framework test for Djogi-owned SQL/driver behavior; raw access is outside the ordinary adopter test surface.
+// JUSTIFICATION (djogi#133): out-of-order policy + attune probe — pg_advisory_lock per-bucket isolation and out_of_order_flag bookkeeping.
 mod phase7_t7_policy_attune_live {
     include!("sources/phase7_t7_policy_attune_live.rs");
 }

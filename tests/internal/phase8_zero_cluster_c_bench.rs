@@ -3,7 +3,7 @@
 #![cfg(feature = "spatial")]
 
 #[djogi::deliberately_bypass_convention_with_raw_sql]
-// JUSTIFICATION (djogi#133): internal framework test for Djogi-owned SQL/driver behavior; raw access is outside the ordinary adopter test surface.
+// JUSTIFICATION (djogi#133): smoke bench for convex_hull aggregate + qualify() lowering vs hand-written derived-table baseline as raw SQL.
 mod phase8_zero_cluster_c_bench {
     include!("sources/phase8_zero_cluster_c_bench.rs");
 }
