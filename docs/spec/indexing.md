@@ -287,4 +287,4 @@ IndexTarget::Columns(&[
 - [Migrations](./migrations.md) — the Phase 7 differ's consumption of `IndexSpec`, the apply-time advisory warning, and the non-transactional migration rule for `concurrently = true`.
 - [Primary Keys](./primary-keys.md) — public `HeerIdRecencyBiased` / `RanjIdRecencyBiased` naming, plus the underlying `HeerIdDesc` / `RanjIdDesc` migration semantics.
 - [Decisions](./decisions.md) — rows for concurrent index creation, unique-constraint default, column ordering, per-column spec, predicate validation.
-- `docs/superpowers/plans/2026-04-22-phase7-zero-indexing-v3.md` §§4–6 — the frozen contract, grammar, lowering rules, and apply-time advisory-warning specification.
+- This section is the tracked frozen contract for the Phase 7-Zero indexing grammar, lowering rules, and apply-time advisory-warning specification.

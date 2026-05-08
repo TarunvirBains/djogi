@@ -3,8 +3,8 @@
 **Date:** 2026-04-22
 **Input:** Topics 01–12 (migration research synthesis, 2026-04-22)
 **References:** `docs/spec/migrations.md`, `docs/spec/decisions.md`, `docs/spec/models.md`,
-`docs/spec/adoption-readiness.md`, `docs/superpowers/specs/2026-04-22-phase7-migration-system-design.md`,
-`docs/superpowers/plans/2026-04-18-phase7-migration-system-v2.md`
+`docs/spec/adoption-readiness.md`, the local Phase 7 migration-system design notes,
+the local Phase 7 migration-system v2 implementation plan
 **Output feeds:** `14-locked-recommendations.md`
 
 ---
@@ -49,8 +49,8 @@ Each of the twelve research topics was read in full, then cross-referenced again
 - `docs/spec/migrations.md` — migration philosophy and generated SQL contracts
 - `docs/spec/models.md` — field and model annotations
 - `docs/spec/adoption-readiness.md` — phase gates
-- `docs/superpowers/specs/2026-04-22-phase7-migration-system-design.md` (Phase 7 design)
-- `docs/superpowers/plans/2026-04-18-phase7-migration-system-v2.md` (Phase 7 v2 implementation plan)
+- Local Phase 7 migration-system design notes (Phase 7 design)
+- Local Phase 7 migration-system v2 implementation plan (Phase 7 v2 implementation plan)
 
 **Status labels:**
 
@@ -70,8 +70,8 @@ Sources are cited as abbreviated references:
 - `SPEC-D` = `docs/spec/decisions.md`
 - `SPEC-MO` = `docs/spec/models.md`
 - `SPEC-AR` = `docs/spec/adoption-readiness.md`
-- `P7D` = `docs/superpowers/specs/2026-04-22-phase7-migration-system-design.md`
-- `P7V2` = `docs/superpowers/plans/2026-04-18-phase7-migration-system-v2.md`
+- `P7D` = the local Phase 7 migration-system design notes
+- `P7V2` = the local Phase 7 migration-system v2 implementation plan
 
 ---
 

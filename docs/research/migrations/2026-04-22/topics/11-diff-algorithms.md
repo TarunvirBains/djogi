@@ -145,7 +145,7 @@ For **drift detection** (`diagnose_migration_history.rs:126-192`):
 - `target/djogi_models.json` (the current desired state, produced by `build.rs` from `#[djogi::model]` descriptors)
 - `migrations/schema_snapshot.json` (the last-successfully-applied state)
 
-Per the Phase 7 migration system design (`docs/superpowers/specs/2026-04-22-phase7-migration-system-design.md:49-55`): "Djogi does not plan by diffing directly against the live database catalog on every build or CLI invocation. The planner diffs: desired schema from descriptors [and] applied schema from `schema_snapshot.json`."
+Per the local Phase 7 migration-system design notes: "Djogi does not plan by diffing directly against the live database catalog on every build or CLI invocation. The planner diffs: desired schema from descriptors [and] applied schema from `schema_snapshot.json`."
 
 **Pros:**
 - No database connection required at diff time
