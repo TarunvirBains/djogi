@@ -49,3 +49,25 @@ pub type Date = time::Date;
 // trait, not the derive. (See the matching note in `crate::cache`.)
 pub use sassi::cacheable::Cacheable;
 pub use sassi::{BasicPredicate, DeltaSyncCacheable, MonotonicWatermark};
+
+// Phase 8eta PR2a — Sassi predicate inspection re-exports.
+//
+// Macro-emitted `impl Model::__djogi_emit_field_predicate` blocks live in
+// adopter crates and must spell Sassi types through `::djogi::types::*`
+// (not `::sassi::*` directly), per `feedback_macro_path_routing.md`. PR2d
+// emits the override; PR2a adds the re-exports so the macro emission
+// compiles when PR2d lands.
+//
+// - `Field<T, V>` — the Sassi field accessor `__make_djogi_field` constructs
+//   internally and `DjogiField::__portable_field` returns. Lives at
+//   `sassi::Field` (re-exported from `sassi::cacheable::Field`).
+// - `FieldPredicate<T>` — the per-field predicate payload Sassi attaches to
+//   `BasicPredicate::Field(_)` leaves; the SQL walker downcasts its
+//   `value_as::<V>()` payload to dispatch on concrete Rust types.
+// - `LookupOp` — the predicate operator marker; PR2d's match arms key off
+//   `(field.field_name(), field.op())`.
+// - `IntoBasicPredicate<T>` — the Sassi-side conversion trait that
+//   `PortablePredicate<T>` implements so adopters can pass the wrapper
+//   straight into `PunnuScope::filter_basic`.
+pub use sassi::Field;
+pub use sassi::predicate::{FieldPredicate, IntoBasicPredicate, LookupOp};

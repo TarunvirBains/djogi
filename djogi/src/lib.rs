@@ -238,8 +238,20 @@ pub mod __private {
     /// indirectly via `filter_struct(my_filter)`; the helper exists at
     /// this path so macro-emitted code can route through
     /// `::djogi::__private::query::*` per `feedback_macro_path_routing.md`.
+    ///
+    /// Phase 8eta PR2a additions (consumed by PR2b's direct-`Q<T>` SQL
+    /// walker and PR2d's macro override):
+    ///
+    /// - `SqlEmitContext` — the parent-table-threading context PR2d's
+    ///   generated `__djogi_emit_field_predicate` arms expect.
+    /// - `PortablePredicateError` — the typed lowering error PR2b's
+    ///   walker propagates back to `DjogiError`.
+    /// - `__make_djogi_field` — the macro constructor PR3 will route every
+    ///   generated `{Model}Fields` accessor through.
     pub mod query {
+        pub use crate::query::field::djogi_field_macro_support::__make_djogi_field;
         pub use crate::query::filter::clauses_into_condition;
+        pub use crate::query::portable::{PortablePredicateError, SqlEmitContext};
         pub use crate::query::q::{IntoQ, Q};
     }
 }
