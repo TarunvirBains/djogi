@@ -2,7 +2,7 @@
 #![allow(clippy::module_inception)]
 
 #[djogi::deliberately_bypass_convention_with_raw_sql]
-// JUSTIFICATION (djogi#133): internal framework test for Djogi-owned SQL/driver behavior; raw access is outside the ordinary adopter test surface.
+// JUSTIFICATION (djogi#133): pg_catalog byte-shape parity probe between sync_models and apply_plan execute paths.
 mod phase7_t10_sync_models_parity {
     include!("sources/phase7_t10_sync_models_parity.rs");
 }

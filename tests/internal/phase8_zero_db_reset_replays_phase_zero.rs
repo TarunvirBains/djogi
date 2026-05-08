@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 #[djogi::deliberately_bypass_convention_with_raw_sql]
-// JUSTIFICATION (djogi#133): internal framework test for Djogi-owned SQL/driver behavior; raw access is outside the ordinary adopter test surface.
+// JUSTIFICATION (djogi#133): provisions a virgin DB bypassing setup_test_db_with_extensions to prove db reset replays the Phase 0 bootstrap.
 mod phase8_zero_db_reset_replays_phase_zero {
     include!("sources/phase8_zero_db_reset_replays_phase_zero.rs");
 }
