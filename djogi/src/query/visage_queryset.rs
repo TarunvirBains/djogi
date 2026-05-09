@@ -232,15 +232,19 @@ impl<V> VisageQuerySet<V> {
     /// keeps it out of rustdoc.
     #[doc(hidden)]
     pub fn __sql_for_test(&self) -> String {
-        let acc = build_visage_select(self);
+        let acc = build_visage_select(self).expect("visage select");
         let (sql, _binds) = acc.into_parts();
         sql
     }
 }
 
 /// Build the SELECT SQL + binds for `fetch_all`, `fetch_one`, and `first`.
-fn run_all_sql<V>(qs: &VisageQuerySet<V>) -> (String, Vec<Box<dyn ToSql + Sync + Send>>) {
-    build_visage_select(qs).into_parts()
+fn run_all_sql<V>(
+    qs: &VisageQuerySet<V>,
+) -> Result<(String, Vec<Box<dyn ToSql + Sync + Send>>), crate::DjogiError> {
+    Ok(build_visage_select(qs)
+        .map_err(crate::DjogiError::from)?
+        .into_parts())
 }
 
 /// Build `SELECT col1, col2, ... FROM <table> [WHERE ...] [ORDER BY ...]
@@ -250,14 +254,16 @@ fn run_all_sql<V>(qs: &VisageQuerySet<V>) -> (String, Vec<Box<dyn ToSql + Sync +
 /// from a model descriptor walk. This is the load-bearing difference
 /// from the model-side `build_select`: dropped columns never appear in
 /// the SELECT regardless of the source model's full column count.
-pub(crate) fn build_visage_select<V>(qs: &VisageQuerySet<V>) -> SqlAccumulator {
+pub(crate) fn build_visage_select<V>(
+    qs: &VisageQuerySet<V>,
+) -> Result<SqlAccumulator, crate::query::portable::PortablePredicateError> {
     let mut acc = SqlAccumulator::new("");
     acc.push_sql("SELECT ");
     acc.push_csv(qs.columns.iter().copied());
     acc.push_sql(" FROM ");
     acc.push_sql(qs.table);
-    push_visage_tail(&mut acc, qs);
-    acc
+    push_visage_tail(&mut acc, qs)?;
+    Ok(acc)
 }
 
 /// Build `SELECT COUNT(*) FROM <table> [WHERE ...]` for a visage queryset.
@@ -266,39 +272,57 @@ pub(crate) fn build_visage_select<V>(qs: &VisageQuerySet<V>) -> SqlAccumulator {
 /// those clauses. Mirrors the model-side `build_count` shape so the
 /// emitted statement is the simplest predicate-matching count Postgres
 /// can plan.
-pub(crate) fn build_visage_count<V>(qs: &VisageQuerySet<V>) -> SqlAccumulator {
+pub(crate) fn build_visage_count<V>(
+    qs: &VisageQuerySet<V>,
+) -> Result<SqlAccumulator, crate::query::portable::PortablePredicateError> {
     let mut acc = SqlAccumulator::new("");
     acc.push_sql("SELECT COUNT(*) FROM ");
     acc.push_sql(qs.table);
-    push_visage_where(&mut acc, qs);
-    acc
+    push_visage_where(&mut acc, qs)?;
+    Ok(acc)
 }
 
 /// Build `SELECT EXISTS (SELECT 1 FROM <table> [WHERE ...] LIMIT 1)` for
 /// a visage queryset. Mirrors the model-side `build_exists` shape.
-pub(crate) fn build_visage_exists<V>(qs: &VisageQuerySet<V>) -> SqlAccumulator {
+pub(crate) fn build_visage_exists<V>(
+    qs: &VisageQuerySet<V>,
+) -> Result<SqlAccumulator, crate::query::portable::PortablePredicateError> {
     let mut acc = SqlAccumulator::new("");
     acc.push_sql("SELECT EXISTS (SELECT 1 FROM ");
     acc.push_sql(qs.table);
-    push_visage_where(&mut acc, qs);
+    push_visage_where(&mut acc, qs)?;
     acc.push_sql(" LIMIT 1)");
-    acc
+    Ok(acc)
 }
 
 /// Emit the `WHERE ...` clause for a visage queryset, if non-vacuous.
-fn push_visage_where<V>(acc: &mut SqlAccumulator, qs: &VisageQuerySet<V>) {
+///
+/// Phase 8eta PR2b: `emit_condition` borrow-walks and returns
+/// `Result<(), PortablePredicateError>`; visage querysets carry pure
+/// `Condition` payloads (no portable predicates yet), so the only
+/// failure path is an inner expression-IR emit error inside a
+/// `Condition::Expr`. Propagate via `Result` so the surrounding
+/// terminal can lift the error to `DjogiError::Predicate(_)`.
+fn push_visage_where<V>(
+    acc: &mut SqlAccumulator,
+    qs: &VisageQuerySet<V>,
+) -> Result<(), crate::query::portable::PortablePredicateError> {
     if !qs.condition.is_vacuously_true() {
         acc.push_sql(" WHERE ");
-        emit_condition(acc, qs.condition.clone(), None);
+        emit_condition(acc, &qs.condition, None)?;
     }
+    Ok(())
 }
 
 /// Tail clauses shared by SELECT variants: `WHERE`, `ORDER BY`, `LIMIT`,
 /// `OFFSET`. Visage querysets do not carry select_related / prefetch /
 /// row-lock state, so this is shorter than the model-side
 /// `push_tail_qualified`.
-fn push_visage_tail<V>(acc: &mut SqlAccumulator, qs: &VisageQuerySet<V>) {
-    push_visage_where(acc, qs);
+fn push_visage_tail<V>(
+    acc: &mut SqlAccumulator,
+    qs: &VisageQuerySet<V>,
+) -> Result<(), crate::query::portable::PortablePredicateError> {
+    push_visage_where(acc, qs)?;
 
     if !qs.ordering.is_empty() {
         acc.push_sql(" ORDER BY ");
@@ -318,6 +342,7 @@ fn push_visage_tail<V>(acc: &mut SqlAccumulator, qs: &VisageQuerySet<V>) {
         acc.push_sql(" OFFSET ");
         acc.push_bind(n);
     }
+    Ok(())
 }
 
 // ── Row-returning terminals (require `V: FromPgRow`) ───────────────────────
@@ -340,7 +365,7 @@ where
         V: 'ctx,
     {
         async move {
-            let (sql, binds) = run_all_sql(&self);
+            let (sql, binds) = run_all_sql(&self)?;
             let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
             rows.iter().map(|r| V::from_pg_row(r)).collect()
@@ -363,7 +388,7 @@ where
             // multi-row failure without a separate COUNT round trip.
             let table = self.table;
             self.limit = Some(2);
-            let (sql, binds) = run_all_sql(&self);
+            let (sql, binds) = run_all_sql(&self)?;
             let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
             match rows.len() {
@@ -391,7 +416,7 @@ where
     {
         async move {
             self.limit = Some(1);
-            let (sql, binds) = run_all_sql(&self);
+            let (sql, binds) = run_all_sql(&self)?;
             let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
             match rows.into_iter().next() {
@@ -414,7 +439,9 @@ impl<V> VisageQuerySet<V> {
         V: 'ctx,
     {
         async move {
-            let (sql, binds) = build_visage_count(&self).into_parts();
+            let (sql, binds) = build_visage_count(&self)
+                .map_err(DjogiError::from)?
+                .into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
             try_get_scalar::<i64>(&row, 0)
@@ -430,7 +457,9 @@ impl<V> VisageQuerySet<V> {
         V: 'ctx,
     {
         async move {
-            let (sql, binds) = build_visage_exists(&self).into_parts();
+            let (sql, binds) = build_visage_exists(&self)
+                .map_err(DjogiError::from)?
+                .into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
             try_get_scalar::<bool>(&row, 0)

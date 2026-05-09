@@ -37,8 +37,8 @@ pub type Date = time::Date;
 // matching `DeltaSyncCacheable` impl through `sassi-codegen` with
 // `sassi_path = ::djogi::types`. `MonotonicWatermark` is the watermark
 // trait the emitted `DeltaSyncCacheable` impl bounds against;
-// `BasicPredicate` is the lifted predicate algebra surface the
-// `Q::Basic(...)` lowering reaches in macro-emission contexts.
+// `BasicPredicate` is the lifted predicate algebra surface carried by
+// `Q::Portable(...)` in macro-emission contexts.
 //
 // The adopter-facing surface lives at `djogi::cache::*` (see
 // `crate::cache`) — this re-export is purely a macro-routing target.

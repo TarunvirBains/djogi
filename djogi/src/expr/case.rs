@@ -231,7 +231,7 @@ mod tests {
         )
         .otherwise(Expr::literal("ok".to_string()));
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &expr.node);
+        emit_expr(&mut qb, &expr.node).expect("case expression should lower to SQL");
         let sql = qb.sql();
         assert_eq!(
             sql.trim(),
@@ -257,7 +257,7 @@ mod tests {
         )
         .otherwise(Expr::literal("ok".to_string()));
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &expr.node);
+        emit_expr(&mut qb, &expr.node).expect("case expression should lower to SQL");
         let sql = qb.sql();
         assert_eq!(
             sql.trim(),

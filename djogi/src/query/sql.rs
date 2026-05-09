@@ -37,6 +37,8 @@ use crate::model::Model;
 use crate::pg::accumulator::SqlAccumulator;
 use crate::pg::decode::FromPgRow;
 use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
+use crate::query::portable::{PortablePredicateError, SqlEmitContext};
+use crate::query::q::{ArrayPredicate, CompoundOp, Q};
 use crate::query::queryset::{DistinctMode, QuerySet};
 
 /// Escape LIKE/ILIKE wildcards (`%`, `_`, `\\`) so user input is treated
@@ -143,6 +145,82 @@ pub(crate) fn push_filter_value(acc: &mut SqlAccumulator, v: FilterValue) {
     }
 }
 
+/// Reference-borrowing counterpart of [`push_filter_value`]. Clones the
+/// individual scalar value into `push_bind` so the caller does not have
+/// to clone an entire `Condition` tree just to borrow-walk it.
+///
+/// Phase 8eta PR2b — `emit_condition` switched to borrow-walk so portable
+/// predicate emission never has to construct a throw-away `Condition`
+/// shadow tree. This helper preserves the same bind shape the by-value
+/// helper produced; only the entry point differs.
+pub(crate) fn push_filter_value_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
+    match v {
+        FilterValue::String(s) => {
+            acc.push_bind(s.clone());
+        }
+        FilterValue::I16(n) => {
+            acc.push_bind(*n);
+        }
+        FilterValue::I32(n) => {
+            acc.push_bind(*n);
+        }
+        FilterValue::I64(n) => {
+            acc.push_bind(*n);
+        }
+        FilterValue::F32(n) => {
+            acc.push_bind(*n);
+        }
+        FilterValue::F64(n) => {
+            acc.push_bind(*n);
+        }
+        FilterValue::Bool(b) => {
+            acc.push_bind(*b);
+        }
+        FilterValue::DateTime(d) => {
+            acc.push_bind(*d);
+        }
+        FilterValue::Date(d) => {
+            acc.push_bind(*d);
+        }
+        FilterValue::Uuid(u) => {
+            acc.push_bind(*u);
+        }
+        FilterValue::HeerId(h) => {
+            acc.push_bind(*h);
+        }
+        FilterValue::RanjId(r) => {
+            acc.push_bind(*r);
+        }
+        FilterValue::HeerIdDesc(h) => {
+            acc.push_bind(*h);
+        }
+        FilterValue::RanjIdDesc(r) => {
+            acc.push_bind(*r);
+        }
+        FilterValue::Decimal(d) => {
+            acc.push_bind(*d);
+        }
+        FilterValue::Null => {
+            acc.push_null_literal();
+        }
+        FilterValue::ArrayString(v) => {
+            acc.push_bind(v.clone());
+        }
+        FilterValue::ArrayI32(v) => {
+            acc.push_bind(v.clone());
+        }
+        FilterValue::ArrayI64(v) => {
+            acc.push_bind(v.clone());
+        }
+        FilterValue::ArrayBool(v) => {
+            acc.push_bind(v.clone());
+        }
+        FilterValue::List(_) | FilterValue::Pair(_, _) => {
+            unreachable!("push_filter_value_ref called with List/Pair — use emit_leaf_ref")
+        }
+    }
+}
+
 /// Emit a list element for `IN (...)` / `NOT IN (...)`.
 ///
 /// Same binding behaviour as [`push_filter_value`] for scalar variants;
@@ -151,6 +229,12 @@ pub(crate) fn push_filter_value(acc: &mut SqlAccumulator, v: FilterValue) {
 /// bug). The reject branch is explicit so the caller cannot accidentally
 /// thread a `Null` through `IN ($1)` — Postgres `col IN (NULL)` is always
 /// `NULL`, never `TRUE`.
+///
+/// Phase 8eta PR2b kept the by-value form for parallelism with
+/// [`push_filter_value`], even though the production borrow-walker uses
+/// [`push_list_element_ref`] exclusively. The by-value form remains a
+/// thin convenience for legacy unit tests.
+#[allow(dead_code)]
 fn push_list_element(acc: &mut SqlAccumulator, v: FilterValue) {
     match v {
         FilterValue::Null
@@ -200,6 +284,13 @@ fn push_qualified_col(
     acc.push_sql(col);
 }
 
+/// Phase 8eta PR2b kept the by-value form alongside the new
+/// [`emit_leaf_ref`] borrow-walker for parallelism with the rest of the
+/// pre-PR2b emitter helpers; the production path uses the borrow-walker
+/// exclusively. Annotated `dead_code` so removing the legacy emitter
+/// surface in a future cleanup does not cascade through this file's
+/// tests.
+#[allow(dead_code)]
 fn emit_leaf(acc: &mut SqlAccumulator, leaf: Leaf, parent_table: Option<&'static str>) {
     let col = leaf.column;
     if let Some(tok) = leaf.op.binary_op_token() {
@@ -307,41 +398,171 @@ fn emit_leaf(acc: &mut SqlAccumulator, leaf: Leaf, parent_table: Option<&'static
     }
 }
 
-/// Walk a [`Condition`] tree and emit the corresponding SQL fragment.
-/// Called recursively for `Not`/`And`/`Or`. The input is consumed by value
-/// because payloads (`String`, `Vec<FilterValue>`, `Box<FilterValue>`) move
-/// into the accumulator one bind at a time.
+/// Reference-borrowing counterpart of [`emit_leaf`]. Phase 8eta PR2b's
+/// [`emit_condition`] borrow-walks the `Condition` tree, so individual
+/// leaves enter through this helper rather than the by-value form. The
+/// list / pair / pattern arms clone the captured payload values into
+/// `push_bind` so production SQL emission no longer requires cloning a
+/// whole `Condition` tree to dispatch.
+fn emit_leaf_ref(acc: &mut SqlAccumulator, leaf: &Leaf, parent_table: Option<&'static str>) {
+    let col = leaf.column;
+    if let Some(tok) = leaf.op.binary_op_token() {
+        push_qualified_col(acc, col, parent_table);
+        acc.push_sql(tok);
+        push_filter_value_ref(acc, &leaf.value);
+        return;
+    }
+    match leaf.op {
+        LookupOp::IsNull => {
+            push_qualified_col(acc, col, parent_table);
+            acc.push_sql(" IS NULL");
+        }
+        LookupOp::IsNotNull => {
+            push_qualified_col(acc, col, parent_table);
+            acc.push_sql(" IS NOT NULL");
+        }
+        LookupOp::IContains => {
+            push_qualified_col(acc, col, parent_table);
+            acc.push_sql(" ILIKE ");
+            let s = match &leaf.value {
+                FilterValue::String(s) => s,
+                _ => unreachable!("IContains requires FilterValue::String"),
+            };
+            acc.push_bind(format!("%{}%", escape_like(s)));
+        }
+        LookupOp::IStartsWith => {
+            push_qualified_col(acc, col, parent_table);
+            acc.push_sql(" ILIKE ");
+            let s = match &leaf.value {
+                FilterValue::String(s) => s,
+                _ => unreachable!("IStartsWith requires FilterValue::String"),
+            };
+            acc.push_bind(format!("{}%", escape_like(s)));
+        }
+        LookupOp::IEndsWith => {
+            push_qualified_col(acc, col, parent_table);
+            acc.push_sql(" ILIKE ");
+            let s = match &leaf.value {
+                FilterValue::String(s) => s,
+                _ => unreachable!("IEndsWith requires FilterValue::String"),
+            };
+            acc.push_bind(format!("%{}", escape_like(s)));
+        }
+        LookupOp::IExact => {
+            acc.push_sql("LOWER(");
+            push_qualified_col(acc, col, parent_table);
+            acc.push_sql(") = LOWER(");
+            push_filter_value_ref(acc, &leaf.value);
+            acc.push_sql(")");
+        }
+        LookupOp::Between => {
+            let (a, b) = match &leaf.value {
+                FilterValue::Pair(a, b) => (a.as_ref(), b.as_ref()),
+                _ => unreachable!("Between requires FilterValue::Pair"),
+            };
+            push_qualified_col(acc, col, parent_table);
+            acc.push_sql(" BETWEEN ");
+            push_filter_value_ref(acc, a);
+            acc.push_sql(" AND ");
+            push_filter_value_ref(acc, b);
+        }
+        LookupOp::In | LookupOp::NotIn => {
+            let list = match &leaf.value {
+                FilterValue::List(v) => v,
+                _ => unreachable!("In/NotIn requires FilterValue::List"),
+            };
+            if list.is_empty() {
+                if matches!(leaf.op, LookupOp::In) {
+                    acc.push_sql("FALSE");
+                } else {
+                    acc.push_sql("TRUE");
+                }
+                return;
+            }
+            push_qualified_col(acc, col, parent_table);
+            acc.push_sql(if matches!(leaf.op, LookupOp::In) {
+                " IN ("
+            } else {
+                " NOT IN ("
+            });
+            for (i, v) in list.iter().enumerate() {
+                if i > 0 {
+                    acc.push_sql(", ");
+                }
+                push_list_element_ref(acc, v);
+            }
+            acc.push_sql(")");
+        }
+        LookupOp::Eq
+        | LookupOp::Neq
+        | LookupOp::Gt
+        | LookupOp::Gte
+        | LookupOp::Lt
+        | LookupOp::Lte
+        | LookupOp::Regex
+        | LookupOp::IRegex => unreachable!("binary-op LookupOp routed past early return"),
+    }
+}
+
+/// Reference-borrowing counterpart of [`push_list_element`]. Same
+/// restriction surface; clones the underlying scalar into `push_bind`.
+fn push_list_element_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
+    match v {
+        FilterValue::Null
+        | FilterValue::List(_)
+        | FilterValue::Pair(_, _)
+        | FilterValue::ArrayString(_)
+        | FilterValue::ArrayI32(_)
+        | FilterValue::ArrayI64(_)
+        | FilterValue::ArrayBool(_) => {
+            unreachable!(
+                "nested/null/array FilterValue in IN list — typed FieldRef API prevents this"
+            )
+        }
+        scalar => push_filter_value_ref(acc, scalar),
+    }
+}
+
+/// Walk a [`Condition`] borrow and emit the corresponding SQL fragment.
+///
+/// Phase 8eta PR2b — converted from by-value to by-reference (`&Condition`)
+/// and made fallible (`Result<(), PortablePredicateError>`). The
+/// expression-IR bridge calls into `expr::sql::emit_expr`, which itself
+/// returns `Result` after PR2b so portable predicates inside a subquery
+/// surface their lowering errors through the outer query builder. Owned
+/// payloads (strings, lists, pairs) clone into `push_bind` instead of
+/// being moved, so production SQL emission no longer requires cloning a
+/// whole `Condition` tree just to borrow-walk `Q<T>`.
 ///
 /// `parent_table` threads through unchanged so every bare column reference
 /// in a joined-variant emission lands as `{table}.{column}`; the non-joined
 /// path passes `None` and gets bare names, preserving byte-for-byte parity
-/// with Phase 2 output.
+/// with the pre-PR2b output.
 ///
 /// `pub(crate)` because Phase 4 Task 5 needs this entry point to lower the
 /// [`Condition`] tree that backs a subquery's `WHERE` clause (a
 /// [`SubqueryNode`](crate::expr::node::SubqueryNode) stores the parent
-/// queryset's accumulated condition tree verbatim and lets this emitter
-/// render it at subquery-emission time — see
-/// [`crate::expr::sql::emit_subquery`]). Keeping the emitter itself
-/// module-private would force a duplicate walk inside `expr::sql`; widening
-/// to `pub(crate)` reuses the shipped, battle-tested condition emitter
-/// without copy-pasting its every `LookupOp` arm.
+/// queryset's predicate behind a type-erased emitter after PR2b — see
+/// [`crate::expr::sql::emit_subquery`]).
 pub(crate) fn emit_condition(
     acc: &mut SqlAccumulator,
-    c: Condition,
+    c: &Condition,
     parent_table: Option<&'static str>,
-) {
+) -> Result<(), PortablePredicateError> {
     match c {
         Condition::True => {
             acc.push_sql("TRUE");
+            Ok(())
         }
         Condition::Leaf(l) => {
-            emit_leaf(acc, l, parent_table);
+            emit_leaf_ref(acc, l, parent_table);
+            Ok(())
         }
         Condition::Not(inner) => {
             acc.push_sql("NOT (");
-            emit_condition(acc, *inner, parent_table);
+            emit_condition(acc, inner, parent_table)?;
             acc.push_sql(")");
+            Ok(())
         }
         Condition::And(parts) => {
             // Empty `And(vec![])` is the vacuous-truth identity — documented
@@ -349,32 +570,34 @@ pub(crate) fn emit_condition(
             // constructs one, but external callers technically can.
             if parts.is_empty() {
                 acc.push_sql("TRUE");
-                return;
+                return Ok(());
             }
             acc.push_sql("(");
-            for (i, p) in parts.into_iter().enumerate() {
+            for (i, p) in parts.iter().enumerate() {
                 if i > 0 {
                     acc.push_sql(" AND ");
                 }
-                emit_condition(acc, p, parent_table);
+                emit_condition(acc, p, parent_table)?;
             }
             acc.push_sql(")");
+            Ok(())
         }
         Condition::Or(parts) => {
             // Empty `Or(vec![])` is the vacuous-falsehood identity — see the
             // variant doc and the condition tests.
             if parts.is_empty() {
                 acc.push_sql("FALSE");
-                return;
+                return Ok(());
             }
             acc.push_sql("(");
-            for (i, p) in parts.into_iter().enumerate() {
+            for (i, p) in parts.iter().enumerate() {
                 if i > 0 {
                     acc.push_sql(" OR ");
                 }
-                emit_condition(acc, p, parent_table);
+                emit_condition(acc, p, parent_table)?;
             }
             acc.push_sql(")");
+            Ok(())
         }
         // Expression-IR bridge — delegates to the dedicated emitter in
         // `expr::sql`. The expression tree carries its own column
@@ -382,9 +605,7 @@ pub(crate) fn emit_condition(
         // deliberately not threaded through (see the module-level
         // comment in `expr::sql` for the scope note on select_related
         // interaction, deferred to Task 5).
-        Condition::Expr(expr) => {
-            crate::expr::sql::emit_expr(acc, &expr.node);
-        }
+        Condition::Expr(expr) => crate::expr::sql::emit_expr(acc, &expr.node),
         // ── Array operators (Phase 5 Task 5) ─────────────────────────────
         //
         // All three operators take the form `col OP $n` where `$n` is a
@@ -396,17 +617,20 @@ pub(crate) fn emit_condition(
         Condition::ArrayContains(leaf) => {
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" @> ");
-            push_filter_value(acc, leaf.values);
+            push_filter_value_ref(acc, &leaf.values);
+            Ok(())
         }
         Condition::ArrayContainedBy(leaf) => {
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" <@ ");
-            push_filter_value(acc, leaf.values);
+            push_filter_value_ref(acc, &leaf.values);
+            Ok(())
         }
         Condition::ArrayOverlap(leaf) => {
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" && ");
-            push_filter_value(acc, leaf.values);
+            push_filter_value_ref(acc, &leaf.values);
+            Ok(())
         }
         // ── JSONB flat-path condition (Phase 5 Task 5) ───────────────────
         //
@@ -416,7 +640,8 @@ pub(crate) fn emit_condition(
         // `push_qualified_col` helper). SQL is rendered here at
         // emit time, never at condition-tree construction time.
         Condition::JsonbPath(leaf) => {
-            emit_jsonb_path_leaf(acc, leaf, parent_table);
+            emit_jsonb_path_leaf_ref(acc, leaf, parent_table);
+            Ok(())
         }
         // ── Raw SQL escape hatch (Phase 8β T3.4) ─────────────────────────
         //
@@ -438,6 +663,7 @@ pub(crate) fn emit_condition(
             acc.push_sql("(");
             acc.push_sql(s.as_str());
             acc.push_sql(")");
+            Ok(())
         }
     }
 }
@@ -453,6 +679,95 @@ pub(crate) fn emit_condition(
 /// `(table.col->'a'->>'b')::cast` — the Postgres JSONB navigation
 /// operators apply to the `table.col` expression, so parenthesisation
 /// wraps the qualified column reference correctly.
+/// Reference-borrowing counterpart of [`emit_jsonb_path_leaf`]. Phase 8eta
+/// PR2b — `emit_condition` borrow-walks the `Condition` tree, so JSONB
+/// path leaves enter through this helper rather than the by-value form.
+fn emit_jsonb_path_leaf_ref(
+    acc: &mut SqlAccumulator,
+    leaf: &crate::jsonb::path::JsonbPathLeaf,
+    parent_table: Option<&'static str>,
+) {
+    fn build_lhs(
+        acc: &mut SqlAccumulator,
+        column: &'static str,
+        path: &'static str,
+        cast: Option<&'static str>,
+        parent_table: Option<&'static str>,
+    ) {
+        let segments: Vec<&str> = path.split('.').collect();
+        acc.push_sql("(");
+        if let Some(table) = parent_table {
+            acc.push_sql(table);
+            acc.push_sql(".");
+        }
+        acc.push_sql(column);
+        for (i, seg) in segments.iter().enumerate() {
+            if i == segments.len() - 1 {
+                acc.push_sql("->>'");
+                acc.push_sql(seg);
+                acc.push_sql("'");
+            } else {
+                acc.push_sql("->'");
+                acc.push_sql(seg);
+                acc.push_sql("'");
+            }
+        }
+        acc.push_sql(")");
+        if let Some(c) = cast {
+            acc.push_sql(c);
+        }
+    }
+
+    if matches!(leaf.op, LookupOp::Regex | LookupOp::IRegex) {
+        unreachable!(
+            "Regex / IRegex not supported on JsonbPathLeaf: {:?}",
+            leaf.op
+        );
+    }
+    if let Some(tok) = leaf.op.binary_op_token() {
+        build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
+        acc.push_sql(tok);
+        push_filter_value_ref(acc, &leaf.value);
+        return;
+    }
+    match leaf.op {
+        LookupOp::IsNull => {
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
+            acc.push_sql(" IS NULL");
+        }
+        LookupOp::IsNotNull => {
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
+            acc.push_sql(" IS NOT NULL");
+        }
+        LookupOp::In => {
+            let list = match &leaf.value {
+                FilterValue::List(v) => v,
+                _ => unreachable!("JsonbPath In requires FilterValue::List"),
+            };
+            if list.is_empty() {
+                acc.push_sql("FALSE");
+                return;
+            }
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
+            acc.push_sql(" IN (");
+            for (i, v) in list.iter().enumerate() {
+                if i > 0 {
+                    acc.push_sql(", ");
+                }
+                push_list_element_ref(acc, v);
+            }
+            acc.push_sql(")");
+        }
+        _ => {
+            unreachable!("unsupported LookupOp in JsonbPathLeaf: {:?}", leaf.op)
+        }
+    }
+}
+
+/// Phase 8eta PR2b kept the by-value form alongside the new
+/// [`emit_jsonb_path_leaf_ref`] borrow-walker for parallelism. The
+/// production borrow-walking path uses the `_ref` form exclusively.
+#[allow(dead_code)]
 fn emit_jsonb_path_leaf(
     acc: &mut SqlAccumulator,
     leaf: crate::jsonb::path::JsonbPathLeaf,
@@ -549,25 +864,175 @@ fn emit_jsonb_path_leaf(
     }
 }
 
-/// Is this condition vacuously `TRUE` at emission time? Walks `And`
-/// subtrees recursively so top-level `And(vec![])`, nested
-/// `And(vec![True, And(vec![])])`, and similar shapes all collapse to the
-/// same identity the emitter treats as "no filter". `Not(Or(vec![]))` is
-/// also vacuously TRUE because the emitter renders empty `Or` as `FALSE`
-/// and `NOT FALSE` is `TRUE`.
+/// Walk a [`Q<T>`] borrow and emit the corresponding SQL fragment.
 ///
+/// Phase 8eta PR2b — direct-`Q<T>` SQL emission. `Q::Portable(_)` arms
+/// route through [`crate::query::portable::emit_portable_predicate`]
+/// (which dispatches to `Model::__djogi_emit_field_predicate`) without
+/// ever building a `Condition` shadow tree. Other variants (`Ilike`,
+/// `Regex`, `JsonbPath`, `Expression`, `Array`, `Condition`, `Compound`,
+/// `Xor`, `Negated`) emit through the existing emitter machinery in
+/// this file.
+///
+/// `ctx` carries the parent-table qualifier so portable root-field
+/// predicates emitted under `build_select_joined` qualify as
+/// `<table>.<column>`. Non-joined builders pass `SqlEmitContext::root()`
+/// and the legacy parent-table-threading channel propagates through to
+/// `emit_condition` for the `Q::Condition(_)` arm via
+/// `ctx.parent_table()`.
+pub(crate) fn emit_q<T: Model>(
+    acc: &mut SqlAccumulator,
+    q: &Q<T>,
+    ctx: SqlEmitContext,
+) -> Result<(), PortablePredicateError> {
+    let parent_table = ctx.parent_table();
+    match q {
+        Q::Portable(predicate) => {
+            crate::query::portable::emit_portable_predicate::<T>(acc, predicate, ctx)
+        }
+        Q::Ilike(field, pattern) => {
+            push_qualified_col(acc, field.column(), parent_table);
+            acc.push_sql(" ILIKE ");
+            acc.push_bind(format!("%{}%", escape_like(pattern)));
+            Ok(())
+        }
+        Q::JsonbPath(leaf) => {
+            emit_jsonb_path_leaf_ref(acc, leaf, parent_table);
+            Ok(())
+        }
+        Q::Regex(field, pattern, true) => {
+            push_qualified_col(acc, field.column(), parent_table);
+            acc.push_sql(" ~ ");
+            acc.push_bind(pattern.clone());
+            Ok(())
+        }
+        Q::Regex(field, pattern, false) => {
+            push_qualified_col(acc, field.column(), parent_table);
+            acc.push_sql(" ~* ");
+            acc.push_bind(pattern.clone());
+            Ok(())
+        }
+        Q::Expression(expr) => crate::expr::sql::emit_expr(acc, &expr.node),
+        Q::Array(ArrayPredicate::Contains(leaf, _)) => {
+            push_qualified_col(acc, leaf.column, parent_table);
+            acc.push_sql(" @> ");
+            push_filter_value_ref(acc, &leaf.values);
+            Ok(())
+        }
+        Q::Array(ArrayPredicate::ContainedBy(leaf, _)) => {
+            push_qualified_col(acc, leaf.column, parent_table);
+            acc.push_sql(" <@ ");
+            push_filter_value_ref(acc, &leaf.values);
+            Ok(())
+        }
+        Q::Array(ArrayPredicate::Overlap(leaf, _)) => {
+            push_qualified_col(acc, leaf.column, parent_table);
+            acc.push_sql(" && ");
+            push_filter_value_ref(acc, &leaf.values);
+            Ok(())
+        }
+        Q::Condition(c) => emit_condition(acc, c, parent_table),
+        Q::Compound { op, parts } => {
+            if parts.is_empty() {
+                acc.push_sql(match op {
+                    CompoundOp::And => "TRUE",
+                    CompoundOp::Or => "FALSE",
+                });
+                return Ok(());
+            }
+            acc.push_sql("(");
+            let sep = match op {
+                CompoundOp::And => " AND ",
+                CompoundOp::Or => " OR ",
+            };
+            for (i, p) in parts.iter().enumerate() {
+                if i > 0 {
+                    acc.push_sql(sep);
+                }
+                emit_q::<T>(acc, p, ctx)?;
+            }
+            acc.push_sql(")");
+            Ok(())
+        }
+        Q::Xor(a, b) => {
+            // General XOR identity: `((NOT a) AND b) OR (a AND (NOT b))`.
+            // Same shape `query::q::xor_to_condition_ref` produces in the
+            // legacy bridge.
+            acc.push_sql("(((NOT (");
+            emit_q::<T>(acc, a, ctx)?;
+            acc.push_sql(")) AND (");
+            emit_q::<T>(acc, b, ctx)?;
+            acc.push_sql(")) OR ((");
+            emit_q::<T>(acc, a, ctx)?;
+            acc.push_sql(") AND (NOT (");
+            emit_q::<T>(acc, b, ctx)?;
+            acc.push_sql("))))");
+            Ok(())
+        }
+        Q::Negated(inner) => {
+            acc.push_sql("NOT (");
+            emit_q::<T>(acc, inner, ctx)?;
+            acc.push_sql(")");
+            Ok(())
+        }
+        // `Q<T>` is `#[non_exhaustive]` — a future variant lands here
+        // as a typed error rather than panicking. The macro / SQL
+        // builder layers surface this as `DjogiError::Predicate(_)`.
+        #[allow(unreachable_patterns)]
+        _ => Err(PortablePredicateError::CacheInvalidNode {
+            kind: "Q::<unknown>",
+        }),
+    }
+}
+
+/// Test whether a `Q<T>` is structurally equivalent to `TRUE`. Mirrors
+/// [`Condition::is_vacuously_true`] for the post-PR2b substrate so the
+/// `WHERE` emitter can omit the clause entirely on unfiltered querysets
+/// without round-tripping through the legacy bridge. Used by
+/// [`push_where_qualified`].
+fn q_is_vacuously_true<T: Model>(q: &Q<T>) -> bool {
+    match q {
+        Q::Portable(p) => match p.inner_ref() {
+            sassi::BasicPredicate::True => true,
+            sassi::BasicPredicate::And(parts) => parts
+                .iter()
+                .all(|c| matches!(c, sassi::BasicPredicate::True)),
+            _ => false,
+        },
+        Q::Condition(c) => c.is_vacuously_true(),
+        Q::Compound {
+            op: CompoundOp::And,
+            parts,
+        } => parts.iter().all(q_is_vacuously_true),
+        Q::Negated(inner) => match inner.as_ref() {
+            // `NOT (False)` is structurally TRUE; the emitter would
+            // render `Q::Negated(Q::Compound { Or, [] })` as `NOT (FALSE)`.
+            Q::Portable(p) => matches!(p.inner_ref(), sassi::BasicPredicate::False),
+            Q::Compound {
+                op: CompoundOp::Or,
+                parts,
+            } => parts.is_empty(),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Emit the `WHERE ...` clause for a QuerySet, if any. Any top-level
-/// condition that collapses to vacuous TRUE (see
-/// [`Condition::is_vacuously_true`]) is omitted entirely rather than
-/// emitted as `WHERE TRUE` — same semantics, cleaner logs, and avoids
-/// touching the planner with a trivially-true predicate.
+/// condition that collapses to vacuous TRUE (see [`q_is_vacuously_true`])
+/// is omitted entirely rather than emitted as `WHERE TRUE` — same
+/// semantics, cleaner logs, and avoids touching the planner with a
+/// trivially-true predicate.
 ///
 /// The non-joined path (every caller in this file except
 /// [`build_select_joined`]) uses this shim, which forwards to
 /// [`push_where_qualified`] with `parent_table = None` — bare column
 /// references are emitted exactly as Phase 2 shipped.
-fn push_where<T: Model>(acc: &mut SqlAccumulator, qs: &QuerySet<T>) {
-    push_where_qualified(acc, qs, None);
+fn push_where<T: Model>(
+    acc: &mut SqlAccumulator,
+    qs: &QuerySet<T>,
+) -> Result<(), PortablePredicateError> {
+    push_where_qualified(acc, qs, None)
 }
 
 /// Qualification-aware variant of [`push_where`]. When `parent_table`
@@ -576,36 +1041,42 @@ fn push_where<T: Model>(acc: &mut SqlAccumulator, qs: &QuerySet<T>) {
 /// `42702 column reference "X" is ambiguous` under `LEFT JOIN`-ed
 /// children that share the same column name (`id`, `created_at`,
 /// `updated_at`). `None` preserves Phase 2's bare-name emission.
+///
+/// Phase 8eta PR2b — direct-`Q<T>` emission via [`emit_q`]. The
+/// `q_is_vacuously_true` short-circuit replaces the legacy
+/// `q_to_condition_ref(...).is_vacuously_true()` round-trip; the SQL
+/// emit path no longer builds a throw-away `Condition` shadow tree.
 fn push_where_qualified<T: Model>(
     acc: &mut SqlAccumulator,
     qs: &QuerySet<T>,
     parent_table: Option<&'static str>,
-) {
-    // Cluster 8γ Stage 2 (T6.9): `qs.condition` is `Q<T>` post-flip.
-    // The SQL emitter still walks `Condition`, so we lower through
-    // the bridge before reaching `emit_condition`. Character-for-
-    // character SQL parity with the pre-flip path is the contract:
-    // `q_to_condition_ref` walks `&Q<T>` and reproduces the legacy
-    // `Condition::And/Or/Not/Leaf/Expr` tree shape every variant
-    // produced before the flip — and does so without invoking
-    // `Clone` on `Q<T>` (which would propagate `T: Clone` virally
-    // through every terminal method via sassi's `BasicPredicate<T>:
-    // Clone` derive bound).
-    let lowered = crate::query::q::q_to_condition_ref(&qs.condition);
-    if !lowered.is_vacuously_true() {
-        acc.push_sql(" WHERE ");
-        emit_condition(acc, lowered, parent_table);
+) -> Result<(), PortablePredicateError> {
+    if q_is_vacuously_true(&qs.condition) {
+        return Ok(());
     }
+    acc.push_sql(" WHERE ");
+    let ctx = match parent_table {
+        Some(t) => SqlEmitContext::joined(t),
+        None => SqlEmitContext::root(),
+    };
+    emit_q::<T>(acc, &qs.condition, ctx)
 }
 
 /// Shared tail emitted by SELECT variants: `ORDER BY ...`, `LIMIT $n`,
 /// `OFFSET $n`. `WHERE` is emitted separately so count/exists builders can
 /// reuse `push_where` without taking the ordering/limit tail.
 ///
+/// Phase 8eta PR2b — fallible because the inner `WHERE` helper
+/// propagates `PortablePredicateError`. Callers `?` through to the
+/// builder's `Result<SqlAccumulator, _>` return.
+///
 /// Shim for the non-joined path — forwards to [`push_tail_qualified`]
 /// with `parent_table = None`.
-fn push_tail<T: Model>(acc: &mut SqlAccumulator, qs: &QuerySet<T>) {
-    push_tail_qualified(acc, qs, None);
+fn push_tail<T: Model>(
+    acc: &mut SqlAccumulator,
+    qs: &QuerySet<T>,
+) -> Result<(), PortablePredicateError> {
+    push_tail_qualified(acc, qs, None)
 }
 
 /// Qualification-aware variant of [`push_tail`]. `parent_table` threads
@@ -617,8 +1088,8 @@ fn push_tail_qualified<T: Model>(
     acc: &mut SqlAccumulator,
     qs: &QuerySet<T>,
     parent_table: Option<&'static str>,
-) {
-    push_where_qualified(acc, qs, parent_table);
+) -> Result<(), PortablePredicateError> {
+    push_where_qualified(acc, qs, parent_table)?;
 
     if !qs.ordering.is_empty() {
         acc.push_sql(" ORDER BY ");
@@ -647,6 +1118,7 @@ fn push_tail_qualified<T: Model>(
     // byte-for-byte preserved for querysets that never touched the
     // lock builders.
     qs.lock.push_tail(acc);
+    Ok(())
 }
 
 /// Emit the shared HAVING / ORDER BY / LIMIT / OFFSET tail for grouped-aggregate
@@ -663,10 +1135,10 @@ fn push_grouped_tail(
     order: &[crate::query::order::OrderExpr],
     limit: Option<u64>,
     offset: Option<u64>,
-) {
+) -> Result<(), PortablePredicateError> {
     if let Some(h) = having {
         acc.push_sql(" HAVING ");
-        crate::expr::sql::emit_expr(acc, h);
+        crate::expr::sql::emit_expr(acc, h)?;
     }
 
     if !order.is_empty() {
@@ -687,6 +1159,7 @@ fn push_grouped_tail(
         acc.push_sql(" OFFSET ");
         acc.push_bind(n as i64);
     }
+    Ok(())
 }
 
 /// Build `SELECT [DISTINCT [ON (...)]] <COLUMN_LIST> FROM <table> [WHERE ...]
@@ -696,7 +1169,9 @@ fn push_grouped_tail(
 /// `fetch_one`, `first`) may need to mutate the queryset (e.g. `fetch_one`
 /// overrides the user-set `limit` to 2 so it can distinguish single-row
 /// success from multiple-row failure) before or after calling this builder.
-pub(crate) fn build_select<T: Model + FromPgRow>(qs: &QuerySet<T>) -> SqlAccumulator {
+pub(crate) fn build_select<T: Model + FromPgRow>(
+    qs: &QuerySet<T>,
+) -> Result<SqlAccumulator, PortablePredicateError> {
     let mut acc = SqlAccumulator::new("");
     // Emit the canonical `FromPgRow::COLUMN_LIST` rather than `*`. Ordinal
     // decode relies on wire column order matching struct-field order;
@@ -724,8 +1199,8 @@ pub(crate) fn build_select<T: Model + FromPgRow>(qs: &QuerySet<T>) -> SqlAccumul
         }
     }
     acc.push_sql(T::table_name());
-    push_tail(&mut acc, qs);
-    acc
+    push_tail(&mut acc, qs)?;
+    Ok(acc)
 }
 
 /// Build `SELECT {parent_cols} FROM <table> {left joins} [WHERE ...]
@@ -757,7 +1232,9 @@ pub(crate) fn build_select<T: Model + FromPgRow>(qs: &QuerySet<T>) -> SqlAccumul
 /// `.select_related(...)` get consistent shape — distinct is applied
 /// to the full projection (parent + aliased children) — but they
 /// should verify the emitted SQL matches their intent.
-pub(crate) fn build_select_joined<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
+pub(crate) fn build_select_joined<T: Model>(
+    qs: &QuerySet<T>,
+) -> Result<SqlAccumulator, PortablePredicateError> {
     let mut acc = SqlAccumulator::new("");
     let col_list = crate::relation::select_related::select_columns::<T>(&qs.select_related_paths);
     // Every bare column reference that follows — `WHERE ...`,
@@ -802,8 +1279,8 @@ pub(crate) fn build_select_joined<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator 
     }
     acc.push_sql(T::table_name());
     crate::relation::select_related::push_joins::<T>(&mut acc, &qs.select_related_paths);
-    push_tail_qualified(&mut acc, qs, parent_table);
-    acc
+    push_tail_qualified(&mut acc, qs, parent_table)?;
+    Ok(acc)
 }
 
 /// Emit `(AGG(..) [OVER (...)])::CAST` for the scalar-aggregate and
@@ -836,7 +1313,7 @@ fn emit_aggregate_inner(
     acc: &mut SqlAccumulator,
     agg: &crate::expr::node::ExprNode,
     default_window: Option<&'static str>,
-) {
+) -> Result<(), PortablePredicateError> {
     // Codex T22 round-3 BLOCK-1 + round-4 refinement: spatial
     // aggregates emit an outer scalar cast (e.g. `::geography`).
     // When OVER is present, Postgres grammar places `OVER` on the
@@ -892,7 +1369,7 @@ fn emit_aggregate_inner(
             true,
             _,
         ) => {
-            crate::expr::sql::emit_expr(acc, agg);
+            crate::expr::sql::emit_expr(acc, agg)?;
             // Bare emission ended with `WRAP(AGG(...))::cast`. Pop
             // the cast and the wrapper close so the next push falls
             // between the AGG(...)'s close paren and the wrapper's.
@@ -941,7 +1418,7 @@ fn emit_aggregate_inner(
                 }
             );
             if has_filter {
-                crate::expr::sql::emit_expr(acc, agg);
+                crate::expr::sql::emit_expr(acc, agg)?;
                 let popped_cast = acc.pop_sql_suffix(suffix);
                 debug_assert!(
                     popped_cast,
@@ -958,7 +1435,7 @@ fn emit_aggregate_inner(
                 acc.push_sql(suffix);
             } else {
                 acc.push_sql("(");
-                crate::expr::sql::emit_expr(acc, agg);
+                crate::expr::sql::emit_expr(acc, agg)?;
                 let popped_cast = acc.pop_sql_suffix(suffix);
                 debug_assert!(
                     popped_cast,
@@ -972,7 +1449,7 @@ fn emit_aggregate_inner(
         // Spatial WITHOUT window — bare emit already includes the
         // cast adjacent to the aggregate. Nothing to splice.
         (Some(_), false, _) => {
-            crate::expr::sql::emit_expr(acc, agg);
+            crate::expr::sql::emit_expr(acc, agg)?;
         }
         // Non-spatial WITH explicit cast_to — paren-wrap (AGG OVER)?,
         // then `::ty`. Window may or may not be present; the existing
@@ -980,17 +1457,18 @@ fn emit_aggregate_inner(
         // attaches cleanly.
         (None, _, Some(ty)) => {
             acc.push_sql("(");
-            crate::expr::sql::emit_expr(acc, agg);
+            crate::expr::sql::emit_expr(acc, agg)?;
             emit_window_clause(acc);
             acc.push_sql(")::");
             acc.push_sql(ty);
         }
         // Non-spatial, no cast — bare emit + optional OVER.
         (None, _, None) => {
-            crate::expr::sql::emit_expr(acc, agg);
+            crate::expr::sql::emit_expr(acc, agg)?;
             emit_window_clause(acc);
         }
     }
+    Ok(())
 }
 
 /// Emission profile for spatial aggregates. The two `wrapped` cases
@@ -1052,8 +1530,8 @@ fn spatial_emission_shape(agg: &crate::expr::node::ExprNode) -> Option<SpatialSh
 pub(crate) fn emit_aggregate_with_cast(
     acc: &mut SqlAccumulator,
     agg: &crate::expr::node::ExprNode,
-) {
-    emit_aggregate_inner(acc, agg, None);
+) -> Result<(), PortablePredicateError> {
+    emit_aggregate_inner(acc, agg, None)
 }
 
 /// Emit `(AGG(..) OVER ())::CAST` for the annotate-SELECT-list path —
@@ -1076,8 +1554,8 @@ pub(crate) fn emit_aggregate_with_cast(
 pub(crate) fn emit_aggregate_with_window_and_cast(
     acc: &mut SqlAccumulator,
     agg: &crate::expr::node::ExprNode,
-) {
-    emit_aggregate_inner(acc, agg, Some(" OVER ()"));
+) -> Result<(), PortablePredicateError> {
+    emit_aggregate_inner(acc, agg, Some(" OVER ()"))
 }
 
 /// Build `SELECT <agg> FROM <table> [WHERE ...]` — the scalar-aggregate
@@ -1095,13 +1573,13 @@ pub(crate) fn emit_aggregate_with_window_and_cast(
 pub(crate) fn build_aggregate_select<T: Model>(
     qs: &QuerySet<T>,
     agg: &crate::expr::node::ExprNode,
-) -> SqlAccumulator {
+) -> Result<SqlAccumulator, PortablePredicateError> {
     let mut acc = SqlAccumulator::new("SELECT ");
-    emit_aggregate_with_cast(&mut acc, agg);
+    emit_aggregate_with_cast(&mut acc, agg)?;
     acc.push_sql(" FROM ");
     acc.push_sql(T::table_name());
-    push_where(&mut acc, qs);
-    acc
+    push_where(&mut acc, qs)?;
+    Ok(acc)
 }
 
 /// Build `SELECT t.*, <agg_0> AS __djogi_agg_0, <agg_1> AS __djogi_agg_1
@@ -1129,7 +1607,7 @@ pub(crate) fn build_aggregate_select<T: Model>(
 pub(crate) fn build_select_with_annotations<T, F>(
     qs: &QuerySet<T>,
     push_columns: F,
-) -> SqlAccumulator
+) -> Result<SqlAccumulator, PortablePredicateError>
 where
     T: Model + FromPgRow,
     F: FnOnce(&mut SqlAccumulator),
@@ -1158,8 +1636,8 @@ where
     acc.push_sql(" FROM ");
     acc.push_sql(T::table_name());
     acc.push_sql(" AS t");
-    push_tail(&mut acc, qs);
-    acc
+    push_tail(&mut acc, qs)?;
+    Ok(acc)
 }
 
 /// Build the annotated SELECT, optionally wrapping in a derived table so
@@ -1178,21 +1656,21 @@ pub(crate) fn build_annotated_select_for_fetch<T, F>(
     qs: &QuerySet<T>,
     push_columns: F,
     qualify: Option<&crate::expr::QualifyCondition>,
-) -> SqlAccumulator
+) -> Result<SqlAccumulator, PortablePredicateError>
 where
     T: Model + FromPgRow,
     F: FnOnce(&mut SqlAccumulator),
 {
-    let inner = build_select_with_annotations(qs, push_columns);
+    let inner = build_select_with_annotations(qs, push_columns)?;
     let Some(qualify) = qualify else {
-        return inner;
+        return Ok(inner);
     };
 
     let mut wrapped = SqlAccumulator::new("SELECT * FROM (");
     wrapped.extend_with(inner);
     wrapped.push_sql(") AS __djogi_q WHERE ");
     qualify.push_outer_where(&mut wrapped);
-    wrapped
+    Ok(wrapped)
 }
 
 /// Build `SELECT keys, aggregates FROM <table> [WHERE ...] GROUP BY keys
@@ -1222,7 +1700,7 @@ where
 /// does not need to be aware of which emission path to take.
 pub(crate) fn build_grouped_annotated_select<T, K, A>(
     gaq: &crate::query::grouped::GroupedAnnotatedQuerySet<T, K, A>,
-) -> SqlAccumulator
+) -> Result<SqlAccumulator, PortablePredicateError>
 where
     T: Model,
     K: crate::query::grouped::IntoGroupKeyTuple,
@@ -1255,7 +1733,7 @@ where
     acc.push_sql(" AS t");
 
     // WHERE from the upstream queryset (filters set before .group_by)
-    push_where(&mut acc, &gaq.qs);
+    push_where(&mut acc, &gaq.qs)?;
 
     // GROUP BY
     acc.push_sql(" GROUP BY ");
@@ -1297,9 +1775,9 @@ where
         &gaq.order,
         gaq.limit,
         gaq.offset,
-    );
+    )?;
 
-    acc
+    Ok(acc)
 }
 
 /// Build the spatial-JOIN variant of the grouped-annotated SELECT:
@@ -1331,7 +1809,7 @@ where
 pub(crate) fn build_spatial_join_grouped_select<T, K, A>(
     gaq: &crate::query::grouped::GroupedAnnotatedQuerySet<T, K, A>,
     spec: &crate::query::spatial_grouping::SpatialJoinSpec,
-) -> SqlAccumulator
+) -> Result<SqlAccumulator, PortablePredicateError>
 where
     T: Model,
     K: crate::query::grouped::IntoGroupKeyTuple,
@@ -1385,7 +1863,7 @@ where
 
     // WHERE from the upstream queryset — qualifies t.<col> references so
     // they don't collide with r.<col> under the JOIN.
-    push_where_qualified(&mut acc, &gaq.qs, Some("t"));
+    push_where_qualified(&mut acc, &gaq.qs, Some("t"))?;
 
     // GROUP BY r.<pk-col>
     acc.push_sql(" GROUP BY ");
@@ -1410,9 +1888,9 @@ where
         &gaq.order,
         gaq.limit,
         gaq.offset,
-    );
+    )?;
 
-    acc
+    Ok(acc)
 }
 
 /// Build the DBSCAN-clustering variant of the grouped-annotated SELECT:
@@ -1474,7 +1952,7 @@ where
 pub(crate) fn build_cluster_grouped_select<T, K, A>(
     gaq: &crate::query::grouped::GroupedAnnotatedQuerySet<T, K, A>,
     spec: &crate::query::spatial_grouping::ClusterSpec,
-) -> SqlAccumulator
+) -> Result<SqlAccumulator, PortablePredicateError>
 where
     T: Model,
     K: crate::query::grouped::IntoGroupKeyTuple,
@@ -1497,7 +1975,7 @@ where
     acc.push_sql(" AS t");
 
     // WHERE from the upstream queryset — prunes BEFORE clustering.
-    push_where(&mut acc, &gaq.qs);
+    push_where(&mut acc, &gaq.qs)?;
 
     acc.push_sql(") AS t");
 
@@ -1512,9 +1990,9 @@ where
         &gaq.order,
         gaq.limit,
         gaq.offset,
-    );
+    )?;
 
-    acc
+    Ok(acc)
 }
 
 /// Build the geohash-bucketing variant of the grouped-annotated SELECT:
@@ -1540,7 +2018,7 @@ where
 pub(crate) fn build_geohash_grouped_select<T, K, A>(
     gaq: &crate::query::grouped::GroupedAnnotatedQuerySet<T, K, A>,
     spec: &crate::query::spatial_grouping::GeohashSpec,
-) -> SqlAccumulator
+) -> Result<SqlAccumulator, PortablePredicateError>
 where
     T: Model,
     K: crate::query::grouped::IntoGroupKeyTuple,
@@ -1565,7 +2043,7 @@ where
     acc.push_sql(" AS t");
 
     // WHERE from the upstream queryset.
-    push_where(&mut acc, &gaq.qs);
+    push_where(&mut acc, &gaq.qs)?;
 
     // GROUP BY geohash  (references the scalar-function alias)
     acc.push_sql(" GROUP BY geohash");
@@ -1576,9 +2054,9 @@ where
         &gaq.order,
         gaq.limit,
         gaq.offset,
-    );
+    )?;
 
-    acc
+    Ok(acc)
 }
 
 /// Build `SELECT COUNT(*) FROM <table> [WHERE ...]`, honoring
@@ -1598,14 +2076,16 @@ where
 /// `ORDER BY`); we prepend the distinct columns and then append any
 /// user-supplied ordering so the emitted SQL is syntactically valid and
 /// semantically stable.
-pub(crate) fn build_count<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
+pub(crate) fn build_count<T: Model>(
+    qs: &QuerySet<T>,
+) -> Result<SqlAccumulator, PortablePredicateError> {
     match &qs.distinct {
         DistinctMode::None => {
             // Fast path — plain row count, no subquery wrap.
             let mut acc = SqlAccumulator::new("SELECT COUNT(*) FROM ");
             acc.push_sql(T::table_name());
-            push_where(&mut acc, qs);
-            acc
+            push_where(&mut acc, qs)?;
+            Ok(acc)
         }
         DistinctMode::Plain => {
             // `COUNT(*)` over `SELECT DISTINCT *` counts distinct whole-row
@@ -1613,9 +2093,9 @@ pub(crate) fn build_count<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
             // no prefix requirement.
             let mut acc = SqlAccumulator::new("SELECT COUNT(*) FROM (SELECT DISTINCT * FROM ");
             acc.push_sql(T::table_name());
-            push_where(&mut acc, qs);
+            push_where(&mut acc, qs)?;
             acc.push_sql(") AS sub");
-            acc
+            Ok(acc)
         }
         DistinctMode::On(cols) => {
             // `DISTINCT ON (a, b)` requires `ORDER BY a, b [, ...]`. We
@@ -1627,7 +2107,7 @@ pub(crate) fn build_count<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
             acc.push_csv(cols.iter().copied());
             acc.push_sql(") * FROM ");
             acc.push_sql(T::table_name());
-            push_where(&mut acc, qs);
+            push_where(&mut acc, qs)?;
             acc.push_sql(" ORDER BY ");
             acc.push_csv(cols.iter().copied());
             // Append user ordering after the required prefix. Delegate to
@@ -1640,7 +2120,7 @@ pub(crate) fn build_count<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
                 o.emit(&mut acc, None);
             }
             acc.push_sql(") AS sub");
-            acc
+            Ok(acc)
         }
     }
 }
@@ -1651,12 +2131,14 @@ pub(crate) fn build_count<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
 /// the queryset's `limit` slot: EXISTS returns a single boolean regardless
 /// of how many rows match, so `LIMIT 1` here is a micro-optimization that
 /// tells Postgres to stop scanning once one match is found.
-pub(crate) fn build_exists<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
+pub(crate) fn build_exists<T: Model>(
+    qs: &QuerySet<T>,
+) -> Result<SqlAccumulator, PortablePredicateError> {
     let mut acc = SqlAccumulator::new("SELECT EXISTS(SELECT 1 FROM ");
     acc.push_sql(T::table_name());
-    push_where(&mut acc, qs);
+    push_where(&mut acc, qs)?;
     acc.push_sql(" LIMIT 1)");
-    acc
+    Ok(acc)
 }
 
 /// Build `UPDATE <table> SET col = $1, col = $2, updated_at = now()
@@ -1687,7 +2169,7 @@ pub(crate) fn build_exists<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
 pub(crate) fn build_update<T: Model>(
     qs: &QuerySet<T>,
     assignments: &[crate::query::update::UpdateAssignment],
-) -> SqlAccumulator {
+) -> Result<SqlAccumulator, PortablePredicateError> {
     let mut acc = SqlAccumulator::new("UPDATE ");
     acc.push_sql(T::table_name());
     acc.push_sql(" SET ");
@@ -1713,7 +2195,7 @@ pub(crate) fn build_update<T: Model>(
                 push_filter_value(&mut acc, v.clone());
             }
             crate::query::update::AssignmentValue::Expr(node) => {
-                crate::expr::sql::emit_expr(&mut acc, node);
+                crate::expr::sql::emit_expr(&mut acc, node)?;
             }
         }
     }
@@ -1723,8 +2205,8 @@ pub(crate) fn build_update<T: Model>(
     // trailing clause after the user's SET list; the leading ", " handles
     // the separator even when the user supplied only one assignment.
     acc.push_sql(", updated_at = now()");
-    push_where(&mut acc, qs);
-    acc
+    push_where(&mut acc, qs)?;
+    Ok(acc)
 }
 
 /// Build `DELETE FROM <table> [WHERE ...]`.
@@ -1741,11 +2223,13 @@ pub(crate) fn build_update<T: Model>(
 /// being removed, so auditing the timestamp has no meaning. Audit of
 /// deletions lives in the Phase 1 `_logs` mirror tables (populated by
 /// the `crud_log_url` pool).
-pub(crate) fn build_delete<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
+pub(crate) fn build_delete<T: Model>(
+    qs: &QuerySet<T>,
+) -> Result<SqlAccumulator, PortablePredicateError> {
     let mut acc = SqlAccumulator::new("DELETE FROM ");
     acc.push_sql(T::table_name());
-    push_where(&mut acc, qs);
-    acc
+    push_where(&mut acc, qs)?;
+    Ok(acc)
 }
 
 /// Walk the emitted SELECT list and check that every column's alias (or
@@ -1913,6 +2397,45 @@ mod tests {
         fn from_pg_row(_row: &tokio_postgres::Row) -> Result<Self, crate::DjogiError> {
             unreachable!("SQL-text unit tests do not exercise row decode")
         }
+    }
+
+    fn build_select<T: Model + FromPgRow>(qs: &QuerySet<T>) -> SqlAccumulator {
+        super::build_select(qs).expect("test predicate should lower to SQL")
+    }
+
+    fn build_select_joined<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
+        super::build_select_joined(qs).expect("test predicate should lower to joined SQL")
+    }
+
+    fn build_count<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
+        super::build_count(qs).expect("test predicate should lower to count SQL")
+    }
+
+    fn build_exists<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
+        super::build_exists(qs).expect("test predicate should lower to exists SQL")
+    }
+
+    fn build_update<T: Model>(
+        qs: &QuerySet<T>,
+        assignments: &[crate::query::update::UpdateAssignment],
+    ) -> SqlAccumulator {
+        super::build_update(qs, assignments).expect("test predicate should lower to update SQL")
+    }
+
+    fn build_delete<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
+        super::build_delete(qs).expect("test predicate should lower to delete SQL")
+    }
+
+    fn build_grouped_annotated_select<T, K, A>(
+        gaq: &crate::query::grouped::GroupedAnnotatedQuerySet<T, K, A>,
+    ) -> SqlAccumulator
+    where
+        T: Model,
+        K: crate::query::grouped::IntoGroupKeyTuple,
+        A: crate::query::annotate::IntoAggregateTuple,
+    {
+        super::build_grouped_annotated_select(gaq)
+            .expect("test predicate should lower to grouped annotated SQL")
     }
 
     // `SqlAccumulator::sql()` exposes the emitted SQL text — that is what we

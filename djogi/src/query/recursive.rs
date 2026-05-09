@@ -547,7 +547,7 @@ fn push_qualified_columns<T: FromPgRow>(acc: &mut SqlAccumulator, alias: &'stati
 /// `acc.into_parts().1` returns them.
 pub(crate) fn build_recursive_select<T: Model + FromPgRow>(
     qs: RecursiveQuerySet<T>,
-) -> SqlAccumulator {
+) -> Result<SqlAccumulator, DjogiError> {
     build_recursive_inner::<T>(qs, RecursiveProjection::Rows)
 }
 
@@ -556,7 +556,7 @@ pub(crate) fn build_recursive_select<T: Model + FromPgRow>(
 /// for COUNT but harmless) survive the count rewrite.
 pub(crate) fn build_recursive_count<T: Model + FromPgRow>(
     qs: RecursiveQuerySet<T>,
-) -> SqlAccumulator {
+) -> Result<SqlAccumulator, DjogiError> {
     build_recursive_inner::<T>(qs, RecursiveProjection::Count)
 }
 
@@ -564,7 +564,7 @@ pub(crate) fn build_recursive_count<T: Model + FromPgRow>(
 /// but optimised for the early-exit semantics of EXISTS.
 pub(crate) fn build_recursive_exists<T: Model + FromPgRow>(
     qs: RecursiveQuerySet<T>,
-) -> SqlAccumulator {
+) -> Result<SqlAccumulator, DjogiError> {
     build_recursive_inner::<T>(qs, RecursiveProjection::Exists)
 }
 
@@ -574,7 +574,7 @@ pub(crate) fn build_recursive_exists<T: Model + FromPgRow>(
 /// (T13).
 pub(crate) fn build_recursive_select_with_paths<T: Model + FromPgRow>(
     qs: RecursiveQuerySet<T>,
-) -> SqlAccumulator {
+) -> Result<SqlAccumulator, DjogiError> {
     build_recursive_inner::<T>(qs, RecursiveProjection::RowsWithDepthAndPath)
 }
 
@@ -604,7 +604,7 @@ enum RecursiveProjection {
 fn build_recursive_inner<T: Model + FromPgRow>(
     qs: RecursiveQuerySet<T>,
     projection: RecursiveProjection,
-) -> SqlAccumulator {
+) -> Result<SqlAccumulator, DjogiError> {
     let mut acc = SqlAccumulator::new("");
 
     // The Count / Exists wraps need an outer expression around the row
@@ -746,7 +746,12 @@ fn build_recursive_inner<T: Model + FromPgRow>(
             // against the `__djogi_tree parent` side of the JOIN,
             // which exposes the same column names through the
             // same alias scope.
-            emit_condition(&mut acc, condition, Some("child"));
+            // Phase 8eta PR2b — `emit_condition` borrow-walks; the
+            // `?` propagates `PortablePredicateError` to the surrounding
+            // builder. `condition` here is a legacy `Condition` (not a
+            // `Q<T>`) — reachable via the recursive-CTE path which
+            // pre-dates the `Q<T>` substrate.
+            emit_condition(&mut acc, &condition, Some("child")).map_err(crate::DjogiError::from)?;
         }
         if has_depth_cap {
             if has_user_filter {
@@ -822,7 +827,7 @@ fn build_recursive_inner<T: Model + FromPgRow>(
         }
     }
 
-    acc
+    Ok(acc)
 }
 
 /// Emit the outer `ORDER BY` clause shared by [`RecursiveProjection::Rows`]
@@ -885,7 +890,7 @@ where
         async move {
             check_edges_present::<T>(&self.edges)?;
             auto_set_tenant::<T>(ctx).await?;
-            let acc = build_recursive_select(self);
+            let acc = build_recursive_select(self)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
@@ -935,7 +940,7 @@ where
         async move {
             check_edges_present::<T>(&self.edges)?;
             auto_set_tenant::<T>(ctx).await?;
-            let acc = build_recursive_select_with_paths(self);
+            let acc = build_recursive_select_with_paths(self)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
@@ -974,7 +979,7 @@ where
         async move {
             check_edges_present::<T>(&self.edges)?;
             auto_set_tenant::<T>(ctx).await?;
-            let mut acc = build_recursive_select(self);
+            let mut acc = build_recursive_select(self)?;
             acc.push_sql(" LIMIT 1");
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
@@ -1003,7 +1008,7 @@ where
         async move {
             check_edges_present::<T>(&self.edges)?;
             auto_set_tenant::<T>(ctx).await?;
-            let acc = build_recursive_count(self);
+            let acc = build_recursive_count(self)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
@@ -1024,7 +1029,7 @@ where
         async move {
             check_edges_present::<T>(&self.edges)?;
             auto_set_tenant::<T>(ctx).await?;
-            let acc = build_recursive_exists(self);
+            let acc = build_recursive_exists(self)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
@@ -1222,7 +1227,7 @@ mod tests {
     #[test]
     fn descendants_emits_union_all_with_child_join() {
         let qs = root();
-        let acc = build_recursive_select(qs);
+        let acc = build_recursive_select(qs).expect("recursive select");
         let sql = acc.sql();
         assert!(
             sql.contains("UNION ALL"),
@@ -1246,7 +1251,7 @@ mod tests {
     #[test]
     fn ancestors_flips_join_direction() {
         let qs = ancestors_root();
-        let acc = build_recursive_select(qs);
+        let acc = build_recursive_select(qs).expect("recursive select");
         let sql = acc.sql();
         // Ancestors direction: the per-edge alternative inside the
         // lateral matches `parent.<edge_col> = t.id`.
@@ -1265,7 +1270,7 @@ mod tests {
         // with our user-visible `path: text[]` column that records
         // edge-name sequences.
         let qs = root();
-        let acc = build_recursive_select(qs);
+        let acc = build_recursive_select(qs).expect("recursive select");
         let sql = acc.sql();
         assert!(
             sql.contains("CYCLE id SET is_cycle USING cycle_path"),
@@ -1286,7 +1291,7 @@ mod tests {
         // exclusive to the `RowsWithDepthAndPath` projection that
         // backs `fetch_all_with_paths`.
         let qs = root();
-        let acc = build_recursive_select(qs);
+        let acc = build_recursive_select(qs).expect("recursive select");
         let sql = acc.sql();
         assert!(
             sql.contains(" SELECT id, parent_id, label FROM __djogi_tree"),
@@ -1308,7 +1313,7 @@ mod tests {
         // either absent (no user filter) or carries only the user
         // filter — never the depth probe.
         let qs = root();
-        let acc = build_recursive_select(qs);
+        let acc = build_recursive_select(qs).expect("recursive select");
         let sql = acc.sql();
         assert!(
             !sql.contains("parent.depth <"),
@@ -1319,7 +1324,7 @@ mod tests {
     #[test]
     fn with_max_depth_emits_depth_predicate_and_binds_n() {
         let qs = root().with_max_depth(5);
-        let acc = build_recursive_select(qs);
+        let acc = build_recursive_select(qs).expect("recursive select");
         let sql = acc.sql();
         assert!(
             sql.contains("parent.depth < $2"),
@@ -1341,7 +1346,7 @@ mod tests {
         // order without an explicit `order_by`.
         let qs = root();
         let qs = qs.search_breadth_first_by(FieldRef::<MiniTree, String>::new("label"));
-        let acc = build_recursive_select(qs);
+        let acc = build_recursive_select(qs).expect("recursive select");
         let sql = acc.sql();
         assert!(
             sql.contains("SEARCH BREADTH FIRST BY label SET __djogi_search_seq"),
@@ -1356,7 +1361,7 @@ mod tests {
     #[test]
     fn search_depth_first_emits_dfs_keyword() {
         let qs = root().search_depth_first_by(FieldRef::<MiniTree, String>::new("label"));
-        let acc = build_recursive_select(qs);
+        let acc = build_recursive_select(qs).expect("recursive select");
         let sql = acc.sql();
         assert!(
             sql.contains("SEARCH DEPTH FIRST BY label SET __djogi_search_seq"),
@@ -1369,7 +1374,7 @@ mod tests {
         let qs = root()
             .search_breadth_first_by(FieldRef::<MiniTree, String>::new("label"))
             .search_depth_first_by(FieldRef::<MiniTree, String>::new("label"));
-        let acc = build_recursive_select(qs);
+        let acc = build_recursive_select(qs).expect("recursive select");
         let sql = acc.sql();
         // Last call (DFS) wins — BFS clause is gone, DFS clause is
         // present.
@@ -1386,7 +1391,7 @@ mod tests {
     #[test]
     fn count_terminal_wraps_in_count_subquery() {
         let qs = root();
-        let acc = build_recursive_count(qs);
+        let acc = build_recursive_count(qs).expect("recursive count");
         let sql = acc.sql();
         assert!(
             sql.starts_with("SELECT COUNT(*) FROM ("),
@@ -1401,7 +1406,7 @@ mod tests {
     #[test]
     fn exists_terminal_wraps_with_limit_one() {
         let qs = root();
-        let acc = build_recursive_exists(qs);
+        let acc = build_recursive_exists(qs).expect("recursive exists");
         let sql = acc.sql();
         assert!(
             sql.starts_with("SELECT EXISTS ("),
@@ -1416,7 +1421,7 @@ mod tests {
     #[test]
     fn first_terminal_appends_outer_limit_one() {
         let qs = root();
-        let mut acc = build_recursive_select(qs);
+        let mut acc = build_recursive_select(qs).expect("recursive select");
         acc.push_sql(" LIMIT 1");
         let sql = acc.sql();
         assert!(
@@ -1433,7 +1438,7 @@ mod tests {
     #[test]
     fn anchor_binds_root_id_as_dollar_one() {
         let qs = root();
-        let acc = build_recursive_select(qs);
+        let acc = build_recursive_select(qs).expect("recursive select");
         let sql = acc.sql();
         assert!(
             sql.contains("mini_trees.id = $1"),
@@ -1456,7 +1461,7 @@ mod tests {
         // the SET shape on every recursive iteration. B3 adds the
         // user-visible `path: text[]` column.
         let qs = root();
-        let acc = build_recursive_select(qs);
+        let acc = build_recursive_select(qs).expect("recursive select");
         let sql = acc.sql();
         assert!(
             sql.contains("__djogi_tree (depth, path, id, parent_id, label)"),
@@ -1470,7 +1475,7 @@ mod tests {
         // — the empty path the recursive term then accumulates one
         // edge name into per step.
         let qs = root();
-        let acc = build_recursive_select(qs);
+        let acc = build_recursive_select(qs).expect("recursive select");
         let sql = acc.sql();
         assert!(
             sql.contains("SELECT 0, ARRAY[]::text[], "),
@@ -1487,7 +1492,7 @@ mod tests {
         // records which edge was followed, so callers can filter on
         // edge sequences (e.g. `path == ["mother_id", "father_id"]`).
         let qs = root();
-        let acc = build_recursive_select(qs);
+        let acc = build_recursive_select(qs).expect("recursive select");
         let sql = acc.sql();
         assert!(
             sql.contains("parent.path || ARRAY[child.__djogi_edge_label]"),
@@ -1509,7 +1514,7 @@ mod tests {
         // SELECT to project `<cols...>, depth, path` so the row
         // decoder reads the trailing two columns by name.
         let qs = root();
-        let acc = build_recursive_select_with_paths(qs);
+        let acc = build_recursive_select_with_paths(qs).expect("recursive select with paths");
         let sql = acc.sql();
         assert!(
             sql.contains("SELECT id, parent_id, label, depth, path FROM __djogi_tree"),
@@ -1558,7 +1563,7 @@ mod tests {
         // - 1 between anchor and the consolidated recursive term
         // - N - 1 inside the LATERAL between the per-edge SELECTs
         let qs = full_ancestors_two_edges();
-        let acc = build_recursive_select(qs);
+        let acc = build_recursive_select(qs).expect("recursive select");
         let sql = acc.sql();
         let union_count = sql.matches("UNION ALL").count();
         assert_eq!(
@@ -1591,7 +1596,7 @@ mod tests {
         // (between anchor and the lone recursive branch). Confirms
         // the multi-edge refactor preserves single-edge SQL shape.
         let qs = root();
-        let acc = build_recursive_select(qs);
+        let acc = build_recursive_select(qs).expect("recursive select");
         let sql = acc.sql();
         let union_count = sql.matches("UNION ALL").count();
         assert_eq!(
@@ -1629,7 +1634,7 @@ mod tests {
         // shape did). Total binds = 1 root id + 1 depth cap = 2,
         // regardless of edge count. (B5 round-2 fixup.)
         let qs = full_ancestors_two_edges().with_max_depth(3);
-        let acc = build_recursive_select(qs);
+        let acc = build_recursive_select(qs).expect("recursive select");
         let sql = acc.sql();
         assert!(
             sql.contains("parent.depth < $2"),

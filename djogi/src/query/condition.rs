@@ -329,7 +329,7 @@ impl Leaf {
 /// `Lte`, `In`, `NotIn`, `IsNull`, `IsNotNull`, `Between`, `IContains`,
 /// `IStartsWith`, `IEndsWith`, `IExact`. These ops have a sassi
 /// counterpart (`sassi::LookupOp::Eq` etc.) and lift to
-/// `sassi::BasicPredicate::Field` — they ride through `Q::Basic` in
+/// `sassi::BasicPredicate::Field` — they ride through `Q::Portable` in
 /// the public algebra and can be evaluated against an in-memory `&T`
 /// without a database round-trip (the substrate Punnu cache builds
 /// on at Cluster 8δ).
@@ -362,7 +362,7 @@ impl Leaf {
 #[non_exhaustive]
 pub enum LookupOp {
     /// `field = value`. Rust-evaluable (lifts to
-    /// `sassi::BasicPredicate::Field` via `Q::Basic`).
+    /// `sassi::BasicPredicate::Field` via `Q::Portable`).
     Eq,
     /// `field <> value`. Rust-evaluable.
     Neq,
@@ -407,7 +407,7 @@ pub enum LookupOp {
 
 /// Source-side classification of [`LookupOp`] per the §660 split.
 /// Every shipped variant is tagged either `RustEvaluable` (lifts to
-/// `sassi::BasicPredicate::Field` via `Q::Basic`) or `SqlOnly` (stays
+/// `sassi::BasicPredicate::Field` via `Q::Portable`) or `SqlOnly` (stays
 /// djogi-side via `Q::Regex` etc.).
 ///
 /// Adopters do not name this enum — it is the type-level partition
@@ -419,7 +419,7 @@ pub enum LookupOp {
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LookupOpSourceClass {
-    /// Lifts to `sassi::BasicPredicate::Field` via `Q::Basic`.
+    /// Lifts to `sassi::BasicPredicate::Field` via `Q::Portable`.
     /// 15 variants today.
     RustEvaluable,
     /// Stays djogi-side via `Q::Regex` (or future SQL-only variants).

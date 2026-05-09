@@ -288,7 +288,7 @@ mod tests {
         };
 
         let mut acc = SqlAccumulator::new("book");
-        emit_expr(&mut acc, &expr.node);
+        emit_expr(&mut acc, &expr.node).expect("FTS expression should lower to SQL");
         let sql = acc.sql();
 
         assert!(
@@ -307,7 +307,7 @@ mod tests {
         let rank_expr = fref.rank(TsQuery::new("planet & earth"));
 
         let mut acc = SqlAccumulator::new("book");
-        emit_expr(&mut acc, &rank_expr.node);
+        emit_expr(&mut acc, &rank_expr.node).expect("FTS expression should lower to SQL");
         let sql = acc.sql();
 
         assert!(

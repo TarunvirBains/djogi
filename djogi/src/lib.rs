@@ -253,6 +253,16 @@ pub mod __private {
         pub use crate::query::filter::clauses_into_condition;
         pub use crate::query::portable::{PortablePredicateError, SqlEmitContext};
         pub use crate::query::q::{IntoQ, Q};
+
+        // Phase 8eta PR2b — hidden re-export of the portable SQL helper
+        // module. PR2d's macro-emitted
+        // `Model::__djogi_emit_field_predicate` override consumes
+        // `::djogi::__private::query::portable_emit::*`. The helpers
+        // themselves live at `crate::query::portable::emit::*` (a
+        // hidden public submodule); the re-export here keeps macro
+        // path-routing through `::djogi::*` per
+        // `feedback_macro_path_routing.md`.
+        pub use crate::query::portable::emit as portable_emit;
     }
 }
 

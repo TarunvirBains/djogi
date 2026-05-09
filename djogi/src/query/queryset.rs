@@ -59,7 +59,7 @@ use crate::pg::decode::FromJoinedPgRow;
 use crate::query::condition::Condition;
 use crate::query::field::FieldRef;
 use crate::query::order::OrderExpr;
-use crate::query::q::{Q, q_to_condition};
+use crate::query::q::Q;
 use crate::relation::path::RelationPath;
 use crate::relation::prefetch::{ErasedPrefetch, prefetch_loader};
 use crate::relation::select_related::{ErasedSelectRelated, child_descriptor, join_decoder};
@@ -324,23 +324,18 @@ pub struct QuerySet<T: Model> {
     _model: PhantomData<fn() -> T>,
 }
 
-// Cluster 8γ Stage 2 (T6.9): the manual Clone impl uses the
-// reference-borrowing lowering (`q_to_condition_ref`) and re-wraps
-// the result through `Q::Condition(_)`. This sidesteps the
-// `T: Clone` bound that sassi's `BasicPredicate<T>: Clone` derive
-// would otherwise propagate — the SQL emitter is the only caller
-// that cared about cloning the substrate, and it now uses the same
-// reference-borrowing helper. Cloning a queryset preserves the
-// substrate semantics (the lowered Condition round-trips as the
-// identity through the bridge), so SQL parity holds across clones.
+// Phase 8eta PR2b — manual `Clone` for `QuerySet<T>`. `Q<T>` itself
+// carries a manual `Clone` impl (no `T: Clone` propagation), so this
+// just delegates `condition.clone()` directly without lowering through
+// `q_to_condition_ref`. The pre-PR2b lower-and-rewrap approach forced
+// every clone to flatten the trusted-portable wrapper into a legacy
+// `Condition` tree, which `BasicPredicate::Field(_)` could not survive
+// once the `Q::Portable` flip exposed Sassi `Field` leaves. Cloning the
+// `Q<T>` directly preserves the trusted-provenance shape across clones.
 impl<T: Model> Clone for QuerySet<T> {
     fn clone(&self) -> Self {
         QuerySet {
-            // Lower the substrate by reference and re-wrap as
-            // `Q::Condition(_)`. The bridge guarantees byte-identical
-            // SQL emission post-clone — `q_to_condition_ref` produces
-            // the same `Condition` tree the pre-flip path produced.
-            condition: Q::Condition(crate::query::q::q_to_condition_ref(&self.condition)),
+            condition: self.condition.clone(),
             ordering: self.ordering.clone(),
             distinct: self.distinct.clone(),
             limit: self.limit,
@@ -367,15 +362,16 @@ impl<T: Model> Clone for QuerySet<T> {
     }
 }
 
-// Cluster 8γ Stage 2 (T6.9): the Debug impl lowers `self.condition`
-// to a [`Condition`] for printing rather than relying on
-// `Q<T>: Debug` (which would require `T: Debug` via sassi's
-// `BasicPredicate<T>: Debug` derive). The lowering preserves
-// SQL-relevant structure, so the debug output remains useful for
-// tracing.
+// Phase 8eta PR2b — `Debug` impl uses the manual `Q<T>: Debug` walker
+// directly. Pre-PR2b the impl lowered through `q_to_condition_ref` to
+// avoid `T: Debug`; the new `Q<T>` manual `Debug` walker handles the
+// model-bound elision in one place, so this impl just forwards. SQL
+// structure visibility is preserved (the variant-walker prints
+// `Q::Portable(_)` / `Q::Compound { op, parts }` etc. just like the
+// legacy `Condition` shape did) without round-tripping through the
+// retired bridge.
 impl<T: Model> std::fmt::Debug for QuerySet<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let lowered = crate::query::q::q_to_condition_ref(&self.condition);
         // Cluster 8δ T7.3: `cache_target` is intentionally excluded
         // from the Debug projection. The cache modifier is purely
         // additive on the post-fetch side (SQL output, query plan,
@@ -383,12 +379,9 @@ impl<T: Model> std::fmt::Debug for QuerySet<T> {
         // whether `.cache(...)` was called or not), so the Debug
         // shape — which downstream tests grep against to check SQL
         // structure — must stay invariant under `.cache(...)`.
-        // Including the cache_target would make `.cache(...)` show up
-        // in `format!("{:?}", qs)` and accidentally turn cache
-        // bindings into a tested SQL-structure surface.
         f.debug_struct("QuerySet")
             .field("table", &T::table_name())
-            .field("condition", &lowered)
+            .field("condition", &self.condition)
             .field("ordering", &self.ordering)
             .field("distinct", &self.distinct)
             .field("limit", &self.limit)
@@ -407,25 +400,60 @@ impl<T: Model> Default for QuerySet<T> {
     }
 }
 
-/// AND-combine a [`Condition`] onto an existing [`Q<T>`] substrate.
+/// AND-combine an arbitrary `IntoQ<T>` term onto an existing `Q<T>`
+/// substrate without flattening the existing structure.
 ///
-/// Cluster 8γ Stage 2 (T6.9) helper. The legacy `filter` / `exclude`
-/// closure API and other internal sites still produce `Condition`
-/// values directly; this helper lowers `self.condition` through
-/// [`q_to_condition`], applies [`Condition::and`] (which has the
-/// shipped flattening + `Condition::True`-identity behaviour every
-/// emitter test depends on), and re-lifts the result via
-/// [`Q::Condition`] so the queryset's substrate stays `Q<T>`.
+/// Phase 8eta PR2b — replaces the pre-PR2b
+/// `and_condition_into_q(Q<T>, Condition) -> Q<T>` helper. The pre-PR2b
+/// helper lowered the existing `Q<T>` through `q_to_condition` and
+/// re-wrapped the combined result as `Q::Condition(_)`, which destroyed
+/// the trusted-provenance shape of any inner `Q::Portable` leaves. The
+/// new helper composes through `Q<T>: BitAnd<Q<T>>` so portable leaves
+/// stay reducible at the cache boundary (PR4) and `Q::Portable & Q::Portable`
+/// flattens through the trusted Sassi reducer.
 ///
-/// Character-for-character SQL parity with the pre-flip path is the
-/// contract: round-tripping through the bridge preserves the exact
-/// `Condition::And(_)` tree shape the SQL emitter saw before the flip,
-/// and `Condition::and`'s flattening + identity logic is the only
-/// merge-time logic any emitter test relies on.
-fn and_condition_into_q<T: Model>(current: Q<T>, addition: Condition) -> Q<T> {
-    let lowered = q_to_condition(current);
-    let combined = Condition::and(lowered, addition);
-    Q::Condition(combined)
+/// `Q::Portable(PortablePredicate::True)` (the unfiltered identity)
+/// short-circuits to the addition unchanged so unfiltered querysets do
+/// not pick up a redundant `TRUE AND ...` wrapper.
+fn and_q_into_q<T: Model, A: crate::query::IntoQ<T>>(current: Q<T>, addition: A) -> Q<T> {
+    let added = addition.into_q();
+    if is_q_vacuously_true(&current) {
+        added
+    } else {
+        current & added
+    }
+}
+
+/// Test whether a `Q<T>` is structurally vacuously TRUE. Mirrors the
+/// `query::sql::q_is_vacuously_true` helper (kept module-private there);
+/// duplicating the small walker here lets `and_q_into_q` short-circuit
+/// without reaching across crate-private boundaries while the legacy
+/// SQL path remains in transition.
+fn is_q_vacuously_true<T: Model>(q: &Q<T>) -> bool {
+    use crate::query::q::CompoundOp;
+    match q {
+        Q::Portable(p) => match p.inner_ref() {
+            sassi::BasicPredicate::True => true,
+            sassi::BasicPredicate::And(parts) => parts
+                .iter()
+                .all(|c| matches!(c, sassi::BasicPredicate::True)),
+            _ => false,
+        },
+        Q::Condition(c) => c.is_vacuously_true(),
+        Q::Compound {
+            op: CompoundOp::And,
+            parts,
+        } => parts.iter().all(is_q_vacuously_true),
+        Q::Negated(inner) => match inner.as_ref() {
+            Q::Portable(p) => matches!(p.inner_ref(), sassi::BasicPredicate::False),
+            Q::Compound {
+                op: CompoundOp::Or,
+                parts,
+            } => parts.is_empty(),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 impl<T: Model> QuerySet<T> {
@@ -533,9 +561,9 @@ impl<T: Model> QuerySet<T> {
     /// returns the legacy [`Condition`] type and changing those return
     /// types would rewrite every adopter's filter callsite. New code
     /// composing against `Q<T>` directly — through the algebra
-    /// (`Q::Ilike(...)`, `Q::Regex(...)`), through sassi's
-    /// [`BasicPredicate<T>`](crate::query::BasicPredicate), or through
-    /// the macro-emitted `{Model}Filter` programmatic builder —
+    /// (`Q::Ilike(...)`, `Q::Regex(...)`), through Djogi-owned
+    /// [`PortablePredicate`](crate::query::PortablePredicate) builders,
+    /// or through the macro-emitted `{Model}Filter` programmatic builder —
     /// reaches for [`filter_struct`](Self::filter_struct) /
     /// [`exclude_struct`](Self::exclude_struct) instead.
     ///
@@ -545,12 +573,13 @@ impl<T: Model> QuerySet<T> {
     /// lowering bridge round-trips `Q::Condition(_)` as the identity
     /// at SQL emit time. Adopter code does not need to migrate.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
-    pub fn filter<F>(mut self, f: F) -> Self
+    pub fn filter<F, P>(mut self, f: F) -> Self
     where
-        F: FnOnce(T::Fields) -> Condition,
+        F: FnOnce(T::Fields) -> P,
+        P: crate::query::IntoQ<T>,
     {
-        let cond = f(T::Fields::default());
-        self.condition = and_condition_into_q(self.condition, cond);
+        let added = f(T::Fields::default());
+        self.condition = and_q_into_q(self.condition, added);
         self
     }
 
@@ -595,7 +624,12 @@ impl<T: Model> QuerySet<T> {
         F: FnOnce(T::Fields) -> crate::expr::Expr<bool>,
     {
         let expr = f(T::Fields::default());
-        self.condition = and_condition_into_q(self.condition, Condition::Expr(expr));
+        // Phase 8eta PR2b: `IntoQ<T> for Expr<bool>` lifts to
+        // `Q::Expression(_)` so this method shares the same generalised
+        // composition surface as `filter`. Kept as a distinct method
+        // for readability — the type signature documents the intent
+        // (this filter is an expression-IR boolean).
+        self.condition = and_q_into_q(self.condition, expr);
         self
     }
 
@@ -617,26 +651,42 @@ impl<T: Model> QuerySet<T> {
     /// [`exclude_struct`](Self::exclude_struct) instead. SQL parity
     /// between the two paths is exact.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
-    pub fn exclude<F>(mut self, f: F) -> Self
+    pub fn exclude<F, P>(mut self, f: F) -> Self
     where
-        F: FnOnce(T::Fields) -> Condition,
+        F: FnOnce(T::Fields) -> P,
+        P: crate::query::IntoQ<T>,
     {
-        let cond = f(T::Fields::default());
-        self.condition = and_condition_into_q(self.condition, Condition::not(cond));
+        let added = f(T::Fields::default()).into_q();
+        // `exclude_struct`-style negation dispatch (Phase 8eta PR2b
+        // PR2 Step 4): if the returned `Q<T>` is purely portable, push
+        // the negation into the trusted `PortablePredicate<T>` (so
+        // `!Portable(p)` rides Sassi's `Not` and double-negation
+        // collapses in place). Otherwise wrap as `Q::Negated(...)`.
+        // This preserves portability for portable predicates and keeps
+        // the cache boundary's audit visibility intact.
+        let negated = match added {
+            Q::Portable(p) => Q::Portable(!p),
+            other => !other,
+        };
+        self.condition = and_q_into_q(self.condition, negated);
         self
     }
 
     /// AND a [`Q<T>`] predicate onto the condition tree.
     ///
-    /// Accepts any [`IntoQ<T>`] — `Q<T>` directly, a sassi
-    /// [`BasicPredicate<T>`](crate::query::BasicPredicate), or a
+    /// Accepts any [`IntoQ<T>`] — `Q<T>` directly, a Djogi-owned
+    /// [`PortablePredicate`](crate::query::PortablePredicate), an
+    /// `Expr<bool>`, a legacy [`Condition`](crate::query::Condition), or a
     /// `{Model}Filter` programmatic builder (the macro emits an
     /// `IntoQ<#model>` impl alongside the existing
-    /// [`ModelFilter`](crate::query::ModelFilter)). All three paths
-    /// fold into the same condition-tree representation and produce
-    /// byte-identical SQL — character-for-character parity with the
-    /// pre-Cluster-8γ `Condition`-substrate `filter_struct` is the
-    /// load-bearing contract of the substrate flip.
+    /// [`ModelFilter`](crate::query::ModelFilter)). Raw
+    /// `sassi::BasicPredicate<T>` is deliberately excluded: it can pair a
+    /// forged SQL column name with an unrelated Rust extractor.
+    ///
+    /// Legacy `Condition` and `{Model}Filter` inputs still produce
+    /// character-for-character SQL parity with the pre-Cluster-8γ
+    /// `Condition`-substrate `filter_struct`; portable inputs now stay in the
+    /// trusted `Q::Portable` path so cache pushdown can distinguish them.
     ///
     /// Empty `{Model}Filter` bodies short-circuit — no AND-ing, no
     /// vacuous `TRUE` sub-tree. Single-clause filters unwrap to a
@@ -667,16 +717,16 @@ impl<T: Model> QuerySet<T> {
     /// ```
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn filter_struct<F: crate::query::IntoQ<T>>(mut self, filter: F) -> Self {
+        // Phase 8eta PR2b: AND the incoming `Q<T>` directly without
+        // round-tripping through `q_to_condition`. The vacuous-truth
+        // short-circuit fires before `Q<T>::bitand` so an empty filter
+        // (e.g. an unfiltered `{Model}Filter` body) does not pick up a
+        // synthetic `TRUE AND ...` wrapper at the SQL emit time.
         let q = filter.into_q();
-        let cond = q_to_condition(q);
-        // Vacuous-truth short-circuit — same shape `filter_struct`
-        // historically used for `ModelFilter` empty-clauses. Keeps the
-        // pre-flip emission identical: an empty `Q<T>` does not AND a
-        // synthetic `TRUE` onto the queryset's tree.
-        if cond.is_vacuously_true() {
+        if is_q_vacuously_true(&q) {
             return self;
         }
-        self.condition = and_condition_into_q(self.condition, cond);
+        self.condition = and_q_into_q(self.condition, q);
         self
     }
 
@@ -684,14 +734,15 @@ impl<T: Model> QuerySet<T> {
     /// tree. The struct-API counterpart of [`QuerySet::exclude`] —
     /// the closure-free version of `.exclude(|f| ...)`.
     ///
-    /// Wraps the lowered condition in a single
-    /// [`Condition::Not`](crate::query::Condition::Not) so the SQL
-    /// emitter renders `... WHERE NOT (predicate)`. Unlike
-    /// [`QuerySet::filter_struct`], an empty filter is **not**
-    /// short-circuited — `NOT TRUE` is `FALSE`, and silently dropping
-    /// it would produce a different result set. Callers who pass an
-    /// empty filter through `exclude_struct` get the explicit `NOT
-    /// (TRUE)` SQL.
+    /// Pure portable predicates are negated inside
+    /// [`PortablePredicate`](crate::query::PortablePredicate), so Sassi can
+    /// preserve Rust-side evaluability and simplify identities (`NOT TRUE`
+    /// becomes false, `NOT FALSE` becomes true). Non-portable predicates are
+    /// wrapped in `Q::Negated` and render as SQL `NOT (...)`.
+    ///
+    /// Unlike [`QuerySet::filter_struct`], an empty filter is **not**
+    /// short-circuited — `NOT TRUE` is `FALSE`, and silently dropping it would
+    /// produce a different result set.
     ///
     /// Sister method to [`QuerySet::filter_struct`]; the two compose
     /// freely:
@@ -704,8 +755,24 @@ impl<T: Model> QuerySet<T> {
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn exclude_struct<F: crate::query::IntoQ<T>>(mut self, filter: F) -> Self {
         let q = filter.into_q();
-        let cond = q_to_condition(q);
-        self.condition = and_condition_into_q(self.condition, Condition::not(cond));
+        // Phase 8eta PR2b — negation dispatch:
+        //
+        // - Pure-portable `Q::Portable(p)`: push the negation into the
+        //   trusted predicate so the stored shape stays
+        //   `Q::Portable(!p)`. Sassi's `Not` reducer collapses double
+        //   negation in place, which keeps cache-boundary portability
+        //   gates from producing `Q::Negated(Q::Portable(_))` shells.
+        // - Anything else: wrap as `Q::Negated(Box<Q<T>>)`. The SQL
+        //   emitter renders this as `NOT (...)`; cache-boundary
+        //   portability checks (PR4) can distinguish the two negations.
+        //
+        // No vacuous-truth short-circuit — `NOT TRUE` is `FALSE`, and
+        // silently dropping it would change the result set.
+        let negated = match q {
+            Q::Portable(p) => Q::Portable(!p),
+            other => !other,
+        };
+        self.condition = and_q_into_q(self.condition, negated);
         self
     }
 
@@ -1689,7 +1756,11 @@ impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
             crate::query::condition::LookupOp::IsNull,
             crate::query::condition::FilterValue::Null,
         );
-        self.condition = and_condition_into_q(self.condition, Condition::Leaf(leaf));
+        // Phase 8eta PR2b: route through the new `and_q_into_q` helper.
+        // `Condition` lifts to `Q::Condition(_)` via the sealed `IntoQ`
+        // impl, preserving the legacy SQL emission shape this caller
+        // depends on.
+        self.condition = and_q_into_q(self.condition, Condition::Leaf(leaf));
         self
     }
 }
@@ -1883,18 +1954,14 @@ impl_into_distinct_columns_tuple!(A, B, C, D, E, F);
 // to pass a BasicPredicate filter to sassi.
 //
 // Implementation note — Q::Condition is always Unreducible:
-//   The legacy closure-based filter API (QuerySet::filter / exclude) and the
-//   filter_struct API both route through and_condition_into_q, which converts
-//   the Q<T> to Condition and wraps it back as Q::Condition(_). A freshly
-//   constructed QuerySet<T>::new() starts with Q::Basic(BasicPredicate::True).
-//   The only way to keep the condition as Q::Basic / Q::Compound / Q::Negated
-//   (reducible forms) is to set self.condition directly via pub(crate) access
-//   from within the djogi crate — the public filter API always produces
-//   Q::Condition. This is a known architectural gap deferred to a future
-//   cluster that redesigns filter_struct to preserve Q-algebra structure.
-//   For now, into_basic_predicate is most useful for unfiltered querysets
-//   (which start as Q::Basic(True)) and for framework-internal code that
-//   sets self.condition directly.
+//   The legacy closure-based filter API (while generated fields still return
+//   FieldRef-backed `Condition`) and macro-generated `{Model}Filter` inputs
+//   route through Q::Condition(_) to preserve byte-for-byte SQL parity. A
+//   freshly constructed QuerySet<T>::new() starts with Q::Portable(True).
+//   Direct `Q<T>` / `PortablePredicate<T>` inputs to filter_struct preserve
+//   Q::Portable / Q::Compound / Q::Negated reducible forms. PR3's generated
+//   field-accessor flip makes the ordinary closure path produce the same
+//   trusted portable shapes.
 //
 // Path-routing note (non-emitted code):
 //   Per `feedback_macro_path_routing.md`, path-routing governs macro-EMITTED
@@ -1918,7 +1985,7 @@ enum ReduceOutcome<T: crate::model::Model> {
 /// models do not implement `Clone`). Ownership is transferred from
 /// `QuerySet::condition` when called from `into_basic_predicate(self)`.
 ///
-/// Only `Q::Basic`, `Q::Compound`, and `Q::Negated` are reducible. Every
+/// Only `Q::Portable`, `Q::Compound`, and `Q::Negated` are reducible. Every
 /// other variant is SQL-only or a legacy escape hatch and returns
 /// `Unreducible` with a descriptive reason string. The walk is depth-first;
 /// the first unreducible node short-circuits and bubbles up.
@@ -1935,13 +2002,16 @@ enum ReduceOutcome<T: crate::model::Model> {
 ///   - `Xor(Box<BasicPredicate<T>>, Box<BasicPredicate<T>>)` — exclusive-or
 fn reduce_q_to_basic<T: crate::model::Model>(q: Q<T>) -> ReduceOutcome<T> {
     match q {
-        // Q::Basic wraps a sassi BasicPredicate<T> directly — move it out.
-        Q::Basic(p) => ReduceOutcome::Reduced(p),
+        // Phase 8eta PR2b — `Q::Portable` carries a trusted-provenance
+        // wrapper around `BasicPredicate<T>`. Unwrap to feed the
+        // reducer's existing `BasicPredicate<T>` output contract.
+        Q::Portable(p) => ReduceOutcome::Reduced(p.into_inner()),
 
-        // Pure-Basic AND/OR flattened through sassi's operators land here as
-        // Q::Basic(BasicPredicate::And/Or(...)). Mixed-operand AND/OR (at
-        // least one side is not Q::Basic) land as Q::Compound. Both are
-        // reducible when every part is reducible.
+        // Pure-Portable AND/OR flattened through Sassi's operators
+        // land here as `Q::Portable(BasicPredicate::And/Or(...))`.
+        // Mixed-operand AND/OR (at least one side is not `Q::Portable`)
+        // land as `Q::Compound`. Both are reducible when every part
+        // is reducible.
         Q::Compound { op, parts } => {
             let mut reduced_parts = Vec::with_capacity(parts.len());
             for part in parts {
@@ -1961,8 +2031,8 @@ fn reduce_q_to_basic<T: crate::model::Model>(q: Q<T>) -> ReduceOutcome<T> {
             ReduceOutcome::Reduced(combined)
         }
 
-        // Q::Negated wraps a non-Basic NOT. Pure-Basic negation rides
-        // BasicPredicate::Not already, so Q::Negated(Q::Basic(p)) means
+        // Q::Negated wraps a non-Portable NOT. Pure-Portable negation rides
+        // BasicPredicate::Not already, so Q::Negated(Q::Portable(p)) means
         // the inner was already not-folded by sassi. Reduce the inner and
         // wrap in BasicPredicate::Not.
         Q::Negated(inner) => match reduce_q_to_basic(*inner) {
@@ -1998,8 +2068,8 @@ fn reduce_q_to_basic<T: crate::model::Model>(q: Q<T>) -> ReduceOutcome<T> {
         // Q::Xor has no equivalent BasicPredicate variant with the same
         // semantics that is both composable and directly expressible as a
         // single BasicPredicate node. BasicPredicate::Xor exists but only
-        // for the pure-Basic case (which already flattened into
-        // Q::Basic(BasicPredicate::Xor(...)) before reaching this arm).
+        // for the pure-Portable case (which already flattened into
+        // Q::Portable(BasicPredicate::Xor(...)) before reaching this arm).
         Q::Xor(_, _) => ReduceOutcome::Unreducible(
             "Q::Xor (mixed-operand XOR; no BasicPredicate equivalent at this node)",
         ),
@@ -2029,7 +2099,7 @@ impl<T: crate::model::Model> QuerySet<T> {
     ///
     /// | Q variant | Reduces to |
     /// |---|---|
-    /// | `Q::Basic(p)` | `p` (moved — `reduce_q_to_basic` takes `Q<T>` by value to avoid `T: Clone`) |
+    /// | `Q::Portable(p)` | `p.into_inner()` (moved — `reduce_q_to_basic` takes `Q<T>` by value to avoid `T: Clone`) |
     /// | `Q::Compound { And, all_basic_parts }` | `BasicPredicate::And(parts)` |
     /// | `Q::Compound { Or, all_basic_parts }` | `BasicPredicate::Or(parts)` |
     /// | `Q::Negated(reducible_inner)` | `BasicPredicate::Not(Box::new(reduced_inner))` — inner walked recursively, so `Q::Negated(Q::Compound{And, basics})` reduces too |
@@ -2039,23 +2109,23 @@ impl<T: crate::model::Model> QuerySet<T> {
     /// `Q::Ilike`, `Q::JsonbPath`, `Q::Regex`, `Q::Expression`,
     /// `Q::Array`, `Q::Condition`, `Q::Xor`.
     ///
-    /// `Q::Condition` covers every queryset built with the public
-    /// `.filter(...)` / `.filter_struct(...)` / `.exclude(...)` APIs —
-    /// those routes always produce a `Q::Condition` wrapper around the
-    /// legacy `Condition` tree (character-for-character SQL-parity
-    /// contract from Cluster 8γ Stage 2 T6.9). A fresh
-    /// `QuerySet::new()` (no filters) starts as
-    /// `Q::Basic(BasicPredicate::True)` and IS reducible.
+    /// `Q::Condition` covers querysets built through legacy FieldRef-backed
+    /// `.filter(...)` / `.exclude(...)` closures and macro-generated
+    /// `{Model}Filter` inputs — those routes intentionally preserve the
+    /// legacy `Condition` tree for SQL parity. Direct `Q<T>` and
+    /// `PortablePredicate<T>` inputs stay reducible; a fresh
+    /// `QuerySet::new()` (no filters) starts as `Q::Portable(True)` and IS
+    /// reducible.
     ///
     /// # When to use this
     ///
     /// The primary caller is [`QuerySet::refresh_into`] — it extracts the
     /// predicate to pass as a Rust-side filter to sassi's delta-refresh
     /// fetcher (for in-memory `BasicPredicate::evaluate` calls on cached
-    /// items). Adopters composing `Q<T>` values directly (via `Q::Basic`
-    /// or the `&` / `|` / `!` algebra operators) and then setting
-    /// `QuerySet::condition` from framework-internal code can produce
-    /// reducible trees for both SQL and Rust-side evaluation.
+    /// items). Framework-internal code can produce reducible trees for both
+    /// SQL and Rust-side evaluation by composing trusted `Q<T>` values with
+    /// the `&` / `|` / `!` algebra operators and assigning
+    /// `QuerySet::condition` directly.
     ///
     /// # Visibility note
     ///
@@ -2068,8 +2138,8 @@ impl<T: crate::model::Model> QuerySet<T> {
     /// 8γ Stage 2 SQL-parity contract), so a clone would always inspect
     /// as unreducible. If you genuinely need to know whether a tree
     /// reduces, the answer until GH #126 lands is "no" for any tree
-    /// built via the public `.filter` / `.filter_struct` / `.exclude`
-    /// surface.
+    /// built via the legacy `.filter` / `.exclude` surface or a
+    /// macro-generated `{Model}Filter`.
     pub fn into_basic_predicate(self) -> Option<sassi::BasicPredicate<T>> {
         let outcome = reduce_q_to_basic(self.condition);
         match outcome {
@@ -2079,10 +2149,10 @@ impl<T: crate::model::Model> QuerySet<T> {
                     target: "djogi::cache",
                     model = std::any::type_name::<T>(),
                     reason = reason,
-                    "QuerySet condition has non-Basic predicates; refresh_into \
+                    "QuerySet condition has non-portable predicates; refresh_into \
                      will fetch the full source-of-truth set per tick (no WHERE \
                      filter applied at the SQL boundary). Restructure the filter \
-                     using only Q::Basic / BasicPredicate-compatible operations \
+                     using only Djogi portable predicate operations \
                      to enable filter pushdown.",
                 );
                 None
@@ -2173,7 +2243,7 @@ where
     /// (legacy-parity requirement) and always receive a `tracing::warn!`
     /// noting that no WHERE filter will be applied at the SQL boundary on
     /// the fetcher side. A fresh unfiltered queryset (`QuerySet::new()`)
-    /// starts as `Q::Basic(BasicPredicate::True)` and extracts cleanly.
+    /// starts as `Q::Portable(True)` and extracts cleanly.
     /// Filter pushdown to SQL is deferred — see GH #127.
     ///
     /// # Interval placeholder
@@ -2194,9 +2264,9 @@ where
         // Without this strip, every unfiltered queryset would emit the
         // filter-pushdown warn per tick. T8.4's reducer returns `Some(True)`
         // for unfiltered querysets because a fresh `QuerySet<T>` initialises
-        // `condition` as `Q::Basic(BasicPredicate::True)` (not `Q::Compound`),
-        // and the reducer's `Q::Basic(p) → Reduced(p)` arm hands the inner
-        // `BasicPredicate::True` straight through.
+        // `condition` as `Q::Portable(True)` (not `Q::Compound`), and the
+        // reducer's `Q::Portable(p) → Reduced(p.into_inner())` arm hands the
+        // inner `BasicPredicate::True` straight through.
         let filter = match self.into_basic_predicate() {
             Some(sassi::BasicPredicate::True) => None,
             other => other,
@@ -2360,22 +2430,21 @@ mod tests {
 
     // ── T6.7 — `IntoQ<T>` + `filter_struct(Q<T>)` + `exclude_struct(Q<T>)` ────
     //
-    // Locks the new substrate-aware filter API: any `IntoQ<T>` impl
-    // (Q<T> directly, sassi BasicPredicate<T>, or `{Model}Filter`
+    // Locks the new substrate-aware filter API: any trusted `IntoQ<T>` impl
+    // (Q<T> directly, PortablePredicate<T>, or `{Model}Filter`
     // through the macro-emitted bridge) folds into the same
     // `Condition` tree the pre-flip path produced. Character-for-
     // character SQL parity is the load-bearing contract.
 
-    /// `filter_struct` accepts `Q<T>` directly. Pure-Basic Q lowers
+    /// `filter_struct` accepts `Q<T>` directly. Pure-Portable Q lowers
     /// through the bridge into `Condition::And/Or/Not/...`; the
     /// resulting tree matches what a closure-side `.filter` call would
     /// have produced.
     #[test]
     fn filter_struct_accepts_q_directly() {
         use crate::query::Q;
-        use sassi::BasicPredicate;
 
-        let q: Q<Fake> = Q::Basic(BasicPredicate::True);
+        let q: Q<Fake> = Q::always_true();
         let qs: QuerySet<Fake> = QuerySet::new().filter_struct(q);
         // True is vacuously-true → short-circuit returns self unchanged.
         assert!(matches!(
@@ -2389,11 +2458,10 @@ mod tests {
     #[test]
     fn filter_struct_q_negated_ands_onto_tree() {
         use crate::query::Q;
-        use sassi::BasicPredicate;
 
-        // Q::Basic(BasicPredicate::False) lowers to `Or(empty)` —
+        // Q::always_false() lowers to `Or(empty)` —
         // structurally non-vacuous, so it AND-s through.
-        let q: Q<Fake> = Q::Basic(BasicPredicate::False);
+        let q: Q<Fake> = Q::always_false();
         let qs: QuerySet<Fake> = QuerySet::new().filter_struct(q);
         match crate::query::q::q_to_condition(qs.condition) {
             Condition::Or(v) => assert!(v.is_empty(), "expected Or(empty)"),
@@ -2401,21 +2469,20 @@ mod tests {
         }
     }
 
-    /// `exclude_struct` wraps the lowered condition in
-    /// `Condition::Not`. Locks the SQL parity contract: the same `NOT
-    /// (...)` SQL the closure-side `.exclude(|f| ...)` path would
-    /// have produced.
+    /// `exclude_struct` over a portable false predicate simplifies to true
+    /// through Sassi. Locks the semantic contract for pure-portable
+    /// predicates: negation stays portable rather than being forced through
+    /// a `Condition::Not` shell.
     #[test]
-    fn exclude_struct_wraps_q_in_not() {
+    fn exclude_struct_false_simplifies_to_true() {
         use crate::query::Q;
-        use sassi::BasicPredicate;
 
-        let q: Q<Fake> = Q::Basic(BasicPredicate::False);
+        let q: Q<Fake> = Q::always_false();
         let qs: QuerySet<Fake> = QuerySet::new().exclude_struct(q);
-        match crate::query::q::q_to_condition(qs.condition) {
-            Condition::Not(_) => {}
-            other => panic!("expected Condition::Not, got {other:?}"),
-        }
+        assert!(matches!(
+            crate::query::q::q_to_condition(qs.condition),
+            Condition::True
+        ));
     }
 
     /// `exclude_struct` does **not** short-circuit on
@@ -2424,26 +2491,25 @@ mod tests {
     #[test]
     fn exclude_struct_does_not_short_circuit_on_vacuous_true() {
         use crate::query::Q;
-        use sassi::BasicPredicate;
 
-        let q: Q<Fake> = Q::Basic(BasicPredicate::True);
+        let q: Q<Fake> = Q::always_true();
         let qs: QuerySet<Fake> = QuerySet::new().exclude_struct(q);
-        // True AND NOT(True) → NOT(True). Condition::and folds away
-        // the `Condition::True` side, so we expect a bare `Not(True)`.
+        // True AND NOT(True) → False.
         match crate::query::q::q_to_condition(qs.condition) {
-            Condition::Not(inner) => assert!(matches!(*inner, Condition::True)),
-            other => panic!("expected Condition::Not(True), got {other:?}"),
+            Condition::Or(parts) => assert!(parts.is_empty(), "expected false"),
+            other => panic!("expected Condition::Or(empty), got {other:?}"),
         }
     }
 
-    /// `BasicPredicate<T>` lifts through `IntoQ<T>::into_q` so
-    /// `.filter_struct(my_basic)` reads naturally without naming
-    /// `Q::Basic(_)` at the callsite.
+    /// `PortablePredicate<T>` lifts through `IntoQ<T>::into_q` so
+    /// `.filter_struct(my_predicate)` reads naturally without naming
+    /// `Q::Portable(_)` at the callsite.
     #[test]
-    fn filter_struct_accepts_basic_predicate_directly() {
-        use sassi::BasicPredicate;
-        let bp: BasicPredicate<Fake> = BasicPredicate::False;
-        let qs: QuerySet<Fake> = QuerySet::new().filter_struct(bp);
+    fn filter_struct_accepts_portable_predicate_directly() {
+        use crate::query::PortablePredicate;
+
+        let predicate: PortablePredicate<Fake> = PortablePredicate::always_false();
+        let qs: QuerySet<Fake> = QuerySet::new().filter_struct(predicate);
         match crate::query::q::q_to_condition(qs.condition) {
             Condition::Or(v) => assert!(v.is_empty()),
             other => panic!("expected Condition::Or(empty), got {other:?}"),
@@ -2662,7 +2728,7 @@ mod tests {
     ///
     /// Cluster 8γ Stage 2 (T6.9): the substrate is now `Q<T>`. For
     /// `default_filter_condition() == None`, `QuerySet::new()` seeds
-    /// `Q::always_true()` (== `Q::Basic(BasicPredicate::True)`), which
+    /// `Q::always_true()` (== `Q::Portable(True)`), which
     /// the bridge lowers to the legacy `Condition::True` — preserving
     /// the pre-flip emission contract.
     #[test]
@@ -3016,23 +3082,21 @@ mod tests {
 
     // ── T8.4 — into_basic_predicate: conservative Q<T>→BasicPredicate<T> walk ──
     //
-    // These tests set `qs.condition` directly (via `pub(crate)` access)
-    // because the public filter API always produces `Q::Condition(...)` — see
-    // the `into_basic_predicate` doc for the architectural note. The unit-test
-    // suite exercises all the reducible and unreducible code paths; the
-    // integration test (`phase8_t8_4_basic_predicate_extraction.rs`) covers
-    // the externally-observable behavior (public filter API → None + warn,
+    // These tests set `qs.condition` directly (via `pub(crate)` access) to
+    // exercise every reducible and unreducible shape. The integration test
+    // (`phase8_t8_4_basic_predicate_extraction.rs`) covers the externally
+    // observable legacy-filter behavior (`Condition` path → None + warn,
     // unfiltered QuerySet → Some(True)).
 
-    /// A fresh `QuerySet::new()` starts as `Q::Basic(BasicPredicate::True)`.
+    /// A fresh `QuerySet::new()` starts as `Q::Portable(True)`.
     /// `into_basic_predicate` must return `Some(BasicPredicate::True)`.
     #[test]
     fn into_basic_predicate_unfiltered_returns_true() {
         let qs: QuerySet<Fake> = QuerySet::new();
-        // Verify the initial condition IS Q::Basic before calling.
+        // Verify the initial condition is portable before calling.
         assert!(
-            matches!(&qs.condition, Q::Basic(_)),
-            "unfiltered QuerySet must start as Q::Basic (was not Q::Basic — substrate regression?)",
+            matches!(&qs.condition, Q::Portable(_)),
+            "unfiltered QuerySet must start as Q::Portable (substrate regression?)",
         );
         let result = qs.into_basic_predicate();
         assert!(
@@ -3041,21 +3105,21 @@ mod tests {
         );
     }
 
-    /// A QuerySet with `condition = Q::Basic(BasicPredicate::False)` reduces
-    /// to `Some(BasicPredicate::False)`. Verifies the `Q::Basic(p)` arm works
+    /// A QuerySet with `condition = Q::Portable(False)` reduces
+    /// to `Some(BasicPredicate::False)`. Verifies the `Q::Portable(p)` arm works
     /// for non-True sentinels.
     #[test]
-    fn into_basic_predicate_basic_false_reduces() {
+    fn into_basic_predicate_portable_false_reduces() {
         let mut qs: QuerySet<Fake> = QuerySet::new();
-        qs.condition = Q::Basic(sassi::BasicPredicate::False);
+        qs.condition = Q::always_false();
         let result = qs.into_basic_predicate();
         assert!(
             matches!(result, Some(sassi::BasicPredicate::False)),
-            "Q::Basic(False) should reduce to Some(BasicPredicate::False)"
+            "Q::Portable(False) should reduce to Some(BasicPredicate::False)"
         );
     }
 
-    /// A QuerySet with `Q::Compound { And, [Basic(True), Basic(False)] }`
+    /// A QuerySet with `Q::Compound { And, [Portable(True), Portable(False)] }`
     /// reduces to `Some(BasicPredicate::And(vec![True, False]))`.
     ///
     /// Verifies the Compound-And arm walks all parts and assembles the
@@ -3066,10 +3130,7 @@ mod tests {
         let mut qs: QuerySet<Fake> = QuerySet::new();
         qs.condition = Q::Compound {
             op: CompoundOp::And,
-            parts: vec![
-                Q::Basic(sassi::BasicPredicate::True),
-                Q::Basic(sassi::BasicPredicate::False),
-            ],
+            parts: vec![Q::always_true(), Q::always_false()],
         };
         let result = qs.into_basic_predicate();
         match result {
@@ -3089,7 +3150,7 @@ mod tests {
         }
     }
 
-    /// A QuerySet with `Q::Compound { Or, [Basic(True), Basic(False)] }`
+    /// A QuerySet with `Q::Compound { Or, [Portable(True), Portable(False)] }`
     /// reduces to `Some(BasicPredicate::Or(vec![True, False]))`.
     ///
     /// Verifies the Compound-Or arm.
@@ -3099,10 +3160,7 @@ mod tests {
         let mut qs: QuerySet<Fake> = QuerySet::new();
         qs.condition = Q::Compound {
             op: CompoundOp::Or,
-            parts: vec![
-                Q::Basic(sassi::BasicPredicate::True),
-                Q::Basic(sassi::BasicPredicate::False),
-            ],
+            parts: vec![Q::always_true(), Q::always_false()],
         };
         let result = qs.into_basic_predicate();
         match result {
@@ -3113,13 +3171,13 @@ mod tests {
         }
     }
 
-    /// `Q::Negated(Q::Basic(p))` reduces to `Some(BasicPredicate::Not(Box::new(p)))`.
+    /// `Q::Negated(Q::Portable(p))` reduces to `Some(BasicPredicate::Not(Box::new(p)))`.
     ///
     /// Verifies the Negated arm: pure-Basic inner wrapped in Not.
     #[test]
-    fn into_basic_predicate_negated_basic_reduces() {
+    fn into_basic_predicate_negated_portable_reduces() {
         let mut qs: QuerySet<Fake> = QuerySet::new();
-        qs.condition = Q::Negated(Box::new(Q::Basic(sassi::BasicPredicate::True)));
+        qs.condition = Q::Negated(Box::new(Q::always_true()));
         let result = qs.into_basic_predicate();
         match result {
             Some(sassi::BasicPredicate::Not(inner)) => {
@@ -3132,7 +3190,7 @@ mod tests {
         }
     }
 
-    /// `Q::Compound { And, [Basic(True), Ilike(...)] }` is Unreducible — the
+    /// `Q::Compound { And, [Portable(True), Ilike(...)] }` is Unreducible — the
     /// Ilike part is SQL-only. Returns `None`. Verifies short-circuit on
     /// first unreducible part.
     #[test]
@@ -3143,7 +3201,7 @@ mod tests {
         qs.condition = Q::Compound {
             op: CompoundOp::And,
             parts: vec![
-                Q::Basic(sassi::BasicPredicate::True),
+                Q::always_true(),
                 // ILIKE is SQL-only — cannot be expressed as BasicPredicate.
                 Q::Ilike(FieldRef::<Fake, String>::new("label"), "foo%".to_string()),
             ],
@@ -3193,19 +3251,16 @@ mod tests {
         );
     }
 
-    /// `Q::Xor(Q::Basic(True), Q::Basic(False))` is Unreducible at the
+    /// `Q::Xor(Q::Portable(True), Q::Portable(False))` is Unreducible at the
     /// mixed-operand `Q::Xor` level. Note: pure-Basic XOR would have been
-    /// folded into `Q::Basic(BasicPredicate::Xor(...))` by the `^` operator,
+    /// folded into `Q::Portable(BasicPredicate::Xor(...))` by the `^` operator,
     /// so the `Q::Xor` variant only appears when at least one side is not
     /// pure-Basic. Verifies the Xor arm returns None.
     #[test]
     fn into_basic_predicate_xor_refuses() {
         // Q::Xor is the mixed-operand variant — construct it directly.
         let mut qs: QuerySet<Fake> = QuerySet::new();
-        qs.condition = Q::Xor(
-            Box::new(Q::Basic(sassi::BasicPredicate::True)),
-            Box::new(Q::Basic(sassi::BasicPredicate::False)),
-        );
+        qs.condition = Q::Xor(Box::new(Q::always_true()), Box::new(Q::always_false()));
         let result = qs.into_basic_predicate();
         assert!(
             result.is_none(),

@@ -236,7 +236,18 @@ where
 
     fn push_column(&self, acc: &mut SqlAccumulator, slot: usize) {
         acc.push_sql(", ");
-        emit_aggregate_with_window_and_cast(acc, &self.node);
+        // Phase 8eta PR2b: `emit_aggregate_*` is now fallible because
+        // aggregates may carry filter expressions that contain portable
+        // subqueries. The annotation-slot trait surface is `()`-returning
+        // (changing it would cascade through every aggregate + window
+        // tuple impl), so we `.expect` here. In practice this path only
+        // sees aggregates over scalar columns — the failure modes
+        // require a nested subquery filter with a malformed portable
+        // predicate, which the type system rejects upstream. PR2c may
+        // make the trait surface Result-returning if real-world adopter
+        // code surfaces this edge case.
+        emit_aggregate_with_window_and_cast(acc, &self.node)
+            .expect("aggregate annotation emission cannot fail for typed-aggregate inputs");
         acc.push_sql(" AS ");
         acc.push_sql(aggregate_alias(slot));
     }
@@ -254,7 +265,8 @@ where
         if has_previous_columns {
             acc.push_sql(", ");
         }
-        crate::query::sql::emit_aggregate_with_cast(acc, &self.node);
+        crate::query::sql::emit_aggregate_with_cast(acc, &self.node)
+            .expect("aggregate annotation emission cannot fail for typed-aggregate inputs");
         acc.push_sql(" AS ");
         acc.push_sql(aggregate_alias(slot));
     }
@@ -634,7 +646,8 @@ where
                     aggregates.push_columns(acc);
                 },
                 qualify.as_ref(),
-            );
+            )
+            .map_err(DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
@@ -781,7 +794,8 @@ mod tests {
         let agg = f.sum();
         let acc = build_select_with_annotations(&qs, |acc| {
             agg.push_columns(acc);
-        });
+        })
+        .expect("annotate select");
         let sql = acc.sql();
         assert!(
             sql.contains(
@@ -799,7 +813,8 @@ mod tests {
         let tuple = (f1.sum(), f2.count());
         let acc = build_select_with_annotations(&qs, |acc| {
             tuple.push_columns(acc);
-        });
+        })
+        .expect("annotate select");
         let sql = acc.sql();
         assert!(
             sql.contains("(SUM(balance) OVER ())::BIGINT AS __djogi_agg_0"),
@@ -820,7 +835,7 @@ mod tests {
         let qs: QuerySet<Acc> = QuerySet::new();
         let f: FieldRef<Acc, i64> = FieldRef::new("balance");
         let agg = f.sum();
-        let acc = build_aggregate_select(&qs, &agg.node);
+        let acc = build_aggregate_select(&qs, &agg.node).expect("aggregate select");
         let sql = acc.sql();
         assert_eq!(
             sql.trim(),
@@ -838,7 +853,7 @@ mod tests {
         let agg = f_count
             .count()
             .filter(f_cond.as_expr().lt(Expr::literal(0i64)));
-        let acc = build_aggregate_select(&qs, &agg.node);
+        let acc = build_aggregate_select(&qs, &agg.node).expect("aggregate select");
         let sql = acc.sql();
         assert!(
             sql.contains("COUNT(balance) FILTER (WHERE balance < $1)"),
@@ -858,7 +873,8 @@ mod tests {
 
         let acc = build_select_with_annotations(&qs, |acc| {
             row_number.push_columns(acc);
-        });
+        })
+        .expect("annotate select");
         let sql = acc.sql();
 
         assert!(
@@ -879,7 +895,8 @@ mod tests {
 
         let acc = build_select_with_annotations(&qs, |acc| {
             rank.push_columns(acc);
-        });
+        })
+        .expect("annotate select");
         let sql = acc.sql();
 
         assert!(
@@ -900,7 +917,8 @@ mod tests {
 
         let acc = build_select_with_annotations(&qs, |acc| {
             dense_rank.push_columns(acc);
-        });
+        })
+        .expect("annotate select");
         let sql = acc.sql();
 
         assert!(
@@ -922,7 +940,8 @@ mod tests {
             &annotated.qs,
             |acc| annotated.aggregates.push_columns(acc),
             annotated.qualify.as_ref(),
-        );
+        )
+        .expect("annotated select");
         let sql = acc.sql();
 
         assert!(
@@ -948,7 +967,8 @@ mod tests {
             &annotated.qs,
             |acc| annotated.aggregates.push_columns(acc),
             annotated.qualify.as_ref(),
-        );
+        )
+        .expect("annotated select");
         let sql = acc.sql();
 
         assert!(!sql.contains("QUALIFY"), "got: {sql}");
@@ -983,7 +1003,8 @@ mod tests {
         let pr = PercentRankWindow::new()
             .order_by(amount.desc())
             .alias("amount_pct");
-        let acc = build_select_with_annotations(&qs, |acc| pr.push_columns(acc));
+        let acc = build_select_with_annotations(&qs, |acc| pr.push_columns(acc))
+            .expect("annotate select");
         let sql = acc.sql();
         assert!(
             sql.contains("PERCENT_RANK() OVER (ORDER BY amount DESC) AS amount_pct"),
@@ -999,7 +1020,8 @@ mod tests {
         let cd = CumeDistWindow::new()
             .order_by(amount.asc())
             .alias("cume_dist");
-        let acc = build_select_with_annotations(&qs, |acc| cd.push_columns(acc));
+        let acc = build_select_with_annotations(&qs, |acc| cd.push_columns(acc))
+            .expect("annotate select");
         let sql = acc.sql();
         assert!(
             sql.contains("CUME_DIST() OVER (ORDER BY amount ASC) AS cume_dist"),
@@ -1015,7 +1037,8 @@ mod tests {
         let ntile = NtileWindow::new(4)
             .order_by(amount.desc())
             .alias("quartile");
-        let acc = build_select_with_annotations(&qs, |acc| ntile.push_columns(acc));
+        let acc = build_select_with_annotations(&qs, |acc| ntile.push_columns(acc))
+            .expect("annotate select");
         let sql = acc.sql();
         assert!(
             sql.contains("NTILE($") && sql.contains(") OVER (ORDER BY amount DESC) AS quartile"),
@@ -1033,7 +1056,8 @@ mod tests {
             .partition_by(herd)
             .order_by(amount.desc())
             .alias("top_amount");
-        let acc = build_select_with_annotations(&qs, |acc| fv.push_columns(acc));
+        let acc = build_select_with_annotations(&qs, |acc| fv.push_columns(acc))
+            .expect("annotate select");
         let sql = acc.sql();
         assert!(
             sql.contains(
@@ -1051,7 +1075,8 @@ mod tests {
         let lv: LastValueWindow<i64> = LastValueWindow::new(amount)
             .order_by(amount.asc())
             .alias("bottom_amount");
-        let acc = build_select_with_annotations(&qs, |acc| lv.push_columns(acc));
+        let acc = build_select_with_annotations(&qs, |acc| lv.push_columns(acc))
+            .expect("annotate select");
         let sql = acc.sql();
         assert!(
             sql.contains("LAST_VALUE(amount) OVER (ORDER BY amount ASC) AS bottom_amount"),
@@ -1067,7 +1092,8 @@ mod tests {
         let lead: LeadWindow<i64> = LeadWindow::new(amount)
             .order_by(amount.asc())
             .alias("next_amount");
-        let acc = build_select_with_annotations(&qs, |acc| lead.push_columns(acc));
+        let acc = build_select_with_annotations(&qs, |acc| lead.push_columns(acc))
+            .expect("annotate select");
         let sql = acc.sql();
         assert!(
             sql.contains("LEAD(amount) OVER (ORDER BY amount ASC) AS next_amount"),
@@ -1084,7 +1110,8 @@ mod tests {
             .offset(3)
             .order_by(amount.asc())
             .alias("third_next_amount");
-        let acc = build_select_with_annotations(&qs, |acc| lead.push_columns(acc));
+        let acc = build_select_with_annotations(&qs, |acc| lead.push_columns(acc))
+            .expect("annotate select");
         let sql = acc.sql();
         assert!(
             sql.contains("LEAD(amount, $")
@@ -1101,7 +1128,8 @@ mod tests {
         let lag: LagWindow<i64> = LagWindow::new(amount)
             .order_by(amount.asc())
             .alias("prev_amount");
-        let acc = build_select_with_annotations(&qs, |acc| lag.push_columns(acc));
+        let acc = build_select_with_annotations(&qs, |acc| lag.push_columns(acc))
+            .expect("annotate select");
         let sql = acc.sql();
         assert!(
             sql.contains("LAG(amount) OVER (ORDER BY amount ASC) AS prev_amount"),
@@ -1117,7 +1145,8 @@ mod tests {
         let nv: NthValueWindow<i64> = NthValueWindow::new(amount, 3)
             .order_by(amount.desc())
             .alias("third");
-        let acc = build_select_with_annotations(&qs, |acc| nv.push_columns(acc));
+        let acc = build_select_with_annotations(&qs, |acc| nv.push_columns(acc))
+            .expect("annotate select");
         let sql = acc.sql();
         assert!(
             sql.contains("NTH_VALUE(amount, $")
@@ -1143,7 +1172,8 @@ mod tests {
             .partition_by(session)
             .order_by(amount.asc())
             .alias("next_amount");
-        let acc = build_select_with_annotations(&qs, |acc| lead.push_columns(acc));
+        let acc = build_select_with_annotations(&qs, |acc| lead.push_columns(acc))
+            .expect("annotate select");
         let sql = acc.sql();
         assert!(
             sql.contains(
@@ -1163,7 +1193,8 @@ mod tests {
             .partition_by(dept)
             .order_by(amount.desc())
             .alias("dept_quartile");
-        let acc = build_select_with_annotations(&qs, |acc| ntile.push_columns(acc));
+        let acc = build_select_with_annotations(&qs, |acc| ntile.push_columns(acc))
+            .expect("annotate select");
         let sql = acc.sql();
         assert!(
             sql.contains("NTILE($")
