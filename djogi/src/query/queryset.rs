@@ -215,16 +215,13 @@ pub struct QuerySet<T: Model> {
     ///
     /// As of Cluster 8γ Stage 2 (T6.9), the queryset's filter
     /// substrate is the [`Q<T>`](crate::query::Q) algebra rather than
-    /// the legacy [`Condition`] tree. The SQL emitter still consumes
-    /// `Condition` — every site that emits SQL lowers
-    /// `self.condition` through
-    /// [`q_to_condition`](crate::query::q::q_to_condition) before
-    /// reaching `emit_condition`. Character-for-character SQL parity
-    /// with the pre-flip queryset is the load-bearing contract: every
-    /// existing `tests/integration/phase{1..7_5}_*` query produces
-    /// byte-identical SQL post-flip because the legacy [`Condition`]
-    /// trees lift through `Q::Condition(_)` (round-trips as the
-    /// identity in the lowering bridge).
+    /// the legacy [`Condition`] tree. Phase 8eta PR2b made SQL emission
+    /// walk `Q<T>` directly: legacy [`Condition`] payloads still
+    /// round-trip as `Q::Condition(_)`, while trusted portable
+    /// predicates stay as `Q::Portable(_)` and emit through the
+    /// portable SQL walker. Character-for-character SQL parity with the
+    /// pre-flip queryset remains the load-bearing contract for legacy
+    /// condition paths.
     pub(crate) condition: Q<T>,
     /// Ordering expressions in emission order. `order_by` appends; it does
     /// not replace.
@@ -567,11 +564,11 @@ impl<T: Model> QuerySet<T> {
     /// reaches for [`filter_struct`](Self::filter_struct) /
     /// [`exclude_struct`](Self::exclude_struct) instead.
     ///
-    /// SQL parity between `filter` and `filter_struct` is exact: the
-    /// closure-returned `Condition` lifts through the bridge into the
-    /// `Q<T>` substrate at storage time, and the reference-borrowing
-    /// lowering bridge round-trips `Q::Condition(_)` as the identity
-    /// at SQL emit time. Adopter code does not need to migrate.
+    /// SQL parity between `filter` and `filter_struct` is exact for
+    /// legacy condition inputs: the closure-returned `Condition` lifts
+    /// into the `Q<T>` substrate as `Q::Condition(_)`, and the direct-Q
+    /// SQL emitter delegates that arm to `emit_condition`. Adopter code
+    /// does not need to migrate.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn filter<F, P>(mut self, f: F) -> Self
     where
@@ -690,7 +687,7 @@ impl<T: Model> QuerySet<T> {
     ///
     /// Empty `{Model}Filter` bodies short-circuit — no AND-ing, no
     /// vacuous `TRUE` sub-tree. Single-clause filters unwrap to a
-    /// plain `Condition::Leaf` (via the lowering bridge) so the SQL
+    /// plain `Condition::Leaf` inside `Q::Condition(_)` so the SQL
     /// emitter renders `col = $1` rather than `(col = $1)`. Both
     /// shapes are preserved by routing through the existing
     /// `clauses_into_condition` helper inside the macro-emitted
@@ -2054,15 +2051,13 @@ fn reduce_q_to_basic<T: crate::model::Model>(q: Q<T>) -> ReduceOutcome<T> {
         }
         Q::Array(_) => ReduceOutcome::Unreducible("Q::Array (Postgres array operators; SQL-only)"),
 
-        // Q::Condition is the legacy escape hatch — always Unreducible. The
-        // public filter / filter_struct / exclude APIs all route through
-        // and_condition_into_q which wraps everything as Q::Condition. Any
-        // queryset built with the public filter surface lands here. The
-        // long-term fix (a future cluster redesigning filter_struct to
-        // preserve Q-algebra structure) is tracked at GH #126
-        // (filter-api-q-preservation).
+        // Q::Condition is the legacy escape hatch — always Unreducible.
+        // FieldRef-backed filters and macro-generated ModelFilter inputs
+        // intentionally preserve the legacy Condition tree for SQL parity.
+        // Direct Q<T> / PortablePredicate<T> inputs stay structural and do
+        // not land here.
         Q::Condition(_) => ReduceOutcome::Unreducible(
-            "Q::Condition (legacy Condition escape hatch; public filter APIs always produce this)",
+            "Q::Condition (legacy Condition escape hatch; not a portable cache predicate)",
         ),
 
         // Q::Xor has no equivalent BasicPredicate variant with the same
@@ -2133,13 +2128,11 @@ impl<T: crate::model::Model> QuerySet<T> {
     /// integration code a named entry point. It is **not** an inspection
     /// API: the method consumes `self`, so callers cannot "inspect first,
     /// then refresh_into" — the QuerySet is moved by either call.
-    /// `QuerySet::clone()` does NOT preserve the reducible shape (it
-    /// rewrites the condition to `Q::Condition` at clone time, per the
-    /// 8γ Stage 2 SQL-parity contract), so a clone would always inspect
-    /// as unreducible. If you genuinely need to know whether a tree
-    /// reduces, the answer until GH #126 lands is "no" for any tree
-    /// built via the legacy `.filter` / `.exclude` surface or a
-    /// macro-generated `{Model}Filter`.
+    /// `QuerySet::clone()` preserves the reducible shape after Phase
+    /// 8eta PR2b because `Q<T>` has a manual clone implementation that
+    /// does not lower through `q_to_condition_ref`. A cloned portable
+    /// queryset may therefore be inspected or refreshed without losing
+    /// its trusted predicate structure.
     pub fn into_basic_predicate(self) -> Option<sassi::BasicPredicate<T>> {
         let outcome = reduce_q_to_basic(self.condition);
         match outcome {
@@ -2357,9 +2350,9 @@ mod tests {
 
     // Cluster 8γ Stage 2 (T6.9): `qs.condition` is `Q<T>` post-flip.
     // Tests that pattern-match on the legacy `Condition` shape lower
-    // through the bridge first; the bridge is the SQL-parity contract,
-    // so asserting the lowered shape is equivalent to asserting the
-    // SQL emitter's input.
+    // through the bridge first. After Phase 8eta PR2b this bridge is a
+    // compatibility oracle for legacy parity, not the production SQL
+    // emitter's input.
 
     #[test]
     fn new_queryset_has_no_filters() {
@@ -2430,16 +2423,15 @@ mod tests {
 
     // ── T6.7 — `IntoQ<T>` + `filter_struct(Q<T>)` + `exclude_struct(Q<T>)` ────
     //
-    // Locks the new substrate-aware filter API: any trusted `IntoQ<T>` impl
+    // Locks the substrate-aware filter API: trusted `IntoQ<T>` impls
     // (Q<T> directly, PortablePredicate<T>, or `{Model}Filter`
-    // through the macro-emitted bridge) folds into the same
-    // `Condition` tree the pre-flip path produced. Character-for-
-    // character SQL parity is the load-bearing contract.
+    // through the macro-emitted bridge) compose at the `Q<T>` layer.
+    // Tests that compare against `Condition` explicitly lower through
+    // the legacy bridge as a parity oracle.
 
     /// `filter_struct` accepts `Q<T>` directly. Pure-Portable Q lowers
-    /// through the bridge into `Condition::And/Or/Not/...`; the
-    /// resulting tree matches what a closure-side `.filter` call would
-    /// have produced.
+    /// through the bridge only in this test assertion; production
+    /// filtering stores the original `Q<T>` shape.
     #[test]
     fn filter_struct_accepts_q_directly() {
         use crate::query::Q;
@@ -2453,8 +2445,9 @@ mod tests {
         ));
     }
 
-    /// `filter_struct` over a non-vacuous Q lifts through
-    /// `q_to_condition` and ANDs onto the existing tree.
+    /// `filter_struct` over a non-vacuous Q ANDs at the `Q<T>` layer.
+    /// The assertion lowers afterward through the legacy bridge to pin
+    /// parity with the old false shape.
     #[test]
     fn filter_struct_q_negated_ands_onto_tree() {
         use crate::query::Q;

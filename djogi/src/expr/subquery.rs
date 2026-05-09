@@ -567,7 +567,11 @@ mod tests {
         }
     }
 
-    struct Entry;
+    struct Entry {
+        id: i64,
+        memo: String,
+        active: bool,
+    }
     impl crate::model::__sealed::Sealed for Entry {}
     #[allow(clippy::manual_async_fn)]
     impl Model for Entry {
@@ -577,10 +581,36 @@ mod tests {
             "entries"
         }
         fn pk_value(&self) -> &i64 {
-            unreachable!()
+            &self.id
         }
         fn descriptor() -> &'static ModelDescriptor {
             unreachable!()
+        }
+        fn __djogi_emit_field_predicate(
+            acc: &mut crate::pg::accumulator::SqlAccumulator,
+            field: &crate::types::FieldPredicate<Self>,
+            ctx: crate::query::SqlEmitContext,
+        ) -> Result<(), crate::query::PortablePredicateError> {
+            use crate::query::portable::emit;
+            use crate::types::LookupOp;
+
+            match (field.field_name(), field.op()) {
+                ("memo", LookupOp::Eq) => {
+                    emit::emit_value::<Self, String>(acc, ctx, "memo", " = ", field)
+                }
+                ("active", LookupOp::Eq) => {
+                    emit::emit_value::<Self, bool>(acc, ctx, "active", " = ", field)
+                }
+                ("memo", op) => Err(crate::query::PortablePredicateError::UnsupportedLookup {
+                    field: "memo",
+                    op,
+                }),
+                ("active", op) => Err(crate::query::PortablePredicateError::UnsupportedLookup {
+                    field: "active",
+                    op,
+                }),
+                (field, _) => Err(crate::query::PortablePredicateError::UnsupportedField { field }),
+            }
         }
         fn get(
             _ctx: &mut crate::context::DjogiContext,
@@ -629,6 +659,43 @@ mod tests {
     }
 
     #[test]
+    fn scalar_subquery_no_filter_emits_without_where() {
+        // Subquery::new(Entry::objects(), id_col).as_expr() starts from
+        // Q::Portable(True), collapses the erased predicate to None, and
+        // emits no WHERE clause.
+        use crate::query::field::FieldRef;
+
+        let id_col: FieldRef<Entry, i64> = FieldRef::new("id");
+        let qs: QuerySet<Entry> = QuerySet::new();
+        let expr = Subquery::new(qs, id_col).as_expr();
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &expr.node).expect("expression emission");
+        let sql = qb.sql();
+        assert_eq!(sql.trim(), "(SELECT id FROM entries)", "got: {sql}");
+    }
+
+    #[test]
+    fn exists_with_portable_predicate_uses_erased_q_emitter() {
+        // A portable Field(_) predicate would panic if Subquery/Exists
+        // construction still routed through q_to_condition. This test
+        // proves it reaches Entry::__djogi_emit_field_predicate through
+        // the erased direct-Q emitter instead.
+        use crate::query::field::djogi_field_macro_support::__make_djogi_field;
+
+        let active = __make_djogi_field::<Entry, bool>("active", |row| &row.active);
+        let qs: QuerySet<Entry> = QuerySet::new().filter_struct(active.eq(true));
+        let expr = Exists::new(qs).as_expr();
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &expr.node).expect("expression emission");
+        let sql = qb.sql();
+        assert_eq!(
+            sql.trim(),
+            "EXISTS (SELECT 1 FROM entries WHERE active = $1)",
+            "got: {sql}"
+        );
+    }
+
+    #[test]
     fn exists_with_correlated_outer_ref() {
         // Exists::new(Entry::objects().filter(|f| <outer predicate>))
         // The outer ref should emit as a bare column name, with the
@@ -664,6 +731,29 @@ mod tests {
         let sql = qb.sql();
         // One bind for the "opening" literal — assert structural shape
         // with the bind placeholder.
+        assert_eq!(
+            sql.trim(),
+            "(SELECT id FROM entries WHERE memo = $1)",
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn scalar_subquery_with_portable_predicate_uses_erased_q_emitter() {
+        // Same regression as the EXISTS test, but through scalar
+        // Subquery::new. If this constructor ever reintroduces
+        // q_to_condition for trusted portable predicates, the
+        // BasicPredicate::Field arm panics before SQL emission.
+        use crate::query::field::FieldRef;
+        use crate::query::field::djogi_field_macro_support::__make_djogi_field;
+
+        let memo = __make_djogi_field::<Entry, String>("memo", |row| &row.memo);
+        let id_col: FieldRef<Entry, i64> = FieldRef::new("id");
+        let qs: QuerySet<Entry> = QuerySet::new().filter_struct(memo.eq("opening".to_string()));
+        let expr = Subquery::new(qs, id_col).as_expr();
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &expr.node).expect("expression emission");
+        let sql = qb.sql();
         assert_eq!(
             sql.trim(),
             "(SELECT id FROM entries WHERE memo = $1)",
