@@ -120,6 +120,146 @@ The broader application of this mechanism — gating arbitrary destructive actio
 
 `BulkUpdate` in v1 uses the magnitude-confirmation prompt but does not require dual approval. This is a deliberate calibration — the type-the-count step catches the common fat-finger; full approval workflows for `BulkUpdate` are Phase 10.5 territory.
 
+## Wire Payload Decoder (Superuser-only)
+
+> **DRAFT — needs review.** This section captures the v1 design plus open questions for security/UX scrutiny. Sassi's binary wire container and entries snapshot export exist as of `sassi 0.1.0-beta.2`; the unsettled parts here are Maahi's operator gating, UX, and visibility/audit treatment.
+
+### Purpose
+
+Maahi exposes an operator-only utility for decoding `sassi` wire-format byte payloads into structured, visibility-filtered output. The v1 payload classes are value-wire records produced by `sassi::wire::to_vec` and consumed by `Punnu::insert_serialized`, plus entries snapshots produced by `Punnu::export_entries_postcard`. The use case is incident response: an operator has bytes from a log, customer report, network trace, backend file, or memory dump, and needs to see what the payload contains against a known visage/cacheable schema. Without this tool, the binary postcard-backed wire leaves operators with no in-Maahi answer to "what was in this payload" — the old JSON envelope's `cat | jq` debuggability does not exist on the current binary wire.
+
+### Sassi wire contract assumed by Maahi
+
+Maahi does not invent a second cache wire format. It decodes the public sassi wire contract:
+
+- `wire::WIRE_FORMAT_MAJOR = 1`.
+- Every payload starts with Sassi's fixed binary header: magic prefix, little-endian wire major, kind byte, flags byte, and the cached type name from `Cacheable::cache_type_name`.
+- Value-wire records have kind `Value` and a postcard-encoded `T` body.
+- Entries snapshots have kind `PunnuEntries` and a body shaped as `<little-endian u32 count> <count x postcard(T)>`. Sassi exports only unexpired L1 entries and sorts them by `T::Id`; TTL deadlines, LRU epochs, and backend state are not part of the snapshot.
+- File-backend entries use Sassi's file-entry kind with an expiry prefix ahead of the value body. Maahi may decode them as an incident-response affordance, but it treats expiry metadata as wire metadata rather than as a Maahi field.
+- Unsupported reserved kinds such as future "entries with hints" payloads are rejected until Maahi and sassi both specify the operational semantics.
+
+Header validation happens before body decoding. Wrong major, wrong kind, unsupported flags, malformed type names, and `cache_type_name` mismatches produce type-level diagnostics without attempting to interpret postcard bytes.
+
+### Threat model
+
+The decoder is a privilege-escalation primitive in the wrong hands. Decoding raw wire bytes reveals every field of the target visage *as encoded*, before Maahi's normal visibility pipeline ever runs. The doctrine is therefore inverted from the rest of Maahi: the decoder consumes bytes that *contain* every field including `expose(none)` and `expose(internal)` data, and the rendering path is responsible for re-applying the standard visibility filter. The bytes themselves never reach the operator's screen as a hex dump — only the post-filter structured output does.
+
+Specific threats the gating model must defeat:
+
+- **Web-session compromise.** A stolen session cookie (despite the CSRF triple stack from [Security](./security.md)) must not be sufficient to decode payloads. Decode requires a second factor.
+- **Cross-tenant peek.** An operator with authority in tenant A pasting bytes that originated in tenant B and decoding against tenant B's schema. The decoder must require a declared tenant context and verify the operator has decode authority *within that tenant*.
+- **Forgery via re-encode.** A "decode → edit → re-encode" path turns the decoder into a payload-forgery primitive. Re-encode is explicitly out of scope for this feature; if a future migration-testing tool needs it, it ships as a separately-gated, separately-specced feature.
+- **`expose(none)` leak via parse-failure diagnostics.** A naive postcard error message that includes byte context around the failure offset can disclose `expose(none)` data when the visage's struct layout puts a hidden field near the failure point. Diagnostics must be type-level only.
+
+### Gating — Superuser + SSH-key-signed challenge
+
+v1 gates decode on the conjunction of two factors:
+
+1. The operator's `_admin_users` row has `is_superuser = TRUE`.
+2. The operator presents a fresh SSH signature over a server-issued challenge, verifiable against the deployment's decode-authorized-keys allow-list.
+
+There is no `decode_wire_payload` system permission in v1 — decode authority is not delegable through the role/visage system. The operation is too privileged to grant without the WebAuthn-shaped story; delegable decode arrives in Phase 10.5 (or whenever Approach C — fresh WebAuthn user-verification — is specced and implemented).
+
+The two-factor structure means:
+
+- A web-session compromise without SSH key access cannot decode. The session by itself is half the answer.
+- An SSH key compromise without an active superuser session cannot decode. The key by itself is the other half.
+- Single-superuser deployments **can** use decode (unlike `BulkDelete`'s approver ≠ requester rule), because the SSH key is the second factor rather than a peer.
+
+### Challenge content
+
+The server-issued challenge binds the SSH signature to a specific decode operation. Reusing a signature from one decode against a different payload, visage, tenant, or operator must fail signature verification. The challenge is a deterministic encoding of:
+
+- A 32-byte cryptographically-random server nonce.
+- The SHA-256 hash of the bytes-to-decode.
+- The target visage identifier (`(app, model, visage_name)` triple).
+- The declared tenant context (the operator's `current_tenant_scope`, or `null` if the operator is acting cross-tenant under `cross_tenant = TRUE`).
+- The operator's `_admin_users.id`.
+- An issuance timestamp.
+
+The challenge is valid for a short window (30s feels right for v1; configurable via `[admin].decode_challenge_ttl`). Single-use: the server tracks issued challenges in memory and rejects re-presentation. The `ssh-keygen -Y sign -n maahi-decode-v1` namespace pins the signature semantic so the same SSH key cannot be tricked into producing a signature usable by another deployment of Maahi or by a non-Maahi tool.
+
+### Key allow-list — open question
+
+Three options under consideration; v1 picks one. The decision affects who can add/remove a decode key and what the bootstrap story looks like.
+
+- **Option (a): ops config file.** A path named in `[admin].decode_authorized_keys_path` (mirrors `~/.ssh/authorized_keys` shape). Pure ops config — adding a key is a deployment change, not a Maahi action. Most ops-native, simplest spec, no recursive "who can add keys" question. Cost: changing the allow-list requires deploy access.
+- **Option (b): new `_admin_decode_keys` table.** Mutable through Maahi. Most Maahi-native. Recursive gating problem: who can add a decode key? Bootstrap CLI only? Approval queue? Adds spec surface.
+- **Option (c): `decode_pubkey` column on `_admin_users`.** Each operator's key tied to their user record. Simple schema, but couples key identity to user identity (rotating a user's SSH key is a `_admin_users` write).
+
+v1 leans Option (a) for its narrowness, but the choice is open. Whatever is picked, key add/remove for v1 is bootstrap-CLI-only — `cargo djogi admin add-decode-key <pubkey-line>` and the corresponding remove — to avoid the recursive gating problem entirely.
+
+### Operator UX — open question
+
+The signing flow:
+
+1. Operator selects a target visage/cacheable type from a typeahead populated from the `Cacheable` registry (filtered to visages the operator has any view authority on after standard visibility resolution — selecting a fully-hidden visage is pointless).
+2. Operator selects the expected wire kind (`Value`, `PunnuEntries`, or, if supported by the deployment, file-entry).
+3. Operator pastes bytes into a text input (hex or base64; auto-detected, with whitespace stripped).
+4. Operator declares the tenant context (defaults to current `tenant_scope`; `cross_tenant` operators see a tenant picker).
+5. Maahi server validates byte size against `[admin].decode_max_bytes` (default 1 MiB v1; oversize attempts logged and rejected before challenge issuance).
+6. Maahi server emits the challenge.
+7. Operator signs the challenge on their workstation. v1 ships a CLI helper: `cargo djogi admin sign-decode-challenge --challenge-file <path>` that wraps `ssh-keygen -Y sign -n maahi-decode-v1` and emits the signature. (Stretch: ssh-agent socket integration; not v1.)
+8. Operator pastes the signature into Maahi.
+9. Maahi server verifies signature, decodes, renders the result through the standard visibility pipeline.
+
+The paste-the-signature step is friction. The CLI helper closes most of it; full agent integration is a future enhancement. v1 accepts the friction as the cost of the second factor.
+
+### Output rendering — standard visibility pipeline
+
+The decoder's output renders through the same visibility filter that audit log entries and live admin queries use:
+
+1. Validate the Sassi binary header against the selected type and wire kind.
+2. Decode the postcard body into the target visage's Rust type using `serde::Deserialize`. For `PunnuEntries`, decode the count-prefixed entry sequence and render each entry through the same path.
+3. Compute the operator's effective `VisibleFields` for the target model (visage grants resolved across the role chain, plus `view_full_struct` if held — a superuser holds it implicitly), intersected with whatever fields the decoded value actually contains.
+4. Render the visible fields as a structured tree. Fields outside the visible set render as `(not visible)`. `expose(none)` fields are absent from the operator's `VisibleFields` set by construction and never render.
+5. Sassi wire metadata (wire major, kind, cache type name, entry count for snapshots, and file-entry expiry if present) renders alongside the decoded fields as metadata.
+
+The standard visibility filter applies even though the operator is superuser: `expose(none)` is the absolute floor per [Field Visibility](./field-visibility.md), and the decoder respects it like every other Maahi surface.
+
+### Audit trail
+
+Every decode attempt — successful or failed — writes one row to the operator audit log. Recorded fields:
+
+- `_admin_users.id` of the operator (from session).
+- SSH key fingerprint of the signing key (proof of which enrolled credential was used, independent of the user record claim).
+- Target visage `(app, model, visage_name)`.
+- Declared tenant context.
+- SHA-256 of the decoded bytes (so the same payload across two decodes is correlatable; the bytes themselves are not stored).
+- Decode result: `success` / `parse_error` / `version_mismatch` / `kind_mismatch` / `type_mismatch` / `unsupported_flags` / `oversize_rejected` / `signature_invalid` / `not_superuser`.
+- Timestamp, client IP, user agent.
+
+The audit row never stores the decoded plaintext. The trail establishes "who decoded what against which schema in which tenant," not "what they saw." Decoded plaintext is per-request, in-memory, and not persisted.
+
+### Failure mode diagnostics
+
+Parse failures surface to the operator as type-level diagnostics: "expected `u32` at field offset 3 of `VehicleAdmin`, found EOF." Never a hex dump of bytes around the failure offset, because the bytes may contain `expose(none)` data that is positionally adjacent to the failure point in postcard's encoding.
+
+Wire major mismatch surfaces explicitly: "wire major 0 not supported; deployment expects major 1. The payload may be from beta.1 JSON-era sassi or a future incompatible major." Kind and type-name mismatches are likewise header-level diagnostics: the operator sees which kind/type was presented and which kind/type the selected decoder expected, never a dump of the body bytes.
+
+### Open questions for review
+
+The following are unresolved as of this rough draft and need revisiting before the Phase 10 v3 plan absorbs this section:
+
+- **Q1.** Key allow-list location (Option a/b/c above).
+- **Q2.** Whether the SSH-helper CLI subcommand should also exist as an in-Maahi-page "copy this challenge, run this command" affordance, vs. requiring out-of-band CLI use.
+- **Q3.** Whether `cross_tenant` operators decoding against a specific tenant should require an extra confirmation step beyond the standard tenant-picker.
+- **Q4.** Whether the decoded-result render window has a TTL (e.g., 10 minutes) after which the operator must re-sign to view again, or persists for the session.
+- **Q5.** Whether Phase 10 v1 decodes both value-wire records and `PunnuEntries` snapshots, or starts with value-wire records and adds snapshot rendering in 10.5. The sassi substrate supports both; the remaining cost is Maahi UX, pagination, size limits, and field-visibility rendering over multi-entry payloads.
+- **Q6.** Whether the failure-mode diagnostic policy ("type-level only, never byte-level") is over-restrictive for legitimate incident-response cases where seeing the byte stream is exactly the diagnostic value. If so, what additional gate (e.g., a separate "raw-bytes" permission requiring its own SSH signature against a stricter challenge) authorizes byte-level inspection.
+
+### v1 → Approach C upgrade path
+
+The SSH-key-match doctrine is intentionally forward-compatible with Approach C (WebAuthn fresh user-verification). The upgrade path:
+
+1. Phase 10 v1 ships SSH-key + superuser as specified above.
+2. Phase 10.5 (or a Phase 11+ Maahi compliance milestone) introduces a delegable `decode_wire_payload` system permission with WebAuthn fresh-UV as the second factor (replacing or stacked-with the SSH-key gate, depending on deployment policy).
+3. Deployments that want hardware-attested decode without enrolling WebAuthn can substitute hardware-backed SSH agents (`yubikey-agent`, `ssh-tpm-agent`) at the v1 layer — the SSH-key gate verifies signatures regardless of where the private key lives.
+4. The audit-trail schema is designed to absorb a `verification_mode` column (`ssh_signature` / `webauthn_uv` / both) without migration, so the upgrade does not invalidate historical audit rows.
+
+The forward-compat discipline means the SSH-key v1 is not throwaway — it remains a valid second-factor for deployments that don't adopt WebAuthn, even after Approach C lands.
+
 ---
 
 > [Back to README](../../../ReadMe.MD) | [All Specs](../index.md) | [Maahi](./index.md)
