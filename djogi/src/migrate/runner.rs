@@ -1098,6 +1098,21 @@ async fn apply_plan_inner(
 /// chars → a non-NULL string in the audit column. NULL is reserved
 /// for code paths where no signature was attempted (today: never on
 /// this path).
+fn audit_signing_key_from_loaded(
+    loaded: Result<Option<[u8; 32]>, crate::snapshot::sign::SnapshotKeyError>,
+) -> [u8; 32] {
+    loaded.ok().flatten().unwrap_or([0u8; 32])
+}
+
+fn audit_signature_hex_for_snapshot(
+    snapshot: &super::schema::AppliedSchema,
+    key: [u8; 32],
+) -> Result<String, SnapshotError> {
+    let snapshot_bytes = super::snapshot::serialize_snapshot(snapshot)?;
+    let sig = crate::snapshot::sign::sign_snapshot(&snapshot_bytes, &key);
+    Ok(super::audit::signature_to_hex(&sig))
+}
+
 async fn record_ddl_audit_for_plan(
     plan: &MigrationPlan,
     runner_ctx: &RunnerCtx,
@@ -1115,8 +1130,17 @@ async fn record_ddl_audit_for_plan(
     // the buffer with `save_snapshot` would require returning bytes
     // up the stack and is left as a future micro-opt; for now,
     // correctness > a couple-hundred-microsecond serialise.
-    let snapshot_bytes = match super::snapshot::serialize_snapshot(snapshot) {
-        Ok(b) => b,
+    //
+    // Resolve the signing key before rendering the signature. Per the
+    // no-op-key sentinel contract in `snapshot::sign`, an unset env var
+    // (`Ok(None)`) and malformed value (`Err`) both collapse here to the
+    // no-op key. The CLI entry point that sets the env var owns the
+    // operator-facing surface for malformed keys (`djogi verify` surfaces
+    // them as `VerifyError::KeyDecode`); the runner is the audit-side
+    // consumer, not the configuration owner.
+    let key = audit_signing_key_from_loaded(crate::snapshot::sign::load_signing_key_from_env());
+    let sig_hex = match audit_signature_hex_for_snapshot(snapshot, key) {
+        Ok(sig_hex) => sig_hex,
         Err(e) => {
             tracing::warn!(
                 target: "djogi::migrate::audit",
@@ -1126,20 +1150,6 @@ async fn record_ddl_audit_for_plan(
             return;
         }
     };
-
-    // Resolve the signing key. Per the no-op-key sentinel contract
-    // in `snapshot::sign`, an unset env var → `Ok(None)` → no-op key.
-    // A malformed value (`Err`) collapses here to the same no-op key
-    // — the CLI entry point that sets the env var owns the
-    // operator-facing surface for malformed keys (`djogi verify`
-    // surfaces it as `VerifyError::KeyDecode`); the runner is the
-    // audit-side consumer, not the configuration owner.
-    let key = crate::snapshot::sign::load_signing_key_from_env()
-        .ok()
-        .flatten()
-        .unwrap_or([0u8; 32]);
-    let sig = crate::snapshot::sign::sign_snapshot(&snapshot_bytes, &key);
-    let sig_hex = super::audit::signature_to_hex(&sig);
 
     // Construct an audit-side DjogiContext. `DjogiPool` wraps the
     // raw deadpool pool; `inner` is `pub(crate)`, so this lives in
@@ -3344,16 +3354,174 @@ fn strip_schema_prefix(name: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use crate::config::MigrateConfig;
     use crate::migrate::diff::Classification;
     use crate::migrate::projection::BucketKey;
+    use crate::migrate::schema::AppliedSchema;
     use crate::migrate::segment::{MigrationPlan, Segment, SegmentKind};
     use crate::migrate::sql::OperationSql;
+    use djogi_macros::djogi_test;
 
     fn bucket(db: &str, app: &str) -> BucketKey {
         BucketKey {
             database: db.to_string(),
             app: app.to_string(),
+        }
+    }
+
+    fn empty_snapshot() -> AppliedSchema {
+        AppliedSchema {
+            djogi_version: "0.1.0".to_string(),
+            enums: BTreeMap::new(),
+            format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+            generated_at: "2026-05-09T00:00:00Z".to_string(),
+            indexes: Vec::new(),
+            models: BTreeMap::new(),
+            registered_apps: vec!["".to_string()],
+        }
+    }
+
+    fn op(label: &str, up: &str) -> OperationSql {
+        OperationSql {
+            label: label.to_string(),
+            up: up.to_string(),
+            down: format!("-- down for {label}"),
+            lossy: None,
+        }
+    }
+
+    fn audit_plan() -> MigrationPlan {
+        MigrationPlan {
+            bucket: bucket("main", ""),
+            classification: Classification::Additive,
+            segments: vec![
+                Segment {
+                    kind: SegmentKind::Transactional,
+                    statements: vec![
+                        op("AddTable audit_a", "CREATE TABLE audit_a (id bigint)"),
+                        op("AddTable audit_b", "CREATE TABLE audit_b (id bigint)"),
+                    ],
+                },
+                Segment {
+                    kind: SegmentKind::MetadataOnly,
+                    statements: vec![op("RenameApp ignored", "-- metadata-only placeholder")],
+                },
+                Segment {
+                    kind: SegmentKind::NonTransactional,
+                    statements: vec![op(
+                        "AddIndex audit_a_id_idx",
+                        "CREATE INDEX CONCURRENTLY audit_a_id_idx ON audit_a (id)",
+                    )],
+                },
+            ],
+        }
+    }
+
+    fn single_table_plan(table: &str) -> MigrationPlan {
+        MigrationPlan {
+            bucket: bucket("main", ""),
+            classification: Classification::Additive,
+            segments: vec![Segment {
+                kind: SegmentKind::Transactional,
+                statements: vec![op(
+                    &format!("AddTable {table}"),
+                    &format!("CREATE TABLE {table} (id bigint)"),
+                )],
+            }],
+        }
+    }
+
+    fn runner_ctx_for_audit_with_snapshot_path(
+        plan: &MigrationPlan,
+        audit_pool: Option<deadpool_postgres::Pool>,
+        snapshot_path: Option<PathBuf>,
+    ) -> RunnerCtx {
+        RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260509000000__audit_test".to_string(),
+            description: "audit test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(plan),
+            checksum_down: None,
+            snapshot: Some(empty_snapshot()),
+            snapshot_path,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool,
+        }
+    }
+
+    fn unique_temp_path(tag: &str, ext: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("djogi-runner-{tag}-{stamp}.{ext}"))
+    }
+
+    fn acquire_test_workspace_guard() -> WorkspaceGuard {
+        crate::migrate::acquire_workspace_lock(
+            &unique_temp_path("audit", "lock"),
+            Duration::from_secs(2),
+        )
+        .expect("acquire workspace lock")
+    }
+
+    struct SigningKeyEnvUnsetGuard {
+        previous: Option<std::ffi::OsString>,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    struct SigningKeyEnvReadGuard {
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl SigningKeyEnvReadGuard {
+        fn hold() -> Self {
+            Self {
+                _guard: crate::snapshot::sign::SIGNING_KEY_ENV_MUTEX
+                    .lock()
+                    .expect("signing-key env mutex"),
+            }
+        }
+    }
+
+    impl SigningKeyEnvUnsetGuard {
+        fn unset() -> Self {
+            let guard = crate::snapshot::sign::SIGNING_KEY_ENV_MUTEX
+                .lock()
+                .expect("signing-key env mutex");
+            let previous = std::env::var_os("DJOGI_SNAPSHOT_SIGNING_KEY");
+            // SAFETY: `SIGNING_KEY_ENV_MUTEX` serialises every unit test in
+            // this crate that reads or mutates `DJOGI_SNAPSHOT_SIGNING_KEY`.
+            unsafe {
+                std::env::remove_var("DJOGI_SNAPSHOT_SIGNING_KEY");
+            }
+            Self {
+                previous,
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for SigningKeyEnvUnsetGuard {
+        fn drop(&mut self) {
+            // SAFETY: this guard still holds `SIGNING_KEY_ENV_MUTEX`, so no
+            // sibling unit test can concurrently read or mutate the signing
+            // key env var while restoration happens.
+            unsafe {
+                if let Some(previous) = &self.previous {
+                    std::env::set_var("DJOGI_SNAPSHOT_SIGNING_KEY", previous);
+                } else {
+                    std::env::remove_var("DJOGI_SNAPSHOT_SIGNING_KEY");
+                }
+            }
         }
     }
 
@@ -3663,100 +3831,188 @@ mod tests {
     }
 
     // ── apply_plan DDL audit wiring (T9.5) ────────────────────────────────
-    //
-    // These tests document the contract `record_ddl_audit_for_plan`
-    // must satisfy. They are `#[ignore]`d in this commit because the
-    // in-crate `#[cfg(test)]` harness has no DB fixture today — the
-    // existing `runner.rs` tests are pure-unit (advisory-lock-key
-    // determinism, checksum determinism, etc.). T9.7 owns the
-    // integration harness that provisions both an app pool and an
-    // audit pool; once that lands these tests can flip from `#[ignore]`
-    // to a real `#[djogi_test(audit_db = true)]` (or equivalent) and
-    // run end-to-end.
-    //
-    // The four scenarios pinned here cover the full failure matrix
-    // called out in the v3 plan §T9.5:
-    //
-    // 1. happy path — `audit_pool = Some(pool)` writes one row per
-    //    executed (non-metadata) segment.
-    // 2. opt-out — `audit_pool = None` skips audit silently.
-    // 3. audit-DB outage — broken audit pool MUST NOT roll back the
-    //    app DB DDL; warn is emitted; apply still succeeds.
-    // 4. unset signing key — `DJOGI_SNAPSHOT_SIGNING_KEY` unset →
-    //    column carries 64 zero hex chars (the no-op-key signature
-    //    of any input is `[0u8; 32]` per `snapshot::sign`'s no-op
-    //    sentinel contract). NOT NULL — NULL is reserved for the
-    //    "no signature attempted" code path which this commit does
-    //    not produce.
 
-    #[tokio::test]
-    #[ignore = "needs audit-DB harness; covered by T9.7 integration tests"]
-    async fn apply_plan_writes_audit_row_when_pool_set() {
-        // Fixture: build a `RunnerCtx` whose `audit_pool` is set to
-        // a real pool against the audit DB. After `apply_plan`
-        // succeeds, the audit DB must carry one `djogi_ddl_audit`
-        // row per executed segment, with `snapshot_signature_hex`
-        // matching `signature_to_hex(&sign_snapshot(&snapshot_bytes,
-        // &key))` round-trip.
-        //
-        // Key assertions T9.7 must wire up:
-        //
-        // - `SELECT count(*) FROM djogi_ddl_audit WHERE
-        //   target_database = $1 AND app_label = $2` returns the
-        //   count of non-metadata segments in the plan.
-        // - For each row, `snapshot_signature_hex` is a 64-char
-        //   uppercase hex string (matches `signature_to_hex`'s
-        //   contract).
-        // - `applied_at` is monotonic across rows from the same
-        //   apply invocation.
+    #[allow(clippy::await_holding_lock)]
+    #[djogi_test]
+    async fn apply_plan_writes_audit_rows_for_executed_segments_when_key_unset(
+        mut ctx: DjogiContext,
+    ) {
+        let _signing_key_env = SigningKeyEnvUnsetGuard::unset();
+        let plan = audit_plan();
+        let audit_pool = ctx
+            .share_pool()
+            .expect("djogi_test context should be pool-backed")
+            .inner;
+        let snapshot_path = unique_temp_path("audit-happy-path", "json");
+        let cleanup_path = snapshot_path.clone();
+        let runner_ctx =
+            runner_ctx_for_audit_with_snapshot_path(&plan, Some(audit_pool), Some(snapshot_path));
+        let guard = acquire_test_workspace_guard();
+        let expected_sig = audit_signature_hex_for_snapshot(
+            runner_ctx.snapshot.as_ref().expect("test snapshot"),
+            [0u8; 32],
+        )
+        .expect("expected audit signature");
+
+        let report = apply_plan(&mut ctx, &plan, &runner_ctx, &guard)
+            .await
+            .expect("apply should write audit rows");
+        assert_eq!(report.transactional_segments, 1);
+        assert_eq!(report.non_transactional_segments, 1);
+        assert_eq!(report.metadata_segments, 1);
+
+        let rows = ctx
+            .query_all(
+                "SELECT target_database, app_label, ddl_sql, snapshot_signature_hex, \
+                        applied_at <= lead(applied_at) OVER (ORDER BY id) AS applied_before_next \
+                 FROM djogi_ddl_audit ORDER BY id",
+                &[],
+            )
+            .await
+            .expect("read audit rows");
+        assert_eq!(
+            rows.len(),
+            2,
+            "transactional and non-transactional segments should be audited; metadata-only skipped"
+        );
+
+        let first_sql: String = rows[0].try_get("ddl_sql").expect("first ddl_sql");
+        assert!(
+            first_sql.contains("CREATE TABLE audit_a")
+                && first_sql.contains(";\n")
+                && first_sql.contains("CREATE TABLE audit_b"),
+            "transactional segment should store concatenated statement SQL; got {first_sql}"
+        );
+        let second_sql: String = rows[1].try_get("ddl_sql").expect("second ddl_sql");
+        assert!(
+            second_sql.contains("CREATE INDEX CONCURRENTLY audit_a_id_idx"),
+            "non-transactional segment should be audited; got {second_sql}"
+        );
+
+        for row in rows {
+            let target_database: String = row
+                .try_get("target_database")
+                .expect("target_database column");
+            let app_label: String = row.try_get("app_label").expect("app_label column");
+            let sig: String = row
+                .try_get("snapshot_signature_hex")
+                .expect("snapshot signature column");
+            let applied_before_next: Option<bool> = row
+                .try_get("applied_before_next")
+                .expect("applied_at monotonic column");
+
+            assert_eq!(target_database, "main");
+            assert_eq!(app_label, "");
+            assert_eq!(sig, expected_sig);
+            assert_eq!(
+                sig,
+                "0".repeat(64),
+                "unset signing key should persist the no-op zero signature"
+            );
+            assert_ne!(
+                applied_before_next,
+                Some(false),
+                "applied_at should be monotonic in audit id order"
+            );
+        }
+
+        let _ = std::fs::remove_file(cleanup_path);
     }
 
-    #[tokio::test]
-    #[ignore = "needs audit-DB harness; covered by T9.7 integration tests"]
-    async fn apply_plan_skips_audit_when_pool_none() {
-        // Fixture: `RunnerCtx { audit_pool: None, .. }`. `apply_plan`
-        // must succeed AND the audit DB must remain untouched —
-        // specifically, the `djogi_ddl_audit` table need not even
-        // exist after the run. The contract is: `audit_pool: None`
-        // is the supported "no audit DB" deployment shape, not a
-        // partial / degraded mode.
+    #[djogi_test]
+    async fn apply_plan_skips_audit_when_pool_none(mut ctx: DjogiContext) {
+        let plan = single_table_plan("audit_pool_none_applies");
+        let snapshot_path = unique_temp_path("audit-pool-none", "json");
+        let cleanup_path = snapshot_path.clone();
+        let runner_ctx = runner_ctx_for_audit_with_snapshot_path(&plan, None, Some(snapshot_path));
+        let guard = acquire_test_workspace_guard();
+
+        let report = apply_plan(&mut ctx, &plan, &runner_ctx, &guard)
+            .await
+            .expect("audit_pool = None should not fail app-side apply");
+        assert_eq!(report.transactional_segments, 1);
+
+        let app_table: Option<String> = ctx
+            .query_one(
+                "SELECT to_regclass('public.audit_pool_none_applies')::text",
+                &[],
+            )
+            .await
+            .expect("query app table existence")
+            .try_get(0)
+            .expect("decode app table existence");
+        assert_eq!(
+            app_table.as_deref(),
+            Some("audit_pool_none_applies"),
+            "audit opt-out should still apply app-side DDL"
+        );
+
+        let audit_table: Option<String> = ctx
+            .query_one("SELECT to_regclass('public.djogi_ddl_audit')::text", &[])
+            .await
+            .expect("query audit table existence")
+            .try_get(0)
+            .expect("decode audit table existence");
+        assert_eq!(
+            audit_table, None,
+            "audit_pool = None should not bootstrap or write the audit table"
+        );
+
+        let _ = std::fs::remove_file(cleanup_path);
     }
 
-    #[tokio::test]
-    #[ignore = "needs audit-DB harness; covered by T9.7 integration tests"]
-    async fn apply_plan_audit_failure_does_not_roll_back_app_db() {
-        // Fixture: `audit_pool` set to a pool that cannot connect
-        // (closed pool, bad URL, connect timeout). `apply_plan` must
-        // still return `Ok(_)` — the app DB DDL has already
-        // committed and the runner MUST NOT propagate audit-side
-        // failures. T9.7 captures the `tracing::warn!` output and
-        // asserts the `target = "djogi::migrate::audit"` log line
-        // is emitted.
-        //
-        // Why this invariant matters: a transient outage on the
-        // sibling audit DB (`crud_log_url`) would otherwise
-        // double-fault every concurrent migration apply across the
-        // fleet, turning a single-DB incident into a global apply
-        // freeze. The audit row is "belt-and-braces" — the on-disk
-        // snapshot + ledger are the authoritative artefacts.
+    #[test]
+    fn audit_signature_for_unset_key_path_is_zero_hex() {
+        let key = audit_signing_key_from_loaded(Ok(None));
+        let sig_hex = audit_signature_hex_for_snapshot(&empty_snapshot(), key)
+            .expect("render audit signature");
+
+        assert_eq!(
+            sig_hex,
+            "0".repeat(64),
+            "an unset signing key should use the no-op key and persist zero hex"
+        );
     }
 
-    #[tokio::test]
-    #[ignore = "needs audit-DB harness; covered by T9.7 integration tests"]
-    async fn apply_plan_no_audit_signature_when_key_unset() {
-        // Fixture: `DJOGI_SNAPSHOT_SIGNING_KEY` env var unset. The
-        // audit row's `snapshot_signature_hex` must be
-        // `"0000…0000"` (64 ASCII '0' characters) — the
-        // `signature_to_hex` of `[0u8; 32]`, which is what
-        // `sign_snapshot` returns under the no-op key sentinel.
-        //
-        // NOT NULL: the column carries a hex string in this commit's
-        // code path; NULL is reserved for code paths that explicitly
-        // pass `snapshot_sig_hex: None` to `record_ddl_audit`, which
-        // `record_ddl_audit_for_plan` never does.
-        //
-        // T9.7 must guard this test with proper env-var hygiene
-        // (`temp_env::with_var_unset` or equivalent — the in-process
-        // env is global state).
+    #[djogi_test]
+    async fn apply_plan_audit_failure_does_not_roll_back_app_db(mut ctx: DjogiContext) {
+        let _signing_key_env = SigningKeyEnvReadGuard::hold();
+        let plan = single_table_plan("audit_failure_survives");
+        let snapshot_path = unique_temp_path("audit-failure-survives", "json");
+        let cleanup_path = snapshot_path.clone();
+        let audit_pool = crate::pg::pool::DjogiPool::builder(
+            "postgres://djogi:djogi@127.0.0.1:1/djogi_unreachable",
+        )
+        .max_size(1)
+        .timeout(Duration::from_millis(50))
+        .build()
+        .await
+        .expect("build unreachable audit pool")
+        .inner;
+        let runner_ctx =
+            runner_ctx_for_audit_with_snapshot_path(&plan, Some(audit_pool), Some(snapshot_path));
+        let guard = acquire_test_workspace_guard();
+
+        let report = apply_plan(&mut ctx, &plan, &runner_ctx, &guard)
+            .await
+            .expect("audit-side failure should not fail app-side apply");
+        assert_eq!(report.transactional_segments, 1);
+
+        let app_table: Option<String> = ctx
+            .query_one(
+                "SELECT to_regclass('public.audit_failure_survives')::text",
+                &[],
+            )
+            .await
+            .expect("query app table existence")
+            .try_get(0)
+            .expect("decode app table existence");
+        assert_eq!(
+            app_table.as_deref(),
+            Some("audit_failure_survives"),
+            "app-side DDL should remain committed when the audit DB is unavailable"
+        );
+
+        let _ = std::fs::remove_file(cleanup_path);
     }
 }

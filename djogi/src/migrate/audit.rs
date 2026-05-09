@@ -216,38 +216,89 @@ mod tests {
         );
     }
 
-    // ── DB-dependent tests — gated until T9.7 wires the audit DB harness.
-    //
-    // These tests document the contract `record_ddl` and
-    // `bootstrap_ddl_audit` must satisfy. They are `#[ignore]`d in
-    // this commit because the in-crate `#[djogi_test]` harness
-    // provisions a single APP-DB context, and the audit-DB
-    // separation is what we are testing. T9.7 owns the integration
-    // harness that constructs an audit-side pool; once that lands
-    // these tests can flip to `#[djogi_test(audit_db = true)]` (or
-    // equivalent) and run for real.
+    // ── DB-dependent tests — same-pool audit fixture ─────────────────────
 
-    #[tokio::test]
-    #[ignore = "needs audit-DB harness; covered by T9.7 integration tests"]
-    async fn bootstrap_is_idempotent() {
-        // Calling `bootstrap_ddl_audit` twice must succeed — the
-        // second call is a no-op thanks to `IF NOT EXISTS`.
-        // Exercised in T9.7.
+    use djogi_macros::djogi_test;
+
+    #[djogi_test]
+    async fn bootstrap_is_idempotent(mut ctx: DjogiContext) {
+        bootstrap_ddl_audit(&mut ctx)
+            .await
+            .expect("first bootstrap_ddl_audit");
+        bootstrap_ddl_audit(&mut ctx)
+            .await
+            .expect("second bootstrap_ddl_audit");
+
+        let count: i64 = ctx
+            .query_one("SELECT COUNT(*)::bigint FROM djogi_ddl_audit", &[])
+            .await
+            .expect("count djogi_ddl_audit")
+            .try_get(0)
+            .expect("decode count");
+        assert_eq!(count, 0, "bootstrap should create the table but no rows");
     }
 
-    #[tokio::test]
-    #[ignore = "needs audit-DB harness; covered by T9.7 integration tests"]
-    async fn record_ddl_returns_increasing_ids() {
-        // Three sequential `record_ddl` calls must return strictly
-        // increasing `id`s — `BIGSERIAL` guarantees this for a
-        // single writer. Exercised in T9.7.
+    #[djogi_test]
+    async fn record_ddl_returns_increasing_ids(mut ctx: DjogiContext) {
+        bootstrap_ddl_audit(&mut ctx)
+            .await
+            .expect("bootstrap audit");
+
+        let a = record_ddl(
+            &mut ctx,
+            "main",
+            "",
+            "CREATE TABLE audit_a (id bigint)",
+            Some("AA"),
+        )
+        .await
+        .expect("record first ddl");
+        let b = record_ddl(
+            &mut ctx,
+            "main",
+            "",
+            "CREATE TABLE audit_b (id bigint)",
+            Some("BB"),
+        )
+        .await
+        .expect("record second ddl");
+        let c = record_ddl(
+            &mut ctx,
+            "main",
+            "",
+            "CREATE TABLE audit_c (id bigint)",
+            Some("CC"),
+        )
+        .await
+        .expect("record third ddl");
+
+        assert!(a < b && b < c, "audit ids should increase: {a}, {b}, {c}");
     }
 
-    #[tokio::test]
-    #[ignore = "needs audit-DB harness; covered by T9.7 integration tests"]
-    async fn record_ddl_accepts_null_signature() {
-        // `snapshot_sig_hex = None` must persist as SQL NULL and
-        // round-trip back as `Option::None` on read. Exercised in
-        // T9.7.
+    #[djogi_test]
+    async fn record_ddl_accepts_null_signature(mut ctx: DjogiContext) {
+        bootstrap_ddl_audit(&mut ctx)
+            .await
+            .expect("bootstrap audit");
+
+        let id = record_ddl(
+            &mut ctx,
+            "main",
+            "",
+            "CREATE TABLE audit_null_signature (id bigint)",
+            None,
+        )
+        .await
+        .expect("record ddl with null signature");
+        let sig: Option<String> = ctx
+            .query_one(
+                "SELECT snapshot_signature_hex FROM djogi_ddl_audit WHERE id = $1",
+                &[&id],
+            )
+            .await
+            .expect("select audit row")
+            .try_get(0)
+            .expect("decode signature");
+        assert_eq!(sig, None);
     }
 }

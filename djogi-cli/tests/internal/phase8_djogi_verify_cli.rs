@@ -2,7 +2,7 @@
 #![allow(clippy::module_inception)]
 
 #[djogi::deliberately_bypass_convention_with_raw_sql]
-// JUSTIFICATION (djogi#133): internal framework test for Djogi-owned SQL/driver behavior; raw access is outside the ordinary adopter test surface.
+// JUSTIFICATION (djogi#133): internal CLI/audit test for Djogi-owned SQL behavior; raw access is outside the ordinary adopter test surface.
 mod phase8_djogi_verify_cli {
     include!("sources/phase8_djogi_verify_cli.rs");
 }

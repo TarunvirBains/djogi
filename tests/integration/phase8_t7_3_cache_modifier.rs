@@ -11,16 +11,8 @@
 //    actually returned to the caller — exactly one entry lands in
 //    the pool when `Some(_)` came back, zero on `None`.
 // 3. The cache modifier is **purely additive** at the SQL level:
-//    a queryset with `.cache(&p)` produces the same `Debug`
-//    projection (and therefore the same accumulator-visible SQL
-//    structure) as the same chain without `.cache(&p)`. The plan
-//    explicitly forbids new instrumentation just for this assertion
-//    (granular plan §3 commit T7.3 "tests" bullet), so the comparison
-//    runs against the existing `std::fmt::Debug` impl, which
-//    intentionally does NOT include `cache_target` in its
-//    projection — see `djogi/src/query/queryset.rs` Debug impl
-//    docs for why that exclusion is the load-bearing parity
-//    contract.
+//    a queryset with `.cache(&p)` renders the same SELECT SQL as the
+//    same chain without `.cache(&p)`.
 //
 // # Spec anchor
 //
@@ -158,19 +150,9 @@ async fn cache_modifier_first_inserts_only_returned_row(mut ctx: djogi::DjogiCon
 // ---------------------------------------------------------------------------
 // Test 3 — `.cache(&p)` is purely additive at the SQL-structure level.
 //
-// The plan forbids adding new instrumentation just for this test
-// (granular plan §3 commit T7.3 "Tests" bullet — "Don't add new
-// instrumentation just for this test."). The Debug impl on
-// `QuerySet<T>` is the available structural-introspection surface;
-// it deliberately omits `cache_target` from its projection (see the
-// Debug impl doc in `djogi/src/query/queryset.rs`) so the printed
-// shape stays invariant under `.cache(...)`. Comparing the two
-// Debug strings is the strongest assertion the available surface
-// supports without dragging in new public API.
-//
 // NOTE: this test does NOT need a populated table — it never calls
-// a terminal. The Debug projection is a pure function of the
-// queryset's structural state (filter / order / limit / etc.).
+// a terminal. SQL rendering is a pure function of the queryset's
+// structural state (filter / order / limit / etc.).
 // ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [CacheRow])]
@@ -194,55 +176,26 @@ async fn cache_modifier_does_not_change_sql_emit(mut ctx: djogi::DjogiContext) {
         .cache(&pool)
         .expect("typed filter must satisfy portable cache gate");
 
-    // Stable-state Debug comparison. The Debug impl walks the
-    // structural fields that the SQL emitter consumes — `condition`,
-    // `ordering`, `distinct`, `limit`, `offset`, `is_empty`,
-    // `prefetch_paths`, `select_related_paths`, `lock` — and
-    // intentionally OMITS `cache_target`. Equal Debug projections
-    // therefore prove equal SQL emission inputs across the two
-    // querysets, which is the spec-required parity contract for
-    // the additive cache modifier.
-    //
-    // # Why Debug, not `build_select`
-    //
-    // T7.3 Codex review (ALLOW-WITH-CONCERNS) flagged this assertion
-    // as brittle — `Debug` projection drift could falsely flag, and a
-    // SQL-emitter change not mirrored in `Debug` could silently slip
-    // through. `djogi::query::sql::build_select` would be the
-    // robust assertion target, but it's `pub(crate)` (`sql.rs:699`),
-    // so reaching it from an external integration test requires
-    // exposing a test-only helper under the `testing` feature flag.
-    // That surface flip is broader than T7.3's scope and is anchored
-    // to a future commit (filed as the trailing TODO below). Until
-    // then: the substring-check immediately below pins the
-    // non-trivial-Debug invariant so the equality assertion cannot
-    // silently degenerate to "two empty strings match", which is the
-    // bounded-mitigation Codex implicitly accepted by ALLOW-WITH-
-    // CONCERNS rather than BLOCK.
-    //
-    // TODO(8δ T7.x): expose a test-only SQL renderer on `QuerySet`
-    // behind `#[cfg(any(test, feature = "testing"))]` and re-anchor
-    // this parity assertion on the rendered SQL string.
-    let plain_dbg = format!("{:?}", plain);
-    let cached_dbg = format!("{:?}", cached);
+    let plain_sql = plain
+        .render_select_sql_for_testing()
+        .expect("plain queryset SQL renders");
+    let cached_sql = cached
+        .render_select_sql_for_testing()
+        .expect("cached queryset SQL renders");
     assert_eq!(
-        plain_dbg, cached_dbg,
-        ".cache(&p) must be purely additive — the queryset's structural Debug projection \
-         (which feeds the SQL emitter) must be byte-identical with vs without .cache(...). \
+        plain_sql, cached_sql,
+        ".cache(&p) must be purely additive — the SELECT SQL must be byte-identical \
+         with vs without .cache(...). \
          A diff here means the cache modifier accidentally mutated SQL-shaping state.",
     );
 
-    // Sanity: the Debug projection is non-trivial. If it ever
-    // collapses to a stub (e.g., a future refactor that drops
-    // structural fields from the printed shape), the equality
-    // assertion above degenerates to "two empty strings match",
-    // which would silently lose the parity guarantee. Pin the
-    // non-trivial shape with a substring check.
+    // Sanity: the rendered SQL is non-trivial and includes the structural
+    // clauses this test built above.
     assert!(
-        plain_dbg.contains("table"),
-        "QuerySet Debug must include the table name; if this fails, the Debug impl was \
-         hollowed out and this test's parity assertion needs to be re-anchored on a \
-         different introspection surface",
+        plain_sql.contains("phase8_t7_3_cache_rows")
+            && plain_sql.contains("ORDER BY")
+            && plain_sql.contains("LIMIT"),
+        "testing SQL renderer lost structural clauses; got {plain_sql}",
     );
 
     // Side-effect-free: neither queryset has been driven through a

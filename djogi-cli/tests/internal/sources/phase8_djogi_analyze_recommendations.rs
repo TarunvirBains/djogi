@@ -51,25 +51,10 @@
 //
 // # Locating the compiled `djogi` binary
 //
-// Tests in the `djogi-cli` crate's integration target do NOT see
-// `CARGO_BIN_EXE_djogi` (Cargo only sets that variable for tests
-// defined in the SAME `[[bin]]` crate that owns the binary; this
-// file is registered as a separate `[[test]]`). We resolve the
-// binary path by walking from [`std::env::current_exe`] (which
-// lives at `target/<profile>/deps/<test_name>-<hash>`) up two
-// directories to `target/<profile>/`, then joining `djogi`. Robust
-// across `cargo test` and `cargo test --release` and does not
-// hard-code the profile name.
-//
-// # `#[ignore]` rationale
-//
-// These tests spawn the `djogi` binary as a subprocess. They MUST
-// run after the binary is built — the precommit gate runs
-// `cargo build -p djogi-cli` before the integration sweep. To
-// avoid surprising failures in `cargo test` invocations that did
-// not build the CLI binary first, the tests are gated behind
-// `#[ignore]` and surface only via `cargo test ... --
-// --include-ignored`.
+// The test is registered in the same package as the `djogi` binary, so
+// Cargo provides `CARGO_BIN_EXE_djogi` for the integration target. A
+// filesystem fallback remains for direct harnesses that pre-build the
+// binary but do not set Cargo's compile-time env var.
 //
 // # Spec / memory anchors
 //
@@ -94,11 +79,37 @@ const FIXTURE_PREFIX: &str = "t10_3_";
 /// the test-binary file) to reach `deps/`, then up another level
 /// to reach `<profile>/`, then join `djogi`.
 fn djogi_binary_path() -> PathBuf {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_djogi") {
+        return PathBuf::from(path);
+    }
+
     let exe = std::env::current_exe().expect("current_exe");
     // exe = target/<profile>/deps/<test>-<hash>
     let deps = exe.parent().expect("current_exe has parent (deps/)");
     let profile_dir = deps.parent().expect("deps has parent (profile/)");
     profile_dir.join("djogi")
+}
+
+fn test_database_url(database: &str) -> String {
+    let admin_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+    splice_db_into_url(&admin_url, database)
+}
+
+fn splice_db_into_url(url: &str, new_db: &str) -> String {
+    let (scheme, rest) = if let Some(rest) = url.strip_prefix("postgres://") {
+        ("postgres://", rest)
+    } else if let Some(rest) = url.strip_prefix("postgresql://") {
+        ("postgresql://", rest)
+    } else {
+        panic!("DATABASE_URL must be a postgres:// or postgresql:// URL, got {url}");
+    };
+
+    let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    let tail = &rest[authority_end..];
+    let query = tail.find('?').map_or("", |idx| &tail[idx..]);
+
+    format!("{scheme}{authority}/{new_db}{query}")
 }
 
 /// Resolve the connected test context's `current_database()` so we
@@ -319,8 +330,6 @@ fn recommendation_kind(row: &serde_json::Value) -> &str {
 }
 
 #[djogi::djogi_test]
-#[ignore = "spawns the compiled `djogi` binary; run with --include-ignored after \
-            `cargo build -p djogi-cli`"]
 async fn analyze_healthy_small_table_returns_healthy(mut ctx: djogi::DjogiContext) {
     // Seed: a small table with 50 live rows, no deletes, no
     // partitions. Default thresholds (0.2 vacuum, override the
@@ -344,7 +353,7 @@ async fn analyze_healthy_small_table_returns_healthy(mut ctx: djogi::DjogiContex
         .expect("analyze healthy table");
 
     let database = current_database(&mut ctx).await;
-    let test_url = format!("postgres://djogi:djogi@localhost/{database}");
+    let test_url = test_database_url(&database);
     let workspace = temp_workspace("healthy");
     write_minimal_djogi_toml(&workspace, &test_url);
 
@@ -379,8 +388,6 @@ async fn analyze_healthy_small_table_returns_healthy(mut ctx: djogi::DjogiContex
 }
 
 #[djogi::djogi_test]
-#[ignore = "spawns the compiled `djogi` binary; run with --include-ignored after \
-            `cargo build -p djogi-cli`"]
 async fn analyze_high_dead_tuple_ratio_returns_vacuum_needed(mut ctx: djogi::DjogiContext) {
     // Seed: 100 rows, then DELETE 50, then ANALYZE so
     // `pg_stat_user_tables.n_dead_tup` reflects the deleted rows.
@@ -420,7 +427,7 @@ async fn analyze_high_dead_tuple_ratio_returns_vacuum_needed(mut ctx: djogi::Djo
     wait_for_dead_tuples(&mut ctx, &table).await;
 
     let database = current_database(&mut ctx).await;
-    let test_url = format!("postgres://djogi:djogi@localhost/{database}");
+    let test_url = test_database_url(&database);
     let workspace = temp_workspace("vacuum");
     write_minimal_djogi_toml(&workspace, &test_url);
 
@@ -453,8 +460,6 @@ async fn analyze_high_dead_tuple_ratio_returns_vacuum_needed(mut ctx: djogi::Djo
 }
 
 #[djogi::djogi_test]
-#[ignore = "spawns the compiled `djogi` binary; run with --include-ignored after \
-            `cargo build -p djogi-cli`"]
 async fn analyze_large_unpartitioned_returns_partition_recommended(mut ctx: djogi::DjogiContext) {
     // Seed: 200 live rows in an unpartitioned table; pass
     // `--threshold-partition-rows 100` so 200 > 100 fires the
@@ -488,7 +493,7 @@ async fn analyze_large_unpartitioned_returns_partition_recommended(mut ctx: djog
     wait_for_live_tuples(&mut ctx, &table, 101).await;
 
     let database = current_database(&mut ctx).await;
-    let test_url = format!("postgres://djogi:djogi@localhost/{database}");
+    let test_url = test_database_url(&database);
     let workspace = temp_workspace("partition");
     write_minimal_djogi_toml(&workspace, &test_url);
 

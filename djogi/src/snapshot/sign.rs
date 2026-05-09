@@ -64,6 +64,9 @@ const NOOP_SIG: [u8; 32] = [0u8; 32];
 /// HMAC-SHA256 type alias used for snapshot signing.
 type HmacSha256 = Hmac<Sha256>;
 
+#[cfg(test)]
+pub(crate) static SIGNING_KEY_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Sign `json_bytes` with `key` using HMAC-SHA256.
 ///
 /// Returns the 32-byte MAC over the input bytes. The caller is responsible
@@ -234,13 +237,11 @@ impl std::error::Error for SnapshotKeyError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    /// Serialises the env-var tests below. `cargo test` runs unit tests in
-    /// parallel by default; without a guard, two tests racing on
-    /// `DJOGI_SNAPSHOT_SIGNING_KEY` (one expecting it unset, another
-    /// expecting it set to a specific value) would flake intermittently.
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+    // The process-wide mutex lives outside this test module so
+    // `migrate::runner` tests can share the same env-var guard. `cargo test`
+    // runs unit tests in parallel by default; every test in this crate that
+    // reads or mutates `DJOGI_SNAPSHOT_SIGNING_KEY` must hold the mutex.
 
     /// Pinned HMAC-SHA256 test vector. Not an RFC-4231 case (those use
     /// variable-length keys; our API is fixed `[u8; 32]`); this vector is
@@ -368,14 +369,12 @@ mod tests {
 
     #[test]
     fn load_key_from_env_unset() {
-        let _g = ENV_MUTEX.lock().unwrap();
+        let _g = SIGNING_KEY_ENV_MUTEX.lock().unwrap();
         // SAFETY: `remove_var` is `unsafe` on Rust 2024+ because mutating
         // the process environment from one thread while another reads it
-        // is UB on some platforms. The `ENV_MUTEX` above serialises every
-        // test in this module that touches `DJOGI_SNAPSHOT_SIGNING_KEY`,
-        // so within this test binary no concurrent reader exists. Tests
-        // that share this env var across crates would still be unsafe;
-        // none currently do.
+        // is UB on some platforms. `SIGNING_KEY_ENV_MUTEX` serialises every
+        // test in this crate that touches `DJOGI_SNAPSHOT_SIGNING_KEY`, so
+        // within this test binary no concurrent reader exists.
         unsafe {
             env::remove_var("DJOGI_SNAPSHOT_SIGNING_KEY");
         }
@@ -384,13 +383,14 @@ mod tests {
 
     #[test]
     fn load_key_from_env_valid_hex() {
-        let _g = ENV_MUTEX.lock().unwrap();
+        let _g = SIGNING_KEY_ENV_MUTEX.lock().unwrap();
         // 64 hex chars = 32 bytes: 0x00, 0x11, 0x22, ..., 0xff (each byte
         // doubled). Mixes lower- and upper-case to exercise both arms of
         // the hex decoder.
         let hex = "00112233445566778899AABBCCDDEEFF00112233445566778899aabbccddeeff";
         // SAFETY: see `load_key_from_env_unset` for the threading argument;
-        // `ENV_MUTEX` serialises all env-var mutators in this module.
+        // `SIGNING_KEY_ENV_MUTEX` serialises all env-var readers and mutators
+        // in this crate.
         unsafe {
             env::set_var("DJOGI_SNAPSHOT_SIGNING_KEY", hex);
         }
@@ -410,10 +410,10 @@ mod tests {
 
     #[test]
     fn load_key_from_env_short() {
-        let _g = ENV_MUTEX.lock().unwrap();
+        let _g = SIGNING_KEY_ENV_MUTEX.lock().unwrap();
         // 63 chars — one short of the required 64.
         let hex = "00112233445566778899AABBCCDDEEFF00112233445566778899aabbccddeef";
-        // SAFETY: `ENV_MUTEX` serialises env-var mutation in this module.
+        // SAFETY: `SIGNING_KEY_ENV_MUTEX` serialises env-var access in this crate.
         unsafe {
             env::set_var("DJOGI_SNAPSHOT_SIGNING_KEY", hex);
         }
@@ -427,10 +427,10 @@ mod tests {
 
     #[test]
     fn load_key_from_env_non_hex() {
-        let _g = ENV_MUTEX.lock().unwrap();
+        let _g = SIGNING_KEY_ENV_MUTEX.lock().unwrap();
         // 64 chars but with a `g` at index 0 — outside hex range.
         let hex = "g0112233445566778899AABBCCDDEEFF00112233445566778899aabbccddeeff";
-        // SAFETY: `ENV_MUTEX` serialises env-var mutation in this module.
+        // SAFETY: `SIGNING_KEY_ENV_MUTEX` serialises env-var access in this crate.
         unsafe {
             env::set_var("DJOGI_SNAPSHOT_SIGNING_KEY", hex);
         }
@@ -462,9 +462,10 @@ mod tests {
     fn load_key_from_env_non_unicode_returns_error() {
         use std::ffi::OsString;
         use std::os::unix::ffi::OsStringExt;
-        let _g = ENV_MUTEX.lock().unwrap();
-        // SAFETY: ENV_MUTEX serialises every env-var test in this binary;
-        // the runtime is single-threaded inside this critical section.
+        let _g = SIGNING_KEY_ENV_MUTEX.lock().unwrap();
+        // SAFETY: SIGNING_KEY_ENV_MUTEX serialises every env-var reader and
+        // mutator in this crate; the runtime is single-threaded inside this
+        // critical section.
         unsafe {
             env::set_var(
                 "DJOGI_SNAPSHOT_SIGNING_KEY",

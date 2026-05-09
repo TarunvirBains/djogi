@@ -20,35 +20,20 @@
 // second admin URL (operationally fragile) or a harness extension
 // (out-of-scope for T9.7).
 //
-// We work around this by pointing both the application URL and the
+// The test works around this by pointing both the application URL and the
 // `DJOGI_CRUD_LOG_URL` override at the SAME per-test database.
-// `djogi_ddl_audit` is a namespaced table inside that DB, so this
-// is a clean simplification — the verify-vs-audit cross-check
-// still runs end-to-end with realistic SQL, just against a single
-// Postgres database. The two-DB topology is exercised by
-// `phase7_t8_seed_docs_live` and the runner's own audit tests.
+// `djogi_ddl_audit` is a namespaced table inside that DB, so the
+// verify-vs-audit cross-check still runs end-to-end with realistic
+// SQL. This is intentionally single-DB coverage; production
+// `crud_log_url` separation remains a topology concern outside this
+// subprocess test.
 //
 // # Locating the compiled `djogi` binary
 //
-// Tests in the `djogi` crate do NOT see `CARGO_BIN_EXE_djogi`
-// (Cargo only sets that variable for tests in the SAME crate as
-// the binary). We resolve the binary path by walking from
-// [`std::env::current_exe`] (which lives at
-// `target/<profile>/deps/<test_name>-<hash>`) up two directories
-// to `target/<profile>/`, then joining `djogi`. This is robust
-// across `cargo test` and `cargo test --release` and does not
-// hard-code the profile name.
-//
-// # `#[ignore]` rationale
-//
-// These tests spawn the `djogi` binary as a subprocess. They MUST
-// run after the binary is built — the precommit gate runs
-// `cargo build -p djogi-cli` before the integration sweep. To
-// avoid surprising failures in `cargo test` invocations that did
-// not build the CLI binary first, the tests are gated behind
-// `#[ignore]` and surface only via `cargo test ... --
-// --include-ignored`. The plan §T9.7 verification command
-// includes that flag.
+// The wrapper target lives in the `djogi-cli` crate, so Cargo provides
+// `CARGO_BIN_EXE_djogi` for the integration test. A filesystem fallback
+// remains for direct harnesses that pre-build the binary but do not set
+// Cargo's compile-time env var.
 //
 // # Spec / memory anchors
 //
@@ -69,11 +54,37 @@ use djogi::snapshot::sign::sign_snapshot;
 /// the test-binary file) to reach `deps/`, then up another level
 /// to reach `<profile>/`, then join `djogi`.
 fn djogi_binary_path() -> PathBuf {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_djogi") {
+        return PathBuf::from(path);
+    }
+
     let exe = std::env::current_exe().expect("current_exe");
     // exe = target/<profile>/deps/<test>-<hash>
     let deps = exe.parent().expect("current_exe has parent (deps/)");
     let profile_dir = deps.parent().expect("deps has parent (profile/)");
     profile_dir.join("djogi")
+}
+
+fn test_database_url(database: &str) -> String {
+    let admin_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+    splice_db_into_url(&admin_url, database)
+}
+
+fn splice_db_into_url(url: &str, new_db: &str) -> String {
+    let (scheme, rest) = if let Some(rest) = url.strip_prefix("postgres://") {
+        ("postgres://", rest)
+    } else if let Some(rest) = url.strip_prefix("postgresql://") {
+        ("postgresql://", rest)
+    } else {
+        panic!("DATABASE_URL must be a postgres:// or postgresql:// URL, got {url}");
+    };
+
+    let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    let tail = &rest[authority_end..];
+    let query = tail.find('?').map_or("", |idx| &tail[idx..]);
+
+    format!("{scheme}{authority}/{new_db}{query}")
 }
 
 /// Resolve the connected test context's `current_database()` so we
@@ -167,8 +178,6 @@ async fn seed_audit_row(
 }
 
 #[djogi::djogi_test]
-#[ignore = "spawns the compiled `djogi` binary; run with --include-ignored after \
-            `cargo build -p djogi-cli`"]
 async fn verify_clean_workspace_exits_zero(mut ctx: djogi::DjogiContext) {
     let database = current_database(&mut ctx).await;
     let app = ""; // global bucket — `_global_/` on disk
@@ -177,12 +186,10 @@ async fn verify_clean_workspace_exits_zero(mut ctx: djogi::DjogiContext) {
     let workspace = temp_workspace("clean");
     let (snapshot_path, snapshot_bytes) = write_fixture_snapshot(&workspace, &database, app);
 
-    // Build the per-test URL the test context is bound to. We do
-    // not have the harness's URL constant exposed; reconstruct from
-    // the host/port the harness uses (`localhost:5432`) plus the
-    // generated DB name. This matches what
-    // `setup_test_db_with_extensions` produces internally.
-    let test_url = format!("postgres://djogi:djogi@localhost/{database}");
+    // Build the per-test URL the test context is bound to by preserving
+    // the harness DATABASE_URL authority/options and replacing only the
+    // database name with `current_database()`.
+    let test_url = test_database_url(&database);
     write_minimal_djogi_toml(&workspace, &test_url);
 
     // Compute the signature under the no-op key (env var unset);
@@ -231,8 +238,6 @@ async fn verify_clean_workspace_exits_zero(mut ctx: djogi::DjogiContext) {
 }
 
 #[djogi::djogi_test]
-#[ignore = "spawns the compiled `djogi` binary; run with --include-ignored after \
-            `cargo build -p djogi-cli`"]
 async fn verify_mismatched_snapshot_exits_one(mut ctx: djogi::DjogiContext) {
     let database = current_database(&mut ctx).await;
     let app = "";
@@ -240,7 +245,7 @@ async fn verify_mismatched_snapshot_exits_one(mut ctx: djogi::DjogiContext) {
     let workspace = temp_workspace("mismatch");
     let (snapshot_path, snapshot_bytes) = write_fixture_snapshot(&workspace, &database, app);
 
-    let test_url = format!("postgres://djogi:djogi@localhost/{database}");
+    let test_url = test_database_url(&database);
     write_minimal_djogi_toml(&workspace, &test_url);
 
     // We must use a NON-NO-OP signing key for this test. Under the

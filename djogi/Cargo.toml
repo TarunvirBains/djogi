@@ -518,17 +518,16 @@ name = "phase8_snapshot_signing_roundtrip"
 path = "../tests/integration/phase8_snapshot_signing_roundtrip.rs"
 harness = true
 
-[[test]]
-name = "phase8_djogi_verify_cli"
-path = "../tests/internal/phase8_djogi_verify_cli.rs"
-harness = true
-
 # ── Phase 8δ T7.3 — cache modifier integration ───────────────────────────────
 
 [[test]]
 name = "phase8_t7_3_cache_modifier"
 path = "../tests/integration/phase8_t7_3_cache_modifier.rs"
 harness = true
+# The SQL parity assertion in this target uses QuerySet's test-only SQL
+# renderer, which is intentionally exposed through `feature = "testing"` for
+# integration-test crates.
+required-features = ["testing"]
 
 # ── Phase 8δ T7.4 — punnu boot registration ─────────────────────────────────
 

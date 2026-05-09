@@ -180,6 +180,11 @@ jobs:
         # issue #80.
         run: cargo test --workspace --exclude elephant-tracker -- --test-threads=1
 
+      - name: Phase 8 cache modifier
+        # This target pins SQL-shape parity through djogi's test-only SQL
+        # renderer, so Cargo skips it in the default-feature workspace sweep.
+        run: cargo test -p djogi --features testing --test phase8_t7_3_cache_modifier -- --test-threads=1
+
       - name: Raw SQL bypass pin tests
         run: >
           cargo test -p djogi --features testing

@@ -55,13 +55,15 @@ serde_json.workspace = true
 inventory.workspace = true
 
 # T10.3 spawns the compiled `djogi` binary as a subprocess, seeds a
-# per-test database via `#[djogi_test]`, and asserts the analyze
-# JSON output. The integration test lives under
-# `tests/integration/` so the file path mirrors the framework-wide
-# test convention (root `tests/integration/` for djogi-crate tests,
-# this crate-local equivalent for djogi-cli). Cargo only
-# auto-discovers tests directly under `tests/*.rs`; the explicit
-# `[[test]]` entry below registers the subdirectory layout.
+# per-test database via `#[djogi_test]`, and asserts CLI output.
+# Cargo only auto-discovers tests directly under `tests/*.rs`; the
+# explicit `[[test]]` entries below register the subdirectory layout.
+
+[[test]]
+name = "phase8_djogi_verify_cli"
+path = "tests/internal/phase8_djogi_verify_cli.rs"
+harness = true
+
 [[test]]
 name = "phase8_djogi_analyze_recommendations"
 path = "tests/internal/phase8_djogi_analyze_recommendations.rs"

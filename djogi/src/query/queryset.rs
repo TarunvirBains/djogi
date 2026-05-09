@@ -523,6 +523,20 @@ impl<T: Model + crate::types::Cacheable + Clone> CachedPortableQuerySet<'_, T> {
     }
 }
 
+#[cfg(any(test, feature = "testing"))]
+impl<T> CachedPortableQuerySet<'_, T>
+where
+    T: Model + crate::types::Cacheable + Clone + crate::pg::decode::FromPgRow,
+{
+    /// Render the plain `SELECT` SQL for test assertions.
+    ///
+    /// Mirrors [`QuerySet::render_select_sql_for_testing`] without forcing
+    /// tests to unwrap the cache-bound wrapper.
+    pub fn render_select_sql_for_testing(&self) -> Result<String, PortablePredicateError> {
+        self.inner.as_query_set().render_select_sql_for_testing()
+    }
+}
+
 impl<T: Model + crate::types::Cacheable + Clone> std::fmt::Debug for CachedPortableQuerySet<'_, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.inner.as_query_set().fmt(f)
@@ -596,6 +610,20 @@ impl<T: Model> std::fmt::Debug for QuerySet<T> {
             .field("select_related_paths", &self.select_related_paths)
             .field("lock", &self.lock)
             .finish()
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl<T> QuerySet<T>
+where
+    T: Model + crate::pg::decode::FromPgRow,
+{
+    /// Render the plain `SELECT` SQL for test assertions.
+    ///
+    /// Exposed only under the `testing` feature so integration tests can pin
+    /// SQL-emitter invariants without coupling to the `Debug` projection.
+    pub fn render_select_sql_for_testing(&self) -> Result<String, PortablePredicateError> {
+        crate::query::sql::build_select(self).map(|acc| acc.into_parts().0)
     }
 }
 
