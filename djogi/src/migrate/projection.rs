@@ -684,6 +684,7 @@ where
                         })
                     },
                 )?;
+                indexes.push(project_outbox_pending_index(m.table_name));
             }
             for idx in m.indexes {
                 indexes.push(project_index(idx, m.table_name));
@@ -843,7 +844,8 @@ fn project_outbox_table(
         columns: vec![
             outbox_column("id", "BIGINT", Some("heerid_next()")),
             outbox_column("row_id", &row_id_sql_type, None),
-            outbox_column("action", "TEXT", None),
+            outbox_column("action", "TEXT", None)
+                .with_check("action IN ('create', 'save', 'delete')"),
             outbox_column("payload", "JSONB", None),
             outbox_column("created_at", "TIMESTAMPTZ", Some("now()")),
             outbox_column("state", "TEXT", Some("'pending'"))
@@ -867,6 +869,50 @@ fn project_outbox_table(
         table,
         tenant_key: None,
     }
+}
+
+fn project_outbox_pending_index(table: &str) -> IndexSchema {
+    let outbox_table = format!("{table}_outbox");
+    IndexSchema {
+        extension_dependency: None,
+        include: Vec::new(),
+        index_type: IndexTypeSchema::BTree,
+        kind: IndexKindSchema::NonUnique,
+        name: outbox_pending_index_name(table),
+        nulls_not_distinct: false,
+        predicate: Some("state = 'pending'".to_string()),
+        requires_out_of_transaction: false,
+        table: outbox_table,
+        target: IndexTargetSchema::Columns(vec![
+            IndexColumnSchema {
+                name: "state".to_string(),
+                nulls: IndexNullsOrderSchema::Default,
+                opclass: None,
+                order: IndexOrderSchema::Asc,
+            },
+            IndexColumnSchema {
+                name: "created_at".to_string(),
+                nulls: IndexNullsOrderSchema::Default,
+                opclass: None,
+                order: IndexOrderSchema::Asc,
+            },
+        ]),
+    }
+}
+
+fn outbox_pending_index_name(table: &str) -> String {
+    let full = format!("{table}_outbox_pending_idx");
+    if full.len() <= 63 {
+        return full;
+    }
+
+    use std::hash::{BuildHasher, BuildHasherDefault, Hasher};
+    let mut h =
+        BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default().build_hasher();
+    h.write(full.as_bytes());
+    let digest = format!("{:08x}", h.finish() as u32);
+    let stem: String = full.as_bytes()[..54].iter().map(|b| *b as char).collect();
+    format!("{stem}_{digest}")
 }
 
 fn outbox_column(name: &str, sql_type: &str, default_sql: Option<&str>) -> ColumnSchema {
@@ -1892,7 +1938,8 @@ mod tests {
             "2026-04-25T00:00:00Z".to_string(),
         )
         .expect("ok");
-        let models = &buckets[&empty_global()].models;
+        let global = &buckets[&empty_global()];
+        let models = &global.models;
         let names: Vec<&str> = models.keys().map(String::as_str).collect();
         assert_eq!(names, vec!["widgets", "widgets_outbox"]);
 
@@ -1908,6 +1955,10 @@ mod tests {
         assert_eq!(outbox.columns[1].sql_type, "BIGINT");
         assert_eq!(outbox.columns[2].name, "action");
         assert_eq!(outbox.columns[2].sql_type, "TEXT");
+        assert_eq!(
+            outbox.columns[2].check.as_deref(),
+            Some("action IN ('create', 'save', 'delete')"),
+        );
         assert_eq!(outbox.columns[3].name, "payload");
         assert_eq!(outbox.columns[3].sql_type, "JSONB");
         assert_eq!(outbox.columns[4].name, "created_at");
@@ -1926,6 +1977,31 @@ mod tests {
         assert_eq!(outbox.columns[7].default_sql.as_deref(), Some("0"));
         assert_eq!(outbox.columns[8].name, "failed_reason");
         assert!(outbox.columns[8].nullable);
+
+        assert_eq!(global.indexes.len(), 1);
+        let idx = &global.indexes[0];
+        assert_eq!(idx.name, "widgets_outbox_pending_idx");
+        assert_eq!(idx.table, "widgets_outbox");
+        assert_eq!(idx.kind, IndexKindSchema::NonUnique);
+        assert_eq!(idx.index_type, IndexTypeSchema::BTree);
+        assert_eq!(idx.predicate.as_deref(), Some("state = 'pending'"));
+        assert_eq!(
+            idx.target,
+            IndexTargetSchema::Columns(vec![
+                IndexColumnSchema {
+                    name: "state".to_string(),
+                    nulls: IndexNullsOrderSchema::Default,
+                    opclass: None,
+                    order: IndexOrderSchema::Asc,
+                },
+                IndexColumnSchema {
+                    name: "created_at".to_string(),
+                    nulls: IndexNullsOrderSchema::Default,
+                    opclass: None,
+                    order: IndexOrderSchema::Asc,
+                },
+            ])
+        );
     }
 
     #[test]

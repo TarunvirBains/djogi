@@ -32,13 +32,20 @@ whose values would be noise to downstream consumers.
 
 ## Companion table
 
-Each events-model needs a `<table>_outbox` table shaped like:
+Each events-model gets a framework-owned `<table>_outbox` companion table from
+the descriptor projection. `#[djogi::djogi_test(sync_models = [...])]`,
+`djogi::testing::sync_models`, and the migration pipeline synthesize the table
+whenever `ModelDescriptor::has_outbox` is true. Do not hand-write this table in
+ordinary integration tests.
+
+The projected shape is:
 
 ```sql
 CREATE TABLE notifications_outbox (
     id            BIGINT PRIMARY KEY DEFAULT heerid_next(),
     row_id        BIGINT NOT NULL,    -- matches the source table PK type
-    action        TEXT NOT NULL,      -- 'create' | 'save' | 'delete'
+    action        TEXT NOT NULL
+                  CHECK (action IN ('create', 'save', 'delete')),
     payload       JSONB NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     state         TEXT NOT NULL DEFAULT 'pending'
@@ -51,9 +58,10 @@ CREATE INDEX ON notifications_outbox (state, created_at)
     WHERE state = 'pending';
 ```
 
-(DDL side-channel emission to `target/djogi_outbox/*.sql` is deferred
-to the Phase 7 migration system; for now, hand-write the outbox table
-alongside your own migrations.)
+The `row_id` SQL type follows the source model's primary key type. `HeerId`,
+`HeerIdRecencyBiased`, and integer-backed keys use `BIGINT`; `RanjId` and
+`RanjIdRecencyBiased` use `UUID`; custom primary keys use their declared
+primary-key SQL type.
 
 ## Semantics
 
@@ -74,16 +82,16 @@ alongside your own migrations.)
 
 ## Consumer pattern
 
-Publishers poll the outbox with `WHERE published_at IS NULL`, ship
+Publishers poll the outbox with `WHERE state = 'pending'`, ship
 the rows to their destination (Kafka, SQS, webhook, etc.), and
-`UPDATE ... SET published_at = now()` when done. Row locking via
+`UPDATE ... SET state = 'published'` when done. Row locking via
 `.skip_locked()` (see the [transactions guide](./transactions.md))
 lets multiple publisher workers safely compete for the same table.
 
 ```rust
 let batch: Vec<NotificationOutbox> = NotificationOutbox::objects()
-    .filter(|f| f.published_at().is_null())
-    .order_by(|f| f.emitted_at().asc())
+    .filter(|f| f.state().eq("pending".to_string()))
+    .order_by(|f| f.created_at().asc())
     .limit(100)
     .skip_locked()
     .fetch_all(ctx).await?;
@@ -95,7 +103,7 @@ for row in &batch {
 NotificationOutbox::bulk_update(
     ctx,
     batch.iter().map(|r| r.id).collect(),
-    |f| f.published_at().set(Some(time::OffsetDateTime::now_utc())),
+    |f| f.state().set("published".to_string()),
 ).await?;
 ```
 
