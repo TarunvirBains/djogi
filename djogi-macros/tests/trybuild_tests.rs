@@ -262,6 +262,37 @@ fn compile_pass_phase8() {
 }
 
 #[test]
+fn compile_pass_phase8eta_predicate_substrate() {
+    // Phase 8eta PR2d — public predicate substrate compiles + the
+    // macro-emitted `Model::__djogi_emit_field_predicate` override
+    // is callable from a downstream test crate. Exercises the
+    // `DjogiField` / `DjogiPresentField` / `PortablePredicate` /
+    // `IntoPortablePredicate` / `IntoBasicPredicate` /
+    // `SqlEmitContext` re-export tree against a `#[model]`-emitted
+    // type.
+    //
+    // Run this bucket in isolation:
+    //     cargo test --test trybuild_tests compile_pass_phase8eta_predicate_substrate
+    let t = TestCases::new();
+    t.pass("tests/compile_pass/phase8eta_predicate_substrate.rs");
+}
+
+#[test]
+fn compile_pass_phase8eta_lookup_op_non_exhaustive_wildcards() {
+    // Phase 8eta PR2d — sassi marks `LookupOp` `#[non_exhaustive]`,
+    // so the macro-emitted `__djogi_emit_field_predicate` match
+    // body MUST include per-field wildcard arms + a final
+    // unknown-field arm. The fixture compile success proves the
+    // wildcards are present: an exhaustive macro emission would
+    // reject the model at downstream compilation time. Mixes
+    // Scalar / String / Bool / OptionScalar / OptionString /
+    // OptionBool / Array kinds in one model so the wildcards on
+    // every per-kind branch are exercised in a single fixture.
+    let t = TestCases::new();
+    t.pass("tests/compile_pass/phase8eta_lookup_op_non_exhaustive_wildcards.rs");
+}
+
+#[test]
 fn compile_pass_unphased() {
     let t = TestCases::new();
     // Pre-phased fixtures — stable and rarely touched.
@@ -354,6 +385,22 @@ fn compile_fail_phase8() {
     t.compile_fail("tests/compile_fail/phase8_trait_impl_generic.rs");
     t.compile_fail("tests/compile_fail/phase8_q_xor_with_mismatched_types.rs");
     t.compile_fail("tests/compile_fail/phase8_q_and_with_mismatched_types.rs");
+}
+
+#[test]
+fn compile_fail_phase8eta_sql_only_without_sql_route() {
+    // Phase 8eta PR2d — `regex` is a PostgreSQL-specific predicate
+    // and is intentionally not on the portable `DjogiField` surface.
+    // Adopters reach it through `.explicit_pg_predicate().regex(...)`,
+    // which yields a legacy `Condition` rejected at the cache and
+    // refresh boundaries. Calling `.regex(...)` directly on
+    // `DjogiField` MUST fail to compile so the routing requirement
+    // is enforced by the type system, not just by documentation.
+    //
+    // Run this bucket in isolation:
+    //     cargo test --test trybuild_tests compile_fail_phase8eta_sql_only_without_sql_route
+    let t = TestCases::new();
+    t.compile_fail("tests/compile_fail/phase8eta_sql_only_without_sql_route.rs");
 }
 
 #[test]

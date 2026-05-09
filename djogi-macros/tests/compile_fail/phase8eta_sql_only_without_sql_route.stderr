@@ -1,0 +1,5 @@
+error[E0599]: no method named `regex` found for struct `DjogiField<M, V>` in the current scope
+  --> tests/compile_fail/phase8eta_sql_only_without_sql_route.rs:37:24
+   |
+37 |     let _ = name_field.regex("^rust");
+   |                        ^^^^^ method not found in `DjogiField<Widget, std::string::String>`

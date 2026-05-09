@@ -18,6 +18,7 @@ pub mod hooks;
 pub mod indexes;
 pub mod inject;
 pub mod outer_ref;
+pub mod portable_field_emit;
 pub mod protected;
 pub mod proxy;
 pub mod relations;
@@ -223,8 +224,30 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     //     at compile time for lack of a decoder.
     let from_joined_row = from_joined_row::expand(&struct_item, &model_attrs, &field_attrs);
 
+    // 2c. Phase 8eta PR2d — shared per-field metadata for portable SQL
+    //     emission. Built once here so both `crud.rs` (the
+    //     `Model::__djogi_emit_field_predicate` override emission) and
+    //     `stubs.rs` (the `{Model}Fields` accessor emission and the
+    //     SQL-only `{Model}SqlFields` view emission) read the same
+    //     facts. Computing it twice would let column-name / portable-
+    //     kind classifications drift silently between the two
+    //     consumers; sharing the vector keeps stubs and crud in
+    //     lock-step on raw-identifier column stripping, JSONB wrapper
+    //     detection, `Option<U>` inner-type recovery, `Tracked<>`
+    //     stripping, and the protected-codec / relation-wrapper
+    //     short-circuits.
+    //
+    //     `pk = None` models receive an empty vector (matches
+    //     `crud::expand`'s gate — no `Model` impl, no portable arms).
+    let portable_field_info = portable_field_emit::build(&struct_item, &model_attrs, &field_attrs);
+
     // 3. Model trait impl (CRUD).
-    let model_impl = crud::expand(&struct_item, &model_attrs, &field_attrs);
+    let model_impl = crud::expand(
+        &struct_item,
+        &model_attrs,
+        &field_attrs,
+        &portable_field_info,
+    );
 
     // 4. ModelDescriptor + inventory::submit! for migration-differ consumption.
     //    T4.5 — `computed_attrs` is threaded through so the emitter can
@@ -244,9 +267,13 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     let cacheable = cacheable::expand(&struct_item, &model_attrs, &field_attrs);
 
     // 5. {Model}Fields — ZST with one `FieldRef<Self, V>` accessor per
-    //    column. Reads field types off the post-injection `struct_item`;
-    //    needs `model_attrs` for pk-aware framework-field gating.
-    let stubs = stubs::expand(&struct_item, &model_attrs);
+    //    column, plus `{Model}SqlFields` (Phase 8eta PR2d) — the
+    //    SQL-only path-aware sibling view used by relation/visage
+    //    traversal sites. Reads field types off the shared portable
+    //    field metadata so `{Model}SqlFields` and `{Model}Fields` agree
+    //    on column names and Rust types with `crud::expand`'s
+    //    `__djogi_emit_field_predicate` arms.
+    let stubs = stubs::expand(&struct_item, &model_attrs, &portable_field_info);
 
     // 6. {Model}Filter — runtime struct carrying `Vec<FilterClause>` with one
     //    setter per user field. Separate codegen path from `{Model}Fields`;

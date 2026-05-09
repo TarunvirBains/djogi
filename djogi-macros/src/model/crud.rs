@@ -102,16 +102,27 @@ use quote::{format_ident, quote};
 use syn::ItemStruct;
 
 use super::attrs::{FieldAttrs, ModelAttrs, PkStrategy};
+use super::portable_field_emit::{PortableFieldEmitInfo, PortableFieldKind};
 
 /// Generate the full `impl Model for T` block.
 ///
 /// Called from `mod.rs` after `inject::expand` has mutated `struct_item`, so
 /// the field list already includes `id`, `created_at`, and `updated_at` at the
 /// front.
+///
+/// `portable_field_info` is the shared per-field metadata vector built by
+/// [`super::portable_field_emit::build`] in `mod.rs`. PR2d threads it
+/// through here so the emitted `Model::__djogi_emit_field_predicate`
+/// override agrees with `stubs::expand`'s `{Model}Fields` /
+/// `{Model}SqlFields` accessor emission on column names, declared Rust
+/// types, and the portable-kind classification. Re-deriving any of those
+/// facts in `crud.rs` would let the override and the accessors drift —
+/// the metadata is the single source of truth.
 pub fn expand(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
     field_attrs: &[FieldAttrs],
+    portable_field_info: &[PortableFieldEmitInfo],
 ) -> TokenStream {
     // pk = None skips Model impl in Phase 1 — Task 8 adds a composite-PK-
     // aware version. The other macro outputs (struct, Default, FromRow,
@@ -589,6 +600,58 @@ pub fn expand(
     } else {
         quote! {}
     };
+
+    // -------------------------------------------------------------------------
+    // Phase 8eta PR2d — `Model::__djogi_emit_field_predicate` override.
+    //
+    // Generates the `(field_name, LookupOp)` -> SQL emission dispatch
+    // for every PK-backed model. The emitted body matches on
+    // `(field.field_name(), field.op())`, dispatches to the hidden
+    // `::djogi::__private::query::portable_emit::*` helpers for portable
+    // field kinds, and falls through to typed `PortablePredicateError`
+    // variants for anything else.
+    //
+    // # Why match `(field_name, op)` rather than `field_name` alone
+    //
+    // Each portable field has a small set of supported operators
+    // (Eq/Neq/In/NotIn for every kind, plus ordering for scalars,
+    // string-pattern arms for `String`, null-test arms for `Option<U>`).
+    // Matching on the pair lets each arm bind the correct concrete
+    // payload type — Sassi's `FieldPredicate::value` is type-erased as
+    // `Arc<dyn Any + Send + Sync>` and the macro is the only place
+    // that knows the user's declared Rust `V` type.
+    //
+    // # Why per-field wildcard arms are mandatory
+    //
+    // `LookupOp` is `#[non_exhaustive]` and the macro output expands
+    // in adopter crates. An exhaustive match would force every
+    // adopter to recompile when sassi adds a new `LookupOp` variant.
+    // Each known portable field gets a `(field_name, op) =>
+    // UnsupportedLookup { field, op }` catch-all so future operators
+    // surface as typed errors rather than as downstream compilation
+    // failures.
+    //
+    // # Final unknown-field arm
+    //
+    // After every known portable arm, a single `(name, _) =>
+    // UnsupportedField { field: name }` arm catches anything else —
+    // SQL-only fields, relation/visage paths, computed-FTS columns,
+    // `Jsonb`/`Vec`/spatial wrappers, and user types whose portable
+    // parity has not been validated. The portable cache/refresh
+    // boundary already rejects upstream queries that would touch
+    // these fields; the typed runtime error here is belt-and-braces
+    // for any future macro path that ends up wrapping one in a
+    // `DjogiField`.
+    //
+    // # Path routing
+    //
+    // The override spells Sassi inspection types through
+    // `::djogi::types::*` (per `feedback_macro_path_routing.md`),
+    // emit helpers through `::djogi::__private::query::portable_emit::*`,
+    // and all error / context types through
+    // `::djogi::__private::query::*` so the impl block compiles in
+    // adopter crates that depend only on `djogi`.
+    let emit_field_predicate_override = emit_djogi_emit_field_predicate(name, portable_field_info);
 
     // -------------------------------------------------------------------------
     // Auto-tenant wiring (Phase 5.5 Task 10 + Task 11).
@@ -2701,6 +2764,525 @@ pub fn expand(
             // Emitted only for `#[model(soft_deletable)]` models; non-soft-deletable
             // models inherit the `Model` trait's default `false` impl.
             #delta_should_tombstone_override
+
+            // Phase 8eta PR2d — portable-field SQL emission override.
+            // Replaces the default `Model::__djogi_emit_field_predicate`
+            // hook (which returns `UnsupportedModel`) with a generated
+            // `(field_name, LookupOp)` dispatch keyed off the shared
+            // portable field metadata. Hand-written `Model` impls (test
+            // fixtures, internal stubs) keep the trait default and
+            // surface a typed error if a portable predicate against
+            // them ever reaches SQL emission.
+            #emit_field_predicate_override
         }
     }
+}
+
+// ── Phase 8eta PR2d — `Model::__djogi_emit_field_predicate` emission ──────
+//
+// The helper is split out of `expand` so `expand`'s body stays focused on
+// CRUD emission. Inputs are the model's struct ident + the shared
+// portable-field metadata vector built by
+// `super::portable_field_emit::build`.
+
+/// Build the `Model::__djogi_emit_field_predicate` override block.
+///
+/// Returns an empty token stream when `portable_field_info` is empty
+/// (e.g., `pk = None` models — the early return in [`expand`] handles
+/// those, but the helper stays defensive in case the caller threads
+/// an empty slice for any reason). The empty-vec branch falls through
+/// to the trait's default impl in `crate::model`, which returns
+/// `PortablePredicateError::UnsupportedModel`.
+///
+/// The emitted match has one or more arms per known portable field
+/// (Eq / Neq / Gt / Gte / Lt / Lte / Between / In / NotIn / IsNull /
+/// IsNotNull / pattern family, depending on `field_kind`), one
+/// catch-all arm per known field for non-portable operators, then a
+/// single final unknown-field arm. Every helper call goes through
+/// `::djogi::__private::query::portable_emit::*` so the macro emission
+/// compiles in adopter crates without an explicit dep on
+/// `crate::query::portable::emit`.
+fn emit_djogi_emit_field_predicate(
+    model_name: &syn::Ident,
+    portable_field_info: &[PortableFieldEmitInfo],
+) -> TokenStream {
+    if portable_field_info.is_empty() {
+        // Defensive: the trait default handles this case, so the
+        // override emit is purely additive and we can skip it
+        // entirely when there's nothing to dispatch on.
+        return TokenStream::new();
+    }
+
+    let mut arms: Vec<TokenStream> = Vec::with_capacity(portable_field_info.len() * 6);
+
+    for info in portable_field_info {
+        let column = info.column_name.as_str();
+        match info.field_kind {
+            PortableFieldKind::Scalar => {
+                let ty = &info.rust_type;
+                arms.extend(scalar_arms(model_name, ty, column, /*ordering=*/ true));
+                // Final per-field wildcard for unknown operators.
+                arms.push(quote! {
+                    (#column, op) => ::std::result::Result::Err(
+                        ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
+                            field: #column,
+                            op,
+                        },
+                    ),
+                });
+            }
+            PortableFieldKind::Bool => {
+                let ty = &info.rust_type;
+                // bool has no ordering / pattern surface; only equality
+                // and list arms make sense.
+                arms.extend(scalar_arms(
+                    model_name, ty, column, /*ordering=*/ false,
+                ));
+                arms.push(quote! {
+                    (#column, op) => ::std::result::Result::Err(
+                        ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
+                            field: #column,
+                            op,
+                        },
+                    ),
+                });
+            }
+            PortableFieldKind::String => {
+                let ty = &info.rust_type;
+                arms.extend(scalar_arms(
+                    model_name, ty, column, /*ordering=*/ false,
+                ));
+                arms.extend(string_pattern_arms(model_name, column));
+                arms.push(quote! {
+                    (#column, op) => ::std::result::Result::Err(
+                        ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
+                            field: #column,
+                            op,
+                        },
+                    ),
+                });
+            }
+            PortableFieldKind::OptionScalar
+            | PortableFieldKind::OptionBool
+            | PortableFieldKind::OptionString => {
+                // `option_inner_type` MUST be Some for portable Option*
+                // kinds — `classify` populates it for OptionScalar /
+                // OptionString / OptionBool. Defensive `expect` so a
+                // future bug in `portable_field_emit::classify` fails
+                // loudly during macro expansion rather than emitting
+                // wrong arms.
+                let inner = info
+                    .option_inner_type
+                    .as_ref()
+                    .expect("Option* portable kind must carry an inner type");
+                let supports_ordering = matches!(info.field_kind, PortableFieldKind::OptionScalar);
+                arms.extend(option_arms(model_name, inner, column, supports_ordering));
+                arms.push(quote! {
+                    (#column, op) => ::std::result::Result::Err(
+                        ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
+                            field: #column,
+                            op,
+                        },
+                    ),
+                });
+            }
+            PortableFieldKind::Jsonb
+            | PortableFieldKind::Array
+            | PortableFieldKind::Spatial
+            | PortableFieldKind::FtsComputed
+            | PortableFieldKind::RelationOrVisage
+            | PortableFieldKind::Unsupported => {
+                // Non-portable kinds get a single catch-all arm
+                // returning the typed `UnsupportedFieldType` error.
+                // `LookupOp` is `#[non_exhaustive]`; this single arm
+                // covers every current and future variant for the
+                // field.
+                arms.push(quote! {
+                    (#column, _) => ::std::result::Result::Err(
+                        ::djogi::__private::query::PortablePredicateError::UnsupportedFieldType {
+                            field: #column,
+                        },
+                    ),
+                });
+            }
+        }
+    }
+
+    // Final unknown-field arm — any (field_name, _) pair that did not
+    // match a known field above. Returns `UnsupportedField` with the
+    // observed `field_name`. This handles future field additions (a
+    // user adds a new column but somehow constructs a portable
+    // predicate against it before recompiling) and macros that
+    // forward through the override (visage paths, dynamic fixtures)
+    // without an exact match.
+    arms.push(quote! {
+        (field_name, _) => ::std::result::Result::Err(
+            ::djogi::__private::query::PortablePredicateError::UnsupportedField {
+                field: field_name,
+            },
+        ),
+    });
+
+    quote! {
+        #[doc(hidden)]
+        fn __djogi_emit_field_predicate(
+            acc: &mut ::djogi::__private::pg::SqlAccumulator,
+            field: &::djogi::types::FieldPredicate<Self>,
+            ctx: ::djogi::__private::query::SqlEmitContext,
+        ) -> ::std::result::Result<
+            (),
+            ::djogi::__private::query::PortablePredicateError,
+        > {
+            match (field.field_name(), field.op()) {
+                #(#arms)*
+            }
+        }
+    }
+}
+
+/// Emit the equality / list arms for a portable scalar-shaped field
+/// (used by `Scalar`, `Bool`, `String`, and as the inner-payload
+/// fallback for `Option*` kinds via [`option_arms`]).
+///
+/// `ordering = true` adds `Gt` / `Gte` / `Lt` / `Lte` / `Between`
+/// arms; `false` skips them (used for `Bool` and `String` whose
+/// portable surfaces don't expose ordering — `String` only gets
+/// ordering through `explicit_pg_predicate()` because Postgres text
+/// collation differs from Rust byte ordering, and `bool` has no
+/// natural ordering at all).
+fn scalar_arms(
+    model_name: &syn::Ident,
+    ty: &syn::Type,
+    column: &str,
+    ordering: bool,
+) -> Vec<TokenStream> {
+    let mut out = vec![
+        quote! {
+            (#column, ::djogi::types::LookupOp::Eq) =>
+                ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
+                    acc, ctx, #column, " = ", field,
+                ),
+        },
+        quote! {
+            (#column, ::djogi::types::LookupOp::Neq) =>
+                ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
+                    acc, ctx, #column, " <> ", field,
+                ),
+        },
+        quote! {
+            (#column, ::djogi::types::LookupOp::In) =>
+                ::djogi::__private::query::portable_emit::emit_list::<#model_name, #ty>(
+                    acc, ctx, #column, field, false,
+                ),
+        },
+        quote! {
+            (#column, ::djogi::types::LookupOp::NotIn) =>
+                ::djogi::__private::query::portable_emit::emit_list::<#model_name, #ty>(
+                    acc, ctx, #column, field, true,
+                ),
+        },
+    ];
+
+    if ordering {
+        out.extend([
+            quote! {
+                (#column, ::djogi::types::LookupOp::Gt) =>
+                    ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
+                        acc, ctx, #column, " > ", field,
+                    ),
+            },
+            quote! {
+                (#column, ::djogi::types::LookupOp::Gte) =>
+                    ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
+                        acc, ctx, #column, " >= ", field,
+                    ),
+            },
+            quote! {
+                (#column, ::djogi::types::LookupOp::Lt) =>
+                    ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
+                        acc, ctx, #column, " < ", field,
+                    ),
+            },
+            quote! {
+                (#column, ::djogi::types::LookupOp::Lte) =>
+                    ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
+                        acc, ctx, #column, " <= ", field,
+                    ),
+            },
+            quote! {
+                (#column, ::djogi::types::LookupOp::Between) =>
+                    ::djogi::__private::query::portable_emit::emit_pair::<#model_name, #ty>(
+                        acc, ctx, #column, field,
+                    ),
+            },
+        ]);
+    }
+    out
+}
+
+/// Emit the LIKE/ILIKE family arms for a non-Option `String` field.
+///
+/// Sassi's `Field<T, String>` exposes the case-sensitive `Contains` /
+/// `StartsWith` / `EndsWith` ops AND the ASCII-stable case-insensitive
+/// `IContains` / `IStartsWith` / `IEndsWith` / `IExact` ops. Each
+/// arm dispatches to the hidden
+/// `portable_emit::emit_string_pattern` helper with the matching
+/// `PatternOp` variant; the helper escapes user-supplied `%` / `_` /
+/// `\\` and wraps the pattern with the substring / prefix / suffix
+/// shape per op. `IExact` emits a no-wildcard `COLLATE "C" ILIKE`
+/// comparison so exact user input cannot become a wildcard match.
+fn string_pattern_arms(_model_name: &syn::Ident, column: &str) -> Vec<TokenStream> {
+    vec![
+        quote! {
+            (#column, ::djogi::types::LookupOp::Contains) =>
+                ::djogi::__private::query::portable_emit::emit_string_pattern(
+                    acc, ctx, #column,
+                    ::djogi::__private::query::portable_emit::PatternOp::Contains,
+                    field,
+                ),
+        },
+        quote! {
+            (#column, ::djogi::types::LookupOp::IContains) =>
+                ::djogi::__private::query::portable_emit::emit_string_pattern(
+                    acc, ctx, #column,
+                    ::djogi::__private::query::portable_emit::PatternOp::IContains,
+                    field,
+                ),
+        },
+        quote! {
+            (#column, ::djogi::types::LookupOp::StartsWith) =>
+                ::djogi::__private::query::portable_emit::emit_string_pattern(
+                    acc, ctx, #column,
+                    ::djogi::__private::query::portable_emit::PatternOp::StartsWith,
+                    field,
+                ),
+        },
+        quote! {
+            (#column, ::djogi::types::LookupOp::IStartsWith) =>
+                ::djogi::__private::query::portable_emit::emit_string_pattern(
+                    acc, ctx, #column,
+                    ::djogi::__private::query::portable_emit::PatternOp::IStartsWith,
+                    field,
+                ),
+        },
+        quote! {
+            (#column, ::djogi::types::LookupOp::EndsWith) =>
+                ::djogi::__private::query::portable_emit::emit_string_pattern(
+                    acc, ctx, #column,
+                    ::djogi::__private::query::portable_emit::PatternOp::EndsWith,
+                    field,
+                ),
+        },
+        quote! {
+            (#column, ::djogi::types::LookupOp::IEndsWith) =>
+                ::djogi::__private::query::portable_emit::emit_string_pattern(
+                    acc, ctx, #column,
+                    ::djogi::__private::query::portable_emit::PatternOp::IEndsWith,
+                    field,
+                ),
+        },
+        quote! {
+            (#column, ::djogi::types::LookupOp::IExact) =>
+                ::djogi::__private::query::portable_emit::emit_string_pattern(
+                    acc, ctx, #column,
+                    ::djogi::__private::query::portable_emit::PatternOp::IExact,
+                    field,
+                ),
+        },
+    ]
+}
+
+/// Emit arms for a portable `Option<U>` field.
+///
+/// Each arm tries the `Option<U>` payload shape first (matching
+/// `DjogiField::eq(Some|None)` / direct `.in_([Some, None])` calls),
+/// then falls back to the inner `U` (matching `.some().eq(_)` /
+/// `.some().in_([_])` calls via `DjogiPresentField`). If neither shape
+/// matches, the arm returns `ValueTypeMismatch` rather than panicking.
+///
+/// `IsNull` / `IsNotNull` arms use the helper-side `emit_null` shape
+/// directly because Sassi carries an inert `Arc<()>` payload for them
+/// and `emit_null` does not consume `field`.
+///
+/// Direct `Option<U>` ordering returns `UnsupportedLookup` because
+/// Rust's `Option` ordering (`None < Some(_)`) does not match SQL
+/// three-valued NULL semantics. Inner-`U` ordering (`PresentField`
+/// payloads) is supported when `supports_ordering = true` (i.e. the
+/// kind is `OptionScalar`).
+fn option_arms(
+    model_name: &syn::Ident,
+    inner: &syn::Type,
+    column: &str,
+    supports_ordering: bool,
+) -> Vec<TokenStream> {
+    let mut out = Vec::with_capacity(16);
+
+    // Eq — direct Option<U> path, then inner U via `.some()`.
+    out.push(quote! {
+        (#column, ::djogi::types::LookupOp::Eq) => {
+            if let ::std::option::Option::Some(value) =
+                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+                    ::std::option::Option<#inner>,
+                >(field)
+            {
+                ::djogi::__private::query::portable_emit::emit_option_eq::<#inner>(
+                    acc, ctx, #column, value,
+                )
+            } else if let ::std::option::Option::Some(value) =
+                <::djogi::types::FieldPredicate<#model_name>>::value_as::<#inner>(field)
+            {
+                ::djogi::__private::query::portable_emit::emit_value_ref::<#inner>(
+                    acc, ctx, #column, " = ", value,
+                )
+            } else {
+                ::std::result::Result::Err(
+                    ::djogi::__private::query::PortablePredicateError::ValueTypeMismatch {
+                        field: #column,
+                        op: field.op(),
+                    },
+                )
+            }
+        },
+    });
+
+    // Neq — direct Option<U> path, then inner U via `.some()`.
+    out.push(quote! {
+        (#column, ::djogi::types::LookupOp::Neq) => {
+            if let ::std::option::Option::Some(value) =
+                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+                    ::std::option::Option<#inner>,
+                >(field)
+            {
+                ::djogi::__private::query::portable_emit::emit_option_neq::<#inner>(
+                    acc, ctx, #column, value,
+                )
+            } else if let ::std::option::Option::Some(value) =
+                <::djogi::types::FieldPredicate<#model_name>>::value_as::<#inner>(field)
+            {
+                ::djogi::__private::query::portable_emit::emit_value_ref::<#inner>(
+                    acc, ctx, #column, " <> ", value,
+                )
+            } else {
+                ::std::result::Result::Err(
+                    ::djogi::__private::query::PortablePredicateError::ValueTypeMismatch {
+                        field: #column,
+                        op: field.op(),
+                    },
+                )
+            }
+        },
+    });
+
+    // In — direct Vec<Option<U>> path, then inner Vec<U> via `.some()`.
+    out.push(quote! {
+        (#column, ::djogi::types::LookupOp::In) => {
+            if let ::std::option::Option::Some(values) =
+                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+                    ::std::vec::Vec<::std::option::Option<#inner>>,
+                >(field)
+            {
+                ::djogi::__private::query::portable_emit::emit_option_in::<#inner>(
+                    acc, ctx, #column, values, false,
+                )
+            } else if let ::std::option::Option::Some(values) =
+                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+                    ::std::vec::Vec<#inner>,
+                >(field)
+            {
+                ::djogi::__private::query::portable_emit::emit_present_list::<#inner>(
+                    acc, ctx, #column, values, false,
+                )
+            } else {
+                ::std::result::Result::Err(
+                    ::djogi::__private::query::PortablePredicateError::ValueTypeMismatch {
+                        field: #column,
+                        op: field.op(),
+                    },
+                )
+            }
+        },
+    });
+
+    // NotIn — direct Vec<Option<U>> path, then inner Vec<U>.
+    out.push(quote! {
+        (#column, ::djogi::types::LookupOp::NotIn) => {
+            if let ::std::option::Option::Some(values) =
+                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+                    ::std::vec::Vec<::std::option::Option<#inner>>,
+                >(field)
+            {
+                ::djogi::__private::query::portable_emit::emit_option_in::<#inner>(
+                    acc, ctx, #column, values, true,
+                )
+            } else if let ::std::option::Option::Some(values) =
+                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+                    ::std::vec::Vec<#inner>,
+                >(field)
+            {
+                ::djogi::__private::query::portable_emit::emit_present_list::<#inner>(
+                    acc, ctx, #column, values, true,
+                )
+            } else {
+                ::std::result::Result::Err(
+                    ::djogi::__private::query::PortablePredicateError::ValueTypeMismatch {
+                        field: #column,
+                        op: field.op(),
+                    },
+                )
+            }
+        },
+    });
+
+    // IsNull / IsNotNull — inert `()` payload.
+    out.push(quote! {
+        (#column, ::djogi::types::LookupOp::IsNull) =>
+            ::djogi::__private::query::portable_emit::emit_null(acc, ctx, #column, true),
+    });
+    out.push(quote! {
+        (#column, ::djogi::types::LookupOp::IsNotNull) =>
+            ::djogi::__private::query::portable_emit::emit_null(acc, ctx, #column, false),
+    });
+
+    if supports_ordering {
+        // Ordering arms — only meaningful for the inner `U` payload
+        // (i.e. predicates built via `.some().gt(_)` / `.gte(_)` /
+        // `.lt(_)` / `.lte(_)` / `.between(_, _)`). Direct
+        // `Option<U>` ordering is rejected at the `DjogiField` level
+        // (no method exposed) and surfaces here as
+        // `UnsupportedLookup` if a caller somehow constructs it.
+        out.extend([
+            quote! {
+                (#column, ::djogi::types::LookupOp::Gt) =>
+                    ::djogi::__private::query::portable_emit::emit_value::<
+                        #model_name, #inner,
+                    >(acc, ctx, #column, " > ", field),
+            },
+            quote! {
+                (#column, ::djogi::types::LookupOp::Gte) =>
+                    ::djogi::__private::query::portable_emit::emit_value::<
+                        #model_name, #inner,
+                    >(acc, ctx, #column, " >= ", field),
+            },
+            quote! {
+                (#column, ::djogi::types::LookupOp::Lt) =>
+                    ::djogi::__private::query::portable_emit::emit_value::<
+                        #model_name, #inner,
+                    >(acc, ctx, #column, " < ", field),
+            },
+            quote! {
+                (#column, ::djogi::types::LookupOp::Lte) =>
+                    ::djogi::__private::query::portable_emit::emit_value::<
+                        #model_name, #inner,
+                    >(acc, ctx, #column, " <= ", field),
+            },
+            quote! {
+                (#column, ::djogi::types::LookupOp::Between) =>
+                    ::djogi::__private::query::portable_emit::emit_pair::<
+                        #model_name, #inner,
+                    >(acc, ctx, #column, field),
+            },
+        ]);
+    }
+
+    out
 }
