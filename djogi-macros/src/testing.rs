@@ -498,10 +498,12 @@ mod tests {
     /// body is intentionally trivial — these tests only care about the
     /// wrapper shape, not the user's test body.
     fn render_expansion(attr_body: &str) -> String {
+        render_expansion_for_item(attr_body, "async fn t(mut ctx: DjogiContext) {}")
+    }
+
+    fn render_expansion_for_item(attr_body: &str, item_body: &str) -> String {
         let attr: TokenStream = attr_body.parse().expect("parse attr body as TokenStream");
-        let item: TokenStream = "async fn t(mut ctx: DjogiContext) {}"
-            .parse()
-            .expect("parse item TokenStream");
+        let item: TokenStream = item_body.parse().expect("parse item TokenStream");
         super::expand(attr, item).to_string()
     }
 
@@ -717,6 +719,24 @@ mod tests {
         assert!(
             count >= 3,
             "expected at least 3 `descriptor()` calls (one per path), got {count}: {expanded}"
+        );
+    }
+
+    #[test]
+    fn public_macro_still_forwards_ignore_for_adopter_shape() {
+        // Phase 8.5's no-quarantine guard is repo-local. It must not
+        // mutate the public macro contract for downstream crates that
+        // still compile a temporarily ignored `#[djogi_test]`.
+        let expanded =
+            render_expansion_for_item("", "#[ignore]\nasync fn t(mut ctx: DjogiContext) {}");
+
+        assert!(
+            expanded.contains("# [ignore]"),
+            "outer #[ignore] must still be forwarded by #[djogi_test]: {expanded}"
+        );
+        assert!(
+            expanded.contains("# [:: tokio :: test]"),
+            "forwarded attributes must remain attached to the generated tokio test: {expanded}"
         );
     }
 

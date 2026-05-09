@@ -29,6 +29,26 @@ const IDENT_PATTERNS: &[&str] = &[
 
 const CALL_PATTERNS: &[&str] = &["pool", "conn", "with_client"];
 
+// Ordinary adopter-shaped test roots where raw SQL escape hatches are banned.
+// Djogi-owned internal test surfaces under `tests/internal` and
+// `djogi-cli/tests/internal` are covered by JUSTIFICATION comments instead.
+const RAW_SQL_TEST_ROOTS: &[&str] = &[
+    "tests/integration",
+    "djogi/tests",
+    "djogi-cli/tests/integration",
+];
+
+const ACTIVE_RUST_COMPONENTS: &[&str] = &["src", "tests", "examples", "benches"];
+
+const WORKFLOW_ROOTS: &[&str] = &[".github/workflows"];
+
+const WORKFLOW_QUARANTINE_PATTERNS: &[&str] = &[
+    "--ignored",
+    "--include-ignored",
+    "run-ignored",
+    "quarantine",
+];
+
 #[derive(Debug)]
 struct Finding {
     path: PathBuf,
@@ -37,24 +57,42 @@ struct Finding {
 }
 
 pub fn run(list_only: bool) -> ExitCode {
-    let mut files = Vec::new();
+    let mut raw_files = Vec::new();
 
-    for root in [
-        Path::new("tests/integration"),
-        Path::new("djogi-cli/tests/integration"),
-    ] {
+    for root in RAW_SQL_TEST_ROOTS.iter().map(Path::new) {
         if root.exists()
-            && let Err(error) = collect_rs_files(root, &mut files)
+            && let Err(error) = collect_rs_files(root, &mut raw_files)
         {
             eprintln!("{}: failed to walk: {error}", display_path(root));
             return ExitCode::FAILURE;
         }
     }
 
-    files.sort();
+    raw_files.sort();
+
+    let mut active_rust_files = Vec::new();
+    if let Err(error) =
+        collect_active_rs_files(Path::new("."), Path::new("."), &mut active_rust_files)
+    {
+        eprintln!(".: failed to walk: {error}");
+        return ExitCode::FAILURE;
+    }
+    active_rust_files.sort();
+    active_rust_files.dedup();
+
+    let mut workflow_files = Vec::new();
+    for root in WORKFLOW_ROOTS.iter().map(Path::new) {
+        if root.exists()
+            && let Err(error) = collect_workflow_files(root, &mut workflow_files)
+        {
+            eprintln!("{}: failed to walk: {error}", display_path(root));
+            return ExitCode::FAILURE;
+        }
+    }
+    workflow_files.sort();
 
     let mut findings = Vec::new();
-    for path in &files {
+    for path in &raw_files {
         match fs::read_to_string(path) {
             Ok(source) => findings.extend(scan_source(path, &source)),
             Err(error) => {
@@ -63,6 +101,31 @@ pub fn run(list_only: bool) -> ExitCode {
             }
         }
     }
+    for path in &active_rust_files {
+        match fs::read_to_string(path) {
+            Ok(source) => findings.extend(scan_rust_no_quarantine(path, &source)),
+            Err(error) => {
+                eprintln!("{}: failed to read: {error}", display_path(path));
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    for path in &workflow_files {
+        match fs::read_to_string(path) {
+            Ok(source) => findings.extend(scan_workflow_no_quarantine(path, &source)),
+            Err(error) => {
+                eprintln!("{}: failed to read: {error}", display_path(path));
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    let scanned_files: BTreeSet<_> = raw_files
+        .iter()
+        .chain(active_rust_files.iter())
+        .chain(workflow_files.iter())
+        .cloned()
+        .collect();
 
     if list_only {
         let paths: BTreeSet<_> = findings
@@ -83,7 +146,7 @@ pub fn run(list_only: bool) -> ExitCode {
         }
         eprintln!(
             "check-test-surface: scanned {} files; {} violations",
-            files.len(),
+            scanned_files.len(),
             findings.len(),
         );
     }
@@ -107,6 +170,65 @@ fn collect_rs_files(root: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
             }
             collect_rs_files(&path, files)?;
         } else if file_type.is_file() && path.extension().is_some_and(|extension| extension == "rs")
+        {
+            files.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_active_rs_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+
+        if file_type.is_dir() {
+            if name == "target" || name.starts_with('.') {
+                continue;
+            }
+            collect_active_rs_files(root, &path, files)?;
+        } else if file_type.is_file()
+            && path.extension().is_some_and(|extension| extension == "rs")
+            && is_active_rust_surface(root, &path)
+        {
+            files.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+fn is_active_rust_surface(root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+
+    relative.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|name| ACTIVE_RUST_COMPONENTS.contains(&name))
+    })
+}
+
+fn collect_workflow_files(root: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            collect_workflow_files(&path, files)?;
+        } else if file_type.is_file()
+            && path
+                .extension()
+                .is_some_and(|extension| extension == "yml" || extension == "yaml")
         {
             files.push(path);
         }
@@ -156,6 +278,84 @@ fn scan_source(path: &Path, source: &str) -> Vec<Finding> {
     findings
 }
 
+fn scan_rust_no_quarantine(path: &Path, source: &str) -> Vec<Finding> {
+    let stripped = strip_comments_and_literals(source);
+    let bytes = stripped.as_bytes();
+    let mut findings = Vec::new();
+    let mut offset = 0;
+
+    while let Some(relative_index) = stripped[offset..].find('#') {
+        let hash_index = offset + relative_index;
+        let mut cursor = hash_index + 1;
+
+        if bytes.get(cursor) == Some(&b'!') {
+            cursor += 1;
+        }
+
+        cursor = skip_ascii_whitespace(bytes, cursor);
+        if bytes.get(cursor) != Some(&b'[') {
+            offset = cursor;
+            continue;
+        }
+
+        let Some(attr_end) = find_attribute_end(bytes, cursor) else {
+            offset = cursor + 1;
+            continue;
+        };
+
+        let attr = &stripped[cursor + 1..attr_end];
+        if attr_starts_with_ident(attr, "ignore")
+            || (attr_starts_with_ident(attr, "cfg_attr")
+                && cfg_attr_payload_contains_ident(attr, "ignore"))
+        {
+            findings.push(Finding {
+                path: path.to_owned(),
+                line: line_number_at(&stripped, hash_index),
+                pattern: "#[ignore]",
+            });
+        }
+
+        offset = attr_end + 1;
+    }
+
+    findings
+}
+
+fn scan_workflow_no_quarantine(path: &Path, source: &str) -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    for (line_index, line) in source.lines().enumerate() {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+
+        let active = strip_yaml_inline_comment(line);
+        for pattern in WORKFLOW_QUARANTINE_PATTERNS {
+            if workflow_line_has_pattern(active, pattern) {
+                findings.push(Finding {
+                    path: path.to_owned(),
+                    line: line_index + 1,
+                    pattern,
+                });
+            }
+        }
+    }
+
+    findings
+}
+
+fn strip_yaml_inline_comment(line: &str) -> &str {
+    line.find(" #").map_or(line, |position| &line[..position])
+}
+
+fn workflow_line_has_pattern(line: &str, pattern: &str) -> bool {
+    if pattern == "quarantine" {
+        return contains_identifier(&line.to_ascii_lowercase(), pattern, false);
+    }
+
+    line.contains(pattern)
+}
+
 pub(crate) fn contains_identifier(line: &str, ident: &str, require_call: bool) -> bool {
     let mut offset = 0;
 
@@ -176,6 +376,78 @@ pub(crate) fn contains_identifier(line: &str, ident: &str, require_call: bool) -
     }
 
     false
+}
+
+fn find_attribute_end(bytes: &[u8], start: usize) -> Option<usize> {
+    debug_assert_eq!(bytes.get(start), Some(&b'['));
+
+    let mut depth = 0usize;
+    let mut cursor = start;
+
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'[' => depth += 1,
+            b']' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(cursor);
+                }
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+
+    None
+}
+
+fn attr_starts_with_ident(attr: &str, ident: &str) -> bool {
+    let bytes = attr.as_bytes();
+    let start = skip_ascii_whitespace(bytes, 0);
+
+    starts_with(bytes, start, ident.as_bytes())
+        && !bytes
+            .get(start + ident.len())
+            .is_some_and(|byte| is_ident_byte(*byte))
+}
+
+fn cfg_attr_payload_contains_ident(attr: &str, ident: &str) -> bool {
+    let Some(open_paren) = attr.find('(') else {
+        return false;
+    };
+    let mut depth = 0usize;
+
+    for (relative_index, byte) in attr.as_bytes()[open_paren + 1..].iter().enumerate() {
+        match *byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                let payload_start = open_paren + 1 + relative_index + 1;
+                return contains_identifier(&attr[payload_start..], ident, false);
+            }
+            _ => {}
+        }
+    }
+
+    false
+}
+
+fn line_number_at(source: &str, index: usize) -> usize {
+    source[..index]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1
+}
+
+fn skip_ascii_whitespace(bytes: &[u8], mut cursor: usize) -> usize {
+    while bytes
+        .get(cursor)
+        .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
+        cursor += 1;
+    }
+    cursor
 }
 
 fn is_followed_by_call_paren(rest: &str) -> bool {
@@ -379,7 +651,10 @@ fn display_path(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{contains_identifier, scan_source, strip_comments_and_literals};
+    use super::{
+        contains_identifier, scan_rust_no_quarantine, scan_source, scan_workflow_no_quarantine,
+        strip_comments_and_literals,
+    };
     use std::path::Path;
 
     #[test]
@@ -459,5 +734,153 @@ use djogi :: __bypass :: RawAccessExt;
         assert!(contains_identifier("ctx.conn ().await?", "conn", true));
         assert!(!contains_identifier("let pool = 1;", "pool", true));
         assert!(!contains_identifier("let spool = 1;", "pool", true));
+    }
+
+    #[test]
+    fn no_quarantine_rejects_ignore_attribute() {
+        let source = r#"
+#[djogi_test]
+#[ ignore = "needs database" ]
+async fn hidden() {}
+"#;
+
+        let findings = scan_rust_no_quarantine(Path::new("tests/integration/example.rs"), source);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].line, 3);
+        assert_eq!(findings[0].pattern, "#[ignore]");
+    }
+
+    #[test]
+    fn no_quarantine_rejects_multiline_ignore_attribute() {
+        let source = r#"
+#[djogi_test]
+#[
+    ignore
+]
+async fn hidden() {}
+"#;
+
+        let findings = scan_rust_no_quarantine(Path::new("tests/integration/example.rs"), source);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].line, 3);
+        assert_eq!(findings[0].pattern, "#[ignore]");
+    }
+
+    #[test]
+    fn no_quarantine_rejects_cfg_attr_ignore_attribute() {
+        let source = r#"
+#[test]
+#[cfg_attr(feature = "slow-tests", ignore)]
+fn hidden() {}
+"#;
+
+        let findings = scan_rust_no_quarantine(Path::new("tests/integration/example.rs"), source);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].line, 3);
+        assert_eq!(findings[0].pattern, "#[ignore]");
+    }
+
+    #[test]
+    fn no_quarantine_allows_cfg_attr_condition_named_ignore() {
+        let source = r#"
+#[test]
+#[cfg_attr(ignore, should_panic)]
+fn panics() {}
+"#;
+
+        let findings = scan_rust_no_quarantine(Path::new("tests/integration/example.rs"), source);
+
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn no_quarantine_allows_should_panic_expected() {
+        let source = r#"
+#[test]
+#[should_panic(expected = "clear message")]
+fn panics() {}
+"#;
+
+        let findings = scan_rust_no_quarantine(Path::new("tests/integration/example.rs"), source);
+
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn no_quarantine_ignores_comments_and_literals() {
+        let source = r##"
+//! ```ignore
+//! #[ignore]
+//! ```
+let text = "#[ignore]";
+// #[ignore]
+#[test]
+fn visible() {}
+"##;
+
+        let findings = scan_rust_no_quarantine(Path::new("tests/integration/example.rs"), source);
+
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn workflow_scanner_rejects_ignored_test_lanes() {
+        let source = r#"
+name: CI
+jobs:
+  test:
+    steps:
+      - run: cargo test -- --ignored
+      - run: cargo test # --include-ignored in comment
+"#;
+
+        let findings = scan_workflow_no_quarantine(Path::new(".github/workflows/ci.yml"), source);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].pattern, "--ignored");
+    }
+
+    #[test]
+    fn workflow_scanner_rejects_run_ignored_and_quarantine_word() {
+        let source = r#"
+jobs:
+  test:
+    steps:
+      - run: cargo xtask run-ignored
+      - run: cargo test --skip-list quarantine.txt
+      - run: cargo test --skip-list Quarantine.txt
+"#;
+
+        let findings = scan_workflow_no_quarantine(Path::new(".github/workflows/ci.yml"), source);
+        let patterns: Vec<_> = findings.iter().map(|finding| finding.pattern).collect();
+
+        assert!(patterns.contains(&"run-ignored"));
+        assert_eq!(
+            patterns
+                .iter()
+                .filter(|pattern| **pattern == "quarantine")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn workflow_scanner_allows_quarantined_prose_and_yaml_hash_literals() {
+        let source = r##"
+jobs:
+  test:
+    steps:
+      - name: Check test surface (no quarantined/ignored tests)
+        run: printf '%s\n' "tag#not-a-comment"
+      - run: cargo test # --include-ignored in comment
+      # quarantine in pure comment
+"##;
+
+        let findings = scan_workflow_no_quarantine(Path::new(".github/workflows/ci.yml"), source);
+
+        assert!(findings.is_empty());
     }
 }
