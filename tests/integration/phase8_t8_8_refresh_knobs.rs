@@ -12,14 +12,14 @@
 //    one-shot `tracing::warn!` on `djogi::cache`. A third tick does NOT emit
 //    the warn again (one-shot flag already set).
 //
-// 2. **`with_eviction_recovery_method_reachable`** — verifies that
-//    `qs.refresh_into(...).with_eviction_recovery(true)` compiles and returns
-//    `DeltaRefreshHandle<T>`. Sassi owns the runtime behavior; djogi only
-//    verifies the method is reachable through its public surface.
+// 2. **`with_eviction_recovery_method_reachable`** — verifies that a
+//    PR4-gated successful `qs.refresh_into(...)` handle can still call
+//    `.with_eviction_recovery(true)`. Sassi owns the runtime behavior; djogi
+//    only verifies the method is reachable through its public surface.
 //
-// 3. **`with_periodic_full_refresh_method_reachable`** — verifies that
-//    `qs.refresh_into(...).with_periodic_full_refresh(NonZeroUsize::new(10))`
-//    compiles and returns `DeltaRefreshHandle<T>`.
+// 3. **`with_periodic_full_refresh_method_reachable`** — verifies that a
+//    PR4-gated successful `qs.refresh_into(...)` handle can still call
+//    `.with_periodic_full_refresh(NonZeroUsize::new(10))`.
 //
 // # Spec anchor
 //
@@ -34,8 +34,9 @@
 // Knob 1 (always-on LRU warn) uses Option B: `try_recv` per tick + `AtomicBool`
 // one-shot flag inside `DjogiDeltaFetcher`. No separate spawned task is needed.
 // Knobs 2 + 3 are sassi-native; djogi's `refresh_into` returns
-// `DeltaRefreshHandle<T>` directly so the methods are reachable with no
-// djogi-side wrappers.
+// `Result<sassi::DeltaRefreshHandle<T>, (QuerySet<T>, PortablePredicateError)>`
+// — the `Ok` arm is the sassi handle with no djogi-side wrapper, so once the
+// PR4 portability gate succeeds the knobs are reachable directly on it.
 //
 // # Tracing capture
 //
@@ -155,7 +156,9 @@ async fn lru_warn_one_shot_per_subscription(mut ctx: djogi::DjogiContext) {
     let auth =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
-    let handle = KnobRow::objects().refresh_into(&punnu, pool.clone(), auth);
+    let handle = KnobRow::objects()
+        .refresh_into(&punnu, pool.clone(), auth)
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
     // ── Tick 1 — full scan, inserts row A into empty Punnu ──────────────────
     //
@@ -236,15 +239,12 @@ async fn lru_warn_one_shot_per_subscription(mut ctx: djogi::DjogiContext) {
     // Count occurrences of the djogi LRU warn specifically by the
     // message-body marker `undersized`. We use this rather than the
     // `djogi::cache` target alone for forward-compatibility: today the
-    // `djogi::cache` target is unique to the LRU warn (the filter-pushdown
-    // warn at refresh.rs:128 is gated on a non-trivial filter, and T8.4's
-    // reducer returns `Some(BasicPredicate::True)` for unfiltered querysets
-    // — refresh_into strips that to `None` so the filter-pushdown warn
-    // doesn't fire per-tick for the unfiltered case this test runs). But
-    // if a future change re-introduces another `djogi::cache`-targeted warn
-    // (e.g. GH #127 lands a real filter-pushdown emitter that fires on
-    // partial-pushdown failure), counting by target would silently double-
-    // count. The `undersized` token is unique to the LRU warn within djogi's
+    // `djogi::cache` target is unique to the LRU warn (PR4's portable gate
+    // rejects SQL-only filters before any fetcher subscription starts, so
+    // no filter-pushdown warn fires from refresh.rs at runtime). If a
+    // future change introduces another `djogi::cache`-targeted warn,
+    // counting by target alone would silently double-count. The
+    // `undersized` token is unique to the LRU warn within djogi's
     // codebase; sassi's LRU warn at `sassi::punnu::delta_refresh` says
     // "consider raising lru_size" (distinct token). The structural
     // `djogi::cache` target match above pins the structural contract; this
@@ -297,11 +297,11 @@ async fn lru_warn_one_shot_per_subscription(mut ctx: djogi::DjogiContext) {
 
 // ── Test 2 — with_eviction_recovery is adopter-reachable ─────────────────────
 
-/// Verifies that `qs.refresh_into(...).with_eviction_recovery(true)` compiles
-/// and returns `sassi::DeltaRefreshHandle<KnobRow>`.
+/// Verifies that `qs.refresh_into(...).expect(...).with_eviction_recovery(true)`
+/// compiles and returns `sassi::DeltaRefreshHandle<KnobRow>`.
 ///
 /// Sassi owns the runtime behavior of eviction recovery. Djogi's contract is
-/// only that the method is reachable through the `refresh_into` return type
+/// only that the method is reachable after the PR4 portable gate succeeds,
 /// without a djogi-side wrapper. This test is a compile-pass verification —
 /// it calls the method and asserts the returned type is usable as a handle.
 ///
@@ -321,6 +321,7 @@ async fn with_eviction_recovery_method_reachable(mut ctx: djogi::DjogiContext) {
     // The `with_eviction_recovery` call must compile and return the handle.
     let handle = KnobRow::objects()
         .refresh_into(&punnu, pool, auth)
+        .expect("unfiltered queryset must satisfy portable refresh gate")
         .with_eviction_recovery(true);
 
     // Verify the handle is usable: cancel it so sassi cleans up the
@@ -331,12 +332,12 @@ async fn with_eviction_recovery_method_reachable(mut ctx: djogi::DjogiContext) {
 // ── Test 3 — with_periodic_full_refresh is adopter-reachable ─────────────────
 
 /// Verifies that
-/// `qs.refresh_into(...).with_periodic_full_refresh(NonZeroUsize::new(10))`
+/// `qs.refresh_into(...).expect(...).with_periodic_full_refresh(NonZeroUsize::new(10))`
 /// compiles and returns `sassi::DeltaRefreshHandle<KnobRow>`.
 ///
 /// Sassi owns the runtime behavior of periodic full refreshes. Djogi's
-/// contract is that the method is reachable through the `refresh_into` return
-/// type without a djogi-side wrapper.
+/// contract is that the method is reachable after the PR4 portable gate
+/// succeeds, without a djogi-side wrapper.
 ///
 #[djogi::djogi_test(sync_models = [KnobRow])]
 async fn with_periodic_full_refresh_method_reachable(mut ctx: djogi::DjogiContext) {
@@ -354,6 +355,7 @@ async fn with_periodic_full_refresh_method_reachable(mut ctx: djogi::DjogiContex
     // The `with_periodic_full_refresh` call must compile and return the handle.
     let handle = KnobRow::objects()
         .refresh_into(&punnu, pool, auth)
+        .expect("unfiltered queryset must satisfy portable refresh gate")
         .with_periodic_full_refresh(NonZeroUsize::new(10));
 
     // Verify the progress accessor works (sassi native method, not djogi-wrapped).

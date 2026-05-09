@@ -5,9 +5,10 @@
 //!
 //! `DjogiDeltaFetcher<T>` owns a snapshot of the substrate needed to issue
 //! delta queries against the source-of-truth Postgres pool: a `DjogiPool`
-//! clone, an `AuthContext` by value, and a `BasicPredicate<T>` filter
-//! (optional). Each tick of `Punnu::start_delta_refresh(...)` calls
-//! `DeltaPunnuFetcher::fetch_delta` on this struct.
+//! clone, an `AuthContext` by value, a structural-empty flag, and a
+//! `BasicPredicate<T>` filter (optional). Each tick of
+//! `Punnu::start_delta_refresh(...)` calls `DeltaPunnuFetcher::fetch_delta`
+//! on this struct.
 //!
 //! # Why owned substrate
 //!
@@ -31,18 +32,26 @@
 //!
 //! # T8.5 SQL path
 //!
-//! `fetch_delta` now issues real SQL on every tick:
+//! `fetch_delta` issues real SQL on every non-empty tick. A
+//! `QuerySet::none()` refresh returns an empty delta without touching the
+//! source table:
 //! 1. Acquire a connection from the captured pool.
 //! 2. Construct a fresh `DjogiContext::from_connection(conn)` and apply the
 //!    captured `AuthContext` via `.with_auth(...)` — auth-locked-to-
 //!    subscription per spec §677.
 //! 3. Build SQL: `SELECT <COLUMN_LIST> FROM <table_name> WHERE
-//!    [<watermark_col> >= $1] [OR id IN ($2, …)] ORDER BY <watermark_col>`.
-//! 4. Execute via `ctx.raw_query::<T>(sql, &binds).await`.
-//! 5. Split items into `(live_items, tombstones)` via the per-row
+//!    [<portable filter on full baseline> | <watermark_col> >= $1]
+//!    [OR id IN ($2, …)] ORDER BY <watermark_col>`.
+//! 4. For filtered full-baseline ticks, also observe
+//!    `SELECT MAX(<watermark_col>) FROM <table_name>` inside the same
+//!    transaction so source progress advances even when the filter excludes
+//!    the newest row.
+//! 5. Execute via `ctx.raw_query::<T>(sql, &binds).await`.
+//! 6. Split items into `(live_items, tombstones)` via the per-row
 //!    `Model::__delta_should_tombstone()` check (Pattern 1,
-//!    SoftDeletable-derived); return `DeltaResult::new(live_items, tombstones)`.
-//! 6. Drop ctx (releases connection back to pool on drop).
+//!    SoftDeletable-derived); return `DeltaResult::with_high_watermark(...)`
+//!    when a source watermark was observed.
+//! 7. Drop ctx (releases connection back to pool on drop).
 //!
 //! # Tombstone collection patterns
 //!
@@ -75,40 +84,37 @@
 //! Both `with_eviction_recovery(bool)` and
 //! `with_periodic_full_refresh(Option<NonZeroUsize>)` are sassi-native builder
 //! knobs on `DeltaRefreshHandle<T>`. Djogi's `refresh_into` returns
-//! `sassi::DeltaRefreshHandle<T>` directly, so adopters can chain them:
+//! `Result<sassi::DeltaRefreshHandle<T>, (QuerySet<T>, PortablePredicateError)>`
+//! — the portability gate runs first and the `Err` arm carries the queryset
+//! back for recovery. No djogi-side handle wrapper sits around the sassi type,
+//! so once the gate succeeds the chain is on the sassi handle itself:
 //!
 //! ```text
 //! let handle = MyModel::objects()
-//!     .refresh_into(&punnu, pool, auth)
+//!     .refresh_into(&punnu, pool, auth)?
 //!     .with_eviction_recovery(true)
 //!     .with_periodic_full_refresh(NonZeroUsize::new(10));
 //! ```
 //!
 //! No djogi-side wrappers are needed.
 //!
-//! # Filter pushdown deferral (GH #127)
+//! # Portable filter pushdown
 //!
-//! The `self.filter: Option<BasicPredicate<T>>` field is KEPT but not
-//! pushed down to SQL in this commit, for two reasons:
-//!
-//! 1. Sassi's `BasicPredicate<T>` does not expose a `to_sql` method —
-//!    verified by grepping `sassi-reference/sassi/src/predicate/`. Writing a
-//!    walker over `FieldPredicate<T>` (which carries type-erased values) is a
-//!    substantial sub-project, not a T8.5-sized change.
-//!
-//! 2. GH #126 (filter-api-q-preservation) blocks the practical reach. Until
-//!    #126 lands, every real-world `QuerySet`'s `into_basic_predicate()`
-//!    returns `None`, so `self.filter` is always `None` in practice. Emitting
-//!    SQL for filter pushdown today would be dead code.
-//!
-//! When `self.filter.is_some()` a `tracing::warn!` fires per tick to surface
-//! the gap. In practice this warn never fires today (filter always `None`).
+//! `QuerySet::refresh_into` rejects SQL-only filters before constructing this
+//! fetcher. When a trusted portable filter is present, this fetcher pushes it
+//! into SQL only on full-baseline ticks (`since = None` and no
+//! `recover_ids`). Watermark and eviction-recovery delta ticks do not reapply
+//! the original filter at SQL time: changed rows must still be fetched when
+//! they transition out of the predicate so Sassi can update or evict resident
+//! cache entries correctly.
 
 use crate::__bypass::RawAccessExt as _;
 use crate::auth::AuthContext;
 use crate::cache::DjogiDeltaSyncMeta;
+use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::FromPgRow;
 use crate::pg::pool::DjogiPool;
+use crate::query::portable::SqlEmitContext;
 use heeranjid::{HeerId, HeerIdDesc};
 use sassi::{BasicPredicate, DeltaPunnuFetcher, DeltaQuery, DeltaResult, FetchError, PunnuEvent};
 use std::any::TypeId;
@@ -174,13 +180,19 @@ fn cast_row_id_to_t_id<TId: 'static>(raw: i64) -> Option<TId> {
 }
 
 /// Owned-substrate fetcher for the `QuerySet::refresh_into` path.
-/// Carries the connection pool, an `AuthContext` snapshot, an optional
-/// `BasicPredicate<T>` filter, and the LRU-eviction-warn fields. The
-/// const-fn-pointer assertion at the bottom of this file pins
+/// Carries the connection pool, an `AuthContext` snapshot, a structural-empty
+/// flag, an optional `BasicPredicate<T>` filter, and the LRU-eviction-warn
+/// fields. The const-fn-pointer assertion at the bottom of this file pins
 /// `Send + Sync + 'static` at the type-system level.
 pub(crate) struct DjogiDeltaFetcher<T: sassi::DeltaSyncCacheable> {
     pub(crate) pool: DjogiPool,
     pub(crate) auth: AuthContext,
+    /// `QuerySet::none()` means every terminal must remain empty. The captured
+    /// false predicate alone is not enough because ordinary delta ticks
+    /// intentionally ignore the predicate at SQL time to catch rows that leave
+    /// a filtered query. This flag keeps a structurally empty refresh from ever
+    /// querying or populating the Punnu on later ticks.
+    pub(crate) empty: bool,
     pub(crate) filter: Option<BasicPredicate<T>>,
     /// One-shot flag — per-(Punnu, Subscription) — for the always-on
     /// LRU eviction warn (spec §674 Knob 1). Set on first `LruEvict`
@@ -210,13 +222,17 @@ where
         + Send
         + Sync
         + 'static,
-    T::Watermark: ToSql + Sync,
+    T::Watermark: ToSql + tokio_postgres::types::FromSqlOwned + Sync,
     T::Id: ToSql + Sync,
 {
     async fn fetch_delta(
         &self,
         query: DeltaQuery<T>,
     ) -> Result<DeltaResult<T, T::Watermark>, FetchError> {
+        if self.empty {
+            return Ok(DeltaResult::new(Vec::new(), HashSet::new()));
+        }
+
         // Always-on LRU eviction warn. Outer `load(Acquire)` short-
         // circuits once the warn has fired; the inner `swap(true, AcqRel)`
         // gates the actual emission against two ticks racing on the same
@@ -268,24 +284,12 @@ where
             }
         }
 
-        // GH #127: filter pushdown is parked until BasicPredicate exposes
-        // a SQL emitter. This warn never fires today because
-        // `into_basic_predicate()` always returns `None` (GH #126).
-        if self.filter.is_some() {
-            tracing::warn!(
-                target: "djogi::cache",
-                model = std::any::type_name::<T>(),
-                "filter pushdown to delta-fetcher SQL emitter is not yet implemented; \
-                 refresh tick will fetch the full source-of-truth set within the \
-                 watermark window. Tracked at GH #127.",
-            );
-        }
-
         // Auth is locked to the subscription (spec §677): the snapshot
         // captured at refresh_into is applied to a fresh ctx below.
         let auth = self.auth.clone();
         let since = query.since.clone();
         let recover_ids = query.recover_ids.clone();
+        let filter = self.filter.clone();
         let watermark_col = <T as DjogiDeltaSyncMeta>::WATERMARK_COLUMN;
         let table_name = <T as crate::model::Model>::table_name();
         let column_list = <T as FromPgRow>::COLUMN_LIST;
@@ -325,10 +329,11 @@ where
         //   `FIRST_TICK_WATERMARK_SAFETY_WINDOW` to also cover concurrent
         //   delete transactions whose `transaction_start` was before our
         //   sample.
-        let (items, outbox_tombstones, first_tick_server_now): (
+        let (items, outbox_tombstones, first_tick_server_now, source_high_watermark): (
             Vec<T>,
             Vec<(i64, OffsetDateTime)>,
             Option<OffsetDateTime>,
+            Option<T::Watermark>,
         ) = crate::transaction::atomic(&self.pool, move |ctx| {
             Box::pin(async move {
                 // Apply the captured auth snapshot to the inner ctx.
@@ -356,49 +361,89 @@ where
                         None
                     };
 
-                // Build SQL — 4 explicit cases on (since, recover_ids).
+                let push_filter = filter.is_some() && since.is_none() && recover_ids.is_empty();
+
+                // For filtered full refreshes, observe source progress before
+                // the filtered row query. A later statement may see more rows
+                // under READ COMMITTED; we merge this max with returned item
+                // watermarks below instead of trusting either source alone.
+                let source_high_watermark_from_max: Option<T::Watermark> = if push_filter {
+                    let max_sql = format!("SELECT MAX({watermark_col}) FROM {table_name}");
+                    let row = ctx.query_one(&max_sql, &[]).await?;
+                    Some(row.try_get::<_, Option<T::Watermark>>(0).map_err(|e| {
+                        crate::DjogiError::Db(crate::error::DbError::other(format!(
+                            "delta refresh: decode MAX({watermark_col}): {e}"
+                        )))
+                    })?)
+                    .flatten()
+                } else {
+                    None
+                };
+
+                // Build SQL — explicit cases on (filter, since, recover_ids).
                 // Watermark uses `>=` (inclusive boundary per the
                 // DeltaPunnuFetcher contract — boundary rows may have changed
                 // without their watermark advancing; sassi deduplicates by id).
                 // Recovery ids are OR-combined with the watermark clause:
                 // we want those rows regardless of watermark progression.
-                let mut params: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
+                let mut acc = SqlAccumulator::new("SELECT ");
+                acc.push_sql(column_list);
+                acc.push_sql(" FROM ");
+                acc.push_sql(table_name);
 
-                let push_watermark =
-                    |params: &mut Vec<Box<dyn ToSql + Sync + Send>>, s: &T::Watermark| -> String {
-                        params.push(Box::new(s.clone()));
-                        format!("{watermark_col} >= ${}", params.len())
-                    };
-                let push_recover = |params: &mut Vec<Box<dyn ToSql + Sync + Send>>| -> String {
-                    let mut placeholders: Vec<String> = Vec::new();
-                    for id in &recover_ids {
-                        params.push(Box::new(id.clone()));
-                        placeholders.push(format!("${}", params.len()));
+                match (push_filter, since.as_ref(), recover_ids.is_empty()) {
+                    (true, None, true) => {
+                        acc.push_sql(" WHERE ");
+                        crate::query::portable::emit_basic_predicate::<T>(
+                            &mut acc,
+                            filter.as_ref().expect("push_filter implies filter"),
+                            SqlEmitContext::root(),
+                        )?;
                     }
-                    format!("id IN ({})", placeholders.join(", "))
-                };
-
-                let where_sql: String = match (since.as_ref(), recover_ids.is_empty()) {
-                    (None, true) => String::new(),
-                    (Some(s), true) => format!("WHERE {}", push_watermark(&mut params, s)),
-                    (None, false) => format!("WHERE {}", push_recover(&mut params)),
-                    (Some(s), false) => {
-                        let watermark_clause = push_watermark(&mut params, s);
-                        let recover_clause = push_recover(&mut params);
-                        format!("WHERE ({watermark_clause}) OR ({recover_clause})")
+                    (false, None, true) => {}
+                    (false, Some(s), true) => {
+                        acc.push_sql(" WHERE ");
+                        acc.push_sql(watermark_col);
+                        acc.push_sql(" >= ");
+                        acc.push_bind(s.clone());
                     }
-                };
+                    (false, None, false) => {
+                        acc.push_sql(" WHERE id IN (");
+                        acc.push_list_binds(recover_ids.iter().cloned());
+                        acc.push_sql(")");
+                    }
+                    (false, Some(s), false) => {
+                        acc.push_sql(" WHERE (");
+                        acc.push_sql(watermark_col);
+                        acc.push_sql(" >= ");
+                        acc.push_bind(s.clone());
+                        acc.push_sql(") OR (id IN (");
+                        acc.push_list_binds(recover_ids.iter().cloned());
+                        acc.push_sql("))");
+                    }
+                    (true, _, _) => {
+                        unreachable!("filter pushdown only occurs on full baseline ticks")
+                    }
+                }
 
-                let sql = format!(
-                    "SELECT {column_list} FROM {table_name} {where_sql} ORDER BY {watermark_col}"
-                );
+                acc.push_sql(" ORDER BY ");
+                acc.push_sql(watermark_col);
 
-                let params_refs: Vec<&(dyn ToSql + Sync)> = params
-                    .iter()
-                    .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                    .collect();
+                let (sql, binds) = acc.into_parts();
+                let params_refs = as_params(&binds);
 
                 let items: Vec<T> = ctx.raw_query::<T>(&sql, &params_refs).await?;
+                // Watermark merge for the filtered full-baseline path. Only
+                // overrides sassi's default `live_items.watermark().max()`
+                // inference when the MAX-from-source observation exists —
+                // that is, when `push_filter == true`. On non-pushdown
+                // ticks we leave `source_high_watermark = None` and let
+                // sassi infer the watermark from the live items it
+                // applies, preserving the pre-PR4 contract that "a
+                // deletion is not itself a high-water checkpoint" (spec
+                // §415: deletion signals flow through tombstones, not
+                // through watermark advance on tombstone-only ticks).
+                let source_high_watermark = source_high_watermark_from_max;
 
                 // Pattern 2 outbox poll. `created_at >= $1` is inclusive
                 // because sassi's `apply_delta` deduplicates by id and
@@ -444,7 +489,12 @@ where
                     Vec::new()
                 };
 
-                Ok::<_, crate::DjogiError>((items, outbox_tombstones, first_tick_server_now))
+                Ok::<_, crate::DjogiError>((
+                    items,
+                    outbox_tombstones,
+                    first_tick_server_now,
+                    source_high_watermark,
+                ))
             })
         })
         .await
@@ -519,12 +569,14 @@ where
             }
         }
 
-        // High watermark is inferred from `max(item.watermark())` across
-        // `live_items` only — tombstoned rows are excluded by virtue of
-        // sitting in the separate `tombstones` set, not because sassi
-        // filters them. A deletion is therefore not itself a high-water
-        // checkpoint, which is the intended behavior.
-        Ok(DeltaResult::new(live_items, tombstones))
+        match source_high_watermark {
+            Some(high_watermark) => Ok(DeltaResult::with_high_watermark(
+                live_items,
+                tombstones,
+                high_watermark,
+            )),
+            None => Ok(DeltaResult::new(live_items, tombstones)),
+        }
     }
 }
 

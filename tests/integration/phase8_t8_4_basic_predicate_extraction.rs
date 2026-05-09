@@ -6,52 +6,34 @@
 // 1. An **unfiltered** `QuerySet::new()` starts as `Q::Portable(True)` and
 //    reduces to `Some(BasicPredicate::True)`.
 //
-// 2. Any queryset built with the public `.filter(...)` / `.exclude(...)` /
-//    `.filter_struct(...)` APIs produces `Q::Condition(...)` and always
-//    reduces to `None`. This is expected — the public filter surface routes
-//    through `and_condition_into_q`, which wraps every condition in
-//    `Q::Condition` for character-for-character SQL-parity with the pre-8γ
-//    substrate. `into_basic_predicate` correctly classifies these as
-//    Unreducible and emits a `tracing::warn!`.
+// 2. Querysets built with ordinary portable field closures (`.filter(...)` /
+//    `.exclude(...)`) reduce to `BasicPredicate<T>` after the PR3 field
+//    accessor flip. SQL-only / legacy `Q::Condition` paths still reduce to
+//    `None`.
 //
-// 3. The `tracing::warn!` emitted for Unreducible paths includes the
+// 3. The `tracing::warn!` emitted for an unreducible legacy path includes the
 //    model type name and a description of the unreducible variant.
 //
-// 4. The `refresh_into` call (which internally calls `into_basic_predicate`)
-//    compiles and returns a `DeltaRefreshHandle<T>` without panicking for an
-//    unfiltered queryset. (The handle's `update().await` path is
-//    unimplemented! in T8.5 — we do not call it here.)
+// 4. The `refresh_into` call compiles and returns a `DeltaRefreshHandle<T>`
+//    behind the PR4 portable gate for an unfiltered queryset.
 //
 // # Architectural note on the public filter API
 //
-// The `.filter(|f| ...)` / `.filter_struct(...)` / `.exclude(...)` routes
-// always produce `Q::Condition` (legacy-parity contract from Cluster 8γ Stage
-// 2 T6.9). A queryset carrying `Q::Condition` cannot be reduced to a
-// `BasicPredicate<T>` without re-parsing the type-erased `Condition` tree —
-// which would require knowing the concrete Rust type for each field operand.
-//
-// For `refresh_into` to benefit from filter pushdown, adopters must build
-// the condition through Djogi-owned portable predicate builders
-// (`DjogiField` / generated field accessors after the PR3 macro flip) rather
-// than raw `sassi::BasicPredicate<T>`. Raw Sassi ingress was removed in
-// Phase 8eta PR2b because it can forge a SQL column/extractor mismatch. The
-// warning from `into_basic_predicate` guides adopters toward the portable
-// predicate path.
+// The ordinary `.filter(|f| f.field().eq(...))` path now produces Djogi-owned
+// portable predicates and can be used with cache / refresh. Legacy
+// `Q::Condition` paths remain unreducible because they would require
+// re-parsing type-erased SQL payloads. Raw Sassi ingress was removed in Phase
+// 8eta PR2b because it can forge a SQL column/extractor mismatch.
 //
 // # Why `into_basic_predicate` is `pub`
 //
 // `into_basic_predicate` is `pub` (not `pub(crate)`) so this integration
 // test suite — which compiles as a separate binary against djogi's public
 // API — can call it directly. Advanced cache-integration callers also
-// benefit from being able to inspect reducibility before calling
-// `refresh_into`. The method is NOT part of the everyday filter API and is
-// documented as an advanced/internal framework utility.
-//
-// # Typed-surface gap in Test 5
-//
-// Test 5 calls `ctx.share_pool()` to obtain the pool required by
-// `DjogiContext::share_pool() -> DjogiPool` so delta-refresh integration
-// tests do not need the bypass.
+// benefit from being able to inspect reducibility before reaching for
+// `try_portable` / `cache` / `refresh_into`. The method is NOT part of
+// the everyday filter API and is documented as an advanced/internal
+// framework utility.
 //
 // # Spec anchor
 //
@@ -101,78 +83,44 @@ async fn extracts_unfiltered_queryset_as_true(mut ctx: djogi::DjogiContext) {
     let _ = &mut ctx;
 }
 
-/// Helper: ensure the `tracing_test` global subscriber is installed and
-/// return the current log buffer length (for delta-checking after a call).
-fn init_log_capture() -> usize {
-    tracing_test::internal::INITIALIZED.call_once(|| {
-        let buf = tracing_test::internal::global_buf();
-        let mock_writer = tracing_test::internal::MockWriter::new(buf);
-        let subscriber = tracing_test::internal::get_subscriber(mock_writer, "trace");
-        tracing::dispatcher::set_global_default(subscriber).unwrap_or(());
-    });
-    tracing_test::internal::global_buf().lock().unwrap().len()
-}
-
-/// Return the substring of the global log buffer appended since `since`.
-fn logs_since(since: usize) -> String {
-    let buf = tracing_test::internal::global_buf().lock().unwrap();
-    std::str::from_utf8(&buf[since..]).unwrap_or("").to_owned()
-}
-
 // ---------------------------------------------------------------------------
-// Test 2 — Queryset with `.filter(...)` produces Q::Condition → None.
+// Test 2 — Queryset with a portable `.filter(...)` reduces.
 //
-// Every public filter call routes through and_condition_into_q, which wraps
-// the condition as Q::Condition. into_basic_predicate must return None and
-// emit a tracing::warn! on the djogi::cache target.
-//
-// The filter uses the typed field accessor (`f.label().eq(...)`) — any
-// public filter call produces Q::Condition, which is exactly what this
-// test needs to exercise the Unreducible path.
+// The PR3 field accessor flip makes `f.label().eq(...)` return a Djogi-owned
+// portable predicate. `into_basic_predicate` must preserve that shape so PR4
+// cache / refresh gates can accept ordinary portable filters.
 // ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [ExtractRow])]
-async fn filtered_queryset_returns_none_with_warning(mut ctx: djogi::DjogiContext) {
-    // Snapshot log buffer length before the call so we only inspect new lines.
-    let since = init_log_capture();
-
+async fn filtered_queryset_extracts_portable_predicate(mut ctx: djogi::DjogiContext) {
     let qs = ExtractRow::objects().filter(|f| f.label().eq("test".to_string()));
 
     let result = qs.into_basic_predicate();
 
     assert!(
-        result.is_none(),
-        "queryset built with .filter() must return None from into_basic_predicate — \
-         the Q::Condition escape hatch is always Unreducible"
-    );
-
-    // Verify the warn! was emitted on the djogi::cache tracing target.
-    let new_logs = logs_since(since);
-    assert!(
-        new_logs.contains("djogi::cache"),
-        "into_basic_predicate must emit a tracing::warn! on the djogi::cache target \
-         when the condition is Unreducible; captured log so far: {new_logs:?}"
+        matches!(result, Some(djogi::BasicPredicate::Field(_))),
+        "queryset built with portable .filter() must reduce to a field BasicPredicate"
     );
 
     let _ = &mut ctx;
 }
 
 // ---------------------------------------------------------------------------
-// Test 3 — Queryset with `.exclude(...)` also produces Q::Condition → None.
+// Test 3 — Queryset with portable `.exclude(...)` reduces to `Not`.
 //
-// `.exclude()` calls `Condition::not(cond)` and routes through the same
-// and_condition_into_q path. into_basic_predicate returns None.
+// `.exclude()` pushes negation into the portable predicate when the closure
+// returns a portable predicate.
 // ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [ExtractRow])]
-async fn excluded_queryset_returns_none(mut ctx: djogi::DjogiContext) {
+async fn excluded_queryset_extracts_portable_negation(mut ctx: djogi::DjogiContext) {
     let qs = ExtractRow::objects().exclude(|f| f.label().eq("skip".to_string()));
 
     let result = qs.into_basic_predicate();
 
     assert!(
-        result.is_none(),
-        "queryset built with .exclude() must return None from into_basic_predicate"
+        matches!(result, Some(djogi::BasicPredicate::Not(_))),
+        "queryset built with portable .exclude() must reduce to BasicPredicate::Not"
     );
 
     let _ = &mut ctx;
@@ -181,17 +129,12 @@ async fn excluded_queryset_returns_none(mut ctx: djogi::DjogiContext) {
 // ---------------------------------------------------------------------------
 // Test 4 — Queryset with filter_struct (model filter builder) → None.
 //
-// filter_struct routes through and_condition_into_q which wraps model-filter
-// inputs as Q::Condition. Even a Q::Portable input becomes Q::Condition after
-// filter_struct.
-// This test verifies that the common adopter pattern of using filter_struct
-// with the model's {Model}Filter builder also always results in None.
+// The macro-generated `{Model}Filter` builder still routes through the legacy
+// condition payload and remains unreducible at the PR4 cache / refresh gate.
 // ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [ExtractRow])]
 async fn filter_struct_with_model_filter_returns_none(mut ctx: djogi::DjogiContext) {
-    // ExtractRowFilter is the macro-generated ModelFilter for ExtractRow.
-    // filter_struct routes through and_condition_into_q → Q::Condition → None.
     let qs = ExtractRow::objects()
         .filter_struct(ExtractRowFilter::new().label(djogi::Lookup::Eq("test".to_string())));
 
@@ -200,7 +143,7 @@ async fn filter_struct_with_model_filter_returns_none(mut ctx: djogi::DjogiConte
     assert!(
         result.is_none(),
         "queryset built with filter_struct(ExtractRowFilter) must return None — \
-         the filter_struct path wraps everything in Q::Condition"
+         the model-filter path still carries a legacy Condition payload"
     );
 
     let _ = &mut ctx;
@@ -209,12 +152,9 @@ async fn filter_struct_with_model_filter_returns_none(mut ctx: djogi::DjogiConte
 // ---------------------------------------------------------------------------
 // Test 5 — refresh_into compiles and returns a handle for unfiltered queryset.
 //
-// Verifies the end-to-end type signature: QuerySet::refresh_into calls
-// into_basic_predicate internally. The handle is dropped immediately (the
-// delta-refresh fetch is unimplemented! in T8.3/T8.5, so we must not call
-// handle.update().await). Just verifies the return type and no panic.
-//
-// to obtain a DjogiPool from a DjogiContext for passing to `refresh_into`.
+// Verifies the end-to-end type signature. The handle is dropped immediately;
+// runtime SQL behavior is covered by the later T8.5 / PR4 integration tests.
+// `ctx.share_pool()` produces the `DjogiPool` value `refresh_into` consumes.
 // ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [ExtractRow])]
@@ -233,9 +173,9 @@ async fn refresh_into_returns_handle_for_unfiltered_queryset(mut ctx: djogi::Djo
 
     // This must not panic. into_basic_predicate returns Some(True) for the
     // unfiltered queryset, so no warning is emitted and the handle is created.
-    let handle = ExtractRow::objects().refresh_into(&punnu, pool, auth);
+    let handle = ExtractRow::objects()
+        .refresh_into(&punnu, pool, auth)
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
-    // Drop the handle without calling .update().await — the T8.5 SQL path is
-    // not yet implemented (it would panic with unimplemented!()).
     drop(handle);
 }

@@ -34,7 +34,13 @@ fn _signature_check(
     punnu: &::djogi::cache::Punnu<RefreshRow>,
     pool: ::djogi::pg::pool::DjogiPool,
     auth: ::djogi::auth::AuthContext,
-) -> ::djogi::cache::DeltaRefreshHandle<RefreshRow> {
+) -> Result<
+    ::djogi::cache::DeltaRefreshHandle<RefreshRow>,
+    (
+        ::djogi::QuerySet<RefreshRow>,
+        ::djogi::query::PortablePredicateError,
+    ),
+> {
     qs.refresh_into(punnu, pool, auth)
 }
 
@@ -44,5 +50,11 @@ fn main() {
         &::djogi::cache::Punnu<RefreshRow>,
         ::djogi::pg::pool::DjogiPool,
         ::djogi::auth::AuthContext,
-    ) -> ::djogi::cache::DeltaRefreshHandle<RefreshRow> = _signature_check;
+    ) -> Result<
+        ::djogi::cache::DeltaRefreshHandle<RefreshRow>,
+        (
+            ::djogi::QuerySet<RefreshRow>,
+            ::djogi::query::PortablePredicateError,
+        ),
+    > = _signature_check;
 }

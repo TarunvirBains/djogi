@@ -343,11 +343,11 @@ pub use fts_query::FtsFieldRef;
 // asserting on tree shape). Adopter code composes through `Q<T>` and
 // never reaches for `Condition` directly.
 pub use query::{
-    AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, ClosureModel, FieldRef,
-    FilterClause, IntoAggregateTuple, IntoFilterValue, Lookup, MaterializeClosureOptions,
-    MaterializeClosureReport, ModelCursorStream, ModelFilter, OrderExpr, Q, QuerySet,
-    RawCursorStream, RecursiveDirection, RecursiveQuerySet, UpdateAssignment, UpdateStmt,
-    VisageQuerySet,
+    AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
+    ClosureModel, FieldRef, FilterClause, IntoAggregateTuple, IntoFilterValue, Lookup,
+    MaterializeClosureOptions, MaterializeClosureReport, ModelCursorStream, ModelFilter, OrderExpr,
+    PortableQuerySet, Q, QuerySet, RawCursorStream, RecursiveDirection, RecursiveQuerySet,
+    UpdateAssignment, UpdateStmt, VisageQuerySet,
 };
 pub use relation::{
     ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
@@ -399,10 +399,10 @@ pub mod prelude {
     // prelude. Adopter code composes through `Q<T>` (in this list);
     // legacy `Condition` callers reach `djogi::query::internal::Condition`.
     pub use crate::query::{
-        AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, ClosureModel, FieldRef,
-        FilterClause, IntoAggregateTuple, IntoFilterValue, Lookup, MaterializeClosureOptions,
-        MaterializeClosureReport, ModelFilter, OrderExpr, Q, QuerySet, RecursiveDirection,
-        RecursiveQuerySet, VisageQuerySet,
+        AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
+        ClosureModel, FieldRef, FilterClause, IntoAggregateTuple, IntoFilterValue, Lookup,
+        MaterializeClosureOptions, MaterializeClosureReport, ModelFilter, OrderExpr,
+        PortableQuerySet, Q, QuerySet, RecursiveDirection, RecursiveQuerySet, VisageQuerySet,
     };
     // `atomic` / `retry_on_conflict` — Phase 4 Task 1 canonical
     // transaction scope + retry helper.

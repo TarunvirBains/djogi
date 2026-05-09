@@ -596,6 +596,13 @@ name = "phase8_t8_10_refresh_e2e"
 path = "../tests/integration/phase8_t8_10_refresh_e2e.rs"
 harness = true
 
+# ── Phase 8eta PR4 — portable cache/refresh gate ────────────────────────────
+
+[[test]]
+name = "phase8eta_pr4_cache_refresh_gate"
+path = "../tests/integration/phase8eta_pr4_cache_refresh_gate.rs"
+harness = true
+
 [[test]]
 name = "phase8_t11_notify_roundtrip"
 path = "../tests/integration/phase8_t11_notify_roundtrip.rs"

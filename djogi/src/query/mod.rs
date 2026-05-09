@@ -113,7 +113,9 @@ pub use predicate::{IntoPortablePredicate, PortablePredicate, Predicate};
 #[doc(hidden)]
 pub use portable::{PortablePredicateError, SqlEmitContext};
 pub use q::{ArrayPredicate, IntoQ, Q};
-pub use queryset::{DistinctMode, IntoDistinctColumns, QuerySet};
+pub use queryset::{
+    CachedPortableQuerySet, DistinctMode, IntoDistinctColumns, PortableQuerySet, QuerySet,
+};
 pub use recursive::{RecursiveDirection, RecursiveQuerySet};
 // `BasicPredicate<T>` is sassi's universal Rust-evaluable predicate algebra.
 // Re-exported here so adopters reach it as `djogi::query::BasicPredicate`

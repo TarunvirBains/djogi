@@ -125,7 +125,9 @@ async fn softdelete_produces_tombstone(mut ctx: djogi::DjogiContext) {
     let auth =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
-    let handle = SoftDeleteRow::objects().refresh_into(&punnu, pool, auth);
+    let handle = SoftDeleteRow::objects()
+        .refresh_into(&punnu, pool, auth)
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
     // First tick: full scan, no watermark. The live row is returned as a live
     // item (deleted_at is None → __delta_should_tombstone() returns false).
@@ -238,7 +240,9 @@ async fn deleted_row_is_tombstoned_not_silently_dropped(mut ctx: djogi::DjogiCon
     let auth =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
-    let handle = SoftDeleteRow::objects().refresh_into(&punnu, pool, auth);
+    let handle = SoftDeleteRow::objects()
+        .refresh_into(&punnu, pool, auth)
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
     // Full-scan tick (since=None): fetches BOTH the live and pre-deleted rows.
     // The live row → live_items (applied = 1).
@@ -316,7 +320,9 @@ async fn non_soft_deletable_model_returns_empty_tombstones(mut ctx: djogi::Djogi
     let auth =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
-    let handle = PlainRow::objects().refresh_into(&punnu, pool, auth);
+    let handle = PlainRow::objects()
+        .refresh_into(&punnu, pool, auth)
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
     // Full-scan tick: both rows are plain (no soft-delete). All rows must go
     // to live_items (applied = 2). Tombstones stays empty (backward-compat).
