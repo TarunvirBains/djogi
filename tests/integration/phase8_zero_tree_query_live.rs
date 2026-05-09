@@ -368,7 +368,7 @@ async fn search_breadth_first_orders_by_depth(mut ctx: DjogiContext) {
 
     let bfs = TreeNode::tree_descendants(root.id)
         .expect("tree_edge resolves")
-        .search_breadth_first_by(TreeNodeFields::default().name())
+        .search_breadth_first_by(TreeNodeFields.name())
         .fetch_all(&mut ctx)
         .await
         .expect("bfs fetch");
@@ -414,7 +414,7 @@ async fn search_depth_first_traverses_chains(mut ctx: DjogiContext) {
 
     let dfs = TreeNode::tree_descendants(root.id)
         .expect("tree_edge resolves")
-        .search_depth_first_by(TreeNodeFields::default().name())
+        .search_depth_first_by(TreeNodeFields.name())
         .fetch_all(&mut ctx)
         .await
         .expect("dfs fetch");

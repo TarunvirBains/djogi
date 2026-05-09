@@ -236,6 +236,7 @@ harness = true
 name = "phase6_spatial"
 path = "../tests/integration/phase6_spatial.rs"
 harness = true
+required-features = ["spatial"]
 
 [[test]]
 name = "phase6_5_aggregates"
@@ -246,6 +247,7 @@ harness = true
 name = "phase6_5_spatial_polish"
 path = "../tests/integration/phase6_5_spatial_polish.rs"
 harness = true
+required-features = ["spatial"]
 
 [[test]]
 name = "phase7_zero_indexes_live"
@@ -413,11 +415,13 @@ harness = true
 name = "phase8_zero_cluster_c_spatial_live"
 path = "../tests/integration/phase8_zero_cluster_c_spatial_live.rs"
 harness = true
+required-features = ["spatial"]
 
 [[test]]
 name = "phase8_zero_cluster_c_spatial_scalar_live"
 path = "../tests/internal/phase8_zero_cluster_c_spatial_scalar_live.rs"
 harness = true
+required-features = ["spatial"]
 
 [[test]]
 name = "phase8_zero_cluster_c_window_live"

@@ -297,12 +297,12 @@ async fn run_typed(
     let walked: Vec<(Elephant, i32, Vec<String>)> = match order {
         Order::Default => qs.fetch_all_with_paths(ctx).await?,
         Order::Bfs => {
-            qs.search_breadth_first_by(ElephantFields::default().estimated_birth_year())
+            qs.search_breadth_first_by(ElephantFields.estimated_birth_year())
                 .fetch_all_with_paths(ctx)
                 .await?
         }
         Order::Dfs => {
-            qs.search_depth_first_by(ElephantFields::default().estimated_birth_year())
+            qs.search_depth_first_by(ElephantFields.estimated_birth_year())
                 .fetch_all_with_paths(ctx)
                 .await?
         }

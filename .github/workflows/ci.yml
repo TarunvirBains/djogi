@@ -259,6 +259,7 @@ jobs:
   #
   # Runs `phase7_t10_sync_models_live` plus every Phase 8-Zero
   # Cluster C live spatial harness (`phase8_zero_cluster_c_spatial_live`,
+  # `phase8_zero_cluster_c_spatial_scalar_live`,
   # `phase8_zero_cluster_c_bench`). Future spatial-feature tests that
   # are not part of these targets must be added explicitly to the test
   # steps below — without an entry here the test silently does not run
@@ -373,6 +374,9 @@ jobs:
 
       - name: Cluster C spatial live test (T16/T17 — convex_hull, intersection, area)
         run: cargo test -p djogi --test phase8_zero_cluster_c_spatial_live --all-features -- --test-threads=1
+
+      - name: Cluster C spatial scalar live test (C1 — area_of scalar probes)
+        run: cargo test -p djogi --test phase8_zero_cluster_c_spatial_scalar_live --all-features -- --test-threads=1
 
       - name: Cluster C window live test (T18 — RowNumber/Rank/DenseRank, qualify lowering)
         run: cargo test -p djogi --test phase8_zero_cluster_c_window_live --all-features -- --test-threads=1

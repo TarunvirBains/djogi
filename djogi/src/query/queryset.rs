@@ -2299,6 +2299,17 @@ fn try_reduce_q_ref_to_basic<T: crate::model::Model>(
     }
 }
 
+fn validate_portable_sql_emit<T: crate::model::Model>(
+    predicate: &sassi::BasicPredicate<T>,
+) -> Result<(), PortablePredicateError> {
+    let mut acc = crate::pg::accumulator::SqlAccumulator::new("");
+    crate::query::portable::emit_basic_predicate::<T>(
+        &mut acc,
+        predicate,
+        crate::query::SqlEmitContext::root(),
+    )
+}
+
 impl<T: crate::model::Model> QuerySet<T> {
     /// Validate that this queryset is safe to use as a Punnu cache boundary.
     ///
@@ -2307,10 +2318,12 @@ impl<T: crate::model::Model> QuerySet<T> {
     /// predicate algebra. `QuerySet::none()` is treated as the portable
     /// false predicate rather than as an unfiltered query.
     pub fn is_portable(&self) -> Result<(), PortablePredicateError> {
-        if self.is_empty {
-            return Ok(());
-        }
-        try_reduce_q_ref_to_basic(&self.condition).map(|_| ())
+        let portable_predicate = if self.is_empty {
+            sassi::BasicPredicate::False
+        } else {
+            try_reduce_q_ref_to_basic(&self.condition)?
+        };
+        validate_portable_sql_emit::<T>(&portable_predicate)
     }
 
     /// Convert this queryset into the portable cache-boundary wrapper.
@@ -2331,6 +2344,9 @@ impl<T: crate::model::Model> QuerySet<T> {
                 Err(err) => return Err((self, err)),
             }
         };
+        if let Err(err) = validate_portable_sql_emit::<T>(&portable_predicate) {
+            return Err((self, err));
+        }
         Ok(PortableQuerySet {
             inner: self,
             portable_predicate,
@@ -3645,8 +3661,7 @@ mod tests {
         ));
         let (recovered, err) = qs
             .try_portable()
-            .err()
-            .expect("legacy Condition must fail try_portable");
+            .expect_err("legacy Condition must fail try_portable");
         assert!(matches!(
             err,
             PortablePredicateError::CacheInvalidNode { kind: "Condition" }

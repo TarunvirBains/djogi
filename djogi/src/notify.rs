@@ -255,7 +255,11 @@ async fn get_or_start_listener(pool: &DjogiPool) -> Result<Arc<PgListener>, Noti
 /// Spawn the per-pool listener task. Uses a standalone
 /// `tokio_postgres::connect` rather than the pool because deadpool's
 /// `Object` doesn't expose the `Connection` half needed for
-/// `AsyncMessage` polling.
+/// `AsyncMessage` polling. This is framework substrate code — the
+/// `clippy::disallowed_methods` lint that gates direct `tokio_postgres`
+/// use against adopters does not apply here, so the allow is local
+/// rather than global.
+#[allow(clippy::disallowed_methods)]
 async fn spawn_listener(pool: &DjogiPool) -> Result<PgListener, NotifyError> {
     let url = pool.url.as_deref().ok_or_else(|| {
         NotifyError::ListenerStartFailed(

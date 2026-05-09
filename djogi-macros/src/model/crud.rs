@@ -2869,10 +2869,11 @@ fn emit_djogi_emit_field_predicate(
             }
             PortableFieldKind::OptionScalar
             | PortableFieldKind::OptionBool
-            | PortableFieldKind::OptionString => {
+            | PortableFieldKind::OptionString
+            | PortableFieldKind::OptionRelationOrVisage => {
                 // `option_inner_type` MUST be Some for portable Option*
                 // kinds — `classify` populates it for OptionScalar /
-                // OptionString / OptionBool. Defensive `expect` so a
+                // OptionString / OptionBool / OptionRelationOrVisage. Defensive `expect` so a
                 // future bug in `portable_field_emit::classify` fails
                 // loudly during macro expansion rather than emitting
                 // wrong arms.
@@ -2891,11 +2892,29 @@ fn emit_djogi_emit_field_predicate(
                     ),
                 });
             }
+            PortableFieldKind::RelationOrVisage => {
+                let ty = &info.rust_type;
+                // Root FK/O2O wrapper columns support equality and
+                // membership because their cached value is the same key
+                // wrapper SQL binds through. Traversal remains on the
+                // SQL-only field view, and ordering/pattern operators are
+                // intentionally unsupported.
+                arms.extend(scalar_arms(
+                    model_name, ty, column, /*ordering=*/ false,
+                ));
+                arms.push(quote! {
+                    (#column, op) => ::std::result::Result::Err(
+                        ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
+                            field: #column,
+                            op,
+                        },
+                    ),
+                });
+            }
             PortableFieldKind::Jsonb
             | PortableFieldKind::Array
             | PortableFieldKind::Spatial
             | PortableFieldKind::FtsComputed
-            | PortableFieldKind::RelationOrVisage
             | PortableFieldKind::Unsupported => {
                 // Non-portable kinds get a single catch-all arm
                 // returning the typed `UnsupportedFieldType` error.

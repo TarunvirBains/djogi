@@ -13,12 +13,23 @@ use djogi::query::PortablePredicateError;
 pub struct CacheRefreshGateRow {
     pub label: String,
     pub active: bool,
+    pub ratings: Vec<i32>,
 }
 
 fn assert_cache_invalid_condition(err: PortablePredicateError) {
     assert!(
         matches!(err, PortablePredicateError::CacheInvalidNode { kind } if kind == "Condition"),
         "expected SQL-only Condition to be rejected at portable boundary; got {err:?}",
+    );
+}
+
+fn assert_unsupported_field_type(err: PortablePredicateError, expected_field: &'static str) {
+    assert!(
+        matches!(
+            err,
+            PortablePredicateError::UnsupportedFieldType { field } if field == expected_field
+        ),
+        "expected unsupported field type for {expected_field}; got {err:?}",
     );
 }
 
@@ -77,6 +88,38 @@ async fn refresh_rejects_pg_specific_predicate(mut ctx: djogi::DjogiContext) {
         Err((_queryset, err)) => err,
     };
     assert_cache_invalid_condition(err);
+
+    let _ = &mut ctx;
+}
+
+#[djogi::djogi_test(sync_models = [CacheRefreshGateRow])]
+async fn cache_and_refresh_reject_unsupported_root_field_predicate(mut ctx: djogi::DjogiContext) {
+    let pool = ctx
+        .share_pool()
+        .expect("djogi_test context must have a pool");
+    let punnu = ctx
+        .punnu::<CacheRefreshGateRow>()
+        .expect("punnu registered for CacheRefreshGateRow");
+    let auth =
+        djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
+
+    let cache_err = match CacheRefreshGateRow::objects()
+        .filter(|f| f.ratings().eq(vec![1, 2, 3]))
+        .cache(&punnu)
+    {
+        Ok(_) => panic!("cache gate must reject unsupported array root field predicate"),
+        Err((_queryset, err)) => err,
+    };
+    assert_unsupported_field_type(cache_err, "ratings");
+
+    let refresh_err = match CacheRefreshGateRow::objects()
+        .filter(|f| f.ratings().eq(vec![1, 2, 3]))
+        .refresh_into(&punnu, pool, auth)
+    {
+        Ok(_) => panic!("refresh gate must reject unsupported array root field predicate"),
+        Err((_queryset, err)) => err,
+    };
+    assert_unsupported_field_type(refresh_err, "ratings");
 
     let _ = &mut ctx;
 }

@@ -13,6 +13,7 @@ pub struct SmokeWidget {
 }
 
 #[test]
+#[allow(clippy::result_large_err)]
 fn default_config_has_sensible_defaults() {
     figment::Jail::expect_with(|jail| {
         jail.set_env("DATABASE_URL", "postgres://localhost/test");
@@ -25,6 +26,7 @@ fn default_config_has_sensible_defaults() {
 }
 
 #[test]
+#[allow(clippy::result_large_err)]
 fn database_url_env_overrides_toml() {
     figment::Jail::expect_with(|jail| {
         jail.create_file(
