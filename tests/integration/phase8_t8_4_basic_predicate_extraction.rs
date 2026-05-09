@@ -3,7 +3,7 @@
 //
 // # What this file pins
 //
-// 1. An **unfiltered** `QuerySet::new()` starts as `Q::Basic(True)` and
+// 1. An **unfiltered** `QuerySet::new()` starts as `Q::Portable(True)` and
 //    reduces to `Some(BasicPredicate::True)`.
 //
 // 2. Any queryset built with the public `.filter(...)` / `.exclude(...)` /
@@ -31,10 +31,12 @@
 // which would require knowing the concrete Rust type for each field operand.
 //
 // For `refresh_into` to benefit from filter pushdown, adopters must build
-// the condition as a sassi `BasicPredicate<T>` and set `qs.condition`
-// directly (framework-internal path) OR wait for a future cluster that
-// redesigns `filter_struct` to preserve Q-algebra structure. The warning
-// from `into_basic_predicate` guides adopters toward that future path.
+// the condition through Djogi-owned portable predicate builders
+// (`DjogiField` / generated field accessors after the PR3 macro flip) rather
+// than raw `sassi::BasicPredicate<T>`. Raw Sassi ingress was removed in
+// Phase 8eta PR2b because it can forge a SQL column/extractor mismatch. The
+// warning from `into_basic_predicate` guides adopters toward the portable
+// predicate path.
 //
 // # Why `into_basic_predicate` is `pub`
 //
@@ -79,7 +81,7 @@ pub struct ExtractRow {
 // ---------------------------------------------------------------------------
 // Test 1 — Unfiltered queryset reduces to Some(BasicPredicate::True).
 //
-// `QuerySet::new()` sets condition = Q::Basic(BasicPredicate::True).
+// `QuerySet::new()` sets condition = Q::Portable(PortablePredicate::True).
 // `into_basic_predicate` must return Some(BasicPredicate::True) for this
 // starting state.
 // ---------------------------------------------------------------------------
@@ -92,7 +94,7 @@ async fn extracts_unfiltered_queryset_as_true(mut ctx: djogi::DjogiContext) {
     assert!(
         matches!(result, Some(djogi::BasicPredicate::True)),
         "unfiltered QuerySet must reduce to Some(BasicPredicate::True) — \
-         the starting condition Q::Basic(True) is the identity and should \
+         the starting condition Q::Portable(True) is the identity and should \
          always be extractable without a warning"
     );
 
@@ -179,8 +181,9 @@ async fn excluded_queryset_returns_none(mut ctx: djogi::DjogiContext) {
 // ---------------------------------------------------------------------------
 // Test 4 — Queryset with filter_struct (model filter builder) → None.
 //
-// filter_struct routes through and_condition_into_q which wraps everything as
-// Q::Condition. Even a Q::Basic input becomes Q::Condition after filter_struct.
+// filter_struct routes through and_condition_into_q which wraps model-filter
+// inputs as Q::Condition. Even a Q::Portable input becomes Q::Condition after
+// filter_struct.
 // This test verifies that the common adopter pattern of using filter_struct
 // with the model's {Model}Filter builder also always results in None.
 // ---------------------------------------------------------------------------

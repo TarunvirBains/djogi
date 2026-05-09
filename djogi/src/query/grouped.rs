@@ -389,7 +389,8 @@ where
             // Validate DISTINCT modifier combinations before building SQL —
             // rejected combos surface as DjogiError::UnsupportedAggregate.
             self.aggregates.check_legality()?;
-            let acc = crate::query::sql::build_grouped_annotated_select(&self);
+            let acc = crate::query::sql::build_grouped_annotated_select(&self)
+                .map_err(crate::DjogiError::from)?;
             // Defensive alias-collision check — fires only if a future API
             // extension introduces a path that collides with a group-key
             // column name or another __djogi_agg_N alias. Today's emitter
@@ -537,7 +538,7 @@ mod tests {
             .group_by(|_| keys)
             .annotate(|_| vals.sum())
             .having(|k, _a| k.as_expr().gt(crate::expr::Expr::literal(0i64)));
-        let acc = build_grouped_annotated_select(&gaq);
+        let acc = build_grouped_annotated_select(&gaq).expect("grouped select");
         let sql = acc.sql();
         assert!(
             sql.contains("GROUP BY") && sql.contains("HAVING"),
@@ -562,7 +563,7 @@ mod tests {
             .group_by(|_| keys)
             .annotate(|_| vals.sum())
             .order_by(|k, _a| k.asc());
-        let acc = build_grouped_annotated_select(&gaq);
+        let acc = build_grouped_annotated_select(&gaq).expect("grouped select");
         let sql = acc.sql();
         assert!(
             sql.contains("GROUP BY") && sql.contains("ORDER BY"),
@@ -587,7 +588,7 @@ mod tests {
             .annotate(|_| vals.sum())
             .limit(10)
             .offset(20);
-        let acc = build_grouped_annotated_select(&gaq);
+        let acc = build_grouped_annotated_select(&gaq).expect("grouped select");
         let sql = acc.sql();
         assert!(sql.contains("LIMIT"), "expected LIMIT, got: {sql}");
         assert!(sql.contains("OFFSET"), "expected OFFSET, got: {sql}");
@@ -616,7 +617,7 @@ mod tests {
             .having(|(_k1, _k2), _a| {
                 crate::expr::Expr::literal(1i64).gt(crate::expr::Expr::literal(0i64))
             });
-        let acc = build_grouped_annotated_select(&gaq);
+        let acc = build_grouped_annotated_select(&gaq).expect("grouped select");
         let sql = acc.sql();
         assert!(
             sql.contains("GROUP BY") && sql.contains("HAVING"),
@@ -635,7 +636,7 @@ mod tests {
         let f: FieldRef<Fake, i64> = FieldRef::new("org_id");
         let vals: FieldRef<Fake, i64> = FieldRef::new("amount");
         let gaq = qs.rollup(|_| f).annotate(|_| vals.sum());
-        let acc = build_grouped_annotated_select(&gaq);
+        let acc = build_grouped_annotated_select(&gaq).expect("grouped select");
         let sql = acc.sql();
         assert!(
             sql.contains("GROUP BY ROLLUP (org_id)"),
@@ -650,7 +651,7 @@ mod tests {
         let f: FieldRef<Fake, i64> = FieldRef::new("org_id");
         let vals: FieldRef<Fake, i64> = FieldRef::new("amount");
         let gaq = qs.cube(|_| f).annotate(|_| vals.sum());
-        let acc = build_grouped_annotated_select(&gaq);
+        let acc = build_grouped_annotated_select(&gaq).expect("grouped select");
         let sql = acc.sql();
         assert!(
             sql.contains("GROUP BY CUBE (org_id)"),
@@ -672,7 +673,7 @@ mod tests {
         let gaq = qs
             .group_by_sets(|_| ["org_id", "region"])
             .annotate(|_| vals.sum());
-        let acc = build_grouped_annotated_select(&gaq);
+        let acc = build_grouped_annotated_select(&gaq).expect("grouped select");
         let sql = acc.sql();
         assert!(
             sql.contains("GROUPING SETS ((org_id), (region))"),
@@ -691,7 +692,7 @@ mod tests {
         let gaq = qs
             .grouping_sets(|_| vec![vec!["region", "dept"], vec!["region"], vec![]])
             .annotate(|_| vals.sum());
-        let acc = build_grouped_annotated_select(&gaq);
+        let acc = build_grouped_annotated_select(&gaq).expect("grouped select");
         let sql = acc.sql();
         assert!(
             sql.contains("GROUPING SETS ((region, dept), (region), ())"),
@@ -717,7 +718,7 @@ mod tests {
                 ]
             })
             .annotate(|_| vals.sum());
-        let acc = build_grouped_annotated_select(&gaq);
+        let acc = build_grouped_annotated_select(&gaq).expect("grouped select");
         let sql = acc.sql();
         assert!(
             sql.contains("GROUPING SETS ((region, dept), (region), ())"),
@@ -740,7 +741,7 @@ mod tests {
             .having(|(_k1, _k2, _k3), _a| {
                 crate::expr::Expr::literal(1i64).gt(crate::expr::Expr::literal(0i64))
             });
-        let acc = build_grouped_annotated_select(&gaq);
+        let acc = build_grouped_annotated_select(&gaq).expect("grouped select");
         let sql = acc.sql();
         assert!(
             sql.contains("GROUP BY") && sql.contains("HAVING"),

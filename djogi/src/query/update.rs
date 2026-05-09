@@ -327,7 +327,7 @@ impl<T: Model> UpdateStmt<T> {
                 return Ok(0);
             }
             auto_set_tenant::<T>(ctx).await?;
-            let acc = build_update(&self.qs, &self.assignments);
+            let acc = build_update(&self.qs, &self.assignments).map_err(crate::DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows_affected = ctx.execute(&sql, &params).await?;
@@ -428,7 +428,7 @@ impl<T: Model> QuerySet<T> {
                 return Ok(0);
             }
             auto_set_tenant::<T>(ctx).await?;
-            let acc = build_delete(&self);
+            let acc = build_delete(&self).map_err(crate::DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows_affected = ctx.execute(&sql, &params).await?;

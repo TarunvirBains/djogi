@@ -178,7 +178,7 @@ where
             // the trait-object handle (see `queryset.rs` Clone impl
             // for the cache_target field rationale), so it's cheap.
             let cache_target = self.cache_target.clone();
-            let acc = build_select(&self);
+            let acc = build_select(&self).map_err(DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
@@ -246,7 +246,7 @@ where
             // that the caller never saw would surface in the Punnu's
             // event stream as an unexplained Insert.
             let cache_target = qs.cache_target.clone();
-            let acc = build_select(&qs);
+            let acc = build_select(&qs).map_err(DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
@@ -344,7 +344,7 @@ where
             let prefetches = self.prefetch_paths.clone();
 
             // Main query — identical shape to `fetch_all`.
-            let acc = build_select(&self);
+            let acc = build_select(&self).map_err(DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let pg_rows = ctx.query_all(&sql, &params).await?;
@@ -448,7 +448,7 @@ where
             // decoded rows come back as raw `tokio_postgres::Row`s so
             // both parent and (per registered path) child can be
             // extracted via `FromJoinedPgRow::from_joined_pg_row`.
-            let acc = build_select_joined(&self);
+            let acc = build_select_joined(&self).map_err(DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows: Vec<tokio_postgres::Row> = match ctx.inner_mut() {
@@ -498,7 +498,7 @@ where
             // Cluster 8δ T7.3: snapshot before the SQL emitter
             // borrows `qs`.
             let cache_target = qs.cache_target.clone();
-            let acc = build_select(&qs);
+            let acc = build_select(&qs).map_err(DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let opt = ctx.query_opt(&sql, &params).await?;
@@ -725,7 +725,7 @@ impl<T: Model> QuerySet<T> {
                 return Ok(0);
             }
             auto_set_tenant::<T>(ctx).await?;
-            let acc = build_count(&self);
+            let acc = build_count(&self).map_err(DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
@@ -753,7 +753,7 @@ impl<T: Model> QuerySet<T> {
                 return Ok(false);
             }
             auto_set_tenant::<T>(ctx).await?;
-            let acc = build_exists(&self);
+            let acc = build_exists(&self).map_err(DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
@@ -865,7 +865,7 @@ where
         // let the standard cursor exhaustion path terminate it after one
         // FETCH that returns 0 rows. This is simpler and more correct than
         // a special empty-stream type.
-        let acc = build_select(&self);
+        let acc = build_select(&self).map_err(DjogiError::from)?;
         let (sql, binds) = acc.into_parts();
         let params = as_params(&binds);
         build_model_stream(ctx, &sql, &params, fetch_size).await

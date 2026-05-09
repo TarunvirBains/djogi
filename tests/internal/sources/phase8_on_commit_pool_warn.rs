@@ -28,6 +28,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 // ── tracing capture helpers (mirrors phase5_5_auth.rs) ──────────────────────
 
+static LOG_CAPTURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Install the `tracing_test` global subscriber once and return the current
 /// byte length of the global buffer. Subsequent `logs_since_contain` calls
 /// scope their search to lines appended after this snapshot.
@@ -71,6 +73,7 @@ async fn on_commit_pool_backed_emits_warn_and_drops_callback(mut ctx: djogi::Djo
         "test fixture must be pool-backed for this assertion to be meaningful"
     );
 
+    let _log_guard = LOG_CAPTURE_LOCK.lock().await;
     let since = init_log_capture();
     let fired = Arc::new(AtomicBool::new(false));
 
@@ -105,6 +108,7 @@ async fn on_commit_pool_backed_emits_warn_and_drops_callback(mut ctx: djogi::Djo
 #[djogi::djogi_test]
 async fn on_commit_pool_backed_warn_per_call(mut ctx: djogi::DjogiContext) {
     assert!(ctx.raw_pool().is_some());
+    let _log_guard = LOG_CAPTURE_LOCK.lock().await;
     let since = init_log_capture();
 
     ctx.on_commit(|| async { Ok::<(), DjogiError>(()) });
@@ -127,6 +131,7 @@ async fn on_commit_pool_backed_warn_per_call(mut ctx: djogi::DjogiContext) {
 #[djogi::djogi_test]
 async fn on_commit_inside_atomic_no_warn_and_callback_runs(mut ctx: djogi::DjogiContext) {
     let pool = ctx.raw_pool().expect("test ctx must be pool-backed").clone();
+    let _log_guard = LOG_CAPTURE_LOCK.lock().await;
     let since = init_log_capture();
     let fired = Arc::new(AtomicUsize::new(0));
 

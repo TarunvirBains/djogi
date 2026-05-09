@@ -110,7 +110,8 @@ where
             // surface as DjogiError::UnsupportedAggregate rather than a
             // cryptic Postgres syntax error.
             crate::expr::sql::check_aggregate_legality(&self.agg.node)?;
-            let acc = build_aggregate_select(&self.qs, &self.agg.node);
+            let acc = build_aggregate_select(&self.qs, &self.agg.node)
+                .map_err(crate::DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;

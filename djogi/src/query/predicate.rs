@@ -31,27 +31,30 @@
 //!
 //! # `Predicate<T>` — a trusted `Q<T>` wrapper
 //!
-//! `Predicate<T>` is a thin shell over `Q<T>` reserved for the mixed-operator
-//! matrix Phase 8eta PR2b will install. PR2a only defines the type so the
-//! public re-export tree compiles; PR2b adds the operator overloads,
-//! `IntoQ<T>`, and the negation/composition wiring described in the v3 plan.
+//! `Predicate<T>` is a thin shell over `Q<T>` carrying the mixed-operator
+//! matrix from the v3 plan. Pure-portable composition (`PortablePredicate<T>
+//! & PortablePredicate<T>`) stays inside `PortablePredicate<T>` so flattening
+//! rides the trusted Sassi reducer. Mixed compositions (where at least one
+//! operand is a `Predicate<T>` or a `Condition`) lift through `Predicate<T>`
+//! so the resulting `Q<T>` carries a `Q::Compound { op, parts }` structure
+//! the cache boundary can audit.
 //!
-//! # PR2a scope
+//! # PR2b scope
 //!
-//! - Define `PortablePredicate<T>` and `Predicate<T>`.
-//! - Implement `IntoPortablePredicate<T>` for `PortablePredicate<T>` (sealed).
-//! - Implement `sassi::IntoBasicPredicate<T>` for `PortablePredicate<T>`.
-//! - Implement pure-portable boolean composition for `PortablePredicate<T>`
-//!   (`&`, `|`, `^`, `!`).
-//! - **Do not** implement `IntoQ<T>` for either wrapper; that lands in PR2b
-//!   alongside the direct-`Q<T>` SQL walker.
-//! - **Do not** remove the existing public `IntoQ<T>` / `From<…>` impls for
-//!   raw `sassi::BasicPredicate<T>`; PR2b removes them when the SQL emitter
-//!   stops routing portable predicates through `Condition`.
+//! - Implement `IntoQ<T>` for `PortablePredicate<T>`, `Predicate<T>`, and
+//!   `crate::expr::Expr<bool>` (sealed alongside the existing impls in
+//!   `query::q`).
+//! - Add the closed mixed-operator matrix between `PortablePredicate<T>`,
+//!   `Predicate<T>`, and `Condition` so `&` / `|` / `^` / `!` compose freely
+//!   regardless of operand order.
+//! - Manual `Clone` for `Predicate<T>` reaches into the new
+//!   `Q<T>: Clone` impl (which itself does not require `T: Clone` after
+//!   PR2b).
 
 use crate::model::Model;
+use crate::query::condition::Condition;
 use crate::query::field::DjogiFieldProvenance;
-use crate::query::q::Q;
+use crate::query::q::{IntoQ, Q};
 use sassi::{BasicPredicate, IntoBasicPredicate};
 use std::ops::{BitAnd, BitOr, BitXor, Not};
 
@@ -328,47 +331,312 @@ impl<T: Model> Not for PortablePredicate<T> {
     }
 }
 
-/// Trusted-provenance `Q<T>` wrapper for the v3 mixed-operator matrix.
+/// Trusted-provenance `Q<T>` wrapper for the mixed-operator matrix.
 ///
-/// PR2a defines the type as a public-facing shell so the re-export tree
-/// from `query::mod` and `lib.rs` compiles. PR2b lands the operator
-/// overloads, `IntoQ<T>`, manual `Clone`, and the
-/// `Predicate ⊕ PortablePredicate`/`Condition` composition rows.
+/// `Predicate<T>` is the output type of the
+/// `PortablePredicate<T> ⊕ Condition`-style combinator rows: any time a
+/// composition mixes Djogi-trusted portable leaves with a SQL-only
+/// `Condition` (or with another already-mixed `Predicate<T>`), the
+/// resulting predicate lifts to `Predicate<T>` so the SQL emitter sees a
+/// `Q::Compound { op, parts }` shape and the cache boundary can audit
+/// which leaves were portable.
 ///
-/// User code does not construct `Predicate<T>` values directly in PR2a —
-/// the type is reachable only through PR2b's combinator output.
+/// `IntoQ<T> for Predicate<T>` unwraps to the inner `Q<T>` directly, so
+/// `QuerySet::filter` / `filter_struct` accept any `P: IntoQ<T>` and the
+/// caller never has to spell `Q::Compound { ... }` by hand.
+///
+/// User code typically reaches `Predicate<T>` through the operator
+/// overloads on `PortablePredicate<T>` and `Condition` (declared below);
+/// constructing values directly stays crate-private.
 pub struct Predicate<T: Model> {
-    #[allow(dead_code)] // PR2b populates the operator surface that reads `inner`
     inner: Q<T>,
 }
 
 impl<T: Model> Predicate<T> {
     /// Construct from an arbitrary `Q<T>`. Crate-private so only Djogi-owned
-    /// combinators can produce a `Predicate<T>`. PR2b uses this to wrap
-    /// composite Q-trees produced by mixed operator overloads.
+    /// combinators can produce a `Predicate<T>`. The mixed operator
+    /// overloads below use this to wrap composite Q-trees.
     #[doc(hidden)]
-    #[allow(dead_code)] // PR2b will use this constructor in the operator overloads
     pub(crate) fn from_q(inner: Q<T>) -> Self {
         Self { inner }
     }
 
     /// Unwrap into the underlying `Q<T>`. Crate-private; downstream code
-    /// reaches `Q<T>` through PR2b's `IntoQ<T> for Predicate<T>` impl.
+    /// reaches `Q<T>` through `IntoQ<T> for Predicate<T>`. Used by the
+    /// `IntoQ` impl below and by the unit tests that pattern-match on
+    /// the inner `Q<T>` shape after a mixed-operator composition.
     #[doc(hidden)]
-    #[allow(dead_code)] // PR2b will use this in the IntoQ impl
+    #[allow(dead_code)]
     pub(crate) fn into_inner(self) -> Q<T> {
         self.inner
     }
 }
 
+// Manual `Clone` for `Predicate<T>` — `Q<T>::Clone` is itself manual after
+// PR2b (no `T: Clone` propagation), so this just delegates without
+// adding any bound.
+impl<T: Model> Clone for Predicate<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
 impl<T: Model> std::fmt::Debug for Predicate<T> {
-    /// `Q<T>` derives `Debug`, which imposes `T: Debug`. We deliberately
-    /// avoid that bound here — `Predicate<T>` may carry a portable
-    /// predicate whose `T` does not derive `Debug`. PR2b's manual
-    /// `Q<T>::Debug` will replace this with a proper variant-walking
-    /// impl; PR2a only needs enough debug surface to print the wrapper.
+    /// Forwards to `Q<T>::Debug` — which itself is a manual walker after
+    /// PR2b that does not require `T: Debug`. The wrapping `Predicate`
+    /// tag keeps the formatted output disambiguated from a bare `Q<T>`
+    /// in trace logs.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Predicate").finish_non_exhaustive()
+        f.debug_tuple("Predicate").field(&self.inner).finish()
+    }
+}
+
+// ── PR2b — `IntoQ<T>` impls for the new wrappers ────────────────────────────
+//
+// `IntoQ<T>` is sealed inside `query::q` (see `__SealedIntoQ`). The seal is
+// `pub(crate)` and re-exported through `crate::__private::__SealedIntoQ` so
+// macro-emitted code can satisfy it from adopter crates. Inside the djogi
+// crate we just impl `Sealed` directly.
+
+impl<T: Model> crate::query::q::__SealedIntoQ for PortablePredicate<T> {}
+impl<T: Model> IntoQ<T> for PortablePredicate<T> {
+    /// Lift a Djogi-trusted [`PortablePredicate<T>`] into `Q<T>` by
+    /// wrapping in the trusted-provenance `Q::Portable(_)` variant. Used
+    /// by `QuerySet::filter` / `filter_struct` so root-field predicates
+    /// like `f.title().eq("rust")` flow through the generalised
+    /// `P: IntoQ<T>` builder signatures without requiring the caller to
+    /// spell `Q::Portable(...)`.
+    #[inline]
+    fn into_q(self) -> Q<T> {
+        Q::Portable(self)
+    }
+}
+
+impl<T: Model> crate::query::q::__SealedIntoQ for Predicate<T> {}
+impl<T: Model> IntoQ<T> for Predicate<T> {
+    /// Unwrap a [`Predicate<T>`] (the output of mixed-operator
+    /// composition) into its inner `Q<T>`. Cheap — `Predicate<T>` is a
+    /// thin newtype.
+    #[inline]
+    fn into_q(self) -> Q<T> {
+        self.inner
+    }
+}
+
+// ── Mixed-operator matrix ───────────────────────────────────────────────────
+//
+// Closed grid covering every operand pairing involving `PortablePredicate<T>`,
+// `Predicate<T>`, and `Condition` per the v3 plan PR2 Step 1 table:
+//
+// | Left | Operator | Right | Output |
+// |---|---|---|---|
+// | `PortablePredicate<T>` | & / | / ^ | `PortablePredicate<T>` | `PortablePredicate<T>` |
+// | `PortablePredicate<T>` | & / | / ^ | `Predicate<T>` | `Predicate<T>` |
+// | `Predicate<T>` | & / | / ^ | `PortablePredicate<T>` | `Predicate<T>` |
+// | `Predicate<T>` | & / | / ^ | `Predicate<T>` | `Predicate<T>` |
+// | `PortablePredicate<T>` | & / | / ^ | `Condition` | `Predicate<T>` |
+// | `Condition` | & / | / ^ | `PortablePredicate<T>` | `Predicate<T>` |
+// | `Predicate<T>` | & / | / ^ | `Condition` | `Predicate<T>` |
+// | `Condition` | & / | / ^ | `Predicate<T>` | `Predicate<T>` |
+// | unary `!` | `PortablePredicate<T>` | `PortablePredicate<T>` |
+// | unary `!` | `Predicate<T>` | `Predicate<T>` |
+//
+// Pure-portable rows already exist above (`impl BitAnd for PortablePredicate`).
+// Mixed rows below all route through `Q<T>`'s operator impls so the
+// flattening / non-associativity rules stay centralised in one place.
+//
+// Pure-Condition rows use `Condition`'s own `BitAnd` / `BitOr` (see
+// `query::condition`). They are unchanged by PR2b.
+//
+// `Add`, `Sub`, `Mul`, `Div`, `Rem`, shifts, and compound-assign variants are
+// **not** implemented — boolean-only surface per the v3 plan.
+
+// ── Predicate ⊕ Predicate ──────────────────────────────────────────────────
+impl<T: Model> BitAnd for Predicate<T> {
+    type Output = Predicate<T>;
+    /// SQL AND. Delegates to `Q<T>::bitand`, which short-circuits
+    /// pure-portable inner trees through Sassi's flattening reducer and
+    /// otherwise lifts to `Q::Compound { op: And, parts }`.
+    fn bitand(self, rhs: Self) -> Predicate<T> {
+        Predicate::from_q(self.inner & rhs.inner)
+    }
+}
+
+impl<T: Model> BitOr for Predicate<T> {
+    type Output = Predicate<T>;
+    /// SQL OR. Same shape as `BitAnd`; delegates to `Q<T>::bitor`.
+    fn bitor(self, rhs: Self) -> Predicate<T> {
+        Predicate::from_q(self.inner | rhs.inner)
+    }
+}
+
+impl<T: Model> BitXor for Predicate<T> {
+    type Output = Predicate<T>;
+    /// SQL XOR. Pure-portable inner trees ride Sassi's
+    /// `BasicPredicate::bitxor`; mixed/SQL-only operands lift to
+    /// `Q::Xor(Box, Box)`.
+    fn bitxor(self, rhs: Self) -> Predicate<T> {
+        Predicate::from_q(self.inner ^ rhs.inner)
+    }
+}
+
+impl<T: Model> Not for Predicate<T> {
+    type Output = Predicate<T>;
+    /// SQL `NOT (...)`. Pure-portable inner trees collapse double
+    /// negation through Sassi's reducer; mixed operands wrap in
+    /// `Q::Negated(...)` (with the existing `Q::Negated(Q::Negated(_))`
+    /// collapse).
+    fn not(self) -> Predicate<T> {
+        Predicate::from_q(!self.inner)
+    }
+}
+
+// ── PortablePredicate ⊕ Predicate ──────────────────────────────────────────
+//
+// Mixed compositions where one side is portable and the other is already
+// mixed/SQL-only. The result lifts to `Predicate<T>` so the audit boundary
+// can see the full shape; the inner `Q<T>` operators handle flattening and
+// non-associativity uniformly.
+
+impl<T: Model> BitAnd<Predicate<T>> for PortablePredicate<T> {
+    type Output = Predicate<T>;
+    fn bitand(self, rhs: Predicate<T>) -> Predicate<T> {
+        Predicate::from_q(Q::Portable(self) & rhs.inner)
+    }
+}
+
+impl<T: Model> BitOr<Predicate<T>> for PortablePredicate<T> {
+    type Output = Predicate<T>;
+    fn bitor(self, rhs: Predicate<T>) -> Predicate<T> {
+        Predicate::from_q(Q::Portable(self) | rhs.inner)
+    }
+}
+
+impl<T: Model> BitXor<Predicate<T>> for PortablePredicate<T> {
+    type Output = Predicate<T>;
+    fn bitxor(self, rhs: Predicate<T>) -> Predicate<T> {
+        Predicate::from_q(Q::Portable(self) ^ rhs.inner)
+    }
+}
+
+impl<T: Model> BitAnd<PortablePredicate<T>> for Predicate<T> {
+    type Output = Predicate<T>;
+    fn bitand(self, rhs: PortablePredicate<T>) -> Predicate<T> {
+        Predicate::from_q(self.inner & Q::Portable(rhs))
+    }
+}
+
+impl<T: Model> BitOr<PortablePredicate<T>> for Predicate<T> {
+    type Output = Predicate<T>;
+    fn bitor(self, rhs: PortablePredicate<T>) -> Predicate<T> {
+        Predicate::from_q(self.inner | Q::Portable(rhs))
+    }
+}
+
+impl<T: Model> BitXor<PortablePredicate<T>> for Predicate<T> {
+    type Output = Predicate<T>;
+    fn bitxor(self, rhs: PortablePredicate<T>) -> Predicate<T> {
+        Predicate::from_q(self.inner ^ Q::Portable(rhs))
+    }
+}
+
+// ── PortablePredicate ⊕ Condition ──────────────────────────────────────────
+//
+// Mixed compositions with a legacy `Condition` (typically produced by the
+// closure-side `f.col.eq(v)` API). The Condition lifts to `Q::Condition(_)`
+// and the result is a `Predicate<T>`.
+
+impl<T: Model> BitAnd<Condition> for PortablePredicate<T> {
+    type Output = Predicate<T>;
+    fn bitand(self, rhs: Condition) -> Predicate<T> {
+        Predicate::from_q(Q::Portable(self) & Q::Condition(rhs))
+    }
+}
+
+impl<T: Model> BitOr<Condition> for PortablePredicate<T> {
+    type Output = Predicate<T>;
+    fn bitor(self, rhs: Condition) -> Predicate<T> {
+        Predicate::from_q(Q::Portable(self) | Q::Condition(rhs))
+    }
+}
+
+impl<T: Model> BitXor<Condition> for PortablePredicate<T> {
+    type Output = Predicate<T>;
+    fn bitxor(self, rhs: Condition) -> Predicate<T> {
+        Predicate::from_q(Q::Portable(self) ^ Q::Condition(rhs))
+    }
+}
+
+// `Condition ⊕ PortablePredicate` — orphan rules require both operands to
+// be local to this crate, which they are (`Condition` is in
+// `crate::query::condition`, `PortablePredicate` is local). Implementing
+// these for `Condition` directly is fine because the trait
+// (`BitAnd<PortablePredicate<T>>`) is a `core` trait and the LHS is local.
+
+impl<T: Model> BitAnd<PortablePredicate<T>> for Condition {
+    type Output = Predicate<T>;
+    fn bitand(self, rhs: PortablePredicate<T>) -> Predicate<T> {
+        Predicate::from_q(Q::Condition(self) & Q::Portable(rhs))
+    }
+}
+
+impl<T: Model> BitOr<PortablePredicate<T>> for Condition {
+    type Output = Predicate<T>;
+    fn bitor(self, rhs: PortablePredicate<T>) -> Predicate<T> {
+        Predicate::from_q(Q::Condition(self) | Q::Portable(rhs))
+    }
+}
+
+impl<T: Model> BitXor<PortablePredicate<T>> for Condition {
+    type Output = Predicate<T>;
+    fn bitxor(self, rhs: PortablePredicate<T>) -> Predicate<T> {
+        Predicate::from_q(Q::Condition(self) ^ Q::Portable(rhs))
+    }
+}
+
+// ── Predicate ⊕ Condition ──────────────────────────────────────────────────
+
+impl<T: Model> BitAnd<Condition> for Predicate<T> {
+    type Output = Predicate<T>;
+    fn bitand(self, rhs: Condition) -> Predicate<T> {
+        Predicate::from_q(self.inner & Q::Condition(rhs))
+    }
+}
+
+impl<T: Model> BitOr<Condition> for Predicate<T> {
+    type Output = Predicate<T>;
+    fn bitor(self, rhs: Condition) -> Predicate<T> {
+        Predicate::from_q(self.inner | Q::Condition(rhs))
+    }
+}
+
+impl<T: Model> BitXor<Condition> for Predicate<T> {
+    type Output = Predicate<T>;
+    fn bitxor(self, rhs: Condition) -> Predicate<T> {
+        Predicate::from_q(self.inner ^ Q::Condition(rhs))
+    }
+}
+
+impl<T: Model> BitAnd<Predicate<T>> for Condition {
+    type Output = Predicate<T>;
+    fn bitand(self, rhs: Predicate<T>) -> Predicate<T> {
+        Predicate::from_q(Q::Condition(self) & rhs.inner)
+    }
+}
+
+impl<T: Model> BitOr<Predicate<T>> for Condition {
+    type Output = Predicate<T>;
+    fn bitor(self, rhs: Predicate<T>) -> Predicate<T> {
+        Predicate::from_q(Q::Condition(self) | rhs.inner)
+    }
+}
+
+impl<T: Model> BitXor<Predicate<T>> for Condition {
+    type Output = Predicate<T>;
+    fn bitxor(self, rhs: Predicate<T>) -> Predicate<T> {
+        Predicate::from_q(Q::Condition(self) ^ rhs.inner)
     }
 }
 
@@ -545,5 +813,143 @@ mod tests {
         let p: PortablePredicate<Fake> = PortablePredicate::always_true();
         let q = p.clone();
         assert!(!q.has_field_provenance());
+    }
+
+    // ── PR2b — IntoQ<T> + mixed-operator matrix ────────────────────────────
+
+    /// `PortablePredicate<T> -> Q<T>` via the new sealed `IntoQ` impl.
+    /// Locks the lift path adopters reach when calling
+    /// `QuerySet::filter_struct(some_portable)` after the PR2b
+    /// generalised builder signatures land.
+    #[test]
+    fn portable_predicate_into_q_yields_q_portable() {
+        let p: PortablePredicate<Fake> = PortablePredicate::always_true();
+        let q: Q<Fake> = p.into_q();
+        match q {
+            Q::Portable(_) => {}
+            other => panic!("expected Q::Portable(_), got {other:?}"),
+        }
+    }
+
+    /// `Predicate<T> -> Q<T>` unwraps the inner `Q<T>` directly.
+    #[test]
+    fn predicate_into_q_unwraps_inner() {
+        let q_inner: Q<Fake> = Q::always_true();
+        let p: Predicate<Fake> = Predicate::from_q(q_inner);
+        match p.into_q() {
+            Q::Portable(_) => {}
+            other => panic!("expected Q::Portable(_), got {other:?}"),
+        }
+    }
+
+    /// `Condition::True -> Q<T>` via the PR2b `IntoQ for Condition` impl
+    /// (defined in `query::q`). Wraps as `Q::Condition(_)` so the SQL
+    /// emitter sees the legacy tree shape unchanged.
+    #[test]
+    fn condition_into_q_wraps_in_q_condition() {
+        use crate::query::condition::{Condition, FilterValue, Leaf};
+        let c = Condition::Leaf(Leaf::eq_raw("col", FilterValue::Bool(true)));
+        let q: Q<Fake> = c.into_q();
+        match q {
+            Q::Condition(_) => {}
+            other => panic!("expected Q::Condition(_), got {other:?}"),
+        }
+    }
+
+    /// Mixed `PortablePredicate & Condition` returns a `Predicate<T>`
+    /// whose inner `Q<T>` is a `Q::Compound { op: And, parts }`.
+    #[test]
+    fn mixed_portable_and_condition_yields_predicate() {
+        use crate::query::condition::{Condition, FilterValue, Leaf};
+        let portable: PortablePredicate<Fake> = PortablePredicate::always_true();
+        let condition = Condition::Leaf(Leaf::eq_raw("col", FilterValue::Bool(true)));
+        let combined: Predicate<Fake> = portable & condition;
+        match combined.into_q() {
+            Q::Compound { parts, .. } => {
+                assert_eq!(parts.len(), 2);
+                assert!(matches!(parts[0], Q::Portable(_)));
+                assert!(matches!(parts[1], Q::Condition(_)));
+            }
+            other => panic!("expected Q::Compound{{And, ..}}, got {other:?}"),
+        }
+    }
+
+    /// Reverse-order mixed composition `Condition & PortablePredicate`
+    /// produces the same shape (just swapped parts).
+    #[test]
+    fn mixed_condition_and_portable_yields_predicate() {
+        use crate::query::condition::{Condition, FilterValue, Leaf};
+        let portable: PortablePredicate<Fake> = PortablePredicate::always_true();
+        let condition = Condition::Leaf(Leaf::eq_raw("col", FilterValue::Bool(true)));
+        let combined: Predicate<Fake> = condition & portable;
+        match combined.into_q() {
+            Q::Compound { parts, .. } => {
+                assert_eq!(parts.len(), 2);
+                assert!(matches!(parts[0], Q::Condition(_)));
+                assert!(matches!(parts[1], Q::Portable(_)));
+            }
+            other => panic!("expected Q::Compound{{And, ..}}, got {other:?}"),
+        }
+    }
+
+    /// Three-term mixed composition `portable & condition | predicate`
+    /// composes through the matrix without a manual `Q::Compound { ... }`
+    /// at any callsite. Demonstrates that the operator matrix is closed
+    /// over `PortablePredicate`, `Predicate`, and `Condition`.
+    #[test]
+    fn mixed_three_term_composition_compiles_without_manual_q() {
+        use crate::query::condition::{Condition, FilterValue, Leaf};
+        let a: PortablePredicate<Fake> = PortablePredicate::always_true();
+        let b: Condition = Condition::Leaf(Leaf::eq_raw("x", FilterValue::Bool(false)));
+        let c: PortablePredicate<Fake> = PortablePredicate::always_false();
+
+        // (a & b) is `Predicate<Fake>`; that `| c` returns `Predicate<Fake>`.
+        let result: Predicate<Fake> = (a & b) | c;
+        // The outer should be `Q::Compound { op: Or, parts: [_, _] }`.
+        match result.into_q() {
+            Q::Compound { op, parts } => {
+                assert_eq!(parts.len(), 2);
+                // Inner left half is the AND from `a & b`.
+                assert!(matches!(parts[0], Q::Compound { .. }));
+                // Inner right half is `Q::Portable(c)`.
+                assert!(matches!(parts[1], Q::Portable(_)));
+                // Sanity-check the discriminant survived.
+                let _ = op;
+            }
+            other => panic!("expected Q::Compound (outer OR), got {other:?}"),
+        }
+    }
+
+    /// `!Predicate<T>` lifts to `Q::Negated(Box<Q<T>>)`. The pure-portable
+    /// shortcut only applies when the inner `Q` is `Q::Portable(_)`; here
+    /// we wrap a compound and check that the negation does not fold
+    /// through Sassi.
+    #[test]
+    fn predicate_not_wraps_in_q_negated() {
+        let inner: Q<Fake> = Q::Compound {
+            op: crate::query::q::CompoundOp::And,
+            parts: vec![Q::always_true(), Q::always_false()],
+        };
+        let p: Predicate<Fake> = Predicate::from_q(inner);
+        let negated: Predicate<Fake> = !p;
+        match negated.into_q() {
+            Q::Negated(_) => {}
+            other => panic!("expected Q::Negated, got {other:?}"),
+        }
+    }
+
+    /// `Expr<bool>` lifts to `Q::Expression(_)` via the PR2b `IntoQ` impl
+    /// (defined in `query::q`). Locks the route used by
+    /// `f.location().explicit_pg_predicate().bounded_by(...)` after PR2b's
+    /// generalised filter signature accepts it directly.
+    #[test]
+    fn expr_bool_into_q_yields_q_expression() {
+        use crate::expr::Expr;
+        let expr: Expr<bool> = Expr::literal(true);
+        let q: Q<Fake> = expr.into_q();
+        match q {
+            Q::Expression(_) => {}
+            other => panic!("expected Q::Expression(_), got {other:?}"),
+        }
     }
 }

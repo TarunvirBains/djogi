@@ -498,6 +498,24 @@ pub enum DjogiError {
          up to 63 bytes; no embedded quotes or control characters)"
     )]
     InvalidRoleName(String),
+
+    /// A portable predicate could not be lowered to SQL. Phase 8eta PR2b
+    /// installs the direct-`Q<T>` SQL walker; portable predicate leaves
+    /// dispatch through [`crate::model::Model::__djogi_emit_field_predicate`]
+    /// (overridden by PR2d's macro on every PK-backed `#[model]`-emitted
+    /// impl). Failure modes — unknown model, unknown field, unknown
+    /// `LookupOp` for a known field, payload-shape mismatch, future
+    /// Sassi predicate variant — surface here as a typed
+    /// [`crate::query::PortablePredicateError`] before the SQL ever
+    /// touches the database.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] — a
+    /// portable-predicate lowering failure is a framework / model
+    /// invariant violation, not a transient database condition.
+    /// Retrying the same closure cannot turn an unknown field into a
+    /// known one.
+    #[error("predicate cannot be lowered to SQL: {0}")]
+    Predicate(#[from] crate::query::PortablePredicateError),
 }
 
 /// Bridge: convert `tokio_postgres::Error` into `DjogiError`.

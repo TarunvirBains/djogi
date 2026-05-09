@@ -22,25 +22,27 @@
 //!   identifier-validation pattern as
 //!   [`crate::query::field::__macro_support::__make_field_ref`]).
 //!
-//! # Design: store `Condition`, not a lowered `ExprNode` tree
+//! # Design: store the queryset's `Q<T>` behind an erased emitter
 //!
-//! The subquery's `WHERE` predicate is the parent queryset's
-//! accumulated [`Condition`] tree, cloned in at `Subquery::new` /
-//! `Exists::new` construction time and carried verbatim on the
-//! [`crate::expr::node::SubqueryNode`] payload. Emission reuses the
-//! shipped [`crate::query::sql::emit_condition`] walk.
+//! Phase 8eta PR2b — the subquery's `WHERE` predicate is the parent
+//! queryset's accumulated `Q<T>` tree, wrapped in an
+//! [`crate::expr::node::ErasedSubqueryPredicate`] handle and carried on
+//! the [`crate::expr::node::SubqueryNode`] payload. Emission flows
+//! through the direct-`Q<T>` SQL walker
+//! (`crate::query::sql::emit_q::<T>`), so portable root-field
+//! predicates inside a subquery emit through
+//! `Model::__djogi_emit_field_predicate` (PR2d's macro override) without
+//! ever round-tripping through `q_to_condition`.
 //!
-//! **Why not lower to `ExprNode`?** The condition tree carries a full
-//! [`crate::query::condition::LookupOp`] vocabulary — ILIKE, BETWEEN,
-//! IN, IS NULL, regex — every one of which already has a matching
-//! emitter arm. Lowering into `ExprNode` would mean duplicating every
-//! op arm on the expression side, which in turn would drift over time
-//! as [`LookupOp`](crate::query::condition::LookupOp) grows new
-//! variants. Storing the `Condition` directly lets `emit_condition` stay
-//! the single source of truth for every filter-side lookup, inside or
-//! outside a subquery. The tradeoff — one structural `Clone` at
-//! subquery-build time — is negligible compared to the duplicated-emitter
-//! maintenance burden.
+//! **Why type-erase rather than parameterise the node?** `SubqueryNode`
+//! is a variant inside `ExprNode`, which itself is the type-erased
+//! payload behind `Expr<V>`. Threading a `T` parameter through
+//! `ExprNode` would propagate the model bound to every `Expr` user.
+//! Wrapping the `Q<T>` behind a `dyn SubqueryPredicateEmitter` keeps the
+//! expression IR model-parameter-free while preserving the trusted-
+//! provenance shape of the inner predicate. The trait object's `emit`
+//! method drives `query::sql::emit_q::<T>` from the model-knowing side,
+//! inside the constructor that captures `T`.
 //!
 //! # Why typed `OuterRef<M, V>` (plan Q12 = B)
 //!
@@ -84,7 +86,7 @@
 //! Phase 8+ enhancement. See `docs/roadmap/future-work.md` §4.7.
 
 use crate::expr::Expr;
-use crate::expr::node::{ExprNode, SubqueryNode};
+use crate::expr::node::{ErasedSubqueryPredicate, ExprNode, SubqueryNode};
 use crate::model::Model;
 use crate::query::field::FieldRef;
 use crate::query::queryset::QuerySet;
@@ -165,13 +167,14 @@ impl<T: Model, V> Subquery<T, V> {
             node: SubqueryNode {
                 table: T::table_name(),
                 select_column: Some(column.column()),
-                // Cluster 8γ Stage 2 (T6.9): `qs.condition` is `Q<T>`
-                // post-flip. The subquery WHERE clause still consumes
-                // `Condition`, so lower through the bridge before
-                // handing off. SQL parity: identity round-trip on
-                // `Q::Condition(_)`, byte-identical Condition tree
-                // shape on every other variant.
-                where_clause: condition_to_opt(crate::query::q::q_to_condition(qs.condition)),
+                // Phase 8eta PR2b: store the queryset's `Q<T>` behind an
+                // erased emitter handle so portable root-field predicates
+                // emit through `query::sql::emit_q` without round-tripping
+                // through `q_to_condition`. Vacuous-truth queries (no
+                // filters chained) collapse to `None` so the emitter
+                // skips the `WHERE` clause entirely — same logical
+                // shape Subquery emission produced before the rewrite.
+                where_clause: q_to_subquery_opt::<T>(qs.condition),
             },
             _phantom: PhantomData,
         }
@@ -254,13 +257,12 @@ impl Exists {
             node: SubqueryNode {
                 table: T::table_name(),
                 select_column: None,
-                // Cluster 8γ Stage 2 (T6.9): `qs.condition` is `Q<T>`
-                // post-flip. The subquery WHERE clause still consumes
-                // `Condition`, so lower through the bridge before
-                // handing off. SQL parity: identity round-trip on
-                // `Q::Condition(_)`, byte-identical Condition tree
-                // shape on every other variant.
-                where_clause: condition_to_opt(crate::query::q::q_to_condition(qs.condition)),
+                // Phase 8eta PR2b: store the queryset's `Q<T>` behind
+                // an erased emitter handle. EXISTS still emits `SELECT
+                // 1` from the inner subquery; only the WHERE body
+                // changes shape vs the pre-flip `Option<Condition>`
+                // storage.
+                where_clause: q_to_subquery_opt::<T>(qs.condition),
             },
         }
     }
@@ -408,31 +410,58 @@ impl<M: Model, V> OuterRef<M, V> {
     }
 }
 
-// ── Condition → Option<Condition> helper ──────────────────────────────
+// ── Q<T> → Option<ErasedSubqueryPredicate> helper ─────────────────────
 //
-// `Condition::True` is the accumulator's identity value; storing it
-// verbatim on a `SubqueryNode.where_clause` slot would force the
-// emitter to render `WHERE TRUE` on every filter-less subquery. Stripping
-// the identity here keeps the emitted SQL clean without a special case
-// in the emitter itself.
+// Phase 8eta PR2b — replaces the pre-flip `condition_to_opt` helper.
+// Vacuous-truth `Q<T>` queries (e.g. an unfiltered queryset whose
+// condition is `Q::Portable(PortablePredicate::True)`) collapse to
+// `None` so the subquery emitter skips the `WHERE` clause entirely on
+// filter-less subqueries — same observable behaviour as the pre-flip
+// `condition_to_opt`. Non-trivial queries are wrapped in an
+// `ErasedSubqueryPredicate` handle so subquery emission flows through
+// the direct-`Q<T>` SQL walker (`query::sql::emit_q`).
 
-/// Collapse `Condition::True` (the accumulator identity) into `None` so
-/// the emitter skips the `WHERE` clause entirely on a filter-less
-/// queryset. Non-trivial conditions pass through unchanged.
-///
-/// Why the collapse: the subquery emitter conditionally emits `WHERE
-/// <cond>` based on `Option::is_some`. `Condition::True` would otherwise
-/// render as `WHERE TRUE`, which is a semantic no-op but visually noisy
-/// in query logs and wastes a planner cycle evaluating the trivial
-/// predicate. Callers who explicitly want "all rows of the inner
-/// table" (e.g. `Exists::new(T::objects())`) get the short form.
-fn condition_to_opt(
-    cond: crate::query::condition::Condition,
-) -> Option<crate::query::condition::Condition> {
-    if cond.is_vacuously_true() {
+/// Collapse a vacuous `Q<T>` into `None` and otherwise wrap the predicate
+/// in an `ErasedSubqueryPredicate` handle. Used by both [`Subquery::new`]
+/// and [`Exists::new`] so subquery and EXISTS emission share one
+/// identity-folding path.
+fn q_to_subquery_opt<T: Model>(q: crate::query::q::Q<T>) -> Option<ErasedSubqueryPredicate> {
+    if is_vacuously_true(&q) {
         None
     } else {
-        Some(cond)
+        Some(ErasedSubqueryPredicate::from_q::<T>(q))
+    }
+}
+
+/// Test whether a `Q<T>` is structurally vacuously TRUE. Mirrors the
+/// `query::sql::q_is_vacuously_true` helper (kept module-private there);
+/// duplicating the small walker here keeps `expr::subquery` from reaching
+/// across crate-private boundaries while the legacy SQL path remains in
+/// transition.
+fn is_vacuously_true<T: Model>(q: &crate::query::q::Q<T>) -> bool {
+    use crate::query::q::{CompoundOp, Q};
+    match q {
+        Q::Portable(p) => match p.inner_ref() {
+            sassi::BasicPredicate::True => true,
+            sassi::BasicPredicate::And(parts) => parts
+                .iter()
+                .all(|c| matches!(c, sassi::BasicPredicate::True)),
+            _ => false,
+        },
+        Q::Condition(c) => c.is_vacuously_true(),
+        Q::Compound {
+            op: CompoundOp::And,
+            parts,
+        } => parts.iter().all(is_vacuously_true),
+        Q::Negated(inner) => match inner.as_ref() {
+            Q::Portable(p) => matches!(p.inner_ref(), sassi::BasicPredicate::False),
+            Q::Compound {
+                op: CompoundOp::Or,
+                parts,
+            } => parts.is_empty(),
+            _ => false,
+        },
+        _ => false,
     }
 }
 
@@ -590,12 +619,11 @@ mod tests {
     #[test]
     fn exists_no_filter_emits_bare_select_one() {
         // Exists::new(Entry::objects()).as_expr() — no WHERE clause
-        // because `Condition::True` collapses to `None` at
-        // construction.
+        // because vacuous-true Q collapses to `None` at construction.
         let qs: QuerySet<Entry> = QuerySet::new();
         let expr = Exists::new(qs).as_expr();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &expr.node);
+        emit_expr(&mut qb, &expr.node).expect("subquery emission");
         let sql = qb.sql();
         assert_eq!(sql.trim(), "EXISTS (SELECT 1 FROM entries)", "got: {sql}");
     }
@@ -614,7 +642,7 @@ mod tests {
             QuerySet::new().filter_expr(|_| inner_col.as_expr().eq(outer_ref.as_expr()));
         let expr = Exists::new(qs).as_expr();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &expr.node);
+        emit_expr(&mut qb, &expr.node).expect("expression emission");
         let sql = qb.sql();
         assert_eq!(
             sql.trim(),
@@ -632,7 +660,7 @@ mod tests {
         let qs: QuerySet<Entry> = QuerySet::new().filter(|_| memo.eq("opening".to_string()));
         let expr = Subquery::new(qs, id_col).as_expr();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &expr.node);
+        emit_expr(&mut qb, &expr.node).expect("expression emission");
         let sql = qb.sql();
         // One bind for the "opening" literal — assert structural shape
         // with the bind placeholder.
@@ -650,7 +678,7 @@ mod tests {
         let r: OuterRef<Ledger, i64> = OuterRef::new("id");
         let expr: Expr<i64> = r.as_expr();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &expr.node);
+        emit_expr(&mut qb, &expr.node).expect("expression emission");
         assert_eq!(qb.sql().trim(), "id", "got: {}", qb.sql());
     }
 

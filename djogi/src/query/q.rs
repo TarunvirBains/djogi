@@ -2,15 +2,16 @@
 //!
 //! `Q<T>` is the substrate adopters compose to filter `QuerySet<T>`.
 //! It composes through Rust's standard bitwise operators (`&` / `|`
-//! / `^` / `!`, desugaring to AND / OR / XOR / NOT) and lifts
-//! directly from `sassi::BasicPredicate<T>` for Rust-evaluable
-//! predicates.
+//! / `^` / `!`, desugaring to AND / OR / XOR / NOT) and carries
+//! Djogi-trusted [`PortablePredicate<T>`] leaves for Rust-evaluable
+//! predicates (Phase 8eta PR2b — replaces the pre-PR2b
+//! `Q::Basic(BasicPredicate<T>)` raw-Sassi ingress).
 //!
 //! # Variant grammar
 //!
 //! | Variant            | Surface                            | Where it evaluates |
 //! |--------------------|------------------------------------|--------------------|
-//! | `Q::Basic(p)`      | `BasicPredicate<T>` from sassi     | Rust + SQL         |
+//! | `Q::Portable(p)`   | Djogi `PortablePredicate<T>`       | Rust + SQL         |
 //! | `Q::Ilike(f, s)`   | `col ILIKE $1`                     | SQL only           |
 //! | `Q::JsonbPath(l)`  | `(col->'a')::cast op $1`           | SQL only           |
 //! | `Q::Regex(...)`    | `col ~ $1` / `col ~* $1` (POSIX)   | SQL only           |
@@ -30,10 +31,10 @@
 //! tighter than OR). So
 //!
 //! ```ignore
-//! Q::Basic(...) ^ Q::Ilike(...) | Q::Negated(...)
+//! Q::Portable(...) ^ Q::Ilike(...) | Q::Negated(...)
 //! ```
 //!
-//! parses as `(Basic ^ Ilike) | Negated`. The trybuild compile-pass
+//! parses as `(Portable ^ Ilike) | Negated`. The trybuild compile-pass
 //! `phase8_q_algebra_xor_precedence.rs` (T6.11) locks the parse at
 //! the type level; runtime tests
 //! `q_operator_precedence_*` in `query::q::tests` lock the resulting
@@ -41,21 +42,22 @@
 //!
 //! # Internal compound nodes — when the substrate uses what
 //!
-//! Pure-Basic compositions short-circuit through sassi's flattening
-//! reducer. `Q::from(a) & Q::from(b)` produces a single
-//! `Q::Basic(BasicPredicate::And(vec![a, b]))` rather than wrapping
-//! in `Q::Compound`. Mixed-operand compositions (at least one side
-//! is not `Q::Basic`) lift to:
+//! Pure-Portable compositions short-circuit through Sassi's flattening
+//! reducer (via the trusted [`PortablePredicate`] wrapper).
+//! `Q::Portable(a) & Q::Portable(b)` produces a single
+//! `Q::Portable(PortablePredicate::And(vec![a, b]))` rather than wrapping
+//! in `Q::Compound`. Mixed-operand compositions (at least one side is
+//! not `Q::Portable`) lift to:
 //!
 //! - `Q::Compound { op: And | Or, parts: Vec<Q<T>> }` for the
 //!   associative operators (And/Or). Flattens on construction:
 //!   `(a & b) & c` produces a 3-element `parts` Vec rather than a
 //!   nested binary tree.
 //! - `Q::Xor(Box<Q<T>>, Box<Q<T>>)` for XOR — non-associative, so
-//!   flattening would silently re-associate. Mirrors sassi's
+//!   flattening would silently re-associate. Mirrors Sassi's
 //!   `BasicPredicate::Xor(Box, Box)` shape.
-//! - `Q::Negated(Box<Q<T>>)` for NOT over non-Basic operands.
-//!   Pure-Basic negation rides sassi's `Not` (which collapses
+//! - `Q::Negated(Box<Q<T>>)` for NOT over non-Portable operands.
+//!   Pure-Portable negation rides Sassi's `Not` (which collapses
 //!   double-negation in place); mixed wraps. `!Q::Negated(inner)`
 //!   collapses to `*inner` to avoid stacked `NOT NOT` SQL.
 //!
@@ -95,9 +97,11 @@
 //! 15 Rust-evaluable lookup operators (`Eq`, `Neq`, `Gt`, `Gte`, `Lt`,
 //! `Lte`, `In`, `NotIn`, `IsNull`, `IsNotNull`, `Between`, `IContains`,
 //! `IStartsWith`, `IEndsWith`, `IExact`) lift to
-//! `sassi::BasicPredicate::Field` and ride through `Q::Basic`. The 2
-//! SQL-only operators (`Regex`, `IRegex` — Postgres POSIX `~` / `~*`)
-//! stay djogi-side as `Q::Regex(field, pattern, case_sensitive)`.
+//! Djogi's [`PortablePredicate<T>`] (which wraps a trusted
+//! `sassi::BasicPredicate::Field` underneath) and ride through
+//! `Q::Portable`. The 2 SQL-only operators (`Regex`, `IRegex` — Postgres
+//! POSIX `~` / `~*`) stay djogi-side as
+//! `Q::Regex(field, pattern, case_sensitive)`.
 //!
 //! The split is load-bearing per `decisions.md` rows 107 + 108 and the
 //! `feedback_no_regex_in_djogi.md` memory anchor. Lifting `Regex` /
@@ -105,18 +109,34 @@
 //! which the framework forbids. Trybuild fixture
 //! `phase8_lookup_op_regex_lifted_to_basic_predicate.rs` (T6.10) locks
 //! the rule at the type level.
+//!
+//! # Phase 8eta PR2b — `Q::Portable` substrate flip
+//!
+//! Pre-PR2b, `Q::Basic(BasicPredicate<T>)` accepted any raw
+//! `sassi::BasicPredicate<T>` constructed by downstream code. Raw Sassi
+//! predicates can pair forged column names with unrelated extractor
+//! closures (`Field::new("col_a", |x| &x.col_b)`), so trusting them at
+//! Djogi cache or SQL boundaries would let SQL emission target a
+//! different column from in-memory Punnu evaluation. PR2b replaces the
+//! variant with `Q::Portable(PortablePredicate<T>)`, where
+//! `PortablePredicate` carries a [`crate::query::field::DjogiFieldProvenance`]
+//! marker constructible only by Djogi-owned `DjogiField` /
+//! `DjogiPresentField` predicate methods. Public conversion impls for
+//! raw `BasicPredicate<T>` (`From<BasicPredicate<T>> for Q<T>` and
+//! `IntoQ<T> for BasicPredicate<T>`) are removed in the same slice.
 
 use crate::model::Model;
 use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
 use crate::query::field::FieldRef;
+use crate::query::predicate::PortablePredicate;
 use sassi::BasicPredicate;
 use std::ops::{BitAnd, BitOr, BitXor, Not};
 
-/// Public Q-algebra over model `T`. Wraps `sassi::BasicPredicate<T>`
-/// for Rust-evaluable predicates plus djogi-only SQL extensions
-/// (ILIKE, JSONB path, Postgres POSIX regex, expression IR escape
-/// hatch, array operators). `Q::Expression` is the single escape
-/// hatch for any `Expr<bool>` — that includes FTS via
+/// Public Q-algebra over model `T`. Wraps Djogi-trusted
+/// [`PortablePredicate<T>`] for Rust-evaluable predicates plus djogi-only
+/// SQL extensions (ILIKE, JSONB path, Postgres POSIX regex, expression
+/// IR escape hatch, array operators). `Q::Expression` is the single
+/// escape hatch for any `Expr<bool>` — that includes FTS via
 /// `ExprNode::TsMatch` and spatial via `ExprNode::Spatial(...)` (see
 /// module docs for why FTS and spatial are not separate variants).
 ///
@@ -125,32 +145,34 @@ use std::ops::{BitAnd, BitOr, BitXor, Not};
 ///
 /// `T: Model` is the same bound as `FieldRef<T, V>` and `QuerySet<T>`
 /// — every variant either constructs a column ref or routes through
-/// the model's typed surface. `BasicPredicate<T>` itself does not
-/// require `T: Model` (it works on plain structs in sassi proper),
-/// but any meaningful djogi-side use of `Q::Basic` lifts the bound
-/// because the model carries the column-name registry the SQL
-/// emitter needs at lowering time.
+/// the model's typed surface.
 ///
 /// # Internal compound nodes
 ///
-/// Pure-Basic compositions short-circuit through sassi's flattening
-/// reducer, so `Q::from(a) & Q::from(b)` produces a single
-/// `Q::Basic(BasicPredicate::And(vec![a, b]))` rather than an outer
-/// `Q::Compound`. Mixed-operand compositions (at least one side is
-/// not `Q::Basic`) lift to `Q::Compound { op, parts }` for And / Or
-/// (which are associative and flatten cleanly), to `Q::Xor(a, b)`
-/// for XOR (non-associative — must stay binary), and to
-/// `Q::Negated(inner)` for Not over non-Basic operands. Pure-Basic
-/// negation rides sassi's `Not` (which collapses double-negation in
-/// place); only the mixed side needs the new variant.
-#[derive(Debug, Clone)]
+/// Pure-Portable compositions short-circuit through Sassi's flattening
+/// reducer (via the trusted [`PortablePredicate`] wrapper), so
+/// `Q::Portable(a) & Q::Portable(b)` produces a single
+/// `Q::Portable(PortablePredicate::And(...))` rather than an outer
+/// `Q::Compound`. Mixed-operand compositions (at least one side is not
+/// `Q::Portable`) lift to `Q::Compound { op, parts }` for And / Or (which
+/// are associative and flatten cleanly), to `Q::Xor(a, b)` for XOR
+/// (non-associative — must stay binary), and to `Q::Negated(inner)` for
+/// Not over non-Portable operands. Pure-Portable negation rides Sassi's
+/// `Not` (which collapses double-negation in place); only the mixed
+/// side needs the new variant.
 #[must_use = "Q<T> describes a filter predicate; use it in a QuerySet::filter_struct call or it has no effect"]
 #[non_exhaustive]
 pub enum Q<T: Model> {
-    /// Rust-evaluable predicates lifted from sassi.
-    /// `BasicPredicate::True` / `False` cover the vacuous identities
-    /// — `Q<T>` does not duplicate them as separate variants.
-    Basic(BasicPredicate<T>),
+    /// Rust-evaluable predicates carried in a trusted-provenance Djogi
+    /// wrapper around `sassi::BasicPredicate<T>`. Phase 8eta PR2b
+    /// replaces the pre-flip `Q::Basic(BasicPredicate<T>)` variant: the
+    /// wrapper's [`crate::query::field::DjogiFieldProvenance`] marker is
+    /// constructible only by Djogi-owned root field methods, so SQL
+    /// emission and Punnu cache evaluation cannot diverge through forged
+    /// column / extractor pairs. `PortablePredicate::True` / `False`
+    /// cover the vacuous identities — `Q<T>` does not duplicate them as
+    /// separate variants.
+    Portable(PortablePredicate<T>),
 
     /// `col ILIKE $1` — case-insensitive LIKE. SQL-only because LIKE
     /// pattern semantics (`%`, `_`, `\\` escape) are not reproducible
@@ -167,7 +189,7 @@ pub enum Q<T: Model> {
     ///
     /// **SQL-only** per `decisions.md` row 108. The match runs
     /// server-side; no Rust regex engine is linked. Lifting this
-    /// variant to `Q::Basic(BasicPredicate::Field(_))` would require
+    /// variant to `Q::Portable(BasicPredicate::Field(_))` would require
     /// a Rust regex engine and is forbidden — see `decisions.md`
     /// row 107 and `feedback_no_regex_in_djogi.md`. Trybuild fixture
     /// `phase8_lookup_op_regex_lifted_to_basic_predicate.rs` (T6.10)
@@ -220,9 +242,9 @@ pub enum Q<T: Model> {
     Condition(Condition),
 
     /// Mixed-operand And/Or — at least one side is not pure
-    /// `Q::Basic`. Pure-Basic And/Or short-circuits through
-    /// `Q::Basic(BasicPredicate::And(_))` to keep flattening +
-    /// evaluation centralised in sassi. Flattens on construction:
+    /// `Q::Portable`. Pure-Portable And/Or short-circuits through
+    /// `Q::Portable(PortablePredicate::And(_))` to keep flattening +
+    /// evaluation centralised in Sassi. Flattens on construction:
     /// `(a & b) & c` produces `Q::Compound { op: And, parts: [a, b, c] }`
     /// rather than a nested binary tree. An empty `Vec` is the vacuous
     /// identity (And empty = TRUE, Or empty = FALSE) but combinator
@@ -231,18 +253,106 @@ pub enum Q<T: Model> {
 
     /// SQL XOR over two Q-algebra terms. Non-associative — `(a ^ b)
     /// ^ c ≠ a ^ (b ^ c)` in general, so XOR cannot ride a
-    /// flattened `parts: Vec<_>` like And/Or do. Mirrors sassi's
+    /// flattened `parts: Vec<_>` like And/Or do. Mirrors Sassi's
     /// `BasicPredicate::Xor(Box, Box)` shape. The general-form SQL
     /// emit is `(NOT a AND b) OR (a AND NOT b)`; a boolean fast-path
     /// (`a <> b` when both operands are pre-evaluated booleans) is
     /// deferred to T11 per v3 §T6 deliverables bullet 3.
     Xor(Box<Q<T>>, Box<Q<T>>),
 
-    /// SQL `NOT (...)` over a non-Basic Q. Pure-Basic negation rides
-    /// sassi's `Not` (which collapses double-negation in place); this
-    /// variant only exists for the SQL-only side. `!Q::Negated(inner)`
-    /// collapses to `*inner` to avoid stacked `NOT NOT` nodes.
+    /// SQL `NOT (...)` over a non-Portable Q. Pure-Portable negation
+    /// rides Sassi's `Not` (which collapses double-negation in place);
+    /// this variant only exists for the SQL-only / mixed side.
+    /// `!Q::Negated(inner)` collapses to `*inner` to avoid stacked
+    /// `NOT NOT` nodes.
     Negated(Box<Q<T>>),
+}
+
+// Manual `Clone` for `Q<T>` — the derived `#[derive(Clone)]` would
+// impose `T: Clone` because `BasicPredicate<T>` (carried inside
+// `PortablePredicate<T>`) and other payloads use generic types
+// indirectly. Sassi's PR1 manual `BasicPredicate<T>: Clone` does not
+// require `T: Clone`; PR2a's `PortablePredicate<T>: Clone` and PR2b's
+// manual `Q<T>::Clone` carry that property up to the queryset surface
+// so `QuerySet::clone` works for any `T: Model` regardless of whether
+// the model derives `Clone`.
+//
+// Phase 8eta PR2b — explicit per-payload audit:
+//
+// - `Q::Portable(PortablePredicate<T>)` clones via PortablePredicate's
+//   manual `Clone` (no `T: Clone` bound).
+// - `Q::Ilike(FieldRef<T, String>, String)` — `FieldRef<T, V>` is `Copy`
+//   (phantom-typed marker) and `String: Clone` — no `T: Clone`.
+// - `Q::JsonbPath(JsonbPathLeaf)` — payload is `Clone` without `T`.
+// - `Q::Regex(FieldRef, String, bool)` — same shape as `Ilike`.
+// - `Q::Expression(Expr<bool>)` — `Expr<bool>: Clone`; the inner
+//   `ExprNode` is `Clone` via shallow `Box`/`Vec` clones. `SubqueryNode`
+//   payloads carry an `Arc<dyn SubqueryPredicateEmitter>` after PR2b's
+//   storage rewrite, so the model parameter never reaches a clone bound.
+// - `Q::Array(ArrayPredicate<T>)` — `Clone` via `PhantomData<fn() -> T>`
+//   plus owned leaf values; no `T: Clone` propagation.
+// - `Q::Condition(Condition)` — `Condition: Clone` unconditionally.
+// - `Q::Compound { op, parts }` — recurses through this manual impl.
+// - `Q::Xor(Box<Q<T>>, Box<Q<T>>)` / `Q::Negated(Box<Q<T>>)` — recurse.
+impl<T: Model> Clone for Q<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Portable(predicate) => Self::Portable(predicate.clone()),
+            Self::Ilike(field, value) => Self::Ilike(*field, value.clone()),
+            Self::JsonbPath(leaf) => Self::JsonbPath(leaf.clone()),
+            Self::Regex(field, value, case_sensitive) => {
+                Self::Regex(*field, value.clone(), *case_sensitive)
+            }
+            Self::Expression(expr) => Self::Expression(expr.clone()),
+            Self::Array(array) => Self::Array(array.clone()),
+            Self::Condition(condition) => Self::Condition(condition.clone()),
+            Self::Compound { op, parts } => Self::Compound {
+                op: *op,
+                parts: parts.clone(),
+            },
+            Self::Xor(left, right) => {
+                Self::Xor(Box::new((**left).clone()), Box::new((**right).clone()))
+            }
+            Self::Negated(inner) => Self::Negated(Box::new((**inner).clone())),
+        }
+    }
+}
+
+// Manual `Debug` for `Q<T>` — a derived `#[derive(Debug)]` would impose
+// `T: Debug` because `PortablePredicate<T>` / `BasicPredicate<T>` /
+// `ArrayPredicate<T>` all carry the type parameter through their
+// payload graphs. Phase 8eta PR2b's queryset Debug impl no longer
+// lowers through `q_to_condition_ref`, so this manual walker is the
+// only place portable field predicates print their `(field_name, op)`
+// shape without forcing every model to derive `Debug`.
+impl<T: Model> std::fmt::Debug for Q<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Portable(predicate) => f.debug_tuple("Portable").field(predicate).finish(),
+            Self::Ilike(field, value) => f
+                .debug_tuple("Ilike")
+                .field(&field.column())
+                .field(value)
+                .finish(),
+            Self::JsonbPath(leaf) => f.debug_tuple("JsonbPath").field(leaf).finish(),
+            Self::Regex(field, value, case_sensitive) => f
+                .debug_tuple("Regex")
+                .field(&field.column())
+                .field(value)
+                .field(case_sensitive)
+                .finish(),
+            Self::Expression(_) => f.debug_struct("Expression").finish_non_exhaustive(),
+            Self::Array(array) => f.debug_tuple("Array").field(array).finish(),
+            Self::Condition(condition) => f.debug_tuple("Condition").field(condition).finish(),
+            Self::Compound { op, parts } => f
+                .debug_struct("Compound")
+                .field("op", op)
+                .field("parts", parts)
+                .finish(),
+            Self::Xor(left, right) => f.debug_tuple("Xor").field(left).field(right).finish(),
+            Self::Negated(inner) => f.debug_tuple("Negated").field(inner).finish(),
+        }
+    }
 }
 
 /// Operator marker for `Q::Compound`. Restricted to the associative
@@ -276,7 +386,6 @@ pub enum CompoundOp {
 /// `#[non_exhaustive]` so future array operators (`array_length`,
 /// `cardinality`, custom GIN/GiST indexable ops) can be added
 /// without breaking downstream pattern matches.
-#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum ArrayPredicate<T: Model> {
     /// `col @> $1` — array contains.
@@ -288,6 +397,33 @@ pub enum ArrayPredicate<T: Model> {
     ),
     /// `col && $1` — array overlap.
     Overlap(crate::array::ArrayOverlapLeaf, std::marker::PhantomData<T>),
+}
+
+// Phase 8eta PR2b — manual `Clone` / `Debug` for `ArrayPredicate<T>`.
+// The derived versions impose `T: Clone` / `T: Debug` via the
+// `PhantomData<T>` carriers, which would propagate virally through
+// `Q<T>: Clone` / `Q<T>: Debug` and force every model to derive both.
+// The leaf payloads themselves carry no `T`-bound state — they own
+// only the column name and a typed bind vector — so manual impls are
+// trivial and remove the unwanted bound.
+impl<T: Model> Clone for ArrayPredicate<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Contains(leaf, _) => Self::Contains(leaf.clone(), std::marker::PhantomData),
+            Self::ContainedBy(leaf, _) => Self::ContainedBy(leaf.clone(), std::marker::PhantomData),
+            Self::Overlap(leaf, _) => Self::Overlap(leaf.clone(), std::marker::PhantomData),
+        }
+    }
+}
+
+impl<T: Model> std::fmt::Debug for ArrayPredicate<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Contains(leaf, _) => f.debug_tuple("Contains").field(leaf).finish(),
+            Self::ContainedBy(leaf, _) => f.debug_tuple("ContainedBy").field(leaf).finish(),
+            Self::Overlap(leaf, _) => f.debug_tuple("Overlap").field(leaf).finish(),
+        }
+    }
 }
 
 // ── `From` impls — array leaves lift into `ArrayPredicate<T>` then `Q<T>` ────
@@ -352,19 +488,37 @@ impl<T: Model> From<crate::array::ArrayOverlapLeaf> for Q<T> {
 // enforcement of v3 §T6 Codex review's "no `Into<Condition>` ambiguity"
 // rule.
 //
-// Three impls ship today:
+// Phase 8eta PR2b — the impl set is now:
 //
 // 1. `Q<T>` — identity. `filter_struct(my_q)` is the canonical caller.
-// 2. `BasicPredicate<T>` — sassi's universal Rust-evaluable predicate.
-//    Adopters can pass a sassi predicate directly without naming
-//    `Q::Basic(_)`; the impl wraps it for them.
-// 3. The `{Model}Filter` programmatic builder — emitted by the
+// 2. `Condition` — legacy bridge for closure-side `f.col.eq(v)` callers
+//    that still produce `Condition`. Wraps as `Q::Condition(_)` so the
+//    SQL emitter sees the same tree the pre-flip path produced.
+// 3. `PortablePredicate<T>` — Djogi-trusted Rust-evaluable predicate
+//    wrapper. Lifts to `Q::Portable(_)` so portable predicates flow
+//    through `QuerySet::filter` / `filter_struct` without requiring the
+//    caller to spell `Q::Portable(...)` at the callsite.
+// 4. `Predicate<T>` — operator-matrix shell wrapping a `Q<T>`. Mixed
+//    `PortablePredicate` ↔ `Condition` compositions surface here.
+// 5. `crate::expr::Expr<bool>` — typed expression boolean. Lifts to
+//    `Q::Expression(_)` so `f.location().explicit_pg_predicate().bounded_by(...)`
+//    composes through `QuerySet::filter` without a separate
+//    `filter_expr` call.
+// 6. The `{Model}Filter` programmatic builder — emitted by the
 //    `#[derive(Model)]` macro alongside the existing `ModelFilter`
 //    impl. The bridge folds `into_clauses()` through the existing
 //    `clauses_into_condition` helper and lifts the result via
 //    `Q::Condition(_)`. SQL parity with the pre-T6.9 `Condition`
 //    substrate is exact because the lowering bridge round-trips the
 //    `Condition` as the identity (see `q_to_condition` for the contract).
+//
+// Pre-PR2b `IntoQ<T> for sassi::BasicPredicate<T>` and
+// `From<sassi::BasicPredicate<T>> for Q<T>` are deliberately removed:
+// raw Sassi predicates can pair forged column names with unrelated
+// extractor closures (`Field::new("col_a", |x| &x.col_b)`), so trusting
+// them at Djogi cache boundaries would let SQL emission and Punnu
+// evaluation diverge. Adopters reach the wrapper through Djogi root
+// field methods (`f.col.eq(v) -> PortablePredicate<T>`) instead.
 
 mod sealed_into_q {
     /// Crate-private seal. Only djogi (and macro-emitted code routed
@@ -406,15 +560,43 @@ impl<T: Model> IntoQ<T> for Q<T> {
     }
 }
 
-impl<T: Model> sealed_into_q::Sealed for BasicPredicate<T> {}
-impl<T: Model> IntoQ<T> for BasicPredicate<T> {
-    /// Lift a sassi `BasicPredicate<T>` directly into `Q<T>` without
-    /// requiring the adopter to name `Q::Basic(_)` at the callsite.
-    /// Identical effect to `Q::from(p)` / `p.into()`; this impl exists
-    /// so `filter_struct(my_basic)` reads naturally.
+// Phase 8eta PR2b — sealed `IntoQ<T> for Condition`.
+//
+// Lets the legacy closure-side filter API (`f.col.eq(v)` returning
+// `Condition`) compose through the generalised `QuerySet::filter` /
+// `filter_struct` signatures (`P: IntoQ<T>`). Wrapping as
+// `Q::Condition(_)` preserves the SQL-parity contract: the lowering
+// bridge round-trips `Q::Condition(_)` as the identity, so the SQL
+// emitter sees the same `Condition` tree the pre-flip path produced.
+//
+// The `Condition` type is locally owned by Djogi (`crate::query::condition`),
+// so this impl satisfies Rust's orphan rules without reaching for the
+// crate-private seal.
+impl sealed_into_q::Sealed for Condition {}
+impl<T: Model> IntoQ<T> for Condition {
     #[inline]
     fn into_q(self) -> Q<T> {
-        Q::Basic(self)
+        Q::Condition(self)
+    }
+}
+
+// Phase 8eta PR2b — sealed `IntoQ<T> for Expr<bool>`.
+//
+// Keeps explicit-PG spatial expression predicates such as
+// `f.location().explicit_pg_predicate().bounded_by(...)` and
+// `f.location().explicit_pg_predicate().distance_to(&center).lt(5000.0)`
+// on the ordinary `QuerySet::filter` path: the typed `Expr<bool>` lifts
+// into `Q::Expression(_)`, the SQL emitter renders it through
+// `expr::sql::emit_expr`, and `.try_portable()` / `.cache(...)` /
+// `.refresh_into(...)` reject `Q::Expression(_)` as cache-invalid (PR4).
+//
+// Sealed: `Expr<bool>` is local to Djogi (`crate::expr::Expr`), so the
+// impl satisfies orphan rules without exposing the seal trait.
+impl sealed_into_q::Sealed for crate::expr::Expr<bool> {}
+impl<T: Model> IntoQ<T> for crate::expr::Expr<bool> {
+    #[inline]
+    fn into_q(self) -> Q<T> {
+        Q::Expression(self)
     }
 }
 
@@ -435,29 +617,32 @@ impl<T: Model> IntoQ<T> for BasicPredicate<T> {
 // ── `Q<T>` constructors + operator overloads ─────────────────────────────────
 
 impl<T: Model> Q<T> {
-    /// Vacuous-truth identity — `Q::Basic(BasicPredicate::True)`.
-    /// Helper for reductions; matches the existing `Condition::True`
-    /// idiom and is used by `QuerySet::default()` once T6.9 swaps the
-    /// substrate.
+    /// Vacuous-truth identity — wraps a trusted-provenance Djogi
+    /// [`PortablePredicate::always_true`] so unfiltered querysets stay
+    /// SQL-emittable and Punnu-portable through the same wrapper as
+    /// every other portable predicate. Phase 8eta PR2b swaps the
+    /// pre-flip `Q::Basic(BasicPredicate::True)` body to
+    /// `Q::Portable(PortablePredicate::always_true())`.
     pub fn always_true() -> Self {
-        Q::Basic(BasicPredicate::True)
+        Q::Portable(PortablePredicate::always_true())
     }
 
-    /// Vacuous-falsehood identity — `Q::Basic(BasicPredicate::False)`.
+    /// Vacuous-falsehood identity — `Q::Portable(PortablePredicate::always_false())`.
+    /// Used by `QuerySet::none()` after Phase 8eta PR4 makes the
+    /// portable boundary explicit.
     pub fn always_false() -> Self {
-        Q::Basic(BasicPredicate::False)
+        Q::Portable(PortablePredicate::always_false())
     }
 }
 
-impl<T: Model> From<BasicPredicate<T>> for Q<T> {
-    /// Lift a sassi `BasicPredicate<T>` into the djogi `Q<T>` algebra
-    /// without duplicating the reducer. `From` is the canonical
-    /// idiomatic conversion; `.into()` at adopter callsites picks
-    /// this up automatically — `let q: Q<V> = my_basic.into();`.
-    fn from(p: BasicPredicate<T>) -> Self {
-        Q::Basic(p)
-    }
-}
+// Phase 8eta PR2b — `From<sassi::BasicPredicate<T>> for Q<T>` is
+// deliberately removed. Raw Sassi predicates carry attacker-controlled
+// column names + arbitrary extractor closures, which would let SQL
+// emission and Punnu evaluation diverge through the cache boundary.
+// Djogi-trusted predicates flow through the typed root field surface
+// (`DjogiField::eq(...) -> PortablePredicate<T>`) and from there into
+// `Q<T>` via `IntoQ<T> for PortablePredicate<T>` (defined in
+// `query::predicate`).
 
 // `BitAnd` / `BitOr` / `BitXor` / `Not` impls — std already marks the
 // trait methods `#[must_use]` (their result is the only meaningful
@@ -468,45 +653,47 @@ impl<T: Model> From<BasicPredicate<T>> for Q<T> {
 
 impl<T: Model> BitAnd for Q<T> {
     type Output = Q<T>;
-    /// SQL AND. Pure-Basic operands flatten through sassi's
-    /// `BasicPredicate::bitand` so chained `a & b & c` produces a
-    /// single `Q::Basic(BasicPredicate::And(vec![a, b, c]))` — keeping
-    /// the flattened-And invariant centralised in sassi. Mixed
-    /// operands lift to `Q::Compound { op: And, parts }` and flatten
-    /// when either side is already a Compound-And.
+    /// SQL AND. Pure-Portable operands flatten through Sassi's
+    /// `BasicPredicate::bitand` (via the trusted [`PortablePredicate`]
+    /// wrapper) so chained `a & b & c` produces a single
+    /// `Q::Portable(PortablePredicate::And(vec![a, b, c]))` — keeping the
+    /// flattened-And invariant centralised in Sassi. Mixed operands lift
+    /// to `Q::Compound { op: And, parts }` and flatten when either side
+    /// is already a Compound-And.
     fn bitand(self, rhs: Self) -> Q<T> {
-        compose_compound(self, rhs, CompoundOp::And, BasicPredicate::bitand)
+        compose_compound::<T, _>(self, rhs, CompoundOp::And, |a, b| a & b)
     }
 }
 
 impl<T: Model> BitOr for Q<T> {
     type Output = Q<T>;
-    /// SQL OR. Dual of `BitAnd::bitand` — pure-Basic flattens through
-    /// sassi; mixed operands lift to `Q::Compound { op: Or, parts }`.
+    /// SQL OR. Dual of `BitAnd::bitand` — pure-Portable flattens through
+    /// Sassi via the trusted wrapper; mixed operands lift to
+    /// `Q::Compound { op: Or, parts }`.
     fn bitor(self, rhs: Self) -> Q<T> {
-        compose_compound(self, rhs, CompoundOp::Or, BasicPredicate::bitor)
+        compose_compound::<T, _>(self, rhs, CompoundOp::Or, |a, b| a | b)
     }
 }
 
 impl<T: Model> BitXor for Q<T> {
     type Output = Q<T>;
-    /// SQL XOR. Pure-Basic operands ride sassi's
-    /// `BasicPredicate::bitxor` (which itself produces
-    /// `BasicPredicate::Xor(Box, Box)`). Mixed operands lift to
-    /// `Q::Xor(Box, Box)` directly. **Non-associative** — XOR
-    /// chains do NOT flatten into a `Vec<_>` (unlike And/Or), so
-    /// `(a ^ b) ^ c` is a left-leaning binary tree, not a 3-element
-    /// flat node. Mirrors sassi's choice (`BasicPredicate::Xor` is
-    /// also binary).
+    /// SQL XOR. Pure-Portable operands ride Sassi's
+    /// `BasicPredicate::bitxor` (via the trusted [`PortablePredicate`]
+    /// wrapper, which produces a `BasicPredicate::Xor(Box, Box)`
+    /// internally). Mixed operands lift to `Q::Xor(Box, Box)` directly.
+    /// **Non-associative** — XOR chains do NOT flatten into a `Vec<_>`
+    /// (unlike And/Or), so `(a ^ b) ^ c` is a left-leaning binary tree,
+    /// not a 3-element flat node. Mirrors Sassi's choice
+    /// (`BasicPredicate::Xor` is also binary).
     ///
     /// **Operator precedence reminder.** Rust binds `&` tighter than
     /// `^`, and `^` tighter than `|`. So
-    /// `Q::from(a) ^ Q::Ilike(...) | Q::Expression(...)` parses as
-    /// `(Q::from(a) ^ Q::Ilike(...)) | Q::Expression(...)`. T6.11
+    /// `Q::Portable(...) ^ Q::Ilike(...) | Q::Expression(...)` parses as
+    /// `(Q::Portable(...) ^ Q::Ilike(...)) | Q::Expression(...)`. T6.11
     /// trybuild compile-pass locks this at the type level.
     fn bitxor(self, rhs: Self) -> Q<T> {
         match (self, rhs) {
-            (Q::Basic(a), Q::Basic(b)) => Q::Basic(a ^ b),
+            (Q::Portable(a), Q::Portable(b)) => Q::Portable(a ^ b),
             (lhs, rhs) => Q::Xor(Box::new(lhs), Box::new(rhs)),
         }
     }
@@ -514,44 +701,44 @@ impl<T: Model> BitXor for Q<T> {
 
 impl<T: Model> Not for Q<T> {
     type Output = Q<T>;
-    /// SQL `NOT (...)`. Pure-Basic operands ride sassi's `Not`,
-    /// which collapses double-negation in place (`!!p == p`) and
-    /// flips `True` ↔ `False`. Mixed operands wrap in
-    /// `Q::Negated(...)`; `!Q::Negated(inner)` collapses to `*inner`
-    /// to avoid stacked `NOT NOT` nodes that would emit redundant
-    /// SQL parens. De Morgan's transformation is **not** applied
-    /// across `Q::Compound` — the SQL emitter renders
-    /// `Q::Negated(Q::Compound{...})` as `NOT (...)` directly,
-    /// matching the existing `Condition::Not(Condition::And(...))`
-    /// behavior.
+    /// SQL `NOT (...)`. Pure-Portable operands ride Sassi's `Not` (via
+    /// the trusted [`PortablePredicate`] wrapper), which collapses
+    /// double-negation in place (`!!p == p`) and flips `True` ↔ `False`.
+    /// Mixed operands wrap in `Q::Negated(...)`; `!Q::Negated(inner)`
+    /// collapses to `*inner` to avoid stacked `NOT NOT` nodes that would
+    /// emit redundant SQL parens. De Morgan's transformation is **not**
+    /// applied across `Q::Compound` — the SQL emitter renders
+    /// `Q::Negated(Q::Compound{...})` as `NOT (...)` directly, matching
+    /// the existing `Condition::Not(Condition::And(...))` behavior.
     fn not(self) -> Q<T> {
         match self {
-            Q::Basic(p) => Q::Basic(!p),
+            Q::Portable(p) => Q::Portable(!p),
             Q::Negated(inner) => *inner,
             other => Q::Negated(Box::new(other)),
         }
     }
 }
 
-/// And/Or composition shared between `BitAnd` and `BitOr`. Pure-Basic
-/// operands delegate to sassi's flattening reducer (passed in as
-/// `basic_op`); mixed operands lift to `Q::Compound { op, parts }`
-/// with the same flattening contract sassi uses internally:
-/// `(Compound{op, parts: l}, Compound{op, parts: r})` extends `l`
-/// with `r`, `(Compound{op, parts: l}, other)` pushes onto `l`,
-/// `(other, Compound{op, parts: r})` prepends, and the bare-binary
-/// case wraps `vec![lhs, rhs]`.
+/// And/Or composition shared between `BitAnd` and `BitOr`. Pure-Portable
+/// operands delegate to Sassi's flattening reducer (via the trusted
+/// [`PortablePredicate`] wrapper, passed in as `portable_op`); mixed
+/// operands lift to `Q::Compound { op, parts }` with the same flattening
+/// contract Sassi uses internally:
+/// `(Compound{op, parts: l}, Compound{op, parts: r})` extends `l` with
+/// `r`, `(Compound{op, parts: l}, other)` pushes onto `l`, `(other,
+/// Compound{op, parts: r})` prepends, and the bare-binary case wraps
+/// `vec![lhs, rhs]`.
 ///
 /// The `op` parameter is the Compound marker for the mixed path; the
-/// `basic_op` parameter is the sassi delegate for the pure-Basic
-/// path. Splitting the two avoids a `match (lhs, rhs, op)` tower at
-/// each callsite while keeping the shared shape DRY.
-fn compose_compound<T: Model, F>(lhs: Q<T>, rhs: Q<T>, op: CompoundOp, basic_op: F) -> Q<T>
+/// `portable_op` parameter is the Sassi delegate for the pure-Portable
+/// path. Splitting the two avoids a `match (lhs, rhs, op)` tower at each
+/// callsite while keeping the shared shape DRY.
+fn compose_compound<T: Model, F>(lhs: Q<T>, rhs: Q<T>, op: CompoundOp, portable_op: F) -> Q<T>
 where
-    F: FnOnce(BasicPredicate<T>, BasicPredicate<T>) -> BasicPredicate<T>,
+    F: FnOnce(PortablePredicate<T>, PortablePredicate<T>) -> PortablePredicate<T>,
 {
     match (lhs, rhs) {
-        (Q::Basic(a), Q::Basic(b)) => Q::Basic(basic_op(a, b)),
+        (Q::Portable(a), Q::Portable(b)) => Q::Portable(portable_op(a, b)),
         (
             Q::Compound {
                 op: lop,
@@ -585,79 +772,50 @@ where
     }
 }
 
-// ── `Q<T> → Condition` lowering bridge (one-way, transitional) ───────────────
+// ── `Q<T> → Condition` lowering bridge (legacy-only after PR2b) ──────────────
 //
-// T6.6 (Cluster 8γ Stage 2). Lowers any `Q<T>` into the legacy
-// [`Condition`] tree that the SQL emitter (`query::sql::emit_condition`)
-// already consumes. This is the **single point** where the two
-// substrates meet during the substrate flip:
+// Phase 8eta PR2b retires this bridge from production SQL emission.
+// `query::sql::emit_q` walks `&Q<T>` directly, calling
+// `query::portable::emit_portable_predicate` for `Q::Portable` leaves
+// (which dispatches through `Model::__djogi_emit_field_predicate`).
+// The bridge below lives on as an opt-in helper for legacy callers and
+// tests that still inspect the lowered `Condition` shape; PR2c audits
+// remaining callers and documents which sites are explicitly legacy
+// while the production path remains direct.
 //
-// - T6.9 swaps `QuerySet<T>::condition` from `Condition` to `Q<T>`.
-// - The SQL emitter still walks `Condition`, so every
-//   `emit_condition(acc, qs.condition.clone(), …)` call gets routed
-//   through `q_to_condition(...)` first.
-// - Character-for-character SQL parity is the contract: every
-//   `Q::Condition(_)`-wrapped legacy tree round-trips as the identity,
-//   and every `Q::*` algebra variant lowers to the same SQL the
-//   pre-flip code path produced.
-//
-// The direction is one-way by design. `Condition → Q<T>` would have to
-// reconstruct sassi's `BasicPredicate::Field` closure payload from a
-// type-erased leaf, which is not generally possible (the closure
-// captures a typed field-accessor). The legacy path that needs to feed
-// `Condition` into a `Q<T>`-shaped queryset uses `Q::Condition(_)` as
-// the lift, which preserves the original tree exactly.
+// **Important caveat.** The `BasicPredicate::Field(_)` arm of the
+// `q_to_condition` walker still panics (see `basic_predicate_to_condition`
+// for the rationale — Sassi's `FieldPredicate::new` is `pub(crate)` so
+// Djogi cannot reconstruct a `Condition::Leaf` here). Production SQL
+// emission no longer reaches that arm because `emit_q` short-circuits
+// `Q::Portable` through `query::portable::emit_portable_predicate`
+// before any `Q -> Condition` lowering would happen. Tests that
+// pattern-match on lowered `Condition` shape and only carry
+// vacuous/structural variants (`True`, `False`, compound nodes, etc.)
+// keep working through the bridge; tests that need to inspect a Field
+// leaf must drive SQL emission through the direct walker instead.
 
 /// Lower a [`Q<T>`] into the legacy [`Condition`] tree consumed by the
 /// SQL emitter.
 ///
-/// Used by `QuerySet<T>` after the T6.9 substrate flip: every
-/// `qs.condition` access in the SQL path goes through this function
-/// before reaching `emit_condition`. Every existing pre-flip test must
-/// produce **byte-identical** SQL post-flip — that contract is what
-/// makes `Q::Condition(_)` the load-bearing variant during the
-/// transition.
-///
-/// Lowering is total over the variants that exist today; the
-/// catch-all `_ => Condition::True` arm is defensive against
-/// `#[non_exhaustive]` extensions added in a sister cluster before
-/// this match learns about them. A debug-only `eprintln!` flags the
-/// fallthrough so missing emitter coverage is loud during
-/// development. Production builds silently degrade to the
-/// vacuous-truth identity rather than panic — the alternative is a
-/// runtime crash on an unrecognised algebra extension, which would
-/// destabilise the substrate refactor.
+/// **Phase 8eta PR2b — legacy-only.** The production SQL path uses
+/// `query::sql::emit_q` to walk `&Q<T>` directly without ever building
+/// a `Condition` tree from a portable predicate. This helper survives
+/// for legacy callers that still inspect the lowered shape (queryset
+/// reducer, a handful of unit tests that pre-date the direct walker).
 ///
 /// # XOR general form
 ///
 /// `Q::Xor(a, b)` lowers to `(NOT a AND b) OR (a AND NOT b)` — the
 /// boolean fast-path (`a <> b`) is deferred to T11 per v3 §T6
 /// deliverables bullet 3 / `cluster-8gamma-granular.md` §"Out-of-scope".
-/// Same identity sassi's `BasicPredicate::Xor` carries; the lowering
+/// Same identity Sassi's `BasicPredicate::Xor` carries; the lowering
 /// is identical whether the XOR rides `Q::Xor(_, _)` directly or
-/// `Q::Basic(BasicPredicate::Xor(_, _))`.
-//
-// `#[allow(dead_code)]` matches the T6.6 atomic-commit shape per
-// `feedback_atomic_commits.md`: the bridge ships by itself first so a
-// bisect that points here points at the lowering, not the wider
-// substrate flip. The first production caller lands in T6.7
-// (`QuerySet::filter_struct` accepts `Q<T>`); the SQL emitter starts
-// routing through here at T6.9. The unit tests below exercise every
-// variant before any caller depends on it.
-//
-// # By-value vs by-reference
-//
-// `q_to_condition` consumes the `Q<T>` and is the canonical
-// production caller (used by `filter_struct` / `exclude_struct`
-// after `filter.into_q()` produces an owned `Q<T>`). The SQL emit
-// path holds `&QuerySet<T>` and cannot consume — see
-// [`q_to_condition_ref`] for the reference-borrowing counterpart
-// that walks the algebra without requiring `T: Clone`. Both produce
-// byte-identical [`Condition`] trees by construction.
+/// `Q::Portable(PortablePredicate::Xor(_, _))`.
 #[allow(dead_code)]
 pub(crate) fn q_to_condition<T: Model>(q: Q<T>) -> Condition {
     match q {
-        Q::Basic(bp) => basic_predicate_to_condition(bp),
+        Q::Portable(p) => basic_predicate_to_condition(p.into_inner()),
         Q::Ilike(field, pattern) => Condition::Leaf(Leaf::new(
             field.column(),
             LookupOp::IContains,
@@ -818,39 +976,25 @@ fn xor_to_condition_basic<T: Model>(a: BasicPredicate<T>, b: BasicPredicate<T>) 
     ])
 }
 
-// ── Reference-borrowing lowering — `&Q<T> -> Condition` ──────────────────────
+// ── Reference-borrowing lowering — `&Q<T> -> Condition` (legacy-only) ────────
 //
-// T6.9 substrate flip companion. The SQL emit path holds
-// `&QuerySet<T>` and cannot consume `qs.condition`. Cloning the
-// queryset's condition would require `T: Clone` to propagate
-// virally through every terminal method (`fetch_all`, `count`,
-// `update`, `delete`, etc.) because sassi's `BasicPredicate<T>`
-// derives Clone and that derive imposes a `T: Clone` bound on the
-// generated impl — even though the Field variant's payload sits
-// behind `Arc` and the True / False variants carry no data at all.
+// Phase 8eta PR2b makes the production SQL path direct: `emit_q` walks
+// `&Q<T>` and emits `Q::Portable` leaves through the model hook
+// (`Model::__djogi_emit_field_predicate`) without ever building a
+// `Condition` shadow tree. The reference walker below is preserved as a
+// legacy helper for unit tests that still inspect the lowered
+// `Condition` shape; PR2c audits remaining callers.
 //
-// Walking by reference and producing a fresh [`Condition`] sidesteps
-// the bound: we never invoke `.clone()` on a `BasicPredicate<T>` or
-// any operand that carries the `T` parameter. `Condition` is
-// unconditionally `Clone`, so the `Q::Condition(_)` arm clones its
-// inner tree without trouble. Every other `Q<T>` variant either
-// recurses (Compound, Xor, Negated), reads `&'static str` plus an
-// owned non-`T`-bound payload (Ilike, Regex, JsonbPath, Array,
-// Expression), or is `BasicPredicate::Field(_)` which the bridge
-// reduces to `Condition::True` with a debug warning (see the
-// `basic_predicate_to_condition` arm — no shipped djogi FieldRef
-// path constructs that variant).
-//
-// SQL parity: the by-reference walker produces the **same**
-// [`Condition`] tree shape the by-value walker does. Both go through
-// the lowering tests in `query::q::tests`; the reference path is
-// asserted via `q_to_condition_ref_matches_q_to_condition` which
-// pins the parity contract at every variant.
+// The `BasicPredicate::Field(_)` arm panics through
+// `basic_predicate_ref_to_condition` (Sassi's `FieldPredicate::new` is
+// `pub(crate)`, so Djogi cannot reconstruct a `Condition::Leaf` here).
+// Production SQL emission never reaches the panic because direct-Q
+// emission short-circuits `Q::Portable` first.
 
 #[allow(dead_code)]
 pub(crate) fn q_to_condition_ref<T: Model>(q: &Q<T>) -> Condition {
     match q {
-        Q::Basic(bp) => basic_predicate_ref_to_condition(bp),
+        Q::Portable(p) => basic_predicate_ref_to_condition(p.inner_ref()),
         Q::Ilike(field, pattern) => Condition::Leaf(Leaf::new(
             field.column(),
             LookupOp::IContains,
@@ -965,14 +1109,17 @@ mod tests {
     // Minimal test-model. Same shape as the in-crate test models used
     // by `query::field::tests` — every async hook is `unreachable!()`
     // because the algebra-level tests never invoke them. The empty
-    // `Fields = ()` tuple is enough; `Q::Basic` / `Q::Ilike` etc. only
-    // need `M: Model`, not a populated field accessor surface.
+    // `Fields = ()` tuple is enough; `Q::Portable` / `Q::Ilike` etc.
+    // only need `M: Model`, not a populated field accessor surface.
     //
-    // `#[derive(Clone)]` on the marker is required because
-    // `BasicPredicate<T>` derives `Clone` (which propagates a `T: Clone`
-    // bound) and `Q<T>` therefore picks up the same bound. Real models
-    // typically derive `Clone` already; the bound only matters for
-    // these marker-only test types.
+    // Phase 8eta PR2b: the manual `Q<T>: Clone` and `PortablePredicate<T>:
+    // Clone` impls do NOT propagate `T: Clone`, so `TestModel` no longer
+    // needs to derive `Clone` for the algebra tests. `Debug` is similarly
+    // not required — `Q<T>` and `PortablePredicate<T>` carry manual
+    // `Debug` impls that stop at the structural-variant tag without
+    // touching `T`. Both bounds are kept here so older test bodies that
+    // print `Q<T>` payloads through `format!("{:?}", ...)` keep working
+    // without churn.
     #[derive(Clone, Debug)]
     struct TestModel;
 
@@ -1021,109 +1168,141 @@ mod tests {
         }
     }
 
-    /// `Q::Basic` constructs from a sassi `BasicPredicate` — the
-    /// load-bearing path for the §660 split.
-    #[test]
-    fn q_skeleton_constructs_basic_variant() {
-        let q: Q<TestModel> = Q::Basic(BasicPredicate::True);
-        assert!(matches!(q, Q::Basic(BasicPredicate::True)));
+    // Phase 8eta PR2b: helpers for the algebra tests below. All `Q<T>`
+    // construction in tests now goes through `Q::Portable(_)` with a
+    // `PortablePredicate<T>` payload, since `Q::Basic` and the public
+    // `From<BasicPredicate<T>> for Q<T>` impl have been retired in this
+    // slice. `PortablePredicate::always_true` / `always_false` are
+    // crate-private constructors that mint trusted-provenance vacuous
+    // wrappers without going through the `DjogiField` surface.
+    fn portable_true<T: Model>() -> Q<T> {
+        Q::Portable(PortablePredicate::<T>::always_true())
     }
 
-    /// `Q::Basic(BasicPredicate::False)` is the vacuous-falsehood
+    fn portable_false<T: Model>() -> Q<T> {
+        Q::Portable(PortablePredicate::<T>::always_false())
+    }
+
+    /// `Q::Portable` constructs from a `PortablePredicate<T>` — the
+    /// load-bearing path for the §660 split after Phase 8eta PR2b's
+    /// raw-`BasicPredicate<T>` ingress removal.
+    #[test]
+    fn q_skeleton_constructs_portable_variant() {
+        let q: Q<TestModel> = portable_true();
+        assert!(matches!(q, Q::Portable(_)));
+    }
+
+    /// `Q::Portable(PortablePredicate::always_false())` is the vacuous-falsehood
     /// identity. Locks the contract that `Q<T>` does not duplicate
     /// True/False as separate top-level variants.
     #[test]
-    fn q_skeleton_carries_basic_false() {
-        let q: Q<TestModel> = Q::Basic(BasicPredicate::False);
-        assert!(matches!(q, Q::Basic(BasicPredicate::False)));
+    fn q_skeleton_carries_portable_false() {
+        let q: Q<TestModel> = portable_false();
+        assert!(matches!(q, Q::Portable(_)));
     }
 
-    /// `Clone` and `Debug` derives sanity check — these are required
-    /// by the `Q::Compound { parts: Vec<Q<T>> }` shape that lands at
-    /// T6.5 (Vec needs Clone for cheap composition).
+    /// `Clone` and `Debug` sanity check on the manual impls. Phase 8eta
+    /// PR2b removes the derived versions because they would impose
+    /// `T: Clone` / `T: Debug` virally; the manual walkers cover every
+    /// payload without that bound.
     #[test]
     fn q_skeleton_is_clone_and_debug() {
-        let q: Q<TestModel> = Q::Basic(BasicPredicate::True);
+        let q: Q<TestModel> = portable_true();
         let _ = format!("{:?}", q.clone());
     }
 
-    /// Convenience constructor — sassi's `True` lifts to `Q::Basic`.
+    /// Convenience constructor — `Q::always_true()` produces a trusted
+    /// portable-true wrapper after the PR2b flip.
     #[test]
-    fn q_always_true_is_basic_true() {
+    fn q_always_true_is_portable_true() {
         let q: Q<TestModel> = Q::always_true();
-        assert!(matches!(q, Q::Basic(BasicPredicate::True)));
+        assert!(matches!(q, Q::Portable(_)));
     }
 
-    /// Dual: `always_false` is `Q::Basic(False)`.
+    /// Dual: `always_false` is `Q::Portable(PortablePredicate::always_false())`.
     #[test]
-    fn q_always_false_is_basic_false() {
+    fn q_always_false_is_portable_false() {
         let q: Q<TestModel> = Q::always_false();
-        assert!(matches!(q, Q::Basic(BasicPredicate::False)));
+        assert!(matches!(q, Q::Portable(_)));
     }
 
-    /// `From<BasicPredicate<T>>` route — the `.into()` adopter idiom.
+    /// Pure-Portable AND short-circuits through Sassi (via the trusted
+    /// wrapper) — the resulting `Q::Portable` carries a flattened
+    /// `BasicPredicate::And(_)` underneath.
     #[test]
-    fn q_from_basic_predicate_via_into() {
-        let bp: BasicPredicate<TestModel> = BasicPredicate::True;
-        let q: Q<TestModel> = bp.into();
-        assert!(matches!(q, Q::Basic(BasicPredicate::True)));
-    }
-
-    /// Pure-Basic AND short-circuits through sassi — the resulting
-    /// `Q::Basic` carries a flattened `BasicPredicate::And(_)`.
-    #[test]
-    fn q_basic_and_basic_flattens_through_sassi() {
-        let a: Q<TestModel> = BasicPredicate::True.into();
-        let b: Q<TestModel> = BasicPredicate::False.into();
+    fn q_portable_and_portable_flattens_through_sassi() {
+        let a: Q<TestModel> = portable_true();
+        let b: Q<TestModel> = portable_false();
         match a & b {
-            Q::Basic(BasicPredicate::And(parts)) => {
-                assert_eq!(parts.len(), 2);
-                assert!(matches!(parts[0], BasicPredicate::True));
-                assert!(matches!(parts[1], BasicPredicate::False));
-            }
-            other => panic!("expected Q::Basic(BasicPredicate::And(_)), got {other:?}"),
+            Q::Portable(p) => match p.into_inner() {
+                BasicPredicate::And(parts) => {
+                    assert_eq!(parts.len(), 2);
+                    assert!(matches!(parts[0], BasicPredicate::True));
+                    assert!(matches!(parts[1], BasicPredicate::False));
+                }
+                other => panic!("expected BasicPredicate::And(_), got {other:?}"),
+            },
+            other => panic!("expected Q::Portable(_), got {other:?}"),
         }
     }
 
-    /// Pure-Basic OR short-circuits through sassi as well.
+    /// Pure-Portable OR short-circuits through Sassi as well.
     #[test]
-    fn q_basic_or_basic_flattens_through_sassi() {
-        let a: Q<TestModel> = BasicPredicate::True.into();
-        let b: Q<TestModel> = BasicPredicate::False.into();
-        assert!(matches!(a | b, Q::Basic(BasicPredicate::Or(_))));
+    fn q_portable_or_portable_flattens_through_sassi() {
+        let a: Q<TestModel> = portable_true();
+        let b: Q<TestModel> = portable_false();
+        match a | b {
+            Q::Portable(p) => match p.into_inner() {
+                BasicPredicate::Or(_) => {}
+                other => panic!("expected BasicPredicate::Or(_), got {other:?}"),
+            },
+            other => panic!("expected Q::Portable(_), got {other:?}"),
+        }
     }
 
-    /// Pure-Basic XOR rides sassi's `BasicPredicate::Xor(Box, Box)`.
+    /// Pure-Portable XOR rides Sassi's `BasicPredicate::Xor(Box, Box)`.
     /// No flattening — XOR is non-associative.
     #[test]
-    fn q_basic_xor_basic_uses_sassi_xor() {
-        let a: Q<TestModel> = BasicPredicate::True.into();
-        let b: Q<TestModel> = BasicPredicate::False.into();
-        assert!(matches!(a ^ b, Q::Basic(BasicPredicate::Xor(_, _))));
+    fn q_portable_xor_portable_uses_sassi_xor() {
+        let a: Q<TestModel> = portable_true();
+        let b: Q<TestModel> = portable_false();
+        match a ^ b {
+            Q::Portable(p) => match p.into_inner() {
+                BasicPredicate::Xor(_, _) => {}
+                other => panic!("expected BasicPredicate::Xor(_, _), got {other:?}"),
+            },
+            other => panic!("expected Q::Portable(_), got {other:?}"),
+        }
     }
 
-    /// Pure-Basic double-negation collapses through sassi's `Not`
-    /// reducer (`!!p == p`). The outer `Q::Basic` wraps the
-    /// already-collapsed sassi result; no `Q::Negated` should appear.
+    /// Pure-Portable double-negation collapses through Sassi's `Not`
+    /// reducer (`!!p == p`). The outer `Q::Portable` wraps the
+    /// already-collapsed Sassi result; no `Q::Negated` should appear.
     #[test]
-    fn q_basic_double_negation_collapses_via_sassi() {
-        let p: Q<TestModel> = BasicPredicate::True.into();
+    fn q_portable_double_negation_collapses_via_sassi() {
+        let p: Q<TestModel> = portable_true();
         let result = !!p;
-        assert!(matches!(result, Q::Basic(BasicPredicate::True)));
+        match result {
+            Q::Portable(p) => match p.into_inner() {
+                BasicPredicate::True => {}
+                other => panic!("expected BasicPredicate::True, got {other:?}"),
+            },
+            other => panic!("expected Q::Portable(_) after !!, got {other:?}"),
+        }
     }
 
     /// Mixed-operand AND lifts to `Q::Compound`.
     #[test]
     fn q_mixed_and_creates_compound_node() {
-        let a: Q<TestModel> = BasicPredicate::True.into();
-        let b: Q<TestModel> = Q::Negated(Box::new(BasicPredicate::False.into()));
+        let a: Q<TestModel> = portable_true();
+        let b: Q<TestModel> = Q::Negated(Box::new(portable_false()));
         match a & b {
             Q::Compound {
                 op: CompoundOp::And,
                 parts,
             } => {
                 assert_eq!(parts.len(), 2);
-                assert!(matches!(parts[0], Q::Basic(_)));
+                assert!(matches!(parts[0], Q::Portable(_)));
                 assert!(matches!(parts[1], Q::Negated(_)));
             }
             other => panic!("expected Q::Compound{{op: And, ..}}, got {other:?}"),
@@ -1136,8 +1315,8 @@ mod tests {
     #[test]
     fn q_chained_compound_and_flattens() {
         // Force mixed by wrapping at least one operand in `Q::Negated`
-        // (which prevents the pure-Basic short-circuit).
-        let neg = || Q::<TestModel>::Negated(Box::new(BasicPredicate::True.into()));
+        // (which prevents the pure-Portable short-circuit).
+        let neg = || Q::<TestModel>::Negated(Box::new(portable_true()));
         let combined = neg() & neg() & neg();
         match combined {
             Q::Compound {
@@ -1151,7 +1330,7 @@ mod tests {
     /// Chained mixed-OR flattens identically to AND.
     #[test]
     fn q_or_with_two_compounds_flattens() {
-        let neg = || Q::<TestModel>::Negated(Box::new(BasicPredicate::True.into()));
+        let neg = || Q::<TestModel>::Negated(Box::new(portable_true()));
         let lhs = neg() | neg();
         let rhs = neg() | neg();
         match lhs | rhs {
@@ -1167,11 +1346,11 @@ mod tests {
     /// non-associativity decision: no flattening allowed.
     #[test]
     fn q_xor_mixed_lands_in_q_xor_variant() {
-        let basic: Q<TestModel> = BasicPredicate::True.into();
-        let neg: Q<TestModel> = Q::Negated(Box::new(BasicPredicate::False.into()));
+        let basic: Q<TestModel> = portable_true();
+        let neg: Q<TestModel> = Q::Negated(Box::new(portable_false()));
         match basic ^ neg {
             Q::Xor(lhs, rhs) => {
-                assert!(matches!(*lhs, Q::Basic(_)));
+                assert!(matches!(*lhs, Q::Portable(_)));
                 assert!(matches!(*rhs, Q::Negated(_)));
             }
             other => panic!("expected Q::Xor(_, _), got {other:?}"),
@@ -1183,32 +1362,32 @@ mod tests {
     /// NOT (...)` nesting in the eventual emitter output.
     #[test]
     fn q_not_negated_negated_collapses() {
-        // Wrap something non-Basic so the negation lands in `Q::Negated`
-        // rather than collapsing through sassi.
+        // Wrap something non-Portable so the negation lands in `Q::Negated`
+        // rather than collapsing through Sassi.
         let inner: Q<TestModel> = Q::Compound {
             op: CompoundOp::And,
             parts: vec![
-                Q::Negated(Box::new(BasicPredicate::True.into())),
-                Q::Negated(Box::new(BasicPredicate::False.into())),
+                Q::Negated(Box::new(portable_true())),
+                Q::Negated(Box::new(portable_false())),
             ],
         };
         let result = !!inner.clone();
         // After two `Not::not` calls: first wraps in `Q::Negated`, second
-        // unwraps. Result is the original non-Basic inner.
+        // unwraps. Result is the original non-Portable inner.
         assert!(matches!(result, Q::Compound { .. }));
     }
 
     /// Operator precedence runtime check. Locks Rust's table:
-    /// `&` > `^` > `|`. So `Q::from(a) ^ Q::Negated(...) | Q::Negated(...)`
-    /// parses as `(Q::from(a) ^ Q::Negated(...)) | Q::Negated(...)`.
+    /// `&` > `^` > `|`. So `Q::Portable(_) ^ Q::Negated(...) | Q::Negated(...)`
+    /// parses as `(Q::Portable(_) ^ Q::Negated(...)) | Q::Negated(...)`.
     /// Trybuild compile-pass at T6.11 doubles this with a
     /// type-level lock; this runtime test validates the resulting
     /// `Q` shape.
     #[test]
     fn q_operator_precedence_xor_binds_tighter_than_or() {
-        let a: Q<TestModel> = BasicPredicate::True.into();
-        let b: Q<TestModel> = Q::Negated(Box::new(BasicPredicate::False.into()));
-        let c: Q<TestModel> = Q::Negated(Box::new(BasicPredicate::True.into()));
+        let a: Q<TestModel> = portable_true();
+        let b: Q<TestModel> = Q::Negated(Box::new(portable_false()));
+        let c: Q<TestModel> = Q::Negated(Box::new(portable_true()));
 
         let composed = a ^ b | c;
 
@@ -1317,16 +1496,16 @@ mod tests {
     /// `(a & b) ^ c`, mirroring Rust's bit-operator precedence.
     #[test]
     fn q_operator_precedence_and_binds_tighter_than_xor() {
-        let a: Q<TestModel> = BasicPredicate::True.into();
-        let b: Q<TestModel> = Q::Negated(Box::new(BasicPredicate::False.into()));
-        let c: Q<TestModel> = Q::Negated(Box::new(BasicPredicate::True.into()));
+        let a: Q<TestModel> = portable_true();
+        let b: Q<TestModel> = Q::Negated(Box::new(portable_false()));
+        let c: Q<TestModel> = Q::Negated(Box::new(portable_true()));
 
         let composed = a & b ^ c;
 
         // Outer Xor.
         match composed {
             Q::Xor(lhs, rhs) => {
-                // Left half: the AND result. With one Basic and one
+                // Left half: the AND result. With one Portable and one
                 // Negated, mixed-AND lifts to Q::Compound{op: And, ..}.
                 assert!(matches!(
                     *lhs,
@@ -1348,10 +1527,11 @@ mod tests {
     /// tighter than `|`. Compile-pass trybuild fixtures verify the expression
     /// compiles; this test verifies the resulting tree shape.
     ///
-    /// When all operands are `Q::Basic(...)`, the `BitAnd`/`BitOr`/`BitXor`
-    /// impls delegate to sassi's `BasicPredicate` operators, producing a
-    /// `Q::Basic(BasicPredicate::Or([Xor(And([...]), ...), ...]))` tree.
-    /// Checking the `BasicPredicate` structure verifies precedence.
+    /// When all operands are `Q::Portable(...)`, the `BitAnd`/`BitOr`/`BitXor`
+    /// impls delegate to Sassi's `BasicPredicate` operators (via the trusted
+    /// wrapper), producing a
+    /// `Q::Portable(PortablePredicate::Or([Xor(And([...]), ...), ...]))`
+    /// tree. Checking the inner `BasicPredicate` structure verifies precedence.
     ///
     /// Locking this prevents a future operator-impl rewrite from silently
     /// changing associativity without this test catching it.
@@ -1365,46 +1545,49 @@ mod tests {
         // `a & b ^ c | d` = `((a & b) ^ c) | d`
         let result = a & b ^ c | d;
 
-        // All operands are Q::Basic → result is Q::Basic wrapping the
+        // All operands are Q::Portable → result is Q::Portable wrapping the
         // BasicPredicate algebra tree. Outer node must be Or.
         match result {
-            Q::Basic(BasicPredicate::Or(or_parts)) => {
-                assert_eq!(or_parts.len(), 2, "outer Or must have 2 branches");
-                // Left branch: `(a & b) ^ c` = Xor(And([True, False]), True)
-                match &or_parts[0] {
-                    BasicPredicate::Xor(lhs, rhs_c) => {
-                        // XOR RHS is `c` = BasicPredicate::True
-                        assert!(
-                            matches!(rhs_c.as_ref(), BasicPredicate::True),
-                            "XOR rhs must be c = True, got {rhs_c:?}"
-                        );
-                        // XOR LHS is `a & b` = And([True, False])
-                        match lhs.as_ref() {
-                            BasicPredicate::And(and_parts) => {
-                                assert_eq!(and_parts.len(), 2, "And must have 2 parts (a, b)");
-                                assert!(
-                                    matches!(and_parts[0], BasicPredicate::True),
-                                    "And[0] must be a = True"
-                                );
-                                assert!(
-                                    matches!(and_parts[1], BasicPredicate::False),
-                                    "And[1] must be b = False"
-                                );
-                            }
-                            other => {
-                                panic!("expected And([True, False]) as XOR lhs, got {other:?}")
+            Q::Portable(p) => match p.into_inner() {
+                BasicPredicate::Or(or_parts) => {
+                    assert_eq!(or_parts.len(), 2, "outer Or must have 2 branches");
+                    // Left branch: `(a & b) ^ c` = Xor(And([True, False]), True)
+                    match &or_parts[0] {
+                        BasicPredicate::Xor(lhs, rhs_c) => {
+                            // XOR RHS is `c` = BasicPredicate::True
+                            assert!(
+                                matches!(rhs_c.as_ref(), BasicPredicate::True),
+                                "XOR rhs must be c = True, got {rhs_c:?}"
+                            );
+                            // XOR LHS is `a & b` = And([True, False])
+                            match lhs.as_ref() {
+                                BasicPredicate::And(and_parts) => {
+                                    assert_eq!(and_parts.len(), 2, "And must have 2 parts (a, b)");
+                                    assert!(
+                                        matches!(and_parts[0], BasicPredicate::True),
+                                        "And[0] must be a = True"
+                                    );
+                                    assert!(
+                                        matches!(and_parts[1], BasicPredicate::False),
+                                        "And[1] must be b = False"
+                                    );
+                                }
+                                other => {
+                                    panic!("expected And([True, False]) as XOR lhs, got {other:?}")
+                                }
                             }
                         }
+                        other => panic!("expected Xor as left Or branch, got {other:?}"),
                     }
-                    other => panic!("expected Xor as left Or branch, got {other:?}"),
+                    // Right branch: `d` = BasicPredicate::False
+                    assert!(
+                        matches!(or_parts[1], BasicPredicate::False),
+                        "right Or branch must be d = False"
+                    );
                 }
-                // Right branch: `d` = BasicPredicate::False
-                assert!(
-                    matches!(or_parts[1], BasicPredicate::False),
-                    "right Or branch must be d = False"
-                );
-            }
-            other => panic!("expected Q::Basic(Or([...])), got {other:?}"),
+                other => panic!("expected BasicPredicate::Or([...]), got {other:?}"),
+            },
+            other => panic!("expected Q::Portable(_), got {other:?}"),
         }
     }
 
@@ -1412,9 +1595,9 @@ mod tests {
     /// the `BitAnd` / `BitOr` / `BitXor` impls flatten consecutive same-op
     /// calls (the `And`-chain has 4 parts, not a nested binary tree).
     ///
-    /// When all operands are `Q::Basic`, operators delegate to sassi's
-    /// `BasicPredicate` algebra — the flattening happens at the
-    /// `BasicPredicate` level. Outermost node is Or.
+    /// When all operands are `Q::Portable`, operators delegate to Sassi's
+    /// `BasicPredicate` algebra (via the trusted wrapper) — the flattening
+    /// happens at the `BasicPredicate` level. Outermost node is Or.
     #[test]
     fn eight_term_composition_flattens_same_op() {
         let a: Q<TestModel> = Q::always_true();
@@ -1431,23 +1614,27 @@ mod tests {
         let result = a & b & c & d | e | f ^ g ^ h;
 
         match result {
-            Q::Basic(BasicPredicate::Or(or_parts)) => {
-                assert!(
-                    or_parts.len() >= 2,
-                    "outer Or must have ≥ 2 parts; got {}",
-                    or_parts.len()
-                );
-                // The And-chain `a & b & c & d` should appear as one Or-part
-                // with 4 inner parts (flattened, not binary-nested).
-                let has_4_way_and = or_parts
-                    .iter()
-                    .any(|p| matches!(p, BasicPredicate::And(ap) if ap.len() == 4));
-                assert!(
-                    has_4_way_and,
-                    "expected a 4-part And in Or parts (a&b&c&d flattened); parts: {or_parts:?}"
-                );
-            }
-            other => panic!("expected Q::Basic(Or([...])), got {other:?}"),
+            Q::Portable(p) => match p.into_inner() {
+                BasicPredicate::Or(or_parts) => {
+                    assert!(
+                        or_parts.len() >= 2,
+                        "outer Or must have ≥ 2 parts; got {}",
+                        or_parts.len()
+                    );
+                    // The And-chain `a & b & c & d` should appear as one
+                    // Or-part with 4 inner parts (flattened, not binary-
+                    // nested).
+                    let has_4_way_and = or_parts
+                        .iter()
+                        .any(|p| matches!(p, BasicPredicate::And(ap) if ap.len() == 4));
+                    assert!(
+                        has_4_way_and,
+                        "expected a 4-part And in Or parts (a&b&c&d flattened); parts: {or_parts:?}"
+                    );
+                }
+                other => panic!("expected BasicPredicate::Or([...]), got {other:?}"),
+            },
+            other => panic!("expected Q::Portable(_), got {other:?}"),
         }
     }
 
@@ -1459,19 +1646,21 @@ mod tests {
     // pre-flip `Condition` path could carry round-trips through
     // `q_to_condition` to the same shape the SQL emitter consumed before.
 
-    /// `Q::Basic(BasicPredicate::True)` lowers to `Condition::True`.
+    /// `Q::Portable(PortablePredicate::True)` lowers to `Condition::True`
+    /// through the legacy bridge.
     #[test]
-    fn q_basic_true_lowers_to_condition_true() {
-        let q: Q<TestModel> = Q::Basic(BasicPredicate::True);
+    fn q_portable_true_lowers_to_condition_true() {
+        let q: Q<TestModel> = portable_true();
         assert!(matches!(q_to_condition(q), Condition::True));
     }
 
-    /// `Q::Basic(BasicPredicate::False)` lowers to the empty-Or
+    /// `Q::Portable(PortablePredicate::False)` lowers to the empty-Or
     /// vacuous-falsehood identity (matches `condition.rs:30` and the
-    /// SQL emitter's `FALSE` rendering at `sql.rs:367`).
+    /// SQL emitter's `FALSE` rendering at `sql.rs:367`) through the
+    /// legacy bridge.
     #[test]
-    fn q_basic_false_lowers_to_empty_or() {
-        let q: Q<TestModel> = Q::Basic(BasicPredicate::False);
+    fn q_portable_false_lowers_to_empty_or() {
+        let q: Q<TestModel> = portable_false();
         match q_to_condition(q) {
             Condition::Or(v) => assert!(v.is_empty(), "expected empty Or, got {v:?}"),
             other => panic!("expected Condition::Or(empty), got {other:?}"),
@@ -1515,10 +1704,7 @@ mod tests {
     fn q_compound_or_lowers_to_or() {
         let q = Q::<TestModel>::Compound {
             op: CompoundOp::Or,
-            parts: vec![
-                Q::Basic(BasicPredicate::True),
-                Q::Basic(BasicPredicate::False),
-            ],
+            parts: vec![portable_true(), portable_false()],
         };
         match q_to_condition(q) {
             Condition::Or(parts) => assert_eq!(parts.len(), 2),
@@ -1529,7 +1715,7 @@ mod tests {
     /// `Q::Negated(inner)` lowers to `Condition::Not(_)`.
     #[test]
     fn q_negated_lowers_to_condition_not() {
-        let q = Q::<TestModel>::Negated(Box::new(Q::Basic(BasicPredicate::True)));
+        let q = Q::<TestModel>::Negated(Box::new(portable_true()));
         match q_to_condition(q) {
             Condition::Not(inner) => assert!(matches!(*inner, Condition::True)),
             other => panic!("expected Condition::Not, got {other:?}"),
@@ -1537,12 +1723,12 @@ mod tests {
     }
 
     /// `Q::Xor(a, b)` lowers to the general form
-    /// `(NOT a AND b) OR (a AND NOT b)` — sassi's identity, no
+    /// `(NOT a AND b) OR (a AND NOT b)` — Sassi's identity, no
     /// boolean fast-path (deferred to T11).
     #[test]
     fn q_xor_lowers_to_general_form() {
-        let a = Q::<TestModel>::Basic(BasicPredicate::True);
-        let b = Q::<TestModel>::Basic(BasicPredicate::False);
+        let a = portable_true::<TestModel>();
+        let b = portable_false::<TestModel>();
         let q = Q::Xor(Box::new(a), Box::new(b));
         match q_to_condition(q) {
             Condition::Or(or_parts) => {
@@ -1687,24 +1873,28 @@ mod tests {
     }
 
     /// Sassi `BasicPredicate::And/Or/Not` round-trip through the
-    /// nested helper into `Condition::And/Or/Not` with the same
-    /// flattening rules — no extra wrapping, no implicit
-    /// re-association.
+    /// `Q::Portable` wrapper into `Condition::And/Or/Not` with the same
+    /// flattening rules — no extra wrapping, no implicit re-association.
+    /// Uses `PortablePredicate`'s pure-portable boolean composition (`&`
+    /// / `|` / `!`) so trusted-provenance vacuous wrappers compose
+    /// without reaching for raw `BasicPredicate<T>`.
     #[test]
-    fn q_basic_and_or_not_round_trip() {
-        let q: Q<TestModel> = Q::Basic(BasicPredicate::And(vec![
-            BasicPredicate::True,
-            BasicPredicate::False,
-        ]));
+    fn q_portable_and_or_not_round_trip() {
+        let composed: PortablePredicate<TestModel> =
+            PortablePredicate::always_true() & PortablePredicate::always_false();
+        let q: Q<TestModel> = Q::Portable(composed);
         match q_to_condition(q) {
             Condition::And(parts) => assert_eq!(parts.len(), 2),
             other => panic!("expected Condition::And, got {other:?}"),
         }
 
-        let q: Q<TestModel> = Q::Basic(BasicPredicate::Not(Box::new(BasicPredicate::True)));
+        let negated: PortablePredicate<TestModel> = !PortablePredicate::always_true();
+        let q: Q<TestModel> = Q::Portable(negated);
+        // `!True` collapses through Sassi to `BasicPredicate::False`,
+        // which the legacy bridge lowers to `Condition::Or(empty)`.
         match q_to_condition(q) {
-            Condition::Not(inner) => assert!(matches!(*inner, Condition::True)),
-            other => panic!("expected Condition::Not, got {other:?}"),
+            Condition::Or(parts) => assert!(parts.is_empty()),
+            other => panic!("expected Condition::Or(empty), got {other:?}"),
         }
     }
 }

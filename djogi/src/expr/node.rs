@@ -34,7 +34,7 @@
 //! - [`crate::query::condition::Condition::Expr`] — the bridge that promotes
 //!   an `Expr<bool>` into the filter tree.
 
-use crate::query::condition::{Condition, FilterValue};
+use crate::query::condition::FilterValue;
 
 // Phase 4 Task 5 landed the `Case` / `Exists` / `Subquery` / `OuterRef`
 // variants alongside the `SubqueryNode` payload at the bottom of this
@@ -495,13 +495,13 @@ pub(crate) enum ExprNode {
 ///   identifier is always validated); `None` for EXISTS, where the
 ///   emitter renders `SELECT 1`.
 /// - `where_clause` — the correlated predicate, stored as a
-///   [`Condition`] tree (not lowered to [`ExprNode`]). Reusing the
-///   battle-tested [`crate::query::sql::emit_condition`] walk means
-///   every `LookupOp` variant the Phase 2 `filter` closure produces
-///   composes inside a subquery without parallel emitter code. See the
-///   module header on [`super::subquery`] for the rationale behind the
-///   "store `Condition` alongside" design decision the plan's Task 5
-///   brief laid out.
+///   type-erased [`ErasedSubqueryPredicate`] handle. Phase 8eta PR2b
+///   replaced the pre-flip `Option<Condition>` storage so expression
+///   subqueries carry full `Q<T>` predicates — including portable root
+///   field leaves — without round-tripping through `q_to_condition`.
+///   The handle owns a `Q<T>` for some concrete `T: Model`; the
+///   trait-object dispatch hides the model parameter so `SubqueryNode`
+///   stays type-erased.
 #[derive(Debug, Clone)]
 pub(crate) struct SubqueryNode {
     /// Subquery's `FROM` table — `<T as Model>::table_name()` from the
@@ -510,12 +510,97 @@ pub(crate) struct SubqueryNode {
     /// Scalar subqueries store `Some(col)`; the EXISTS path stores
     /// `None` and the emitter renders `SELECT 1`.
     pub(crate) select_column: Option<&'static str>,
-    /// The subquery's `WHERE` clause — the correlated predicate,
-    /// carried verbatim from the typed
-    /// [`crate::query::QuerySet<T>`]'s accumulated
-    /// [`Condition`] tree. `None` when the typed queryset carries no
-    /// filters; the emitter skips the `WHERE` clause on that branch.
-    pub(crate) where_clause: Option<Condition>,
+    /// The subquery's `WHERE` clause — the correlated predicate, stored
+    /// as a type-erased emitter handle. `None` when the typed queryset
+    /// carries no filters; the emitter skips the `WHERE` clause on that
+    /// branch.
+    pub(crate) where_clause: Option<ErasedSubqueryPredicate>,
+}
+
+/// Type-erased subquery predicate handle. Wraps an
+/// `Arc<dyn SubqueryPredicateEmitter>` so a `SubqueryNode` can carry the
+/// outer queryset's `Q<T>` predicate without leaking the model parameter
+/// into the type-erased subquery wrappers.
+///
+/// Phase 8eta PR2b — the storage rewrite that retires the pre-flip
+/// `Option<Condition>` payload. Construction goes through
+/// [`Self::from_q`]; every Djogi-trusted predicate emitted from a
+/// subquery flows through that path so cache/refresh boundaries can audit
+/// (PR4) the trusted-portable provenance carried inside the wrapped
+/// `Q<T>`.
+///
+/// The trait is `Send + Sync + 'static` because `ExprNode` itself is and
+/// `Expr<bool>` is freely cloneable across thread boundaries.
+#[derive(Clone)]
+pub(crate) struct ErasedSubqueryPredicate(std::sync::Arc<dyn SubqueryPredicateEmitter>);
+
+/// Internal trait the `ErasedSubqueryPredicate` dispatches through. Each
+/// concrete implementer carries a `Q<T>` for one specific `T: Model`
+/// and emits SQL through the direct walker
+/// (`crate::query::sql::emit_q::<T>`).
+///
+/// Subquery emission always uses `SqlEmitContext::root()` because the
+/// subquery owns its own table scope — outer-table qualification is
+/// handled by the inclusive `OuterRefColumn` / `OuterRef` IR nodes, not
+/// here.
+pub(crate) trait SubqueryPredicateEmitter: Send + Sync + 'static {
+    /// Emit the subquery's `WHERE` body into the outer accumulator. The
+    /// outer accumulator owns global bind numbering, so binds emitted
+    /// here interleave correctly with the surrounding SQL.
+    fn emit(
+        &self,
+        acc: &mut crate::pg::accumulator::SqlAccumulator,
+    ) -> Result<(), crate::query::portable::PortablePredicateError>;
+    /// Format the wrapped `Q<T>` for `Debug` output without requiring
+    /// `T: Debug`. Delegates to `Q<T>`'s manual `Debug` impl, which
+    /// itself never reaches into model-parameter clone/debug bounds.
+    fn fmt_debug(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
+}
+
+/// Concrete implementer of [`SubqueryPredicateEmitter`]. Wraps a
+/// `Q<T>` for some `T: Model`. The model parameter never leaks to the
+/// surrounding `SubqueryNode` because the trait object hides it.
+struct TypedSubqueryPredicate<T: crate::model::Model> {
+    q: crate::query::q::Q<T>,
+}
+
+impl<T: crate::model::Model> SubqueryPredicateEmitter for TypedSubqueryPredicate<T> {
+    fn emit(
+        &self,
+        acc: &mut crate::pg::accumulator::SqlAccumulator,
+    ) -> Result<(), crate::query::portable::PortablePredicateError> {
+        crate::query::sql::emit_q::<T>(acc, &self.q, crate::query::portable::SqlEmitContext::root())
+    }
+
+    fn fmt_debug(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("TypedSubqueryPredicate")
+            .field(&self.q)
+            .finish()
+    }
+}
+
+impl ErasedSubqueryPredicate {
+    /// Build an erased predicate handle from a typed `Q<T>`. The handle
+    /// owns the predicate; cloning the `ExprNode` clones the underlying
+    /// `Arc`, so a single `SubqueryNode` may be emitted any number of
+    /// times without re-allocating the predicate.
+    pub(crate) fn from_q<T: crate::model::Model>(q: crate::query::q::Q<T>) -> Self {
+        Self(std::sync::Arc::new(TypedSubqueryPredicate::<T> { q }))
+    }
+
+    /// Emit this subquery predicate into the outer accumulator.
+    pub(crate) fn emit(
+        &self,
+        acc: &mut crate::pg::accumulator::SqlAccumulator,
+    ) -> Result<(), crate::query::portable::PortablePredicateError> {
+        self.0.emit(acc)
+    }
+}
+
+impl std::fmt::Debug for ErasedSubqueryPredicate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt_debug(f)
+    }
 }
 
 /// Aggregate operator — the sub-discriminant inside [`ExprNode::Aggregate`].
