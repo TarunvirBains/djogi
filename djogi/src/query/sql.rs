@@ -2728,8 +2728,10 @@ mod tests {
         let mut qs: QuerySet<Fake> = QuerySet::new();
         // Cluster 8γ Stage 2 (T6.9): wrap the legacy `Condition` through
         // `Q::Condition(_)` so `qs.condition`'s `Q<T>` substrate stays
-        // honest. The bridge round-trips this as the identity, so the
-        // emitter sees the same `Condition::RawSql` it did pre-flip.
+        // honest. The direct-Q emitter delegates this arm to
+        // `emit_condition`, so SQL parity with the pre-flip
+        // `Condition::RawSql` path is preserved without using the
+        // q_to_condition bridge.
         qs.condition =
             crate::query::Q::Condition(Condition::__from_raw_sql_fragment("active = TRUE"));
         let acc = build_select(&qs);
@@ -2753,10 +2755,11 @@ mod tests {
         let user = Condition::Leaf(Leaf::eq_raw("price", FilterValue::I64(100)));
         let mut qs: QuerySet<Fake> = QuerySet::new();
         // Cluster 8γ Stage 2 (T6.9): wrap the composed legacy tree
-        // through `Q::Condition(_)` for the substrate flip. The bridge
-        // unwraps this as the identity at SQL-emit time, so the
+        // through `Q::Condition(_)` for the substrate flip. The direct-Q
+        // emitter delegates this arm to `emit_condition`, so the
         // assertion on the emitted `WHERE ((active = TRUE) AND price = $1)`
-        // shape still holds character-for-character.
+        // shape still holds character-for-character without using the
+        // q_to_condition bridge.
         qs.condition = crate::query::Q::Condition(Condition::and(raw, user));
         let acc = build_select(&qs);
         let sql = acc.sql();
