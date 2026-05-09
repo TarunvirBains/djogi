@@ -25,11 +25,14 @@
 //! `unwrap_schema_type` channel). The classifier is deliberately
 //! conservative — only types whose SQL bind shape is known and whose
 //! cached-row parity with the in-memory Sassi evaluator has been
-//! validated get a portable kind. Everything else (`Jsonb<T>`,
-//! `Vec<T>`, `GeoPoint`/`Polygon`/etc., `TsVector`, `ForeignKey<T>`,
-//! `OneToOneField<T>`, `#[field(protected(...))]` wrappers, user enums,
-//! and unrecognised newtypes) lands in [`PortableFieldKind::Unsupported`]
-//! or one of its more specific neighbours so the macro emits a typed
+//! validated get a portable kind. Root-column relation wrappers
+//! (`ForeignKey<T>` / `OneToOneField<T>`) are portable for equality and
+//! membership because their cached representation is the same key wrapper
+//! SQL binds through. Everything else (`Jsonb<T>`, `Vec<T>`,
+//! `GeoPoint`/`Polygon`/etc., `TsVector`, `#[field(protected(...))]`
+//! wrappers, user enums, and unrecognised newtypes) lands in
+//! [`PortableFieldKind::Unsupported`] or one of its more specific
+//! neighbours so the macro emits a typed
 //! `PortablePredicateError::UnsupportedFieldType` arm rather than
 //! pretending to support a payload shape that has not been parity-tested.
 //!
@@ -62,9 +65,11 @@ use crate::model::attrs::{
 ///    eq/neq/in/not_in arm bodies that try `Option<U>` first and fall
 ///    back to the inner `U` (matching `DjogiField::eq(None|Some(_))`
 ///    versus `DjogiField::some().eq(_)`).
-/// 3. **SQL-only / non-portable kinds** — [`Jsonb`], [`Array`],
-///    [`Spatial`], [`FtsComputed`], [`RelationOrVisage`],
-///    [`Unsupported`]. Get a single catch-all
+/// 3. **Portable root relation leaves** — [`RelationOrVisage`] and
+///    [`OptionRelationOrVisage`]. These cover FK/O2O physical columns
+///    only; dotted relation traversal stays on the SQL-only field view.
+/// 4. **SQL-only / non-portable kinds** — [`Jsonb`], [`Array`],
+///    [`Spatial`], [`FtsComputed`], [`Unsupported`]. Get a single catch-all
 ///    `(field, _) => UnsupportedFieldType { field }` arm. The portable
 ///    cache/refresh boundary already rejects the constructed predicate
 ///    upstream of SQL emission for every `Q::Portable` payload that
@@ -83,6 +88,7 @@ use crate::model::attrs::{
 /// [`Spatial`]: PortableFieldKind::Spatial
 /// [`FtsComputed`]: PortableFieldKind::FtsComputed
 /// [`RelationOrVisage`]: PortableFieldKind::RelationOrVisage
+/// [`OptionRelationOrVisage`]: PortableFieldKind::OptionRelationOrVisage
 /// [`Unsupported`]: PortableFieldKind::Unsupported
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortableFieldKind {
@@ -125,9 +131,14 @@ pub enum PortableFieldKind {
     /// `TsVector` — full-text search column populated by a
     /// `GENERATED ALWAYS AS` expression; SQL-only by construction.
     FtsComputed,
-    /// `ForeignKey<T>` / `OneToOneField<T>` (and their
-    /// `Option<...>` wrappers) — relation traversal is not portable.
+    /// `ForeignKey<T>` / `OneToOneField<T>` root physical columns.
+    /// Equality and membership are portable; ordering and relation
+    /// traversal are not.
     RelationOrVisage,
+    /// `Option<ForeignKey<T>>` / `Option<OneToOneField<T>>` root
+    /// physical columns. Null tests, equality, and membership are
+    /// portable; ordering and relation traversal are not.
+    OptionRelationOrVisage,
     /// Anything else — user enums that don't satisfy the bind bounds,
     /// unrecognised newtypes, `#[field(protected(...))]` wrappers
     /// whose codec semantics are not yet portable.
@@ -157,6 +168,8 @@ impl PortableFieldKind {
                 | Self::OptionScalar
                 | Self::OptionString
                 | Self::OptionBool
+                | Self::RelationOrVisage
+                | Self::OptionRelationOrVisage
         )
     }
 
@@ -167,7 +180,10 @@ impl PortableFieldKind {
     pub fn is_optional(self) -> bool {
         matches!(
             self,
-            Self::OptionScalar | Self::OptionString | Self::OptionBool
+            Self::OptionScalar
+                | Self::OptionString
+                | Self::OptionBool
+                | Self::OptionRelationOrVisage
         )
     }
 
@@ -308,14 +324,16 @@ pub fn build(
 ///    Rust type — protected codecs change the bound shape between
 ///    plaintext (Punnu) and ciphertext (SQL), which 8eta has not
 ///    parity-tested.
-/// 2. `ForeignKey<T>` / `OneToOneField<T>` (with or without an
-///    `Option<...>` wrapper) lower to
-///    [`PortableFieldKind::RelationOrVisage`].
-/// 3. Strip a single `Tracked<...>` layer; the SQL bind operates on
+/// 2. Strip a single `Tracked<...>` layer; the SQL bind operates on
 ///    the inner type and the macro emission should follow.
-/// 4. Strip a single `Option<...>` layer and remember whether one was
+/// 3. Strip a single `Option<...>` layer and remember whether one was
 ///    stripped. The inner type drives the kind; the option flag turns
 ///    [`Scalar`]/[`String`]/[`Bool`] into their `Option*` siblings.
+/// 4. `ForeignKey<T>` / `OneToOneField<T>` root columns lower to
+///    [`PortableFieldKind::RelationOrVisage`] or
+///    [`PortableFieldKind::OptionRelationOrVisage`]. This is physical
+///    column equality/membership only; relation traversal remains
+///    SQL-only.
 /// 5. Match the inner type's last path segment against the curated
 ///    portable-scalar set; fall through to [`Unsupported`] for
 ///    anything else (including user enums, custom newtypes, and any
@@ -335,13 +353,6 @@ fn classify(ty: &Type, field_attrs: Option<&FieldAttrs>) -> (PortableFieldKind, 
         return (PortableFieldKind::Unsupported, None);
     }
 
-    // Relations short-circuit before the Option/Tracked strip because
-    // `detect_relation` already handles `Option<ForeignKey<T>>` /
-    // `Option<OneToOneField<T>>` internally.
-    if detect_relation(ty).is_some() {
-        return (PortableFieldKind::RelationOrVisage, None);
-    }
-
     // Strip Tracked<U> — the SQL bind operates on `U`, and the
     // descriptor's `unwrap_schema_type` follows the same convention
     // for column-type derivation.
@@ -352,6 +363,14 @@ fn classify(ty: &Type, field_attrs: Option<&FieldAttrs>) -> (PortableFieldKind, 
 
     // Strip Option<U> and remember whether we did so.
     let (inner, was_option) = unwrap_option(&stripped);
+
+    if detect_relation(&inner).is_some() {
+        return if was_option {
+            (PortableFieldKind::OptionRelationOrVisage, Some(inner))
+        } else {
+            (PortableFieldKind::RelationOrVisage, None)
+        };
+    }
 
     let inner_kind = classify_inner(&inner);
 
@@ -568,15 +587,18 @@ mod tests {
     #[test]
     fn classify_relation_wrapper_is_relation() {
         let ty: Type = parse_quote!(ForeignKey<Owner>);
-        let (kind, _) = classify(&ty, None);
+        let (kind, inner) = classify(&ty, None);
         assert_eq!(kind, PortableFieldKind::RelationOrVisage);
+        assert!(inner.is_none());
     }
 
     #[test]
     fn classify_optional_relation_wrapper_is_relation() {
         let ty: Type = parse_quote!(Option<ForeignKey<Owner>>);
-        let (kind, _) = classify(&ty, None);
-        assert_eq!(kind, PortableFieldKind::RelationOrVisage);
+        let (kind, inner) = classify(&ty, None);
+        assert_eq!(kind, PortableFieldKind::OptionRelationOrVisage);
+        let inner_ty = inner.expect("inner type expected for Option<ForeignKey<Owner>>");
+        assert_eq!(quote::quote!(#inner_ty).to_string(), "ForeignKey < Owner >");
     }
 
     #[test]
@@ -605,11 +627,12 @@ mod tests {
         assert!(PortableFieldKind::OptionScalar.is_portable_leaf());
         assert!(PortableFieldKind::OptionString.is_portable_leaf());
         assert!(PortableFieldKind::OptionBool.is_portable_leaf());
+        assert!(PortableFieldKind::RelationOrVisage.is_portable_leaf());
+        assert!(PortableFieldKind::OptionRelationOrVisage.is_portable_leaf());
         assert!(!PortableFieldKind::Jsonb.is_portable_leaf());
         assert!(!PortableFieldKind::Array.is_portable_leaf());
         assert!(!PortableFieldKind::Spatial.is_portable_leaf());
         assert!(!PortableFieldKind::FtsComputed.is_portable_leaf());
-        assert!(!PortableFieldKind::RelationOrVisage.is_portable_leaf());
         assert!(!PortableFieldKind::Unsupported.is_portable_leaf());
     }
 
@@ -621,6 +644,8 @@ mod tests {
         assert!(PortableFieldKind::OptionScalar.is_optional());
         assert!(PortableFieldKind::OptionString.is_optional());
         assert!(PortableFieldKind::OptionBool.is_optional());
+        assert!(!PortableFieldKind::RelationOrVisage.is_optional());
+        assert!(PortableFieldKind::OptionRelationOrVisage.is_optional());
     }
 
     #[test]
@@ -631,5 +656,7 @@ mod tests {
         assert!(!PortableFieldKind::Bool.supports_ordering());
         assert!(!PortableFieldKind::OptionString.supports_ordering());
         assert!(!PortableFieldKind::OptionBool.supports_ordering());
+        assert!(!PortableFieldKind::RelationOrVisage.supports_ordering());
+        assert!(!PortableFieldKind::OptionRelationOrVisage.supports_ordering());
     }
 }

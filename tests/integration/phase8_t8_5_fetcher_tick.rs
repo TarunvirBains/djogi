@@ -94,7 +94,9 @@ async fn fetcher_returns_rows_matching_watermark(mut ctx: djogi::DjogiContext) {
     let auth =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
-    let handle = FetcherTickRow::objects().refresh_into(&punnu, pool, auth);
+    let handle = FetcherTickRow::objects()
+        .refresh_into(&punnu, pool, auth)
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
     // First tick: since=None → full scan, returns all 3 old rows.
     // Subscription records max(updated_at of old rows) as the new watermark.
@@ -178,7 +180,9 @@ async fn fetcher_uses_owned_pool_clone(mut ctx: djogi::DjogiContext) {
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
     // Construct the handle — fetcher clones the pool internally.
-    let handle = FetcherTickRow::objects().refresh_into(&punnu, original_pool.clone(), auth);
+    let handle = FetcherTickRow::objects()
+        .refresh_into(&punnu, original_pool.clone(), auth)
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
     // Explicitly drop the original pool handle. The fetcher retains its clone.
     drop(original_pool);
@@ -231,7 +235,9 @@ async fn fetcher_constructs_fresh_context_per_tick(mut ctx: djogi::DjogiContext)
     let auth =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
-    let handle = FetcherTickRow::objects().refresh_into(&punnu, pool, auth);
+    let handle = FetcherTickRow::objects()
+        .refresh_into(&punnu, pool, auth)
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
     // First tick — constructs a fresh DjogiContext, acquires a connection,
     // runs SQL, releases connection on ctx drop.
@@ -320,7 +326,9 @@ async fn fetcher_runs_under_captured_auth(mut ctx: djogi::DjogiContext) {
     let auth_a =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
-    let handle = FetcherTickRow::objects().refresh_into(&punnu, pool, auth_a);
+    let handle = FetcherTickRow::objects()
+        .refresh_into(&punnu, pool, auth_a)
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
     // Build auth_b with uid=2 — this is the "modified" auth in caller scope.
     // The fetcher has already captured auth_a's snapshot; auth_b is unrelated.

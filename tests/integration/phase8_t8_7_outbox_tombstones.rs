@@ -73,7 +73,9 @@ async fn hard_delete_propagates_via_outbox_to_tombstone(mut ctx: djogi::DjogiCon
     let auth =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
-    let handle = EventRow::objects().refresh_into(&punnu, pool.clone(), auth.clone());
+    let handle = EventRow::objects()
+        .refresh_into(&punnu, pool.clone(), auth.clone())
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
     // First tick initialises the outbox watermark to `now()`; later
     // ticks only see events past that checkpoint.
@@ -161,7 +163,9 @@ async fn hard_delete_propagates_for_default_heerid_desc_pk(mut ctx: djogi::Djogi
     let auth =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
-    let handle = EventDescRow::objects().refresh_into(&punnu, pool.clone(), auth.clone());
+    let handle = EventDescRow::objects()
+        .refresh_into(&punnu, pool.clone(), auth.clone())
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
     let tick_1 = handle.update().await.expect("first tick must succeed");
     assert_eq!(tick_1.applied, 1);
@@ -209,7 +213,9 @@ async fn non_events_model_no_outbox_poll(mut ctx: djogi::DjogiContext) {
     let auth =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
-    let handle = PlainRow::objects().refresh_into(&punnu, pool.clone(), auth);
+    let handle = PlainRow::objects()
+        .refresh_into(&punnu, pool.clone(), auth)
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
     let tick_1 = handle.update().await.expect("first tick must succeed");
     assert_eq!(tick_1.applied, 1);

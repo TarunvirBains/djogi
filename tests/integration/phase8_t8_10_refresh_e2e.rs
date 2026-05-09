@@ -160,7 +160,9 @@ async fn refresh_into_e2e_happy_path(mut ctx: djogi::DjogiContext) {
     let auth =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
-    let handle = E2ERow::objects().refresh_into(&punnu, pool, auth);
+    let handle = E2ERow::objects()
+        .refresh_into(&punnu, pool, auth)
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
     // ── Tick 1 — full scan ───────────────────────────────────────────────────
     // since = None → no watermark filter → returns all 3 initial rows.
@@ -342,11 +344,15 @@ async fn refresh_into_auth_locked_to_subscription(mut ctx: djogi::DjogiContext) 
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(2).expect("HeerId(2) is valid"));
 
     // handle_a captures auth_a by value.
-    let handle_a = AuthRow::objects().refresh_into(&punnu_a, pool.clone(), auth_a);
+    let handle_a = AuthRow::objects()
+        .refresh_into(&punnu_a, pool.clone(), auth_a)
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
     // handle_b captures auth_b by value. Uses the SAME punnu to show both
     // subscriptions can independently write into the same identity map.
-    let handle_b = AuthRow::objects().refresh_into(&punnu_a, pool, auth_b);
+    let handle_b = AuthRow::objects()
+        .refresh_into(&punnu_a, pool, auth_b)
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
     // ── Construct auth that caller holds but is unrelated to handle_a's auth ─
     // After `refresh_into`, the fetcher owns its own clone. Any further
@@ -464,7 +470,9 @@ async fn refresh_into_cancel_stops_ticks(mut ctx: djogi::DjogiContext) {
     let auth =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
-    let handle = CancelRow::objects().refresh_into(&punnu, pool, auth);
+    let handle = CancelRow::objects()
+        .refresh_into(&punnu, pool, auth)
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
     // ── Pre-cancel: manual tick succeeds ────────────────────────────────────
     let pre_cancel_tick = handle.update().await.expect("pre-cancel tick must succeed");

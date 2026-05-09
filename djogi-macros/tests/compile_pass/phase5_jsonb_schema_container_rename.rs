@@ -77,21 +77,21 @@ pub struct MixedModel {
 
 fn _check_camel_path_compiles() {
     // engine_type (Rust) → engineType (JSON key via camelCase rename_all)
-    let _path = |f: CamelSpecModelFields| f.spec().typed().engine_type().gt(4);
+    let _path = |f: CamelSpecModelFields| f.spec().explicit_pg_predicate().typed().engine_type().gt(4);
     // weight_kg (Rust) → weightKg (JSON key via camelCase rename_all)
-    let _weight = |f: CamelSpecModelFields| f.spec().typed().weight_kg().gt(500.0_f32);
+    let _weight = |f: CamelSpecModelFields| f.spec().explicit_pg_predicate().typed().weight_kg().gt(500.0_f32);
 }
 
 fn _check_kebab_path_compiles() {
     // first_field (Rust) → first-field (JSON key via kebab-case rename_all)
-    let _path = |f: KebabModelFields| f.data().typed().first_field().gt(0);
+    let _path = |f: KebabModelFields| f.data().explicit_pg_predicate().typed().first_field().gt(0);
 }
 
 fn _check_mixed_path_compiles() {
     // engine_field (Rust) → "engine" (field-level rename wins over container rename)
-    let _path = |f: MixedModelFields| f.info().typed().engine_field().gt(0);
+    let _path = |f: MixedModelFields| f.info().explicit_pg_predicate().typed().engine_field().gt(0);
     // weight_kg (Rust) → "weightKg" (container camelCase applies)
-    let _weight = |f: MixedModelFields| f.info().typed().weight_kg().gt(0.0_f32);
+    let _weight = |f: MixedModelFields| f.info().explicit_pg_predicate().typed().weight_kg().gt(0.0_f32);
 }
 
 fn main() {}

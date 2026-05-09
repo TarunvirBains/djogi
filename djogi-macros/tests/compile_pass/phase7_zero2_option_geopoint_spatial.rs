@@ -1,5 +1,7 @@
-// Phase 7-Zero-2 polish — `Option<GeoPoint>` columns gain `.within_km`
-// and `.order_by_distance` (closes GH issue #16).
+// Phase 7-Zero-2 polish plus Phase 8eta routing — `Option<GeoPoint>`
+// columns keep the SQL-only `.within_km` route through
+// `.explicit_pg_predicate()` and keep `.order_by_distance` on the root
+// field handle.
 //
 // Pre-this-change, the spatial methods lived only on
 // `FieldRef<M, GeoPoint>`, so models with nullable location columns
@@ -7,9 +9,9 @@
 // like `GeoPoint::new(0.0, 0.0)` meaning "unknown" — the kind of
 // schema contortion the lens explicitly rejects) or fall back to raw
 // `ST_DWithin` with hand-written `IS NOT NULL` guards. The polish
-// lifts the methods onto the nullable variant so callers can swap
-// `GeoPoint` for `Option<GeoPoint>` at the schema level without
-// changing their query call sites.
+// lifts the methods onto the nullable SQL-only variant so callers can
+// swap `GeoPoint` for `Option<GeoPoint>` at the schema level while
+// preserving the explicit PostGIS predicate route.
 //
 // The fixture is gated on `#[cfg(feature = "spatial")]` to mirror the
 // pattern in `phase6_spatial_field.rs`: under default features the
@@ -33,7 +35,10 @@ pub struct Place {
 #[allow(dead_code)]
 fn _within_km_compiles_on_option_geopoint() {
     let origin = djogi::GeoPoint::new(47.6062, -122.3321).expect("valid");
-    let _f = |p: PlaceFields| p.location().within_km(origin, 25.0);
+    let _f = |p: PlaceFields| p
+        .location()
+        .explicit_pg_predicate()
+        .within_km(origin, 25.0);
 }
 
 #[cfg(feature = "spatial")]

@@ -42,16 +42,16 @@ fn _check_renamed_path_compiles() {
     // Depth-2 scalar path using renamed nested key + renamed leaf key.
     // This call chain must compile; the path produced internally uses
     // "engineData" (not "engine") and "numCylinders" (not "cylinders").
-    let _path_fn = |f: RenameCarFields| f.profile().typed().engine().cylinders().gt(4);
+    let _path_fn = |f: RenameCarFields| f.profile().explicit_pg_predicate().typed().engine().cylinders().gt(4);
 
     // Non-renamed scalar — must still compile alongside renamed fields.
-    let _weight = |f: RenameCarFields| f.profile().typed().weight_kg().gt(1000.0_f32);
+    let _weight = |f: RenameCarFields| f.profile().explicit_pg_predicate().typed().weight_kg().gt(1000.0_f32);
 
     // Non-renamed nested then renamed leaf.
-    let _brand = |f: RenameCarFields| f.profile().typed().brand().eq("Acme".to_string());
+    let _brand = |f: RenameCarFields| f.profile().explicit_pg_predicate().typed().brand().eq("Acme".to_string());
 
     // skip_serializing_if on a scalar field — must compile.
-    let _disp = |f: RenameCarFields| f.profile().typed().engine().displacement_cc().gt(1500.0_f32);
+    let _disp = |f: RenameCarFields| f.profile().explicit_pg_predicate().typed().engine().displacement_cc().gt(1500.0_f32);
 }
 
 fn main() {}

@@ -106,21 +106,21 @@ fn _every_alias_field_is_a_scalar_leaf() {
     // derive would emit a method returning `<V as JsonbSchema>::Path<M>`
     // — and the alias targets (`OffsetDateTime` / `Date`) do not
     // implement `JsonbSchema`, so this binding would not compile.
-    let _f1 = |f: AuditEntryFields| f.payload().typed().bare_dt();
-    let _f2 = |f: AuditEntryFields| f.payload().typed().bare_d();
-    let _f3 = |f: AuditEntryFields| f.payload().typed().djogi_dt();
-    let _f4 = |f: AuditEntryFields| f.payload().typed().djogi_d();
-    let _f5 = |f: AuditEntryFields| f.payload().typed().djogi_types_dt();
-    let _f6 = |f: AuditEntryFields| f.payload().typed().djogi_types_d();
-    let _f7 = |f: AuditEntryFields| f.payload().typed().abs_djogi_dt();
-    let _f8 = |f: AuditEntryFields| f.payload().typed().abs_djogi_d();
-    let _f9 = |f: AuditEntryFields| f.payload().typed().abs_djogi_types_dt();
-    let _f10 = |f: AuditEntryFields| f.payload().typed().abs_djogi_types_d();
+    let _f1 = |f: AuditEntryFields| f.payload().explicit_pg_predicate().typed().bare_dt();
+    let _f2 = |f: AuditEntryFields| f.payload().explicit_pg_predicate().typed().bare_d();
+    let _f3 = |f: AuditEntryFields| f.payload().explicit_pg_predicate().typed().djogi_dt();
+    let _f4 = |f: AuditEntryFields| f.payload().explicit_pg_predicate().typed().djogi_d();
+    let _f5 = |f: AuditEntryFields| f.payload().explicit_pg_predicate().typed().djogi_types_dt();
+    let _f6 = |f: AuditEntryFields| f.payload().explicit_pg_predicate().typed().djogi_types_d();
+    let _f7 = |f: AuditEntryFields| f.payload().explicit_pg_predicate().typed().abs_djogi_dt();
+    let _f8 = |f: AuditEntryFields| f.payload().explicit_pg_predicate().typed().abs_djogi_d();
+    let _f9 = |f: AuditEntryFields| f.payload().explicit_pg_predicate().typed().abs_djogi_types_dt();
+    let _f10 = |f: AuditEntryFields| f.payload().explicit_pg_predicate().typed().abs_djogi_types_d();
 
     // Optional Jsonb<T> with the qualified spellings descends through
-    // .typed() too — exercises the Option<Jsonb<T>> path.
-    let _f11 = |f: AuditEntryFields| f.legacy().typed().created_at();
-    let _f12 = |f: AuditEntryFields| f.legacy().typed().published_on();
+    // .explicit_pg_predicate().typed() too — exercises the Option<Jsonb<T>> path.
+    let _f11 = |f: AuditEntryFields| f.legacy().explicit_pg_predicate().typed().created_at();
+    let _f12 = |f: AuditEntryFields| f.legacy().explicit_pg_predicate().typed().published_on();
 
     // Once we have a concrete value (`DateTime` is `time::OffsetDateTime`,
     // re-exported through `djogi::types`), `.eq(value)` must accept it —
@@ -130,8 +130,8 @@ fn _every_alias_field_is_a_scalar_leaf() {
     // `UNIX_EPOCH` const sentinel rather than `now_utc()` to avoid the
     // runtime call in a compile-only fixture.
     let epoch: djogi::DateTime = DateTime::UNIX_EPOCH;
-    let _f13 = move |f: AuditEntryFields| f.payload().typed().bare_dt().eq(epoch);
-    let _f14 = move |f: AuditEntryFields| f.payload().typed().djogi_types_dt().eq(epoch);
+    let _f13 = move |f: AuditEntryFields| f.payload().explicit_pg_predicate().typed().bare_dt().eq(epoch);
+    let _f14 = move |f: AuditEntryFields| f.payload().explicit_pg_predicate().typed().djogi_types_dt().eq(epoch);
 }
 
 fn main() {}

@@ -98,6 +98,7 @@ async fn cache_modifier_populates_punnu_on_fetch_all(mut ctx: djogi::DjogiContex
     // Run the queryset with the cache binding.
     let rows = CacheRow::objects()
         .cache(&pool)
+        .expect("unfiltered queryset must satisfy portable cache gate")
         .fetch_all(&mut ctx)
         .await
         .expect("fetch_all should succeed");
@@ -140,6 +141,7 @@ async fn cache_modifier_first_inserts_only_returned_row(mut ctx: djogi::DjogiCon
 
     let row = CacheRow::objects()
         .cache(&pool)
+        .expect("unfiltered queryset must satisfy portable cache gate")
         .first(&mut ctx)
         .await
         .expect("first should succeed");
@@ -178,18 +180,19 @@ async fn cache_modifier_does_not_change_sql_emit(mut ctx: djogi::DjogiContext) {
     // Build two structurally identical querysets — same filter, same
     // ordering, same limit — differing only in whether `.cache(&p)`
     // was called. Use a literal filter rather than a closure that
-    // captures shared state so the structural shape is provably
-    // the same (the closures below evaluate to the same Condition
-    // tree at storage time).
+    // captures shared state so the structural shape is provably the
+    // same. Use the portable predicate route because PR4 correctly
+    // rejects legacy `Q::Condition` filters at the cache boundary.
     let plain = CacheRow::objects()
-        .filter(|f| f.note().eq("alpha".to_string()))
+        .portable_filter(|f| f.note().eq("alpha".to_string()))
         .order_by(|f| f.id().asc())
         .limit(10);
     let cached = CacheRow::objects()
-        .filter(|f| f.note().eq("alpha".to_string()))
+        .portable_filter(|f| f.note().eq("alpha".to_string()))
         .order_by(|f| f.id().asc())
         .limit(10)
-        .cache(&pool);
+        .cache(&pool)
+        .expect("typed filter must satisfy portable cache gate");
 
     // Stable-state Debug comparison. The Debug impl walks the
     // structural fields that the SQL emitter consumes — `condition`,

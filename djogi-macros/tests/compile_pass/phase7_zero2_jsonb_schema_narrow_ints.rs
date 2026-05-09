@@ -44,27 +44,27 @@ pub struct Server {
 #[allow(dead_code)]
 fn _u16_path_compiles() {
     // Direct equality on a u16 JSONB field — the headline acceptance test.
-    let _f1 = |f: ServerFields| f.profile().typed().port().eq(80u16);
-    let _f2 = |f: ServerFields| f.profile().typed().port().gt(1024u16);
-    let _f3 = |f: ServerFields| f.profile().typed().port().is_not_null();
+    let _f1 = |f: ServerFields| f.profile().explicit_pg_predicate().typed().port().eq(80u16);
+    let _f2 = |f: ServerFields| f.profile().explicit_pg_predicate().typed().port().gt(1024u16);
+    let _f3 = |f: ServerFields| f.profile().explicit_pg_predicate().typed().port().is_not_null();
 }
 
 #[allow(dead_code)]
 fn _i8_path_compiles() {
-    let _f1 = |f: ServerFields| f.profile().typed().priority().eq(-1i8);
-    let _f2 = |f: ServerFields| f.profile().typed().priority().gt(0i8);
+    let _f1 = |f: ServerFields| f.profile().explicit_pg_predicate().typed().priority().eq(-1i8);
+    let _f2 = |f: ServerFields| f.profile().explicit_pg_predicate().typed().priority().gt(0i8);
 }
 
 #[allow(dead_code)]
 fn _u8_path_compiles() {
-    let _f1 = |f: ServerFields| f.profile().typed().retry_count().eq(3u8);
-    let _f2 = |f: ServerFields| f.profile().typed().retry_count().lt(10u8);
+    let _f1 = |f: ServerFields| f.profile().explicit_pg_predicate().typed().retry_count().eq(3u8);
+    let _f2 = |f: ServerFields| f.profile().explicit_pg_predicate().typed().retry_count().lt(10u8);
 }
 
 #[allow(dead_code)]
 fn _u32_path_compiles() {
-    let _f1 = |f: ServerFields| f.profile().typed().bytes_received().eq(1_000u32);
-    let _f2 = |f: ServerFields| f.profile().typed().bytes_received().gt(0u32);
+    let _f1 = |f: ServerFields| f.profile().explicit_pg_predicate().typed().bytes_received().eq(1_000u32);
+    let _f2 = |f: ServerFields| f.profile().explicit_pg_predicate().typed().bytes_received().gt(0u32);
 }
 
 fn main() {}

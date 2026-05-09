@@ -12,6 +12,6 @@ error[E0599]: no method named `fetch_all` found for struct `GroupedQuerySet<T, K
   --> tests/compile_fail/grouped_queryset_fetch_without_annotate.rs:14:53
    |
 14 |     let _ = Txn::objects().group_by(|f| f.org_id()).fetch_all(&mut ctx);
-   |             --------------                          ^^^^^^^^^ method not found in `GroupedQuerySet<Txn, FieldRef<Txn, i64>>`
+   |             --------------                          ^^^^^^^^^ method not found in `GroupedQuerySet<Txn, DjogiField<Txn, i64>>`
    |             |
    |             method `fetch_all` is available on `QuerySet<Txn>`

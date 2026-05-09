@@ -235,7 +235,7 @@ pub(crate) fn emit_portable_predicate<T: Model>(
 /// `Xor` walk through this without going back through `PortablePredicate`
 /// (which carries provenance metadata that does not change the SQL
 /// shape).
-fn emit_basic_predicate<T: Model>(
+pub(crate) fn emit_basic_predicate<T: Model>(
     acc: &mut SqlAccumulator,
     bp: &BasicPredicate<T>,
     ctx: SqlEmitContext,

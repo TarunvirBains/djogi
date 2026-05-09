@@ -106,7 +106,9 @@ async fn refresh_handle_survives_tokio_spawn(mut ctx: djogi::DjogiContext) {
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
     // Construct the handle in this scope.
-    let handle = LifetimeRow::objects().refresh_into(&punnu, pool, auth);
+    let handle = LifetimeRow::objects()
+        .refresh_into(&punnu, pool, auth)
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
     // Move the handle into a spawned task and call update() from there.
     // This compiles only if DeltaRefreshHandle<LifetimeRow>: Send.
@@ -172,7 +174,9 @@ async fn refresh_handle_survives_pool_drop_in_main(mut ctx: djogi::DjogiContext)
 
     // Construct the handle. Internally `refresh_into` clones the pool into the
     // `DjogiDeltaFetcher` — the fetcher now holds its own Arc clone.
-    let handle = LifetimeRow::objects().refresh_into(&punnu, original_pool.clone(), auth);
+    let handle = LifetimeRow::objects()
+        .refresh_into(&punnu, original_pool.clone(), auth)
+        .expect("unfiltered queryset must satisfy portable refresh gate");
 
     // Drop the original pool handle. Arc refcount: fetcher's clone keeps it alive.
     drop(original_pool);

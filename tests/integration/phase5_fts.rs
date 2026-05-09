@@ -51,7 +51,7 @@ async fn fts_matches_basic_terms(mut ctx: djogi::DjogiContext) {
 
 #[test]
 fn fts_rank_expression_is_typed() {
-    let _rank: Expr<f32> = BookFields::default().search().rank(TsQuery::new("planet"));
+    let _rank: Expr<f32> = BookFields.search().rank(TsQuery::new("planet"));
 }
 
 #[djogi::djogi_test(sync_models = [Book])]

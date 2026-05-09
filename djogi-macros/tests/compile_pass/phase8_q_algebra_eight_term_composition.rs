@@ -2,13 +2,13 @@
 //
 // Locks v3 §T6 acceptance criterion: "Trybuild compile-pass: complex
 // 8-term composition with mixed XOR / AND / OR / NOT." The fixture
-// exercises every operator, the `From<BasicPredicate<T>>` lift, and
+// exercises every operator, the portable true/false constructors, and
 // the `Q::Compound` flattening contract simultaneously, ensuring no
 // inference cliff appears at multi-operand chained compositions.
 //
 // Pre-T6.9 the `FieldRef::eq` methods still return `Condition`, so
 // this fixture builds `Q<T>` operands directly from
-// `BasicPredicate::True` / `False` and `Q::Negated` wrappers rather
+// `Q::always_true` / `Q::always_false` and `Q::Negated` wrappers rather
 // than from field-comparison return values. Operator precedence and
 // flattening behavior are independent of how the operands are
 // constructed; the fixture's job is to lock the algebra's
@@ -26,11 +26,11 @@ pub struct Widget {
 }
 
 fn main() {
-    // Eight basic operands — mix of Q::Basic from sassi True/False
+    // Eight basic operands — mix of Q portable true/false
     // sentinels and Q::Negated wrappers. The eight-term composition
     // chains AND, OR, XOR, NOT in every position.
-    let t = || Q::<Widget>::Basic(BasicPredicate::True);
-    let f = || Q::<Widget>::Basic(BasicPredicate::False);
+    let t = || Q::<Widget>::always_true();
+    let f = || Q::<Widget>::always_false();
     let neg = || Q::<Widget>::Negated(Box::new(t()));
 
     // (a & b & c) ^ (d | e | f) | !(g & h) — exercises every

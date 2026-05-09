@@ -56,10 +56,11 @@
 
 use crate::model::Model;
 use crate::pg::decode::FromJoinedPgRow;
+use crate::query::PortablePredicateError;
 use crate::query::condition::Condition;
 use crate::query::field::FieldRef;
 use crate::query::order::OrderExpr;
-use crate::query::q::Q;
+use crate::query::q::{CompoundOp, Q};
 use crate::relation::path::RelationPath;
 use crate::relation::prefetch::{ErasedPrefetch, prefetch_loader};
 use crate::relation::select_related::{ErasedSelectRelated, child_descriptor, join_decoder};
@@ -321,6 +322,213 @@ pub struct QuerySet<T: Model> {
     _model: PhantomData<fn() -> T>,
 }
 
+/// A queryset whose accumulated predicate tree has been proven reducible to
+/// Sassi's portable [`BasicPredicate`](sassi::BasicPredicate) algebra.
+///
+/// Constructed only by [`QuerySet::try_portable`]. The stored predicate is
+/// produced by a trusted borrow-walk over `Q<T>`; there is no public
+/// constructor accepting a raw Sassi predicate, so downstream code cannot
+/// pair forged field names with unrelated extractors and then feed the result
+/// into a cache boundary.
+pub struct PortableQuerySet<T: Model> {
+    inner: QuerySet<T>,
+    portable_predicate: sassi::BasicPredicate<T>,
+}
+
+/// Cached terminal wrapper for a portable queryset.
+///
+/// The wrapper owns the database queryset and borrows the target Punnu only
+/// long enough to clone Sassi's cheap handle before delegating to the existing
+/// QuerySet terminal implementations.
+pub struct CachedPortableQuerySet<'p, T: Model + crate::types::Cacheable + Clone> {
+    inner: PortableQuerySet<T>,
+    punnu: &'p sassi::Punnu<T>,
+}
+
+fn basic_predicate_kind<T: Model>(predicate: &sassi::BasicPredicate<T>) -> &'static str {
+    match predicate {
+        sassi::BasicPredicate::True => "True",
+        sassi::BasicPredicate::False => "False",
+        sassi::BasicPredicate::Field(_) => "Field",
+        sassi::BasicPredicate::And(_) => "And",
+        sassi::BasicPredicate::Or(_) => "Or",
+        sassi::BasicPredicate::Not(_) => "Not",
+        sassi::BasicPredicate::Xor(_, _) => "Xor",
+        _ => "<unknown>",
+    }
+}
+
+impl<T: Model> std::fmt::Debug for PortableQuerySet<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PortableQuerySet")
+            .field("inner", &self.inner)
+            .field(
+                "portable_predicate",
+                &basic_predicate_kind(&self.portable_predicate),
+            )
+            .finish()
+    }
+}
+
+impl<T: Model> PortableQuerySet<T> {
+    /// Drop the portable-cache guarantee and return to normal SQL queryset
+    /// execution.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn into_query_set(self) -> QuerySet<T> {
+        self.inner
+    }
+
+    /// Borrow the underlying SQL queryset.
+    pub fn as_query_set(&self) -> &QuerySet<T> {
+        &self.inner
+    }
+
+    /// Borrow the Sassi predicate proven at the cache boundary.
+    pub fn predicate(&self) -> &sassi::BasicPredicate<T> {
+        &self.portable_predicate
+    }
+
+    /// Run the queryset and return every matching row. Equivalent to
+    /// [`QuerySet::fetch_all`]; the portable wrapper delegates without
+    /// rebinding any cache target so the query reaches the database
+    /// unchanged. Pair with [`PortableQuerySet::cache`] when you want
+    /// the returned rows mirrored into a [`sassi::Punnu`].
+    pub fn fetch_all<'ctx>(
+        self,
+        ctx: &'ctx mut crate::DjogiContext,
+    ) -> impl std::future::Future<Output = Result<Vec<T>, crate::DjogiError>> + Send + 'ctx
+    where
+        T: crate::pg::decode::FromPgRow + Send + Unpin + 'ctx,
+    {
+        self.inner.fetch_all(ctx)
+    }
+
+    /// Run the queryset and return exactly one matching row. Delegates to
+    /// [`QuerySet::fetch_one`]; mirrors the same `NotFound`/`MultipleFound`
+    /// errors as the underlying queryset.
+    pub fn fetch_one<'ctx>(
+        self,
+        ctx: &'ctx mut crate::DjogiContext,
+    ) -> impl std::future::Future<Output = Result<T, crate::DjogiError>> + Send + 'ctx
+    where
+        T: crate::pg::decode::FromPgRow + Send + Unpin + 'ctx,
+    {
+        self.inner.fetch_one(ctx)
+    }
+
+    /// Run the queryset and return the first matching row, or `None` if no
+    /// rows match. Delegates to [`QuerySet::first`].
+    pub fn first<'ctx>(
+        self,
+        ctx: &'ctx mut crate::DjogiContext,
+    ) -> impl std::future::Future<Output = Result<Option<T>, crate::DjogiError>> + Send + 'ctx
+    where
+        T: crate::pg::decode::FromPgRow + Send + Unpin + 'ctx,
+    {
+        self.inner.first(ctx)
+    }
+
+    /// Run the queryset and return the row count. Delegates to
+    /// [`QuerySet::count`]; cache binding is intentionally not applied
+    /// because `COUNT(*)` does not return rows the identity map could
+    /// absorb.
+    pub fn count<'ctx>(
+        self,
+        ctx: &'ctx mut crate::DjogiContext,
+    ) -> impl std::future::Future<Output = Result<i64, crate::DjogiError>> + Send + 'ctx
+    where
+        T: 'ctx,
+    {
+        self.inner.count(ctx)
+    }
+}
+
+impl<T: Model + crate::types::Cacheable + Clone> PortableQuerySet<T> {
+    /// Bind a [`sassi::Punnu`] to the queryset so that rows returned by the
+    /// next terminal call are mirrored into the Punnu's identity map.
+    ///
+    /// The returned [`CachedPortableQuerySet`] borrows `punnu` only long
+    /// enough to clone Sassi's cheap `Arc`-backed handle when the terminal
+    /// fires; the queryset itself stays owned. Cache binding only applies
+    /// to row-returning terminals (`fetch_all`, `fetch_one`, `first`);
+    /// `count` runs unchanged because it returns no rows.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn cache(self, punnu: &sassi::Punnu<T>) -> CachedPortableQuerySet<'_, T> {
+        CachedPortableQuerySet { inner: self, punnu }
+    }
+}
+
+impl<T: Model + crate::types::Cacheable + Clone> CachedPortableQuerySet<'_, T> {
+    /// Run the queryset, return every matching row, and mirror the rows
+    /// into the bound Punnu's identity map.
+    ///
+    /// Cache binding happens at the moment of the terminal call: the
+    /// captured `&Punnu<T>` is cloned into the queryset's cache target,
+    /// and the existing [`QuerySet::fetch_all`] terminal pipeline upserts
+    /// rows under the same on-commit hook used elsewhere.
+    pub fn fetch_all<'ctx>(
+        self,
+        ctx: &'ctx mut crate::DjogiContext,
+    ) -> impl std::future::Future<Output = Result<Vec<T>, crate::DjogiError>> + Send + 'ctx
+    where
+        T: crate::pg::decode::FromPgRow + Send + Unpin + 'ctx,
+    {
+        let qs = self.inner.into_query_set().bind_cache(self.punnu.clone());
+        qs.fetch_all(ctx)
+    }
+
+    /// Run the queryset, return exactly one matching row, and mirror that
+    /// row into the bound Punnu. Same error semantics as
+    /// [`QuerySet::fetch_one`].
+    pub fn fetch_one<'ctx>(
+        self,
+        ctx: &'ctx mut crate::DjogiContext,
+    ) -> impl std::future::Future<Output = Result<T, crate::DjogiError>> + Send + 'ctx
+    where
+        T: crate::pg::decode::FromPgRow + Send + Unpin + 'ctx,
+    {
+        let qs = self.inner.into_query_set().bind_cache(self.punnu.clone());
+        qs.fetch_one(ctx)
+    }
+
+    /// Run the queryset, return the first matching row (or `None`), and
+    /// mirror that row — when present — into the bound Punnu.
+    pub fn first<'ctx>(
+        self,
+        ctx: &'ctx mut crate::DjogiContext,
+    ) -> impl std::future::Future<Output = Result<Option<T>, crate::DjogiError>> + Send + 'ctx
+    where
+        T: crate::pg::decode::FromPgRow + Send + Unpin + 'ctx,
+    {
+        let qs = self.inner.into_query_set().bind_cache(self.punnu.clone());
+        qs.first(ctx)
+    }
+
+    /// Run the queryset and return the row count.
+    ///
+    /// Cache binding is intentionally not applied — `COUNT(*)` returns no
+    /// rows for the identity map to absorb. Adopters wanting both a count
+    /// and the rows themselves should issue separate `fetch_all` and
+    /// `count` calls; the framework does not synthesise a count from a
+    /// cached row vector because the count must reflect the database, not
+    /// the locally cached subset.
+    pub fn count<'ctx>(
+        self,
+        ctx: &'ctx mut crate::DjogiContext,
+    ) -> impl std::future::Future<Output = Result<i64, crate::DjogiError>> + Send + 'ctx
+    where
+        T: 'ctx,
+    {
+        self.inner.into_query_set().count(ctx)
+    }
+}
+
+impl<T: Model + crate::types::Cacheable + Clone> std::fmt::Debug for CachedPortableQuerySet<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.inner.as_query_set().fmt(f)
+    }
+}
+
 // Phase 8eta PR2b — manual `Clone` for `QuerySet<T>`. `Q<T>` itself
 // carries a manual `Clone` impl (no `T: Clone` propagation), so this
 // just delegates `condition.clone()` directly without lowering through
@@ -542,33 +750,24 @@ impl<T: Model> QuerySet<T> {
 
     /// Add a typed filter closure to the condition tree, AND-ed with whatever
     /// already accumulated. The closure receives a default-constructed
-    /// `T::Fields` (a ZST) and returns a [`Condition`].
+    /// `T::Fields` (a ZST) and returns any [`IntoQ`](crate::query::IntoQ)
+    /// predicate.
     ///
     /// ```ignore
-    /// Post::objects().filter(|f| f.published.eq(true))
+    /// Post::objects().filter(|f| f.published().eq(true))
     /// ```
     ///
-    /// # New code: prefer [`filter_struct`](Self::filter_struct)
+    /// Ordinary generated root fields now return Djogi-owned portable
+    /// predicates, so `f.col().eq(...)` / `icontains(...)` filters can pass the
+    /// cache and refresh portability gates. PostgreSQL-specific predicates
+    /// remain valid database filters through
+    /// [`DjogiField::explicit_pg_predicate`](crate::query::field::DjogiField::explicit_pg_predicate)
+    /// and are rejected by cache boundaries.
     ///
-    /// As of Cluster 8γ Stage 2 (T6.9), the public predicate substrate
-    /// is the [`Q<T>`](crate::query::Q) algebra. `filter` and
-    /// [`exclude`](Self::exclude) keep their
-    /// `FnOnce(T::Fields) -> Condition` shape because every shipped
-    /// `FieldRef` lookup method (`f.col.eq(v)`, `f.col.gt(v)`, …)
-    /// returns the legacy [`Condition`] type and changing those return
-    /// types would rewrite every adopter's filter callsite. New code
-    /// composing against `Q<T>` directly — through the algebra
-    /// (`Q::Ilike(...)`, `Q::Regex(...)`), through Djogi-owned
-    /// [`PortablePredicate`](crate::query::PortablePredicate) builders,
-    /// or through the macro-emitted `{Model}Filter` programmatic builder —
-    /// reaches for [`filter_struct`](Self::filter_struct) /
-    /// [`exclude_struct`](Self::exclude_struct) instead.
-    ///
-    /// SQL parity between `filter` and `filter_struct` is exact for
-    /// legacy condition inputs: the closure-returned `Condition` lifts
-    /// into the `Q<T>` substrate as `Q::Condition(_)`, and the direct-Q
-    /// SQL emitter delegates that arm to `emit_condition`. Adopter code
-    /// does not need to migrate.
+    /// Use [`filter_struct`](Self::filter_struct) for closure-free dynamic
+    /// builders, macro-generated `{Model}Filter` values, or direct `Q<T>`
+    /// composition outside a field closure. Legacy raw [`Condition`] values
+    /// still lift into `Q::Condition(_)` for byte-for-byte SQL parity.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn filter<F, P>(mut self, f: F) -> Self
     where
@@ -634,19 +833,13 @@ impl<T: Model> QuerySet<T> {
     /// onto the existing tree. Equivalent to Django's `QuerySet.exclude()`.
     ///
     /// ```ignore
-    /// Post::objects().exclude(|f| f.title.eq("draft".to_string()))
+    /// Post::objects().exclude(|f| f.title().eq("draft".to_string()))
     /// ```
     ///
-    /// # New code: prefer [`exclude_struct`](Self::exclude_struct)
-    ///
-    /// See the module-level note on [`filter`](Self::filter): the
-    /// public predicate substrate is the
-    /// [`Q<T>`](crate::query::Q) algebra. `exclude` keeps its
-    /// `FnOnce(T::Fields) -> Condition` shape for back-compat with
-    /// every shipped `FieldRef` lookup method; new code composing
-    /// against `Q<T>` reaches for
-    /// [`exclude_struct`](Self::exclude_struct) instead. SQL parity
-    /// between the two paths is exact.
+    /// See [`filter`](Self::filter) for the current portable-vs-SQL-only
+    /// routing. Pure portable predicates are negated inside the trusted
+    /// portable algebra so cache and refresh gates can still reduce them;
+    /// SQL-only predicates are wrapped as `Q::Negated(...)`.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn exclude<F, P>(mut self, f: F) -> Self
     where
@@ -1804,61 +1997,96 @@ impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
 // Phase 8 plan §374. Granular plan
 // `cluster-8delta-granular.md` §3 commit T7.3.
 impl<T: Model + crate::types::Cacheable + Clone> QuerySet<T> {
-    /// Bind this QuerySet to a [`sassi::Punnu`] — every row produced
-    /// by a terminal method (`.fetch_all()`, `.first()`, `.fetch_one()`)
-    /// is inserted into the bound Punnu via [`sassi::Punnu::insert`]
-    /// after the rows materialise and before the value is returned to
-    /// the caller. Identity-map semantics + the configured
-    /// [`sassi::OnConflict`] policy from sassi apply.
+    /// Internal helper: stamp this QuerySet with a type-erased Punnu cache
+    /// target so the next terminal method sends each materialised row
+    /// through [`sassi::Punnu::insert`] before returning to the caller.
+    ///
+    /// `pub(crate)` because the public adopter surface is [`QuerySet::cache`]
+    /// (Phase 8eta PR4), which gates entry through the trusted portable
+    /// predicate reducer. `bind_cache` runs unconditionally with no gate, so
+    /// only framework code that has already proven the queryset's predicate
+    /// is portable (e.g. [`CachedPortableQuerySet`]'s terminal methods) may
+    /// reach it.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub(crate) fn bind_cache(mut self, punnu: sassi::Punnu<T>) -> Self {
+        // Wrap in the type-erased `CacheTarget` handle so the
+        // queryset's struct field doesn't need a `T: Cacheable`
+        // bound. `Arc::new` here boxes the wrapper once at bind
+        // time; later clones of the queryset reuse the same `Arc`.
+        // `Punnu::clone` itself is `Arc`-cheap, so the embedded
+        // clone inside `PunnuCacheTarget::new` is also cheap.
+        self.cache_target = Some(std::sync::Arc::new(PunnuCacheTarget::new(punnu)));
+        self
+    }
+
+    /// Bind this QuerySet to a [`sassi::Punnu`] cache, gated by the
+    /// trusted portable-predicate reducer.
+    ///
+    /// On success returns a [`CachedPortableQuerySet`] whose terminal methods
+    /// (`fetch_all`, `fetch_one`, `first`, `count`) execute the underlying
+    /// SQL and additionally feed every materialised row through
+    /// [`sassi::Punnu::insert`] before handing the values back to the caller.
+    /// Identity-map semantics + the configured [`sassi::OnConflict`] policy
+    /// from sassi apply.
+    ///
+    /// On failure returns the original QuerySet alongside a typed
+    /// [`PortablePredicateError`] — no terminal work or cache binding has
+    /// taken place. SQL-only predicates (`Q::Condition`, `Q::Ilike`,
+    /// `Q::JsonbPath`, `Q::Regex`, `Q::Expression`, `Q::Array`) are rejected;
+    /// cache and refresh paths must be reducible to Sassi's Rust-evaluable
+    /// algebra so cache reads can apply the same predicate in memory.
+    /// [`QuerySet::none`] is treated as the portable false predicate and
+    /// passes the gate even though its `is_empty` short-circuit means no
+    /// row will ever be inserted.
     ///
     /// # Bounds
     ///
-    /// `T: Clone` is required because the post-fetch hook runs after
-    /// the terminal has materialised the `Vec<T>` for the caller —
-    /// the cache target needs its own copy of each row to feed into
-    /// `Punnu::insert`, while the caller still gets the original.
-    /// Sassi's `Cacheable` does not include `Clone` as a supertrait
-    /// (a model can be cacheable without being cloneable), so the
-    /// bound is added explicitly here. Every model that goes
-    /// through `#[derive(Model)]` already has `#[derive(Clone)]` in
-    /// the canonical recipe (see the model spec) so this bound is
-    /// satisfied by construction for every realistic adopter.
+    /// `T: Clone` is required because the post-fetch hook runs after the
+    /// terminal has materialised the `Vec<T>` for the caller — the cache
+    /// target needs its own copy of each row to feed into `Punnu::insert`,
+    /// while the caller still gets the original. Sassi's `Cacheable` does
+    /// not include `Clone` as a supertrait, so the bound is added explicitly
+    /// here. Every model that goes through `#[derive(Model)]` already has
+    /// `#[derive(Clone)]` in the canonical recipe so this bound is satisfied
+    /// by construction for every realistic adopter.
     ///
     /// # Why opt-in
     ///
-    /// The cache hook is purely additive — SQL output, query plan,
-    /// and the lifetime of the QuerySet are unchanged whether
-    /// `.cache(...)` was called or not. Calling `.cache(&p)` records
-    /// "this QuerySet feeds that Punnu instance"; not calling it
-    /// preserves the pre-T7.3 fetch behaviour exactly. Adopters who
-    /// don't want a cache pay zero — neither in cycles nor in API
-    /// surface.
+    /// The cache hook is purely additive — SQL output, query plan, and the
+    /// lifetime of the QuerySet are unchanged whether `.cache(...)` was
+    /// called or not. Calling `.cache(&p)` records "this QuerySet feeds that
+    /// Punnu instance"; not calling it preserves the uncached fetch
+    /// behaviour exactly. Adopters who don't want a cache pay zero — neither
+    /// in cycles nor in API surface.
     ///
     /// # Why `&Punnu<T>` (not `Punnu<T>`)
     ///
-    /// `sassi::Punnu<T>` is `Arc`-internal — `Punnu::clone` clones a
-    /// single `Arc<PunnuInner<T>>` (see
-    /// `sassi-reference/sassi/src/punnu/pool.rs` lines 116–122). The
-    /// builder takes the punnu by reference and clones internally so
-    /// the call site reads as a binding ("feed THIS punnu") rather
-    /// than a transfer ("hand over your punnu"). The cloned handle
-    /// shares state with the caller's, matching the bind semantics
+    /// `sassi::Punnu<T>` is `Arc`-internal — `Punnu::clone` clones a single
+    /// `Arc<PunnuInner<T>>`. The builder takes the punnu by reference and
+    /// clones internally so the call site reads as a binding ("feed THIS
+    /// punnu") rather than a transfer ("hand over your punnu"). The cloned
+    /// handle shares state with the caller's, matching the bind semantics
     /// the spec requires.
     ///
     /// # Errors propagation
     ///
-    /// Errors from `Punnu::insert` (e.g.,
-    /// [`sassi::InsertError::Conflict`] under
-    /// [`sassi::OnConflict::Reject`], or an L2-backend serialization
-    /// failure) are logged via `tracing::warn!` and swallowed — they
-    /// do not abort the fetch. Adopters who want to observe cache-
-    /// side errors subscribe to [`sassi::Punnu::events`] (which fires
-    /// per-insert events including conflict outcomes) — that is the
-    /// designed observability surface for cache-pool lifecycle.
-    /// Routing them through the fetch return type would conflate
-    /// "Postgres said something went wrong" with "the cache mirror
-    /// disagreed" and break the spec's contract that the cache
+    /// Per-row [`sassi::Punnu::insert`] errors (e.g.
+    /// [`sassi::InsertError::Conflict`] under [`sassi::OnConflict::Reject`],
+    /// or an L2-backend serialization failure) are logged via
+    /// `tracing::warn!` and swallowed — they do not abort the fetch.
+    /// Adopters who want to observe cache-side errors subscribe to
+    /// [`sassi::Punnu::events`] (which fires per-insert events including
+    /// conflict outcomes) — that is the designed observability surface for
+    /// cache-pool lifecycle. Routing them through the fetch return type
+    /// would conflate "Postgres said something went wrong" with "the cache
+    /// mirror disagreed" and break the spec's contract that the cache
     /// modifier is purely additive.
+    ///
+    /// Predicate-portability errors travel through the `Result` return type,
+    /// not through `tracing`, because they reflect a structural choice the
+    /// adopter must repair (rewrite the filter using portable predicates) —
+    /// retrying the same queryset cannot turn a SQL-only predicate into a
+    /// portable one.
     ///
     /// # Example
     ///
@@ -1868,25 +2096,33 @@ impl<T: Model + crate::types::Cacheable + Clone> QuerySet<T> {
     ///
     /// let pool: Punnu<Post> = Punnu::<Post>::builder().build();
     /// let recent = Post::objects()
-    ///     .filter(|f| f.published.eq(true))
-    ///     .order_by(|f| f.created_at.desc())
+    ///     .filter(|f| f.published().eq(true))
+    ///     .order_by(|f| f.created_at().desc())
     ///     .limit(20)
-    ///     .cache(&pool)               // ← opt in
+    ///     .cache(&pool)?              // ← portable-gated cache binding
     ///     .fetch_all(&mut ctx)
     ///     .await?;
     /// // `pool.len() == recent.len()` — the 20 rows are now in
     /// // the bound Punnu's L1 identity map, ready for `pool.get(id)`.
     /// ```
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
-    pub fn cache(mut self, punnu: &sassi::Punnu<T>) -> Self {
-        // Wrap in the type-erased `CacheTarget` handle so the
-        // queryset's struct field doesn't need a `T: Cacheable`
-        // bound. `Arc::new` here boxes the wrapper once at bind
-        // time; later clones of the queryset reuse the same `Arc`.
-        // `Punnu::clone` itself is `Arc`-cheap, so the embedded
-        // clone inside `PunnuCacheTarget::new` is also cheap.
-        self.cache_target = Some(std::sync::Arc::new(PunnuCacheTarget::new(punnu.clone())));
-        self
+    // `clippy::result_large_err` is silenced because the `Err` variant returns
+    // ownership of `self` to the caller alongside the typed portability error
+    // — the recovery shape (retry with a portable filter, or fall through to
+    // ordinary SQL execution) requires the original queryset. Boxing would
+    // force an allocation on every error path without changing what the
+    // caller has to do with it; the established codebase idiom (see
+    // `migrate/segment.rs`, `migrate/projection.rs`) keeps the allow at the
+    // function boundary.
+    #[allow(clippy::result_large_err)]
+    pub fn cache(
+        self,
+        punnu: &sassi::Punnu<T>,
+    ) -> Result<CachedPortableQuerySet<'_, T>, (Self, PortablePredicateError)> {
+        match self.try_portable() {
+            Ok(portable) => Ok(portable.cache(punnu)),
+            Err((queryset, err)) => Err((queryset, err)),
+        }
     }
 }
 
@@ -2012,138 +2248,128 @@ impl_into_distinct_columns_djogi_tuple!(A, B, C, D, E, F);
 // to pass a BasicPredicate filter to sassi.
 //
 // Implementation note — Q::Condition is always Unreducible:
-//   The legacy closure-based filter API (while generated fields still return
-//   FieldRef-backed `Condition`) and macro-generated `{Model}Filter` inputs
-//   route through Q::Condition(_) to preserve byte-for-byte SQL parity. A
-//   freshly constructed QuerySet<T>::new() starts with Q::Portable(True).
-//   Direct `Q<T>` / `PortablePredicate<T>` inputs to filter_struct preserve
-//   Q::Portable / Q::Compound / Q::Negated reducible forms. PR3's generated
-//   field-accessor flip makes the ordinary closure path produce the same
-//   trusted portable shapes.
+//   Legacy SQL-only payloads and macro-generated `{Model}Filter` inputs route
+//   through Q::Condition(_) to preserve byte-for-byte SQL parity. A freshly
+//   constructed QuerySet<T>::new() starts with Q::Portable(True). Ordinary
+//   closure filters whose field accessors return `PortablePredicate<T>` now
+//   preserve Q::Portable / Q::Compound / Q::Negated reducible forms, so PR4
+//   cache and refresh gates accept them.
 //
 // Path-routing note (non-emitted code):
 //   Per `feedback_macro_path_routing.md`, path-routing governs macro-EMITTED
 //   code only. This impl block is non-emitted framework code; it may spell
 //   `sassi::BasicPredicate` directly.
 
-/// Outcome of a `reduce_q_to_basic` walk.
-enum ReduceOutcome<T: crate::model::Model> {
-    /// The entire Q<T> tree reduced to a single BasicPredicate<T>.
-    Reduced(sassi::BasicPredicate<T>),
-    /// At least one node was not reducible. Carries a `&'static str`
-    /// describing the first unreducible variant encountered.
-    Unreducible(&'static str),
+fn cache_invalid(kind: &'static str) -> PortablePredicateError {
+    PortablePredicateError::CacheInvalidNode { kind }
 }
 
-/// Recursively walk a `Q<T>` tree (by value) and attempt to reduce it to a
-/// single `BasicPredicate<T>`.
-///
-/// Takes `Q<T>` by value to avoid a `T: Clone` bound (sassi's
-/// `BasicPredicate<T>: Clone` derive requires `T: Clone`, but many djogi
-/// models do not implement `Clone`). Ownership is transferred from
-/// `QuerySet::condition` when called from `into_basic_predicate(self)`.
-///
-/// Only `Q::Portable`, `Q::Compound`, and `Q::Negated` are reducible. Every
-/// other variant is SQL-only or a legacy escape hatch and returns
-/// `Unreducible` with a descriptive reason string. The walk is depth-first;
-/// the first unreducible node short-circuits and bubbles up.
-///
-/// # sassi BasicPredicate API
-///
-/// The sassi `BasicPredicate<T>` enum variants (confirmed from
-/// `sassi-reference/sassi/src/predicate/basic.rs`):
-///   - `True` / `False` — vacuous sentinels
-///   - `Field(FieldPredicate<T>)` — single-field predicate
-///   - `And(Vec<BasicPredicate<T>>)` — conjunction (flattened)
-///   - `Or(Vec<BasicPredicate<T>>)` — disjunction (flattened)
-///   - `Not(Box<BasicPredicate<T>>)` — negation
-///   - `Xor(Box<BasicPredicate<T>>, Box<BasicPredicate<T>>)` — exclusive-or
-fn reduce_q_to_basic<T: crate::model::Model>(q: Q<T>) -> ReduceOutcome<T> {
+fn try_reduce_q_ref_to_basic<T: crate::model::Model>(
+    q: &Q<T>,
+) -> Result<sassi::BasicPredicate<T>, PortablePredicateError> {
     match q {
-        // Phase 8eta PR2b — `Q::Portable` carries a trusted-provenance
-        // wrapper around `BasicPredicate<T>`. Unwrap to feed the
-        // reducer's existing `BasicPredicate<T>` output contract.
-        Q::Portable(p) => ReduceOutcome::Reduced(p.into_inner()),
-
-        // Pure-Portable AND/OR flattened through Sassi's operators
-        // land here as `Q::Portable(BasicPredicate::And/Or(...))`.
-        // Mixed-operand AND/OR (at least one side is not `Q::Portable`)
-        // land as `Q::Compound`. Both are reducible when every part
-        // is reducible.
+        Q::Portable(p) => Ok(p.clone().into_inner()),
         Q::Compound { op, parts } => {
             let mut reduced_parts = Vec::with_capacity(parts.len());
             for part in parts {
-                match reduce_q_to_basic(part) {
-                    ReduceOutcome::Reduced(p) => reduced_parts.push(p),
-                    other @ ReduceOutcome::Unreducible(_) => return other,
-                }
+                reduced_parts.push(try_reduce_q_ref_to_basic(part)?);
             }
             #[allow(unreachable_patterns)]
-            let combined = match op {
-                crate::query::q::CompoundOp::And => sassi::BasicPredicate::And(reduced_parts),
-                crate::query::q::CompoundOp::Or => sassi::BasicPredicate::Or(reduced_parts),
-                // CompoundOp is #[non_exhaustive]; forward-compat catch-all for any
-                // new associative operator added in a future sassi release.
-                _ => return ReduceOutcome::Unreducible("Q::Compound with unknown CompoundOp"),
-            };
-            ReduceOutcome::Reduced(combined)
-        }
-
-        // Q::Negated wraps a non-Portable NOT. Pure-Portable negation rides
-        // BasicPredicate::Not already, so Q::Negated(Q::Portable(p)) means
-        // the inner was already not-folded by sassi. Reduce the inner and
-        // wrap in BasicPredicate::Not.
-        Q::Negated(inner) => match reduce_q_to_basic(*inner) {
-            ReduceOutcome::Reduced(p) => {
-                ReduceOutcome::Reduced(sassi::BasicPredicate::Not(Box::new(p)))
+            match op {
+                CompoundOp::And => Ok(sassi::BasicPredicate::And(reduced_parts)),
+                CompoundOp::Or => Ok(sassi::BasicPredicate::Or(reduced_parts)),
+                _ => Err(cache_invalid("Compound::<unknown>")),
             }
-            other => other,
-        },
-
-        // SQL-only variants — cannot be expressed as a BasicPredicate because
-        // they require server-side evaluation.
-        Q::Ilike(_, _) => ReduceOutcome::Unreducible("Q::Ilike (SQL-only, no Rust eval path)"),
-        Q::JsonbPath(_) => ReduceOutcome::Unreducible("Q::JsonbPath (SQL-only, no Rust eval path)"),
-        Q::Regex(_, _, _) => ReduceOutcome::Unreducible(
-            "Q::Regex (SQL-only Postgres POSIX; no Rust regex engine in djogi)",
-        ),
-        Q::Expression(_) => {
-            ReduceOutcome::Unreducible("Q::Expression (typed expression IR; SQL-only escape hatch)")
         }
-        Q::Array(_) => ReduceOutcome::Unreducible("Q::Array (Postgres array operators; SQL-only)"),
-
-        // Q::Condition is the legacy escape hatch — always Unreducible.
-        // FieldRef-backed filters and macro-generated ModelFilter inputs
-        // intentionally preserve the legacy Condition tree for SQL parity.
-        // Direct Q<T> / PortablePredicate<T> inputs stay structural and do
-        // not land here.
-        Q::Condition(_) => ReduceOutcome::Unreducible(
-            "Q::Condition (legacy Condition escape hatch; not a portable cache predicate)",
-        ),
-
-        // Q::Xor has no equivalent BasicPredicate variant with the same
-        // semantics that is both composable and directly expressible as a
-        // single BasicPredicate node. BasicPredicate::Xor exists but only
-        // for the pure-Portable case (which already flattened into
-        // Q::Portable(BasicPredicate::Xor(...)) before reaching this arm).
-        Q::Xor(_, _) => ReduceOutcome::Unreducible(
-            "Q::Xor (mixed-operand XOR; no BasicPredicate equivalent at this node)",
-        ),
-
-        // Q is #[non_exhaustive] — forward-compat catch-all for any variant
-        // added in a future cluster before this match is updated.
-        // The #[allow] suppresses the "unreachable pattern" warning that
-        // occurs within-crate because the compiler can see all variants
-        // are already matched. It is load-bearing for external callers in
-        // a downstream crate once a new variant is added.
+        Q::Xor(left, right) => Ok(sassi::BasicPredicate::Xor(
+            Box::new(try_reduce_q_ref_to_basic(left)?),
+            Box::new(try_reduce_q_ref_to_basic(right)?),
+        )),
+        Q::Negated(inner) => Ok(sassi::BasicPredicate::Not(Box::new(
+            try_reduce_q_ref_to_basic(inner)?,
+        ))),
+        Q::Condition(_) => Err(cache_invalid("Condition")),
+        Q::Ilike(_, _) => Err(cache_invalid("Ilike")),
+        Q::Regex(_, _, _) => Err(cache_invalid("Regex")),
+        Q::Expression(_) => Err(cache_invalid("Expression")),
+        Q::Array(_) => Err(cache_invalid("Array")),
+        Q::JsonbPath(_) => Err(cache_invalid("JsonbPath")),
         #[allow(unreachable_patterns)]
-        _ => ReduceOutcome::Unreducible(
-            "Q variant not yet supported by into_basic_predicate (forward-compat catch-all)",
-        ),
+        _ => Err(cache_invalid("Q::<unknown>")),
     }
 }
 
+fn validate_portable_sql_emit<T: crate::model::Model>(
+    predicate: &sassi::BasicPredicate<T>,
+) -> Result<(), PortablePredicateError> {
+    let mut acc = crate::pg::accumulator::SqlAccumulator::new("");
+    crate::query::portable::emit_basic_predicate::<T>(
+        &mut acc,
+        predicate,
+        crate::query::SqlEmitContext::root(),
+    )
+}
+
 impl<T: crate::model::Model> QuerySet<T> {
+    /// Validate that this queryset is safe to use as a Punnu cache boundary.
+    ///
+    /// Ordinary SQL-only predicates remain valid for database execution, but
+    /// cache and refresh paths must be reducible to Sassi's Rust-evaluable
+    /// predicate algebra. `QuerySet::none()` is treated as the portable
+    /// false predicate rather than as an unfiltered query.
+    pub fn is_portable(&self) -> Result<(), PortablePredicateError> {
+        let portable_predicate = if self.is_empty {
+            sassi::BasicPredicate::False
+        } else {
+            try_reduce_q_ref_to_basic(&self.condition)?
+        };
+        validate_portable_sql_emit::<T>(&portable_predicate)
+    }
+
+    /// Convert this queryset into the portable cache-boundary wrapper.
+    ///
+    /// On failure the original queryset is returned unchanged with the typed
+    /// portability error; no terminal work or refresh task has started.
+    // `clippy::result_large_err` allowed for the same reason as `cache`/
+    // `refresh_into`: the `Err` variant returns ownership of `self` so the
+    // caller can recover from a portability rejection. See the rationale on
+    // [`QuerySet::cache`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_portable(self) -> Result<PortableQuerySet<T>, (Self, PortablePredicateError)> {
+        let portable_predicate = if self.is_empty {
+            sassi::BasicPredicate::False
+        } else {
+            match try_reduce_q_ref_to_basic(&self.condition) {
+                Ok(predicate) => predicate,
+                Err(err) => return Err((self, err)),
+            }
+        };
+        if let Err(err) = validate_portable_sql_emit::<T>(&portable_predicate) {
+            return Err((self, err));
+        }
+        Ok(PortableQuerySet {
+            inner: self,
+            portable_predicate,
+        })
+    }
+
+    /// Add a Djogi-trusted portable predicate closure to the query.
+    ///
+    /// This is the cache-safe sibling of [`QuerySet::filter`]: the closure
+    /// must return a sealed [`IntoPortablePredicate`](crate::query::IntoPortablePredicate)
+    /// value, so SQL-only `Condition`, `Expr<bool>`, and raw Sassi predicates
+    /// cannot enter by accident.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn portable_filter<F, P>(mut self, f: F) -> Self
+    where
+        F: FnOnce(T::Fields) -> P,
+        P: crate::query::IntoPortablePredicate<T>,
+    {
+        let predicate = f(T::Fields::default()).into_portable_predicate();
+        self.condition = and_q_into_q(self.condition, predicate);
+        self
+    }
+
     /// Attempt to extract a [`sassi::BasicPredicate<T>`] from this QuerySet's
     /// filter tree.
     ///
@@ -2155,33 +2381,36 @@ impl<T: crate::model::Model> QuerySet<T> {
     ///
     /// | Q variant | Reduces to |
     /// |---|---|
-    /// | `Q::Portable(p)` | `p.into_inner()` (moved — `reduce_q_to_basic` takes `Q<T>` by value to avoid `T: Clone`) |
-    /// | `Q::Compound { And, all_basic_parts }` | `BasicPredicate::And(parts)` |
-    /// | `Q::Compound { Or, all_basic_parts }` | `BasicPredicate::Or(parts)` |
+    /// | `Q::Portable(p)` | `p.into_inner()` — the inner [`sassi::BasicPredicate<T>`] is cloned out of the borrow so the walker does not require `T: Clone` |
+    /// | `Q::Compound { And, all_reducible_parts }` | `BasicPredicate::And(parts)` |
+    /// | `Q::Compound { Or, all_reducible_parts }` | `BasicPredicate::Or(parts)` |
+    /// | `Q::Xor(left, right)` | `BasicPredicate::Xor(Box::new(reduced_left), Box::new(reduced_right))` |
     /// | `Q::Negated(reducible_inner)` | `BasicPredicate::Not(Box::new(reduced_inner))` — inner walked recursively, so `Q::Negated(Q::Compound{And, basics})` reduces too |
+    /// | `QuerySet::none()` (`is_empty == true`) | `BasicPredicate::False` |
     ///
     /// # Unreducible variants (always → `None`)
     ///
     /// `Q::Ilike`, `Q::JsonbPath`, `Q::Regex`, `Q::Expression`,
-    /// `Q::Array`, `Q::Condition`, `Q::Xor`.
+    /// `Q::Array`, `Q::Condition`.
     ///
-    /// `Q::Condition` covers querysets built through legacy FieldRef-backed
-    /// `.filter(...)` / `.exclude(...)` closures and macro-generated
+    /// `Q::Condition` covers legacy SQL-only payloads and macro-generated
     /// `{Model}Filter` inputs — those routes intentionally preserve the
-    /// legacy `Condition` tree for SQL parity. Direct `Q<T>` and
-    /// `PortablePredicate<T>` inputs stay reducible; a fresh
-    /// `QuerySet::new()` (no filters) starts as `Q::Portable(True)` and IS
-    /// reducible.
+    /// legacy `Condition` tree for SQL parity. Direct `Q<T>`,
+    /// `PortablePredicate<T>`, and ordinary generated field-accessor closure
+    /// filters stay reducible; a fresh `QuerySet::new()` (no filters) starts
+    /// as `Q::Portable(True)` and is reducible.
     ///
     /// # When to use this
     ///
-    /// The primary caller is [`QuerySet::refresh_into`] — it extracts the
-    /// predicate to pass as a Rust-side filter to sassi's delta-refresh
-    /// fetcher (for in-memory `BasicPredicate::evaluate` calls on cached
-    /// items). Framework-internal code can produce reducible trees for both
-    /// SQL and Rust-side evaluation by composing trusted `Q<T>` values with
-    /// the `&` / `|` / `!` algebra operators and assigning
-    /// `QuerySet::condition` directly.
+    /// This is the inspection-style sibling of [`QuerySet::try_portable`].
+    /// [`QuerySet::cache`] and [`QuerySet::refresh_into`] (Phase 8eta PR4)
+    /// take the `Result`-returning route through `try_portable` so
+    /// non-portable querysets are rejected with a typed error before any
+    /// terminal work or refresh subscription begins. Reach for
+    /// `into_basic_predicate` when you want to inspect a queryset's
+    /// reducibility without consuming it through the cache/refresh boundary
+    /// — for example in tests or framework-internal cache-integration code
+    /// that already knows it owns the queryset.
     ///
     /// # Visibility note
     ///
@@ -2195,19 +2424,30 @@ impl<T: crate::model::Model> QuerySet<T> {
     /// queryset may therefore be inspected or refreshed without losing
     /// its trusted predicate structure.
     pub fn into_basic_predicate(self) -> Option<sassi::BasicPredicate<T>> {
-        let outcome = reduce_q_to_basic(self.condition);
-        match outcome {
-            ReduceOutcome::Reduced(p) => Some(p),
-            ReduceOutcome::Unreducible(reason) => {
+        if self.is_empty {
+            return Some(sassi::BasicPredicate::False);
+        }
+        match try_reduce_q_ref_to_basic(&self.condition) {
+            Ok(predicate) => Some(predicate),
+            Err(PortablePredicateError::CacheInvalidNode { kind }) => {
                 tracing::warn!(
                     target: "djogi::cache",
                     model = std::any::type_name::<T>(),
-                    reason = reason,
-                    "QuerySet condition has non-portable predicates; refresh_into \
-                     will fetch the full source-of-truth set per tick (no WHERE \
-                     filter applied at the SQL boundary). Restructure the filter \
-                     using only Djogi portable predicate operations \
-                     to enable filter pushdown.",
+                    reason = kind,
+                    "QuerySet condition has non-portable predicates and cannot be \
+                     reduced to a Sassi BasicPredicate. The cache and refresh paths \
+                     reject non-portable querysets with a typed error; restructure \
+                     the filter using only Djogi portable predicate operations to \
+                     pass the cache/refresh boundary.",
+                );
+                None
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: "djogi::cache",
+                    model = std::any::type_name::<T>(),
+                    error = ?err,
+                    "QuerySet condition could not be reduced to a portable cache predicate.",
                 );
                 None
             }
@@ -2242,14 +2482,15 @@ where
         + Send
         + Sync
         + 'static,
-    T::Watermark: tokio_postgres::types::ToSql + Sync,
+    T::Watermark: tokio_postgres::types::ToSql + tokio_postgres::types::FromSqlOwned + Sync,
     T::Id: tokio_postgres::types::ToSql + Sync,
 {
     /// Bind this QuerySet to a Punnu and start a delta-sync refresh subscription.
     ///
-    /// The fetcher owns a clone of the pool, the AuthContext by value, and
-    /// the QuerySet's BasicPredicate filter (extracted via
-    /// `into_basic_predicate`). NEVER captures `&mut DjogiContext`.
+    /// On success, the fetcher owns a clone of the pool, the AuthContext by
+    /// value, and the QuerySet's trusted BasicPredicate filter. SQL-only
+    /// predicates return `Err((self, PortablePredicateError))` before any
+    /// subscription starts. The fetcher NEVER captures `&mut DjogiContext`.
     ///
     /// # T8.5 — real SQL path
     ///
@@ -2258,7 +2499,8 @@ where
     /// `DjogiContext` with the captured `AuthContext` (auth-locked-to-
     /// subscription per spec §677), and runs
     /// `SELECT <columns> FROM <table> WHERE <watermark_col> >= $1
-    ///  [OR id IN ($2, …)] ORDER BY <watermark_col>`.
+    ///  [OR id IN ($2, …)] ORDER BY <watermark_col>` for delta ticks.
+    /// Full baseline ticks with a portable filter push that filter into SQL.
     ///
     /// # T8.8 — refresh knobs (spec §674)
     ///
@@ -2279,7 +2521,7 @@ where
     ///
     /// ```text
     /// let handle = MyModel::objects()
-    ///     .refresh_into(&punnu, pool, auth)
+    ///     .refresh_into(&punnu, pool, auth)?
     ///     .with_eviction_recovery(true)
     ///     .with_periodic_full_refresh(NonZeroUsize::new(10));
     /// ```
@@ -2289,41 +2531,86 @@ where
     /// `djogi::cache` the first time an eviction is observed (spec §674
     /// Knob 1 — always-on, no adopter opt-in required).
     ///
-    /// # Filter pushdown via into_basic_predicate (T8.4)
+    /// # Portable filter gate and full-baseline pushdown
     ///
-    /// `into_basic_predicate` now performs a real recursive walk over the
-    /// QuerySet's `Q<T>` condition tree. Querysets built with the public
-    /// filter / filter_struct / exclude APIs produce `Q::Condition` wrappers
-    /// (legacy-parity requirement) and always receive a `tracing::warn!`
-    /// noting that no WHERE filter will be applied at the SQL boundary on
-    /// the fetcher side. A fresh unfiltered queryset (`QuerySet::new()`)
-    /// starts as `Q::Portable(True)` and extracts cleanly.
-    /// Filter pushdown to SQL is deferred — see GH #127.
+    /// `refresh_into` first runs `try_portable()`. Reducible predicates are
+    /// carried as `BasicPredicate<T>`; SQL-only `Q<T>` arms are rejected. The
+    /// fetcher pushes non-trivial portable filters into SQL only on full
+    /// baseline ticks (`since == None` and no eviction-recovery ids). Delta
+    /// ticks ignore the filter at SQL time so changed rows that transitioned
+    /// out of the predicate can still be upserted or tombstoned correctly.
+    /// `QuerySet::none()` is preserved as a structural empty subscription:
+    /// update ticks return empty deltas without querying the source table.
     ///
     /// # Interval placeholder
     ///
     /// The 30 s interval is a placeholder. T8.6 may add a builder for
     /// caller-supplied interval; see spec §672 review.
+    // `clippy::result_large_err` is silenced for the same reason as
+    // [`QuerySet::cache`]: the `Err` variant carries the original queryset
+    // back to the caller for recovery. Boxing here would force allocations
+    // on every rejection without changing the recovery shape.
+    #[allow(clippy::result_large_err)]
+    pub fn refresh_into(
+        self,
+        punnu: &sassi::Punnu<T>,
+        pool: crate::pg::pool::DjogiPool,
+        auth: crate::auth::AuthContext,
+    ) -> Result<sassi::DeltaRefreshHandle<T>, (Self, PortablePredicateError)> {
+        match self.try_portable() {
+            Ok(portable) => Ok(portable.refresh_into(punnu, pool, auth)),
+            Err((queryset, err)) => Err((queryset, err)),
+        }
+    }
+}
+
+impl<T> PortableQuerySet<T>
+where
+    T: crate::model::Model
+        + sassi::DeltaSyncCacheable
+        + crate::pg::decode::FromPgRow
+        + crate::cache::DjogiDeltaSyncMeta
+        + Send
+        + Sync
+        + 'static,
+    T::Watermark: tokio_postgres::types::ToSql + tokio_postgres::types::FromSqlOwned + Sync,
+    T::Id: tokio_postgres::types::ToSql + Sync,
+{
+    /// Construct a sassi delta-refresh subscription from a queryset whose
+    /// portable-predicate gate has already passed.
+    ///
+    /// Infallible sibling of [`QuerySet::refresh_into`] — the public
+    /// `QuerySet::refresh_into` runs `try_portable()` first and either
+    /// delegates here on success or returns `Err((self, err))` without
+    /// touching the Punnu. Adopters who already hold a [`PortableQuerySet`]
+    /// (e.g. from an explicit `try_portable()` inspection) can call this
+    /// directly to skip the redundant gate.
     pub fn refresh_into(
         self,
         punnu: &sassi::Punnu<T>,
         pool: crate::pg::pool::DjogiPool,
         auth: crate::auth::AuthContext,
     ) -> sassi::DeltaRefreshHandle<T> {
-        // Trivially-true reductions (`BasicPredicate::True`) carry no pushdown
-        // work and should not trip the fetcher's filter-pushdown warn (which
-        // signals "non-trivial filter present but not yet emitted to SQL").
-        // Strip them here so `self.filter` in the fetcher accurately means
-        // "non-trivial filter awaiting pushdown" — meaningful per GH #126/#127.
-        // Without this strip, every unfiltered queryset would emit the
-        // filter-pushdown warn per tick. T8.4's reducer returns `Some(True)`
-        // for unfiltered querysets because a fresh `QuerySet<T>` initialises
-        // `condition` as `Q::Portable(True)` (not `Q::Compound`), and the
-        // reducer's `Q::Portable(p) → Reduced(p.into_inner())` arm hands the
-        // inner `BasicPredicate::True` straight through.
-        let filter = match self.into_basic_predicate() {
-            Some(sassi::BasicPredicate::True) => None,
-            other => other,
+        // Trivially-true reductions (`BasicPredicate::True`) carry no
+        // pushdown work — emitting `WHERE TRUE` on full-baseline ticks
+        // would just bloat the SQL and slow planner work. Strip them
+        // here so the fetcher's `Option<BasicPredicate<T>>` field
+        // accurately means "non-trivial filter to push into SQL on
+        // full-baseline ticks". A fresh `QuerySet<T>` initialises
+        // `condition` as `Q::Portable(True)`, which the reducer hands
+        // straight through as `BasicPredicate::True`.
+        let PortableQuerySet {
+            inner,
+            portable_predicate,
+        } = self;
+        let empty = inner.is_empty;
+        let filter = if empty {
+            None
+        } else {
+            match portable_predicate {
+                sassi::BasicPredicate::True => None,
+                predicate => Some(predicate),
+            }
         };
         // Capture the Punnu's event broadcast receiver before starting the
         // delta refresh. Each `refresh_into` call gets its own independent
@@ -2337,6 +2624,7 @@ where
         let fetcher = crate::query::refresh::DjogiDeltaFetcher::<T> {
             pool,
             auth,
+            empty,
             filter,
             lru_warn_issued: std::sync::atomic::AtomicBool::new(false),
             events_rx,
@@ -3267,21 +3555,23 @@ mod tests {
         );
     }
 
-    /// `Q::Condition(...)` is always Unreducible — it is what every public
-    /// `.filter(...)` / `.filter_struct(...)` / `.exclude(...)` call produces.
-    /// Returns `None`.
-    ///
-    /// This test verifies the most common adopter-facing code path:
-    /// a queryset built with `.filter(|f| ...)` can never be reduced.
+    /// `Q::Condition(...)` is always Unreducible. After PR3 the ordinary
+    /// `.filter(|f| f.col().eq(...))` closure returns a portable predicate
+    /// and produces `Q::Portable`, but `.filter_struct(...)` (model-filter
+    /// builder) and any closure that hand-rolls a raw `Condition` still
+    /// route through `Q::Condition(_)` for SQL parity. This test pins the
+    /// SQL-only `Q::Condition` arm: the legacy escape hatch returns `None`
+    /// from `into_basic_predicate`.
     #[test]
     fn into_basic_predicate_legacy_condition_refuses() {
         use crate::query::condition::{FilterValue, Leaf};
         let qs: QuerySet<Fake> =
             QuerySet::new().filter(|_| Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true))));
-        // After .filter(), condition is Q::Condition(...).
+        // The closure returns a raw `Condition`, which the legacy
+        // `IntoQ for Condition` shim wraps as `Q::Condition(...)`.
         assert!(
             matches!(&qs.condition, Q::Condition(_)),
-            "queryset after .filter() must have Q::Condition (regression in and_condition_into_q?)",
+            "raw Condition payloads must reach the queryset as Q::Condition (regression in and_condition_into_q?)",
         );
         let result = qs.into_basic_predicate();
         assert!(
@@ -3305,20 +3595,79 @@ mod tests {
         );
     }
 
-    /// `Q::Xor(Q::Portable(True), Q::Portable(False))` is Unreducible at the
-    /// mixed-operand `Q::Xor` level. Note: pure-Basic XOR would have been
-    /// folded into `Q::Portable(BasicPredicate::Xor(...))` by the `^` operator,
-    /// so the `Q::Xor` variant only appears when at least one side is not
-    /// pure-Basic. Verifies the Xor arm returns None.
+    /// `Q::Xor(Q::Portable(True), Q::Portable(False))` reduces to
+    /// `BasicPredicate::Xor(...)`.
     #[test]
-    fn into_basic_predicate_xor_refuses() {
-        // Q::Xor is the mixed-operand variant — construct it directly.
+    fn into_basic_predicate_xor_reduces() {
         let mut qs: QuerySet<Fake> = QuerySet::new();
         qs.condition = Q::Xor(Box::new(Q::always_true()), Box::new(Q::always_false()));
         let result = qs.into_basic_predicate();
-        assert!(
-            result.is_none(),
-            "Q::Xor must reduce to None (no BasicPredicate equivalent at this Q-level)"
-        );
+        match result {
+            Some(sassi::BasicPredicate::Xor(left, right)) => {
+                assert!(matches!(*left, sassi::BasicPredicate::True));
+                assert!(matches!(*right, sassi::BasicPredicate::False));
+            }
+            _ => panic!("expected Some(BasicPredicate::Xor(True, False))"),
+        }
+    }
+
+    // ── PR4 — portable cache/refresh gate API ─────────────────────────────────
+    //
+    // These tests pin the new public-surface invariants introduced when
+    // `QuerySet::cache` and `QuerySet::refresh_into` flipped to `Result`-
+    // returning gates. The integration test `phase8eta_pr4_cache_refresh_gate`
+    // covers the database-backed behavior; these unit tests cover the
+    // structural reduction without a DB round-trip so regressions surface
+    // even when the integration suite is skipped.
+
+    /// `QuerySet::none()` flips `is_empty = true`. Both `try_portable` and
+    /// `is_portable` must accept it as a portable-false predicate so adopters
+    /// can short-circuit authorization branches through `.none().cache(...)`.
+    #[test]
+    fn try_portable_accepts_none_as_portable_false() {
+        let qs: QuerySet<Fake> = QuerySet::new().none();
+        assert!(qs.is_portable().is_ok());
+        let portable = qs.try_portable().expect("none() must satisfy try_portable");
+        assert!(matches!(portable.predicate(), sassi::BasicPredicate::False));
+        // `into_query_set` round-trips back to a queryset that still
+        // short-circuits at terminals via `is_empty`.
+        assert!(portable.into_query_set().is_empty);
+    }
+
+    /// `try_portable` on a fresh `QuerySet::new()` (Q::Portable(True))
+    /// reduces and the resulting `PortableQuerySet::predicate()` is True.
+    #[test]
+    fn try_portable_unfiltered_yields_true_predicate() {
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let portable = qs
+            .try_portable()
+            .expect("unfiltered queryset must satisfy try_portable");
+        assert!(matches!(portable.predicate(), sassi::BasicPredicate::True));
+    }
+
+    /// `try_portable` returns the typed `CacheInvalidNode` error and hands
+    /// the original queryset back unchanged when the condition tree carries
+    /// SQL-only legacy `Q::Condition` payloads.
+    #[test]
+    fn try_portable_rejects_legacy_condition_payload() {
+        use crate::query::condition::{FilterValue, Leaf};
+        let qs: QuerySet<Fake> =
+            QuerySet::new().filter(|_| Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true))));
+        // `is_portable` reports the same classification through the
+        // borrow-style API.
+        assert!(matches!(
+            qs.is_portable(),
+            Err(PortablePredicateError::CacheInvalidNode { kind: "Condition" }),
+        ));
+        let (recovered, err) = qs
+            .try_portable()
+            .expect_err("legacy Condition must fail try_portable");
+        assert!(matches!(
+            err,
+            PortablePredicateError::CacheInvalidNode { kind: "Condition" }
+        ));
+        // The recovered queryset still carries the legacy condition so the
+        // caller can rewrite it without losing the original filter.
+        assert!(matches!(&recovered.condition, Q::Condition(_)));
     }
 }
