@@ -260,7 +260,12 @@ async fn limit_offset_paginate(mut ctx: djogi::DjogiContext) {
 async fn nested_and_or(mut ctx: djogi::DjogiContext) {
     seed_posts(&mut ctx).await;
     let rows = Post::objects()
-        .filter(|f| f.published().eq(true).and_with(f.view_count().gte(50i32)))
+        // PR3: portable predicates (`PortablePredicate<T>`) compose via
+        // `&` from the operator matrix instead of the legacy
+        // `Condition::and_with` fluent helper. Same SQL shape, same
+        // operator precedence; the closure receives the `DjogiField`
+        // wrapper and reaches for the post-flip portable surface.
+        .filter(|f| f.published().eq(true) & f.view_count().gte(50i32))
         .fetch_all(&mut ctx)
         .await
         .unwrap();
@@ -273,11 +278,11 @@ async fn nested_and_or(mut ctx: djogi::DjogiContext) {
 async fn in_list_and_between(mut ctx: djogi::DjogiContext) {
     seed_posts(&mut ctx).await;
 
+    // PR3: portable IN takes any `IntoIterator<Item = V>` and is named
+    // `in_` (not `in_list`) on `DjogiField`. SQL parity is preserved
+    // through the portable lowering helpers.
     let by_title = Post::objects()
-        .filter(|f| {
-            f.title()
-                .in_list(vec!["alpha".to_string(), "beta".to_string()])
-        })
+        .filter(|f| f.title().in_(vec!["alpha".to_string(), "beta".to_string()]))
         .fetch_all(&mut ctx)
         .await
         .unwrap();
@@ -302,7 +307,12 @@ async fn filter_struct_matches_closure_results(mut ctx: djogi::DjogiContext) {
     seed_posts(&mut ctx).await;
 
     let closure_rows = Post::objects()
-        .filter(|f| f.published().eq(true).and_with(f.view_count().gte(50i32)))
+        // PR3: portable predicates (`PortablePredicate<T>`) compose via
+        // `&` from the operator matrix instead of the legacy
+        // `Condition::and_with` fluent helper. Same SQL shape, same
+        // operator precedence; the closure receives the `DjogiField`
+        // wrapper and reaches for the post-flip portable surface.
+        .filter(|f| f.published().eq(true) & f.view_count().gte(50i32))
         .fetch_all(&mut ctx)
         .await
         .unwrap();
@@ -543,14 +553,14 @@ async fn in_list_empty_returns_zero_rows(mut ctx: djogi::DjogiContext) {
     seed_posts(&mut ctx).await;
 
     let rows = Post::objects()
-        .filter(|f| f.id().in_list(Vec::<HeerId>::new()))
+        .filter(|f| f.id().in_(Vec::<HeerId>::new()))
         .fetch_all(&mut ctx)
         .await
         .unwrap();
     assert_eq!(rows.len(), 0, "empty IN list must match zero rows");
 
     let n = Post::objects()
-        .filter(|f| f.id().in_list(Vec::<HeerId>::new()))
+        .filter(|f| f.id().in_(Vec::<HeerId>::new()))
         .count(&mut ctx)
         .await
         .unwrap();
@@ -563,7 +573,7 @@ async fn not_in_list_empty_returns_all_rows(mut ctx: djogi::DjogiContext) {
     seed_posts(&mut ctx).await;
 
     let n = Post::objects()
-        .filter(|f| f.id().not_in_list(Vec::<HeerId>::new()))
+        .filter(|f| f.id().not_in(Vec::<HeerId>::new()))
         .count(&mut ctx)
         .await
         .unwrap();

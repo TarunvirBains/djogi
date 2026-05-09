@@ -256,9 +256,13 @@ async fn array_contains_overlap_and_len_filters(mut ctx: djogi::DjogiContext) {
     .await
     .expect("create python post");
 
+    // PR3: array `contains` / `overlap` (`@>` / `&&`) are PostgreSQL-
+    // specific; route through `explicit_pg_predicate()` from the
+    // post-flip `DjogiField` surface.
     let contains = Post::objects()
         .filter(|f| {
             f.tags()
+                .explicit_pg_predicate()
                 .contains(&["rust".to_string(), "postgres".to_string()])
         })
         .fetch_all(&mut ctx)
@@ -268,7 +272,11 @@ async fn array_contains_overlap_and_len_filters(mut ctx: djogi::DjogiContext) {
     assert!(!contains.iter().any(|post| post.id == python.id));
 
     let overlap = Post::objects()
-        .filter(|f| f.tags().overlap(&["rust".to_string(), "java".to_string()]))
+        .filter(|f| {
+            f.tags()
+                .explicit_pg_predicate()
+                .overlap(&["rust".to_string(), "java".to_string()])
+        })
         .fetch_all(&mut ctx)
         .await
         .expect("array overlap");
@@ -307,8 +315,16 @@ async fn jsonb_flat_path_filter_works(mut ctx: djogi::DjogiContext) {
     .await
     .expect("create eco post");
 
+    // PR3: JSONB `path()` is PostgreSQL-specific and SQL-only in 8eta;
+    // route through `explicit_pg_predicate()` from the post-flip
+    // `DjogiField` surface.
     let found = Post::objects()
-        .filter(|f| f.specs().path::<i32>("engine_cylinders").gt(4))
+        .filter(|f| {
+            f.specs()
+                .explicit_pg_predicate()
+                .path::<i32>("engine_cylinders")
+                .gt(4)
+        })
         .fetch_all(&mut ctx)
         .await
         .expect("jsonb path filter");
@@ -352,8 +368,19 @@ async fn typed_jsonb_deep_path_filters(mut ctx: djogi::DjogiContext) {
     let v8 = make_vehicle_deep(&mut ctx, "V8 Beast", 8, false, 1800.0, "BrandA").await;
     let eco = make_vehicle_deep(&mut ctx, "Eco Car", 3, false, 1200.0, "BrandB").await;
 
+    // PR3: JSONB `typed()` / `path()` predicates are PostgreSQL-specific
+    // and SQL-only in 8eta; route through `explicit_pg_predicate()` from
+    // the post-flip `DjogiField` surface so the closure surface keeps the
+    // database-locale typed-path filtering shape.
     let cylinder_matches = VehicleDeep::objects()
-        .filter(|f| f.specs().typed().engine().cylinders().gt(4))
+        .filter(|f| {
+            f.specs()
+                .explicit_pg_predicate()
+                .typed()
+                .engine()
+                .cylinders()
+                .gt(4)
+        })
         .fetch_all(&mut ctx)
         .await
         .expect("typed cylinder filter");
@@ -361,7 +388,13 @@ async fn typed_jsonb_deep_path_filters(mut ctx: djogi::DjogiContext) {
     assert!(!cylinder_matches.iter().any(|vehicle| vehicle.id == eco.id));
 
     let heavy_matches = VehicleDeep::objects()
-        .filter(|f| f.specs().typed().weight_kg().gt(1500.0_f32))
+        .filter(|f| {
+            f.specs()
+                .explicit_pg_predicate()
+                .typed()
+                .weight_kg()
+                .gt(1500.0_f32)
+        })
         .fetch_all(&mut ctx)
         .await
         .expect("typed weight filter");

@@ -1552,6 +1552,79 @@ impl<M: crate::model::Model> DjogiField<M, crate::geo::MultiPolygon> {
     }
 }
 
+// ── IntoSqlField — sealed conversion to FieldRef for SQL helper APIs ─────────
+//
+// PR3 needs `FieldRef`-shaped SQL helper APIs (spatial group/cluster keys,
+// aggregate column probes, etc.) to accept either of:
+//
+// - the legacy `FieldRef<M, V>` directly, or
+// - the new generated root accessor return type `DjogiField<M, V>`.
+//
+// `IntoSqlField<M, V>` is the sealed bridge that adapts both into a
+// `FieldRef<M, V>`. Sealing the trait at the module boundary keeps
+// downstream crates from injecting their own column strings — the trait is
+// nameable as a bound (so signatures like
+// `pub fn group_by_region<F, R>(...) where F: FnOnce(T::Fields) -> impl
+// IntoSqlField<T, G>` compile), but only `FieldRef` and `DjogiField` can
+// satisfy it. Identifier-smuggling stays closed because the only
+// implementations forward the validated column string from one of those
+// two types.
+//
+// The trait deliberately does not accept tuples or other compound shapes:
+// downstream APIs that need a fan-out (DISTINCT ON, GROUP BY, …) reach
+// for `IntoDistinctColumns` / `IntoGroupKeyTuple` instead.
+
+mod sql_field_seal {
+    pub trait Sealed {}
+}
+
+/// Sealed conversion from a typed root field handle into a SQL `FieldRef`.
+///
+/// Implemented for:
+///
+/// - [`FieldRef<M, V>`] — legacy SQL-only handle. Returns the receiver
+///   unchanged.
+/// - [`DjogiField<M, V>`] — Phase 8eta root accessor return type. Returns
+///   the wrapped SQL `FieldRef` so the SQL helper sees the same column
+///   metadata it always has.
+///
+/// Use this trait as a bound on SQL helper signatures (spatial group/cluster
+/// keys, single-column probes for aggregate emission helpers, etc.) so root
+/// accessors can flow through without an explicit `.explicit_pg_predicate()`
+/// /  `__sql_field()` step. The bound is sealed, so downstream crates cannot
+/// add hostile impls that would smuggle arbitrary column strings into
+/// SQL emission sites — the only way to reach a `FieldRef<M, V>` here is
+/// through a value already produced by the validated `__make_field_ref` /
+/// `__make_djogi_field` constructors.
+///
+/// The trait deliberately covers single columns only: helpers that fan
+/// out into a column tuple (`DISTINCT ON`, `GROUP BY`) reach for
+/// [`crate::query::queryset::IntoDistinctColumns`] /
+/// [`crate::query::grouped::IntoGroupKeyTuple`] instead.
+pub trait IntoSqlField<M: Model, V>: sql_field_seal::Sealed {
+    /// Convert into a `FieldRef<M, V>` carrying the same column metadata.
+    fn into_sql_field(self) -> FieldRef<M, V>;
+}
+
+impl<M: Model, V> sql_field_seal::Sealed for FieldRef<M, V> {}
+impl<M: Model, V> IntoSqlField<M, V> for FieldRef<M, V> {
+    fn into_sql_field(self) -> FieldRef<M, V> {
+        self
+    }
+}
+
+impl<M: Model, V> sql_field_seal::Sealed for DjogiField<M, V> {}
+impl<M: Model, V> IntoSqlField<M, V> for DjogiField<M, V> {
+    fn into_sql_field(self) -> FieldRef<M, V> {
+        // Reuse the SQL handle the wrapper already owns — `__sql_field`
+        // is crate-private but reachable from this module. The column
+        // string was validated by `__make_djogi_field` at construction
+        // (which routes through `__make_field_ref::<M, V>`); no
+        // re-validation is required here.
+        self.__sql_field()
+    }
+}
+
 // ── Macro-construction support ─────────────────────────────────────────────
 //
 // `__make_djogi_field` is the single entry point macro-emitted code uses to

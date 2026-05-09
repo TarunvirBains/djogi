@@ -192,7 +192,7 @@ fn within_km_returns_condition_expr() {
     // The queryset is lazy; no DB call happens here.
     let mut captured: Option<djogi::query::condition::Condition> = None;
     let _qs = Place::objects().filter(|p| {
-        let cond = p.location().within_km(center, 5.0);
+        let cond = p.location().explicit_pg_predicate().within_km(center, 5.0);
         captured = Some(cond.clone());
         cond
     });
@@ -234,7 +234,7 @@ fn queryset_with_spatial_filter_and_ordering_composes_without_panic() {
     let center = djogi::GeoPoint::new(37.7749, -122.4194).unwrap();
     // Neither filter nor order_by execute SQL — they are lazy accumulators.
     let _qs = Place::objects()
-        .filter(|p| p.location().within_km(center, 50.0))
+        .filter(|p| p.location().explicit_pg_predicate().within_km(center, 50.0))
         .order_by(|p| p.location().order_by_distance(center));
     // Reaching this line means both methods type-checked and the queryset
     // accumulated the condition and ordering without panicking.
@@ -339,7 +339,11 @@ async fn within_km_filters_correctly(mut ctx: djogi::DjogiContext) {
 
     let sfo_center = djogi::GeoPoint::new(37.6189, -122.3750).unwrap();
     let nearby = Place::objects()
-        .filter(|p| p.location().within_km(sfo_center, 50.0))
+        .filter(|p| {
+            p.location()
+                .explicit_pg_predicate()
+                .within_km(sfo_center, 50.0)
+        })
         .fetch_all(&mut ctx)
         .await
         .expect("within_km query must succeed");

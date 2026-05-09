@@ -287,6 +287,18 @@ name = "phase7_zero2_visage_traversal_shape"
 path = "../tests/internal/phase7_zero2_visage_traversal_shape.rs"
 harness = true
 
+# Phase 8eta PR3 — `QuerySet::filter` SQL parity through the post-flip
+# root accessor surface. Pins simple equality, AND composition,
+# `exclude` negation, portable string `contains` (`COLLATE "C" ILIKE`),
+# `explicit_pg_predicate().regex` (legacy `Condition` arm of `Q<T>`),
+# and the optional `some()` / `is_null()` shapes — all without a live
+# database. Verification target: `cargo test -p djogi
+# queryset_filter_preservation`.
+[[test]]
+name = "phase8eta_queryset_filter_preservation"
+path = "../tests/internal/phase8eta_queryset_filter_preservation.rs"
+harness = true
+
 [[test]]
 name = "phase7_zero2_select_narrowing_live"
 path = "../tests/integration/phase7_zero2_select_narrowing_live.rs"

@@ -290,6 +290,29 @@ impl<M: Model, T: Model> crate::query::field::FieldRef<M, ForeignKey<T>> {
     }
 }
 
+// PR3: post-flip root accessors return `DjogiField<M, ForeignKey<T>>` for
+// FK columns. `as_pk_expr` is a non-predicate SQL helper (the result is
+// `Expr<T::Pk>`, an expression-IR node consumed by builders like
+// `correlated_subquery::*`), so it forwards to the wrapper's stored
+// SQL handle without entering the portable predicate boundary. The
+// macro-generated `m2m` / FK navigation emitters call this method
+// inside `.filter_expr(|f| Expr::eq(f.fk().as_pk_expr(), …))`; routing
+// through the wrapper keeps the same call site working post-PR3.
+impl<M: Model, T: Model> crate::query::field::DjogiField<M, ForeignKey<T>> {
+    /// Promote this foreign-key column handle into an
+    /// `Expr<T::Pk>` — the target PK's type. Forwarded from
+    /// [`FieldRef::as_pk_expr`](crate::query::field::FieldRef::as_pk_expr).
+    /// PR3 makes this directly available on the post-flip
+    /// `DjogiField` accessor surface so existing macro-emitted
+    /// correlated-subquery patterns keep compiling.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn as_pk_expr(self) -> crate::expr::Expr<T::Pk> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::Field {
+            column: self.column(),
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Post-fetch / post-prefetch resolved wrapper.
 // ---------------------------------------------------------------------------

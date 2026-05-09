@@ -181,9 +181,11 @@ async fn contains_point_in_polygon_matches(mut ctx: djogi::DjogiContext) {
         .expect("create JFK neighborhood");
 
     // A point inside the SFO box.
+    // PR3: PostGIS `ST_Contains` is database-locale; route via
+    // `explicit_pg_predicate()`.
     let inside = GeoPoint::new(37.620, -122.370).unwrap();
     let matches = Neighborhood::objects()
-        .filter(|n| n.boundary().contains(&inside))
+        .filter(|n| n.boundary().explicit_pg_predicate().contains(&inside))
         .fetch_all(&mut ctx)
         .await
         .expect("contains query must succeed");
@@ -242,8 +244,10 @@ async fn intersects_linestring_polygon(mut ctx: djogi::DjogiContext) {
 
     let sfo_box = square_polygon(GeoPoint::new(37.618, -122.375).unwrap(), 0.1);
 
+    // PR3: PostGIS `ST_Intersects` is database-locale; route via
+    // `explicit_pg_predicate()`.
     let hits = Route::objects()
-        .filter(|r| r.path().intersects(&sfo_box))
+        .filter(|r| r.path().explicit_pg_predicate().intersects(&sfo_box))
         .fetch_all(&mut ctx)
         .await
         .expect("intersects query must succeed");
@@ -277,10 +281,12 @@ async fn contains_point_in_multipolygon(mut ctx: djogi::DjogiContext) {
     .await
     .expect("create coverage");
 
-    // Point inside box_b (JFK neighborhood).
+    // Point inside box_b (JFK neighborhood). PR3: PostGIS `ST_Contains`
+    // is a database-locale shape predicate, so the closure routes through
+    // `explicit_pg_predicate()` to reach it.
     let jfk_point = GeoPoint::new(40.64, -73.78).unwrap();
     let hits = Coverage::objects()
-        .filter(|c| c.area().contains(&jfk_point))
+        .filter(|c| c.area().explicit_pg_predicate().contains(&jfk_point))
         .fetch_all(&mut ctx)
         .await
         .expect("multipolygon contains query must succeed");
@@ -290,7 +296,7 @@ async fn contains_point_in_multipolygon(mut ctx: djogi::DjogiContext) {
     // Point outside both member polygons (mid-Atlantic).
     let at_sea = GeoPoint::new(30.0, -50.0).unwrap();
     let misses = Coverage::objects()
-        .filter(|c| c.area().contains(&at_sea))
+        .filter(|c| c.area().explicit_pg_predicate().contains(&at_sea))
         .fetch_all(&mut ctx)
         .await
         .expect("multipolygon contains query must succeed");
@@ -354,8 +360,10 @@ async fn touches_adjacent_polygons(mut ctx: djogi::DjogiContext) {
     // Query: find parcels that touch `left`. Expect exactly `right`.
     // `left` itself overlaps (shares full interior) and is excluded by
     // `ST_Touches`, which requires shared boundaries but disjoint interiors.
+    // PR3: `ST_Touches` is PostGIS-specific; route through
+    // `explicit_pg_predicate()` from the post-flip `DjogiField` surface.
     let touching = Parcel::objects()
-        .filter(|p| p.shape().touches(&left))
+        .filter(|p| p.shape().explicit_pg_predicate().touches(&left))
         .fetch_all(&mut ctx)
         .await
         .expect("touches query must succeed");
@@ -411,8 +419,16 @@ async fn bounded_by_with_order_by_distance_returns_expected_rows(mut ctx: djogi:
     }
 
     // Filter to a ~1° box around SFO, order by distance from SFO.
+    // PR3: `bounded_by` is a spatial expression-only predicate, so it
+    // routes through `explicit_pg_predicate()`. `order_by_distance`
+    // remains direct on `DjogiField` because spatial ordering is not a
+    // cache predicate boundary.
     let in_box = Store::objects()
-        .filter_expr(|f| f.location().bounded_by(37.0, -123.0, 38.0, -122.0))
+        .filter_expr(|f| {
+            f.location()
+                .explicit_pg_predicate()
+                .bounded_by(37.0, -123.0, 38.0, -122.0)
+        })
         .order_by(|f| f.location().order_by_distance(sfo))
         .fetch_all(&mut ctx)
         .await
@@ -451,10 +467,13 @@ async fn distance_to_in_filter_expr(mut ctx: djogi::DjogiContext) {
         .unwrap();
 
     // `distance_to` returns meters. 50 000 m = 50 km — SFO + OAK qualify, JFK
-    // does not.
+    // does not. PR3: `distance_to` is on `ExplicitPgPredicateField` because
+    // PostGIS distance expressions cannot evaluate in Punnu; route via
+    // `explicit_pg_predicate()` and lower the boolean comparison to SQL.
     let near: Vec<Store> = Store::objects()
         .filter_expr(|f| {
             f.location()
+                .explicit_pg_predicate()
                 .distance_to(&sfo)
                 .lt(Expr::literal(50_000.0_f64))
         })

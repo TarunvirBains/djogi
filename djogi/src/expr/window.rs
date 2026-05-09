@@ -27,7 +27,6 @@
 //! Djogi query surface.
 
 use crate::pg::accumulator::SqlAccumulator;
-use crate::query::field::FieldRef;
 use crate::query::order::Direction;
 
 /// A fully specified window clause — partition, ordering, and optional frame.
@@ -143,14 +142,22 @@ impl WindowBuilder {
     /// Add a `PARTITION BY` column to the window.
     ///
     /// The column name is taken from the validated `&'static str` inside
-    /// `FieldRef`, so no extra identifier validation is needed here.
+    /// the field handle, so no extra identifier validation is needed here.
     /// Calling this method multiple times appends columns in call order —
     /// `PARTITION BY first_col, second_col, ...`.
-    pub fn partition_by<M, V>(mut self, f: FieldRef<M, V>) -> Self
+    ///
+    /// PR3: accepts both legacy `FieldRef<M, V>` and the post-flip root
+    /// accessor return type `DjogiField<M, V>` through the sealed
+    /// [`IntoSqlField`](crate::query::field::IntoSqlField) bridge — window
+    /// partitions are SQL-only emission boundaries, not predicate
+    /// boundaries, so the wrapper's column metadata flows through
+    /// unchanged.
+    pub fn partition_by<M, V, S>(mut self, f: S) -> Self
     where
         M: crate::model::Model,
+        S: crate::query::field::IntoSqlField<M, V>,
     {
-        self.0.partition_by.push(f.column());
+        self.0.partition_by.push(f.into_sql_field().column());
         self
     }
 
@@ -159,22 +166,34 @@ impl WindowBuilder {
     /// For descending order use [`WindowBuilder::order_by_desc`].
     /// Multiple calls append terms in call order —
     /// `ORDER BY first_col ASC, second_col ASC, ...`.
-    pub fn order_by<M, V>(mut self, f: FieldRef<M, V>) -> Self
+    ///
+    /// PR3: accepts `FieldRef<M, V>` or `DjogiField<M, V>` through
+    /// `IntoSqlField`. Window ordering is a SQL-only emission boundary.
+    pub fn order_by<M, V, S>(mut self, f: S) -> Self
     where
         M: crate::model::Model,
+        S: crate::query::field::IntoSqlField<M, V>,
     {
-        self.0.order_by.push((f.column(), Direction::Asc));
+        self.0
+            .order_by
+            .push((f.into_sql_field().column(), Direction::Asc));
         self
     }
 
     /// Add an `ORDER BY <col> DESC` term to the window.
     ///
     /// Multiple calls append terms in call order.
-    pub fn order_by_desc<M, V>(mut self, f: FieldRef<M, V>) -> Self
+    ///
+    /// PR3: accepts `FieldRef<M, V>` or `DjogiField<M, V>` through
+    /// `IntoSqlField`. Window ordering is a SQL-only emission boundary.
+    pub fn order_by_desc<M, V, S>(mut self, f: S) -> Self
     where
         M: crate::model::Model,
+        S: crate::query::field::IntoSqlField<M, V>,
     {
-        self.0.order_by.push((f.column(), Direction::Desc));
+        self.0
+            .order_by
+            .push((f.into_sql_field().column(), Direction::Desc));
         self
     }
 
