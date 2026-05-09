@@ -7,7 +7,6 @@
 
 use crate::model::Model;
 use crate::pg::accumulator::SqlAccumulator;
-use crate::query::field::FieldRef;
 use crate::query::order::OrderExpr;
 
 use super::window::WindowSpec;
@@ -232,12 +231,18 @@ macro_rules! define_window_rank_fn {
             ///     .order_by(fields.score().desc())
             ///     .alias("rank");
             /// ```
+            ///
+            /// PR3: accepts `FieldRef<M, V>` or the post-flip root
+            /// accessor return type `DjogiField<M, V>` through
+            /// [`IntoSqlField`](crate::query::field::IntoSqlField).
+            /// Window partitions are SQL-only emission boundaries.
             #[must_use = "window functions are immutable builders - use the returned value"]
-            pub fn partition_by<M, V>(mut self, field: FieldRef<M, V>) -> Self
+            pub fn partition_by<M, V, S>(mut self, field: S) -> Self
             where
                 M: Model,
+                S: crate::query::field::IntoSqlField<M, V>,
             {
-                self.window.partition_by.push(field.column());
+                self.window.partition_by.push(field.into_sql_field().column());
                 self
             }
 
@@ -479,13 +484,16 @@ macro_rules! impl_zero_arg_f64_window {
                 }
             }
 
-            /// Add a `PARTITION BY` column.
+            /// Add a `PARTITION BY` column. PR3: accepts
+            /// `FieldRef<M, V>` or `DjogiField<M, V>` through
+            /// [`IntoSqlField`](crate::query::field::IntoSqlField).
             #[must_use = "window functions are immutable builders - use the returned value"]
-            pub fn partition_by<M, V>(mut self, field: FieldRef<M, V>) -> Self
+            pub fn partition_by<M, V, S>(mut self, field: S) -> Self
             where
                 M: Model,
+                S: crate::query::field::IntoSqlField<M, V>,
             {
-                self.window.partition_by.push(field.column());
+                self.window.partition_by.push(field.into_sql_field().column());
                 self
             }
 
@@ -570,13 +578,18 @@ impl NtileWindow {
         }
     }
 
-    /// Add a `PARTITION BY` column.
+    /// Add a `PARTITION BY` column. PR3: accepts `FieldRef<M, V>` or
+    /// `DjogiField<M, V>` through
+    /// [`IntoSqlField`](crate::query::field::IntoSqlField).
     #[must_use = "window functions are immutable builders - use the returned value"]
-    pub fn partition_by<M, V>(mut self, field: FieldRef<M, V>) -> Self
+    pub fn partition_by<M, V, S>(mut self, field: S) -> Self
     where
         M: Model,
+        S: crate::query::field::IntoSqlField<M, V>,
     {
-        self.window.partition_by.push(field.column());
+        self.window
+            .partition_by
+            .push(field.into_sql_field().column());
         self
     }
 
@@ -652,26 +665,34 @@ macro_rules! define_column_arg_window_fn {
             /// Construct a window annotation reading from `target` —
             /// the column whose value is reported per row by this
             /// window function. The typed wrapper carries `V` for
-            /// row-decode at fetch time.
-            pub fn new<M>(target: FieldRef<M, V>) -> Self
+            /// row-decode at fetch time. PR3: accepts `FieldRef<M, V>`
+            /// or `DjogiField<M, V>` through
+            /// [`IntoSqlField`](crate::query::field::IntoSqlField).
+            pub fn new<M, S>(target: S) -> Self
             where
                 M: Model,
+                S: crate::query::field::IntoSqlField<M, V>,
             {
                 Self {
                     window: WindowSpec::default(),
                     alias: None,
-                    target_column: target.column(),
+                    target_column: target.into_sql_field().column(),
                     _out: std::marker::PhantomData,
                 }
             }
 
-            /// Add a `PARTITION BY` column.
+            /// Add a `PARTITION BY` column. PR3: accepts
+            /// `FieldRef<M, V>` or `DjogiField<M, V>` through
+            /// [`IntoSqlField`](crate::query::field::IntoSqlField).
             #[must_use = "window functions are immutable builders - use the returned value"]
-            pub fn partition_by<M, V2>(mut self, field: FieldRef<M, V2>) -> Self
+            pub fn partition_by<M, V2, S>(mut self, field: S) -> Self
             where
                 M: Model,
+                S: crate::query::field::IntoSqlField<M, V2>,
             {
-                self.window.partition_by.push(field.column());
+                self.window
+                    .partition_by
+                    .push(field.into_sql_field().column());
                 self
             }
 
@@ -778,14 +799,18 @@ macro_rules! impl_lead_lag {
         impl<V> $type_name<V> {
             /// Construct with the target column. Default offset is 1
             /// (next/previous row); chain `.offset(n)` to override.
-            pub fn new<M>(target: FieldRef<M, V>) -> Self
+            /// PR3: accepts `FieldRef<M, V>` or `DjogiField<M, V>`
+            /// through
+            /// [`IntoSqlField`](crate::query::field::IntoSqlField).
+            pub fn new<M, S>(target: S) -> Self
             where
                 M: Model,
+                S: crate::query::field::IntoSqlField<M, V>,
             {
                 Self {
                     window: WindowSpec::default(),
                     alias: None,
-                    target_column: target.column(),
+                    target_column: target.into_sql_field().column(),
                     offset: None,
                     _out: std::marker::PhantomData,
                 }
@@ -802,13 +827,18 @@ macro_rules! impl_lead_lag {
                 self
             }
 
-            /// Add a `PARTITION BY` column.
+            /// Add a `PARTITION BY` column. PR3: accepts
+            /// `FieldRef<M, V>` or `DjogiField<M, V>` through
+            /// [`IntoSqlField`](crate::query::field::IntoSqlField).
             #[must_use = "window functions are immutable builders - use the returned value"]
-            pub fn partition_by<M, V2>(mut self, field: FieldRef<M, V2>) -> Self
+            pub fn partition_by<M, V2, S>(mut self, field: S) -> Self
             where
                 M: Model,
+                S: crate::query::field::IntoSqlField<M, V2>,
             {
-                self.window.partition_by.push(field.column());
+                self.window
+                    .partition_by
+                    .push(field.into_sql_field().column());
                 self
             }
 
@@ -888,27 +918,35 @@ pub struct NthValueWindow<V> {
 
 impl<V> NthValueWindow<V> {
     /// Construct with the target column and the 1-indexed position
-    /// `n`. Postgres rejects `n <= 0` at runtime.
-    pub fn new<M>(target: FieldRef<M, V>, n: i64) -> Self
+    /// `n`. Postgres rejects `n <= 0` at runtime. PR3: accepts
+    /// `FieldRef<M, V>` or `DjogiField<M, V>` through
+    /// [`IntoSqlField`](crate::query::field::IntoSqlField).
+    pub fn new<M, S>(target: S, n: i64) -> Self
     where
         M: Model,
+        S: crate::query::field::IntoSqlField<M, V>,
     {
         Self {
             window: WindowSpec::default(),
             alias: None,
-            target_column: target.column(),
+            target_column: target.into_sql_field().column(),
             n,
             _out: std::marker::PhantomData,
         }
     }
 
-    /// Add a `PARTITION BY` column.
+    /// Add a `PARTITION BY` column. PR3: accepts `FieldRef<M, V>` or
+    /// `DjogiField<M, V>` through
+    /// [`IntoSqlField`](crate::query::field::IntoSqlField).
     #[must_use = "window functions are immutable builders - use the returned value"]
-    pub fn partition_by<M, V2>(mut self, field: FieldRef<M, V2>) -> Self
+    pub fn partition_by<M, V2, S>(mut self, field: S) -> Self
     where
         M: Model,
+        S: crate::query::field::IntoSqlField<M, V2>,
     {
-        self.window.partition_by.push(field.column());
+        self.window
+            .partition_by
+            .push(field.into_sql_field().column());
         self
     }
 

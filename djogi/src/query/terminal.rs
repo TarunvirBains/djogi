@@ -151,6 +151,40 @@ pub(crate) async fn auto_set_tenant<T: Model>(ctx: &mut DjogiContext) -> Result<
 
 impl<T: Model> QuerySet<T>
 where
+    T: FromPgRow,
+{
+    /// Build the `SELECT` SQL this queryset would execute, without
+    /// touching a database. **Internal-test plumbing — never call this
+    /// from adopter code.**
+    ///
+    /// Tests that pin SQL shape (column ordering, bind ordinals,
+    /// portable predicate lowering, joined-select qualification) reach
+    /// for this hook to assert the textual contract directly without
+    /// needing `pg_stat_statements` server-side configuration. Mirrors
+    /// the pre-existing `VisageQuerySet::__sql_for_test` shape.
+    ///
+    /// The double-underscore prefix is the framework's
+    /// `feedback_macro_path_routing` convention for "macro-internal
+    /// public-by-necessity surface, do not depend on" — same as
+    /// `__make_field_ref_with_path` and friends. The method stays
+    /// `pub` (cross-crate test access requires it) but `#[doc(hidden)]`
+    /// keeps it out of rustdoc.
+    ///
+    /// Phase 8eta PR3 introduces this helper so the regression test
+    /// `phase8eta_queryset_filter_preservation` can verify SQL parity
+    /// through the post-flip root accessor surface. Returns the raw SQL
+    /// string only; callers needing both SQL and binds use the
+    /// underlying `build_select` (crate-private) instead.
+    #[doc(hidden)]
+    pub fn __sql_for_test(&self) -> Result<String, crate::DjogiError> {
+        let acc = crate::query::sql::build_select(self).map_err(crate::DjogiError::from)?;
+        let (sql, _binds) = acc.into_parts();
+        Ok(sql)
+    }
+}
+
+impl<T: Model> QuerySet<T>
+where
     T: FromPgRow + Send + Unpin,
 {
     /// Execute the query and collect every matching row into a `Vec<T>`.

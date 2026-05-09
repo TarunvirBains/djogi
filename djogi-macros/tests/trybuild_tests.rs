@@ -262,6 +262,76 @@ fn compile_pass_phase8() {
 }
 
 #[test]
+fn compile_pass_phase8eta_root_fields() {
+    // Phase 8eta PR3 — generated root `{Model}Fields` accessors flip
+    // to return `DjogiField<Self, V>`. Locks the post-PR3 closure
+    // surface (portable `eq` / `gte`, `& | ^` operator matrix,
+    // `explicit_pg_predicate` PG-locale escape hatch, `Cacheable::Fields
+    // = WidgetFields` auto-emit) against a `#[model]`-annotated type.
+    //
+    // Run this bucket in isolation:
+    //     cargo test --test trybuild_tests compile_pass_phase8eta_root_fields
+    let t = TestCases::new();
+    t.pass("tests/compile_pass/phase8eta_root_fields.rs");
+}
+
+#[test]
+fn compile_fail_phase8eta_traversal_not_portable() {
+    // Phase 8eta PR3 — visage/relation traversal accessors are SQL-only
+    // and must not appear on the root portable `{Model}Fields` ZST.
+    // The root FK column accessor itself still exists, but it returns
+    // `DjogiField<_, ForeignKey<_>>`, not a path-aware traversal handle.
+    // Adopters who try to compose `f.department().name()` inside a
+    // Punnu `filter_basic(...)` closure get a compile error at `.name()`
+    // rather than a runtime cache mismatch.
+    let t = TestCases::new();
+    t.compile_fail("tests/compile_fail/phase8eta_traversal_not_portable.rs");
+}
+
+#[test]
+fn compile_fail_phase8eta_optional_ordering_not_direct() {
+    // Phase 8eta PR3 — `DjogiField<M, Option<U>>` deliberately omits
+    // direct ordering methods (`gt`/`gte`/`lt`/`lte`/`between`) because
+    // Rust's `Option` ordering (`None < Some(_)`) does NOT match SQL's
+    // three-valued NULL semantics. Adopters who want value comparisons
+    // route through `.some().gt(value)`, and those who want nullability
+    // route through `is_null` / `is_not_null`. The fixture asserts a
+    // direct `.gt(...)` call on `DjogiField<Widget, Option<i16>>` fails
+    // to compile so the type system enforces the routing rule.
+    let t = TestCases::new();
+    t.compile_fail("tests/compile_fail/phase8eta_optional_ordering_not_direct.rs");
+}
+
+#[test]
+fn compile_pass_phase8eta_custom_scalar_portable_ord() {
+    // Phase 8eta PR3 — adopter-defined custom scalar types opt into
+    // direct portable ordering on `DjogiField` by implementing
+    // `djogi::query::DjogiPortableOrd`. The fixture defines a `Rank`
+    // newtype, threads it through `postgres_types::ToSql`, opts into
+    // the marker trait, and asserts root closures using `.gte(...)` on
+    // a `DjogiField<Widget, Rank>` compile. This is the canonical
+    // adopter extension point for direct portable ordering on custom
+    // scalars.
+    let t = TestCases::new();
+    t.pass("tests/compile_pass/phase8eta_custom_scalar_portable_ord.rs");
+}
+
+#[test]
+fn compile_fail_phase8eta_string_ordering_not_direct() {
+    // Phase 8eta PR3 — `DjogiField<M, String>` deliberately omits
+    // direct ordering (`gt`/`gte`/`lt`/`lte`/`between`) because
+    // PostgreSQL text ordering depends on the database's collation,
+    // which doesn't match Rust's byte-lexicographic `Ord` for non-
+    // ASCII inputs. Adopters who want database-locale text ordering
+    // route through `f.col().explicit_pg_predicate().gt(...)`, which
+    // is rejected at cache boundaries (PG-locale ordering is not
+    // portable to Punnu). The fixture asserts a direct `.gt(...)` on
+    // a `DjogiField<Widget, String>` fails to compile.
+    let t = TestCases::new();
+    t.compile_fail("tests/compile_fail/phase8eta_string_ordering_not_direct.rs");
+}
+
+#[test]
 fn compile_pass_phase8eta_predicate_substrate() {
     // Phase 8eta PR2d — public predicate substrate compiles + the
     // macro-emitted `Model::__djogi_emit_field_predicate` override

@@ -258,21 +258,22 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // 4b. Cacheable + DeltaSyncCacheable auto-emission — Cluster 8δ T7.2.
     //     Routes through `sassi-codegen` for the DeltaSyncCacheable arm
     //     (so the surface stays in lock-step with sassi's own
-    //     `#[derive(Cacheable)]`); the Cacheable arm is hand-rolled with
-    //     `type Fields = ()` to avoid colliding with `stubs::expand`'s
-    //     `{Model}Fields` emission. Skipped entirely for `pk = None`
-    //     models — the cache surface cannot ride the `QuerySet`-driven
-    //     path without a `Model` impl. See `model::cacheable` for the
-    //     full rationale + the macro-path-routing contract.
+    //     `#[derive(Cacheable)]`); the Cacheable arm is hand-rolled so
+    //     PR3 can wire `type Fields = {Model}Fields` without invoking
+    //     sassi-codegen's separate companion-struct emitter. Skipped
+    //     entirely for `pk = None` models — the cache surface cannot
+    //     ride the `QuerySet`-driven path without a `Model` impl. See
+    //     `model::cacheable` for the full rationale + the macro-path-
+    //     routing contract.
     let cacheable = cacheable::expand(&struct_item, &model_attrs, &field_attrs);
 
-    // 5. {Model}Fields — ZST with one `FieldRef<Self, V>` accessor per
-    //    column, plus `{Model}SqlFields` (Phase 8eta PR2d) — the
-    //    SQL-only path-aware sibling view used by relation/visage
-    //    traversal sites. Reads field types off the shared portable
-    //    field metadata so `{Model}SqlFields` and `{Model}Fields` agree
-    //    on column names and Rust types with `crud::expand`'s
-    //    `__djogi_emit_field_predicate` arms.
+    // 5. {Model}Fields — root ZST with one `DjogiField<Self, V>`
+    //    accessor per column, plus `{Model}SqlFields` — the SQL-only
+    //    path-aware sibling view used by relation/visage traversal
+    //    sites. Reads field types off the shared portable field
+    //    metadata so `{Model}SqlFields`, `{Model}Fields`, and
+    //    `crud::expand`'s `__djogi_emit_field_predicate` arms agree on
+    //    column names and Rust types.
     let stubs = stubs::expand(&struct_item, &model_attrs, &portable_field_info);
 
     // 6. {Model}Filter — runtime struct carrying `Vec<FilterClause>` with one

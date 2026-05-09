@@ -659,12 +659,24 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
                         // FK column name would surface as a compile
                         // error here (`no method named 'foo' on type ...
                         // {Returned}Fields`), not a runtime SQL bug.
+                        //
+                        // Phase 8eta PR3: `Model::Fields` accessors return
+                        // `DjogiField<M, V>` after the macro flip, so the
+                        // FK predicate routes the wrapper through
+                        // `IntoSqlField::into_sql_field` to recover the
+                        // legacy `FieldRef<M, V>` and emit a
+                        // `Condition`-shaped FK predicate the
+                        // `VisageQuerySet::__filter_with_initial_condition`
+                        // entry point already expects.
+                        let __field = <
+                            <#returned_type as ::djogi::model::Model>::Fields
+                            as ::core::default::Default
+                        >::default()
+                        .#filter_method();
+                        let __sql_field =
+                            ::djogi::query::field::IntoSqlField::<#returned_type, _>::into_sql_field(__field);
                         let __cond = ::djogi::query::field::FieldRef::<#returned_type, _>::eq(
-                            <
-                                <#returned_type as ::djogi::model::Model>::Fields
-                                as ::core::default::Default
-                            >::default()
-                            .#filter_method(),
+                            __sql_field,
                             #wrapper_ctor,
                         );
                         <#peer>::__filter_with_initial_condition(__cond)

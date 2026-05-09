@@ -1420,13 +1420,14 @@ impl<T: Model> QuerySet<T> {
     /// appropriate — the same way an out-of-bounds slice index is.
     #[cfg(feature = "spatial")]
     #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
-    pub fn group_by_region<F, G, R>(
+    pub fn group_by_region<F, G, R, S>(
         self,
         field: F,
         _regions: QuerySet<R>,
     ) -> crate::query::grouped::GroupedQuerySet<T, crate::query::spatial_grouping::RegionKey<R>>
     where
-        F: FnOnce(T::Fields) -> crate::query::field::FieldRef<T, G>,
+        F: FnOnce(T::Fields) -> S,
+        S: crate::query::field::IntoSqlField<T, G>,
         G: crate::geo::GeographyValue,
         R: Model,
         R::Pk: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
@@ -1449,7 +1450,14 @@ impl<T: Model> QuerySet<T> {
         }
 
         // ── Identify the data-side geo column ────────────────────────────────
-        let t_geo_col = field(T::Fields::default()).column();
+        // PR3: `IntoSqlField` accepts both legacy `FieldRef<T, G>` and the
+        // post-flip root accessor return type `DjogiField<T, G>`. The trait
+        // is sealed so downstream code cannot smuggle hand-rolled column
+        // strings; both implementers forward the validated column metadata
+        // produced by `__make_field_ref`. Spatial group keys are not
+        // predicate boundaries — adopters keep `f.location()` direct
+        // without an `.explicit_pg_predicate()` step.
+        let t_geo_col = field(T::Fields::default()).into_sql_field().column();
 
         // ── Identify the region-side geo column ──────────────────────────────
         // Walk the region model's descriptor to find the first Geography-typed
@@ -1512,7 +1520,7 @@ impl<T: Model> QuerySet<T> {
     /// Same bounds as [`QuerySet::group_by_region`].
     #[cfg(feature = "spatial")]
     #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
-    pub fn count_by_region<F, G, R>(
+    pub fn count_by_region<F, G, R, S>(
         self,
         field: F,
         regions: QuerySet<R>,
@@ -1522,7 +1530,8 @@ impl<T: Model> QuerySet<T> {
         crate::expr::AggregateExpr<i64>,
     >
     where
-        F: FnOnce(T::Fields) -> crate::query::field::FieldRef<T, G>,
+        F: FnOnce(T::Fields) -> S,
+        S: crate::query::field::IntoSqlField<T, G>,
         G: crate::geo::GeographyValue,
         R: Model,
         R::Pk: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
@@ -1576,16 +1585,21 @@ impl<T: Model> QuerySet<T> {
     /// - `G` — concrete geography type (e.g. `GeoPoint`, `Polygon`).
     #[cfg(feature = "spatial")]
     #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
-    pub fn cluster_by_proximity<F, G>(
+    pub fn cluster_by_proximity<F, G, S>(
         self,
         field: F,
         radius: crate::query::spatial_grouping::ClusterRadius,
     ) -> crate::query::grouped::GroupedQuerySet<T, crate::query::spatial_grouping::ClusterId>
     where
-        F: FnOnce(T::Fields) -> crate::query::field::FieldRef<T, G>,
+        F: FnOnce(T::Fields) -> S,
+        S: crate::query::field::IntoSqlField<T, G>,
         G: crate::geo::GeographyValue,
     {
-        let t_geo_col = field(T::Fields::default()).column();
+        // PR3: accept legacy `FieldRef<T, G>` and the post-flip root
+        // accessor return type `DjogiField<T, G>`. Spatial cluster keys
+        // are not predicate boundaries — `f.location()` stays direct
+        // without an `.explicit_pg_predicate()` step.
+        let t_geo_col = field(T::Fields::default()).into_sql_field().column();
         let spec = crate::query::spatial_grouping::ClusterSpec {
             t_geo_col,
             eps_degrees: radius.eps_degrees,
@@ -1642,16 +1656,21 @@ impl<T: Model> QuerySet<T> {
     /// - `G` — concrete geography type (e.g. `GeoPoint`).
     #[cfg(feature = "spatial")]
     #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
-    pub fn bucket_by_cell<F, G>(
+    pub fn bucket_by_cell<F, G, S>(
         self,
         field: F,
         precision: crate::query::spatial_grouping::GeohashPrecision,
     ) -> crate::query::grouped::GroupedQuerySet<T, crate::query::spatial_grouping::GeohashKey>
     where
-        F: FnOnce(T::Fields) -> crate::query::field::FieldRef<T, G>,
+        F: FnOnce(T::Fields) -> S,
+        S: crate::query::field::IntoSqlField<T, G>,
         G: crate::geo::GeographyValue,
     {
-        let t_geo_col = field(T::Fields::default()).column();
+        // PR3: accept legacy `FieldRef<T, G>` and the post-flip root
+        // accessor return type `DjogiField<T, G>`. Geohash bucket keys
+        // are not predicate boundaries — `f.location()` stays direct
+        // without an `.explicit_pg_predicate()` step.
+        let t_geo_col = field(T::Fields::default()).into_sql_field().column();
         let spec = crate::query::spatial_grouping::GeohashSpec {
             t_geo_col,
             precision: precision.as_i32(),
@@ -1912,6 +1931,19 @@ impl<M: Model, V> IntoDistinctColumns for FieldRef<M, V> {
     }
 }
 
+// PR3: `DjogiField<M, V>` is the post-flip root accessor return type.
+// `DISTINCT ON` is a SQL-only emission boundary (no Punnu evaluator),
+// so the wrapper forwards its column metadata through the same sealed
+// trait. The bound stays sealed because both implementers route through
+// the validated `__make_field_ref` / `__make_djogi_field` constructors —
+// downstream code cannot smuggle column strings through this interface.
+impl<M: Model, V> distinct_seal::Sealed for crate::query::field::DjogiField<M, V> {}
+impl<M: Model, V> IntoDistinctColumns for crate::query::field::DjogiField<M, V> {
+    fn into_distinct_columns(self) -> Vec<&'static str> {
+        vec![self.column()]
+    }
+}
+
 /// Generate `IntoDistinctColumns` (plus the sealed marker) for a tuple
 /// of `FieldRef`s. Each type parameter stands for the tuple slot's
 /// value type `V` — the model type `M` is shared across every
@@ -1935,6 +1967,35 @@ impl_into_distinct_columns_tuple!(A, B, C);
 impl_into_distinct_columns_tuple!(A, B, C, D);
 impl_into_distinct_columns_tuple!(A, B, C, D, E);
 impl_into_distinct_columns_tuple!(A, B, C, D, E, F);
+
+/// Generate `IntoDistinctColumns` (plus the sealed marker) for a tuple
+/// of `DjogiField`s. The tuple impls mirror the `FieldRef` set above so
+/// post-PR3 root closures can return `(f.col_a(), f.col_b(), ...)`
+/// directly without unwrapping each accessor through `__sql_field()`.
+/// Identifier safety stays sealed by the same mechanism — every
+/// `DjogiField` carries a column string the validator already accepted.
+macro_rules! impl_into_distinct_columns_djogi_tuple {
+    ($($name:ident),+) => {
+        impl<M: Model, $($name),+> distinct_seal::Sealed
+            for ($(crate::query::field::DjogiField<M, $name>,)+)
+        {}
+        impl<M: Model, $($name),+> IntoDistinctColumns
+            for ($(crate::query::field::DjogiField<M, $name>,)+)
+        {
+            fn into_distinct_columns(self) -> Vec<&'static str> {
+                #[allow(non_snake_case)]
+                let ($($name,)+) = self;
+                vec![$($name.column()),+]
+            }
+        }
+    };
+}
+impl_into_distinct_columns_djogi_tuple!(A);
+impl_into_distinct_columns_djogi_tuple!(A, B);
+impl_into_distinct_columns_djogi_tuple!(A, B, C);
+impl_into_distinct_columns_djogi_tuple!(A, B, C, D);
+impl_into_distinct_columns_djogi_tuple!(A, B, C, D, E);
+impl_into_distinct_columns_djogi_tuple!(A, B, C, D, E, F);
 
 // ── Cluster 8δ T8.4 — into_basic_predicate: conservative Q<T> → BasicPredicate<T> ─────
 //

@@ -1528,14 +1528,19 @@ pub fn expand(
     };
 
     // bulk_update's id bind — HeerId needs `.as_i64()` on each element,
-    // RanjId / Serial bind directly. We route through FieldRef::in_list
-    // which takes `IntoIterator<Item = V>` where `V: IntoFilterValue`.
-    // HeerId / RanjId / i32 (Serial) all `impl IntoFilterValue`, so the
-    // same expression compiles for every pk_type.
+    // RanjId / Serial bind directly. We route through `DjogiField::in_`
+    // which takes `IntoIterator<Item = V>` where
+    // `V: PartialEq + ToSql + Clone + Send + Sync + 'static`. HeerId /
+    // RanjId / i32 (Serial) all satisfy the bind/clone surface, so the
+    // same expression compiles for every pk_type. Phase 8eta PR3 flipped
+    // root `{Model}Fields` accessors to return `DjogiField`; the
+    // portable `.in_(ids)` produces a `PortablePredicate<Self>` that
+    // `QuerySet::filter` accepts via `IntoQ<Self>` like every other
+    // root predicate.
     //
     // `Self::Pk` is already the right type at macro expansion time
     // (see `pk_type_tokens` above), so we can forward `ids` verbatim
-    // into `.in_list(ids)`.
+    // into `.in_(ids)`.
     let bulk_update_impl = if n_user == 0 {
         // Pathological case: no user fields to update + `updated_at`
         // bumped via the existing `.update` emitter's implicit
@@ -1546,7 +1551,7 @@ pub fn expand(
             /// Bulk-update every row whose primary key is in `ids`.
             ///
             /// Equivalent to
-            /// `Self::objects().filter(|f| f.id().in_list(ids)).update(closure).execute(ctx)`.
+            /// `Self::objects().filter(|f| f.id().in_(ids)).update(closure).execute(ctx)`.
             /// This method is sugar for the common "update these
             /// specific rows" pattern without the caller spelling out
             /// the filter chain.
@@ -1561,7 +1566,7 @@ pub fn expand(
             {
                 if ids.is_empty() { return ::std::result::Result::Ok(0); }
                 <Self as ::djogi::model::Model>::objects()
-                    .filter(|f| f.id().in_list(ids))
+                    .filter(|f| f.id().in_(ids))
                     .update(closure)
                     .execute(ctx)
                     .await
@@ -1576,7 +1581,7 @@ pub fn expand(
             /// Empty `ids` short-circuits to `Ok(0)` without SQL.
             ///
             /// Equivalent to the explicit chain
-            /// `Self::objects().filter(|f| f.id().in_list(ids)).update(closure).execute(ctx)`;
+            /// `Self::objects().filter(|f| f.id().in_(ids)).update(closure).execute(ctx)`;
             /// this method is sugar for the common "update these
             /// specific rows" pattern.
             pub async fn bulk_update<F, A>(
@@ -1590,7 +1595,7 @@ pub fn expand(
             {
                 if ids.is_empty() { return ::std::result::Result::Ok(0); }
                 <Self as ::djogi::model::Model>::objects()
-                    .filter(|f| f.id().in_list(ids))
+                    .filter(|f| f.id().in_(ids))
                     .update(closure)
                     .execute(ctx)
                     .await

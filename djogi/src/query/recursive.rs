@@ -150,10 +150,19 @@ use crate::context::DjogiContext;
 use crate::model::Model;
 use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::{FromPgRow, try_get_scalar};
-use crate::query::condition::Condition;
+// Phase 8eta PR3: `FieldRef` is no longer the parameter type for
+// `search_breadth_first_by` / `search_depth_first_by` — both methods now
+// accept any `IntoSqlField<T, V>`. The unit tests in `mod tests` below
+// continue to construct `FieldRef::<_, _>::new(...)` values directly
+// (they exercise the SQL builder, not adopter API ergonomics), so the
+// import is kept under `#[cfg(test)]` here to avoid an unused-import
+// warning in release builds.
+#[cfg(test)]
 use crate::query::field::FieldRef;
 use crate::query::order::OrderExpr;
-use crate::query::sql::emit_condition;
+use crate::query::portable::SqlEmitContext;
+use crate::query::q::Q;
+use crate::query::sql::{emit_q, q_is_vacuously_true};
 use crate::query::terminal::auto_set_tenant;
 use crate::relation::path::{RelationKind, RelationPath};
 use postgres_types::ToSql;
@@ -262,7 +271,7 @@ pub struct RecursiveQuerySet<T: Model> {
     /// Accumulated user filter — AND-ed onto the recursive term's
     /// `WHERE`. Anchor (root) row is *not* filtered through this; the
     /// anchor's only condition is `id = $1`.
-    pub(crate) condition: Condition,
+    pub(crate) condition: Q<T>,
     /// Outer `ORDER BY` clauses — applied to the materialised CTE,
     /// never inside it. SEARCH BFS/DFS, when set, prepends an
     /// implicit `__djogi_search_seq` term so the user's ordering
@@ -336,7 +345,7 @@ impl<T: Model> RecursiveQuerySet<T> {
             direction,
             edges: vec![path],
             root_id: Box::new(root_id),
-            condition: Condition::True,
+            condition: Q::always_true(),
             ordering: Vec::new(),
             max_depth: None,
             search_mode: None,
@@ -383,7 +392,7 @@ impl<T: Model> RecursiveQuerySet<T> {
             direction,
             edges: paths,
             root_id: Box::new(root_id),
-            condition: Condition::True,
+            condition: Q::always_true(),
             ordering: Vec::new(),
             max_depth: None,
             search_mode: None,
@@ -394,20 +403,31 @@ impl<T: Model> RecursiveQuerySet<T> {
     /// AND a typed filter closure onto the recursive-term `WHERE`.
     ///
     /// Same closure shape as [`QuerySet::filter`](crate::query::QuerySet::filter)
-    /// — receives a default-constructed `T::Fields` and returns a
-    /// [`Condition`]. The predicate applies to **every recursive step**;
-    /// the anchor row (the root) is matched only by `id = $1`, never
-    /// through this filter. This matches caller intent: "give me the
-    /// subtree rooted here, narrowed by predicate" — narrowing the root
-    /// would change which subtree is being walked, not which rows in it
-    /// match.
+    /// — receives a default-constructed `T::Fields` and returns any
+    /// [`IntoQ<T>`](crate::query::IntoQ) value
+    /// (`Condition`, `PortablePredicate<T>`, `Predicate<T>`,
+    /// `Q<T>`, `Expr<bool>`). The predicate applies to **every recursive
+    /// step**; the anchor row (the root) is matched only by `id = $1`,
+    /// never through this filter. This matches caller intent: "give me
+    /// the subtree rooted here, narrowed by predicate" — narrowing the
+    /// root would change which subtree is being walked, not which rows
+    /// in it match.
+    ///
+    /// PR3: the closure return type generalised from `Condition` to
+    /// `IntoQ<T>` so post-flip root closures returning portable
+    /// predicates (`f.col().eq(value)` -> `PortablePredicate<T>`)
+    /// continue to compile. Recursive SQL emission walks `Q<T>`
+    /// directly through the same portable-predicate emitter as
+    /// `QuerySet::filter`; it must not round-trip through the legacy
+    /// `q_to_condition` bridge because that bridge intentionally cannot
+    /// reconstruct `Condition::Leaf` values from Sassi field predicates.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
-    pub fn filter<F>(mut self, f: F) -> Self
+    pub fn filter<F, P>(mut self, f: F) -> Self
     where
-        F: FnOnce(T::Fields) -> Condition,
+        F: FnOnce(T::Fields) -> P,
+        P: crate::query::IntoQ<T>,
     {
-        let cond = f(T::Fields::default());
-        self.condition = Condition::and(self.condition, cond);
+        self.condition = and_q_into_q(self.condition, f(T::Fields::default()));
         self
     }
 
@@ -416,7 +436,7 @@ impl<T: Model> RecursiveQuerySet<T> {
     /// Field-vs-field comparisons and arithmetic predicates work exactly
     /// as on [`QuerySet::filter_expr`](crate::query::QuerySet::filter_expr) —
     /// the closure returns an `Expr<bool>`, which is wrapped in
-    /// [`Condition::Expr`] before being AND-ed onto the accumulated tree.
+    /// `Q::Expression` before being AND-ed onto the accumulated tree.
     /// Same anchor-row caveat as [`filter`](Self::filter): the anchor is
     /// matched only by `id = $1`.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
@@ -424,8 +444,7 @@ impl<T: Model> RecursiveQuerySet<T> {
     where
         F: FnOnce(T::Fields) -> crate::expr::Expr<bool>,
     {
-        let expr = f(T::Fields::default());
-        self.condition = Condition::and(self.condition, Condition::Expr(expr));
+        self.condition = and_q_into_q(self.condition, f(T::Fields::default()));
         self
     }
 
@@ -488,9 +507,18 @@ impl<T: Model> RecursiveQuerySet<T> {
     /// is framework-reserved (see
     /// `docs/spec/reserved-identifiers.md`), so a model field cannot
     /// collide with the synthetic search column.
+    ///
+    /// PR3: accepts both legacy `FieldRef<T, V>` and the post-flip root
+    /// accessor return type `DjogiField<T, V>` through the sealed
+    /// [`IntoSqlField`](crate::query::field::IntoSqlField) bridge.
+    /// Recursive search ordering is a SQL-only emission boundary; the
+    /// wrapper's column metadata flows through unchanged.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
-    pub fn search_breadth_first_by<V>(mut self, field: FieldRef<T, V>) -> Self {
-        self.search_mode = Some(SearchMode::Breadth(field.column()));
+    pub fn search_breadth_first_by<V, S>(mut self, field: S) -> Self
+    where
+        S: crate::query::field::IntoSqlField<T, V>,
+    {
+        self.search_mode = Some(SearchMode::Breadth(field.into_sql_field().column()));
         self
     }
 
@@ -499,11 +527,26 @@ impl<T: Model> RecursiveQuerySet<T> {
     /// [`search_breadth_first_by`](Self::search_breadth_first_by).
     ///
     /// Same auto-prepended outer `ORDER BY __djogi_search_seq`,
-    /// same mutual-exclusion rule.
+    /// same mutual-exclusion rule. Same `IntoSqlField` bridge as
+    /// [`search_breadth_first_by`](Self::search_breadth_first_by).
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
-    pub fn search_depth_first_by<V>(mut self, field: FieldRef<T, V>) -> Self {
-        self.search_mode = Some(SearchMode::Depth(field.column()));
+    pub fn search_depth_first_by<V, S>(mut self, field: S) -> Self
+    where
+        S: crate::query::field::IntoSqlField<T, V>,
+    {
+        self.search_mode = Some(SearchMode::Depth(field.into_sql_field().column()));
         self
+    }
+}
+
+fn and_q_into_q<T: Model, A: crate::query::IntoQ<T>>(current: Q<T>, addition: A) -> Q<T> {
+    let addition = addition.into_q();
+    if q_is_vacuously_true(&current) {
+        addition
+    } else if q_is_vacuously_true(&addition) {
+        current
+    } else {
+        current & addition
     }
 }
 
@@ -541,7 +584,7 @@ fn push_qualified_columns<T: FromPgRow>(acc: &mut SqlAccumulator, alias: &'stati
 /// so the consume-by-value shape composes naturally.
 ///
 /// Bind ordering: `$1` is the root id; subsequent `$n` slots are
-/// allocated by [`emit_condition`] for the user filter and by
+/// allocated by [`emit_q`] for the user filter and by
 /// [`with_max_depth`](RecursiveQuerySet::with_max_depth) for the depth
 /// cap. `tokio_postgres::Row` gets the values back in the order
 /// `acc.into_parts().1` returns them.
@@ -673,7 +716,7 @@ fn build_recursive_inner<T: Model + FromPgRow>(
     // — UNION ALL never deduplicates.
     //
     // `qs` is consumed by value here, so each field can be moved out
-    // directly — `condition` (a `Condition` enum tree) and `ordering`
+    // directly — `condition` (a `Q<T>` enum tree) and `ordering`
     // (a `Vec<OrderExpr>`) used to be cloned out of historical caution,
     // but neither is reused after this point and `qs` itself is dropped
     // at function return. Moving avoids one heap allocation per
@@ -685,7 +728,7 @@ fn build_recursive_inner<T: Model + FromPgRow>(
     let search_mode = qs.search_mode;
     let edges = qs.edges;
 
-    let has_user_filter = !condition.is_vacuously_true();
+    let has_user_filter = !q_is_vacuously_true(&condition);
     let has_depth_cap = max_depth.is_some();
 
     acc.push_sql(
@@ -746,12 +789,12 @@ fn build_recursive_inner<T: Model + FromPgRow>(
             // against the `__djogi_tree parent` side of the JOIN,
             // which exposes the same column names through the
             // same alias scope.
-            // Phase 8eta PR2b — `emit_condition` borrow-walks; the
-            // `?` propagates `PortablePredicateError` to the surrounding
-            // builder. `condition` here is a legacy `Condition` (not a
-            // `Q<T>`) — reachable via the recursive-CTE path which
-            // pre-dates the `Q<T>` substrate.
-            emit_condition(&mut acc, &condition, Some("child")).map_err(crate::DjogiError::from)?;
+            // Phase 8eta PR3 — recursive filters carry `Q<T>` like the
+            // plain `QuerySet` path. `emit_q` handles both legacy
+            // `Condition` leaves and trusted portable predicates, qualifying
+            // root columns through the `child` lateral alias.
+            emit_q::<T>(&mut acc, &condition, SqlEmitContext::joined("child"))
+                .map_err(crate::DjogiError::from)?;
         }
         if has_depth_cap {
             if has_user_filter {
@@ -1142,15 +1185,28 @@ mod tests {
     use super::*;
     use crate::descriptor::ModelDescriptor;
     use crate::pg::decode::FromPgRow;
+    use crate::query::field::DjogiField;
     use crate::types::HeerId;
 
     struct MiniTree;
+
+    #[derive(Clone, Copy, Default)]
+    struct MiniTreeFields;
+
+    impl MiniTreeFields {
+        fn label(&self) -> DjogiField<MiniTree, String> {
+            crate::__private::query::__make_djogi_field("label", |_| {
+                static LABEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+                LABEL.get_or_init(String::new)
+            })
+        }
+    }
 
     impl crate::model::__sealed::Sealed for MiniTree {}
 
     impl crate::model::Model for MiniTree {
         type Pk = HeerId;
-        type Fields = ();
+        type Fields = MiniTreeFields;
         fn table_name() -> &'static str {
             "mini_trees"
         }
@@ -1189,6 +1245,22 @@ mod tests {
             _ctx: &'ctx mut crate::context::DjogiContext,
         ) -> impl std::future::Future<Output = Result<Self, DjogiError>> + Send + 'ctx {
             async { unreachable!() }
+        }
+        fn __djogi_emit_field_predicate(
+            acc: &mut crate::pg::accumulator::SqlAccumulator,
+            field: &crate::types::FieldPredicate<Self>,
+            ctx: crate::query::SqlEmitContext,
+        ) -> Result<(), crate::query::PortablePredicateError> {
+            match (field.field_name(), field.op()) {
+                ("label", crate::types::LookupOp::Eq) => {
+                    crate::query::portable::emit::emit_value::<Self, String>(
+                        acc, ctx, "label", " = ", field,
+                    )
+                }
+                (field_name, _) => Err(crate::query::PortablePredicateError::UnsupportedField {
+                    field: field_name,
+                }),
+            }
         }
     }
 
@@ -1319,6 +1391,22 @@ mod tests {
             !sql.contains("parent.depth <"),
             "no depth cap must not emit `parent.depth <`: {sql}"
         );
+    }
+
+    #[test]
+    fn filter_accepts_portable_root_predicate_without_condition_bridge_panic() {
+        // PR3 flips root fields to `DjogiField`, so a direct equality
+        // predicate returns `PortablePredicate<MiniTree>`. Recursive filters
+        // must emit that Q<T> directly; lowering through `q_to_condition`
+        // would panic on Sassi's `BasicPredicate::Field` arm.
+        let qs = root().filter(|f| f.label().eq("branch".to_string()));
+        let acc = build_recursive_select(qs).expect("recursive select");
+        let sql = acc.sql();
+        assert!(
+            sql.contains("child.label = $2"),
+            "recursive portable filter must qualify through child alias and bind after root id: {sql}"
+        );
+        assert_eq!(acc.bind_count(), 2);
     }
 
     #[test]

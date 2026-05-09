@@ -990,7 +990,7 @@ pub(crate) fn emit_q<T: Model>(
 /// `WHERE` emitter can omit the clause entirely on unfiltered querysets
 /// without round-tripping through the legacy bridge. Used by
 /// [`push_where_qualified`].
-fn q_is_vacuously_true<T: Model>(q: &Q<T>) -> bool {
+pub(crate) fn q_is_vacuously_true<T: Model>(q: &Q<T>) -> bool {
     match q {
         Q::Portable(p) => match p.inner_ref() {
             sassi::BasicPredicate::True => true,

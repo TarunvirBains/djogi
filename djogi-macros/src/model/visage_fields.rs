@@ -53,7 +53,7 @@
 
 use crate::model::attrs::PkStrategy;
 use crate::model::visage_ctx::{
-    ScopeMembership, VisageEmitContext, classify_field_for_scope, peer_fields_path,
+    ScopeMembership, VisageEmitContext, classify_field_for_scope, peer_traversal_fields_path,
 };
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -151,7 +151,17 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
             // FK) or `OptionalRelationRef<{PeerVisage}Fields>` (optional
             // FK / O2O).
             ScopeMembership::RelationEmbed { exposure, nullable } => {
-                let pfp = peer_fields_path(exposure);
+                // After Phase 8eta PR3 the path-aware peer fields handle
+                // depends on the exposure shape: full-peer
+                // (`expose(scope -> Department)`) routes through
+                // `{Department}SqlFields` because root `{Department}Fields`
+                // is now a portable ZST without `__djogi_path` /
+                // `with_path`; narrow visage
+                // (`expose(scope -> Department::Public)`) keeps using
+                // `{Visage}Fields` because the visage struct is
+                // path-aware on its own. `peer_traversal_fields_path`
+                // resolves the right shape from the relation field.
+                let pfp = peer_traversal_fields_path(field, exposure);
 
                 // The SQL-alias path emitted into the peer's `Fields` is
                 // the FK column name itself. For `department:

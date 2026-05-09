@@ -16,7 +16,7 @@
 
 use crate::model::Model;
 use crate::pg::accumulator::SqlAccumulator;
-use crate::query::field::FieldRef;
+use crate::query::field::{DjogiField, FieldRef};
 use crate::query::queryset::QuerySet;
 use std::marker::PhantomData;
 
@@ -117,6 +117,91 @@ macro_rules! impl_into_group_key_tuple {
 impl_into_group_key_tuple!(arity = 2, types = [(A, 0, 0), (B, 1, 1)]);
 impl_into_group_key_tuple!(arity = 3, types = [(A, 0, 0), (B, 1, 1), (C, 2, 2)]);
 impl_into_group_key_tuple!(
+    arity = 4,
+    types = [(A, 0, 0), (B, 1, 1), (C, 2, 2), (D, 3, 3)]
+);
+
+// ── Arity 1: single DjogiField<M, V> ────────────────────────────────────────
+//
+// PR3: post-flip root accessors return `DjogiField<M, V>`. `GROUP BY` is a
+// SQL-only boundary (no Punnu evaluator participates in column emission),
+// so the impl forwards the wrapper's column metadata through the same
+// emission code paths `FieldRef` already drives. Sealing stays in place
+// — `DjogiField` is a Djogi-owned type that can only be constructed
+// through the validated `__make_djogi_field` macro entry point.
+
+impl<M: Model, V> sealed::Sealed for DjogiField<M, V> {}
+
+impl<M: Model, V> IntoGroupKeyTuple for DjogiField<M, V>
+where
+    V: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
+{
+    type Decoded = V;
+
+    fn push_group_by_columns(&self, acc: &mut SqlAccumulator) {
+        acc.push_sql(self.column());
+    }
+
+    fn push_select_columns(&self, acc: &mut SqlAccumulator) {
+        acc.push_sql(self.column());
+    }
+
+    fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
+        row.try_get::<_, V>(0)
+    }
+}
+
+// ── Arity 2..=4: tuples of DjogiField<M, V_i> ───────────────────────────────
+//
+// Mirrors the `FieldRef` tuple impl set so post-PR3 root closures returning
+// `(f.col_a(), f.col_b(), ...)` compose directly without unwrapping each
+// accessor.
+
+macro_rules! impl_into_group_key_tuple_djogi {
+    (
+        arity = $arity:tt,
+        types = [ $( ($ty:ident, $slot:tt, $pos:literal) ),+ $(,)? ]
+    ) => {
+        impl<M: Model, $($ty),+> sealed::Sealed for ( $(DjogiField<M, $ty>,)+ ) {}
+
+        impl<M: Model, $($ty),+> IntoGroupKeyTuple for ( $(DjogiField<M, $ty>,)+ )
+        where
+            $( $ty: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static, )+
+        {
+            type Decoded = ( $($ty,)+ );
+
+            fn push_group_by_columns(&self, acc: &mut SqlAccumulator) {
+                let mut first = true;
+                $(
+                    if !first { acc.push_sql(", "); }
+                    first = false;
+                    acc.push_sql(self.$slot.column());
+                )+
+                let _ = first;
+            }
+
+            fn push_select_columns(&self, acc: &mut SqlAccumulator) {
+                let mut first = true;
+                $(
+                    if !first { acc.push_sql(", "); }
+                    first = false;
+                    acc.push_sql(self.$slot.column());
+                )+
+                let _ = first;
+            }
+
+            fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
+                Ok((
+                    $( row.try_get::<_, $ty>($pos)?, )+
+                ))
+            }
+        }
+    };
+}
+
+impl_into_group_key_tuple_djogi!(arity = 2, types = [(A, 0, 0), (B, 1, 1)]);
+impl_into_group_key_tuple_djogi!(arity = 3, types = [(A, 0, 0), (B, 1, 1), (C, 2, 2)]);
+impl_into_group_key_tuple_djogi!(
     arity = 4,
     types = [(A, 0, 0), (B, 1, 1), (C, 2, 2), (D, 3, 3)]
 );

@@ -88,7 +88,11 @@
 use crate::expr::Expr;
 use crate::expr::node::{ErasedSubqueryPredicate, ExprNode, SubqueryNode};
 use crate::model::Model;
-use crate::query::field::FieldRef;
+// Phase 8eta PR3: `Subquery::new` no longer demands a `FieldRef<T, V>`
+// — it accepts any `IntoSqlField<T, V>` so post-flip root accessors
+// (`DjogiField<T, V>`) compose without explicit unwrapping. The unit
+// tests under `mod tests` construct `FieldRef` values directly via
+// their own scoped imports — no top-level use is needed.
 use crate::query::queryset::QuerySet;
 use std::marker::PhantomData;
 
@@ -162,11 +166,19 @@ impl<T: Model, V> Subquery<T, V> {
     /// is out of scope for Task 5). Callers who need a deterministic
     /// scalar from a multi-row source should use `ctx.raw_scalar`
     /// until Phase 5 extends this surface.
-    pub fn new(qs: QuerySet<T>, column: FieldRef<T, V>) -> Self {
+    /// PR3: accepts both legacy `FieldRef<T, V>` and the post-flip root
+    /// accessor return type `DjogiField<T, V>` through the sealed
+    /// [`IntoSqlField`](crate::query::field::IntoSqlField) bridge.
+    /// Subquery `SELECT <col>` is a SQL-only emission boundary — the
+    /// projected column metadata flows through unchanged.
+    pub fn new<S>(qs: QuerySet<T>, column: S) -> Self
+    where
+        S: crate::query::field::IntoSqlField<T, V>,
+    {
         Subquery {
             node: SubqueryNode {
                 table: T::table_name(),
-                select_column: Some(column.column()),
+                select_column: Some(column.into_sql_field().column()),
                 // Phase 8eta PR2b: store the queryset's `Q<T>` behind an
                 // erased emitter handle so portable root-field predicates
                 // emit through `query::sql::emit_q` without round-tripping

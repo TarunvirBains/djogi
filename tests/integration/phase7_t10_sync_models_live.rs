@@ -246,8 +246,10 @@ async fn spatial_field_extension_provisioned_first(mut ctx: djogi::DjogiContext)
         .await
         .expect("Place::create against PostGIS-backed table");
 
+    // PR3: `within_km` is PostGIS-specific; route through
+    // `explicit_pg_predicate()` from the post-flip `DjogiField` surface.
     let nearby = Place::objects()
-        .filter(|p| p.location().within_km(sfo, 50.0))
+        .filter(|p| p.location().explicit_pg_predicate().within_km(sfo, 50.0))
         .fetch_all(&mut ctx)
         .await
         .expect("within_km query against sync_models-created spatial schema");
@@ -526,8 +528,14 @@ async fn index_spec_routes_through_migration_engine(mut ctx: djogi::DjogiContext
     .await
     .expect("Document::create against sync_models-created table");
 
+    // PR3: array `contains` (`@>`) is PostgreSQL-specific; route through
+    // `explicit_pg_predicate()` from the post-flip `DjogiField` surface.
     let matches = Document::objects()
-        .filter(|d| d.tags().contains(&["rust".to_string()]))
+        .filter(|d| {
+            d.tags()
+                .explicit_pg_predicate()
+                .contains(&["rust".to_string()])
+        })
         .fetch_all(&mut ctx)
         .await
         .expect("array contains query");

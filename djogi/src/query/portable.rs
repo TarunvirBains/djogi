@@ -886,6 +886,12 @@ mod tests {
     // for descriptor lookup. The trait default's unsupported-model
     // error never fires because the helpers never call back through
     // `__djogi_emit_field_predicate`.
+    //
+    // `active` / `maybe_year` are referenced through the typed Sassi
+    // extractors below but the struct's borrow path is not exercised in
+    // every test arm; suppress the dead-code lint to keep the test
+    // surface stable across helper additions.
+    #[allow(dead_code)]
     #[derive(Debug)]
     struct TestModel {
         id: i64,
