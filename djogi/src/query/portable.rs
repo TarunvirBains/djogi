@@ -461,6 +461,59 @@ pub mod emit {
         Ok(())
     }
 
+    /// Emit list membership for `Option<V>::some()` predicates.
+    ///
+    /// This is intentionally distinct from [`emit_list`]: Sassi's
+    /// `PresentField<T, V>` treats `None` as `false` for every comparison,
+    /// so `some().not_in([])` is `column IS NOT NULL`, not the scalar-list
+    /// identity `TRUE`.
+    #[doc(hidden)]
+    pub fn emit_present_list<V>(
+        acc: &mut SqlAccumulator,
+        ctx: SqlEmitContext,
+        column: &'static str,
+        values: &[V],
+        negated: bool,
+    ) -> Result<(), PortablePredicateError>
+    where
+        V: postgres_types::ToSql + Clone + Send + Sync + 'static,
+    {
+        if values.is_empty() {
+            if negated {
+                ctx.push_column(acc, column);
+                acc.push_sql(" IS NOT NULL");
+            } else {
+                acc.push_sql("FALSE");
+            }
+            return Ok(());
+        }
+
+        if negated {
+            acc.push_sql("(");
+            ctx.push_column(acc, column);
+            acc.push_sql(" IS NOT NULL AND ");
+            ctx.push_column(acc, column);
+            acc.push_sql(" NOT IN (");
+        } else {
+            ctx.push_column(acc, column);
+            acc.push_sql(" IN (");
+        }
+
+        for (i, v) in values.iter().enumerate() {
+            if i > 0 {
+                acc.push_sql(", ");
+            }
+            acc.push_bind(v.clone());
+        }
+
+        if negated {
+            acc.push_sql("))");
+        } else {
+            acc.push_sql(")");
+        }
+        Ok(())
+    }
+
     /// Emit a portable string-pattern predicate. Uses Postgres
     /// `ILIKE` / `LIKE` with `ESCAPE '\\'`; `IExact` lowers to
     /// `COLLATE "C" ILIKE` to match the ASCII-stable case-insensitive
@@ -804,5 +857,646 @@ mod tests {
     fn parent_table_accessor_returns_stored_value() {
         assert_eq!(SqlEmitContext::root().parent_table(), None);
         assert_eq!(SqlEmitContext::joined("t").parent_table(), Some("t"));
+    }
+
+    // ── PR2d helper-level SQL lowering tests ──────────────────────────────
+    //
+    // The helpers under `emit::*` are called by macro-emitted
+    // `Model::__djogi_emit_field_predicate` arms. The unit tests here
+    // exercise the helper signatures directly so PR2d's macro emission
+    // and the helpers stay in lock-step on:
+    //
+    // - Optional field equality / inequality / list shapes (the v3
+    //   plan PR2 Step 6 truth table).
+    // - Empty / non-empty list emission for non-Option scalars.
+    // - String-pattern LIKE escape + ASCII-stable case-folding parity.
+    // - Joined-select parent-table qualification through
+    //   `SqlEmitContext::joined`.
+    //
+    // The tests construct `FieldPredicate<TestModel>` instances via
+    // sassi's `Field<T, V>` builder methods, mirroring what
+    // `DjogiField` does internally. No live database is required.
+
+    use crate::model::Model;
+    use sassi::BasicPredicate;
+    use sassi::Field as SassiField;
+
+    // Hand-written model — the SQL helpers in `emit::*` only need
+    // `M: Model` for type-binding the `FieldPredicate<M>` payload, not
+    // for descriptor lookup. The trait default's unsupported-model
+    // error never fires because the helpers never call back through
+    // `__djogi_emit_field_predicate`.
+    #[derive(Debug)]
+    struct TestModel {
+        id: i64,
+        score: i32,
+        name: String,
+        active: bool,
+        maybe_year: Option<i32>,
+    }
+
+    impl crate::model::__sealed::Sealed for TestModel {}
+    #[allow(clippy::manual_async_fn)]
+    impl Model for TestModel {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "test_models"
+        }
+        fn pk_value(&self) -> &i64 {
+            &self.id
+        }
+        fn descriptor() -> &'static crate::descriptor::ModelDescriptor {
+            unimplemented!()
+        }
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: i64,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx
+        {
+            async { unimplemented!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx
+        {
+            async { unimplemented!() }
+        }
+    }
+
+    /// Helper: extract the `FieldPredicate<M>` out of a
+    /// `BasicPredicate::Field(_)` leaf, panicking on any other variant.
+    /// `M: std::fmt::Debug` so the panic path can format the unexpected
+    /// variant; `BasicPredicate<M>` derives `Debug` requiring the bound.
+    fn unwrap_field_pred<M: std::fmt::Debug>(
+        bp: BasicPredicate<M>,
+    ) -> sassi::predicate::FieldPredicate<M> {
+        match bp {
+            BasicPredicate::Field(fp) => fp,
+            other => panic!("expected Field predicate, got {other:?}"),
+        }
+    }
+
+    // ── Optional-field SQL lowering (Eq) ──────────────────────────────────
+
+    #[test]
+    fn emit_option_eq_some_value_uses_equals_bind() {
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_option_eq::<i32>(
+            &mut acc,
+            SqlEmitContext::root(),
+            "estimated_year",
+            &Some(2020),
+        )
+        .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(sql, "estimated_year = $1");
+        assert_eq!(binds.len(), 1);
+    }
+
+    #[test]
+    fn emit_option_eq_none_uses_is_null() {
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_option_eq::<i32>(&mut acc, SqlEmitContext::root(), "estimated_year", &None)
+            .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(sql, "estimated_year IS NULL");
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn emit_option_neq_some_value_uses_null_or_neq() {
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_option_neq::<i32>(
+            &mut acc,
+            SqlEmitContext::root(),
+            "estimated_year",
+            &Some(2020),
+        )
+        .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(sql, "(estimated_year IS NULL OR estimated_year <> $1)");
+        assert_eq!(binds.len(), 1);
+    }
+
+    #[test]
+    fn emit_option_neq_none_uses_is_not_null() {
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_option_neq::<i32>(&mut acc, SqlEmitContext::root(), "estimated_year", &None)
+            .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(sql, "estimated_year IS NOT NULL");
+        assert!(binds.is_empty());
+    }
+
+    // ── Optional-field SQL lowering (In / NotIn) ──────────────────────────
+
+    #[test]
+    fn emit_option_in_empty_returns_false_literal() {
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_option_in::<i32>(
+            &mut acc,
+            SqlEmitContext::root(),
+            "estimated_year",
+            &[],
+            false,
+        )
+        .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(sql, "FALSE");
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn emit_option_not_in_empty_returns_true_literal() {
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_option_in::<i32>(
+            &mut acc,
+            SqlEmitContext::root(),
+            "estimated_year",
+            &[],
+            true,
+        )
+        .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(sql, "TRUE");
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn emit_option_in_only_none_uses_is_null() {
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_option_in::<i32>(
+            &mut acc,
+            SqlEmitContext::root(),
+            "estimated_year",
+            &[None],
+            false,
+        )
+        .unwrap();
+        let (sql, _) = acc.into_parts();
+        assert_eq!(sql, "estimated_year IS NULL");
+    }
+
+    #[test]
+    fn emit_option_in_only_some_uses_in_list() {
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_option_in::<i32>(
+            &mut acc,
+            SqlEmitContext::root(),
+            "estimated_year",
+            &[Some(2019), Some(2020)],
+            false,
+        )
+        .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(sql, "estimated_year IN ($1, $2)");
+        assert_eq!(binds.len(), 2);
+    }
+
+    #[test]
+    fn emit_option_in_mixed_none_and_some_unions_predicates() {
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_option_in::<i32>(
+            &mut acc,
+            SqlEmitContext::root(),
+            "estimated_year",
+            &[None, Some(2020)],
+            false,
+        )
+        .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(sql, "(estimated_year IS NULL OR estimated_year IN ($1))");
+        assert_eq!(binds.len(), 1);
+    }
+
+    #[test]
+    fn emit_option_not_in_mixed_intersects_predicates() {
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_option_in::<i32>(
+            &mut acc,
+            SqlEmitContext::root(),
+            "estimated_year",
+            &[None, Some(2020)],
+            true,
+        )
+        .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(
+            sql,
+            "(estimated_year IS NOT NULL AND estimated_year NOT IN ($1))"
+        );
+        assert_eq!(binds.len(), 1);
+    }
+
+    #[test]
+    fn emit_option_not_in_only_none_uses_is_not_null() {
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_option_in::<i32>(
+            &mut acc,
+            SqlEmitContext::root(),
+            "estimated_year",
+            &[None],
+            true,
+        )
+        .unwrap();
+        let (sql, _) = acc.into_parts();
+        assert_eq!(sql, "estimated_year IS NOT NULL");
+    }
+
+    #[test]
+    fn emit_option_not_in_only_some_unions_null_branch() {
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_option_in::<i32>(
+            &mut acc,
+            SqlEmitContext::root(),
+            "estimated_year",
+            &[Some(2019), Some(2020)],
+            true,
+        )
+        .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(
+            sql,
+            "(estimated_year IS NULL OR estimated_year NOT IN ($1, $2))"
+        );
+        assert_eq!(binds.len(), 2);
+    }
+
+    // ── Scalar list SQL lowering ──────────────────────────────────────────
+
+    #[test]
+    fn emit_list_empty_in_returns_false() {
+        // `field_predicate` with an empty `Vec<i32>` payload — the
+        // bound `Field<TestModel, i32>::in_(vec![])` produces this.
+        let f = SassiField::<TestModel, i32>::new("score", |m| &m.score);
+        let pred = unwrap_field_pred(f.in_(vec![]));
+
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_list::<TestModel, i32>(&mut acc, SqlEmitContext::root(), "score", &pred, false)
+            .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(sql, "FALSE");
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn emit_list_empty_not_in_returns_true() {
+        let f = SassiField::<TestModel, i32>::new("score", |m| &m.score);
+        let pred = unwrap_field_pred(f.not_in(vec![]));
+
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_list::<TestModel, i32>(&mut acc, SqlEmitContext::root(), "score", &pred, true)
+            .unwrap();
+        let (sql, _) = acc.into_parts();
+        assert_eq!(sql, "TRUE");
+    }
+
+    #[test]
+    fn emit_list_non_empty_in_emits_inlist() {
+        let f = SassiField::<TestModel, i32>::new("score", |m| &m.score);
+        let pred = unwrap_field_pred(f.in_(vec![1, 2, 3]));
+
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_list::<TestModel, i32>(&mut acc, SqlEmitContext::root(), "score", &pred, false)
+            .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(sql, "score IN ($1, $2, $3)");
+        assert_eq!(binds.len(), 3);
+    }
+
+    #[test]
+    fn emit_list_non_empty_not_in_emits_not_inlist() {
+        let f = SassiField::<TestModel, i32>::new("score", |m| &m.score);
+        let pred = unwrap_field_pred(f.not_in(vec![1, 2]));
+
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_list::<TestModel, i32>(&mut acc, SqlEmitContext::root(), "score", &pred, true)
+            .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(sql, "score NOT IN ($1, $2)");
+        assert_eq!(binds.len(), 2);
+    }
+
+    #[test]
+    fn emit_list_value_type_mismatch_returns_typed_error() {
+        // Predicate's payload is `Vec<i32>`; helper requested `Vec<String>`.
+        let f = SassiField::<TestModel, i32>::new("score", |m| &m.score);
+        let pred = unwrap_field_pred(f.in_(vec![1]));
+
+        let mut acc = SqlAccumulator::new("");
+        let result = emit::emit_list::<TestModel, String>(
+            &mut acc,
+            SqlEmitContext::root(),
+            "score",
+            &pred,
+            false,
+        );
+        match result {
+            Err(PortablePredicateError::ValueTypeMismatch { field, .. }) => {
+                assert_eq!(field, "score");
+            }
+            other => panic!("expected ValueTypeMismatch, got {other:?}"),
+        }
+    }
+
+    // ── Present optional-field list SQL lowering ─────────────────────────
+
+    #[test]
+    fn emit_present_list_empty_in_returns_false() {
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_present_list::<i32>(
+            &mut acc,
+            SqlEmitContext::root(),
+            "estimated_year",
+            &[],
+            false,
+        )
+        .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(sql, "FALSE");
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn emit_present_list_empty_not_in_requires_present_value() {
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_present_list::<i32>(
+            &mut acc,
+            SqlEmitContext::root(),
+            "estimated_year",
+            &[],
+            true,
+        )
+        .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(sql, "estimated_year IS NOT NULL");
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn emit_present_list_non_empty_not_in_excludes_nulls() {
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_present_list::<i32>(
+            &mut acc,
+            SqlEmitContext::root(),
+            "estimated_year",
+            &[2019, 2020],
+            true,
+        )
+        .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(
+            sql,
+            "(estimated_year IS NOT NULL AND estimated_year NOT IN ($1, $2))"
+        );
+        assert_eq!(binds.len(), 2);
+    }
+
+    // ── String pattern SQL lowering ───────────────────────────────────────
+
+    #[test]
+    fn emit_string_pattern_contains_wraps_bind_with_percent_signs() {
+        let f = SassiField::<TestModel, String>::new("name", |m| &m.name);
+        let pred = unwrap_field_pred(f.contains("rust"));
+
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_string_pattern(
+            &mut acc,
+            SqlEmitContext::root(),
+            "name",
+            emit::PatternOp::Contains,
+            &pred,
+        )
+        .unwrap();
+        let (sql, binds) = acc.into_parts();
+        // `Contains` is the case-sensitive form — Postgres `LIKE` with
+        // explicit `ESCAPE '\'`.
+        assert_eq!(sql, "name LIKE $1 ESCAPE '\\'");
+        assert_eq!(binds.len(), 1);
+    }
+
+    #[test]
+    fn emit_string_pattern_icontains_uses_collate_c_ilike() {
+        let f = SassiField::<TestModel, String>::new("name", |m| &m.name);
+        let pred = unwrap_field_pred(f.icontains("rust"));
+
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_string_pattern(
+            &mut acc,
+            SqlEmitContext::root(),
+            "name",
+            emit::PatternOp::IContains,
+            &pred,
+        )
+        .unwrap();
+        let (sql, _) = acc.into_parts();
+        // ASCII-stable case-insensitive form: `COLLATE "C" ILIKE`.
+        // Mirrors `query/sql.rs::escape_like` semantics so portable
+        // and SQL evaluators agree.
+        assert_eq!(sql, "name COLLATE \"C\" ILIKE $1 ESCAPE '\\'");
+    }
+
+    #[test]
+    fn emit_string_pattern_iexact_uses_no_wildcard_collate_ilike() {
+        let f = SassiField::<TestModel, String>::new("name", |m| &m.name);
+        let pred = unwrap_field_pred(f.iexact("Rust"));
+
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_string_pattern(
+            &mut acc,
+            SqlEmitContext::root(),
+            "name",
+            emit::PatternOp::IExact,
+            &pred,
+        )
+        .unwrap();
+        let (sql, binds) = acc.into_parts();
+        // No wildcard wrapping — `IExact` is exact equality with
+        // ASCII case folding. Exact user input must not become a
+        // wildcard match.
+        assert_eq!(sql, "name COLLATE \"C\" ILIKE $1 ESCAPE '\\'");
+        assert_eq!(binds.len(), 1);
+    }
+
+    #[test]
+    fn emit_string_pattern_starts_with_appends_percent() {
+        let f = SassiField::<TestModel, String>::new("name", |m| &m.name);
+        let pred = unwrap_field_pred(f.starts_with("ru"));
+
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_string_pattern(
+            &mut acc,
+            SqlEmitContext::root(),
+            "name",
+            emit::PatternOp::StartsWith,
+            &pred,
+        )
+        .unwrap();
+        let (sql, _) = acc.into_parts();
+        assert_eq!(sql, "name LIKE $1 ESCAPE '\\'");
+    }
+
+    #[test]
+    fn emit_string_pattern_ends_with_prepends_percent() {
+        let f = SassiField::<TestModel, String>::new("name", |m| &m.name);
+        let pred = unwrap_field_pred(f.ends_with("st"));
+
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_string_pattern(
+            &mut acc,
+            SqlEmitContext::root(),
+            "name",
+            emit::PatternOp::EndsWith,
+            &pred,
+        )
+        .unwrap();
+        let (sql, _) = acc.into_parts();
+        assert_eq!(sql, "name LIKE $1 ESCAPE '\\'");
+    }
+
+    // ── Scalar value bind shape ───────────────────────────────────────────
+
+    #[test]
+    fn emit_value_emits_op_and_bind() {
+        let f = SassiField::<TestModel, i32>::new("score", |m| &m.score);
+        let pred = unwrap_field_pred(f.eq(42));
+
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_value::<TestModel, i32>(&mut acc, SqlEmitContext::root(), "score", " = ", &pred)
+            .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(sql, "score = $1");
+        assert_eq!(binds.len(), 1);
+    }
+
+    #[test]
+    fn emit_pair_emits_between_with_two_binds() {
+        let f = SassiField::<TestModel, i32>::new("score", |m| &m.score);
+        let pred = unwrap_field_pred(f.between(0, 100));
+
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_pair::<TestModel, i32>(&mut acc, SqlEmitContext::root(), "score", &pred)
+            .unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(sql, "score BETWEEN $1 AND $2");
+        assert_eq!(binds.len(), 2);
+    }
+
+    // ── Null-test SQL lowering ────────────────────────────────────────────
+
+    #[test]
+    fn emit_null_true_uses_is_null() {
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_null(&mut acc, SqlEmitContext::root(), "estimated_year", true).unwrap();
+        let (sql, binds) = acc.into_parts();
+        assert_eq!(sql, "estimated_year IS NULL");
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn emit_null_false_uses_is_not_null() {
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_null(&mut acc, SqlEmitContext::root(), "estimated_year", false).unwrap();
+        let (sql, _) = acc.into_parts();
+        assert_eq!(sql, "estimated_year IS NOT NULL");
+    }
+
+    // ── Joined-select parent-table qualification ──────────────────────────
+
+    #[test]
+    fn emit_value_under_joined_context_qualifies_column() {
+        // Mirrors what `build_select_joined` will do once PR2b's
+        // direct-Q walker threads `SqlEmitContext::joined(T::table_name())`
+        // into expression subqueries / joined-select WHERE emission.
+        let f = SassiField::<TestModel, i32>::new("score", |m| &m.score);
+        let pred = unwrap_field_pred(f.eq(42));
+
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_value::<TestModel, i32>(
+            &mut acc,
+            SqlEmitContext::joined("test_models"),
+            "score",
+            " = ",
+            &pred,
+        )
+        .unwrap();
+        let (sql, _) = acc.into_parts();
+        assert_eq!(sql, "test_models.score = $1");
+    }
+
+    #[test]
+    fn emit_string_pattern_under_joined_context_qualifies_column() {
+        let f = SassiField::<TestModel, String>::new("name", |m| &m.name);
+        let pred = unwrap_field_pred(f.icontains("rust"));
+
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_string_pattern(
+            &mut acc,
+            SqlEmitContext::joined("test_models"),
+            "name",
+            emit::PatternOp::IContains,
+            &pred,
+        )
+        .unwrap();
+        let (sql, _) = acc.into_parts();
+        assert_eq!(sql, "test_models.name COLLATE \"C\" ILIKE $1 ESCAPE '\\'");
+    }
+
+    #[test]
+    fn emit_option_eq_under_joined_context_qualifies_both_sides() {
+        // The mixed `(col IS NULL OR col <> $1)` shape uses
+        // `push_column` twice — both sides must qualify.
+        let mut acc = SqlAccumulator::new("");
+        emit::emit_option_neq::<i32>(
+            &mut acc,
+            SqlEmitContext::joined("test_models"),
+            "estimated_year",
+            &Some(2020),
+        )
+        .unwrap();
+        let (sql, _) = acc.into_parts();
+        assert_eq!(
+            sql,
+            "(test_models.estimated_year IS NULL OR test_models.estimated_year <> $1)"
+        );
+    }
+
+    // ── Defensive SqlEmitContext::joined("parent").push_column(rel.field) ──
+    //
+    // Already covered by `dotted_column_is_emitted_as_is_under_joined`
+    // above. This test repeats the exact assertion the dispatch
+    // requires so the named test is easy to find by phase prefix:
+    // the joined context MUST emit a dotted column unchanged, even
+    // though that means the SQL-only relation field is NOT a portable
+    // predicate leaf.
+    #[test]
+    fn phase8eta_pr2d_joined_push_column_with_dotted_path_emits_as_is() {
+        let mut acc = SqlAccumulator::new("");
+        SqlEmitContext::joined("posts").push_column(&mut acc, "rel.field");
+        let (sql, _) = acc.into_parts();
+        // Expectation from the v3 plan: "asserts it emits `rel.field`,
+        // not `parent.rel.field`; this test does not make `rel.field`
+        // portable through generated root metadata."
+        assert_eq!(sql, "rel.field");
     }
 }
