@@ -4,7 +4,7 @@
 //! The T7 `derive_djogi_enum` emitter now folds an `IntoFilterValue`
 //! impl into its expansion — encoding the variant as its Postgres wire
 //! string, matching the `ToSql` encoding path. This fixture pins the
-//! surface: `.eq`, `.neq`, `.in_list`, and `.not_in_list` must all type-
+//! surface: `.eq`, `.neq`, `.in_`, and `.not_in` must all type-
 //! check when the column's declared Rust type is a `DjogiEnum`.
 use djogi::prelude::*;
 
@@ -34,12 +34,12 @@ fn main() {
     let _eq = Vehicle::objects().filter(|f| f.status().eq(VehicleStatus::Active));
     let _neq = Vehicle::objects().filter(|f| f.status().neq(VehicleStatus::Retired));
 
-    // `.in_list` / `.not_in_list` — IN / NOT IN with a variant list. Each
+    // `.in_` / `.not_in` — IN / NOT IN with a variant list. Each
     // variant converts via the emitted `IntoFilterValue` impl into a
     // `FilterValue::String(<wire>)`, matching the ToSql encoding path.
     let _in = Vehicle::objects().filter(|f| {
         f.status()
-            .in_list(vec![VehicleStatus::Active, VehicleStatus::InMaintenance])
+            .in_(vec![VehicleStatus::Active, VehicleStatus::InMaintenance])
     });
-    let _nin = Vehicle::objects().filter(|f| f.status().not_in_list(vec![VehicleStatus::Retired]));
+    let _nin = Vehicle::objects().filter(|f| f.status().not_in(vec![VehicleStatus::Retired]));
 }

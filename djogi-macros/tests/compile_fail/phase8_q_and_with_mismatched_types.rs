@@ -21,7 +21,7 @@ pub struct B {
 }
 
 fn main() {
-    let qa: Q<A> = Q::Basic(BasicPredicate::True);
-    let qb: Q<B> = Q::Basic(BasicPredicate::True);
+    let qa: Q<A> = Q::always_true();
+    let qb: Q<B> = Q::always_true();
     let _q = qa & qb;
 }

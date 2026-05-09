@@ -9,8 +9,8 @@
 // lives alongside in `query::q::tests::q_operator_precedence_*`. v3
 // §T6 acceptance criterion bullet 6 + Codex review focus bullet 3.
 //
-// Uses `Q::Negated(Box::new(Q::Basic(BasicPredicate::True.into())))`
-// as the non-Basic operand so the precedence test exercises the
+// Uses `Q::Negated(Box::new(Q::always_true()))` as the non-portable
+// operand so the precedence test exercises the
 // mixed-operand path through `Q::Compound` / `Q::Xor`. Pre-T6.9
 // the `FieldRef::eq` etc. methods still return `Condition`, so the
 // fixture can't use field-method return values directly as `Q<T>`;
@@ -32,8 +32,8 @@ pub struct Widget {
 }
 
 fn main() {
-    let true_basic = || Q::<Widget>::Basic(BasicPredicate::True);
-    let false_basic = || Q::<Widget>::Basic(BasicPredicate::False);
+    let true_basic = || Q::<Widget>::always_true();
+    let false_basic = || Q::<Widget>::always_false();
     let neg = || Q::<Widget>::Negated(Box::new(true_basic()));
 
     // (Basic ^ Negated) | Negated — XOR binds tighter than OR.
