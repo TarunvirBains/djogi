@@ -328,6 +328,32 @@ pub use primary_key::{PrimaryKey, PrimaryKeyClientGen, PrimaryKeyDbGen};
 // in test or feature-enabled builds.
 pub use djogi_macros::djogi_test;
 pub use error::{DbError, DjogiError};
+
+/// Crate-scoped `Result` alias — `Result<T, DjogiError>`.
+///
+/// Every fallible Djogi operation returns a `DjogiError` from a single
+/// public error type, so adopter code can name the success type alone:
+///
+/// ```ignore
+/// use djogi::prelude::*;
+///
+/// async fn publish(ctx: &mut DjogiContext, id: HeerId) -> djogi::Result<Article> {
+///     let mut article = Article::get(ctx, id).await?;
+///     article.published = true;
+///     article.save(ctx).await?;
+///     Ok(article)
+/// }
+/// ```
+///
+/// The alias mirrors the convention exported by `tokio`, `axum`, `sqlx`,
+/// and most other Rust libraries that own a single error type — adopters
+/// expect `djogi::Result<T>` to exist and can write it without naming
+/// `DjogiError` directly. Prefer this alias at API boundaries; reach for
+/// the explicit `Result<T, DjogiError>` form only when a function returns
+/// a non-Djogi error (in which case it should not be using this alias
+/// anyway).
+pub type Result<T> = std::result::Result<T, DjogiError>;
+
 pub use expr::{
     AggregateExpr, Case, CaseBuilder, DenseRank, Exists, Expr, OuterRef, QualifyCondition,
     QualifyOp, Rank, RowNumber, Subquery, WindowRanking,
@@ -382,6 +408,11 @@ pub mod prelude {
         RedactionPolicy, RetentionLabel, Sensitivity,
     };
     pub use crate::error::{DbError, DjogiError};
+    // Re-export the crate-scoped `Result<T>` alias (= `Result<T, DjogiError>`).
+    // Adopters writing `async fn foo(...) -> Result<...>` after
+    // `use djogi::prelude::*` get the Djogi alias by default; reach for
+    // `std::result::Result` explicitly when a foreign error type is needed.
+    pub use crate::Result;
     pub use crate::expr::{
         AggregateExpr, Case, CaseBuilder, DenseRank, Exists, Expr, OuterRef, QualifyCondition,
         QualifyOp, Rank, RowNumber, Subquery, WindowRanking,
