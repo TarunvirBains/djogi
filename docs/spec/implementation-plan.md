@@ -687,6 +687,7 @@ Lands after 8η predicate/cache correctness, before the publish run. Each item i
    4. Only after step 3 passes does djogi cut its own `v0.1.0` tag.
 - [ ] **Reference-symlink cleanup** — remove the design-mining `*-reference` symlinks at the djogi project root (django, sqlalchemy, diesel, sea-orm, sea-query, prisma, cot, alembic, flyway, liquibase, refinery, kindnudge). Keep only `HeeRanjID-reference` and `sassi-reference` (the actual integration siblings). `.gitignore` entries for `*-reference` stay as a re-introduction guard. Rationale: djogi goes public at v0.1.0; gitignored design-mining symlinks make the repo root look stale on github.
 - [ ] **Docs sweep** — README accuracy pass against shipped surface, doc-link audit (no broken `docs/spec/` references), `cargo doc --no-deps` clean.
+- [ ] **Drift-detection guide + apply-time pre-flight gate** — close djogi#152 before publish. Guide first: add `docs/spec/drift-detection.md` explaining how adopters should invoke `djogi migrations verify` across local dev, CI, deploy, and production-monitoring pipelines. Code second: `apply_plan` runs the existing D6xx `verify` pass before executing migration SQL and fails with a typed `RunnerError::DriftDetected { report }` on drift, with CLI output that points operators at the drift guide. This is catalog drift detection, not Phase 13's D7xx runtime-query prepare-protocol verifier.
 - [ ] **Repo-flip readiness** — branch protection re-enabled (currently off per `project_djogi_gha_billing.md`), CI-required-for-merge configured, `act` workflow validation green.
 
 **Deliverable:** Lifecycle hooks, composable field groups, proxy models, computed
@@ -1052,6 +1053,31 @@ Full deferral list at [`docs/spec/maahi/phase-map.md`](./maahi/phase-map.md).
 
 ---
 
+## Phase 13: Runtime Query Verification (D7xx)
+
+**Goal:** Three sequenced moves — **inventory** every generated SQL surface in djogi (Model CRUD, QuerySet, migration DDL, outbox templates, relation queries, FTS, spatial, auth) and classify each as static (finite template set) or dynamic (per-call construction); **introduce the `SqlSurface` trait** as the contract every emitter implements — static surfaces register their full shape list at startup, dynamic surfaces participate via a per-execution verification hook gated by an active-probe flag the verifier sets; **verify the registered shapes** with Postgres prepare — exhaustive for static surfaces, bounded-by-exercised-paths for dynamic. Detects the class of bug where descriptor and live DB schema agree (D6xx clean) but a SQL emitter has a bug that would cause runtime queries to fail or return mistyped data. Closes the projection-audit gap behind GH #133.
+
+**The trait is the load-bearing design choice.** Without it, every new SQL-emitting surface is a "remember to register" footgun — silent coverage holes as djogi grows. With it, new surfaces either implement `SqlSurface` (covered automatically) or don't (explicitly uncovered, no false claim). Two coverage modes, one trait: `known_shapes()` for static (exhaustive at verify time); `is_dynamic()` + per-execution hook for dynamic (covers every shape that actually runs in verify-mode — test suite, staging traffic — but not shapes nobody hits). Coverage difference documented honestly in the adopter guide.
+
+**Scope sibling — Phase 8.5 issue #152** covers the schema-level drift case (live DB diverges from descriptor → apply hard-fails via existing D6xx + new pre-flight gate). Phase 13 covers the orthogonal case: descriptor and DB agree, but a SQL emitter is wrong. Lower urgency, narrower surface, structurally invisible to integration tests that bypass the projection pipeline via `raw_*` (the GH #133 root cause).
+
+Built natively on `tokio_postgres::Client::prepare`. No new external dependencies.
+
+- [ ] **C0 — SQL-surface inventory.** Research deliverable. Walk djogi source, classify every emitter as static / parameterized / dynamic, output `docs/research/djogi-sql-surface-inventory.md`. **Gates everything else** — registration interface design depends on what surfaces it serves.
+- [ ] **C1 — `SqlSurface` trait + `RuntimeQueryShape` + active-probe machinery + `FieldSqlType::expected_oid()` + extension-type OID lookup.** The shared mechanism: trait with `surface_name`, `known_shapes`, `is_dynamic`; `inventory::submit!` glue for static surfaces; process-wide active-probe flag + hook plumbing for dynamic surfaces; `expected_oid()` extends existing enum at `djogi/src/descriptor.rs:1394`; one-time `pg_type` lookup at verifier startup for `Geography{}` / `Citext` / `Custom(_)`. ~250-350 LOC.
+- [ ] **C2 — Static surface impls (Model CRUD via macro + outbox + static relation queries + auth/FTS/spatial helpers).** Macro change in `djogi-macros/src/model/crud.rs` is the largest single piece (~200-500 LOC); other surfaces are manual `impl SqlSurface` blocks (~30-50 LOC each). Total ~300-700 LOC distributed. Highest-risk component.
+- [ ] **C3 — Dynamic surface impl: QuerySet.** `impl SqlSurface for QuerySet { is_dynamic() = true }` plus per-execution prepare-check hook in `QuerySet::execute()` and other terminal methods, gated by the active-probe flag. Zero overhead when active-probe is off (production default); on during `djogi migrations verify --runtime` and opted-in test runs. ~150-250 LOC.
+- [ ] **C4 — `migrate/verify_runtime.rs` + D7xx diagnostics.** Savepoint-protected probe: walk every registered `SqlSurface`, prepare-check `known_shapes()` for static, enable active-probe for dynamic during the verify pass, emit D7xx into existing `VerifyReport`, ROLLBACK. Reuses existing `VerifyDiagnostic` / `VerifySeverity` from `djogi/src/migrate/verify.rs`. ~300-500 LOC + integration tests covering both static and dynamic surfaces.
+- [ ] **C5 — `--runtime` CLI flag + adopter docs.** Wire onto existing `djogi migrations verify`; companion adopter-facing guide `docs/spec/runtime-query-verification.md` explaining static-vs-dynamic coverage, when to enable verify-mode in tests, what's caught and what isn't.
+
+**Reuse over reinvent (per 2026-05-09 survey):** `VerifyDiagnostic { code, severity, message, location }` from `verify.rs:179`, `VerifySeverity::{Info, Warning, Error}` from `verify.rs:161`, `VerifyReport.has_errors()` non-zero exit semantic, `FieldDescriptor.sql_type` (the type table djogi already has), `FieldDescriptor.nullable` (descriptor declares; no inference). All previously assumed to require new infrastructure; survey confirmed they exist and slot naturally.
+
+**Cornucopia reference notes** *(`cornucopia-reference/` symlink, MIT/Apache-2.0, design reference only)*: After survey, cornucopia's relevance narrowed substantially. The `FieldSqlType` enum is djogi's analogue of cornucopia's `TypeRegistrar` — flat-table approach doesn't transfer because djogi's enum is richer and already exists. The lessons that DO transfer: nullability-by-declaration (already djogi's pattern via `Option<T>`), error-on-unknown-type with `col_name` + `col_ty` (D704). Detailed source review at `docs/research/cornucopia-type-mapping.md`.
+
+**Deliverable:** `djogi migrations verify --runtime` detects projection-pipeline bugs across every SQL surface that implements `SqlSurface` — exhaustive for static surfaces, bounded-by-exercised-paths for dynamic. Coverage scope determined by the C0 inventory + which surfaces grow `SqlSurface` impls. Closes GH #133's audit gap without new dependencies, in roughly 1200-2300 LOC. The trait makes future SQL surfaces auto-covered (or explicitly uncovered), eliminating silent coverage holes as djogi grows. C2 (Model CRUD macro impl) and C3 (QuerySet dynamic hook) are the two highest-risk pieces.
+
+---
+
 ## Milestone Map
 
 | Phase | Est. Effort | Cumulative Result |
@@ -1077,5 +1103,6 @@ Full deferral list at [`docs/spec/maahi/phase-map.md`](./maahi/phase-map.md).
 | 11: Logging & Observability | Medium | Audit trail, tracing, slow-query hooks, metrics, admin views |
 | 11.5: Ops Tooling | Medium | Turnkey backups, PITR, vacuum scheduling, health checks, runbooks |
 | 12: Topology | Large | Residency, replica semantics, distributed guardrails |
+| 13: Runtime Query Verification | Medium | Pre-flight prepare-protocol check that macro-generated SQL still type-checks post-migration; closes GH #133 projection-audit gap |
 
-**The critical path to standing alongside popular Rust ORM alternatives is Phases 0–4.** Phase 4.5 improves contract hygiene and shared contract reuse without changing that write-path boundary. Phases 5–12 add the Postgres-native depth, governance, and scale-oriented capabilities needed for broader high-scale confidence.
+**The critical path to standing alongside popular Rust ORM alternatives is Phases 0–4.** Phase 4.5 improves contract hygiene and shared contract reuse without changing that write-path boundary. Phases 5–13 add the Postgres-native depth, governance, scale-oriented capabilities, and projection-correctness audit needed for broader high-scale confidence.
