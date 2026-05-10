@@ -49,12 +49,13 @@
 // intended counts deterministically — without it, every counter is
 // zero and every recommendation collapses to `Healthy`.
 //
-// # Locating the compiled `djogi` binary
+// # Shared CLI helpers
 //
-// The test is registered in the same package as the `djogi` binary, so
-// Cargo provides `CARGO_BIN_EXE_djogi` for the integration target. A
-// filesystem fallback remains for direct harnesses that pre-build the
-// binary but do not set Cargo's compile-time env var.
+// `djogi_binary_path`, `current_database`, `temp_workspace`, and
+// `write_minimal_djogi_toml` live in `djogi::testing::cli` (gated behind
+// the `testing` feature) so this file and its sibling
+// `phase8_djogi_verify_cli.rs` share a single implementation. See
+// djogi#119.
 //
 // # Spec / memory anchors
 //
@@ -63,32 +64,18 @@
 // - `djogi-cli/src/analyze.rs` — the implementation under test.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
+
+use djogi::testing::cli::{
+    current_database, djogi_binary_path, temp_workspace, write_minimal_djogi_toml,
+};
 
 /// Common prefix for every fixture table this file creates. Used to
 /// filter the analyze output so framework-managed tables provisioned
 /// by `#[djogi_test]` (e.g. `_djogi_seed_runs`) cannot cause
 /// false-positive matches when we walk the JSON array.
 const FIXTURE_PREFIX: &str = "t10_3_";
-
-/// Walk from the running test executable to the workspace's
-/// compiled `djogi` binary. Test binaries live at
-/// `target/<profile>/deps/<test_name>-<hash>`; the CLI binary
-/// lives at `target/<profile>/djogi`. We walk up one level (drop
-/// the test-binary file) to reach `deps/`, then up another level
-/// to reach `<profile>/`, then join `djogi`.
-fn djogi_binary_path() -> PathBuf {
-    if let Some(path) = option_env!("CARGO_BIN_EXE_djogi") {
-        return PathBuf::from(path);
-    }
-
-    let exe = std::env::current_exe().expect("current_exe");
-    // exe = target/<profile>/deps/<test>-<hash>
-    let deps = exe.parent().expect("current_exe has parent (deps/)");
-    let profile_dir = deps.parent().expect("deps has parent (profile/)");
-    profile_dir.join("djogi")
-}
 
 fn test_database_url(database: &str) -> String {
     let admin_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
@@ -110,14 +97,6 @@ fn splice_db_into_url(url: &str, new_db: &str) -> String {
     let query = tail.find('?').map_or("", |idx| &tail[idx..]);
 
     format!("{scheme}{authority}/{new_db}{query}")
-}
-
-/// Resolve the connected test context's `current_database()` so we
-/// can splice it into the workspace's `Djogi.toml` URL.
-async fn current_database(ctx: &mut djogi::DjogiContext) -> String {
-    ctx.raw_scalar::<String>("SELECT current_database()::text", &[])
-        .await
-        .expect("current_database")
 }
 
 /// Poll `pg_stat_user_tables.n_dead_tup` for `table` until it
@@ -213,39 +192,6 @@ async fn wait_for_live_tuples(ctx: &mut djogi::DjogiContext, table: &str, min_co
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-}
-
-/// Build a unique temporary workspace directory and return its path.
-fn temp_workspace(tag: &str) -> PathBuf {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let p = std::env::temp_dir().join(format!("djogi-t10-3-analyze-{tag}-{stamp}-{n}"));
-    fs::create_dir_all(&p).expect("create_dir_all temp workspace");
-    p
-}
-
-/// Write a minimal `Djogi.toml` in `workspace` whose
-/// `database.url` points at the supplied per-test URL. The CLI's
-/// `analyze` command reads this file via
-/// `DjogiConfig::load_from_workspace`.
-fn write_minimal_djogi_toml(workspace: &Path, db_url: &str) {
-    let toml = format!(
-        r#"profile = "development"
-
-[database]
-url = "{db_url}"
-
-[server]
-host = "127.0.0.1"
-port = 0
-"#,
-    );
-    fs::write(workspace.join("Djogi.toml"), toml).expect("write Djogi.toml");
 }
 
 /// Spawn `djogi analyze --format json` against `workspace` with the
@@ -354,7 +300,7 @@ async fn analyze_healthy_small_table_returns_healthy(mut ctx: djogi::DjogiContex
 
     let database = current_database(&mut ctx).await;
     let test_url = test_database_url(&database);
-    let workspace = temp_workspace("healthy");
+    let workspace = temp_workspace("t10-3-analyze-healthy");
     write_minimal_djogi_toml(&workspace, &test_url);
 
     // 1_000_000 keeps the partition rule far away from a 50-row
@@ -428,7 +374,7 @@ async fn analyze_high_dead_tuple_ratio_returns_vacuum_needed(mut ctx: djogi::Djo
 
     let database = current_database(&mut ctx).await;
     let test_url = test_database_url(&database);
-    let workspace = temp_workspace("vacuum");
+    let workspace = temp_workspace("t10-3-analyze-vacuum");
     write_minimal_djogi_toml(&workspace, &test_url);
 
     // Keep partition rule out of the way (1M >> 50 live rows).
@@ -494,7 +440,7 @@ async fn analyze_large_unpartitioned_returns_partition_recommended(mut ctx: djog
 
     let database = current_database(&mut ctx).await;
     let test_url = test_database_url(&database);
-    let workspace = temp_workspace("partition");
+    let workspace = temp_workspace("t10-3-analyze-partition");
     write_minimal_djogi_toml(&workspace, &test_url);
 
     // Threshold of 100 with 200 seeded rows → strictly greater

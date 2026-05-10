@@ -54,6 +54,17 @@ serde_json.workspace = true
 # the CLI binary must link the same version so the iter resolves.
 inventory.workspace = true
 
+# djogi#119 — the CLI integration tests below import shared helpers
+# from `djogi::testing::cli`, which is gated behind djogi's `testing`
+# feature. Listing djogi here as a dev-dep with the feature enabled
+# unions the feature only for test/example/bench builds; ordinary
+# `cargo build -p djogi-cli` continues to use the regular
+# [dependencies] entry above. Test-built artifacts may see the unified
+# feature, which is acceptable because `testing` only exposes test
+# helpers.
+[dev-dependencies]
+djogi = { workspace = true, features = ["testing"] }
+
 # T10.3 spawns the compiled `djogi` binary as a subprocess, seeds a
 # per-test database via `#[djogi_test]`, and asserts CLI output.
 # Cargo only auto-discovers tests directly under `tests/*.rs`; the

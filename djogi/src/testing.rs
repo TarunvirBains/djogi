@@ -61,6 +61,9 @@
 
 #![allow(clippy::disallowed_methods)]
 
+#[cfg(any(test, feature = "testing"))]
+pub mod cli;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::__bypass::RawAccessExt as _;

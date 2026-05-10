@@ -28,12 +28,13 @@
 // `crud_log_url` separation remains a topology concern outside this
 // subprocess test.
 //
-// # Locating the compiled `djogi` binary
+// # Shared CLI helpers
 //
-// The wrapper target lives in the `djogi-cli` crate, so Cargo provides
-// `CARGO_BIN_EXE_djogi` for the integration test. A filesystem fallback
-// remains for direct harnesses that pre-build the binary but do not set
-// Cargo's compile-time env var.
+// `djogi_binary_path`, `current_database`, `temp_workspace`, and
+// `write_minimal_djogi_toml` live in `djogi::testing::cli` (gated behind
+// the `testing` feature) so this file and its sibling
+// `phase8_djogi_analyze_recommendations.rs` share a single
+// implementation. See djogi#119.
 //
 // # Spec / memory anchors
 //
@@ -46,24 +47,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use djogi::snapshot::sign::sign_snapshot;
-
-/// Walk from the running test executable to the workspace's
-/// compiled `djogi` binary. Test binaries live at
-/// `target/<profile>/deps/<test_name>-<hash>`; the CLI binary
-/// lives at `target/<profile>/djogi`. We walk up one level (drop
-/// the test-binary file) to reach `deps/`, then up another level
-/// to reach `<profile>/`, then join `djogi`.
-fn djogi_binary_path() -> PathBuf {
-    if let Some(path) = option_env!("CARGO_BIN_EXE_djogi") {
-        return PathBuf::from(path);
-    }
-
-    let exe = std::env::current_exe().expect("current_exe");
-    // exe = target/<profile>/deps/<test>-<hash>
-    let deps = exe.parent().expect("current_exe has parent (deps/)");
-    let profile_dir = deps.parent().expect("deps has parent (profile/)");
-    profile_dir.join("djogi")
-}
+use djogi::testing::cli::{
+    current_database, djogi_binary_path, temp_workspace, write_minimal_djogi_toml,
+};
 
 fn test_database_url(database: &str) -> String {
     let admin_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
@@ -85,46 +71,6 @@ fn splice_db_into_url(url: &str, new_db: &str) -> String {
     let query = tail.find('?').map_or("", |idx| &tail[idx..]);
 
     format!("{scheme}{authority}/{new_db}{query}")
-}
-
-/// Resolve the connected test context's `current_database()` so we
-/// can splice it into the workspace's `Djogi.toml` URL.
-async fn current_database(ctx: &mut djogi::DjogiContext) -> String {
-    ctx.raw_scalar::<String>("SELECT current_database()::text", &[])
-        .await
-        .expect("current_database")
-}
-
-/// Build a unique temporary workspace directory and return its path.
-fn temp_workspace(tag: &str) -> PathBuf {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let p = std::env::temp_dir().join(format!("djogi-t9-7-verify-{tag}-{stamp}-{n}"));
-    fs::create_dir_all(&p).expect("create_dir_all temp workspace");
-    p
-}
-
-/// Write a minimal `Djogi.toml` in `workspace` whose
-/// `database.url` points at the supplied per-test URL. The CLI's
-/// `verify` command reads this file via `DjogiConfig::load_from_workspace`.
-fn write_minimal_djogi_toml(workspace: &Path, db_url: &str) {
-    let toml = format!(
-        r#"profile = "development"
-
-[database]
-url = "{db_url}"
-
-[server]
-host = "127.0.0.1"
-port = 0
-"#,
-    );
-    fs::write(workspace.join("Djogi.toml"), toml).expect("write Djogi.toml");
 }
 
 /// Build the `migrations/<database>/<app>/` directory tree and write
@@ -183,7 +129,7 @@ async fn verify_clean_workspace_exits_zero(mut ctx: djogi::DjogiContext) {
     let app = ""; // global bucket — `_global_/` on disk
 
     // Workspace setup: temp dir + minimal Djogi.toml + snapshot file.
-    let workspace = temp_workspace("clean");
+    let workspace = temp_workspace("t9-7-verify-clean");
     let (snapshot_path, snapshot_bytes) = write_fixture_snapshot(&workspace, &database, app);
 
     // Build the per-test URL the test context is bound to by preserving
@@ -242,7 +188,7 @@ async fn verify_mismatched_snapshot_exits_one(mut ctx: djogi::DjogiContext) {
     let database = current_database(&mut ctx).await;
     let app = "";
 
-    let workspace = temp_workspace("mismatch");
+    let workspace = temp_workspace("t9-7-verify-mismatch");
     let (snapshot_path, snapshot_bytes) = write_fixture_snapshot(&workspace, &database, app);
 
     let test_url = test_database_url(&database);
