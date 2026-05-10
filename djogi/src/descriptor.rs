@@ -88,7 +88,17 @@ pub enum FieldSqlType {
     Boolean,
     Timestamptz,
     Date,
+    /// Bare `NUMERIC` — unbounded precision/scale. Existing Decimal columns
+    /// project to this variant for backward compatibility; future work
+    /// (`djogi#188`) migrates those callers to [`Self::NumericPrecision`].
     Numeric,
+    /// `NUMERIC(precision, scale)` — bounded numeric. Used by the integer
+    /// widening projection (`djogi#186`) for `u64 → NUMERIC(20, 0)` and
+    /// reserved for the upcoming `Decimal → NUMERIC(28, 28)` migration
+    /// (`djogi#188`). The differ compares variants structurally (`precision`
+    /// + `scale` are part of `PartialEq`), so a precision change emits a
+    /// `ColumnChange::ChangeType` like any other type evolution.
+    NumericPrecision { precision: u8, scale: u8 },
     Uuid,
     Jsonb,
     TextArray,
@@ -141,6 +151,9 @@ impl std::fmt::Display for FieldSqlType {
             FieldSqlType::Timestamptz => write!(f, "TIMESTAMPTZ"),
             FieldSqlType::Date => write!(f, "DATE"),
             FieldSqlType::Numeric => write!(f, "NUMERIC"),
+            FieldSqlType::NumericPrecision { precision, scale } => {
+                write!(f, "NUMERIC({precision}, {scale})")
+            }
             FieldSqlType::Uuid => write!(f, "UUID"),
             FieldSqlType::Jsonb => write!(f, "JSONB"),
             FieldSqlType::TextArray => write!(f, "TEXT[]"),
