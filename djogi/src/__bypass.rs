@@ -254,6 +254,35 @@
 //! Tracking issue: [djogi#162](https://github.com/TarunvirBains/djogi/issues/162).
 //! See also [`docs/spec/raw-sql-escape-hatches.md`](https://github.com/TarunvirBains/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md)
 //! for the full contract.
+//! # Reaching the raw API
+//!
+//! Adopter code reaches these traits only through the bypass attribute, not
+//! through `use djogi::__bypass::*;` at the import site. The attribute brings
+//! the trait methods into scope on the `DjogiContext` / `DjogiPool` value
+//! inside the decorated item:
+//!
+//! ```ignore
+//! use djogi::prelude::*;
+//!
+//! #[djogi::deliberately_bypass_convention_with_raw_sql]
+//! // JUSTIFICATION (djogi#234): citext column needs case-insensitive
+//! // equality; QuerySet doesn't expose LOWER(col) equality yet.
+//! async fn count_users_ci(ctx: &mut DjogiContext, name: &str) -> djogi::Result<i64> {
+//!     ctx.raw_scalar(
+//!         "SELECT COUNT(*) FROM users WHERE LOWER(name) = LOWER($1)",
+//!         &[&name],
+//!     ).await
+//! }
+//! ```
+//!
+//! # Cross-references
+//!
+//! - **Specification** — [Raw SQL escape hatches](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md)
+//!   for the full contract, the JUSTIFICATION convention, the pin-test
+//!   carve-out, and the "no ergonomic raw SQL" decision.
+//! - **Pool-level escape hatch** — see [`RawPoolAccessExtBase::raw_with_client`]
+//!   when binary protocol, `COPY`, or `CREATE EXTENSION` requires bypassing
+//!   the per-statement `tokio_postgres::Statement` cache.
 
 use crate::context::DjogiContext;
 use crate::pg::connection::PgConnection;
@@ -286,6 +315,11 @@ pub trait RawAccessExtBase: sealed::Sealed {
     ///
     /// Raw escape hatch — djogi's `unsafe`-equivalent. See the
     /// [module docs](self) for the bypass-attribute convention.
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]` (under
+    /// `tests/` the attribute requires a paired `// JUSTIFICATION (djogi#<n>):`
+    /// comment, validated by `cargo xtask check-justifications`). See the
+    /// [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
     ///
     /// Prefer the typed surface — `Model::objects().filter(...).fetch_all(ctx)`
     /// — for any predicate the queryset can express. Reach for `raw_query`
@@ -339,6 +373,15 @@ pub trait RawAccessExtBase: sealed::Sealed {
     /// `raw_rows` only when the caller really does need to inspect column
     /// metadata or call [`tokio_postgres::Row::try_get`] on heterogenous
     /// columns by name (e.g. dynamic introspection helpers).
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
+    ///
+    /// Prefer [`raw_query`](RawAccessExtBase::raw_query) when the row shape
+    /// fits a `FromPgRow` impl — the per-row decode is positional and
+    /// debug-asserted. Reach for `raw_rows` only when the caller really does
+    /// need to inspect column metadata or call [`tokio_postgres::Row::try_get`]
+    /// on heterogenous columns by name (e.g. dynamic introspection helpers).
     ///
     /// ```ignore
     /// #[djogi::deliberately_bypass_convention_with_raw_sql]
@@ -364,6 +407,9 @@ pub trait RawAccessExtBase: sealed::Sealed {
     ///
     /// Raw escape hatch — djogi's `unsafe`-equivalent. See the
     /// [module docs](self) for the bypass-attribute convention.
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
     ///
     /// Returns [`DjogiError::NotFound`] when the query produces zero rows;
     /// the framework does not enforce the upper bound, so the caller is
@@ -397,6 +443,9 @@ pub trait RawAccessExtBase: sealed::Sealed {
     ///
     /// Raw escape hatch — djogi's `unsafe`-equivalent. See the
     /// [module docs](self) for the bypass-attribute convention.
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
     ///
     /// Returns [`DjogiError::NotFound`] when the query produces zero rows.
     /// Use for `SELECT COUNT(*)`, `SELECT MAX(...)`, and similar single-value
@@ -431,6 +480,9 @@ pub trait RawAccessExtBase: sealed::Sealed {
     ///
     /// Raw escape hatch — djogi's `unsafe`-equivalent. See the
     /// [module docs](self) for the bypass-attribute convention.
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
     ///
     /// Prefer `Model::create` / `Model::save` / `Model::delete` for single-row
     /// CRUD and `QuerySet::update` / `QuerySet::delete` for bulk writes. Reach
@@ -463,6 +515,9 @@ pub trait RawAccessExtBase: sealed::Sealed {
     ///
     /// Raw escape hatch — djogi's `unsafe`-equivalent. See the
     /// [module docs](self) for the bypass-attribute convention.
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
     ///
     /// `raw_ddl` is `batch_execute(sql)` under a friendlier name — it
     /// carries the same blast radius as [`raw_execute`](RawAccessExtBase::raw_execute)
@@ -493,6 +548,9 @@ pub trait RawAccessExtBase: sealed::Sealed {
     ///
     /// Raw escape hatch — djogi's `unsafe`-equivalent. See the
     /// [module docs](self) for the bypass-attribute convention.
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
     ///
     /// Postgres cursors are transaction-local — the surrounding context MUST
     /// be transaction-backed. Calling `raw_stream` on a pool-backed context
@@ -544,6 +602,9 @@ pub trait RawAccessExtBase: sealed::Sealed {
     /// stream cannot describe the projection AND the default chunk size used
     /// by `raw_stream` is the wrong shape for the consumer (typically very
     /// large exports or very latency-sensitive previews).
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
     ///
     /// `fetch_size` of `0` returns [`DjogiError::Validation`] — the cursor
     /// driver cannot make progress on an empty fetch chunk. Larger values
@@ -700,6 +761,9 @@ pub trait RawPoolAccessExtBase: sealed::Sealed {
     ///
     /// Raw escape hatch — djogi's `unsafe`-equivalent. See the
     /// [module docs](self) for the bypass-attribute convention.
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
     ///
     /// Returns `None` when the context is transaction-backed — pool reads
     /// during a transaction would route around the surrounding scope. Use
@@ -723,6 +787,9 @@ pub trait RawPoolAccessExtBase: sealed::Sealed {
     ///
     /// Raw escape hatch — djogi's `unsafe`-equivalent. See the
     /// [module docs](self) for the bypass-attribute convention.
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
     ///
     /// Returns `None` when the context is pool-backed — there is no
     /// long-lived connection to borrow. Use for connection-state inspection
@@ -761,6 +828,20 @@ pub trait RawPoolAccessExtBase: sealed::Sealed {
     /// changes inside the closure are responsible for resetting the
     /// connection (or the surrounding pool's `Manager` impl must declare a
     /// `reset` step).
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
+    ///
+    /// `raw_with_client` is the framework's only path to the underlying
+    /// `tokio_postgres::Client` and the only way to reach binary-protocol
+    /// helpers like `client.copy_in(...)`, `client.simple_query(...)`,
+    /// `CREATE EXTENSION` (which requires `simple_query` outside a
+    /// transaction), and the prepared-statement cache directly. The closure
+    /// receives `&mut Client` for the duration of the borrow; the returned
+    /// connection is **dirty by default** — adopters that issue `SET` /
+    /// `LISTEN` / role changes inside the closure are responsible for
+    /// resetting the connection (or the surrounding pool's `Manager` impl
+    /// must declare a `reset` step).
     ///
     /// Returns [`DjogiError::Db`] wrapping the underlying transport / pool
     /// error when the context has no pool to draw from (pure transaction-
