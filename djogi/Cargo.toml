@@ -570,6 +570,15 @@ name = "phase8_5_c2_190_integer_widening"
 path = "../tests/internal/phase8_5_c2_190_integer_widening.rs"
 harness = true
 
+# Phase 8.5 Cluster 3 issue #110 — round-2 dogfood discovery across six
+# typed-surface categories. Each scenario uses `#[djogi_test]` and the
+# typed surface only; gaps surface as compile-fail callsites that are
+# documented inline as `// GAP(...)` markers and routed to GH issues.
+[[test]]
+name = "phase8_5_c3_110_dogfood_round2"
+path = "../tests/integration/phase8_5_c3_110_dogfood_round2.rs"
+harness = true
+
 # Phase 8.5 predicate ergonomics — closes #107 (Option scalar comparisons),
 # #109 (Condition ergonomics — operators + ConditionExt), #166 (Tracked<T>
 # field lookups), and #167 (&str ergonomics for String fields). The fixture
@@ -652,6 +661,7 @@ name = "phase8_5_c4a_pair_area_overlap_ratio_live"
 path = "../tests/integration/phase8_5_c4a_pair_area_overlap_ratio_live.rs"
 harness = true
 required-features = ["spatial"]
+
 
 [[test]]
 name = "phase8_trait_impl_registry"
