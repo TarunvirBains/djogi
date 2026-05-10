@@ -139,15 +139,15 @@
 //! The `UNIQUE (<source>, <ancestor>, <depth>)` constraint is **load-
 //! bearing** — `ON CONFLICT (...)` requires an exact match against a
 //! unique constraint. The helper validates the column-name identifiers
-//! at runtime via [`crate::ident::check_plain_ident`]; the unique
-//! constraint itself the framework cannot verify without reaching the
-//! catalog, so the contract is stated in this doc and surfaces as a
-//! Postgres `42P10` error if the constraint is missing.
+//! at runtime via [`crate::ident::check_user_supplied_ident`]; the
+//! unique constraint itself the framework cannot verify without
+//! reaching the catalog, so the contract is stated in this doc and
+//! surfaces as a Postgres `42P10` error if the constraint is missing.
 #![allow(clippy::manual_async_fn)]
 
 use crate::DjogiError;
 use crate::context::DjogiContext;
-use crate::ident::check_plain_ident;
+use crate::ident::check_user_supplied_ident;
 use crate::model::Model;
 use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::try_get_scalar;
@@ -263,12 +263,13 @@ pub struct MaterializeClosureReport {
 /// # Identifier validation
 ///
 /// Every column name returned by this trait is identifier-validated
-/// at helper-call time via [`crate::ident::check_plain_ident`]: ASCII
-/// alphabetic / underscore first byte, ASCII alphanumeric / underscore
-/// remainder, ≤ 63 bytes, not a Postgres reserved keyword. A bad
-/// identifier surfaces as [`DjogiError::Validation`] before any SQL
-/// is built — adopters cannot accidentally smuggle SQL through the
-/// column-name accessors.
+/// at helper-call time via [`crate::ident::check_user_supplied_ident`]:
+/// ASCII alphabetic / underscore first byte, ASCII alphanumeric /
+/// underscore remainder, ≤ 63 bytes, not a Postgres reserved keyword,
+/// and not in the framework-reserved `__djogi_` prefix namespace. A
+/// bad identifier surfaces as [`DjogiError::Validation`] before any
+/// SQL is built — adopters cannot accidentally smuggle SQL through
+/// the column-name accessors or shadow framework-internal aliases.
 ///
 /// # `Source = T` binding
 ///
@@ -356,11 +357,13 @@ where
         // The trait surfaces them as `&'static str` from the adopter's
         // hand-written impl — without this gate a typo (or hostile
         // override) could smuggle SQL into the emitter's
-        // `push_sql` sites. `check_plain_ident(value, true)` enforces
-        // the four-rule contract (Postgres unquoted identifier shape)
-        // *plus* the reserved-keyword block; the SQL emitter quotes
-        // nothing, so reserved keywords would otherwise produce a
-        // `42601 syntax error`.
+        // `push_sql` sites. `check_user_supplied_ident(value, true)`
+        // enforces the four-rule contract (Postgres unquoted identifier
+        // shape) *plus* the reserved-keyword block *plus* the
+        // framework-reserved `__djogi_` prefix block. Adopter-provided
+        // names are user-supplied identifiers, so the reservation rule
+        // applies here as well as at window aliases / FTS / outbox
+        // (see `docs/spec/reserved-identifiers.md`).
         for (label, col) in [
             ("closure table", C::table()),
             ("source_column", C::source_column()),
@@ -368,7 +371,7 @@ where
             ("depth_column", C::depth_column()),
             ("path_count_column", C::path_count_column()),
         ] {
-            check_plain_ident(col, true).map_err(|e| {
+            check_user_supplied_ident(col, true).map_err(|e| {
                 DjogiError::Validation(format!(
                     "ClosureModel<{}>::{} returned invalid identifier {:?}: {:?}",
                     std::any::type_name::<C>(),

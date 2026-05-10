@@ -1173,6 +1173,16 @@ impl DjogiContext {
 /// in-module tests that pin the byte-level rejection table. Sharing
 /// one function prevents drift between the production security gate
 /// and the test fixtures that verify it.
+///
+/// Routes through `check_plain_ident` (NOT
+/// `check_user_supplied_ident`) on purpose: Postgres role names live
+/// in the role catalog, a separate namespace from the relations,
+/// columns, and CTE aliases djogi reserves under `__djogi_*`. A role
+/// named `__djogi_admin` cannot collide with any framework-internal
+/// identifier and the SQL emission double-quotes it
+/// (`SET LOCAL ROLE "<role>"`) for an extra layer of escape safety.
+/// Applying the reservation here would over-restrict adopters
+/// without any defensive benefit.
 fn validate_role_name(role: &str) -> Result<(), DjogiError> {
     if crate::ident::check_plain_ident(role, false).is_err() {
         return Err(DjogiError::InvalidRoleName(role.to_string()));
@@ -1192,11 +1202,17 @@ fn validate_role_name(role: &str) -> Result<(), DjogiError> {
 /// rejection is intentionally **not** applied here because some runtime
 /// helpers (e.g. enum-type names that match a reserved word like
 /// `interval`) are fine when wrapped in `DO`-block context. Keeping
-/// the check minimal matches Postgres's actual identifier-acceptance
-/// gradient.
+/// the keyword check minimal matches Postgres's actual identifier-
+/// acceptance gradient.
+///
+/// Routes through [`crate::ident::check_user_supplied_ident`] so the
+/// framework-reserved `__djogi_` prefix is rejected here too — runtime
+/// type names flow into framework-emitted SQL the same way window
+/// aliases and outbox table names do, and the reservation must be
+/// uniform across every adopter-facing entry point.
 fn validate_runtime_plain_ident(value: &str, role: &str) -> Result<(), DjogiError> {
     use crate::ident::IdentError;
-    crate::ident::check_plain_ident(value, false).map_err(|e| {
+    crate::ident::check_user_supplied_ident(value, false).map_err(|e| {
         let msg = match e {
             IdentError::Empty => format!("{role} cannot be empty"),
             IdentError::TooLong { len } => format!(
@@ -1210,7 +1226,12 @@ fn validate_runtime_plain_ident(value: &str, role: &str) -> Result<(), DjogiErro
                  unquoted Postgres identifier byte; only ASCII alphanumerics \
                  and underscores are permitted after the first character"
             ),
-            IdentError::Reserved => unreachable!("check_plain_ident(reserved=false) cannot return Reserved"),
+            IdentError::Reserved => unreachable!("check_user_supplied_ident(reserved=false) cannot return Reserved"),
+            IdentError::ReservedDjogiPrefix => format!(
+                "{role} {value:?} starts with the framework-reserved `__djogi_` prefix; \
+                 this namespace is used for djogi-internal identifiers — choose a \
+                 different name"
+            ),
         };
         DjogiError::Db(crate::error::DbError::other(msg))
     })
@@ -1311,6 +1332,37 @@ mod tests {
     fn validate_runtime_plain_ident_accepts_exact_max_length() {
         let exact = "a".repeat(63);
         assert!(validate_runtime_plain_ident(&exact, "enum type name").is_ok());
+    }
+
+    #[test]
+    fn validate_runtime_plain_ident_rejects_djogi_reserved_prefix() {
+        // Issue #82 — `ensure_enum_type` accepts an adopter-supplied
+        // schema identifier. The public contract reserves `__djogi_*`
+        // across user-facing SQL identifier surfaces so future
+        // framework objects can use that namespace without per-surface
+        // exceptions.
+        let err = validate_runtime_plain_ident("__djogi_status", "enum type name")
+            .expect_err("must reject __djogi_ prefix");
+        let msg = err.to_string();
+        assert!(msg.contains("`__djogi_` prefix"), "got: {msg}");
+        // Bare prefix is also rejected.
+        assert!(validate_runtime_plain_ident("__djogi_", "enum type name").is_err());
+        // Lookalikes remain accepted.
+        assert!(validate_runtime_plain_ident("djogi_status", "enum type name").is_ok());
+        assert!(validate_runtime_plain_ident("_djogi_status", "enum type name").is_ok());
+    }
+
+    #[test]
+    fn validate_role_name_keeps_djogi_prefix_legal() {
+        // Postgres role names live in a separate namespace from the
+        // relations, columns, and CTE aliases djogi reserves under
+        // `__djogi_*`. The SQL emission also double-quotes the role,
+        // so a `__djogi_admin` role cannot smuggle injection through
+        // any djogi surface. Pin the carve-out so a future "make all
+        // ident validators uniform" refactor doesn't accidentally
+        // tighten this surface.
+        assert!(super::validate_role_name("__djogi_admin").is_ok());
+        assert!(super::validate_role_name("__djogi_").is_ok());
     }
 
     // -------------------------------------------------------------------------

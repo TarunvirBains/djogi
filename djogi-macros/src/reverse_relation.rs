@@ -479,9 +479,10 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
         // Construction routes through the sealed
         // `__make_reverse_relation_marker` constructor so `name` and
         // `via` are validated against
-        // `crate::ident::const_assert_plain_ident` at const-eval time
-        // — a downstream crate cannot submit a fabricated marker
-        // carrying SQL metacharacters through the inventory slice.
+        // `crate::ident::const_assert_user_supplied_ident` at const-eval
+        // time — a downstream crate cannot submit a fabricated marker
+        // carrying SQL metacharacters or the reserved `__djogi_*`
+        // namespace through the inventory slice.
         ::djogi::__private::inventory::submit! {
             ::djogi::relation::registry::__macro_support::__make_reverse_relation_marker(
                 #relation_kind_variant,

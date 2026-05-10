@@ -2,7 +2,7 @@
 
 # Reserved Identifier Namespace
 
-Djogi reserves identifiers beginning with `__djogi_` (two leading underscores + lowercase `djogi` + underscore) for framework-internal use. Adopters must not emit identifiers in this namespace from `#[model]` definitions, custom column names, window-function aliases, or any other surface that flows into framework-emitted SQL or macro expansions.
+Djogi reserves identifiers beginning with `__djogi_` (two leading underscores + ASCII-case-insensitive `djogi` + underscore) for framework-internal use. Adopters must not emit identifiers in this namespace from `#[model]` definitions, custom column names, window-function aliases, or any other surface that flows into framework-emitted SQL or macro expansions.
 
 The prefix shape is intentional: SQL accepts a leading underscore in identifiers, and Rust keyword shadowing handles double-underscore prefixes cleanly, so `__djogi_*` collides with no Postgres-internal pattern and no idiomatic user code while remaining unambiguous in framework-emitted output.
 
@@ -58,18 +58,25 @@ These are emitted by `#[derive(...)]` and attribute-macros into the user's crate
 
 ## Validation surfaces
 
-The framework rejects user-supplied identifiers in this namespace at the surfaces below. Each surface validates at the point user input crosses into framework-emitted SQL or expansion.
+The framework rejects user-supplied identifiers in this namespace at the surfaces below. Each surface validates at the point user input crosses into framework-emitted SQL or expansion. The rule is centralized in the [`crate::ident`](../../djogi/src/ident.rs) module: runtime callers route through `check_user_supplied_ident` / `assert_user_supplied_ident`, which return / panic with `IdentError::ReservedDjogiPrefix` for any identifier in the `__djogi_*` namespace, matched ASCII-case-insensitively because Postgres folds unquoted identifiers to lowercase. The macro-time validator in [`djogi-macros/src/ident.rs`](../../djogi-macros/src/ident.rs) carries the same rule as a sibling `RESERVED_DJOGI_PREFIX` constant pinned in unit tests on both sides.
 
 | Surface | Enforcement | File |
 |---|---|---|
-| `WindowExpr::alias(&str)` | `assert!(!alias.starts_with("__djogi_"))` | [`djogi/src/expr/window_fn.rs`](../../djogi/src/expr/window_fn.rs) |
+| Window-function `.alias(&str)` (every `Window*` builder, including `RowNumber`, `Rank`, `DenseRank`, `PercentRankWindow`, `CumeDistWindow`, `NtileWindow`, `FirstValueWindow`, `LastValueWindow`, `LeadWindow`, `LagWindow`, `NthValueWindow`) | `assert_user_supplied_ident(alias, "window_alias")` | [`djogi/src/expr/window_fn.rs`](../../djogi/src/expr/window_fn.rs) |
+| `ClosureModel` column accessors (`source_column`, `ancestor_column`, `depth_column`, `path_count_column`, plus `table()`) | `check_user_supplied_ident(col, true)` → `DjogiError::Validation` on reservation hit | [`djogi/src/query/closure.rs`](../../djogi/src/query/closure.rs) |
+| FTS `dictionary` / `source` column names from `#[model(fts = ...)]` | `check_user_supplied_ident(name, false)` with a reservation-specific diagnostic | [`djogi/src/fts.rs`](../../djogi/src/fts.rs) |
+| Outbox table name (worker-side validation in `claim_pending` / `mark_published` / `mark_failed` / `recover_stale`) | `check_user_supplied_ident(name, false)` → `DjogiError::Db` on reservation hit | [`djogi/src/outbox/worker.rs`](../../djogi/src/outbox/worker.rs) |
+| Hidden testing outbox-table helpers (`outbox_rows_for_test`, `clear_outbox_for_test`) | `check_user_supplied_ident(table, false)` before raw SQL embedding | [`djogi/src/testing.rs`](../../djogi/src/testing.rs) |
+| Runtime enum-type names (`DjogiContext::ensure_enum_type`) | `check_user_supplied_ident(value, false)` → `DjogiError::Db` on reservation hit | [`djogi/src/context.rs`](../../djogi/src/context.rs) |
+| `#[model]` field column names and `#[model(table = "...")]` (macro-time) | `check_ident(...)` rejects the `__djogi_` prefix ASCII-case-insensitively with a `syn::Error` carrying a rename hint | [`djogi-macros/src/ident.rs`](../../djogi-macros/src/ident.rs) |
+| Reverse-relation / M2M macro names (`reverse_one_to_*` relation `name` / `via`, `many_to_many!` `relation`, `this_fk`, `that_fk`) | `const_assert_user_supplied_ident(...)` in the sealed registry constructor / guard const, rejecting the prefix at const-eval before inventory submission | [`djogi/src/relation/registry.rs`](../../djogi/src/relation/registry.rs), [`djogi-macros/src/many_to_many.rs`](../../djogi-macros/src/many_to_many.rs), [`djogi-macros/src/reverse_relation.rs`](../../djogi-macros/src/reverse_relation.rs) |
 | Grouped-fetch SELECT-list collision detector | `assert_no_alias_collision(sql)` returns `DjogiError::AliasCollision { alias }` when the parsed SELECT list contains two columns with the same alias. The check is generic (any duplicate alias is rejected), but it indirectly enforces the `__djogi_*` rule for `__djogi_agg_N`: when the framework emits `<agg> AS __djogi_agg_0`, a user SELECT alias of `__djogi_agg_0` produces a duplicate that the detector catches. (Phase 6.5 — aggregate alias discipline.) | [`djogi/src/query/sql.rs`](../../djogi/src/query/sql.rs) |
 
-## Coverage gap (v0.1.0)
+Surfaces that derive identifiers from already-validated inputs (e.g. the `<table>_outbox` companion table and the `djogi_<table>` notify channel in [`djogi/src/outbox/mod.rs`](../../djogi/src/outbox/mod.rs) and [`djogi/src/notify.rs`](../../djogi/src/notify.rs)) remain on the plainer `check_plain_ident`, since the reservation rule is transitively enforced upstream by the macro-time gate on the source table name.
 
-The central identifier validator [`crate::ident::check_plain_ident`](../../djogi/src/ident.rs) does **not** check the `__djogi_` prefix. The two surfaces above are the only places that enforce the rule. Other call sites that route user-supplied identifiers through `check_plain_ident` (e.g. `ClosureModel::source_column()` / `ancestor_column()` / `depth_column()` / `path_count_column()` in `closure.rs`, FTS dictionary / source-column names in both `djogi/src/fts.rs` and the macro-time validator in `djogi-macros/src/model/attrs.rs`, outbox topic names in `djogi/src/outbox/worker.rs`) currently let `__djogi_*` through.
+## Coverage status (v0.1.0)
 
-In practice this is theoretical — those surfaces emit identifiers in scopes that don't share a name-resolution context with the framework's recursive CTE columns or derived-table aliases. But the rule should be uniform; tracked as **GH issue #82** for follow-up.
+GH issues [#69](https://github.com/TarunvirBains/djogi/issues/69) (lift the prefix check out of `WindowExpr::alias`) and [#82](https://github.com/TarunvirBains/djogi/issues/82) (uniform rejection across user-facing entry points) are closed by the central `IdentError::ReservedDjogiPrefix` variant and the `check_user_supplied_ident` / `assert_user_supplied_ident` helpers. The runtime helpers continue to accept the `__djogi_*` prefix on the general-purpose `check_plain_ident` / `assert_plain_ident` entry points, so framework-internal emissions (recursive CTEs, derived-table aliases, slot aliases) keep working without per-call-site allowlists.
 
 ## Adopter contract
 

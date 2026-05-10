@@ -120,10 +120,10 @@ pub enum RelationKind {
 /// if it were macro-emitted. The only supported construction path is
 /// [`__macro_support::__make_reverse_relation_marker`], which routes
 /// both `name` and `via` through
-/// [`crate::ident::assert_plain_ident`]. `source` and `target` are
-/// Rust type names: they are validated at the macro call site via
-/// `debug_assert_ident!` (cheap) because Rust's own tokenizer already
-/// constrains the shapes reachable into a `syn::Ident`.
+/// [`crate::ident::const_assert_user_supplied_ident`]. `source` and
+/// `target` are Rust type names: they are validated at the macro call
+/// site via `debug_assert_ident!` (cheap) because Rust's own tokenizer
+/// already constrains the shapes reachable into a `syn::Ident`.
 ///
 /// Accessors [`source`](Self::source), [`name`](Self::name),
 /// [`target`](Self::target), [`via`](Self::via), and
@@ -197,13 +197,13 @@ impl ReverseRelationMarker {
 /// Mirrors the seal patterns in [`crate::relation::__macro_support`]
 /// (for `RelationPath::new`) and [`crate::query::field::__macro_support`]
 /// (for `FieldRef::new`): fields are `pub(crate)` and the only
-/// supported construction path routes identifier strings through the
-/// shared [`crate::ident::assert_plain_ident`] validator before the
-/// record reaches the inventory slice.
+/// supported construction path routes user-supplied identifier strings
+/// through the shared [`crate::ident::const_assert_user_supplied_ident`]
+/// validator before the record reaches the inventory slice.
 #[doc(hidden)]
 pub mod __macro_support {
     use super::{RelationKind, ReverseRelationMarker};
-    use crate::ident::const_assert_plain_ident;
+    use crate::ident::{const_assert_plain_ident, const_assert_user_supplied_ident};
 
     /// Construct a [`ReverseRelationMarker`] from macro-emitted
     /// identifier strings. The only supported caller is the
@@ -213,11 +213,13 @@ pub mod __macro_support {
     /// Panics (at const-eval time — `inventory::submit!` wraps the
     /// returned value in a `static` initializer) if `name` or `via`
     /// violates any rule in
-    /// [`crate::ident::const_assert_plain_ident`]: empty, over 63
-    /// bytes, leading digit, a non-identifier byte, or a reserved
-    /// Postgres keyword. `name` names a Rust method emitted on the
-    /// receiver type and `via` names a Postgres column; both must
-    /// therefore satisfy the shared unquoted-identifier rule.
+    /// [`crate::ident::const_assert_user_supplied_ident`]: empty, over
+    /// 63 bytes, leading digit, a non-identifier byte, a reserved
+    /// Postgres keyword, or the framework-reserved `__djogi_*`
+    /// namespace. `name` names a Rust method emitted on the receiver
+    /// type and `via` names a Postgres column; both originate in adopter
+    /// macro input and must therefore satisfy the shared user-supplied
+    /// unquoted-identifier rule.
     /// `source` and `target` are Rust type names reached via
     /// `syn::Ident` in the macro, so the Rust tokenizer has already
     /// rejected obviously malformed inputs at parse time; they are
@@ -237,8 +239,8 @@ pub mod __macro_support {
         target: &'static str,
         via: &'static str,
     ) -> ReverseRelationMarker {
-        const_assert_plain_ident(name, "reverse_relation_name");
-        const_assert_plain_ident(via, "reverse_relation_via");
+        const_assert_user_supplied_ident(name, "reverse_relation_name");
+        const_assert_user_supplied_ident(via, "reverse_relation_via");
         ReverseRelationMarker {
             kind,
             source,
@@ -248,16 +250,28 @@ pub mod __macro_support {
         }
     }
 
-    /// Validate a macro-emitted identifier in const context without
+    /// Validate a framework-emitted identifier in const context without
     /// constructing a marker.
+    ///
+    /// This remains available for macro-support call sites that need the
+    /// plain identifier contract while still allowing djogi's own
+    /// `__djogi_*` namespace. User-supplied macro arguments should use
+    /// [`__const_assert_user_supplied_ident`] instead.
+    #[doc(hidden)]
+    pub const fn __const_assert_plain_ident(value: &'static str, role: &'static str) {
+        const_assert_plain_ident(value, role);
+    }
+
+    /// Validate a macro-emitted user-supplied identifier in const
+    /// context without constructing a marker.
     ///
     /// `many_to_many!` needs this for `that_fk`: unlike `relation` and
     /// `this_fk`, it does not flow through the stored
     /// [`ReverseRelationMarker`] fields, but it still becomes a
     /// SQL-facing `&'static str` through `ManyToMany::that_fk()`.
     #[doc(hidden)]
-    pub const fn __const_assert_plain_ident(value: &'static str, role: &'static str) {
-        const_assert_plain_ident(value, role);
+    pub const fn __const_assert_user_supplied_ident(value: &'static str, role: &'static str) {
+        const_assert_user_supplied_ident(value, role);
     }
 
     #[cfg(test)]
@@ -275,6 +289,10 @@ pub mod __macro_support {
 
         fn try_const_assert(value: &'static str) -> std::thread::Result<()> {
             std::panic::catch_unwind(|| __const_assert_plain_ident(value, "test_role"))
+        }
+
+        fn try_const_assert_user(value: &'static str) -> std::thread::Result<()> {
+            std::panic::catch_unwind(|| __const_assert_user_supplied_ident(value, "test_role"))
         }
 
         #[test]
@@ -318,9 +336,25 @@ pub mod __macro_support {
         }
 
         #[test]
+        fn rejects_reserved_djogi_prefix_in_name_and_via() {
+            assert!(try_make("__djogi_cars", "owner_id").is_err());
+            assert!(try_make("__DJOGI_cars", "owner_id").is_err());
+            assert!(try_make("cars", "__djogi_owner_id").is_err());
+            assert!(try_make("cars", "__Djogi_owner_id").is_err());
+        }
+
+        #[test]
         fn const_assert_wrapper_rejects_reserved_keywords() {
             assert!(try_const_assert("owner_id").is_ok());
             assert!(try_const_assert("select").is_err());
+        }
+
+        #[test]
+        fn const_user_assert_wrapper_rejects_reserved_djogi_prefix() {
+            assert!(try_const_assert_user("owner_id").is_ok());
+            assert!(try_const_assert_user("__djogi_owner_id").is_err());
+            assert!(try_const_assert_user("__DJOGI_owner_id").is_err());
+            assert!(try_const_assert_user("_djogi_owner_id").is_ok());
         }
     }
 }

@@ -33,6 +33,19 @@
 //! field's source span in the user's code, not as a runtime panic buried
 //! in SQL emission.
 //!
+//! # Framework-reserved `__djogi_` prefix
+//!
+//! In addition to the four byte-shape rules, this validator rejects
+//! identifiers that enter djogi's reserved namespace (`__djogi_*`).
+//! That namespace is used for framework-internal recursive CTE names,
+//! derived-table aliases, and synthetic column slots; an adopter-
+//! declared field or table starting with `__djogi_` would shadow them
+//! at SQL emission time. The reservation is enforced uniformly across
+//! every adopter-facing entry point — this macro-time gate, plus the
+//! runtime helpers in `djogi/src/ident.rs::check_user_supplied_ident` /
+//! `assert_user_supplied_ident`. See `docs/spec/reserved-identifiers.md`
+//! for the inventory.
+//!
 //! # No regex
 //!
 //! Per the project-wide rule in `CLAUDE.md` / `docs/spec/decisions.md`,
@@ -53,6 +66,26 @@ use syn::spanned::Spanned;
 /// Postgres's usable identifier length (NAMEDATALEN - 1 on a default
 /// build). Matches the runtime-side constant in `djogi/src/ident.rs`.
 const MAX_IDENT_LEN: usize = 63;
+
+/// Framework-reserved identifier prefix.
+///
+/// Mirrors `RESERVED_DJOGI_PREFIX` in `djogi/src/ident.rs`; keep the
+/// two in sync (the rule is the same on both sides of the macro
+/// boundary). The match is ASCII-case-insensitive because Postgres
+/// folds unquoted identifiers to lowercase.
+const RESERVED_DJOGI_PREFIX: &[u8] = b"__djogi_";
+
+fn starts_with_reserved_djogi_prefix(bytes: &[u8]) -> bool {
+    if bytes.len() < RESERVED_DJOGI_PREFIX.len() {
+        return false;
+    }
+    for i in 0..RESERVED_DJOGI_PREFIX.len() {
+        if bytes[i].to_ascii_lowercase() != RESERVED_DJOGI_PREFIX[i] {
+            return false;
+        }
+    }
+    true
+}
 
 /// Postgres 18 fully-reserved keywords (catcode `R`). Lowercase,
 /// sorted — `binary_search` depends on both. Mirrors the list in
@@ -253,6 +286,31 @@ fn check_ident(kind: &str, value: &str, span: proc_macro2::Span) -> syn::Result<
         }
     }
 
+    // Framework-reserved-prefix block. djogi reserves the `__djogi_`
+    // namespace for recursive CTE names, derived-table aliases, and
+    // synthetic column slots; a user-declared field or table in that
+    // namespace would shadow the framework's own emissions at SQL
+    // build time. Apply uniformly to both `field name` and `table
+    // name` since both end up unquoted in djogi-emitted SQL. See
+    // `docs/spec/reserved-identifiers.md` for the inventory.
+    if starts_with_reserved_djogi_prefix(bytes) {
+        let rename_hint = match kind {
+            "field name" => {
+                "Rename the field, or use `#[field(renamed_from = \"…\")]` to map to a non-reserved column name."
+            }
+            _ => "Use a non-reserved name.",
+        };
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "#[model] {kind} {value:?} starts with the framework-reserved `__djogi_` \
+                 prefix. djogi uses this namespace for recursive CTE names, derived-table \
+                 aliases, and synthetic column slots; user-declared identifiers in this \
+                 namespace would shadow framework-internal emissions. {rename_hint}"
+            ),
+        ));
+    }
+
     // Case-insensitive keyword lookup. The reserved-keyword table is
     // sorted lowercase; if `value` is already all-lowercase (the common
     // case for snake_case Rust idents) we search it directly, otherwise
@@ -368,5 +426,101 @@ mod tests {
                 "RESERVED_KEYWORDS must be lowercase: {kw:?}"
             );
         }
+    }
+
+    // ── Framework-reserved `__djogi_` prefix (issue #82) ─────────────────────
+
+    #[test]
+    fn rejects_djogi_reserved_prefix_on_field_name() {
+        // The macro-time validator must reject any user-declared field
+        // whose column name enters djogi's reserved namespace. Check
+        // both bare `__djogi_` and a populated suffix shape so a
+        // partial fix that only matches "exactly __djogi_" is caught.
+        let err = classify("__djogi_q").expect_err("__djogi_q must be rejected at macro time");
+        assert!(
+            err.contains("framework-reserved `__djogi_` prefix"),
+            "expected reserved-prefix diagnostic, got: {err}"
+        );
+        let err = classify("__djogi_anything").expect_err("__djogi_anything must be rejected");
+        assert!(
+            err.contains("framework-reserved `__djogi_` prefix"),
+            "got: {err}"
+        );
+        let err = classify("__djogi_").expect_err("bare `__djogi_` must be rejected");
+        assert!(
+            err.contains("framework-reserved `__djogi_` prefix"),
+            "got: {err}"
+        );
+        let err = classify("__DJOGI_q").expect_err("__DJOGI_q must be rejected");
+        assert!(
+            err.contains("framework-reserved `__djogi_` prefix"),
+            "got: {err}"
+        );
+        let err = classify("__Djogi_q").expect_err("__Djogi_q must be rejected");
+        assert!(
+            err.contains("framework-reserved `__djogi_` prefix"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_djogi_reserved_prefix_on_table_name() {
+        // `check_table_name` reuses `check_ident` so the reservation
+        // applies to `#[model(table = "...")]` values too. Pin both
+        // entry points so a future refactor that splits them keeps
+        // the rule on both.
+        let err = check_table_name("__djogi_audit_log", proc_macro2::Span::call_site())
+            .expect_err("__djogi_audit_log must be rejected as a table name");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("framework-reserved `__djogi_` prefix"),
+            "got: {msg}"
+        );
+        let err = check_table_name("__DJOGI_audit_log", proc_macro2::Span::call_site())
+            .expect_err("__DJOGI_audit_log must be rejected as a table name");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("framework-reserved `__djogi_` prefix"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn djogi_prefix_diagnostic_carries_rename_hint_for_field_name() {
+        // Diagnostic quality — adopters seeing the reservation error
+        // benefit from being pointed at `#[field(renamed_from = "…")]`
+        // since the offending identifier might be a Rust field name
+        // they can't change without breaking external API.
+        let err = classify("__djogi_legacy_id").expect_err("must reject");
+        assert!(
+            err.contains("#[field(renamed_from"),
+            "field-name diagnostic should include a rename hint, got: {err}"
+        );
+    }
+
+    #[test]
+    fn accepts_non_reserved_lookalikes() {
+        // Single-underscore + `djogi` (the notify channel-name shape
+        // `djogi_<table>` flows through a derived path, not this
+        // validator, but the analogous user-named shape is still
+        // accepted) and `_djogi_*` (one underscore) must NOT be
+        // rejected — the rule is the exact double-underscore prefix.
+        assert!(classify("djogi_audit_log").is_ok());
+        assert!(classify("_djogi_x").is_ok());
+        assert!(classify("djogi").is_ok());
+        // Adopter-owned reserved namespaces (a derivative crate's own
+        // `__myprefix_*` reservation) are unaffected.
+        assert!(classify("__myprefix_x").is_ok());
+    }
+
+    #[test]
+    fn reserved_djogi_prefix_constant_matches_runtime_constant() {
+        // The macro-time and runtime constants must agree byte-for-byte
+        // — they encode the same public stability contract documented
+        // in `docs/spec/reserved-identifiers.md`. A drift here would
+        // produce a class of identifiers that pass macro expansion
+        // but blow up at runtime (or vice versa).
+        assert_eq!(RESERVED_DJOGI_PREFIX, b"__djogi_");
+        assert_eq!(RESERVED_DJOGI_PREFIX.len(), 8);
     }
 }
