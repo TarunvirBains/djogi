@@ -59,7 +59,7 @@ async fn example(pool: &DjogiPool) -> Result<(), DjogiError> {
     let mut ctx = DjogiContext::from_pool(pool.clone());
 
     let post = Post::create(&mut ctx, Post {
-        id: HeerId::placeholder(),
+        id: HeerId::ZERO,
         created_at: Default::default(),
         updated_at: Default::default(),
         title: "Getting started with Djogi".to_string(),
