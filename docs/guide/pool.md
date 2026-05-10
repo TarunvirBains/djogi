@@ -4,17 +4,34 @@
 
 `DjogiPool` is the framework's Postgres connection pool. It wraps
 `deadpool_postgres::Pool` with a Djogi-specific builder, a
-`post_connect` hook for per-physical-connection setup, a
-`with_client` raw-borrow escape hatch for operations that cannot
-route through `DjogiContext`, and a config-driven entry point that
-walks `env > Djogi.toml > builder default` for sizing.
+`post_connect` hook for per-physical-connection setup, and a
+config-driven entry point that walks `env > Djogi.toml > builder
+default` for sizing.
+
+For the rare cases where a closure needs a raw `&mut
+tokio_postgres::Client` — `COPY FROM STDIN` / `COPY TO STDOUT`,
+one-time DDL like `CREATE EXTENSION` at cold-start, or bridging
+into third-party crates that take `&tokio_postgres::Client`
+directly — the pool exposes an explicit raw-driver bypass through
+the sealed [`RawPoolAccessExt::raw_with_client`](#raw-client-escape-hatch--raw_with_client)
+trait. This is the same opt-in bypass pattern Djogi uses for
+`raw_query` / `raw_execute` on `DjogiContext`; see the
+[raw SQL escape hatches spec](../spec/raw-sql-escape-hatches.md)
+for the broader contract.
 
 This guide covers the `DjogiPool` public surface — the builder API,
 the `post_connect` hook for per-physical-connection setup, and the
-`with_client` raw-driver escape hatch. For the broader context —
-`DjogiContext`, transactions, raw queries —
-see the [Transactions guide](./transactions.md) and the
+`raw_with_client` raw-driver bypass. For the broader context —
+`DjogiContext`, transactions, raw queries — see the
+[Transactions guide](./transactions.md) and the
 [Getting Started guide](./getting-started.md).
+
+> **Status — ergonomic public pool surface.** Today, reaching a
+> raw client off `DjogiPool` requires the explicit bypass trait.
+> An ergonomic, adopter-friendly pool surface that does not pass
+> through `RawPoolAccessExt` is upcoming Cluster 3 work and may
+> change the recommended path. Until then, the bypass route shown
+> below is the supported entry. Tracking issue: djogi#66.
 
 ---
 
@@ -127,7 +144,7 @@ checkout reset is intentionally NOT exposed in v0.1.0.
 ### When the hook errors
 
 A closure that returns `Err` aborts the originating `pool.get()` (or
-`with_client` checkout). Deadpool discards the connection and the
+`raw_with_client` checkout). Deadpool discards the connection and the
 caller sees `DjogiError::Db` whose message starts with
 `post_connect:`. Hook errors are typically a missing GUC or a
 permissions issue — fail loudly at startup rather than silently.
@@ -148,21 +165,36 @@ allocation.
 
 ---
 
-## Raw-client escape hatch — `with_client`
+## Raw-client escape hatch — `raw_with_client`
 
-`pool.with_client(closure)` borrows a `&mut tokio_postgres::Client`
-for the closure's lifetime. Use it for operations that cannot route
+`pool.raw_with_client(closure)` borrows a `&mut tokio_postgres::Client`
+for the closure's lifetime. It is the **explicit raw-driver bypass**
+on the pool: the inherent `DjogiPool::with_client` method is
+`pub(crate)` (internal substrate uses it directly), and adopter code
+reaches the same behaviour through the sealed
+[`RawPoolAccessExt::raw_with_client`](../spec/raw-sql-escape-hatches.md)
+trait. Bring it into scope with:
+
+```rust
+use djogi::__bypass::RawPoolAccessExt as _;
+```
+
+Use `raw_with_client` for operations that genuinely cannot route
 through `DjogiContext`:
 
 - `COPY FROM STDIN` / `COPY TO STDOUT` and other binary-protocol
   features.
 - Server-side cursors driven via the driver API.
-- `CREATE EXTENSION` and one-time DDL at cold-start.
-- Bridging into third-party crates that take `&tokio_postgres::Client`
-  (e.g. `heeranjid::postgres_schema::install_schema`).
+- `CREATE EXTENSION` and other one-time DDL at cold-start /
+  bootstrap.
+- Bridging into third-party crates that take a
+  `&tokio_postgres::Client` directly (e.g. installing HeeRanjID's
+  schema, third-party migration helpers).
 
 ```rust
-pool.with_client(|client| Box::pin(async move {
+use djogi::__bypass::RawPoolAccessExt as _;
+
+pool.raw_with_client(|client| Box::pin(async move {
     client
         .batch_execute("CREATE EXTENSION IF NOT EXISTS postgis")
         .await?;
@@ -170,20 +202,32 @@ pool.with_client(|client| Box::pin(async move {
 })).await?;
 ```
 
+The `djogi::__bypass` path is intentionally `#[doc(hidden)]` and
+sealed — it is public so workspace examples and adopter crates can
+opt in consciously, but it is hidden from rustdoc so the typed
+surface stays the obvious default. See the
+[raw SQL escape hatches spec](../spec/raw-sql-escape-hatches.md)
+for the full bypass contract (sealed traits, the
+`#[deliberately_bypass_convention_with_raw_sql]` attribute used in
+tests, and the `JUSTIFICATION` comment convention).
+
 ### NOT for raw `SELECT` queries
 
-Adopter code that needs a raw query should use
-`DjogiContext::raw_query` / `DjogiContext::raw_execute`, which keep
-the call inside the framework's pool / transaction substrate, surface
-decode helpers, and compose with `atomic()` scopes (so the raw query
-participates in the same transaction as the surrounding model
-operations). The boundary is tight by design — `with_client` is for
-the cases where the framework's path *cannot* express what you need.
+Adopter code that needs a raw query should use the
+`RawAccessExt::raw_query` / `RawAccessExt::raw_execute` bypass on
+`DjogiContext`, which keeps the call inside the framework's pool /
+transaction substrate, surfaces decode helpers, and composes with
+`atomic()` scopes (so the raw query participates in the same
+transaction as the surrounding model operations). The boundary is
+tight by design — `raw_with_client` is for the cases where the
+framework's path *cannot* express what you need (binary protocol,
+cold-start DDL, third-party `&tokio_postgres::Client` bridges), not
+for routine SELECTs.
 
 ### Lifecycle — clean exit returns, dirty exit detaches
 
-This is the safety guarantee: `with_client` is dirty-by-default. The
-behaviour on the way out depends on how the closure exits:
+This is the safety guarantee: `raw_with_client` is dirty-by-default.
+The behaviour on the way out depends on how the closure exits:
 
 - **Clean exit (`Ok`).** The `Object` drops normally and deadpool
   returns the connection to the pool. The next checkout reuses the
@@ -224,6 +268,8 @@ Adopters who factor closure bodies out into named helpers can spell
 the lifetime explicitly:
 
 ```rust
+use djogi::__bypass::RawPoolAccessExt as _;
+
 fn install_extensions<'a>(
     client: &'a mut tokio_postgres::Client,
 ) -> djogi::pg::pool::ClientFuture<'a, ()> {
@@ -235,7 +281,7 @@ fn install_extensions<'a>(
     })
 }
 
-pool.with_client(install_extensions).await?;
+pool.raw_with_client(install_extensions).await?;
 ```
 
 ---
@@ -329,12 +375,16 @@ concurrency budget.
 - `djogi::pg::pool::DjogiPool` — the pool type
 - `djogi::pg::pool::DjogiPoolBuilder` — the builder
 - `djogi::pg::pool::ClientFuture<'a, R>` — boxed future alias for
-  `with_client` closures
+  `raw_with_client` closures
 - `djogi::pg::pool::resolve_max_connections` — the env > config
   resolver, exposed for adopters who need both the chain and a hook
 - `djogi::pg::pool::ENV_DATABASE_MAX_CONNECTIONS` — the env var name
   (`"DJOGI_DATABASE_MAX_CONNECTIONS"`) read by the resolver
 - `djogi::pg::pool::DEFAULT_MAX_SIZE` — `5`
+- `djogi::__bypass::RawPoolAccessExt` — sealed bypass trait that
+  exposes `raw_with_client` (and `raw_pool` / `raw_conn`) on
+  `DjogiPool` and `DjogiContext`. The trait module is `#[doc(hidden)]`;
+  see [raw SQL escape hatches](../spec/raw-sql-escape-hatches.md).
 - `djogi::DjogiError::PoolTimeout { phase }` — saturation error
   variant; `phase` is `"wait"`, `"create"`, or `"recycle"`
 
@@ -353,4 +403,4 @@ cargo test --test phase8_zero_pool_bench -p djogi --all-features --release \
 to see throughput on your hardware. The benchmarks are not perf
 guarantees — they verify the pool delivers concurrency, the
 `post_connect` hook doesn't catastrophically tax connection setup, and
-`with_client` overhead is bounded relative to a held-client baseline.
+`raw_with_client` overhead is bounded relative to a held-client baseline.

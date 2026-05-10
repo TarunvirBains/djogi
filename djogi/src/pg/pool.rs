@@ -24,15 +24,24 @@
 //! 3. **A raw-client escape hatch.** `COPY`, server-side cursors,
 //!    `CREATE EXTENSION`, and third-party crates that take a
 //!    `&tokio_postgres::Client` cannot route through `DjogiContext`.
-//!    [`DjogiPool::with_client`] is dirty-by-default: a closure that
+//!    The raw-driver bypass is dirty-by-default: a closure that
 //!    returns `Err`, panics, or is cancelled detaches the connection
 //!    from the pool so a poisoned session (open transaction,
 //!    uncommitted `SET ROLE`, advisory lock) cannot leak to the next
-//!    checkout.
+//!    checkout. Adopter code reaches the bypass through the sealed
+//!    [`RawPoolAccessExt::raw_with_client`](crate::__bypass::RawPoolAccessExt)
+//!    trait; the inherent `DjogiPool::with_client` method is
+//!    `pub(crate)` and used only by internal substrate. See the
+//!    [raw SQL escape hatches spec](crate::__bypass) for the broader
+//!    contract.
 //!
-//! [`DjogiPool::builder`] (`.max_size`, `.timeout`, `.post_connect`) and
-//! [`DjogiPool::with_client`] cover all three. `connect(url)` is preserved
-//! as sugar for `DjogiPool::builder(url).build().await`.
+//! [`DjogiPool::builder`] (`.max_size`, `.timeout`, `.post_connect`) covers
+//! the first two; the raw-driver bypass is reached via
+//! [`RawPoolAccessExt::raw_with_client`](crate::__bypass::RawPoolAccessExt).
+//! `connect(url)` is preserved as sugar for
+//! `DjogiPool::builder(url).build().await`. An ergonomic adopter-public
+//! pool surface that does not pass through `RawPoolAccessExt` is
+//! upcoming Phase 8.5 Cluster 3 work (tracking issue: djogi#66).
 //!
 //! # Where the `post_connect` hook fits in deadpool's lifecycle
 //!
@@ -94,12 +103,17 @@ pub const DEFAULT_MAX_SIZE: usize = 5;
 /// than zeroing the pool — a typo must not silently disable the database.
 pub const ENV_DATABASE_MAX_CONNECTIONS: &str = "DJOGI_DATABASE_MAX_CONNECTIONS";
 
-/// Boxed future returned by closures handed to [`DjogiPool::with_client`].
+/// Boxed future returned by closures handed to the raw-driver bypass
+/// — both `RawPoolAccessExt::raw_with_client` (the adopter-facing path)
+/// and the internal `DjogiPool::with_client` (`pub(crate)`) it dispatches
+/// to.
 ///
 /// Exposed at module scope so adopters can spell the lifetime explicitly
 /// when factoring a closure body into a named function:
 ///
 /// ```ignore
+/// use djogi::__bypass::RawPoolAccessExt as _;
+///
 /// fn install_extension<'a>(
 ///     client: &'a mut tokio_postgres::Client,
 /// ) -> ClientFuture<'a, ()> {
@@ -110,6 +124,8 @@ pub const ENV_DATABASE_MAX_CONNECTIONS: &str = "DJOGI_DATABASE_MAX_CONNECTIONS";
 ///             .map_err(djogi::DjogiError::from)
 ///     })
 /// }
+///
+/// pool.raw_with_client(install_extension).await?;
 /// ```
 ///
 /// Adopters that already use inline `Box::pin(async move { ... })` blocks

@@ -9,7 +9,7 @@ For design history and items still on the horizon, see
 | Guide | Covers |
 |---|---|
 | [Getting Started](./getting-started.md) | Installation, first model, first CRUD, first test |
-| [Connection Pool](./pool.md) | `DjogiPool` builder, `post_connect` hook, `with_client` raw-borrow, env > TOML > default sizing |
+| [Connection Pool](./pool.md) | `DjogiPool` builder, `post_connect` hook, `raw_with_client` raw-driver bypass (via `RawPoolAccessExt`), env > TOML > default sizing |
 | [Models](./models.md) | `#[model(...)]` attributes, `#[field(...)]` attributes, Phase 1 field types |
 | [Queries](./queries.md) | `QuerySet<T>`, filter closures, programmatic filters, bulk update/delete |
 | [Query Aggregation](./query-aggregation.md) | `group_by` / `rollup` / `cube` / `group_by_sets`, `annotate`, `having`, window frames, DISTINCT aggregates, spatial grouping |
