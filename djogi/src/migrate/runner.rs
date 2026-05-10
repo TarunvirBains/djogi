@@ -632,11 +632,21 @@ pub struct RunnerCtx {
     /// silently skipped — appropriate for tests and for adopters
     /// who have not yet provisioned the second DB.
     ///
-    /// **Wiring status (Cluster 8ε):** populated only at the CLI
-    /// entry point (`apply` / `db reset` orchestrator) starting in
-    /// T9.5. Tests that build `RunnerCtx` literals leave this
-    /// `None`. The field exists today so adding the wire-up in T9.5
-    /// is a non-breaking change to `RunnerCtx`'s shape.
+    /// **Wiring status:**
+    ///
+    /// - **Cluster 8ε (T9.4 / T9.5)** added the field and wired
+    ///   [`super::record_ddl_audit`] into `apply_plan_inner`'s
+    ///   success-only path. The runner writes audit rows whenever
+    ///   the caller supplies `Some(pool)`.
+    /// - **Phase 8.5 Cluster 2 issue #118** wired the production CLI
+    ///   dispatch (`db reset` replay path) to populate this field
+    ///   from `crud_log_url` (env-var override or
+    ///   derive-from-`database.url` fallback) via
+    ///   [`super::resolve_audit_url`] + [`super::build_audit_pool`].
+    ///
+    /// Tests that build `RunnerCtx` literals typically leave this
+    /// `None` — the dedicated audit-row coverage runs in
+    /// `tests/internal/sources/phase8_5_c2_118_*`.
     ///
     /// **Why `deadpool_postgres::Pool` and not `DjogiPool`:** the
     /// audit pool is not user-facing — adopters never see it, and
@@ -1009,15 +1019,26 @@ async fn apply_plan_inner(
             path: path.clone(),
             source: e,
         })?;
-
-        // T9.5 — DDL audit. Best-effort: if any audit-side step fails
-        // we log via `tracing::warn!` and SKIP. The app DB DDL has
-        // already succeeded and the snapshot has been persisted; an
-        // audit-DB outage MUST NOT roll back work that already
-        // committed. See `record_ddl_audit_for_plan` for the full
-        // failure-mode rationale.
-        record_ddl_audit_for_plan(plan, runner_ctx, snapshot).await;
     }
+
+    // T9.5 / Phase 8.5 issue #118 — DDL audit. Best-effort: if any
+    // audit-side step fails we log via `tracing::warn!` and SKIP. The
+    // app DB DDL has already succeeded; an audit-DB outage MUST NOT
+    // roll back work that already committed. See
+    // `record_ddl_audit_for_plan` for the full failure-mode
+    // rationale.
+    //
+    // **Snapshot decoupling (issue #118).** The audit-write loop runs
+    // whenever `audit_pool.is_some()`, regardless of whether a
+    // snapshot was persisted on this apply. The snapshot signature
+    // becomes part of the audit row only when a snapshot was just
+    // written; the `db reset` replay path deliberately passes
+    // `snapshot: None` (the on-disk snapshot is unchanged across the
+    // drop / recreate / replay cycle) and would otherwise have its
+    // audit row suppressed by an unrelated pre-condition. The audit
+    // row's primary purpose — recording that a migration's DDL ran —
+    // is independent of whether new schema bytes hit disk.
+    record_ddl_audit_for_plan(plan, runner_ctx, runner_ctx.snapshot.as_ref()).await;
 
     Ok(RunReport {
         ledger_id,
@@ -1030,7 +1051,8 @@ async fn apply_plan_inner(
 }
 
 /// Write one `djogi_ddl_audit` row per executed (non-metadata-only)
-/// segment in the plan. T9.5.
+/// segment in the plan. T9.5; snapshot decoupling Phase 8.5 issue
+/// #118.
 ///
 /// # Why this lives on the success-only path
 ///
@@ -1038,15 +1060,38 @@ async fn apply_plan_inner(
 ///
 /// 1. Every segment has committed (transactional or non-transactional).
 /// 2. `mark_applied` flipped the ledger row to `applied`.
-/// 3. `save_snapshot` persisted the new schema-of-record to disk.
+/// 3. `save_snapshot` persisted the new schema-of-record to disk
+///    (when a snapshot was supplied by the caller; the `db reset`
+///    replay path deliberately does not).
 ///
 /// Calling it earlier would risk an audit row whose
 /// `snapshot_signature_hex` does not correspond to any persisted
 /// snapshot — the signature would be of an in-memory `AppliedSchema`
 /// that never reached disk. Per v3 plan §453 the audit row's purpose
 /// is to ground the migration trail to the schema-of-record file
-/// `djogi verify` (T9.6) inspects, so we sign the bytes that were
-/// just written.
+/// `djogi verify` (T9.6) inspects.
+///
+/// # Snapshot is optional (Phase 8.5 issue #118)
+///
+/// The `snapshot` parameter is `Option<&AppliedSchema>`. The audit
+/// row's primary purpose — recording that a migration's DDL ran — is
+/// independent of whether new schema bytes hit disk on this apply:
+///
+/// - **`Some(snapshot)`** — the runner just persisted these bytes to
+///   `snapshot_path`. The audit row's `snapshot_signature_hex` is
+///   the HMAC over those bytes (or the no-op zero hex when the
+///   signing key is unset).
+/// - **`None`** — no snapshot was persisted (e.g. `db reset` replay,
+///   which re-runs the existing migrations against a fresh DB
+///   without producing new schema bytes). The audit row carries
+///   `NULL` in the signature column. NULL distinguishes "no snapshot
+///   was written this apply" from "snapshot written, signed under
+///   the no-op key" (the latter produces 64 zero hex chars).
+///
+/// Pre-issue-#118 this function took `&AppliedSchema` and the call
+/// site gated audit writes on snapshot presence — which meant `db
+/// reset` (the only production constructor of `RunnerCtx`) could
+/// never write audit rows.
 ///
 /// # Three-database awareness
 ///
@@ -1065,7 +1110,7 @@ async fn apply_plan_inner(
 /// none propagate. Reasons:
 ///
 /// - The app DB DDL has already committed.
-/// - The on-disk snapshot has already been persisted.
+/// - The on-disk snapshot has already been persisted (when supplied).
 /// - The ledger row has already reached `applied`.
 ///
 /// Rolling any of those back because the audit DB is unreachable
@@ -1081,11 +1126,11 @@ async fn apply_plan_inner(
 /// granularity the runner reports (the `Transactional /
 /// NonTransactional` split). MetadataOnly segments produce no SQL so
 /// they are skipped — there is no `ddl_sql` to record. The same
-/// `snapshot_signature_hex` lands on every segment row from a single
-/// apply: rows from one apply share the post-apply
-/// schema-of-record, and the audit reader reconstructs the
-/// per-segment timeline from `applied_at` ordering on the ledger
-/// side.
+/// `snapshot_signature_hex` (or `NULL` when no snapshot was supplied)
+/// lands on every segment row from a single apply: rows from one
+/// apply share the post-apply schema-of-record, and the audit reader
+/// reconstructs the per-segment timeline from `applied_at` ordering
+/// on the ledger side.
 ///
 /// # Signing key
 ///
@@ -1095,9 +1140,9 @@ async fn apply_plan_inner(
 /// up signing owns the operator-facing surface for key errors
 /// (`djogi verify` surfaces them as `VerifyError::KeyDecode`).
 /// Signing under the no-op key produces `[0u8; 32]` → 64 zero hex
-/// chars → a non-NULL string in the audit column. NULL is reserved
-/// for code paths where no signature was attempted (today: never on
-/// this path).
+/// chars → a non-NULL string in the audit column. `NULL` is reserved
+/// for code paths where no snapshot was supplied at all (today:
+/// `db reset` replay).
 fn audit_signing_key_from_loaded(
     loaded: Result<Option<[u8; 32]>, crate::snapshot::sign::SnapshotKeyError>,
 ) -> [u8; 32] {
@@ -1116,7 +1161,7 @@ fn audit_signature_hex_for_snapshot(
 async fn record_ddl_audit_for_plan(
     plan: &MigrationPlan,
     runner_ctx: &RunnerCtx,
-    snapshot: &super::schema::AppliedSchema,
+    snapshot: Option<&super::schema::AppliedSchema>,
 ) {
     let Some(audit_pool) = runner_ctx.audit_pool.as_ref() else {
         // Audit pool not configured — this is the supported "no
@@ -1124,13 +1169,6 @@ async fn record_ddl_audit_for_plan(
         return;
     };
 
-    // Re-serialize the snapshot to the same byte form `save_snapshot`
-    // wrote. The cost is one `serde_json::to_vec_pretty` per apply,
-    // amortised over however many segments the plan carries. Sharing
-    // the buffer with `save_snapshot` would require returning bytes
-    // up the stack and is left as a future micro-opt; for now,
-    // correctness > a couple-hundred-microsecond serialise.
-    //
     // Resolve the signing key before rendering the signature. Per the
     // no-op-key sentinel contract in `snapshot::sign`, an unset env var
     // (`Ok(None)`) and malformed value (`Err`) both collapse here to the
@@ -1138,17 +1176,34 @@ async fn record_ddl_audit_for_plan(
     // operator-facing surface for malformed keys (`djogi verify` surfaces
     // them as `VerifyError::KeyDecode`); the runner is the audit-side
     // consumer, not the configuration owner.
+    //
+    // **Snapshot decoupling (Phase 8.5 issue #118).** Audit rows now
+    // fire whenever `audit_pool.is_some()` regardless of whether a
+    // snapshot was persisted on this apply (the runner's `db reset`
+    // replay path deliberately passes `snapshot: None`). When no
+    // snapshot is supplied the audit row's `snapshot_signature_hex`
+    // column is `NULL` — distinguishing "no snapshot was written" from
+    // "snapshot written, signed under the no-op key" (the latter
+    // produces 64 zero hex chars, the former is `NULL`). This matches
+    // the `record_ddl` parameter contract: `snapshot_sig_hex:
+    // Option<&str>` was always optional; pre-issue-#118 the call site
+    // happened to always pass `Some`, but the column is nullable by
+    // design.
     let key = audit_signing_key_from_loaded(crate::snapshot::sign::load_signing_key_from_env());
-    let sig_hex = match audit_signature_hex_for_snapshot(snapshot, key) {
-        Ok(sig_hex) => sig_hex,
-        Err(e) => {
-            tracing::warn!(
-                target: "djogi::migrate::audit",
-                error = ?e,
-                "snapshot re-serialisation for audit signature failed; skipping audit",
-            );
-            return;
-        }
+    let sig_hex_opt: Option<String> = match snapshot {
+        Some(s) => match audit_signature_hex_for_snapshot(s, key) {
+            Ok(sig_hex) => Some(sig_hex),
+            Err(e) => {
+                tracing::warn!(
+                    target: "djogi::migrate::audit",
+                    error = ?e,
+                    "snapshot re-serialisation for audit signature failed; \
+                     proceeding with NULL signature so the DDL audit row still records the apply",
+                );
+                None
+            }
+        },
+        None => None,
     };
 
     // Construct an audit-side DjogiContext. `DjogiPool` wraps the
@@ -1214,7 +1269,7 @@ async fn record_ddl_audit_for_plan(
             &plan.bucket.database,
             &plan.bucket.app,
             &ddl_sql,
-            Some(&sig_hex),
+            sig_hex_opt.as_deref(),
         )
         .await
         {
@@ -3971,6 +4026,85 @@ mod tests {
             sig_hex,
             "0".repeat(64),
             "an unset signing key should use the no-op key and persist zero hex"
+        );
+    }
+
+    /// Phase 8.5 issue #118 — apply path with `audit_pool: Some` AND
+    /// `snapshot: None` (the `db reset` replay shape) MUST still
+    /// write `djogi_ddl_audit` rows. Pre-fix the audit-write loop
+    /// was gated on snapshot presence inside the same `if let`
+    /// block as `save_snapshot`, so production reset (which passes
+    /// `snapshot: None`) silently bypassed the audit overlay even
+    /// though the pool was wired through.
+    ///
+    /// Distinguishing assertion: `snapshot_signature_hex` is `NULL`
+    /// (not the no-op zero hex) — `NULL` is the contract for
+    /// "no snapshot was supplied this apply".
+    #[allow(clippy::await_holding_lock)]
+    #[djogi_test]
+    async fn apply_plan_writes_audit_rows_when_snapshot_none(mut ctx: DjogiContext) {
+        let _signing_key_env = SigningKeyEnvUnsetGuard::unset();
+        let plan = single_table_plan("audit_snapshot_none_applies");
+        let audit_pool = ctx
+            .share_pool()
+            .expect("djogi_test context should be pool-backed")
+            .inner;
+        // Build the runner ctx with audit_pool=Some BUT snapshot=None
+        // — this is the production `db reset` replay shape that the
+        // pre-fix code path could not service.
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260509000001__reset_audit_test".to_string(),
+            description: "snapshot-none audit test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: Some(audit_pool),
+        };
+        let guard = acquire_test_workspace_guard();
+
+        let report = apply_plan(&mut ctx, &plan, &runner_ctx, &guard)
+            .await
+            .expect("apply with audit_pool=Some and snapshot=None must succeed");
+        assert_eq!(report.transactional_segments, 1);
+
+        let row_count: i64 = ctx
+            .query_one(
+                "SELECT COUNT(*)::bigint FROM djogi_ddl_audit \
+                 WHERE target_database = 'main' AND app_label = ''",
+                &[],
+            )
+            .await
+            .expect("count audit rows")
+            .try_get(0)
+            .expect("decode count");
+        assert!(
+            row_count >= 1,
+            "expected at least one audit row when audit_pool=Some, even with snapshot=None; got {row_count}"
+        );
+
+        // Critical: signature column is NULL when no snapshot was
+        // supplied. Distinguishes "no snapshot this apply" (NULL)
+        // from "snapshot signed under no-op key" (zero hex). The
+        // verify CLI's tolerant comparison treats NULL as a
+        // no-stored-signature skip — see `verify::run`.
+        let sig: Option<String> = ctx
+            .query_one(
+                "SELECT snapshot_signature_hex FROM djogi_ddl_audit \
+                 WHERE target_database = 'main' AND app_label = '' \
+                 ORDER BY id DESC LIMIT 1",
+                &[],
+            )
+            .await
+            .expect("read most recent audit row signature")
+            .try_get(0)
+            .expect("decode signature");
+        assert_eq!(
+            sig, None,
+            "snapshot=None must persist NULL signature, not the no-op zero hex"
         );
     }
 

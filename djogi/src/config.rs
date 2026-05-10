@@ -44,6 +44,16 @@ fn default_profile() -> String {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DatabaseConfig {
     pub url: String,
+    /// CRUD/audit database URL. When `None`, audit surfaces derive
+    /// `crud_log` from [`url`](Self::url) unless an environment variable
+    /// override is present.
+    #[serde(default)]
+    pub crud_log_url: Option<String>,
+    /// Event/observability database URL. Reserved for the event-log
+    /// pool surface; stored here so `Djogi.toml` matches the documented
+    /// three-database architecture even before every consumer is wired.
+    #[serde(default)]
+    pub event_log_url: Option<String>,
     /// Connection-pool size override. `None` (or absent in TOML) means
     /// the env > Djogi.toml > builder-default chain falls through to
     /// the builder default; an explicit non-zero value here overrides
@@ -161,6 +171,8 @@ impl Default for DjogiConfig {
         Self {
             database: DatabaseConfig {
                 url: String::new(),
+                crud_log_url: None,
+                event_log_url: None,
                 max_connections: None,
                 dev_mode: false,
             },
@@ -208,6 +220,16 @@ impl DjogiConfig {
         if let Ok(url) = std::env::var("DATABASE_URL") {
             config.database.url = url;
         }
+        if let Ok(url) = std::env::var("CRUD_LOG_URL")
+            && !url.is_empty()
+        {
+            config.database.crud_log_url = Some(url);
+        }
+        if let Ok(url) = std::env::var("EVENT_LOG_URL")
+            && !url.is_empty()
+        {
+            config.database.event_log_url = Some(url);
+        }
 
         Ok(config)
     }
@@ -234,6 +256,16 @@ impl DjogiConfig {
         // DATABASE_URL env var always wins (not prefixed with DJOGI_)
         if let Ok(url) = std::env::var("DATABASE_URL") {
             config.database.url = url;
+        }
+        if let Ok(url) = std::env::var("CRUD_LOG_URL")
+            && !url.is_empty()
+        {
+            config.database.crud_log_url = Some(url);
+        }
+        if let Ok(url) = std::env::var("EVENT_LOG_URL")
+            && !url.is_empty()
+        {
+            config.database.event_log_url = Some(url);
         }
 
         Ok(config)
@@ -300,6 +332,83 @@ mod tests {
             assert!(
                 cfg.database.max_connections.is_none(),
                 "TOML without max_connections must remain None"
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[allow(clippy::result_large_err)] // Jail returns figment::Error
+    fn loaded_config_reads_three_database_urls_from_toml() {
+        let _guard = crate::migrate::audit::AUDIT_URL_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        figment::Jail::expect_with(|jail| {
+            // Empty process env values are treated as unset, so this
+            // test pins the TOML surface without inheriting a developer
+            // shell's CRUD_LOG_URL / EVENT_LOG_URL.
+            jail.set_env("CRUD_LOG_URL", "");
+            jail.set_env("EVENT_LOG_URL", "");
+            jail.create_file(
+                "Djogi.toml",
+                r#"
+                [database]
+                url = "postgres://localhost/app"
+                crud_log_url = "postgres://localhost/crud_log"
+                event_log_url = "postgres://localhost/event_log"
+                dev_mode = false
+
+                [server]
+                host = "0.0.0.0"
+                port = 8000
+                "#,
+            )?;
+
+            let cfg = DjogiConfig::load().expect("load should succeed");
+            assert_eq!(
+                cfg.database.crud_log_url.as_deref(),
+                Some("postgres://localhost/crud_log")
+            );
+            assert_eq!(
+                cfg.database.event_log_url.as_deref(),
+                Some("postgres://localhost/event_log")
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[allow(clippy::result_large_err)] // Jail returns figment::Error
+    fn unprefixed_log_url_env_vars_override_toml() {
+        let _guard = crate::migrate::audit::AUDIT_URL_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("CRUD_LOG_URL", "postgres://localhost/env_crud_log");
+            jail.set_env("EVENT_LOG_URL", "postgres://localhost/env_event_log");
+            jail.create_file(
+                "Djogi.toml",
+                r#"
+                [database]
+                url = "postgres://localhost/app"
+                crud_log_url = "postgres://localhost/toml_crud_log"
+                event_log_url = "postgres://localhost/toml_event_log"
+                dev_mode = false
+
+                [server]
+                host = "0.0.0.0"
+                port = 8000
+                "#,
+            )?;
+
+            let cfg = DjogiConfig::load().expect("load should succeed");
+            assert_eq!(
+                cfg.database.crud_log_url.as_deref(),
+                Some("postgres://localhost/env_crud_log")
+            );
+            assert_eq!(
+                cfg.database.event_log_url.as_deref(),
+                Some("postgres://localhost/env_event_log")
             );
             Ok(())
         });

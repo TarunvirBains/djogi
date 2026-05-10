@@ -107,7 +107,7 @@ async fn seed_audit_row(
     ctx: &mut djogi::DjogiContext,
     database: &str,
     app: &str,
-    signature_hex: &str,
+    signature_hex: Option<&str>,
 ) {
     djogi::migrate::audit::bootstrap_ddl_audit(ctx)
         .await
@@ -117,7 +117,7 @@ async fn seed_audit_row(
         database,
         app,
         "-- T9.7 fixture DDL",
-        Some(signature_hex),
+        signature_hex,
     )
     .await
     .expect("record_ddl");
@@ -143,7 +143,7 @@ async fn verify_clean_workspace_exits_zero(mut ctx: djogi::DjogiContext) {
     // row matches what verify will compute.
     let sig = sign_snapshot(&snapshot_bytes, &[0u8; 32]);
     let sig_hex = djogi::migrate::audit::signature_to_hex(&sig);
-    seed_audit_row(&mut ctx, &database, app, &sig_hex).await;
+    seed_audit_row(&mut ctx, &database, app, Some(&sig_hex)).await;
 
     // Run `djogi verify --workspace <tmp>`. Override the audit DB
     // URL so it points at the same per-test DB (single-DB
@@ -213,7 +213,15 @@ async fn verify_mismatched_snapshot_exits_one(mut ctx: djogi::DjogiContext) {
     // ORIGINAL bytes under the test-only signing key.
     let sig = sign_snapshot(&snapshot_bytes, &signing_key);
     let sig_hex = djogi::migrate::audit::signature_to_hex(&sig);
-    seed_audit_row(&mut ctx, &database, app, &sig_hex).await;
+    seed_audit_row(&mut ctx, &database, app, Some(&sig_hex)).await;
+
+    // Regression for issue #118: `db reset` writes audit rows with
+    // `snapshot_signature_hex = NULL` because reset replays DDL without
+    // persisting a fresh snapshot. Verify must ignore those NULL rows
+    // when searching for the latest signed snapshot row; otherwise a
+    // reset after the signed apply would mask this tamper mismatch and
+    // downgrade it to a skip.
+    seed_audit_row(&mut ctx, &database, app, None).await;
 
     // Step 2 — tamper the on-disk snapshot AFTER the audit row was
     // written. This simulates the canonical filesystem-tamper

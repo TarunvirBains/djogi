@@ -130,6 +130,33 @@ pub struct ResetRequest<'a> {
     /// phase. Operators rarely override this; the CLI default is the
     /// loaded `Djogi.toml::migrate` block.
     pub migrate_config: MigrateConfig,
+    /// Optional pool pointing at the **audit DB** (`crud_log_url` in
+    /// `Djogi.toml`, by default `crud_log` derived from
+    /// `database.url`). When `Some`, every replayed migration writes
+    /// one `djogi_ddl_audit` row per executed (non-metadata) segment
+    /// so the audit trail captures the post-reset apply just as a
+    /// regular `apply` would. When `None` the audit write is silently
+    /// skipped — appropriate for adopters who have not yet provisioned
+    /// the second DB OR for tests that only care about the app-side
+    /// replay.
+    ///
+    /// **Why a raw `deadpool_postgres::Pool`:** mirrors
+    /// [`super::runner::RunnerCtx::audit_pool`] so the replay
+    /// orchestrator can pass the pool through without re-wrapping.
+    /// See the doc on `RunnerCtx::audit_pool` for the rationale (the
+    /// audit pool is internal substrate; `DjogiPool`'s wider invariants
+    /// such as post-connect callbacks and status reporting are not
+    /// needed for the audit-side context the runner builds).
+    ///
+    /// **Construction.** Production callers build this via
+    /// [`super::resolve_audit_url`] + [`super::build_audit_pool`]. The
+    /// CLI's `db reset` glue degrades to `None` (with a warn log) if
+    /// audit URL resolution or pool construction fails — losing the
+    /// audit row is preferable to refusing the destructive operation
+    /// over a sibling-DB outage. Tests typically pass `None` unless
+    /// they explicitly want to assert the per-segment audit-row
+    /// behaviour.
+    pub audit_pool: Option<deadpool_postgres::Pool>,
 }
 
 /// Successful-reset report. Names every replayed migration so the
@@ -462,6 +489,7 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
             &version,
             &req.migrate_config,
             &_guard,
+            req.audit_pool.as_ref(),
         )
         .await?;
         replayed.push(ReplayedMigration {
@@ -767,6 +795,7 @@ async fn replay_one_migration(
     version: &str,
     migrate_config: &MigrateConfig,
     guard: &super::guard::WorkspaceGuard,
+    audit_pool: Option<&deadpool_postgres::Pool>,
 ) -> Result<(), ResetError> {
     let bucket_dir = super::target::bucket_dir(workspace_root, bucket);
     let up_path = bucket_dir.join(up_filename(version));
@@ -830,11 +859,18 @@ async fn replay_one_migration(
         // means a bug here surfaces as a warning rather than a hard
         // failure during the time-sensitive reset window.
         out_of_order_policy: OutOfOrderPolicy::AllowWithDiagnostic,
-        // T9.4: audit-DB plumbing exists on `RunnerCtx` but the
-        // replay path inside `db reset` does not yet route the
-        // audit pool through. T9.5 wires the apply path; the
-        // reset orchestrator inherits that wiring once it lands.
-        audit_pool: None,
+        // Phase 8.5 Cluster 2 issue #118 — production wire-up. When the
+        // caller supplied an audit pool on `ResetRequest::audit_pool`
+        // we plumb it through to `RunnerCtx` so each replayed
+        // migration writes one `djogi_ddl_audit` row per executed
+        // segment, exactly as a regular `apply` would. `cloned()`
+        // bumps the underlying `Arc` (deadpool pools are Arc-shaped)
+        // so the runner's per-segment context can take ownership of
+        // its own handle without disturbing the orchestrator's. When
+        // the caller passed `None` the runner's audit-write loop
+        // gracefully skips — matching the runner's own best-effort
+        // stance documented on `record_ddl_audit_for_plan`.
+        audit_pool: audit_pool.cloned(),
     };
 
     apply_plan(ctx, &plan, &runner_ctx, guard)
@@ -1073,6 +1109,10 @@ mod tests {
             confirmed,
             maintenance_database: "postgres",
             migrate_config: MigrateConfig::default(),
+            // Gate / URL / replay tests do not assert audit-row
+            // behaviour — the focused audit-pool wire-up coverage
+            // lives in `tests/internal/sources/phase8_5_c2_118_*`.
+            audit_pool: None,
         }
     }
 
@@ -1298,6 +1338,7 @@ mod tests {
             confirmed: true,
             maintenance_database: "'; DROP DATABASE main; --",
             migrate_config: MigrateConfig::default(),
+            audit_pool: None,
         };
         match reset_app_database(bogus_maint).await {
             Err(ResetError::InvalidDatabaseName { name }) => {

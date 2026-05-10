@@ -932,6 +932,8 @@ mod tests {
         clear_env();
         let cfg = DatabaseConfig {
             url: String::new(),
+            crud_log_url: None,
+            event_log_url: None,
             max_connections: None,
             dev_mode: false,
         };
@@ -941,6 +943,8 @@ mod tests {
         clear_env();
         let cfg = DatabaseConfig {
             url: String::new(),
+            crud_log_url: None,
+            event_log_url: None,
             max_connections: Some(25),
             dev_mode: false,
         };
@@ -950,6 +954,8 @@ mod tests {
         unsafe { std::env::set_var(ENV_DATABASE_MAX_CONNECTIONS, "42") };
         let cfg = DatabaseConfig {
             url: String::new(),
+            crud_log_url: None,
+            event_log_url: None,
             max_connections: Some(25),
             dev_mode: false,
         };
@@ -959,6 +965,8 @@ mod tests {
         unsafe { std::env::set_var(ENV_DATABASE_MAX_CONNECTIONS, "  ") };
         let cfg = DatabaseConfig {
             url: String::new(),
+            crud_log_url: None,
+            event_log_url: None,
             max_connections: Some(25),
             dev_mode: false,
         };
@@ -968,6 +976,8 @@ mod tests {
         unsafe { std::env::set_var(ENV_DATABASE_MAX_CONNECTIONS, "not-a-number") };
         let cfg = DatabaseConfig {
             url: String::new(),
+            crud_log_url: None,
+            event_log_url: None,
             max_connections: Some(25),
             dev_mode: false,
         };
@@ -978,6 +988,8 @@ mod tests {
         unsafe { std::env::set_var(ENV_DATABASE_MAX_CONNECTIONS, "0") };
         let cfg = DatabaseConfig {
             url: String::new(),
+            crud_log_url: None,
+            event_log_url: None,
             max_connections: Some(25),
             dev_mode: false,
         };
@@ -987,6 +999,8 @@ mod tests {
         unsafe { std::env::set_var(ENV_DATABASE_MAX_CONNECTIONS, "0") };
         let cfg = DatabaseConfig {
             url: String::new(),
+            crud_log_url: None,
+            event_log_url: None,
             max_connections: None,
             dev_mode: false,
         };
@@ -1007,6 +1021,8 @@ mod tests {
 
         let cfg = DatabaseConfig {
             url: "postgres://localhost/_djogi_unreachable".to_string(),
+            crud_log_url: None,
+            event_log_url: None,
             max_connections: Some(11),
             dev_mode: false,
         };

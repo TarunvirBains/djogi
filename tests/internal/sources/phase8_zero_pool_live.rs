@@ -464,6 +464,8 @@ async fn from_database_config_honours_toml_max_connections() {
 
     let cfg = djogi::config::DatabaseConfig {
         url: url.clone(),
+        crud_log_url: None,
+        event_log_url: None,
         max_connections: Some(13),
         dev_mode: false,
     };
@@ -496,6 +498,8 @@ async fn from_database_config_env_overrides_toml() {
 
     let cfg = djogi::config::DatabaseConfig {
         url: url.clone(),
+        crud_log_url: None,
+        event_log_url: None,
         max_connections: Some(13),
         dev_mode: false,
     };

@@ -35,6 +35,19 @@ thiserror.workspace = true
 # transitively; declaring it directly here keeps the import path
 # stable (no `djogi::__private::*` reach-through from CLI code).
 tokio-postgres.workspace = true
+# Used by `db reset` (Phase 8.5 issue #118) to plumb the audit-DB
+# pool from `djogi::migrate::build_audit_pool` into
+# `ResetRequest::audit_pool`. The runner exposes the raw deadpool
+# handle on `RunnerCtx::audit_pool` deliberately (see the doc on
+# that field for the rationale); declaring deadpool-postgres directly
+# here mirrors the same "stable import path" reasoning as the
+# tokio-postgres dep above.
+deadpool-postgres.workspace = true
+# Used by `db reset` (Phase 8.5 issue #118) to emit best-effort
+# degradation warnings when audit-pool URL resolution or pool
+# construction fails. djogi already depends on tracing transitively;
+# declaring it directly here keeps the macro path stable.
+tracing.workspace = true
 # Used by `analyze` to derive `Serialize` on `TableHealth` and
 # `Recommendation` so T10.2 can emit deterministic JSON output via
 # `serde_json`. The pure recommend() layer (T10.1) only needs the

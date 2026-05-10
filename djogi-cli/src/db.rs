@@ -121,12 +121,30 @@ pub fn reset_cmd(yes: bool, maintenance_database: String, workspace: Option<Path
 }
 
 /// Async body of [`reset_cmd`]. Returns the desired exit code.
+///
+/// **Audit pool wire-up (issue #118).** The `db reset` replay path
+/// passes its `RunnerCtx` through to `apply_plan`, which writes a
+/// `djogi_ddl_audit` row per executed segment when given a
+/// `Some(audit_pool)`. The CLI resolves the audit DB URL via
+/// [`djogi::migrate::resolve_audit_url`] (`CRUD_LOG_URL` / compatibility
+/// env, `[database].crud_log_url`, then derive `crud_log` from
+/// `database.url`) and constructs the pool via
+/// [`djogi::migrate::build_audit_pool`].
+///
+/// Audit pool construction is **best-effort**: a missing
+/// `Djogi.toml::database.url` path component, an unreachable audit DB,
+/// or a self-audit refusal degrades to `audit_pool = None` with a
+/// `tracing::warn!`. We do not block the destructive `db reset` over a
+/// sibling-DB outage; the runner's own audit-write loop already
+/// degrades silently when the pool is absent (see
+/// `record_ddl_audit_for_plan`'s failure-mode rationale).
 async fn run_reset(
     workspace: &Path,
     config: &DjogiConfig,
     maintenance_database: &str,
     confirmed: bool,
 ) -> i32 {
+    let audit_pool = resolve_audit_pool_best_effort(config).await;
     let req = ResetRequest {
         workspace_root: workspace,
         database_url: &config.database.url,
@@ -139,6 +157,7 @@ async fn run_reset(
             pk_flip_long_tx_threshold_secs: config.migrate.pk_flip_long_tx_threshold_secs,
             pk_flip_join_table_option: config.migrate.pk_flip_join_table_option,
         },
+        audit_pool,
     };
     match reset_app_database(req).await {
         Ok(report) => {
@@ -155,6 +174,71 @@ async fn run_reset(
         Err(other) => {
             eprintln!("djogi db reset: {other}");
             1
+        }
+    }
+}
+
+/// Best-effort audit-pool construction for the `db reset` replay path
+/// (issue #118).
+///
+/// Returns `Some(pool)` when the operator's environment / `Djogi.toml`
+/// resolves to an audit DB URL and the pool can be constructed from
+/// that URL. Returns `None` (with a `tracing::warn!`) on any of:
+///
+/// - URL resolution failure (no path component to splice; no
+///   `CRUD_LOG_URL` / `[database].crud_log_url` override; self-audit
+///   refusal because `database.url` already ends in `/crud_log`).
+/// - Syntactically invalid pool configuration or immediate pool
+///   construction failure.
+///
+/// **Why best-effort.** The audit overlay is a defence-in-depth
+/// mechanism: an audit row exists so a future `db reset` cannot erase
+/// the migration history. Refusing the destructive `db reset` over an
+/// audit-side configuration glitch would invert the priority — the
+/// operator's recovery path (re-run reset to rebuild the DB) gets
+/// blocked by a sibling-DB outage. The runner's own audit-write loop
+/// already follows the same stance: a `Some(audit_pool)` whose first
+/// `INSERT` fails is logged + skipped without rolling back the
+/// committed app DDL (see [`super::audit`]'s
+/// `record_ddl_audit_for_plan` doc).
+///
+/// **Operator visibility.** Degradation paths detected before replay
+/// print a warning to stderr and also emit a `tracing::warn!` with the
+/// offending URL (when known). A syntactically valid but unreachable
+/// audit DB may not fail until the runner's first audit insert; that
+/// later path follows the runner's existing best-effort tracing warning.
+async fn resolve_audit_pool_best_effort(config: &DjogiConfig) -> Option<deadpool_postgres::Pool> {
+    let url = match djogi::migrate::resolve_audit_url(config) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!(
+                "djogi db reset: warning — audit-pool URL resolution failed; \
+                 proceeding without djogi_ddl_audit rows: {e}"
+            );
+            tracing::warn!(
+                target: "djogi::cli::db::reset",
+                error = %e,
+                "audit-pool URL resolution failed; db reset will proceed without writing \
+                 djogi_ddl_audit rows"
+            );
+            return None;
+        }
+    };
+    match djogi::migrate::build_audit_pool(&url).await {
+        Ok(pool) => Some(pool),
+        Err(e) => {
+            eprintln!(
+                "djogi db reset: warning — audit-pool construction failed for `{url}`; \
+                 proceeding without djogi_ddl_audit rows: {e}"
+            );
+            tracing::warn!(
+                target: "djogi::cli::db::reset",
+                audit_url = %url,
+                error = %e,
+                "audit-pool construction failed; db reset will proceed without writing \
+                 djogi_ddl_audit rows"
+            );
+            None
         }
     }
 }
