@@ -1,0 +1,13 @@
+# Cargo test names that must run in the Spatial (PostGIS) CI lane with
+# `--all-features`. `cargo xtask check-spatial-ci` fails if a Cargo test that
+# contains spatial-gated scenarios or `#[djogi_test(extensions = ["postgis"])]`
+# is missing from this manifest.
+phase6_spatial
+phase6_5_spatial_polish
+phase7_t10_sync_models_live
+phase7_t10_sync_models_catalog_live
+phase7_zero_indexes_live
+phase8_zero_cluster_c_spatial_live
+phase8_zero_cluster_c_spatial_scalar_live
+phase8_zero_cluster_c_window_live
+phase8_zero_cluster_c_bench

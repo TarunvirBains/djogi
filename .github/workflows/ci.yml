@@ -24,7 +24,12 @@ jobs:
 
     services:
       postgres:
-        image: postgres:18
+        # Use the same PostGIS-backed Postgres image as the spatial lane so
+        # extension availability does not drift between local dev, default CI,
+        # and all-features CI. Individual tests still create extensions per
+        # database through `#[djogi_test(extensions = [...])]` or migration
+        # bootstrap; image availability is not database installation.
+        image: postgis/postgis:18-3.6
         env:
           POSTGRES_USER: djogi
           POSTGRES_PASSWORD: djogi
@@ -126,6 +131,9 @@ jobs:
       - name: Test surface policy
         run: cargo xtask check-test-surface
 
+      - name: Spatial CI manifest policy
+        run: cargo xtask check-spatial-ci
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets --features spatial,outbox,notify,testing -- -D warnings
 
@@ -166,18 +174,13 @@ jobs:
         # `Cargo.toml` activates djogi's `spatial` + `outbox` features,
         # and under cargo's resolver-2 workspace feature unification a
         # `cargo test --workspace` would cascade those activations onto
-        # djogi globally — forcing spatial-gated integration tests in
-        # djogi (e.g., `phase6_5_spatial_polish`) to compile with the
-        # spatial cfg active and then panic at runtime trying to
-        # `CREATE EXTENSION postgis` against the default-features test
-        # container, which has no PostGIS. The Spatial (PostGIS) job
-        # below runs those tests intentionally with `--all-features`
-        # against a postgis-enabled image; here we keep
-        # elephant-tracker out of the unified feature graph so the
-        # default-features sweep stays default-features. The Build
-        # step above still covers `--workspace` (build, not test —
-        # PostGIS is a runtime dep, not a compile dep). Tracked in
-        # issue #80.
+        # djogi globally. That would mix the default-features lane with
+        # the all-features spatial lane and bypass the manifest contract
+        # in `tests/spatial-ci-tests.txt`. The Spatial (PostGIS) job below
+        # runs those tests intentionally with `--all-features`; here we
+        # keep elephant-tracker out of the unified feature graph so the
+        # default-features sweep stays default-features. The Build step
+        # above still covers `--workspace`. Tracked in issue #80.
         run: cargo test --workspace --exclude elephant-tracker -- --test-threads=1
 
       - name: Phase 8 cache modifier
@@ -252,30 +255,18 @@ jobs:
       - name: cargo check (default features)
         run: cargo check --workspace
 
-  # Spatial / PostGIS coverage — runs the Phase 7 T10 sync_models
-  # spatial scenario against a PostGIS-enabled Postgres image. The
-  # default `check` job above runs only with default features against
-  # `postgres:18`, so any test that calls into `CREATE EXTENSION
-  # postgis` is silently skipped there (Codex T10 round-1 B-1: the
-  # `extensions`-before-`sync_models` ordering proof for
-  # `geography(Point, 4326)` columns lives only in the `spatial`
-  # feature, and without this dedicated job the proof never runs in
-  # CI).
-  #
-  # Runs `phase7_t10_sync_models_live` plus every Phase 8-Zero
-  # Cluster C live spatial harness (`phase8_zero_cluster_c_spatial_live`,
-  # `phase8_zero_cluster_c_spatial_scalar_live`,
-  # `phase8_zero_cluster_c_bench`). Future spatial-feature tests that
-  # are not part of these targets must be added explicitly to the test
-  # steps below — without an entry here the test silently does not run
-  # in CI even when authored, as the C1 convex_hull geography-cast bug
-  # demonstrated (it shipped at commit 5ec0da5 because the C1 spatial
-  # live test was never wired in here, and only surfaced once the C4
-  # bench was about to actually run live in this job).
+  # Spatial / PostGIS coverage — runs every test listed in
+  # `tests/spatial-ci-tests.txt` with `--all-features`. The default
+  # `check` job above uses the same PostGIS-backed service image, but
+  # it intentionally runs default features only; tests with
+  # `required-features = ["spatial"]` do not execute there, and mixed
+  # tests with `#[cfg(feature = "spatial")]` compile out their spatial
+  # scenarios. `cargo xtask check-spatial-ci` keeps this manifest in
+  # sync with Cargo test metadata and included source files.
   #
   # Kept as a separate job rather than a feature toggle inside `check`
-  # so the spatial dependency footprint (PostGIS image pull, GEOS
-  # libraries) doesn't slow down the common default-features run.
+  # so all-features spatial runtime coverage remains explicit and easy
+  # to attribute.
   spatial:
     name: Spatial (PostGIS)
     runs-on: ubuntu-latest
@@ -363,28 +354,13 @@ jobs:
           key: ${{ runner.os }}-cargo-target-spatial-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-target-spatial-
 
-      # Run the T10 live sync_models suite with `--all-features` so the
-      # `#[cfg(feature = "spatial")]` scenarios compile and execute.
-      # Single-threaded because each `#[djogi_test]` provisions its own
-      # per-test database; concurrent provisioning races on
-      # CREATE/DROP DATABASE.
-      - name: T10 spatial sync_models live test
-        run: cargo test -p djogi --test phase7_t10_sync_models_live --all-features -- --test-threads=1
-
-      - name: Phase 6 spatial live test (GeoPoint, within_km, order_by_distance)
-        run: cargo test -p djogi --test phase6_spatial --all-features -- --test-threads=1
-
-      - name: Phase 6.5 spatial polish live test (LineString, Polygon, MultiPoint, contains/intersects)
-        run: cargo test -p djogi --test phase6_5_spatial_polish --all-features -- --test-threads=1
-
-      - name: Cluster C spatial live test (T16/T17 — convex_hull, intersection, area)
-        run: cargo test -p djogi --test phase8_zero_cluster_c_spatial_live --all-features -- --test-threads=1
-
-      - name: Cluster C spatial scalar live test (C1 — area_of scalar probes)
-        run: cargo test -p djogi --test phase8_zero_cluster_c_spatial_scalar_live --all-features -- --test-threads=1
-
-      - name: Cluster C window live test (T18 — RowNumber/Rank/DenseRank, qualify lowering)
-        run: cargo test -p djogi --test phase8_zero_cluster_c_window_live --all-features -- --test-threads=1
-
-      - name: Cluster C smoke benchmarks (T20b — convex_hull + qualify lowering)
-        run: cargo test -p djogi --test phase8_zero_cluster_c_bench --all-features -- --test-threads=1
+      - name: Spatial manifest tests
+        run: |
+          while IFS= read -r test_name; do
+            case "$test_name" in
+              ""|\#*) continue ;;
+            esac
+            echo "::group::cargo test -p djogi --test ${test_name} --all-features"
+            cargo test -p djogi --test "$test_name" --all-features -- --test-threads=1
+            echo "::endgroup::"
+          done < tests/spatial-ci-tests.txt
