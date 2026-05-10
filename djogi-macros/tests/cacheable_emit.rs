@@ -192,6 +192,61 @@ fn cacheable_skipped_for_pk_none() {
 }
 
 // ---------------------------------------------------------------------------
+// `Cacheable::Fields` associated-type pin (issue #121). The auto-emitted
+// `impl Cacheable` MUST set `type Fields = {Model}Fields`, where
+// `{Model}Fields` is the ZST companion emitted by `model::stubs::expand`
+// (and re-used by every `QuerySet::filter(|f| ...)` closure call site).
+//
+// Without this pin a regression that:
+//   * accidentally let sassi-codegen run `generate_fields_struct` would
+//     surface an E0428 (`{Model}Fields defined twice`) at expand time —
+//     caught upstream of this assertion;
+//   * silently wired `type Fields = ()` (or any other unintended type)
+//     through some future plumbing change would otherwise compile cleanly
+//     — only this assertion catches that scenario.
+// ---------------------------------------------------------------------------
+
+fn assert_fields_type<T, Expected>()
+where
+    T: Cacheable<Fields = Expected>,
+    Expected: ::std::default::Default + ::std::marker::Send + ::std::marker::Sync + 'static,
+{
+}
+
+/// `Cacheable::Fields` for every PK strategy resolves to the djogi-emitted
+/// `{Model}Fields` companion — never `()`, never a sassi-codegen-emitted
+/// collision struct. This is the load-bearing surface check for the
+/// Cluster 2 issue #121 cutover (route Cacheable emit through
+/// `sassi_codegen::generate_cacheable_impl` with
+/// `CacheableFieldsMode::external(...)`).
+#[test]
+fn cacheable_fields_is_djogi_companion() {
+    assert_fields_type::<DefaultModel, DefaultModelFields>();
+    assert_fields_type::<HeerIdModel, HeerIdModelFields>();
+    assert_fields_type::<RanjIdModel, RanjIdModelFields>();
+    assert_fields_type::<HeerIdDescModel, HeerIdDescModelFields>();
+    assert_fields_type::<RanjIdDescModel, RanjIdDescModelFields>();
+    assert_fields_type::<SerialModel, SerialModelFields>();
+    assert_fields_type::<CustomPkModel, CustomPkModelFields>();
+    assert_fields_type::<WatermarkModel, WatermarkModelFields>();
+}
+
+/// `Cacheable::fields()` must construct the ZST through the same
+/// `{Model}Fields::new()` constructor `model::stubs::expand` emits — the
+/// resulting handle is `Default + Send + Sync + 'static` and round-trips
+/// through trait dispatch. Calling the trait method (rather than the
+/// inherent `::new()`) proves the macro wired the constructor expression
+/// correctly through `CacheableFieldsMode::external`'s `constructor` slot.
+#[test]
+fn cacheable_fields_constructor_returns_zst() {
+    let _f: DefaultModelFields = <DefaultModel as Cacheable>::fields();
+    let _f: HeerIdModelFields = <HeerIdModel as Cacheable>::fields();
+    let _f: SerialModelFields = <SerialModel as Cacheable>::fields();
+    let _f: CustomPkModelFields = <CustomPkModel as Cacheable>::fields();
+    let _f: WatermarkModelFields = <WatermarkModel as Cacheable>::fields();
+}
+
+// ---------------------------------------------------------------------------
 // Behaviour assertions — `Cacheable::id(&self)` clones the `id` field;
 // `DeltaSyncCacheable::watermark(&self)` clones the watermark field.
 // These are general-shape tests that don't change per PK strategy

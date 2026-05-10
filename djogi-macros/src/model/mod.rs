@@ -256,13 +256,14 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     let descriptor = descriptor::expand(&struct_item, &model_attrs, &field_attrs, &computed_attrs);
 
     // 4b. Cacheable + DeltaSyncCacheable auto-emission — Cluster 8δ T7.2.
-    //     Routes through `sassi-codegen` for the DeltaSyncCacheable arm
-    //     (so the surface stays in lock-step with sassi's own
-    //     `#[derive(Cacheable)]`); the Cacheable arm is hand-rolled so
-    //     PR3 can wire `type Fields = {Model}Fields` without invoking
-    //     sassi-codegen's separate companion-struct emitter. Skipped
-    //     entirely for `pk = None` models — the cache surface cannot
-    //     ride the `QuerySet`-driven path without a `Model` impl. See
+    //     Both arms route through `sassi-codegen` so the surface stays in
+    //     lock-step with sassi's own `#[derive(Cacheable)]`. The Cacheable
+    //     arm uses `CacheableFieldsMode::external(...)` so sassi-codegen's
+    //     `generate_fields_struct` does not run — djogi's own
+    //     `model::stubs::expand` already owns the `{Model}Fields` name with
+    //     a different (`DjogiField<Self, V>`) accessor shape. Skipped
+    //     entirely for `pk = None` models — the cache surface cannot ride
+    //     the `QuerySet`-driven path without a `Model` impl. See
     //     `model::cacheable` for the full rationale + the macro-path-
     //     routing contract.
     let cacheable = cacheable::expand(&struct_item, &model_attrs, &field_attrs);
