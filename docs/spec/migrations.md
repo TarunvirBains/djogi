@@ -219,6 +219,96 @@ Rename behavior is explicit only:
 
 No heuristic rename guessing is part of the core differ.
 
+### 10.6.1 Type-Derived CHECK Projection (djogi#186)
+
+The differ projects a table-level `CHECK` constraint for every column whose
+Rust source type widens to a Postgres column type. The projection is
+type-driven and runs at descriptor → snapshot lowering time, so the resulting
+CHECK serializes into `schema_snapshot.json` and survives every round-trip.
+
+**Mapping table.** Each Rust source type widens to the smallest signed Postgres
+integer that fits its full value range; `u64` widens to `NUMERIC(20, 0)`
+because `u64::MAX > i64::MAX`. The CHECK expression bounds the widened column
+to the Rust source type's natural range.
+
+| Rust source | Postgres column | Type-derived CHECK expression          |
+|-------------|-----------------|----------------------------------------|
+| `i8`        | `SMALLINT`      | `<col> >= -128 AND <col> <= 127`       |
+| `u8`        | `SMALLINT`      | `<col> >= 0 AND <col> <= 255`          |
+| `u16`       | `INTEGER`       | `<col> >= 0 AND <col> <= 65535`        |
+| `u32`       | `BIGINT`        | `<col> >= 0 AND <col> <= 4294967295`   |
+| `u64`       | `NUMERIC(20, 0)`| `<col> >= 0 AND <col> <= 18446744073709551615` |
+
+Identity-mapped widths (`i16`, `i32`, `i64`, `bool`, `String`, `f32`, `f64`,
+...) project no CHECK because the column type already covers their full range.
+FK columns inherit the parent PK's identity-width type, so they project no
+CHECK either.
+
+**Constraint naming.** Each projected CHECK becomes a table-level constraint
+named `<table>_<column>_check`, deterministic from `(table, column)`. The
+naming function lives at `djogi/src/migrate/sql.rs::check_constraint_name` and
+truncates to Postgres' 63-byte identifier limit by appending an 8-char hex
+digest to a 54-byte stem.
+
+**ADD lifecycle.** Descriptor evolves from a column with no CHECK (e.g. `i64`)
+to a column whose Rust source projects a CHECK (e.g. `u32`). The differ at
+`migrate/diff.rs::emit_alter_column` emits `ColumnChange::SetCheck(Some(expr))`
+which the SQL emitter renders as:
+
+```sql
+ALTER TABLE <table> ADD CONSTRAINT <table>_<column>_check CHECK (<expr>);
+```
+
+**DROP lifecycle.** Descriptor evolves from a column whose Rust source projects
+a CHECK (e.g. `u32`) to a column with no CHECK (e.g. `i64`). The differ emits
+`ColumnChange::SetCheck(None)` which renders as:
+
+```sql
+ALTER TABLE <table> DROP CONSTRAINT <table>_<column>_check;
+```
+
+The down-migration carries a documented-not-recoverable comment because the
+prior CHECK expression is not preserved in the diff.
+
+**AMEND lifecycle.** Descriptor evolves from a column with one CHECK to a
+column with a different CHECK (e.g. `u16` → `u32`, or any `#[field(check)]`
+expression edit). The differ detects the AMEND case explicitly and emits two
+`ColumnChange` entries in order — `SetCheck(None)` followed by
+`SetCheck(Some(new))` — so the SQL pair is:
+
+```sql
+ALTER TABLE <table> DROP CONSTRAINT <table>_<column>_check;
+ALTER TABLE <table> ADD CONSTRAINT <table>_<column>_check CHECK (<new_expr>);
+```
+
+The two-step emission is required because the SQL emitter for
+`SetCheck(Some(expr))` synthesizes the same constraint name regardless of
+whether one already exists; without the explicit DROP, the second ALTER would
+collide on the constraint name slot. The pair is symmetric, easy to read in
+audit logs, and reuses both existing emitter arms unchanged.
+
+**Online safety.** All three lifecycle operations classify as `OnlineSafe` on
+empty tables. On populated tables, the ADD case routes through the two-phase
+constraint validation default (per the `Two-phase constraint validation
+default (Phase 7.5)` decision row): `ADD CONSTRAINT … NOT VALID` followed by
+a separate `VALIDATE CONSTRAINT` step under `ShareUpdateExclusiveLock`. DROP
+is always catalog-only.
+
+**Family extensibility.** The same `field_type_check` projection helper is
+designed to grow with future type families: temporal year bounds (djogi#187),
+Decimal precision (djogi#188), and HeerId / RanjId structural validation
+(djogi#189) all plug into the same match without reshaping the helper
+signature. See `decisions.md` "Type-derived CHECK projection (Phase 8.5 v3
+Cluster 2)" for the contract.
+
+**Currently shipped vs deferred.** The projection contract, the AMEND DROP+ADD
+fix, and `IntoFilterValue for u64` ship under djogi#186. The actual
+`rust_type_to_sql` arms for `i8 / u8 / u16 / u32 / u64` are gated on djogi#190
+(per-field bind/decode shims in the macro emitter) — `tokio_postgres::ToSql`
+binds `i8` as `"char"` and `u32` as `OID`, and has no impl for `u8 / u16 /
+u64` at all. djogi#190 closes the column-side wiring; the projection contract
+landed here is reusable as-is when that work lands.
+
 ### 10.7 Ledger and Locking
 
 The migration ledger table is `djogi_schema_migrations`.
