@@ -1571,7 +1571,6 @@ dependencies = [
  "postcard",
  "sassi-macros",
  "serde",
- "serde_json",
  "thiserror",
  "time",
  "tokio",
