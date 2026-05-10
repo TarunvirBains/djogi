@@ -1,8 +1,10 @@
-//! Deliberate raw SQL escape hatches.
+//! Deliberate raw SQL escape hatches — djogi's `unsafe`-equivalent.
 //!
-//! This module is public so adopter crates and workspace examples can opt in
-//! consciously, but it is `#[doc(hidden)]` and sealed. In this repository's
-//! tests, the supported way to bring these traits into scope is the
+//! Raw SQL in djogi is treated culturally the way `unsafe` is in Rust: not
+//! banned, but always conscious. This module is public so adopter crates and
+//! workspace examples can opt in consciously, but the module itself is
+//! `#[doc(hidden)]` (declared at the crate root) and the traits inside are
+//! sealed. The supported way to bring these traits into scope is the
 //! `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute plus an
 //! attached `// JUSTIFICATION ...` comment; `cargo xtask check-justifications`
 //! enforces that convention under `tests/`.
@@ -118,6 +120,35 @@
 //! Tracking issue: [djogi#162](https://github.com/TarunvirBains/djogi/issues/162).
 //! See also [`docs/spec/raw-sql-escape-hatches.md`](https://github.com/TarunvirBains/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md)
 //! for the full contract.
+//! # Reaching the raw API
+//!
+//! Adopter code reaches these traits only through the bypass attribute, not
+//! through `use djogi::__bypass::*;` at the import site. The attribute brings
+//! the trait methods into scope on the `DjogiContext` / `DjogiPool` value
+//! inside the decorated item:
+//!
+//! ```ignore
+//! use djogi::prelude::*;
+//!
+//! #[djogi::deliberately_bypass_convention_with_raw_sql]
+//! // JUSTIFICATION (djogi#234): citext column needs case-insensitive
+//! // equality; QuerySet doesn't expose LOWER(col) equality yet.
+//! async fn count_users_ci(ctx: &mut DjogiContext, name: &str) -> djogi::Result<i64> {
+//!     ctx.raw_scalar(
+//!         "SELECT COUNT(*) FROM users WHERE LOWER(name) = LOWER($1)",
+//!         &[&name],
+//!     ).await
+//! }
+//! ```
+//!
+//! # Cross-references
+//!
+//! - **Specification** — [Raw SQL escape hatches](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md)
+//!   for the full contract, the JUSTIFICATION convention, the pin-test
+//!   carve-out, and the "no ergonomic raw SQL" decision.
+//! - **Pool-level escape hatch** — see [`RawPoolAccessExtBase::raw_with_client`]
+//!   when binary protocol, `COPY`, or `CREATE EXTENSION` requires bypassing
+//!   the per-statement `tokio_postgres::Statement` cache.
 
 use crate::context::DjogiContext;
 use crate::pg::connection::PgConnection;
@@ -138,28 +169,153 @@ mod sealed {
 /// Sealed extension trait exposing djogi's raw SQL context escape hatches.
 ///
 /// Base trait: no `Send` bound. The generated [`RawAccessExt`] variant adds
-/// `Send` bounds to the futures returned by async methods.
+/// `Send` bounds to the futures returned by async methods. Reaching any
+/// method here is djogi's `unsafe`-equivalent — see the
+/// [module docs](self) and the
+/// [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
 #[doc(hidden)]
 #[trait_variant::make(RawAccessExt: Send)]
 pub trait RawAccessExtBase: sealed::Sealed {
+    /// Run a raw `SELECT` and decode every row into `T` via
+    /// [`FromPgRow`](crate::pg::decode::FromPgRow).
+    ///
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]` (under
+    /// `tests/` the attribute requires a paired `// JUSTIFICATION (djogi#<n>):`
+    /// comment, validated by `cargo xtask check-justifications`). See the
+    /// [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
+    ///
+    /// Prefer the typed surface — `Model::objects().filter(...).fetch_all(ctx)`
+    /// — for any predicate the queryset can express. Reach for `raw_query`
+    /// only for shapes the typed layer cannot describe today (recursive CTEs,
+    /// set-returning functions, bespoke joins).
+    ///
+    /// `T: FromPgRow` decodes positionally against the wire row, so the
+    /// `SELECT` projection list must match the model's column order. The
+    /// canonical order is `id, created_at, updated_at, ...user_fields` for
+    /// `#[model]`-derived structs; ad-hoc rowtypes implement
+    /// [`FromPgRow`](crate::pg::decode::FromPgRow) with whatever shape they
+    /// need.
+    ///
+    /// ```ignore
+    /// use djogi::prelude::*;
+    ///
+    /// #[djogi::deliberately_bypass_convention_with_raw_sql]
+    /// // JUSTIFICATION (djogi#234): typed surface lacks recursive CTE.
+    /// async fn ancestor_threads(ctx: &mut DjogiContext, root_id: HeerId)
+    ///     -> djogi::Result<Vec<Comment>>
+    /// {
+    ///     ctx.raw_query(
+    ///         "WITH RECURSIVE ancestors AS (
+    ///              SELECT * FROM comments WHERE id = $1
+    ///              UNION ALL
+    ///              SELECT c.* FROM comments c
+    ///              JOIN ancestors a ON c.id = a.parent_id
+    ///          )
+    ///          SELECT id, created_at, updated_at, parent_id, body
+    ///          FROM ancestors",
+    ///         &[&root_id],
+    ///     ).await
+    /// }
+    /// ```
     async fn raw_query<T: FromPgRow>(
         &mut self,
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Vec<T>, DjogiError>;
 
+    /// Run a raw `SELECT` and return undecoded `tokio_postgres::Row` values.
+    ///
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
+    ///
+    /// Prefer [`raw_query`](RawAccessExtBase::raw_query) when the row shape
+    /// fits a `FromPgRow` impl — the per-row decode is positional and
+    /// debug-asserted. Reach for `raw_rows` only when the caller really does
+    /// need to inspect column metadata or call [`tokio_postgres::Row::try_get`]
+    /// on heterogenous columns by name (e.g. dynamic introspection helpers).
+    ///
+    /// ```ignore
+    /// #[djogi::deliberately_bypass_convention_with_raw_sql]
+    /// // JUSTIFICATION (djogi#456): introspecting column metadata for the admin
+    /// // schema diff renderer; FromPgRow does not expose column types.
+    /// async fn dump_columns(ctx: &mut DjogiContext, table: &str)
+    ///     -> djogi::Result<Vec<tokio_postgres::Row>>
+    /// {
+    ///     ctx.raw_rows(
+    ///         "SELECT column_name, data_type FROM information_schema.columns
+    ///          WHERE table_name = $1",
+    ///         &[&table],
+    ///     ).await
+    /// }
+    /// ```
     async fn raw_rows(
         &mut self,
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Vec<Row>, DjogiError>;
 
+    /// Run a raw `SELECT` expected to return exactly one row, decoded into `T`.
+    ///
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
+    ///
+    /// Returns [`DjogiError::NotFound`] when the query produces zero rows;
+    /// the framework does not enforce the upper bound, so the caller is
+    /// responsible for using `LIMIT 1` (or otherwise guaranteeing
+    /// uniqueness) when required. Prefer
+    /// [`Model::get`](crate::model::Model::get) /
+    /// `QuerySet::fetch_one` for typed-surface lookups.
+    ///
+    /// ```ignore
+    /// #[djogi::deliberately_bypass_convention_with_raw_sql]
+    /// // JUSTIFICATION (djogi#789): typed surface lacks JSON-aggregated reads.
+    /// async fn fetch_one_summary(ctx: &mut DjogiContext, id: HeerId)
+    ///     -> djogi::Result<UserSummary>
+    /// {
+    ///     ctx.raw_fetch_one(
+    ///         "SELECT id, jsonb_build_object('posts', count(p.id)) AS summary
+    ///          FROM users u LEFT JOIN posts p ON p.author_id = u.id
+    ///          WHERE u.id = $1 GROUP BY u.id LIMIT 1",
+    ///         &[&id],
+    ///     ).await
+    /// }
+    /// ```
     async fn raw_fetch_one<T: FromPgRow>(
         &mut self,
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<T, DjogiError>;
 
+    /// Run a raw `SELECT` and return the first column of the first row as a
+    /// scalar value of type `T`.
+    ///
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
+    ///
+    /// Returns [`DjogiError::NotFound`] when the query produces zero rows.
+    /// Use for `SELECT COUNT(*)`, `SELECT MAX(...)`, and similar single-value
+    /// reductions. Prefer the queryset's `.count(ctx)` / `.exists(ctx)` /
+    /// aggregate-projection terminals when the typed surface covers the
+    /// shape.
+    ///
+    /// ```ignore
+    /// #[djogi::deliberately_bypass_convention_with_raw_sql]
+    /// // JUSTIFICATION (djogi#101): summary aggregate the visage layer doesn't
+    /// // yet project for nested JSONB facets.
+    /// async fn open_invoices_total_cents(ctx: &mut DjogiContext)
+    ///     -> djogi::Result<i64>
+    /// {
+    ///     ctx.raw_scalar(
+    ///         "SELECT COALESCE(SUM(total_cents), 0)
+    ///          FROM invoices WHERE status = 'open'",
+    ///         &[],
+    ///     ).await
+    /// }
+    /// ```
     async fn raw_scalar<T>(
         &mut self,
         sql: &str,
@@ -168,20 +324,152 @@ pub trait RawAccessExtBase: sealed::Sealed {
     where
         T: for<'row> FromSql<'row> + Send + 'static;
 
+    /// Run a raw `INSERT`, `UPDATE`, `DELETE`, or other no-row-returning
+    /// statement and return the affected-row count.
+    ///
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
+    ///
+    /// Prefer `Model::create` / `Model::save` / `Model::delete` for single-row
+    /// CRUD and `QuerySet::update` / `QuerySet::delete` for bulk writes. Reach
+    /// for `raw_execute` only for shapes the typed layer cannot express today
+    /// (e.g. preserving `updated_at` across a bulk update — the queryset
+    /// always stamps it).
+    ///
+    /// ```ignore
+    /// #[djogi::deliberately_bypass_convention_with_raw_sql]
+    /// // JUSTIFICATION (djogi#202): bulk update must preserve updated_at; the
+    /// // queryset bulk-update path always stamps `updated_at = now()`.
+    /// async fn restamp_recent(ctx: &mut DjogiContext, days: i32)
+    ///     -> djogi::Result<u64>
+    /// {
+    ///     ctx.raw_execute(
+    ///         "UPDATE posts SET view_count = view_count + 1
+    ///          WHERE created_at > now() - $1::interval",
+    ///         &[&format!("{days} days")],
+    ///     ).await
+    /// }
+    /// ```
     async fn raw_execute(
         &mut self,
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<u64, DjogiError>;
 
+    /// Run a raw DDL batch (one or more semicolon-separated statements,
+    /// no parameters).
+    ///
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
+    ///
+    /// `raw_ddl` is `batch_execute(sql)` under a friendlier name — it
+    /// carries the same blast radius as [`raw_execute`](RawAccessExtBase::raw_execute)
+    /// and intentionally does not project through the migration substrate.
+    /// Tests that need to set up tables MUST use
+    /// `#[djogi::djogi_test(sync_models = [...])]` instead — `sync_models`
+    /// projects through the descriptor / `pk_default_sql` pipeline so
+    /// projection bugs surface from the test surface (tracking issue
+    /// djogi#133).
+    ///
+    /// Reach for `raw_ddl` only for setup that cannot live in a model
+    /// descriptor (`CREATE EXTENSION`, custom types declared outside djogi's
+    /// schema-snapshot model, role / permission grants).
+    ///
+    /// ```ignore
+    /// #[djogi::deliberately_bypass_convention_with_raw_sql]
+    /// // JUSTIFICATION (djogi#303): PostGIS extension install runs once per
+    /// // database; the future #[djogi_test(extensions = ["postgis"])] surface
+    /// // (Phase 6.5) is the preferred path.
+    /// async fn install_postgis(ctx: &mut DjogiContext) -> djogi::Result<()> {
+    ///     ctx.raw_ddl("CREATE EXTENSION IF NOT EXISTS postgis").await
+    /// }
+    /// ```
     async fn raw_ddl(&mut self, sql: &str) -> Result<(), DjogiError>;
 
+    /// Open a server-side cursor and yield rows lazily as a
+    /// [`RawCursorStream`].
+    ///
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
+    ///
+    /// Postgres cursors are transaction-local — the surrounding context MUST
+    /// be transaction-backed. Calling `raw_stream` on a pool-backed context
+    /// returns [`DjogiError::StreamOutsideTransaction`] at construction time
+    /// (not at the first `poll_next`), so the misuse surfaces immediately.
+    /// Wrap the consumer in `atomic(&mut ctx, |tx| Box::pin(async move {
+    /// ... }))` so the `tx` argument is transaction-backed.
+    ///
+    /// Uses the framework default fetch size (chunk-size for the
+    /// `FETCH FORWARD` calls under the cursor). For control over the chunk
+    /// shape, use [`raw_stream_with_fetch_size`](RawAccessExtBase::raw_stream_with_fetch_size).
+    /// Prefer `QuerySet::stream(ctx)` for typed-surface streaming.
+    ///
+    /// ```ignore
+    /// use djogi::prelude::*;
+    /// use futures::StreamExt;
+    ///
+    /// #[djogi::deliberately_bypass_convention_with_raw_sql]
+    /// // JUSTIFICATION (djogi#404): export job needs server-side cursor; the
+    /// // typed QuerySet::stream is preferred when the shape fits.
+    /// async fn export_orders(ctx: &mut DjogiContext) -> djogi::Result<()> {
+    ///     atomic(ctx, |tx| Box::pin(async move {
+    ///         let mut stream = tx.raw_stream(
+    ///             "SELECT id, total_cents FROM orders ORDER BY id",
+    ///             &[],
+    ///         ).await?;
+    ///         while let Some(row) = stream.next().await {
+    ///             let _row = row?; // process row
+    ///         }
+    ///         Ok(())
+    ///     })).await
+    /// }
+    /// ```
     async fn raw_stream<'ctx>(
         &'ctx mut self,
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<RawCursorStream<'ctx>, DjogiError>;
 
+    /// Same as [`raw_stream`](RawAccessExtBase::raw_stream) but caller-tunable
+    /// `FETCH FORWARD` chunk size.
+    ///
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
+    ///
+    /// `fetch_size` of `0` returns [`DjogiError::Validation`] — the cursor
+    /// driver cannot make progress on an empty fetch chunk. Larger values
+    /// reduce round-trips at the cost of per-chunk memory; smaller values
+    /// reduce latency to the first row at the cost of more network round
+    /// trips. The framework default (used by `raw_stream`) is a balanced
+    /// middle ground.
+    ///
+    /// Same transaction-context rules as [`raw_stream`](RawAccessExtBase::raw_stream):
+    /// pool-backed contexts return [`DjogiError::StreamOutsideTransaction`]
+    /// at construction time.
+    ///
+    /// ```ignore
+    /// #[djogi::deliberately_bypass_convention_with_raw_sql]
+    /// // JUSTIFICATION (djogi#505): export job tunes chunk size to match the
+    /// // downstream consumer's batch boundary.
+    /// async fn export_orders_chunked(ctx: &mut DjogiContext) -> djogi::Result<()> {
+    ///     atomic(ctx, |tx| Box::pin(async move {
+    ///         let mut stream = tx.raw_stream_with_fetch_size(
+    ///             "SELECT id, total_cents FROM orders ORDER BY id",
+    ///             &[],
+    ///             100, // fetch 100 rows per round-trip
+    ///         ).await?;
+    ///         use futures::StreamExt;
+    ///         while let Some(row) = stream.next().await {
+    ///             let _row = row?;
+    ///         }
+    ///         Ok(())
+    ///     })).await
+    /// }
+    /// ```
     async fn raw_stream_with_fetch_size<'ctx>(
         &'ctx mut self,
         sql: &str,
@@ -296,14 +584,99 @@ impl RawAccessExt for DjogiContext {
 /// Sealed extension trait exposing pool/client escape hatches.
 ///
 /// Base trait: no `Send` bound. The generated [`RawPoolAccessExt`] variant
-/// adds `Send` bounds to the future returned by `raw_with_client`.
+/// adds `Send` bounds to the future returned by `raw_with_client`. Reaching
+/// any method here is djogi's `unsafe`-equivalent — see the
+/// [module docs](self) and the
+/// [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
 #[doc(hidden)]
 #[trait_variant::make(RawPoolAccessExt: Send)]
 pub trait RawPoolAccessExtBase: sealed::Sealed {
+    /// Borrow the underlying [`DjogiPool`] when the context is pool-backed.
+    ///
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
+    ///
+    /// Returns `None` when the context is transaction-backed — pool reads
+    /// during a transaction would route around the surrounding scope. Use
+    /// for pool-state introspection (capacity, idle counts) when wiring
+    /// adopter-side metrics; otherwise prefer the typed surface
+    /// (`DjogiContext::from_pool` for fresh handles, `share_pool` to clone
+    /// the inner `Arc`).
+    ///
+    /// ```ignore
+    /// #[djogi::deliberately_bypass_convention_with_raw_sql]
+    /// // JUSTIFICATION (djogi#606): pool-state introspection for adopter
+    /// // metrics; the typed surface does not yet expose pool-stats reads.
+    /// fn pool_status(ctx: &DjogiContext) -> Option<usize> {
+    ///     ctx.raw_pool().map(|p| p.status().available)
+    /// }
+    /// ```
     fn raw_pool(&self) -> Option<&DjogiPool>;
 
+    /// Borrow the underlying [`PgConnection`] when the context is
+    /// transaction-backed.
+    ///
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
+    ///
+    /// Returns `None` when the context is pool-backed — there is no
+    /// long-lived connection to borrow. Use for connection-state inspection
+    /// (savepoint depth, in-progress transaction state) when an adopter-side
+    /// helper needs to branch on the inner state. Prefer
+    /// [`DjogiContext::savepoint_depth`](crate::DjogiContext::savepoint_depth)
+    /// and the typed transaction substrate for ordinary use.
+    ///
+    /// ```ignore
+    /// #[djogi::deliberately_bypass_convention_with_raw_sql]
+    /// // JUSTIFICATION (djogi#707): transaction-state inspection for a custom
+    /// // tracing layer.
+    /// fn debug_conn(ctx: &mut DjogiContext) -> bool {
+    ///     ctx.raw_conn().is_some()
+    /// }
+    /// ```
     fn raw_conn(&mut self) -> Option<&mut PgConnection>;
 
+    /// Run a closure with a checked-out raw [`tokio_postgres::Client`] from
+    /// the underlying pool.
+    ///
+    /// Reaching this is djogi's `unsafe`-equivalent — every call must walk
+    /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
+    /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
+    ///
+    /// `raw_with_client` is the framework's only path to the underlying
+    /// `tokio_postgres::Client` and the only way to reach binary-protocol
+    /// helpers like `client.copy_in(...)`, `client.simple_query(...)`,
+    /// `CREATE EXTENSION` (which requires `simple_query` outside a
+    /// transaction), and the prepared-statement cache directly. The closure
+    /// receives `&mut Client` for the duration of the borrow; the returned
+    /// connection is **dirty by default** — adopters that issue `SET` /
+    /// `LISTEN` / role changes inside the closure are responsible for
+    /// resetting the connection (or the surrounding pool's `Manager` impl
+    /// must declare a `reset` step).
+    ///
+    /// Returns [`DjogiError::Db`] wrapping the underlying transport / pool
+    /// error when the context has no pool to draw from (pure transaction-
+    /// scoped contexts cannot satisfy `raw_with_client`).
+    ///
+    /// See the [connection-pool guide](https://github.com/tarunvir/djogi/blob/main/docs/guide/pool.md#raw-client-escape-hatch--raw_with_client)
+    /// for the canonical treatment of when to reach for this surface.
+    ///
+    /// ```ignore
+    /// use djogi::prelude::*;
+    ///
+    /// #[djogi::deliberately_bypass_convention_with_raw_sql]
+    /// // JUSTIFICATION (djogi#808): COPY IN ingest needs binary protocol; the
+    /// // typed surface has no streaming-bulk-insert primitive yet.
+    /// async fn copy_in_orders(pool: &DjogiPool) -> djogi::Result<()> {
+    ///     pool.raw_with_client(|client| Box::pin(async move {
+    ///         let _sink = client.copy_in("COPY orders FROM STDIN").await?;
+    ///         // write rows to the sink ...
+    ///         Ok(())
+    ///     })).await
+    /// }
+    /// ```
     async fn raw_with_client<F, R>(&self, f: F) -> Result<R, DjogiError>
     where
         F: for<'client> FnOnce(&'client mut tokio_postgres::Client) -> ClientFuture<'client, R>
