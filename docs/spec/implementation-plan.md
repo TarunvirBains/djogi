@@ -771,10 +771,34 @@ real field.
 
 These surfaces are intentionally downstream of the core ORM/runtime. They are useful operational tools, but they must remain feature-gated adapters over the model/query layer rather than redefining the core identity of the crate. (The admin console is its own phase — see Phase 10 / Maahi.)
 
+**Phase 9 amendment (2026-05-10).** Four architectural decisions land alongside the original Phase 9 task list:
+
+1. **Shell is the primary query-construction surface for users**, not an admin REPL or occasional inspection tool. Adopters writing non-trivial query code spend more time in the shell than in their editor for the duration of that work. Shell startup latency is a product feature with measurable budgets (see `docs/spec/shell.md` §13.0); shell ergonomics (history, syntax highlighting, autocomplete on registered model methods, transparent SQL inspection, per-call timing) are first-class deliverables, not deferrable polish. The Rhai shell is also the workshop surface that other harnesses (lihaaf v0.1) defer to.
+2. **djogi-as-dylib is a load-bearing Phase 9 dependency**, shared with lihaaf. The shell binary is small (~5 MB) and dlopens `libdjogi.so` (~30 MB) at startup. See `docs/spec/decisions.md` *Djogi-as-dylib for shell + lihaaf (Phase 9)* row and `docs/spec/shell.md` §13.11 for the rationale (build iteration, plugin ecosystem, memory hygiene, distribution size — explicitly NOT runtime query speed).
+3. **`rhai-dylib` is the planned plugin-loading mechanism, evaluation pending** a 30-minute audit (§13.12) that confirms the crate's symbol-visibility requirements, Rhai-version compatibility, and maintenance status before djogi commits its `[lib]` configuration to satisfy it.
+4. **Parse-vs-eval split for syntax-error UX** (§13.10). The shell calls `Engine::compile(&input)` first to surface syntax errors instantly with caret positioning, only then calls `Engine::eval_ast(&ast)` so the user never waits on a database round-trip to discover a typo. Ships with `Engine::set_strict_variables(true)` and an `OnVarFn` resolver that validates model-binding identifiers against the inventory-collected descriptor set.
+
+### 9-Zero: Inventory-on-Dylib Spike
+
+The dylib coupling is gated on a research spike that validates whether (a) `cargo rustc --crate-type=dylib` produces a working `libdjogi.so` for djogi's workspace and (b) `inventory::submit!` registrations made inside djogi propagate across the dylib boundary to dlopen-ing consumers.
+
+- [ ] **Spike artifact:** `docs/research/2026-05-10-inventory-on-dylib-spike.md` (TBD when this entry is written; orchestrator to fix path on integration). Captures method, results, and selected contingency outcome
+- [ ] **Coordination with lihaaf:** lihaaf consumes the same dylib for its own reasons; spike runs once and feeds both Phase 9 and lihaaf's v0.1 spec (`docs/spec/lihaaf-v0.1.md`, TBD)
+- [ ] **Contingency selection** (per `docs/spec/shell.md` §13.13):
+  - `GO_NATIVE` — best case; no `Cargo.toml` changes needed
+  - `GO_WITH_MANIFEST` — djogi's `[lib]` adds `crate-type = ["lib", "dylib"]`
+  - `GO_WITH_WORKAROUND` — djogi exposes `pub fn lihaaf_inventory_collect_<T>()` per-collection re-exports; shared naming convention with lihaaf
+  - `NO_GO` — Phase 9 ships statically-linked; dylib-dependent items deferred until toolchain blocker resolves (parse-vs-eval split, djqry authoring loop, ergonomics work all still ship; only the dylib-dependent items defer)
+
 ### 9a: Shell (Rhai REPL)
 
 - [ ] `cargo djogi shell` — launches REPL with all models loaded
+- [ ] **Shell binary dlopens `libdjogi.so` at startup** (gated on 9-Zero spike outcome — `NO_GO` falls back to static linking for v0)
 - [ ] Synchronous API via `block_on()` — no `.await` in shell
+- [ ] **Parse-vs-eval split:** every submitted line goes through `Engine::compile` first; parse errors print a one-liner with caret positioning and skip `eval_ast` entirely. Only on parse success does the shell dispatch the AST. Removes the wait-then-fail loop on typos that today would round-trip the database before failing
+- [ ] **Strict-variables mode:** `Engine::set_strict_variables(true)` plus an `OnVarFn` resolver that validates model-binding identifiers against the inventory-collected descriptor set. Mistyped model names (`Vechile::objects()`) surface as parse-time errors with caret positioning rather than runtime errors several lines into a script. Function-arity and argument-type errors remain runtime errors — Rhai does not expose a compile-time type checker for dynamic dispatch
+- [ ] **Startup latency budget:** target sub-second cold start on a representative laptop; measured per-release and tracked. Justifies the dylib coupling (re-linking djogi statically on every shell-crate iteration would blow the budget repeatedly during development)
+- [ ] **Ergonomics first-class:** persistent history, syntax highlighting, autocomplete on registered model methods, transparent SQL inspection (last-query echo, `EXPLAIN`-on-demand), per-call timing
 - [ ] `pp(value)`, `sql("...")`, `begin()`, `commit()`, `rollback()`, `savepoint()`
 - [ ] Error handling: one-liner + full traceback to `.djogi_shell_errors/`
 - [ ] `.export` / `.import` / `.bookmark` for session scripts
@@ -784,6 +808,15 @@ These surfaces are intentionally downstream of the core ORM/runtime. They are us
   - `djqry.import("<name>")` — loads an existing `djqry/<name>.sql`, parses its frontmatter + SQL, binds the override into the shell session as a callable, and runs it alongside the macro-query form for side-by-side comparison (row count, first-row diff, timing)
   - `djqry.diff("<name>")` — runs macro-query and override both, reports result-set diff + `EXPLAIN` cost comparison + timing. Acts as the local on-demand analog of CI's `cargo djogi djqry verify`
   - `djqry.sign("<name>")` — re-computes the fingerprint from the current `@replaces` and updates `@signature`, asserting the author has re-verified. Prompts for confirmation before overwriting
+- [ ] **`rhai-dylib` audit** (gates §9a-Plugins below): 30-minute audit of `rhai-dylib` (https://crates.io/crates/rhai-dylib) covering symbol-visibility requirements, `pub extern "Rust"` annotations, Rhai-version compatibility, dylib-loader compatibility (likely `libloading`), and maintenance status. Audit outcome documented in the 9-Zero spike artifact alongside contingency selection. Audit failure scopes Phase 9 to source-form Rhai modules only; precompiled `.so` plugins defer until an alternative crate or upstream fix lands
+
+### 9a-Plugins: Precompiled Rhai Module Loading (gated on `rhai-dylib` audit)
+
+- [ ] Adopters package query-helper Rhai modules as precompiled `.so` artifacts that link against the canonical `libdjogi.so`
+- [ ] Shell loads precompiled modules from a configured search path at startup (or on `.import`)
+- [ ] Per-module memory cost stays roughly constant as the ecosystem grows (each plugin shares the loaded djogi instead of statically baking its own copy)
+- [ ] Source-form `.rhai` modules continue to load via the existing `.import` path; the precompiled path is purely an optimization
+- [ ] **`.rhai` test-fixture surface** — Phase 9 owns the in-process Rhai parse + snapshot-compare harness for testing shell scripts. Lihaaf is Rust-only and explicitly does not host this surface (~300-500 LOC, in-process, NOT subprocess-based; design lives with the shell because the shell already owns the Rhai engine, the model bindings, and the runtime). Detailed design pending — referenced here so the cross-harness boundary is unambiguous
 
 ### 9b: Static Query Analyzer
 
