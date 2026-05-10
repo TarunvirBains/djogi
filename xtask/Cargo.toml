@@ -8,3 +8,4 @@ publish = false
 [dependencies]
 proc-macro2 = { workspace = true }
 syn = { workspace = true }
+sha2 = { workspace = true }
