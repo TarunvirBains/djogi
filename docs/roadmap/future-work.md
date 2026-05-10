@@ -92,6 +92,24 @@ Added 2026-04-21 during the same brainstorming session. `djqry/` directory holds
 
 The shell is the authoring surface: `djqry.export(<last_query>, "<name>")` captures the canonical macro-query, infers return/bind types, computes the initial signature, and seeds the SQL body. `djqry.import` + `djqry.diff` + `djqry.sign` close the *test → optimize → compile → deploy* loop inside the REPL. The §9a shell commands make authoring overrides a first-class workflow rather than a text-editor-and-hope exercise.
 
+### 3.9 Postgres extension roadmap and test-image policy → Phase 8.5, 10, 11
+
+Added 2026-05-09 during Phase 8.5 alpha-readiness planning.
+
+Djogi is Postgres-first, so common Postgres extensions should be routed by product need rather than treated as ad hoc raw-SQL escape hatches:
+
+- **Phase 8.5 alpha blockers:** `pg_trgm` and `btree_gist` are tracked as first-class typed-surface gaps. `pg_trgm` covers fuzzy text search, similarity ranking, and trigram operator-class indexes. `btree_gist` covers database-enforced no-overlap / no-conflict invariants through exclusion constraints. Both require user-guide documentation before their issues can close: public API, extension requirements, migration behavior, and adopter-shaped examples.
+- **Phase 8.5 or nearest search-polish follow-up:** `unaccent` is a natural companion to `pg_trgm` / FTS for human-facing search, but it should be documented as language/collation-sensitive behavior rather than silently folded into every text predicate.
+- **Phase 9-11 substrate candidates:** `pgvector` belongs with later recommendation, ranking, embedding, or similarity-search work rather than 8.5 unless an immediate adopter-shaped scenario requires it. `pg_stat_statements` belongs with observability / ops doctor surfaces. `postgres_fdw` belongs with distributed topology and cross-database routing. `citext` should be weighed against nondeterministic collations before becoming a headline surface, because modern Postgres collation support can cover more Unicode cases than `citext`.
+
+Test infrastructure normalization is Phase 8.5 scope, tracked in `djogi#149`. It must keep "extension available in the image" separate from "extension created in a database":
+
+- The local `docker-compose.yml` currently uses `postgis/postgis:18-3.6`; the main GitHub Actions `check` job currently uses `postgres:18`; the dedicated spatial job uses `postgis/postgis:18-3.6`.
+- Ordinary contrib extensions such as `pg_trgm`, `btree_gist`, `unaccent`, `citext`, `ltree`, `pgcrypto`, and `postgres_fdw` are expected to be available in the standard Postgres/PostGIS images, but still need `CREATE EXTENSION` in each test database that uses them.
+- `pg_stat_statements` is different: meaningful production-like coverage requires `shared_preload_libraries` and a server restart or a purpose-built image.
+- `pgvector` is not part of the current local PostGIS image; any pgvector phase needs either a custom CI image, package installation, or a separate extension-enabled service.
+- To avoid local/CI drift, extension-rich test suites should either run against the same PostGIS-backed service image everywhere or document why a lighter plain-Postgres job remains separate. The cost optimization is secondary to reliable Phase 8.5 coverage once extension-backed typed surfaces become alpha-blocking.
+
 ---
 
 ## 4. Unscheduled roadmap items
