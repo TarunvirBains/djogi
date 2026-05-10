@@ -154,14 +154,17 @@ rationale captures behavioral constraints, write patterns, and ownership
 rules that the type system cannot encode. Ignoring it produces bugs that are
 invisible until production.
 
-### Rule 3: Use `djogi::raw::*` for queries the Model trait and QuerySet don't cover
+### Rule 3: Use `raw_*` escape hatches for queries the Model trait and QuerySet don't cover
 
 The `Model` trait methods cover single-row CRUD (`get`, `create`, `save`,
 `delete`). `Model::objects()` returns a `QuerySet<T>` that covers filters,
 ordering, pagination, distinct, bulk update, and bulk delete — see the
 [queries guide](./queries.md). For anything beyond that surface
-(recursive CTEs, set-returning functions, bespoke JOINs), use the
-raw helpers on `DjogiContext`:
+(recursive CTEs, set-returning functions, bespoke JOINs), reach for the
+raw escape hatches on `DjogiContext`. These methods live on the sealed
+`RawAccessExt` extension trait and are unreachable from `DjogiContext`
+without the bypass attribute, which is djogi's `unsafe`-equivalent — see
+the [Raw SQL escape hatches spec](../spec/raw-sql-escape-hatches.md):
 
 ```rust
 // raw_query — Vec<T> where T: FromPgRow
@@ -189,24 +192,48 @@ pool-backed context or a transaction-backed one.
 
 ### Rule 4: Use transactions explicitly
 
-Wrap multi-step operations in a transaction by constructing a tx-backed
-`DjogiContext`:
+Wrap multi-step operations in `djogi::transaction::atomic` (re-exported as
+`atomic` through the prelude). The closure receives a transaction-backed
+`DjogiContext`; commit happens on `Ok`, rollback on `Err`:
 
 ```rust
-let tx = pool.begin().await?;
-let mut tx_ctx = DjogiContext::from_transaction(tx);
+use djogi::prelude::*;
 
-let post = Post::create(&mut tx_ctx, Post { ..Default::default() }).await?;
-djogi::raw::execute(
-    &mut tx_ctx,
-    "INSERT INTO tags (post_id, name) VALUES ($1, $2)",
-    |q| q.bind(post.id.as_i64()).bind("rust"),
-).await?;
+async fn create_post_with_tag(
+    ctx: &mut DjogiContext,
+    title: String,
+    body: String,
+) -> djogi::Result<Post> {
+    atomic(ctx, |tx| Box::pin(async move {
+        let post = Post::create(tx, Post {
+            title,
+            body,
+            ..Default::default()
+        }).await?;
 
-tx_ctx.commit().await?;
+        // The tag-write goes through the typed surface — Tag is a
+        // `#[model]` struct with a ForeignKey<Post> field.
+        Tag::create(tx, Tag {
+            post_id: ForeignKey::new(post.id),
+            name: "rust".into(),
+            ..Default::default()
+        }).await?;
+
+        Ok(post)
+    })).await
+}
 ```
 
-If either step fails, drop the context and neither change is persisted.
+If either `create()` returns `Err`, the surrounding `atomic` rolls the
+transaction back and neither row is persisted. Nested `atomic` calls
+push savepoints rather than opening a fresh transaction, so library
+helpers can compose without coordinating with their callers.
+
+For raw SQL inside a transaction, the bypass attribute brings the
+`raw_*` extension methods into scope on the transaction-backed `tx`
+context — see Rule 3 above for the typed-surface check that should run
+first, and the [Raw SQL escape hatches spec](../spec/raw-sql-escape-hatches.md)
+for the full contract.
 
 ### Rule 5: Match field types exactly
 
@@ -400,7 +427,8 @@ query code.
   emitter always appends `updated_at = now()` to the SET list, even
   when the caller's closure omits it. Parity with single-row `save()`.
   Callers who need to preserve `updated_at` across a bulk write drop to
-  `djogi::raw::execute`.
+  the `raw_execute` escape hatch (under the bypass attribute — see
+  the [Raw SQL escape hatches spec](../spec/raw-sql-escape-hatches.md)).
 
 - **`FieldRef<M, V>` is `Copy + 'static`.** Free to pass around, bind to
   a local, use twice in one closure. The two phantom markers
@@ -501,9 +529,9 @@ for desc in inventory::iter::<ModelDescriptor> {
 | Count | `Model::objects().filter(\|f\| ...).count(&mut ctx).await?` |
 | Bulk update | `Model::objects().filter(\|f\| ...).update(\|f\| f.col().set(v)).execute(&mut ctx).await?` |
 | Bulk delete | `Model::objects().filter(\|f\| ...).delete(&mut ctx).await?` |
-| Raw query (beyond QuerySet) | `djogi::raw::query_as(&mut ctx, "SELECT ...", \|q\| q.bind(val)).await?` |
-| Raw execute | `djogi::raw::execute(&mut ctx, "UPDATE ...", \|q\| q.bind(val)).await?` |
-| Transactional ops | `let mut tx_ctx = ctx.begin().await?;` → pass `&mut tx_ctx` to methods → `tx_ctx.commit().await?`. `atomic()` (Phase 4 Task 1) is the forthcoming canonical wrapper. |
+| Raw query (beyond QuerySet) | `ctx.raw_query::<T>("SELECT ...", &[&val]).await?` (under `#[djogi::deliberately_bypass_convention_with_raw_sql]`) |
+| Raw execute | `ctx.raw_execute("UPDATE ...", &[&val]).await?` (under `#[djogi::deliberately_bypass_convention_with_raw_sql]`) |
+| Transactional ops | `atomic(&mut ctx, \|tx\| Box::pin(async move { ... })).await?` — re-exported from `djogi::prelude`. Commits on `Ok`, rolls back on `Err`. |
 | Iterate all models | `for desc in inventory::iter::<djogi::ModelDescriptor> { ... }` |
 | Check trait contract | Read `djogi/src/model.rs` |
 | Check field-type mapping | Read `djogi-macros/src/model/attrs.rs::rust_type_to_sql` |

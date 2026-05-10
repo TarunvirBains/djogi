@@ -104,7 +104,7 @@ pub trait Model: Sized + Send + Sync + 'static {
 
 `create()` takes the struct directly — no separate `CreateVehicle` wrapper. Framework-injected fields (`id`, `created_at`, `updated_at`) are **public** — they are visible in struct literals, auto-complete, and pattern matches, just like developer-defined fields. The database overwrites whatever values are passed; callers must supply something syntactically valid.
 
-The context parameter is a `&mut DjogiContext`, which carries either a pool handle or an active transaction. The same call site works against either; the framework pattern-matches on the inner variant at each `tokio-postgres` boundary. `atomic()` is the ergonomic way into a transaction; `DjogiContext::from_transaction(tx)` is the low-level escape hatch.
+The context parameter is a `&mut DjogiContext`, which carries either a pool handle or an active transaction. The same call site works against either; the framework pattern-matches on the inner variant at each `tokio-postgres` boundary. `djogi::transaction::atomic(&mut ctx, |tx| Box::pin(async move { ... }))` is the canonical scope helper — it commits on `Ok`, rolls back on `Err`, and pushes savepoints for nested calls. Callers that need to drop below `atomic()` reach for the raw escape hatches on `RawAccessExt` / `RawPoolAccessExt` under the `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute (see [Raw SQL escape hatches](raw-sql-escape-hatches.md)).
 
 #### 4.2.1 Construction
 
