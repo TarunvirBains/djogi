@@ -2,16 +2,20 @@
 //!
 //! # `atomic()` at a glance
 //!
-//! `atomic(&pool, |ctx| async move { ... })` is the outermost entry
-//! point: it acquires a connection from the pool, issues `BEGIN`, wraps
-//! the connection in a fresh [`DjogiContext`](crate::DjogiContext), runs
-//! the closure, commits on `Ok`, rolls back on `Err`, and drains the
-//! on-commit callback queue after a successful commit. Nested calls —
-//! `atomic(&mut *outer, |inner| async move { ... })` — push a
-//! Postgres savepoint rather than opening a new transaction: the inner
-//! scope rolls back to / releases the savepoint on `Err`/`Ok`
-//! respectively, and on success promotes its on-commit callbacks to
-//! the outer context so they drain once at the outermost commit.
+//! `atomic(&mut ctx, |tx| Box::pin(async move { ... }))` is the preferred
+//! outermost entry point when the caller already has a pool-backed
+//! [`DjogiContext`](crate::DjogiContext): it acquires a connection from the
+//! context's pool, issues `BEGIN`, wraps the connection in a transaction
+//! context that shares the parent context's `Arc<Sassi>`, runs the closure,
+//! commits on `Ok`, rolls back on `Err`, and drains the on-commit callback
+//! queue after a successful commit. `atomic(&pool, |tx| ...)` remains the
+//! compatibility shortcut when no parent context exists; it constructs a fresh
+//! top-level context for that transaction. Nested calls —
+//! `atomic(&mut *outer, |inner| Box::pin(async move { ... }))` — push a
+//! Postgres savepoint rather than opening a new transaction: the inner scope
+//! rolls back to / releases the savepoint on `Err`/`Ok` respectively, and on
+//! success promotes its on-commit callbacks to the outer context so they drain
+//! once at the outermost commit.
 //!
 //! # Panic semantics
 //!
@@ -64,8 +68,10 @@ mod sealed {
 /// Entry point for [`atomic()`].
 ///
 /// Sealed: the only scopes that can open an `atomic()` block are a
-/// pool reference (outermost) and a mutable [`DjogiContext`] reference
-/// (nested — implemented via Postgres savepoints).
+/// pool reference (fresh outermost context) and a mutable [`DjogiContext`]
+/// reference. A pool-backed `DjogiContext` opens an outermost transaction that
+/// shares the context's `Arc<Sassi>`; a transaction-backed context opens a
+/// nested savepoint.
 ///
 /// The trait carries the dispatch logic through an associated
 /// [`run_atomic`](IntoAtomicScope::run_atomic) method so `atomic()`
@@ -137,6 +143,66 @@ impl IntoAtomicScope for &DjogiPool {
     }
 }
 
+async fn run_pool_context_atomic<F, R>(ctx: &mut DjogiContext, closure: F) -> Result<R, DjogiError>
+where
+    R: Send + 'static,
+    F: for<'a> FnOnce(&'a mut DjogiContext) -> AtomicFuture<'a, R> + Send,
+{
+    let pool = ctx.pool().cloned().ok_or_else(|| {
+        DjogiError::Db(DbError::other(
+            "atomic(&mut ctx, ...) expected a pool-backed context",
+        ))
+    })?;
+
+    let mut conn = pool.get().await?;
+    conn.batch_execute("BEGIN").await?;
+
+    let mut tx_ctx =
+        DjogiContext::from_connection_with_sassi(conn, std::sync::Arc::clone(&ctx.sassi));
+    tx_ctx.auth = ctx.auth.clone();
+    tx_ctx.tenant_scope_suppressed = ctx.tenant_scope_suppressed;
+
+    let result = AssertUnwindSafe(closure(&mut tx_ctx)).catch_unwind().await;
+
+    match result {
+        Ok(Ok(value)) => {
+            let auth_after = tx_ctx.auth.clone();
+            let tenant_scope_suppressed_after = tx_ctx.tenant_scope_suppressed;
+            tx_ctx.commit().await?;
+
+            ctx.auth = auth_after;
+            ctx.tenant_scope_suppressed = tenant_scope_suppressed_after;
+            clear_pool_context_transaction_trackers(ctx);
+
+            Ok(value)
+        }
+        Ok(Err(err)) => {
+            if let Err(rb_err) = tx_ctx.rollback().await {
+                tracing::error!(
+                    error = ?rb_err,
+                    "atomic: rollback after closure Err failed; returning closure err",
+                );
+            }
+            clear_pool_context_transaction_trackers(ctx);
+            Err(err)
+        }
+        Err(panic_payload) => {
+            if let Err(rb_err) = tx_ctx.rollback().await {
+                tracing::error!(
+                    error = ?rb_err,
+                    "atomic: rollback after closure panic failed; resuming panic",
+                );
+            }
+            resume_unwind(panic_payload);
+        }
+    }
+}
+
+fn clear_pool_context_transaction_trackers(ctx: &mut DjogiContext) {
+    ctx.tenant_set = false;
+    ctx.applied_tenant_id = None;
+}
+
 // ---------------------------------------------------------------------------
 // Nested-context impl — savepoints + callback promotion.
 // ---------------------------------------------------------------------------
@@ -147,15 +213,8 @@ impl IntoAtomicScope for &mut DjogiContext {
         R: Send + 'static,
         F: for<'a> FnOnce(&'a mut DjogiContext) -> AtomicFuture<'a, R> + Send,
     {
-        // Guard: nested `atomic` is only valid on a transaction-backed
-        // context. A pool-backed context arriving here means the caller
-        // tried to nest without an outer scope — surface that as a
-        // configuration error pointing at the fix.
-        if !matches!(self.inner_mut(), ContextInner::Transaction(_)) {
-            return Err(DjogiError::Db(DbError::other(
-                "atomic(&mut ctx, ...) requires a transaction-backed context; \
-                 wrap the outermost call in atomic(&pool, ...)",
-            )));
+        if matches!(self.inner_mut(), ContextInner::Pool(_)) {
+            return run_pool_context_atomic(self, closure).await;
         }
 
         // Push savepoint. Depth is incremented BEFORE the SQL so
@@ -262,14 +321,19 @@ impl IntoAtomicScope for &mut DjogiContext {
 ///
 /// Two shapes:
 ///
-/// - `atomic(&pool, |ctx| async move { ... })` — outermost. Opens a
-///   transaction, commits on `Ok`, rolls back on `Err`, drains
-///   on-commit callbacks after the commit.
-/// - `atomic(&mut ctx, |ctx| async move { ... })` — nested. Emits
-///   `SAVEPOINT sp_<depth>` on entry; `RELEASE` on `Ok`, `ROLLBACK TO
-///   SAVEPOINT` + `RELEASE` on `Err`. On-commit callbacks registered
-///   inside a nested scope are promoted to the outer queue on
-///   success, discarded on `Err`.
+/// - `atomic(&mut pool_ctx, |ctx| Box::pin(async move { ... }))` —
+///   preferred outermost form when the caller already has a pool-backed
+///   context. Opens a transaction, shares `pool_ctx`'s Sassi registry,
+///   commits on `Ok`, rolls back on `Err`, and drains on-commit callbacks
+///   after the commit.
+/// - `atomic(&pool, |ctx| Box::pin(async move { ... }))` — compatibility
+///   shortcut when no parent context exists. Opens a fresh top-level
+///   transaction context.
+/// - `atomic(&mut tx_ctx, |ctx| Box::pin(async move { ... }))` — nested.
+///   Emits `SAVEPOINT sp_<depth>` on entry; `RELEASE` on `Ok`, `ROLLBACK TO
+///   SAVEPOINT` + `RELEASE` on `Err`. On-commit callbacks registered inside
+///   a nested scope are promoted to the outer queue on success, discarded on
+///   `Err`.
 ///
 /// # Panic semantics
 ///
@@ -280,10 +344,12 @@ impl IntoAtomicScope for &mut DjogiContext {
 /// # Examples
 ///
 /// ```ignore
-/// djogi::transaction::atomic(&pool, |ctx| async move {
+/// let mut ctx = DjogiContext::from_pool(pool.clone());
+///
+/// djogi::transaction::atomic(&mut ctx, |ctx| Box::pin(async move {
 ///     Account::create(ctx, Account { balance: 100, ..Default::default() }).await?;
 ///     Ok::<_, DjogiError>(())
-/// })
+/// }))
 /// .await?;
 /// ```
 pub async fn atomic<S, F, R>(scope: S, closure: F) -> Result<R, DjogiError>

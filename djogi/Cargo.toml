@@ -500,6 +500,13 @@ name = "phase8_5_c2_118_reset_writes_audit_rows"
 path = "../tests/internal/phase8_5_c2_118_reset_writes_audit_rows.rs"
 harness = true
 
+# Phase 8.5 Cluster 2 issue #123 — pool-backed context atomic scopes
+# share the parent Sassi registry instead of rebuilding on every transaction.
+[[test]]
+name = "phase8_5_c2_123_atomic_context_sassi"
+path = "../tests/integration/phase8_5_c2_123_atomic_context_sassi.rs"
+harness = true
+
 [[test]]
 name = "phase8_trait_impl_registry"
 path = "../tests/integration/phase8_trait_impl_registry.rs"

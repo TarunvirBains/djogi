@@ -11,9 +11,11 @@
 //! context. After boot the registry is read-only.
 //!
 //! Cross-context behaviour: each top-level `DjogiContext` builds its
-//! own `Sassi`. `begin()` / `atomic()` SHARE the parent's `Arc<Sassi>`
-//! (cache state is transaction-scope-agnostic). This is the "DjogiContext
-//! IS the tenant boundary" contract from cluster 8δ T7.4.
+//! own `Sassi`. `begin()` / `atomic(&mut pool_ctx, ...)` SHARE the parent's
+//! `Arc<Sassi>` (cache state is transaction-scope-agnostic). `atomic(&pool,
+//! ...)` constructs a fresh top-level transaction context because no parent
+//! context was supplied. This is the "DjogiContext IS the tenant boundary"
+//! contract from cluster 8δ T7.4.
 
 /// A boot-time hook that registers one `Punnu<T>` on a `Sassi` orchestrator.
 ///

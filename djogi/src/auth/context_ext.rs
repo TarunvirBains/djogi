@@ -62,7 +62,7 @@ impl DjogiContext {
     /// `&mut DjogiContext` rather than an owned context.
     ///
     /// ```ignore
-    /// djogi::transaction::atomic(&pool, |ctx| Box::pin(async move {
+    /// djogi::transaction::atomic(&mut ctx, |ctx| Box::pin(async move {
     ///     ctx.set_auth(AuthContext::new(user_id).with_tenant("org_a"));
     ///     TenantPost::objects().fetch_all(ctx).await
     /// })).await
@@ -87,7 +87,7 @@ impl DjogiContext {
     /// let ctx = DjogiContext::from_pool(pool).with_no_tenant_scope();
     /// ```
     ///
-    /// For `atomic(&pool, |ctx| ...)` closures where the closure has
+    /// For `atomic(&mut ctx, |ctx| ...)` closures where the closure has
     /// `&mut DjogiContext`, use [`Self::set_no_tenant_scope`] instead.
     ///
     /// Intended for admin / batch / migration flows that legitimately want
@@ -101,7 +101,7 @@ impl DjogiContext {
     }
 
     /// Mutating form of [`Self::with_no_tenant_scope`] for use inside
-    /// `atomic(&pool, |ctx| ...)` closures.
+    /// `atomic(&mut ctx, |ctx| ...)` closures.
     pub fn set_no_tenant_scope(&mut self) {
         self.tenant_scope_suppressed = true;
     }

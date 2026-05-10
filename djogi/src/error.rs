@@ -363,8 +363,9 @@ pub enum DjogiError {
     /// first `poll_next`. This makes the error surface immediate and
     /// actionable rather than deferred to the first row consume.
     ///
-    /// Fix: wrap the stream consumer in `atomic(&pool, |ctx| async move { … })`
-    /// so `ctx` is transaction-backed when `stream` is called.
+    /// Fix: wrap the stream consumer in
+    /// `atomic(&mut ctx, |ctx| Box::pin(async move { … }))` so `ctx` is
+    /// transaction-backed when `stream` is called.
     #[error("QuerySet::stream requires an active transaction — wrap the call in atomic()")]
     StreamOutsideTransaction,
 

@@ -13,7 +13,10 @@ or an active `tokio_postgres::Transaction` (all writes commit together
 on `atomic()`'s success return, or roll back on `Err` / panic).
 
 - `atomic(executor, closure)` — enters a transactional scope. Passes
-  `&mut DjogiContext` to the closure.
+  `&mut DjogiContext` to the closure. Prefer `atomic(&mut ctx, ...)`
+  when you already have a request context; it preserves that context's
+  Sassi/Punnu registry. `atomic(&pool, ...)` remains available as a
+  fresh top-level context shortcut.
 - `ctx.on_commit(|| ...)` — queue a callback to fire after the
   outermost transaction commits. Inner savepoints do NOT flush
   callbacks; only the root atomic scope does.
@@ -26,7 +29,9 @@ on `atomic()`'s success return, or roll back on `Err` / panic).
 ```rust
 use djogi::prelude::*;
 
-djogi::transaction::atomic(&pool, |ctx| async move {
+let mut ctx = DjogiContext::from_pool(pool.clone());
+
+djogi::transaction::atomic(&mut ctx, |ctx| Box::pin(async move {
     let post = Post::create(ctx, Post { title: "hi".into(), ..Default::default() }).await?;
     post.save(ctx).await?;
 
@@ -35,7 +40,7 @@ djogi::transaction::atomic(&pool, |ctx| async move {
     });
 
     Ok::<_, DjogiError>(())
-}).await?;
+})).await?;
 ```
 
 Commits on `Ok(_)`; rolls back on `Err(_)` or panic. `on_commit`

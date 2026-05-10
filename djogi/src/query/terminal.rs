@@ -828,7 +828,7 @@ where
     /// ```ignore
     /// use futures::StreamExt;
     ///
-    /// atomic(&pool, |ctx| Box::pin(async move {
+    /// atomic(&mut ctx, |ctx| Box::pin(async move {
     ///     let mut stream = Post::objects()
     ///         .filter(|f| f.published.eq(true))
     ///         .stream(ctx)
