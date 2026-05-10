@@ -40,8 +40,8 @@
 //! DB-backed generators (it is what `generate_many` calls). `generate`
 //! opts the type into client-side generation.
 //!
-//! See `docs/guide/primary-keys.md#custom-pk-types` for the user-facing
-//! prose and the "when do I reach for this?" decision tree.
+//! See `docs/spec/primary-keys.md` §3.5b for the user-facing prose and
+//! the "when do I reach for this?" decision tree.
 
 use proc_macro2::TokenStream;
 use quote::quote;

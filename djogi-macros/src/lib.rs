@@ -446,8 +446,7 @@ pub fn apps(input: TokenStream) -> TokenStream {
 /// ```
 ///
 /// See `djogi_macros::primary_key_macro` for the full grammar and
-/// `docs/guide/primary-keys.md#custom-pk-types` for the user-facing
-/// narrative.
+/// `docs/spec/primary-keys.md` §3.5b for the user-facing narrative.
 #[proc_macro]
 pub fn primary_key(input: TokenStream) -> TokenStream {
     primary_key_macro::expand(input.into()).into()
