@@ -252,6 +252,22 @@ register as `PrimaryKeyKind::Custom(CustomPrimaryKeyKind { type_name,
 sql_type, default_sql })` so descriptors stay self-describing for the
 migration engine.
 
+**Migrating between primary-key shapes.** The framework's
+[`pk_flip`](./migrations.md#1010a-primary-key-flip-support-matrix)
+family auto-migrates only the four built-in asc↔desc pairs
+(`HeerId` ↔ `HeerIdRecencyBiased`, `RanjId` ↔ `RanjIdRecencyBiased`).
+Any transition that involves a `djogi::primary_key!` custom newtype —
+whether `Custom → Custom` (rename of the Rust type, change of inner
+SQL type), `built-in → Custom`, or `Custom → built-in` — is rejected
+by the differ in v0.1.0 with a typed diagnostic that names the model,
+classifies the bucket, and surfaces the affected `type_name` /
+`sql_type`. The rejection is intentional: a custom shape change
+requires adopter-specific decisions about value-preserving casts, FK
+cascades, and pre-allocated ID re-issuance that the framework cannot
+infer on its own. Hand-write the migration when you need this — see
+[Migrations §10.10a](./migrations.md#1010a-primary-key-flip-support-matrix)
+for the full support matrix and the rationale.
+
 ### 3.5a Public naming vs internal desc types
 
 Djogi's public surface names the newest-first variants

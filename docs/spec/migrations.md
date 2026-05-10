@@ -399,4 +399,55 @@ Composite boundary:
 
 For supported composite unique/index cases, Djogi must preserve declared column order in both diffs and generated SQL.
 
+### 10.10a Primary-Key Flip Support Matrix
+
+The `pk_flip` family that lives under `djogi::migrate::pk_flip`
+ships migration playbooks for the four built-in asc↔desc primary-key
+pairs only:
+
+| Before                  | After                   | Supported? | Mechanism                  |
+|-------------------------|-------------------------|------------|----------------------------|
+| `HeerId`                | `HeerIdRecencyBiased`   | yes        | `pk_flip` Heer family      |
+| `HeerIdRecencyBiased`   | `HeerId`                | yes        | `pk_flip` Heer family      |
+| `RanjId`                | `RanjIdRecencyBiased`   | yes        | `pk_flip` Ranj family      |
+| `RanjIdRecencyBiased`   | `RanjId`                | yes        | `pk_flip` Ranj family      |
+| any custom newtype A    | any custom newtype B    | rejected   | hand-written migration     |
+| any built-in            | any custom newtype      | rejected   | hand-written migration     |
+| any custom newtype      | any built-in            | rejected   | hand-written migration     |
+| `HeerId` ↔ `Serial`     | (any cross-family pair) | rejected   | hand-written migration     |
+| anything                | composite reshape       | rejected   | hand-written migration     |
+
+A "custom newtype" is a primary-key type declared through the
+`djogi::primary_key! { ... }` macro — see the
+[primary keys spec](./primary-keys.md#35b-custom-primary-key-types-djogiprimary_key)
+for the macro grammar.
+
+**Why custom-PK shape flips are rejected in v0.1.0.** Every custom
+newtype carries an adopter-defined inner SQL type (`BIGINT`, `UUID`,
+adopter-installed domain types, …) and an adopter-defined `default_sql`
+generator. A safe migration between two custom shapes must answer
+three questions the framework cannot derive on its own:
+
+1. **The value-preserving cast.** `BIGINT → UUID` has no implicit cast
+   in Postgres; a wrong `USING` clause silently truncates row IDs.
+2. **The FK cascade strategy.** Every column that holds a foreign key
+   to the migrating table must be re-typed in lockstep. The asc↔desc
+   flips can do this safely because the inner SQL type does not change;
+   custom shape changes can.
+3. **The DEFAULT generator's bulk-allocation contract.** Pre-existing
+   pre-allocated IDs (Pattern 2 / Pattern 3 from the
+   [primary keys spec §3.5](./primary-keys.md#35-id-generation-patterns))
+   may need re-issuing under the new generator.
+
+When the differ encounters any transition involving a custom PK kind
+on either side, it emits a typed `SchemaOperation::Unsupported` whose
+`reason` field names the affected table, classifies the bucket
+(`custom-to-custom`, `built-in-to-custom`, `custom-to-built-in`), and
+surfaces the inner `type_name` / `sql_type` for the custom side(s).
+`compose` then refuses to lower the delta and surfaces this string
+verbatim through `ComposeError::UnsupportedDelta` so adopters see the
+exact reason without grepping the differ.
+
+Tracking issue: [djogi#165](https://github.com/TarunvirBains/djogi/issues/165).
+
 The model-level declaration grammar (`#[model(indexes(...))]`), the unique-constraint-vs-unique-index lowering rules, the deterministic name format, and the `concurrently = true` operator contract — including the apply-time advisory warning — are specified in the [indexing spec](./indexing.md). This chapter covers only how `IndexSpec` feeds the differ and the generated DDL; the contract itself lives there.
