@@ -446,7 +446,11 @@ impl DjogiContext {
     pub(crate) fn build_sassi() -> Arc<sassi::Sassi> {
         let mut s = sassi::Sassi::new();
         for hook in inventory::iter::<crate::cache::SassiBootHook>() {
-            (hook.0)(&mut s);
+            // GH #125 — the inner `fn` pointer is `pub(crate)`; the
+            // public surface is the `run` method, not tuple-field
+            // access. Call sites stay inside the framework crate
+            // alongside the boot-time invariants the runner upholds.
+            hook.run(&mut s);
         }
         Arc::new(s)
     }

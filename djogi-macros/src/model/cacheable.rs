@@ -238,9 +238,18 @@ fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Resu
     // `::djogi::cache::Punnu` are both re-exported through `djogi::cache`
     // (T7.1). `::djogi::__private::inventory::submit!` is already available
     // for macro-emitted code.
+    //
+    // GH #125 — construction routes through the hidden public
+    // `::djogi::SassiBootHook::__djogi_from_model_macro` associated
+    // function rather than the
+    // tuple-struct constructor. The tuple field on `SassiBootHook` is
+    // `pub(crate)` to keep adopter code from reading the field or using
+    // the literal constructor; macro-emitted code uses the named
+    // constructor so the emission keeps compiling against the narrowed
+    // v0.1.0 surface.
     let boot_hook = quote! {
         ::djogi::__private::inventory::submit! {
-            ::djogi::SassiBootHook(|sassi: &mut ::djogi::cache::Sassi| {
+            ::djogi::SassiBootHook::__djogi_from_model_macro(|sassi: &mut ::djogi::cache::Sassi| {
                 let punnu = ::djogi::cache::Punnu::<#struct_name>::builder().build();
                 sassi.register::<#struct_name>(::std::sync::Arc::new(punnu));
             })

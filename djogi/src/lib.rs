@@ -99,6 +99,13 @@ pub use visage_boundary::DjogiVisageOf;
 // Cluster 8δ T7.4 — `SassiBootHook` re-export so `#[derive(Model)]`-emitted
 // `inventory::submit!` blocks can spell `::djogi::SassiBootHook` per
 // `feedback_macro_path_routing.md` (macro paths route through djogi only).
+//
+// GH #125 — re-exported under `#[doc(hidden)]` to keep this link-time
+// machinery off the v0.1.0 adopter-facing surface. The type itself is
+// already `#[doc(hidden)]` at its definition site (`cache::boot`); the
+// re-export carries the same marker so `cargo doc` does not surface
+// the path under the crate root either.
+#[doc(hidden)]
 pub use crate::cache::SassiBootHook;
 
 /// Private re-exports used only by macro-generated code.

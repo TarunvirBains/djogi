@@ -1,6 +1,6 @@
 //! Boot-time `Sassi` registration via the `inventory` crate.
 //!
-//! `#[derive(Model)]` (via `model::cacheable::expand` — when `Cacheable`
+//! `#[model]` (via `model::cacheable::expand` — when `Cacheable`
 //! applies, i.e. `pk` ≠ `None`) emits one `inventory::submit!` per
 //! model, each containing a `SassiBootHook` whose `fn(&mut Sassi)`
 //! constructs a `Punnu<T>` and registers it on the orchestrator.
@@ -17,16 +17,93 @@
 //! context was supplied. This is the "DjogiContext IS the tenant boundary"
 //! contract from cluster 8δ T7.4.
 
-/// A boot-time hook that registers one `Punnu<T>` on a `Sassi` orchestrator.
+/// Link-time `Sassi` registration handle emitted by `#[model]`.
 ///
-/// Every `#[model]` struct (with the exception of `pk = None`) emits an
-/// `inventory::submit!` of a `SassiBootHook` — a thin newtype around
-/// `fn(&mut Sassi)`. `DjogiContext::from_pool` walks the inventory once
-/// and applies every hook so the context's `Sassi` starts with a pool
-/// registered for each `Cacheable` model type in the current binary.
+/// # What
 ///
-/// Macro-emitted code spells this as `::djogi::SassiBootHook` (re-exported
-/// at the crate root) per `feedback_macro_path_routing.md`.
-pub struct SassiBootHook(pub fn(&mut sassi::Sassi));
+/// Every `#[model]` struct (with the exception of `pk = None`) emits one
+/// `inventory::submit!` of a `SassiBootHook` — a thin newtype around a
+/// `fn(&mut Sassi)` registration pointer. At top-level
+/// [`DjogiContext`](crate::DjogiContext) construction time
+/// (`from_pool`, `from_connection`), the framework walks the inventory
+/// once and applies every hook so the context's `Sassi` starts with a
+/// `Punnu<T>` registered for each `Cacheable` model type compiled into
+/// the binary.
+///
+/// # Why this is hidden from rustdoc
+///
+/// `SassiBootHook` is link-time machinery, not adopter-facing API.
+/// Adopters should never name this type, read its inner field, or
+/// construct an instance. The struct is `#[doc(hidden)]`, the inner
+/// `fn` pointer is `pub(crate)`, and the
+/// [`__djogi_from_model_macro`](Self::__djogi_from_model_macro)
+/// constructor is `#[doc(hidden) pub]` solely so macro-emitted code in
+/// downstream crates can call it through the
+/// `::djogi::SassiBootHook::__djogi_from_model_macro` path (per
+/// `feedback_macro_path_routing.md`). Narrowing the surface keeps the
+/// framework free to evolve the inventory wiring (richer registration
+/// shape, batched hooks per app, swap `inventory` for a different
+/// link-time mechanism, etc.) without breaking the v0.1.0 adopter API.
+///
+/// # Adopter usage
+///
+/// Adopters interact with the framework's cache surface through the
+/// `Sassi` registry built for them at context construction time —
+/// never by naming `SassiBootHook` directly:
+///
+/// ```rust
+/// use djogi::prelude::*;
+///
+/// #[model(table = "posts")]
+/// #[derive(Debug, Clone)]
+/// struct Post {
+///     title: String,
+///     body: String,
+/// }
+///
+/// fn typed_pool(ctx: &DjogiContext) {
+///     // The boot hook for `Post` ran when `ctx` was constructed —
+///     // `ctx.punnu::<Post>()` returns the registered `Arc<Punnu<Post>>`
+///     // without the adopter ever naming `SassiBootHook`.
+///     let _post_pool = ctx.punnu::<Post>();
+/// }
+/// ```
+///
+/// Macro-emitted code reaches this type through the
+/// `::djogi::SassiBootHook` re-export at the crate root.
+#[doc(hidden)]
+pub struct SassiBootHook(pub(crate) fn(&mut sassi::Sassi));
+
+impl SassiBootHook {
+    /// Construct a boot hook from a `Sassi`-registration `fn` pointer.
+    ///
+    /// `#[doc(hidden) pub]` — adopter code never calls this directly.
+    /// `#[model]`-emitted code in adopter crates reaches the
+    /// constructor through
+    /// `::djogi::SassiBootHook::__djogi_from_model_macro(...)` (per
+    /// `feedback_macro_path_routing.md`); marking the field
+    /// `pub(crate)` makes the implicit tuple-struct constructor
+    /// unavailable to downstream macro expansion sites, which is why
+    /// this named constructor exists.
+    ///
+    /// `const` so the macro emission can place the hook construction
+    /// in `inventory::submit!`'s `static` initialiser without a runtime
+    /// fence.
+    #[doc(hidden)]
+    pub const fn __djogi_from_model_macro(register: fn(&mut sassi::Sassi)) -> Self {
+        Self(register)
+    }
+
+    /// Invoke the registration `fn` against `sassi`.
+    ///
+    /// `pub(crate)` — only [`DjogiContext::build_sassi`](crate::DjogiContext)
+    /// walks the inventory and calls this. The runtime path stays
+    /// inside the framework crate alongside the boot-time invariants
+    /// (single-call-per-context, freeze-into-`Arc<Sassi>`, etc.) the
+    /// runner upholds.
+    pub(crate) fn run(&self, sassi: &mut sassi::Sassi) {
+        (self.0)(sassi);
+    }
+}
 
 inventory::collect!(SassiBootHook);

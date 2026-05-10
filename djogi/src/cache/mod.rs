@@ -63,7 +63,13 @@ pub use sassi::{
 // Re-exported at the crate root (`djogi::SassiBootHook`) so macro-emitted
 // code can spell `::djogi::SassiBootHook` per
 // `feedback_macro_path_routing.md`.
+//
+// GH #125 — `SassiBootHook` is link-time machinery, not adopter-facing
+// API. Hide both the module path and the re-export so `cargo doc` does
+// not surface the inventory wiring through `djogi::cache::*`.
+#[doc(hidden)]
 pub mod boot;
+#[doc(hidden)]
 pub use boot::SassiBootHook;
 
 /// SQL column name that carries the delta-sync watermark for a

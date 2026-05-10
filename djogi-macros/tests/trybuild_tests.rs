@@ -483,6 +483,30 @@ fn compile_fail_phase8() {
 }
 
 #[test]
+fn compile_fail_phase8_5_c2_125_sassi_boot_hook_field_private() {
+    // v0.1.0 doc surface (GH #125) — `SassiBootHook`'s tuple field and
+    // tuple-struct constructor are gated against adopter code. The
+    // type stays `pub` (and `#[doc(hidden)]`) so macro-emitted code
+    // can name `::djogi::SassiBootHook` for the trait bound on
+    // `inventory::submit!`, but the inner `fn(&mut sassi::Sassi)`
+    // pointer and the tuple-struct constructor become field-private —
+    // both surfaces leak the boot-time registration shape that the
+    // framework reserves the right to evolve in v0.x.
+    //
+    // Macro-emitted adopter code routes through the hidden public
+    // `SassiBootHook::__djogi_from_model_macro(...)` associated
+    // function, verified by the `compile_pass_phase8_t7_4` bucket and
+    // the strict `adopter_crate_isolation` driver.
+    //
+    // Run this bucket in isolation:
+    //     cargo test --test trybuild_tests \
+    //         compile_fail_phase8_5_c2_125_sassi_boot_hook_field_private \
+    //         -- --test-threads=1
+    let t = TestCases::new();
+    t.compile_fail("tests/compile_fail/phase8_5_c2_125_sassi_boot_hook_field_private.rs");
+}
+
+#[test]
 fn compile_fail_phase8eta_sql_only_without_sql_route() {
     // Phase 8eta PR2d — `regex` is a PostgreSQL-specific predicate
     // and is intentionally not on the portable `DjogiField` surface.
