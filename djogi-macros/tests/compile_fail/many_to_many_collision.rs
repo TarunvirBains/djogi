@@ -1,18 +1,31 @@
-// Two `many_to_many!` invocations producing the same inherent-method
-// name (`groups`) on the same source type (`Person`) must fail to
-// compile. The macro does not (yet) perform a cross-invocation
-// collision check via inventory — that lands in a follow-up phase —
-// but each invocation emits a plain `impl Person { pub fn groups(...) }`
-// block, so rustc's duplicate-definition error fires on the second
-// invocation and turns the mistake into a compile-time failure.
+// Two `many_to_many!` invocations producing the same `relation` name
+// (`groups`) on the same source type (`Person`) must fail to compile.
+// The macro emits a per-relation trait
+// `{Source}{Relation-pascal}ManyToManyRelation` plus its impl (GH issue
+// #39 — coherence-rule rationale, see `djogi-macros/src/many_to_many.rs`
+// module docs); two invocations with the same source/relation pair
+// emit the same trait twice and trip rustc's E0428 / E0119
+// duplicate-definition errors. The trait `ManyToMany<Group>` impl on
+// `Person` is also redefined, compounding the failure.
 //
-// This pins the collision story for `many_to_many!` symmetric with
-// `reverse_relation_duplicate_accessor.rs`: same-receiver /
-// same-method emissions collide at the inherent-method layer
-// regardless of which macro (reverse-FK, reverse-O2O, M2M) produced
-// them. A future refactor that shifts the emission into an extension
-// trait (which would silently lose the collision check) trips this
-// fixture instead of slipping by.
+// ## Collision-coverage scope (matters for whoever audits this fixture)
+//
+// rustc only catches **same-suffix** trait redefinitions. Two
+// `many_to_many!` invocations with the same `(Source, relation)` (this
+// fixture) share the `…ManyToManyRelation` suffix and collide at
+// rustc.
+//
+// What rustc DOES NOT catch is a `many_to_many!` competing with a
+// `reverse_one_to_many!` / `reverse_one_to_one!` for the same accessor
+// name on the same source — the M2M side emits
+// `…ManyToManyRelation`, the reverse side emits `…ReverseRelation`,
+// the two trait names differ, both compile cleanly, and the conflict
+// only surfaces as an "ambiguous method call" error at every
+// downstream call site that has both traits in scope. That gap is
+// closed by
+// `djogi::relation::registry::validate_relation_accessor_collisions`,
+// which adopters call once at startup or in a CI gate; see registry.rs
+// module docs and the `validator_*` unit tests there for the contract.
 
 use djogi::prelude::*;
 use djogi::relation::ForeignKey;

@@ -1,20 +1,33 @@
 // Declaring two `reverse_one_to_many!` accessors with the same method
-// name on the same receiver type must fail to compile. The macro does
-// not (yet) perform a cross-invocation collision check in inventory
-// — that lands in a follow-up phase — but each invocation emits a
-// plain inherent method on the receiver, so two macros that produce
-// the same method name on the same type hit rustc's
-// duplicate-definition error directly. This fixture pins that failure
-// mode so a later refactor that shifts the emission into an extension
-// trait (which would silently lose the collision check) trips this
-// trybuild fixture instead of slipping by.
+// name on the same receiver type must fail to compile. The macro emits
+// a per-relation trait `{Receiver}{Method-pascal}ReverseRelation` plus
+// its impl (GH issue #39 — coherence-rule rationale, see
+// `djogi-macros/src/reverse_relation.rs` module docs), so two macros
+// that would produce the same trait name on the same source hit
+// rustc's E0428 / E0119 duplicate-definition errors directly.
 //
-// The test also documents the scope of the Phase 3 Task 7 collision
-// guarantee: same-type / same-name accessors are blocked; cross-kind
-// collisions (an FK reverse and an M2M accessor with the same method
-// name) or same-name accessors via `reverse_one_to_one!` + `reverse_
-// one_to_many!` trip the same duplicate-inherent-method error, so the
-// coverage below is load-bearing for all three macros.
+// ## Collision-coverage scope (matters for whoever audits this fixture)
+//
+// rustc only catches **same-suffix** trait redefinitions. The reverse
+// macros all emit the `…ReverseRelation` suffix, so:
+//
+// - two `reverse_one_to_many!` with the same `(Receiver, method)` (this
+//   fixture), or
+// - one `reverse_one_to_many!` + one `reverse_one_to_one!` sharing the
+//   same `(Receiver, method)`,
+//
+// both trip the same E0428 / E0119 errors at the trait layer.
+//
+// What rustc DOES NOT catch is the cross-suffix case — a
+// `reverse_one_to_many!` (or `reverse_one_to_one!`) plus a
+// `many_to_many!` exposing the same accessor name on the same source.
+// They emit DIFFERENT trait names (`…ReverseRelation` vs
+// `…ManyToManyRelation`), both compile cleanly, and the collision only
+// surfaces as an "ambiguous method call" error at every downstream
+// call site that has both traits in scope. That gap is closed by
+// `djogi::relation::registry::validate_relation_accessor_collisions`,
+// which adopters call once at startup or in a CI gate; see registry.rs
+// module docs and the `validator_*` unit tests there for the contract.
 use djogi::prelude::*;
 
 #[model(table = "owners_dup")]

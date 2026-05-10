@@ -26,17 +26,48 @@
 //! 3 itself does not consume them; shipping the registry now is
 //! forward-compatibility infrastructure.
 //!
-//! The inventory marker provides metadata for tooling and future
-//! collision checks; runtime collision detection across reverse-relation
-//! accessors is out of scope for this commit. The macro emits a plain
-//! inherent method, so duplicate accessors with the same method name on
-//! the same receiver type already fail to compile via rustc's
-//! duplicate-definition error (see
-//! `tests/compile_fail/reverse_relation_duplicate_accessor.rs`). Detecting
-//! cross-macro-kind collisions (e.g. a `reverse_one_to_many!` and a
-//! `many_to_many!` both emitting `.cars()` on the same source) lands in
-//! a follow-up that walks `inventory::iter::<ReverseRelationMarker>`
-//! during startup registration.
+//! ## Collision detection
+//!
+//! rustc covers the trait-layer half; the registry walker
+//! [`validate_relation_accessor_collisions`] covers the cross-suffix
+//! half.
+//!
+//! Each macro invocation emits a per-relation **trait** plus its impl
+//! (GH issue #39 — coherence rule, see `reverse_relation.rs` and
+//! `many_to_many.rs` module docs). The trait name embeds the macro kind
+//! suffix:
+//!
+//! - `reverse_one_to_many!` / `reverse_one_to_one!` → `{Receiver}{Method}ReverseRelation`
+//! - `many_to_many!`                                → `{Source}{Relation}ManyToManyRelation`
+//!
+//! That suffix split means rustc only catches **same-suffix**
+//! collisions:
+//!
+//! - Two `reverse_one_to_many!`s with the same `(Receiver, method)` (or
+//!   one `reverse_one_to_many!` and one `reverse_one_to_one!`) emit the
+//!   same `…ReverseRelation` trait twice → E0428 / E0119, build fails.
+//!   The compile-fail fixture
+//!   `tests/compile_fail/reverse_relation_duplicate_accessor.rs` pins
+//!   that surface, as does `many_to_many_collision.rs` for the M2M
+//!   same-suffix case.
+//! - A `reverse_one_to_many!` (or `reverse_one_to_one!`) and a
+//!   `many_to_many!` that all want to expose the same accessor name on
+//!   the same source emit DIFFERENT trait names (`…ReverseRelation` vs
+//!   `…ManyToManyRelation`). Both compile cleanly. The collision only
+//!   manifests downstream as an "ambiguous method call" error at every
+//!   call site that has both traits in scope — the diagnostic points at
+//!   the call site instead of at the macro invocations, and there is no
+//!   guarantee any call site exercises the ambiguity.
+//!
+//! [`validate_relation_accessor_collisions`] closes that gap. It walks
+//! a sequence of [`ReverseRelationMarker`]s (typically
+//! `inventory::iter::<ReverseRelationMarker>()`), groups them by
+//! `(source, accessor_name)`, and returns
+//! [`RelationRegistryError::AccessorCollisions`] for any group whose
+//! members disagree on `kind`, `target`, or `via`. Adopters are expected
+//! to call it once during startup or in a CI gate test so cross-suffix
+//! collisions surface at the macro invocations rather than at an
+//! arbitrary call site.
 //!
 //! # How
 //!
@@ -183,6 +214,219 @@ impl ReverseRelationMarker {
 }
 
 ::inventory::collect!(ReverseRelationMarker);
+
+/// Errors produced by relation-registry validators.
+///
+/// Currently surfaces a single failure mode — accessor collisions that
+/// rustc cannot catch because the colliding macros emit different trait
+/// suffixes. Held under `#[non_exhaustive]` so future relation-graph
+/// invariants (orphaned through-side markers, self-referential M2M with
+/// inconsistent FK ordering, etc.) can land as new variants without a
+/// breaking change.
+#[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
+pub enum RelationRegistryError {
+    /// One or more `(source, accessor_name)` pairs were registered by
+    /// multiple [`ReverseRelationMarker`]s that disagree on `kind`,
+    /// `target`, or `via`.
+    ///
+    /// Carries every conflicting group so a single call to
+    /// [`validate_relation_accessor_collisions`] reports every cross-kind
+    /// collision in one pass instead of forcing an iterative
+    /// fix-rebuild-revalidate loop.
+    #[error("relation-accessor collisions detected:\n{}", .0.iter().map(ToString::to_string).collect::<Vec<_>>().join(""))]
+    AccessorCollisions(Vec<RelationAccessorCollision>),
+}
+
+/// One detected accessor collision — every marker that shares a
+/// `(source, name)` pair with at least one disagreement on `kind`,
+/// `target`, or `via`.
+///
+/// Returned (in a `Vec`) inside
+/// [`RelationRegistryError::AccessorCollisions`]. The `Display` impl
+/// renders a diagnostic block listing every conflicting marker; the
+/// fields are `pub` so consumers that want to format the diagnostic
+/// themselves (e.g. emit a build-script `cargo:warning=...` line, or
+/// route into a structured `tracing` event) can read them directly.
+#[derive(Debug, Clone)]
+pub struct RelationAccessorCollision {
+    /// Source model name — the receiver that the accessor method is
+    /// attached to. Shared by every marker in [`Self::markers`].
+    pub source: &'static str,
+    /// Accessor method name. Shared by every marker in [`Self::markers`].
+    pub name: &'static str,
+    /// Every marker that registered this `(source, name)` pair. The
+    /// vec contains at least two elements; otherwise the validator
+    /// would not have flagged it as a collision.
+    pub markers: Vec<ReverseRelationMarker>,
+}
+
+impl std::fmt::Display for RelationAccessorCollision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "  - `{}::{}` is registered by {} markers, but they disagree on kind / target / via:",
+            self.source,
+            self.name,
+            self.markers.len(),
+        )?;
+        for m in &self.markers {
+            writeln!(
+                f,
+                "      kind={:?}, target={}, via={}",
+                m.kind(),
+                m.target(),
+                m.via(),
+            )?;
+        }
+        writeln!(
+            f,
+            "    fix: rename one of the accessors so each `(source, name)` pair is \
+             unique, or align the macro invocations on a single kind/target/via.",
+        )
+    }
+}
+
+/// Stable total order over [`RelationKind`] discriminants for
+/// diagnostic-ordering purposes only.
+///
+/// `RelationKind` is `#[non_exhaustive]` and intentionally does not
+/// derive `Ord` — adopters pattern-match on the variants and adding
+/// `Ord` would constrain the public ordering semantics to whatever the
+/// derive picks. Internal sorts (specifically the within-group marker
+/// sort in [`validate_relation_accessor_collisions`]) just need *some*
+/// stable key, so we project to `u8` here.
+///
+/// The match is intentionally exhaustive (no `_` arm). Within the
+/// defining crate `#[non_exhaustive]` does not relax exhaustiveness,
+/// so any future variant added here surfaces as a compile error and
+/// forces the maintainer to choose its sort position deliberately —
+/// which is what we want, since every diagnostic snapshot test
+/// downstream depends on the ordering being stable.
+const fn kind_order(k: RelationKind) -> u8 {
+    match k {
+        RelationKind::FK => 0,
+        RelationKind::O2O => 1,
+        RelationKind::M2M => 2,
+    }
+}
+
+/// Walk a sequence of [`ReverseRelationMarker`]s and surface any
+/// `(source, accessor_name)` pair claimed by markers that disagree on
+/// `kind`, `target`, or `via`.
+///
+/// # What this catches that rustc misses
+///
+/// The reverse / M2M macros emit per-relation traits whose names embed
+/// the macro kind:
+///
+/// - `reverse_one_to_many!` / `reverse_one_to_one!` →
+///   `{Receiver}{Method}ReverseRelation`
+/// - `many_to_many!` →
+///   `{Source}{Relation}ManyToManyRelation`
+///
+/// rustc only catches **same-suffix** trait redefinitions (E0428 / E0119);
+/// a `reverse_one_to_many!` and a `many_to_many!` competing for the
+/// same `.cars()` accessor on `Owner` produce `OwnerCarsReverseRelation`
+/// and `OwnerCarsManyToManyRelation`, both of which compile, and the
+/// collision only manifests as an "ambiguous method call" at every
+/// downstream call site that has both traits in scope. This validator
+/// closes the gap: callers route the inventory iterator through it once
+/// at startup (or in a CI gate) and the diagnostic points at the macro
+/// invocations rather than at an arbitrary call site.
+///
+/// # Tolerance for legitimate duplicates
+///
+/// A group whose members all share the same `(kind, target, via)`
+/// triple is treated as an intentional duplicate (e.g. a registry-merge
+/// tool concatenating two inventories that happen to overlap on a
+/// shared marker). Such groups never appear from the macro layer alone:
+/// every reverse / M2M macro invocation emits both a unique trait impl
+/// and a unique inventory record, so two truly identical markers also
+/// imply two identical trait impls and rustc rejects the build with
+/// E0428 before the markers ever reach this validator. The tolerance
+/// is defensive future-proofing, not a deliberate macro escape hatch.
+///
+/// # Diagnostic ordering
+///
+/// Collisions are reported in deterministic `(source, name)` order so
+/// the diagnostic is stable between runs — important for integrating
+/// the validator into reproducible CI gates and snapshot-style tests.
+///
+/// # Example
+///
+/// ```ignore
+/// // Typical adopter call site — startup or a CI gate test:
+/// djogi::relation::registry::validate_relation_accessor_collisions(
+///     ::inventory::iter::<djogi::relation::registry::ReverseRelationMarker>(),
+/// )?;
+/// ```
+pub fn validate_relation_accessor_collisions<'a, I>(markers: I) -> Result<(), RelationRegistryError>
+where
+    I: IntoIterator<Item = &'a ReverseRelationMarker>,
+{
+    use std::collections::BTreeMap;
+
+    // BTreeMap (vs HashMap) keeps the diagnostic ordering deterministic
+    // so the same input always produces the same error message — a
+    // requirement for snapshot-style tests and reproducible CI gates.
+    // Marker populations are tiny (tens for a typical app, hundreds at
+    // most), so the O(log n) overhead is dwarfed by the stability win.
+    let mut by_pair: BTreeMap<(&'static str, &'static str), Vec<ReverseRelationMarker>> =
+        BTreeMap::new();
+    for marker in markers {
+        by_pair
+            .entry((marker.source(), marker.name()))
+            .or_default()
+            .push(*marker);
+    }
+
+    let mut collisions: Vec<RelationAccessorCollision> = Vec::new();
+    for ((source, name), mut group) in by_pair {
+        if group.len() < 2 {
+            continue;
+        }
+        // Probe whether every marker in the group is an exact duplicate
+        // of the first. The macros never emit identical duplicates (each
+        // invocation emits a unique trait impl), but a future
+        // registry-merge consumer might legitimately concatenate
+        // overlapping inventories; tolerate identical duplicates so that
+        // case keeps working. Disagreements on ANY of kind/target/via
+        // are flagged.
+        let head = &group[0];
+        let identical = group.iter().all(|m| {
+            m.kind() == head.kind() && m.target() == head.target() && m.via() == head.via()
+        });
+        if identical {
+            continue;
+        }
+        // Sort markers within the group on a stable key so the
+        // diagnostic is deterministic regardless of inventory link
+        // order (across both `inventory::iter` walks and arbitrary
+        // input orders). Insertion order can shift across builds
+        // because the link-time-collected slice depends on linker
+        // ordering and codegen unit shuffling — sorting in-place
+        // anchors the diagnostic.
+        group.sort_by(|l, r| {
+            (kind_order(l.kind()), l.target(), l.via()).cmp(&(
+                kind_order(r.kind()),
+                r.target(),
+                r.via(),
+            ))
+        });
+        collisions.push(RelationAccessorCollision {
+            source,
+            name,
+            markers: group,
+        });
+    }
+
+    if collisions.is_empty() {
+        Ok(())
+    } else {
+        Err(RelationRegistryError::AccessorCollisions(collisions))
+    }
+}
 
 /// Macro-only entry point for constructing [`ReverseRelationMarker`]
 /// values. **Not** part of the stable public API.
@@ -418,5 +662,213 @@ mod tests {
             "inventory::iter<ReverseRelationMarker> did not surface the test marker — \
              either linkage dropped it or the submit! block expanded without registering."
         );
+    }
+
+    // ── validate_relation_accessor_collisions ────────────────────────────
+    //
+    // The validator's contract is small enough to verify with
+    // hand-built marker fixtures rather than driven through the proc
+    // macro. Every test below routes construction through the sealed
+    // `__make_reverse_relation_marker` so the marker shape is
+    // guaranteed identical to the one the macros emit.
+
+    fn make(
+        kind: RelationKind,
+        source: &'static str,
+        name: &'static str,
+        target: &'static str,
+        via: &'static str,
+    ) -> ReverseRelationMarker {
+        super::__macro_support::__make_reverse_relation_marker(kind, source, name, target, via)
+    }
+
+    #[test]
+    fn validator_accepts_empty_input() {
+        // A registry with no markers is trivially collision-free; the
+        // validator must not allocate or panic on the empty case.
+        let markers: [ReverseRelationMarker; 0] = [];
+        assert!(validate_relation_accessor_collisions(markers.iter()).is_ok());
+    }
+
+    #[test]
+    fn validator_accepts_unrelated_markers() {
+        // Different `(source, name)` pairs do not collide regardless of
+        // kind / target / via.
+        let markers = [
+            make(RelationKind::FK, "Owner", "cars", "Vehicle", "owner_id"),
+            make(RelationKind::M2M, "Person", "groups", "Group", "person_id"),
+            make(RelationKind::O2O, "User", "profile", "Profile", "user_id"),
+        ];
+        assert!(validate_relation_accessor_collisions(markers.iter()).is_ok());
+    }
+
+    #[test]
+    fn validator_tolerates_identical_duplicates() {
+        // Two markers identical in every field — kind, target, via —
+        // are treated as an intentional duplicate. The reverse / M2M
+        // macros never emit this in practice (each invocation also
+        // emits a unique trait impl that rustc would E0428 on a true
+        // double), but a future registry-merge consumer concatenating
+        // overlapping inventories should not be punished for harmless
+        // overlap.
+        let m = make(RelationKind::FK, "Owner", "cars", "Vehicle", "owner_id");
+        let markers = [m, m];
+        assert!(validate_relation_accessor_collisions(markers.iter()).is_ok());
+    }
+
+    #[test]
+    fn validator_flags_cross_kind_fk_vs_m2m() {
+        // The headline case from GH issue #158: a `reverse_one_to_many!`
+        // and a `many_to_many!` both expose `.cars()` on `Owner`. The
+        // emitted trait names — `OwnerCarsReverseRelation` and
+        // `OwnerCarsManyToManyRelation` — differ, so rustc compiles
+        // both. Without this validator the collision only surfaces as
+        // an "ambiguous method call" error at every downstream call
+        // site that has both traits in scope.
+        let markers = [
+            make(RelationKind::FK, "Owner", "cars", "Vehicle", "owner_id"),
+            make(RelationKind::M2M, "Owner", "cars", "Garage", "owner_id"),
+        ];
+        let err = validate_relation_accessor_collisions(markers.iter())
+            .expect_err("FK + M2M with the same (source, name) must collide");
+        let RelationRegistryError::AccessorCollisions(collisions) = err;
+        assert_eq!(collisions.len(), 1);
+        let c = &collisions[0];
+        assert_eq!(c.source, "Owner");
+        assert_eq!(c.name, "cars");
+        assert_eq!(c.markers.len(), 2);
+    }
+
+    #[test]
+    fn validator_flags_cross_kind_o2o_vs_m2m() {
+        // Symmetric companion to the FK + M2M test. `OwnerProfileReverseRelation`
+        // and `OwnerProfileManyToManyRelation` again differ at the trait layer,
+        // so this case is invisible to rustc.
+        let markers = [
+            make(RelationKind::O2O, "User", "profile", "Profile", "user_id"),
+            make(RelationKind::M2M, "User", "profile", "Avatar", "user_id"),
+        ];
+        let err = validate_relation_accessor_collisions(markers.iter())
+            .expect_err("O2O + M2M with the same (source, name) must collide");
+        let RelationRegistryError::AccessorCollisions(collisions) = err;
+        assert_eq!(collisions.len(), 1);
+        assert_eq!(collisions[0].markers.len(), 2);
+    }
+
+    #[test]
+    fn validator_flags_same_kind_different_target() {
+        // The reverse / M2M macros emit one inventory marker per
+        // invocation alongside a unique trait impl, so in practice two
+        // markers sharing kind + name + source but disagreeing on
+        // target also fail at rustc (the trait names match, E0428
+        // fires). The validator covers the case as a defensive belt:
+        // if a future emission shape ever decoupled the trait name
+        // from the (source, name) pair, this gate keeps the registry
+        // honest.
+        let markers = [
+            make(RelationKind::FK, "Owner", "cars", "Vehicle", "owner_id"),
+            make(RelationKind::FK, "Owner", "cars", "Truck", "owner_id"),
+        ];
+        let err = validate_relation_accessor_collisions(markers.iter())
+            .expect_err("same (source, name) but different target must collide");
+        let RelationRegistryError::AccessorCollisions(collisions) = err;
+        assert_eq!(collisions.len(), 1);
+    }
+
+    #[test]
+    fn validator_flags_same_kind_different_via() {
+        // Same defensive gate, but for the via column — caught at the
+        // trait layer today, but the validator double-checks.
+        let markers = [
+            make(RelationKind::FK, "Owner", "cars", "Vehicle", "owner_id"),
+            make(RelationKind::FK, "Owner", "cars", "Vehicle", "old_owner_id"),
+        ];
+        let err = validate_relation_accessor_collisions(markers.iter())
+            .expect_err("same (source, name, target) but different via must collide");
+        let RelationRegistryError::AccessorCollisions(collisions) = err;
+        assert_eq!(collisions.len(), 1);
+    }
+
+    #[test]
+    fn validator_reports_multiple_collisions_in_one_pass() {
+        // The validator surfaces every collision in a single
+        // `Result::Err` so adopters can fix the whole registry in one
+        // round instead of iteratively rebuilding to discover the
+        // next conflict.
+        let markers = [
+            make(RelationKind::FK, "A", "x", "Vehicle", "a_id"),
+            make(RelationKind::M2M, "A", "x", "Garage", "a_id"),
+            make(RelationKind::O2O, "B", "y", "Vehicle", "b_id"),
+            make(RelationKind::M2M, "B", "y", "Garage", "b_id"),
+            make(RelationKind::FK, "C", "z", "Vehicle", "c_id"), // alone — no collision
+        ];
+        let err = validate_relation_accessor_collisions(markers.iter()).unwrap_err();
+        let RelationRegistryError::AccessorCollisions(mut collisions) = err;
+        // Sort by (source, name) so the assertion is robust against
+        // future ordering changes (today they're sorted by BTreeMap
+        // construction; pin both invariants explicitly).
+        collisions.sort_by(|l, r| (l.source, l.name).cmp(&(r.source, r.name)));
+        assert_eq!(collisions.len(), 2);
+        assert_eq!((collisions[0].source, collisions[0].name), ("A", "x"));
+        assert_eq!((collisions[1].source, collisions[1].name), ("B", "y"));
+    }
+
+    #[test]
+    fn validator_diagnostic_ordering_is_deterministic() {
+        // Diagnostic stability is a contract — snapshot-style tests
+        // and reproducible CI gates depend on it. Submit the same
+        // collision set twice in different input orders and assert
+        // the resulting error string is identical.
+        let a = [
+            make(RelationKind::FK, "B", "y", "Vehicle", "b_id"),
+            make(RelationKind::M2M, "B", "y", "Garage", "b_id"),
+            make(RelationKind::FK, "A", "x", "Vehicle", "a_id"),
+            make(RelationKind::M2M, "A", "x", "Garage", "a_id"),
+        ];
+        let b = [
+            make(RelationKind::M2M, "A", "x", "Garage", "a_id"),
+            make(RelationKind::FK, "A", "x", "Vehicle", "a_id"),
+            make(RelationKind::M2M, "B", "y", "Garage", "b_id"),
+            make(RelationKind::FK, "B", "y", "Vehicle", "b_id"),
+        ];
+        let err_a = validate_relation_accessor_collisions(a.iter())
+            .unwrap_err()
+            .to_string();
+        let err_b = validate_relation_accessor_collisions(b.iter())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err_a, err_b);
+    }
+
+    #[test]
+    fn validator_error_display_mentions_source_name_and_kinds() {
+        // The diagnostic must point at the colliding (source, name) and
+        // list every marker's kind/target/via — that's what makes the
+        // error actionable without a separate "where did this come
+        // from" investigation. Pin the load-bearing substrings so
+        // accidental refactors don't silently drop them.
+        let markers = [
+            make(RelationKind::FK, "Owner", "cars", "Vehicle", "owner_id"),
+            make(RelationKind::M2M, "Owner", "cars", "Garage", "owner_id"),
+        ];
+        let msg = validate_relation_accessor_collisions(markers.iter())
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("Owner"), "missing source: {msg}");
+        assert!(msg.contains("cars"), "missing accessor name: {msg}");
+        assert!(msg.contains("FK"), "missing FK kind: {msg}");
+        assert!(msg.contains("M2M"), "missing M2M kind: {msg}");
+        assert!(msg.contains("Vehicle"), "missing FK target: {msg}");
+        assert!(msg.contains("Garage"), "missing M2M target: {msg}");
+    }
+
+    #[test]
+    fn validator_inventory_walk_compiles() {
+        // Pin that the validator's signature accepts the canonical
+        // adopter call shape — passing `inventory::iter::<T>()`
+        // directly — and that the iterator's `&'static T` items satisfy
+        // the `&'a T` bound. The result itself is whatever the live
+        // inventory contains; the test is purely a type-check.
+        let _ = validate_relation_accessor_collisions(::inventory::iter::<ReverseRelationMarker>());
     }
 }

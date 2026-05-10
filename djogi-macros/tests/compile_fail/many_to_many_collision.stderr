@@ -1,15 +1,6 @@
 error[E0428]: the name `PersonGroupsManyToManyRelation` is defined multiple times
-  --> tests/compile_fail/many_to_many_collision.rs:53:1
+  --> tests/compile_fail/many_to_many_collision.rs:66:1
    |
-40 | / djogi::many_to_many!(
-41 | |     Person, Group,
-42 | |     through = PersonGroup,
-43 | |     this_fk = person_id,
-44 | |     that_fk = group_id,
-45 | |     relation = "groups"
-46 | | );
-   | |_- previous definition of the trait `PersonGroupsManyToManyRelation` here
-...
 53 | / djogi::many_to_many!(
 54 | |     Person, Group,
 55 | |     through = PersonGroup,
@@ -17,33 +8,42 @@ error[E0428]: the name `PersonGroupsManyToManyRelation` is defined multiple time
 57 | |     that_fk = group_id,
 58 | |     relation = "groups"
 59 | | );
+   | |_- previous definition of the trait `PersonGroupsManyToManyRelation` here
+...
+66 | / djogi::many_to_many!(
+67 | |     Person, Group,
+68 | |     through = PersonGroup,
+69 | |     this_fk = person_id,
+70 | |     that_fk = group_id,
+71 | |     relation = "groups"
+72 | | );
    | |_^ `PersonGroupsManyToManyRelation` redefined here
    |
    = note: `PersonGroupsManyToManyRelation` must be defined only once in the type namespace of this module
    = note: this error originates in the macro `djogi::many_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0119]: conflicting implementations of trait `ManyToMany<Group>` for type `Person`
-  --> tests/compile_fail/many_to_many_collision.rs:53:1
+  --> tests/compile_fail/many_to_many_collision.rs:66:1
    |
-40 | / djogi::many_to_many!(
-41 | |     Person, Group,
-   | |__________- first implementation here
-...
 53 | / djogi::many_to_many!(
 54 | |     Person, Group,
+   | |__________- first implementation here
+...
+66 | / djogi::many_to_many!(
+67 | |     Person, Group,
    | |__________^ conflicting implementation for `Person`
    |
    = note: this error originates in the macro `djogi::many_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0119]: conflicting implementations of trait `PersonGroupsManyToManyRelation` for type `Person`
-  --> tests/compile_fail/many_to_many_collision.rs:53:1
+  --> tests/compile_fail/many_to_many_collision.rs:66:1
    |
-40 | / djogi::many_to_many!(
-41 | |     Person, Group,
-   | |__________- first implementation here
-...
 53 | / djogi::many_to_many!(
 54 | |     Person, Group,
+   | |__________- first implementation here
+...
+66 | / djogi::many_to_many!(
+67 | |     Person, Group,
    | |__________^ conflicting implementation for `Person`
    |
    = note: this error originates in the macro `djogi::many_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)

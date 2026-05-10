@@ -245,19 +245,30 @@ let profile: Option<Profile> = user.profile(&mut ctx).await?;
 
 ### Compile-time collision detection
 
-The reverse macros emit **plain inherent methods**, so two reverse macros
-that would produce the same accessor name on the same source model fail
-at compile time with rustc's standard duplicate-method error:
+Each reverse-relation macro emits a per-relation trait
+`{Receiver}{Method-pascal}ReverseRelation` plus its impl on the
+receiver type (the trait-based shape lifts the cross-crate coherence
+constraint described in GH issue #39). Two reverse macros that would
+produce the same accessor name on the same source model emit the same
+trait twice and trip rustc's `E0428` / `E0119` errors:
 
 ```rust
 djogi::reverse_one_to_many!(Owner, vehicles -> Vehicle by owner_id);
 djogi::reverse_one_to_many!(Owner, vehicles -> Truck   by owner_id);
-// error[E0592]: duplicate definitions with name `vehicles`
+// error[E0428]: the name `OwnerVehiclesReverseRelation` is defined multiple times
 ```
 
 A compile-fail fixture pins this: `reverse_relation_duplicate_accessor.rs`.
 The `via` column is also validated — an unknown or non-FK column fails
 the `const_assert_user_supplied_ident` gate at codegen.
+
+The same trait suffix `…ReverseRelation` is shared by `reverse_one_to_many!`
+and `reverse_one_to_one!`, so a same-name FK reverse + O2O reverse pair
+collides at the same trait redefinition. **Cross-suffix collisions
+(reverse + M2M) compile cleanly** because each macro kind emits a
+distinct trait suffix — see [Many-to-Many's accessor-name
+collisions](#accessor-name-collisions) below for the validator that
+closes that gap.
 
 ---
 
@@ -384,10 +395,47 @@ let admins: Vec<PersonGroup> = PersonGroup::objects()
 
 ### Accessor-name collisions
 
-Two `many_to_many!` invocations on the same source that produce the same
-`relation` name fail with rustc's duplicate-method error — same mechanism
-as the reverse macros. The inventory marker is informational for admin
-tooling, not the collision gate.
+`many_to_many!` emits a per-relation trait
+`{Source}{Relation-pascal}ManyToManyRelation` plus its impl on the
+source type. Two `many_to_many!` invocations on the same source that
+produce the same `relation` name redefine the same trait and trip
+rustc's `E0428` / `E0119` errors. The compile-fail fixture
+`many_to_many_collision.rs` pins this surface.
+
+The reverse macros emit `…ReverseRelation` instead of
+`…ManyToManyRelation`, so a `many_to_many!` and a `reverse_one_to_many!`
+(or `reverse_one_to_one!`) competing for the **same accessor name on
+the same source** produce two different trait names and **both
+compile**. The collision only manifests at downstream call sites that
+have both traits in scope, raising "ambiguous method call" errors that
+point at the call site rather than at the macro invocations.
+
+To close that cross-kind gap, call
+`djogi::relation::registry::validate_relation_accessor_collisions` once
+at startup (or in a CI gate test):
+
+```rust
+use djogi::relation::registry::{
+    validate_relation_accessor_collisions, ReverseRelationMarker,
+};
+
+validate_relation_accessor_collisions(
+    inventory::iter::<ReverseRelationMarker>(),
+)?;
+```
+
+It walks the link-time-collected inventory of reverse / M2M markers,
+groups them by `(source, accessor_name)`, and returns
+`RelationRegistryError::AccessorCollisions(..)` with one
+`RelationAccessorCollision` per offending pair. The diagnostic includes
+the conflicting kinds, targets, and via columns so adopters can fix
+each clash at the macro call site instead of triaging from a downstream
+ambiguity error.
+
+The validator tolerates **identical duplicate markers** (same kind /
+target / via) so future registry-merge consumers don't false-positive
+on a harmless overlap; only disagreements on `kind`, `target`, or
+`via` are flagged.
 
 ### Roadmap: view struct
 

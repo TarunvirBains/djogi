@@ -472,17 +472,26 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
             }
         }
 
-        // Inventory marker — Phase 4.5's projection generator walks
-        // these records to discover every registered reverse accessor.
-        // The marker's `source` field is the receiver (the model the
-        // method lives on); `target` is the model the accessor queries.
-        // Construction routes through the sealed
-        // `__make_reverse_relation_marker` constructor so `name` and
-        // `via` are validated against
+        // Inventory marker — Phase 4.5's projection generator and the
+        // `validate_relation_accessor_collisions` cross-kind collision
+        // gate (closed by GH #158) walk these records to discover every
+        // registered reverse accessor. The marker's `source` field is
+        // the receiver (the model the method lives on); `target` is
+        // the model the accessor queries. Construction routes through
+        // the sealed `__make_reverse_relation_marker` constructor so
+        // `name` and `via` are validated against
         // `crate::ident::const_assert_user_supplied_ident` at const-eval
         // time — a downstream crate cannot submit a fabricated marker
         // carrying SQL metacharacters or the reserved `__djogi_*`
         // namespace through the inventory slice.
+        //
+        // Note: rustc catches the same-suffix accessor-name clash
+        // (two `reverse_one_to_*!` invocations agreeing on the
+        // `{Receiver}{Method-pascal}ReverseRelation` trait name) at
+        // the trait redefinition. It does NOT catch a cross-kind
+        // clash with a same-name `many_to_many!` invocation, which
+        // emits the disjoint `{Source}{Relation-pascal}ManyToManyRelation`
+        // trait. The registry validator above is what closes that gap.
         ::djogi::__private::inventory::submit! {
             ::djogi::relation::registry::__macro_support::__make_reverse_relation_marker(
                 #relation_kind_variant,

@@ -169,10 +169,14 @@
 //! - `djogi-macros/tests/compile_pass/many_to_many_macro.rs` — the
 //!   end-to-end macro fixture that pins the emission shape.
 //! - `djogi-macros/tests/compile_fail/many_to_many_collision.rs` —
-//!   duplicate-accessor fixture; two invocations emitting the same
-//!   relation name on the same source type trip rustc's
-//!   duplicate-inherent-method error, mirroring the reverse-accessor
-//!   collision fixture.
+//!   same-suffix collision fixture; two `many_to_many!` invocations
+//!   producing the same `(Source, relation)` pair emit the same
+//!   `…ManyToManyRelation` trait twice and trip rustc's E0428 / E0119
+//!   duplicate-definition errors. Cross-suffix collisions (M2M vs
+//!   reverse-FK / reverse-O2O on the same accessor name) emit
+//!   different trait names and slip past rustc; the
+//!   [`djogi::relation::registry::validate_relation_accessor_collisions`]
+//!   gate covers that case (GH issue #158).
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -698,6 +702,17 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // model's descriptor; recording only `this_fk` in the marker
     // avoids duplicating schema info already carried by the
     // `ModelDescriptor`.
+    //
+    // GH issue #158 — the registry's
+    // `validate_relation_accessor_collisions` walker also consumes
+    // these markers to detect cross-suffix collisions rustc cannot
+    // catch (a `many_to_many!` and a `reverse_one_to_*!` competing for
+    // the same accessor name on the same source emit disjoint trait
+    // names — `…ManyToManyRelation` vs `…ReverseRelation` — and
+    // compile cleanly until the call site forces an "ambiguous method
+    // call" error). Adopters call the validator once at startup or in
+    // a CI gate so the diagnostic points at the macro invocations
+    // rather than at an arbitrary downstream call site.
     let inventory_submit = quote! {
         ::djogi::__private::inventory::submit! {
             ::djogi::relation::registry::__macro_support::__make_reverse_relation_marker(
