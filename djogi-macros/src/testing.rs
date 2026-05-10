@@ -1,7 +1,8 @@
 //! Implementation of the `#[djogi_test]` attribute proc-macro.
 //!
 //! Transforms an `async fn my_test(ctx: DjogiContext)` into a
-//! `#[tokio::test]`-runnable by wrapping it with per-test database lifecycle:
+//! plain-`#[test]` runnable by wrapping it with a per-test Tokio runtime and
+//! database lifecycle:
 //!
 //! 1. `CREATE DATABASE djogi_test_<uuid>`.
 //! 2. HeeRanjID schema + default node installed in the fresh DB.
@@ -85,7 +86,7 @@ use syn::{
 
 /// Expand `#[djogi_test]` on an `async fn` with one `DjogiContext` parameter.
 ///
-/// The generated code wraps the test body in a `#[tokio::test]` harness that:
+/// The generated code wraps the test body in a plain `#[test]` harness that:
 ///
 /// 1. Calls `::djogi::testing::setup_test_db_with_extensions(&[...]).await`
 ///    to create the per-test DB, install HeeRanjID, auto-provision any
@@ -136,8 +137,8 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
     let fn_body = &func.block;
     let fn_vis = &func.vis;
     // Propagate outer attributes (e.g. `#[ignore]`, `#[should_panic]`,
-    // rustdoc comments) onto the generated `#[::tokio::test]` wrapper so
-    // user-space test modifiers behave as they would on a plain tokio test.
+    // rustdoc comments) onto the generated `#[test]` wrapper so user-space
+    // test modifiers behave as they would on a plain async test harness.
     // Without this forwarding the macro silently drops `#[ignore]`, causing
     // blocked tests to run and fail instead of being skipped.
     let fn_attrs = &func.attrs;
@@ -187,58 +188,65 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     quote! {
         #( #fn_attrs )*
-        #[::tokio::test]
-        #fn_vis async fn #fn_name() {
-            use ::djogi::__private::futures::FutureExt as _;
-            use ::std::panic::AssertUnwindSafe;
+        #[test]
+        #fn_vis fn #fn_name() {
+            let __djogi_test_runtime =
+                ::djogi::__private::tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("djogi_test: failed to build Tokio runtime");
 
-            // Inner async fn holds the original test body, called with the
-            // DjogiContext from setup_test_db_with_extensions. The parameter
-            // is always `mut` so the test body can call `&mut self` methods
-            // on the context.
-            async fn #inner_name(mut #ctx_arg_name: ::djogi::DjogiContext) {
-                #fn_body
-            }
+            __djogi_test_runtime.block_on(async {
+                use ::djogi::__private::futures::FutureExt as _;
+                use ::std::panic::AssertUnwindSafe;
 
-            // Set up the per-test database. Panics here (e.g., DATABASE_URL not
-            // set, unknown extension name) propagate directly — there is
-            // nothing to clean up yet if setup itself failed.
-            //
-            // Wrapper ordering is deliberate and observable:
-            //   1. extensions provisioned first (CREATE EXTENSION),
-            //   2. sync_models runs (CREATE TABLE / indexes / FKs),
-            //   3. user's test body runs.
-            // Step 2 is omitted when `sync_models` is absent or `[]`.
-            //
-            // `ctx` is always `mut` here; `#[allow(unused_mut)]` suppresses
-            // the lint when sync_models is absent and no `&mut ctx` is taken
-            // between setup and the inner fn call.
-            #[allow(unused_mut)]
-            let (cleanup, mut ctx) = ::djogi::testing::setup_test_db_with_extensions(
-                #extensions_slice,
-            )
-                .await
-                .expect("djogi_test: failed to set up per-test database");
+                // Inner async fn holds the original test body, called with the
+                // DjogiContext from setup_test_db_with_extensions. The parameter
+                // is always `mut` so the test body can call `&mut self` methods
+                // on the context.
+                async fn #inner_name(mut #ctx_arg_name: ::djogi::DjogiContext) {
+                    #fn_body
+                }
 
-            // Phase 7 T10 — auto-create tables for the listed models on
-            // the per-test database. Skipped entirely when the
-            // attribute did not carry `sync_models = [...]` or carried
-            // an empty list.
-            #sync_models_call
+                // Set up the per-test database. Panics here (e.g., DATABASE_URL not
+                // set, unknown extension name) propagate directly — there is
+                // nothing to clean up yet if setup itself failed.
+                //
+                // Wrapper ordering is deliberate and observable:
+                //   1. extensions provisioned first (CREATE EXTENSION),
+                //   2. sync_models runs (CREATE TABLE / indexes / FKs),
+                //   3. user's test body runs.
+                // Step 2 is omitted when `sync_models` is absent or `[]`.
+                //
+                // `ctx` is always `mut` here; `#[allow(unused_mut)]` suppresses
+                // the lint when sync_models is absent and no `&mut ctx` is taken
+                // between setup and the inner fn call.
+                #[allow(unused_mut)]
+                let (cleanup, mut ctx) = ::djogi::testing::setup_test_db_with_extensions(
+                    #extensions_slice,
+                )
+                    .await
+                    .expect("djogi_test: failed to set up per-test database");
 
-            // Run the test body, catching any panics so teardown always runs.
-            let result = AssertUnwindSafe(#inner_name(ctx)).catch_unwind().await;
+                // Phase 7 T10 — auto-create tables for the listed models on
+                // the per-test database. Skipped entirely when the
+                // attribute did not carry `sync_models = [...]` or carried
+                // an empty list.
+                #sync_models_call
 
-            // Teardown: drop the per-test database regardless of test outcome.
-            // This is async, so it runs cleanly inside the Tokio test runtime
-            // without the block_on-in-async-context problem that a Drop impl
-            // would face.
-            ::djogi::testing::teardown_test_db(cleanup).await;
+                // Run the test body, catching any panics so teardown always runs.
+                let result = AssertUnwindSafe(#inner_name(ctx)).catch_unwind().await;
 
-            // Propagate any panic from the test body now that cleanup is done.
-            if let Err(panic_payload) = result {
-                ::std::panic::resume_unwind(panic_payload);
-            }
+                // Teardown: drop the per-test database regardless of test outcome.
+                // This is async, so it runs cleanly inside the Tokio runtime without
+                // the block_on-in-async-context problem that a Drop impl would face.
+                ::djogi::testing::teardown_test_db(cleanup).await;
+
+                // Propagate any panic from the test body now that cleanup is done.
+                if let Err(panic_payload) = result {
+                    ::std::panic::resume_unwind(panic_payload);
+                }
+            });
         }
     }
 }
@@ -735,8 +743,8 @@ mod tests {
             "outer #[ignore] must still be forwarded by #[djogi_test]: {expanded}"
         );
         assert!(
-            expanded.contains("# [:: tokio :: test]"),
-            "forwarded attributes must remain attached to the generated tokio test: {expanded}"
+            expanded.contains("# [test]"),
+            "forwarded attributes must remain attached to the generated test wrapper: {expanded}"
         );
     }
 

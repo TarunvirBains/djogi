@@ -1,0 +1,5 @@
+# `--target-dir` is set by the integration-test driver to a subdirectory
+# of the workspace `target/` tree, so artifacts don't land here. The
+# entry below is belt-and-suspenders — covers anyone running
+# `cargo check` directly from this directory.
+target/

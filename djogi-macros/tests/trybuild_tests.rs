@@ -186,13 +186,38 @@ fn compile_pass_phase8_t7() {
 #[test]
 fn compile_pass_phase8_t7_4() {
     // Targeted bucket for Cluster 8δ T7.4 — boot-time Sassi registry.
-    // Pins that the macro-emitted `inventory::submit!` block routes
-    // every path through `::djogi::*` (per `feedback_macro_path_routing.md`)
-    // so the fixture compiles against a crate that only depends on `djogi`,
-    // with no direct `sassi` or `inventory` dep.
+    // Pins that the macro-emitted `inventory::submit!` block compiles
+    // when the user-facing trait bounds (`::djogi::types::Cacheable`,
+    // `::djogi::SassiBootHook`) are reached via the `::djogi::*`
+    // re-export surface.
     //
-    // Run this bucket in isolation to check just the T7.4 emission:
+    // # Scope of this bucket — NOT a strict adopter-crate isolation guard
+    //
+    // Trybuild compiles each fixture as a standalone crate but with the
+    // same dependency graph as the test crate that drives trybuild —
+    // here, `djogi-macros`. `djogi-macros/Cargo.toml` lists `sassi`,
+    // `serde`, and `serde_json` as `[dev-dependencies]` for unrelated
+    // fixtures (8γ T6.10's lookup-op no-regex lock, the JsonbSchema
+    // fixtures' `serde::Serialize` derives), so a stray `::sassi::*` /
+    // `::serde::*` typo in macro emission would still compile inside
+    // this bucket — those crates are reachable through the test-binary
+    // dep graph even though an external adopter has only `djogi` in
+    // their `[dependencies]`.
+    //
+    // The `feedback_macro_path_routing.md` invariant ("macro paths route
+    // through `::djogi::*` only") is enforced by a sibling integration
+    // test, `tests/adopter_crate_isolation.rs`, which shells out
+    // `cargo check` against a fixture crate (`tests/adopter_crate_isolation/`)
+    // whose own `[workspace]` block + `[dependencies]` table contains
+    // exactly one entry — `djogi`. That driver is the actual guard;
+    // this bucket is a faster check on the user-facing surface shape.
+    //
+    // Run this bucket in isolation to check just the T7.4 fixture
+    // (the trybuild compile_pass surface):
     //     cargo test --test trybuild_tests compile_pass_phase8_t7_4 --test-threads=1
+    //
+    // Run the strict adopter-isolation guard separately:
+    //     cargo test -p djogi-macros --test adopter_crate_isolation
     TestCases::new().pass("tests/compile_pass/phase8_t7_4_*.rs");
 }
 

@@ -49,7 +49,7 @@
 //! intercept panics from the test body, then calls `teardown_test_db` as an
 //! ordinary `async` function before resuming the panic. This avoids the
 //! "block_on called from async context" panic that a Drop impl would face
-//! inside a `#[tokio::test]` harness.
+//! inside a running Tokio runtime.
 //!
 //! # Usage
 //!

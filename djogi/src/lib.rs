@@ -119,6 +119,7 @@ pub mod __private {
     pub use inventory;
     pub use postgres_types;
     pub use serde;
+    pub use tokio;
     pub use tokio_postgres;
 
     /// New SQL substrate re-exports for macro-emitted code.

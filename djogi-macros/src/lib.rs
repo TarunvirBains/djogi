@@ -310,7 +310,7 @@ pub fn derive_jsonb_schema(input: TokenStream) -> TokenStream {
 /// Per-test database lifecycle harness.
 ///
 /// Transforms an `async fn my_test(ctx: DjogiContext)` into a
-/// `#[tokio::test]`-runnable wrapper that:
+/// plain `#[test]` wrapper that builds a Tokio runtime through `djogi` and:
 ///
 /// 1. Creates a fresh `djogi_test_<uuid>` Postgres database.
 /// 2. Installs the HeeRanjID schema and seeds the default node.
