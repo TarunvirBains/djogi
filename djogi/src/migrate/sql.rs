@@ -2020,6 +2020,55 @@ mod tests {
     }
 
     #[test]
+    fn alter_column_amend_check_pair_emits_drop_then_add() {
+        // The AMEND scenario from the lifecycle contract: descriptor
+        // evolves from u32 → u64 (or any CHECK expression change).
+        // The differ at `migrate/diff.rs::emit_alter_column` emits two
+        // ColumnChange entries in order — `SetCheck(None)` then
+        // `SetCheck(Some(new))` — and the SQL emitter renders them as
+        // a clean DROP-then-ADD pair against the same constraint name
+        // slot. Without the differ's two-step emission the second
+        // ALTER would collide on the existing constraint name.
+        //
+        // This test simulates the SQL pair the emitter produces when
+        // the differ supplies the two changes in order. Walk the two
+        // emissions and verify their SQL forms compose correctly.
+        let drop_sql = emit_alter_column("widgets", "amount", &ColumnChange::SetCheck(None));
+        let add_sql = emit_alter_column(
+            "widgets",
+            "amount",
+            &ColumnChange::SetCheck(Some(
+                "\"amount\" >= 0 AND \"amount\" <= 18446744073709551615".to_string(),
+            )),
+        );
+        // The first emission drops the existing constraint.
+        assert!(
+            drop_sql
+                .up
+                .contains("DROP CONSTRAINT \"widgets_amount_check\""),
+            "AMEND step 1 drops the existing constraint: {}",
+            drop_sql.up
+        );
+        // The second emission re-adds it under the same name with the
+        // new expression. By the time this ALTER runs the previous DROP
+        // has already cleared the slot, so Postgres accepts the ADD.
+        assert!(
+            add_sql
+                .up
+                .contains("ADD CONSTRAINT \"widgets_amount_check\""),
+            "AMEND step 2 adds the new constraint under the same name: {}",
+            add_sql.up
+        );
+        assert!(
+            add_sql
+                .up
+                .contains("CHECK (\"amount\" >= 0 AND \"amount\" <= 18446744073709551615)"),
+            "AMEND step 2 carries the new CHECK expression: {}",
+            add_sql.up
+        );
+    }
+
+    #[test]
     fn alter_column_set_unique_uses_named_key_constraint() {
         let sql = emit_alter_column("users", "email", &ColumnChange::SetUnique(true));
         assert!(

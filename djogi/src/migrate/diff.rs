@@ -2125,8 +2125,46 @@ fn emit_alter_column(
         if before.default_sql != after.default_sql {
             push(ColumnChange::SetDefault(after.default_sql.clone()));
         }
-        if before.check != after.check {
-            push(ColumnChange::SetCheck(after.check.clone()));
+        // CHECK constraint transitions — djogi#186 (Phase 8.5 v3 Cluster 2).
+        //
+        // The SQL emitter for `SetCheck(Some(expr))` synthesizes a
+        // table-level constraint named `<table>_<column>_check`
+        // (`migrate/sql.rs::check_constraint_name`) and emits
+        // `ALTER TABLE … ADD CONSTRAINT … CHECK (<expr>);`. That works
+        // cleanly for the ADD case (no prior CHECK) and the DROP case
+        // (`SetCheck(None)` emits `ALTER TABLE … DROP CONSTRAINT …`).
+        // The AMEND case — both `before.check` and `after.check` are
+        // `Some` with different expressions — would emit an `ADD
+        // CONSTRAINT` against a constraint name that already exists,
+        // which Postgres rejects.
+        //
+        // The motivating scenario is the integer-widening lifecycle:
+        // a column evolves from `u32` to a wider Rust type that picks
+        // a different bound, or an adopter changes a `#[field(check)]`
+        // expression. The AMEND emits two ColumnChange entries —
+        // `SetCheck(None)` followed by `SetCheck(Some(new))` — so the
+        // SQL pair is `DROP CONSTRAINT … ; ADD CONSTRAINT … CHECK (…);`.
+        // Two ALTERs, symmetric, easy to read in audit logs, and
+        // reuses both existing emitter arms unchanged.
+        //
+        // The orderingness matters: DROP must precede ADD so the
+        // re-issued `ADD CONSTRAINT <name>` lands in the open
+        // constraint-name slot. `Vec` push order preserves this.
+        match (&before.check, &after.check) {
+            (None, None) => {} // unchanged
+            (Some(b), Some(a)) if b == a => {} // unchanged
+            (Some(_), Some(_)) => {
+                // AMEND — drop the old constraint, then add the new.
+                push(ColumnChange::SetCheck(None));
+                push(ColumnChange::SetCheck(after.check.clone()));
+            }
+            // ADD (None → Some) and DROP (Some → None) collapse to a
+            // single `SetCheck(after.check.clone())` because the
+            // emitter's two arms (`SetCheck(Some)` / `SetCheck(None)`)
+            // already DTRT for each direction.
+            (None, Some(_)) | (Some(_), None) => {
+                push(ColumnChange::SetCheck(after.check.clone()));
+            }
         }
         if before.unique != after.unique {
             push(ColumnChange::SetUnique(after.unique));
@@ -2987,6 +3025,212 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    // ── djogi#186 — CHECK constraint AMEND-replace lifecycle ───────────────
+    //
+    // The differ at this site (line ~2128) detects CHECK transitions
+    // and emits ColumnChange::SetCheck variants. The AMEND case
+    // (`Some(old) → Some(new)` with `old != new`) used to emit a
+    // single `SetCheck(Some(new))`, which the SQL emitter renders as
+    // `ALTER TABLE … ADD CONSTRAINT <name> CHECK (…)` — Postgres
+    // rejects because the constraint name already exists from the
+    // prior projection. The fix emits `SetCheck(None)` followed by
+    // `SetCheck(Some(new))` so the SQL pair is `DROP CONSTRAINT` then
+    // `ADD CONSTRAINT`. These tests pin all four cells of the CHECK
+    // transition matrix so a future refactor cannot silently regress
+    // any direction.
+
+    fn build_table_with_check(check: Option<&str>) -> crate::migrate::schema::AppliedSchema {
+        use crate::migrate::schema::{
+            AppliedSchema, ColumnSchema, PkKindSchema, PrimaryKeySchema, TableSchema,
+        };
+        use std::collections::BTreeMap;
+
+        let id_col = ColumnSchema {
+            check: None,
+            default_sql: Some("heerid_next()".to_string()),
+            foreign_key: None,
+            generated: None,
+            identity: None,
+            index_type: None,
+            indexed: false,
+            max_length: None,
+            name: "id".to_string(),
+            nullable: false,
+            on_delete: None,
+            outbox_exclude: false,
+            rationale: None,
+            relation_kind: None,
+            renamed_from: None,
+            sequence_within: None,
+            sql_type: "BIGINT".to_string(),
+            unique: false,
+        };
+        let amount_col = ColumnSchema {
+            check: check.map(|s| s.to_string()),
+            default_sql: None,
+            foreign_key: None,
+            generated: None,
+            identity: None,
+            index_type: None,
+            indexed: false,
+            max_length: None,
+            name: "amount".to_string(),
+            nullable: false,
+            on_delete: None,
+            outbox_exclude: false,
+            rationale: None,
+            relation_kind: None,
+            renamed_from: None,
+            sequence_within: None,
+            sql_type: "BIGINT".to_string(),
+            unique: false,
+        };
+        let mut models = BTreeMap::new();
+        models.insert(
+            "widgets".to_string(),
+            TableSchema {
+                app: None,
+                columns: vec![id_col, amount_col],
+                exclusion_constraints: vec![],
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["id".to_string()],
+                    kind: PkKindSchema::HeerId,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                table: "widgets".to_string(),
+                tenant_key: None,
+            },
+        );
+        AppliedSchema {
+            djogi_version: "0.1.0".to_string(),
+            enums: BTreeMap::new(),
+            format_version: "1".to_string(),
+            generated_at: "2026-05-10T00:00:00Z".to_string(),
+            indexes: vec![],
+            models,
+            registered_apps: vec!["".to_string()],
+        }
+    }
+
+    fn alter_column_changes_for(
+        delta: &crate::migrate::diff::SchemaDelta,
+        column: &str,
+    ) -> Vec<ColumnChange> {
+        delta
+            .operations
+            .iter()
+            .filter_map(|op| match op {
+                SchemaOperation::AlterColumn {
+                    column: c, change, ..
+                } if c == column => Some(change.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn check_unchanged_some_emits_no_set_check() {
+        let before = build_table_with_check(Some("\"amount\" >= 0 AND \"amount\" <= 4294967295"));
+        let after = build_table_with_check(Some("\"amount\" >= 0 AND \"amount\" <= 4294967295"));
+        let delta = diff_schemas(&before, &after, empty_global());
+        let changes = alter_column_changes_for(&delta, "amount");
+        assert!(
+            changes.is_empty(),
+            "identical CHECK on both sides must not emit any AlterColumn change: {changes:?}",
+        );
+    }
+
+    #[test]
+    fn check_unchanged_none_emits_no_set_check() {
+        let before = build_table_with_check(None);
+        let after = build_table_with_check(None);
+        let delta = diff_schemas(&before, &after, empty_global());
+        let changes = alter_column_changes_for(&delta, "amount");
+        assert!(
+            changes.is_empty(),
+            "absent CHECK on both sides must not emit any AlterColumn change: {changes:?}",
+        );
+    }
+
+    #[test]
+    fn check_add_emits_single_set_check_some() {
+        // ADD scenario — descriptor evolves from i64 (no CHECK) to a
+        // type that projects a CHECK. The differ emits a single
+        // SetCheck(Some(...)) which the emitter renders as
+        // `ALTER TABLE … ADD CONSTRAINT … CHECK (…)`.
+        let before = build_table_with_check(None);
+        let after = build_table_with_check(Some("\"amount\" >= 0 AND \"amount\" <= 4294967295"));
+        let delta = diff_schemas(&before, &after, empty_global());
+        let changes = alter_column_changes_for(&delta, "amount");
+        assert_eq!(
+            changes.len(),
+            1,
+            "ADD CHECK is a single ColumnChange entry: {changes:?}"
+        );
+        assert!(
+            matches!(changes.first(), Some(ColumnChange::SetCheck(Some(_)))),
+            "ADD CHECK emits SetCheck(Some(...)): {changes:?}"
+        );
+    }
+
+    #[test]
+    fn check_drop_emits_single_set_check_none() {
+        // DROP scenario — descriptor evolves from u32 (with CHECK) to
+        // i64 (no CHECK). The differ emits a single SetCheck(None)
+        // which the emitter renders as `ALTER TABLE … DROP CONSTRAINT …`.
+        let before = build_table_with_check(Some("\"amount\" >= 0 AND \"amount\" <= 4294967295"));
+        let after = build_table_with_check(None);
+        let delta = diff_schemas(&before, &after, empty_global());
+        let changes = alter_column_changes_for(&delta, "amount");
+        assert_eq!(
+            changes.len(),
+            1,
+            "DROP CHECK is a single ColumnChange entry: {changes:?}"
+        );
+        assert!(
+            matches!(changes.first(), Some(ColumnChange::SetCheck(None))),
+            "DROP CHECK emits SetCheck(None): {changes:?}"
+        );
+    }
+
+    #[test]
+    fn check_amend_emits_drop_then_add() {
+        // AMEND scenario — the central djogi#186 lifecycle case.
+        // Descriptor evolves from u32 → u64 (or any other CHECK
+        // expression change). The differ MUST emit two ColumnChange
+        // entries in order: SetCheck(None) then SetCheck(Some(new)).
+        // The SQL emitter renders these as `DROP CONSTRAINT …; ADD
+        // CONSTRAINT … CHECK (…);` — two separate ALTERs against the
+        // same constraint name slot, which Postgres accepts cleanly.
+        // Without this two-step emission the second ALTER would
+        // collide on the constraint name from the first.
+        let before = build_table_with_check(Some("\"amount\" >= 0 AND \"amount\" <= 4294967295"));
+        let after = build_table_with_check(Some(
+            "\"amount\" >= 0 AND \"amount\" <= 18446744073709551615",
+        ));
+        let delta = diff_schemas(&before, &after, empty_global());
+        let changes = alter_column_changes_for(&delta, "amount");
+        assert_eq!(
+            changes.len(),
+            2,
+            "AMEND CHECK emits exactly two ColumnChange entries: {changes:?}"
+        );
+        assert!(
+            matches!(changes.first(), Some(ColumnChange::SetCheck(None))),
+            "AMEND CHECK emits SetCheck(None) first: {changes:?}"
+        );
+        assert!(
+            matches!(changes.get(1), Some(ColumnChange::SetCheck(Some(s))) if s == "\"amount\" >= 0 AND \"amount\" <= 18446744073709551615"),
+            "AMEND CHECK emits SetCheck(Some(new)) second with the post-change expression: {changes:?}"
+        );
     }
 
     // ── T22 round-3 BLOCK-2 / GAP-3 — SetIdentity diff regression ──
