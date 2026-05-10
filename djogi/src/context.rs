@@ -599,7 +599,9 @@ impl DjogiContext {
 
     /// Execute a parameterised query and return all rows.
     ///
-    /// On the pool path, acquires a connection for the duration of this call.
+    /// On the pool path, acquires a connection for the duration of this call
+    /// behind a [`PoolConnGuard`] — clean exit returns the connection to the
+    /// pool, dirty exit (`Err`, panic, future cancellation) detaches it.
     /// On the transaction path, reuses the existing connection.
     pub(crate) async fn query_all(
         &mut self,
@@ -608,14 +610,19 @@ impl DjogiContext {
     ) -> Result<Vec<Row>, DjogiError> {
         match &mut self.inner {
             ContextInner::Pool(pool) => {
-                let mut conn = pool.get().await?;
-                conn.query(sql, params).await
+                let mut guard = PoolConnGuard::checkout(pool).await?;
+                let result = guard.conn().query(sql, params).await;
+                guard.finish(&result);
+                result
             }
             ContextInner::Transaction(conn) => conn.query(sql, params).await,
         }
     }
 
     /// Execute a parameterised query and return the first row, if any.
+    ///
+    /// Pool-path checkout is guarded by [`PoolConnGuard`]; see [`Self::query_all`]
+    /// for the dirty-by-default lifecycle.
     pub(crate) async fn query_opt(
         &mut self,
         sql: &str,
@@ -623,8 +630,10 @@ impl DjogiContext {
     ) -> Result<Option<Row>, DjogiError> {
         match &mut self.inner {
             ContextInner::Pool(pool) => {
-                let mut conn = pool.get().await?;
-                conn.query_opt(sql, params).await
+                let mut guard = PoolConnGuard::checkout(pool).await?;
+                let result = guard.conn().query_opt(sql, params).await;
+                guard.finish(&result);
+                result
             }
             ContextInner::Transaction(conn) => conn.query_opt(sql, params).await,
         }
@@ -633,6 +642,8 @@ impl DjogiContext {
     /// Execute a parameterised query and return exactly one row.
     ///
     /// Returns an error if zero or more than one row is returned.
+    /// Pool-path checkout is guarded by [`PoolConnGuard`]; see [`Self::query_all`]
+    /// for the dirty-by-default lifecycle.
     pub(crate) async fn query_one(
         &mut self,
         sql: &str,
@@ -640,14 +651,19 @@ impl DjogiContext {
     ) -> Result<Row, DjogiError> {
         match &mut self.inner {
             ContextInner::Pool(pool) => {
-                let mut conn = pool.get().await?;
-                conn.query_one(sql, params).await
+                let mut guard = PoolConnGuard::checkout(pool).await?;
+                let result = guard.conn().query_one(sql, params).await;
+                guard.finish(&result);
+                result
             }
             ContextInner::Transaction(conn) => conn.query_one(sql, params).await,
         }
     }
 
     /// Execute a parameterised DML statement and return the number of rows affected.
+    ///
+    /// Pool-path checkout is guarded by [`PoolConnGuard`]; see [`Self::query_all`]
+    /// for the dirty-by-default lifecycle.
     pub(crate) async fn execute(
         &mut self,
         sql: &str,
@@ -655,8 +671,10 @@ impl DjogiContext {
     ) -> Result<u64, DjogiError> {
         match &mut self.inner {
             ContextInner::Pool(pool) => {
-                let mut conn = pool.get().await?;
-                conn.execute(sql, params).await
+                let mut guard = PoolConnGuard::checkout(pool).await?;
+                let result = guard.conn().execute(sql, params).await;
+                guard.finish(&result);
+                result
             }
             ContextInner::Transaction(conn) => conn.execute(sql, params).await,
         }
@@ -666,12 +684,16 @@ impl DjogiContext {
     ///
     /// Used for `BEGIN`, `COMMIT`, `ROLLBACK`, savepoint commands, and other
     /// control statements that carry no user-supplied values.
+    /// Pool-path checkout is guarded by [`PoolConnGuard`]; see [`Self::query_all`]
+    /// for the dirty-by-default lifecycle.
     #[allow(dead_code)] // Used by PgConnection directly in transaction.rs; may be wired up in T5.
     pub(crate) async fn batch_execute(&mut self, sql: &str) -> Result<(), DjogiError> {
         match &mut self.inner {
             ContextInner::Pool(pool) => {
-                let mut conn = pool.get().await?;
-                conn.batch_execute(sql).await
+                let mut guard = PoolConnGuard::checkout(pool).await?;
+                let result = guard.conn().batch_execute(sql).await;
+                guard.finish(&result);
+                result
             }
             ContextInner::Transaction(conn) => conn.batch_execute(sql).await,
         }
@@ -860,6 +882,112 @@ impl DjogiContext {
     /// nested `atomic()` scope that rolled back.
     pub(crate) fn on_commit_truncate(&mut self, new_len: usize) {
         self.on_commit.truncate(new_len);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PoolConnGuard — dirty-by-default checkout for the pool-path execution helpers.
+// ---------------------------------------------------------------------------
+
+/// RAII guard around a pool checkout used by [`DjogiContext::query_all`],
+/// [`DjogiContext::query_opt`], [`DjogiContext::query_one`],
+/// [`DjogiContext::execute`], and [`DjogiContext::batch_execute`] when the
+/// underlying context is pool-backed.
+///
+/// # Why this exists
+///
+/// `deadpool_postgres` runs Djogi's pools with `RecyclingMethod::Fast`,
+/// which only checks `is_closed()` on return — it does **not** issue
+/// `ROLLBACK`, `RESET ALL`, or `DISCARD ALL`. Without a guard, a pool-path
+/// call that errors mid-statement, panics, or has its future cancelled would
+/// drop the [`PgConnection`] (and so its inner deadpool `Object`) on the
+/// normal recycling path. Any session-state change the call left behind
+/// — open transaction, uncommitted `SET ROLE`, `SET search_path`,
+/// advisory lock, half-finished `COPY` protocol stream — would leak to
+/// the next checkout. For raw SQL escape hatches (which take adopter-
+/// composed SQL strings) that is a real auth/tenant/session-state hazard
+/// flagged in the [issue tracker](https://github.com/TarunvirBains/djogi/issues/162).
+///
+/// # Lifecycle (parallel to [`crate::pg::pool::DjogiPool::with_client`])
+///
+/// - **Clean exit (`Ok`).** [`Self::finish`] flips `committed = true`.
+///   `Drop` returns the underlying [`PgConnection`] (and so the deadpool
+///   `Object`) to the pool the normal way; the next checkout reuses the
+///   same physical connection.
+/// - **Dirty exit (`Err`, panic, future cancellation).** `committed`
+///   stays `false`. `Drop` calls [`PgConnection::detach`], which routes
+///   through `deadpool_postgres::Object::take`, removes the connection
+///   from the pool's tracker, and drops the underlying
+///   `tokio_postgres::Client` immediately. The pool will create a fresh
+///   physical connection on the next demand.
+///
+/// The trade-off is one extra physical connection per dirty exit, which
+/// is the right cost to pay for the safety guarantee. The guard is
+/// pool-path-only — transaction-backed contexts surface their own errors
+/// through `atomic()`'s rollback mechanism, which already discards the
+/// surrounding connection's session state on rollback.
+struct PoolConnGuard {
+    /// The checked-out connection. Always `Some` until the guard is
+    /// dropped — the `Option` exists only so `Drop` can move out of it
+    /// and either return it to the pool (clean exit) or call
+    /// [`PgConnection::detach`] (dirty exit).
+    conn: Option<PgConnection>,
+    /// Set to `true` only after [`Self::finish`] observes `Ok`. Defaults
+    /// to `false` so every non-clean exit path detaches.
+    committed: bool,
+}
+
+impl PoolConnGuard {
+    /// Acquire a connection from `pool` and wrap it in a dirty-by-default
+    /// guard. Errors propagate from the underlying [`DjogiPool::get`] call
+    /// and never leave a checked-out connection un-tracked because
+    /// [`DjogiPool::get`] returns before the guard is constructed.
+    async fn checkout(pool: &DjogiPool) -> Result<Self, DjogiError> {
+        let conn = pool.get().await?;
+        Ok(PoolConnGuard {
+            conn: Some(conn),
+            committed: false,
+        })
+    }
+
+    /// Borrow the wrapped [`PgConnection`] for a single operation. The
+    /// guard retains ownership — callers must not move the connection
+    /// out of the guard.
+    fn conn(&mut self) -> &mut PgConnection {
+        self.conn
+            .as_mut()
+            .expect("PoolConnGuard.conn is Some until Drop")
+    }
+
+    /// Inspect the operation's result and arm the guard for the matching
+    /// exit path. `Ok` flips `committed` so `Drop` returns the connection
+    /// to the pool; `Err` leaves it `false` so `Drop` detaches. This
+    /// must be called before the guard goes out of scope, even on the
+    /// `Err` path — leaving `committed = false` is the dirty-exit
+    /// signal, but reaching `finish` at all proves the future was not
+    /// cancelled mid-statement.
+    fn finish<T>(&mut self, result: &Result<T, DjogiError>) {
+        if result.is_ok() {
+            self.committed = true;
+        }
+    }
+}
+
+impl Drop for PoolConnGuard {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            if self.committed {
+                // Clean exit — drop the PgConnection normally so deadpool
+                // returns the underlying connection to the pool.
+                drop(conn);
+            } else {
+                // Dirty exit — detach the connection from the pool. The
+                // underlying tokio_postgres::Client is dropped
+                // immediately, closing the socket. The pool will create
+                // a fresh physical connection on the next demand.
+                conn.detach();
+            }
+        }
     }
 }
 

@@ -12,6 +12,54 @@
 //! methods off the ordinary inherent API surface while preserving an explicit
 //! opt-in path for pin tests, internal substrate, and truly exceptional adopter
 //! needs.
+//!
+//! # Connection lifecycle — dirty-by-default
+//!
+//! The pool-backed raw methods on
+//! [`RawAccessExt`](RawAccessExtBase) (`raw_query`, `raw_rows`,
+//! `raw_fetch_one`, `raw_scalar`, `raw_execute`, `raw_ddl`) acquire a
+//! pooled connection through [`crate::context::DjogiContext`]'s execution
+//! helpers, which wrap each checkout in a dirty-by-default guard:
+//!
+//! - **Clean exit (`Ok`).** The connection returns to the pool the
+//!   normal way; the next checkout reuses it.
+//! - **Dirty exit (`Err`, panic, future cancellation).** The connection
+//!   is detached via `deadpool_postgres::Object::take` and dropped
+//!   immediately, closing the underlying `tokio_postgres::Client` and
+//!   socket. The pool will create a fresh physical connection on the
+//!   next demand. The trade-off is one extra physical connection per
+//!   dirty exit, paid for the guarantee that a poisoned session
+//!   (open transaction, uncommitted `SET ROLE`, `SET search_path`,
+//!   advisory lock, half-finished `COPY` stream) cannot leak to the
+//!   next checkout.
+//!
+//! This is the same lifecycle [`crate::pg::pool::DjogiPool::with_client`]
+//! enforces via its `WithClientGuard`. It is required because Djogi runs
+//! its pools with `deadpool_postgres::RecyclingMethod::Fast`, which only
+//! checks `is_closed()` on return — it does **not** issue `ROLLBACK`,
+//! `RESET ALL`, or `DISCARD ALL`.
+//!
+//! ## Adopter contract
+//!
+//! Even with the dirty-by-default guard, raw SQL that mutates session
+//! state (`SET ROLE`, `SET search_path`, advisory locks, manual
+//! `BEGIN`/`COMMIT`, `LISTEN`/`UNLISTEN`, prepared-statement creation
+//! outside the cache) on the **clean-exit path** still leaves the
+//! connection in a non-default state when it returns to the pool. Wrap
+//! such SQL in [`crate::transaction::atomic`] so the surrounding
+//! transaction's commit or rollback bounds the state change, or use the
+//! transaction-local form (`SET LOCAL …`, `set_config(name, value, true)`,
+//! `BEGIN; … COMMIT;`) inside the closure.
+//!
+//! Cursors, `COPY` streams, and other multi-round-trip protocol
+//! operations should run through
+//! [`RawPoolAccessExt::raw_with_client`](RawPoolAccessExtBase) — the
+//! `WithClientGuard` there bounds the protocol exchange to a single
+//! checkout and applies the same dirty-detach on dirty exit.
+//!
+//! Tracking issue: [djogi#162](https://github.com/TarunvirBains/djogi/issues/162).
+//! See also [`docs/spec/raw-sql-escape-hatches.md`](https://github.com/TarunvirBains/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md)
+//! for the full contract.
 
 use crate::context::DjogiContext;
 use crate::pg::connection::PgConnection;

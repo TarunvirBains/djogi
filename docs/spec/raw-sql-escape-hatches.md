@@ -254,3 +254,47 @@ Raw SQL is not banned. It is deliberately loud. Djogi will not ship a fluent
 
 Every escape hatch must make reviewers ask why the typed surface is not enough.
 That question is the point of the harness.
+
+## 9. Connection lifecycle — dirty-by-default
+
+The pool-backed raw methods on `RawAccessExt` (`raw_query`, `raw_rows`,
+`raw_fetch_one`, `raw_scalar`, `raw_execute`, `raw_ddl`) acquire a pooled
+connection through the framework's execution helpers. Each pool checkout is
+wrapped in a dirty-by-default guard that mirrors `DjogiPool::with_client`:
+
+- **Clean exit (`Ok`).** The connection returns to the pool the normal way;
+  the next checkout reuses it.
+- **Dirty exit (`Err`, panic, future cancellation).** The connection is
+  detached via `deadpool_postgres::Object::take` and dropped immediately.
+  The pool will create a fresh physical connection on the next demand.
+
+This is required because djogi runs its pools with
+`deadpool_postgres::RecyclingMethod::Fast`, which only checks `is_closed()`
+on return — it does NOT issue `ROLLBACK`, `RESET ALL`, or `DISCARD ALL`.
+Without the dirty-exit detach, a bypassed `raw_execute` that runs
+`SET ROLE`, `SET search_path`, advisory lock acquisition, manual
+`BEGIN`/`COMMIT`, `LISTEN`/`UNLISTEN`, or any other session-state mutation
+and then errors or panics would leak that state to the next checkout — a
+real auth/tenant/session-state hazard for multi-tenant deployments.
+
+The trade-off is one extra physical connection per dirty exit. This is the
+right cost to pay for the guarantee.
+
+### Adopter contract
+
+The dirty-by-default guard fires on `Err`/panic/cancel paths only. On the
+**clean-exit path**, session state mutated by an `Ok` raw call still
+leaves the connection non-default when it returns to the pool. Adopters
+who run session-state-affecting raw SQL must:
+
+- wrap the raw call in `djogi::transaction::atomic(...)` so the surrounding
+  transaction commit or rollback bounds the state change, or
+- use the transaction-local form inside the raw call (`SET LOCAL …`,
+  `set_config(name, value, true)`, `BEGIN; … COMMIT;`).
+
+Cursors, `COPY` streams, and other multi-round-trip protocol operations
+should go through `RawPoolAccessExt::raw_with_client`. Its `WithClientGuard`
+bounds the protocol exchange to a single checkout and applies the same
+dirty-detach on dirty exit.
+
+Tracking issue: [djogi#162](https://github.com/TarunvirBains/djogi/issues/162).

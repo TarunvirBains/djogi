@@ -70,6 +70,31 @@ impl PgConnection {
         PgConnection { obj }
     }
 
+    /// Detach this connection from its pool instead of returning it.
+    ///
+    /// Consumes `self`, calls `deadpool_postgres::Object::take` to remove the
+    /// underlying `ClientWrapper` from the pool's tracker, and immediately
+    /// drops the wrapper — closing the `tokio_postgres::Client` and the
+    /// underlying socket. The pool will create a fresh physical connection
+    /// on the next demand.
+    ///
+    /// This is the dirty-by-default escape used by the pool-path execution
+    /// helpers (`query_all` / `query_opt` / `query_one` / `execute` /
+    /// `batch_execute` on a pool-backed [`crate::context::DjogiContext`])
+    /// when an operation returns `Err`, panics, or is cancelled. It is the
+    /// counterpart of [`crate::pg::pool::DjogiPool::with_client`]'s
+    /// `WithClientGuard` discard branch — both paths share the same
+    /// invariant: with deadpool's `RecyclingMethod::Fast`, returning a
+    /// session-poisoned connection (open transaction, uncommitted
+    /// `SET ROLE`, advisory lock, half-finished `COPY` stream) to the pool
+    /// would leak that state to the next checkout. Detaching trades one
+    /// extra physical connection per dirty exit for the safety guarantee.
+    pub(crate) fn detach(self) {
+        let _client_wrapper = Object::take(self.obj);
+        // `_client_wrapper` drops at end of scope, closing the underlying
+        // connection.
+    }
+
     /// Prepare `sql` if not already cached; return a clone of the statement.
     ///
     /// Delegates to `deadpool_postgres::ClientWrapper::prepare_cached`, which
