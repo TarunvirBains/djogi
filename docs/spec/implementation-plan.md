@@ -780,15 +780,25 @@ These surfaces are intentionally downstream of the core ORM/runtime. They are us
 
 ### 9-Zero: Inventory-on-Dylib Spike
 
-The dylib coupling is gated on a research spike that validates whether (a) `cargo rustc --crate-type=dylib` produces a working `libdjogi.so` for djogi's workspace and (b) `inventory::submit!` registrations made inside djogi propagate across the dylib boundary to dlopen-ing consumers.
+The dylib coupling is gated on a research spike that validates (a) `cargo rustc --crate-type=dylib` produces a working `libdjogi.so` for djogi's workspace, (b) `inventory::submit!` registrations made inside djogi propagate across the dylib boundary to dlopen-ing consumers, (c) the resulting dylib loads cleanly at runtime via `libloading` without TLS / global-init / loader-compat failures, and (d) the canonical Rhai API surface relied on by §9a (`Engine::compile`, `Engine::eval_ast`, `ParseError`, `Engine::set_strict_variables`, `OnVarFn`) behaves as the spec assumes.
 
-- [ ] **Spike artifact:** `docs/research/2026-05-10-inventory-on-dylib-spike.md` (TBD when this entry is written; orchestrator to fix path on integration). Captures method, results, and selected contingency outcome
-- [ ] **Coordination with lihaaf:** lihaaf consumes the same dylib for its own reasons; spike runs once and feeds both Phase 9 and lihaaf's v0.1 spec (`docs/spec/lihaaf-v0.1.md`, TBD)
-- [ ] **Contingency selection** (per `docs/spec/shell.md` §13.13):
-  - `GO_NATIVE` — best case; no `Cargo.toml` changes needed
+- [x] **Spike artifact:** [`docs/research/2026-05-10-inventory-on-dylib-spike.md`](../research/2026-05-10-inventory-on-dylib-spike.md). 2026-05-10 outcome: **`GO_NATIVE`** — `cargo rustc -p djogi --lib --release --crate-type=dylib` produces working `libdjogi.so`; cross-DSO inventory propagation confirmed (`LIHAAF_SPIKE_TOTAL=2`, `BOTH_SUBMISSIONS_VISIBLE`); `libloading::Library::new` dlopen path confirmed for Phase 9 shell. **No djogi `Cargo.toml` changes required.** The four contingencies in `docs/spec/shell.md` §13.13 (`GO_WITH_MANIFEST` / `GO_WITH_WORKAROUND` / `RUNTIME_INCOMPATIBLE` / `NO_GO`) are retained as defensive design for revalidation cadence (next revalidation: every Rust toolchain MSRV bump + every 6 months absent other triggers)
+- [ ] **API smoke step:** the spike artifact MUST include a runtime smoke test for the Rhai surface §9a depends on. Test exercises: (1) `Engine::compile(<bad_syntax>)` returns `ParseError` with line + column position; (2) `Engine::eval_ast(<good_ast>)` runs a registered model-binding function end-to-end; (3) `Engine::set_strict_variables(true)` causes mistyped identifier references to surface as parse-time errors before any runtime dispatch; (4) `OnVarFn` resolver receives the expected `(name, index, &EvalContext)` callback signature. Validates the spec's API claims against the Rhai version djogi-shell pins. Failure here surfaces a Rhai-API drift before §9a implementation begins
+- [x] **Coordination with lihaaf:** lihaaf consumes the same dylib for its own reasons; spike runs once and feeds both Phase 9 and lihaaf's v0.1 spec ([`docs/spec/lihaaf-v0.1.md`](./lihaaf-v0.1.md), TBD)
+- [x] **Contingency outcome (selected 2026-05-10):** `GO_NATIVE`. Other outcomes named for revalidation completeness (per `docs/spec/shell.md` §13.13):
+  - `GO_NATIVE` — best case; no `Cargo.toml` changes needed (**selected**)
   - `GO_WITH_MANIFEST` — djogi's `[lib]` adds `crate-type = ["lib", "dylib"]`
-  - `GO_WITH_WORKAROUND` — djogi exposes `pub fn lihaaf_inventory_collect_<T>()` per-collection re-exports; shared naming convention with lihaaf
+  - `GO_WITH_WORKAROUND` — djogi exposes `pub fn lihaaf_inventory_collect_<T>()` per-collection re-exports; shared naming convention with lihaaf; spike must evaluate `linkme` / `ctor` / manual init alternatives before locking in the workaround
+  - `RUNTIME_INCOMPATIBLE` — build succeeds but dylib fails at runtime (TLS init, loader compat, global-init races); same scoping as `NO_GO` but different remediation
   - `NO_GO` — Phase 9 ships statically-linked; dylib-dependent items deferred until toolchain blocker resolves (parse-vs-eval split, djqry authoring loop, ergonomics work all still ship; only the dylib-dependent items defer)
+
+**Phase ordering (sequencing constraints).** Phase 9 milestones depend on upstream work landing in a specific order:
+
+- **Phase 8ε wrap (set_role + snapshot signing + djogi verify) must complete before §9a implementation begins.** Rationale: the shell uses `DjogiContext`'s post-8ε surface for transaction-scoped role propagation in REPL transactions. §9a code that reaches into a pre-8ε `DjogiContext` would need rewrite when 8ε lands
+- **`lihaaf v0.1` spec must land (self-review ALLOW + Codex review ALLOW or ALLOW_WITH_NITS) before any precompiled-Rhai-plugin (§9a-Plugins) work begins.** Rationale: the cross-harness boundary (lihaaf is Rust-only; Phase 9 owns Rhai test fixtures) needs both specs in agreement before either harness commits to ownership
+- **Inventory-on-dylib spike must complete before §9a implementation begins.** Already gated above; recorded here for completeness
+- **`rhai-dylib` audit (per shell.md §13.12) must complete before §9a-Plugins implementation begins.** Audit `PASS` enables §9a-Plugins; `FAIL` defers §9a-Plugins indefinitely (source-form Rhai modules ship regardless via the standard `.import` path)
+- **§9b (Static Query Analyzer) and §9c (djqry SQL override registry) have no dependency on the dylib coupling.** They can land in parallel with §9a once Phase 8ε wraps
 
 ### 9a: Shell (Rhai REPL)
 
