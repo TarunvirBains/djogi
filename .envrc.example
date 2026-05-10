@@ -1,0 +1,46 @@
+# djogi per-worktree CARGO_TARGET_DIR isolation
+# ----------------------------------------------
+#
+# WHAT: Routes this worktree's `cargo build`/`cargo test` artifacts into a
+# physically separate target tree under `~/.cache/djogi-target/<worktree-id>/`,
+# so concurrent worktree activity cannot share or contaminate cached state.
+#
+# WHY: trybuild fixtures keep transient state under `target/tests/trybuild/`,
+# and `cargo metadata` resolves that path relative to the active target dir.
+# When two worktrees run macro tests in parallel under the same physical
+# target tree (because both worktrees mount, symlink, or otherwise reach the
+# same path), one fixture's artifacts can invalidate the other's expected
+# output and produce spurious diffs. This isolates them. Closes djogi#176.
+#
+# HOW TO ENABLE (per worktree):
+#   cp .envrc.example .envrc
+#   direnv allow
+#
+# Without direnv, export the same variable in your shell (e.g. .bashrc) before
+# entering the worktree, or wrap cargo invocations:
+#   CARGO_TARGET_DIR="$HOME/.cache/djogi-target/$(basename "$PWD")" cargo test
+#
+# DISK USAGE: each worktree's target tree accumulates roughly 5-10 GB of
+# incremental artifacts. After deleting a worktree (e.g. `git worktree
+# remove`), prune the matching cache directory with:
+#   cargo xtask gc-target-cache
+#
+# WORKTREE-ID DERIVATION: we hash the absolute worktree path to a short stable
+# identifier so sibling worktrees that share a basename (a hazard when nested
+# under `.worktrees/` across multiple repo clones) do not collide. The hash is
+# computed in pure shell so direnv users do not need extra tooling.
+
+# Compute a 12-char SHA-256-derived id from the absolute worktree path.
+# Fallback to the basename if `sha256sum` is unavailable.
+__djogi_worktree_id() {
+    local abs_path
+    abs_path="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$abs_path" | sha256sum | cut -c1-12
+    else
+        basename "$abs_path"
+    fi
+}
+
+export CARGO_TARGET_DIR="$HOME/.cache/djogi-target/$(__djogi_worktree_id)"
+unset -f __djogi_worktree_id
