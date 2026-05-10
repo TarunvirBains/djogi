@@ -30,6 +30,10 @@ These documents define Djogi's public contract as a performance-sensitive, Postg
 - [Shell](./shell.md) — Rhai REPL, transactions, import/export, seed scripts
 - [Maahi (Admin Console)](./maahi/index.md) — Dioxus full-stack admin with visage-driven RBAC, multi-tenancy, six-action permissions, M2M inlines, and the inline-bulk approval threshold
 
+## Testing
+
+- [Testing Conventions](./testing.md) — typed-surface rule, self-referential seed convention, silent nullable-FK degradation, and the raw SQL bypass harness pointer
+
 ## Reference
 
 - [Scope & Boundaries](./scope.md) — what belongs in Djogi vs an app or companion crate
