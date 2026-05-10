@@ -326,11 +326,7 @@ macro_rules! define_window_rank_fn {
             /// the caller's responsibility to pick a non-colliding alias.
             #[must_use = "window functions are immutable builders - use the returned value"]
             pub fn alias(mut self, alias: &'static str) -> Self {
-                crate::ident::assert_plain_ident(alias, "window_alias");
-                assert!(
-                    !alias.starts_with("__djogi_"),
-                    "window alias \"{alias}\" is reserved (the `__djogi_` prefix is used for framework-internal identifiers like the qualify derived-table alias `__djogi_q` and the aggregate-tuple slot aliases `__djogi_agg_N`)"
-                );
+                crate::ident::assert_user_supplied_ident(alias, "window_alias");
                 self.alias = Some(alias);
                 self
             }
@@ -493,7 +489,9 @@ macro_rules! impl_zero_arg_f64_window {
                 M: Model,
                 S: crate::query::field::IntoSqlField<M, V>,
             {
-                self.window.partition_by.push(field.into_sql_field().column());
+                self.window
+                    .partition_by
+                    .push(field.into_sql_field().column());
                 self
             }
 
@@ -508,11 +506,7 @@ macro_rules! impl_zero_arg_f64_window {
             /// Set the output alias. Required before SQL emission.
             #[must_use = "window functions are immutable builders - use the returned value"]
             pub fn alias(mut self, alias: &'static str) -> Self {
-                crate::ident::assert_plain_ident(alias, "window_alias");
-                assert!(
-                    !alias.starts_with("__djogi_"),
-                    "window alias \"{alias}\" is reserved (the `__djogi_` prefix is used for framework-internal identifiers)"
-                );
+                crate::ident::assert_user_supplied_ident(alias, "window_alias");
                 self.alias = Some(alias);
                 self
             }
@@ -603,11 +597,7 @@ impl NtileWindow {
     /// Set the output alias.
     #[must_use = "window functions are immutable builders - use the returned value"]
     pub fn alias(mut self, alias: &'static str) -> Self {
-        crate::ident::assert_plain_ident(alias, "window_alias");
-        assert!(
-            !alias.starts_with("__djogi_"),
-            "window alias \"{alias}\" is reserved (the `__djogi_` prefix is used for framework-internal identifiers)"
-        );
+        crate::ident::assert_user_supplied_ident(alias, "window_alias");
         self.alias = Some(alias);
         self
     }
@@ -706,11 +696,7 @@ macro_rules! define_column_arg_window_fn {
             /// Set the output alias.
             #[must_use = "window functions are immutable builders - use the returned value"]
             pub fn alias(mut self, alias: &'static str) -> Self {
-                crate::ident::assert_plain_ident(alias, "window_alias");
-                assert!(
-                    !alias.starts_with("__djogi_"),
-                    "window alias \"{alias}\" is reserved"
-                );
+                crate::ident::assert_user_supplied_ident(alias, "window_alias");
                 self.alias = Some(alias);
                 self
             }
@@ -853,11 +839,7 @@ macro_rules! impl_lead_lag {
             /// Set the output alias.
             #[must_use = "window functions are immutable builders - use the returned value"]
             pub fn alias(mut self, alias: &'static str) -> Self {
-                crate::ident::assert_plain_ident(alias, "window_alias");
-                assert!(
-                    !alias.starts_with("__djogi_"),
-                    "window alias \"{alias}\" is reserved"
-                );
+                crate::ident::assert_user_supplied_ident(alias, "window_alias");
                 self.alias = Some(alias);
                 self
             }
@@ -960,11 +942,7 @@ impl<V> NthValueWindow<V> {
     /// Set the output alias.
     #[must_use = "window functions are immutable builders - use the returned value"]
     pub fn alias(mut self, alias: &'static str) -> Self {
-        crate::ident::assert_plain_ident(alias, "window_alias");
-        assert!(
-            !alias.starts_with("__djogi_"),
-            "window alias \"{alias}\" is reserved"
-        );
+        crate::ident::assert_user_supplied_ident(alias, "window_alias");
         self.alias = Some(alias);
         self
     }

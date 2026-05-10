@@ -61,6 +61,9 @@
 
 #![allow(clippy::disallowed_methods)]
 
+#[cfg(any(test, feature = "testing"))]
+pub mod cli;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::__bypass::RawAccessExt as _;
@@ -660,7 +663,7 @@ pub struct OutboxRowForTest {
 }
 
 fn validate_outbox_table_for_test(table: &str) -> Result<(), DjogiError> {
-    crate::ident::check_plain_ident(table, false).map_err(|error| {
+    crate::ident::check_user_supplied_ident(table, false).map_err(|error| {
         DjogiError::Db(DbError::other(format!(
             "invalid outbox table name {table:?}: {error:?}"
         )))
@@ -1188,5 +1191,20 @@ mod tests {
             }),
             "RenameTable",
         );
+    }
+
+    #[test]
+    fn outbox_table_for_test_rejects_reserved_djogi_prefix() {
+        // `outbox_rows_for_test` / `clear_outbox_for_test` are hidden
+        // testing helpers, but they still accept a caller-supplied SQL
+        // identifier string. Keep them on the same reserved-prefix rule
+        // as the production outbox worker table validator.
+        let err = super::validate_outbox_table_for_test("__djogi_outbox")
+            .expect_err("must reject framework-reserved prefix");
+        let msg = err.to_string();
+        assert!(msg.contains("ReservedDjogiPrefix"), "got: {msg}");
+        assert!(super::validate_outbox_table_for_test("__djogi_").is_err());
+        assert!(super::validate_outbox_table_for_test("app_outbox").is_ok());
+        assert!(super::validate_outbox_table_for_test("_djogi_outbox").is_ok());
     }
 }

@@ -86,7 +86,9 @@ pub use attune::{
     AttuneReport, AttuneRequest, attune,
 };
 pub use audit::{
-    DDL_AUDIT_TABLE_DDL, bootstrap_ddl_audit, record_ddl as record_ddl_audit, signature_to_hex,
+    AUDIT_DB_DERIVED_NAME, AUDIT_URL_ENV_VAR, AuditUrlError, DDL_AUDIT_TABLE_DDL,
+    bootstrap_ddl_audit, build_audit_pool, record_ddl as record_ddl_audit, resolve_audit_url,
+    signature_to_hex,
 };
 pub use bootstrap::{
     AutoEmitError, BootstrapError, DEFAULT_NODE_ID, EmittedPhaseZero, PHASE_ZERO_VERSION,

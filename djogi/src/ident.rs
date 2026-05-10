@@ -33,6 +33,55 @@
 /// identity contracts aligned.
 pub(crate) const MAX_IDENT_LEN: usize = 63;
 
+/// Framework-reserved identifier prefix.
+///
+/// Djogi reserves identifiers beginning with `__djogi_` (two leading
+/// underscores + ASCII-case-insensitive `djogi` + underscore) for
+/// framework-internal use — recursive CTE names (`__djogi_tree`,
+/// `__djogi_closure`),
+/// derived-table aliases (`__djogi_q`), synthetic column slots
+/// (`__djogi_agg_N`, `__djogi_parent_id`, `__djogi_search_seq`,
+/// `__djogi_edge_label`), and macro scratch identifiers. See
+/// `docs/spec/reserved-identifiers.md` for the inventory and rationale.
+///
+/// User-supplied identifiers — window aliases, FTS dictionary names,
+/// closure-model column accessors, outbox table names, runtime enum
+/// types — must not enter this namespace, since the framework can
+/// repurpose any name in it without considering it a breaking change.
+/// Macro-emitted identifiers from `#[derive(Model)]` and friends *do*
+/// legitimately start with `__djogi_`, so the runtime
+/// [`assert_plain_ident`] / [`check_plain_ident`] validators do not
+/// enforce the rule by themselves; the user-facing pair
+/// [`assert_user_supplied_ident`] / [`check_user_supplied_ident`]
+/// layers it on for surfaces that route adopter input into framework
+/// SQL.
+pub(crate) const RESERVED_DJOGI_PREFIX: &[u8] = b"__djogi_";
+
+/// Const-stable check for the [`RESERVED_DJOGI_PREFIX`] namespace.
+///
+/// Equivalent to a case-insensitive `bytes.starts_with("__djogi_")`
+/// over the alphabetic segment, but written with const-stable indexing
+/// primitives so it can fire from [`const_assert_user_supplied_ident`]
+/// inside `inventory::submit!` initializers.
+pub(crate) const fn starts_with_reserved_djogi_prefix(bytes: &[u8]) -> bool {
+    if bytes.len() < RESERVED_DJOGI_PREFIX.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < RESERVED_DJOGI_PREFIX.len() {
+        let actual = if bytes[i] >= b'A' && bytes[i] <= b'Z' {
+            bytes[i] | 0x20
+        } else {
+            bytes[i]
+        };
+        if actual != RESERVED_DJOGI_PREFIX[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// Postgres fully-reserved keywords (catcode `R` in `pg_get_keywords()`
 /// as of Postgres 18). These cannot be used as identifiers unless
 /// quoted, so emitting them unquoted into `SELECT`, `FROM`, or
@@ -207,6 +256,25 @@ pub(crate) const fn const_assert_plain_ident(value: &'static str, role: &'static
     let _ = role;
 }
 
+/// Compile-time-evaluable validator for user-supplied identifiers.
+///
+/// Adds the framework-reserved-prefix block from
+/// [`check_user_supplied_ident`] to [`const_assert_plain_ident`]. Use
+/// this for macro arguments that originate in adopter code and are
+/// baked into SQL-facing strings or macro-expanded relation names.
+/// Keep using [`const_assert_plain_ident`] for framework-generated
+/// internal identifiers that legitimately live in the `__djogi_*`
+/// namespace.
+pub(crate) const fn const_assert_user_supplied_ident(value: &'static str, role: &'static str) {
+    if starts_with_reserved_djogi_prefix(value.as_bytes()) {
+        panic!(
+            "djogi::ident: user-supplied identifier starts with the framework-reserved \
+             `__djogi_` prefix"
+        );
+    }
+    const_assert_plain_ident(value, role);
+}
+
 /// Const-stable case-insensitive byte-slice comparison.
 ///
 /// Works on ASCII-only inputs — every caller here has already
@@ -240,13 +308,15 @@ const fn const_eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
     true
 }
 
-/// Why a single rule failed when [`check_plain_ident`] returns `Err`.
+/// Why a single rule failed when [`check_plain_ident`] (or its
+/// user-supplied twin [`check_user_supplied_ident`]) returns `Err`.
 ///
 /// Each variant carries enough payload that the caller can render its
 /// preferred error shape (`DjogiError`, `String`, panic message)
-/// without re-walking the bytes. `Reserved` carries no payload because
-/// the caller already has the offending name; the lookup happened
-/// against the lowercased copy.
+/// without re-walking the bytes. `Reserved` and `ReservedDjogiPrefix`
+/// carry no payload because the caller already has the offending
+/// name; the lookups happened against the lowercased copy / against
+/// the [`RESERVED_DJOGI_PREFIX`] constant respectively.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IdentError {
     /// Empty input.
@@ -259,6 +329,12 @@ pub(crate) enum IdentError {
     BadByte { idx: usize, byte: u8 },
     /// Lowercased name is in the [`RESERVED_KEYWORDS`] table.
     Reserved,
+    /// Name starts with the framework-reserved [`RESERVED_DJOGI_PREFIX`]
+    /// (`__djogi_`, ASCII-case-insensitive). Only emitted by
+    /// [`check_user_supplied_ident`]; the
+    /// general-purpose [`check_plain_ident`] continues to accept this
+    /// prefix because macro-emitted identifiers legitimately use it.
+    ReservedDjogiPrefix,
 }
 
 /// Fallible validator for runtime-supplied identifiers — the
@@ -373,6 +449,68 @@ pub(crate) fn assert_plain_ident(value: &'static str, role: &'static str) {
          appear unquoted in generated SQL — either the proc-macro emission is broken or \
          downstream code bypassed the macro-support seal"
     );
+}
+
+/// Fallible validator for user-supplied identifiers.
+///
+/// This is the user-facing twin of [`check_plain_ident`]. It enforces
+/// every rule [`check_plain_ident`] enforces (non-empty, ≤ 63 bytes,
+/// ASCII letter or underscore first, ASCII alphanumeric or underscore
+/// after, optional reserved-keyword block) AND additionally rejects
+/// names that start with the framework-reserved [`RESERVED_DJOGI_PREFIX`]
+/// (`__djogi_`, ASCII-case-insensitive).
+///
+/// Use this at every surface where adopters can hand the framework an
+/// SQL identifier — window-function aliases, FTS dictionary / source
+/// column names, [`crate::query::closure::ClosureModel`] column
+/// accessors, outbox table names, runtime enum-type names. Use the
+/// plainer [`check_plain_ident`] only for derived names that the
+/// framework constructs from already-validated inputs (e.g. the
+/// `<table>_outbox` companion table name) where the prefix rule is
+/// transitively enforced upstream.
+///
+/// `check_reserved` toggles the Postgres-keyword block in the same
+/// shape as [`check_plain_ident`].
+///
+/// On failure, the prefix rejection precedes the byte-shape rejections
+/// so a name like `__djogi_select` reports the more actionable
+/// `ReservedDjogiPrefix` error rather than a Postgres-keyword error
+/// that could mislead the caller into renaming the suffix.
+pub(crate) fn check_user_supplied_ident(
+    value: &str,
+    check_reserved: bool,
+) -> Result<(), IdentError> {
+    if starts_with_reserved_djogi_prefix(value.as_bytes()) {
+        return Err(IdentError::ReservedDjogiPrefix);
+    }
+    check_plain_ident(value, check_reserved)
+}
+
+/// Panicking validator for user-supplied identifiers carried as
+/// `&'static str` — typically window-function aliases the adopter
+/// passes to [`crate::expr::RowNumber::alias`] and friends.
+///
+/// Combines [`assert_plain_ident`]'s four-rule contract with the
+/// framework-reserved-prefix block from
+/// [`check_user_supplied_ident`]. Call this at boundaries where the
+/// adopter directly hands a static identifier to the SQL emitter and
+/// the failure mode is best surfaced as a panic (typed-builder API,
+/// where the typed alias is known at compile-time and a typo is the
+/// only realistic failure path).
+///
+/// `role` labels the identifier in the panic message — same convention
+/// as [`assert_plain_ident`] — so an on-call engineer can map the
+/// panic back to the offending API surface.
+#[inline]
+pub(crate) fn assert_user_supplied_ident(value: &'static str, role: &'static str) {
+    assert!(
+        !starts_with_reserved_djogi_prefix(value.as_bytes()),
+        "djogi::ident: user-supplied {role} {value:?} is reserved — the `__djogi_` prefix \
+         is used for framework-internal identifiers (recursive CTE names like `__djogi_tree`, \
+         derived-table aliases like `__djogi_q`, aggregate-tuple slot aliases like \
+         `__djogi_agg_N`). Choose a different name."
+    );
+    assert_plain_ident(value, role);
 }
 
 /// Debug-build-only identifier assertion. Expands to
@@ -535,5 +673,198 @@ mod tests {
         // well-formed identifiers.
         let ok = std::panic::catch_unwind(|| debug_assert_ident!("owner_id", "field_name"));
         assert!(ok.is_ok());
+    }
+
+    // ── Reserved-prefix rule (issues #69, #82) ───────────────────────────────
+
+    #[test]
+    fn starts_with_reserved_djogi_prefix_basic_cases() {
+        // Const helper used by both `check_user_supplied_ident` and
+        // `assert_user_supplied_ident`; pin its behavior on the boundary
+        // cases that matter to callers.
+        assert!(starts_with_reserved_djogi_prefix(b"__djogi_"));
+        assert!(starts_with_reserved_djogi_prefix(b"__djogi_q"));
+        assert!(starts_with_reserved_djogi_prefix(b"__djogi_anything"));
+        // Postgres folds unquoted identifiers to lowercase, so user
+        // spellings with uppercase letters still resolve into the same
+        // SQL namespace and must be rejected by the prefix check.
+        assert!(starts_with_reserved_djogi_prefix(b"__DJOGI_q"));
+        assert!(starts_with_reserved_djogi_prefix(b"__Djogi_q"));
+        assert!(!starts_with_reserved_djogi_prefix(b""));
+        assert!(!starts_with_reserved_djogi_prefix(b"_"));
+        assert!(!starts_with_reserved_djogi_prefix(b"__djogi"));
+        assert!(!starts_with_reserved_djogi_prefix(b"__DJOGI"));
+        // Single-underscore prefix — used by `notify` channel names like
+        // `djogi_<table>` — must NOT collide with the reservation.
+        assert!(!starts_with_reserved_djogi_prefix(b"_djogi_"));
+        assert!(!starts_with_reserved_djogi_prefix(b"djogi_"));
+        // Different prefixes — adopters' own reserved namespaces.
+        assert!(!starts_with_reserved_djogi_prefix(b"__myprefix_"));
+    }
+
+    #[test]
+    fn check_plain_ident_still_accepts_djogi_prefix() {
+        // Pin: the general-purpose `check_plain_ident` continues to
+        // accept macro-emitted internal identifiers. Adding the
+        // reservation rule here would break every framework-internal
+        // emission (recursive CTE names, derived-table aliases, slot
+        // aliases) — those legitimately live in the namespace.
+        assert_eq!(check_plain_ident("__djogi_q", true), Ok(()));
+        assert_eq!(check_plain_ident("__djogi_tree", true), Ok(()));
+        assert_eq!(check_plain_ident("__djogi_agg_0", true), Ok(()));
+    }
+
+    #[test]
+    fn check_user_supplied_ident_rejects_djogi_prefix() {
+        // The user-facing twin must reject every shape in the reserved
+        // namespace, regardless of the suffix. Pin the canonical
+        // existing slot names so a later refactor cannot silently let
+        // them through.
+        assert_eq!(
+            check_user_supplied_ident("__djogi_q", true),
+            Err(IdentError::ReservedDjogiPrefix)
+        );
+        assert_eq!(
+            check_user_supplied_ident("__djogi_tree", true),
+            Err(IdentError::ReservedDjogiPrefix)
+        );
+        assert_eq!(
+            check_user_supplied_ident("__djogi_agg_0", true),
+            Err(IdentError::ReservedDjogiPrefix)
+        );
+        assert_eq!(
+            check_user_supplied_ident("__djogi_parent_id", true),
+            Err(IdentError::ReservedDjogiPrefix)
+        );
+        assert_eq!(
+            check_user_supplied_ident("__DJOGI_q", true),
+            Err(IdentError::ReservedDjogiPrefix)
+        );
+        assert_eq!(
+            check_user_supplied_ident("__Djogi_q", true),
+            Err(IdentError::ReservedDjogiPrefix)
+        );
+        // Surface still rejects post-prefix when applicable: `__djogi_`
+        // alone (no suffix) is also reserved — the prefix is the entire
+        // exclusion zone.
+        assert_eq!(
+            check_user_supplied_ident("__djogi_", false),
+            Err(IdentError::ReservedDjogiPrefix)
+        );
+    }
+
+    #[test]
+    fn check_user_supplied_ident_prefix_check_precedes_byte_check() {
+        // Ordering pin — `__djogi_<reserved keyword>` should report the
+        // ReservedDjogiPrefix error rather than Reserved (Postgres
+        // keyword), because the reservation rule trips before the byte
+        // / keyword scan and gives the caller the more actionable
+        // "rename your prefix" diagnostic.
+        assert_eq!(
+            check_user_supplied_ident("__djogi_select", true),
+            Err(IdentError::ReservedDjogiPrefix)
+        );
+        // Likewise, an over-long name in the namespace prefers the
+        // prefix error over `TooLong` because the prefix is the
+        // primary failure to fix.
+        let overlong = format!("__djogi_{}", "a".repeat(70));
+        assert_eq!(
+            check_user_supplied_ident(&overlong, false),
+            Err(IdentError::ReservedDjogiPrefix)
+        );
+    }
+
+    #[test]
+    fn check_user_supplied_ident_accepts_non_reserved_names() {
+        // Positive shapes — anything that the plain validator accepts
+        // and that does not enter the reserved namespace must pass
+        // unchanged.
+        assert_eq!(check_user_supplied_ident("rank", true), Ok(()));
+        assert_eq!(check_user_supplied_ident("dense_rank", true), Ok(()));
+        assert_eq!(check_user_supplied_ident("_internal", true), Ok(()));
+        // Single-underscore + djogi is NOT reserved — the rule is the
+        // double-underscore prefix only. This shape mirrors the notify
+        // channel names (`djogi_<table>`) the framework derives from
+        // already-validated table names.
+        assert_eq!(check_user_supplied_ident("djogi_orders", true), Ok(()));
+        assert_eq!(check_user_supplied_ident("_djogi_q", true), Ok(()));
+    }
+
+    fn try_const_assert_user(value: &'static str) -> std::thread::Result<()> {
+        std::panic::catch_unwind(|| const_assert_user_supplied_ident(value, "test_role"))
+    }
+
+    #[test]
+    fn const_assert_user_supplied_ident_rejects_reserved_prefix() {
+        assert!(try_const_assert_user("__djogi_q").is_err());
+        assert!(try_const_assert_user("__DJOGI_q").is_err());
+        assert!(try_const_assert_user("__Djogi_q").is_err());
+        assert!(try_const_assert_user("plain_relation").is_ok());
+        assert!(try_const_assert_user("_djogi_relation").is_ok());
+    }
+
+    #[test]
+    fn check_user_supplied_ident_propagates_other_ident_errors() {
+        // The user-supplied helper falls through to `check_plain_ident`
+        // for non-prefix-related failures, so the underlying error
+        // shape must remain visible to callers (they map it onto their
+        // own diagnostic strings).
+        assert_eq!(check_user_supplied_ident("", false), Err(IdentError::Empty));
+        assert_eq!(
+            check_user_supplied_ident("9col", false),
+            Err(IdentError::BadFirst { byte: b'9' })
+        );
+        assert_eq!(
+            check_user_supplied_ident("select", true),
+            Err(IdentError::Reserved)
+        );
+    }
+
+    fn try_assert_user(value: &'static str) -> std::thread::Result<()> {
+        std::panic::catch_unwind(|| assert_user_supplied_ident(value, "test_role"))
+    }
+
+    #[test]
+    fn assert_user_supplied_ident_panics_on_reserved_prefix() {
+        // The panicking twin is the surface window-fn `.alias(...)`
+        // routes through; a typo collision with `__djogi_*` must
+        // produce a loud framework-bug-style panic so the adopter
+        // catches it in their unit tests rather than at SQL emission.
+        let caught = try_assert_user("__djogi_q");
+        assert!(
+            caught.is_err(),
+            "assert_user_supplied_ident must panic on reserved prefix"
+        );
+        let caught = try_assert_user("__djogi_anything");
+        assert!(caught.is_err());
+    }
+
+    #[test]
+    fn assert_user_supplied_ident_accepts_valid_names() {
+        assert!(try_assert_user("rank").is_ok());
+        assert!(try_assert_user("dense_rank").is_ok());
+        assert!(try_assert_user("_internal_alias").is_ok());
+        assert!(try_assert_user("djogi_pluralized_rank").is_ok());
+    }
+
+    #[test]
+    fn assert_user_supplied_ident_panics_on_other_violations() {
+        // Falls through to `assert_plain_ident` for byte-shape and
+        // reserved-keyword violations — the panic just routes through
+        // a different message body.
+        assert!(try_assert_user("").is_err());
+        assert!(try_assert_user("9col").is_err());
+        assert!(try_assert_user("select").is_err());
+    }
+
+    #[test]
+    fn reserved_djogi_prefix_constant_is_stable() {
+        // The exact byte sequence `__djogi_` is documented in
+        // `docs/spec/reserved-identifiers.md` and is part of djogi's
+        // public stability contract. Pin it so a refactor that, say,
+        // capitalizes the bytes or swaps in a different separator
+        // immediately surfaces.
+        assert_eq!(RESERVED_DJOGI_PREFIX, b"__djogi_");
+        assert_eq!(RESERVED_DJOGI_PREFIX.len(), 8);
     }
 }

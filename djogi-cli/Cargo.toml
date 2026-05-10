@@ -35,6 +35,19 @@ thiserror.workspace = true
 # transitively; declaring it directly here keeps the import path
 # stable (no `djogi::__private::*` reach-through from CLI code).
 tokio-postgres.workspace = true
+# Used by `db reset` (Phase 8.5 issue #118) to plumb the audit-DB
+# pool from `djogi::migrate::build_audit_pool` into
+# `ResetRequest::audit_pool`. The runner exposes the raw deadpool
+# handle on `RunnerCtx::audit_pool` deliberately (see the doc on
+# that field for the rationale); declaring deadpool-postgres directly
+# here mirrors the same "stable import path" reasoning as the
+# tokio-postgres dep above.
+deadpool-postgres.workspace = true
+# Used by `db reset` (Phase 8.5 issue #118) to emit best-effort
+# degradation warnings when audit-pool URL resolution or pool
+# construction fails. djogi already depends on tracing transitively;
+# declaring it directly here keeps the macro path stable.
+tracing.workspace = true
 # Used by `analyze` to derive `Serialize` on `TableHealth` and
 # `Recommendation` so T10.2 can emit deterministic JSON output via
 # `serde_json`. The pure recommend() layer (T10.1) only needs the
@@ -53,6 +66,17 @@ serde_json.workspace = true
 # crate (`djogi`) registers models via the same `inventory` crate;
 # the CLI binary must link the same version so the iter resolves.
 inventory.workspace = true
+
+# djogi#119 — the CLI integration tests below import shared helpers
+# from `djogi::testing::cli`, which is gated behind djogi's `testing`
+# feature. Listing djogi here as a dev-dep with the feature enabled
+# unions the feature only for test/example/bench builds; ordinary
+# `cargo build -p djogi-cli` continues to use the regular
+# [dependencies] entry above. Test-built artifacts may see the unified
+# feature, which is acceptable because `testing` only exposes test
+# helpers.
+[dev-dependencies]
+djogi = { workspace = true, features = ["testing"] }
 
 # T10.3 spawns the compiled `djogi` binary as a subprocess, seeds a
 # per-test database via `#[djogi_test]`, and asserts CLI output.

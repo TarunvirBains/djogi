@@ -493,6 +493,13 @@ name = "phase8_zero_db_reset_replays_phase_zero"
 path = "../tests/internal/phase8_zero_db_reset_replays_phase_zero.rs"
 harness = true
 
+# Phase 8.5 Cluster 2 issue #118 — production CLI dispatch wires the
+# audit pool from `crud_log_url` into the `db reset` replay path.
+[[test]]
+name = "phase8_5_c2_118_reset_writes_audit_rows"
+path = "../tests/internal/phase8_5_c2_118_reset_writes_audit_rows.rs"
+harness = true
+
 [[test]]
 name = "phase8_trait_impl_registry"
 path = "../tests/integration/phase8_trait_impl_registry.rs"

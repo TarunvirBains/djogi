@@ -195,6 +195,10 @@ async fn db_reset_replays_phase_zero_against_virgin_database() {
         profile: "test",
         confirmed: true,
         migrate_config: MigrateConfig::default(),
+        // Phase 0 replay coverage does not assert audit-row behaviour;
+        // dedicated coverage lives in
+        // `tests/internal/sources/phase8_5_c2_118_*` per issue #118.
+        audit_pool: None,
     };
     let reset_report = reset_app_database(req)
         .await

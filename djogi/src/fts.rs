@@ -250,7 +250,7 @@ impl<'a> FromSql<'a> for TsQuery {
 /// without additional escaping.
 pub fn validate_dictionary_name(name: &str) -> Result<(), String> {
     use crate::ident::IdentError;
-    crate::ident::check_plain_ident(name, false).map_err(|e| match e {
+    crate::ident::check_user_supplied_ident(name, false).map_err(|e| match e {
         IdentError::Empty => "dictionary name must not be empty".to_owned(),
         IdentError::TooLong { len } => format!(
             "dictionary name `{name}` is {len} bytes; Postgres caps identifiers at 63 bytes"
@@ -264,8 +264,12 @@ pub fn validate_dictionary_name(name: &str) -> Result<(), String> {
             byte as char
         ),
         IdentError::Reserved => {
-            unreachable!("check_plain_ident(reserved=false) cannot return Reserved")
+            unreachable!("check_user_supplied_ident(reserved=false) cannot return Reserved")
         }
+        IdentError::ReservedDjogiPrefix => format!(
+            "dictionary name `{name}` starts with the framework-reserved `__djogi_` prefix; \
+             choose a different name"
+        ),
     })
 }
 
@@ -277,7 +281,7 @@ pub fn validate_dictionary_name(name: &str) -> Result<(), String> {
 /// both feed into `to_tsvector(...)` SQL without further quoting.
 pub fn validate_source_column(col: &str) -> Result<(), String> {
     use crate::ident::IdentError;
-    crate::ident::check_plain_ident(col, false).map_err(|e| match e {
+    crate::ident::check_user_supplied_ident(col, false).map_err(|e| match e {
         IdentError::Empty => "source column name must not be empty".to_owned(),
         IdentError::TooLong { len } => {
             format!("source column `{col}` is {len} bytes; Postgres caps identifiers at 63 bytes")
@@ -290,8 +294,13 @@ pub fn validate_source_column(col: &str) -> Result<(), String> {
             byte as char
         ),
         IdentError::Reserved => {
-            unreachable!("check_plain_ident(reserved=false) cannot return Reserved")
+            unreachable!("check_user_supplied_ident(reserved=false) cannot return Reserved")
         }
+        IdentError::ReservedDjogiPrefix => format!(
+            "source column `{col}` starts with the framework-reserved `__djogi_` prefix; \
+             rename the column or use `#[field(renamed_from = \"…\")]` to map to a non-\
+             reserved name"
+        ),
     })
 }
 
@@ -414,6 +423,33 @@ mod tests {
         // 63 ASCII letters is valid.
         let name = "a".repeat(63);
         assert!(validate_dictionary_name(&name).is_ok());
+    }
+
+    #[test]
+    fn validate_dictionary_name_rejects_djogi_reserved_prefix() {
+        // Issue #82 — uniform reservation. The dictionary name flows
+        // into emitted SQL (`to_tsvector('<dict>', ...)`) as an
+        // adopter-supplied name, so it follows the same public
+        // `__djogi_*` reservation contract as aliases and columns.
+        let err = validate_dictionary_name("__djogi_english")
+            .expect_err("must reject framework-reserved prefix");
+        assert!(err.contains("`__djogi_` prefix"), "got: {err}");
+        assert!(validate_dictionary_name("__djogi_").is_err());
+        // Non-reserved lookalikes stay legal.
+        assert!(validate_dictionary_name("djogi_english").is_ok());
+        assert!(validate_dictionary_name("_djogi_english").is_ok());
+    }
+
+    #[test]
+    fn validate_source_column_rejects_djogi_reserved_prefix() {
+        // Same rule applies to FTS source-column names — they end up
+        // in `to_tsvector(<dict>, <col1> || ' ' || <col2>)`, sharing
+        // the framework's column namespace.
+        let err = validate_source_column("__djogi_search")
+            .expect_err("must reject framework-reserved prefix");
+        assert!(err.contains("`__djogi_` prefix"), "got: {err}");
+        assert!(validate_source_column("__djogi_").is_err());
+        assert!(validate_source_column("djogi_title").is_ok());
     }
 
     #[test]

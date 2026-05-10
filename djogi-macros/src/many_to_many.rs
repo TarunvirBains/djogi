@@ -147,11 +147,12 @@
 //!   junction construction — same rustc validation.
 //! - As `&'static str` values returned by `RELATION` / `this_fk()` /
 //!   `that_fk()`. All three are routed through
-//!   [`djogi::relation::registry::__macro_support::__const_assert_plain_ident`]
+//!   [`djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident`]
 //!   at const-eval time; `relation` and `this_fk` additionally flow
 //!   through the inventory marker constructor. That panic fires before
-//!   the marker reaches the inventory slice, so any hostile string
-//!   turns into a compile error pointing at the macro invocation.
+//!   the marker reaches the inventory slice, so any hostile or
+//!   `__djogi_*`-reserved string turns into a compile error pointing at
+//!   the macro invocation.
 //!
 //! The `relation` string is also validated through the same const
 //! path — it names both a Rust method on `Source` and a registry
@@ -457,15 +458,15 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // same stricter Postgres-identifier seal.
     let identifier_guard = quote! {
         const _: () = {
-            ::djogi::relation::registry::__macro_support::__const_assert_plain_ident(
+            ::djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident(
                 #relation_lit,
                 "many_to_many_relation",
             );
-            ::djogi::relation::registry::__macro_support::__const_assert_plain_ident(
+            ::djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident(
                 #this_fk_str,
                 "many_to_many_this_fk",
             );
-            ::djogi::relation::registry::__macro_support::__const_assert_plain_ident(
+            ::djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident(
                 #that_fk_str,
                 "many_to_many_that_fk",
             );

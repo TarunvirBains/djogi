@@ -257,7 +257,7 @@ djogi::reverse_one_to_many!(Owner, vehicles -> Truck   by owner_id);
 
 A compile-fail fixture pins this: `reverse_relation_duplicate_accessor.rs`.
 The `via` column is also validated — an unknown or non-FK column fails
-the `const_assert_plain_ident` gate at codegen.
+the `const_assert_user_supplied_ident` gate at codegen.
 
 ---
 
@@ -329,12 +329,13 @@ Each invocation emits one direction. The macro generates:
 | `impl ManyToMany<Target> for Source` | Supplies `Through`, `RELATION`, `this_fk()`, `that_fk()`, and typed bodies for `related` / `add_related` / `remove_related` |
 | `impl Source` inherent method named after `relation` | `person.groups(&mut ctx)` delegates to `<Self as ManyToMany<Group>>::related(self, &mut ctx)` |
 | `inventory::submit!(ReverseRelationMarker::new_via_macro_support(...))` | Registers the relation for collision detection and admin enumeration |
-| `const _: () = { … }` const-assert block | Validates `relation`, `this_fk`, `that_fk` against the Postgres plain-identifier grammar at codegen time |
+| `const _: () = { … }` const-assert block | Validates `relation`, `this_fk`, `that_fk` against the user-supplied identifier grammar at codegen time, including the reserved `__djogi_*` prefix |
 
 All three user-supplied identifiers (`relation`, `this_fk`, `that_fk`)
-flow through `const_assert_plain_ident`, so a keyword or SQL-injection
-attempt (`"id; DROP TABLE users"`) fails at compile time, not at query
-time. Fixtures: `many_to_many_bad_that_fk_keyword.rs` and peers.
+flow through `const_assert_user_supplied_ident`, so a keyword, reserved
+`__djogi_*` name, or SQL-injection attempt (`"id; DROP TABLE users"`)
+fails at compile time, not at query time. Fixtures:
+`many_to_many_bad_that_fk_keyword.rs` and peers.
 
 ### Call sites
 

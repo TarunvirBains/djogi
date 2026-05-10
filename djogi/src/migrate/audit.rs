@@ -41,24 +41,35 @@
 //!    the modern equivalent — Postgres still accepts the SERIAL
 //!    pseudo-types and emits the identity column under the hood).
 //!
-//! # Wiring status (Cluster 8ε)
+//! # Wiring status
 //!
-//! - **T9.4 (this commit)** — schema bootstrap + write helpers +
+//! - **T9.4 (Cluster 8ε)** — schema bootstrap + write helpers +
 //!   `RunnerCtx::audit_pool` field. NOT yet called from the apply
-//!   path.
-//! - **T9.5** — wires `record_ddl` into `apply_plan_inner` so every
-//!   successful migration writes an audit row.
-//! - **T9.6** — `djogi verify` CLI surface that reads from this
-//!   table.
+//!   path at that point.
+//! - **T9.5 (Cluster 8ε)** — wires `record_ddl` into `apply_plan_inner`
+//!   so every successful migration writes an audit row when the runner
+//!   is given a `Some(audit_pool)`.
+//! - **T9.6 (Cluster 8ε)** — `djogi verify` CLI surface that reads
+//!   from this table.
+//! - **Phase 8.5 Cluster 2 (issue #118)** — production CLI dispatch
+//!   wires the audit pool from `crud_log_url` (env var override or
+//!   derive-from-`database.url` fallback) into the `db reset` replay
+//!   path via [`resolve_audit_url`] + [`build_audit_pool`] +
+//!   [`super::reset::ResetRequest::audit_pool`]. Pre-fix every
+//!   production `db reset` invocation passed `audit_pool: None` so
+//!   no row reached `djogi_ddl_audit` from a real CLI invocation.
 //!
 //! # Spec / memory anchors
 //!
 //! - v3 plan §453 (audit table schema), §469 (T9 cluster boundary).
 //! - CLAUDE.md "Three-Database Architecture".
+//! - Phase 8.5 Cluster 2 issue #118 (production CLI wire-up).
 
 use crate::__bypass::RawAccessExt as _;
+use crate::config::DjogiConfig;
 use crate::context::DjogiContext;
 use crate::error::DjogiError;
+use crate::pg::pool::DjogiPool;
 
 /// SQL DDL for the `djogi_ddl_audit` table. Public so tests and any
 /// future `init`-style command can replay it without going through
@@ -165,6 +176,192 @@ pub fn signature_to_hex(sig: &[u8; 32]) -> String {
         out.push(HEX[(byte & 0x0F) as usize] as char);
     }
     out
+}
+
+/// Conventional name of the audit / CRUD-log database used when the
+/// derived path is constructed from [`DjogiConfig::database`]. Spliced
+/// into the application URL's path component by [`resolve_audit_url`]
+/// when the operator has not set an audit URL override.
+///
+/// Intentionally a constant (not configurable) — the on-disk migration
+/// tree convention `migrations/crud_log/<app>/` and the doc-anchor
+/// surface in `djogi-cli/src/verify.rs` both encode the same name. A
+/// rename would have to ripple through both surfaces in lockstep, so
+/// the indirection lives here.
+pub const AUDIT_DB_DERIVED_NAME: &str = "crud_log";
+
+/// Primary environment variable name read by [`resolve_audit_url`] to
+/// override `[database].crud_log_url` / the derived audit DB URL.
+/// Mirrors `docs/spec/configuration.md`.
+pub const AUDIT_URL_ENV_VAR: &str = "CRUD_LOG_URL";
+
+/// Compatibility environment variable accepted by the Phase 8ε verify
+/// CLI tests before `crud_log_url` was promoted into [`DatabaseConfig`].
+/// Prefer [`AUDIT_URL_ENV_VAR`] in new docs and operator scripts.
+pub const DJOGI_AUDIT_URL_ENV_VAR: &str = "DJOGI_CRUD_LOG_URL";
+
+/// Process-wide mutex serialising every read or write of
+/// [`AUDIT_URL_ENV_VAR`] / [`DJOGI_AUDIT_URL_ENV_VAR`] inside the test
+/// suite. Mirrors the `SIGNING_KEY_ENV_MUTEX` pattern from
+/// `crate::snapshot::sign` so unit tests in different modules that
+/// touch the audit URL env vars cannot race even when Cargo runs them
+/// in parallel. `pub(crate)` because only djogi-side tests need to
+/// coordinate; downstream adopters running production code should
+/// never mutate the env var
+/// concurrently.
+#[cfg(test)]
+pub(crate) static AUDIT_URL_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Errors surfaced by [`resolve_audit_url`].
+///
+/// Both variants are operator-actionable — the [`std::fmt::Display`]
+/// impl names the offending URL and points at the env-var override so a
+/// CI script or human can fix the misconfiguration without grepping
+/// source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuditUrlError {
+    /// Neither the env-var override nor the derive-from-application-URL
+    /// path produced a usable URL. Surfaces when
+    /// [`DjogiConfig::database::url`](crate::config::DatabaseConfig::url)
+    /// has no path component to splice (e.g.
+    /// `postgres://localhost`) AND neither env nor
+    /// `[database].crud_log_url` supplied an override.
+    Unresolvable {
+        /// The application URL the resolver tried (and failed) to
+        /// derive from. Echoed in the operator-facing message so a
+        /// typo in `Djogi.toml::database.url` is visible.
+        application_url: String,
+    },
+    /// The derived audit URL is byte-identical to the application URL
+    /// (i.e. `database.url` already ends in `/crud_log`). Returning the
+    /// same URL would silently audit the application DB into itself —
+    /// the exact regression Codex BLOCK-1 (recorded in
+    /// `docs/superpowers/codex-review-phase8-findings.md`) flagged for
+    /// the verify path. The resolver refuses BEFORE any caller can
+    /// connect to a self-targeting audit pool.
+    SelfAudit {
+        /// The application URL whose path component already names the
+        /// audit DB. Surfaced verbatim so the operator can pick the
+        /// right remediation (rename the app DB OR set
+        /// `CRUD_LOG_URL` / `[database].crud_log_url` to a different value).
+        application_url: String,
+    },
+}
+
+impl std::fmt::Display for AuditUrlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AuditUrlError::Unresolvable { application_url } => write!(
+                f,
+                "cannot resolve audit DB URL: set {AUDIT_URL_ENV_VAR}, set \
+                 [database].crud_log_url, or ensure \
+                 Djogi.toml::database.url has a path component to splice (got `{application_url}`)"
+            ),
+            AuditUrlError::SelfAudit { application_url } => write!(
+                f,
+                "audit URL derivation produced the same URL as the app DB (`{application_url}`). \
+                 The audit DB must be a separate database — set {AUDIT_URL_ENV_VAR} \
+                 or [database].crud_log_url explicitly, or rename the app DB so its path does not end in \
+                 `/{AUDIT_DB_DERIVED_NAME}`."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AuditUrlError {}
+
+/// Resolve the audit DB URL the runner / reset orchestrator should
+/// connect to in order to write `djogi_ddl_audit` rows.
+///
+/// # Resolution priority
+///
+/// 1. **`CRUD_LOG_URL` env var** (when set and non-empty) — explicit
+///    operator override, returned verbatim.
+/// 2. **`DJOGI_CRUD_LOG_URL` env var** (when set and non-empty) —
+///    backwards-compatible spelling used by the Phase 8ε verify tests.
+/// 3. **`[database].crud_log_url`** (when non-empty) — documented
+///    three-database configuration surface.
+/// 4. **Derive `crud_log` from `database.url`** via
+///    [`super::derive_per_database_url`] — splice
+///    [`AUDIT_DB_DERIVED_NAME`] into the application URL's path
+///    component. REJECTED when the splice produces the same string as
+///    the input (i.e. `database.url` already ends in
+///    `/crud_log`); returning the same URL would silently auto-audit
+///    the app DB into itself.
+///
+/// # Errors
+///
+/// - [`AuditUrlError::Unresolvable`] when neither path resolves a
+///   usable URL.
+/// - [`AuditUrlError::SelfAudit`] when the derive path produces an
+///   unchanged URL.
+///
+/// # Why a shared helper
+///
+/// The same resolution logic is needed by `djogi verify` (read the
+/// audit DB) and `djogi db reset` (write the audit DB during replay).
+/// Hosting the helper inside `djogi::migrate::audit` keeps the
+/// resolver's behaviour single-source so the two CLI surfaces cannot
+/// drift apart on env-var name, derived-name convention, or
+/// self-audit-rejection policy. Phase 8.5 issue #118 promoted this
+/// helper here from a private copy in `djogi-cli/src/verify.rs` and
+/// connected it to the documented `crud_log_url` config key.
+pub fn resolve_audit_url(config: &DjogiConfig) -> Result<String, AuditUrlError> {
+    if let Ok(url) = std::env::var(AUDIT_URL_ENV_VAR)
+        && !url.is_empty()
+    {
+        return Ok(url);
+    }
+    if let Ok(url) = std::env::var(DJOGI_AUDIT_URL_ENV_VAR)
+        && !url.is_empty()
+    {
+        return Ok(url);
+    }
+    if let Some(url) = config.database.crud_log_url.as_deref()
+        && !url.is_empty()
+    {
+        return Ok(url.to_string());
+    }
+    let derived = super::derive_per_database_url(&config.database.url, AUDIT_DB_DERIVED_NAME)
+        .ok_or_else(|| AuditUrlError::Unresolvable {
+            application_url: config.database.url.clone(),
+        })?;
+    if derived == config.database.url {
+        return Err(AuditUrlError::SelfAudit {
+            application_url: config.database.url.clone(),
+        });
+    }
+    Ok(derived)
+}
+
+/// Build a `deadpool_postgres::Pool` against the audit DB URL.
+///
+/// Returns the raw deadpool handle so it can be plumbed directly into
+/// [`super::runner::RunnerCtx::audit_pool`] /
+/// [`super::reset::ResetRequest::audit_pool`]. Audit pools deliberately
+/// use the raw deadpool type rather than [`DjogiPool`] — see the doc
+/// comment on [`super::runner::RunnerCtx::audit_pool`] for the
+/// rationale (audit-side concerns do not need `DjogiPool`'s wider
+/// invariants such as post-connect callbacks or status reporting).
+///
+/// # Why a shared helper
+///
+/// Both the verify CLI and the `db reset` orchestrator need to
+/// construct an audit pool from a resolved URL. Hosting the helper
+/// here keeps the inner-pool extraction (which goes through
+/// [`DjogiPool`]'s `pub(crate)` field) in one place inside the djogi
+/// crate, so adopters never see the raw `inner` accessor and djogi-cli
+/// does not need a private downcast.
+pub async fn build_audit_pool(url: &str) -> Result<deadpool_postgres::Pool, DjogiError> {
+    let djogi_pool = DjogiPool::connect(url).await?;
+    // `inner` is `pub(crate)` on `DjogiPool`; this helper lives inside
+    // the djogi crate so the access is legitimate. The raw deadpool
+    // handle is what `RunnerCtx::audit_pool` and
+    // `ResetRequest::audit_pool` both consume; passing through
+    // `DjogiPool` first ensures the same connect path the rest of the
+    // framework uses (default `max_size`, no post-connect hook) — no
+    // bespoke audit-pool tuning lives here.
+    Ok(djogi_pool.inner)
 }
 
 #[cfg(test)]
@@ -300,5 +497,241 @@ mod tests {
             .try_get(0)
             .expect("decode signature");
         assert_eq!(sig, None);
+    }
+
+    // ── resolve_audit_url — pure unit tests, env-var coordinated ─────────
+
+    /// Build a minimal [`DjogiConfig`] for the URL-resolver tests. We
+    /// only need the database URL fields populated; the resolver never
+    /// reads any other field.
+    fn stub_config_with_url(url: &str) -> DjogiConfig {
+        DjogiConfig {
+            database: crate::config::DatabaseConfig {
+                url: url.to_string(),
+                crud_log_url: None,
+                event_log_url: None,
+                max_connections: None,
+                dev_mode: false,
+            },
+            server: crate::config::ServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            },
+            migrate: crate::config::MigrateConfig {
+                concurrent_warn_relpages: 128,
+                strict_concurrent_warnings: false,
+                pk_flip_long_tx_threshold_secs: 60,
+                pk_flip_join_table_option: 'A',
+            },
+            profile: "development".to_string(),
+            policy: crate::config::PolicyConfig::default(),
+        }
+    }
+
+    fn clear_audit_url_env_vars() {
+        // SAFETY: every resolver test holds AUDIT_URL_ENV_MUTEX before
+        // calling this helper, serialising all reads/writes of the two
+        // supported audit URL env var spellings.
+        unsafe {
+            std::env::remove_var(AUDIT_URL_ENV_VAR);
+            std::env::remove_var(DJOGI_AUDIT_URL_ENV_VAR);
+        }
+    }
+
+    #[test]
+    fn resolve_audit_url_env_var_wins() {
+        let _g = AUDIT_URL_ENV_MUTEX.lock().expect("audit url env mutex");
+        // SAFETY: `AUDIT_URL_ENV_MUTEX` serialises every test in this
+        // crate that reads or mutates the audit URL env vars, so no peer
+        // can race the env-var write or the subsequent resolver call.
+        unsafe {
+            std::env::remove_var(DJOGI_AUDIT_URL_ENV_VAR);
+            std::env::set_var(AUDIT_URL_ENV_VAR, "postgres://override/audit");
+        }
+        let cfg = stub_config_with_url("postgres://localhost/main");
+        let resolved = resolve_audit_url(&cfg);
+        clear_audit_url_env_vars();
+        assert_eq!(
+            resolved.expect("env URL").as_str(),
+            "postgres://override/audit"
+        );
+    }
+
+    #[test]
+    fn resolve_audit_url_compat_env_var_still_works() {
+        let _g = AUDIT_URL_ENV_MUTEX.lock().expect("audit url env mutex");
+        // SAFETY: see `clear_audit_url_env_vars`.
+        unsafe {
+            std::env::remove_var(AUDIT_URL_ENV_VAR);
+            std::env::set_var(DJOGI_AUDIT_URL_ENV_VAR, "postgres://compat/audit");
+        }
+        let cfg = stub_config_with_url("postgres://localhost/main");
+        let resolved = resolve_audit_url(&cfg);
+        clear_audit_url_env_vars();
+        assert_eq!(
+            resolved.expect("compat env URL").as_str(),
+            "postgres://compat/audit"
+        );
+    }
+
+    #[test]
+    fn resolve_audit_url_uses_configured_crud_log_url_before_derive() {
+        let _g = AUDIT_URL_ENV_MUTEX.lock().expect("audit url env mutex");
+        clear_audit_url_env_vars();
+        let mut cfg = stub_config_with_url("postgres://localhost/main");
+        cfg.database.crud_log_url = Some("postgres://localhost/myapp_crud_logs".to_string());
+        let resolved = resolve_audit_url(&cfg).expect("configured crud_log_url");
+        assert_eq!(resolved, "postgres://localhost/myapp_crud_logs");
+    }
+
+    #[test]
+    fn resolve_audit_url_falls_back_to_derived() {
+        let _g = AUDIT_URL_ENV_MUTEX.lock().expect("audit url env mutex");
+        // The mutex serialises every concurrent env-var read or write.
+        clear_audit_url_env_vars();
+        let cfg = stub_config_with_url("postgres://localhost/main");
+        let url = resolve_audit_url(&cfg).expect("derived audit URL");
+        // `derive_per_database_url` swaps the path component; the
+        // canonical form is owned by that helper, so we just assert
+        // the path now ends in `/crud_log` and the authority is
+        // preserved.
+        assert!(
+            url.ends_with("/crud_log"),
+            "expected derived URL to end in /crud_log, got `{url}`"
+        );
+        assert!(
+            url.contains("localhost"),
+            "expected derived URL to preserve authority, got `{url}`"
+        );
+    }
+
+    #[test]
+    fn resolve_audit_url_empty_env_var_falls_back() {
+        let _g = AUDIT_URL_ENV_MUTEX.lock().expect("audit url env mutex");
+        // An explicitly empty env var should NOT silently override —
+        // empty is treated as "unset" so the fallback fires. Mirrors
+        // the no-op signing-key sentinel rationale in
+        // `crate::snapshot::sign`: an empty string almost certainly
+        // means "the operator forgot to fill it in", not "use empty".
+        // SAFETY: see `resolve_audit_url_env_var_wins`.
+        unsafe {
+            std::env::remove_var(DJOGI_AUDIT_URL_ENV_VAR);
+            std::env::set_var(AUDIT_URL_ENV_VAR, "");
+        }
+        let cfg = stub_config_with_url("postgres://localhost/main");
+        let resolved = resolve_audit_url(&cfg);
+        clear_audit_url_env_vars();
+        let url = resolved.expect("derived audit URL on empty env");
+        assert!(
+            url.ends_with("/crud_log"),
+            "empty env var should fall back to derived; got `{url}`"
+        );
+    }
+
+    #[test]
+    fn resolve_audit_url_rejects_self_audit_via_derive_path() {
+        let _g = AUDIT_URL_ENV_MUTEX.lock().expect("audit url env mutex");
+        // Codex BLOCK-1 regression — when `database.url` already ends
+        // in `/crud_log`, the derived audit URL is identical to the
+        // app DB URL. Returning that silently would auto-audit the app
+        // DB into itself; the resolver MUST refuse on the derive path.
+        clear_audit_url_env_vars();
+        let cfg = stub_config_with_url("postgres://localhost/crud_log");
+        match resolve_audit_url(&cfg) {
+            Err(AuditUrlError::SelfAudit { application_url }) => {
+                assert_eq!(application_url, "postgres://localhost/crud_log");
+                let display = format!(
+                    "{}",
+                    AuditUrlError::SelfAudit {
+                        application_url: application_url.clone()
+                    }
+                );
+                assert!(
+                    display.contains("audit URL derivation produced the same URL"),
+                    "operator-actionable error message expected, got: {display}"
+                );
+                assert!(
+                    display.contains(AUDIT_URL_ENV_VAR),
+                    "error must point at the env-var override, got: {display}"
+                );
+            }
+            other => panic!("expected SelfAudit; got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_audit_url_env_var_bypasses_self_audit_guard() {
+        let _g = AUDIT_URL_ENV_MUTEX.lock().expect("audit url env mutex");
+        // An operator with intentional co-location must still be able
+        // to set `CRUD_LOG_URL` explicitly and have it returned
+        // verbatim, even when it points at the app DB. The resolver
+        // only enforces the unchanged-URL guard on the derive path.
+        // SAFETY: see `resolve_audit_url_env_var_wins`.
+        unsafe {
+            std::env::remove_var(DJOGI_AUDIT_URL_ENV_VAR);
+            std::env::set_var(AUDIT_URL_ENV_VAR, "postgres://localhost/crud_log");
+        }
+        let cfg = stub_config_with_url("postgres://localhost/crud_log");
+        let resolved = resolve_audit_url(&cfg);
+        clear_audit_url_env_vars();
+        assert_eq!(
+            resolved.expect("env URL bypasses guard").as_str(),
+            "postgres://localhost/crud_log"
+        );
+    }
+
+    #[test]
+    fn resolve_audit_url_unresolvable_when_no_path_component() {
+        let _g = AUDIT_URL_ENV_MUTEX.lock().expect("audit url env mutex");
+        clear_audit_url_env_vars();
+        let cfg = stub_config_with_url("postgres://localhost");
+        match resolve_audit_url(&cfg) {
+            Err(AuditUrlError::Unresolvable { application_url }) => {
+                assert_eq!(application_url, "postgres://localhost");
+                let display = format!(
+                    "{}",
+                    AuditUrlError::Unresolvable {
+                        application_url: application_url.clone()
+                    }
+                );
+                assert!(
+                    display.contains("cannot resolve audit DB URL"),
+                    "operator-actionable error message expected, got: {display}"
+                );
+                assert!(
+                    display.contains(AUDIT_URL_ENV_VAR),
+                    "error must point at the env-var override, got: {display}"
+                );
+            }
+            other => panic!("expected Unresolvable; got {other:?}"),
+        }
+    }
+
+    // ── build_audit_pool — failure-path coverage (success path is
+    // exercised by integration tests that have a real DB available) ───────
+
+    #[tokio::test]
+    async fn build_audit_pool_malformed_url_surfaces_error() {
+        // Pool construction is lazy on connectivity (the deadpool
+        // builder only validates URL syntax + builds the config; no
+        // socket is opened until the first checkout). To exercise the
+        // synchronous failure path we feed a URL the underlying
+        // tokio_postgres `Config` parser rejects outright. The helper
+        // must surface a typed `DjogiError` rather than panicking or
+        // returning an `Ok(pool)` whose first use would be confusing.
+        //
+        // The runtime-failure path (URL parses, connection refused at
+        // first checkout) is covered end-to-end by
+        // `apply_plan_audit_failure_does_not_roll_back_app_db` —
+        // that path holds the audit-side best-effort contract: the
+        // runner logs + skips, the app-side DDL stays committed.
+        let res = build_audit_pool("not a postgres url").await;
+        match res {
+            Err(_) => {} // any DjogiError variant is acceptable here
+            Ok(_) => panic!(
+                "expected build_audit_pool to fail against a malformed URL — \
+                 build() validates the tokio_postgres Config synchronously"
+            ),
+        }
     }
 }

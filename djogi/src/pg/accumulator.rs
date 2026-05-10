@@ -42,6 +42,17 @@
 use postgres_types::ToSql;
 use std::fmt::Write;
 
+/// Panic message used for every internal `u32` arithmetic overflow inside
+/// [`SqlAccumulator`]. Reaching it means the framework attempted to allocate
+/// more than `u32::MAX` positional bind slots — far past the parameter ceiling
+/// of any real query — or parsed an inner placeholder larger than `u32::MAX`,
+/// or computed a renumbered placeholder past the same ceiling. All of these
+/// are framework-internal invariant breaks rather than user input errors:
+/// adopters never construct `SqlAccumulator` directly and only typed binds
+/// flow through it. Sharing one message keeps the diagnostic uniform across
+/// every overflow site.
+const ACCUMULATOR_OVERFLOW_MSG: &str = "djogi accumulator exceeded u32::MAX bind positions -- this is a framework-internal invariant break";
+
 /// A positional-parameter SQL accumulator for Postgres.
 ///
 /// Collects raw SQL fragments (keywords, identifiers) and typed bind values
@@ -90,6 +101,13 @@ impl SqlAccumulator {
 
     /// Push one typed bind value. Appends `$<next_param>` to the SQL string,
     /// stores the value in the bind vector, and increments the parameter counter.
+    ///
+    /// # Panics
+    ///
+    /// Panics with [`ACCUMULATOR_OVERFLOW_MSG`] if `next_param` would exceed
+    /// `u32::MAX`. Reaching this state requires more than four billion bind
+    /// slots in a single accumulator — far past any realistic Postgres query —
+    /// and indicates a framework-internal invariant break.
     pub fn push_bind<T>(&mut self, v: T)
     where
         T: ToSql + Sync + Send + 'static,
@@ -99,7 +117,10 @@ impl SqlAccumulator {
         // `write!` into `String` cannot fail, so the result is discarded.
         let _ = write!(self.sql, "${}", self.next_param);
         self.binds.push(Box::new(v));
-        self.next_param += 1;
+        self.next_param = self
+            .next_param
+            .checked_add(1)
+            .expect(ACCUMULATOR_OVERFLOW_MSG);
     }
 
     /// Push a list of bind values separated by commas, for `IN (...)` / `NOT IN (...)` lists.
@@ -172,6 +193,19 @@ impl SqlAccumulator {
     /// outside that role does not occur in any current emitter; if a future
     /// emitter introduces literal `$` text it must use `push_bind` (no
     /// scenario for a literal `$` in trusted SQL today).
+    ///
+    /// # Panics
+    ///
+    /// Panics with [`ACCUMULATOR_OVERFLOW_MSG`] if any of the following
+    /// `u32` overflows occurs (every case is a framework-internal invariant
+    /// break):
+    ///
+    /// - parsing an inner placeholder digit run yields a value greater than
+    ///   `u32::MAX` (e.g. `$9999999999`);
+    /// - a renumbered placeholder `n + offset` exceeds `u32::MAX`;
+    /// - the post-splice `next_param` increment by `other_binds.len()`
+    ///   exceeds `u32::MAX` (this also catches the case where `other_binds.len()`
+    ///   itself does not fit in `u32`).
     pub fn extend_with(&mut self, other: SqlAccumulator) {
         let SqlAccumulator {
             sql: other_sql,
@@ -190,7 +224,11 @@ impl SqlAccumulator {
             // qualify-lowering cases the offset is small (offset < 1000) so
             // growth is at most 3 bytes per placeholder; the looser reserve
             // is the cost of an honest upper bound.
-            self.sql.reserve(other_sql.len() + 9 * other_binds.len());
+            let reserve_extra = 9_usize
+                .checked_mul(other_binds.len())
+                .and_then(|extra| other_sql.len().checked_add(extra))
+                .expect(ACCUMULATOR_OVERFLOW_MSG);
+            self.sql.reserve(reserve_extra);
 
             // Slice-based flush: walk byte indices, and whenever a
             // `$<digits>` run starts, push the contiguous run BEFORE it as
@@ -208,10 +246,22 @@ impl SqlAccumulator {
                     let mut j = i + 1;
                     let mut n: u32 = 0;
                     while j < bytes.len() && bytes[j].is_ascii_digit() {
-                        n = n * 10 + (bytes[j] - b'0') as u32;
+                        let digit = u32::from(bytes[j] - b'0');
+                        // Checked arithmetic guards against an inner placeholder
+                        // whose digit run would parse to a value past u32::MAX
+                        // (e.g. `$9999999999`). Non-negotiable framework
+                        // invariant — see ACCUMULATOR_OVERFLOW_MSG.
+                        n = n
+                            .checked_mul(10)
+                            .and_then(|n10| n10.checked_add(digit))
+                            .expect(ACCUMULATOR_OVERFLOW_MSG);
                         j += 1;
                     }
-                    let _ = write!(self.sql, "${}", n + offset);
+                    // Renumbered placeholder must also stay within u32 — the
+                    // outer query's positional space is the same `u32`-bounded
+                    // namespace as the inner accumulator.
+                    let renumbered = n.checked_add(offset).expect(ACCUMULATOR_OVERFLOW_MSG);
+                    let _ = write!(self.sql, "${}", renumbered);
                     i = j;
                     start = j;
                 } else {
@@ -222,7 +272,15 @@ impl SqlAccumulator {
                 self.sql.push_str(&other_sql[start..]);
             }
         }
-        self.next_param += other_binds.len() as u32;
+        // `other_binds.len()` is `usize`; on 64-bit hosts that exceeds `u32`,
+        // so an unchecked `as u32` would silently truncate. `try_from` makes
+        // truncation an explicit panic site, and `checked_add` then guards
+        // the post-splice counter increment itself.
+        let other_count = u32::try_from(other_binds.len()).expect(ACCUMULATOR_OVERFLOW_MSG);
+        self.next_param = self
+            .next_param
+            .checked_add(other_count)
+            .expect(ACCUMULATOR_OVERFLOW_MSG);
         self.binds.extend(other_binds);
     }
 
@@ -485,5 +543,86 @@ mod tests {
             binds.is_empty(),
             "no bind values expected after push_null_literal"
         );
+    }
+
+    // ── Bind-position overflow tests (issue #76) ──────────────────────────────
+    //
+    // These four tests pin the framework-internal invariant that every `u32`
+    // arithmetic site inside `SqlAccumulator` panics on overflow rather than
+    // wrapping silently. The tests reach into the private `next_param` field
+    // because the parent module grants child modules access to private items
+    // — synthesising a multi-billion-bind accumulator through the public API
+    // would be impractical and is not what's under test here.
+
+    /// Pushing a bind when `next_param == u32::MAX` must panic instead of
+    /// wrapping the counter. The placeholder text and bind value are still
+    /// committed before the panic — this test verifies only that the panic
+    /// occurs at the increment site.
+    #[test]
+    #[should_panic(expected = "djogi accumulator exceeded u32::MAX bind positions")]
+    fn push_bind_panics_on_counter_overflow_at_u32_max() {
+        let mut acc = SqlAccumulator::new("");
+        acc.next_param = u32::MAX;
+        acc.push_bind(1_i64);
+    }
+
+    /// `extend_with` parses each inner `$N` digit run as a `u32`. A run whose
+    /// value would exceed `u32::MAX` (here, ten consecutive `9`s) must panic
+    /// during the `n * 10 + digit` computation rather than wrap.
+    ///
+    /// The outer accumulator's `next_param` is set to `2` so `offset == 1`,
+    /// forcing the renumbering path (the `offset == 0` fast path skips
+    /// digit parsing entirely).
+    #[test]
+    #[should_panic(expected = "djogi accumulator exceeded u32::MAX bind positions")]
+    fn extend_with_panics_on_placeholder_digit_parse_overflow() {
+        // Inner SQL is constructed via `push_sql` (bypassing `push_bind` so the
+        // bind list stays empty and the post-splice increment cannot panic
+        // before the digit-parse site does). 10 nines = 9_999_999_999, which
+        // overflows the `n * 10` step at the final digit.
+        let mut inner = SqlAccumulator::new("");
+        inner.push_sql("$9999999999");
+
+        let mut outer = SqlAccumulator::new("");
+        outer.next_param = 2; // offset = 1, triggers renumbering path
+        outer.extend_with(inner);
+    }
+
+    /// Once a placeholder digit run parses cleanly, `extend_with` adds
+    /// `offset` to it to produce the renumbered placeholder. That addition
+    /// is also bounded by `u32::MAX`. Setting `outer.next_param == u32::MAX`
+    /// makes `offset == u32::MAX - 1`; an inner placeholder of `$2` then
+    /// requires `2 + (u32::MAX - 1) = u32::MAX + 1`, which must panic.
+    ///
+    /// Inner SQL is again pushed via `push_sql` so the bind list is empty —
+    /// keeping the post-splice increment site out of the test path.
+    #[test]
+    #[should_panic(expected = "djogi accumulator exceeded u32::MAX bind positions")]
+    fn extend_with_panics_on_renumber_offset_overflow() {
+        let mut inner = SqlAccumulator::new("");
+        inner.push_sql("$2");
+
+        let mut outer = SqlAccumulator::new("");
+        outer.next_param = u32::MAX;
+        outer.extend_with(inner);
+    }
+
+    /// After splicing inner SQL, `extend_with` must extend `next_param` by
+    /// the inner bind count. With `outer.next_param == u32::MAX` and an inner
+    /// accumulator carrying one bind, the post-splice increment to
+    /// `u32::MAX + 1` must panic.
+    ///
+    /// The renumbering path is exercised but cannot panic first: with
+    /// `offset == u32::MAX - 1` and inner placeholder `$1`, the renumbered
+    /// value is exactly `u32::MAX` — the boundary case that *just* fits.
+    #[test]
+    #[should_panic(expected = "djogi accumulator exceeded u32::MAX bind positions")]
+    fn extend_with_panics_on_post_splice_bind_count_overflow() {
+        let mut inner = SqlAccumulator::new("");
+        inner.push_bind(1_i64); // inner.sql == "$1", inner.binds.len() == 1
+
+        let mut outer = SqlAccumulator::new("");
+        outer.next_param = u32::MAX;
+        outer.extend_with(inner);
     }
 }

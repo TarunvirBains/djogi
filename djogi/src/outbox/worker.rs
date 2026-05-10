@@ -90,11 +90,13 @@ pub struct OutboxRow {
 /// Validate that `name` is safe to embed as an unquoted SQL identifier.
 ///
 /// Validates the Postgres unquoted-identifier contract for the outbox
-/// table name. Routes through [`crate::ident::check_plain_ident`] so the
-/// rules stay in lock-step with every other runtime ident check.
+/// table name. Routes through [`crate::ident::check_user_supplied_ident`]
+/// so the rules stay in lock-step with every other runtime ident check
+/// AND so a caller cannot smuggle a `__djogi_*` framework-reserved
+/// table name through the worker SQL embedding.
 fn validate_table_ident(name: &str) -> Result<(), DjogiError> {
     use crate::ident::IdentError;
-    crate::ident::check_plain_ident(name, false).map_err(|e| {
+    crate::ident::check_user_supplied_ident(name, false).map_err(|e| {
         let msg = match e {
             IdentError::Empty | IdentError::TooLong { .. } => {
                 format!("invalid outbox table name {name:?}: must be 1–63 bytes")
@@ -106,7 +108,11 @@ fn validate_table_ident(name: &str) -> Result<(), DjogiError> {
                 "invalid outbox table name {name:?}: contains disallowed character '{}'",
                 byte as char
             ),
-            IdentError::Reserved => unreachable!("check_plain_ident(reserved=false) cannot return Reserved"),
+            IdentError::Reserved => unreachable!("check_user_supplied_ident(reserved=false) cannot return Reserved"),
+            IdentError::ReservedDjogiPrefix => format!(
+                "invalid outbox table name {name:?}: starts with the framework-reserved \
+                 `__djogi_` prefix; choose a different name"
+            ),
         };
         DjogiError::Db(DbError::other(msg))
     })
@@ -414,5 +420,25 @@ mod tests {
     #[test]
     fn space_rejected() {
         assert!(validate_table_ident("worker outbox").is_err());
+    }
+
+    #[test]
+    fn djogi_reserved_prefix_rejected() {
+        // Issue #82 — uniform reservation rule. The outbox worker is
+        // an adopter-facing surface (the table name is computed from
+        // a user model name in `outbox/mod.rs::emit_event` and could
+        // be passed directly here in test fixtures). User-supplied SQL
+        // identifier surfaces must not enter the framework-reserved
+        // namespace; reject before SQL is composed.
+        let err = validate_table_ident("__djogi_outbox").expect_err("must reject reserved prefix");
+        let msg = err.to_string();
+        assert!(msg.contains("`__djogi_` prefix"), "got: {msg}");
+        // Bare prefix is also rejected (no suffix needed).
+        assert!(validate_table_ident("__djogi_").is_err());
+        // Adopter-derivative reservations stay legal.
+        assert!(validate_table_ident("__myadopter_outbox").is_ok());
+        // Single-underscore variants stay legal — the rule is the
+        // exact double-underscore prefix.
+        assert!(validate_table_ident("_djogi_outbox").is_ok());
     }
 }

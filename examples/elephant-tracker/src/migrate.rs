@@ -18,16 +18,21 @@
 //! The function is idempotent — running `migrate` twice is safe and
 //! leaves the database in the same state.
 //!
-//! # Why `pool.with_client` is the bridge
+//! # Why `pool.raw_with_client` is the bridge
 //!
 //! `bootstrap::run_phase_zero` takes a `&tokio_postgres::GenericClient`
-//! and runs the install batch in one round-trip. `DjogiPool::with_client`
-//! is the documented escape hatch for raw-driver operations — it
-//! borrows a `&mut tokio_postgres::Client` for the closure's duration
-//! and returns the connection to the pool on `Ok` (or detaches on
-//! `Err`/panic to prevent session-state leakage). The migrate path
-//! uses the same pool the rest of the example uses — no one-shot
-//! connections, no manual driver-task spawn.
+//! and runs the install batch in one round-trip.
+//! [`djogi::__bypass::RawPoolAccessExt::raw_with_client`] is the
+//! documented escape hatch for raw-driver operations — it borrows a
+//! `&mut tokio_postgres::Client` for the closure's duration and
+//! returns the connection to the pool on `Ok` (or detaches on
+//! `Err`/panic to prevent session-state leakage). The inherent
+//! `DjogiPool::with_client` method is `pub(crate)`; example/adopter
+//! code reaches the same behaviour through the sealed
+//! `RawPoolAccessExt` bypass trait, which we bring into scope at the
+//! top of this module. The migrate path uses the same pool the rest
+//! of the example uses — no one-shot connections, no manual
+//! driver-task spawn.
 
 use anyhow::{Context, Result};
 use djogi::__bypass::{RawAccessExt as _, RawPoolAccessExt as _};
@@ -80,10 +85,11 @@ pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
 /// against the SAME bootstrap surface the test harness +
 /// `migrations compose` auto-emit + `db reset` replay all use.
 ///
-/// `DjogiPool::with_client` is the bridge: `bootstrap::run_phase_zero`
-/// takes a bare `&tokio_postgres::GenericClient` (since it predates
-/// any pool concept and operates outside `DjogiContext`'s ergonomics);
-/// `with_client` borrows the pool's connection and hands it to the
+/// `RawPoolAccessExt::raw_with_client` is the bridge:
+/// `bootstrap::run_phase_zero` takes a bare
+/// `&tokio_postgres::GenericClient` (since it predates any pool
+/// concept and operates outside `DjogiContext`'s ergonomics); the
+/// raw bypass borrows the pool's connection and hands it to the
 /// closure for the bootstrap's duration. The pool's `post_connect`
 /// hook (set in `main.rs`) handles the session-level `SET
 /// heer.node_id` for every connection going forward; `bootstrap`
@@ -117,7 +123,7 @@ async fn install_phase_zero(ctx: &mut DjogiContext) -> Result<()> {
         })
     })
     .await
-    .context("phase 0 bootstrap via pool.with_client")?;
+    .context("phase 0 bootstrap via pool.raw_with_client")?;
     Ok(())
 }
 

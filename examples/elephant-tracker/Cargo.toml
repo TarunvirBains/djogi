@@ -24,8 +24,10 @@ description = "Runnable Djogi example: tracking African elephant herds across bo
 djogi = { path = "../../djogi", features = ["spatial", "outbox"] }
 heeranjid = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-# `migrate.rs` reaches the underlying client through `DjogiPool::with_client`,
-# the framework's escape hatch for raw-driver operations. The
+# `migrate.rs` reaches the underlying client through the
+# `RawPoolAccessExt::raw_with_client` raw-driver bypass on
+# `DjogiPool` — the framework's escape hatch for COPY, cold-start
+# DDL, and third-party `&tokio_postgres::Client` bridges. The
 # `&mut tokio_postgres::Client` argument inside the closure resolves
 # transitively through Djogi's re-export — no direct tokio-postgres dep
 # needed.
