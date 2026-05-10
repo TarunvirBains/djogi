@@ -224,7 +224,11 @@ impl SqlAccumulator {
             // qualify-lowering cases the offset is small (offset < 1000) so
             // growth is at most 3 bytes per placeholder; the looser reserve
             // is the cost of an honest upper bound.
-            self.sql.reserve(other_sql.len() + 9 * other_binds.len());
+            let reserve_extra = 9_usize
+                .checked_mul(other_binds.len())
+                .and_then(|extra| other_sql.len().checked_add(extra))
+                .expect(ACCUMULATOR_OVERFLOW_MSG);
+            self.sql.reserve(reserve_extra);
 
             // Slice-based flush: walk byte indices, and whenever a
             // `$<digits>` run starts, push the contiguous run BEFORE it as

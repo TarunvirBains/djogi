@@ -8,6 +8,9 @@ tests under `tests/internal/`, and SQL seed scripts under `seeds/`.
 
 For the raw SQL bypass harness (when and how `raw_*` APIs are
 permitted), see [Raw SQL Escape Hatches](./raw-sql-escape-hatches.md).
+Internal framework-boundary tests may use raw SQL only through that
+harness and with a local justification; ordinary integration tests must
+prefer the typed surface described below.
 
 ## 1. Typed surface first
 

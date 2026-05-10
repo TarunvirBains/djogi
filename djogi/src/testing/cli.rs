@@ -44,17 +44,17 @@ use crate::DjogiContext;
 ///
 /// # Why the `option_env!` branch is structurally retained
 ///
-/// Cargo only sets `CARGO_BIN_EXE_<name>` when compiling integration
-/// tests in the same package as the matching `[[bin]]`. Because this
-/// helper is compiled in the `djogi` crate (not `djogi-cli`), the
-/// `option_env!("CARGO_BIN_EXE_djogi")` lookup is statically `None` and
-/// the walk fallback always runs. The branch is preserved verbatim so
-/// the helper's surface stays identical to the per-file copies it
-/// replaces, and so a future relocation or macro-wrap that re-evaluates
-/// the env var in a caller's context can re-activate the optimisation
-/// without touching call sites. The walk reliably finds the binary
-/// because Cargo always builds the package's `[[bin]]` targets before
-/// its `[[test]]` targets when running `cargo test -p djogi-cli`.
+/// Cargo only sets `CARGO_BIN_EXE_<name>` for integration tests in the
+/// same package as the matching `[[bin]]`. In today's `djogi-cli`
+/// tests this helper is compiled by the `djogi` crate, so the env-var
+/// branch is expected to be inactive and the walk fallback is
+/// load-bearing. The branch is preserved verbatim so the helper's
+/// surface stays identical to the per-file copies it replaces, and so
+/// a future relocation that compiles this code in the binary package
+/// can use Cargo's direct path without touching call sites. The walk
+/// reliably finds the binary because Cargo builds the package's
+/// `[[bin]]` targets before its `[[test]]` targets when running
+/// `cargo test -p djogi-cli`.
 pub fn djogi_binary_path() -> PathBuf {
     if let Some(path) = option_env!("CARGO_BIN_EXE_djogi") {
         return PathBuf::from(path);
