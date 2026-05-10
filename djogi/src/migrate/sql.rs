@@ -1952,7 +1952,8 @@ mod tests {
             )),
         );
         assert!(
-            sql.up.contains("ADD CONSTRAINT \"widgets_medium_count_check\""),
+            sql.up
+                .contains("ADD CONSTRAINT \"widgets_medium_count_check\""),
             "u32 CHECK uses table+column constraint name: {}",
             sql.up
         );
@@ -1985,14 +1986,14 @@ mod tests {
             )),
         );
         assert!(
-            sql.up.contains("ADD CONSTRAINT \"widgets_huge_count_check\""),
+            sql.up
+                .contains("ADD CONSTRAINT \"widgets_huge_count_check\""),
             "u64 CHECK uses table+column constraint name: {}",
             sql.up
         );
         assert!(
-            sql.up.contains(
-                "CHECK (\"huge_count\" >= 0 AND \"huge_count\" <= 18446744073709551615)"
-            ),
+            sql.up
+                .contains("CHECK (\"huge_count\" >= 0 AND \"huge_count\" <= 18446744073709551615)"),
             "u64 CHECK expression wraps the projected bound: {}",
             sql.up
         );

@@ -1114,9 +1114,7 @@ fn field_type_check(
         FieldSqlType::NumericPrecision {
             precision: 20,
             scale: 0,
-        } => Some(format!(
-            "{qcol} >= 0 AND {qcol} <= 18446744073709551615"
-        )),
+        } => Some(format!("{qcol} >= 0 AND {qcol} <= 18446744073709551615")),
         // All other `FieldSqlType` variants (`Text`, `Real`,
         // `DoublePrecision`, `Boolean`, `Timestamptz`, `Date`,
         // `Numeric`, `Uuid`, `Jsonb`, arrays, `Citext`, `Geography`,

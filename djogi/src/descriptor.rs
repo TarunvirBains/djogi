@@ -95,10 +95,13 @@ pub enum FieldSqlType {
     /// `NUMERIC(precision, scale)` — bounded numeric. Used by the integer
     /// widening projection (`djogi#186`) for `u64 → NUMERIC(20, 0)` and
     /// reserved for the upcoming `Decimal → NUMERIC(28, 28)` migration
-    /// (`djogi#188`). The differ compares variants structurally (`precision`
-    /// + `scale` are part of `PartialEq`), so a precision change emits a
+    /// (`djogi#188`). The differ compares variants structurally (precision
+    /// and scale are part of `PartialEq`), so a precision change emits a
     /// `ColumnChange::ChangeType` like any other type evolution.
-    NumericPrecision { precision: u8, scale: u8 },
+    NumericPrecision {
+        precision: u8,
+        scale: u8,
+    },
     Uuid,
     Jsonb,
     TextArray,

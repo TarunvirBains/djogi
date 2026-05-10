@@ -2151,7 +2151,7 @@ fn emit_alter_column(
         // re-issued `ADD CONSTRAINT <name>` lands in the open
         // constraint-name slot. `Vec` push order preserves this.
         match (&before.check, &after.check) {
-            (None, None) => {} // unchanged
+            (None, None) => {}                 // unchanged
             (Some(b), Some(a)) if b == a => {} // unchanged
             (Some(_), Some(_)) => {
                 // AMEND — drop the old constraint, then add the new.
