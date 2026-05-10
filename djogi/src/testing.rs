@@ -301,6 +301,358 @@ pub async fn teardown_test_db(cleanup: TestDbCleanup) {
     }
 }
 
+/// Cluster-wide non-superuser role used by RLS-backed integration tests.
+///
+/// Postgres roles are cluster-scoped (not per-database); the same role is
+/// reused across every per-test database. The idempotent CREATE/ALTER
+/// pattern in [`connect_test_db_as_non_superuser`] keeps the role's
+/// attribute shape consistent across runs.
+///
+/// The literal name is shaped like a Postgres unquoted identifier so the
+/// SQL emitter can rely on the standard double-quoting path
+/// ([`quoted`]) without special-casing it.
+pub const TEST_NON_SUPERUSER_ROLE: &str = "djogi_test_user";
+
+/// Password literal for [`TEST_NON_SUPERUSER_ROLE`].
+///
+/// Bound at compile time and only ever used inside the local test cluster
+/// — the URL emitted by `connect_test_db_as_non_superuser` is a
+/// `postgres://djogi_test_user:djogi_test_user@…/<per-test-db>` shape that
+/// `pg_hba.conf` for development clusters typically accepts via `trust`
+/// or `md5`. The shared helpers (`quoted`, `sql_string_literal`) handle
+/// the SQL identifier / literal escaping so the constant body itself
+/// never needs to be sanitised at the call site.
+pub const TEST_NON_SUPERUSER_PASSWORD: &str = "djogi_test_user";
+
+/// Open a [`DjogiContext`] backed by a pool that authenticates as a
+/// non-superuser cluster role on the per-test database carried by
+/// `cleanup`.
+///
+/// This is the integration-test escape hatch for RLS-backed coverage:
+/// the default `djogi_test` harness opens its pool as the connecting
+/// role from `DATABASE_URL`, which in local and CI clusters is
+/// usually a Postgres superuser. Superusers unconditionally bypass
+/// row security regardless of `FORCE ROW LEVEL SECURITY`, so RLS
+/// policies can pass for the wrong reason (every row visible looks
+/// like every row hidden when zero rows match the policy). This
+/// helper returns a fresh [`DjogiContext`] backed by a pool whose
+/// physical connections authenticate as
+/// [`TEST_NON_SUPERUSER_ROLE`] — a `LOGIN NOSUPERUSER NOCREATEDB
+/// NOCREATEROLE NOREPLICATION NOBYPASSRLS` role — so RLS is
+/// observable end-to-end through the typed surface.
+///
+/// # Lifecycle
+///
+/// 1. Connect to the admin database via `cleanup`'s admin URL.
+/// 2. Idempotently `CREATE ROLE …` (or `ALTER ROLE …` if it pre-exists)
+///    so attributes always match the intended shape, even if a previous
+///    process drifted them.
+/// 3. Reconnect to the per-test database (same admin URL with the path
+///    component swapped to `cleanup.db_name()`) and grant the role
+///    access to every existing object in `public`:
+///    - `GRANT CONNECT ON DATABASE …`
+///    - `GRANT USAGE ON SCHEMA public`
+///    - `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public`
+///    - `GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public`
+///    - `GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public`
+/// 4. Build a non-superuser URL pointing at the same per-test database
+///    and open a fresh [`DjogiPool`].
+/// 5. Wrap the pool in a new [`DjogiContext::from_pool`] and return it.
+///
+/// # Ordering requirement
+///
+/// The grants in step 3 only cover objects that already exist when they
+/// run. Callers MUST invoke this helper **after** schema and seed setup
+/// has finished on the admin context — typically after
+/// `djogi::testing::sync_models(...)`, the test's RLS DDL bootstrap, and
+/// any rows the admin connection seeds before RLS becomes observable.
+/// Adding new tables / sequences / functions to `public` after this
+/// helper returns leaves the non-superuser without privilege on those
+/// objects (a regression test framework can add them, but the new
+/// objects need their own GRANT round).
+///
+/// # Returned context
+///
+/// The returned [`DjogiContext`] has its **own** `Arc<sassi::Sassi>`
+/// registry (built from the global `inventory` walk in
+/// [`DjogiContext::from_pool`]). Cache and refresh tests should use
+/// `non_super_ctx.punnu::<T>()` and `non_super_ctx.share_pool()` so the
+/// cache target and the fetcher pool share a consistent ancestry —
+/// crossing punnus between the admin and non-superuser contexts is
+/// allowed at the type level but loses the lifecycle invariants the
+/// per-context cluster guard pins.
+///
+/// # Errors
+///
+/// Returns [`DjogiError::Db`] when the admin connection fails, when
+/// any of the role-management or grant statements fail, or when the
+/// derived non-superuser URL cannot be parsed back into a pool.
+pub async fn connect_test_db_as_non_superuser(
+    cleanup: &TestDbCleanup,
+) -> Result<DjogiContext, DjogiError> {
+    // ── Step 1 — open the admin connection for cluster-level role work ─────
+    let (admin_client, admin_conn) = tokio_postgres::connect(&cleanup.admin_url, NoTls)
+        .await
+        .map_err(|e| {
+            DjogiError::Db(DbError::other(format!(
+                "non-superuser admin connect failed: {e}"
+            )))
+        })?;
+    tokio::spawn(async move {
+        if let Err(e) = admin_conn.await {
+            eprintln!("[djogi_test] non-superuser admin connection error: {e}");
+        }
+    });
+
+    // ── Step 2 — idempotent role bootstrap ──────────────────────────────────
+    // The `pg_roles` lookup uses parameter binding (no SQL composition with
+    // user-controlled data). The role / password constants are compile-time
+    // ASCII identifiers, but we still route them through the dedicated
+    // identifier and string-literal escapers (`quoted` /
+    // `sql_string_literal`) so the SQL composition stays robust if anyone
+    // later widens the constants.
+    let role_exists: bool = admin_client
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)",
+            &[&TEST_NON_SUPERUSER_ROLE],
+        )
+        .await
+        .map_err(|e| {
+            DjogiError::Db(DbError::other(format!(
+                "non-superuser role lookup failed: {e}"
+            )))
+        })?
+        .get(0);
+
+    let role_quoted = quoted(TEST_NON_SUPERUSER_ROLE);
+    let password_literal = sql_string_literal(TEST_NON_SUPERUSER_PASSWORD);
+    let role_sql = if role_exists {
+        // Re-assert attributes + password: a prior test process may have
+        // ALTERed the role into a different shape. Setting NOSUPERUSER
+        // NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION explicitly
+        // closes the bypass surface even if some external tooling tried to
+        // promote the role.
+        format!(
+            "ALTER ROLE {role_quoted} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE \
+             NOREPLICATION NOBYPASSRLS PASSWORD {password_literal}"
+        )
+    } else {
+        format!(
+            "CREATE ROLE {role_quoted} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE \
+             NOREPLICATION NOBYPASSRLS PASSWORD {password_literal}"
+        )
+    };
+    admin_client.batch_execute(&role_sql).await.map_err(|e| {
+        DjogiError::Db(DbError::other(format!(
+            "non-superuser role provisioning failed: {e}"
+        )))
+    })?;
+    drop(admin_client);
+
+    // ── Step 3 — connect to the per-test DB and grant access ────────────────
+    let test_admin_url = replace_db_in_url(&cleanup.admin_url, &cleanup.db_name)?;
+    let (test_admin_client, test_admin_conn) = tokio_postgres::connect(&test_admin_url, NoTls)
+        .await
+        .map_err(|e| {
+            DjogiError::Db(DbError::other(format!(
+                "non-superuser test-db admin connect failed: {e}"
+            )))
+        })?;
+    tokio::spawn(async move {
+        if let Err(e) = test_admin_conn.await {
+            eprintln!("[djogi_test] non-superuser test-db admin connection error: {e}");
+        }
+    });
+
+    let db_quoted = quoted(&cleanup.db_name);
+    let grants_sql = format!(
+        "GRANT CONNECT ON DATABASE {db_quoted} TO {role_quoted};\n\
+         GRANT USAGE ON SCHEMA public TO {role_quoted};\n\
+         GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {role_quoted};\n\
+         GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO {role_quoted};\n\
+         GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO {role_quoted};"
+    );
+    test_admin_client
+        .batch_execute(&grants_sql)
+        .await
+        .map_err(|e| DjogiError::Db(DbError::other(format!("non-superuser grants failed: {e}"))))?;
+    drop(test_admin_client);
+
+    // ── Step 4 — open a non-superuser pool against the per-test database ────
+    let non_super_url = build_non_superuser_url(&cleanup.admin_url, &cleanup.db_name)?;
+    let pool = DjogiPool::connect(&non_super_url).await?;
+    Ok(DjogiContext::from_pool(pool))
+}
+
+/// Build a Postgres connection URL whose userinfo and database components
+/// are swapped for the non-superuser test role + the per-test database
+/// name, while preserving the original URL's host, port, and non-identity
+/// query parameters.
+///
+/// The `admin_url` is parsed via the same byte-level scheme the rest of
+/// the testing substrate uses (`postgres://` or `postgresql://`,
+/// optional `user[:pass]@` userinfo, host[:port], `/database`, optional
+/// `?query`). The userinfo is stripped and replaced with
+/// `djogi_test_user:djogi_test_user`; the path component is replaced with
+/// `db_name`; and query parameters that would override the authenticated
+/// user, password, or database (`user`, `password`, `dbname`) are rejected.
+///
+/// # Errors
+///
+/// Returns [`DjogiError::Db`] when `admin_url` lacks the `postgres://`
+/// or `postgresql://` scheme, when it lacks a `/database` path component
+/// (the same shape `replace_db_in_url` rejects), or when its query string
+/// contains `user`, `password`, or `dbname` parameters. `tokio-postgres`
+/// applies those URL query parameters after parsing authority/path pieces,
+/// so preserving them would let a legal admin URL silently override the
+/// non-superuser role this helper is supposed to guarantee.
+fn build_non_superuser_url(admin_url: &str, db_name: &str) -> Result<String, DjogiError> {
+    let body = admin_url
+        .strip_prefix("postgres://")
+        .or_else(|| admin_url.strip_prefix("postgresql://"))
+        .ok_or_else(|| {
+            DjogiError::Db(DbError::other(
+                "DATABASE_URL must start with `postgres://` or `postgresql://` to derive \
+                 the non-superuser test URL",
+            ))
+        })?;
+    let scheme = if admin_url.starts_with("postgres://") {
+        "postgres://"
+    } else {
+        "postgresql://"
+    };
+
+    // Walk the body bytes once: authority before the first `/`, path until
+    // the first `?`, query string from `?` onward.
+    let body_bytes = body.as_bytes();
+    let mut idx = 0usize;
+    while idx < body_bytes.len() && body_bytes[idx] != b'/' {
+        idx += 1;
+    }
+    if idx >= body_bytes.len() {
+        return Err(DjogiError::Db(DbError::other(
+            "DATABASE_URL does not contain a database name component; \
+             cannot derive the non-superuser test URL",
+        )));
+    }
+    let authority = &body[..idx];
+    // Strip any `user[:pass]@` prefix from the authority — the test URL
+    // always emits `<role>:<password>@host:port`. Use `rfind('@')` to
+    // tolerate '@' inside a password (rare, but matches the rest of
+    // libpq-shaped URL parsing in the codebase).
+    let host_and_port = match authority.rfind('@') {
+        Some(at) => &authority[at + 1..],
+        None => authority,
+    };
+
+    let path_start = idx + 1;
+    let mut path_end = path_start;
+    while path_end < body_bytes.len() && body_bytes[path_end] != b'?' {
+        path_end += 1;
+    }
+    let trailing = &body[path_end..]; // includes leading `?` when present.
+    reject_identity_overriding_query_params(trailing)?;
+
+    Ok(format!(
+        "{scheme}{role}:{password}@{host_and_port}/{db_name}{trailing}",
+        role = TEST_NON_SUPERUSER_ROLE,
+        password = TEST_NON_SUPERUSER_PASSWORD,
+    ))
+}
+
+fn reject_identity_overriding_query_params(query_with_marker: &str) -> Result<(), DjogiError> {
+    let Some(query) = query_with_marker.strip_prefix('?') else {
+        return Ok(());
+    };
+
+    for pair in query.split('&') {
+        let key = pair.split_once('=').map_or(pair, |(key, _)| key);
+        let key = percent_decode_query_key(key)?;
+        if matches!(key.as_str(), "user" | "password" | "dbname") {
+            return Err(DjogiError::Db(DbError::other(format!(
+                "DATABASE_URL query parameter `{key}` would override the non-superuser \
+                 test role or per-test database; remove it before calling \
+                 connect_test_db_as_non_superuser",
+            ))));
+        }
+    }
+
+    Ok(())
+}
+
+fn percent_decode_query_key(key: &str) -> Result<String, DjogiError> {
+    let mut out = Vec::with_capacity(key.len());
+    let bytes = key.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err(DjogiError::Db(DbError::other(
+                    "DATABASE_URL query parameter contains an incomplete percent escape",
+                )));
+            }
+            let hi = hex_value(bytes[index + 1]).ok_or_else(|| {
+                DjogiError::Db(DbError::other(
+                    "DATABASE_URL query parameter contains an invalid percent escape",
+                ))
+            })?;
+            let lo = hex_value(bytes[index + 2]).ok_or_else(|| {
+                DjogiError::Db(DbError::other(
+                    "DATABASE_URL query parameter contains an invalid percent escape",
+                ))
+            })?;
+            out.push((hi << 4) | lo);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+
+    String::from_utf8(out).map_err(|e| {
+        DjogiError::Db(DbError::other(format!(
+            "DATABASE_URL query parameter key is not valid UTF-8 after percent decoding: {e}",
+        )))
+    })
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Quote a Postgres string literal for embedding in a DDL statement.
+///
+/// Postgres uses single-quoted string literals with `''` as the embedded
+/// single-quote escape. This helper mirrors [`quoted`] (which handles
+/// identifier double-quoting) for the literal side: most call sites pass
+/// controlled constants, but emitting the escape here keeps the call
+/// sites uniform and future-proof if those constants ever broaden to
+/// include `'` bytes.
+///
+/// `E'...'` is intentionally not used — backslash escapes are off by
+/// default on modern Postgres (`standard_conforming_strings = on`),
+/// so the single-quote-doubling escape is sufficient and keeps the
+/// emitted SQL portable across `standard_conforming_strings` settings.
+fn sql_string_literal(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('\'');
+    for ch in value.chars() {
+        if ch == '\'' {
+            out.push('\'');
+            out.push('\'');
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
 /// List every database whose name matches the `djogi_test_*` prefix that is
 /// still present on the cluster connected to via `admin_url`.
 ///
@@ -995,7 +1347,10 @@ async fn execute_plan(
 
 #[cfg(test)]
 mod tests {
-    use super::{replace_db_in_url, validate_extension_name};
+    use super::{
+        TEST_NON_SUPERUSER_PASSWORD, TEST_NON_SUPERUSER_ROLE, build_non_superuser_url,
+        replace_db_in_url, sql_string_literal, validate_extension_name,
+    };
 
     #[test]
     fn replace_db_preserves_host_and_port() {
@@ -1190,6 +1545,138 @@ mod tests {
                 to: "b".to_string(),
             }),
             "RenameTable",
+        );
+    }
+
+    // ── non-superuser test pool helpers ─────────────────────────────────
+
+    #[test]
+    fn sql_string_literal_wraps_in_single_quotes() {
+        assert_eq!(sql_string_literal("djogi_test_user"), "'djogi_test_user'");
+        assert_eq!(sql_string_literal(""), "''");
+    }
+
+    #[test]
+    fn sql_string_literal_doubles_embedded_single_quote() {
+        // Pre-fix would let `' OR 1=1; DROP …` through unescaped. The
+        // doubling rule keeps every embedding site safe regardless of
+        // the source of the value.
+        assert_eq!(sql_string_literal("a'b"), "'a''b'");
+        assert_eq!(sql_string_literal("'leading"), "'''leading'");
+        assert_eq!(sql_string_literal("trailing'"), "'trailing'''");
+    }
+
+    #[test]
+    fn build_non_superuser_url_swaps_userinfo_and_database() {
+        // Admin connects as `djogi:djogi` to the maintenance DB; the
+        // derived URL points at the per-test DB as the non-superuser
+        // role with its compile-time password.
+        let url = build_non_superuser_url(
+            "postgres://djogi:djogi@localhost:5432/djogi_test",
+            "djogi_test_abc123",
+        )
+        .expect("valid URL must round-trip");
+        assert_eq!(
+            url,
+            format!(
+                "postgres://{role}:{pass}@localhost:5432/djogi_test_abc123",
+                role = TEST_NON_SUPERUSER_ROLE,
+                pass = TEST_NON_SUPERUSER_PASSWORD,
+            ),
+        );
+    }
+
+    #[test]
+    fn build_non_superuser_url_preserves_query_string() {
+        let url = build_non_superuser_url(
+            "postgres://djogi:djogi@localhost:5432/djogi_test?sslmode=disable",
+            "djogi_test_xyz",
+        )
+        .expect("valid URL with query must round-trip");
+        assert!(
+            url.ends_with("/djogi_test_xyz?sslmode=disable"),
+            "query string must be preserved on splice; got: {url}",
+        );
+    }
+
+    #[test]
+    fn build_non_superuser_url_rejects_identity_override_query_params() {
+        for key in ["user", "password", "dbname"] {
+            let url = format!("postgres://localhost/djogi_test?sslmode=disable&{key}=djogi");
+            let err = build_non_superuser_url(&url, "djogi_test_xyz")
+                .expect_err("identity-overriding query params must be rejected");
+            assert!(
+                err.to_string().contains("would override"),
+                "error must explain identity override for {key}; got: {err}",
+            );
+        }
+    }
+
+    #[test]
+    fn build_non_superuser_url_rejects_percent_encoded_identity_override_keys() {
+        let err = build_non_superuser_url(
+            "postgres://localhost/djogi_test?%75ser=djogi",
+            "djogi_test_xyz",
+        )
+        .expect_err("percent-encoded `user` key must be rejected");
+        assert!(
+            err.to_string().contains("would override"),
+            "error must explain identity override; got: {err}",
+        );
+    }
+
+    #[test]
+    fn build_non_superuser_url_handles_postgresql_scheme() {
+        let url = build_non_superuser_url("postgresql://localhost/djogi_test", "djogi_test_001")
+            .expect("postgresql:// scheme accepted");
+        assert!(
+            url.starts_with("postgresql://"),
+            "scheme preserved on splice; got: {url}",
+        );
+        assert!(
+            url.ends_with("/djogi_test_001"),
+            "database swapped; got: {url}",
+        );
+    }
+
+    #[test]
+    fn build_non_superuser_url_strips_existing_userinfo() {
+        // The admin URL's user is the connecting superuser; the derived
+        // non-superuser URL must replace, not append, the userinfo.
+        let url = build_non_superuser_url(
+            "postgres://admin:secret@db.local:5432/main",
+            "djogi_test_001",
+        )
+        .expect("admin URL with userinfo accepted");
+        assert!(
+            !url.contains("admin:secret"),
+            "previous userinfo must be stripped; got: {url}",
+        );
+        assert!(
+            url.contains(&format!(
+                "{TEST_NON_SUPERUSER_ROLE}:{TEST_NON_SUPERUSER_PASSWORD}@"
+            )),
+            "non-superuser userinfo must be present; got: {url}",
+        );
+    }
+
+    #[test]
+    fn build_non_superuser_url_rejects_missing_database() {
+        let err = build_non_superuser_url("postgres://localhost", "djogi_test_001")
+            .expect_err("URL without /db component must be rejected");
+        assert!(
+            err.to_string().contains("does not contain a database name"),
+            "error must explain the missing path; got: {err}",
+        );
+    }
+
+    #[test]
+    fn build_non_superuser_url_rejects_unknown_scheme() {
+        let err = build_non_superuser_url("mysql://localhost/main", "djogi_test_001")
+            .expect_err("non-postgres schemes must be rejected");
+        assert!(
+            err.to_string().contains("postgres://"),
+            "error must mention the supported schemes; got: {err}",
         );
     }
 

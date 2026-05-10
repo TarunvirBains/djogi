@@ -507,6 +507,15 @@ name = "phase8_5_c2_123_atomic_context_sassi"
 path = "../tests/integration/phase8_5_c2_123_atomic_context_sassi.rs"
 harness = true
 
+# Phase 8.5 Cluster 2 issue #129 — non-superuser test pool for
+# RLS-backed integration tests. Internal because the fixture installs
+# RLS policy DDL through Djogi's raw SQL bypass; ordinary integration
+# tests must stay raw-free.
+[[test]]
+name = "phase8_5_c2_129_non_superuser_rls"
+path = "../tests/internal/phase8_5_c2_129_non_superuser_rls.rs"
+harness = true
+
 [[test]]
 name = "phase8_trait_impl_registry"
 path = "../tests/integration/phase8_trait_impl_registry.rs"

@@ -33,12 +33,16 @@
 //    and the `DjogiDeltaFetcher::auth: AuthContext` owned field verified in
 //    T8.3–T8.5.
 //
-//    **GH issue for full RLS test:** [GH #129] — full RLS proof via a
-//    dedicated `djogi_fetcher_test_user` non-superuser role that is
-//    explicitly switched to inside the fetcher's transaction via a new
-//    optional `with_role(role_name)` knob on `DeltaRefreshHandle` or via
-//    a test-only `DjogiPool` configured with a restricted role. Deferred to
-//    Phase 8ε / Phase 9 scope.
+//    **Companion full-RLS test:** the row-count proof under a real
+//    non-superuser pool now lives in
+//    `tests/internal/phase8_5_c2_129_non_superuser_rls.rs`
+//    (closes [GH #129]). That test reuses the Phase 8δ refresh path
+//    against a `connect_test_db_as_non_superuser`-derived pool and
+//    asserts that only the tenant-scoped rows reach the bound Punnu.
+//    The structural proof here (Option C) and the row-count proof
+//    there (Option B + non-superuser pool) are complementary: this
+//    file pins the *value-capture* invariant; #129 pins the
+//    *server-side filtering* invariant.
 //
 // 3. **`refresh_into_cancel_stops_ticks`** — `handle.cancel()` stops the
 //    periodic refresh loop. After cancel, manual `handle.update()` still
@@ -60,9 +64,14 @@
 // test user is a Postgres superuser and superusers unconditionally bypass
 // row security (`BYPASSRLS` is implied by `rolsuper = t`). `FORCE ROW LEVEL
 // SECURITY` applies the policy to the table owner when the owner is a NORMAL
-// role — it does not override the superuser bypass. A complete RLS-filtered
-// proof requires switching to a restricted role inside the fetcher's
-// transaction, which is outside T8.10 scope. See GH issue filed above.
+// role — it does not override the superuser bypass. The complete RLS-filtered
+// proof — Option B + a real non-superuser pool — now lives in
+// `tests/internal/phase8_5_c2_129_non_superuser_rls.rs`, which uses
+// `djogi::testing::connect_test_db_as_non_superuser` to open a pool whose
+// physical connections authenticate as `djogi_test_user` (NOSUPERUSER /
+// NOBYPASSRLS). Test 2 here is preserved because the *value-capture*
+// invariant on `AuthContext` is structural — it must hold regardless of
+// whether RLS is observable at SQL level.
 //
 // # Fixture strategy
 //
@@ -399,9 +408,11 @@ async fn refresh_into_auth_locked_to_subscription(mut ctx: djogi::DjogiContext) 
     // invisible to the other handle. The `'static` bound on
     // `DeltaPunnuFetcher<T>` enforces this at the type level.
     //
-    // Full RLS-backed row-count isolation proof deferred: requires non-superuser
-    // connection or `SET LOCAL ROLE` inside the fetcher transaction. Tracked at
-    // GH #129.
+    // Full RLS-backed row-count isolation proof lives in
+    // `tests/internal/phase8_5_c2_129_non_superuser_rls.rs`, which
+    // builds the fetcher pool through
+    // `djogi::testing::connect_test_db_as_non_superuser` so the SELECT
+    // observes RLS server-side. Closes GH #129.
 
     // ── Second tick on handle_a: still runs under auth_a ────────────────────
     // After handle_b has ticked, handle_a's auth snapshot is unchanged.
