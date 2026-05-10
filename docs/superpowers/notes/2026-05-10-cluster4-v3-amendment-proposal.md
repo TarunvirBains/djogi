@@ -3,6 +3,54 @@
 > Derived from `2026-05-10-cluster4-vs-postgres-coverage-xref.md`.
 > Apply via inline edits to `docs/superpowers/plans/2026-05-09-phase8-5-alpha-readiness-v3.md` after independent review.
 
+## Pre-existing GH issues confirmed in scope (re-eval `2026-05-10`)
+
+The following already-filed GH issues cover work that was in earlier
+draft amendments. They do NOT need re-filing; the audit should route
+them through Cluster 4.0:
+
+- **`djogi#150`** — `framework gap: PG18 temporal constraints
+  (WITHOUT OVERLAPS, PERIOD FK, NOT ENFORCED)`. Body explicitly covers
+  all four PG18 temporal-constraint primitives (WITHOUT OVERLAPS,
+  PERIOD FK, NOT ENFORCED, named NOT NULL) plus the design
+  coordination with #148 ("Sibling of #148 — same no-overlap
+  motivation, distinct DDL surface area"). #150 is marked "Required
+  for Phase 8.5 alpha-readiness." **Reframes the temporal-constraint
+  evaluation bullet from Amendment 2 (now removed) and the standalone
+  `NOT ENFORCED` line that was in the v2 gap table.**
+
+Other in-scope filed issues that v3 4A–4E already names by number
+(unchanged): #71, #72, #84, #85, #88, #89, #92, #94, #95, #99,
+#101–#106, #108, #147, #148.
+
+## Reviewer-driven corrections (re-eval `2026-05-10`)
+
+Following careful-coder Opus review (verdict
+`ALLOW_WITH_CORRECTIONS`), the following amendments were
+reframed or dropped:
+
+1. **Amendment 4 issue 1 (SAVEPOINT)** — was framed as "no SAVEPOINT
+   typed surface". Reviewer correctly identified that nested
+   `atomic(&mut *outer, |inner| ...)` IS the typed savepoint surface
+   (`djogi/src/transaction.rs:13-18, 207-309`). **Dropped from the
+   issues-to-file list below** because SAVEPOINT capability already
+   exists; recorded as an anchored deferral. The convenience-only
+   caller-named `savepoint(name)` method can be filed lazily if/when
+   an adopter shape demonstrates the need.
+2. **Amendment 2 (temporal-constraint evaluation bullet)** — duplicates
+   already-filed `djogi#150`. **Removed below;** Amendment 2 retains
+   only the OLD/NEW RETURNING evaluation bullet plus the quick-wins
+   tabulation bullet, and the routing-to-#150 instruction.
+3. **Amendment 4 issue 3 (pgcrypto)** — was framed as "extension
+   absence". Reviewer noted the extension IS reachable via the
+   migration emitter allowlist (`djogi/src/migrate/bootstrap.rs:139`).
+   **Reframed below** as expression-side typed wrapper gap, NOT
+   extension absence. The pgcrypto issue stays in the file-list with
+   the corrected scope.
+
+**Net result:** 5 amendments (unchanged), 7 issues to file (was 8),
+1 amendment evaluation bullet absorbed by an existing issue (#150).
+
 ## Amendment 1: Add MERGE to Cluster 4B
 
 **Section:** "Cluster 4B: Set And Relational SQL Shapes"
@@ -157,15 +205,14 @@ After the existing four bullets, add:
 >       disposition: `Implemented` (none today), `Roadmapped` (route to
 >       4B as #4B.8 if alpha-blocking for audit/event-publication
 >       shapes), or `Out of scope` with anchored deferral.
-> - [ ] Evaluate the PG18 temporal-constraint family
->       (`WITHOUT OVERLAPS`, PERIOD FK, NOT ENFORCED, named NOT NULL)
->       and route as: `Implemented` (none today), `Roadmapped`
->       (WITHOUT OVERLAPS / PERIOD FK fold into 4E #148 since the use
->       case overlaps EXCLUDE on tstzrange), or filed as a new
->       post-v0.1.0 issue (NOT ENFORCED is unusual enough to warrant
->       a separate decision). PG18 is the supported floor per
->       `docs/spec/decisions.md`, so PG18-syntax forms should be
->       preferred over backport-equivalent forms when both work.
+> - [ ] Route already-filed `djogi#150`
+>       (`framework gap: PG18 temporal constraints (WITHOUT OVERLAPS,
+>       PERIOD FK, NOT ENFORCED)`) through this audit. #150's body
+>       covers the full PG18 temporal-constraint family (WITHOUT
+>       OVERLAPS, PERIOD FK, NOT ENFORCED, named NOT NULL) and is
+>       marked "Required for Phase 8.5 alpha-readiness." Coordinate
+>       with 4E #148 (the EXCLUDE-vs-WITHOUT-OVERLAPS preference is
+>       still surfaced separately by Amendment 3 below).
 > - [ ] Tabulate the eight quick-wins from
 >       `2026-05-10-cluster4-vs-postgres-coverage-xref.md` and flip
 >       their catalog disposition from `unknown` to `Implemented`
@@ -173,11 +220,18 @@ After the existing four bullets, add:
 >       verified.
 
 **Rationale:** The Cluster 4.0 contract today is "run the audit; route
-alpha-blocking gaps." The cross-reference surfaced two PG18-specific
-items (OLD/NEW RETURNING, temporal-constraint family) that the existing
-4A-4E task lists do not name explicitly. Adding them as evaluation tasks
-ensures the audit can route them rather than silently miss them. The
-quick-wins tabulation prevents repeat spec-grep work.
+alpha-blocking gaps." The cross-reference surfaced one new PG18-specific
+item (OLD/NEW RETURNING) that the existing 4A-4E task lists do not name
+explicitly. The temporal-constraint family is already filed as #150 —
+the audit should route it rather than re-discover it. The quick-wins
+tabulation prevents repeat spec-grep work.
+
+**Re-eval correction (`2026-05-10`):** The original Amendment 2 had a
+second evaluation bullet for the PG18 temporal-constraint family. That
+duplicates already-filed `djogi#150`. The bullet has been replaced with
+a routing instruction for the existing issue. Anchor: anchored
+deferral via existing GH issue, per the "anchor every deferral" memory
+rule.
 
 **Routing source:** `2026-05-10-cluster4-vs-postgres-coverage-xref.md`
 "Cluster 4.0" and "High-leverage gaps NOT currently in any v3 cluster"
@@ -227,38 +281,66 @@ task bullet.
 
 **Proposed addition:**
 
-> - [ ] Before closing Cluster 4.0, file the following five tracking
+> - [ ] Before closing Cluster 4.0, file the following four tracking
 >       issues so the post-v0.1.0 backlog has them on the books and the
 >       no-arbitrary-deferrals rule is satisfied:
->       1. `framework gap: SAVEPOINT / RELEASE SAVEPOINT / ROLLBACK TO
->          SAVEPOINT typed transaction surface` — anchor:
->          `atomic` + `retry_on_conflict` covers the dominant case;
->          nested savepoint is rare in adopter code.
->       2. `framework gap: FTS configuration DDL (CREATE TEXT SEARCH
+>       1. `framework gap: FTS configuration DDL (CREATE TEXT SEARCH
 >          CONFIGURATION / DICTIONARY / PARSER / TEMPLATE)` — anchor:
 >          declarative low-frequency surface; `tsvector` / `tsquery`
 >          / `to_tsvector` / `to_tsquery` typed query surface IS
 >          implemented; raw-SQL bypass attribute acceptable for the
 >          DDL during v0.1.0.
->       3. `framework gap: pgcrypto (encrypt/digest/hmac) typed
->          surface` — anchor: adopters use Rust-side crypto today
->          (sha2, hmac, ring); pgcrypto is post-v0.1.0 only if a real
->          adopter shape requires server-side crypto.
->       4. `framework gap: PG18 scalar functions (uuidv7, uuidv4,
+>       2. `framework gap: pgcrypto expression-side typed wrapper
+>          (encrypt / decrypt / digest / hmac / gen_salt etc.) — the
+>          extension itself IS reachable via the migration emitter
+>          allowlist (djogi/src/migrate/bootstrap.rs:139); only the
+>          typed expression surface is missing` — anchor: adopters
+>          use Rust-side crypto today (sha2, hmac, ring); pgcrypto
+>          server-side wrapping is post-v0.1.0 only if a real adopter
+>          shape requires it. NOT a CREATE EXTENSION absence — the
+>          differ already projects pgcrypto as an extension dependency.
+>       3. `framework gap: PG18 scalar functions (uuidv7, uuidv4,
 >          array_sort, array_reverse, casefold, crc32, crc32c, gamma,
 >          lgamma)` — anchor: HeerId/RanjId obviates UUID surface;
 >          remaining scalars are roadmapped only when an adopter
 >          shape needs them.
->       5. `framework gap: MIN()/MAX() over arrays and composites
+>       4. `framework gap: MIN()/MAX() over arrays and composites
 >          (PG18)` — anchor: route as 4C tail-task after #89
 >          type-state migration lands the Kind discriminator; until
 >          then, raw SQL bypass is acceptable.
+>
+> **Note:** A fifth candidate — caller-named `savepoint(name)`
+> ergonomics on top of nested `atomic()` — was deliberately NOT
+> filed in this audit. SAVEPOINT capability already exists at
+> `djogi/src/transaction.rs:13-18, 207-309` (nested `atomic()`
+> pushes `SAVEPOINT sp_<depth>` / `RELEASE` / `ROLLBACK TO`).
+> A caller-supplied opaque name is convenience-only and should be
+> filed lazily if/when an adopter shape demonstrates the need. This
+> is anchored deferral via "capability already exists; ergonomics
+> shortcut tracked informally as a v0.1.0+ enhancement candidate."
 
-**Rationale:** The cross-reference identified five categorical gaps
-that none of 4A-4E covers. Filing tracking issues during the audit
-satisfies the "no arbitrary deferrals" rule (each has an explicit
-anchor) and gives the post-v0.1.0 backlog a known shape rather than
-discovery-by-customer-bug.
+**Rationale:** The cross-reference identified four categorical gaps
+that none of 4A-4E covers and that no existing GH issue tracks.
+Filing tracking issues during the audit satisfies the "no arbitrary
+deferrals" rule (each has an explicit anchor) and gives the
+post-v0.1.0 backlog a known shape rather than discovery-by-customer-bug.
+
+**Re-eval corrections (`2026-05-10`, post-Opus review):**
+- The original Amendment 4 listed five issues. Issue 1 (SAVEPOINT)
+  has been removed from the file-list because reviewer correctly
+  identified that nested `atomic()` IS the typed savepoint surface
+  (`djogi/src/transaction.rs:13-18, 207-309`). The capability is
+  already implemented; only a caller-named convenience method is
+  missing, and that is convenience-only. Recorded above as a deferral
+  with anchor.
+- Issue 3 (pgcrypto, now renumbered as issue 2) was reframed from
+  "typed surface absent" to "expression-side typed wrapper missing —
+  extension reachable via allowlist." Reviewer correctly identified
+  `djogi/src/migrate/bootstrap.rs:139` (allowlist entry) and
+  `djogi/src/testing.rs:834,1438` (test fixture references) showing
+  the differ projects pgcrypto without an issue; only the SQL-side
+  typed wrapper is the gap. The issue stays in the file-list with
+  the reframed scope.
 
 **Routing source:** `2026-05-10-cluster4-vs-postgres-coverage-xref.md`
 "High-leverage gaps NOT currently in any v3 cluster" table.
@@ -308,59 +390,109 @@ keeps the post-v0.1.0 backlog manageable while satisfying the
 lines 14–105 (constructors and accessors); spec-grep against
 `djogi/src/geo/mod.rs` confirms the v0.1.0 surface.
 
-## New issues to file (consolidated list)
+## New issues to file (consolidated list, re-eval `2026-05-10`)
 
 DO NOT actually file the issues. The user reviews first.
+
+**Reviewer correction tally:**
+- Was: 8 issues to file. Now: **7 issues to file**.
+- One issue dropped from the file-list (SAVEPOINT — capability
+  already exists via nested `atomic()`; ergonomics convenience-only).
+- One issue reframed but kept in the file-list (pgcrypto — extension
+  reachable; expression-side wrapper still missing).
+- One amendment evaluation bullet absorbed by an existing issue
+  (PG18 temporal constraints → `djogi#150`).
+- Pre-existing GH issues confirmed in scope (no new issue needed):
+  `djogi#150` (PG18 temporal constraints).
 
 1. **`framework gap: MERGE INTO ... USING ... typed surface`**
    - Cluster: 4B (after Cluster 4.0 audit confirms alpha-blocking)
    - Body: see Amendment 1a above
    - Closing-condition: Stage 1.5 format (rustdoc + doctest + spec
      amendment + live PG18 test + user guide example)
+   - Re-eval status: net-new-valid; reviewer-confirmed (zero `MERGE
+     INTO` in `djogi/src`).
 
-2. **`framework gap: SAVEPOINT / RELEASE SAVEPOINT / ROLLBACK TO
-   SAVEPOINT typed transaction surface`**
-   - Cluster: post-v0.1.0
-   - Body: anchor "atomic + retry_on_conflict covers the dominant case"
-   - Closing-condition: Stage 1.5 format if/when adopter shape requires
-
-3. **`framework gap: FTS configuration DDL (CREATE TEXT SEARCH
+2. **`framework gap: FTS configuration DDL (CREATE TEXT SEARCH
    CONFIGURATION / DICTIONARY / PARSER / TEMPLATE)`**
    - Cluster: post-v0.1.0
-   - Body: anchor "tsvector/tsquery typed query surface is implemented;
+   - Body: anchor "tsvector/tsquery typed query surface is implemented
+     at `djogi/src/expr/node.rs:398, 417, 431` and `djogi/src/fts.rs`;
      DDL is declarative low-frequency; raw bypass is acceptable"
    - Closing-condition: Stage 1.5 format if/when adopter shape requires
+   - Re-eval status: net-new-valid; unchanged.
 
-4. **`framework gap: pgcrypto (encrypt/digest/hmac) typed surface`**
+3. **`framework gap: pgcrypto expression-side typed wrapper
+   (encrypt/decrypt/digest/hmac/gen_salt etc.) — extension itself IS
+   reachable via the migration emitter allowlist`**
    - Cluster: post-v0.1.0
-   - Body: anchor "adopters use Rust-side crypto today; pgcrypto is
-     server-side and only needed for specific shapes"
+   - Body: anchor "extension allowlisted at
+     `djogi/src/migrate/bootstrap.rs:139` and validated at line 821;
+     test fixtures use it (`djogi/src/testing.rs:834, 1438`). Only
+     the SQL-side typed wrapper for crypto operations is missing.
+     Adopters use Rust-side crypto today (sha2, hmac, ring); pgcrypto
+     is post-v0.1.0 only if a real adopter shape requires server-side
+     crypto."
    - Closing-condition: Stage 1.5 format if/when adopter shape requires
+   - **Re-eval correction (`2026-05-10`):** was framed as "extension
+     absence" in v2. Reviewer correctly noted the extension IS
+     reachable via the allowlist. Reframed as expression-side typed
+     wrapper gap, NOT extension absence.
 
-5. **`framework gap: PG18 scalar functions (uuidv7, uuidv4, array_sort,
+4. **`framework gap: PG18 scalar functions (uuidv7, uuidv4, array_sort,
    array_reverse, casefold, crc32, crc32c, gamma, lgamma)`**
    - Cluster: post-v0.1.0 (one umbrella issue)
    - Body: per-function anchor table; HeerId/RanjId obviates UUID
    - Closing-condition: track as a list; promote individual entries to
      dedicated issues only when an adopter shape requires
+   - Re-eval status: net-new-valid; unchanged.
 
-6. **`framework gap: MIN()/MAX() over arrays and composites (PG18)`**
+5. **`framework gap: MIN()/MAX() over arrays and composites (PG18)`**
    - Cluster: 4C tail (after #89 type-state lands) OR post-v0.1.0
    - Body: anchor "Kind discriminator from #89 may need a new variant
      for composite/array aggregates"
    - Closing-condition: Stage 1.5 format
+   - Re-eval status: net-new-valid; reviewer-confirmed not covered
+     by existing #88 (which is the aggregate umbrella for the
+     existing surface, not array/composite extension).
 
-7. **`framework gap: extended PostGIS constructor coverage
+6. **`framework gap: extended PostGIS constructor coverage
    (TileEnvelope, HexagonGrid, SquareGrid, Letters, MakePointM,
    MakeValid, IsValidDetail, IsValidReason)`**
    - Cluster: post-v0.1.0 (one umbrella issue)
    - Body: explicit list with the v0.1.0 carve-out anchor
    - Closing-condition: track as a list; escalate to v3 4C if
      `ST_TileEnvelope` becomes required for MVT/Geobuf
+   - Re-eval status: net-new-valid; reviewer-confirmed no umbrella
+     constructor-breadth issue exists.
 
-8. **`framework gap: PG18 OLD / NEW in RETURNING for INSERT / UPDATE /
+7. **`framework gap: PG18 OLD / NEW in RETURNING for INSERT / UPDATE /
    DELETE / MERGE`**
    - Cluster: 4B as #4B.8 if Cluster 4.0 audit confirms alpha-blocking
    - Body: covers audit/event-publication shapes where pre and post
      image are both needed in one round trip
    - Closing-condition: Stage 1.5 format
+   - Re-eval status: net-new-valid; unchanged.
+
+## Issues NOT filed (anchored deferrals, re-eval `2026-05-10`)
+
+The following candidate from the v2 draft was deliberately NOT filed:
+
+- **`framework gap: caller-named savepoint(name) ergonomics on top of
+  nested atomic() (which IS the typed savepoint surface)`** — anchored
+  deferral. Capability already exists at
+  `djogi/src/transaction.rs:13-18, 207-309` (nested `atomic()`
+  pushes `SAVEPOINT sp_<depth>` at line 223-227, releases on `Ok` at
+  line 265, rolls back on `Err` at line 281). Caller-supplied opaque
+  name is convenience-only. File lazily if/when an adopter shape
+  demonstrates the need. Reviewer-confirmed no capability gap exists.
+
+## Pre-existing GH issues that absorb earlier draft amendments
+
+The following items from the v2 draft are NOT new issues — they
+duplicate already-filed GH issues. Routing only:
+
+- **PG18 temporal constraints (`WITHOUT OVERLAPS`, PERIOD FK,
+  `NOT ENFORCED`, named NOT NULL)** → already filed as **`djogi#150`**.
+  Route through Cluster 4.0 audit; no separate evaluation issue.
+  Anchor: anchored deferral via existing GH issue.

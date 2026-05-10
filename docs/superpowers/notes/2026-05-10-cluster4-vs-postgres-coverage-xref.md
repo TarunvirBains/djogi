@@ -3,6 +3,50 @@
 > Prep work for Cluster 4.0 (Postgres 18+ feature gap audit, Area 19).
 > Self-review only — independent GPT-5.5 xhigh review pending.
 
+## v3 framing context (re-eval `2026-05-10`)
+
+Per user clarification, **most catalog rows in
+`docs/research/postgres-coverage/2026-05-09/` are intentionally
+future-phase pointers** — the postgres-coverage research is a multi-phase
+roadmap input, not a Phase 8.5 delivery checklist. The user has already
+triaged the Phase 8.5-eligible subset into filed GH issues (#147, #148,
+#150, plus the round-1 typed-surface gap set #99/#101–#106 and the
+spatial/aggregate set #71/#72/#88/#89/#92/#94/#95).
+
+This xref's job, post-correction, is narrow:
+
+1. Surface gaps that are **alpha-blocking** AND **not yet covered** by
+   v3 4A–4E AND **not yet filed** as a GH issue.
+2. Confirm the existing 4A–4E routing matches what the catalog
+   enumerates, flagging cases where the catalog mis-classifies a feature
+   as `partial` when grep proves it is `unknown` (or vice versa).
+3. Tabulate quick-wins where the catalog says `unknown` but spec-grep
+   shows the feature IS implemented — these flip to `Implemented` on
+   the audit ledger without further verification.
+
+It is NOT a comprehensive triage of the ~850 `unknown` rows. The
+Cluster 4.0 audit owns that work. This xref pre-stages it.
+
+### Review history footer
+
+- Initial deliverables landed at commit `ca93e9c` (3 docs, this one
+  being one of them).
+- careful-coder Opus reviewer ran a corrections-pass; verdict
+  `ALLOW_WITH_CORRECTIONS`. The reviewer caught:
+  - Amendment 4 issue 1 (SAVEPOINT) framed as absence; in fact nested
+    `atomic()` IS the typed surface (`djogi/src/transaction.rs:14-18,
+    207-309`). Reframed in this re-eval as ergonomics-on-top, not
+    capability gap.
+  - Amendment 2 (temporal-constraint bullet) duplicates already-filed
+    `djogi#150`. Reframed as "route #150 through 4.0 audit" rather
+    than as net-new evaluation work.
+  - pgcrypto entry conflated extension reachability (allowlisted at
+    `djogi/src/migrate/bootstrap.rs:139`) with expression-side typed
+    wrapper absence. Reframed in this re-eval.
+- This re-eval (`2026-05-10`, post-corrections) addresses those three
+  reframings and adds this v3 framing context section. No new
+  substantive amendments.
+
 ## Method
 
 Read v3 plan Cluster 4 sections 4.0–4E end-to-end
@@ -100,10 +144,19 @@ should be evaluated mid-cluster, not deferred.
   forms (NOT ENFORCED, WITHOUT OVERLAPS, PERIOD FK) are exactly the
   Area 19 audit material. v3 4B does not address them.
 - `03-pg18-sql-reference.md` lines 110–116: SAVEPOINT family `unknown`.
-  Grep against `transaction.rs`: `atomic` and `retry_on_conflict` are
-  the public transaction surface; no `SAVEPOINT` / `RELEASE SAVEPOINT`
-  / `ROLLBACK TO SAVEPOINT` typed methods. Not currently in v3 — leaves
-  nested-savepoint workflows as raw-only.
+  **Re-eval correction (post-Opus review):** SAVEPOINT IS implemented
+  as the typed surface — it just isn't a *named* `savepoint(name)` API.
+  Nested `atomic(&mut *outer, |inner| ...)` pushes a savepoint
+  (`SAVEPOINT sp_<depth>` at `djogi/src/transaction.rs:223-227`),
+  releases on `Ok` (`RELEASE SAVEPOINT` at line 265), rolls back on
+  `Err` (`ROLLBACK TO SAVEPOINT` at line 281), and rolls back on panic
+  (line 300). Public API is `crate::transaction::atomic`, with
+  rustdoc explicitly noting "Nested calls push a Postgres savepoint
+  rather than opening a new transaction" (transaction.rs:13-18). This
+  is a v0.1.0 **ergonomics gap** (no opaque-name savepoint method) —
+  NOT a capability gap. The audit ledger should mark SAVEPOINT as
+  `partial` (anonymous-depth-named savepoints via nested atomic;
+  no caller-supplied name surface).
 
 **Gaps surfaced by catalog NOT in v3 4B:**
 1. **`MERGE` (PG15+)**: catalog mis-classifies as `partial`; my grep
@@ -118,13 +171,21 @@ should be evaluated mid-cluster, not deferred.
    exposed (grep confirms zero matches). **Routing:** this is an Area
    19 PG18-new item; route to Cluster 4.0's gap audit, then to
    Cluster 4B as #4B.8 if the audit confirms it as alpha-blocking.
-3. **PG18 temporal constraints (`WITHOUT OVERLAPS`, PERIOD FK)** —
+3. **PG18 temporal constraints (`WITHOUT OVERLAPS`, PERIOD FK,
+   `NOT ENFORCED`, named NOT NULL)** —
    exactly the use case for `tstzrange` exclusion that #148 already
    targets. The PG18 syntax is a more declarative form (`PRIMARY KEY
-   (id, validity WITHOUT OVERLAPS)`). **Routing:** mention in 4E #148
-   as "if PG18 syntax is materially better than the EXCLUDE form,
-   prefer it — same use case, more idiomatic on PG18." Not a separate
-   subcluster.
+   (id, validity WITHOUT OVERLAPS)`). **Re-eval correction
+   (post-Opus review):** This is already filed as `djogi#150`
+   (`framework gap: PG18 temporal constraints (WITHOUT OVERLAPS,
+   PERIOD FK, NOT ENFORCED)`). #150's body explicitly covers all four
+   PG18 temporal-constraint primitives plus the design coordination
+   with #148 ("Sibling of #148 — same no-overlap motivation, distinct
+   DDL surface area"). **Routing:** route #150 through the 4.0 audit;
+   no new evaluation issue needed. Amendment 3 (4E #148 PG18-syntax
+   preference note) still stands as a follow-up clarification because
+   #148's task wording targets EXCLUDE form exclusively while #150's
+   shape is the more declarative PG18 emission.
 
 **v3 4B items NOT supported by catalog:** None — every 4B item maps to
 a catalog row.
@@ -132,9 +193,13 @@ a catalog row.
 **Routing recommendation:** Amend 4B to add MERGE
 (catalog mis-classified as `partial`; actually uncovered) and to route
 PG18 `OLD`/`NEW RETURNING` through the 4.0 gap audit before deciding
-its cluster home. The other catalog gaps (SAVEPOINT, SELECT INTO) can
-defer past v0.1.0 with the standard "named API surface, no live adopter
-demand" anchor.
+its cluster home. SELECT INTO can defer past v0.1.0 with the standard
+"named API surface, no live adopter demand" anchor. SAVEPOINT does
+NOT defer — it's already implemented as nested `atomic()` (see
+correction above); the only remaining work is an optional
+ergonomics-on-top issue if a caller-supplied savepoint name is needed,
+which is a v0.1.0+ enhancement not a v0.1.0 blocker. PG18 temporal
+constraints are already filed as `djogi#150` (no new issue required).
 
 ### Cluster 4C: Aggregate, Window, And Row-Shape IR
 
@@ -372,13 +437,12 @@ Triage" — six clusters mapped to v3:**
 |---|---|---|---|
 | `MERGE` (PG15+ conditional DML) | `03-pg18-sql-reference.md` line 16 | **Likely yes** — UPSERT-with-conditions is a real shape; catalog mis-classifies as `partial`, grep confirms uncovered | New issue; route to v3 4B as #4B.7 |
 | PG18 `OLD`/`NEW` in `RETURNING` | `01-pg18-release-notes.md` line 59 | Possibly — adopter use case is audit/event publication where you want both pre and post images | Route to 4.0 audit; if alpha-blocking add to 4B as #4B.8 |
-| PG18 `WITHOUT OVERLAPS` / PERIOD FK | `01-pg18-release-notes.md` lines 49–50 | Same use case as #148; PG18 syntax is more idiomatic | Mention in 4E #148; prefer PG18 syntax once PG18 is the floor (which it is per `decisions.md`) |
-| PG18 `NOT ENFORCED` constraint | `01-pg18-release-notes.md` line 51 | Possibly — useful for migrations | New issue, post-v0.1.0 with anchor |
+| PG18 `WITHOUT OVERLAPS` / PERIOD FK / `NOT ENFORCED` / named NOT NULL — **already filed as `djogi#150`** | `01-pg18-release-notes.md` lines 49–51 + `djogi#150` body | Yes — #150 marks "Required for Phase 8.5 alpha-readiness" | Existing issue (`djogi#150`); route through 4.0 audit; coordinate with 4E #148 (Amendment 3 still applies for the EXCLUDE-vs-WITHOUT-OVERLAPS preference clarification) |
 | PG18 `array_sort()` / `array_reverse()` | `01-pg18-release-notes.md` lines 25–26 | No — scalar functions, raw SQL or CASE expressions cover today | Roadmapped; file `pg-18-scalars` tracking issue |
 | PG18 `min`/`max` over arrays/composites | `01-pg18-release-notes.md` lines 32–35 | No — niche aggregates | Roadmapped; route to 4C tail after #89 type-state |
-| `SAVEPOINT` family | `03-pg18-sql-reference.md` lines 114–116 | Possibly — nested-transaction workflows | New issue, post-v0.1.0; anchor: "atomic+retry covers the main case; nested savepoint is rare in adopter code" |
+| `SAVEPOINT` family — **ergonomics on top of nested `atomic()` (which IS the typed surface)** — caller-named `savepoint(name: &str)` method | `03-pg18-sql-reference.md` lines 114–116 + `djogi/src/transaction.rs:13-18, 207-309` | No — anonymous-depth-named savepoints already work via nested `atomic()`; named API is convenience-only | New issue (ergonomics); post-v0.1.0; anchor: "nested `atomic()` IS the typed savepoint surface (`SAVEPOINT sp_<depth>` / `RELEASE` / `ROLLBACK TO`); a caller-named `savepoint(name)` shortcut is convenience" |
 | FTS configuration DDL (CREATE TEXT SEARCH …) | `03-pg18-sql-reference.md` lines 244–256 | No — declarative, low-frequency | New issue, post-v0.1.0; raw bypass acceptable |
-| `pgcrypto` extension | `04-extensions.md` line 35 | No — adopters use Rust-side crypto today | Roadmapped tracking issue |
+| `pgcrypto` **expression-side typed wrapper** (`encrypt`/`decrypt`/`digest`/`hmac`/`gen_salt` etc.) — extension itself IS reachable via the migration emitter allowlist (`djogi/src/migrate/bootstrap.rs:139`) | `04-extensions.md` line 35 + `djogi/src/migrate/bootstrap.rs:139` | No — adopters use Rust-side crypto today; extension is reachable, only the typed expression-surface is missing | New issue (expression-side wrapper, NOT extension absence); roadmapped post-v0.1.0 |
 | `fuzzystrmatch` extension | `04-extensions.md` line 24 | No — pg_trgm covers main fuzzy-match shape | Out-of-scope or post-v0.1.0 with anchor |
 | `ltree` extension | `04-extensions.md` line 31 | No — closure CTE covers most hierarchy queries | Out-of-scope for v0.1.0 |
 
@@ -472,13 +536,28 @@ This is a careful-coder cross-reference. It is NOT a GPT-5.5 xhigh
 ALLOW. The user must dispatch independent review before treating this
 as Cluster 4.0 deliverable.
 
+**Re-eval status (`2026-05-10`, post-Opus correction pass):**
+- SAVEPOINT framing is now correct (nested `atomic()` IS the typed
+  surface; only an opaque caller-supplied savepoint name is missing).
+- Temporal-constraint family is routed to the existing `djogi#150`
+  (no new evaluation issue needed).
+- pgcrypto framing is now correct (extension reachable via allowlist;
+  expression-side typed wrapper is the gap).
+- The quick-wins line refs (`djogi/src/expr/node.rs:398,417,431`,
+  `djogi/src/fts.rs`, `djogi/src/query/queryset.rs:1081,1094,1108`,
+  `djogi/src/query/lock.rs:69-122`, `djogi/src/query/queryset.rs:1417,1517`)
+  are reviewer-confirmed. No quick-win removed; the bottleneck for
+  flipping more `unknown` rows is a full catalog walk during the
+  4.0 audit.
+
 Specific things I did not verify and that an independent reviewer
 should confirm:
 
 - **MERGE coverage claim**: my grep was for `MERGE INTO` and
   `MergeStmt` and similar. If MERGE is implemented under a
   different name (e.g. as part of a save/upsert helper), my
-  classification is wrong.
+  classification is wrong. **Re-eval reviewer pass confirmed
+  zero `MERGE INTO` in `djogi/src` — claim stands.**
 - **OLD/NEW RETURNING coverage**: zero matches for `RETURNING.*OLD`
   and `RETURNING.*NEW`, but the syntax may be supported through a
   different path (e.g. trigger-based audit hooks) that doesn't grep

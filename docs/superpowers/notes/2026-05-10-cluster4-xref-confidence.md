@@ -33,8 +33,8 @@
 | PG18 `OLD` / `NEW` in `RETURNING` is NOT implemented | **high** | grep for `RETURNING.*OLD` / `RETURNING.*NEW` / `returning_old` / `returning_new` returned zero matches | n/a |
 | PG18 temporal constraints (WITHOUT OVERLAPS, PERIOD FK, NOT ENFORCED, named NOT NULL) are NOT implemented | **medium** | grep for `WITHOUT OVERLAPS` / `PERIOD FK` / `NOT ENFORCED` returned zero matches; only `tstzrange` mention in `descriptor.rs:378` is for documentation; could be implemented under a different name | run `grep -ri 'temporal\|without overlaps\|period\|not enforced' djogi-macros/src djogi/src` for ~5 minutes |
 | PG18 scalar functions (uuidv7, uuidv4, array_sort, array_reverse, casefold, crc32, gamma) are NOT implemented | **high** | grep for `casefold` / `array_sort` / `array_reverse` / `crc32` / `gamma(` returned zero matches; HeerId/RanjId obviates UUID functions | n/a |
-| `SAVEPOINT` family is NOT implemented as typed surface | **medium** | spec-read of `djogi/src/transaction.rs` shows atomic + retry_on_conflict but no SAVEPOINT methods; could be inside a builder I didn't sample | run `grep -ri 'savepoint\|Savepoint' djogi/src` for ~3 minutes |
-| `pgcrypto` extension is NOT implemented as typed surface | **medium** | grep for `pgcrypto` / `encrypt` / `digest(` / `gen_salt` / `hmac(` returned only Rust-side crypto in plan_file.rs / snapshot/sign.rs; no SQL-side wrapping | run `grep -ri 'pgcrypto\|encrypt(\|digest(' djogi/src` for ~3 minutes; could be in a sub-module |
+| `SAVEPOINT` family — **partial** — typed surface composed via nested `atomic()`; no caller-named savepoint method | **high** (downgraded from "medium absence" by re-eval) | spec-read of `djogi/src/transaction.rs:13-18, 207-309` confirms nested `atomic()` pushes `SAVEPOINT sp_<depth>` (line 223-227), releases on `Ok` (line 265), rolls back on `Err` (line 281), rolls back on panic (line 300); rustdoc explicitly notes "Nested calls push a Postgres savepoint rather than opening a new transaction" (line 13-18). Caller-named savepoint method (`savepoint(name: &str)`) does NOT exist — that is the ergonomics-on-top gap, not absence of capability. | n/a — already verified post-correction |
+| `pgcrypto` extension — **partial** — extension reachable via migration emitter allowlist; expression-side typed wrapper missing | **high** (downgraded from "medium absence" by re-eval) | spec-read of `djogi/src/migrate/bootstrap.rs:139` (allowlist entry); spec-read of `djogi/src/migrate/bootstrap.rs:821` (validation); spec-read of `djogi/src/testing.rs:834, 1438` (test fixture references). No expression-side typed wrapper for `encrypt`/`decrypt`/`digest`/`hmac`/`gen_salt`. Adopters who want pgcrypto today get the extension projected automatically when the descriptor lists it; SQL-side calls require the raw bypass attribute. | n/a — already verified post-correction |
 | FTS configuration DDL (CREATE TEXT SEARCH CONFIG/DICT/PARSER/TEMPLATE) is NOT implemented | **medium** | catalog rows all `unknown`; spec-read of FTS files shows query-side coverage only; no DDL emission for FTS configuration | run `grep -ri 'CREATE TEXT SEARCH' djogi/src` for ~2 minutes |
 | `fuzzystrmatch` extension (Levenshtein, Soundex, Metaphone) is NOT implemented | **high** | grep for `fuzzystrmatch` / `levenshtein` / `soundex` / `metaphone` returned zero matches | n/a |
 | `ltree` extension is NOT implemented | **high** | grep for `ltree` returned zero matches; closure CTE in `query/closure.rs` covers the dominant hierarchy use case | n/a |
@@ -57,12 +57,19 @@ xref relies on negative grep evidence and could be wrong. In rough
 order of impact:
 
 1. **PG18 temporal constraints** (medium) — if these ARE supported
-   under a different name, Amendment 3 is unnecessary; if they're not,
-   Amendment 3 is correct.
-2. **`SAVEPOINT` family** (medium) — if it's implemented through a
-   builder I didn't sample, Amendment 4 issue 1 is unnecessary.
-3. **`pgcrypto`** (medium) — if there's a SQL-side wrapper
-   I didn't find, Amendment 4 issue 3 is unnecessary.
+   under a different name, the route-to-`djogi#150` instruction in
+   Amendment 2 is harmless; if they're not, #150 is the correct
+   destination.
+2. **`SAVEPOINT` family** — **resolved post-correction**.
+   careful-coder Opus reviewer confirmed nested `atomic()` IS the
+   typed savepoint surface (`djogi/src/transaction.rs:13-18, 207-309`).
+   Amendment 4 issue 1 is reframed as ergonomics-on-top, NOT absence.
+3. **`pgcrypto`** — **resolved post-correction**.
+   careful-coder Opus reviewer confirmed the extension IS reachable
+   via the migration emitter allowlist
+   (`djogi/src/migrate/bootstrap.rs:139`). Amendment 4 issue 3 is
+   reframed as expression-side typed wrapper gap, NOT extension
+   absence.
 4. **FTS configuration DDL** (medium) — if there's a typed `#[fts]`
    attribute that emits CREATE TEXT SEARCH CONFIG, Amendment 4 issue
    2 is unnecessary.
@@ -78,3 +85,31 @@ GPT-5.5 xhigh ALLOW. Every **high**-confidence finding has at least
 one direct grep + spec-read pair backing it; every **medium** /
 **low** finding is the polite way of saying "I sampled, I might be
 wrong, please verify."
+
+## Review history
+
+- **`ca93e9c`** (`2026-05-10`) — initial three deliverables landed
+  on branch `cluster4-postgres-coverage-xref`:
+  `2026-05-10-cluster4-vs-postgres-coverage-xref.md`,
+  `2026-05-10-cluster4-v3-amendment-proposal.md`, this file.
+- **careful-coder Opus reviewer pass** (`2026-05-10`) — verdict
+  `ALLOW_WITH_CORRECTIONS`. Reviewer flagged three issues:
+  1. SAVEPOINT framed as absence; in fact nested `atomic()` IS the
+     typed surface. Reframed as ergonomics-on-top.
+  2. Amendment 2 temporal-constraint bullet duplicates already-filed
+     `djogi#150`. Reframed as routing-to-existing-issue.
+  3. pgcrypto entry conflated extension reachability with
+     expression-side typed wrapper absence. Reframed.
+  Reviewer also confirmed: Amendment 1 (MERGE), Amendment 3 (PG18
+  syntax preference for #148), Amendment 4 issues 2/3/4/5,
+  Amendment 5 (PostGIS constructor breadth), and the eight
+  quick-wins are all valid.
+- **Re-eval pass** (`2026-05-10`, this commit) addresses the three
+  reviewer corrections. Final amendment count: **5 (unchanged)**.
+  Final issues-to-file count: **7** (was 8; SAVEPOINT dropped from
+  the file-list and recorded as an anchored deferral because nested
+  `atomic()` IS the typed surface; capability-gap framing was wrong).
+  pgcrypto stays in the file-list with reframed expression-side
+  scope.
+- **Pending:** GPT-5.5 xhigh reviewer dispatch before any v3
+  amendment lands in the plan file.
