@@ -68,6 +68,34 @@ djogi shell                          # Rhai shell (Phase 8+)
 
 After implementation work, run `cargo fmt --all` and `cargo clippy --all-targets --all-features` before handoff when feasible, not just targeted tests.
 
+## Worktree workflow
+
+When running concurrent careful-coder dispatches across multiple `.worktrees/`
+checkouts, parallel `cargo test -p djogi-macros` runs can corrupt each other's
+trybuild fixture state because every worktree's `target/tests/trybuild/`
+subtree is reachable through `cargo metadata` (djogi#176). The fix is to give
+each worktree its own physically separate target tree by overriding
+`CARGO_TARGET_DIR`.
+
+Two ways to enable per-worktree isolation:
+
+```bash
+# direnv (recommended): per-worktree opt-in, no shell-init pollution
+cp .envrc.example .envrc && direnv allow
+
+# manual: prepend to any cargo invocation, or export from your shell
+export CARGO_TARGET_DIR="$HOME/.cache/djogi-target/$(basename "$PWD")"
+```
+
+`.envrc.example` derives a stable 12-char id from the absolute worktree path
+so siblings sharing a basename do not collide. CI runners are single-worktree
+per job and do not need this fix; the override is a developer-side convenience
+only.
+
+Tradeoff: each worktree's cache accumulates roughly 5-10 GB of incremental
+artifacts. After `git worktree remove`, prune orphaned caches with
+`cargo xtask gc-target-cache`.
+
 ## Architecture
 
 ### Crate Boundaries
