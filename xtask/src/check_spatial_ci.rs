@@ -14,6 +14,7 @@ struct CargoTest {
     name: Option<String>,
     path: Option<String>,
     required_spatial: bool,
+    cargo_block: String,
 }
 
 pub fn run() -> ExitCode {
@@ -58,9 +59,40 @@ fn run_inner() -> Result<(), String> {
 
     let workflow = fs::read_to_string(WORKFLOW)
         .map_err(|error| format!("{WORKFLOW}: failed to read: {error}"))?;
-    if !workflow.contains(MANIFEST) {
+    let active_workflow_lines = active_yaml_lines(&workflow);
+    if !active_workflow_lines
+        .iter()
+        .any(|line| line == "run: cargo xtask check-spatial-ci")
+    {
+        failures.push(format!(
+            "{WORKFLOW}: check job must run `cargo xtask check-spatial-ci`"
+        ));
+    }
+    if active_workflow_lines
+        .iter()
+        .filter(|line| line == &&"image: postgis/postgis:18-3.6")
+        .count()
+        < 2
+    {
+        failures.push(format!(
+            "{WORKFLOW}: default and spatial DB service lanes must both use postgis/postgis:18-3.6"
+        ));
+    }
+    if !active_workflow_lines
+        .iter()
+        .any(|line| line == &format!("done < {MANIFEST}"))
+    {
         failures.push(format!(
             "{WORKFLOW}: spatial job must read {MANIFEST} instead of hard-coding test steps"
+        ));
+    }
+    if !active_workflow_lines.iter().any(|line| {
+        line.starts_with("cargo test -p djogi --test")
+            && line.contains("\"$test_name\"")
+            && line.contains("--all-features")
+    }) {
+        failures.push(format!(
+            "{WORKFLOW}: spatial manifest loop must run `$test_name` with --all-features"
         ));
     }
 
@@ -86,7 +118,8 @@ fn parse_cargo_tests(path: &Path) -> io::Result<Vec<CargoTest>> {
     for line in source.lines() {
         let trimmed = line.trim();
         if trimmed == "[[test]]" {
-            if let Some(test) = current.take() {
+            if let Some(mut test) = current.take() {
+                finalize_cargo_test(&mut test);
                 tests.push(test);
             }
             current = Some(CargoTest::default());
@@ -96,20 +129,27 @@ fn parse_cargo_tests(path: &Path) -> io::Result<Vec<CargoTest>> {
         let Some(test) = current.as_mut() else {
             continue;
         };
+        test.cargo_block.push_str(trimmed);
+        test.cargo_block.push('\n');
         if let Some(value) = string_assignment(trimmed, "name") {
             test.name = Some(value.to_string());
         } else if let Some(value) = string_assignment(trimmed, "path") {
             test.path = Some(value.to_string());
-        } else if trimmed.starts_with("required-features") && trimmed.contains("\"spatial\"") {
-            test.required_spatial = true;
         }
     }
 
-    if let Some(test) = current {
+    if let Some(mut test) = current {
+        finalize_cargo_test(&mut test);
         tests.push(test);
     }
 
     Ok(tests)
+}
+
+fn finalize_cargo_test(test: &mut CargoTest) {
+    let compact = compact(&test.cargo_block);
+    test.required_spatial =
+        compact.contains("required-features") && compact.contains("\"spatial\"");
 }
 
 fn string_assignment<'a>(line: &'a str, key: &str) -> Option<&'a str> {
@@ -138,16 +178,45 @@ fn is_spatial_ci_required(test: &CargoTest) -> Result<bool, String> {
         return Ok(true);
     }
 
-    let Some(path) = &test.path else {
+    let Some(name) = &test.name else {
         return Ok(false);
     };
     let cargo_dir = Path::new(CARGO_TOML)
         .parent()
         .unwrap_or_else(|| Path::new("."));
-    let path = cargo_dir.join(path);
+    let path = match &test.path {
+        Some(path) => cargo_dir.join(path),
+        None => cargo_dir.join("tests").join(format!("{name}.rs")),
+    };
     let path = path.as_path();
+    if !path.exists() {
+        return Ok(false);
+    }
     let source = read_test_source_with_includes(path)?;
-    Ok(source.contains("feature = \"spatial\"") || source.contains("extensions = [\"postgis\"]"))
+    Ok(source_requires_spatial_ci(&source))
+}
+
+fn source_requires_spatial_ci(source: &str) -> bool {
+    let compact = compact(source);
+    compact.contains("feature=\"spatial\"")
+        || (compact.contains("extensions=[") && compact.contains("\"postgis\""))
+}
+
+fn compact(source: &str) -> String {
+    source.chars().filter(|ch| !ch.is_whitespace()).collect()
+}
+
+fn active_yaml_lines(source: &str) -> Vec<String> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let active = line
+                .split_once('#')
+                .map_or(line, |(active, _)| active)
+                .trim();
+            (!active.is_empty()).then(|| active.to_string())
+        })
+        .collect()
 }
 
 fn read_test_source_with_includes(path: &Path) -> Result<String, String> {
@@ -185,7 +254,10 @@ fn include_paths(path: &Path, source: &str) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CargoTest, string_assignment};
+    use super::{
+        CargoTest, active_yaml_lines, finalize_cargo_test, source_requires_spatial_ci,
+        string_assignment,
+    };
 
     #[test]
     fn string_assignment_reads_quoted_values() {
@@ -205,8 +277,44 @@ mod tests {
             name: Some("phase6_spatial".to_string()),
             path: Some("../tests/integration/phase6_spatial.rs".to_string()),
             required_spatial: true,
+            cargo_block: String::new(),
         };
         assert_eq!(test.name.as_deref(), Some("phase6_spatial"));
         assert!(test.required_spatial);
+    }
+
+    #[test]
+    fn cargo_block_detects_multiline_required_spatial_feature() {
+        let mut test = CargoTest {
+            name: Some("phase6_spatial".to_string()),
+            path: None,
+            required_spatial: false,
+            cargo_block: "required-features = [\n    \"spatial\",\n]\n".to_string(),
+        };
+        finalize_cargo_test(&mut test);
+        assert!(test.required_spatial);
+    }
+
+    #[test]
+    fn source_detector_tolerates_whitespace_in_postgis_extensions() {
+        assert!(source_requires_spatial_ci(
+            "#[djogi::djogi_test(extensions = [ \"postgis\" ])]"
+        ));
+        assert!(source_requires_spatial_ci(
+            "#[cfg( feature = \"spatial\" )]\nfn live_spatial() {}"
+        ));
+    }
+
+    #[test]
+    fn active_yaml_lines_drop_comments_before_workflow_checks() {
+        let lines = active_yaml_lines(
+            r#"
+            # run: cargo xtask check-spatial-ci
+            run: cargo xtask check-spatial-ci
+            echo "::group::cargo test -p djogi --test ${test_name} --all-features"
+            "#,
+        );
+        assert_eq!(lines[0], "run: cargo xtask check-spatial-ci");
+        assert_eq!(lines.len(), 2);
     }
 }
