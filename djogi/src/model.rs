@@ -63,6 +63,75 @@ pub mod __sealed {
     pub trait Sealed {}
 }
 
+/// The contract every adopter struct that participates in djogi's data layer
+/// satisfies. Implemented exclusively by `#[derive(Model)]` (re-exported as the
+/// `#[model]` attribute through `djogi::prelude`); the sealed `__sealed::Sealed`
+/// supertrait makes hand-rolled `impl Model` blocks unsatisfiable, so every
+/// `Model` in production code carries the full derivation chain (descriptor
+/// emission, `FromPgRow`, the `{Model}Fields` handle bag, the `{Model}Filter`
+/// programmatic builder, app registration via `inventory`).
+///
+/// # What implementing `Model` gives the adopter
+///
+/// - **Single-row CRUD.** [`Model::create`], [`Model::get`], [`Model::save`],
+///   [`Model::delete`], [`Model::refresh_from_db`] — every method takes
+///   `&mut DjogiContext` so the same call site works against a pool-backed
+///   context or a transaction-backed one (the framework pattern-matches on
+///   the inner variant at each `tokio_postgres` boundary).
+/// - **The queryset entry point.** [`Model::objects`] returns a lazy
+///   [`QuerySet<Self>`](crate::query::QuerySet) — filters, ordering,
+///   pagination, distinct, bulk update, bulk delete. Nothing hits the database
+///   until a terminal method is called.
+/// - **Descriptor emission.** The macro emits a `ModelDescriptor` via
+///   `inventory::submit!`, registering the struct with the workspace's
+///   migration differ, app registry, admin console, and shell bindings — all
+///   without any explicit registration call by the adopter.
+/// - **Row decode.** A canonical `impl FromPgRow for Self` is emitted so any
+///   raw-SQL escape hatch (under the bypass attribute — see
+///   [`docs/spec/raw-sql-escape-hatches.md`](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md))
+///   can decode rows into the model with positional, debug-asserted column
+///   reads.
+///
+/// # How to implement (and the only way to)
+///
+/// Adopters never write `impl Model for MyType` by hand. The sealed
+/// supertrait blocks it at compile time. Use `#[derive(Model)]` (re-exported
+/// as the `#[model]` attribute through `djogi::prelude`):
+///
+/// ```ignore
+/// use djogi::prelude::*;
+///
+/// #[model(table = "articles")]
+/// pub struct Article {
+///     pub title: String,
+///     pub body: String,
+///     pub published: bool,
+/// }
+/// ```
+///
+/// The macro injects `id: HeerId`, `created_at: DateTime`, and
+/// `updated_at: DateTime` as real public struct fields, generates the `Model`
+/// impl, the `FromPgRow` impl, the `ArticleFields` / `ArticleFilter` /
+/// `ArticleRelated` companion types, and submits the descriptor via
+/// `inventory::submit!` for app/migration registration.
+///
+/// # Where to read further
+///
+/// - **Specification** — [`docs/spec/models.md`](https://github.com/tarunvir/djogi/blob/main/docs/spec/models.md)
+///   for the formal `Model` contract, framework field semantics, and the
+///   `pk = ...` configuration matrix.
+/// - **Getting started** — [`docs/guide/getting-started.md`](https://github.com/tarunvir/djogi/blob/main/docs/guide/getting-started.md)
+///   for an end-to-end walkthrough.
+/// - **Crate root rustdoc** — module table summarising the public surface.
+///
+/// # Why the seal
+///
+/// Every `Model` method composes through emitter sites that trust
+/// `Self::table_name()` and `Self::descriptor().fields[].name` to be
+/// well-formed identifiers. A hand-rolled `impl Model` could smuggle hostile
+/// strings into those positions; the seal removes that route entirely.
+/// Threat model: defends against accidental hand-impls, not deliberate
+/// framework subversion (which has simpler routes via `unsafe`).
 pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// Primary key Rust type.
     /// - `pk = HeerIdRecencyBiased` (default, Phase 7-Zero-2 T2) → `HeerIdDesc`
