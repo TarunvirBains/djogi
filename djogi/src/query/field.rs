@@ -472,7 +472,13 @@ pub trait DjogiPortableOrd:
 // - `rust_decimal::Decimal`: numeric ordering under Postgres `numeric`.
 //
 // Deliberately omitted: `bool` (no ordering callers), `String`, `f32`,
-// `f64`, `Option<U>`, `u8`, `u16`. See trait docs.
+// `f64`, `Option<U>`, `u8`, `u16`, `u64`. See trait docs. `u64` is not
+// `postgres_types::ToSql` and so cannot satisfy the `DjogiPortableOrd`
+// supertrait bounds today — the `IntoFilterValue for u64` impl above
+// routes through `rust_decimal::Decimal` for the SQL bind side, but
+// the portable-ord trait requires the Rust type bind directly. When
+// djogi#190 wires per-field bind shims, a `u64` portable-ord becomes
+// reachable via the same chained-widening route Decimal already has.
 
 impl DjogiPortableOrd for i8 {}
 impl DjogiPortableOrd for i16 {}
@@ -1718,7 +1724,8 @@ impl IntoFilterValue for i64 {
         FilterValue::I64(self)
     }
 }
-// Narrow integer widening (Phase 7-Zero-2 polish, GH issue #29).
+// Narrow integer widening (Phase 7-Zero-2 polish, GH issue #29; `u64`
+// arm added under djogi#186 / Phase 8.5 v3 Cluster 2).
 //
 // Postgres has no native unsigned-integer types and no `i8`. Adopters
 // who model fields as `u8` / `u16` / `u32` / `i8` (port numbers, small
@@ -1726,14 +1733,21 @@ impl IntoFilterValue for i64 {
 // those values without manually upcasting. Each narrow type widens to
 // the smallest signed Postgres type that fits its full range:
 //
-// - `i8`  → `I16` (smallint)   — i8 fits in int2 directly.
-// - `u8`  → `I16` (smallint)   — u8 max 255 fits in int2's 32_767.
-// - `u16` → `I32` (integer)    — u16 max 65_535 exceeds i16's 32_767.
-// - `u32` → `I64` (bigint)     — u32 max ~4.3B exceeds i32's ~2.1B.
-//
-// `u64` deliberately has no impl: u64 max (~18.4 quintillion) exceeds
-// i64 max (~9.2 quintillion). Adopters who genuinely need `u64`
-// values bind via `numeric` through `rust_decimal::Decimal` instead.
+// - `i8`  → `I16`     (smallint)        — i8 fits in int2 directly.
+// - `u8`  → `I16`     (smallint)        — u8 max 255 fits in int2's 32_767.
+// - `u16` → `I32`     (integer)         — u16 max 65_535 exceeds i16's 32_767.
+// - `u32` → `I64`     (bigint)          — u32 max ~4.3B exceeds i32's ~2.1B.
+// - `u64` → `Decimal` (NUMERIC(20, 0))  — u64 max ~18.4 quintillion exceeds
+//                                         i64 max ~9.2 quintillion, so signed
+//                                         widening loses the upper half. The
+//                                         lossless route is `rust_decimal::Decimal`,
+//                                         which Postgres `NUMERIC` accepts. The
+//                                         column-side type-derived CHECK from
+//                                         djogi#186 mirrors this binding so
+//                                         `u64` filter values round-trip
+//                                         exactly through `NUMERIC(20, 0)`
+//                                         once `u64` columns become reachable
+//                                         (gated on djogi#190 macro shim work).
 impl IntoFilterValue for i8 {
     fn into_filter_value(self) -> FilterValue {
         FilterValue::I16(i16::from(self))
@@ -1752,6 +1766,15 @@ impl IntoFilterValue for u16 {
 impl IntoFilterValue for u32 {
     fn into_filter_value(self) -> FilterValue {
         FilterValue::I64(i64::from(self))
+    }
+}
+impl IntoFilterValue for u64 {
+    fn into_filter_value(self) -> FilterValue {
+        // `Decimal::from(u64)` is infallible (u64::MAX < Decimal::MAX,
+        // since Decimal is 96-bit mantissa). Round-trips exactly back
+        // to u64 via the column-side decode path that djogi#190 will
+        // wire when narrow / unsigned column support lands.
+        FilterValue::Decimal(rust_decimal::Decimal::from(self))
     }
 }
 impl IntoFilterValue for f32 {
@@ -5582,6 +5605,23 @@ mod distance_tests {
             // u32 max ~4.3B exceeds i32 max ~2.1B, so widen to i64.
             FilterValue::I64(v) => assert_eq!(v, 4_294_967_295),
             other => panic!("expected I64, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn into_filter_value_u64_widens_to_decimal() {
+        // djogi#186 (Phase 8.5 v3 Cluster 2) — `u64` was previously
+        // omitted from `IntoFilterValue` because `u64::MAX > i64::MAX`
+        // makes the simple signed widening unsound. The fix uses
+        // `rust_decimal::Decimal`, which Postgres `NUMERIC(20, 0)`
+        // round-trips losslessly.
+        match 0u64.into_filter_value() {
+            FilterValue::Decimal(v) => assert_eq!(v, rust_decimal::Decimal::from(0u64)),
+            other => panic!("expected Decimal, got {other:?}"),
+        }
+        match u64::MAX.into_filter_value() {
+            FilterValue::Decimal(v) => assert_eq!(v, rust_decimal::Decimal::from(u64::MAX)),
+            other => panic!("expected Decimal, got {other:?}"),
         }
     }
 }
