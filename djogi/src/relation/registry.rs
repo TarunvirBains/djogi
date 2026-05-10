@@ -64,10 +64,24 @@
 //! `inventory::iter::<ReverseRelationMarker>()`), groups them by
 //! `(source, accessor_name)`, and returns
 //! [`RelationRegistryError::AccessorCollisions`] for any group whose
-//! members disagree on `kind`, `target`, or `via`. Adopters are expected
-//! to call it once during startup or in a CI gate test so cross-suffix
-//! collisions surface at the macro invocations rather than at an
-//! arbitrary call site.
+//! members disagree on `kind`, `target`, or `via`. The cross-suffix
+//! collision then surfaces during Djogi's registry/projection pass with
+//! the offending source, accessor, kind, target, and via metadata,
+//! rather than at an arbitrary downstream method-call site.
+//!
+//! The framework's own bootstrap paths invoke the gate automatically:
+//! `djogi::migrate::project_from_inventory` validates the global
+//! registry before producing snapshot output, and the test sync helper
+//! (`djogi::testing::sync_models` via `build_sync_plans`) validates
+//! before composing per-bucket DDL. Adopters with a custom bootstrap —
+//! one that does not run through the framework's projection or sync
+//! helpers — can still call
+//! [`validate_global_relation_accessor_registry`] (a zero-arg shortcut
+//! for the canonical `inventory::iter::<ReverseRelationMarker>` walk)
+//! during startup or in a dedicated CI gate test.
+//! [`validate_relation_accessor_collisions`] remains the lower-level
+//! entry point for custom tooling that needs to feed in a synthetic
+//! marker iterator (e.g. registry-merge consumers).
 //!
 //! # How
 //!
@@ -92,9 +106,8 @@
 //!   submit!` block.
 //! - `djogi_macros::reverse_one_to_one!` — same, with
 //!   `RelationKind::O2O`.
-//! - A future `djogi_macros::many_to_many!` (Task 7's M2M half, out
-//!   of scope here) will emit `RelationKind::M2M` records using the
-//!   same marker shape.
+//! - `djogi_macros::many_to_many!` — emits `RelationKind::M2M`
+//!   records using the same marker shape.
 
 /// Kind discriminator for registered relation accessors.
 ///
@@ -118,9 +131,8 @@ pub enum RelationKind {
     /// accessor returns `Option<Source>`.
     O2O,
     /// `many_to_many!` — through-model-backed M2M. The generated
-    /// accessor returns a `Vec<{Source}{Name}View>` JOIN row. Emitted
-    /// by a future sibling macro; carried here so Phase 4.5's
-    /// projection generator can walk all three kinds in one pass.
+    /// accessor returns a `Vec<Target>`. Carried here so the projection
+    /// generator can walk all three kinds in one pass.
     M2M,
 }
 
@@ -332,8 +344,8 @@ const fn kind_order(k: RelationKind) -> u8 {
 /// collision only manifests as an "ambiguous method call" at every
 /// downstream call site that has both traits in scope. This validator
 /// closes the gap: callers route the inventory iterator through it once
-/// at startup (or in a CI gate) and the diagnostic points at the macro
-/// invocations rather than at an arbitrary call site.
+/// at startup (or in a CI gate) and the diagnostic names the conflicting
+/// accessor metadata rather than an arbitrary downstream call site.
 ///
 /// # Tolerance for legitimate duplicates
 ///
@@ -426,6 +438,53 @@ where
     } else {
         Err(RelationRegistryError::AccessorCollisions(collisions))
     }
+}
+
+/// Validate the link-time-collected
+/// [`inventory::iter::<ReverseRelationMarker>`] for cross-kind accessor
+/// collisions in one zero-arg call.
+///
+/// Convenience companion to [`validate_relation_accessor_collisions`]
+/// for adopters whose bootstrap does not already feed an explicit
+/// marker iterator. The body is exactly
+/// `validate_relation_accessor_collisions(::inventory::iter::<ReverseRelationMarker>())`;
+/// keeping it as a named function gives the production projection /
+/// sync-helper paths a single call site to gate on, and gives custom
+/// bootstraps a stable entry point that does not require spelling out
+/// the inventory iterator type.
+///
+/// # When to call this
+///
+/// The framework calls this automatically inside
+/// `djogi::migrate::project_from_inventory` and
+/// `djogi::testing::build_sync_plans` (the two paths that produce
+/// schema or per-test DDL from the global descriptor inventory). A
+/// custom bootstrap that bypasses both — for example, an adopter that
+/// renders an admin schema graph from `inventory::iter::<ModelDescriptor>`
+/// without ever running `project_from_inventory` — should call this
+/// helper once at startup or in a dedicated CI gate test so cross-kind
+/// accessor collisions surface at deploy time rather than at a downstream
+/// "ambiguous method call" call site.
+///
+/// # Cost
+///
+/// One linear walk of the inventory plus a `BTreeMap` group-by. Marker
+/// counts are tiny (one per declared reverse / M2M accessor — tens to
+/// low hundreds for a typical app), so the cost is dominated by the
+/// `inventory::iter` walk itself, not the validator.
+///
+/// # Example
+///
+/// ```ignore
+/// // Custom bootstrap — adopter calls the gate explicitly.
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     djogi::relation::registry::validate_global_relation_accessor_registry()?;
+///     // ... rest of startup ...
+///     Ok(())
+/// }
+/// ```
+pub fn validate_global_relation_accessor_registry() -> Result<(), RelationRegistryError> {
+    validate_relation_accessor_collisions(::inventory::iter::<ReverseRelationMarker>())
 }
 
 /// Macro-only entry point for constructing [`ReverseRelationMarker`]
@@ -870,5 +929,25 @@ mod tests {
         // the `&'a T` bound. The result itself is whatever the live
         // inventory contains; the test is purely a type-check.
         let _ = validate_relation_accessor_collisions(::inventory::iter::<ReverseRelationMarker>());
+    }
+
+    #[test]
+    fn validate_global_relation_accessor_registry_is_zero_arg_shortcut() {
+        // The zero-arg helper is the canonical entry point for adopters
+        // and for the framework's own production hooks
+        // (`project_from_inventory`, `build_sync_plans`). It must
+        // (1) compile without arguments, (2) return `Result`, and
+        // (3) produce the same outcome as walking the live inventory
+        // through `validate_relation_accessor_collisions` directly.
+        // Asserting outcome-equality keeps the helper a thin alias —
+        // anyone who later swaps in a memoised / cached implementation
+        // must keep the result shape stable.
+        let direct =
+            validate_relation_accessor_collisions(::inventory::iter::<ReverseRelationMarker>());
+        let via_helper = validate_global_relation_accessor_registry();
+        assert_eq!(direct.is_ok(), via_helper.is_ok());
+        if let (Err(d), Err(h)) = (&direct, &via_helper) {
+            assert_eq!(d.to_string(), h.to_string());
+        }
     }
 }

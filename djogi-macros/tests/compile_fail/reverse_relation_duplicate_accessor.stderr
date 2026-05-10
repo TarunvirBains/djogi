@@ -1,22 +1,22 @@
 error[E0428]: the name `OwnerCarsReverseRelation` is defined multiple times
-  --> tests/compile_fail/reverse_relation_duplicate_accessor.rs:53:1
+  --> tests/compile_fail/reverse_relation_duplicate_accessor.rs:54:1
    |
 47 | djogi::reverse_one_to_many!(Owner, cars -> Vehicle by owner_id);
    | --------------------------------------------------------------- previous definition of the trait `OwnerCarsReverseRelation` here
 ...
-53 | djogi::reverse_one_to_many!(Owner, cars -> Vehicle by owner_id);
+54 | djogi::reverse_one_to_many!(Owner, cars -> Vehicle by owner_id);
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `OwnerCarsReverseRelation` redefined here
    |
    = note: `OwnerCarsReverseRelation` must be defined only once in the type namespace of this module
    = note: this error originates in the macro `djogi::reverse_one_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0119]: conflicting implementations of trait `OwnerCarsReverseRelation` for type `Owner`
-  --> tests/compile_fail/reverse_relation_duplicate_accessor.rs:53:1
+  --> tests/compile_fail/reverse_relation_duplicate_accessor.rs:54:1
    |
 47 | djogi::reverse_one_to_many!(Owner, cars -> Vehicle by owner_id);
    | --------------------------------- first implementation here
 ...
-53 | djogi::reverse_one_to_many!(Owner, cars -> Vehicle by owner_id);
+54 | djogi::reverse_one_to_many!(Owner, cars -> Vehicle by owner_id);
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ conflicting implementation for `Owner`
    |
    = note: this error originates in the macro `djogi::reverse_one_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)

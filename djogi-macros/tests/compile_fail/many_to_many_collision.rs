@@ -59,10 +59,11 @@ djogi::many_to_many!(
 );
 
 // Second declaration with the same `relation` on the same source
-// type. The emitted `impl Person { pub fn groups(...) }` collides
-// with the first at rustc's duplicate-definition check, failing the
-// build here. The trait impl `impl ManyToMany<Group> for Person` also
-// duplicates, compounding the failure.
+// type. The emitted per-relation trait `PersonGroupsManyToManyRelation`
+// (and its `impl ... for Person`) is defined twice, tripping rustc's
+// duplicate-definition check (E0428) and failing the build here. The
+// `impl ManyToMany<Group> for Person` blanket also duplicates, so
+// E0119 (conflicting trait implementation) fires alongside.
 djogi::many_to_many!(
     Person, Group,
     through = PersonGroup,

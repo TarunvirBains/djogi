@@ -22,8 +22,8 @@ see [the relations roadmap](../roadmap/relations.md).
 |---|---|---|
 | `pub owner_id: ForeignKey<Owner>` | Many-to-one | `.fetch(&mut ctx)` / `.resolved()` / prefetch via `{Model}Related` |
 | `pub user_id: OneToOneField<User>` | One-to-one (unique on the FK column) | same surface as `ForeignKey<T>` |
-| `reverse_one_to_many!(Parent, name -> Child by fk)` | Reverse of a `ForeignKey` | inherent method `parent.name(&mut ctx) -> Vec<Child>` |
-| `reverse_one_to_one!(Parent, name -> Child by fk)` | Reverse of a `OneToOneField` | inherent method `parent.name(&mut ctx) -> Option<Child>` |
+| `reverse_one_to_many!(Parent, name -> Child by fk)` | Reverse of a `ForeignKey` | per-relation trait method `parent.name(&mut ctx) -> Vec<Child>` |
+| `reverse_one_to_one!(Parent, name -> Child by fk)` | Reverse of a `OneToOneField` | per-relation trait method `parent.name(&mut ctx) -> Option<Child>` |
 | `many_to_many!(Source, Target, through = …, …)` | M2M via an explicit junction model | trait impl + `source.relation(&mut ctx) -> Vec<Target>` |
 
 Every relation type has a matching entry in `ModelDescriptor::relations` so
@@ -208,16 +208,29 @@ Effective emission:
 
 ```rust
 // Effective emission — do not write this by hand
-impl Owner {
-    pub async fn vehicles<'ctx>(
+pub trait OwnerVehiclesReverseRelation {
+    fn vehicles<'ctx>(
         &'ctx self,
         ctx: &'ctx mut DjogiContext,
-    ) -> Result<Vec<Vehicle>, DjogiError>
-    {
-        Vehicle::objects()
-            .filter(|f| f.owner_id().eq(ForeignKey::new(self.id.clone())))
-            .fetch_all(ctx)
-            .await
+    ) -> impl std::future::Future<Output = Result<Vec<Vehicle>, DjogiError>>
+    + Send
+    + 'ctx;
+}
+
+impl OwnerVehiclesReverseRelation for Owner {
+    fn vehicles<'ctx>(
+        &'ctx self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl std::future::Future<Output = Result<Vec<Vehicle>, DjogiError>>
+    + Send
+    + 'ctx {
+        let pk = self.pk_value().clone();
+        async move {
+            Vehicle::objects()
+                .filter(move |f| f.owner_id().eq(ForeignKey::new(pk)))
+                .fetch_all(ctx)
+                .await
+        }
     }
 }
 ```
@@ -338,7 +351,7 @@ Each invocation emits one direction. The macro generates:
 | Item | Shape |
 |---|---|
 | `impl ManyToMany<Target> for Source` | Supplies `Through`, `RELATION`, `this_fk()`, `that_fk()`, and typed bodies for `related` / `add_related` / `remove_related` |
-| `impl Source` inherent method named after `relation` | `person.groups(&mut ctx)` delegates to `<Self as ManyToMany<Group>>::related(self, &mut ctx)` |
+| `pub trait {Source}{Relation-pascal}ManyToManyRelation` + `impl … for Source` | Stamps out the per-relation accessor as a trait method named after `relation`. `person.groups(&mut ctx)` delegates to `<Self as ManyToMany<Group>>::related(self, &mut ctx)`. Trait-based emission lifts the cross-crate coherence constraint described in GH issue #39 — the same shape used by the reverse macros. |
 | `inventory::submit!(ReverseRelationMarker::new_via_macro_support(...))` | Registers the relation for collision detection and admin enumeration |
 | `const _: () = { … }` const-assert block | Validates `relation`, `this_fk`, `that_fk` against the user-supplied identifier grammar at codegen time, including the reserved `__djogi_*` prefix |
 
@@ -347,6 +360,11 @@ flow through `const_assert_user_supplied_ident`, so a keyword, reserved
 `__djogi_*` name, or SQL-injection attempt (`"id; DROP TABLE users"`)
 fails at compile time, not at query time. Fixtures:
 `many_to_many_bad_that_fk_keyword.rs` and peers.
+
+The per-relation trait is `pub`, so a downstream consumer who wants to call
+`person.groups(&mut ctx)` from another module must bring the trait into scope
+(e.g. `use crate::models::PersonGroupsManyToManyRelation;`) — same ergonomics
+as the reverse-relation accessors.
 
 ### Call sites
 
@@ -408,11 +426,38 @@ The reverse macros emit `…ReverseRelation` instead of
 the same source** produce two different trait names and **both
 compile**. The collision only manifests at downstream call sites that
 have both traits in scope, raising "ambiguous method call" errors that
-point at the call site rather than at the macro invocations.
+point at the call site rather than at the relation declarations.
 
-To close that cross-kind gap, call
-`djogi::relation::registry::validate_relation_accessor_collisions` once
-at startup (or in a CI gate test):
+To close that cross-kind gap, Djogi gates the global relation accessor
+registry inside its production projection and per-test sync helpers:
+
+- `djogi::migrate::project_from_inventory` — the entry point used by
+  `djogi migrations compose` and the migration runner — validates the
+  registry before producing any snapshot output. A collision surfaces
+  as `ProjectionError::RelationAccessorCollisions(..)`.
+- `djogi::testing::sync_models` (and the underlying `build_sync_plans`)
+  — the helper invoked by `#[djogi::djogi_test(sync_models = [...])]`
+  — runs the same gate before composing per-bucket DDL. A collision
+  surfaces as `DjogiError::Db(..)` carrying the registry diagnostic.
+
+Typical Djogi migration composition and synced integration-test setup
+therefore catch the collision automatically; no extra wiring is required
+on those paths. If you have a custom bootstrap that bypasses both helpers
+(for example, an admin schema graph rendered straight from
+`inventory::iter::<ModelDescriptor>` without ever running
+`project_from_inventory`), call the zero-arg
+`validate_global_relation_accessor_registry` once during startup or in a
+dedicated CI gate test:
+
+```rust
+djogi::relation::registry::validate_global_relation_accessor_registry()?;
+```
+
+The lower-level
+`djogi::relation::registry::validate_relation_accessor_collisions`
+remains available for tooling that needs to feed in a synthetic marker
+iterator (for example, a registry-merge tool concatenating two
+inventories before deciding whether the result is collision-free):
 
 ```rust
 use djogi::relation::registry::{
@@ -424,13 +469,13 @@ validate_relation_accessor_collisions(
 )?;
 ```
 
-It walks the link-time-collected inventory of reverse / M2M markers,
-groups them by `(source, accessor_name)`, and returns
+Either entry point walks the link-time-collected inventory of reverse
+/ M2M markers, groups them by `(source, accessor_name)`, and returns
 `RelationRegistryError::AccessorCollisions(..)` with one
 `RelationAccessorCollision` per offending pair. The diagnostic includes
 the conflicting kinds, targets, and via columns so adopters can fix
-each clash at the macro call site instead of triaging from a downstream
-ambiguity error.
+each relation declaration instead of triaging from a downstream ambiguity
+error.
 
 The validator tolerates **identical duplicate markers** (same kind /
 target / via) so future registry-merge consumers don't false-positive

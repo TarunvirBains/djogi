@@ -927,6 +927,17 @@ fn replace_db_in_url(url: &str, new_db: &str) -> Result<String, DjogiError> {
 /// intentionally bypassed. The composition primitives (T1 + T2 + T3)
 /// remain shared with production.
 ///
+/// # Pre-flight registry gate (GH #158)
+///
+/// Before step 1 the helper invokes
+/// [`crate::relation::registry::validate_global_relation_accessor_registry`]
+/// to catch cross-kind reverse / M2M accessor collisions that rustc
+/// cannot see. Per-test sync therefore fails loudly with the offending
+/// source, accessor, kind, target, and via metadata rather than at a
+/// downstream "ambiguous method call" call site — the gate runs whether
+/// or not the offending models happen to be in the `sync_models = [...]`
+/// set, since the underlying inventory is link-time-global.
+///
 /// # Bucket ordering
 ///
 /// Buckets are walked in [`BucketKey`] order
@@ -1083,11 +1094,13 @@ pub async fn clear_outbox_for_test(ctx: &mut DjogiContext, table: &str) -> Resul
 /// Build the additive [`MigrationPlan`]s [`sync_models`] would execute
 /// for `descriptors`, without touching any database.
 ///
-/// Steps 1–5 of [`sync_models`]: pre-flight FK check, projection,
-/// empty-source diff, additive-only invariant check, and per-bucket
-/// `plan_delta` lowering. Returns one plan per non-`NoOp` bucket in
-/// [`BucketKey`] order. An empty `descriptors` slice returns an empty
-/// vec (matching `sync_models`'s zero-DDL no-op contract).
+/// Steps 0–5 of [`sync_models`]: relation-accessor registry gate,
+/// pre-flight FK check, projection, empty-source diff, additive-only
+/// invariant check, and per-bucket `plan_delta` lowering. Returns one
+/// plan per non-`NoOp` bucket in [`BucketKey`] order. An empty
+/// `descriptors` slice returns an empty vec (matching `sync_models`'s
+/// zero-DDL no-op contract); the registry gate is also skipped in that
+/// case because no schema would be produced anyway.
 ///
 /// Used by [`sync_models`] itself and by parity tests that need to
 /// compare the additive sync plan against the production migration
@@ -1095,12 +1108,37 @@ pub async fn clear_outbox_for_test(ctx: &mut DjogiContext, table: &str) -> Resul
 /// the same `MigrationPlan` to both `sync_models`'s `execute_plan`
 /// and `migrate::apply_plan`, proving the two execution wrappers
 /// produce identical schema state.
+///
+/// # Pre-flight registry gate (GH #158)
+///
+/// Step 0 invokes
+/// [`crate::relation::registry::validate_global_relation_accessor_registry`]
+/// before any descriptor work. The gate catches cross-kind reverse /
+/// M2M accessor collisions that rustc cannot see (the colliding macros
+/// emit different trait suffixes — `…ReverseRelation` vs
+/// `…ManyToManyRelation` — so both compile and the clash only
+/// manifests at downstream "ambiguous method call" call sites). A
+/// failure surfaces as [`DjogiError::Db`] carrying the registry
+/// diagnostic, anchoring the fix at the relation registry metadata
+/// rather than at an arbitrary call site.
 pub fn build_sync_plans(
     descriptors: &[&'static ModelDescriptor],
 ) -> Result<Vec<MigrationPlan>, DjogiError> {
     if descriptors.is_empty() {
         return Ok(Vec::new());
     }
+
+    // ── Step 0 — relation-accessor registry gate (GH #158). Walks the
+    //              link-time-collected `ReverseRelationMarker` inventory
+    //              and surfaces any cross-kind `(source, name)` pair
+    //              that rustc cannot catch (the colliding macros emit
+    //              different trait suffixes, so both compile cleanly).
+    //              Run before the per-descriptor work so a hostile
+    //              registry never reaches the differ / planner; the
+    //              error names every offending pair in one pass.
+    wrap_relation_registry_for_sync_models(
+        crate::relation::registry::validate_global_relation_accessor_registry(),
+    )?;
 
     // ── Step 1 — pre-flight: every FK target named on a descriptor
     //              must also be in the supplied list. Macro-time
@@ -1227,6 +1265,26 @@ pub fn build_sync_plans(
         plans.push(plan);
     }
     Ok(plans)
+}
+
+/// Wrap a [`crate::relation::registry::validate_global_relation_accessor_registry`]
+/// result into the [`DjogiError::Db`] surface `build_sync_plans` /
+/// `sync_models` use for every other failure mode. Extracted so unit
+/// tests can drive the wrapping path with a synthetic registry error
+/// without polluting the link-time-collected
+/// [`crate::relation::registry::ReverseRelationMarker`] inventory —
+/// `inventory::submit!` from a test would persist for every other test
+/// in the same binary.
+fn wrap_relation_registry_for_sync_models(
+    result: Result<(), crate::relation::registry::RelationRegistryError>,
+) -> Result<(), DjogiError> {
+    result.map_err(|e| {
+        DjogiError::Db(DbError::other(format!(
+            "sync_models: relation accessor registry contains cross-kind \
+             collisions (GH #158); fix the colliding relation macro declaration(s) \
+             before re-running sync_models:\n{e}"
+        )))
+    })
 }
 
 /// Build a fresh, empty [`AppliedSchema`] suitable as the "before"
@@ -1693,5 +1751,58 @@ mod tests {
         assert!(super::validate_outbox_table_for_test("__djogi_").is_err());
         assert!(super::validate_outbox_table_for_test("app_outbox").is_ok());
         assert!(super::validate_outbox_table_for_test("_djogi_outbox").is_ok());
+    }
+
+    // ── GH #158 — relation-registry gate inside build_sync_plans ─────────
+
+    #[test]
+    fn wrap_relation_registry_for_sync_models_passes_ok_through() {
+        // The clean-registry path must not perturb the existing
+        // `Result<(), DjogiError>` flow — `Ok(())` in, `Ok(())` out,
+        // no string formatting, no allocation.
+        super::wrap_relation_registry_for_sync_models(Ok(()))
+            .expect("Ok input must propagate unchanged");
+    }
+
+    #[test]
+    fn wrap_relation_registry_for_sync_models_wraps_collision_into_djogi_error() {
+        // Build a synthetic `RelationRegistryError` via the public API
+        // so the wrap path sees the exact shape the live walker would
+        // emit. Polluting the link-time-collected
+        // `inventory::iter::<ReverseRelationMarker>` is intentionally
+        // avoided — submitting a colliding marker would persist for
+        // every other test in the lib's test binary.
+        use crate::relation::registry::{RelationKind, validate_relation_accessor_collisions};
+        let make = |kind, source, name, target, via| {
+            crate::relation::registry::__macro_support::__make_reverse_relation_marker(
+                kind, source, name, target, via,
+            )
+        };
+        let markers = [
+            make(RelationKind::FK, "Owner", "cars", "Vehicle", "owner_id"),
+            make(RelationKind::M2M, "Owner", "cars", "Garage", "owner_id"),
+        ];
+        let registry_err = validate_relation_accessor_collisions(markers.iter())
+            .expect_err("synthetic FK + M2M markers must collide");
+
+        let err = super::wrap_relation_registry_for_sync_models(Err(registry_err))
+            .expect_err("registry error must surface as DjogiError::Db");
+
+        // Diagnostic anchors — the message must direct the operator at
+        // the relation metadata + carry the GH issue number, and it
+        // must mention `sync_models` so a confused reader scanning a
+        // `cargo test` log can connect the dot to this code path
+        // rather than to `project_from_inventory` (which uses a
+        // different prefix).
+        let msg = err.to_string();
+        assert!(
+            msg.contains("sync_models"),
+            "missing entry-point anchor: {msg}"
+        );
+        assert!(msg.contains("GH #158"), "missing issue anchor: {msg}");
+        assert!(msg.contains("Owner"), "missing source: {msg}");
+        assert!(msg.contains("cars"), "missing accessor: {msg}");
+        assert!(msg.contains("FK"), "missing FK kind: {msg}");
+        assert!(msg.contains("M2M"), "missing M2M kind: {msg}");
     }
 }

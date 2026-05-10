@@ -47,9 +47,10 @@ pub struct Vehicle {
 djogi::reverse_one_to_many!(Owner, cars -> Vehicle by owner_id);
 
 // Second declaration with the same method name on the same receiver.
-// The emitted `impl Owner { pub fn cars(...) }` collides with the
-// first at rustc's duplicate-definition check, failing the build
-// here.
+// The emitted per-relation trait `OwnerCarsReverseRelation` (and its
+// `impl ... for Owner`) is defined twice, tripping rustc's
+// duplicate-definition check (E0428 on the trait, E0119 on the impl)
+// and failing the build here.
 djogi::reverse_one_to_many!(Owner, cars -> Vehicle by owner_id);
 
 fn main() {}

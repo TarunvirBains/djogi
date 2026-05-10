@@ -209,6 +209,18 @@ pub enum ProjectionError {
         /// The type at which the cycle was first detected.
         type_name: String,
     },
+    /// GH issue #158 — the global
+    /// [`crate::relation::registry::ReverseRelationMarker`] inventory
+    /// contains at least one `(source, accessor_name)` pair claimed by
+    /// markers that disagree on `kind`, `target`, or `via`.
+    ///
+    /// Surfaced eagerly by [`project_from_inventory`] before any
+    /// per-bucket projection work so the diagnostic names the colliding
+    /// source, accessor, kind, target, and via metadata rather than an
+    /// arbitrary downstream "ambiguous method call" call site. The
+    /// carried error value enumerates every offending pair so adopters
+    /// can fix the whole registry in one round.
+    RelationAccessorCollisions(crate::relation::registry::RelationRegistryError),
 }
 
 impl std::fmt::Display for ProjectionError {
@@ -308,6 +320,15 @@ impl std::fmt::Display for ProjectionError {
                  parent. Break the cycle by removing one of the `proxy_for` \
                  declarations in the loop."
             ),
+            ProjectionError::RelationAccessorCollisions(inner) => write!(
+                f,
+                "relation-accessor collisions detected before projection \
+                 (GH #158); the framework gates `project_from_inventory` on \
+                 the global `inventory::iter::<ReverseRelationMarker>` walk \
+                 so cross-kind clashes surface with relation metadata \
+                 rather than at a downstream `ambiguous method call` site:\n\
+                 {inner}"
+            ),
         }
     }
 }
@@ -336,8 +357,51 @@ fn insert_unique<K: Ord, V, E>(
 /// `inventory::iter::<EnumDescriptor>`, and [`AppRegistry::all`] —
 /// the production entry point. Use [`project_from_iters`] when you
 /// need to project from explicit iterables (tests).
+///
+/// # Pre-projection registry gate (GH #158)
+///
+/// Before producing any snapshot output this entry point invokes
+/// [`crate::relation::registry::validate_global_relation_accessor_registry`]
+/// to catch cross-kind reverse / M2M accessor collisions that rustc
+/// cannot see (the colliding macros emit different trait suffixes —
+/// `…ReverseRelation` vs `…ManyToManyRelation` — so both compile and
+/// the clash only manifests at downstream call sites). A failure is
+/// wrapped into [`ProjectionError::RelationAccessorCollisions`] before
+/// any per-bucket work runs, keeping the diagnostic anchored at the
+/// relation registry metadata rather than at the eventual ambiguity
+/// error.
+/// Custom bootstraps that bypass this entry point can call the
+/// validator directly to retain the same gate.
 #[allow(clippy::result_large_err)]
 pub fn project_from_inventory() -> Result<BTreeMap<BucketKey, AppliedSchema>, ProjectionError> {
+    project_from_inventory_with_relation_validator(
+        crate::relation::registry::validate_global_relation_accessor_registry,
+    )
+}
+
+/// Inner half of [`project_from_inventory`] with the relation-registry
+/// validator extracted to a closure parameter.
+///
+/// The production entry point passes
+/// [`crate::relation::registry::validate_global_relation_accessor_registry`]
+/// directly. Tests inject `|| Ok(())` (clean-registry path) or
+/// `|| Err(synthetic_err)` (collision path) to exercise the wrapping
+/// without polluting the link-time-collected inventory — submitting a
+/// colliding marker via `inventory::submit!` from a test would persist
+/// for every other test in the same binary, and the lib's `cargo test`
+/// surface should be able to assert both branches.
+///
+/// `pub(crate)` because the closure type signature is an internal
+/// implementation detail; outside callers should keep going through
+/// [`project_from_inventory`].
+#[allow(clippy::result_large_err)]
+pub(crate) fn project_from_inventory_with_relation_validator<F>(
+    validator: F,
+) -> Result<BTreeMap<BucketKey, AppliedSchema>, ProjectionError>
+where
+    F: FnOnce() -> Result<(), crate::relation::registry::RelationRegistryError>,
+{
+    validator().map_err(ProjectionError::RelationAccessorCollisions)?;
     project_from_iters(
         inventory::iter::<ModelDescriptor>(),
         inventory::iter::<EnumDescriptor>(),
@@ -1373,6 +1437,22 @@ mod tests {
         EnumDescriptor, FieldDescriptor, FieldSqlType, IndexColumnSpec, IndexKind, IndexSpec,
         IndexTarget, IndexType, ModelDescriptor, PkType, field_descriptor, model_descriptor,
     };
+    use crate::relation::registry::{
+        RelationKind as RegistryRelationKind, RelationRegistryError, ReverseRelationMarker,
+        validate_relation_accessor_collisions,
+    };
+
+    fn synth_collision_marker(
+        kind: RegistryRelationKind,
+        source: &'static str,
+        name: &'static str,
+        target: &'static str,
+        via: &'static str,
+    ) -> ReverseRelationMarker {
+        crate::relation::registry::__macro_support::__make_reverse_relation_marker(
+            kind, source, name, target, via,
+        )
+    }
 
     fn synth_model(table: &'static str, type_name: &'static str) -> ModelDescriptor {
         ModelDescriptor {
@@ -2662,5 +2742,119 @@ mod tests {
             "non-FK Text column must pass through unchanged; got {}",
             name.sql_type
         );
+    }
+
+    // ── GH #158 — projection-time relation-registry gate ──────────────────
+    //
+    // The full integration (live `inventory::iter::<ReverseRelationMarker>`
+    // walk → `project_from_inventory()` failure) is intentionally NOT
+    // pinned with a globally-submitted colliding marker: such a submission
+    // would persist for every other test in the lib's test binary and
+    // permanently lock `project_from_inventory()` into the failing branch.
+    // Instead we exercise the wrapping path through
+    // `project_from_inventory_with_relation_validator`, which the
+    // production entry point delegates to. Synthetic registry errors are
+    // built via the public `validate_relation_accessor_collisions` so the
+    // shape matches what the live walker would emit.
+
+    #[test]
+    fn project_from_inventory_wraps_relation_collision_into_projection_error() {
+        // Build a synthetic `RelationRegistryError` using the public API
+        // so the wrapper sees the exact shape `validate_global_relation_accessor_registry`
+        // would emit against an offending live registry.
+        let markers = [
+            synth_collision_marker(
+                RegistryRelationKind::FK,
+                "Owner",
+                "cars",
+                "Vehicle",
+                "owner_id",
+            ),
+            synth_collision_marker(
+                RegistryRelationKind::M2M,
+                "Owner",
+                "cars",
+                "Garage",
+                "owner_id",
+            ),
+        ];
+        let registry_err: RelationRegistryError =
+            validate_relation_accessor_collisions(markers.iter())
+                .expect_err("synthetic FK + M2M markers must collide");
+
+        let result = project_from_inventory_with_relation_validator(|| Err(registry_err));
+        let err = result.expect_err("validator failure must short-circuit projection");
+
+        // Variant assertion — the gate must surface as the dedicated
+        // `RelationAccessorCollisions` arm so callers can match on it
+        // (e.g. CLI `compose_cmd` may eventually want a tailored exit
+        // code or ANSI hint for this case).
+        assert!(
+            matches!(err, ProjectionError::RelationAccessorCollisions(_)),
+            "expected RelationAccessorCollisions, got {err:?}"
+        );
+
+        // Diagnostic anchors — the message must point at the relation
+        // registry metadata (source / accessor name / both kinds) and
+        // carry the GH issue number so a future operator can grep for
+        // it without re-discovering the design rationale.
+        let msg = err.to_string();
+        assert!(
+            msg.contains("relation-accessor collisions detected before projection"),
+            "missing projection-side anchor: {msg}"
+        );
+        assert!(msg.contains("GH #158"), "missing issue number: {msg}");
+        assert!(msg.contains("Owner"), "missing source: {msg}");
+        assert!(msg.contains("cars"), "missing accessor name: {msg}");
+        assert!(msg.contains("FK"), "missing FK kind: {msg}");
+        assert!(msg.contains("M2M"), "missing M2M kind: {msg}");
+    }
+
+    #[test]
+    fn project_from_inventory_with_clean_validator_does_not_short_circuit() {
+        // Inject a `Ok(())` validator. The downstream `project_from_iters`
+        // call may still return `Ok` or `Err` depending on what the live
+        // test-binary inventory holds (e.g. fixtures from other tests),
+        // but the failure mode this test pins is "validator returned Ok →
+        // we did NOT short-circuit with `RelationAccessorCollisions`".
+        let result = project_from_inventory_with_relation_validator(|| Ok(()));
+        if let Err(ref e) = result {
+            assert!(
+                !matches!(e, ProjectionError::RelationAccessorCollisions(_)),
+                "validator returned Ok(()) but projection still produced \
+                 RelationAccessorCollisions: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn projection_error_relation_accessor_collisions_display_is_actionable() {
+        // The Display impl is the operator-facing diagnostic surface.
+        // Pin every load-bearing substring so a refactor cannot silently
+        // drop the source / accessor / kinds / GH-issue anchor.
+        let markers = [
+            synth_collision_marker(
+                RegistryRelationKind::FK,
+                "Account",
+                "subscriptions",
+                "Subscription",
+                "account_id",
+            ),
+            synth_collision_marker(
+                RegistryRelationKind::M2M,
+                "Account",
+                "subscriptions",
+                "Plan",
+                "account_id",
+            ),
+        ];
+        let registry_err = validate_relation_accessor_collisions(markers.iter()).unwrap_err();
+        let projection_err = ProjectionError::RelationAccessorCollisions(registry_err);
+        let msg = projection_err.to_string();
+        assert!(msg.contains("Account"), "missing source: {msg}");
+        assert!(msg.contains("subscriptions"), "missing accessor: {msg}");
+        assert!(msg.contains("Subscription"), "missing FK target: {msg}");
+        assert!(msg.contains("Plan"), "missing M2M target: {msg}");
+        assert!(msg.contains("GH #158"), "missing issue anchor: {msg}");
     }
 }

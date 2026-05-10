@@ -711,8 +711,8 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // names — `…ManyToManyRelation` vs `…ReverseRelation` — and
     // compile cleanly until the call site forces an "ambiguous method
     // call" error). Adopters call the validator once at startup or in
-    // a CI gate so the diagnostic points at the macro invocations
-    // rather than at an arbitrary downstream call site.
+    // a CI gate so the diagnostic names the conflicting relation
+    // metadata rather than an arbitrary downstream call site.
     let inventory_submit = quote! {
         ::djogi::__private::inventory::submit! {
             ::djogi::relation::registry::__macro_support::__make_reverse_relation_marker(
