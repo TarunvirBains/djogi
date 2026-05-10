@@ -296,7 +296,7 @@ fn check_ident(kind: &str, value: &str, span: proc_macro2::Span) -> syn::Result<
     if starts_with_reserved_djogi_prefix(bytes) {
         let rename_hint = match kind {
             "field name" => {
-                "Rename the field, or use `#[field(renamed_from = \"…\")]` to map to a non-reserved column name."
+                "Rename the Rust field to a non-reserved column name; use `#[field(renamed_from = \"…\")]` only when migrating from an existing old column."
             }
             _ => "Use a non-reserved name.",
         };
@@ -325,7 +325,7 @@ fn check_ident(kind: &str, value: &str, span: proc_macro2::Span) -> syn::Result<
     if is_reserved {
         let rename_hint = match kind {
             "field name" => {
-                "Rename the field, or use `#[field(renamed_from = \"…\")]` to map to a non-reserved column name."
+                "Rename the Rust field to a non-reserved column name; use `#[field(renamed_from = \"…\")]` only when migrating from an existing old column."
             }
             _ => "Use a non-reserved name.",
         };
@@ -488,9 +488,9 @@ mod tests {
     #[test]
     fn djogi_prefix_diagnostic_carries_rename_hint_for_field_name() {
         // Diagnostic quality — adopters seeing the reservation error
-        // benefit from being pointed at `#[field(renamed_from = "…")]`
-        // since the offending identifier might be a Rust field name
-        // they can't change without breaking external API.
+        // benefit from being pointed at the safe migration shape:
+        // rename the Rust field now, and use `renamed_from` only to
+        // describe the old column that already exists on disk.
         let err = classify("__djogi_legacy_id").expect_err("must reject");
         assert!(
             err.contains("#[field(renamed_from"),
