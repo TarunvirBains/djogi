@@ -116,13 +116,8 @@ pub fn expand(
 fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Result<TokenStream> {
     // `pk = None` skip — adopter-managed PK lifecycle, no auto-emitted
     // Cacheable. Same shape as `crud::expand`'s `Model` impl gate
-    // (the early return for `PkStrategy::None`); the IntoQ bridge in
-    // cluster 8ε's `filter::expand` (PR #116, branch
-    // `phase8-cluster-epsilon-security-simplify`) adopts the same
-    // pattern when it lands. Until that PR merges into `main`, this
-    // comment cannot cite `filter.rs` line numbers — the precedent
-    // lives on a sibling branch. Once 8ε is on `main`, follow up by
-    // pointing this comment at the canonical `filter::expand` block.
+    // (the early return for `PkStrategy::None`) and `filter::expand`'s
+    // IntoQ bridge gate for pk-less models.
     if matches!(model_attrs.pk, PkStrategy::None) {
         return Ok(TokenStream::new());
     }
