@@ -1,0 +1,15 @@
+error[E0428]: the name `__djogi_apps_invocation_sentinel` is defined multiple times
+ --> $DIR/phase7_zero_apps_duplicate_invocation.rs:9:1
+  |
+4 | djogi::apps! {
+  | ------------ previous definition of the module `__djogi_apps_invocation_sentinel` here
+...
+9 | djogi::apps! {
+  | ^^^^^^^^^^^^ `__djogi_apps_invocation_sentinel` redefined here
+  |
+  = note: `__djogi_apps_invocation_sentinel` must be defined only once in the type namespace of this module
+  = note: this error originates in the macro `djogi::apps` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0428`.

@@ -1,0 +1,12 @@
+error[E0599]: no method named `nonexistent_col` found for struct `VehicleFields` in the current scope
+  --> $DIR/reverse_relation_wrong_via_column.rs:31:55
+   |
+22 | #[model(table = "vehicles_cf", no_default)]
+   | ------------------------------------------- method `nonexistent_col` not found for this struct
+...
+31 | djogi::reverse_one_to_many!(Owner, cars -> Vehicle by nonexistent_col);
+   |                                                       ^^^^^^^^^^^^^^^ method not found in `VehicleFields`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

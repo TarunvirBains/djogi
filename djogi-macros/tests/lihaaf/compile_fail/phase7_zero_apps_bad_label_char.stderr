@@ -1,0 +1,7 @@
+error: app label "bad char!" has a non-conforming one or more bytes after the first. explicit labels must be ASCII — first byte a letter or underscore, remaining bytes ASCII alphanumerics or underscores
+ --> $DIR/phase7_zero_apps_bad_label_char.rs:5:19
+  |
+5 |     #[app(label = "bad char!", database = "main")]
+  |                   ^^^^^^^^^^^
+
+error: aborting due to 1 previous error

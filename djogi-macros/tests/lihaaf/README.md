@@ -1,52 +1,73 @@
-# djogi-macros — lihaaf fixture layout (Phase 8.5)
+# djogi-macros — lihaaf fixture harness (CI-primary, Phase 8.5)
 
 This directory wires djogi-macros's existing `tests/compile_pass/` and
 `tests/compile_fail/` trybuild corpus into the
 [lihaaf](https://github.com/TarunvirBains/lihaaf) v0.1 proc-macro test
-harness so adopters can drive the same 237 fixtures through the
-build-once-dylib + per-fixture-rustc path lihaaf exposes.
+harness. **lihaaf is the primary CI gate for macro fixtures** as of Phase 8.5.
 
-Phase 8.5 is the integration phase only. trybuild remains the
-**authoritative source-of-truth** for the corpus. The trybuild
-`.stderr` snapshots under `tests/compile_fail/` stay committed; lihaaf
-runs in parallel as the fast-iteration path while the trybuild →
-lihaaf migration is sequenced as a separate later step.
+## CI posture
 
-## Source of truth and integration base
-
-| | Path | Ref |
+| Harness | CI role | How it runs |
 | - | - | - |
-| Standalone Lihaaf (canonical) | `~/projects/lihaaf` | post-alpha build with diagnostic extraction and long-type path normalization fixes |
-| Djogi integration worktree | `~/projects/djogi/.worktrees/phase85-lihaaf-integration` | branch `phase85-lihaaf-integration` |
-| Djogi integration base | `~/projects/djogi` | `main` |
+| **lihaaf** | **Primary gate** | `cargo install lihaaf --version 0.1.0-alpha.2 --locked` → `cargo lihaaf --manifest-path djogi-macros/Cargo.toml -j 2` |
+| trybuild | Manual parity only | `cargo test -p djogi-macros --features trybuild-tests --test trybuild_tests -- --test-threads=2` |
 
-The lihaaf crate is consumed as a local dev tool during Phase 8.5
-branch work — there is no `[dev-dependencies] lihaaf = ...` entry in
-this crate's `Cargo.toml`. The harness is invoked through `cargo run`
-against a standalone lihaaf source tree that includes the post-alpha
-diagnostic extraction fix and long-type note path normalization:
+`cargo test --workspace` (and therefore default CI) does NOT run the
+trybuild test binaries. They are gated behind `required-features =
+["trybuild-tests"]` in `djogi-macros/Cargo.toml`. lihaaf runs instead.
+
+## Source of truth
+
+| | Path |
+| - | - |
+| Standalone lihaaf (canonical) | `~/projects/lihaaf` (local), `TarunvirBains/lihaaf` on GitHub, published at `lihaaf = "0.1.0-alpha.2"` on crates.io |
+| Trybuild snapshots (committed) | `djogi-macros/tests/compile_fail/*.stderr` |
+| Lihaaf snapshots (committed) | `djogi-macros/tests/lihaaf/compile_fail/*.stderr` |
+
+## Committed snapshots
+
+lihaaf-owned `.stderr` snapshots under `tests/lihaaf/compile_fail/` **are
+committed** so `cargo lihaaf` in CI succeeds without `--bless`. They are
+separate from the trybuild snapshots under `tests/compile_fail/` — the two
+corpora normalize path prefixes differently:
+
+- **trybuild** → `tests/compile_fail/<name>.rs:L:C`
+- **lihaaf** → `$DIR/<name>.rs:L:C`
+
+This harness-format difference is intentional. The diagnostic semantics are
+identical; only the path normalization format differs.
+
+### Re-blessing snapshots
+
+Re-bless locally whenever macro diagnostics change (new error, span change,
+error message edit), then commit the updated `.stderr` files alongside the
+macro change:
 
 ```bash
-# From the djogi-macros crate root (this directory's grandparent).
-cargo run \
-    --manifest-path ~/projects/lihaaf/Cargo.toml \
-    --bin cargo-lihaaf \
-    -- lihaaf \
-    --manifest-path $(pwd)/Cargo.toml \
-    --list
+# From the repo root (manifest-path is relative to cwd):
+cargo lihaaf --manifest-path djogi-macros/Cargo.toml \
+    --filter compile_fail --bless -j 4
 ```
 
-If your shell's `cargo run` resolves the binary's working directory to
-lihaaf's own package root (older cargo behaviour) rather than the
-invoker's CWD, pass the fully qualified path to djogi-macros's
-`Cargo.toml` to the lihaaf side of the `--` boundary as shown above —
-absolute paths are portable across both behaviours.
+If `cargo-lihaaf` is not on PATH, install it first:
 
-## Fixture-discovery layout
+```bash
+cargo install lihaaf --version 0.1.0-alpha.2 --locked
+```
+
+### rust-src requirement
+
+3 of the 138 compile_fail snapshots reference stdlib source via `$RUST`
+(e.g. `$RUST/lib/rustlib/src/rust/library/alloc/src/string.rs`). These
+lines appear only when `rust-src` is installed. CI always installs
+rust-src; local dev should too. If you bless locally without rust-src,
+those 3 fixtures will produce shorter output and the CI run will fail
+with `SNAPSHOT_DIFF` on the `$RUST`-containing lines.
+
+## Fixture layout
 
 Lihaaf reads `[package.metadata.lihaaf]` from `djogi-macros/Cargo.toml`
-and walks the directories named in `fixture_dirs`. Both
-fixture-discovery directories live under `tests/lihaaf/`:
+and walks the directories named in `fixture_dirs`:
 
 | Directory | Backing | Why this shape |
 | - | - | - |
@@ -59,40 +80,6 @@ preserves the path-as-passed in its diagnostics; lihaaf's normalizer
 rewrites `<fixture_dir>` prefixes to `$DIR`. The chain is symlink-safe
 for both reads and writes provided the per-file `.rs` layout above is
 preserved.
-
-## Snapshot divergence is intentional
-
-Lihaaf and trybuild normalize diagnostic path prefixes differently:
-
-- **trybuild** writes the relative crate path: `--> tests/compile_fail/<name>.rs:L:C`.
-- **lihaaf** writes the placeholder form: `--> $DIR/<name>.rs:L:C`.
-
-This is harness-format noise — the underlying diagnostic semantics are
-identical, and lihaaf v0.1 spec §9.2 anticipates exactly one re-bless
-when an adopter migrates off trybuild. Phase 8.5 takes the path that
-keeps the snapshots **physically separate** so neither corpus
-overwrites the other when the developer runs `--bless` against either
-harness.
-
-Concretely, lihaaf-owned `.stderr` snapshots written into
-`tests/lihaaf/compile_fail/` are **gitignored** (see the local
-`.gitignore`) and regenerated locally with:
-
-```bash
-cargo run \
-    --manifest-path ~/projects/lihaaf/Cargo.toml \
-    --bin cargo-lihaaf \
-    -- lihaaf \
-    --manifest-path $(pwd)/Cargo.toml \
-    --filter compile_fail \
-    --bless \
-    -j 4
-```
-
-Bless writes are constrained to this directory by construction: lihaaf
-computes the snapshot path from the fixture path-as-discovered
-(`tests/lihaaf/compile_fail/<name>.rs`), and the snapshot writer does
-not canonicalize through the symlink.
 
 ## Why `dylib_crate = "djogi"`
 
@@ -118,31 +105,34 @@ parity through lihaaf is a follow-up.
 
 ## Trybuild fallback posture
 
-`tests/trybuild_tests.rs` and `tests/trybuild_spatial_tests.rs` continue
-to drive the same source files with trybuild's own normalization and
-committed `.stderr` snapshots. Phase 8.5 does **not** remove or rewrite
-either harness — trybuild stays the publicly committed corpus and CI
-gate, lihaaf is the new fast path.
+`tests/trybuild_tests.rs` and `tests/trybuild_spatial_tests.rs` are
+retained as opt-in manual parity checks gated behind
+`--features trybuild-tests`. They are NOT removed — they serve as a
+validation backstop when upgrading the CI toolchain or comparing snapshot
+normalization formats. Phase 8.5 promotes lihaaf to the CI-primary role
+while keeping trybuild as a committed fallback.
 
 ## Validation reference
 
-The historical validation from the earlier in-repo wiring commit
-(reference only, not the integration base): 237 fixtures discovered;
-compile_pass 99 OK in 10.7s; compile_fail bless + re-run 138 OK in
-11.8s; full post-bless sweep 237 OK in 16.5s. Recapture locally on
-this branch with a post-fix lihaaf checkout:
+237 fixtures total: 99 compile_pass + 138 compile_fail.
 
 ```bash
-# Enumerate
-cargo run --manifest-path ~/projects/lihaaf/Cargo.toml --bin cargo-lihaaf \
-    -- lihaaf --manifest-path $(pwd)/Cargo.toml --list | wc -l   # expect 237
+# Enumerate all 237 fixtures
+cargo lihaaf --manifest-path djogi-macros/Cargo.toml --list | wc -l
 
-# Compile-pass sweep (no bless side-effects — compile_pass has no .stderr)
-cargo run --manifest-path ~/projects/lihaaf/Cargo.toml --bin cargo-lihaaf \
-    -- lihaaf --manifest-path $(pwd)/Cargo.toml --filter compile_pass -j 4
+# Full sweep (compile_pass + compile_fail), no bless — expect 237 OK
+cargo lihaaf --manifest-path djogi-macros/Cargo.toml -j 4
 
-# Compile-fail bless (writes into tests/lihaaf/compile_fail/*.stderr only,
-# never tests/compile_fail/*.stderr; gitignored)
-cargo run --manifest-path ~/projects/lihaaf/Cargo.toml --bin cargo-lihaaf \
-    -- lihaaf --manifest-path $(pwd)/Cargo.toml --filter compile_fail --bless -j 4
+# Compile-pass only (~12s)
+cargo lihaaf --manifest-path djogi-macros/Cargo.toml --filter compile_pass -j 4
+
+# Compile-fail only, re-bless (~8s)
+cargo lihaaf --manifest-path djogi-macros/Cargo.toml \
+    --filter compile_fail --bless -j 4
 ```
+
+Baseline wall-clock (local, djogi dylib already built): compile_pass ~12s;
+compile_fail ~8s; full sweep ~20s. Versus trybuild: ~15 min for a full
+sweep (22 test-split functions × N fixtures each, one cargo invocation
+per split). The speedup comes from the shared dylib and parallel
+per-fixture rustc dispatch.

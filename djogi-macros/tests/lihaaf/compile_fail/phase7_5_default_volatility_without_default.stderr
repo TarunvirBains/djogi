@@ -1,0 +1,7 @@
+error: `default_volatility` is meaningless without a `default = "..."` attribute on the same field — the override classifies a default expression that does not exist. Either add a `default = "..."` or drop the override.
+  --> $DIR/phase7_5_default_volatility_without_default.rs:10:34
+   |
+10 |     #[field(default_volatility = "stable")]
+   |                                  ^^^^^^^^
+
+error: aborting due to 1 previous error

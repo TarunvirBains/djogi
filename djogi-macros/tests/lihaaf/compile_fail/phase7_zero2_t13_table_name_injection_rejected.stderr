@@ -1,0 +1,7 @@
+error: #[model] table name "users; DROP TABLE x; --" contains a character that is not a valid unquoted Postgres identifier byte. Only ASCII alphanumerics and underscores are permitted after the first character.
+  --> $DIR/phase7_zero2_t13_table_name_injection_rejected.rs:14:17
+   |
+14 | #[model(table = "users; DROP TABLE x; --")]
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

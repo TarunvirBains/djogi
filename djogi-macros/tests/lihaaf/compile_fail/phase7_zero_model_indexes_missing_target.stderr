@@ -1,0 +1,7 @@
+error: missing target — every index declaration must set either `fields = [..]` or `expr = ".."`
+ --> $DIR/phase7_zero_model_indexes_missing_target.rs:5:5
+  |
+5 |     index(using = "btree"),
+  |     ^^^^^
+
+error: aborting due to 1 previous error

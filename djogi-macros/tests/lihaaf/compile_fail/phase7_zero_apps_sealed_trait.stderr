@@ -1,0 +1,11 @@
+error[E0046]: not all trait items implemented, missing: `__DJOGI_APP_SEAL`
+ --> $DIR/phase7_zero_apps_sealed_trait.rs:7:1
+  |
+7 | impl App for Foo {
+  | ^^^^^^^^^^^^^^^^ missing `__DJOGI_APP_SEAL` in implementation
+  |
+  = help: implement the missing item: `const __DJOGI_APP_SEAL: djogi::apps::SealToken = /* value */;`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0046`.

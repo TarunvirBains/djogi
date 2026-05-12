@@ -1,0 +1,9 @@
+error: #[model] requires `table = "..."`
+ --> $DIR/missing_table.rs:3:1
+  |
+3 | #[model]
+  | ^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: aborting due to 1 previous error

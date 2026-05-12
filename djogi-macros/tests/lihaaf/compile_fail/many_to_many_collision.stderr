@@ -1,0 +1,54 @@
+error[E0428]: the name `PersonGroupsManyToManyRelation` is defined multiple times
+  --> $DIR/many_to_many_collision.rs:67:1
+   |
+53 | / djogi::many_to_many!(
+54 | |     Person, Group,
+55 | |     through = PersonGroup,
+56 | |     this_fk = person_id,
+57 | |     that_fk = group_id,
+58 | |     relation = "groups"
+59 | | );
+   | |_- previous definition of the trait `PersonGroupsManyToManyRelation` here
+...
+67 | / djogi::many_to_many!(
+68 | |     Person, Group,
+69 | |     through = PersonGroup,
+70 | |     this_fk = person_id,
+71 | |     that_fk = group_id,
+72 | |     relation = "groups"
+73 | | );
+   | |_^ `PersonGroupsManyToManyRelation` redefined here
+   |
+   = note: `PersonGroupsManyToManyRelation` must be defined only once in the type namespace of this module
+   = note: this error originates in the macro `djogi::many_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `ManyToMany<Group>` for type `Person`
+  --> $DIR/many_to_many_collision.rs:67:1
+   |
+53 | / djogi::many_to_many!(
+54 | |     Person, Group,
+   | |__________- first implementation here
+...
+67 | / djogi::many_to_many!(
+68 | |     Person, Group,
+   | |__________^ conflicting implementation for `Person`
+   |
+   = note: this error originates in the macro `djogi::many_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0119]: conflicting implementations of trait `PersonGroupsManyToManyRelation` for type `Person`
+  --> $DIR/many_to_many_collision.rs:67:1
+   |
+53 | / djogi::many_to_many!(
+54 | |     Person, Group,
+   | |__________- first implementation here
+...
+67 | / djogi::many_to_many!(
+68 | |     Person, Group,
+   | |__________^ conflicting implementation for `Person`
+   |
+   = note: this error originates in the macro `djogi::many_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: aborting due to 3 previous errors
+
+Some errors have detailed explanations: E0119, E0428.
+For more information about an error, try `rustc --explain E0119`.

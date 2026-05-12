@@ -1,0 +1,7 @@
+error: #[djogi_test] `extensions` array elements must be string literals, e.g. `"postgis"`
+ --> $DIR/djogi_test_extensions_non_string_element.rs:5:35
+  |
+5 | #[djogi::djogi_test(extensions = [42])]
+  |                                   ^^
+
+error: aborting due to 1 previous error

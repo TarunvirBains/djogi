@@ -1,0 +1,7 @@
+error: duplicate app identity (database = "main", label = "vehicles") — also declared by `Vehicles` in the same `djogi::apps!` block
+  --> $DIR/phase7_zero_apps_duplicate_label.rs:11:16
+   |
+11 |     pub struct Cars;
+   |                ^^^^
+
+error: aborting due to 1 previous error

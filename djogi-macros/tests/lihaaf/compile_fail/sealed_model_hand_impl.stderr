@@ -1,0 +1,57 @@
+error[E0277]: the trait bound `Hostile: djogi::model::__sealed::Sealed` is not satisfied
+  --> $DIR/sealed_model_hand_impl.rs:30:9
+   |
+30 |         fn pk_value(&self) -> &Self::Pk {
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `djogi::model::__sealed::Sealed` is not implemented for `Hostile`
+  --> $DIR/sealed_model_hand_impl.rs:16:1
+   |
+16 | pub struct Hostile;
+   | ^^^^^^^^^^^^^^^^^^
+note: required by a bound in `Model`
+  --> djogi/src/model.rs:66:50
+   |
+66 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
+   |                                                  ^^^^^^^^^^^^^^^^ required by this bound in `Model`
+
+error[E0277]: the trait bound `Hostile: djogi::model::__sealed::Sealed` is not satisfied
+  --> $DIR/sealed_model_hand_impl.rs:36:9
+   |
+36 | /         fn get(
+37 | |             _ctx: &mut DjogiContext,
+38 | |             _id: Self::Pk,
+39 | |         ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
+   | |__________________________________________________________________^ unsatisfied trait bound
+   |
+help: the trait `djogi::model::__sealed::Sealed` is not implemented for `Hostile`
+  --> $DIR/sealed_model_hand_impl.rs:16:1
+   |
+16 | pub struct Hostile;
+   | ^^^^^^^^^^^^^^^^^^
+note: required by a bound in `Model`
+  --> djogi/src/model.rs:66:50
+   |
+66 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
+   |                                                  ^^^^^^^^^^^^^^^^ required by this bound in `Model`
+
+error[E0277]: the trait bound `Hostile: djogi::model::__sealed::Sealed` is not satisfied
+  --> $DIR/sealed_model_hand_impl.rs:24:20
+   |
+24 |     impl Model for Hostile {
+   |                    ^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `djogi::model::__sealed::Sealed` is not implemented for `Hostile`
+  --> $DIR/sealed_model_hand_impl.rs:16:1
+   |
+16 | pub struct Hostile;
+   | ^^^^^^^^^^^^^^^^^^
+note: required by a bound in `Model`
+  --> djogi/src/model.rs:66:50
+   |
+66 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
+   |                                                  ^^^^^^^^^^^^^^^^ required by this bound in `Model`
+
+error: aborting due to 3 previous errors
+
+For more information about this error, try `rustc --explain E0277`.

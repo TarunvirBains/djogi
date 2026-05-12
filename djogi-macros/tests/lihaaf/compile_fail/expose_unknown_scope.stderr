@@ -1,0 +1,7 @@
+error: unknown scope `notascope`; expected one of: public, self_view, admin, export, none, internal
+ --> $DIR/expose_unknown_scope.rs:8:20
+  |
+8 |     #[field(expose(notascope))]
+  |                    ^^^^^^^^^
+
+error: aborting due to 1 previous error

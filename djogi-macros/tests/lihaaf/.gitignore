@@ -1,4 +1,5 @@
-# Lihaaf snapshots are regenerated locally with `cargo lihaaf --bless`.
-# They are intentionally separate from the committed trybuild snapshots under
-# `tests/compile_fail/` and must not be committed during Phase 8.5.
-/compile_fail/*.stderr
+# Phase 8.5 CI-primary posture: lihaaf compile_fail .stderr snapshots ARE
+# committed (under tests/lihaaf/compile_fail/) so CI passes without --bless.
+# Remove this file or keep it empty; the individual .gitignore in
+# compile_fail/ documents the new policy and has no *.stderr exclusion.
+

@@ -5,9 +5,10 @@
 # vs. `$DIR/<file>` for lihaaf — see `docs/spec/lihaaf-v0.1.md` §7.2
 # in the standalone lihaaf repo), so snapshot bytes diverge by design.
 #
-# Phase 8.5 posture: lihaaf-blessed snapshots are NOT committed. They
-# are regenerated locally with
+# Phase 8.5 CI-primary posture: lihaaf-blessed snapshots ARE committed
+# so `cargo lihaaf` in CI succeeds without `--bless`. Snapshots must be
+# re-blessed locally whenever macro diagnostics change:
 #   `cargo lihaaf --filter compile_fail --bless -j 4`
-# and trybuild remains the committed source-of-truth corpus while the
-# trybuild → lihaaf migration is a separate later step.
-*.stderr
+# then committed alongside the diagnostic change.
+#
+# Nothing to ignore — all files in this directory are tracked.

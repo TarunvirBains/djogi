@@ -1,0 +1,17 @@
+error[E0432]: unresolved import `djogi::geo`
+  --> $DIR/phase6_spatial_feature_off.rs:10:12
+   |
+10 | use djogi::geo::GeoPoint;
+   |            ^^^ could not find `geo` in `djogi`
+   |
+note: found an item that was configured out
+  --> djogi/src/lib.rs:68:9
+   |
+67 | #[cfg(feature = "spatial")]
+   |       ------------------- the item is gated behind the `spatial` feature
+68 | pub mod geo;
+   |         ^^^
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0432`.

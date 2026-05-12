@@ -1,0 +1,8 @@
+error: duplicate #[field(version)]: at most one version field is allowed per model
+  --> $DIR/version_field_duplicate.rs:11:5
+   |
+11 | /     #[field(version)]
+12 | |     pub version2: i64,
+   | |_____________________^
+
+error: aborting due to 1 previous error

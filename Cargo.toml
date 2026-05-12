@@ -120,7 +120,14 @@ libc = "0.2"
 # The `macros` feature unlocks `phf::phf_set!` / `phf::phf_map!`.
 phf = { version = "0.13", features = ["macros"] }
 
-# Testing
+# Testing — trybuild is the opt-in manual parity harness for macro fixtures.
+# It is no longer the primary CI gate; lihaaf replaced it (see
+# `.github/workflows/ci.yml` and `djogi-macros/Cargo.toml`). The trybuild
+# test binaries are gated behind `required-features = ["trybuild-tests"]`
+# so `cargo test --workspace` does not auto-run them. The workspace dep
+# is kept so `cargo check --workspace` and `cargo clippy --workspace`
+# still compile the trybuild test sources (the `required-features` gate
+# only suppresses execution, not compilation under explicit `--features`).
 trybuild = { version = "1", features = ["diff"] }
 
 # Internal — `version` alongside `path` is required so `cargo publish` resolves

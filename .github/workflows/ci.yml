@@ -77,14 +77,20 @@ jobs:
 
       # Ubuntu-latest GHA runners ship with ~14GB of free disk. Phase 7-Zero
       # pushed the workspace test footprint past that ceiling — 22
-      # `#[djogi_test]`s (each provisioning a per-test Postgres DB) + 50+
-      # trybuild fixtures (each compiling to its own binary) + the existing
-      # Phase 6/6.5 integration tests fill the disk partway into
+      # `#[djogi_test]`s (each provisioning a per-test Postgres DB) + the
+      # existing Phase 6/6.5 integration tests fill the disk partway into
       # `cargo test --workspace`. The runner dies with "No space left on
       # device" before it can finish or emit useful logs. Freeing ~30GB of
       # preinstalled tooling Djogi doesn't need (dotnet, Haskell, hosted
       # toolcache) restores headroom for the full test surface. Cheap enough
       # (~10s) to keep in every run rather than gate.
+      #
+      # Note: the trybuild test binaries (formerly a major disk contributor
+      # — 22+ trybuild invocations × N fixtures each) no longer execute in
+      # the default `cargo test --workspace` path; they are gated behind
+      # `--features trybuild-tests`. lihaaf (the current macro-fixture gate)
+      # builds one shared dylib and does not blow up `target/` in the same
+      # way. Disk pressure is now primarily from integration tests + Postgres.
       #
       # Skipped under `act` (local CI emulation): act bind-mounts the
       # hostedtoolcache from the runner image (read-only), so the rm
@@ -103,13 +109,15 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          # rust-src is required for trybuild compile-fail fixtures that
-          # capture const-eval panics originating in stdlib — rustc inlines
-          # stdlib source excerpts in error output only when rust-src is
-          # installed, so stored `.stderr` snapshots drift between sandboxes
-          # with and without it. Adding rust-src here keeps CI's rustc
-          # output shape aligned with local dev environments that install
-          # it by default (e.g., rust-analyzer users).
+          # rust-src is required to keep lihaaf compile-fail snapshot bytes
+          # stable between CI and local dev. When rust-src is installed,
+          # rustc inlines stdlib source excerpts in error output (e.g.
+          # `$RUST/lib/rustlib/src/rust/library/alloc/src/string.rs:353:1`);
+          # without it, those lines are absent and committed `.stderr`
+          # snapshots that reference `$RUST` diverge. The same applies to
+          # the opt-in trybuild parity harness. Removing rust-src from CI
+          # would invalidate the committed lihaaf snapshots under
+          # `djogi-macros/tests/lihaaf/compile_fail/`.
           components: clippy, rustfmt, rust-src
 
       - name: Cache cargo registry and build
@@ -166,8 +174,38 @@ jobs:
         with:
           command: check
 
+      # Install lihaaf, the primary macro-fixture CI gate. Pinned to the
+      # same version used to bless the committed `.stderr` snapshots under
+      # `djogi-macros/tests/lihaaf/compile_fail/`. Bump this pin when
+      # upgrading lihaaf and re-blessing snapshots locally.
+      #
+      # `--locked` ensures the install uses the exact dependency versions
+      # in lihaaf's published Cargo.lock rather than resolving fresh; this
+      # makes the install deterministic across CI runs.
+      - name: Install lihaaf (macro-fixture CI gate)
+        run: cargo install lihaaf --version 0.1.0-alpha.2 --locked
+
       - name: Build
         run: cargo build --workspace
+
+      # Macro-fixture gate — 237 proc-macro fixtures (99 compile_pass +
+      # 138 compile_fail) using lihaaf's build-once-dylib + per-fixture-
+      # rustc model. Faster than trybuild because:
+      #   • djogi is built once as a dylib per session (not per test split)
+      #   • per-fixture rustc invocations are parallel (-j 2 on 2-vCPU GHA)
+      #
+      # `cargo test --workspace` no longer auto-runs the trybuild test
+      # binaries — they are gated behind `required-features = ["trybuild-tests"]`
+      # in `djogi-macros/Cargo.toml` and must be invoked explicitly for
+      # manual parity checks.
+      #
+      # Committed `.stderr` snapshots mean `--bless` is never needed here.
+      # If this step fails with `SNAPSHOT_DIFF`, re-bless locally:
+      #   cargo lihaaf --manifest-path djogi-macros/Cargo.toml \
+      #     --filter compile_fail --bless -j 4
+      # then commit the updated `.stderr` files alongside the macro change.
+      - name: Macro fixture gate (lihaaf)
+        run: cargo lihaaf --manifest-path djogi-macros/Cargo.toml -j 2
 
       - name: Test
         # Excluding `elephant-tracker` here is load-bearing. Its
@@ -181,6 +219,11 @@ jobs:
         # keep elephant-tracker out of the unified feature graph so the
         # default-features sweep stays default-features. The Build step
         # above still covers `--workspace`. Tracked in issue #80.
+        #
+        # Note: `djogi-macros` trybuild test binaries (`trybuild_tests`,
+        # `trybuild_spatial_tests`) are excluded here because they are
+        # gated behind `required-features = ["trybuild-tests"]`. The lihaaf
+        # step above is the macro-fixture CI gate.
         run: cargo test --workspace --exclude elephant-tracker -- --test-threads=1
 
       - name: Phase 8 cache modifier

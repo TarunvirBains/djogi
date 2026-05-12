@@ -1,0 +1,7 @@
+error: `#[field(unique, nulls_not_distinct = true)]` on `slug`: `nulls_not_distinct` is only supported at the model level. Move `slug` into a model-level unique index: `#[model(indexes(unique(fields = [slug], nulls_not_distinct = true)))]`.
+  --> $DIR/phase7_zero_field_nulls_not_distinct.rs:13:21
+   |
+13 |     #[field(unique, nulls_not_distinct = true)]
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

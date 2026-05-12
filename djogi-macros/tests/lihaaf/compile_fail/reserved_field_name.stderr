@@ -1,0 +1,7 @@
+error: #[model] reserves the field name `created_at` — the macro injects it automatically. Rename your field or, if you need to control the primary key yourself, set `#[model(pk = None)]`.
+ --> $DIR/reserved_field_name.rs:9:5
+  |
+9 |     pub created_at: String,
+  |     ^^^
+
+error: aborting due to 1 previous error
