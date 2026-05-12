@@ -74,3 +74,36 @@ serde_json.workspace = true
 # djogi's own consumption — same workspace `exclude = ["sassi-reference"]`
 # trick keeps cargo from absorbing the symlink tree into djogi's workspace.
 sassi = { path = "../sassi-reference/sassi" }
+
+# Lihaaf v0.1 — fast, parallel proc-macro test harness (standalone
+# repo: `~/projects/lihaaf`, using a post-alpha build with diagnostic
+# extraction and long-type note path normalization fixes). djogi-macros
+# is the canonical adopter that drove lihaaf's design (lihaaf spec §9.1).
+# Phase 8.5 runs lihaaf side-by-side with the existing trybuild driver
+# (`tests/trybuild_tests.rs` / `tests/trybuild_spatial_tests.rs`); the
+# trybuild → lihaaf migration is a separate later step. While the
+# standalone lihaaf crate is pre-publish on consumer sites and
+# `cargo-lihaaf` is not assumed to be on PATH, local invocation flows
+# through the source run shape — see `tests/lihaaf/README.md` for the
+# exact command.
+#
+# Fixture layout: see `tests/lihaaf/README.md`. compile_pass is a single
+# directory symlink (`tests/lihaaf/compile_pass` → `../compile_pass`);
+# compile_fail is a real directory of per-file `.rs` symlinks back to
+# `../../compile_fail/*.rs` so each fixture lives in exactly one place
+# on disk while lihaaf-owned `.stderr` snapshots stay separated from
+# the trybuild snapshots they would otherwise clobber.
+#
+# `dev_deps` mirrors djogi-macros' `[dev-dependencies]` so per-fixture
+# rustc invocations resolve `use serde`, `use serde_json`, and the
+# `sassi::LookupOp` reference in the no-regex-engine compile-fail
+# fixture. `dylib_crate = "djogi"` (not "djogi-macros") because the
+# fixtures `use djogi::prelude::*` — the proc-macro crate is loaded
+# transitively through djogi's `pub use djogi_macros::*` re-export.
+[package.metadata.lihaaf]
+dylib_crate = "djogi"
+extern_crates = ["djogi", "djogi-macros"]
+features = []
+dev_deps = ["serde", "serde_json", "sassi"]
+edition = "2024"
+fixture_dirs = ["tests/lihaaf/compile_fail", "tests/lihaaf/compile_pass"]

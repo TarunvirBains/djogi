@@ -1,0 +1,1 @@
+../../compile_fail/phase7_zero2_t6_nested_missing_brace.rs

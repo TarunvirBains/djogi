@@ -1,0 +1,1 @@
+../../compile_fail/bad_on_delete_value.rs

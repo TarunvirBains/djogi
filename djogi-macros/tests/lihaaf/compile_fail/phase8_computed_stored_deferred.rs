@@ -1,0 +1,1 @@
+../../compile_fail/phase8_computed_stored_deferred.rs

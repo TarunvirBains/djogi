@@ -1,0 +1,1 @@
+../../compile_fail/phase7_zero2_t3_missing_sql_type.rs

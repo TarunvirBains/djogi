@@ -1,0 +1,1 @@
+../../compile_fail/invalid_through_model.rs

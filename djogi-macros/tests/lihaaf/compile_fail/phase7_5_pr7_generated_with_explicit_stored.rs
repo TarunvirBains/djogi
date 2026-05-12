@@ -1,0 +1,1 @@
+../../compile_fail/phase7_5_pr7_generated_with_explicit_stored.rs

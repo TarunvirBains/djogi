@@ -1,0 +1,1 @@
+../../compile_fail/phase7_zero_field_gin_on_unsupported_type.rs

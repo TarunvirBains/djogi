@@ -1,0 +1,1 @@
+../../compile_fail/version_field_wrong_type.rs

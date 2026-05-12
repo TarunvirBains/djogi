@@ -1,0 +1,1 @@
+../../compile_fail/phase8_zero_tree_edge_non_self_fk.rs

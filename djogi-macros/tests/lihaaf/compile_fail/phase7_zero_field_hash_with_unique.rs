@@ -1,0 +1,1 @@
+../../compile_fail/phase7_zero_field_hash_with_unique.rs

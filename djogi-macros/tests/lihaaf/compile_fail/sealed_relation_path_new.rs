@@ -1,0 +1,1 @@
+../../compile_fail/sealed_relation_path_new.rs

@@ -1,0 +1,1 @@
+../../compile_fail/phase7_zero_apps_sealed_trait.rs

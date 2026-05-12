@@ -1,0 +1,1 @@
+../../compile_fail/phase7_zero2_t10_visage_write_path_rejected.rs

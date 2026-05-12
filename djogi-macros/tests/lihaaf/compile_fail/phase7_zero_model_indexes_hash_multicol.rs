@@ -1,0 +1,1 @@
+../../compile_fail/phase7_zero_model_indexes_hash_multicol.rs

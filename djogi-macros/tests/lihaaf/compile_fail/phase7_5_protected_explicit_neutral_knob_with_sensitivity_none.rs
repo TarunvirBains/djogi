@@ -1,0 +1,1 @@
+../../compile_fail/phase7_5_protected_explicit_neutral_knob_with_sensitivity_none.rs

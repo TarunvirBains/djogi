@@ -1,0 +1,1 @@
+../../compile_fail/insecurely_not_on_plain_model.rs

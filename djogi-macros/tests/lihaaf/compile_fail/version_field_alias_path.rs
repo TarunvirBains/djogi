@@ -1,0 +1,1 @@
+../../compile_fail/version_field_alias_path.rs

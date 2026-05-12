@@ -1,0 +1,1 @@
+../../compile_fail/pk_none_has_no_model_impl.rs

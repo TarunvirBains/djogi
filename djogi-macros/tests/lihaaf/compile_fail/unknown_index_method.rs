@@ -1,0 +1,1 @@
+../../compile_fail/unknown_index_method.rs

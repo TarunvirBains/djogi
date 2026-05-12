@@ -1,0 +1,1 @@
+../../compile_fail/sealed_into_distinct_columns.rs

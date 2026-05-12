@@ -1,0 +1,1 @@
+../../compile_fail/phase7_5_protected_malformed_bare_path.rs

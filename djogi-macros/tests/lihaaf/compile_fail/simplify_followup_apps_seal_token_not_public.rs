@@ -1,0 +1,1 @@
+../../compile_fail/simplify_followup_apps_seal_token_not_public.rs

@@ -1,0 +1,1 @@
+../../compile_fail/phase7_5_pr7_exclusion_initially_deferred_without_deferrable.rs

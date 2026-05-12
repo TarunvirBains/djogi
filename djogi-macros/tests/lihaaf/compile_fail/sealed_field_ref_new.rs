@@ -1,0 +1,1 @@
+../../compile_fail/sealed_field_ref_new.rs

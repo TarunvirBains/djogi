@@ -1,0 +1,1 @@
+../../compile_fail/simplify_followup_pk_seal_token_not_public.rs

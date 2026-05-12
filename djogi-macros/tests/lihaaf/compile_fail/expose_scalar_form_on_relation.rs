@@ -1,0 +1,1 @@
+../../compile_fail/expose_scalar_form_on_relation.rs

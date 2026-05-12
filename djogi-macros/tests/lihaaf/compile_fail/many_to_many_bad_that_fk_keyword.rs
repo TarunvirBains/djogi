@@ -1,0 +1,1 @@
+../../compile_fail/many_to_many_bad_that_fk_keyword.rs

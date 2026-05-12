@@ -1,0 +1,1 @@
+../../compile_fail/field_index_int_value.rs

@@ -1,0 +1,1 @@
+../../compile_fail/phase7_5_protected_hash_id_on_string.rs

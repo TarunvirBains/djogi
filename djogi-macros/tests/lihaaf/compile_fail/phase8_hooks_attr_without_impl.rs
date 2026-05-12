@@ -1,0 +1,1 @@
+../../compile_fail/phase8_hooks_attr_without_impl.rs

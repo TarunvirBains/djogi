@@ -1,0 +1,1 @@
+../../compile_fail/djogi_test_sync_models_scalar_value.rs

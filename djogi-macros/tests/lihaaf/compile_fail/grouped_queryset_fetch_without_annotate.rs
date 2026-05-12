@@ -1,0 +1,1 @@
+../../compile_fail/grouped_queryset_fetch_without_annotate.rs

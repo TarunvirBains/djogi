@@ -1,0 +1,1 @@
+../../compile_fail/djogi_enum_empty.rs

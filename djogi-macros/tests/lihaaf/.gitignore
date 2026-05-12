@@ -1,0 +1,4 @@
+# Lihaaf snapshots are regenerated locally with `cargo lihaaf --bless`.
+# They are intentionally separate from the committed trybuild snapshots under
+# `tests/compile_fail/` and must not be committed during Phase 8.5.
+/compile_fail/*.stderr

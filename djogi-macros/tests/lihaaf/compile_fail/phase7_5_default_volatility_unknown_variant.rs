@@ -1,0 +1,1 @@
+../../compile_fail/phase7_5_default_volatility_unknown_variant.rs
