@@ -230,11 +230,14 @@ pub trait RawAccessExtBase: sealed::Sealed {
     /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
     /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
     ///
-    /// Prefer [`raw_query`](RawAccessExtBase::raw_query) when the row shape
-    /// fits a `FromPgRow` impl — the per-row decode is positional and
-    /// debug-asserted. Reach for `raw_rows` only when the caller really does
-    /// need to inspect column metadata or call [`tokio_postgres::Row::try_get`]
-    /// on heterogenous columns by name (e.g. dynamic introspection helpers).
+    /// Prefer the typed surface — `Model::objects().filter(...).fetch_all(ctx)`
+    /// — for any predicate the queryset can express. If the typed surface
+    /// cannot describe the shape but the row decodes into a `FromPgRow`,
+    /// prefer [`raw_query`](RawAccessExtBase::raw_query) over `raw_rows` so
+    /// the per-row decode is positional and debug-asserted. Reach for
+    /// `raw_rows` only when the caller really does need to inspect column
+    /// metadata or call [`tokio_postgres::Row::try_get`] on heterogenous
+    /// columns by name (e.g. dynamic introspection helpers).
     ///
     /// ```ignore
     /// #[djogi::deliberately_bypass_convention_with_raw_sql]
@@ -645,16 +648,20 @@ pub trait RawPoolAccessExtBase: sealed::Sealed {
     /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
     /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
     ///
-    /// `raw_with_client` is the framework's only path to the underlying
-    /// `tokio_postgres::Client` and the only way to reach binary-protocol
-    /// helpers like `client.copy_in(...)`, `client.simple_query(...)`,
-    /// `CREATE EXTENSION` (which requires `simple_query` outside a
-    /// transaction), and the prepared-statement cache directly. The closure
-    /// receives `&mut Client` for the duration of the borrow; the returned
-    /// connection is **dirty by default** — adopters that issue `SET` /
-    /// `LISTEN` / role changes inside the closure are responsible for
-    /// resetting the connection (or the surrounding pool's `Manager` impl
-    /// must declare a `reset` step).
+    /// Prefer the typed surface — `Model::objects()` / `QuerySet`,
+    /// `Model::create` / `save` / `delete`, and `djogi::transaction::atomic`
+    /// — for routine reads, writes, and transactions. `raw_with_client` is
+    /// the framework's only path to the underlying `tokio_postgres::Client`
+    /// and the only way to reach binary-protocol helpers like
+    /// `client.copy_in(...)`, `client.simple_query(...)`, `CREATE EXTENSION`
+    /// (which requires `simple_query` outside a transaction), and the
+    /// prepared-statement cache directly — typed-surface equivalents do not
+    /// exist for those binary-protocol primitives today. The closure receives
+    /// `&mut Client` for the duration of the borrow; the returned connection
+    /// is **dirty by default** — adopters that issue `SET` / `LISTEN` / role
+    /// changes inside the closure are responsible for resetting the
+    /// connection (or the surrounding pool's `Manager` impl must declare a
+    /// `reset` step).
     ///
     /// Returns [`DjogiError::Db`] wrapping the underlying transport / pool
     /// error when the context has no pool to draw from (pure transaction-

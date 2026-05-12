@@ -525,7 +525,7 @@ async fn batch_job(pool: &DjogiPool, tenant_ids: Vec<HeerId>) {
 
 ```rust
 // WRONG — "I couldn't figure out the filter syntax so I bypassed it"
-// Reaching for raw_query_insecurely on a pool-backed context skips both
+// Reaching for raw_query on a pool-backed context skips both
 // the typed surface and the RLS / tenant guards in one move.
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 async fn list_open_invoices_insecurely(ctx: &mut DjogiContext) -> djogi::Result<Vec<Invoice>> {
@@ -536,7 +536,7 @@ async fn list_open_invoices_insecurely(ctx: &mut DjogiContext) -> djogi::Result<
 }
 ```
 
-The `_insecurely` raw escape hatches exist for admin tooling and migrations — not as a workaround for query complexity. If you cannot express a query in `QuerySet`, push the gap upstream as a djogi issue rather than reaching for raw SQL.
+The `raw_*` escape hatches exist for admin tooling and migrations — not as a workaround for query complexity. If you cannot express a query in `QuerySet`, push the gap upstream as a djogi issue rather than reaching for raw SQL.
 
 ```rust
 // CORRECT — raw query inside an atomic() scope so RLS / tenant context apply

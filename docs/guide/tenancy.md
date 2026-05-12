@@ -64,14 +64,14 @@ pub struct Post {
 }
 
 async fn list_posts_for_org(pool: &DjogiPool, org_id: i64) -> Result<Vec<Post>, DjogiError> {
-    djogi::transaction::atomic(pool, |ctx| async move {
+    djogi::transaction::atomic(pool, |ctx| Box::pin(async move {
         // Activate tenant isolation for this transaction.
         ctx.set_tenant(&org_id.to_string()).await?;
 
         // All queries inside atomic() now see only rows where org_id matches.
         let posts = Post::objects().fetch_all(ctx).await?;
         Ok(posts)
-    }).await
+    })).await
 }
 
 async fn create_post_for_org(
@@ -80,7 +80,7 @@ async fn create_post_for_org(
     title: String,
     body: String,
 ) -> Result<Post, DjogiError> {
-    djogi::transaction::atomic(pool, |ctx| async move {
+    djogi::transaction::atomic(pool, |ctx| Box::pin(async move {
         ctx.set_tenant(&org_id.to_string()).await?;
 
         let post = Post::create(ctx, Post {
@@ -93,7 +93,7 @@ async fn create_post_for_org(
         }).await?;
 
         Ok(post)
-    }).await
+    })).await
 }
 ```
 

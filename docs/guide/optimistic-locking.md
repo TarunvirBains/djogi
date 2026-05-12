@@ -150,7 +150,7 @@ instead. `select_for_update()` on `QuerySet` acquires a row lock before the
 read; no version field is needed:
 
 ```rust
-djogi::transaction::atomic(&pool, |ctx| async move {
+djogi::transaction::atomic(&pool, |ctx| Box::pin(async move {
     let mut account = Account::objects()
         .filter(|f| f.id().eq(account_id))
         .select_for_update()
@@ -160,7 +160,7 @@ djogi::transaction::atomic(&pool, |ctx| async move {
     // save() here does not need a version field; the row lock prevents concurrent writes.
     account.save(ctx).await?;
     Ok::<_, DjogiError>(())
-}).await?;
+})).await?;
 ```
 
 See the [transactions guide](./transactions.md) for the full row-lock surface.

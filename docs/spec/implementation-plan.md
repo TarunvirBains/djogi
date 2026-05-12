@@ -128,10 +128,11 @@ Every workstream should review new public API against the idiomatic-Rust guardra
 
 ### 1d: Raw SQL Escape Hatch
 
-- [ ] `djogi::raw::query_as::<T>(pool, sql, params)` → execute raw SQL, return typed model
-- [ ] `djogi::raw::query_scalar::<T>(pool, sql, params)` → return scalar value
-- [ ] `djogi::raw::execute(pool, sql, params)` → execute without return
-- [ ] All raw methods accept both `&PgPool` and `&mut Transaction` (generic over connection)
+- [x] Raw SQL escape hatch shipped — see `djogi::__bypass::RawAccessExt` (`raw_query`, `raw_scalar`, `raw_execute`, plus `raw_rows` / `raw_fetch_one` / `raw_ddl` / `raw_stream` / `raw_stream_with_fetch_size`) and `djogi::__bypass::RawPoolAccessExt` (`raw_pool` / `raw_conn` / `raw_with_client`). All require the `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute and `// JUSTIFICATION ...` comment at the call site; see [`docs/spec/raw-sql-escape-hatches.md`](raw-sql-escape-hatches.md) for the full contract. The historical `djogi::raw::*` task names below describe the original 1d sketch that never shipped under that namespace.
+- [ ] ~~`djogi::raw::query_as::<T>(pool, sql, params)`~~ — superseded by `RawAccessExt::raw_query<T>` (called as `ctx.raw_query::<T>(sql, params).await`).
+- [ ] ~~`djogi::raw::query_scalar::<T>(pool, sql, params)`~~ — superseded by `RawAccessExt::raw_scalar<T>`.
+- [ ] ~~`djogi::raw::execute(pool, sql, params)`~~ — superseded by `RawAccessExt::raw_execute`.
+- [x] Raw methods route through `&mut DjogiContext` (which pattern-matches on pool-vs-transaction), so a single call site works for either backing — see `RawAccessExt` impls in `djogi/src/__bypass.rs`.
 
 ### 1e: Connection Generics
 
@@ -254,9 +255,9 @@ Phase 4 is the main query/write power inflection point. It is where Djogi stops 
 
 ### 4a: Transaction API
 
-- [ ] `djogi::transaction::atomic(pool, |txn| async { ... })` — closure-based, returns `Result`
-- [ ] Manual: `let txn = pool.begin().await?; ... txn.commit().await?;`
-- [ ] Savepoint support within transactions
+- [x] `djogi::transaction::atomic(scope, |ctx| Box::pin(async move { ... }))` — closure-based, returns `Result<R, DjogiError>`. The closure receives `&mut DjogiContext` and returns `AtomicFuture<'_, R>` (= `Pin<Box<dyn Future<…>>>`). Implemented at `djogi/src/transaction.rs::atomic`; `IntoAtomicScope` is impl'd for both `&DjogiPool` and `&mut DjogiContext`. The original 4a checkbox shape — bare `async { ... }` without `Box::pin` — was a historical sketch; the real signature requires the boxed future.
+- [ ] ~~Manual: `let txn = pool.begin().await?; ... txn.commit().await?;`~~ — `pool.begin()` was a historical sketch; the framework path is `DjogiContext::from_pool(pool)` plus `atomic(...)`. Adopters who truly need to manually drive a transaction reach for `__bypass` per the raw-SQL escape-hatch contract.
+- [x] Savepoint support within transactions — nested `atomic(...)` calls push savepoints (`djogi/src/transaction.rs`).
 - [ ] `on_commit(pool, || { ... })` — callbacks that fire only after outermost commit
 - [ ] Savepoint-aware callback tracking (rollback discards inner callbacks)
 - [ ] `select_for_update()` on QuerySet → `FOR UPDATE` (with `nowait`, `skip_locked`)

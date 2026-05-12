@@ -8,11 +8,12 @@
 //! let mut ctx = DjogiContext::from_pool(pool.clone());
 //! let post = Post::create(&mut ctx, post).await?;
 //!
-//! // Transaction-backed (once `atomic()` lands in Phase 4 Task 1):
-//! ctx.atomic(|ctx| async move {
-//!     Post::create(ctx, post).await?;
+//! // Transaction-backed via the `atomic` free function (re-exported through
+//! // `djogi::prelude`). The closure must return `Pin<Box<dyn Future<…>>>`:
+//! atomic(&mut ctx, |tx| Box::pin(async move {
+//!     Post::create(tx, post).await?;
 //!     Ok(())
-//! }).await?;
+//! })).await?;
 //! ```
 //!
 //! ## Context dispatch

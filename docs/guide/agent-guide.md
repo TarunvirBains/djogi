@@ -83,11 +83,13 @@ For the full attribute list, see [the models guide](./models.md).
 | `Post::descriptor()` | `-> &'static ModelDescriptor` | For inventory registration — do not call manually |
 
 All methods take `&mut DjogiContext` — construct one with
-`DjogiContext::from_pool(pool)` for pool-backed work, or use
-`ctx.atomic(|tx| async { ... })` to run inside a transaction with
-savepoint nesting and on-commit callback dispatch. The context
-pattern-matches on pool-vs-transaction at each `tokio-postgres`
-boundary, so the same call site works for either mode.
+`DjogiContext::from_pool(pool)` for pool-backed work, or wrap a call
+site in `atomic(ctx, |tx| Box::pin(async move { ... })).await?` (the
+free function re-exported from `djogi::prelude`) to run inside a
+transaction with savepoint nesting and on-commit callback dispatch.
+The context pattern-matches on pool-vs-transaction at each
+`tokio-postgres` boundary, so the same call site works for either
+mode.
 
 ---
 

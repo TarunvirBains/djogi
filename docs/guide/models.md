@@ -299,11 +299,11 @@ let pool = djogi::DjogiPool::connect(&database_url).await?;
 let mut ctx = DjogiContext::from_pool(pool);
 let article = Article::create(&mut ctx, Article { /* … */ }).await?;
 
-// Inside a transaction — use `ctx.atomic(...)`:
-ctx.atomic(|tx| async move {
+// Inside a transaction — use the `atomic(...)` free function from `djogi::prelude`:
+atomic(&mut ctx, |tx| Box::pin(async move {
     let article = Article::create(tx, Article { /* … */ }).await?;
     Ok(())
-}).await?;
+})).await?;
 ```
 
 ### Inherent: `create_with_id`

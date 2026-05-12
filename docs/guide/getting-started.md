@@ -307,9 +307,12 @@ go in `&[&dyn ToSql]` form using `postgres-types::ToSql` (re-exported as
 
 ## 7. Transactions
 
-Model CRUD methods take `&mut DjogiContext`. Use `ctx.atomic(|tx| async
-{ ... })` to run a closure inside a transaction with savepoint nesting
-and on-commit callbacks:
+Model CRUD methods take `&mut DjogiContext`. Wrap a call site in
+`atomic(ctx, |tx| Box::pin(async move { ... }))` (the free function
+re-exported from `djogi::prelude`) to run a closure inside a
+transaction with savepoint nesting and on-commit callbacks. The
+closure must return `Pin<Box<dyn Future<…>>>` — the `Box::pin(async
+move { … })` wrapper is how you spell it:
 
 ```rust
 use djogi::prelude::*;
@@ -317,7 +320,7 @@ use djogi::prelude::*;
 async fn transfer_views(ctx: &mut DjogiContext, from_id: HeerId, to_id: HeerId)
     -> djogi::Result<()>
 {
-    ctx.atomic(|tx| async move {
+    atomic(ctx, |tx| Box::pin(async move {
         let mut source = Article::get(tx, from_id).await?;
         let mut dest = Article::get(tx, to_id).await?;
 
@@ -328,7 +331,7 @@ async fn transfer_views(ctx: &mut DjogiContext, from_id: HeerId, to_id: HeerId)
         dest.save(tx).await?;
 
         Ok(())
-    }).await
+    })).await
 }
 ```
 
