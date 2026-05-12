@@ -2551,6 +2551,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
+ "sha2",
  "syn 2.0.117",
 ]
 
