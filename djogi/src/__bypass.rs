@@ -39,6 +39,22 @@
 //! checks `is_closed()` on return — it does **not** issue `ROLLBACK`,
 //! `RESET ALL`, or `DISCARD ALL`.
 //!
+//! ## Post-query decode covered by the guard
+//!
+//! Raw SQL that succeeds server-side but produces a row the framework
+//! cannot decode (e.g. `raw_scalar::<i32>("SELECT
+//! set_config('application_name','poisoned',false)")` — the SQL ran,
+//! the session GUC mutated, and `try_get_scalar` then fails because
+//! the returned text is not an `i32`) is itself a dirty exit.
+//! `raw_query`, `raw_fetch_one`, and `raw_scalar` route through
+//! [`DjogiContext::query_all_with`](crate::context::DjogiContext) /
+//! [`query_opt_with`](crate::context::DjogiContext) so the `FromPgRow` /
+//! `try_get_scalar` decode runs **inside** the `PoolConnGuard`'s
+//! lifetime. A decode failure flips the guard's `Result` to `Err`, so
+//! `Drop` detaches the connection. `raw_execute`, `raw_ddl`, and
+//! `raw_rows` have no post-query decode step — their existing pool
+//! guard already covers the only Err/cancel exit shapes.
+//!
 //! ## Adopter contract
 //!
 //! Even with the dirty-by-default guard, raw SQL that mutates session
@@ -50,6 +66,19 @@
 //! transaction's commit or rollback bounds the state change, or use the
 //! transaction-local form (`SET LOCAL …`, `set_config(name, value, true)`,
 //! `BEGIN; … COMMIT;`) inside the closure.
+//!
+//! **`atomic()` cancellation caveat.** `atomic()` issues `ROLLBACK` on
+//! the closure's `Err` and panic paths. It does NOT issue `ROLLBACK`
+//! when the entire `atomic()` future is dropped mid-execution (e.g.
+//! `tokio::time::timeout(..., atomic(&pool, |tx| async { ... }))`
+//! firing the timeout before the closure resolves). In that case the
+//! transaction-backed `DjogiContext` drops without async cleanup and
+//! the underlying connection returns to the pool with the transaction
+//! still open. This is a pre-existing transaction-scope hazard tracked
+//! separately from djogi#162; it is not introduced by the pool-path
+//! guard this module describes, but adopters relying on `atomic()` as
+//! a session-state isolation mechanism should avoid wrapping it in
+//! cancellation primitives until that gap is closed.
 //!
 //! Cursors, `COPY` streams, and other multi-round-trip protocol
 //! operations should run through
@@ -138,8 +167,15 @@ impl RawAccessExt for DjogiContext {
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Vec<T>, DjogiError> {
-        let rows = self.__query_all_for_macros(sql, params).await?;
-        rows.iter().map(T::from_pg_row).collect()
+        // Route through `query_all_with` so the per-row `FromPgRow::from_pg_row`
+        // decode runs inside the `PoolConnGuard`'s lifetime. A decode failure
+        // here would otherwise leave the pool with a possibly poisoned
+        // connection — the underlying SQL succeeded (guard armed for clean
+        // return) while the framework-side decode failed afterwards.
+        self.query_all_with(sql, params, |rows| {
+            rows.iter().map(T::from_pg_row).collect()
+        })
+        .await
     }
 
     async fn raw_rows(
@@ -147,6 +183,8 @@ impl RawAccessExt for DjogiContext {
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Vec<Row>, DjogiError> {
+        // No post-query decode — the existing `query_all` guard already
+        // covers the only Err/cancel exit shape.
         self.__query_all_for_macros(sql, params).await
     }
 
@@ -155,11 +193,18 @@ impl RawAccessExt for DjogiContext {
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<T, DjogiError> {
-        let row = self
-            .__query_opt_for_macros(sql, params)
-            .await?
-            .ok_or_else(|| DjogiError::not_found("<raw>"))?;
-        T::from_pg_row(&row)
+        // Decode runs inside the guard's lifetime via `query_opt_with`. The
+        // `not_found` branch is also reported as `Err`, so the guard's
+        // `committed` flag stays `false` and a no-row response still
+        // recycles the connection cleanly (no session state mutated — the
+        // recycle path is appropriate). Server-side failure paths are
+        // funnelled through the inner `query_opt` `Err`, and decode
+        // failures funnel through the `T::from_pg_row(...)` return.
+        self.query_opt_with(sql, params, |row_opt| {
+            let row = row_opt.ok_or_else(|| DjogiError::not_found("<raw>"))?;
+            T::from_pg_row(&row)
+        })
+        .await
     }
 
     async fn raw_scalar<T>(
@@ -170,11 +215,18 @@ impl RawAccessExt for DjogiContext {
     where
         T: for<'row> FromSql<'row> + Send + 'static,
     {
-        let row = self
-            .__query_opt_for_macros(sql, params)
-            .await?
-            .ok_or_else(|| DjogiError::not_found("<raw>"))?;
-        try_get_scalar(&row, 0)
+        // `try_get_scalar` is the decode step that can fail on a row that
+        // the underlying SQL produced successfully — e.g.
+        // `SELECT set_config('application_name', '...', false)` returns
+        // text and mutates the session GUC, so calling
+        // `raw_scalar::<i32>` decode-fails AFTER the session was poisoned.
+        // Routing through `query_opt_with` keeps that decode inside the
+        // guard's lifetime so the connection detaches on the Err path.
+        self.query_opt_with(sql, params, |row_opt| {
+            let row = row_opt.ok_or_else(|| DjogiError::not_found("<raw>"))?;
+            try_get_scalar(&row, 0)
+        })
+        .await
     }
 
     async fn raw_execute(

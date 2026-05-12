@@ -699,6 +699,80 @@ impl DjogiContext {
         }
     }
 
+    /// Execute a parameterised query, then run `finalize` on the returned
+    /// rows **inside the pool guard's lifetime**. Used by the `RawAccessExt`
+    /// raw-decoding paths (`raw_query`, `raw_fetch_one`) so a post-query
+    /// decode failure still flags the connection as dirty and triggers a
+    /// `PgConnection::detach`. Without this, an `Ok` query that returned a
+    /// row whose contents the caller could not decode would arm the guard
+    /// for clean return — handing the next checkout a session whose state
+    /// was potentially mutated by the original SQL (`SET ROLE`,
+    /// `set_config(name, value, false)`, advisory locks, etc.).
+    ///
+    /// The transaction path runs `finalize` without a guard — session
+    /// state on a transaction-backed context is bounded by the surrounding
+    /// `atomic()`'s rollback path on Err/panic. See `__bypass.rs` for the
+    /// adopter-facing contract around `atomic()` and cancellation.
+    pub(crate) async fn query_all_with<T, F>(
+        &mut self,
+        sql: &str,
+        params: &[&(dyn ToSql + Sync)],
+        finalize: F,
+    ) -> Result<T, DjogiError>
+    where
+        F: FnOnce(Vec<Row>) -> Result<T, DjogiError>,
+    {
+        match &mut self.inner {
+            ContextInner::Pool(pool) => {
+                let mut guard = PoolConnGuard::checkout(pool).await?;
+                let raw = guard.conn().query(sql, params).await;
+                let finalized = match raw {
+                    Ok(rows) => finalize(rows),
+                    Err(e) => Err(e),
+                };
+                guard.finish(&finalized);
+                finalized
+            }
+            ContextInner::Transaction(conn) => {
+                let rows = conn.query(sql, params).await?;
+                finalize(rows)
+            }
+        }
+    }
+
+    /// Execute a parameterised query expecting zero or one row, then run
+    /// `finalize` on the `Option<Row>` inside the pool guard's lifetime.
+    /// Used by `RawAccessExt::raw_scalar` and adjacent decode paths so a
+    /// `try_get_scalar` decode failure detaches the connection rather
+    /// than returning it with the original SQL's session-state mutations
+    /// still applied. See [`Self::query_all_with`] for the full rationale.
+    pub(crate) async fn query_opt_with<T, F>(
+        &mut self,
+        sql: &str,
+        params: &[&(dyn ToSql + Sync)],
+        finalize: F,
+    ) -> Result<T, DjogiError>
+    where
+        F: FnOnce(Option<Row>) -> Result<T, DjogiError>,
+    {
+        match &mut self.inner {
+            ContextInner::Pool(pool) => {
+                let mut guard = PoolConnGuard::checkout(pool).await?;
+                let raw = guard.conn().query_opt(sql, params).await;
+                let finalized = match raw {
+                    Ok(row) => finalize(row),
+                    Err(e) => Err(e),
+                };
+                guard.finish(&finalized);
+                finalized
+            }
+            ContextInner::Transaction(conn) => {
+                let row = conn.query_opt(sql, params).await?;
+                finalize(row)
+            }
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Transaction lifecycle.
     // -------------------------------------------------------------------------

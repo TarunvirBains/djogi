@@ -280,6 +280,26 @@ real auth/tenant/session-state hazard for multi-tenant deployments.
 The trade-off is one extra physical connection per dirty exit. This is the
 right cost to pay for the guarantee.
 
+### Post-query decode dirty-exit
+
+`raw_query`, `raw_fetch_one`, and `raw_scalar` perform framework-side
+decoding after the underlying SQL returns. A pathological mix — server-side
+mutation in the SQL plus a column type the caller's `T` cannot decode — can
+produce an SQL `Ok` paired with a decode `Err`. Example:
+
+```rust,ignore
+let _: i32 = ctx
+    .raw_scalar("SELECT set_config('application_name', 'poisoned', false)", &[])
+    .await?;
+```
+
+The SQL succeeds and mutates the session GUC; `set_config` returns text, so
+`try_get_scalar::<i32>` then fails. The decode is routed through the same
+pool guard via `query_all_with` / `query_opt_with`, so the `Err` arms the
+guard for detach and the poisoned connection is closed before the next
+checkout sees it. Adopters do not need to reason about this case
+explicitly — it is covered by the dirty-by-default lifecycle.
+
 ### Adopter contract
 
 The dirty-by-default guard fires on `Err`/panic/cancel paths only. On the
@@ -291,6 +311,21 @@ who run session-state-affecting raw SQL must:
   transaction commit or rollback bounds the state change, or
 - use the transaction-local form inside the raw call (`SET LOCAL …`,
   `set_config(name, value, true)`, `BEGIN; … COMMIT;`).
+
+#### `atomic()` cancellation caveat
+
+`atomic()` issues `ROLLBACK` on the closure's `Err` and panic paths. It
+does NOT issue `ROLLBACK` when the entire `atomic()` future is dropped
+mid-execution (e.g. wrapping an `atomic` call in `tokio::time::timeout` and
+having the timeout fire before the closure resolves). In that case the
+transaction-backed `DjogiContext` drops without async cleanup and the
+underlying connection returns to the pool with the transaction still open.
+
+This is a pre-existing transaction-scope hazard tracked separately from
+djogi#162. It is not introduced by the pool-path guard described above,
+but adopters relying on `atomic()` as a session-state isolation mechanism
+should avoid wrapping it in cancellation primitives until the gap is
+closed.
 
 Cursors, `COPY` streams, and other multi-round-trip protocol operations
 should go through `RawPoolAccessExt::raw_with_client`. Its `WithClientGuard`

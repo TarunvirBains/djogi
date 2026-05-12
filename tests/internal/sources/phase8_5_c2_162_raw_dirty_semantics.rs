@@ -188,3 +188,51 @@ async fn clean_raw_execute(ctx: &mut djogi::DjogiContext) -> Result<u64, DjogiEr
     )
     .await
 }
+
+/// Dirty exit via **post-query decode failure**. The SQL succeeds
+/// server-side and mutates session state (the `set_config(name, value,
+/// false)` form persists the new GUC across commit/rollback), then the
+/// framework-side `try_get_scalar::<i32>` decode fails because the
+/// returned column is `text`. Without `query_opt_with` routing the
+/// decode through `PoolConnGuard`'s lifetime, the connection would
+/// recycle back to the pool already armed for clean return — silently
+/// handing the next checkout a session whose `application_name` GUC was
+/// `djogi_162_post_decode_dirty`.
+///
+/// With the post-decode guard wiring, the decode `Err` flips the guard
+/// to dirty and `PgConnection::detach` runs, dropping the connection's
+/// underlying socket. `pool.status().size` falls back to zero, the same
+/// invariant the SQL-level Err and cancellation tests pin.
+#[tokio::test]
+async fn pool_raw_scalar_detaches_on_post_query_decode_err() {
+    let _lock = test_lock().await;
+    let (cleanup, url) = provision_test_db().await;
+
+    let pool = DjogiPool::builder(&url)
+        .max_size(2)
+        .build()
+        .await
+        .expect("pool builds");
+
+    let mut ctx = djogi::DjogiContext::from_pool(pool.clone());
+    let result: Result<i32, DjogiError> = ctx
+        .raw_scalar(
+            "SELECT set_config('application_name', 'djogi_162_post_decode_dirty', false)",
+            &[],
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "raw_scalar::<i32> against a `text`-returning function must surface Err"
+    );
+
+    let status = pool.status();
+    assert_eq!(
+        status.size, 0,
+        "post-query decode failure must detach the PgConnection so the \
+         physical connection is closed; pool.size should drop back to 0, \
+         got: {status:?}"
+    );
+
+    teardown_test_db(cleanup).await;
+}
