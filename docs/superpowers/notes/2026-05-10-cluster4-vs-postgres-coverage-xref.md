@@ -1,7 +1,19 @@
 # Cluster 4 vs PG18+PostGIS Coverage Cross-Reference
 
 > Prep work for Cluster 4.0 (Postgres 18+ feature gap audit, Area 19).
-> Self-review only — independent GPT-5.5 xhigh review pending.
+
+## Path-reference disclaimer
+
+This document cites local reviewer artifacts that are not tracked in
+this repository (per `.gitignore` line 27 covering `docs/superpowers/`,
+and the unstaged `docs/research/postgres-coverage/2026-05-09/` research
+set). Path references to those artifacts are accurate for the lane
+lead's local filesystem; readers cloning the repository will only see
+the notes under `docs/superpowers/notes/`. Each cited research artifact
+is also referred to by its descriptive name (the v3 Phase 8.5
+alpha-readiness plan, the PG18+PostGIS catalog research, the red-team
+gate plan) so the prose remains meaningful without local path
+resolution.
 
 ## v3 framing context (re-eval `2026-05-10`)
 
@@ -228,12 +240,14 @@ qualify/window-fraction).
 - `01-pg18-release-notes.md` line 87: `query_id_jumbling_optimization`
   and similar EXPLAIN/optimizer changes are GUC-level; out of djogi
   scope per Area 19 carve-out rules.
-- `06-operator-classes.md` line 105: `gin_jsonb_path_ops` is `unknown`
-  — JSONB path-value GIN opclass. Grep against `migrate/`: index
-  creation supports `using = "..."` but no typed path-ops opclass
-  attribute. This is index-projection territory, not aggregate; route
-  to Cluster 4E #148 if GIN-on-JSONB-paths is needed for trigram-
-  adjacent shapes, or defer to post-v0.1.0 with explicit anchor.
+- `06-operator-classes.md` line 105: `gin_jsonb_path_ops` is catalogued
+  `unknown`. **GPT-5.5 xhigh review correction (2026-05-12):** `opclass`
+  IS exposed via the macro attribute. `djogi-macros/src/model/indexes.rs:1012`
+  parses `index(fields = [payload], using = "gin", opclass = "jsonb_path_ops")`
+  and `docs/spec/indexing.md:31` documents the surface. My earlier grep was
+  scoped only to `djogi/src/migrate/`, which is why the macro-side
+  surface was missed. Disposition: flip from `unknown` to `Implemented`.
+  This becomes a ninth quick-win for the audit ledger.
 
 **Gaps surfaced by catalog NOT in v3 4C:**
 - **PG18 `MIN`/`MAX` over arrays and composites**: route through 4.0
@@ -398,8 +412,12 @@ findings above, I estimate the breakdown is roughly:
   statements (driver-level not query-API level), libpq protocol
   parameters, psql CLI features, monitoring GUCs, pg_upgrade flags,
   pg_dump flags, vacuum scheduling, OAuth method, SSL configuration,
-  many specialized PostGIS functions (clustering, coverage, trajectory,
-  exotic I/O like FlatGeobuf/MARC21/TWKB).
+  the specialized PostGIS long-tail (coverage `ST_CoverageUnion`,
+  trajectory `ST_IsValidTrajectory`, exotic I/O `ST_AsFlatGeobuf` /
+  MARC21 / TWKB; clustering via `ST_ClusterDBSCAN` is NOT in this
+  out-of-scope set — it IS implemented as `cluster_by_proximity` at
+  `djogi/src/query/queryset.rs:1809`, confirmed by GPT-5.5 xhigh
+  review 2026-05-12).
 
 **MASTER-CATALOG.md lines 127–169 — "Notable Clusters for Orchestrator
 Triage" — six clusters mapped to v3:**
@@ -414,11 +432,15 @@ Triage" — six clusters mapped to v3:**
    OVERLAPS go into #148's range/exclusion family.
 2. **PG18 I/O & Performance GUCs** — explicitly out-of-djogi-scope per
    Area 19 carve-out rules. Document in `docs/spec/scope.md`.
-3. **PostGIS Advanced Geometry Operations** — clustering, coverage,
-   trajectory, etc. Mostly out-of-scope for v0.1.0 spatial alpha.
-   Anchor: "spatial alpha covers GeoPoint + relationship + measurement
-   + overlay families; advanced geometry/trajectory/clustering is
-   post-v0.1.0."
+3. **PostGIS Advanced Geometry Operations** — coverage, trajectory,
+   exotic I/O. Mostly out-of-scope for v0.1.0 spatial alpha.
+   Clustering via `ST_ClusterDBSCAN` is explicitly excluded from
+   this carve-out: it IS implemented as `cluster_by_proximity`
+   (`djogi/src/query/queryset.rs:1809`; SQL emission emits
+   `ST_ClusterDBSCAN(... OVER ())`). Anchor for the remainder:
+   "spatial alpha covers GeoPoint + relationship + measurement +
+   overlay families + DBSCAN clustering + geohash bucketing; coverage
+   union, trajectory validation, exotic I/O formats are post-v0.1.0."
 4. **System Catalog Introspection** — pg_backend_memory_contexts,
    pg_stat_io. Out-of-scope for query-API; introspection happens
    through `pg_class`/`pg_attribute` for descriptor work, which IS
@@ -440,7 +462,7 @@ Triage" — six clusters mapped to v3:**
 | PG18 `WITHOUT OVERLAPS` / PERIOD FK / `NOT ENFORCED` / named NOT NULL — **already filed as `djogi#150`** | `01-pg18-release-notes.md` lines 49–51 + `djogi#150` body | Yes — #150 marks "Required for Phase 8.5 alpha-readiness" | Existing issue (`djogi#150`); route through 4.0 audit; coordinate with 4E #148 (Amendment 3 still applies for the EXCLUDE-vs-WITHOUT-OVERLAPS preference clarification) |
 | PG18 `array_sort()` / `array_reverse()` | `01-pg18-release-notes.md` lines 25–26 | No — scalar functions, raw SQL or CASE expressions cover today | Roadmapped; file `pg-18-scalars` tracking issue |
 | PG18 `min`/`max` over arrays/composites | `01-pg18-release-notes.md` lines 32–35 | No — niche aggregates | Roadmapped; route to 4C tail after #89 type-state |
-| `SAVEPOINT` family — **ergonomics on top of nested `atomic()` (which IS the typed surface)** — caller-named `savepoint(name: &str)` method | `03-pg18-sql-reference.md` lines 114–116 + `djogi/src/transaction.rs:13-18, 207-309` | No — anonymous-depth-named savepoints already work via nested `atomic()`; named API is convenience-only | New issue (ergonomics); post-v0.1.0; anchor: "nested `atomic()` IS the typed savepoint surface (`SAVEPOINT sp_<depth>` / `RELEASE` / `ROLLBACK TO`); a caller-named `savepoint(name)` shortcut is convenience" |
+| `SAVEPOINT` family — **ergonomics on top of nested `atomic()` (which IS the typed surface)** — caller-named `savepoint(name: &str)` method | `03-pg18-sql-reference.md` lines 114–116 + `djogi/src/transaction.rs:13-18, 207-309` | No — anonymous-depth-named savepoints already work via nested `atomic()`; named API is convenience-only | **NOT filed during this audit**; anchored deferral (matches Amendment 4 footnote). Capability already exists via nested `atomic()` (`SAVEPOINT sp_<depth>` / `RELEASE` / `ROLLBACK TO`); a caller-named `savepoint(name)` shortcut is convenience and would be filed lazily if/when an adopter shape requires it. |
 | FTS configuration DDL (CREATE TEXT SEARCH …) | `03-pg18-sql-reference.md` lines 244–256 | No — declarative, low-frequency | New issue, post-v0.1.0; raw bypass acceptable |
 | `pgcrypto` **expression-side typed wrapper** (`encrypt`/`decrypt`/`digest`/`hmac`/`gen_salt` etc.) — extension itself IS reachable via the migration emitter allowlist (`djogi/src/migrate/bootstrap.rs:139`) | `04-extensions.md` line 35 + `djogi/src/migrate/bootstrap.rs:139` | No — adopters use Rust-side crypto today; extension is reachable, only the typed expression-surface is missing | New issue (expression-side wrapper, NOT extension absence); roadmapped post-v0.1.0 |
 | `fuzzystrmatch` extension | `04-extensions.md` line 24 | No — pg_trgm covers main fuzzy-match shape | Out-of-scope or post-v0.1.0 with anchor |
@@ -563,6 +585,39 @@ should confirm:
   different path (e.g. trigger-based audit hooks) that doesn't grep
   cleanly.
 - **Quick-win row count (~30+)**: I sampled 8 quick-wins, generalized
-  the count. The full audit may surface more or fewer.
+  the count. The full audit may surface more or fewer. **Post-GPT-5.5
+  correction:** quick-win count goes up by one — `gin_jsonb_path_ops`
+  flips from `unknown` to `Implemented`.
 - **Out-of-scope ~450-600 estimate**: order-of-magnitude rough; the
   audit will land closer to actuals.
+
+## GPT-5.5 xhigh review corrections (`2026-05-12`)
+
+- **Amendment 1 "Current text"** was stale; refreshed against the
+  actual v3 plan §Cluster 4B (lines 475–506 in the local plan file).
+  Amendment 1's "Proposed text" now preserves `#168` / `#169` / `#170` /
+  `#172` and adds `#new-merge` without dropping the dogfood-discovered
+  routings.
+- **`jsonb_path_ops`** flipped from `medium unknown` to `high
+  Implemented`. The macro attribute parser accepts `opclass =
+  "jsonb_path_ops"` (`djogi-macros/src/model/indexes.rs:1012`), and the
+  spec documents the surface (`docs/spec/indexing.md:31`). My earlier
+  grep was scoped only to `djogi/src/migrate/` and missed the macro
+  parser.
+- **`ST_ClusterDBSCAN`** removed from the "specialized PostGIS NOT
+  implemented" set. It IS implemented as `cluster_by_proximity`
+  (`djogi/src/query/queryset.rs:1809`), which emits `ST_ClusterDBSCAN(...
+  OVER ())`. Remaining specialized functions (coverage
+  `ST_CoverageUnion`, trajectory `ST_IsValidTrajectory`, exotic I/O
+  `ST_AsFlatGeobuf` / MARC21 / TWKB) remain uncovered.
+- **Candidate issues 2–7** in the amendment proposal now carry inline
+  Stage 1.5 closing-condition checklists (rustdoc + doctest + spec +
+  live PG18 test + adopter guide) so each is file-ready, not stub.
+- **Path-reference disclaimers** added to the top of all three notes
+  so the broken-link hazard from cross-referencing local-only
+  artifacts (the v3 plan, the coverage research, the red-team gate
+  plan) is explicit for any reader cloning the repo.
+- **SAVEPOINT** wording aligned across the cross-reference (this
+  file's "High-leverage gaps" table) and the amendment proposal:
+  NOT filed during this audit; anchored deferral; capability already
+  exists via nested `atomic()`.

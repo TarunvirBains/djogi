@@ -4,6 +4,15 @@
 > and `2026-05-10-cluster4-v3-amendment-proposal.md`. Lets the user
 > and the GPT-5.5 reviewer see what to prioritize verifying.
 
+## Path-reference disclaimer
+
+This document cites local reviewer artifacts under
+`docs/superpowers/plans/` and `docs/research/postgres-coverage/2026-05-09/`
+that are not tracked in this repository. Path references are accurate
+for the lane lead's local filesystem; readers cloning the repository
+will only see the notes under `docs/superpowers/notes/`. See the
+companion cross-reference doc for the full disclaimer.
+
 ## Confidence rubric
 
 - **high** = grep + spec read + catalog row all agree
@@ -39,8 +48,8 @@
 | `fuzzystrmatch` extension (Levenshtein, Soundex, Metaphone) is NOT implemented | **high** | grep for `fuzzystrmatch` / `levenshtein` / `soundex` / `metaphone` returned zero matches | n/a |
 | `ltree` extension is NOT implemented | **high** | grep for `ltree` returned zero matches; closure CTE in `query/closure.rs` covers the dominant hierarchy use case | n/a |
 | `cube` / `seg` / `isn` data type extensions are NOT implemented | **medium** | not directly grep-verified; catalog rows `unknown`; very specialized | run `grep -ri 'cube_ops\|seg_ops\|isn_ops' djogi/src` for ~2 minutes |
-| GIN `jsonb_path_ops` opclass is NOT exposed as typed `using` attribute | **medium** | catalog row `06-operator-classes.md:105` `unknown`; grep for `jsonb_path_ops` returned zero hits; index-projection layer supports `using = "..."` raw string | run `grep -ri 'jsonb_path_ops\|gin_ops\|opclass' djogi/src/migrate` for ~3 minutes |
-| Specialized PostGIS functions (clustering ST_ClusterDBSCAN, coverage ST_CoverageUnion, trajectory ST_IsValidTrajectory, exotic I/O ST_AsFlatGeobuf/MARC21/TWKB) are NOT implemented | **medium** | catalog rows all `unknown`; only the canonical typed spatial surface (~30 functions) is implemented per `geo/mod.rs`; no spec-grep done on the long tail | run `grep -ri 'ClusterDBSCAN\|CoverageUnion\|IsValidTrajectory\|FlatGeobuf' djogi/src` for ~5 minutes |
+| ~~GIN `jsonb_path_ops` opclass is NOT exposed as typed `using` attribute~~ — **corrected by GPT-5.5 xhigh review (2026-05-12)**: opclass IS exposed via the `index(... opclass = "jsonb_path_ops")` macro attribute | **high** (post-correction) | `djogi-macros/src/model/indexes.rs:1012` parses `opclass = "jsonb_path_ops"`; `docs/spec/indexing.md:31` documents the surface; my earlier grep was scoped only to `djogi/src/migrate` and missed the macro-side parser. Flip the catalog disposition for `gin_jsonb_path_ops` from `unknown` to `Implemented`. | n/a — verified post-correction |
+| Specialized PostGIS functions — **ST_ClusterDBSCAN IS implemented** as `cluster_by_proximity` (`djogi/src/query/queryset.rs:1809`; SQL emission at line 1773 calls `ST_ClusterDBSCAN(t.<col>::geometry, $eps, $minpoints) OVER ()`). Coverage (`ST_CoverageUnion`), trajectory (`ST_IsValidTrajectory`), and exotic I/O (`ST_AsFlatGeobuf`, MARC21, TWKB) remain NOT implemented. | **high** (post-correction by GPT-5.5 xhigh review 2026-05-12) | `cluster_by_proximity` confirmed at `djogi/src/query/queryset.rs:1767-1809` + types at `djogi/src/query/spatial_grouping.rs:89-117`. `cluster_by_proximity` returns `GroupedQuerySet<T, ClusterId>`; pin test at queryset.rs:3427. The remaining specialized functions (CoverageUnion, IsValidTrajectory, FlatGeobuf, MARC21, TWKB) still have zero grep matches in `djogi/src/`. | n/a — partial coverage now verified |
 | Quick-win count of "~30+ catalog rows flippable from `unknown` to `Implemented` on first audit pass" | **medium** | sampled 8 quick-win categories; generalized count from category breadth; could be 20 or 50 depending on how the audit ledger counts row-level vs category-level | full audit pass would land actuals; ~30 minutes of scripted catalog walk |
 | Out-of-scope ~450-600 estimate from catalog `unknown` set | **low** | order-of-magnitude; based on rough categorization (replication, FDW, FTS DDL, libpq protocol, psql, pg_dump flags, monitoring GUCs, OAuth, SSL, specialized PostGIS) | full audit pass needed to land actuals |
 | MASTER-CATALOG.md "Notable Cluster 1: PG18 Constraint & Temporal Features" maps to v3 4B + 4E correctly | **medium** | based on spec-read of catalog cluster description; does not verify what subset of features is actually represented in 4B/4E task lists | cross-walk each of the 5 features (named NOT NULL, NOT ENFORCED, WITHOUT OVERLAPS, PERIOD FK, deterministic_collation_fk) against #105 + #148 issue bodies — ~10 minutes |
@@ -104,12 +113,46 @@ wrong, please verify."
   syntax preference for #148), Amendment 4 issues 2/3/4/5,
   Amendment 5 (PostGIS constructor breadth), and the eight
   quick-wins are all valid.
-- **Re-eval pass** (`2026-05-10`, this commit) addresses the three
+- **Re-eval pass** (`2026-05-10`, commit `03dc0f6`) addresses the three
   reviewer corrections. Final amendment count: **5 (unchanged)**.
   Final issues-to-file count: **7** (was 8; SAVEPOINT dropped from
   the file-list and recorded as an anchored deferral because nested
   `atomic()` IS the typed surface; capability-gap framing was wrong).
   pgcrypto stays in the file-list with reframed expression-side
   scope.
-- **Pending:** GPT-5.5 xhigh reviewer dispatch before any v3
-  amendment lands in the plan file.
+- **GPT-5.5 xhigh reviewer pass** (`2026-05-12`, on PR #192) — verdict
+  `APPROVE_MERGE: NO` initially, with five FIX_BEFORE_MERGE findings.
+  Lane lead applied corrections in this commit (see review history
+  immediately below). Re-dispatch of gpt-5.5 follows.
+- **GPT-5.5 correction pass** (`2026-05-12`, this commit) addresses
+  all five findings:
+  1. Amendment 1 "Current text" quotation was stale against the
+     actual v3 plan; refreshed to include `#168`, `#169`, `#170`,
+     `#172`. Amendment 1's "Proposed text" preserves them all and
+     adds `#new-merge`. (Cross-checked the v3 plan §Cluster 4B
+     lines 475–506 in the local plan file at lock time.)
+  2. `jsonb_path_ops` opclass was wrongly classified as `medium`
+     unknown. Corrected to `high` Implemented in this file (entry
+     reframed) and in the cross-reference (`...vs-postgres-coverage-xref.md`
+     §Cluster 4C). Becomes a ninth quick-win for the audit ledger.
+     Evidence: `djogi-macros/src/model/indexes.rs:1012`,
+     `docs/spec/indexing.md:31`.
+  3. `ST_ClusterDBSCAN` was wrongly bundled into the "specialized
+     PostGIS NOT implemented" list. Corrected: clustering via
+     `cluster_by_proximity` (`djogi/src/query/queryset.rs:1809`)
+     IS implemented and emits `ST_ClusterDBSCAN(... OVER ())`.
+     Remaining specialized functions (coverage `ST_CoverageUnion`,
+     trajectory `ST_IsValidTrajectory`, exotic I/O `ST_AsFlatGeobuf` /
+     MARC21 / TWKB) remain `unknown`/uncovered.
+  4. Candidate issues 2–7 now carry inline Stage 1.5 closing-condition
+     checklists (rustdoc + doctest + spec + live PG18 test +
+     adopter guide) so they are file-ready alongside candidate 1.
+  5. Added path-reference disclaimers to the top of all three notes
+     so the broken-link hazard from cross-referencing local-only
+     artifacts (`docs/superpowers/plans/...`,
+     `docs/research/postgres-coverage/2026-05-09/...`,
+     `docs/superpowers/red-team-gate-plan.md`) is explicit.
+  6. SAVEPOINT framing aligned across the cross-reference and the
+     amendment proposal: NOT filed during this audit; anchored
+     deferral; capability already exists via nested `atomic()`.
+- **Pending:** GPT-5.5 xhigh re-dispatch on the corrected commit.

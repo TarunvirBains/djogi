@@ -1,7 +1,34 @@
 # Proposed Cluster 4 v3 Amendments
 
-> Derived from `2026-05-10-cluster4-vs-postgres-coverage-xref.md`.
-> Apply via inline edits to `docs/superpowers/plans/2026-05-09-phase8-5-alpha-readiness-v3.md` after independent review.
+> Derived from the Cluster 4 PG18+PostGIS coverage cross-reference
+> (companion file `2026-05-10-cluster4-vs-postgres-coverage-xref.md` in
+> this directory). Apply via inline edits to the v3 Phase 8.5
+> alpha-readiness plan after independent review.
+
+## Path-reference disclaimer
+
+This document cites local reviewer artifacts that are not tracked in
+this repository (per `.gitignore` line 27 covering `docs/superpowers/`,
+and the unstaged `docs/research/postgres-coverage/2026-05-09/` research
+set). Specifically:
+
+- The v3 Phase 8.5 alpha-readiness plan lives at
+  `docs/superpowers/plans/2026-05-09-phase8-5-alpha-readiness-v3.md`
+  in the user's local working tree and is not committed.
+- The PG18+PostGIS coverage research lives at
+  `docs/research/postgres-coverage/2026-05-09/01..06.md` plus
+  `MASTER-CATALOG.md` / `RESEARCH-SUMMARY.txt` in the user's local
+  working tree and is not committed.
+- The red-team gate plan lives at
+  `docs/superpowers/red-team-gate-plan.md` in the user's local
+  working tree and is not committed.
+
+Path references below are accurate for the lane lead's local
+filesystem; readers cloning the repository will only see the notes
+under `docs/superpowers/notes/`. Each cited research artifact is
+also referred to by its descriptive name (e.g., "the v3 Phase 8.5
+alpha-readiness plan", "the PG18+PostGIS catalog research") so the
+prose remains meaningful without local path resolution.
 
 ## Pre-existing GH issues confirmed in scope (re-eval `2026-05-10`)
 
@@ -53,13 +80,15 @@ reframed or dropped:
 
 ## Amendment 1: Add MERGE to Cluster 4B
 
-**Section:** "Cluster 4B: Set And Relational SQL Shapes"
-(`docs/superpowers/plans/2026-05-09-phase8-5-alpha-readiness-v3.md`
-lines 392–406)
+**Section:** "Cluster 4B: Set And Relational SQL Shapes" of the v3
+Phase 8.5 alpha-readiness plan (local reviewer artifact at
+`docs/superpowers/plans/2026-05-09-phase8-5-alpha-readiness-v3.md`
+lines 475–506 at lock time).
 
-**Current text:**
+**Current text (verified against the v3 plan as of 2026-05-12 re-eval):**
 > **Primary issues:** `djogi#101`, `djogi#102`, `djogi#103`, `djogi#104`,
-> `djogi#105`, `djogi#106`.
+> `djogi#105`, `djogi#106`, `djogi#168`, `djogi#169`, `djogi#170`,
+> `djogi#172`.
 >
 > - [ ] Add typed `UNION`, `INTERSECT`, and `EXCEPT` between compatible
 >       `QuerySet`s, with type/column compatibility diagnostics.
@@ -70,11 +99,24 @@ lines 392–406)
 >       descriptor surface, with migration projection tests.
 > - [ ] Add `INSERT ... SELECT` support for copying rows from typed queries into
 >       typed tables.
+> - [ ] `djogi#168`: typed isolation-level surface (`atomic_with(level, ...)`
+>       or chosen builder shape), including `40001` retry parity through
+>       `retry_on_conflict`. Discovered via #110 round-2 dogfood (cat3_b).
+> - [ ] `djogi#169`: typed `SET CONSTRAINTS DEFERRED` surface, validated
+>       against named constraints declared on model descriptors, with the
+>       transaction-only invariant enforced. Discovered via #110 round-2
+>       dogfood (cat3_c).
+> - [ ] `djogi#170` (umbrella): file sub-issues for INTERVAL, INET / CIDR /
+>       MACADDR, MONEY (or doc decision), RANGE TYPES, and DOMAIN TYPES.
+> - [ ] `djogi#172` (umbrella): file sub-issues for COMMENT ON, storage
+>       parameters, TABLESPACE, ALTER COLUMN ... TYPE ... USING, and
+>       generated-column re-declarations.
 
-**Proposed text:**
+**Proposed text (preserves all existing 4B routed items + adds MERGE):**
 > **Primary issues:** `djogi#101`, `djogi#102`, `djogi#103`, `djogi#104`,
-> `djogi#105`, `djogi#106`, `djogi#new-merge` (filed during Cluster 4.0
-> audit; see Amendment 1a).
+> `djogi#105`, `djogi#106`, `djogi#168`, `djogi#169`, `djogi#170`,
+> `djogi#172`, `djogi#new-merge` (filed during Cluster 4.0 audit; see
+> Amendment 1a).
 >
 > - [ ] Add typed `UNION`, `INTERSECT`, and `EXCEPT` between compatible
 >       `QuerySet`s, with type/column compatibility diagnostics.
@@ -85,6 +127,10 @@ lines 392–406)
 >       descriptor surface, with migration projection tests.
 > - [ ] Add `INSERT ... SELECT` support for copying rows from typed queries into
 >       typed tables.
+> - [ ] `djogi#168`: typed isolation-level surface (unchanged).
+> - [ ] `djogi#169`: typed `SET CONSTRAINTS DEFERRED` surface (unchanged).
+> - [ ] `djogi#170` (umbrella, unchanged).
+> - [ ] `djogi#172` (umbrella, unchanged).
 > - [ ] Add typed `MERGE INTO ... USING ... WHEN MATCHED ... WHEN NOT
 >       MATCHED ...` surface for conditional UPSERT-with-conditions.
 >       The Postgres 18+ catalog cross-reference (Cluster 4.0)
@@ -130,10 +176,10 @@ A concrete shape that is not expressible today:
 
 ## Surfaced at
 
-Cluster 4.0 Postgres 18+ feature gap audit
-(`docs/superpowers/notes/2026-05-10-cluster4-vs-postgres-coverage-xref.md`).
-The MASTER-CATALOG marks MERGE as `partial`; spec-grep confirms no
-typed surface. Adopters who need MERGE today fall back to raw SQL.
+Cluster 4.0 Postgres 18+ feature gap audit (the PG18+PostGIS coverage
+cross-reference). The MASTER-CATALOG marks MERGE as `partial`;
+spec-grep confirms no typed surface. Adopters who need MERGE today
+fall back to raw SQL.
 
 ## Investigation
 
@@ -168,7 +214,7 @@ are source-driven write shapes).
       the builder type, with one full worked example
 - [ ] Doctest exercises the WHEN MATCHED + WHEN NOT MATCHED minimum
       branch set
-- [ ] Spec amendment in `docs/spec/queryset.md` (or successor) describes
+- [ ] Spec amendment in `docs/spec/queries.md` (or successor) describes
       the SQL shape, condition typing, and `RETURNING` interaction
 - [ ] Live PG18 integration test exercises both branches against a real
       database
@@ -390,9 +436,16 @@ keeps the post-v0.1.0 backlog manageable while satisfying the
 lines 14–105 (constructors and accessors); spec-grep against
 `djogi/src/geo/mod.rs` confirms the v0.1.0 surface.
 
-## New issues to file (consolidated list, re-eval `2026-05-10`)
+## New issues to file (consolidated list, re-eval `2026-05-10`; GPT-5.5 corrections `2026-05-12`)
 
 DO NOT actually file the issues. The user reviews first.
+
+**Each entry below is a file-ready candidate.** Candidate 1 (MERGE)
+carries the full body sketch at Amendment 1a above; candidates 2–7
+carry inline Stage 1.5 closing-condition checklists with the same
+five-bullet structure (rustdoc + doctest + spec amendment + live
+PG18 test + adopter guide example), so the file-issues step can
+copy them verbatim without re-derivation.
 
 **Reviewer correction tally:**
 - Was: 8 issues to file. Now: **7 issues to file**.
@@ -407,7 +460,7 @@ DO NOT actually file the issues. The user reviews first.
 
 1. **`framework gap: MERGE INTO ... USING ... typed surface`**
    - Cluster: 4B (after Cluster 4.0 audit confirms alpha-blocking)
-   - Body: see Amendment 1a above
+   - Body: see Amendment 1a above (full Stage 1.5 issue body sketch)
    - Closing-condition: Stage 1.5 format (rustdoc + doctest + spec
      amendment + live PG18 test + user guide example)
    - Re-eval status: net-new-valid; reviewer-confirmed (zero `MERGE
@@ -419,7 +472,12 @@ DO NOT actually file the issues. The user reviews first.
    - Body: anchor "tsvector/tsquery typed query surface is implemented
      at `djogi/src/expr/node.rs:398, 417, 431` and `djogi/src/fts.rs`;
      DDL is declarative low-frequency; raw bypass is acceptable"
-   - Closing-condition: Stage 1.5 format if/when adopter shape requires
+   - Closing-condition (Stage 1.5 inline):
+     - [ ] Rustdoc on the new `#[fts]` (or chosen name) attribute and any helper builders, with one full FTS-config worked example
+     - [ ] Doctest exercises `CREATE TEXT SEARCH CONFIGURATION` minimum, plus at least one of `DICTIONARY` / `PARSER` / `TEMPLATE`
+     - [ ] Spec amendment in `docs/spec/migrations.md` (extensions/DDL section) describes the descriptor surface and emitted SQL
+     - [ ] Live PG18 integration test creates an FTS configuration via the typed surface and matches it against `to_tsvector(<cfg>, $1)` query results
+     - [ ] Adopter guide example added under `docs/guide/` (likely `docs/guide/fts.md`) showing typed FTS-config use with a typed `tsvector` column
    - Re-eval status: net-new-valid; unchanged.
 
 3. **`framework gap: pgcrypto expression-side typed wrapper
@@ -433,7 +491,12 @@ DO NOT actually file the issues. The user reviews first.
      Adopters use Rust-side crypto today (sha2, hmac, ring); pgcrypto
      is post-v0.1.0 only if a real adopter shape requires server-side
      crypto."
-   - Closing-condition: Stage 1.5 format if/when adopter shape requires
+   - Closing-condition (Stage 1.5 inline):
+     - [ ] Rustdoc on each typed wrapper (`encrypt`, `decrypt`, `digest`, `hmac`, `gen_salt`, `crypt`) with one full worked example per family
+     - [ ] Doctest exercises a digest + hmac round trip plus an encrypt/decrypt round trip
+     - [ ] Spec amendment in `docs/spec/queries.md` (or successor) names the new expression family and its result typing
+     - [ ] Live PG18 integration test verifies emitted SQL against pgcrypto installed in a test cluster
+     - [ ] Adopter guide example added under `docs/guide/` (likely `docs/guide/crypto.md`) clarifying when to prefer pgcrypto vs Rust-side crypto
    - **Re-eval correction (`2026-05-10`):** was framed as "extension
      absence" in v2. Reviewer correctly noted the extension IS
      reachable via the allowlist. Reframed as expression-side typed
@@ -443,15 +506,25 @@ DO NOT actually file the issues. The user reviews first.
    array_reverse, casefold, crc32, crc32c, gamma, lgamma)`**
    - Cluster: post-v0.1.0 (one umbrella issue)
    - Body: per-function anchor table; HeerId/RanjId obviates UUID
-   - Closing-condition: track as a list; promote individual entries to
-     dedicated issues only when an adopter shape requires
+   - Closing-condition (Stage 1.5 inline, applied per individual
+     function once a sub-issue is promoted):
+     - [ ] Rustdoc on the typed wrapper(s) with at least one worked example
+     - [ ] Doctest exercises the wrapper's result typing
+     - [ ] Spec amendment names the wrapper in `docs/spec/queries.md` (or successor)
+     - [ ] Live PG18 integration test verifies emitted SQL against PG18
+     - [ ] Adopter guide example added under `docs/guide/` if the wrapper is non-obvious; otherwise the rustdoc example suffices
    - Re-eval status: net-new-valid; unchanged.
 
 5. **`framework gap: MIN()/MAX() over arrays and composites (PG18)`**
    - Cluster: 4C tail (after #89 type-state lands) OR post-v0.1.0
    - Body: anchor "Kind discriminator from #89 may need a new variant
      for composite/array aggregates"
-   - Closing-condition: Stage 1.5 format
+   - Closing-condition (Stage 1.5 inline):
+     - [ ] Rustdoc on the new aggregate variant(s) (likely a new `AggregateExpr<Out, Kind>` Kind) with worked examples for both array and composite arguments
+     - [ ] Doctest exercises `min_array_agg` / `max_array_agg` / `min_composite_agg` / `max_composite_agg` minimum set
+     - [ ] Spec amendment in `docs/spec/queries.md` describes the aggregate-over-non-scalar typing rules
+     - [ ] Live PG18 integration test runs the four aggregates against a real table
+     - [ ] Adopter guide example added under `docs/guide/aggregates.md` (or successor) showing typical use
    - Re-eval status: net-new-valid; reviewer-confirmed not covered
      by existing #88 (which is the aggregate umbrella for the
      existing surface, not array/composite extension).
@@ -461,8 +534,13 @@ DO NOT actually file the issues. The user reviews first.
    MakeValid, IsValidDetail, IsValidReason)`**
    - Cluster: post-v0.1.0 (one umbrella issue)
    - Body: explicit list with the v0.1.0 carve-out anchor
-   - Closing-condition: track as a list; escalate to v3 4C if
-     `ST_TileEnvelope` becomes required for MVT/Geobuf
+   - Closing-condition (Stage 1.5 inline, applied per individual
+     constructor once a sub-issue is promoted):
+     - [ ] Rustdoc on the typed constructor with one full worked example
+     - [ ] Doctest exercises the constructor's result-geometry typing
+     - [ ] Spec amendment in `docs/spec/queries.md` (spatial section) names the constructor and its result-typing semantics
+     - [ ] Live PG18 + PostGIS integration test verifies the emitted SQL against a real cluster
+     - [ ] Adopter guide example added under `docs/guide/spatial.md` (or successor) if the constructor's use case is non-obvious
    - Re-eval status: net-new-valid; reviewer-confirmed no umbrella
      constructor-breadth issue exists.
 
@@ -471,7 +549,12 @@ DO NOT actually file the issues. The user reviews first.
    - Cluster: 4B as #4B.8 if Cluster 4.0 audit confirms alpha-blocking
    - Body: covers audit/event-publication shapes where pre and post
      image are both needed in one round trip
-   - Closing-condition: Stage 1.5 format
+   - Closing-condition (Stage 1.5 inline):
+     - [ ] Rustdoc on the `RETURNING (OLD ..., NEW ...)` typed surface (likely a new builder on `QuerySet::update` / `delete` / `merge_into`)
+     - [ ] Doctest exercises returning OLD + NEW pair for at least one UPDATE
+     - [ ] Spec amendment in `docs/spec/queries.md` (or successor) names the surface and the PG18-version-gating
+     - [ ] Live PG18 integration test verifies emitted SQL for all four shapes (INSERT / UPDATE / DELETE / MERGE)
+     - [ ] Adopter guide example added under `docs/guide/audit.md` (or successor) showing audit/event-publication use
    - Re-eval status: net-new-valid; unchanged.
 
 ## Issues NOT filed (anchored deferrals, re-eval `2026-05-10`)
