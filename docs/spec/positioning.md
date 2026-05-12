@@ -21,7 +21,7 @@ If you came here from the README's design-north-star section, the short version 
 
 | Dimension | **Djogi v0.1.0** | **Cot** | **SeaORM** | **Diesel** |
 |---|---|---|---|---|
-| Async model | Tokio-only; unified `DjogiContext` pool/txn | Tokio-only via `sea-query-binder` | Tokio OR async-std (feature flags) | Sync core; `diesel-async` separate addon |
+| Async model | Tokio-only; unified `DjogiContext` pool/txn | Tokio-only via `sea-query-binder` | Tokio (active); async-std runtime flag still present but deprecated upstream | Sync core; `diesel-async` separate addon |
 | Postgres driver | `tokio-postgres` + `deadpool-postgres` | sqlx (via sea-query-binder) | sqlx | Diesel-internal libpq wrapper |
 | Pool | `deadpool-postgres`; typed `DjogiPool::builder()` | sqlx::Pool | sqlx::Pool | r2d2 (sync) |
 | Macro style | `#[model(...)]` + `#[field(...)]` attributes | `#[model]` + `#[migration_op]` attributes | `#[derive(DeriveEntityModel)]` derives | `table!` declarative |
@@ -37,14 +37,14 @@ If you came here from the README's design-north-star section, the short version 
 | Full-text search | `#[model(fts)]` → `TsVector`/`TsQuery` + GIN index | Not surfaced | Not surfaced | Not surfaced |
 | Audit / outbox | `#[model(events)]` transactional outbox + Publisher trait + pg_notify listener | Not surfaced | Not surfaced | Not surfaced |
 | Field-level protection | `#[field(protect = "...")]` codec registry for PII / encrypted-at-rest | Not surfaced | Not surfaced | Not surfaced |
-| Aggregates | count / sum / avg / min / max + array_agg / json_agg / string_agg / bool_and / bool_or with `FILTER (WHERE)` | SeaQuery-mediated | SeaQuery-mediated | Hand-written |
-| Window functions | `Expr<T>::over(Window)`, RowNumber / Rank / DenseRank + `.qualify()` | Limited via SeaQuery | Limited via SeaQuery | Hand-written |
+| Aggregates | count / sum / avg / min / max + array_agg / json_agg / string_agg / bool_and / bool_or with `FILTER (WHERE)` | SeaQuery-mediated | SeaQuery-mediated | Typed DSL (`sum`/`avg`/`min`/`max`); no `FILTER (WHERE)` |
+| Window functions | `Expr<T>::over(Window)`, RowNumber / Rank / DenseRank + `.qualify()` | Limited via SeaQuery | Limited via SeaQuery | Typed DSL (`rank`/`row_number`); no `.qualify()` |
 | Recursive CTEs / tree queries | `RecursiveQuerySet<T>::tree_descendants` / `tree_ancestors` with cycle detection, BREADTH / DEPTH FIRST, path output | Hand-written SQL | Hand-written SQL | Hand-written SQL |
 | GROUPING SETS / ROLLUP / CUBE | First-class via three-stage grouped state | Not surfaced | Not surfaced | Not surfaced |
 | Relations | `ForeignKey<T>` / `OneToOneField<T>` / `ManyToMany<Target>` with cascade policies; reverse-accessor macros; `select_related` / `prefetch` | FK only; limited reverse | FK only; limited reverse | FK only; no reverse macros |
 | ENUM | `#[derive(DjogiEnum)]` Postgres-native codec | SeaQuery builder | SeaORM derive | Hand-mapped |
 | Raw SQL escape hatches | `raw_query` / `raw_fetch_one` / `raw_scalar` / `raw_execute` / `raw_stream` on `DjogiContext`, gated by an explicit bypass attribute | Not typed | Standard practice | Standard practice |
-| Admin / shell / CLI | `cargo djogi docs`, `cargo djogi db seed`; Rhai shell deferred Phase 9 | Not surfaced | SeaORM Studio (third-party) | Not surfaced |
+| Admin / shell / CLI | `cargo djogi docs`, `cargo djogi db seed`; Rhai shell deferred Phase 9 | Built-in `cot::admin` module + `cot-cli` | SeaORM Pro (official add-on) | Not surfaced |
 | Model hooks | `#[derive(ModelHooks)]`, zero-overhead via marker trait | Not surfaced | Event listeners | Not surfaced |
 | Computed fields | `#[computed(sql = "...")]` + `#[djogi::trait_impl]` cross-type registry | Not surfaced | Not surfaced | Not surfaced |
 | Proxy models | `#[model(proxy_for = "Parent")]` w/ custom default-filter | Not surfaced | Not surfaced | Not surfaced |
@@ -121,7 +121,7 @@ Djogi's design intent is explicit: **Rust-first** (idiomatic Rust where user cod
 | Source of truth is a Rust struct | Yes — `#[model]` attribute injects fields into the struct | Yes — `#[model]` attribute | Mixed — `entity` crate codegen-from-SQL, schema-first rather than model-first | Yes — `table!` declarative macro |
 | Type-state in query layer | Strong — `QuerySet<T>` → `GroupedQuerySet<T,K>` → `GroupedAnnotatedQuerySet<T,K,A>`; sealed `DjogiVisageOf<M>`; `HasHooks` marker; `Tracked<T>` | Less type-state-driven | SeaQuery is SQL-shaped, less Rust-shaped | Strongest compile-time guarantees in the ecosystem |
 | Zero-overhead abstractions | Yes — marker-trait monomorphisation; `#[derive]`-driven codegen; no runtime reflection | Comparable | Mixed — async-trait and dyn dispatch in places | Yes — no runtime cost |
-| Async-Rust idiom alignment | Yes — Tokio-native | Yes — Tokio-native | Mixed — feature-flagged Tokio-or-async-std splits the audience | Sync-only core; an async addon ships separately |
+| Async-Rust idiom alignment | Yes — Tokio-native | Yes — Tokio-native | Mixed — Tokio is the active runtime path; the async-std runtime flag persists but is deprecated upstream | Sync-only core; an async addon ships separately |
 | Public algebra in Rust types (not strings) | Yes — `Q<T>` enum w/ `&` `\|` `^` `!` overloads; bare-ident PK syntax (no string PK names) | Internal condition tree | Builder-style API | No public algebra |
 | Typed JSONB / arrays / spatial | Yes — `Jsonb<T>` + `#[derive(JsonbSchema)]`; `Vec<V>` w/ native operators; EWKB-typed | Untyped | `serde_json::Value` only | Untyped |
 | Cross-type trait registry | Yes — `#[djogi::trait_impl]` + `Sassi::all_impl::<Trait>()` | Not surfaced | Not surfaced | Not surfaced |
@@ -148,7 +148,7 @@ Djogi's design intent is explicit: **Rust-first** (idiomatic Rust where user cod
 | `NULLS NOT DISTINCT`, partial / covering / functional indexes, `CREATE INDEX CONCURRENTLY` | Yes — all first-class | Not surfaced | Not surfaced | Not surfaced |
 | `GROUPING SETS` / `ROLLUP` / `CUBE` | Yes — first-class | Not surfaced | Not surfaced | Not surfaced |
 | Transactional outbox + `pg_notify` | Yes — `#[model(events)]` + Publisher trait | Not surfaced | Not surfaced | Not surfaced |
-| Window fns + `.qualify()` | Yes — typed surface | Via SeaQuery | Via SeaQuery | Hand-written |
+| Window fns + `.qualify()` | Yes — typed surface | Via SeaQuery | Via SeaQuery | Typed window helpers; no `.qualify()` |
 
 **Verdict (Postgres-first):** intent achieved emphatically. Postgres-first is Djogi's most uncompromised design axis. Multi-DB projects forgo this depth by design — that is the trade they made for portability. Postgres-native `CYCLE … USING path` is a clean illustration: Djogi can use it because it does not have to abstract over MySQL's missing recursive-CTE ordering or SQLite's recursive-CTE feature gates.
 
@@ -174,7 +174,7 @@ Routed to post-v0.1.0 with issue numbers where available:
 
 - **#138** — field accessor property-style API (`.field_name` syntax deferred).
 - Stored computed columns — `#[computed(sql = "...", stored)]` deferred (Postgres irreversibility).
-- Custom field-group derives — public extension trait for Auditable / SoftDeletable patterns deferred 8.5+.
+- Adopter-defined field-group derives — built-in `#[derive(Auditable)]` / `#[derive(SoftDeletable)]` ship today; a public extension trait letting adopters compose new field-groups (e.g., `Versioned`, `Approved`) is deferred 8.5+.
 - Constraint / index name interpolation — pattern-substitution ownership ambiguous; deferred 8.5.
 - Distributed placement / residency — no node affinity, shard routing, or topology semantics in v0.1.0 (Phase 11+).
 - Cross-target FK moves — no first-class pattern; classified `OfflineOnly`.
