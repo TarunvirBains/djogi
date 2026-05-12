@@ -1048,6 +1048,122 @@ fn project_generated_column(spec: &GeneratedColumnSpec) -> GeneratedColumnSchema
     }
 }
 
+/// Render a column-level CHECK expression bounding the widened column
+/// to the Rust source type's representable range.
+///
+/// Returns `None` for columns whose Rust type maps identity-width to
+/// the Postgres column type (`i16`, `i32`, `i64`, `bool`, `String`,
+/// `f32`, `f64`, ...) — the column type already enforces the range,
+/// and a redundant CHECK would inflate every snapshot for no safety
+/// win.
+///
+/// Returns `Some(expr)` for the integer-widening cases that motivate
+/// `djogi#186`:
+///
+/// | Rust | Postgres column | CHECK expression                   |
+/// |------|-----------------|-------------------------------------|
+/// | `i8` | `SMALLINT`      | `<col> >= -128 AND <col> <= 127`    |
+/// | `u32`| `BIGINT`        | `<col> >= 0 AND <col> <= 4294967295`|
+///
+/// (`u8`, `u16`, `u64` are pre-wired here for `djogi#190` — once
+/// tokio-postgres bind/decode shims land, the descriptor will start
+/// surfacing those types and the matching arms below trigger
+/// automatically.)
+///
+/// The expression references the column by its quoted name so
+/// identifiers using reserved words round-trip cleanly through
+/// Postgres parsing. The descriptor's `name` field is the user's Rust
+/// ident with `r#` stripped, which matches the column-name convention
+/// the rest of the projection / SQL emitter uses.
+///
+/// **Dormant in non-test builds today.** `project_column` does not
+/// invoke this helper yet — see the comment at the projection wiring
+/// for the source-type-discriminator gating. The `#[allow(dead_code)]`
+/// keeps the helper compilable under `-D warnings` until djogi#190
+/// flips the wiring on; the unit tests in this module's `tests` block
+/// exercise it directly so behaviour cannot regress while it sits
+/// dormant.
+#[allow(dead_code)]
+fn field_type_check(
+    sql_type: &crate::descriptor::FieldSqlType,
+    column_name: &str,
+) -> Option<String> {
+    use crate::descriptor::FieldSqlType;
+
+    let qcol = quote_ident_for_check(column_name);
+    match sql_type {
+        // Note: this match dispatches on the descriptor's typed
+        // `FieldSqlType`, not on the SQL string. The macro's
+        // `rust_type_to_sql` table already routes `i8 → "SMALLINT"`
+        // and `u8 → "SMALLINT"` to the same Postgres column type, so
+        // we can't recover the Rust source from the column type alone.
+        // Today the only `SMALLINT`-producing Rust type with a CHECK is
+        // `i8` — every other `SMALLINT` source (`i16`) is identity and
+        // produces no CHECK. The `u8 → SMALLINT` arm activates only
+        // once djogi#190 wires the macro's `rust_type_to_sql` for `u8`.
+        // The CHECK projection at that point becomes ambiguous on
+        // `SMALLINT` alone; the resolution is to add a typed
+        // discriminant on `FieldDescriptor` (a `rust_source_type` slot)
+        // so the projection can choose between `i8` and `u8` bounds.
+        // For now, only `i8` is reachable, and the chosen bound matches
+        // its range.
+        FieldSqlType::SmallInt => Some(format!("{qcol} >= -128 AND {qcol} <= 127")),
+        // `u32` is the only Rust type today that lowers to BIGINT but
+        // requires a non-default range. `i64 → BIGINT` is identity and
+        // produces no CHECK; the macro routes `i64` → `FieldSqlType::BigInt`
+        // unconditionally. Same ambiguity caveat as `SMALLINT` above
+        // applies once `i64` and `u32` land in the same projection
+        // pipeline — resolved by future `rust_source_type` discriminant.
+        FieldSqlType::BigInt => Some(format!("{qcol} >= 0 AND {qcol} <= 4294967295")),
+        // `u8 → SMALLINT` (range 0..255), `u16 → INTEGER` (range
+        // 0..65535), `u64 → NUMERIC(20, 0)` (range 0..18446744073709551615).
+        // Pre-wired for djogi#190; the matching arms in
+        // `rust_type_to_sql` are gated on the bind/decode shim work.
+        FieldSqlType::Integer => None,
+        FieldSqlType::NumericPrecision {
+            precision: 20,
+            scale: 0,
+        } => Some(format!("{qcol} >= 0 AND {qcol} <= 18446744073709551615")),
+        // All other `FieldSqlType` variants (`Text`, `Real`,
+        // `DoublePrecision`, `Boolean`, `Timestamptz`, `Date`,
+        // `Numeric`, `Uuid`, `Jsonb`, arrays, `Citext`, `Geography`,
+        // `Custom`) carry their own type bounds via the column type
+        // itself; no Rust-derived CHECK applies. Future families
+        // (temporal year bounds — djogi#187, Decimal precision —
+        // djogi#188) plug into this same match without reshaping the
+        // helper signature.
+        _ => None,
+    }
+}
+
+/// Local quoter for CHECK expressions — duplicates `quote_ident` from
+/// `migrate/sql.rs` because the projection layer cannot depend back
+/// on the SQL emitter. The two implementations stay byte-identical;
+/// any change to one must update the other.
+///
+/// Wraps the identifier in double quotes and doubles any embedded
+/// double quote (the Postgres rule). Matches the convention every other
+/// SQL emitter in this crate uses for column references.
+///
+/// **Dormant in non-test builds today.** Only `field_type_check`
+/// (also dormant pending djogi#190) calls this; the
+/// `#[allow(dead_code)]` keeps it compilable under `-D warnings`.
+#[allow(dead_code)]
+fn quote_ident_for_check(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 2);
+    out.push('"');
+    for byte in name.bytes() {
+        if byte == b'"' {
+            out.push('"');
+            out.push('"');
+        } else {
+            out.push(byte as char);
+        }
+    }
+    out.push('"');
+    out
+}
+
 fn project_column(
     f: &FieldDescriptor,
     parent: &ModelDescriptor,
@@ -1176,8 +1292,44 @@ fn project_column(
         None
     };
 
+    // Type-derived CHECK projection (djogi#186, Phase 8.5 v3 Cluster 2)
+    // is intentionally NOT wired through `project_column` yet. The
+    // descriptor exposes `f.sql_type` (a typed `FieldSqlType` such as
+    // `BigInt` / `SmallInt`) but the projection cannot recover the
+    // *Rust source type* from that single field — `i64 → BIGINT` and
+    // `u32 → BIGINT` both lower to `FieldSqlType::BigInt`, and
+    // `i16 → SMALLINT` and `i8 → SMALLINT` both lower to
+    // `FieldSqlType::SmallInt`. Calling the `field_type_check` helper
+    // here would unconditionally emit a `>= 0 AND <= 4294967295` CHECK
+    // for every BIGINT column, including the framework's own
+    // HeerId-backed `id` column and every legitimate adopter `i64`
+    // field. Production HeerIds exceed `u32::MAX` from day one, so
+    // wiring without a source-type discriminator would silently break
+    // every table.
+    //
+    // Wiring is therefore deferred to djogi#190, which lands the
+    // per-field "rust source type" tracking on `FieldDescriptor`
+    // alongside the macro arms / bind shims for `i8 / u8 / u16 / u32 /
+    // u64`. Until then:
+    //
+    //   * `field_type_check` ships as a unit-tested helper (see the
+    //     `field_type_check_*` tests below).
+    //   * The differ AMEND DROP+ADD lifecycle ships and is unit-tested
+    //     against synthetic `ColumnSchema` instances (see
+    //     `check_*_emits_*` tests in `migrate/diff.rs`).
+    //   * Only the wiring at this site sits dormant, so the
+    //     contract-layer infrastructure cannot regress production
+    //     tables before #190 closes the source-type gap.
+    //
+    // FK columns are reserved as `None` here even after #190 lands —
+    // FK columns inherit their type from the parent's PK, which is
+    // always identity-width (BIGINT for HeerId, UUID for RanjId), so
+    // no Rust-derived CHECK applies to references regardless of source
+    // type tracking.
+    let check: Option<String> = None;
+
     ColumnSchema {
-        check: None,
+        check,
         default_sql,
         foreign_key,
         generated: f.generated.as_ref().map(project_generated_column),
@@ -2856,5 +3008,231 @@ mod tests {
         assert!(msg.contains("Subscription"), "missing FK target: {msg}");
         assert!(msg.contains("Plan"), "missing M2M target: {msg}");
         assert!(msg.contains("GH #158"), "missing issue anchor: {msg}");
+    }
+
+    // ── djogi#186 — type-derived CHECK projection ──────────────────────────
+    //
+    // `field_type_check` is the projection helper that bounds widened
+    // integer columns to the Rust source type's representable range.
+    // The expected expression for each currently-shipped Rust type
+    // (i8 → SMALLINT, u32 → BIGINT) is pinned here so a future refactor
+    // cannot silently change the bound. The pre-wired arms (u64 →
+    // NUMERIC(20, 0)) are also pinned so when djogi#190 surfaces u64,
+    // the projection emits the documented bound without further code
+    // changes.
+
+    #[test]
+    fn field_type_check_for_smallint_emits_i8_bounds() {
+        let expr = field_type_check(&FieldSqlType::SmallInt, "byte_count")
+            .expect("SMALLINT field must carry the i8 type-derived CHECK");
+        assert!(
+            expr.contains("\"byte_count\" >= -128 AND \"byte_count\" <= 127"),
+            "unexpected SMALLINT CHECK expression: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_bigint_emits_u32_bounds() {
+        let expr = field_type_check(&FieldSqlType::BigInt, "medium_count")
+            .expect("BIGINT field must carry the u32 type-derived CHECK");
+        assert!(
+            expr.contains("\"medium_count\" >= 0 AND \"medium_count\" <= 4294967295"),
+            "unexpected BIGINT CHECK expression: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_numeric_20_0_emits_u64_bounds() {
+        let expr = field_type_check(
+            &FieldSqlType::NumericPrecision {
+                precision: 20,
+                scale: 0,
+            },
+            "huge_count",
+        )
+        .expect("NUMERIC(20, 0) field must carry the u64 type-derived CHECK");
+        assert!(
+            expr.contains("\"huge_count\" >= 0 AND \"huge_count\" <= 18446744073709551615"),
+            "unexpected NUMERIC(20, 0) CHECK expression: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_quotes_reserved_word_columns() {
+        // `order` is a Postgres reserved word — must come back quoted.
+        let expr = field_type_check(&FieldSqlType::SmallInt, "order")
+            .expect("SMALLINT field must carry CHECK regardless of column name");
+        assert!(
+            expr.contains("\"order\""),
+            "CHECK expression must quote reserved-word column names: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_returns_none_for_identity_widths() {
+        // Identity-mapped Rust types (`i16 → SMALLINT` carries no
+        // `i8`-derived CHECK; the projection cannot tell them apart on
+        // the typed `FieldSqlType` alone today, so the chosen rule is
+        // "if the type is SMALLINT, project the narrower bound" — see
+        // the in-source comment on `field_type_check`. The
+        // identity-width arms that genuinely have no CHECK are TEXT,
+        // BOOLEAN, REAL, DOUBLE PRECISION, TIMESTAMPTZ, DATE, NUMERIC
+        // (unbounded), UUID, JSONB, and the array variants.
+        for ty in [
+            FieldSqlType::Text,
+            FieldSqlType::Boolean,
+            FieldSqlType::Real,
+            FieldSqlType::DoublePrecision,
+            FieldSqlType::Timestamptz,
+            FieldSqlType::Date,
+            FieldSqlType::Numeric,
+            FieldSqlType::Uuid,
+            FieldSqlType::Jsonb,
+            FieldSqlType::TextArray,
+            FieldSqlType::IntegerArray,
+            FieldSqlType::BigIntArray,
+            FieldSqlType::BoolArray,
+            FieldSqlType::Citext,
+        ] {
+            assert!(
+                field_type_check(&ty, "col").is_none(),
+                "non-widened SQL type {ty:?} must not carry a Rust-derived CHECK",
+            );
+        }
+        // INTEGER is reserved for the future u16 case (djogi#190);
+        // currently unreachable, so no CHECK projects either.
+        assert!(
+            field_type_check(&FieldSqlType::Integer, "col").is_none(),
+            "INTEGER without u16 source carries no CHECK today",
+        );
+    }
+
+    // ── djogi#186 — projection wiring deferral pin ─────────────────────────
+    //
+    // Until djogi#190 lands the per-field "rust source type" discriminator
+    // on `FieldDescriptor`, `project_column` MUST NOT call
+    // `field_type_check`. The descriptor today exposes only `f.sql_type`
+    // (a typed `FieldSqlType` such as `BigInt`); without source-type
+    // tracking, calling the helper would project a `>= 0 AND <=
+    // 4294967295` CHECK onto every BIGINT column, including the
+    // framework's own HeerId-backed `id` columns whose values exceed
+    // `u32::MAX` from day one. The pin tests below assert that
+    // `project_column` keeps `ColumnSchema.check` at `None` for every
+    // descriptor surface today — non-FK BigInt id columns, non-FK BigInt
+    // non-id columns, FK columns, etc.
+    //
+    // When djogi#190 lands and adds the source-type discriminator, the
+    // wiring inside `project_column` flips on (gated on the
+    // discriminator), and these pins should be replaced with positive
+    // assertions that the projection emits the correct CHECK for each
+    // source type. The deferral is structural — never delete these
+    // assertions without an accompanying source-type discriminator
+    // landing in `FieldDescriptor`.
+    //
+    // See:
+    //   * djogi/src/migrate/projection.rs::project_column (the dormant
+    //     wiring site, kept gated to `None`)
+    //   * docs/spec/migrations.md §10.6.1 ("Currently shipped vs
+    //     deferred" subsection)
+
+    #[test]
+    fn project_column_deferred_no_check_for_non_fk_bigint_id_column() {
+        // Adopter `#[model] struct Widget { /* id: HeerId injected */ }`
+        // — the framework's id column lowers to FieldSqlType::BigInt
+        // and is non-FK. Projection MUST keep `check: None` until
+        // djogi#190 lands the source-type discriminator; otherwise the
+        // u32 CHECK would reject every HeerId greater than 4_294_967_295,
+        // breaking every adopter table at the first INSERT.
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
+        }];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("widgets", "Widget")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let id_col = &buckets[&empty_global()].models["widgets"].columns[0];
+        assert!(
+            id_col.check.is_none(),
+            "BigInt id column MUST have check=None until djogi#190 \
+             lands the source-type discriminator; got {:?}",
+            id_col.check
+        );
+    }
+
+    #[test]
+    fn project_column_deferred_no_check_for_non_fk_bigint_amount_column() {
+        // Adopter `#[model] struct Ledger { amount: i64 }`. The amount
+        // column is non-FK, non-id, lowers to FieldSqlType::BigInt.
+        // Same deferral applies — the helper would otherwise reject
+        // negative i64 values and any value above u32::MAX.
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                ..field_descriptor("amount", FieldSqlType::BigInt, false)
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("ledgers", "Ledger")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let amount_col = &buckets[&empty_global()].models["ledgers"].columns[1];
+        assert_eq!(amount_col.name, "amount");
+        assert!(
+            amount_col.check.is_none(),
+            "BigInt amount column MUST have check=None until djogi#190; \
+             got {:?}",
+            amount_col.check
+        );
+    }
+
+    #[test]
+    fn project_column_deferred_no_check_for_non_fk_smallint_column() {
+        // Adopter `#[model] struct Widget { byte_count: i16 }`. Lowers
+        // to FieldSqlType::SmallInt. The helper would otherwise apply
+        // an i8 CHECK (`>= -128 AND <= 127`), rejecting every i16 value
+        // outside that range.
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                ..field_descriptor("byte_count", FieldSqlType::SmallInt, false)
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("widgets", "Widget")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let byte_col = &buckets[&empty_global()].models["widgets"].columns[1];
+        assert_eq!(byte_col.name, "byte_count");
+        assert!(
+            byte_col.check.is_none(),
+            "SmallInt column MUST have check=None until djogi#190; \
+             got {:?}",
+            byte_col.check
+        );
     }
 }

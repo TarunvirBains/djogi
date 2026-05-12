@@ -1904,6 +1904,171 @@ mod tests {
         assert!(sql.down.contains("DROP CONSTRAINT \"users_email_check\""));
     }
 
+    // ── djogi#186 — type-derived integer-bound CHECKs ──────────────────────
+    //
+    // Mirrors `alter_column_set_check_uses_named_constraint` for every
+    // Rust integer width that projects a CHECK expression. The
+    // expression strings come from `migrate::projection::field_type_check`;
+    // these tests pin the SQL the emitter wraps around them. Together
+    // with the `field_type_check_*` tests in `projection.rs` this
+    // covers the full descriptor → SQL pipeline.
+
+    #[test]
+    fn alter_column_set_check_for_i8_smallint() {
+        let sql = emit_alter_column(
+            "widgets",
+            "maybe_signed_byte",
+            &ColumnChange::SetCheck(Some(
+                "\"maybe_signed_byte\" >= -128 AND \"maybe_signed_byte\" <= 127".to_string(),
+            )),
+        );
+        assert!(
+            sql.up
+                .contains("ADD CONSTRAINT \"widgets_maybe_signed_byte_check\""),
+            "i8 CHECK uses table+column constraint name: {}",
+            sql.up
+        );
+        assert!(
+            sql.up
+                .contains("CHECK (\"maybe_signed_byte\" >= -128 AND \"maybe_signed_byte\" <= 127)"),
+            "i8 CHECK expression wraps the projected bound: {}",
+            sql.up
+        );
+        assert!(
+            sql.down
+                .contains("DROP CONSTRAINT \"widgets_maybe_signed_byte_check\""),
+            "i8 CHECK rollback drops the named constraint: {}",
+            sql.down
+        );
+    }
+
+    #[test]
+    fn alter_column_set_check_for_u32_bigint() {
+        let sql = emit_alter_column(
+            "widgets",
+            "medium_count",
+            &ColumnChange::SetCheck(Some(
+                "\"medium_count\" >= 0 AND \"medium_count\" <= 4294967295".to_string(),
+            )),
+        );
+        assert!(
+            sql.up
+                .contains("ADD CONSTRAINT \"widgets_medium_count_check\""),
+            "u32 CHECK uses table+column constraint name: {}",
+            sql.up
+        );
+        assert!(
+            sql.up
+                .contains("CHECK (\"medium_count\" >= 0 AND \"medium_count\" <= 4294967295)"),
+            "u32 CHECK expression wraps the projected bound: {}",
+            sql.up
+        );
+        assert!(
+            sql.down
+                .contains("DROP CONSTRAINT \"widgets_medium_count_check\""),
+            "u32 CHECK rollback drops the named constraint: {}",
+            sql.down
+        );
+    }
+
+    #[test]
+    fn alter_column_set_check_for_u64_numeric() {
+        // Pre-wired for djogi#190 — once tokio-postgres bind/decode
+        // shims land, the projection will start emitting this CHECK
+        // for `u64` columns automatically. Pinning the SQL shape now
+        // means the integer-widening contract from #186 stays intact
+        // when #190 surfaces the new type.
+        let sql = emit_alter_column(
+            "widgets",
+            "huge_count",
+            &ColumnChange::SetCheck(Some(
+                "\"huge_count\" >= 0 AND \"huge_count\" <= 18446744073709551615".to_string(),
+            )),
+        );
+        assert!(
+            sql.up
+                .contains("ADD CONSTRAINT \"widgets_huge_count_check\""),
+            "u64 CHECK uses table+column constraint name: {}",
+            sql.up
+        );
+        assert!(
+            sql.up
+                .contains("CHECK (\"huge_count\" >= 0 AND \"huge_count\" <= 18446744073709551615)"),
+            "u64 CHECK expression wraps the projected bound: {}",
+            sql.up
+        );
+    }
+
+    #[test]
+    fn alter_column_drop_check_emits_drop_constraint_only() {
+        // The DROP scenario from the lifecycle contract: descriptor
+        // evolves from u32 → i64. `field_type_check` returns `None` on
+        // the new descriptor, the differ emits `SetCheck(None)`, and
+        // the SQL emitter produces a single DROP CONSTRAINT statement
+        // with a documented-not-recoverable down side.
+        let sql = emit_alter_column("widgets", "medium_count", &ColumnChange::SetCheck(None));
+        assert!(
+            sql.up
+                .contains("DROP CONSTRAINT \"widgets_medium_count_check\""),
+            "drop CHECK emits a named DROP CONSTRAINT: {}",
+            sql.up
+        );
+        assert!(
+            !sql.up.contains("ADD CONSTRAINT"),
+            "drop CHECK must not also add a constraint: {}",
+            sql.up
+        );
+    }
+
+    #[test]
+    fn alter_column_amend_check_pair_emits_drop_then_add() {
+        // The AMEND scenario from the lifecycle contract: descriptor
+        // evolves from u32 → u64 (or any CHECK expression change).
+        // The differ at `migrate/diff.rs::emit_alter_column` emits two
+        // ColumnChange entries in order — `SetCheck(None)` then
+        // `SetCheck(Some(new))` — and the SQL emitter renders them as
+        // a clean DROP-then-ADD pair against the same constraint name
+        // slot. Without the differ's two-step emission the second
+        // ALTER would collide on the existing constraint name.
+        //
+        // This test simulates the SQL pair the emitter produces when
+        // the differ supplies the two changes in order. Walk the two
+        // emissions and verify their SQL forms compose correctly.
+        let drop_sql = emit_alter_column("widgets", "amount", &ColumnChange::SetCheck(None));
+        let add_sql = emit_alter_column(
+            "widgets",
+            "amount",
+            &ColumnChange::SetCheck(Some(
+                "\"amount\" >= 0 AND \"amount\" <= 18446744073709551615".to_string(),
+            )),
+        );
+        // The first emission drops the existing constraint.
+        assert!(
+            drop_sql
+                .up
+                .contains("DROP CONSTRAINT \"widgets_amount_check\""),
+            "AMEND step 1 drops the existing constraint: {}",
+            drop_sql.up
+        );
+        // The second emission re-adds it under the same name with the
+        // new expression. By the time this ALTER runs the previous DROP
+        // has already cleared the slot, so Postgres accepts the ADD.
+        assert!(
+            add_sql
+                .up
+                .contains("ADD CONSTRAINT \"widgets_amount_check\""),
+            "AMEND step 2 adds the new constraint under the same name: {}",
+            add_sql.up
+        );
+        assert!(
+            add_sql
+                .up
+                .contains("CHECK (\"amount\" >= 0 AND \"amount\" <= 18446744073709551615)"),
+            "AMEND step 2 carries the new CHECK expression: {}",
+            add_sql.up
+        );
+    }
+
     #[test]
     fn alter_column_set_unique_uses_named_key_constraint() {
         let sql = emit_alter_column("users", "email", &ColumnChange::SetUnique(true));
