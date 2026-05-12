@@ -58,14 +58,35 @@
 //! ## Adopter contract
 //!
 //! Even with the dirty-by-default guard, raw SQL that mutates session
-//! state (`SET ROLE`, `SET search_path`, advisory locks, manual
-//! `BEGIN`/`COMMIT`, `LISTEN`/`UNLISTEN`, prepared-statement creation
-//! outside the cache) on the **clean-exit path** still leaves the
-//! connection in a non-default state when it returns to the pool. Wrap
-//! such SQL in [`crate::transaction::atomic`] so the surrounding
-//! transaction's commit or rollback bounds the state change, or use the
-//! transaction-local form (`SET LOCAL …`, `set_config(name, value, true)`,
-//! `BEGIN; … COMMIT;`) inside the closure.
+//! state (`SET ROLE`, `SET search_path`, session-scoped
+//! `pg_advisory_lock`, `LISTEN`/`UNLISTEN`, prepared-statement creation
+//! outside the cache, etc.) on the **clean-exit path** still leaves the
+//! connection in a non-default state when it returns to the pool. The
+//! dirty-by-default guard fires on `Err`, panic, and future cancellation
+//! only — not on `Ok`.
+//!
+//! For session-state-affecting raw SQL on the clean-exit path, wrap the
+//! call in [`crate::transaction::atomic`] **and** either:
+//!
+//! - use a TRANSACTION-LOCAL form so `COMMIT` (or `ROLLBACK`) clears the
+//!   state automatically — `SET LOCAL key = value` instead of `SET key
+//!   = value`, `set_config(name, value, true)` instead of
+//!   `set_config(name, value, false)`, `pg_advisory_xact_lock(…)`
+//!   instead of `pg_advisory_lock(…)`, etc.; or
+//! - explicitly reset / unlock / `UNLISTEN` / `DEALLOCATE` the
+//!   session-level mutation before the closure returns `Ok`.
+//!
+//! **`atomic()` is a transaction guard, not a session-state reset
+//! guard.** Its `ROLLBACK` path covers the closure's `Err` and panic
+//! exits, so transaction-scoped mutations performed in the failure path
+//! are unwound by Postgres's transactional state machine. Its clean
+//! `COMMIT` path does NOT reset session-level state: a `SET search_path
+//! = 'audit'` inside an `atomic()` closure that returns `Ok` commits
+//! but the new `search_path` survives `COMMIT` and rides the connection
+//! back to the pool. The same applies to `SET ROLE`, session advisory
+//! locks, `LISTEN`, and prepared statements created via raw SQL.
+//! Adopters must choose transaction-local forms or explicit reset for
+//! the clean-exit contract to hold.
 //!
 //! **`atomic()` cancellation caveat.** `atomic()` issues `ROLLBACK` on
 //! the closure's `Err` and panic paths. It does NOT issue `ROLLBACK`

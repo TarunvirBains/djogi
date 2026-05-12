@@ -302,15 +302,30 @@ explicitly — it is covered by the dirty-by-default lifecycle.
 
 ### Adopter contract
 
-The dirty-by-default guard fires on `Err`/panic/cancel paths only. On the
-**clean-exit path**, session state mutated by an `Ok` raw call still
-leaves the connection non-default when it returns to the pool. Adopters
-who run session-state-affecting raw SQL must:
+The dirty-by-default guard fires on `Err` / panic / cancellation paths
+only. On the **clean-exit path**, session state mutated by an `Ok` raw
+call still leaves the connection non-default when it returns to the
+pool. Adopters who run session-state-affecting raw SQL must wrap the
+call in `djogi::transaction::atomic(...)` **and** either:
 
-- wrap the raw call in `djogi::transaction::atomic(...)` so the surrounding
-  transaction commit or rollback bounds the state change, or
-- use the transaction-local form inside the raw call (`SET LOCAL …`,
-  `set_config(name, value, true)`, `BEGIN; … COMMIT;`).
+- use a TRANSACTION-LOCAL form so a `COMMIT` (or `ROLLBACK`) clears the
+  state automatically — `SET LOCAL key = value` instead of `SET key =
+  value`, `set_config(name, value, true)` instead of
+  `set_config(name, value, false)`, `pg_advisory_xact_lock(...)` instead
+  of `pg_advisory_lock(...)`, etc.; or
+- explicitly reset / unlock / `UNLISTEN` / `DEALLOCATE` the
+  session-level mutation before the closure returns `Ok`.
+
+`atomic()` is a transaction guard, not a session-state reset guard. Its
+`ROLLBACK` path covers the closure's `Err` and panic exits, so
+transaction-scoped mutations performed in the failure path are unwound
+by Postgres's transactional state machine. Its clean `COMMIT` path does
+NOT reset session-level state: a `SET search_path = 'audit'` inside an
+`atomic()` closure that returns `Ok` commits but the new `search_path`
+survives `COMMIT` and rides the connection back to the pool. The same
+applies to `SET ROLE`, session advisory locks, `LISTEN`, and prepared
+statements created via raw SQL. Adopters must choose transaction-local
+forms or explicit reset for the clean-exit contract to hold.
 
 #### `atomic()` cancellation caveat
 
