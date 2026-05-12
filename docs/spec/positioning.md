@@ -174,7 +174,7 @@ Routed to post-v0.1.0 with issue numbers where available:
 
 - **#138** — field accessor property-style API (`.field_name` syntax deferred).
 - Stored computed columns — `#[computed(sql = "...", stored)]` deferred (Postgres irreversibility).
-- Adopter-defined field-group derives — built-in `#[derive(Auditable)]` / `#[derive(SoftDeletable)]` ship today; a public extension trait letting adopters compose new field-groups (e.g., `Versioned`, `Approved`) is deferred 8.5+.
+- Adopter-defined field-group composition — built-in `#[model(auditable)]` / `#[model(soft_deletable)]` ship today (Phase 8 §T2.4 / §T2.6 attribute surface; the prior `#[derive(Auditable)]` / `#[derive(SoftDeletable)]` derives were retired in the same task). A public extension trait letting adopters compose new field-groups (e.g., `Versioned`, `Approved`) is deferred 8.5+.
 - Constraint / index name interpolation — pattern-substitution ownership ambiguous; deferred 8.5.
 - Distributed placement / residency — no node affinity, shard routing, or topology semantics in v0.1.0 (Phase 11+).
 - Cross-target FK moves — no first-class pattern; classified `OfflineOnly`.
