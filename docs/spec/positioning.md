@@ -83,7 +83,7 @@ This section reads each project on its own design intent first, then names the a
 
 **SeaORM's design intent:** SeaORM optimises for multi-database portability and an ergonomic builder API on top of SeaQuery, with the official SeaORM Pro add-on providing an admin-style surface.
 
-**Where Djogi extends the surface:** the entire right side of the matrix — CTEs / recursive / window / GROUPING SETS / ROLLUP / CUBE first-class; online-safety classification; live migration; spatial / FTS; protected fields; tenancy / RLS; model hooks; computed fields; proxy models; named typed projection surface (Djogi's *visages* go beyond a result-only `FromQueryResult` derive); apps subsystem.
+**Where Djogi extends the surface:** the entire right side of the matrix — CTEs / recursive / window first-class; `GROUPING SETS` first-class with `ROLLUP` / `CUBE` SQL emission shipped (typed subtotal/grand-total NULL-key decoding deferred); online-safety classification; live-migration library substrate (CLI executor wiring still partial — see §1 row); spatial / FTS; protected-field metadata substrate; tenancy / RLS; model hooks; computed fields; proxy models; named typed projection surface (Djogi's *visages* go beyond a result-only `FromQueryResult` derive); apps subsystem.
 
 **Where SeaORM extends the surface:** multi-DB at runtime (PG / MySQL / SQLite); larger community and more third-party integrations; the `FromQueryResult` partial-model derive is simpler to reach for than Djogi's full visage system when an adopter only needs a one-off result shape.
 
