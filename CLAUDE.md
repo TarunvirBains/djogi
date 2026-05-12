@@ -83,8 +83,12 @@ Two ways to enable per-worktree isolation:
 # direnv (recommended): per-worktree opt-in, no shell-init pollution
 cp .envrc.example .envrc && direnv allow
 
-# manual: prepend to any cargo invocation, or export from your shell
-export CARGO_TARGET_DIR="$HOME/.cache/djogi-target/$(basename "$PWD")"
+# manual (no direnv): source the example, or inline the same SHA-256 id
+# (using basename "$PWD" would collide between sibling worktrees and
+# orphan caches when `cargo xtask gc-target-cache` runs).
+source .envrc.example
+# — or, self-contained one-shot —
+export CARGO_TARGET_DIR="$HOME/.cache/djogi-target/$(printf '%s' "$(pwd -P)" | sha256sum | cut -c1-12)"
 ```
 
 `.envrc.example` derives a stable 12-char id from the absolute worktree path

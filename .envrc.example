@@ -16,9 +16,13 @@
 #   cp .envrc.example .envrc
 #   direnv allow
 #
-# Without direnv, export the same variable in your shell (e.g. .bashrc) before
-# entering the worktree, or wrap cargo invocations:
-#   CARGO_TARGET_DIR="$HOME/.cache/djogi-target/$(basename "$PWD")" cargo test
+# Without direnv, source this file from your shell, or inline the same SHA-256
+# derivation when wrapping a cargo invocation. Using just `basename "$PWD"`
+# would re-introduce the sibling-basename collision the SHA-256 id exists to
+# prevent (and would orphan caches on `cargo xtask gc-target-cache`):
+#   source .envrc.example
+#   # — or, self-contained one-shot —
+#   CARGO_TARGET_DIR="$HOME/.cache/djogi-target/$(printf '%s' "$(pwd -P)" | sha256sum | cut -c1-12)" cargo test
 #
 # DISK USAGE: each worktree's target tree accumulates roughly 5-10 GB of
 # incremental artifacts. After deleting a worktree (e.g. `git worktree
