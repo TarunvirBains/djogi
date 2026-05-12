@@ -112,25 +112,28 @@ lines 475–506 at lock time).
 >       parameters, TABLESPACE, ALTER COLUMN ... TYPE ... USING, and
 >       generated-column re-declarations.
 
-**Proposed text (preserves all existing 4B routed items + adds MERGE):**
+**Proposed change shape (additive — do NOT replace the section):**
+
+This amendment is intentionally **additive**: the v3 plan's 4B
+primary-issues list and the existing bullets stay verbatim. Apply
+this amendment as TWO small edits:
+
+**Edit 1 — extend the "Primary issues" line.** Replace:
+
+> **Primary issues:** `djogi#101`, `djogi#102`, `djogi#103`, `djogi#104`,
+> `djogi#105`, `djogi#106`, `djogi#168`, `djogi#169`, `djogi#170`,
+> `djogi#172`.
+
+with:
+
 > **Primary issues:** `djogi#101`, `djogi#102`, `djogi#103`, `djogi#104`,
 > `djogi#105`, `djogi#106`, `djogi#168`, `djogi#169`, `djogi#170`,
 > `djogi#172`, `djogi#new-merge` (filed during Cluster 4.0 audit; see
 > Amendment 1a).
->
-> - [ ] Add typed `UNION`, `INTERSECT`, and `EXCEPT` between compatible
->       `QuerySet`s, with type/column compatibility diagnostics.
-> - [ ] Add typed LATERAL join support for user-facing query composition.
-> - [ ] Add typed `VALUES` or inline-relation sources usable as join inputs.
-> - [ ] Add typed `FOR SHARE` row-lock mode and verify lock SQL shape.
-> - [ ] Add `CHECK` constraint declaration through `#[field(...)]` or the
->       descriptor surface, with migration projection tests.
-> - [ ] Add `INSERT ... SELECT` support for copying rows from typed queries into
->       typed tables.
-> - [ ] `djogi#168`: typed isolation-level surface (unchanged).
-> - [ ] `djogi#169`: typed `SET CONSTRAINTS DEFERRED` surface (unchanged).
-> - [ ] `djogi#170` (umbrella, unchanged).
-> - [ ] `djogi#172` (umbrella, unchanged).
+
+**Edit 2 — append one bullet to the end of the 4B task list, after
+the existing `djogi#172` bullet, leaving all other bullets unchanged:**
+
 > - [ ] Add typed `MERGE INTO ... USING ... WHEN MATCHED ... WHEN NOT
 >       MATCHED ...` surface for conditional UPSERT-with-conditions.
 >       The Postgres 18+ catalog cross-reference (Cluster 4.0)
@@ -138,6 +141,14 @@ lines 475–506 at lock time).
 >       Acceptance: covers single-source MERGE with at least
 >       `WHEN MATCHED THEN UPDATE` and `WHEN NOT MATCHED THEN INSERT`
 >       branches, with typed condition predicates.
+
+**Why additive.** GPT-5.5 xhigh round-2 review flagged that an inline
+"Proposed text" containing placeholder bullets (`djogi#168: ...
+(unchanged)`) would be lossy if applied verbatim — it would drop
+retry parity, the transaction-only invariant, the umbrella type
+lists, and the discovery-context anchors. The two-edit form removes
+that hazard: only the new MERGE bullet and the issue-list extension
+are added; every existing detailed bullet stays exactly as written.
 
 **Rationale:** The MASTER-CATALOG marks MERGE as `partial` (PG15+
 conditional DML), but spec-grep against `djogi/src/` finds zero matches
@@ -259,7 +270,7 @@ After the existing four bullets, add:
 >       marked "Required for Phase 8.5 alpha-readiness." Coordinate
 >       with 4E #148 (the EXCLUDE-vs-WITHOUT-OVERLAPS preference is
 >       still surfaced separately by Amendment 3 below).
-> - [ ] Tabulate the eight quick-wins from
+> - [ ] Tabulate the nine quick-wins from
 >       `2026-05-10-cluster4-vs-postgres-coverage-xref.md` and flip
 >       their catalog disposition from `unknown` to `Implemented`
 >       on first audit pass — they have already been spec-grep
@@ -505,7 +516,20 @@ copy them verbatim without re-derivation.
 4. **`framework gap: PG18 scalar functions (uuidv7, uuidv4, array_sort,
    array_reverse, casefold, crc32, crc32c, gamma, lgamma)`**
    - Cluster: post-v0.1.0 (one umbrella issue)
-   - Body: per-function anchor table; HeerId/RanjId obviates UUID
+   - Body (per-function anchor table, file-ready):
+
+     | Function | Catalog row | Anchor / disposition |
+     |---|---|---|
+     | `uuidv7()` | `01-pg18-release-notes.md` line 22 | HeerId / RanjId obviates UUID surface. **Out of scope** for v0.1.0; reopen only if an adopter shape needs raw PG-side UUIDv7 emission. |
+     | `uuidv4()` | `01-pg18-release-notes.md` line 23 | Same as `uuidv7()` — HeerId / RanjId is the canonical surface. **Out of scope.** |
+     | `array_sort(anyarray)` | `01-pg18-release-notes.md` line 25 | Scalar; raw-SQL bypass acceptable today. **Roadmapped** as a typed `FieldRef::sort_array` if/when adopter shape requires; promote to a sub-issue then. |
+     | `array_reverse(anyarray)` | `01-pg18-release-notes.md` line 26 | Same as `array_sort`. **Roadmapped.** |
+     | `casefold(text)` | `01-pg18-release-notes.md` line 31 | citext already covers the dominant case-insensitive use case. **Roadmapped** as `FieldRef::casefold` if a locale-aware shape is needed; promote then. |
+     | `crc32(bytea)` / `crc32c(bytea)` | `01-pg18-release-notes.md` line 36 | Niche checksum surface; Rust-side crc32/crc32c crates cover today. **Roadmapped** only if a server-side checksum constraint shape arises. |
+     | `gamma(double precision)` / `lgamma(double precision)` | `01-pg18-release-notes.md` line 41 | Math functions; raw-SQL bypass acceptable; statistical workloads can ship today via the bypass attribute. **Roadmapped** behind adopter demand. |
+
+     Umbrella anchor: "HeerId / RanjId obviates the UUID surface; the remaining PG18 scalars are roadmapped behind individual adopter requests rather than batch-implemented." Sub-issues are promoted from this umbrella table only when an adopter shape demonstrates need.
+
    - Closing-condition (Stage 1.5 inline, applied per individual
      function once a sub-issue is promoted):
      - [ ] Rustdoc on the typed wrapper(s) with at least one worked example
@@ -533,7 +557,39 @@ copy them verbatim without re-derivation.
    (TileEnvelope, HexagonGrid, SquareGrid, Letters, MakePointM,
    MakeValid, IsValidDetail, IsValidReason)`**
    - Cluster: post-v0.1.0 (one umbrella issue)
-   - Body: explicit list with the v0.1.0 carve-out anchor
+   - Body (explicit list with v0.1.0 carve-out anchor, file-ready):
+
+     **What v0.1.0 covers (the "spatial alpha" surface):** `GeoPoint`,
+     `Polygon`, `MultiPolygon`, `LineString`, `MultiLineString`,
+     `MultiPoint` constructors plus the relationship family
+     (`ST_Within`, `ST_Contains`, `ST_Intersects`, `ST_Disjoint`,
+     `ST_Equals`, `ST_DWithin`), the measurement family (`ST_Area`,
+     `ST_Distance`, `ST_Length`, `ST_Perimeter`), the overlay family
+     (`ST_Buffer`, `ST_Centroid`, `ST_ConvexHull`, `ST_Simplify`),
+     DBSCAN clustering (`cluster_by_proximity` → `ST_ClusterDBSCAN`),
+     and geohash bucketing (`bucket_by_cell`). See `djogi/src/geo/`
+     and `djogi/src/expr/spatial.rs` for the canonical list.
+
+     **What is NOT in v0.1.0 (this umbrella issue tracks):**
+
+     | Constructor | Catalog row | Use case |
+     |---|---|---|
+     | `ST_TileEnvelope(int zoom, int x, int y)` | `02-postgis-functions.md` line 18 | Web-Mercator MVT/vector-tile generation; needed if 4C #92's MVT/Geobuf work requires tile bbox computation. **Escalate to 4C if MVT row-shape lands.** |
+     | `ST_HexagonGrid(double, geometry)` | `02-postgis-functions.md` line 21 | Hex-binning analytics; specialized. |
+     | `ST_SquareGrid(double, geometry)` | `02-postgis-functions.md` line 22 | Square-binning analytics; specialized. |
+     | `ST_Letters(text, json options)` | `02-postgis-functions.md` line 24 | Text-as-geometry rendering; rare. |
+     | `ST_MakePointM(x, y, m)` | `02-postgis-functions.md` line 14 | Measured-points (4D geometry); rare. |
+     | `ST_MakeValid(geometry)` | `02-postgis-functions.md` line 109 | Self-intersecting / invalid geometry repair; some adopters may want this. |
+     | `ST_IsValidDetail(geometry)` | `02-postgis-functions.md` line 110 | Validation reason as record; pairs with `ST_MakeValid`. |
+     | `ST_IsValidReason(geometry)` | `02-postgis-functions.md` line 111 | Validation reason as text; pairs with `ST_MakeValid`. |
+
+     Umbrella anchor: "v0.1.0 spatial alpha covers the canonical typed
+     surface (~30 functions); specialized constructors land
+     post-v0.1.0 when an adopter shape requires them, with the
+     raw-SQL bypass attribute as the interim escape. ST_TileEnvelope
+     escalates into 4C scope if #92's MVT/Geobuf row-shape work
+     requires it as a precondition."
+
    - Closing-condition (Stage 1.5 inline, applied per individual
      constructor once a sub-issue is promoted):
      - [ ] Rustdoc on the typed constructor with one full worked example

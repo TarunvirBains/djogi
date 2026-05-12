@@ -548,7 +548,16 @@ flip these without further verification.
    `jsonb/path.rs:354-405` (eq/neq/gt/gte/lt/lte). **Disposition:**
    `Implemented`.
 
-These eight quick-wins flip ~30+ catalog rows from `unknown` to
+9. **`gin_jsonb_path_ops` opclass** (catalog `06-operator-classes.md`
+   line 105 — was flagged `medium unknown` until GPT-5.5 xhigh
+   review 2026-05-12 spotted the macro-side parser). **Evidence:**
+   `djogi-macros/src/model/indexes.rs:1012` parses `index(fields =
+   [payload], using = "gin", opclass = "jsonb_path_ops")` and asserts
+   the parsed opclass at line 1016; `docs/spec/indexing.md:31`
+   documents the surface. **Disposition:** `Implemented`. Added in
+   the post-GPT-5.5 correction commit `d5eaa6e`.
+
+These nine quick-wins flip ~30+ catalog rows from `unknown` to
 `Implemented` without any new grep — the audit ledger should record
 them on first pass.
 
@@ -584,10 +593,12 @@ should confirm:
   and `RETURNING.*NEW`, but the syntax may be supported through a
   different path (e.g. trigger-based audit hooks) that doesn't grep
   cleanly.
-- **Quick-win row count (~30+)**: I sampled 8 quick-wins, generalized
+- **Quick-win row count (~30+)**: I sampled 9 quick-wins, generalized
   the count. The full audit may surface more or fewer. **Post-GPT-5.5
-  correction:** quick-win count goes up by one — `gin_jsonb_path_ops`
-  flips from `unknown` to `Implemented`.
+  correction (2026-05-12):** quick-win count went up by one from the
+  original 8 — `gin_jsonb_path_ops` flipped from `unknown` to
+  `Implemented`. The "nine quick-wins" wording is now consistent
+  across this file, the confidence ledger, and Amendment 2.
 - **Out-of-scope ~450-600 estimate**: order-of-magnitude rough; the
   audit will land closer to actuals.
 
