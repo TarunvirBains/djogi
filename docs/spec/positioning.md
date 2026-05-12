@@ -36,7 +36,7 @@ If you came here from the README's design-north-star section, the short version 
 | Spatial | PostGIS behind `spatial` feature; GeoPoint/Line/Polygon/Multi* with EWKB codecs; `convex_hull` / `intersection` / `area` aggregates | Not surfaced | sqlx types only | Not surfaced |
 | Full-text search | `#[model(fts(source = "<cols>", dictionary = "<config>"))]` → `TsVector`/`TsQuery` + GIN index | Not surfaced | Not surfaced | Not surfaced |
 | Audit / outbox | `#[model(events)]` transactional outbox + Publisher trait + pg_notify listener | Not surfaced | Not surfaced | Not surfaced |
-| Field-level protection | `#[field(protected(sensitivity = "...", rationale = "...", redaction = "...", codec = "...", retention = "..."))]` with span-precise validation; codec registry is a substrate (no built-in codecs in v0.1.0 — adopters supply their own) | Not surfaced | Not surfaced | Not surfaced |
+| Field-level protection | `#[field(protected(sensitivity = "...", rationale = "...", redaction = "...", retention = "..."))]` metadata substrate with span-precise validation (sensitivity vocabulary, rationale-when-above-`none`, retention vocabulary, etc.). The `codec = "<id>"` key is recognised in the grammar but the codec registry is empty in v0.1.0 — built-in codecs ship with the framework in a later phase, not as adopter code | Not surfaced | Not surfaced | Not surfaced |
 | Aggregates | count / sum / avg / min / max + array_agg / json_agg / string_agg / bool_and / bool_or with `FILTER (WHERE)` | SeaQuery-mediated | SeaQuery-mediated | Typed DSL (`sum`/`avg`/`min`/`max`); no `FILTER (WHERE)` |
 | Window functions | `Expr<T>::over(Window)`, RowNumber / Rank / DenseRank + `.qualify()` | Limited via SeaQuery | Limited via SeaQuery | Typed DSL (`rank`/`row_number`); no `.qualify()` |
 | Recursive CTEs / tree queries | `RecursiveQuerySet<T>::tree_descendants` / `tree_ancestors` with cycle detection, BREADTH / DEPTH FIRST, path output | Hand-written SQL | Hand-written SQL | Hand-written SQL |
@@ -44,7 +44,7 @@ If you came here from the README's design-north-star section, the short version 
 | Relations | `ForeignKey<T>` / `OneToOneField<T>` / `ManyToMany<Target>` with cascade policies; reverse-accessor macros; `select_related` / `prefetch` | FK only; limited reverse | FK only; limited reverse | FK only; no reverse macros |
 | ENUM | `#[derive(DjogiEnum)]` Postgres-native codec | SeaQuery builder | SeaORM derive | Hand-mapped |
 | Raw SQL escape hatches | `raw_query` / `raw_fetch_one` / `raw_scalar` / `raw_execute` / `raw_stream` on `DjogiContext`, gated by an explicit bypass attribute | Not typed | Standard practice | Standard practice |
-| Admin / shell / CLI | `cargo djogi docs`, `cargo djogi db seed`; Rhai shell deferred Phase 9 | Built-in `cot::admin` module + `cot-cli` | SeaORM Pro (official add-on) | Not surfaced |
+| Admin / shell / CLI | `djogi docs`, `djogi db seed` (shipped CLI binary); Rhai shell deferred Phase 9 | Built-in `cot::admin` module + `cot-cli` | SeaORM Pro (official add-on) | Not surfaced |
 | Model hooks | `#[model(..., hooks)]` opt-in flag + adopter-written `impl djogi::hooks::ModelHooks for T`; zero-overhead via marker trait | Not surfaced | Event listeners | Not surfaced |
 | Computed fields | `#[computed(sql = "...")]` + `#[djogi::trait_impl]` cross-type registry | Not surfaced | Not surfaced | Not surfaced |
 | Proxy models | `#[model(proxy_for = Parent)]` (bare-ident parent) w/ optional `default_filter = \|f\| ...` | Not surfaced | Not surfaced | Not surfaced |
@@ -143,7 +143,7 @@ Djogi's design intent is explicit: **Rust-first** (idiomatic Rust where user cod
 | Advisory locks | Yes — per-target SHA-256 lock keys | Not surfaced | Not surfaced | Not surfaced |
 | RLS / `set_config()` / tenant_key | Yes — first-class | Not surfaced | Not surfaced | Not surfaced |
 | JSONB native operators | Yes — deep-path | Not surfaced | Via `serde_json::Value` | Not surfaced |
-| FTS (`tsvector` + GIN) | Yes — `#[model(fts)]` | Not surfaced | Not surfaced | Not surfaced |
+| FTS (`tsvector` + GIN) | Yes — `#[model(fts(source = "<cols>", dictionary = "<config>"))]` | Not surfaced | Not surfaced | Not surfaced |
 | PostGIS / EWKB | Yes — `spatial` feature plus spatial aggregates | Not surfaced | sqlx types | Not surfaced |
 | `NULLS NOT DISTINCT`, partial / covering / functional indexes, `CREATE INDEX CONCURRENTLY` | Yes — all first-class | Not surfaced | Not surfaced | Not surfaced |
 | `GROUPING SETS` / `ROLLUP` / `CUBE` | Yes — first-class | Not surfaced | Not surfaced | Not surfaced |
