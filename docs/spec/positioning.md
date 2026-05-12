@@ -55,7 +55,7 @@ If you came here from the README's design-north-star section, the short version 
 | Apps subsystem (schema-domain partitioning) | `djogi::apps!` + `AppRegistry` with `renamed_from` / `tombstone` lifecycle | Apps concept supported | Not surfaced | Not surfaced |
 | Bulk ops | `bulk_create` (pre-allocated PKs), `bulk_update`, `bulk_upsert` with dirty-tracking | Limited | Limited | Hand-written multi-row INSERT |
 | Transactions | `atomic()` w/ savepoints + FIFO `on_commit` callbacks + RLS / tenant scope snapshot/restore | Explicit txn API | Explicit txn API | Explicit txn API |
-| MSRV | 1.82+ (2024 edition) | Pre-publish | ≥1.65 implied | ≥1.65 implied |
+| MSRV | 1.95+ (2024 edition) | Pre-publish | ≥1.65 implied | ≥1.65 implied |
 
 ### Terminology notes
 
@@ -172,7 +172,6 @@ The mirror-image observation also lands: multi-DB Rust data projects that aim fo
 
 Routed to post-v0.1.0 with issue numbers where available:
 
-- **#82** — `__djogi_` reserved-prefix uniformity (currently in `window_fn.rs` only; should be a shared helper).
 - **#138** — field accessor property-style API (`.field_name` syntax deferred).
 - Stored computed columns — `#[computed(sql = "...", stored)]` deferred (Postgres irreversibility).
 - Custom field-group derives — public extension trait for Auditable / SoftDeletable patterns deferred 8.5+.
