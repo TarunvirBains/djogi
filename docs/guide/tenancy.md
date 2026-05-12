@@ -118,19 +118,19 @@ caller has to issue the `SET LOCAL` on the ctx before the terminal method.
 
 ```rust
 // Async method — bypass is internal; just wrap the call in atomic():
-djogi::transaction::atomic(pool, |ctx| async move {
+djogi::transaction::atomic(pool, |ctx| Box::pin(async move {
     let post = Post::get_insecurely(ctx, post_id).await?;
     Ok(post)
-}).await?;
+})).await?;
 
 // Lazy queryset — caller issues SET LOCAL before the terminal method:
-djogi::transaction::atomic(pool, |ctx| async move {
+djogi::transaction::atomic(pool, |ctx| Box::pin(async move {
     // Emits: tracing::warn!(model = "Post", method = "objects_insecurely", ...)
     let qs = Post::objects_insecurely();
     ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
     let all_posts = qs.fetch_all(ctx).await?;
     Ok(all_posts)
-}).await?;
+})).await?;
 ```
 
 Every `_insecurely` terminal call emits a `tracing::warn!` with the model name,

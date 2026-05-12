@@ -443,6 +443,13 @@ pub trait RawAccessExtBase: sealed::Sealed {
     /// through `#[djogi::deliberately_bypass_convention_with_raw_sql]`. See
     /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
     ///
+    /// Prefer the typed surface — `Model::objects()` / `QuerySet::stream`
+    /// inside an `atomic(...)` scope — for any shape the typed layer can
+    /// describe. Reach for `raw_stream_with_fetch_size` only when the typed
+    /// stream cannot describe the projection AND the default chunk size used
+    /// by `raw_stream` is the wrong shape for the consumer (typically very
+    /// large exports or very latency-sensitive previews).
+    ///
     /// `fetch_size` of `0` returns [`DjogiError::Validation`] — the cursor
     /// driver cannot make progress on an empty fetch chunk. Larger values
     /// reduce round-trips at the cost of per-chunk memory; smaller values

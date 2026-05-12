@@ -180,7 +180,7 @@ async fn create_invoice(
 use djogi::prelude::*;
 
 pub struct InvoiceService {
-    pool: PgPool,
+    pool: DjogiPool,
 }
 
 impl InvoiceService {
