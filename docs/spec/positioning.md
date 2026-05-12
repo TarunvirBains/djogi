@@ -31,12 +31,12 @@ If you came here from the README's design-north-star section, the short version 
 | Online-safety classification | 4-tier: OnlineSafe / FastLockDestructiveGuarded / ExpandContract / OfflineOnly | Not surfaced | Not surfaced | Not surfaced |
 | Live/staged migration | Phase 7.5 substrate: expand-contract, protected-field codecs, chunked backfill, daemon-mode runner | Not surfaced | Not surfaced | Not surfaced |
 | Multi-DB | Postgres-only (permanent design choice) | PG / MySQL / SQLite | PG / MySQL / SQLite | PG / MySQL / SQLite |
-| Multi-tenancy / RLS | First-class via `#[model(tenant_key)]` + auto `set_config()` | Not surfaced | Not surfaced | Not surfaced |
+| Multi-tenancy / RLS | First-class via `#[model(tenant_key = "<col>")]` + auto `set_config()` | Not surfaced | Not surfaced | Not surfaced |
 | JSONB typed schemas | `Jsonb<T>` + `#[derive(JsonbSchema)]` deep-path accessors | Untyped | `serde_json::Value` only | Untyped |
 | Spatial | PostGIS behind `spatial` feature; GeoPoint/Line/Polygon/Multi* with EWKB codecs; `convex_hull` / `intersection` / `area` aggregates | Not surfaced | sqlx types only | Not surfaced |
-| Full-text search | `#[model(fts)]` → `TsVector`/`TsQuery` + GIN index | Not surfaced | Not surfaced | Not surfaced |
+| Full-text search | `#[model(fts(source = "<cols>", dictionary = "<config>"))]` → `TsVector`/`TsQuery` + GIN index | Not surfaced | Not surfaced | Not surfaced |
 | Audit / outbox | `#[model(events)]` transactional outbox + Publisher trait + pg_notify listener | Not surfaced | Not surfaced | Not surfaced |
-| Field-level protection | `#[field(protect = "...")]` codec registry for PII / encrypted-at-rest | Not surfaced | Not surfaced | Not surfaced |
+| Field-level protection | `#[field(protected(sensitivity = "...", rationale = "...", redaction = "...", codec = "...", retention = "..."))]` with span-precise validation; codec registry is a substrate (no built-in codecs in v0.1.0 — adopters supply their own) | Not surfaced | Not surfaced | Not surfaced |
 | Aggregates | count / sum / avg / min / max + array_agg / json_agg / string_agg / bool_and / bool_or with `FILTER (WHERE)` | SeaQuery-mediated | SeaQuery-mediated | Typed DSL (`sum`/`avg`/`min`/`max`); no `FILTER (WHERE)` |
 | Window functions | `Expr<T>::over(Window)`, RowNumber / Rank / DenseRank + `.qualify()` | Limited via SeaQuery | Limited via SeaQuery | Typed DSL (`rank`/`row_number`); no `.qualify()` |
 | Recursive CTEs / tree queries | `RecursiveQuerySet<T>::tree_descendants` / `tree_ancestors` with cycle detection, BREADTH / DEPTH FIRST, path output | Hand-written SQL | Hand-written SQL | Hand-written SQL |
@@ -45,9 +45,9 @@ If you came here from the README's design-north-star section, the short version 
 | ENUM | `#[derive(DjogiEnum)]` Postgres-native codec | SeaQuery builder | SeaORM derive | Hand-mapped |
 | Raw SQL escape hatches | `raw_query` / `raw_fetch_one` / `raw_scalar` / `raw_execute` / `raw_stream` on `DjogiContext`, gated by an explicit bypass attribute | Not typed | Standard practice | Standard practice |
 | Admin / shell / CLI | `cargo djogi docs`, `cargo djogi db seed`; Rhai shell deferred Phase 9 | Built-in `cot::admin` module + `cot-cli` | SeaORM Pro (official add-on) | Not surfaced |
-| Model hooks | `#[derive(ModelHooks)]`, zero-overhead via marker trait | Not surfaced | Event listeners | Not surfaced |
+| Model hooks | `#[model(..., hooks)]` opt-in flag + adopter-written `impl djogi::hooks::ModelHooks for T`; zero-overhead via marker trait | Not surfaced | Event listeners | Not surfaced |
 | Computed fields | `#[computed(sql = "...")]` + `#[djogi::trait_impl]` cross-type registry | Not surfaced | Not surfaced | Not surfaced |
-| Proxy models | `#[model(proxy_for = "Parent")]` w/ custom default-filter | Not surfaced | Not surfaced | Not surfaced |
+| Proxy models | `#[model(proxy_for = Parent)]` (bare-ident parent) w/ optional `default_filter = \|f\| ...` | Not surfaced | Not surfaced | Not surfaced |
 | Query algebra (public) | `Q<T>` enum w/ `&`, `\|`, `^` (XOR), `!` overloads; `.exclude_struct()` | Internal | SeaQuery (no XOR) | Not surfaced |
 | Cache integration | `.cache(&punnu)` + `QuerySet::refresh_into` delta-sync (sassi) | Not surfaced | Not surfaced | Not surfaced |
 | Typed projections / partial-model views | Full: per-projection `{Proj}::filter()` + Fields/Filter accessors, SELECT narrowing, FK/M2M traversal via `expose(...)`, sealed `DjogiVisageOf<M>` boundary (Djogi calls these *visages*) | Minimal — no typed projection surface | Partial: `#[derive(FromQueryResult)]` + custom select gives a typed result shape; no per-projection filter API or relation traversal | Partial: tuple select (`select((id, name))`) is typed but unnamed — no field methods on the projection, no relation surface |
@@ -63,7 +63,7 @@ The matrix labels use generic concepts so each row reads on its own merits; Djog
 
 - **Typed projections / partial-model views** — Djogi calls these *visages*. The generic concept covers any framework's notion of a partial-model surface that returns a different Rust type than the source model. Djogi's distinguisher is the *named* typed surface that carries its own filter API, relation traversal, and a sealed compile-time boundary, rather than an ad-hoc tuple or a result-only struct.
 - **Apps subsystem (schema-domain partitioning)** — both Djogi and Cot use the term "apps". Djogi's variant adds `renamed_from` / `tombstone` lifecycle markers and cross-app FK graph validation.
-- **Cache integration** — Djogi's implementation is via *Punnu* (sassi). The cell names the module the same way SeaORM's cell names "SeaORM Studio".
+- **Cache integration** — Djogi's implementation is via *Punnu* (sassi). The cell names the module the same way SeaORM's cell names "SeaORM Pro".
 
 ---
 
@@ -81,7 +81,7 @@ This section reads each project on its own design intent first, then names the a
 
 ### Relative to SeaORM
 
-**SeaORM's design intent:** SeaORM optimises for multi-database portability and an ergonomic builder API on top of SeaQuery, with a third-party Studio for an admin-style surface.
+**SeaORM's design intent:** SeaORM optimises for multi-database portability and an ergonomic builder API on top of SeaQuery, with the official SeaORM Pro add-on providing an admin-style surface.
 
 **Where Djogi extends the surface:** the entire right side of the matrix — CTEs / recursive / window / GROUPING SETS / ROLLUP / CUBE first-class; online-safety classification; live migration; spatial / FTS; protected fields; tenancy / RLS; model hooks; computed fields; proxy models; named typed projection surface (Djogi's *visages* go beyond a result-only `FromQueryResult` derive); apps subsystem.
 
@@ -124,7 +124,7 @@ Djogi's design intent is explicit: **Rust-first** (idiomatic Rust where user cod
 | Async-Rust idiom alignment | Yes — Tokio-native | Yes — Tokio-native | Mixed — Tokio is the active runtime path; the async-std runtime flag persists but is deprecated upstream | Sync-only core; an async addon ships separately |
 | Public algebra in Rust types (not strings) | Yes — `Q<T>` enum w/ `&` `\|` `^` `!` overloads; bare-ident PK syntax (no string PK names) | Internal condition tree | Builder-style API | No public algebra |
 | Typed JSONB / arrays / spatial | Yes — `Jsonb<T>` + `#[derive(JsonbSchema)]`; `Vec<V>` w/ native operators; EWKB-typed | Untyped | `serde_json::Value` only | Untyped |
-| Cross-type trait registry | Yes — `#[djogi::trait_impl]` + `Sassi::all_impl::<Trait>()` | Not surfaced | Not surfaced | Not surfaced |
+| Cross-type trait registry | Yes — `#[djogi::trait_impl]` + `djogi::trait_registry::iter_for_trait::<dyn T>()` (Punnu-integrated sibling: `#[sassi::trait_impl]` + `Sassi::all_impl::<dyn T>()`) | Not surfaced | Not surfaced | Not surfaced |
 
 **Concessions where Djogi steps away from the strict Rust-first ideal:**
 
@@ -217,7 +217,7 @@ This section exists so any reviewer can re-run the verification before publish.
 1. Re-read each project's most recent CHANGELOG / release notes.
 2. For each "not surfaced" cell where Djogi claims uniqueness, search the project's repository for the relevant feature surface and confirm absence; if a feature shipped, update the cell.
 3. Bump the **Last verified** date stamp at the top.
-4. Spot-check Djogi's own claims by name (`#[model(fts)]`, `#[derive(ModelHooks)]`, `tree_descendants`, etc.) against the in-repo source — claims that no longer compile against current `main` get updated, not retained.
+4. Spot-check Djogi's own claims by name (`#[model(fts(...))]`, `#[model(..., hooks)]` + `ModelHooks`, `tree_descendants`, etc.) against the in-repo source — claims that no longer compile against current `main` get updated, not retained.
 
 ---
 
