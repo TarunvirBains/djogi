@@ -55,7 +55,7 @@ If you came here from the README's design-north-star section, the short version 
 | Apps subsystem (schema-domain partitioning) | `djogi::apps!` + `AppRegistry` with `renamed_from` / `tombstone` lifecycle | Apps concept supported | Not surfaced | Not surfaced |
 | Bulk ops | `bulk_create` (pre-allocated PKs), `bulk_update`, `bulk_upsert` with dirty-tracking | Limited | Limited | Hand-written multi-row INSERT |
 | Transactions | `atomic()` w/ savepoints + FIFO `on_commit` callbacks + RLS / tenant scope snapshot/restore | Explicit txn API | Explicit txn API | Explicit txn API |
-| MSRV | 1.95+ (2024 edition) | Pre-publish | ≥1.65 implied | ≥1.65 implied |
+| MSRV | 1.95+ (2024 edition) | Pre-publish | Pre-publish re-verify | Pre-publish re-verify |
 
 ### Terminology notes
 
@@ -150,7 +150,7 @@ Djogi's design intent is explicit: **Rust-first** (idiomatic Rust where user cod
 | Transactional outbox + `pg_notify` | Yes — `#[model(events)]` + Publisher trait | Not surfaced | Not surfaced | Not surfaced |
 | Window fns + `.qualify()` | Yes — typed surface | Via SeaQuery | Via SeaQuery | Hand-written |
 
-**Verdict (Postgres-first):** intent achieved emphatically. Postgres-first is Djogi's most uncompromised design axis. Multi-DB projects forgo this depth by design — that is the trade they made for portability. Postgres 18-specific `CYCLE … USING path` is a clean illustration: Djogi can use it because it does not have to abstract over MySQL's missing recursive-CTE ordering or SQLite's recursive-CTE feature gates.
+**Verdict (Postgres-first):** intent achieved emphatically. Postgres-first is Djogi's most uncompromised design axis. Multi-DB projects forgo this depth by design — that is the trade they made for portability. Postgres-native `CYCLE … USING path` is a clean illustration: Djogi can use it because it does not have to abstract over MySQL's missing recursive-CTE ordering or SQLite's recursive-CTE feature gates.
 
 ### The two axes reinforce each other
 
@@ -182,12 +182,12 @@ Routed to post-v0.1.0 with issue numbers where available:
 - Lifecycle plan / apply governance — no approval workflow for migrations; deferred Phase 9.5.
 - OpenAPI schema export — `djogi schema --format openapi` deferred Phase 9.
 
-**Unverified performance (benchmarking in Phase 8.5 Cluster C/D):**
+**Performance smoke-benchmarked, not yet perf-guaranteed (publish-gate analysis pending in Phase 8.5 Cluster C/D):**
 
-- materialized-closure scalability at 5000+ nodes;
-- `array_append` cost for path accumulation;
-- window-function performance with 1000+ rows;
-- pool builder overhead at 64+ concurrent acquirers.
+- materialized-closure scalability at 5000+ nodes (smoke bench: `tests/integration/phase8_zero_tree_query_bench.rs`);
+- `array_append` cost for path accumulation (smoke bench: `tests/integration/phase8_zero_tree_query_bench.rs`);
+- window-function performance with 1000+ rows (smoke bench: `tests/internal/sources/phase8_zero_cluster_c_bench.rs`);
+- pool builder overhead at 64+ concurrent acquirers (smoke bench: `tests/internal/sources/phase8_zero_pool_bench.rs`).
 
 ---
 
@@ -197,7 +197,7 @@ This section exists so any reviewer can re-run the verification before publish.
 
 **What was verified directly (very high confidence):** all Phase 7–8 shipped features, against the in-repo CHANGELOG, plan files, and source. Migration system architecture, online-safety classification, live-migration machinery, tree queries, spatial, window functions, hooks, composition, `Q`-algebra.
 
-**What was synthesised (high confidence):** feature deltas across phases, phase sequencing, phase plan synthesis. Sources: `docs/spec/implementation-plan.md`, `docs/spec/decisions.md`, the Phase X plan files under `docs/superpowers/plans/`.
+**What was synthesised (high confidence):** feature deltas across phases, phase sequencing, phase plan synthesis. Sources: `docs/spec/implementation-plan.md` and `docs/spec/decisions.md`.
 
 **What is dated and needs re-verification near the v0.1.0 publish gate (medium confidence):**
 
