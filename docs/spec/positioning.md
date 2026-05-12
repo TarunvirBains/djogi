@@ -29,7 +29,7 @@ If you came here from the README's design-north-star section, the short version 
 | Migration generation | Descriptor-driven differ; `build.rs` drift warning; CLI `djogi migrations compose` | CLI `cot migration make` (AST diff) | `sea-orm-cli generate entity`; migrations hand-written | Manual SQL; `diesel print-schema` |
 | Migration file format | SQL up/down + `#[migration]` Rust escape hatch | Rust code (generated) | Rust trait impl OR raw SQL | Paired SQL files |
 | Online-safety classification | 4-tier: OnlineSafe / FastLockDestructiveGuarded / ExpandContract / OfflineOnly | Not surfaced | Not surfaced | Not surfaced |
-| Live/staged migration | Phase 7.5 substrate: expand-contract, protected-field codecs, chunked backfill, daemon-mode runner | Not surfaced | Not surfaced | Not surfaced |
+| Live/staged migration | Phase 7.5 substrate: expand-contract, protected-field metadata + codec-transition classification (codec registry empty in v0.1.0; built-in codecs land in a later phase), chunked backfill, daemon-mode runner | Not surfaced | Not surfaced | Not surfaced |
 | Multi-DB | Postgres-only (permanent design choice) | PG / MySQL / SQLite | PG / MySQL / SQLite | PG / MySQL / SQLite |
 | Multi-tenancy / RLS | First-class via `#[model(tenant_key = "<col>")]` + auto `set_config()` | Not surfaced | Not surfaced | Not surfaced |
 | JSONB typed schemas | `Jsonb<T>` + `#[derive(JsonbSchema)]` deep-path accessors | Untyped | `serde_json::Value` only | Untyped |
@@ -75,9 +75,9 @@ This section reads each project on its own design intent first, then names the a
 
 **Cot's design intent:** Cot positions itself as a full Rust web stack — model, migrations, admin, and view layer in one. Its app concept maps domain partitions across the whole framework.
 
-**Where Djogi extends the surface:** staged-rollout machinery (Phase 7.5 live-migration substrate); tenancy / RLS first-class; JSONB typed schemas; spatial; FTS; advisory locking with checksums and replica-safety; typed projection surface with compile-time boundary; recursive CTEs with path output; public `Q<T>` algebra with XOR; Punnu cache integration; protected-field codecs; computed fields plus a cross-type trait registry; proxy models.
+**Where Djogi extends the surface:** staged-rollout machinery (Phase 7.5 live-migration substrate); tenancy / RLS first-class; JSONB typed schemas; spatial; FTS; advisory locking with checksums and replica-safety; typed projection surface with compile-time boundary; recursive CTEs with path output; public `Q<T>` algebra with XOR; Punnu cache integration; protected-field metadata substrate (v0.1.0 codec registry empty; built-in codecs land in a later phase); computed fields plus a cross-type trait registry; proxy models.
 
-**Where Cot extends the surface:** AST-driven autogeneration handles more heuristic edge cases at the migration boundary; an admin pattern ships with the framework (Djogi's admin is the [Maahi console](./maahi/index.md), opt-in via the `admin` feature and currently sequenced for Phase 10).
+**Where Cot extends the surface:** AST-driven autogeneration handles more heuristic edge cases at the migration boundary; an admin pattern ships with the framework (Djogi's admin is the planned [Maahi console](./maahi/index.md), sequenced for Phase 10 — the `admin` feature flag and `djogi-maahi` crate ship with that phase).
 
 ### Relative to SeaORM
 
@@ -91,7 +91,7 @@ This section reads each project on its own design intent first, then names the a
 
 **Diesel's design intent:** Diesel is the longest-standing Rust ORM, prioritising minimal abstraction overhead and a strongly-typed `schema.rs` codegen path that gives compile-time guarantees down to the column.
 
-**Where Djogi extends the surface:** async-first; descriptor-driven migrations with classification plus live-migration staging; every advanced query (CTEs / tree / window / aggregate / FTS / spatial); tenancy / RLS; typed `Q<T>`; JSONB and arrays first-class with native operators; named typed projections (Djogi's *visages* go beyond Diesel's tuple select); model hooks; typed `DjogiPool` builder; protected-data codecs; bulk ops with pre-allocation and dirty-tracking.
+**Where Djogi extends the surface:** async-first; descriptor-driven migrations with classification plus live-migration staging; every advanced query (CTEs / tree / window / aggregate / FTS / spatial); tenancy / RLS; typed `Q<T>`; JSONB and arrays first-class with native operators; named typed projections (Djogi's *visages* go beyond Diesel's tuple select); model hooks; typed `DjogiPool` builder; protected-field metadata substrate (v0.1.0 codec registry empty; built-in codecs land in a later phase); bulk ops with pre-allocation and dirty-tracking.
 
 **Where Diesel extends the surface:** longest-standing Rust ORM with a long battle-test record at scale; the `schema.rs` codegen offers a different and arguably crisper compile-time guarantee than descriptor JSON; minimal abstraction overhead with direct SQL emission.
 
