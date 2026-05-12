@@ -302,12 +302,31 @@ signature. See `decisions.md` "Type-derived CHECK projection (Phase 8.5 v3
 Cluster 2)" for the contract.
 
 **Currently shipped vs deferred.** The projection contract, the AMEND DROP+ADD
-fix, and `IntoFilterValue for u64` ship under djogi#186. The actual
-`rust_type_to_sql` arms for `i8 / u8 / u16 / u32 / u64` are gated on djogi#190
-(per-field bind/decode shims in the macro emitter) — `tokio_postgres::ToSql`
-binds `i8` as `"char"` and `u32` as `OID`, and has no impl for `u8 / u16 /
-u64` at all. djogi#190 closes the column-side wiring; the projection contract
-landed here is reusable as-is when that work lands.
+fix, and `IntoFilterValue for u64` ship under djogi#186. Two pieces are gated
+on djogi#190:
+
+  * The `rust_type_to_sql` arms for `i8 / u8 / u16 / u32 / u64` are gated on
+    djogi#190 (per-field bind/decode shims in the macro emitter) —
+    `tokio_postgres::ToSql` binds `i8` as `"char"` and `u32` as `OID`, and has
+    no impl for `u8 / u16 / u64` at all.
+  * The projection wiring at `migrate/projection.rs::project_column` that
+    invokes `field_type_check` to populate `ColumnSchema.check` is also gated
+    on djogi#190. The descriptor today exposes only `f.sql_type` (a typed
+    `FieldSqlType` such as `BigInt`); it does not carry the Rust source type,
+    so the projection cannot tell `i64 → BIGINT` from `u32 → BIGINT`. Wiring
+    the helper unconditionally would project a `>= 0 AND <= 4294967295` CHECK
+    onto every BIGINT column, including the framework's own HeerId-backed
+    `id` columns whose values exceed `u32::MAX` from day one. djogi#190 must
+    add a per-field "rust source type" discriminator on `FieldDescriptor`
+    alongside the bind/decode shims, and at that point `project_column` flips
+    on the call to `field_type_check` (gated on the discriminator) and the
+    contract surface lights up for `i8 / u8 / u16 / u32 / u64`.
+
+The helper, the differ AMEND DROP+ADD lifecycle, and the
+`FieldSqlType::NumericPrecision { precision, scale }` variant are all
+unit-tested today against synthetic descriptor / `ColumnSchema` shapes; only
+the projection wiring sits dormant so the contract layer cannot regress
+production tables before #190 closes the source-type gap.
 
 ### 10.7 Ledger and Locking
 
