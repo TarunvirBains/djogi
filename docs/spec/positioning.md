@@ -29,7 +29,7 @@ If you came here from the README's design-north-star section, the short version 
 | Migration generation | Descriptor-driven differ; `build.rs` drift warning; CLI `djogi migrations compose` | CLI `cot migration make` (AST diff) | `sea-orm-cli generate entity`; migrations hand-written | Manual SQL; `diesel print-schema` |
 | Migration file format | SQL up/down + `#[migration]` Rust escape hatch | Rust code (generated) | Rust trait impl OR raw SQL | Paired SQL files |
 | Online-safety classification | 4-tier: OnlineSafe / FastLockDestructiveGuarded / ExpandContract / OfflineOnly | Not surfaced | Not surfaced | Not surfaced |
-| Live/staged migration | Phase 7.5 substrate: expand-contract, protected-field metadata + codec-transition classification (codec registry empty in v0.1.0; built-in codecs land in a later phase), chunked backfill, daemon-mode runner | Not surfaced | Not surfaced | Not surfaced |
+| Live/staged migration | Phase 7.5 library substrate: expand-contract, protected-field metadata + codec-transition classification (codec registry empty in v0.1.0; built-in codecs land in a later phase), chunked backfill, daemon-mode runner. Adopter-facing CLI executor wiring for `live plan` / `live resume` / `live finalize` is dispatch+parsing-only in v0.1.0; the compose/chunk-loop/cleanup execution lands in a follow-up task | Not surfaced | Not surfaced | Not surfaced |
 | Multi-DB | Postgres-only (permanent design choice) | PG / MySQL / SQLite | PG / MySQL / SQLite | PG / MySQL / SQLite |
 | Multi-tenancy / RLS | First-class via `#[model(tenant_key = "<col>")]` + auto `set_config()` | Not surfaced | Not surfaced | Not surfaced |
 | JSONB typed schemas | `Jsonb<T>` + `#[derive(JsonbSchema)]` deep-path accessors | Untyped | `serde_json::Value` only | Untyped |
@@ -40,7 +40,7 @@ If you came here from the README's design-north-star section, the short version 
 | Aggregates | count / sum / avg / min / max + array_agg / json_agg / string_agg / bool_and / bool_or with `FILTER (WHERE)` | SeaQuery-mediated | SeaQuery-mediated | Typed DSL (`sum`/`avg`/`min`/`max`); no `FILTER (WHERE)` |
 | Window functions | `Expr<T>::over(Window)`, RowNumber / Rank / DenseRank + `.qualify()` | Limited via SeaQuery | Limited via SeaQuery | Typed DSL (`rank`/`row_number`); no `.qualify()` |
 | Recursive CTEs / tree queries | `RecursiveQuerySet<T>::tree_descendants` / `tree_ancestors` with cycle detection, BREADTH / DEPTH FIRST, path output | Hand-written SQL | Hand-written SQL | Hand-written SQL |
-| GROUPING SETS / ROLLUP / CUBE | First-class via three-stage grouped state | Not surfaced | Not surfaced | Not surfaced |
+| GROUPING SETS / ROLLUP / CUBE | First-class via three-stage grouped state; `GROUPING SETS` typed fetch fully shipped, `ROLLUP` / `CUBE` SQL emission shipped with typed subtotal/grand-total NULL-key decoding deferred (pinned by `tests/integration/phase6_5_aggregates.rs`) | Not surfaced | Not surfaced | Not surfaced |
 | Relations | `ForeignKey<T>` / `OneToOneField<T>` / `ManyToMany<Target>` with cascade policies; reverse-accessor macros; `select_related` / `prefetch` | FK only; limited reverse | FK only; limited reverse | FK only; no reverse macros |
 | ENUM | `#[derive(DjogiEnum)]` Postgres-native codec | SeaQuery builder | SeaORM derive | Hand-mapped |
 | Raw SQL escape hatches | `raw_query` / `raw_fetch_one` / `raw_scalar` / `raw_execute` / `raw_stream` on `DjogiContext`, gated by an explicit bypass attribute | Not typed | Standard practice | Standard practice |
@@ -144,9 +144,9 @@ Djogi's design intent is explicit: **Rust-first** (idiomatic Rust where user cod
 | RLS / `set_config()` / tenant_key | Yes — first-class | Not surfaced | Not surfaced | Not surfaced |
 | JSONB native operators | Yes — deep-path | Not surfaced | Via `serde_json::Value` | Not surfaced |
 | FTS (`tsvector` + GIN) | Yes — `#[model(fts(source = "<cols>", dictionary = "<config>"))]` | Not surfaced | Not surfaced | Not surfaced |
-| PostGIS / EWKB | Yes — `spatial` feature plus spatial aggregates | Not surfaced | sqlx types | Not surfaced |
+| PostGIS / EWKB | Yes — `spatial` feature plus `convex_hull` aggregate and `area_of` / `area_of_intersection` scalar expressions | Not surfaced | sqlx types | Not surfaced |
 | `NULLS NOT DISTINCT`, partial / covering / functional indexes, `CREATE INDEX CONCURRENTLY` | Yes — all first-class | Not surfaced | Not surfaced | Not surfaced |
-| `GROUPING SETS` / `ROLLUP` / `CUBE` | Yes — first-class | Not surfaced | Not surfaced | Not surfaced |
+| `GROUPING SETS` / `ROLLUP` / `CUBE` | `GROUPING SETS` first-class; `ROLLUP` / `CUBE` SQL emission shipped, with typed subtotal/grand-total NULL-key decoding deferred | Not surfaced | Not surfaced | Not surfaced |
 | Transactional outbox + `pg_notify` | Yes — `#[model(events)]` + Publisher trait | Not surfaced | Not surfaced | Not surfaced |
 | Window fns + `.qualify()` | Yes — typed surface | Via SeaQuery | Via SeaQuery | Typed window helpers; no `.qualify()` |
 
