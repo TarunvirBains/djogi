@@ -2347,9 +2347,17 @@ fn custom_pk_unsupported_reason(
 ) -> String {
     fn describe(kind: &PkKindSchema) -> String {
         match kind {
+            // Include `default_sql` alongside `type_name` and `sql_type`
+            // so a same-type / same-sql / different-default-sql change
+            // (e.g. swapping `user_id_next()` for `user_id_next_v2()`)
+            // surfaces both generator expressions in the diagnostic.
+            // Without this, the two sides of such a transition would
+            // print identically and the operator would have no way to
+            // see what actually changed from the surfaced
+            // `ComposeError::UnsupportedDelta`.
             PkKindSchema::Custom(c) => format!(
-                "Custom(type_name = `{}`, sql_type = `{}`)",
-                c.type_name, c.sql_type,
+                "Custom(type_name = `{}`, sql_type = `{}`, default_sql = `{}`)",
+                c.type_name, c.sql_type, c.default_sql,
             ),
             other => format!("{other:?}"),
         }
@@ -2954,6 +2962,17 @@ mod tests {
         sql_type: "UUID",
         default_sql: "gen_random_uuid()",
     });
+    // Same `type_name` and `sql_type` as `CUSTOM_USER_ID` but a different
+    // `default_sql` — pins the diagnostic surfaces every part of the
+    // `CustomPkKindSchema` identity so operators can see what changed
+    // when the generator function rotates (e.g. shard split, new
+    // sequence cadence).
+    const CUSTOM_USER_ID_NEXT_V2: PkType =
+        PkType::Custom(crate::descriptor::CustomPrimaryKeyKind {
+            type_name: "crate::ids::UserId",
+            sql_type: "BIGINT",
+            default_sql: "user_id_next_v2()",
+        });
 
     #[test]
     fn pk_custom_same_inner_type_different_newtype_is_unsupported() {
@@ -3012,6 +3031,37 @@ mod tests {
         assert!(
             reason.contains("BIGINT") && reason.contains("UUID"),
             "diagnostic must surface both inner SQL types; got: {reason}"
+        );
+    }
+
+    #[test]
+    fn pk_custom_changed_default_sql_is_unsupported() {
+        // Same `type_name` AND same `sql_type` — only the `default_sql`
+        // changes. `CustomPkKindSchema` derives `PartialEq` over all
+        // three identity fields, so a generator rotation (sequence
+        // bump, shard split, new ID minting service) still fails the
+        // equality check and routes through the custom-PK reject.
+        //
+        // The diagnostic MUST include both `default_sql` strings — without
+        // them the operator would see two identical-looking `Custom(...)`
+        // arms in the surfaced `ComposeError::UnsupportedDelta` and have
+        // no way to tell what the differ actually objected to.
+        let before_desc = synth_model_with_pk("users", "User", CUSTOM_USER_ID);
+        let after_desc = synth_model_with_pk("users", "User", CUSTOM_USER_ID_NEXT_V2);
+        let before = project_one(&before_desc);
+        let after = project_one(&after_desc);
+        let delta = diff_schemas(&before, &after, empty_global());
+        let Classification::Unsupported { reason } = &delta.classification else {
+            panic!("expected Unsupported, got {:?}", delta.classification);
+        };
+        assert!(
+            reason.contains("custom-to-custom"),
+            "diagnostic must label the bucket; got: {reason}"
+        );
+        assert!(
+            reason.contains("user_id_next()") && reason.contains("user_id_next_v2()"),
+            "diagnostic must surface both default_sql generators so the \
+             operator can see what changed; got: {reason}"
         );
     }
 
