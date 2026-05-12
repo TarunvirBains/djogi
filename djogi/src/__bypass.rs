@@ -65,28 +65,36 @@
 //! dirty-by-default guard fires on `Err`, panic, and future cancellation
 //! only — not on `Ok`.
 //!
-//! For session-state-affecting raw SQL on the clean-exit path, wrap the
-//! call in [`crate::transaction::atomic`] **and** either:
+//! For session-state-affecting raw SQL, wrap the call in
+//! [`crate::transaction::atomic`] **and** either:
 //!
-//! - use a TRANSACTION-LOCAL form so `COMMIT` (or `ROLLBACK`) clears the
+//! - use a TRANSACTION-LOCAL form so `COMMIT` or `ROLLBACK` clears the
 //!   state automatically — `SET LOCAL key = value` instead of `SET key
 //!   = value`, `set_config(name, value, true)` instead of
 //!   `set_config(name, value, false)`, `pg_advisory_xact_lock(…)`
 //!   instead of `pg_advisory_lock(…)`, etc.; or
 //! - explicitly reset / unlock / `UNLISTEN` / `DEALLOCATE` the
-//!   session-level mutation before the closure returns `Ok`.
+//!   session-level mutation on **every non-cancel exit** of the closure
+//!   — before returning `Ok`, in every error branch, and in any panic
+//!   recovery. `atomic()` will NOT do this cleanup for you on Err/panic;
+//!   see the next paragraph.
 //!
 //! **`atomic()` is a transaction guard, not a session-state reset
-//! guard.** Its `ROLLBACK` path covers the closure's `Err` and panic
-//! exits, so transaction-scoped mutations performed in the failure path
-//! are unwound by Postgres's transactional state machine. Its clean
-//! `COMMIT` path does NOT reset session-level state: a `SET search_path
-//! = 'audit'` inside an `atomic()` closure that returns `Ok` commits
-//! but the new `search_path` survives `COMMIT` and rides the connection
-//! back to the pool. The same applies to `SET ROLE`, session advisory
-//! locks, `LISTEN`, and prepared statements created via raw SQL.
-//! Adopters must choose transaction-local forms or explicit reset for
-//! the clean-exit contract to hold.
+//! guard.** Its `ROLLBACK` path on Err/panic only unwinds
+//! TRANSACTION-SCOPED state (row writes, sequence allocations, `SET
+//! LOCAL`, `set_config(_, _, true)`, `pg_advisory_xact_lock`).
+//! SESSION-scoped state survives both clean `COMMIT` and `ROLLBACK` —
+//! session advisory locks explicitly ignore transaction rollback per
+//! Postgres semantics, plain `SET` / `SET ROLE` / `SET search_path` are
+//! reset by `ROLLBACK` only when the SAME transaction issued them, and
+//! `LISTEN` / prepared statements bypass transactional rollback
+//! entirely. A `SET search_path = 'audit'` inside an `atomic()` closure
+//! that returns `Ok` commits but the new `search_path` survives
+//! `COMMIT` and rides the connection back to the pool; a
+//! `pg_advisory_lock(...)` acquired inside `atomic()` that subsequently
+//! returns `Err` is NOT released by `ROLLBACK` and the lock leaks.
+//! Adopters must choose transaction-local forms or run explicit reset
+//! on every non-cancel exit for the contract to hold.
 //!
 //! **`atomic()` cancellation caveat.** `atomic()` issues `ROLLBACK` on
 //! the closure's `Err` and panic paths. It does NOT issue `ROLLBACK`

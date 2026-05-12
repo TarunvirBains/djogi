@@ -190,9 +190,14 @@ async fn clean_raw_execute(ctx: &mut djogi::DjogiContext) -> Result<u64, DjogiEr
 }
 
 /// Dirty exit via **post-query decode failure**. The SQL succeeds
-/// server-side and mutates session state (the `set_config(name, value,
-/// false)` form persists the new GUC across commit/rollback), then the
-/// framework-side `try_get_scalar::<i32>` decode fails because the
+/// server-side and mutates session state — `set_config(name, value,
+/// false)` is the session-level form (equivalent to plain `SET`), which
+/// survives a clean `COMMIT` and rides the connection back to the pool.
+/// (Postgres `ROLLBACK` would still revert a session-level `SET` issued
+/// inside the same aborted transaction; this test runs the call on a
+/// pool-checkout autocommit path, so neither commit nor rollback
+/// applies — the GUC just sticks until the connection is closed.) The
+/// framework-side `try_get_scalar::<i32>` decode then fails because the
 /// returned column is `text`. Without `query_opt_with` routing the
 /// decode through `PoolConnGuard`'s lifetime, the connection would
 /// recycle back to the pool already armed for clean return — silently

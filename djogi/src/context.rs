@@ -706,13 +706,23 @@ impl DjogiContext {
     /// `PgConnection::detach`. Without this, an `Ok` query that returned a
     /// row whose contents the caller could not decode would arm the guard
     /// for clean return — handing the next checkout a session whose state
-    /// was potentially mutated by the original SQL (`SET ROLE`,
-    /// `set_config(name, value, false)`, advisory locks, etc.).
+    /// was potentially mutated by the original SQL (`SET ROLE`, plain
+    /// `SET`, session `pg_advisory_lock(...)`, `set_config(name, value,
+    /// false)`, `LISTEN`, prepared statements, etc.).
     ///
-    /// The transaction path runs `finalize` without a guard — session
-    /// state on a transaction-backed context is bounded by the surrounding
-    /// `atomic()`'s rollback path on Err/panic. See `__bypass.rs` for the
-    /// adopter-facing contract around `atomic()` and cancellation.
+    /// The transaction path runs `finalize` without a guard because
+    /// **TRANSACTION-SCOPED** state on a transaction-backed context is
+    /// bounded by the surrounding `atomic()`'s rollback path on Err/panic
+    /// (e.g. `SET LOCAL …`, `set_config(_, _, true)`, `pg_advisory_xact_lock(…)`,
+    /// changes to rows / sequences). **Session-scoped** state mutated by
+    /// raw SQL inside an `atomic()` closure — session advisory locks,
+    /// plain `SET`, `SET ROLE`, `SET search_path`, `LISTEN`, prepared
+    /// statements created via `PREPARE` — is NOT rolled back by `atomic()`
+    /// on Err/panic and is NOT reset on clean `COMMIT` either. Adopters
+    /// who run such SQL inside `atomic()` must explicitly reset / unlock
+    /// / `UNLISTEN` / `DEALLOCATE` on all non-cancel exits, or prefer the
+    /// transaction-local form. See `__bypass.rs` for the adopter-facing
+    /// contract around `atomic()` and cancellation.
     pub(crate) async fn query_all_with<T, F>(
         &mut self,
         sql: &str,
