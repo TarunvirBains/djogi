@@ -19,9 +19,10 @@
 //! can actually reach `Punnu`, `BasicPredicate`, etc. Putting it in
 //! the `djogi` crate's `tests/` directory lets cargo build the test
 //! binary against the public `djogi` crate API exactly as an adopter
-//! would. The trybuild fixture in `djogi-macros/tests/compile_pass`
-//! covers the same surface from the macro-consumer angle (a model
-//! definition that imports through `djogi::cache::*`).
+//! would. The lihaaf compile-pass fixture in
+//! `djogi-macros/tests/compile_pass` covers the same surface from the
+//! macro-consumer angle (a model definition that imports through
+//! `djogi::cache::*`).
 
 use djogi::cache::{BasicPredicate, Cacheable, Punnu};
 

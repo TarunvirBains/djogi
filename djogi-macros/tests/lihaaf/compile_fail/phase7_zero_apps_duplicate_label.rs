@@ -1,1 +1,0 @@
-../../compile_fail/phase7_zero_apps_duplicate_label.rs

@@ -1,1 +1,0 @@
-../../compile_fail/phase8_5_c2_125_sassi_boot_hook_field_private.rs

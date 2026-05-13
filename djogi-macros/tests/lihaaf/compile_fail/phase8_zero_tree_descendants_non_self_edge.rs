@@ -1,1 +1,0 @@
-../../compile_fail/phase8_zero_tree_descendants_non_self_edge.rs

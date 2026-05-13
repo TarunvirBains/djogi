@@ -12,8 +12,9 @@
 - [ ] `cargo test --workspace -- --test-threads=1`
 - [ ] (if data-layer changes) integration tests against live
       Postgres 18+
-- [ ] (if macro changes) `cargo test -p djogi-macros --test
-      trybuild_tests` full sweep
+- [ ] (if macro changes) `cargo lihaaf --manifest-path djogi-macros/Cargo.toml -j 4` full sweep;
+      if diagnostics changed, re-bless and commit:
+      `cargo lihaaf --manifest-path djogi-macros/Cargo.toml --filter compile_fail --bless -j 4`
 
 ## Linked issue
 

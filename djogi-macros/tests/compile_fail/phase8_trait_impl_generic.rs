@@ -4,7 +4,7 @@
 // `feedback_anchored_deferrals` because they require runtime
 // parameter substitution for the `TypeId::of` lookup.
 //
-// Per `feedback_trybuild_fixtures.md`, every fixture has `fn main() {}`.
+// Every compile-fixture has `fn main() {}` so lihaaf's per-fixture rustc invocation produces a linkable artifact.
 
 trait Searchable {
     fn searchable_columns(&self) -> &'static [&'static str];

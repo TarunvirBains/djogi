@@ -1,0 +1,14 @@
+error[E0624]: method `pool` is private
+   --> $DIR/pool_without_bypass.rs:3:21
+    |
+  3 |         let _ = ctx.pool();
+    |                     ^^^^ private method
+    |
+   ::: djogi/src/context.rs:283:5
+    |
+283 |     pub(crate) fn pool(&self) -> Option<&DjogiPool> {
+    |     ----------------------------------------------- private method defined here
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0624`.

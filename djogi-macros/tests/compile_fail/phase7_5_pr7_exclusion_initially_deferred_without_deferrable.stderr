@@ -1,5 +1,7 @@
 error: `initially_deferred = true` requires `deferrable = true` on the same exclusion(...) entry — INITIALLY DEFERRED is meaningless on a non-deferrable constraint
-  --> tests/compile_fail/phase7_5_pr7_exclusion_initially_deferred_without_deferrable.rs:17:9
+  --> $DIR/phase7_5_pr7_exclusion_initially_deferred_without_deferrable.rs:17:9
    |
 17 |         initially_deferred = true,
    |         ^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

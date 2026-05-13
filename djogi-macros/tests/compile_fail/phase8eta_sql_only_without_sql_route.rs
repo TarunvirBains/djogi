@@ -14,7 +14,7 @@
 // method call, telling the adopter exactly where they need to insert
 // `.explicit_pg_predicate()`.
 //
-// Per `feedback_trybuild_fixtures.md`, every trybuild fixture has
+// Per the lihaaf compile-fixture contract, every lihaaf fixture has
 // `fn main` so `.stderr` does not pick up `E0601 (main not found)`.
 
 use djogi::__private::query::__make_djogi_field;

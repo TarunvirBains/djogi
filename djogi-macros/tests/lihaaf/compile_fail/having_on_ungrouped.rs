@@ -1,1 +1,0 @@
-../../compile_fail/having_on_ungrouped.rs

@@ -1,1 +1,0 @@
-../../compile_fail/djogi_test_extensions_non_string_element.rs

@@ -478,7 +478,7 @@ mod tests {
     //! These tests exercise the parsing layer without touching the
     //! emission half — every assertion runs against
     //! [`parse_args`] / [`parse_sync_models_value`]. Compile-fail
-    //! coverage of end-to-end macro rejection lives in the trybuild
+    //! coverage of end-to-end macro rejection lives in the lihaaf
     //! fixtures under `djogi-macros/tests/compile_fail/`.
     //!
     //! Token-stream walk tests for emission ordering live in

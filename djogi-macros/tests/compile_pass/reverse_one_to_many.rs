@@ -13,7 +13,7 @@
 //     the macro expansion).
 //
 // This fixture does NOT execute the accessor — no live Postgres is available
-// to trybuild runs. The body of `_signature_check` is typecheck-only:
+// to lihaaf runs. The body of `_signature_check` is typecheck-only:
 // calling `.cars(&pool)` requires a real pool which we don't construct here.
 // Instead, we consume the accessor's return type through function coercion:
 // assigning the method reference to a fully-spelled function-pointer type

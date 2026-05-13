@@ -14,7 +14,7 @@
 // traits in the dep graph (any trait declaring an `id()` method
 // would otherwise widen the candidate-trait list).
 //
-// Per `feedback_trybuild_fixtures.md`, every compile-fail fixture
+// Per the lihaaf compile-fixture contract, every compile-fail fixture
 // must have `fn main` so the stored `.stderr` does not pick up E0601
 // noise.
 //

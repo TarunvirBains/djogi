@@ -8,7 +8,7 @@
 // offending node and instructing the adopter to implement
 // `Model::default_filter_condition` by hand for non-literal RHS.
 //
-// Per `feedback_trybuild_fixtures.md`, every fixture must have
+// Every lihaaf compile-fixture must have
 // `fn main() {}` so the stored `.stderr` does not pick up E0601.
 
 use djogi::prelude::*;

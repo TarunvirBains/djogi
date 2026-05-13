@@ -1,5 +1,7 @@
 error: the `expose(public = "...")` form is only valid on relation fields (`ForeignKey<T>` / `OneToOneField<T>`)
-  --> tests/compile_fail/expose_relation_form_on_scalar.rs:10:5
+  --> $DIR/expose_relation_form_on_scalar.rs:10:5
    |
 10 |     pub name: String,
    |     ^^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

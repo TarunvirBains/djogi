@@ -7,10 +7,10 @@
 # `[dependencies]` table.
 #
 # Why a separate crate (and not another `djogi-macros/tests/compile_pass/*.rs`
-# fixture):
+# lihaaf fixture):
 #
 # `djogi-macros/Cargo.toml` carries `sassi`, `serde`, and `serde_json`
-# as `[dev-dependencies]` so a few specialized trybuild fixtures can
+# as `[dev-dependencies]` so a few specialized lihaaf fixtures can
 # reference them directly:
 #
 #   - 8γ T6.10's `phase8_lookup_op_regex_lifted_to_basic_predicate.rs`
@@ -18,14 +18,13 @@
 #   - JsonbSchema fixtures derive `serde::Serialize` / `Deserialize` on
 #     their schema structs.
 #
-# Trybuild compiles each `compile_pass/*.rs` fixture as a standalone
-# binary crate — but with the same dependency graph as the test crate
-# that drives trybuild (`djogi-macros`). Any `compile_pass` fixture can
-# therefore name `::sassi::*` directly, even though an external adopter
-# could not. The `compile_pass_phase8_t7_4` bucket is misleading on this
-# point: a stray `::sassi::*` typo in macro emission would compile
-# inside that bucket because trybuild has `sassi` reachable through the
-# dev-dep graph.
+# Lihaaf compiles each `compile_pass/*.rs` fixture as a standalone
+# rustc invocation linked against djogi-macros' own dev-dependency
+# graph. Any `compile_pass` fixture can therefore name `::sassi::*`
+# directly, even though an external adopter could not. The lihaaf
+# compile_pass bucket is misleading on this point: a stray `::sassi::*`
+# typo in macro emission would compile inside that bucket because
+# `sassi` is reachable through djogi-macros' dev-dep graph.
 #
 # This crate gets its own `[workspace]` table so cargo treats it as its
 # own workspace root, isolating dep resolution from djogi's outer
@@ -41,8 +40,9 @@
 #
 # Spec anchor:
 #   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
-#   §3 commit T7.4 — "Trybuild fixture" bullet (this fixture is the
-#   stronger sibling complementing the same-named compile_pass fixture).
+#   §3 commit T7.4 — compile-fixture bullet (this fixture is the
+#   stronger sibling complementing the same-named lihaaf compile_pass
+#   fixture).
 
 [package]
 name = "djogi-adopter-isolation-fixture"

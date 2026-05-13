@@ -44,8 +44,8 @@
 //!   file is stale — warning suggests re-running compose.
 //!
 //! The warning *wording* is frozen — see the `format_warning_*`
-//! helpers below — so the trybuild-style expectation test can match
-//! on exact stderr output.
+//! helpers below — so the expectation-style integration test can
+//! match on exact stderr output.
 //!
 //! # No regex
 //!
@@ -166,9 +166,9 @@ pub fn classify_bucket(
 ///   pending JSON it loads; the operator sees an actionable filename.
 /// - `build.rs`: walks pending JSON files itself (build scripts cannot
 ///   import the crate they are compiling), reads the `version` field
-///   directly, and emits the same wording. The trybuild-style
-///   integration test in `phase7_t6_build_warning_agreement` pins
-///   the agreement.
+///   directly, and emits the same wording. The
+///   `phase7_t6_build_warning_agreement` integration test pins the
+///   agreement byte-for-byte.
 /// - `build_classify_bucket` re-export (the convenience wrapper): used
 ///   by tests and the rare caller that genuinely lacks a version
 ///   string. Surfaces the `<unknown>` placeholder so the message is
@@ -338,10 +338,10 @@ pub fn classify_filesystem_drift(
 
 // ── Frozen warning wording ─────────────────────────────────────────────────
 //
-// The trybuild-style expectation test pins these exact strings. Any
-// rewording here breaks the stored stderr golden file; bump the
-// version IDs in that file in lockstep when intentionally changing
-// the messages.
+// The `phase7_t6_build_warning_agreement` integration test pins these
+// exact strings. Any rewording here breaks the stored expectation;
+// bump the version IDs in that test in lockstep when intentionally
+// changing the messages.
 // MIRROR: keep in lockstep with djogi/build.rs (the build-script re-implements these formatters)
 
 /// Outcome 2 — `composed migration not yet applied: <filename>

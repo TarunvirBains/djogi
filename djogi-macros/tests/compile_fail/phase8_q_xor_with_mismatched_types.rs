@@ -9,7 +9,7 @@
 // `type Output = Q<T>`, so `Q<A> ^ Q<B>` fails because the operator
 // trait expects `Self = Q<T>` on both sides.
 //
-// Per `feedback_trybuild_fixtures.md`, every trybuild fixture must
+// Every lihaaf compile-fixture must
 // have `fn main` so the stored `.stderr` does not pick up
 // `E0601 (main not found)` noise.
 

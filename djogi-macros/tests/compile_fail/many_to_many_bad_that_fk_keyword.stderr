@@ -1,5 +1,5 @@
 error[E0609]: no field `select` on type `&PersonGroup`
-  --> tests/compile_fail/many_to_many_bad_that_fk_keyword.rs:32:15
+  --> $DIR/many_to_many_bad_that_fk_keyword.rs:32:15
    |
 32 |     that_fk = r#select,
    |               ^^^^^^^^ unknown field
@@ -7,7 +7,7 @@ error[E0609]: no field `select` on type `&PersonGroup`
    = note: available fields are: `id`, `created_at`, `updated_at`, `person_id`, `group_id`
 
 error[E0560]: struct `PersonGroup` has no field named `select`
-  --> tests/compile_fail/many_to_many_bad_that_fk_keyword.rs:32:15
+  --> $DIR/many_to_many_bad_that_fk_keyword.rs:32:15
    |
 32 |     that_fk = r#select,
    |               ^^^^^^^^ `PersonGroup` does not have this field
@@ -15,7 +15,7 @@ error[E0560]: struct `PersonGroup` has no field named `select`
    = note: all struct fields are already assigned
 
 error[E0599]: no method named `select` found for struct `PersonGroupFields` in the current scope
-  --> tests/compile_fail/many_to_many_bad_that_fk_keyword.rs:32:15
+  --> $DIR/many_to_many_bad_that_fk_keyword.rs:32:15
    |
 21 |   #[model(table = "person_groups_mmbtfk", through, no_default)]
    |   ------------------------------------------------------------- method `select` not found for this struct
@@ -30,39 +30,44 @@ error[E0599]: no method named `select` found for struct `PersonGroupFields` in t
    |
 
 error[E0080]: evaluation panicked: djogi::ident: macro-emitted identifier contains a non-identifier character — either the proc-macro emission is broken or downstream code bypassed the macro-support seal
-  --> tests/compile_fail/many_to_many_bad_that_fk_keyword.rs:28:1
-   |
-28 | / djogi::many_to_many!(
-29 | |     Person, Group,
-30 | |     through = PersonGroup,
-31 | |     this_fk = person_id,
-32 | |     that_fk = r#select,
-33 | |     relation = "groups"
-34 | | );
-   | |_^ evaluation of `_` failed inside this call
-   |
+   --> $DIR/many_to_many_bad_that_fk_keyword.rs:28:1
+    |
+ 28 | / djogi::many_to_many!(
+ 29 | |     Person, Group,
+ 30 | |     through = PersonGroup,
+ 31 | |     this_fk = person_id,
+ 32 | |     that_fk = r#select,
+ 33 | |     relation = "groups"
+ 34 | | );
+    | |_^ evaluation of `_` failed inside this call
+    |
 note: inside `djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident`
-  --> $WORKSPACE/djogi/src/relation/registry.rs
-   |
-   |         const_assert_user_supplied_ident(value, role);
-   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   --> djogi/src/relation/registry.rs:577:9
+    |
+577 |         const_assert_user_supplied_ident(value, role);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: inside `djogi::ident::const_assert_user_supplied_ident`
-  --> $WORKSPACE/djogi/src/ident.rs
-   |
-   |     const_assert_plain_ident(value, role);
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   --> djogi/src/ident.rs:275:5
+    |
+275 |     const_assert_plain_ident(value, role);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: inside `djogi::ident::const_assert_plain_ident`
-  --> $RUST/core/src/panic.rs
-   |
-   |           $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
-   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
-   |
-  ::: $WORKSPACE/djogi/src/ident.rs
-   |
-   | /         assert!(
-   | |             byte.is_ascii_alphanumeric() || byte == b'_',
-   | |             "djogi::ident: macro-emitted identifier contains a non-identifier character \
-   | |              — either the proc-macro emission is broken or downstream code bypassed the \
-   | |              macro-support seal"
-   | |         );
-   | |_________- in this macro invocation
+   --> $RUST/lib/rustlib/src/rust/library/core/src/panic.rs:62:9
+    |
+ 62 |           $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
+    |
+   ::: djogi/src/ident.rs:222:9
+    |
+222 | /         assert!(
+223 | |             byte.is_ascii_alphanumeric() || byte == b'_',
+224 | |             "djogi::ident: macro-emitted identifier contains a non-identifier character \
+225 | |              — either the proc-macro emission is broken or downstream code bypassed the \
+226 | |              macro-support seal"
+227 | |         );
+    | |_________- in this macro invocation
+
+error: aborting due to 4 previous errors
+
+Some errors have detailed explanations: E0080, E0560, E0599, E0609.
+For more information about an error, try `rustc --explain E0080`.

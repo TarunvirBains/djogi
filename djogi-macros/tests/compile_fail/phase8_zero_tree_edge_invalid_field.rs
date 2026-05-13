@@ -6,8 +6,8 @@
 // compile error pointing at the offending string literal, with the message
 // instructing the caller to declare the FK first.
 //
-// `fn main() {}` is required for trybuild compile-fail fixtures (see
-// feedback_trybuild_fixtures.md) — the .stderr would otherwise carry an
+// `fn main() {}` is required for lihaaf compile-fail fixtures (see
+// lihaaf compile-fixture contract) — the .stderr would otherwise carry an
 // E0601 noise line for the missing main.
 
 use djogi::prelude::*;

@@ -120,9 +120,6 @@ libc = "0.2"
 # The `macros` feature unlocks `phf::phf_set!` / `phf::phf_map!`.
 phf = { version = "0.13", features = ["macros"] }
 
-# Testing
-trybuild = { version = "1", features = ["diff"] }
-
 # Internal — `version` alongside `path` is required so `cargo publish` resolves
 # the dep against crates.io rather than the local path. Local builds use the
 # path; published tarballs use the version. The cyclic dev-dep from djogi-macros

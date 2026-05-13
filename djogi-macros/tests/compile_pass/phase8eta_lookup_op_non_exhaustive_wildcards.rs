@@ -20,7 +20,7 @@
 // catch-all `(field, _) => UnsupportedFieldType` arm; the wildcard
 // shape there is also exercised by the compile success.
 //
-// Per `feedback_trybuild_fixtures.md`, every trybuild fixture has
+// Per the lihaaf compile-fixture contract, every lihaaf fixture has
 // `fn main` so the binary still has to link.
 
 use djogi::prelude::*;

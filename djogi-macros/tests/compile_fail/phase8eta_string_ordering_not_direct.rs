@@ -15,7 +15,7 @@
 // cache boundaries (the result is a `Condition` carrying PG-locale
 // semantics, not portable to Punnu).
 //
-// Per `feedback_trybuild_fixtures.md`, every trybuild fixture has
+// Per the lihaaf compile-fixture contract, every lihaaf fixture has
 // `fn main` so `.stderr` does not pick up E0601 noise.
 
 use djogi::prelude::*;

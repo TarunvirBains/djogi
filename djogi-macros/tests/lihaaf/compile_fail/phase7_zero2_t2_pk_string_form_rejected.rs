@@ -1,1 +1,0 @@
-../../compile_fail/phase7_zero2_t2_pk_string_form_rejected.rs

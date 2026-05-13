@@ -1,1 +1,0 @@
-../../compile_fail/reverse_relation_wrong_via_column.rs

@@ -531,7 +531,7 @@ fn emit_invocation_sentinel() -> TokenStream {
 
 // ---------------------------------------------------------------------------
 // Unit tests — label shape + helper parsing. Full round-trips live in
-// trybuild compile_pass / compile_fail fixtures.
+// lihaaf compile_pass / compile_fail fixtures.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]

@@ -1,1 +1,0 @@
-../../compile_fail/phase6_spatial_feature_off.rs

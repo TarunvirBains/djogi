@@ -1,5 +1,7 @@
 error: `pk = "…"` string-literal form is removed; use bare identifier, e.g. `pk = HeerIdRecencyBiased` / `pk = HeerId` / `pk = Serial`
- --> tests/compile_fail/phase7_zero2_t2_pk_string_form_rejected.rs:7:24
+ --> $DIR/phase7_zero2_t2_pk_string_form_rejected.rs:7:24
   |
 7 | #[model(table = "foo", pk = "heerid")]
   |                        ^^
+
+error: aborting due to 1 previous error

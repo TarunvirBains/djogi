@@ -1,5 +1,7 @@
 error: `stored` computed columns are deferred to Phase 8.5 — the migration differ has not yet accumulated 6+ months of long-running stability evidence post-publish, so generating column DDL from `#[computed(stored)]` is out of scope for v0.1.0; ship a non-stored computed (drop the `stored` keyword) and revisit when the deferral lifts
-  --> tests/compile_fail/phase8_computed_stored_deferred.rs:17:40
+  --> $DIR/phase8_computed_stored_deferred.rs:17:40
    |
 17 |     #[computed(sql = "base_price * 2", stored)]
    |                                        ^^^^^^
+
+error: aborting due to 1 previous error

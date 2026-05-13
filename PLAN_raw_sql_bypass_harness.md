@@ -1,5 +1,15 @@
 # Plan v3 — Raw SQL Escape Hatch Harness (GH #133 + GH #134)
 
+> **Status: historical archive.** This plan shipped across PRs 1–3 and is
+> retained for context only. References to `trybuild` in this document
+> describe the original compile-fail driver under
+> `tests/compile_fail/raw_sql.rs`; that driver was removed in Phase 8.5
+> when lihaaf replaced trybuild as djogi's compile-fixture gate. The
+> raw-SQL compile-fail fixtures now live at
+> `djogi/tests/compile_fail/*.rs` with blessed lihaaf snapshots and run
+> via `cargo lihaaf --manifest-path djogi/Cargo.toml` in CI. Do not use
+> this document as a "use trybuild" instruction.
+
 **Branch:** `harness/raw-methods-prevention` (off `origin/main` @ `8e007d2`).
 **Worktree:** `/home/tarunvir/projects/djogi-harness/`.
 **PR target:** `main`, **split into 3 PRs** (additive → refactor → lockdown).

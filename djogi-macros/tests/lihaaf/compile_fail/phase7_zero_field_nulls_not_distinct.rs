@@ -1,1 +1,0 @@
-../../compile_fail/phase7_zero_field_nulls_not_distinct.rs

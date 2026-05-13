@@ -12,7 +12,7 @@
 //
 // `fn main() {}` is intentional — compile-pass fixtures must compile as
 // normal binaries, not as library artifacts; see
-// `feedback_trybuild_fixtures.md`.
+// `lihaaf compile-fixture contract`.
 
 use djogi::prelude::*;
 

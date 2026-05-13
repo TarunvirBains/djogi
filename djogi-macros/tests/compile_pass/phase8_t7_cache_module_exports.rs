@@ -2,7 +2,7 @@
 //
 // Verifies that an adopter can `use djogi::cache::*;` and reach every
 // sassi cache primitive without listing `sassi` in their own
-// `Cargo.toml`. The trybuild harness builds this fixture against the
+// `Cargo.toml`. The lihaaf harness builds this fixture against the
 // public `djogi` crate exactly as an external adopter would, so any
 // hidden transitive sassi dep on the test path would still produce a
 // compile failure if `djogi::cache` failed to re-export the symbol.
@@ -12,7 +12,7 @@
 // the type-level reachability of every spec-named symbol so a future
 // removal-by-typo from `cache.rs` is caught at fixture-build time.
 //
-// Per `feedback_trybuild_fixtures.md`, every trybuild fixture must
+// Every lihaaf compile-fixture must
 // have `fn main` so the stored binary can link.
 //
 // Spec anchor:
@@ -52,7 +52,7 @@ use djogi::cache::{
 // bound on a generic function. This catches a regression where the
 // trait might be re-exported under an alias that the trait-bound
 // resolver cannot follow. (Concrete-type pins are exercised by the
-// runtime tests in `djogi/tests/cache_module.rs`; trybuild scope is
+// runtime tests in `djogi/tests/cache_module.rs`; lihaaf scope is
 // the type-level surface only.)
 fn _bound_check<T>()
 where

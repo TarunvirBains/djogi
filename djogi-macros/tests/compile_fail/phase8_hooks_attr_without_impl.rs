@@ -14,7 +14,7 @@
 // the adopter must hand-roll, exactly the error class the spec calls
 // for.
 //
-// Per `feedback_trybuild_fixtures.md`, `fn main() {}` is mandatory.
+// Per the lihaaf compile-fixture contract, `fn main() {}` is mandatory.
 
 use djogi::prelude::*;
 

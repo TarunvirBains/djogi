@@ -7,12 +7,12 @@
 //
 // The fixture exercises the macro-emission path that the in-crate
 // integration test in `djogi-macros/tests/cacheable_emit.rs` cannot
-// — trybuild compiles each fixture as a standalone crate, which
+// — lihaaf compiles each fixture as a standalone rustc invocation, which
 // catches every kind of "name routes through the wrong path"
 // regression that an in-crate test (where every internal name
 // resolves directly) would miss.
 //
-// Per `feedback_trybuild_fixtures.md`, every trybuild fixture must
+// Every lihaaf compile-fixture must
 // have `fn main` so the stored binary can link.
 //
 // Spec anchor:

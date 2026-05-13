@@ -14,7 +14,7 @@
 // silently adds a `Regex` variant, this fixture starts compiling and
 // the build fails the no-regex invariant.
 //
-// Per `feedback_trybuild_fixtures.md`, every trybuild fixture must have
+// Every lihaaf compile-fixture must have
 // `fn main` so the stored `.stderr` does not pick up `E0601 (main
 // not found)` noise alongside the real diagnostic.
 

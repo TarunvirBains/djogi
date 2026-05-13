@@ -1,1 +1,0 @@
-../../compile_fail/phase7_5_protected_sensitivity_none_with_redaction.rs

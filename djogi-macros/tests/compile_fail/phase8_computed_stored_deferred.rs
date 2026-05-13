@@ -6,7 +6,7 @@
 // evidence post-publish, so generating column DDL from
 // `#[computed(stored)]` is out of scope for v0.1.0.
 //
-// Per `feedback_trybuild_fixtures.md`, every fixture has `fn main() {}`.
+// Every compile-fixture has `fn main() {}` so lihaaf's per-fixture rustc invocation produces a linkable artifact.
 
 use djogi::prelude::*;
 

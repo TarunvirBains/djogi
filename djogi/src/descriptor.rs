@@ -2081,8 +2081,8 @@ pub struct ModelDescriptor {
     /// must pass `RelationPath` explicitly to the recursive-query
     /// builder. Models with two or more self-FK edges and no
     /// `tree_edge` annotation are valid descriptors but force the
-    /// caller into the explicit-path form (B5 covers the trybuild
-    /// fixture).
+    /// caller into the explicit-path form (B5 covers the lihaaf
+    /// compile-fixture under `djogi-macros/tests/compile_fail/`).
     pub tree_edge: Option<&'static str>,
 
     // ── Proxy models (Phase 8 Cluster 8β — T3) ──────────────────────────────

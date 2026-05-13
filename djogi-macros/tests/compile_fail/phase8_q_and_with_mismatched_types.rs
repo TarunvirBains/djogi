@@ -2,7 +2,7 @@
 // fixture). Locks the type-parameterization guarantee on `BitAnd`
 // for `Q<T>` — composing across model types is a type-level error.
 //
-// Per `feedback_trybuild_fixtures.md`, every trybuild fixture must
+// Every lihaaf compile-fixture must
 // have `fn main` so the stored `.stderr` does not pick up
 // `E0601 (main not found)`.
 

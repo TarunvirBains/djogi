@@ -1,0 +1,16 @@
+error[E0624]: method `with_client` is private
+   --> $DIR/with_client_without_bypass.rs:3:18
+    |
+  3 |       let _ = pool.with_client(|_client| Box::pin(async { Ok(()) }));
+    |                    ^^^^^^^^^^^ private method
+    |
+   ::: djogi/src/pg/pool.rs:435:5
+    |
+435 | /     pub(crate) async fn with_client<F, R>(&self, f: F) -> Result<R, DjogiError>
+436 | |     where
+437 | |         F: for<'a> FnOnce(&'a mut tokio_postgres::Client) -> ClientFuture<'a, R>,
+    | |_________________________________________________________________________________- private method defined here
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0624`.

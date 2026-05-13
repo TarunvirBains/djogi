@@ -1,1 +1,0 @@
-../../compile_fail/djogi_test_sync_models_non_path_element.rs

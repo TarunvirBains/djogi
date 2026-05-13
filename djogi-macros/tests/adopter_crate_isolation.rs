@@ -3,18 +3,17 @@
 //! # Why this test exists
 //!
 //! `djogi-macros/tests/compile_pass/phase8_t7_4_punnu_boot_hook_emitted.rs`
-//! and friends run inside trybuild. Trybuild compiles each fixture as a
-//! standalone crate but with the same dependency graph as the test
-//! crate that drives trybuild — `djogi-macros`. `djogi-macros/Cargo.toml`
-//! lists `sassi`, `serde`, and `serde_json` as `[dev-dependencies]`
-//! for unrelated fixtures (8γ T6.10's lookup-op no-regex lock, the
-//! JsonbSchema fixtures' `serde::Serialize` derives), so the
-//! compile_pass bucket has those crates reachable via direct
-//! `extern crate` resolution. A future macro-emission regression that
-//! spelled `::sassi::*` / `::heeranjid::*` / `::time::*` etc. directly
-//! instead of routing through `::djogi::*` per
-//! `feedback_macro_path_routing.md` would compile inside that bucket
-//! — the bucket can't catch the bug.
+//! and friends run through lihaaf. Lihaaf compiles each fixture as a
+//! standalone rustc invocation that links against djogi-macros' own
+//! dev-dependency graph. `djogi-macros/Cargo.toml` lists `sassi`,
+//! `serde`, and `serde_json` as `[dev-dependencies]` for unrelated
+//! fixtures (8γ T6.10's lookup-op no-regex lock, the JsonbSchema
+//! fixtures' `serde::Serialize` derives), so the lihaaf compile_pass
+//! bucket has those crates reachable via direct `extern crate`
+//! resolution. A future macro-emission regression that spelled
+//! `::sassi::*` / `::heeranjid::*` / `::time::*` etc. directly instead
+//! of routing through `::djogi::*` per `feedback_macro_path_routing.md`
+//! would compile inside that bucket — the bucket can't catch the bug.
 //!
 //! # What this test does
 //!
@@ -54,8 +53,9 @@
 //!
 //! Spec anchor:
 //!   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
-//!   §3 commit T7.4 — "Trybuild fixture" bullet (this driver invokes the
-//!   stronger sibling complementing the same-named compile_pass fixture).
+//!   §3 commit T7.4 — compile-fixture bullet (this driver invokes the
+//!   stronger sibling complementing the same-named lihaaf compile_pass
+//!   fixture).
 //!
 //! GitHub: djogi#124.
 

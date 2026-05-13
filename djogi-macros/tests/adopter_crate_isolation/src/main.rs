@@ -18,9 +18,9 @@
 //! regression that introduces a stray `::sassi::*` / `::heeranjid::*` /
 //! `::time::*` etc. into any model emission pass exercised here
 //! surfaces here — not in the ordinary
-//! `djogi-macros/tests/compile_pass/*.rs` fixtures, because
+//! `djogi-macros/tests/compile_pass/*.rs` lihaaf fixtures, because
 //! `djogi-macros/Cargo.toml` lists those crates as `[dev-dependencies]`
-//! so trybuild's compile_pass bucket compiles against a richer dep
+//! so lihaaf's compile_pass bucket compiles against a richer dep
 //! graph than a real adopter has.
 //!
 //! The fixture also invokes `djogi::primary_key!` and
@@ -47,12 +47,13 @@
 //!   on a non-`Default` model must be initialised explicitly by the
 //!   adopter.
 //!
-//! Per `feedback_trybuild_fixtures.md`, every fixture binary needs
-//! `fn main` so the stored binary can link.
+//! Every fixture binary needs `fn main` so the rustc invocation
+//! produces a linkable artifact (this requirement carried over from
+//! the trybuild era and still holds under lihaaf).
 //!
 //! Spec anchor:
 //!   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
-//!   §3 commit T7.4 — "Trybuild fixture" bullet.
+//!   §3 commit T7.4 — compile-fixture bullet.
 //!
 //! GitHub: djogi#124.
 

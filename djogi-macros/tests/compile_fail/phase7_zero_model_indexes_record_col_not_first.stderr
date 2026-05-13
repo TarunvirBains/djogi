@@ -1,5 +1,7 @@
 error: column record must start with `col = ident`; got `order` first
- --> tests/compile_fail/phase7_zero_model_indexes_record_col_not_first.rs:8:22
+ --> $DIR/phase7_zero_model_indexes_record_col_not_first.rs:8:22
   |
 8 |     index(fields = [(order = desc, col = email)]),
   |                      ^^^^^
+
+error: aborting due to 1 previous error

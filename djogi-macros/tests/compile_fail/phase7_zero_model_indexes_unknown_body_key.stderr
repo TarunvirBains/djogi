@@ -1,5 +1,7 @@
 error: unknown key `wrongkey` inside index(...); expected one of: fields, expr, using, opclass, include, where, nulls_not_distinct, concurrently, name
- --> tests/compile_fail/phase7_zero_model_indexes_unknown_body_key.rs:5:29
+ --> $DIR/phase7_zero_model_indexes_unknown_body_key.rs:5:29
   |
 5 |     index(fields = [email], wrongkey = "x"),
   |                             ^^^^^^^^
+
+error: aborting due to 1 previous error

@@ -1,11 +1,15 @@
 error[E0599]: no method named `groups` found for reference `&'a PersonAdmin` in the current scope
-  --> tests/compile_fail/phase7_zero2_t9_m2m_missing_through_visage.rs:75:18
+  --> $DIR/phase7_zero2_t9_m2m_missing_through_visage.rs:75:18
    |
 75 |     person_admin.groups(ctx)
    |                  ^^^^^^ method not found in `&'a PersonAdmin`
    |
    = help: items from traits can only be used if the trait is implemented and in scope
    = note: the following traits define an item `groups`, perhaps you need to implement one of them:
-           candidate #1: `PersonGroupsManyToManyRelation`
-           candidate #2: `PersonPublicGroupsManyToManyVisageRelation`
-           candidate #3: `std::os::unix::process::CommandExt`
+           candidate $TYPEID: `PersonGroupsManyToManyRelation`
+           candidate $TYPEID: `PersonPublicGroupsManyToManyVisageRelation`
+           candidate $TYPEID: `std::os::unix::process::CommandExt`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

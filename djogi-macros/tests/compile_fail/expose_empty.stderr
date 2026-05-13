@@ -1,5 +1,7 @@
 error: `expose(...)` requires at least one scope; write `expose(public)` / `expose(none)` / etc.
- --> tests/compile_fail/expose_empty.rs:8:13
+ --> $DIR/expose_empty.rs:8:13
   |
 8 |     #[field(expose())]
   |             ^^^^^^
+
+error: aborting due to 1 previous error

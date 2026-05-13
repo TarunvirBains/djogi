@@ -1,1 +1,0 @@
-../../compile_fail/phase7_5_default_volatility_without_default.rs

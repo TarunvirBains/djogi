@@ -8,7 +8,7 @@
 //!    drift via `cargo:warning=`. Build scripts cannot import the
 //!    crate they're building, so the wording is duplicated.
 //!
-//! This test is the "trybuild-style expectation" called out in the
+//! This test is the byte-for-byte expectation pinning called out in the
 //! v3 §6 amendment. It pins the exact strings on the library side
 //! (covered by `build_match::tests`) AND verifies that the build.rs
 //! source contains the same wording byte-for-byte. If a future change

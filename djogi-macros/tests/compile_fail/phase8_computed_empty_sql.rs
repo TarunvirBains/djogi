@@ -3,7 +3,7 @@
 // Empty SQL strings are silent-no-op surfaces; rejected at parse time
 // with a span-precise error pointing at the empty literal.
 //
-// Per `feedback_trybuild_fixtures.md`, every fixture has `fn main() {}`.
+// Every compile-fixture has `fn main() {}` so lihaaf's per-fixture rustc invocation produces a linkable artifact.
 
 use djogi::prelude::*;
 

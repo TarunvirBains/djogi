@@ -5,7 +5,7 @@
 //
 // This fixture pins the rejection so a future macro refactor that
 // silently widens what `sensitivity = "none"` accepts fails loudly
-// in trybuild rather than landing as a behavioural drift.
+// in lihaaf rather than landing as a behavioural drift.
 use djogi::prelude::*;
 
 #[model(table = "users")]

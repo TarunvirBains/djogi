@@ -2,7 +2,7 @@
 //! the `spatial` feature flag.
 //!
 //! Without `djogi = { features = ["spatial"] }`, importing `djogi::geo::GeoPoint`
-//! must fail with a clean "unresolved import" diagnostic. The trybuild runner
+//! must fail with a clean "unresolved import" diagnostic. The lihaaf runner
 //! compiles this fixture using the default-feature djogi dev-dep (no `spatial`),
 //! so the import error is expected and the `.stderr` file locks the exact
 //! diagnostic shape.

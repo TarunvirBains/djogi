@@ -1,1 +1,0 @@
-../../compile_fail/phase7_zero_apps_renamed_from_live_label.rs

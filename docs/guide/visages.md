@@ -328,7 +328,9 @@ the boundary.
 
 ## Common compile errors
 
-These compile-fail cases are pinned by trybuild fixtures:
+These compile-fail cases are pinned by djogi-macros's compile-fail
+fixture corpus (run by lihaaf in CI; lihaaf is the sole compile-fixture
+gate):
 
 | Annotation                                                | Error                                                                 |
 |-----------------------------------------------------------|-----------------------------------------------------------------------|

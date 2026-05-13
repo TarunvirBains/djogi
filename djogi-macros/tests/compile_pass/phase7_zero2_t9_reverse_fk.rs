@@ -15,7 +15,7 @@
 //! ## Compile-only probes
 //!
 //! We assert the method shapes with function-coercion probes rather than
-//! `.await`-ing them, because trybuild has no live Postgres pool. A future
+//! `.await`-ing them, because lihaaf has no live Postgres pool. A future
 //! function pointer that matches the emitted signature will only typecheck
 //! if the macro emitted the method with exactly that signature.
 
@@ -72,5 +72,5 @@ fn _visage_scoped_accessor(
 
 fn main() {
     // Compile-only — the function probes above do the real work. A
-    // runtime call would need a pool; trybuild doesn't provide one.
+    // runtime call would need a pool; lihaaf doesn't provide one.
 }

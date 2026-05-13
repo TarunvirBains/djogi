@@ -1,1 +1,0 @@
-../../compile_fail/djogi_test_extensions_not_array.rs

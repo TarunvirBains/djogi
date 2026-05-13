@@ -9,7 +9,7 @@
 // 2. `OutboxIgnoreNoRationale` — carries `outbox = "ignore"` with NO rationale.
 //    The macro emits a `#[deprecated]` advisory that fires as a compiler warning.
 //    Compilation still succeeds (warn, not error), which is the point of this
-//    compile_pass fixture — trybuild `pass()` asserts the file compiles, not that
+//    compile_pass fixture — lihaaf `pass()` asserts the file compiles, not that
 //    it is warning-free.
 use djogi::prelude::*;
 

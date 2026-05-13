@@ -21,19 +21,18 @@
 // separately by the `compile_pass_phase8_t7_4` and
 // `adopter_crate_isolation` buckets).
 //
-// Per `feedback_trybuild_fixtures.md`, every compile-fail fixture must
+// Per the lihaaf compile-fixture contract, every compile-fail fixture must
 // have `fn main` so the stored `.stderr` does not pick up E0601
 // noise.
 //
-// **Snapshot maintenance.** trybuild 1.0 has no wildcard-or-placeholder
+// **Snapshot maintenance.** lihaaf 1.0 has no wildcard-or-placeholder
 // notation in `.stderr` files (only path / version / temp-dir
 // normalisation), so the stored snapshot pins the file:line:col block
 // + the source-line excerpt verbatim. If this file is edited and the
 // `SassiBootHook(...)` / `hook.0` lines move, the snapshot drifts and
-// the test fails with `Mismatch`. Regenerate with
-// `TRYBUILD=overwrite cargo test -p djogi-macros --test trybuild_tests
-// compile_fail_phase8_5_c2_125_sassi_boot_hook_field_private --
-// --test-threads=1`.
+// the lihaaf gate fails with `SNAPSHOT_DIFF`. Regenerate with
+// `cargo lihaaf --manifest-path djogi-macros/Cargo.toml \
+//     --filter phase8_5_c2_125 --bless -j 4`.
 //
 // Spec anchor: GH #125 "v0.1.0 doc surface: narrow SassiBootHook public field".
 

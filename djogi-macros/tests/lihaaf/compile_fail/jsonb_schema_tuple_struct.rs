@@ -1,1 +1,0 @@
-../../compile_fail/jsonb_schema_tuple_struct.rs
