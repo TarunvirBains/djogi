@@ -154,36 +154,37 @@ fine for the getting-started flow; production services tune through
 
 ## 4. Create the Table
 
-In Phase 1, tables are created manually. Phase 7 ships a descriptor-driven
-migration differ that emits the same DDL automatically (`djogi
-migrations compose`); for the getting-started flow we keep the SQL
-visible.
+Djogi materialises tables from the same `ModelDescriptor` the proc
+macro emits, so there is no hand-written DDL to keep in sync with the
+struct definition.
+
+**Production / development.** Use the descriptor-driven migration
+differ:
+
+```bash
+djogi migrations compose          # generate up/down SQL from descriptor drift
+djogi migrations apply            # apply pending migrations to $DATABASE_URL
+```
+
+See the [Migrations guide](./migrations.md) for the full compose /
+apply / attune pipeline, online-safety classification, and the ledger.
+
+**Tests.** Annotate the test with `sync_models = [...]` and the
+`#[djogi::djogi_test]` harness materialises the listed models into the
+per-test ephemeral database — same projection pipeline as the
+production runner, no hand-written DDL:
 
 ```rust
-use djogi::prelude::*;
-
-async fn create_articles_table(ctx: &mut DjogiContext) -> djogi::Result<()> {
-    ctx.raw_execute(
-        "CREATE TABLE articles (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            title       TEXT        NOT NULL,
-            slug        TEXT        NOT NULL,
-            body        TEXT        NOT NULL,
-            published   BOOLEAN     NOT NULL,
-            view_count  INTEGER     NOT NULL
-        )",
-        &[],
-    ).await?;
-    Ok(())
+#[djogi::djogi_test(sync_models = [Article])]
+async fn create_articles(mut ctx: DjogiContext) {
+    let _article = Article::create(&mut ctx, /* ... */).await.unwrap();
 }
 ```
 
-The column order does not matter for `FromPgRow` decode — Djogi's
-canonical SELECT projection is baked at macro time and the wire shape
-matches the struct-field order, so positional decode is sound and
-fast.
+The column order in the materialised table does not matter for
+`FromPgRow` decode — Djogi's canonical SELECT projection is baked at
+macro time and the wire shape matches the struct-field order, so
+positional decode is sound and fast.
 
 ---
 
@@ -272,36 +273,59 @@ async fn reload(ctx: &mut DjogiContext, article: Article) -> djogi::Result<Artic
 ## 6. Raw SQL Escape Hatch
 
 For queries the `Model` trait and `QuerySet` API don't cover — bespoke
-joins, recursive CTEs, set-returning functions — use the raw helpers
-on `DjogiContext`:
+joins, recursive CTEs, set-returning functions — Djogi exposes raw
+helpers (`raw_query`, `raw_scalar`, `raw_execute`, `raw_ddl`, …) on
+the sealed `djogi::__bypass::RawAccessExt` extension trait. Raw SQL is
+treated culturally the way `unsafe` is in Rust: not banned, but always
+conscious. The trait is reachable only through the
+`#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute,
+which brings the extension into scope for the decorated item. Pair the
+attribute with a `JUSTIFICATION` comment naming the typed-surface gap
+the bypass is filling.
+
+See the [raw SQL escape hatches spec](../spec/raw-sql-escape-hatches.md)
+for the full contract.
 
 ```rust
 use djogi::prelude::*;
 
-// raw_query — returns Vec<T> for any T: FromPgRow
-let articles: Vec<Article> = ctx.raw_query(
-    "SELECT id, created_at, updated_at, title, slug, body, published, view_count
-     FROM articles WHERE published = $1",
-    &[&true],
-).await?;
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): bespoke ranking query not exposed by QuerySet.
+async fn published_articles(ctx: &mut DjogiContext) -> djogi::Result<Vec<Article>> {
+    // raw_query — returns Vec<T> for any T: FromPgRow
+    let articles: Vec<Article> = ctx.raw_query(
+        "SELECT id, created_at, updated_at, title, slug, body, published, view_count
+         FROM articles WHERE published = $1",
+        &[&true],
+    ).await?;
 
-// raw_scalar — returns a single scalar value
-let count: i64 = ctx.raw_scalar(
-    "SELECT COUNT(*) FROM articles",
-    &[],
-).await?;
+    // raw_scalar — returns a single scalar value
+    let _count: i64 = ctx.raw_scalar(
+        "SELECT COUNT(*) FROM articles",
+        &[],
+    ).await?;
 
-// raw_execute — runs a statement without returning rows; returns rows-affected
-let updated = ctx.raw_execute(
-    "UPDATE articles SET view_count = view_count + 1 WHERE id = $1",
-    &[&article_id],
-).await?;
+    // raw_execute — runs a statement without returning rows; returns rows-affected
+    let _updated = ctx.raw_execute(
+        "UPDATE articles SET view_count = view_count + 1 WHERE published = $1",
+        &[&true],
+    ).await?;
+
+    Ok(articles)
+}
 ```
 
 All three methods take `&mut DjogiContext` — the same call site works
 against a pool-backed context or a transaction-backed one. Parameters
 go in `&[&dyn ToSql]` form using `postgres-types::ToSql` (re-exported as
 `djogi::ToSql`).
+
+The bypass attribute is mandatory: without it, `RawAccessExt` is not in
+scope and `ctx.raw_*` does not resolve. Inside djogi's own integration
+tests under `tests/integration/` the bypass is forbidden by policy
+(GH #133) — tests use the typed surface plus `#[djogi_test(sync_models
+= [...])]`, and the rare deliberate pin tests under `tests/pin/` carry
+`JUSTIFICATION (PIN): exercises raw_<api> itself`.
 
 ---
 
@@ -352,33 +376,17 @@ docs for the full surface.
 Use `#[djogi::djogi_test]` for integration tests. Each test gets an
 isolated throwaway database, with `install_schema` and
 `seed_default_node` applied automatically — no shared state, no teardown
-ceremony, no per-test setup helper.
+ceremony, no per-test setup helper. Pass `sync_models = [...]` so the
+harness materialises the model set into the per-test database through
+the same projection pipeline the production runner uses — no
+hand-written DDL, no `raw_*` reach.
 
 ```rust
 // tests/integration/articles.rs
 use djogi::prelude::*;
 
-async fn create_articles_table(ctx: &mut DjogiContext) -> djogi::Result<()> {
-    ctx.raw_execute(
-        "CREATE TABLE articles (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            title       TEXT        NOT NULL,
-            slug        TEXT        NOT NULL,
-            body        TEXT        NOT NULL,
-            published   BOOLEAN     NOT NULL,
-            view_count  INTEGER     NOT NULL
-        )",
-        &[],
-    ).await?;
-    Ok(())
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Article])]
 async fn create_and_get(ctx: &mut DjogiContext) {
-    create_articles_table(ctx).await.unwrap();
-
     let article = Article::create(ctx, Article {
         title: "Test Article".into(),
         slug: "test".into(),
@@ -400,10 +408,8 @@ async fn create_and_get(ctx: &mut DjogiContext) {
     assert_eq!(fetched.slug, "test");
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Article])]
 async fn save_updates_fields(ctx: &mut DjogiContext) {
-    create_articles_table(ctx).await.unwrap();
-
     let mut article = Article::create(ctx, Article {
         title: "Draft".into(),
         slug: "draft".into(),
@@ -424,10 +430,8 @@ async fn save_updates_fields(ctx: &mut DjogiContext) {
     assert_eq!(reloaded.title, "Published");
 }
 
-#[djogi::djogi_test]
+#[djogi::djogi_test(sync_models = [Article])]
 async fn delete_removes_row(ctx: &mut DjogiContext) {
-    create_articles_table(ctx).await.unwrap();
-
     let article = Article::create(ctx, Article {
         title: "To Delete".into(),
         slug: "to-delete".into(),

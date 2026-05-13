@@ -47,30 +47,33 @@ use std::future::Future;
 
 /// Seal marker for the [`Model`] trait.
 ///
-/// `#[derive(Model)]` emits `impl djogi::model::__sealed::Sealed for T {}`
-/// alongside the `impl Model for T` block. A hand-rolled `impl Model`
-/// that skips `#[derive(Model)]` fails to compile because the sealed
-/// supertrait is unsatisfied — so hostile downstream code cannot
-/// fabricate a `Model` whose `table_name()` or `descriptor().fields[].name`
-/// smuggles SQL into the emitter's `SqlAccumulator::push_sql` sites.
-/// The module is `#[doc(hidden)] pub` because `djogi-macros` emits a
-/// cross-crate path through it; the `__` prefix plus the seal-marker
-/// doc comment are the social signal that downstream code must never
-/// reach into it directly. The threat model defends against accidental
-/// hand-impls, not deliberate framework subversion (which has simpler
-/// routes via `unsafe`).
+/// The `#[model(...)]` attribute macro emits
+/// `impl djogi::model::__sealed::Sealed for T {}` alongside the
+/// `impl Model for T` block. A hand-rolled `impl Model` that skips
+/// `#[model(...)]` fails to compile because the sealed supertrait is
+/// unsatisfied — so hostile downstream code cannot fabricate a `Model`
+/// whose `table_name()` or `descriptor().fields[].name` smuggles SQL
+/// into the emitter's `SqlAccumulator::push_sql` sites. The sibling
+/// `#[derive(Model)]` proc-macro is a no-op stub kept as a placeholder
+/// for future derive-based extensions; it does not produce a working
+/// `Model` impl. The module is `#[doc(hidden)] pub` because `djogi-macros`
+/// emits a cross-crate path through it; the `__` prefix plus the
+/// seal-marker doc comment are the social signal that downstream code
+/// must never reach into it directly. The threat model defends against
+/// accidental hand-impls, not deliberate framework subversion (which
+/// has simpler routes via `unsafe`).
 #[doc(hidden)]
 pub mod __sealed {
     pub trait Sealed {}
 }
 
 /// The contract every adopter struct that participates in djogi's data layer
-/// satisfies. Implemented exclusively by `#[derive(Model)]` (re-exported as the
-/// `#[model]` attribute through `djogi::prelude`); the sealed `__sealed::Sealed`
-/// supertrait makes hand-rolled `impl Model` blocks unsatisfiable, so every
-/// `Model` in production code carries the full derivation chain (descriptor
-/// emission, `FromPgRow`, the `{Model}Fields` handle bag, the `{Model}Filter`
-/// programmatic builder, app registration via `inventory`).
+/// satisfies. Implemented exclusively by the `#[model(...)]` attribute macro
+/// re-exported through `djogi::prelude` (the sibling `#[derive(Model)]`
+/// proc-macro is a no-op stub); the sealed `__sealed::Sealed` supertrait
+/// makes hand-rolled `impl Model` blocks unsatisfiable, so every `Model` in
+/// production code carries the full derivation chain (descriptor emission,
+/// `FromPgRow`, the `{Model}Fields` / `{Model}Filter` companions, registration).
 ///
 /// # What implementing `Model` gives the adopter
 ///
@@ -96,8 +99,8 @@ pub mod __sealed {
 /// # How to implement (and the only way to)
 ///
 /// Adopters never write `impl Model for MyType` by hand. The sealed
-/// supertrait blocks it at compile time. Use `#[derive(Model)]` (re-exported
-/// as the `#[model]` attribute through `djogi::prelude`):
+/// supertrait blocks it at compile time. Use the `#[model(...)]` attribute
+/// macro re-exported through `djogi::prelude`:
 ///
 /// ```ignore
 /// use djogi::prelude::*;
@@ -396,12 +399,12 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     ///
     /// # Adopter contract
     ///
-    /// Adopters do **not** override this method directly — `#[derive(Model)]`
-    /// emits the override on every macro-generated impl. Hand-written
-    /// `impl Model` blocks (which are themselves discouraged outside of
-    /// internal test fixtures because `__sealed::Sealed` is private) keep
-    /// the default and surface a typed error if a portable predicate
-    /// against the model ever reaches SQL emission.
+    /// Adopters do **not** override this method directly — the `#[model(...)]`
+    /// attribute macro emits the override on every macro-generated impl.
+    /// Hand-written `impl Model` blocks (which are themselves discouraged
+    /// outside of internal test fixtures because `__sealed::Sealed` is
+    /// private) keep the default and surface a typed error if a portable
+    /// predicate against the model ever reaches SQL emission.
     #[doc(hidden)]
     fn __djogi_emit_field_predicate(
         acc: &mut crate::pg::accumulator::SqlAccumulator,
