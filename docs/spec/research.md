@@ -39,7 +39,10 @@
 - Emitting `ModelDescriptor` via `inventory::submit!` from inside the derive macro
 - Side-channel file (`target/djogi_models.json`) for `build.rs` consumption
 - Error message quality: `proc-macro-error`, `syn::Error::new_spanned`
-- Testing: `trybuild` for compile-fail, `macrotest` for expansion snapshots
+- Testing: `lihaaf` is the primary compile-fail / compile-pass macro
+  fixture harness (CI gate). `trybuild` is retained as an opt-in manual
+  parity harness gated behind `--features trybuild-tests`. `macrotest`
+  for expansion snapshots.
 
 ### Build.rs Drift Detection
 - Reading `target/djogi_models.json` after proc macro expansion
