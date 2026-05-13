@@ -124,8 +124,8 @@ wrong, please verify."
   `APPROVE_MERGE: NO` initially, with five FIX_BEFORE_MERGE findings.
   Lane lead applied corrections in this commit (see review history
   immediately below). Re-dispatch of gpt-5.5 follows.
-- **GPT-5.5 correction pass** (`2026-05-12`, this commit) addresses
-  all five findings:
+- **GPT-5.5 round-1 correction pass** (`2026-05-12`, commit `239e056`)
+  addresses all five round-1 findings:
   1. Amendment 1 "Current text" quotation was stale against the
      actual v3 plan; refreshed to include `#168`, `#169`, `#170`,
      `#172`. Amendment 1's "Proposed text" preserves them all and
@@ -155,4 +155,28 @@ wrong, please verify."
   6. SAVEPOINT framing aligned across the cross-reference and the
      amendment proposal: NOT filed during this audit; anchored
      deferral; capability already exists via nested `atomic()`.
-- **Pending:** GPT-5.5 xhigh re-dispatch on the corrected commit.
+- **GPT-5.5 round-2 reviewer pass** (`2026-05-12`, on the round-1
+  corrected commit `239e056`) — verdict `APPROVE_MERGE: NO` with
+  three further FIX_BEFORE_MERGE findings.
+- **GPT-5.5 round-2 correction pass** (`2026-05-12`, commit `13bb2d7`,
+  current branch HEAD) addresses all three round-2 findings:
+  1. Amendment 1 placeholder bullets ("`djogi#168: ... (unchanged)`")
+     were still lossy if applied verbatim — they would drop retry
+     parity, the transaction-only invariant, the umbrella type lists,
+     and the discovery-context anchors. Restructured Amendment 1 as
+     two additive edits (extend the "Primary issues" line + append
+     one new MERGE bullet); every existing detailed 4B bullet stays
+     verbatim.
+  2. The ninth quick-win (`gin_jsonb_path_ops`) was claimed in
+     round-1 but not added to the actual quick-wins list in the
+     cross-reference (which still ended at eight). Added as entry 9
+     with full evidence; "nine" wording is now consistent across
+     this file, the cross-reference, and Amendment 2.
+  3. Candidate issues 4 (PG18 scalars) and 6 (extended PostGIS
+     constructors) previously said "Body: per-function anchor table"
+     without spelling out the table. Filled inline anchor tables in
+     the amendment proposal so each candidate is fully file-ready.
+- **Awaiting:** any subsequent GPT-5.5 xhigh dispatch on the round-2
+  corrected commit (`13bb2d7`), plus director sign-off on the
+  routing decisions for the five amendments and the seven candidate
+  issues to file.

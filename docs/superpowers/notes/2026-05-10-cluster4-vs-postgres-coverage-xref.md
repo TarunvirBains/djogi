@@ -602,7 +602,9 @@ should confirm:
 - **Out-of-scope ~450-600 estimate**: order-of-magnitude rough; the
   audit will land closer to actuals.
 
-## GPT-5.5 xhigh review corrections (`2026-05-12`)
+## GPT-5.5 xhigh review corrections (`2026-05-12`, rounds 1 and 2)
+
+### Round 1 (`239e056`) — five findings
 
 - **Amendment 1 "Current text"** was stale; refreshed against the
   actual v3 plan §Cluster 4B (lines 475–506 in the local plan file).
@@ -632,3 +634,25 @@ should confirm:
   file's "High-leverage gaps" table) and the amendment proposal:
   NOT filed during this audit; anchored deferral; capability already
   exists via nested `atomic()`.
+
+### Round 2 (`13bb2d7`, current branch HEAD) — three findings
+
+- **Amendment 1 placeholder bullets** ("`djogi#168: ... (unchanged)`")
+  were still lossy if applied verbatim — they would drop retry parity,
+  the transaction-only invariant, the umbrella type lists, and the
+  discovery-context anchors. Amendment 1 was restructured in the
+  amendment proposal as two additive edits (extend the "Primary
+  issues" line + append one new MERGE bullet); every existing
+  detailed 4B bullet stays verbatim. This file is unchanged by that
+  restructure.
+- **Ninth quick-win formally added to this file's quick-wins list.**
+  Round-1 claimed `gin_jsonb_path_ops` as the ninth quick-win but
+  the actual quick-wins list (above) still ended at eight. Added as
+  entry 9 with full evidence; the footer wording is now "These nine
+  quick-wins flip" (was "These eight quick-wins flip"). "Nine"
+  wording is consistent across this file, the confidence ledger,
+  and Amendment 2.
+- **Candidate issues 4 and 6 in the amendment proposal** now carry
+  full inline per-function anchor tables (PG18 scalars; extended
+  PostGIS constructors) instead of unspecified "per-function anchor
+  table". This file is unchanged by that addition.
