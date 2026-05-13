@@ -64,7 +64,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::projection::BucketKey;
 use super::schema::{
     AppliedSchema, ColumnSchema, EnumSchema, ExclusionConstraintSchema, ForeignKeySchema,
-    GeneratedColumnSchema, IndexSchema, PkKindSchema, PrimaryKeySchema, TableSchema,
+    GeneratedColumnSchema, IndexSchema, PkKindSchema, TableSchema,
 };
 
 /// Typed delta between two [`AppliedSchema`] values, scoped to a
@@ -2293,23 +2293,18 @@ fn diff_pk_in_table(
         });
         return;
     }
-    // djogi#165 — custom PK transitions get their own diagnostic so
-    // operators see WHICH custom newtype changed and how (type rename
-    // vs. inner-SQL-type change vs. built-in↔custom move) instead of
-    // a generic "primary key change is not auto-supported" debug dump.
-    // Routing the custom case here keeps the v0.1.0 contract tight:
-    // `pk_flip.rs` only carries playbooks for the four built-in
-    // asc↔desc pairs, and silently degrading a custom shape change to
-    // an `AlterColumn` would risk dropping or truncating row IDs when
-    // the inner SQL types differ.
+    // djogi#165 — route any transition that involves a custom-PK
+    // newtype on either side to its own diagnostic instead of the
+    // generic debug-dump fallback. Rationale in the docstring above
+    // and in `custom_pk_unsupported_reason`.
     if matches!(&before.primary_key.kind, PkKindSchema::Custom(_))
         || matches!(&after.primary_key.kind, PkKindSchema::Custom(_))
     {
         ops.push(SchemaOperation::Unsupported {
             reason: custom_pk_unsupported_reason(
                 &after.table,
-                &before.primary_key,
-                &after.primary_key,
+                &before.primary_key.kind,
+                &after.primary_key.kind,
             ),
         });
         return;
@@ -2333,28 +2328,22 @@ fn diff_pk_in_table(
 /// that involves a `djogi::primary_key!` custom newtype on at least
 /// one side (djogi#165).
 ///
-/// The message names the model, classifies the transition into one
-/// of three buckets (`Custom → Custom`, `Custom → built-in`,
-/// `built-in → Custom`), surfaces the relevant `type_name` and
-/// `sql_type` for the custom side(s), and points operators at the
-/// docs section that explains why `pk_flip.rs` does not auto-migrate
-/// custom shapes in v0.1.0. Kept as a free fn so the test mod can
-/// pin the exact phrasing per bucket.
+/// The message names the table, classifies the transition into one
+/// of three buckets (`custom-to-custom`, `custom-to-built-in`,
+/// `built-in-to-custom`), surfaces the full `type_name` / `sql_type` /
+/// `default_sql` of the custom side(s) so a same-type but
+/// different-`default_sql` change (e.g. a generator rotation) is
+/// distinguishable from a same-generator type rename, and points
+/// operators at the docs section that explains why `pk_flip.rs` does
+/// not auto-migrate custom shapes in v0.1.0. Kept as a free fn so the
+/// test mod can pin the exact phrasing per bucket.
 fn custom_pk_unsupported_reason(
     table: &str,
-    before: &PrimaryKeySchema,
-    after: &PrimaryKeySchema,
+    before: &PkKindSchema,
+    after: &PkKindSchema,
 ) -> String {
     fn describe(kind: &PkKindSchema) -> String {
         match kind {
-            // Include `default_sql` alongside `type_name` and `sql_type`
-            // so a same-type / same-sql / different-default-sql change
-            // (e.g. swapping `user_id_next()` for `user_id_next_v2()`)
-            // surfaces both generator expressions in the diagnostic.
-            // Without this, the two sides of such a transition would
-            // print identically and the operator would have no way to
-            // see what actually changed from the surfaced
-            // `ComposeError::UnsupportedDelta`.
             PkKindSchema::Custom(c) => format!(
                 "Custom(type_name = `{}`, sql_type = `{}`, default_sql = `{}`)",
                 c.type_name, c.sql_type, c.default_sql,
@@ -2362,14 +2351,15 @@ fn custom_pk_unsupported_reason(
             other => format!("{other:?}"),
         }
     }
-    let before_desc = describe(&before.kind);
-    let after_desc = describe(&after.kind);
-    let bucket = match (&before.kind, &after.kind) {
+    let before_desc = describe(before);
+    let after_desc = describe(after);
+    let bucket = match (before, after) {
         (PkKindSchema::Custom(_), PkKindSchema::Custom(_)) => "custom-to-custom",
         (PkKindSchema::Custom(_), _) => "custom-to-built-in",
         (_, PkKindSchema::Custom(_)) => "built-in-to-custom",
-        // Unreachable in this fn — the caller gates on at least one
-        // Custom side. Keep the arm for exhaustive matching.
+        // Defensive: the caller gates on at least one Custom side, but
+        // this fallback keeps the format strictly total without
+        // panicking if a future refactor relaxes the gate.
         _ => "non-custom",
     };
     format!(
@@ -2947,6 +2937,22 @@ mod tests {
         }
     }
 
+    /// Build before/after `users` descriptors with `before_pk` and
+    /// `after_pk`, run them through the differ, and return the
+    /// `Classification::Unsupported` reason string. Panics if the
+    /// differ produced any other classification — the four reject
+    /// tests below all assume `Unsupported` is the only correct
+    /// answer for a custom-PK shape change.
+    fn unsupported_pk_reason(before_pk: PkType, after_pk: PkType) -> String {
+        let before = project_one(&synth_model_with_pk("users", "User", before_pk));
+        let after = project_one(&synth_model_with_pk("users", "User", after_pk));
+        let delta = diff_schemas(&before, &after, empty_global());
+        match delta.classification {
+            Classification::Unsupported { reason } => reason,
+            other => panic!("expected Unsupported, got {other:?}"),
+        }
+    }
+
     const CUSTOM_USER_ID: PkType = PkType::Custom(crate::descriptor::CustomPrimaryKeyKind {
         type_name: "crate::ids::UserId",
         sql_type: "BIGINT",
@@ -2986,14 +2992,7 @@ mod tests {
         // `IntoFilterValue` discriminant, and potentially a different
         // `bulk_sql` / `default_sql` — the migration engine cannot
         // tell which fields the adopter changed under the rename.
-        let before_desc = synth_model_with_pk("users", "User", CUSTOM_USER_ID);
-        let after_desc = synth_model_with_pk("users", "User", CUSTOM_USER_ID_V2);
-        let before = project_one(&before_desc);
-        let after = project_one(&after_desc);
-        let delta = diff_schemas(&before, &after, empty_global());
-        let Classification::Unsupported { reason } = &delta.classification else {
-            panic!("expected Unsupported, got {:?}", delta.classification);
-        };
+        let reason = unsupported_pk_reason(CUSTOM_USER_ID, CUSTOM_USER_ID_V2);
         assert!(
             reason.contains("custom-to-custom"),
             "diagnostic must label the bucket; got: {reason}"
@@ -3016,14 +3015,7 @@ mod tests {
         // outright (no implicit BIGINT→UUID cast) or, worse, succeed
         // with a USING clause the operator never reviewed and
         // truncate live row IDs.
-        let before_desc = synth_model_with_pk("users", "User", CUSTOM_USER_ID);
-        let after_desc = synth_model_with_pk("users", "User", CUSTOM_USER_ID_UUID);
-        let before = project_one(&before_desc);
-        let after = project_one(&after_desc);
-        let delta = diff_schemas(&before, &after, empty_global());
-        let Classification::Unsupported { reason } = &delta.classification else {
-            panic!("expected Unsupported, got {:?}", delta.classification);
-        };
+        let reason = unsupported_pk_reason(CUSTOM_USER_ID, CUSTOM_USER_ID_UUID);
         assert!(
             reason.contains("custom-to-custom"),
             "diagnostic must label the bucket; got: {reason}"
@@ -3046,14 +3038,7 @@ mod tests {
         // them the operator would see two identical-looking `Custom(...)`
         // arms in the surfaced `ComposeError::UnsupportedDelta` and have
         // no way to tell what the differ actually objected to.
-        let before_desc = synth_model_with_pk("users", "User", CUSTOM_USER_ID);
-        let after_desc = synth_model_with_pk("users", "User", CUSTOM_USER_ID_NEXT_V2);
-        let before = project_one(&before_desc);
-        let after = project_one(&after_desc);
-        let delta = diff_schemas(&before, &after, empty_global());
-        let Classification::Unsupported { reason } = &delta.classification else {
-            panic!("expected Unsupported, got {:?}", delta.classification);
-        };
+        let reason = unsupported_pk_reason(CUSTOM_USER_ID, CUSTOM_USER_ID_NEXT_V2);
         assert!(
             reason.contains("custom-to-custom"),
             "diagnostic must label the bucket; got: {reason}"
@@ -3072,14 +3057,7 @@ mod tests {
         // — both the column DEFAULT generator (heerid_next() →
         // user_id_next()) and the FK cascade strategy depend on the
         // adopter's intent, so we reject and let them hand-write it.
-        let before_desc = synth_model_with_pk("users", "User", PkType::HeerId);
-        let after_desc = synth_model_with_pk("users", "User", CUSTOM_USER_ID);
-        let before = project_one(&before_desc);
-        let after = project_one(&after_desc);
-        let delta = diff_schemas(&before, &after, empty_global());
-        let Classification::Unsupported { reason } = &delta.classification else {
-            panic!("expected Unsupported, got {:?}", delta.classification);
-        };
+        let reason = unsupported_pk_reason(PkType::HeerId, CUSTOM_USER_ID);
         assert!(
             reason.contains("built-in-to-custom"),
             "diagnostic must label the bucket; got: {reason}"
@@ -3099,14 +3077,7 @@ mod tests {
         // Reverse direction — a model walks back from a custom
         // newtype to a built-in. Same reasoning: the value-preserving
         // cast is adopter-decided, not framework-derivable.
-        let before_desc = synth_model_with_pk("users", "User", CUSTOM_USER_ID);
-        let after_desc = synth_model_with_pk("users", "User", PkType::HeerId);
-        let before = project_one(&before_desc);
-        let after = project_one(&after_desc);
-        let delta = diff_schemas(&before, &after, empty_global());
-        let Classification::Unsupported { reason } = &delta.classification else {
-            panic!("expected Unsupported, got {:?}", delta.classification);
-        };
+        let reason = unsupported_pk_reason(CUSTOM_USER_ID, PkType::HeerId);
         assert!(
             reason.contains("custom-to-built-in"),
             "diagnostic must label the bucket; got: {reason}"
