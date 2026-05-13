@@ -23,17 +23,13 @@ use djogi::pg::pool::DjogiPool;
 use djogi::testing::{TestDbCleanup, setup_test_db, teardown_test_db};
 use tokio::sync::{Mutex, MutexGuard};
 // `RawAccessExt` is brought into scope by the
-// `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute that
-// decorates the wrapper module in `tests/internal/phase8_5_c2_162_raw_dirty_semantics.rs`.
+// `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute on the
+// wrapper module that `include!`s this source.
 
-/// Process-global async lock. The detach assertions below read
-/// `pool.status().size` immediately after the guarded call returns —
-/// running multiple of these in parallel against the same per-test
-/// database is fine (each test owns its own pool), but provisioning the
-/// per-test database under `setup_test_db` is the same code path as
-/// other internal live tests, so we keep the test serialised by
-/// convention to avoid surprising failures from CREATE DATABASE
-/// contention on slow CI hosts.
+/// Process-global async lock. Each test owns its own per-test database
+/// and pool, but `setup_test_db`'s `CREATE DATABASE` shares the maintenance
+/// connection with other internal live tests — serialising avoids
+/// spurious contention failures on slow CI hosts.
 async fn test_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(())).lock().await
