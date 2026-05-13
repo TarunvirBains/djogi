@@ -356,6 +356,7 @@ jobs:
           fetch-depth: 0
 
       - name: Free disk space on GHA runner
+        if: ${{ !env.ACT }}
         run: |
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
