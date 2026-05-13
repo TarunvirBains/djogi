@@ -55,7 +55,7 @@ jobs:
       # Pinned to commit SHA `49190ad` ("chore(release): prepare
       # v0.1.0-alpha.3") rather than a tag because sassi has not yet
       # tagged v0.1.0-alpha.3 on GitHub (only `v0.1.0-alpha.1` and
-      # `v0.1.0-alpha.2` are published). djogi's `Cargo.lock` was
+      # `v0.1.0-alpha.3` are published). djogi's `Cargo.lock` was
       # generated against the local path-dep at the alpha.3 prep
       # commit, so CI must check out the matching SHA. Bump to
       # `ref: v0.1.0-alpha.3` once sassi publishes that tag.
@@ -184,7 +184,7 @@ jobs:
       # in lihaaf's published Cargo.lock rather than resolving fresh; this
       # makes the install deterministic across CI runs.
       - name: Install lihaaf (compile-fixture CI gate)
-        run: cargo install lihaaf --version 0.1.0-alpha.2 --locked
+        run: cargo install lihaaf --version 0.1.0-alpha.3 --locked
 
       - name: Build
         run: cargo build --workspace

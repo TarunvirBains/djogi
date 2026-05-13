@@ -4,7 +4,7 @@ error[E0624]: method `with_client` is private
   3 |       let _ = pool.with_client(|_client| Box::pin(async { Ok(()) }));
     |                    ^^^^^^^^^^^ private method
     |
-   ::: $WORKSPACE/src/pg/pool.rs:435:5
+   ::: djogi/src/pg/pool.rs:435:5
     |
 435 | /     pub(crate) async fn with_client<F, R>(&self, f: F) -> Result<R, DjogiError>
 436 | |     where

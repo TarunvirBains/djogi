@@ -83,7 +83,7 @@ sassi = { path = "../sassi-reference/sassi" }
 # Lihaaf is the **sole** macro-fixture gate; trybuild has been removed
 # from djogi entirely.
 #
-# CI installs lihaaf via `cargo install lihaaf --version 0.1.0-alpha.2
+# CI installs lihaaf via `cargo install lihaaf --version 0.1.0-alpha.3
 # --locked` and runs `cargo lihaaf --manifest-path djogi-macros/Cargo.toml
 # -j 4`. The 138 compile_fail `.stderr` snapshots under
 # `tests/compile_fail/` ARE committed so CI succeeds without `--bless`.
@@ -92,8 +92,9 @@ sassi = { path = "../sassi-reference/sassi" }
 #       --filter compile_fail --bless -j 4`
 # then commit the updated `.stderr` files alongside the diagnostic change.
 #
-# Fixture layout: lihaaf walks `tests/compile_pass/` and `tests/compile_fail/`
-# directly. The `.rs` fixtures live in those directories alongside the
+# Fixture layout: lihaaf walks `tests/compile_fail/` and `tests/compile_pass/`
+# in the default suite, plus `tests/compile_pass_spatial/` in the named
+# `spatial` suite with `features = ["spatial"]`. The `.rs` fixtures live in those directories alongside the
 # blessed `.stderr` snapshots — no symlink farm, no shadow corpus.
 #
 # `dev_deps` mirrors djogi-macros' `[dev-dependencies]` so per-fixture
@@ -109,3 +110,12 @@ features = []
 dev_deps = ["serde", "serde_json", "sassi"]
 edition = "2024"
 fixture_dirs = ["tests/compile_fail", "tests/compile_pass"]
+
+# Spatial compile-pass fixtures live in their own named suite so lihaaf
+# builds the djogi dylib and per-fixture rustc invocations with
+# `--features spatial`. This preserves the old trybuild_spatial_tests
+# coverage without re-enabling spatial for the default fixture corpus.
+[[package.metadata.lihaaf.suite]]
+name = "spatial"
+features = ["spatial"]
+fixture_dirs = ["tests/compile_pass_spatial"]

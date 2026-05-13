@@ -4,7 +4,7 @@ error[E0624]: method `pool` is private
   3 |         let _ = ctx.pool();
     |                     ^^^^ private method
     |
-   ::: $WORKSPACE/src/context.rs:283:5
+   ::: djogi/src/context.rs:283:5
     |
 283 |     pub(crate) fn pool(&self) -> Option<&DjogiPool> {
     |     ----------------------------------------------- private method defined here

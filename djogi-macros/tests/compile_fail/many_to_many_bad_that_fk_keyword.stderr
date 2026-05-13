@@ -54,18 +54,18 @@ note: inside `djogi::ident::const_assert_user_supplied_ident`
 note: inside `djogi::ident::const_assert_plain_ident`
    --> $RUST/lib/rustlib/src/rust/library/core/src/panic.rs:62:9
     |
- 62 |           $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
-    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
+ 62 |   ...   $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
     |
    ::: djogi/src/ident.rs:222:9
     |
-222 | /         assert!(
-223 | |             byte.is_ascii_alphanumeric() || byte == b'_',
-224 | |             "djogi::ident: macro-emitted identifier contains a non-identifier character \
-225 | |              — either the proc-macro emission is broken or downstream code bypassed the \
-226 | |              macro-support seal"
-227 | |         );
-    | |_________- in this macro invocation
+222 | / ...   assert!(
+223 | | ...       byte.is_ascii_alphanumeric() || byte == b'_',
+224 | | ...       "djogi::ident: macro-emitted identifier contains a non-iden...
+225 | | ...        — either the proc-macro emission is broken or downstream c...
+226 | | ...        macro-support seal"
+227 | | ...   );
+    | |_______- in this macro invocation
 
 error: aborting due to 4 previous errors
 
