@@ -83,7 +83,7 @@ This section reads each project on its own design intent first, then names the a
 
 **SeaORM's design intent:** SeaORM optimises for multi-database portability and an ergonomic builder API on top of SeaQuery, with the official SeaORM Pro add-on providing an admin-style surface.
 
-**Where Djogi extends the surface:** the entire right side of the matrix — CTEs / recursive / window first-class; `GROUPING SETS` first-class with `ROLLUP` / `CUBE` SQL emission shipped (typed subtotal/grand-total NULL-key decoding deferred); online-safety classification; live-migration library substrate (CLI executor wiring still partial — see §1 row); spatial / FTS; protected-field metadata substrate; tenancy / RLS; model hooks; computed fields; proxy models; named typed projection surface (Djogi's *visages* go beyond a result-only `FromQueryResult` derive); apps subsystem.
+**Where Djogi extends the surface:** CTEs / recursive / window first-class; `GROUPING SETS` first-class with `ROLLUP` / `CUBE` SQL emission shipped (typed subtotal/grand-total NULL-key decoding deferred); online-safety classification; live-migration library substrate (CLI executor wiring still partial — see §1 row); spatial / FTS; protected-field metadata substrate; tenancy / RLS; model hooks; computed fields; proxy models; named typed projection surface (Djogi's *visages* go beyond a result-only `FromQueryResult` derive); apps subsystem.
 
 **Where SeaORM extends the surface:** multi-DB at runtime (PG / MySQL / SQLite); larger community and more third-party integrations; the `FromQueryResult` partial-model derive is simpler to reach for than Djogi's full visage system when an adopter only needs a one-off result shape.
 
@@ -182,7 +182,7 @@ Routed to post-v0.1.0 with issue numbers where available:
 - Lifecycle plan / apply governance — no approval workflow for migrations; deferred Phase 9.5.
 - OpenAPI schema export — `djogi schema --format openapi` deferred Phase 9.
 
-**Performance smoke-benchmarked, not yet perf-guaranteed (publish-gate analysis pending in Phase 8.5 Cluster C/D):**
+**Performance smoke-benchmarked, not yet perf-guaranteed (publish-gate analysis pending in Phase 8.5 pre-publish housekeeping):**
 
 - materialized-closure scalability at 5000+ nodes (smoke bench: `tests/integration/phase8_zero_tree_query_bench.rs`);
 - `array_append` cost for path accumulation (smoke bench: `tests/integration/phase8_zero_tree_query_bench.rs`);
