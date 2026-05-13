@@ -303,8 +303,20 @@ pub(crate) fn compose_extension_installs(
 /// connection that just executed Phase 0 sees the value immediately,
 /// without needing to drop and re-establish).
 ///
-/// Both statements are idempotent: re-running with the same value is
-/// a metadata-only no-op on the database side and a session-write
+/// Seeds **both** `heer.node_id` (consumed by `heerid_next()` via
+/// `current_heer_node_id()`) and `heer.ranj_node_id` (consumed by
+/// `ranjid_next()` via `current_heer_ranj_node_id()`). HeeRanjID
+/// stores these as two separate session GUCs because the underlying
+/// node-id ranges differ (HeerId: 0..=511, RanjId: 0..=32767), but a
+/// single-node deployment uses the same logical node id for both —
+/// the `seed.sql` from heeranjid pre-populates rows in both
+/// `heer_node_state` and `heer_ranj_node_state` for that node id, so
+/// pointing both GUCs at it is the only way `ranjid_next()` works out
+/// of the box. Multi-node operators that want different ids per
+/// generator must override the Phase 0 SQL.
+///
+/// All four statements are idempotent: re-running with the same value
+/// is a metadata-only no-op on the database side and a session-write
 /// no-op on the client side.
 ///
 /// **Why both** an ALTER DATABASE and a session SET: the Phase 0 SQL
@@ -316,12 +328,15 @@ pub(crate) fn compose_extension_installs(
 /// the post-connect hook (belt-and-braces). The session-level SET
 /// covers the running connection itself — without it, an additive
 /// migration applied immediately after Phase 0 in the same `apply`
-/// run would lack the GUC and `current_heer_node_id()` would surface
-/// a `nan` / null read.
+/// run would lack the GUC and `current_heer_node_id()` /
+/// `current_heer_ranj_node_id()` would raise.
 ///
 /// `node_id` must be a non-negative `i32`; the SQL uses the raw
 /// integer (no quoting) which is safe because the type is integer-
-/// only.
+/// only. HeeRanjID's `set_heer_node_id` / `set_heer_ranj_node_id`
+/// enforce per-generator range bounds at the SQL layer if a caller
+/// passes the value out of range later; the seed here only writes
+/// the GUC literal.
 ///
 /// **Why an unquoted database name** is acceptable here: the
 /// production caller passes the database name from
@@ -337,15 +352,29 @@ pub(crate) fn compose_node_seed(database: &str, node_id: i32) -> Result<String, 
     // `is_valid_pg_identifier`. Defence-in-depth — a mis-routed
     // caller still gets a typed error rather than an SQL injection.
     validate_extension_name(database)?;
-    let mut out = String::with_capacity(database.len() + 96);
+    let node_id_str = node_id.to_string();
+    // Two GUCs × two scopes = four statements. Pre-size for the worst
+    // case (database name appears twice, node id appears four times).
+    let mut out = String::with_capacity(database.len() * 2 + node_id_str.len() * 4 + 256);
     out.push_str("-- HeeRanjID node-id GUC seed (database-level + session-level).\n");
+    out.push_str(
+        "-- `heer.node_id` powers heerid_next(); `heer.ranj_node_id` powers ranjid_next().\n",
+    );
     out.push_str("ALTER DATABASE \"");
     out.push_str(database);
     out.push_str("\" SET heer.node_id = '");
-    out.push_str(&node_id.to_string());
+    out.push_str(&node_id_str);
+    out.push_str("';\n");
+    out.push_str("ALTER DATABASE \"");
+    out.push_str(database);
+    out.push_str("\" SET heer.ranj_node_id = '");
+    out.push_str(&node_id_str);
     out.push_str("';\n");
     out.push_str("SET heer.node_id = '");
-    out.push_str(&node_id.to_string());
+    out.push_str(&node_id_str);
+    out.push_str("';\n");
+    out.push_str("SET heer.ranj_node_id = '");
+    out.push_str(&node_id_str);
     out.push_str("';\n");
     Ok(out)
 }
@@ -912,8 +941,14 @@ mod tests {
     #[test]
     fn compose_node_seed_emits_alter_and_session_set() {
         let sql = compose_node_seed("djogi_test_abc", 7).unwrap();
+        // Both GUCs are seeded at both scopes: HeerId path (heer.node_id)
+        // and RanjId path (heer.ranj_node_id) need separate session
+        // variables. See compose_node_seed for the per-generator
+        // rationale.
         assert!(sql.contains("ALTER DATABASE \"djogi_test_abc\" SET heer.node_id = '7'"));
+        assert!(sql.contains("ALTER DATABASE \"djogi_test_abc\" SET heer.ranj_node_id = '7'"));
         assert!(sql.contains("SET heer.node_id = '7'"));
+        assert!(sql.contains("SET heer.ranj_node_id = '7'"));
     }
 
     #[test]

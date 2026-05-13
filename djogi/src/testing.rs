@@ -7,9 +7,11 @@
 //! 2. Create a fresh `djogi_test_<uuid>` database.
 //! 3. Run the Phase 0 bootstrap migration via
 //!    [`crate::migrate::bootstrap::run_phase_zero`] — installs HeeRanjID
-//!    schema, seeds the default node, sets the `heer.node_id` GUC, and
-//!    creates any extensions requested via the
-//!    `#[djogi_test(extensions = [...])]` attribute argument.
+//!    schema, seeds the default node, sets the `heer.node_id` and
+//!    `heer.ranj_node_id` GUCs (HeerId and RanjId generators read
+//!    separate session variables), and creates any extensions
+//!    requested via the `#[djogi_test(extensions = [...])]` attribute
+//!    argument.
 //! 4. Return a `DjogiContext` backed by a pool pointed at the new database.
 //! 5. Drop the database via `teardown_test_db` — called explicitly by the
 //!    macro-generated wrapper, both on normal return and after a caught panic.
@@ -152,8 +154,9 @@ pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError
 ///    new connection. This is the SAME bootstrap surface
 ///    `migrations compose` writes to disk and `db reset` replays —
 ///    no parallel install path. Phase 0 installs HeeRanjID, every
-///    requested extension, and seeds the `heer.node_id` GUC at both
-///    the database (`ALTER DATABASE`) and session (`SET`) levels.
+///    requested extension, and seeds both the `heer.node_id` and
+///    `heer.ranj_node_id` GUCs at both the database (`ALTER DATABASE`)
+///    and session (`SET`) levels.
 /// 6. Open a `DjogiPool` (deadpool-postgres) and return it as a
 ///    `DjogiContext`.
 ///
@@ -256,7 +259,8 @@ pub async fn setup_test_db_with_extensions(
 
     // The setup client is dropped here — the connection driver task
     // will finish. Phase 0's `ALTER DATABASE ... SET heer.node_id`
-    // persists for every NEW connection the DjogiPool opens.
+    // and the matching `heer.ranj_node_id` write persist for every
+    // NEW connection the DjogiPool opens.
     drop(test_client);
 
     // Build the DjogiPool (tokio-postgres / deadpool) for the app context.

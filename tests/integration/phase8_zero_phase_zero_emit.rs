@@ -171,7 +171,11 @@ fn compose_auto_emits_phase_zero_with_postgis_dependency_on_first_run() {
     );
     assert!(
         up_sql.contains("ALTER DATABASE \"main\" SET heer.node_id = '1'"),
-        "up SQL must include node-id GUC seed"
+        "up SQL must include heer.node_id GUC seed"
+    );
+    assert!(
+        up_sql.contains("ALTER DATABASE \"main\" SET heer.ranj_node_id = '1'"),
+        "up SQL must include heer.ranj_node_id GUC seed (powers ranjid_next())"
     );
 
     // Down SQL is comment-only.
