@@ -11,7 +11,7 @@
 // The redaction-with-mask fixture pins one shape of the
 // `sensitivity = "none"` rule; this fixture pins the
 // explicit-neutral-knob case so a regression to value-comparison fails
-// loudly in trybuild.
+// loudly in lihaaf.
 use djogi::prelude::*;
 
 #[model(table = "users")]

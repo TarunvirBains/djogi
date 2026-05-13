@@ -1,1 +1,0 @@
-../../compile_fail/phase7_zero_model_indexes_missing_target.rs

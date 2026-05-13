@@ -1,1 +1,0 @@
-../../compile_fail/duplicate_no_default.rs

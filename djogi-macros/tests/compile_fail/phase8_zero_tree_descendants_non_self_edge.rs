@@ -8,7 +8,7 @@
 // mismatch — Source and Target both have to be the same model for a tree
 // walk to make sense.
 //
-// `fn main() {}` per feedback_trybuild_fixtures.md.
+// `fn main() {}` per lihaaf compile-fixture contract.
 
 use djogi::prelude::*;
 

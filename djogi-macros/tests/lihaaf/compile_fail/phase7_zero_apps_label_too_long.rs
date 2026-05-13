@@ -1,1 +1,0 @@
-../../compile_fail/phase7_zero_apps_label_too_long.rs

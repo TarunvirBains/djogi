@@ -1,5 +1,7 @@
 error: app label must be non-empty
- --> tests/compile_fail/phase7_zero_apps_empty_label.rs:5:19
+ --> $DIR/phase7_zero_apps_empty_label.rs:5:19
   |
 5 |     #[app(label = "", database = "main")]
   |                   ^^
+
+error: aborting due to 1 previous error

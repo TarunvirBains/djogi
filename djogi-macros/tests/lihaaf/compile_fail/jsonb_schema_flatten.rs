@@ -1,1 +1,0 @@
-../../compile_fail/jsonb_schema_flatten.rs

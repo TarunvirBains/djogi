@@ -329,8 +329,8 @@ the boundary.
 ## Common compile errors
 
 These compile-fail cases are pinned by djogi-macros's compile-fail
-fixture corpus (run by lihaaf in CI; trybuild kept as an opt-in
-parity harness):
+fixture corpus (run by lihaaf in CI; lihaaf is the sole compile-fixture
+gate):
 
 | Annotation                                                | Error                                                                 |
 |-----------------------------------------------------------|-----------------------------------------------------------------------|

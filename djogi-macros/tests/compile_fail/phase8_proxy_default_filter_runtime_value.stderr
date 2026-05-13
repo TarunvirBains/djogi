@@ -1,65 +1,65 @@
 error: `default_filter` argument must be an inline literal (bool/integer/float/string/`null`); runtime-bound values are not supported in v0.1.0 — for non-literal RHS, implement `Model::default_filter_condition` by hand
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:28:38
+  --> $DIR/phase8_proxy_default_filter_runtime_value.rs:28:38
    |
 28 |     default_filter = |f| f.active.eq(RUNTIME_VAR),
    |                                      ^^^^^^^^^^^
 
 error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:25:1
-   |
-25 | / #[model(
-26 | |     table = "phase8_proxy_runtime_vehicles",
-27 | |     proxy_for = Vehicle,
-28 | |     default_filter = |f| f.active.eq(RUNTIME_VAR),
-29 | | )]
-   | |__^ unsatisfied trait bound
-   |
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:25:1
+    |
+ 25 | / #[model(
+ 26 | |     table = "phase8_proxy_runtime_vehicles",
+ 27 | |     proxy_for = Vehicle,
+ 28 | |     default_filter = |f| f.active.eq(RUNTIME_VAR),
+ 29 | | )]
+    | |__^ unsatisfied trait bound
+    |
 help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:31:1
-   |
-31 | pub struct ActiveVehicle {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:31:1
+    |
+ 31 | pub struct ActiveVehicle {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^
 help: the trait `djogi::model::Model` is implemented for `Vehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:18:1
-   |
-18 | #[model(table = "phase8_proxy_runtime_vehicles")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:18:1
+    |
+ 18 | #[model(table = "phase8_proxy_runtime_vehicles")]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `Q`
-  --> $WORKSPACE/djogi/src/query/q.rs
-   |
-   | pub enum Q<T: Model> {
-   |               ^^^^^ required by this bound in `Q`
-   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+   --> djogi/src/query/q.rs:165:15
+    |
+165 | pub enum Q<T: Model> {
+    |               ^^^^^ required by this bound in `Q`
+    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:25:1
-   |
-25 | / #[model(
-26 | |     table = "phase8_proxy_runtime_vehicles",
-27 | |     proxy_for = Vehicle,
-28 | |     default_filter = |f| f.active.eq(RUNTIME_VAR),
-29 | | )]
-   | |__^ unsatisfied trait bound
-   |
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:25:1
+    |
+ 25 | / #[model(
+ 26 | |     table = "phase8_proxy_runtime_vehicles",
+ 27 | |     proxy_for = Vehicle,
+ 28 | |     default_filter = |f| f.active.eq(RUNTIME_VAR),
+ 29 | | )]
+    | |__^ unsatisfied trait bound
+    |
 help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:31:1
-   |
-31 | pub struct ActiveVehicle {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:31:1
+    |
+ 31 | pub struct ActiveVehicle {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^
 help: the trait `djogi::model::Model` is implemented for `Vehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:18:1
-   |
-18 | #[model(table = "phase8_proxy_runtime_vehicles")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:18:1
+    |
+ 18 | #[model(table = "phase8_proxy_runtime_vehicles")]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `IntoQ`
-  --> $WORKSPACE/djogi/src/query/q.rs
-   |
-   | pub trait IntoQ<T: Model>: sealed_into_q::Sealed {
-   |                    ^^^^^ required by this bound in `IntoQ`
-   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+   --> djogi/src/query/q.rs:550:20
+    |
+550 | pub trait IntoQ<T: Model>: sealed_into_q::Sealed {
+    |                    ^^^^^ required by this bound in `IntoQ`
+    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:25:1
+  --> $DIR/phase8_proxy_default_filter_runtime_value.rs:25:1
    |
 25 | / #[model(
 26 | |     table = "phase8_proxy_runtime_vehicles",
@@ -69,51 +69,51 @@ error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisf
    | |__^ unsatisfied trait bound
    |
 help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:31:1
+  --> $DIR/phase8_proxy_default_filter_runtime_value.rs:31:1
    |
 31 | pub struct ActiveVehicle {
    | ^^^^^^^^^^^^^^^^^^^^^^^^
 help: the trait `djogi::model::Model` is implemented for `Vehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:18:1
+  --> $DIR/phase8_proxy_default_filter_runtime_value.rs:18:1
    |
 18 | #[model(table = "phase8_proxy_runtime_vehicles")]
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `DjogiVisageOf`
-  --> $WORKSPACE/djogi/src/visage_boundary.rs
+  --> djogi/src/visage_boundary.rs:41:28
    |
-   | pub trait DjogiVisageOf<M: crate::model::Model>: private::Sealed<M> {}
+41 | pub trait DjogiVisageOf<M: crate::model::Model>: private::Sealed<M> {}
    |                            ^^^^^^^^^^^^^^^^^^^ required by this bound in `DjogiVisageOf`
    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:25:1
-   |
-25 | / #[model(
-26 | |     table = "phase8_proxy_runtime_vehicles",
-27 | |     proxy_for = Vehicle,
-28 | |     default_filter = |f| f.active.eq(RUNTIME_VAR),
-29 | | )]
-   | |__^ unsatisfied trait bound
-   |
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:25:1
+    |
+ 25 | / #[model(
+ 26 | |     table = "phase8_proxy_runtime_vehicles",
+ 27 | |     proxy_for = Vehicle,
+ 28 | |     default_filter = |f| f.active.eq(RUNTIME_VAR),
+ 29 | | )]
+    | |__^ unsatisfied trait bound
+    |
 help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:31:1
-   |
-31 | pub struct ActiveVehicle {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:31:1
+    |
+ 31 | pub struct ActiveVehicle {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^
 help: the trait `djogi::model::Model` is implemented for `Vehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:18:1
-   |
-18 | #[model(table = "phase8_proxy_runtime_vehicles")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:18:1
+    |
+ 18 | #[model(table = "phase8_proxy_runtime_vehicles")]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `DjogiField`
-  --> $WORKSPACE/djogi/src/query/field.rs
-   |
-   | pub struct DjogiField<M: Model, V> {
-   |                          ^^^^^ required by this bound in `DjogiField`
-   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+   --> djogi/src/query/field.rs:533:26
+    |
+533 | pub struct DjogiField<M: Model, V> {
+    |                          ^^^^^ required by this bound in `DjogiField`
+    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:25:1
+  --> $DIR/phase8_proxy_default_filter_runtime_value.rs:25:1
    |
 25 | / #[model(
 26 | |     table = "phase8_proxy_runtime_vehicles",
@@ -123,165 +123,169 @@ error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisf
    | |__^ unsatisfied trait bound
    |
 help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:31:1
+  --> $DIR/phase8_proxy_default_filter_runtime_value.rs:31:1
    |
 31 | pub struct ActiveVehicle {
    | ^^^^^^^^^^^^^^^^^^^^^^^^
 help: the trait `djogi::model::Model` is implemented for `Vehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:18:1
+  --> $DIR/phase8_proxy_default_filter_runtime_value.rs:18:1
    |
 18 | #[model(table = "phase8_proxy_runtime_vehicles")]
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `FieldRef`
-  --> $WORKSPACE/djogi/src/query/field.rs
+  --> djogi/src/query/field.rs:65:24
    |
-   | pub struct FieldRef<M: Model, V> {
+65 | pub struct FieldRef<M: Model, V> {
    |                        ^^^^^ required by this bound in `FieldRef`
    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:25:1
-   |
-25 | / #[model(
-26 | |     table = "phase8_proxy_runtime_vehicles",
-27 | |     proxy_for = Vehicle,
-28 | |     default_filter = |f| f.active.eq(RUNTIME_VAR),
-29 | | )]
-   | |__^ unsatisfied trait bound
-   |
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:25:1
+    |
+ 25 | / #[model(
+ 26 | |     table = "phase8_proxy_runtime_vehicles",
+ 27 | |     proxy_for = Vehicle,
+ 28 | |     default_filter = |f| f.active.eq(RUNTIME_VAR),
+ 29 | | )]
+    | |__^ unsatisfied trait bound
+    |
 help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:31:1
-   |
-31 | pub struct ActiveVehicle {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:31:1
+    |
+ 31 | pub struct ActiveVehicle {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^
 help: the trait `djogi::model::Model` is implemented for `Vehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:18:1
-   |
-18 | #[model(table = "phase8_proxy_runtime_vehicles")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:18:1
+    |
+ 18 | #[model(table = "phase8_proxy_runtime_vehicles")]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `OuterRef`
-  --> $WORKSPACE/djogi/src/expr/subquery.rs
-   |
-   | pub struct OuterRef<M: Model, V> {
-   |                        ^^^^^ required by this bound in `OuterRef`
-   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+   --> djogi/src/expr/subquery.rs:343:24
+    |
+343 | pub struct OuterRef<M: Model, V> {
+    |                        ^^^^^ required by this bound in `OuterRef`
+    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:31:12
-   |
-31 | pub struct ActiveVehicle {
-   |            ^^^^^^^^^^^^^ unsatisfied trait bound
-   |
+    --> $DIR/phase8_proxy_default_filter_runtime_value.rs:31:12
+     |
+  31 | pub struct ActiveVehicle {
+     |            ^^^^^^^^^^^^^ unsatisfied trait bound
+     |
 help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:31:1
-   |
-31 | pub struct ActiveVehicle {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^
+    --> $DIR/phase8_proxy_default_filter_runtime_value.rs:31:1
+     |
+  31 | pub struct ActiveVehicle {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^
 help: the trait `djogi::model::Model` is implemented for `Vehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:18:1
-   |
-18 | #[model(table = "phase8_proxy_runtime_vehicles")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    --> $DIR/phase8_proxy_default_filter_runtime_value.rs:18:1
+     |
+  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `djogi::query::field::djogi_field_macro_support::__make_djogi_field`
-  --> $WORKSPACE/djogi/src/query/field.rs
-   |
-   |     pub fn __make_djogi_field<M, V>(column: &'static str, extract: fn(&M) -> &V) -> DjogiField<M, V>
-   |            ------------------ required by a bound in this function
-   |     where
-   |         M: Model,
-   |            ^^^^^ required by this bound in `__make_djogi_field`
-   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+    --> djogi/src/query/field.rs:1679:12
+     |
+1677 |     pub fn __make_djogi_field<M, V>(column: &'static str, extract: fn(&M) -> &V) -> DjogiField<M, V>
+     |            ------------------ required by a bound in this function
+1678 |     where
+1679 |         M: Model,
+     |            ^^^^^ required by this bound in `__make_djogi_field`
+     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:31:12
-   |
-31 | pub struct ActiveVehicle {
-   |            ^^^^^^^^^^^^^ unsatisfied trait bound
-   |
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:31:12
+    |
+ 31 | pub struct ActiveVehicle {
+    |            ^^^^^^^^^^^^^ unsatisfied trait bound
+    |
 help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:31:1
-   |
-31 | pub struct ActiveVehicle {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:31:1
+    |
+ 31 | pub struct ActiveVehicle {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^
 help: the trait `djogi::model::Model` is implemented for `Vehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:18:1
-   |
-18 | #[model(table = "phase8_proxy_runtime_vehicles")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:18:1
+    |
+ 18 | #[model(table = "phase8_proxy_runtime_vehicles")]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `djogi::query::field::__macro_support::__make_field_ref`
-  --> $WORKSPACE/djogi/src/query/field.rs
-   |
-   |     pub fn __make_field_ref<M: Model, V>(
-   |                                ^^^^^ required by this bound in `__make_field_ref`
-   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+   --> djogi/src/query/field.rs:191:32
+    |
+191 |     pub fn __make_field_ref<M: Model, V>(
+    |                                ^^^^^ required by this bound in `__make_field_ref`
+    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:25:1
-   |
-25 | / #[model(
-26 | |     table = "phase8_proxy_runtime_vehicles",
-27 | |     proxy_for = Vehicle,
-28 | |     default_filter = |f| f.active.eq(RUNTIME_VAR),
-29 | | )]
-   | |__^ unsatisfied trait bound
-   |
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:25:1
+    |
+ 25 | / #[model(
+ 26 | |     table = "phase8_proxy_runtime_vehicles",
+ 27 | |     proxy_for = Vehicle,
+ 28 | |     default_filter = |f| f.active.eq(RUNTIME_VAR),
+ 29 | | )]
+    | |__^ unsatisfied trait bound
+    |
 help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:31:1
-   |
-31 | pub struct ActiveVehicle {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:31:1
+    |
+ 31 | pub struct ActiveVehicle {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^
 help: the trait `djogi::model::Model` is implemented for `Vehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:18:1
-   |
-18 | #[model(table = "phase8_proxy_runtime_vehicles")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:18:1
+    |
+ 18 | #[model(table = "phase8_proxy_runtime_vehicles")]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `Condition`
-  --> $WORKSPACE/djogi/src/query/q.rs
-   |
-   | pub enum Q<T: Model> {
-   |               ^^^^^ required by this bound in `Condition`
+   --> djogi/src/query/q.rs:165:15
+    |
+165 | pub enum Q<T: Model> {
+    |               ^^^^^ required by this bound in `Condition`
 ...
-   |     Condition(Condition),
-   |     --------- required by a bound in this tuple variant
-   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+242 |     Condition(Condition),
+    |     --------- required by a bound in this tuple variant
+    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:31:12
-   |
-31 | pub struct ActiveVehicle {
-   |            ^^^^^^^^^^^^^ unsatisfied trait bound
-   |
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:31:12
+    |
+ 31 | pub struct ActiveVehicle {
+    |            ^^^^^^^^^^^^^ unsatisfied trait bound
+    |
 help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:31:1
-   |
-31 | pub struct ActiveVehicle {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:31:1
+    |
+ 31 | pub struct ActiveVehicle {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^
 help: the trait `djogi::model::Model` is implemented for `Vehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:18:1
-   |
-18 | #[model(table = "phase8_proxy_runtime_vehicles")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:18:1
+    |
+ 18 | #[model(table = "phase8_proxy_runtime_vehicles")]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `djogi::expr::subquery::__macro_support::__make_outer_ref`
-  --> $WORKSPACE/djogi/src/expr/subquery.rs
-   |
-   |     pub fn __make_outer_ref<M: Model, V>(column: &'static str) -> OuterRef<M, V> {
-   |                                ^^^^^ required by this bound in `__make_outer_ref`
-   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+   --> djogi/src/expr/subquery.rs:514:32
+    |
+514 |     pub fn __make_outer_ref<M: Model, V>(column: &'static str) -> OuterRef<M, V> {
+    |                                ^^^^^ required by this bound in `__make_outer_ref`
+    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:31:12
+  --> $DIR/phase8_proxy_default_filter_runtime_value.rs:31:12
    |
 31 | pub struct ActiveVehicle {
    |            ^^^^^^^^^^^^^ unsatisfied trait bound
    |
 help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:31:1
+  --> $DIR/phase8_proxy_default_filter_runtime_value.rs:31:1
    |
 31 | pub struct ActiveVehicle {
    | ^^^^^^^^^^^^^^^^^^^^^^^^
 help: the trait `djogi::model::Model` is implemented for `Vehicle`
-  --> tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs:18:1
+  --> $DIR/phase8_proxy_default_filter_runtime_value.rs:18:1
    |
 18 | #[model(table = "phase8_proxy_runtime_vehicles")]
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: aborting due to 12 previous errors
+
+For more information about this error, try `rustc --explain E0277`.

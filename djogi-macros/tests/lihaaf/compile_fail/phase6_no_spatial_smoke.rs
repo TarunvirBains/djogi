@@ -1,1 +1,0 @@
-../../compile_fail/phase6_no_spatial_smoke.rs

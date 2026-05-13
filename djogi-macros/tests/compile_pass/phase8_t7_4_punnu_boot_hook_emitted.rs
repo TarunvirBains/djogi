@@ -11,8 +11,8 @@
 //
 // # Scope — user-surface shape only, NOT path-routing isolation
 //
-// This trybuild fixture compiles in the same dep graph as
-// `djogi-macros` (trybuild copies the test crate's dev-deps into the
+// This lihaaf fixture compiles in the same dep graph as
+// `djogi-macros` (lihaaf compiles the fixture with the test crate's dev-deps reachable in the
 // generated fixture crate). `djogi-macros/Cargo.toml` lists `sassi`,
 // `serde`, and `serde_json` as `[dev-dependencies]` for unrelated
 // fixtures (8γ T6.10 lookup-op no-regex lock, JsonbSchema serde
@@ -32,12 +32,13 @@
 // outer workspace. That driver is the actual adopter-isolation guard;
 // this fixture is the faster, focused user-facing surface check.
 //
-// Per `feedback_trybuild_fixtures.md`, every trybuild fixture must
+// Every lihaaf compile-fixture must
 // have `fn main` so the stored binary can link.
 //
 // Spec anchor:
 //   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
-//   §3 commit T7.4 — "Trybuild fixture" bullet.
+//   §3 commit T7.4 — compile-fixture bullet (the plan calls it
+//   "Trybuild fixture"; this fixture is now run through lihaaf).
 
 use djogi::prelude::*;
 

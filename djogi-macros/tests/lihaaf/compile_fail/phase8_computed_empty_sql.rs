@@ -1,1 +1,0 @@
-../../compile_fail/phase8_computed_empty_sql.rs

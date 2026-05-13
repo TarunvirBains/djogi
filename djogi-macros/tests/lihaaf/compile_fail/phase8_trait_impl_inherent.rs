@@ -1,1 +1,0 @@
-../../compile_fail/phase8_trait_impl_inherent.rs

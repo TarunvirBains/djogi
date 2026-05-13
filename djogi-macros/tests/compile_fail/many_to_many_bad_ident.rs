@@ -12,7 +12,7 @@
 // `const_assert_plain_ident` validates at const-eval time). The
 // parser-side check runs first; this fixture exercises that path
 // because a stored `.stderr` line for a const-panic is finicky under
-// trybuild (the panic line number shifts with every validator edit).
+// lihaaf (the panic line number shifts with every validator edit).
 // The parser-side error message stays stable under downstream edits
 // because it is produced at this macro's own source site.
 

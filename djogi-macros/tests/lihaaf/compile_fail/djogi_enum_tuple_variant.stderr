@@ -1,7 +1,0 @@
-error: #[derive(DjogiEnum)] variants must be unit-only (got `Circle`)
- --> $DIR/djogi_enum_tuple_variant.rs:7:11
-  |
-7 |     Circle(u32),
-  |           ^^^^^
-
-error: aborting due to 1 previous error

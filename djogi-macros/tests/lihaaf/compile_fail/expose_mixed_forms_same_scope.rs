@@ -1,1 +1,0 @@
-../../compile_fail/expose_mixed_forms_same_scope.rs

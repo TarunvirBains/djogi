@@ -7,10 +7,10 @@
 // the impl with a method-receiver mismatch error — exactly the
 // diagnostic an adopter would see if they typed the signature wrong.
 //
-// Pinning the diagnostic via trybuild keeps the error message stable
+// Pinning the diagnostic via lihaaf keeps the error message stable
 // across rustc upgrades; if the message changes we want to know.
 //
-// Per `feedback_trybuild_fixtures.md`, `fn main() {}` is mandatory so
+// Per the lihaaf compile-fixture contract, `fn main() {}` is mandatory so
 // the captured `.stderr` does NOT contain `E0601 (main not found)`
 // noise alongside the load-bearing receiver-mismatch error.
 

@@ -1,5 +1,7 @@
 error: unknown key `ghost` inside `#[app(...)]`; expected one of: label, database, renamed_from, tombstone
- --> tests/compile_fail/phase7_zero_apps_unknown_key.rs:6:30
+ --> $DIR/phase7_zero_apps_unknown_key.rs:6:30
   |
 6 |     #[app(database = "main", ghost = "no")]
   |                              ^^^^^
+
+error: aborting due to 1 previous error

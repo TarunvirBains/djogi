@@ -168,6 +168,17 @@ fn collect_rs_files(root: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
             if path.file_name().is_some_and(|name| name == "target") {
                 continue;
             }
+            // `compile_fail/` subdirectories under a raw-SQL test root
+            // hold lihaaf compile-fail fixtures that intentionally name
+            // the forbidden bypass methods to prove they do not resolve
+            // (e.g. `djogi/tests/compile_fail/raw_execute_without_bypass.rs`).
+            // Those fixtures are gated through `cargo lihaaf` and are not
+            // adopter-shaped test code — skip them here so the surface
+            // check does not double-fire on the very fixtures that pin
+            // the gate.
+            if path.file_name().is_some_and(|name| name == "compile_fail") {
+                continue;
+            }
             collect_rs_files(&path, files)?;
         } else if file_type.is_file() && path.extension().is_some_and(|extension| extension == "rs")
         {

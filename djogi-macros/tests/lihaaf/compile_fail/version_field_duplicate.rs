@@ -1,1 +1,0 @@
-../../compile_fail/version_field_duplicate.rs

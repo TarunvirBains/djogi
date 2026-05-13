@@ -1,5 +1,7 @@
 error: duplicate `no_default` flag in #[model(...)]
- --> tests/compile_fail/duplicate_no_default.rs:6:34
+ --> $DIR/duplicate_no_default.rs:6:34
   |
 6 | #[model(table = "x", no_default, no_default)]
   |                                  ^^^^^^^^^^
+
+error: aborting due to 1 previous error

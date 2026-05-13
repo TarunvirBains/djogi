@@ -1,1 +1,0 @@
-../../compile_fail/bad_relation_path.rs

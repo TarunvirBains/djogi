@@ -1,5 +1,7 @@
 error: `#[field(generated = "...")]` cannot be combined with `#[field(default = "...")]`. Postgres rejects a column declaration with both a DEFAULT and a GENERATED ALWAYS AS (...) STORED clause — the generation expression is the value source. Drop the `default` attribute.
-  --> tests/compile_fail/phase7_5_pr7_generated_with_default.rs:15:25
+  --> $DIR/phase7_5_pr7_generated_with_default.rs:15:25
    |
 15 |     #[field(generated = "LOWER(email)", default = "''")]
    |                         ^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

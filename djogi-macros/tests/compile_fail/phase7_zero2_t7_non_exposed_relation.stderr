@@ -1,5 +1,5 @@
 error[E0599]: no function or associated item named `department` found for struct `EmpPublicFields` in the current scope
-  --> tests/compile_fail/phase7_zero2_t7_non_exposed_relation.rs:30:33
+  --> $DIR/phase7_zero2_t7_non_exposed_relation.rs:30:33
    |
 17 | #[model(table = "emps_t7_non_exposed_relation", no_default)]
    | ------------------------------------------------------------ function or associated item `department` not found for this struct
@@ -10,8 +10,12 @@ error[E0599]: no function or associated item named `department` found for struct
 note: if you're trying to build a new `EmpPublicFields` consider using one of the following associated functions:
       EmpPublicFields::new
       EmpPublicFields::with_path
-  --> tests/compile_fail/phase7_zero2_t7_non_exposed_relation.rs:17:1
+  --> $DIR/phase7_zero2_t7_non_exposed_relation.rs:17:1
    |
 17 | #[model(table = "emps_t7_non_exposed_relation", no_default)]
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

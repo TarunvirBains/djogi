@@ -1,1 +1,0 @@
-../../compile_fail/field_index_bool_value.rs

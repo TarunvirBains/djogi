@@ -6,7 +6,7 @@
 //!
 //! If a future refactor breaks the merge (e.g. second attribute
 //! overwrites the first instead of merging), this fixture stops
-//! compiling and trybuild surfaces it.
+//! compiling and lihaaf surfaces it.
 use djogi::prelude::*;
 
 // Phase 7-Zero-2 T2 flipped the default PK to `HeerIdRecencyBiased`;

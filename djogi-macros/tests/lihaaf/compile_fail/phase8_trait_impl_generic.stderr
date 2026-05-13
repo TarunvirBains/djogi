@@ -1,7 +1,0 @@
-error: `#[djogi::trait_impl]` does not yet support generic impls — concrete `impl Trait for ConcreteType { ... }` only in v0.1.0; generic impls deferred to a future phase
-  --> $DIR/phase8_trait_impl_generic.rs:14:5
-   |
-14 | impl<T> Searchable for Vec<T> {
-   |     ^^^
-
-error: aborting due to 1 previous error

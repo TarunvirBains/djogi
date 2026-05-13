@@ -13,7 +13,7 @@
 // does not implement `Default` — every field must be initialised
 // explicitly when the user model carries a non-Default field type.
 //
-// Per `feedback_trybuild_fixtures.md`, every trybuild fixture must
+// Every lihaaf compile-fixture must
 // have `fn main` so the stored binary can link.
 //
 // Spec anchor:

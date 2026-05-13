@@ -1,5 +1,7 @@
 error: `nulls_not_distinct = true` is only meaningful on `unique(...)`; move this declaration into `unique(...)` or drop `nulls_not_distinct`.
- --> tests/compile_fail/phase7_zero_model_indexes_nnd_on_index.rs:5:5
+ --> $DIR/phase7_zero_model_indexes_nnd_on_index.rs:5:5
   |
 5 |     index(fields = [email], nulls_not_distinct = true),
   |     ^^^^^
+
+error: aborting due to 1 previous error

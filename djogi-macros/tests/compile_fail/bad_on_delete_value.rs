@@ -5,7 +5,7 @@
 // darling has already reduced the attribute to a plain `String`. This
 // fixture pins that behaviour so any future darling upgrade, FieldAttrs
 // refactor, or attr-walker rewrite that regresses the span fails loudly
-// in the trybuild suite instead of silently degrading the UX.
+// in the lihaaf suite instead of silently degrading the UX.
 //
 // Accepted values (see `FieldAttrs::parse`): cascade, restrict, set_null,
 // set_default, protect, do_nothing. `"bogus"` is not in that set.

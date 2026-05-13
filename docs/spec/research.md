@@ -39,10 +39,10 @@
 - Emitting `ModelDescriptor` via `inventory::submit!` from inside the derive macro
 - Side-channel file (`target/djogi_models.json`) for `build.rs` consumption
 - Error message quality: `proc-macro-error`, `syn::Error::new_spanned`
-- Testing: `lihaaf` is the primary compile-fail / compile-pass macro
-  fixture harness (CI gate). `trybuild` is retained as an opt-in manual
-  parity harness gated behind `--features trybuild-tests`. `macrotest`
-  for expansion snapshots.
+- Testing: `lihaaf` is the sole compile-fail / compile-pass macro
+  fixture harness (CI gate). The historical `trybuild`-based corpus
+  was migrated to lihaaf in Phase 8.5; trybuild is no longer a dependency
+  or fallback. `macrotest` for expansion snapshots.
 
 ### Build.rs Drift Detection
 - Reading `target/djogi_models.json` after proc macro expansion

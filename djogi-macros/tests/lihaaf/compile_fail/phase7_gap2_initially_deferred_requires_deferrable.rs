@@ -1,1 +1,0 @@
-../../compile_fail/phase7_gap2_initially_deferred_requires_deferrable.rs

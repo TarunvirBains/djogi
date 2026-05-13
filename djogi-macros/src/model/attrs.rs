@@ -3194,8 +3194,9 @@ mod tests {
     //
     // Parser-side coverage. Field-existence + self-FK validation runs
     // at descriptor-emit time (where the user-field list is in scope)
-    // and is exercised by Cluster B5's trybuild fixtures — the parser
-    // itself only enforces the standard Djogi identifier grammar.
+    // and is exercised by Cluster B5's lihaaf compile-fail fixtures —
+    // the parser itself only enforces the standard Djogi identifier
+    // grammar.
     use super::ModelAttrs;
     use proc_macro2::TokenStream;
     use std::str::FromStr;

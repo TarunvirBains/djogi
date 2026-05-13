@@ -121,7 +121,7 @@ fn _relation_metadata_accessors_compile() {
 
 fn main() {
     // Runtime assertions — the compile-pass fixture is executed as a plain
-    // binary under trybuild, so we can pin the concrete values here and
+    // binary under lihaaf, so we can pin the concrete values here and
     // catch accidental emitter drift (wrong column literal, wrong kind,
     // wrong target table) loudly rather than silently producing bogus SQL.
     let p_owner = VehicleRelated::owner();

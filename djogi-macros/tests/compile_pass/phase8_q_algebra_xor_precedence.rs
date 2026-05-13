@@ -17,7 +17,7 @@
 // the operator-precedence guarantee is independent of which
 // constructors produce the operands.
 //
-// Per `feedback_trybuild_fixtures.md`, every trybuild fixture must
+// Every lihaaf compile-fixture must
 // have `fn main` so the stored `.stderr` (when compile-fail) does
 // not pick up `E0601 (main not found)`. compile-pass fixtures need
 // `fn main()` for the same reason — the binary still has to link.

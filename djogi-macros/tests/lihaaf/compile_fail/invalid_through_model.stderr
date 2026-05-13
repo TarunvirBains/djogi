@@ -1,7 +1,0 @@
-error: a `#[model(through)]` struct must declare at least two `ForeignKey<T>` fields
- --> $DIR/invalid_through_model.rs:5:12
-  |
-5 | pub struct BadThrough {
-  |            ^^^^^^^^^^
-
-error: aborting due to 1 previous error

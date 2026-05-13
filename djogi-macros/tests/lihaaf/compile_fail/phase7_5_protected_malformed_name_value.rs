@@ -1,1 +1,0 @@
-../../compile_fail/phase7_5_protected_malformed_name_value.rs

@@ -1,1 +1,0 @@
-../../compile_fail/bad_field_attr.rs

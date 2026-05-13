@@ -588,7 +588,8 @@ Phase 7.5 expanded beyond the original protected-data scope to absorb the live-m
       (protected-data audit, tenant_key + ForeignKey RLS empty cast,
       `ForeignKey<T>` Serialize fix, reverse-accessor inherent-impl
       E0116 fix, `JsonbSchema` djogi:: alias acceptance)
-- [x] T12 integration tests + per-phase trybuild dispatcher
+- [x] T12 integration tests + per-phase compile-fixture dispatcher
+      (originally a trybuild driver; migrated to lihaaf in Phase 8.5)
 
 **Deferred:**
 

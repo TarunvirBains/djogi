@@ -33,7 +33,7 @@
 //! [`crate::ident::check_table_name`]: ASCII letter or underscore first
 //! byte, ASCII alphanumerics or underscores after, ≤ 63 bytes — the
 //! Postgres unquoted-identifier cap. Validation runs at parse time so
-//! the trybuild compile-fail fixtures get span-precise diagnostics
+//! the lihaaf compile-fail fixtures get span-precise diagnostics
 //! before any expansion code runs.
 //!
 //! # Why bare-identifier `proxy_for` (not string-literal)?

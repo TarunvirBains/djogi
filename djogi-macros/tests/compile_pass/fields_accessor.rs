@@ -104,7 +104,7 @@ fn _serial_pk_id_is_i32() {
 
 fn main() {
     // Runtime-assert the raw-ident column stripping. Compile-pass fixtures
-    // are executed by trybuild as plain binaries, so `fn main()` is a fine
+    // are executed by lihaaf as plain binaries, so `fn main()` is a fine
     // place to land the assertion.
     _raw_ident_column_literal_strips_prefix();
 }

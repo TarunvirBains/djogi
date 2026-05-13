@@ -6,7 +6,7 @@
 // The error is span-precise (points at the literal) and explicitly names
 // both the model and the requirement that the FK target match the source.
 //
-// `fn main() {}` per feedback_trybuild_fixtures.md.
+// `fn main() {}` per lihaaf compile-fixture contract.
 
 use djogi::prelude::*;
 

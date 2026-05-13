@@ -1,5 +1,5 @@
 error[E0428]: the name `OwnerCarsReverseRelation` is defined multiple times
-  --> tests/compile_fail/reverse_relation_duplicate_accessor.rs:54:1
+  --> $DIR/reverse_relation_duplicate_accessor.rs:54:1
    |
 47 | djogi::reverse_one_to_many!(Owner, cars -> Vehicle by owner_id);
    | --------------------------------------------------------------- previous definition of the trait `OwnerCarsReverseRelation` here
@@ -11,7 +11,7 @@ error[E0428]: the name `OwnerCarsReverseRelation` is defined multiple times
    = note: this error originates in the macro `djogi::reverse_one_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0119]: conflicting implementations of trait `OwnerCarsReverseRelation` for type `Owner`
-  --> tests/compile_fail/reverse_relation_duplicate_accessor.rs:54:1
+  --> $DIR/reverse_relation_duplicate_accessor.rs:54:1
    |
 47 | djogi::reverse_one_to_many!(Owner, cars -> Vehicle by owner_id);
    | --------------------------------- first implementation here
@@ -20,3 +20,8 @@ error[E0119]: conflicting implementations of trait `OwnerCarsReverseRelation` fo
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ conflicting implementation for `Owner`
    |
    = note: this error originates in the macro `djogi::reverse_one_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: aborting due to 2 previous errors
+
+Some errors have detailed explanations: E0119, E0428.
+For more information about an error, try `rustc --explain E0119`.

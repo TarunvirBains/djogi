@@ -1,5 +1,7 @@
 error: #[derive(JsonbSchema)] requires a named struct — tuple structs are not supported. Use named fields: `struct Foo { field: Type }`
- --> tests/compile_fail/jsonb_schema_tuple_struct.rs:5:12
+ --> $DIR/jsonb_schema_tuple_struct.rs:5:12
   |
 5 | pub struct TupleSpecs(i32, f32);
   |            ^^^^^^^^^^
+
+error: aborting due to 1 previous error

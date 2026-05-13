@@ -1,5 +1,7 @@
 error: `#[field(index)]` takes an optional string method (e.g. `index = "gin"`) or no value
- --> tests/compile_fail/field_index_bool_value.rs:6:21
+ --> $DIR/field_index_bool_value.rs:6:21
   |
 6 |     #[field(index = true)]
   |                     ^^^^
+
+error: aborting due to 1 previous error

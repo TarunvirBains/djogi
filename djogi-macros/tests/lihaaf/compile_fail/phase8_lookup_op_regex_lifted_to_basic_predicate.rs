@@ -1,1 +1,0 @@
-../../compile_fail/phase8_lookup_op_regex_lifted_to_basic_predicate.rs

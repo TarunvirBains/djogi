@@ -5,12 +5,14 @@
 # physically separate target tree under `~/.cache/djogi-target/<worktree-id>/`,
 # so concurrent worktree activity cannot share or contaminate cached state.
 #
-# WHY: trybuild fixtures keep transient state under `target/tests/trybuild/`,
-# and `cargo metadata` resolves that path relative to the active target dir.
-# When two worktrees run macro tests in parallel under the same physical
+# WHY: when two worktrees run cargo in parallel under the same physical
 # target tree (because both worktrees mount, symlink, or otherwise reach the
-# same path), one fixture's artifacts can invalidate the other's expected
-# output and produce spurious diffs. This isolates them. Closes djogi#176.
+# same path), one worktree's incremental artifacts can invalidate the other's
+# expected output and produce spurious diffs (originally surfaced by the
+# now-removed trybuild fixtures, which kept transient state under
+# `target/tests/trybuild/`). Lihaaf's per-fixture rustc invocations are
+# isolated, but cargo's incremental cache still benefits from per-worktree
+# isolation. Closes djogi#176.
 #
 # HOW TO ENABLE (per worktree):
 #   cp .envrc.example .envrc

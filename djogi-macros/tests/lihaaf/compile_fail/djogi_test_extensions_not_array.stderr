@@ -1,7 +1,0 @@
-error: #[djogi_test] `extensions` expects an array literal, e.g. `extensions = ["postgis"]`
- --> $DIR/djogi_test_extensions_not_array.rs:5:34
-  |
-5 | #[djogi::djogi_test(extensions = "postgis")]
-  |                                  ^^^^^^^^^
-
-error: aborting due to 1 previous error

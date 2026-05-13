@@ -1,9 +1,0 @@
-error[E0599]: no method named `having` found for struct `QuerySet<T>` in the current scope
-  --> $DIR/having_on_ungrouped.rs:12:28
-   |
-12 |     let _ = Txn::objects().having(|_, _| unimplemented!());
-   |                            ^^^^^^ method not found in `QuerySet<Txn>`
-
-error: aborting due to 1 previous error
-
-For more information about this error, try `rustc --explain E0599`.

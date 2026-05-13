@@ -344,7 +344,7 @@ impl Leaf {
 ///
 /// The partition is locked by:
 ///
-/// - The trybuild fixture
+/// - The lihaaf compile-fail fixture
 ///   `djogi-macros/tests/compile_fail/phase8_lookup_op_regex_lifted_to_basic_predicate.rs`
 ///   (Cluster 8γ Stage 1 T6.10) — verifies `sassi::LookupOp::Regex`
 ///   does not exist at the type level, so a future sassi release that
@@ -411,8 +411,8 @@ pub enum LookupOp {
 /// djogi-side via `Q::Regex` etc.).
 ///
 /// Adopters do not name this enum — it is the type-level partition
-/// the lowering bridge and the trybuild fixture lean on. A new
-/// `LookupOp` variant added under `#[non_exhaustive]` must be placed
+/// the lowering bridge and the lihaaf compile-fail fixture lean on. A
+/// new `LookupOp` variant added under `#[non_exhaustive]` must be placed
 /// in one of these two classes by extending
 /// [`LookupOp::source_class`] below; the partition test in this
 /// module fails to compile until the new arm is added.
@@ -676,7 +676,7 @@ mod tests {
     // The partition is load-bearing per `decisions.md` rows 107 + 108
     // and `feedback_no_regex_in_djogi.md`: lifting `Regex` / `IRegex`
     // to sassi would require a Rust regex engine, which the framework
-    // forbids. The trybuild fixture
+    // forbids. The lihaaf compile-fail fixture
     // `djogi-macros/tests/compile_fail/phase8_lookup_op_regex_lifted_to_basic_predicate.rs`
     // (Cluster 8γ Stage 1 T6.10) catches the type-level violation;
     // this unit test catches the source-side classification mistake

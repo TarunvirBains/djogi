@@ -227,9 +227,10 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     // The runtime check is the deliberate trade-off: a compile-time
     // gate would require either an extra trait the macro implements
     // only when `tree_edge` is set, or generic-bounded specialization
-    // (unstable). Pre-1.0 we ship the runtime gate; B5's trybuild
-    // covers the type-level error case for the explicit-path API
-    // (`QuerySet::tree_descendants` with a mismatched `RelationPath`).
+    // (unstable). Pre-1.0 we ship the runtime gate; B5's lihaaf
+    // compile-fail fixture covers the type-level error case for the
+    // explicit-path API (`QuerySet::tree_descendants` with a mismatched
+    // `RelationPath`).
 
     /// `tree_edge`-aware shorthand for
     /// [`QuerySet::tree_descendants`](crate::query::QuerySet::tree_descendants).

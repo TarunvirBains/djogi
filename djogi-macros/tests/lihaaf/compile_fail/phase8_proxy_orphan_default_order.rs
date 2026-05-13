@@ -1,1 +1,0 @@
-../../compile_fail/phase8_proxy_orphan_default_order.rs

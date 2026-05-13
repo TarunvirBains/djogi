@@ -1,1 +1,0 @@
-../../compile_fail/sealed_model_hand_impl.rs

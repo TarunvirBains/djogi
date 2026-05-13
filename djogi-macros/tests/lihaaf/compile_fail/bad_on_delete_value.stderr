@@ -1,7 +1,0 @@
-error: unknown on_delete value `bogus`; expected one of: cascade, restrict, set_null, set_default, protect, do_nothing
-  --> $DIR/bad_on_delete_value.rs:17:25
-   |
-17 |     #[field(on_delete = "bogus")]
-   |                         ^^^^^^^
-
-error: aborting due to 1 previous error

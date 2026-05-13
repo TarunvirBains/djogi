@@ -6,7 +6,7 @@
 //      lifetimes appear in the signature or the DjogiDeltaFetcher struct).
 //   3. `DeltaRefreshHandle<T>` is the return type.
 //
-// Per `feedback_trybuild_fixtures.md`, every trybuild fixture must have
+// Every lihaaf compile-fixture must have
 // `fn main` so the stored binary can link.
 //
 // Path-routing note: this fixture exercises NON-emitted code (`refresh_into`

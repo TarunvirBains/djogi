@@ -1,5 +1,5 @@
 error[E0428]: the name `PersonGroupsManyToManyRelation` is defined multiple times
-  --> tests/compile_fail/many_to_many_collision.rs:67:1
+  --> $DIR/many_to_many_collision.rs:67:1
    |
 53 | / djogi::many_to_many!(
 54 | |     Person, Group,
@@ -23,7 +23,7 @@ error[E0428]: the name `PersonGroupsManyToManyRelation` is defined multiple time
    = note: this error originates in the macro `djogi::many_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0119]: conflicting implementations of trait `ManyToMany<Group>` for type `Person`
-  --> tests/compile_fail/many_to_many_collision.rs:67:1
+  --> $DIR/many_to_many_collision.rs:67:1
    |
 53 | / djogi::many_to_many!(
 54 | |     Person, Group,
@@ -36,7 +36,7 @@ error[E0119]: conflicting implementations of trait `ManyToMany<Group>` for type 
    = note: this error originates in the macro `djogi::many_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0119]: conflicting implementations of trait `PersonGroupsManyToManyRelation` for type `Person`
-  --> tests/compile_fail/many_to_many_collision.rs:67:1
+  --> $DIR/many_to_many_collision.rs:67:1
    |
 53 | / djogi::many_to_many!(
 54 | |     Person, Group,
@@ -47,3 +47,8 @@ error[E0119]: conflicting implementations of trait `PersonGroupsManyToManyRelati
    | |__________^ conflicting implementation for `Person`
    |
    = note: this error originates in the macro `djogi::many_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: aborting due to 3 previous errors
+
+Some errors have detailed explanations: E0119, E0428.
+For more information about an error, try `rustc --explain E0119`.

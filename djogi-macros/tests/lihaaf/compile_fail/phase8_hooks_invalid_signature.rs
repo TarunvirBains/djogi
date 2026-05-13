@@ -1,1 +1,0 @@
-../../compile_fail/phase8_hooks_invalid_signature.rs

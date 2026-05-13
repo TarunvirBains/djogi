@@ -1,5 +1,7 @@
 error: unregistered codec ID `aes256_gcm_v1`. Valid codec IDs in this build of Djogi: (none). The registry will be populated in future phases — codecs ship with the framework, not adopter code.
-  --> tests/compile_fail/phase7_5_protected_unknown_codec.rs:17:17
+  --> $DIR/phase7_5_protected_unknown_codec.rs:17:17
    |
 17 |         codec = "aes256_gcm_v1"
    |                 ^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

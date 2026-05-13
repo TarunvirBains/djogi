@@ -5,7 +5,7 @@
 // `Vehicle::computed().total_price()`. Proves the descriptor emission
 // + `{Model}Computed` ZST + accessor return type all wire together.
 //
-// Per `feedback_trybuild_fixtures.md`, every trybuild fixture must
+// Every lihaaf compile-fixture must
 // have `fn main() {}` so the stored `.stderr` does not pick up
 // E0601. Compile-pass fixtures need it for the same reason — the
 // binary still has to link.

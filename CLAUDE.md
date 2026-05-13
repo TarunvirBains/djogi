@@ -47,15 +47,15 @@ cargo test -p djogi-macros
 # Check proc macro expansion (requires cargo-expand)
 cargo expand -p djogi-macros
 
-# Macro fixture gate — lihaaf (primary, fast, ~20s for 237 fixtures)
+# Macro fixture gate — lihaaf (fast, ~20s for 237 fixtures)
 cargo lihaaf --manifest-path djogi-macros/Cargo.toml -j 4
+
+# Raw-SQL bypass fixture gate — lihaaf (6 fixtures, ~1s warm dylib)
+cargo lihaaf --manifest-path djogi/Cargo.toml -j 4
 
 # Re-bless lihaaf compile_fail snapshots after diagnostic changes
 cargo lihaaf --manifest-path djogi-macros/Cargo.toml --filter compile_fail --bless -j 4
-
-# Macro fixture gate — trybuild (manual parity only, ~15 min full sweep)
-# Requires --features trybuild-tests; NOT run by default CI
-cargo test -p djogi-macros --features trybuild-tests --test trybuild_tests -- --test-threads=2
+cargo lihaaf --manifest-path djogi/Cargo.toml --bless -j 4
 
 # Lint
 cargo clippy --all-targets --all-features
@@ -78,13 +78,10 @@ After implementation work, run `cargo fmt --all` and `cargo clippy --all-targets
 ## Worktree workflow
 
 When running concurrent careful-coder dispatches across multiple `.worktrees/`
-checkouts, parallel `cargo test -p djogi-macros` runs previously corrupted each
-other's trybuild fixture state (djogi#176). The trybuild test binaries are now
-gated behind `--features trybuild-tests` and do NOT run in the default sweep,
-so the primary concern is no longer trybuild state. Per-worktree target
-isolation is still the right practice to avoid incremental-build interference.
-Give each worktree its own physically separate target tree by overriding
-`CARGO_TARGET_DIR`.
+checkouts, parallel cargo builds previously corrupted each other's shared
+target tree (djogi#176). Per-worktree target isolation avoids incremental-build
+interference. Give each worktree its own physically separate target tree by
+overriding `CARGO_TARGET_DIR`.
 
 Two ways to enable per-worktree isolation:
 
@@ -140,9 +137,12 @@ The macro is the heart of the framework. It:
 7. Emits `Model::descriptor()` via `inventory::submit!` for app registration and migration differ
 8. Writes a side-channel `target/djogi_models.json` for `build.rs` consumption
 
-Proc macro testing: use `lihaaf` for compile-fail/compile-pass cases (primary CI gate, fast parallel
-dylib path); `trybuild` is the opt-in manual parity harness (gated behind `--features trybuild-tests`);
-`macrotest` for expansion snapshots.
+Proc macro testing: use `lihaaf` for compile-fail/compile-pass cases (the
+sole compile-fixture gate, fast parallel dylib path); `macrotest` for
+expansion snapshots. Djogi no longer uses `trybuild` — the historical
+trybuild corpus was migrated to lihaaf in Phase 8.5, with the `.stderr`
+snapshots committed under `djogi-macros/tests/compile_fail/` and
+`djogi/tests/compile_fail/`.
 
 ### QuerySet and Condition Tree
 

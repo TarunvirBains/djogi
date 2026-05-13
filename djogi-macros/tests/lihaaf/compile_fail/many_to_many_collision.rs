@@ -1,1 +1,0 @@
-../../compile_fail/many_to_many_collision.rs

@@ -6,7 +6,7 @@
 //! code does not break; an internal `from_string_form` flag on the parsed
 //! `RelationExposure` reserves a hook for future `#[deprecated]` advisory
 //! wiring. This fixture asserts the form still emits a working visage —
-//! the warning text itself is not pinned (trybuild does not snapshot
+//! the warning text itself is not pinned (lihaaf does not snapshot
 //! warnings), only that compilation succeeds.
 use djogi::prelude::*;
 

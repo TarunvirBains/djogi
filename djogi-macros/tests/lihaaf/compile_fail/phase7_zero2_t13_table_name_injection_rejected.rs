@@ -1,1 +1,0 @@
-../../compile_fail/phase7_zero2_t13_table_name_injection_rejected.rs

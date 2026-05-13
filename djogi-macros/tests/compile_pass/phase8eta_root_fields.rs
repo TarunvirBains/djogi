@@ -23,7 +23,7 @@
 //    choose between Djogi's closure surface and Sassi's predicate
 //    DSL — every callsite reaches the same `DjogiField` accessors.
 //
-// Per `feedback_trybuild_fixtures.md`, every trybuild fixture has
+// Per the lihaaf compile-fixture contract, every lihaaf fixture has
 // `fn main` so the binary still has to link.
 
 use djogi::cache::*;

@@ -1,1 +1,0 @@
-../../compile_fail/phase7_zero_apps_tombstone_and_renamed_from.rs

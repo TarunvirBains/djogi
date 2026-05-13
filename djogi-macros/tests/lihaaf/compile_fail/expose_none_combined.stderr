@@ -1,7 +1,0 @@
-error: `none` / `internal` cannot be combined with other scopes; omit them when declaring real scopes
- --> $DIR/expose_none_combined.rs:8:20
-  |
-8 |     #[field(expose(none, public))]
-  |                    ^^^^
-
-error: aborting due to 1 previous error

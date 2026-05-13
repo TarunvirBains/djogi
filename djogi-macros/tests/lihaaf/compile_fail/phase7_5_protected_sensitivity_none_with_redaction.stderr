@@ -1,7 +1,0 @@
-error: `sensitivity = "none"` cannot be combined with other protected-field metadata (rationale / redaction / codec / retention). Either drop the `protected(...)` attribute entirely or set `sensitivity` higher.
-  --> $DIR/phase7_5_protected_sensitivity_none_with_redaction.rs:14:57
-   |
-14 |     #[field(protected(sensitivity = "none", redaction = "mask"))]
-   |                                                         ^^^^^^
-
-error: aborting due to 1 previous error

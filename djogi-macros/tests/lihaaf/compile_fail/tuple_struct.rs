@@ -1,1 +1,0 @@
-../../compile_fail/tuple_struct.rs

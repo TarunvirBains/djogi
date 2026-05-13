@@ -1,5 +1,0 @@
-# Phase 8.5 CI-primary posture: lihaaf compile_fail .stderr snapshots ARE
-# committed (under tests/lihaaf/compile_fail/) so CI passes without --bless.
-# Remove this file or keep it empty; the individual .gitignore in
-# compile_fail/ documents the new policy and has no *.stderr exclusion.
-

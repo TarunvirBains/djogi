@@ -1,1 +1,0 @@
-../../compile_fail/missing_table.rs

@@ -1,7 +1,0 @@
-error: relation fields require an explicit peer visage name; write `expose(public = "PeerProjection")`
-  --> $DIR/expose_scalar_form_on_relation.rs:16:5
-   |
-16 |     pub owner_id: ForeignKey<Owner>,
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-error: aborting due to 1 previous error

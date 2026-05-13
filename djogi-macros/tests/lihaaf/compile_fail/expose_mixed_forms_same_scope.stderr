@@ -1,7 +1,0 @@
-error: scope `public` already declared as bare scope; pick one form per scope
- --> $DIR/expose_mixed_forms_same_scope.rs:8:28
-  |
-8 |     #[field(expose(public, public = "VehicleSummary"))]
-  |                            ^^^^^^
-
-error: aborting due to 1 previous error

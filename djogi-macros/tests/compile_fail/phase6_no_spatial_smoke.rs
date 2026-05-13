@@ -5,7 +5,7 @@
 //! must get a clean "unresolved import `djogi::geo`" diagnostic, confirming
 //! that the spatial surface does not leak into builds that did not opt in.
 //!
-//! The trybuild runner compiles this fixture against the default-feature
+//! The lihaaf runner compiles this fixture against the default-feature
 //! `djogi` dev-dep (no `spatial`), so the import error is expected and the
 //! `.stderr` file locks the exact diagnostic shape.
 

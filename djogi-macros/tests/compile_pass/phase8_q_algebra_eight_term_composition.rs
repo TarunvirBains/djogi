@@ -1,7 +1,9 @@
 // Phase 8γ T6.11 — Eight-term mixed AND/OR/XOR/NOT composition for `Q<T>`.
 //
-// Locks v3 §T6 acceptance criterion: "Trybuild compile-pass: complex
-// 8-term composition with mixed XOR / AND / OR / NOT." The fixture
+// Locks v3 §T6 acceptance criterion: "[Compile-pass] complex
+// 8-term composition with mixed XOR / AND / OR / NOT." (originally
+// titled "Trybuild compile-pass" before the Phase 8.5 lihaaf
+// migration.) The fixture
 // exercises every operator, the portable true/false constructors, and
 // the `Q::Compound` flattening contract simultaneously, ensuring no
 // inference cliff appears at multi-operand chained compositions.

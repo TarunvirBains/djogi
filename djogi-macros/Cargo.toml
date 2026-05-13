@@ -17,27 +17,10 @@ categories = ["database", "development-tools::procedural-macro-helpers"]
 proc-macro = true
 
 [features]
-# Mirror of `djogi`'s `spatial` feature so cfg-gated trybuild fixtures
-# compile against the same public API surface they enable locally.
-# The macro crate itself has no spatial-specific code paths.
+# Mirror of `djogi`'s `spatial` feature so cfg-gated lihaaf compile-pass
+# fixtures compile against the same public API surface they enable
+# locally. The macro crate itself has no spatial-specific code paths.
 spatial = ["djogi/spatial"]
-
-# Opt-in gate for the trybuild test binaries. `cargo test --workspace`
-# (the default CI path) no longer auto-runs trybuild fixtures; lihaaf is
-# the primary macro-fixture CI gate (see `.github/workflows/ci.yml` and
-# `tests/lihaaf/`).
-#
-# Use trybuild as a **manual parity check** when changing the CI
-# toolchain or migrating snapshot formats:
-#   cargo test -p djogi-macros --features trybuild-tests \
-#       --test trybuild_tests -- --test-threads=2
-#   cargo test -p djogi-macros --features trybuild-tests \
-#       --test trybuild_spatial_tests
-#
-# `required-features = ["trybuild-tests"]` on each `[[test]]` entry
-# below prevents these binaries from being compiled or run in the
-# default test sweep (including `cargo test --workspace`).
-trybuild-tests = []
 
 [dependencies]
 syn.workspace = true
@@ -64,32 +47,29 @@ darling.workspace = true
 sassi-codegen = { path = "../sassi-reference/sassi-codegen" }
 
 [dev-dependencies]
-# trybuild — retained as an opt-in manual parity check. Not used by
-# `cargo test --workspace`; the trybuild_tests and trybuild_spatial_tests
-# binaries are gated behind `required-features = ["trybuild-tests"]` so
-# they do not compile or run in the default CI sweep. lihaaf is the
-# primary macro-fixture CI gate (see `tests/lihaaf/`).
-trybuild.workspace = true
 # djogi as a dev-dep forms a cycle (djogi depends on djogi-macros as a
 # regular dep; djogi-macros dev-deps djogi here). Cargo permits this because
 # dev-deps are excluded from the published / runtime dependency graph — they
-# only participate when compiling this crate's own tests. Required so both
-# trybuild compile_pass/*.rs fixtures and lihaaf per-fixture rustc
-# invocations can `use djogi::prelude::*` to reach `#[model]`.
+# only participate when compiling this crate's own tests. Required so the
+# lihaaf per-fixture rustc invocations can `use djogi::prelude::*` to
+# reach `#[model]`, and so in-crate integration tests
+# (`adopter_crate_isolation.rs`, `cacheable_emit.rs`, etc.) link against
+# djogi.
 # Path-only override (no `version`) so `cargo publish -p djogi-macros` succeeds
 # without a publish-order cycle: djogi-macros publishes first, before djogi
 # exists on crates.io, so a versioned dev-dep would fail the index lookup.
 djogi = { path = "../djogi" }
 # serde — needed by JsonbSchema compile_pass fixtures that derive Serialize +
-# Deserialize on schema structs. The trybuild process compiles each fixture
-# as a standalone crate with the same dev-deps as djogi-macros.
+# Deserialize on schema structs. Lihaaf compiles each fixture as a
+# standalone rustc invocation that links against the dev-dependencies
+# declared here (mirrored into `package.metadata.lihaaf.dev_deps` below).
 serde.workspace = true
 # serde_json — needed by the Phase 7-Zero T2 compile_pass fixture covering
 # `#[field(index = "gin")]` on `Jsonb<serde_json::Value>`. Same rationale as
-# serde above: trybuild compiles fixtures as standalone crates whose deps
-# come from djogi-macros' dev-dependencies.
+# serde above: lihaaf links the fixture binaries against the dev-deps
+# declared in djogi-macros' `[dev-dependencies]` table.
 serde_json.workspace = true
-# sassi — needed by Phase 8γ T6.10 trybuild compile-fail fixture
+# sassi — needed by Phase 8γ T6.10 lihaaf compile-fail fixture
 # (`phase8_lookup_op_regex_lifted_to_basic_predicate.rs`) which references
 # `sassi::LookupOp` directly to prove the no-regex-engine invariant
 # (`decisions.md` rows 107 + 108): sassi's `LookupOp` enum has no `Regex`
@@ -100,23 +80,21 @@ sassi = { path = "../sassi-reference/sassi" }
 
 # Lihaaf v0.1 — fast, parallel proc-macro test harness. djogi-macros is
 # the canonical adopter that drove lihaaf's design (lihaaf spec §9.1).
-# lihaaf is the **primary CI gate** for macro fixtures as of Phase 8.5.
+# Lihaaf is the **sole** macro-fixture gate; trybuild has been removed
+# from djogi entirely.
 #
 # CI installs lihaaf via `cargo install lihaaf --version 0.1.0-alpha.2
 # --locked` and runs `cargo lihaaf --manifest-path djogi-macros/Cargo.toml
-# -j 4`. The 237 compile_fail `.stderr` snapshots under
-# `tests/lihaaf/compile_fail/` ARE committed so CI succeeds without
-# `--bless`. Re-bless locally whenever macro diagnostics change:
-#   `cargo lihaaf --filter compile_fail --bless -j 4`
+# -j 4`. The 138 compile_fail `.stderr` snapshots under
+# `tests/compile_fail/` ARE committed so CI succeeds without `--bless`.
+# Re-bless locally whenever macro diagnostics change:
+#   `cargo lihaaf --manifest-path djogi-macros/Cargo.toml \
+#       --filter compile_fail --bless -j 4`
 # then commit the updated `.stderr` files alongside the diagnostic change.
 #
-# trybuild is retained as an opt-in manual parity harness gated behind
-# `--features trybuild-tests` — see the `trybuild-tests` feature above.
-#
-# Fixture layout: `tests/lihaaf/compile_pass` is a directory symlink →
-# `../compile_pass`; `tests/lihaaf/compile_fail/` is a real directory of
-# per-file `.rs` symlinks → `../../compile_fail/<name>.rs` so each
-# fixture lives in exactly one on-disk location.
+# Fixture layout: lihaaf walks `tests/compile_pass/` and `tests/compile_fail/`
+# directly. The `.rs` fixtures live in those directories alongside the
+# blessed `.stderr` snapshots — no symlink farm, no shadow corpus.
 #
 # `dev_deps` mirrors djogi-macros' `[dev-dependencies]` so per-fixture
 # rustc invocations resolve `use serde`, `use serde_json`, and the
@@ -130,24 +108,4 @@ extern_crates = ["djogi", "djogi-macros"]
 features = []
 dev_deps = ["serde", "serde_json", "sassi"]
 edition = "2024"
-fixture_dirs = ["tests/lihaaf/compile_fail", "tests/lihaaf/compile_pass"]
-
-# ── trybuild test binaries (opt-in, off by default) ─────────────────────────
-#
-# These `[[test]]` entries declare the trybuild drivers explicitly so that
-# `required-features = ["trybuild-tests"]` can be attached. Without an
-# explicit entry Cargo auto-discovers `tests/*.rs` and cannot apply a
-# required-features gate. With the gate, `cargo test --workspace` (and
-# therefore default CI) silently skips compilation and execution of these
-# binaries unless `--features trybuild-tests` is passed.
-#
-# lihaaf is the primary CI gate. trybuild is the manual parity harness.
-[[test]]
-name = "trybuild_tests"
-path = "tests/trybuild_tests.rs"
-required-features = ["trybuild-tests"]
-
-[[test]]
-name = "trybuild_spatial_tests"
-path = "tests/trybuild_spatial_tests.rs"
-required-features = ["trybuild-tests"]
+fixture_dirs = ["tests/compile_fail", "tests/compile_pass"]

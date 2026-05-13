@@ -1,1 +1,0 @@
-../../compile_fail/phase7_zero_model_indexes_per_column_opclass_bad_shape.rs

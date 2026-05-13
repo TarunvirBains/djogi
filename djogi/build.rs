@@ -21,7 +21,8 @@
 //!
 //! This script reads JSON only — never executes SQL, never touches
 //! the database. The exact warning wording is frozen so the
-//! trybuild-style expectation test pins on it.
+//! `phase7_t6_build_warning_agreement` integration test can pin on
+//! it byte-for-byte.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -135,8 +136,8 @@ fn drift_warnings_suppressed(workspace_root: &Path) -> bool {
 /// module is being compiled. We re-implement the three-way match
 /// against parsed JSON only — the `migrate::build_match` module owns
 /// the same logic in production code paths and the test suite pins
-/// the exact warning strings, so the two implementations agree by
-/// the trybuild-style expectation test.
+/// the exact warning strings, so the two implementations agree via
+/// the `phase7_t6_build_warning_agreement` integration test.
 ///
 /// Each returned [`BuildDiagnostic`] carries `is_outcome3_drift` so
 /// the caller can suppress only Outcome 3 when

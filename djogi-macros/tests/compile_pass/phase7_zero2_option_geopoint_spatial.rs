@@ -17,7 +17,7 @@
 // pattern in `phase6_spatial_field.rs`: under default features the
 // fixture compiles trivially as `fn main() {}`; under
 // `--features spatial` the full surface is exercised. Both runs ship
-// trybuild-clean.
+// lihaaf-clean.
 
 #[cfg(feature = "spatial")]
 use djogi::prelude::*;

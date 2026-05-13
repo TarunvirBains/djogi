@@ -1,5 +1,7 @@
 error: #[derive(DjogiEnum)] requires at least one variant
- --> tests/compile_fail/djogi_enum_empty.rs:6:10
+ --> $DIR/djogi_enum_empty.rs:6:10
   |
 6 | pub enum EmptyKind {}
   |          ^^^^^^^^^
+
+error: aborting due to 1 previous error

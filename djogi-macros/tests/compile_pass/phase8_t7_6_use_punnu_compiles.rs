@@ -6,7 +6,7 @@
 //
 // This is a non-emitted, non-macro method on `DjogiContext`; the fixture
 // lives here (alongside other T7 compile_pass checks) rather than in
-// `djogi/tests/` because the trybuild harness owns this bucket and the
+// `djogi/tests/` because the lihaaf harness owns this bucket and the
 // type-witness pattern is the same as T7.4/T7.5.
 //
 // T7.6 is non-emitted code — `use_punnu` is a method on `DjogiContext`,
@@ -16,12 +16,13 @@
 // reach it through the re-exported `djogi::cache::Punnu` path, which is what
 // this fixture uses.
 //
-// Per `feedback_trybuild_fixtures.md`, every trybuild fixture must have
+// Every lihaaf compile-fixture must have
 // `fn main` so the stored binary can link.
 //
 // Spec anchor:
 //   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
-//   §3 commit T7.6 — "Trybuild fixture" bullet.
+//   §3 commit T7.6 — compile-fixture bullet (the plan calls it
+//   "Trybuild fixture"; this fixture is now run through lihaaf).
 
 use djogi::prelude::*;
 

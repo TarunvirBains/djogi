@@ -23,12 +23,14 @@
 //   - `::djogi::cache::InvalidationReason::OnSave`  — save path
 //   - `::djogi::cache::InvalidationReason::OnDelete` — delete path
 //
-// Per `feedback_trybuild_fixtures.md`, every trybuild fixture must
+// Every lihaaf compile-fixture must
 // have `fn main` so the stored binary can link.
 //
 // Spec anchor:
 //   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
-//   §3 commit T7.5 — "Trybuild compile-pass fixture" bullet.
+//   §3 commit T7.5 — compile-pass fixture bullet (the plan calls it
+//   "Trybuild compile-pass fixture"; this fixture is now run through
+//   lihaaf).
 
 use djogi::prelude::*;
 

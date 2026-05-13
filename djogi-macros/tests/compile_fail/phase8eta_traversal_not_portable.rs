@@ -17,7 +17,7 @@
 // found for `DjogiField<...>`" error. Traversal accessors live on the
 // SQL-only visage/relation surfaces, not on the root portable field bag.
 //
-// Per `feedback_trybuild_fixtures.md`, every trybuild fixture has
+// Per the lihaaf compile-fixture contract, every lihaaf fixture has
 // `fn main` so `.stderr` does not pick up E0601 noise.
 
 use djogi::cache::*;

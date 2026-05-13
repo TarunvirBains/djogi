@@ -1,5 +1,7 @@
 error: many_to_many! `relation = "my-groups"` must be a valid Rust identifier (it becomes both a method name on `Person` and an entry in the relation registry)
-  --> tests/compile_fail/many_to_many_bad_ident.rs:49:16
+  --> $DIR/many_to_many_bad_ident.rs:49:16
    |
 49 |     relation = "my-groups"
    |                ^^^^^^^^^^^
+
+error: aborting due to 1 previous error
