@@ -83,7 +83,7 @@ sassi = { path = "../sassi-reference/sassi" }
 # Lihaaf is the **sole** macro-fixture gate; trybuild has been removed
 # from djogi entirely.
 #
-# CI installs lihaaf via `cargo install lihaaf --version 0.1.0-alpha.3
+# CI installs lihaaf via `cargo install lihaaf --version 0.1.0-alpha.4
 # --locked` and runs `cargo lihaaf --manifest-path djogi-macros/Cargo.toml
 # -j 4`. The 138 compile_fail `.stderr` snapshots under
 # `tests/compile_fail/` ARE committed so CI succeeds without `--bless`.
