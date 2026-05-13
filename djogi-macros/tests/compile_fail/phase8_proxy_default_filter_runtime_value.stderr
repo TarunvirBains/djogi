@@ -185,7 +185,7 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
 note: required by a bound in `djogi::query::field::djogi_field_macro_support::__make_djogi_field`
     --> djogi/src/query/field.rs:1679:12
      |
-1677 |     pub fn __make_djogi_field<M, V>(column: &'static str, extract: fn(...
+1677 |     pub fn __make_djogi_field<M, V>(column: &'static str, extract: fn(&M) -> &V) -> DjogiField<M, V>
      |            ------------------ required by a bound in this function
 1678 |     where
 1679 |         M: Model,
@@ -264,8 +264,8 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
 note: required by a bound in `djogi::expr::subquery::__macro_support::__make_outer_ref`
    --> djogi/src/expr/subquery.rs:514:32
     |
-514 | ...r_ref<M: Model, V>(column: &'static str) -> OuterRef<M, V> {
-    |             ^^^^^ required by this bound in `__make_outer_ref`
+514 |     pub fn __make_outer_ref<M: Model, V>(column: &'static str) -> OuterRef<M, V> {
+    |                                ^^^^^ required by this bound in `__make_outer_ref`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
