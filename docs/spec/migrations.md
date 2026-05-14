@@ -135,20 +135,16 @@ DROP INDEX vehicles_horsepower_idx;
 ALTER TABLE vehicles DROP COLUMN horsepower;
 ```
 
-If a file must run outside a transaction, it carries the directive:
+Execution mode (transactional vs non-transactional) is **not** carried by a comment directive in the generated SQL file. The composed migration plan tags each segment with `SegmentKind::Transactional` or `SegmentKind::NonTransactional`, and the runner dispatches by segment kind. Operations that force a non-transactional segment — `CREATE INDEX CONCURRENTLY` is the canonical example — originate from `IndexSchema::requires_out_of_transaction` (and equivalents on other operations) on the descriptor; the segment planner reads that flag at compose time and tags the resulting segment accordingly.
 
-```sql
--- djogi:no-transaction
-```
+Segment-metadata contract:
 
-Directive rules:
+- segment kind is set at compose time from operation-level metadata (`IndexSchema::requires_out_of_transaction` and equivalents), not by inspecting the SQL file text
+- the runner reads `SegmentKind` from the composed plan and chooses the transactional or non-transactional execution path from that tag
+- the generated SQL file is a human-review artifact replayed under the kind the composed plan carries — it is **not** the source of truth for execution mode
+- external tooling that round-trips or re-emits a composed migration must preserve segment metadata; a file-level comment directive is not honoured by the current runner
 
-- must appear on the first non-blank, non-comment line of the file
-- applies to the entire file
-- `_up.sql` and `_down.sql` are evaluated independently
-- generated automatically when Djogi knows the file must be non-transactional
-
-If the runner detects a statement Postgres forbids inside a transaction and the directive is missing, execution fails before any SQL runs.
+A future revision may add a `-- djogi:no-transaction` (or equivalent) directive parser/generator so the SQL file itself encodes the execution mode end-to-end and external tooling can rely on the file alone. That directive is **not** part of the current contract — today's contract is segment-metadata-driven, and adopters and tooling must treat the composed plan as authoritative.
 
 Destructive generated SQL uses `-- DJOGI WARNING:` comments in the UP file so code review sees the risk in the forward path, not only in rollback text.
 
@@ -165,11 +161,11 @@ Examples include:
 
 The execution contract remains strict:
 
-- one migration plan applies to one database target at a time
-- each database target has its own ledger
-- each database target has its own snapshot set
-- advisory locking is per target
-- repair, baseline, verify, and apply are per target
+- one migration plan applies to one `(database, app)` bucket at a time
+- each database target has its own ledger (shared across all apps in that target)
+- each database target has its own snapshot set (finer-grained, per `(target, app)`)
+- advisory locking is per bucket — each `(database, app)` bucket has its own advisory-lock key, so independent buckets within the same target do not contend (key derivation in §10.7)
+- repair, baseline, verify, and apply are bucket-scoped
 - cross-database foreign keys are explicitly rejected
 
 Djogi does **not** promise distributed atomic migration across multiple databases. Cross-target coordination is an orchestration concern, not a single transactional migration guarantee.
@@ -413,12 +409,12 @@ Checksum contract:
 
 Advisory lock contract:
 
-- key: `0x444A4F474D494752`
-- decimal: `4994068948568834898`
-- acquired before reading the pending set
-- session-scoped
+- scope: per migration bucket, where bucket = `(database, app)`; independent buckets hash to distinct keys and do not contend on a single global literal key
+- key derivation: `SHA-256("djogi:advisory_lock:" || database || "\0" || app)`, with the first 8 digest bytes interpreted as a big-endian signed 64-bit integer (Postgres `bigint`)
+- prefix: the `djogi:advisory_lock:` byte prefix scopes the keyspace so adopter-side advisory locks that hash arbitrary identifiers cannot collide with Djogi's keys
+- acquired before reading the pending set for the bucket
+- session-scoped — held on a dedicated non-pooled `tokio_postgres::Client` for the full `apply` / `rollback` / `repair` window (pool reuse would silently swap the lock holder)
 - released in a finally-equivalent cleanup path
-- lock namespace is per database target
 
 ### 10.8 Apply, Rollback, Repair, and Adoption
 
