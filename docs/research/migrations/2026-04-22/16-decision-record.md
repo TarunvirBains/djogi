@@ -50,7 +50,7 @@ Pure spec cleanup. No design judgment required — the older `docs/spec/migratio
 
 - **Status:** LOCKED
 - **Column:** `run_id BIGINT NOT NULL`
-- **Generation:** One call to `SELECT generate_id()` at the start of each `djogi migrate` invocation; the returned HeerId is stamped into the `run_id` column of every ledger row written during that run.
+- **Generation:** One call to `SELECT heerid_next()` at the start of each `djogi migrate` invocation; the returned HeerId is stamped into the `run_id` column of every ledger row written during that run.
 - **Rationale:** HeerId is already the canonical ID type everywhere else in Djogi. Time-ordered, 8-byte, zero new dependency, grep-consistent with the rest of the system.
 - **Rejected:** UUID v4 (heavier, not time-sortable), ULID (extra dep for no win), custom timestamp strings (redundant when HeerId already solves this).
 - **Source:** Prior art at `projects/prisma.md:735` already flagged HeerId as strictly better than Prisma's UUID v4 for their equivalent column.

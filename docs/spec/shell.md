@@ -4,15 +4,17 @@
 
 ### 13.0 Role of the Shell
 
+> **Current status:** Phase 9 target; `djogi shell` is deferred in v0.1.0 shipped CLI.
+
 The Rhai shell is the **primary surface through which application developers iterate on queries**. It is not an admin REPL or an occasional inspection tool — it is the iteration loop where query patterns are discovered, refined, timed, and rewritten before they are committed back to `.rs` files as `QuerySet` chains. Adopters writing non-trivial query code will spend more time in the shell than in their editor for the duration of that work.
 
 This positioning has consequences:
 
 - **Startup latency is a product feature**, not just a developer convenience. A shell that takes seconds to launch fragments the iteration loop; a shell that launches in well under a second supports the rapid try-revise-retry rhythm queries require. Phase 9 treats startup speed as a hard constraint with measurable budgets, not a "nice to have."
-- **Shell ergonomics are first-class.** Persistent history, syntax highlighting, autocomplete on registered model methods, transparent SQL inspection (`EXPLAIN`, last-query echo), and per-call timing all belong in the shell surface — not deferred behind a flag or postponed to "v2."
+- **Shell ergonomics are first-class.** Persistent history, syntax highlighting, autocomplete on registered model methods, transparent SQL inspection (`EXPLAIN`, last-query echo), and per-call timing all belong in the shell target surface, and the current shipped surface is still closed to this capability.
 - **The shell is where other harnesses defer "workshop" affordances.** `lihaaf`'s v0.1 spec (see [`lihaaf-v0.1.md`](./lihaaf-v0.1.md), TBD) explicitly defers interactive workshop mode to Phase 9 on the basis that the Rhai shell is already that workshop for query authors. Building a second interactive surface elsewhere would fragment the iteration story without serving a use case the shell does not already cover.
 
-The closest external analog is Django's `manage.py shell`, but the comparison undersells what Phase 9 ships: Django's shell loads the ORM and stops. Djogi's shell additionally owns the `djqry` authoring loop (§13.9), splits parse from eval for instant syntax-error feedback (§13.10), and is the binary that the dynamic library architecture (§13.11) is sized for.
+The closest external analog is Django's `manage.py shell`, but the comparison undersells what Phase 9 targets: Django's shell loads the ORM and stops. Djogi's shell additionally owns the `djqry` authoring loop (§13.9), splits parse from eval for instant syntax-error feedback (§13.10), and is the binary that the dynamic library architecture (§13.11) is sized for.
 
 ### 13.1 Invocation
 ```bash
@@ -201,7 +203,7 @@ Uses the same model API the developer already knows.
 
 ### 13.9 `djqry` Authoring Loop
 
-The shell is the canonical authoring surface for `djqry` SQL overrides (Phase 9c — see [`implementation-plan.md`](./implementation-plan.md) §9c). The *test → optimize → compile → deploy* cycle never requires leaving the REPL.
+The shell is the canonical authoring surface for `djqry` SQL overrides (Phase 9c — see [`implementation-plan.md`](./implementation-plan.md) §9c). The *test → optimize → compile → deploy* cycle never requires leaving the REPL in Phase 9 target behavior.
 
 ```rhai
 // Run the macro-query you suspect is suboptimal
@@ -306,7 +308,7 @@ Phase 9 evaluates `rhai-dylib` (https://crates.io/crates/rhai-dylib) as the plug
 
 The inventory-on-dylib spike (see [`docs/research/2026-05-10-inventory-on-dylib-spike.md`](../research/2026-05-10-inventory-on-dylib-spike.md), TBD) is validating whether `cargo rustc --crate-type=dylib` works for djogi AND whether `inventory::submit!` registrations made inside djogi remain visible to consumers that link the resulting dylib. Phase 9 is specced assuming the spike's best outcome; this section names the contingencies for the other three.
 
-**Best case — `GO_NATIVE`.** `cargo rustc --crate-type=dylib` produces a working `libdjogi.so` and inventory registrations propagate natively across the dylib boundary. Phase 9 ships exactly as specced above: shell binary dlopens the dylib, all model/descriptor/runtime calls dispatch through it, no special build configuration beyond a per-target `cargo rustc` invocation. **No changes to djogi's `Cargo.toml` required.**
+**Best case — `GO_NATIVE`.** `cargo rustc --crate-type=dylib` produces a working `libdjogi.so` and inventory registrations propagate natively across the dylib boundary. Phase 9 targets the architecture above: shell binary dlopens the dylib, all model/descriptor/runtime calls dispatch through it, no special build configuration beyond a per-target `cargo rustc` invocation. **No changes to djogi's `Cargo.toml` required.**
 
 **Contingency 1 — `GO_WITH_MANIFEST`.** `cargo rustc --crate-type=dylib` works but inventory propagation only succeeds when djogi's `Cargo.toml` declares the dylib at manifest level rather than per-invocation. Resolution: djogi's `Cargo.toml` adds:
 
@@ -329,7 +331,7 @@ The chosen mechanism applies to all future registries that need to cross the DSO
 
 **Contingency 3 — `RUNTIME_INCOMPATIBLE`.** Build steps succeed (`cargo rustc --crate-type=dylib` produces a `libdjogi.so`, manifest-level declaration optionally added, optionally with the workaround re-exports), inventory propagation passes its compile-time probe, but the dylib fails at runtime when the shell binary attempts to load it. Common causes: TLS constructor/destructor ordering issues (per-thread initializers run in incompatible order across DSO boundaries), loader incompatibilities on a specific platform (`dlopen` vs `LoadLibrary` semantic differences leaking into shared crate state), global-singleton initialization races (sassi/punnu boot order, three-database connection pool initialization, tracing subscriber installation), or incompatible runtime feature sets (`tokio` runtime instance held by the dylib vs the shell). Resolution: the spike artifact MUST include a runtime smoke test that exercises (a) shell binary `dlopen`s the dylib, (b) calls into one descriptor lookup, one query construction, and one transaction-scoped operation, and (c) cleanly tears down. Failure here scopes Phase 9 the same way `NO_GO` does (statically-linked shell, dylib-dependent items deferred), but with a different remediation path: the underlying blocker is in djogi's runtime initialization rather than its build configuration, and the fix is to redesign whatever global-state initialization conflicts with the DSO boundary. Phase 9 may also choose to defer this contingency's resolution to a Phase-9.5 or future task if the redesign cost is high.
 
-**Contingency 4 — `NO_GO`.** `cargo rustc --crate-type=dylib` fails outright on djogi (proc-macro dependencies, build-script outputs, or workspace shape rejects dylib emission). Resolution: Phase 9 ships with a statically-linked shell binary. The build-iteration, plugin-ecosystem, and distribution-size benefits are deferred until the underlying blocker resolves (likely a Rust toolchain or workspace-config fix). The shell still works — startup is slower, the binary is larger, `rhai-dylib` plugin loading is unsupported until the dylib path opens. Phase 9's parse-vs-eval split, djqry authoring loop, and ergonomics improvements all ship regardless; only the dylib-dependent items defer. **`NO_GO` and `RUNTIME_INCOMPATIBLE` are the only contingencies that materially reshape Phase 9's deliverable set; the spike is sized to surface either one early enough to avoid building toward an architecture that won't compile or won't load.**
+**Contingency 4 — `NO_GO`.** `cargo rustc --crate-type=dylib` fails outright on djogi (proc-macro dependencies, build-script outputs, or workspace shape rejects dylib emission). Resolution: Phase 9 targets a statically-linked shell fallback. The build-iteration, plugin-ecosystem, and distribution-size benefits are deferred until the underlying blocker resolves (likely a Rust toolchain or workspace-config fix). The shell still works — startup is slower, the binary is larger, `rhai-dylib` plugin loading is unsupported until the dylib path opens. Phase 9's parse-vs-eval split, djqry authoring loop, and ergonomics improvements all target regardless; only the dylib-dependent items defer. **`NO_GO` and `RUNTIME_INCOMPATIBLE` are the only contingencies that materially reshape Phase 9's deliverable set; the spike is sized to surface either one early enough to avoid building toward an architecture that won't compile or won't load.**
 
 The spike's outcome (one of `GO_NATIVE`, `GO_WITH_MANIFEST`, `GO_WITH_WORKAROUND`, `RUNTIME_INCOMPATIBLE`, `NO_GO`) is captured in the shell's Phase 9 task list before any dylib-dependent work begins. See `implementation-plan.md` §9 for the corresponding task graph and sequencing.
 

@@ -17,8 +17,8 @@ djogi/                  ← this repo — the framework implementation
   djogi/                ← framework library crate
   djogi-macros/         ← proc macro crate (separate crate — required by Rust)
   djogi-cli/            ← djogi binary
-  djogi-shell/          ← Rhai engine + model bindings
-  djogi-maahi/          ← admin console (Dioxus full-stack); behind djogi's `admin` feature
+  djogi-shell/          ← Rhai engine + model bindings (Phase 9 target)
+  djogi-maahi/          ← planned admin console crate (Dioxus full-stack); not present as shipped component in this worktree
 
 ../HeeRanjID/           ← sibling workspace — the HeeRanjId ID system
   heeranjid/            ← core Rust types and conversions
@@ -70,7 +70,7 @@ djogi migrations attune              # reconcile disk / ledger / live DB
 djogi db reset --yes                 # drop, recreate, replay (triple-gated)
 djogi db seed                        # run seeds/<database>/*.sql via djogi_seed_runs ledger
 djogi docs                           # render Markdown reference pages from descriptor inventory
-djogi shell                          # Rhai shell (Phase 8+)
+# djogi shell                          # Rhai shell (Phase 9 target; deferred in v0.1.0)
 ```
 
 After implementation work, run `cargo fmt --all` and `cargo clippy --all-targets --all-features` before handoff when feasible, not just targeted tests.
@@ -256,7 +256,7 @@ The shell holds a dedicated single-threaded Tokio runtime. Every terminal method
 - FK cascade default is `RESTRICT` — must opt in to `cascade` per field
 - Field renames: annotate with `#[field(renamed_from = "old_name")]` or the differ treats it as drop+add
 - Admin panel is opt-in via `djogi = { features = ["admin"] }` — not bundled by default
-- **Specialized features (spatial, outbox publisher backends, vector, etc.) ship as feature flags within `djogi`, never as separate `djogi-*` crates.** The 5-crate workspace (djogi, djogi-macros, djogi-cli, djogi-shell, djogi-maahi) exists for hard Rust requirements (proc macro must be its own crate, CLI is a binary, shell is its own runtime) plus one carve-out: **djogi-maahi** owns the admin console (Maahi), separated because Dioxus full-stack is categorically heavier than other specialized features — full UI framework with WASM-target builds, pre-1.0 churn isolated from djogi core. The "one `cargo add djogi`" experience is preserved: `features = ["admin"]` pulls in `djogi-maahi` as an optional dep, and `djogi::maahi::*` re-exports the API. The carve-out applies to Maahi only; spatial / vector / outbox / etc. remain feature flags within `djogi`. The phrase "companion crate" in `docs/spec/` refers to user-side / app-side crates, not Djogi-maintained ones.
+- **Specialized features (spatial, outbox publisher backends, vector, etc.) ship as feature flags within `djogi`, never as separate `djogi-*` crates.** The workspace includes crates for hard Rust boundaries (library, macros, CLI, shell runtime) and keeps admin as a planned carve-out: **djogi-maahi** is not in shipped components in this branch and remains a Phase 10 dependency target. The "one `cargo add djogi`" experience is preserved conceptually, but `features = ["admin"]` is not yet available until Maahi ships. The phrase "companion crate" in `docs/spec/` refers to user-side / app-side crates, not Djogi-maintained ones.
 - `Djogi.toml` holds app config; secrets (DATABASE_URL, NODE_ID) live in env vars only
 
 ## Tests must use djogi structs, not raw escape hatches

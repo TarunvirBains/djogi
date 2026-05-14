@@ -183,6 +183,8 @@ Do not run migrations until this is resolved.
 
 ### `djogi shell`
 
+> **Current status:** planned (Phase 9), deferred in v0.1.0 shipped CLI. This section documents the target behavior.
+
 Starts an interactive Rhai REPL with all registered models pre-loaded, a live database connection, and persistent command history.
 
 ```bash

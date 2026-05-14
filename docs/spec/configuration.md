@@ -123,8 +123,8 @@ djogi db seed --allow-non-localhost    # opt in to remote DBs (CI integration su
 # Documentation — registered today (T8)
 djogi docs                             # render Markdown reference pages from descriptor inventory
 
-# Shell — Phase 8+
-djogi shell
+# Shell — Phase 9 (deferred)
+# djogi shell  # target command is planned for Phase 9; not registered in v0.1.0 CLI
 
 # Project scaffolding — Phase 7+ follow-up
 djogi new my-project                   # scaffold project + init migrations submodule

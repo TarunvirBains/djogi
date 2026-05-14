@@ -473,6 +473,7 @@ node-id config — should keep the serialized flag.
   `select_related`, aggregates and annotations, raw-SQL escape hatch.
 - [Migrations guide](./migrations.md) — the descriptor-driven differ,
   `djogi migrations compose / status / attune`, online-safety
-  classification, and the `djogi live` backfill orchestrator.
+  classification, and the `djogi live` backfill-orchestrator surface
+  (declared, with `run` / `resume` / `status` behavior deferred in v0.1.0).
 - [Agent guide](./agent-guide.md) — if you are an AI coding agent working
   in a Djogi codebase, start here.
