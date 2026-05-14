@@ -51,6 +51,9 @@ pub struct MySessionProvider {
 }
 
 impl DjogiAuth for MySessionProvider {
+    #[djogi::deliberately_bypass_convention_with_raw_sql]
+    // JUSTIFICATION (djogi#234): provider-owned `sessions` table is not modelled
+    // as a djogi `#[model]`; the typed surface does not cover lookup-by-token.
     fn authenticate<'a>(
         &'a self,
         token: &'a str,
@@ -82,6 +85,16 @@ impl DjogiAuth for MySessionProvider {
     }
 }
 ```
+
+The `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute is
+mandatory wherever `ctx.raw_*` appears — it brings the sealed
+`djogi::__bypass::RawAccessExt` trait into scope for the decorated item.
+Pair it with an adjacent `// JUSTIFICATION (djogi#<n>): ...` comment that
+names the typed-surface gap the bypass is filling (see
+[Raw SQL escape hatches](../spec/raw-sql-escape-hatches.md)). Modelling
+the sessions table as a `#[model]` and using `Session::objects().filter(...)`
+removes the need for the bypass entirely; the raw form is shown here only
+because adopter-owned schemas frequently predate the model layer.
 
 The `token` parameter is opaque to the trait — implementations decide whether to treat it as a session id, JWT, bearer, cookie value, or anything else. Djogi does not impose a format.
 

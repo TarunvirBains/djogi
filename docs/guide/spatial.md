@@ -642,21 +642,37 @@ covers the overwhelming majority of location-based use cases (WGS-84, the
 coordinate system used by GPS and mapping APIs).
 
 For non-4326 work — custom projections, raster columns, geometry rather than
-geography — use the raw-SQL escape hatch:
+geography — use the raw-SQL escape hatch. The `raw_*` methods live on the
+sealed `djogi::__bypass::RawAccessExt` extension trait, so every call site
+must decorate the enclosing item with
+`#[djogi::deliberately_bypass_convention_with_raw_sql]` and pair it with an
+adjacent `// JUSTIFICATION (djogi#<n>): ...` comment naming the
+typed-surface gap (see [Raw SQL escape hatches](../spec/raw-sql-escape-hatches.md)).
 
 ```rust
+use djogi::prelude::*;
+
 // Declare a custom column type in the descriptor:
 // #[field(sql_type = "GEOMETRY(Polygon, 32618)")]
 // pub boundary: SomeCustomType,
 
-// Query via raw SQL:
-let rows = ctx
-    .raw_query::<YourRow>(
-        "SELECT id, ST_AsText(boundary) FROM parcels WHERE \
-         ST_Contains(boundary, ST_Point($1, $2)::geometry)",
-        &[&lon as &(dyn ToSql + Sync), &lat as &(dyn ToSql + Sync)],
-    )
-    .await?;
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): typed spatial surface is locked to GEOGRAPHY(Point, 4326);
+// custom-SRID GEOMETRY columns and ST_Contains have no QuerySet equivalent.
+async fn parcels_containing(
+    ctx: &mut DjogiContext,
+    lon: f64,
+    lat: f64,
+) -> djogi::Result<Vec<YourRow>> {
+    let rows: Vec<YourRow> = ctx
+        .raw_query(
+            "SELECT id, ST_AsText(boundary) FROM parcels WHERE \
+             ST_Contains(boundary, ST_Point($1, $2)::geometry)",
+            &[&lon, &lat],
+        )
+        .await?;
+    Ok(rows)
+}
 ```
 
 A future phase may generalize `GeoPoint` to `GeoPoint<const SRID: u32>` if

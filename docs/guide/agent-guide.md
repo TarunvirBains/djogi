@@ -174,9 +174,14 @@ use djogi::prelude::*;
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#234): recursive CTE / bespoke JOIN not exposed by QuerySet.
 async fn raw_examples(ctx: &mut DjogiContext, post_id: HeerId) -> djogi::Result<()> {
-    // raw_query — Vec<T> where T: FromPgRow
+    // raw_query — Vec<T> where T: FromPgRow. FromPgRow decoding is
+    // positional, so the SELECT list must match Post's column order
+    // exactly: the three injected fields (id, created_at, updated_at)
+    // followed by the developer-owned fields (title, body, published,
+    // view_count). Missing or reordered columns produce a runtime decode
+    // error, not a compile error.
     let _posts: Vec<Post> = ctx.raw_query(
-        "SELECT id, created_at, updated_at, title, body, published
+        "SELECT id, created_at, updated_at, title, body, published, view_count
          FROM posts WHERE published = $1",
         &[&true],
     ).await?;
