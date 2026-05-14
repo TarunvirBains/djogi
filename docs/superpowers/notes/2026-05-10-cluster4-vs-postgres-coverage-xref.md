@@ -5,7 +5,7 @@
 ## Path-reference disclaimer
 
 This document cites local reviewer artifacts that are not tracked in
-this repository (per `.gitignore` line 27 covering `docs/superpowers/`,
+this repository (per `.gitignore` lines 27-28 covering `docs/superpowers/`,
 and the unstaged `docs/research/postgres-coverage/2026-05-09/` research
 set). Path references to those artifacts are accurate for the lane
 lead's local filesystem; readers cloning the repository will only see
@@ -172,11 +172,10 @@ should be evaluated mid-cluster, not deferred.
 
 **Gaps surfaced by catalog NOT in v3 4B:**
 1. **`MERGE` (PG15+)**: catalog mis-classifies as `partial`; my grep
-   says `unknown`. No typed surface. **Routing:** add to v3 4B as
-   #4B.7 OR file a new issue and route to a follow-up cluster. Consensus
-   choice: file as a new issue (`djogi#new-merge`), route to v3 4B with
-   note that the typed shape needs `WHEN MATCHED` / `WHEN NOT MATCHED`
-   condition wiring.
+   says `unknown`. No typed surface. **Routing:** file a tracking issue,
+   but default to post-v0.1.0 per current public positioning. Promote
+   to v3 4B only if Cluster 4.0 explicitly marks it alpha-blocking and
+   updates or supersedes that positioning text.
 2. **PG18 `OLD`/`NEW` in `RETURNING`** (catalog row 59
    `01-pg18-release-notes.md`): UPDATE/DELETE/INSERT/MERGE can return
    both old and new row shapes. djogi has no `RETURNING` typed surface
@@ -202,10 +201,11 @@ should be evaluated mid-cluster, not deferred.
 **v3 4B items NOT supported by catalog:** None — every 4B item maps to
 a catalog row.
 
-**Routing recommendation:** Amend 4B to add MERGE
-(catalog mis-classified as `partial`; actually uncovered) and to route
-PG18 `OLD`/`NEW RETURNING` through the 4.0 gap audit before deciding
-its cluster home. SELECT INTO can defer past v0.1.0 with the standard
+**Routing recommendation:** file a MERGE tracking issue with
+post-v0.1.0 default routing, then promote it to 4B only if Cluster 4.0
+explicitly marks it alpha-blocking and updates/supersedes current
+positioning. Route PG18 `OLD`/`NEW RETURNING` through the 4.0 gap audit
+before deciding its cluster home. SELECT INTO can defer past v0.1.0 with the standard
 "named API surface, no live adopter demand" anchor. SAVEPOINT does
 NOT defer — it's already implemented as nested `atomic()` (see
 correction above); the only remaining work is an optional
@@ -293,7 +293,8 @@ out-of-scope decision rather than landing automatically in 4C.
   exist (Point/MultiPoint/Polygon/MultiPolygon/LineString/MultiLineString
   per `mod.rs`). **Not in v3 4D.** Most are specialized — defer to
   post-v0.1.0 with the "spatial alpha covers core constructors" anchor;
-  file `ST_TileEnvelope` separately if vector-tile work in 4C #92
+  route through existing `djogi#179`, and escalate `ST_TileEnvelope`
+  from #179 if vector-tile work in 4C #92
   needs it as a precondition.
 - **`ST_MakeValid` / `ST_IsValidDetail` / `ST_IsValidReason`** (catalog
   lines 109–111): validation depth. `ST_IsValid` is `covered`; the
@@ -457,7 +458,7 @@ Triage" — six clusters mapped to v3:**
 
 | Gap | Catalog row | Alpha-blocking? | Suggested routing |
 |---|---|---|---|
-| `MERGE` (PG15+ conditional DML) | `03-pg18-sql-reference.md` line 16 | **Likely yes** — UPSERT-with-conditions is a real shape; catalog mis-classifies as `partial`, grep confirms uncovered | New issue; route to v3 4B as #4B.7 |
+| `MERGE` (PG15+ conditional DML) | `03-pg18-sql-reference.md` line 16 | Audit decision — UPSERT-with-conditions is a real shape and grep confirms uncovered, but current positioning keeps MERGE/RETURNING post-v0.1.0 | New issue; post-v0.1.0 by default, promote to 4B only if Cluster 4.0 marks alpha-blocking and updates/supersedes positioning |
 | PG18 `OLD`/`NEW` in `RETURNING` | `01-pg18-release-notes.md` line 59 | Possibly — adopter use case is audit/event publication where you want both pre and post images | Route to 4.0 audit; if alpha-blocking add to 4B as #4B.8 |
 | PG18 `WITHOUT OVERLAPS` / PERIOD FK / `NOT ENFORCED` / named NOT NULL — **already filed as `djogi#150`** | `01-pg18-release-notes.md` lines 49–51 + `djogi#150` body | Yes — #150 marks "Required for Phase 8.5 alpha-readiness" | Existing issue (`djogi#150`); route through 4.0 audit; coordinate with 4E #148 (Amendment 3 still applies for the EXCLUDE-vs-WITHOUT-OVERLAPS preference clarification) |
 | PG18 `array_sort()` / `array_reverse()` | `01-pg18-release-notes.md` lines 25–26 | No — scalar functions, raw SQL or CASE expressions cover today | Roadmapped; file `pg-18-scalars` tracking issue |
@@ -574,9 +575,9 @@ as Cluster 4.0 deliverable.
   (no new evaluation issue needed).
 - pgcrypto framing is now correct (extension reachable via allowlist;
   expression-side typed wrapper is the gap).
-- The quick-wins line refs (`djogi/src/expr/node.rs:398,417,431`,
-  `djogi/src/fts.rs`, `djogi/src/query/queryset.rs:1081,1094,1108`,
-  `djogi/src/query/lock.rs:69-122`, `djogi/src/query/queryset.rs:1417,1517`)
+- The quick-wins source refs (`djogi/src/expr/node.rs`,
+  `djogi/src/fts.rs`, `djogi/src/query/queryset.rs`,
+  `djogi/src/query/lock.rs`)
   are reviewer-confirmed. No quick-win removed; the bottleneck for
   flipping more `unknown` rows is a full catalog walk during the
   4.0 audit.

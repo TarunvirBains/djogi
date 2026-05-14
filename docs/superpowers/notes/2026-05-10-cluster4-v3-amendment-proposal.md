@@ -8,7 +8,7 @@
 ## Path-reference disclaimer
 
 This document cites local reviewer artifacts that are not tracked in
-this repository (per `.gitignore` line 27 covering `docs/superpowers/`,
+this repository (per `.gitignore` lines 27-28 covering `docs/superpowers/`,
 and the unstaged `docs/research/postgres-coverage/2026-05-09/` research
 set). Specifically:
 
@@ -48,7 +48,8 @@ them through Cluster 4.0:
 
 Other in-scope filed issues that v3 4A–4E already names by number
 (unchanged): #71, #72, #84, #85, #88, #89, #92, #94, #95, #99,
-#101–#106, #108, #147, #148.
+#101–#106, #108, #147, #148. Additional filed issue confirmed before
+merge: #179 (extended PostGIS constructor coverage).
 
 ## Reviewer-driven corrections (re-eval `2026-05-10`)
 
@@ -75,10 +76,11 @@ reframed or dropped:
    extension absence. The pgcrypto issue stays in the file-list with
    the corrected scope.
 
-**Net result:** 5 amendments (unchanged), 7 issues to file (was 8),
-1 amendment evaluation bullet absorbed by an existing issue (#150).
+**Net result:** 5 amendments (unchanged), 6 new issues to file (was 8),
+1 existing issue to route (#179), and 1 amendment evaluation bullet
+absorbed by an existing issue (#150).
 
-## Amendment 1: Add MERGE to Cluster 4B
+## Amendment 1: Record MERGE as a Cluster 4.0 audit decision
 
 **Section:** "Cluster 4B: Set And Relational SQL Shapes" of the v3
 Phase 8.5 alpha-readiness plan (local reviewer artifact at
@@ -112,43 +114,20 @@ lines 475–506 at lock time).
 >       parameters, TABLESPACE, ALTER COLUMN ... TYPE ... USING, and
 >       generated-column re-declarations.
 
-**Proposed change shape (additive — do NOT replace the section):**
+**Proposed change shape (non-mutating by default):**
 
-This amendment is intentionally **additive**: the v3 plan's 4B
-primary-issues list and the existing bullets stay verbatim. Apply
-this amendment as TWO small edits:
+Do **not** add MERGE directly to the v3 4B primary-issues list from
+this planning note. Current main's public positioning places Postgres
+18 `MERGE ... RETURNING` under post-v0.1.0 double-down work, so this
+amendment records the audit finding and files a tracking issue only.
+Default route: post-v0.1.0. Promote MERGE into 4B only if the Cluster
+4.0 audit explicitly marks it alpha-blocking and the corresponding
+positioning text is updated or superseded in the same planning sweep.
 
-**Edit 1 — extend the "Primary issues" line.** Replace:
-
-> **Primary issues:** `djogi#101`, `djogi#102`, `djogi#103`, `djogi#104`,
-> `djogi#105`, `djogi#106`, `djogi#168`, `djogi#169`, `djogi#170`,
-> `djogi#172`.
-
-with:
-
-> **Primary issues:** `djogi#101`, `djogi#102`, `djogi#103`, `djogi#104`,
-> `djogi#105`, `djogi#106`, `djogi#168`, `djogi#169`, `djogi#170`,
-> `djogi#172`, `djogi#new-merge` (filed during Cluster 4.0 audit; see
-> Amendment 1a).
-
-**Edit 2 — append one bullet to the end of the 4B task list, after
-the existing `djogi#172` bullet, leaving all other bullets unchanged:**
-
-> - [ ] Add typed `MERGE INTO ... USING ... WHEN MATCHED ... WHEN NOT
->       MATCHED ...` surface for conditional UPSERT-with-conditions.
->       The Postgres 18+ catalog cross-reference (Cluster 4.0)
->       confirmed no typed surface today; raw SQL is the only path.
->       Acceptance: covers single-source MERGE with at least
->       `WHEN MATCHED THEN UPDATE` and `WHEN NOT MATCHED THEN INSERT`
->       branches, with typed condition predicates.
-
-**Why additive.** GPT-5.5 xhigh round-2 review flagged that an inline
-"Proposed text" containing placeholder bullets (`djogi#168: ...
-(unchanged)`) would be lossy if applied verbatim — it would drop
-retry parity, the transaction-only invariant, the umbrella type
-lists, and the discovery-context anchors. The two-edit form removes
-that hazard: only the new MERGE bullet and the issue-list extension
-are added; every existing detailed bullet stays exactly as written.
+If promoted later, apply as an additive 4B edit: extend the primary
+issues line with `djogi#new-merge` and append one typed `MERGE INTO
+... USING ... WHEN MATCHED ... WHEN NOT MATCHED ...` bullet after the
+existing `djogi#172` bullet, preserving every existing 4B detail.
 
 **Rationale:** The MASTER-CATALOG marks MERGE as `partial` (PG15+
 conditional DML), but spec-grep against `djogi/src/` finds zero matches
@@ -156,14 +135,15 @@ for `MERGE INTO` / `MergeStmt` / `merge_stmt` / `MergeWhen`. The only
 hit is a comment in `migrate/diff.rs:572` that uses the verb in a
 different sense. Catalog over-claims; actual coverage is `unknown` /
 uncovered. MERGE is a high-adoption-pressure shape that has been
-stable since PG15 — leaving it as raw-only contradicts the v3 plan's
-"no raw SQL because the typed API is missing" exit clause for Cluster 4.
+stable since PG15, but current public positioning keeps the
+MERGE/RETURNING family post-v0.1.0 unless Cluster 4.0 deliberately
+promotes it with an explicit positioning update.
 
 **Routing source:** `docs/research/postgres-coverage/2026-05-09/03-pg18-sql-reference.md`
 line 16 (catalog row); spec-grep evidence in
 `2026-05-10-cluster4-vs-postgres-coverage-xref.md` "Cluster 4B" section.
 
-## Amendment 1a: New issue to file before adding to 4B
+## Amendment 1a: New issue to file / audit routing
 
 **Title:** `framework gap: MERGE INTO ... USING ... typed surface`
 
@@ -191,6 +171,10 @@ Cluster 4.0 Postgres 18+ feature gap audit (the PG18+PostGIS coverage
 cross-reference). The MASTER-CATALOG marks MERGE as `partial`;
 spec-grep confirms no typed surface. Adopters who need MERGE today
 fall back to raw SQL.
+
+Default routing: post-v0.1.0 per `docs/spec/positioning.md`. Promote to
+4B only if Cluster 4.0 explicitly marks MERGE alpha-blocking and updates
+or supersedes that positioning text.
 
 ## Investigation
 
@@ -232,7 +216,8 @@ are source-driven write shapes).
 - [ ] At least one user guide example in `docs/guide/` (placement TBD)
 ```
 
-**Cluster:** 4B
+**Cluster:** post-v0.1.0 by default; 4B only if Cluster 4.0 confirms
+alpha-blocking and updates/supersedes `docs/spec/positioning.md`
 
 ## Amendment 2: Add OLD/NEW RETURNING evaluation to Cluster 4.0
 
@@ -393,9 +378,9 @@ post-v0.1.0 backlog a known shape rather than discovery-by-customer-bug.
 - Issue 3 (pgcrypto, now renumbered as issue 2) was reframed from
   "typed surface absent" to "expression-side typed wrapper missing —
   extension reachable via allowlist." Reviewer correctly identified
-  `djogi/src/migrate/bootstrap.rs:139` (allowlist entry) and
-  `djogi/src/testing.rs:834,1438` (test fixture references) showing
-  the differ projects pgcrypto without an issue; only the SQL-side
+  `djogi/src/migrate/bootstrap.rs:139` (allowlist entry) plus the
+  bootstrap/testing extension-name validation tests showing `pgcrypto`
+  is accepted; only the SQL-side
   typed wrapper is the gap. The issue stays in the file-list with
   the reframed scope.
 
@@ -426,8 +411,8 @@ lines 426–434)
 >       constructors not in this set (e.g. `ST_TileEnvelope`,
 >       `ST_HexagonGrid`, `ST_SquareGrid`, `ST_Letters`,
 >       `ST_MakePointM`, `ST_MakeValid`, `ST_IsValidDetail`,
->       `ST_IsValidReason`) are out-of-scope for v0.1.0. File one
->       tracking issue (`framework gap: extended PostGIS constructor
+>       `ST_IsValidReason`) are out-of-scope for v0.1.0. Route through
+>       existing `djogi#179` (`framework gap: extended PostGIS constructor
 >       coverage`) with the explicit list and the anchor: "v0.1.0
 >       spatial alpha covers the canonical typed surface; specialized
 >       constructors land post-v0.1.0 when an adopter shape requires
@@ -438,8 +423,8 @@ lines 426–434)
 
 **Rationale:** Catalog `02-postgis-functions.md` enumerates 400+
 PostGIS functions; v0.1.0 covers ~30. Without an explicit carve-out
-issue, the gap is implicit and unmeasurable. Filing one tracking
-issue with the explicit list (rather than 370 individual issues)
+issue, the gap is implicit and unmeasurable. Routing through one
+tracking issue with the explicit list (rather than 370 individual issues)
 keeps the post-v0.1.0 backlog manageable while satisfying the
 "no arbitrary deferrals" rule.
 
@@ -447,19 +432,21 @@ keeps the post-v0.1.0 backlog manageable while satisfying the
 lines 14–105 (constructors and accessors); spec-grep against
 `djogi/src/geo/mod.rs` confirms the v0.1.0 surface.
 
-## New issues to file (consolidated list, re-eval `2026-05-10`; GPT-5.5 corrections `2026-05-12`)
+## New issues to file and existing issues to route (consolidated list, re-eval `2026-05-10`; GPT-5.5 corrections `2026-05-12`)
 
 DO NOT actually file the issues. The user reviews first.
 
-**Each entry below is a file-ready candidate.** Candidate 1 (MERGE)
-carries the full body sketch at Amendment 1a above; candidates 2–7
-carry inline Stage 1.5 closing-condition checklists with the same
-five-bullet structure (rustdoc + doctest + spec amendment + live
+**Each new-issue entry below is file-ready.** Candidate 1 (MERGE)
+carries the full body sketch at Amendment 1a above; candidates 2–5
+and 7 carry inline Stage 1.5 closing-condition checklists with the
+same five-bullet structure (rustdoc + doctest + spec amendment + live
 PG18 test + adopter guide example), so the file-issues step can
-copy them verbatim without re-derivation.
+copy them verbatim without re-derivation. Candidate 6 is not a new
+issue; route through existing `djogi#179`.
 
 **Reviewer correction tally:**
-- Was: 8 issues to file. Now: **7 issues to file**.
+- Was: 8 issues to file. Now: **6 new issues to file** plus **1 existing
+  issue to route**.
 - One issue dropped from the file-list (SAVEPOINT — capability
   already exists via nested `atomic()`; ergonomics convenience-only).
 - One issue reframed but kept in the file-list (pgcrypto — extension
@@ -467,15 +454,17 @@ copy them verbatim without re-derivation.
 - One amendment evaluation bullet absorbed by an existing issue
   (PG18 temporal constraints → `djogi#150`).
 - Pre-existing GH issues confirmed in scope (no new issue needed):
-  `djogi#150` (PG18 temporal constraints).
+  `djogi#150` (PG18 temporal constraints) and `djogi#179` (extended
+  PostGIS constructor coverage).
 
 1. **`framework gap: MERGE INTO ... USING ... typed surface`**
-   - Cluster: 4B (after Cluster 4.0 audit confirms alpha-blocking)
+   - Cluster: post-v0.1.0 by default; 4B only if Cluster 4.0 confirms
+     alpha-blocking and updates/supersedes `docs/spec/positioning.md`
    - Body: see Amendment 1a above (full Stage 1.5 issue body sketch)
    - Closing-condition: Stage 1.5 format (rustdoc + doctest + spec
      amendment + live PG18 test + user guide example)
-   - Re-eval status: net-new-valid; reviewer-confirmed (zero `MERGE
-     INTO` in `djogi/src`).
+   - Re-eval status: net-new-valid; uncovered, but not promoted to
+     alpha-blocking 4B by this PR (zero `MERGE INTO` in `djogi/src`).
 
 2. **`framework gap: FTS configuration DDL (CREATE TEXT SEARCH
    CONFIGURATION / DICTIONARY / PARSER / TEMPLATE)`**
@@ -496,8 +485,8 @@ copy them verbatim without re-derivation.
    reachable via the migration emitter allowlist`**
    - Cluster: post-v0.1.0
    - Body: anchor "extension allowlisted at
-     `djogi/src/migrate/bootstrap.rs:139` and validated at line 821;
-     test fixtures use it (`djogi/src/testing.rs:834, 1438`). Only
+     `djogi/src/migrate/bootstrap.rs:139`; bootstrap/testing
+     extension-name validation accepts `pgcrypto`. Only
      the SQL-side typed wrapper for crypto operations is missing.
      Adopters use Rust-side crypto today (sha2, hmac, ring); pgcrypto
      is post-v0.1.0 only if a real adopter shape requires server-side
@@ -553,11 +542,11 @@ copy them verbatim without re-derivation.
      by existing #88 (which is the aggregate umbrella for the
      existing surface, not array/composite extension).
 
-6. **`framework gap: extended PostGIS constructor coverage
+6. **Existing `djogi#179`: `framework gap: extended PostGIS constructor coverage
    (TileEnvelope, HexagonGrid, SquareGrid, Letters, MakePointM,
    MakeValid, IsValidDetail, IsValidReason)`**
-   - Cluster: post-v0.1.0 (one umbrella issue)
-   - Body (explicit list with v0.1.0 carve-out anchor, file-ready):
+   - Cluster: post-v0.1.0 (existing umbrella issue; do not file a duplicate)
+   - Existing issue body / routing anchor:
 
      **What v0.1.0 covers (the "spatial alpha" surface):** `GeoPoint`,
      `Polygon`, `MultiPolygon`, `LineString`, `MultiLineString`,
@@ -597,8 +586,10 @@ copy them verbatim without re-derivation.
      - [ ] Spec amendment in `docs/spec/queries.md` (spatial section) names the constructor and its result-typing semantics
      - [ ] Live PG18 + PostGIS integration test verifies the emitted SQL against a real cluster
      - [ ] Adopter guide example added under `docs/guide/spatial.md` (or successor) if the constructor's use case is non-obvious
-   - Re-eval status: net-new-valid; reviewer-confirmed no umbrella
-     constructor-breadth issue exists.
+   - Re-eval status: existing-valid; `djogi#179` already carries this
+     umbrella scope. Keep it post-v0.1.0, and only escalate
+     `ST_TileEnvelope` into 4C if #92's MVT/Geobuf row-shape work proves
+     it is required.
 
 7. **`framework gap: PG18 OLD / NEW in RETURNING for INSERT / UPDATE /
    DELETE / MERGE`**

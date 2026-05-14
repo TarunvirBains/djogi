@@ -33,7 +33,7 @@ companion cross-reference doc for the full disclaimer.
 | Window functions `RowNumber`, `DenseRank` plus `qualify` lowering ARE implemented | **high** | spec-read of `djogi/src/query/annotate.rs:865-933` (RowNumber/DenseRank pin tests); spec-read of `djogi/src/query/annotate.rs:566-711` (qualify field + emission) | n/a |
 | Spatial relationships (Within/Contains/Intersects/Disjoint/Equals/DWithin) plus measurement/overlay families ARE implemented | **high** | spec-read of `djogi/src/expr/spatial.rs` for each variant: Within line 326, Distance line 342, Intersection line 411, ConvexHull migrated to AggOp::SpatialConvexHull; aligned with catalog `covered` rows in 02-postgis-functions.md | n/a |
 | JSONB path operators `->`, `->>`, `(col->'a'->>'b')::cast` ARE implemented | **high** | spec-read of `djogi/src/jsonb/path.rs:261-290` (path emission); spec-read of `jsonb/path.rs:354-405` (eq/neq/gt/gte/lt/lte) | n/a |
-| `pg_trgm` is in extension allowlist + migration emitter; NO typed similarity expression | **high** | spec-read of `djogi/src/migrate/bootstrap.rs:138` (allowlist) and 821 (validation); grep against `djogi/src/expr/` for `trigram` / `similarity` / `pg_trgm_ops` returned zero matches | n/a |
+| `pg_trgm` is in extension allowlist + migration emitter; NO typed similarity expression | **high** | spec-read of `djogi/src/migrate/bootstrap.rs` (allowlist + extension validation); grep against `djogi/src/expr/` for `trigram` / `similarity` / `pg_trgm_ops` returned zero matches | n/a |
 | `btree_gist` is in extension allowlist; NO exclusion-constraint typed surface | **high** | spec-read of `djogi/src/migrate/bootstrap.rs:137` (allowlist); grep for `EXCLUDE` / `ExcludeConstraint` returned zero matches in `djogi/src` | n/a |
 | `LATERAL`, `VALUES`, `UNION`/`INTERSECT`/`EXCEPT` are framework-internal only (no public surface) | **high** | grep matched only in `query/recursive.rs` and `query/closure.rs`; both files are framework-internal CTE/closure machinery; no `QuerySet::union` / `lateral` / `values` public method | n/a |
 | AggregateExpr type-state (#89) does NOT exist yet (only `AggregateExpr<Out>` with PhantomData) | **high** | spec-read of `djogi/src/expr/aggregate.rs:86-91` shows single template; no Kind discriminator, no ValueAgg/MetadataAgg/OrderedSetAgg/HypotheticalSetAgg type-states | n/a |
@@ -43,7 +43,7 @@ companion cross-reference doc for the full disclaimer.
 | PG18 temporal constraints (WITHOUT OVERLAPS, PERIOD FK, NOT ENFORCED, named NOT NULL) are NOT implemented | **medium** | grep for `WITHOUT OVERLAPS` / `PERIOD FK` / `NOT ENFORCED` returned zero matches; only `tstzrange` mention in `descriptor.rs:378` is for documentation; could be implemented under a different name | run `grep -ri 'temporal\|without overlaps\|period\|not enforced' djogi-macros/src djogi/src` for ~5 minutes |
 | PG18 scalar functions (uuidv7, uuidv4, array_sort, array_reverse, casefold, crc32, gamma) are NOT implemented | **high** | grep for `casefold` / `array_sort` / `array_reverse` / `crc32` / `gamma(` returned zero matches; HeerId/RanjId obviates UUID functions | n/a |
 | `SAVEPOINT` family — **partial** — typed surface composed via nested `atomic()`; no caller-named savepoint method | **high** (downgraded from "medium absence" by re-eval) | spec-read of `djogi/src/transaction.rs:13-18, 207-309` confirms nested `atomic()` pushes `SAVEPOINT sp_<depth>` (line 223-227), releases on `Ok` (line 265), rolls back on `Err` (line 281), rolls back on panic (line 300); rustdoc explicitly notes "Nested calls push a Postgres savepoint rather than opening a new transaction" (line 13-18). Caller-named savepoint method (`savepoint(name: &str)`) does NOT exist — that is the ergonomics-on-top gap, not absence of capability. | n/a — already verified post-correction |
-| `pgcrypto` extension — **partial** — extension reachable via migration emitter allowlist; expression-side typed wrapper missing | **high** (downgraded from "medium absence" by re-eval) | spec-read of `djogi/src/migrate/bootstrap.rs:139` (allowlist entry); spec-read of `djogi/src/migrate/bootstrap.rs:821` (validation); spec-read of `djogi/src/testing.rs:834, 1438` (test fixture references). No expression-side typed wrapper for `encrypt`/`decrypt`/`digest`/`hmac`/`gen_salt`. Adopters who want pgcrypto today get the extension projected automatically when the descriptor lists it; SQL-side calls require the raw bypass attribute. | n/a — already verified post-correction |
+| `pgcrypto` extension — **partial** — extension reachable via migration emitter allowlist; expression-side typed wrapper missing | **high** (downgraded from "medium absence" by re-eval) | spec-read of `djogi/src/migrate/bootstrap.rs:139` (allowlist entry) plus bootstrap/testing extension-name validation tests accepting `pgcrypto`. No expression-side typed wrapper for `encrypt`/`decrypt`/`digest`/`hmac`/`gen_salt`. Adopters who want pgcrypto today get the extension projected automatically when the descriptor lists it; SQL-side calls require the raw bypass attribute. | n/a — already verified post-correction |
 | FTS configuration DDL (CREATE TEXT SEARCH CONFIG/DICT/PARSER/TEMPLATE) is NOT implemented | **medium** | catalog rows all `unknown`; spec-read of FTS files shows query-side coverage only; no DDL emission for FTS configuration | run `grep -ri 'CREATE TEXT SEARCH' djogi/src` for ~2 minutes |
 | `fuzzystrmatch` extension (Levenshtein, Soundex, Metaphone) is NOT implemented | **high** | grep for `fuzzystrmatch` / `levenshtein` / `soundex` / `metaphone` returned zero matches | n/a |
 | `ltree` extension is NOT implemented | **high** | grep for `ltree` returned zero matches; closure CTE in `query/closure.rs` covers the dominant hierarchy use case | n/a |
@@ -109,15 +109,16 @@ wrong, please verify."
      `djogi#150`. Reframed as routing-to-existing-issue.
   3. pgcrypto entry conflated extension reachability with
      expression-side typed wrapper absence. Reframed.
-  Reviewer also confirmed: Amendment 1 (MERGE), Amendment 3 (PG18
+  Reviewer also confirmed: Amendment 1 (MERGE audit finding), Amendment 3 (PG18
   syntax preference for #148), Amendment 4 issues 2/3/4/5,
   Amendment 5 (PostGIS constructor breadth), and the eight
   quick-wins are all valid.
 - **Re-eval pass** (`2026-05-10`, commit `03dc0f6`) addresses the three
   reviewer corrections. Final amendment count: **5 (unchanged)**.
-  Final issues-to-file count: **7** (was 8; SAVEPOINT dropped from
-  the file-list and recorded as an anchored deferral because nested
-  `atomic()` IS the typed surface; capability-gap framing was wrong).
+  Final issues-to-file count: **6 new issues** plus **1 existing issue
+  route** (was 8; SAVEPOINT dropped from the file-list and recorded as
+  an anchored deferral because nested `atomic()` IS the typed surface;
+  capability-gap framing was wrong; #179 already exists).
   pgcrypto stays in the file-list with reframed expression-side
   scope.
 - **GPT-5.5 xhigh reviewer pass** (`2026-05-12`, on PR #192) — verdict
@@ -144,9 +145,10 @@ wrong, please verify."
      Remaining specialized functions (coverage `ST_CoverageUnion`,
      trajectory `ST_IsValidTrajectory`, exotic I/O `ST_AsFlatGeobuf` /
      MARC21 / TWKB) remain `unknown`/uncovered.
-  4. Candidate issues 2–7 now carry inline Stage 1.5 closing-condition
-     checklists (rustdoc + doctest + spec + live PG18 test +
-     adopter guide) so they are file-ready alongside candidate 1.
+  4. New-issue candidates 2–5 and 7 now carry inline Stage 1.5
+     closing-condition checklists (rustdoc + doctest + spec + live PG18
+     test + adopter guide) so they are file-ready alongside candidate
+     1; candidate 6 routes through existing #179.
   5. Added path-reference disclaimers to the top of all three notes
      so the broken-link hazard from cross-referencing local-only
      artifacts (`docs/superpowers/plans/...`,
@@ -172,11 +174,12 @@ wrong, please verify."
      cross-reference (which still ended at eight). Added as entry 9
      with full evidence; "nine" wording is now consistent across
      this file, the cross-reference, and Amendment 2.
-  3. Candidate issues 4 (PG18 scalars) and 6 (extended PostGIS
-     constructors) previously said "Body: per-function anchor table"
-     without spelling out the table. Filled inline anchor tables in
-     the amendment proposal so each candidate is fully file-ready.
+  3. Candidate issue 4 (PG18 scalars) previously said "Body:
+     per-function anchor table" without spelling out the table. Filled
+     the inline anchor table, and changed entry 6 to route extended
+     PostGIS constructors through existing #179 rather than filing a
+     duplicate.
 - **Awaiting:** any subsequent GPT-5.5 xhigh dispatch on the round-2
   corrected commit (`13bb2d7`), plus director sign-off on the
-  routing decisions for the five amendments and the seven candidate
-  issues to file.
+  routing decisions for the five amendments, six new candidate issues,
+  and one existing issue route.
