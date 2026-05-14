@@ -12,15 +12,21 @@
 //!    session-scoped flag that the future
 //!    `#[model(events)]` outbox writer (wired in a later task)
 //!    consults before queuing an outbox row. The default is "events
-//!    suppressed during a backfill chunk". An internal `emit_events:
-//!    bool` parameter on this module's entry points, when `true`,
-//!    skips the `SET LOCAL` so downstream hooks behave normally —
-//!    used today by tests. No public adopter-facing opt-in surface is
-//!    wired yet: there is no `--emit-events` CLI flag on `djogi live
-//!    run` / `resume` and no `#[migration]` proc macro attribute. An
-//!    operator-facing opt-in is deferred to a future task; suppression
-//!    is always-on for adopter-driven backfills until that surface
-//!    lands.
+//!    suppressed during a backfill chunk". The module's public entry
+//!    points [`execute_backfill`] and [`resume_backfill`] expose an
+//!    `emit_events: bool` parameter; when the caller passes `true`
+//!    the runner skips the `SET LOCAL` so downstream hooks behave
+//!    normally. This is an advanced, low-level Rust API — exercised
+//!    today primarily by the test suite — and not part of the stable
+//!    high-level adopter contract. There is no high-level opt-in
+//!    surface yet: no `--emit-events` CLI flag on `djogi live run` /
+//!    `resume`, no `#[migration(emit_events_during_backfill)]`
+//!    proc-macro attribute (no `#[migration]` macro exists at all
+//!    today), and the parameter is not surfaced through any derive
+//!    or other attribute path. A high-level adopter-facing opt-in is
+//!    deferred to a future task; for adopter-driven backfills routed
+//!    through the CLI / derive contract, suppression is always-on
+//!    until that surface lands.
 //! 2. The pattern's `UPDATE … WHERE <idempotent-predicate> LIMIT $1
 //!    RETURNING <pk>` query — the actual transformation. Bound count
 //!    is the chunk size; the predicate is supplied by the pattern

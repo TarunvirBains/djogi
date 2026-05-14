@@ -413,7 +413,7 @@ Advisory lock contract:
 - key derivation: `SHA-256("djogi:advisory_lock:" || database || "\0" || app)`, with the first 8 digest bytes interpreted as a big-endian signed 64-bit integer (Postgres `bigint`)
 - prefix: the `djogi:advisory_lock:` byte prefix scopes the keyspace so adopter-side advisory locks that hash arbitrary identifiers cannot collide with Djogi's keys
 - acquired before reading the pending set for the bucket
-- session-scoped — held on a dedicated non-pooled `tokio_postgres::Client` for the full `apply` / `rollback` / `repair` window (pool reuse would silently swap the lock holder)
+- session-scoped — the design intent is that the holder pins a single session (e.g. a dedicated non-pooled `tokio_postgres::Client`) for the full `apply` / `rollback` / `repair` window so pool reuse cannot silently swap the holder; the current runner acquires the lock through a supplied pool-backed `DjogiContext` and per-operation checkouts are not yet pinned to one session for the migration window — pinning is a release-gate hardening item (track ahead of v0.1.0 publish), not a current runtime guarantee
 - released in a finally-equivalent cleanup path
 
 ### 10.8 Apply, Rollback, Repair, and Adoption
