@@ -74,7 +74,7 @@ impl djogi::FromPgRow for SessionRow {
 }
 
 pub struct MySessionProvider {
-    pool: djogi::DjogiPool,
+    pool: djogi::pg::pool::DjogiPool,
 }
 
 impl DjogiAuth for MySessionProvider {
