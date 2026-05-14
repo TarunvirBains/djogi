@@ -159,15 +159,21 @@ macro emits, so there is no hand-written DDL to keep in sync with the
 struct definition.
 
 **Production / development.** Use the descriptor-driven migration
-differ:
+differ to compose a migration from descriptor drift:
 
 ```bash
 djogi migrations compose          # generate up/down SQL from descriptor drift
-djogi migrations apply            # apply pending migrations to $DATABASE_URL
+djogi migrations status           # show ledger / snapshot / live-DB state
+djogi migrations attune           # reconcile disk / ledger / live DB
 ```
 
-See the [Migrations guide](./migrations.md) for the full compose /
-apply / attune pipeline, online-safety classification, and the ledger.
+Apply the composed plan through the library API
+(`djogi::migrate::apply_plan` / `rollback_plan` / `fake_apply_plan` /
+`baseline_plan`) — the operator-facing `djogi migrations apply` CLI
+dispatcher is deferred to a Phase 7 follow-up. See the
+[Migrations guide](./migrations.md) for the full pipeline (compose /
+apply / attune), library entry points, online-safety classification,
+and the ledger.
 
 **Tests.** Annotate the test with `sync_models = [...]` and the
 `#[djogi::djogi_test]` harness materialises the listed models into the
