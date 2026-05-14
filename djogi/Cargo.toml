@@ -537,6 +537,15 @@ name = "phase8_5_c2_129_non_superuser_rls"
 path = "../tests/internal/phase8_5_c2_129_non_superuser_rls.rs"
 harness = true
 
+# Phase 8.5 Cluster 2 issue #162 — pool-path raw SQL escape hatches must
+# detach the connection on Err / cancellation, mirroring DjogiPool::with_client.
+# Internal because the fixture exercises raw_execute through the bypass
+# attribute to prove the dirty-by-default lifecycle.
+[[test]]
+name = "phase8_5_c2_162_raw_dirty_semantics"
+path = "../tests/internal/phase8_5_c2_162_raw_dirty_semantics.rs"
+harness = true
+
 [[test]]
 name = "phase8_trait_impl_registry"
 path = "../tests/integration/phase8_trait_impl_registry.rs"

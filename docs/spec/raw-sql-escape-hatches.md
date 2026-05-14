@@ -254,3 +254,112 @@ Raw SQL is not banned. It is deliberately loud. Djogi will not ship a fluent
 
 Every escape hatch must make reviewers ask why the typed surface is not enough.
 That question is the point of the harness.
+
+## 9. Connection lifecycle — dirty-by-default
+
+The pool-backed raw methods on `RawAccessExt` (`raw_query`, `raw_rows`,
+`raw_fetch_one`, `raw_scalar`, `raw_execute`, `raw_ddl`) acquire a pooled
+connection through the framework's execution helpers. Each pool checkout is
+wrapped in a dirty-by-default guard that mirrors `DjogiPool::with_client`:
+
+- **Clean exit (`Ok`).** The connection returns to the pool the normal way;
+  the next checkout reuses it.
+- **Dirty exit (`Err`, panic, future cancellation).** The connection is
+  detached via `deadpool_postgres::Object::take` and dropped immediately.
+  The pool will create a fresh physical connection on the next demand.
+
+This is required because djogi runs its pools with
+`deadpool_postgres::RecyclingMethod::Fast`, which only checks `is_closed()`
+on return — it does NOT issue `ROLLBACK`, `RESET ALL`, or `DISCARD ALL`.
+Without the dirty-exit detach, a bypassed `raw_execute` that runs
+`SET ROLE`, `SET search_path`, advisory lock acquisition, manual
+`BEGIN`/`COMMIT`, `LISTEN`/`UNLISTEN`, or any other session-state mutation
+and then errors or panics would leak that state to the next checkout — a
+real auth/tenant/session-state hazard for multi-tenant deployments.
+
+The trade-off is one extra physical connection per dirty exit. This is the
+right cost to pay for the guarantee.
+
+### Post-query decode dirty-exit
+
+`raw_query`, `raw_fetch_one`, and `raw_scalar` perform framework-side
+decoding after the underlying SQL returns. A pathological mix — server-side
+mutation in the SQL plus a column type the caller's `T` cannot decode — can
+produce an SQL `Ok` paired with a decode `Err`. Example:
+
+```rust,ignore
+let _: i32 = ctx
+    .raw_scalar("SELECT set_config('application_name', 'poisoned', false)", &[])
+    .await?;
+```
+
+The SQL succeeds and mutates the session GUC; `set_config` returns text, so
+`try_get_scalar::<i32>` then fails. The decode is routed through the same
+pool guard via `query_all_with` / `query_opt_with`, so the `Err` arms the
+guard for detach and the poisoned connection is closed before the next
+checkout sees it. Adopters do not need to reason about this case
+explicitly — it is covered by the dirty-by-default lifecycle.
+
+### Adopter contract
+
+The dirty-by-default guard fires on `Err` / panic / cancellation paths
+only. On the **clean-exit path**, session state mutated by an `Ok` raw
+call still leaves the connection non-default when it returns to the
+pool. Adopters who run session-state-affecting raw SQL must wrap the
+call in `djogi::transaction::atomic(...)` **and** either:
+
+- use a TRANSACTION-LOCAL form so a `COMMIT` or `ROLLBACK` clears the
+  state automatically — `SET LOCAL key = value` instead of `SET key =
+  value`, `set_config(name, value, true)` instead of
+  `set_config(name, value, false)`, `pg_advisory_xact_lock(...)` instead
+  of `pg_advisory_lock(...)`, etc.; or
+- explicitly reset / unlock / `UNLISTEN` / `DEALLOCATE` the
+  session-level mutation on **every non-cancel exit** of the closure —
+  before returning `Ok`, in every error branch, and in any panic
+  recovery. `atomic()` will NOT do this cleanup for you on `Err` /
+  panic; the next paragraph explains why.
+
+`atomic()` is a transaction guard, not a session-state reset guard. Its
+`ROLLBACK` path on `Err` / panic only unwinds TRANSACTION-SCOPED state
+(row writes, sequence allocations, `SET LOCAL`,
+`set_config(_, _, true)`, `pg_advisory_xact_lock`). SESSION-scoped
+state survives both clean `COMMIT` and `ROLLBACK`: session advisory
+locks explicitly ignore transaction rollback per Postgres semantics,
+plain `SET` / `SET ROLE` / `SET search_path` are reset by `ROLLBACK`
+only when the same transaction issued them, and `LISTEN` / prepared
+statements bypass transactional rollback entirely.
+
+Two worked examples:
+
+- A `SET search_path = 'audit'` inside an `atomic()` closure that
+  returns `Ok` commits but the new `search_path` survives `COMMIT` and
+  rides the connection back to the pool.
+- A `pg_advisory_lock(424242)` acquired inside an `atomic()` closure
+  that subsequently returns `Err` is NOT released by `ROLLBACK`; the
+  next pool checkout can still see the lock held and would have to call
+  `pg_advisory_unlock(424242)` (which `atomic()` will not do for you).
+
+Adopters must choose transaction-local forms or run explicit reset on
+every non-cancel exit for the contract to hold.
+
+#### `atomic()` cancellation caveat
+
+`atomic()` issues `ROLLBACK` on the closure's `Err` and panic paths. It
+does NOT issue `ROLLBACK` when the entire `atomic()` future is dropped
+mid-execution (e.g. wrapping an `atomic` call in `tokio::time::timeout` and
+having the timeout fire before the closure resolves). In that case the
+transaction-backed `DjogiContext` drops without async cleanup and the
+underlying connection returns to the pool with the transaction still open.
+
+This is a pre-existing transaction-scope hazard tracked separately from
+djogi#162. It is not introduced by the pool-path guard described above,
+but adopters relying on `atomic()` as a session-state isolation mechanism
+should avoid wrapping it in cancellation primitives until the gap is
+closed.
+
+Cursors, `COPY` streams, and other multi-round-trip protocol operations
+should go through `RawPoolAccessExt::raw_with_client`. Its `WithClientGuard`
+bounds the protocol exchange to a single checkout and applies the same
+dirty-detach on dirty exit.
+
+Tracking issue: [djogi#162](https://github.com/TarunvirBains/djogi/issues/162).
