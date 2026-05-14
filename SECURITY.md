@@ -34,7 +34,8 @@ In scope:
 
 - The djogi framework crates (`djogi`, `djogi-macros`,
   `djogi-cli`, `djogi-shell`)
-- The `djogi-maahi` admin console (when feature-flagged on)
+- The planned `djogi-maahi` admin console once its crate and feature
+  flag ship; it is not a v0.1.0-alpha shipped surface
 - Generated migration SQL — escape, injection, and
   least-privilege concerns
 - Auth substrate (`PasswordHash`, `AuthContext`, RLS policy
