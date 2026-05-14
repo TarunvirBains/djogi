@@ -170,13 +170,14 @@ pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
 
 /// Programmatic seed wrapped in a single `atomic()` scope.
 #[djogi::deliberately_bypass_convention_with_raw_sql]
-// JUSTIFICATION (djogi#234): example seed reads reference rows with a minimal raw query before typed model inserts.
+// JUSTIFICATION: temporary Phase 8.5 debt; this lookup should use the typed model surface, not remain a raw-SQL example.
 async fn seed_programmatic(pool: &DjogiPool) -> Result<()> {
     atomic(pool, |ctx| {
         Box::pin(async move {
             // Pull all five countries up front — we need their PKs to
             // build HerdRange rows. `Country::objects().fetch_all`
-            // would also work; raw_query keeps the lookup minimal.
+            // is the intended typed replacement; this raw_query is
+            // current Phase 8.5 debt, not a preferred example path.
             let countries: Vec<Country> = ctx
                 .raw_query("SELECT * FROM countries ORDER BY iso_alpha3", &[])
                 .await?;

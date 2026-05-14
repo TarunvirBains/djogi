@@ -265,9 +265,9 @@ This is the single biggest functional gap in the current Djogi spec. Real applic
 
 ---
 
-## 9. Admin Renderer — Resolved at Maahi Phase 10
+## 9. Admin Renderer — Planned Maahi Phase 10 Resolution
 
-This section previously argued for replacing Dioxus with HTMX + Askama for the admin renderer. The decision was reversed during Phase 10 design: Maahi (Djogi's admin console) ships as a Dioxus full-stack application. Pure-Rust component tree, type-safe server functions, desktop-renderer reach (`dioxus-desktop`), and richer interactivity ergonomics outweighed the bundle-size advantages of HTMX + Askama for djogi's adopter profile. To keep Dioxus's dep weight off non-admin adopters' lock files, Maahi is carved into its own `djogi-maahi` workspace crate behind the `admin` feature flag — see `CLAUDE.md` for the carve-out reasoning.
+This section previously argued for replacing Dioxus with HTMX + Askama for the admin renderer. The planned Phase 10 decision is Maahi (Djogi's admin console) as a Dioxus full-stack application. Pure-Rust component tree, type-safe server functions, desktop-renderer reach (`dioxus-desktop`), and richer interactivity ergonomics outweighed the bundle-size advantages of HTMX + Askama for djogi's adopter profile. The intended carve-out is a future `djogi-maahi` workspace crate behind an `admin` feature flag; that crate and feature are not shipped in v0.1.0-alpha.
 
 See [`docs/spec/maahi/`](./maahi/index.md) for the authoritative Maahi spec. A `djogi-light-admin` (HTMX + Askama only, no WASM toolchain) is parked in [`docs/roadmap/future-work.md`](../roadmap/future-work.md) if real demand surfaces.
 
@@ -461,9 +461,9 @@ for car in vehicles {
 
 ---
 
-## 13. Admin Renderer — Same Resolution as §9
+## 13. Admin Renderer — Same Planned Resolution as §9
 
-Earlier draft analysis recommended HTMX + Askama over Dioxus for the admin renderer. The decision was reversed in favor of Dioxus full-stack during Phase 10 design — see §9 above and the Maahi spec at [`docs/spec/maahi/`](./maahi/index.md). The carve-out lives in `djogi-maahi`; per-adopter dep weight is bounded by the optional-dep behind the `admin` feature flag.
+Earlier draft analysis recommended HTMX + Askama over Dioxus for the admin renderer. The planned Phase 10 direction is Dioxus full-stack — see §9 above and the Maahi spec at [`docs/spec/maahi/`](./maahi/index.md). The intended carve-out is a future `djogi-maahi` crate; the optional `admin` dependency surface is not shipped in v0.1.0-alpha.
 
 ---
 
