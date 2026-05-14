@@ -224,15 +224,19 @@ No heuristic rename guessing is part of the core differ.
 type-derived CHECK projection contract that djogi#186 puts in place. The
 helper, the differ AMEND DROP+ADD lifecycle, the
 `FieldSqlType::NumericPrecision { precision, scale }` variant, and the
-`IntoFilterValue for u64` shim are wired and unit-tested today. The piece
-that connects them to production — the `project_column` call site that would
-populate `ColumnSchema.check` from a column's Rust source type — is gated on
-djogi#190 (see "Currently shipped vs deferred" below for the why and what
-needs to land). Until djogi#190 closes, `ColumnSchema.check` is always
-`None` for type-derived CHECKs in production projections, the differ never
-sees a differing CHECK to act on, and no type-derived CHECK constraint
-reaches `schema_snapshot.json` or generated migration SQL. The remainder of
-this section is the contract the projection will honour once that wiring
+`IntoFilterValue for u64` shim are wired and unit-tested today. Two pieces
+still keep this contract from reaching production and are gated on
+djogi#190: the `project_column` call site that would populate
+`ColumnSchema.check` from a column's Rust source type, and the
+source-Rust-type-aware dispatch the helper itself still lacks (its
+`SMALLINT` arm hard-codes `i8` bounds and its `INTEGER` arm returns `None`,
+so `u8` and `u16` source types cannot be projected correctly without it).
+See "Currently shipped vs deferred" below for the why and what needs to
+land. Until djogi#190 closes, `ColumnSchema.check` is always `None` for
+type-derived CHECKs in production projections, the differ never sees a
+differing CHECK to act on, and no type-derived CHECK constraint reaches
+`schema_snapshot.json` or generated migration SQL. The remainder of this
+section is the contract the projection will honour once that wiring
 activates.
 
 Under the contract, the differ will project a table-level `CHECK` constraint
@@ -317,8 +321,8 @@ signature. See `decisions.md` "Type-derived CHECK projection (Phase 8.5 v3
 Cluster 2)" for the contract.
 
 **Currently shipped vs deferred.** The projection contract, the AMEND DROP+ADD
-fix, and `IntoFilterValue for u64` ship under djogi#186. Two pieces are gated
-on djogi#190:
+fix, and `IntoFilterValue for u64` ship under djogi#186. Three pieces are
+gated on djogi#190:
 
   * The `rust_type_to_sql` arms for `i8 / u8 / u16 / u32 / u64` are gated on
     djogi#190 (per-field bind/decode shims in the macro emitter) —
@@ -334,14 +338,34 @@ on djogi#190:
     `id` columns whose values exceed `u32::MAX` from day one. djogi#190 must
     add a per-field "rust source type" discriminator on `FieldDescriptor`
     alongside the bind/decode shims, and at that point `project_column` flips
-    on the call to `field_type_check` (gated on the discriminator) and the
-    contract surface lights up for `i8 / u8 / u16 / u32 / u64`.
+    on the call to `field_type_check` (gated on the discriminator). Flipping
+    the call site alone, however, does not project correct bounds for `u8`
+    and `u16` — see the next bullet.
+  * Source-Rust-type-aware dispatch *inside* `field_type_check` itself is
+    also gated on djogi#190. The helper today dispatches on `FieldSqlType`
+    alone: its `SMALLINT` arm hard-codes the `i8` range
+    (`>= -128 AND <= 127`), and its `INTEGER` arm returns `None`. Even
+    after `project_column` flips on with the new source-type discriminator,
+    a `u8 → SMALLINT` column would receive `i8` bounds rather than its own
+    `0 .. 255` range, and a `u16 → INTEGER` column would receive no CHECK
+    at all. djogi#190 must therefore plumb the same `rust_source_type`
+    discriminator into the helper so it can choose between `i8` and `u8`
+    bounds under `SMALLINT` and emit a fresh `u16` arm under `INTEGER`. The
+    `u32 → BIGINT` and `u64 → NUMERIC(20, 0)` paths already encode the
+    correct bounds for their sole expected source type — disambiguation at
+    `BIGINT` is handled at the `project_column` gate above, and
+    `NumericPrecision { precision: 20, scale: 0 }` is unique to `u64` and
+    needs no further discrimination. So the contract surface lights up for
+    `i8 / u8 / u16 / u32 / u64` only when this helper extension lands
+    alongside the `project_column` flip.
 
 The helper, the differ AMEND DROP+ADD lifecycle, and the
 `FieldSqlType::NumericPrecision { precision, scale }` variant are all
-unit-tested today against synthetic descriptor / `ColumnSchema` shapes; only
-the projection wiring sits dormant so the contract layer cannot regress
-production tables before #190 closes the source-type gap.
+unit-tested today against synthetic descriptor / `ColumnSchema` shapes; the
+production wiring (`project_column` call site) and the helper's
+source-Rust-type-aware dispatch for `u8 / u16` both sit dormant so the
+contract layer cannot regress production tables before #190 closes the
+source-type gap.
 
 ### 10.7 Ledger and Locking
 
