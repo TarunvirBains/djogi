@@ -68,8 +68,8 @@ ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoices FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY invoices_tenant_isolation ON invoices
-    USING (org_id = current_setting('djogi.tenant_id', true)::bigint)
-    WITH CHECK (org_id = current_setting('djogi.tenant_id', true)::bigint);
+    USING (org_id = current_setting('app.tenant_id', true)::bigint)
+    WITH CHECK (org_id = current_setting('app.tenant_id', true)::bigint);
 
 -- App role sees only tenant rows; admin role bypasses policy
 GRANT SELECT, INSERT, UPDATE, DELETE ON invoices TO djogi_app;
@@ -83,13 +83,12 @@ Descriptor-driven migration plans include this SQL when they detect a model with
 
 ---
 
-## 3. `djogi::set_tenant(tx, tenant_id)`
+## 3. `DjogiContext::set_tenant(tenant_id)`
 
 For RLS to work, every database transaction that accesses tenant-scoped tables must set the tenant context before any query fires. Djogi does not set this automatically — you set it explicitly in your request-handling code.
 
 ```rust
 use djogi::prelude::*;
-use sqlx::PgPool;
 
 async fn list_invoices(
     State(pool): State<DjogiPool>,
@@ -113,14 +112,14 @@ async fn list_invoices(
 Under the hood, `set_tenant()` executes:
 
 ```sql
-SET LOCAL djogi.tenant_id = '8312847293';
+SET LOCAL app.tenant_id = '8312847293';
 ```
 
 `SET LOCAL` means the variable is scoped to the current transaction — it is cleared automatically when the transaction ends (commit or rollback). You cannot accidentally leak a tenant context between requests.
 
-> **Warning:** Never call `SET djogi.tenant_id` without `LOCAL`. A session-level `SET` persists on the connection for the lifetime of the connection pool slot — if the connection is reused for a different tenant's request, the wrong tenant context will be active. Always use `djogi::set_tenant()` which uses `SET LOCAL`.
+> **Warning:** Never call `SET app.tenant_id` without `LOCAL`. A session-level `SET` persists on the connection for the lifetime of the connection pool slot — if the connection is reused for a different tenant's request, the wrong tenant context will be active. Always use `DjogiContext::set_tenant(...)` inside `atomic(...)`; it uses transaction-local state.
 
-### Using `djogi::set_tenant()` in middleware
+### Using `DjogiContext::set_tenant(...)` in middleware
 
 The standard pattern is a web-framework middleware layer that extracts the tenant from the authenticated session and injects it into the request. The example below uses Axum (enabled via the opt-in `axum` feature flag); the same pattern works for any other Rust web framework adopters wire in through its own per-framework feature flag (one flag per framework) or manual middleware.
 
@@ -130,7 +129,7 @@ use axum::{extract::State, middleware::Next, response::Response};
 use axum::http::Request;
 
 pub async fn tenant_context_middleware<B>(
-    State(pool): State<PgPool>,
+    State(pool): State<DjogiPool>,
     mut request: Request<B>,
     next: Next<B>,
 ) -> Response {
@@ -192,7 +191,7 @@ impl InvoiceService {
             tx.set_tenant(&scope.tenant_id().to_string()).await?;
 
             Invoice::objects()
-                .filter(|f| f.org_id().eq(scope.tenant_id()).and(f.status().eq("open")))
+                .filter(|f| f.org_id().eq(scope.tenant_id()).and_with(f.status().eq("open")))
                 .fetch_all(tx).await
         })).await
     }
@@ -207,28 +206,25 @@ let invoices = service.list_open(scope).await?;
 
 ## 5. `_insecurely()` Methods
 
-Every terminal method on a tenant-scoped model has a corresponding `_insecurely()` variant that bypasses RLS enforcement. These are provided for legitimate administrative use — global statistics, support tools, data migrations, and cross-tenant reporting.
+Tenant-scoped models expose explicit insecure helpers for legitimate administrative use. The generated model-level helpers perform their own bypass; `objects_insecurely()` returns a queryset shape whose terminal calls must run inside an explicitly authorized transaction-scoped bypass pattern. These are provided for legitimate administrative use — global statistics, support tools, data migrations, and cross-tenant reporting.
 
 ```rust
 let mut ctx = DjogiContext::from_pool(pool.clone());
 
 // Standard — enforces tenant isolation
 Invoice::objects()
-    .filter(|f| f.org_id.eq(org_id))
+    .filter(|f| f.org_id().eq(org_id))
     .fetch_all(&mut ctx).await?;
 
 // Bypasses RLS — sees all tenants' data
-Invoice::objects()
-    .fetch_all_insecurely(&mut ctx).await?;
+Invoice::objects_insecurely()
+    .fetch_all(&mut ctx).await?;
 
-// Specific per-terminal variants
-Invoice::objects().fetch_one_insecurely(&mut ctx).await?;
-Invoice::objects().fetch_optional_insecurely(&mut ctx).await?;
-Invoice::objects().count_insecurely(&mut ctx).await?;
-Invoice::objects().exists_insecurely(&mut ctx).await?;
+// Prefer generated model-level helpers for specific admin operations, or
+// use objects_insecurely().fetch_* only inside a reviewed admin path.
 ```
 
-**Every `_insecurely()` call is logged to the event log database with:**
+**Every `_insecurely()` path is logged to the event log database with:**
 - Caller function name (via `std::panic::Location`)
 - Full stack trace
 - The SQL query that was executed
@@ -347,7 +343,7 @@ async fn admin_report(State(pool): State<DjogiPool>) -> impl IntoResponse {
         tx.set_role("djogi_admin").await?;
 
         Invoice::objects()
-            .fetch_all_insecurely(tx).await
+            .fetch_all(tx).await
     })).await?;
     Json(all_invoices).into_response()
 }
@@ -413,11 +409,11 @@ The following patterns are common mistakes that compromise isolation, auditabili
 // WRONG — application-layer filtering is not defense in depth
 let mut ctx = DjogiContext::from_pool(pool.clone());
 Invoice::objects()
-    .filter(|f| f.org_id.eq(org_id))
+    .filter(|f| f.org_id().eq(org_id))
     .fetch_all(&mut ctx).await?;  // pool-backed ctx — no transaction, no RLS context
 ```
 
-If the filter is accidentally removed, or if there is a bug in the org_id extraction, all tenants' data is exposed. The fix is to use `djogi::set_tenant()` so the database enforces isolation:
+If the filter is accidentally removed, or if there is a bug in the org_id extraction, all tenants' data is exposed. The fix is to use `DjogiContext::set_tenant(...)` inside a transaction so the database enforces isolation:
 
 ```rust
 // CORRECT — RLS enforces isolation at the database level
@@ -434,7 +430,7 @@ atomic(&mut ctx, |tx| Box::pin(async move {
 
 ```rust
 // WRONG — bypasses tenant isolation in a user-facing endpoint
-async fn get_invoice(Path(id): Path<HeerId>, State(pool): State<PgPool>) -> impl IntoResponse {
+async fn get_invoice(Path(id): Path<HeerId>, State(pool): State<DjogiPool>) -> impl IntoResponse {
     let mut ctx = DjogiContext::from_pool(pool.clone());
     let invoice = Invoice::objects()
         .filter(|f| f.id.eq(id))
@@ -489,6 +485,7 @@ export DJOGI_SIGNING_KEY="$(vault read secret/djogi-signing-key)"
 ```rust
 // WRONG — SET LOCAL is transaction-scoped, but this misses that the pool reuses connections
 #[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#rls-leak-demo): intentionally demonstrates the forbidden session-level SET anti-pattern.
 async fn batch_job(pool: &DjogiPool, tenant_ids: Vec<HeerId>) -> djogi::Result<()> {
     let mut ctx = DjogiContext::from_pool(pool.clone());
     for tenant_id in tenant_ids {
@@ -496,7 +493,7 @@ async fn batch_job(pool: &DjogiPool, tenant_ids: Vec<HeerId>) -> djogi::Result<(
         // The SET persists on whichever connection the pool hands out, then leaks to the next
         // caller once this ctx releases it.
         ctx.raw_execute(
-            "SET djogi.tenant_id = $1",
+            "SET app.tenant_id = ",
             &[&tenant_id.to_string()],
         ).await?;
         let _invoices = Invoice::objects().fetch_all(&mut ctx).await?;
@@ -505,7 +502,7 @@ async fn batch_job(pool: &DjogiPool, tenant_ids: Vec<HeerId>) -> djogi::Result<(
 }
 ```
 
-Always use `djogi::set_tenant()` with a transaction-backed context, never a pool-backed one:
+Always use `DjogiContext::set_tenant(...)` with a transaction-backed context, never a pool-backed one:
 
 ```rust
 // CORRECT
@@ -528,6 +525,7 @@ async fn batch_job(pool: &DjogiPool, tenant_ids: Vec<HeerId>) {
 // Reaching for raw_query on a pool-backed context skips both
 // the typed surface and the RLS / tenant guards in one move.
 #[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#raw-query-anti-pattern): intentionally demonstrates a forbidden raw-query shortcut.
 async fn list_open_invoices_insecurely(ctx: &mut DjogiContext) -> djogi::Result<Vec<Invoice>> {
     ctx.raw_query::<Invoice>(
         "SELECT * FROM invoices WHERE status = 'open'",
@@ -551,7 +549,7 @@ async fn list_open_invoices(
         // on the enclosing helper if you really do need raw SQL.
         // See docs/spec/raw-sql-escape-hatches.md.
         Invoice::objects()
-            .filter(|f| f.status().eq("open").and(f.org_id().eq(org_id)))
+            .filter(|f| f.status().eq("open").and_with(f.org_id().eq(org_id)))
             .fetch_all(tx).await
     })).await
 }

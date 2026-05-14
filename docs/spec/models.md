@@ -113,7 +113,7 @@ Users set framework fields to any value; `create()` ignores them and the databas
 ```rust
 let mut ctx = DjogiContext::from_pool(pool.clone());
 let article = Article::create(&mut ctx, Article {
-    id: HeerId::from_i64(0).unwrap(), // ignored — DB generates via generate_id()
+    id: <HeerIdRecencyBiased as PrimaryKey>::sentinel(), // ignored — DB generates
     created_at: DateTime::UNIX_EPOCH, // ignored — DB generates via now()
     updated_at: DateTime::UNIX_EPOCH, // ignored — DB generates via now()
     title: "Hello".into(),
@@ -176,7 +176,8 @@ Phase 1's `String -> TEXT` rule is the bootstrap mapping, not the long-term publ
 | `Vec<i32>` | `INTEGER[]` |
 | `Vec<i64>` | `BIGINT[]` |
 | `Vec<bool>` | `BOOLEAN[]` |
-| `HeerId` | `BIGINT` (injected PK default) |
+| `HeerIdRecencyBiased` | `BIGINT` (injected PK default; backed by `HeerIdDesc`) |
+| `HeerId` | `BIGINT` (opt-in via `#[model(pk = HeerId)]`) |
 | `RanjId` | `UUID` (opt-in via `#[model(pk = RanjId)]`) |
 | `Option<T>` | nullable wrapper around T's SQL type |
 

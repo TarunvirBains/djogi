@@ -102,7 +102,7 @@ After `#[model]` expands, the struct effectively gains three injected fields:
 ```rust
 // What the struct looks like after macro expansion (not written by hand):
 pub struct Article {
-    pub id: HeerId,                        // BIGINT DEFAULT generate_id(), injected PK
+    pub id: HeerIdRecencyBiased,        // BIGINT HeerIdDesc-backed injected PK
     pub created_at: time::OffsetDateTime,  // TIMESTAMPTZ DEFAULT now(), injected
     pub updated_at: time::OffsetDateTime,  // TIMESTAMPTZ DEFAULT now(), injected
 
@@ -123,26 +123,14 @@ The macro also generates:
 
 ---
 
-## 3. Connect and Install HeeRanjId Schema
+## 3. Bootstrap the Database
 
-HeeRanjId provides the `generate_id()` Postgres function used by the `id`
-column default. Install it once per database before creating any tables:
-
-```rust
-use djogi::prelude::*;
-
-async fn prepare_db(ctx: &mut DjogiContext) -> djogi::Result<()> {
-    // Install the generate_id() and related functions.
-    heeranjid::install_schema(ctx).await?;
-    // Seed node 1 — required for ID generation to work.
-    heeranjid::seed_default_node(ctx).await?;
-    Ok(())
-}
-```
-
-In integration tests, this is handled by the `#[djogi::djogi_test]`
-harness — you don't call `install_schema` or `seed_default_node` from
-test code yourself.
+HeeRanjId provides the Postgres functions behind Djogi's default
+`HeerIdRecencyBiased` primary key. Adopters do not call the `heeranjid` crate
+directly in ordinary Djogi projects: descriptor-driven migration plans include
+the required bootstrap, and `#[djogi::djogi_test]` applies the same bootstrap for
+each isolated test database. Use `cargo djogi migrations compose` for reviewed
+DDL and `sync_models = [...]` in tests.
 
 For production sizing of the connection pool — `max_size`, wait
 timeout, per-connection setup hook, raw-client escape hatch — see the
@@ -231,7 +219,7 @@ RETURNING id, created_at, updated_at, title, slug, body, published, view_count
 ### Fetch by primary key
 
 ```rust
-async fn fetch_article(ctx: &mut DjogiContext, id: HeerId) -> djogi::Result<Article> {
+async fn fetch_article(ctx: &mut DjogiContext, id: HeerIdRecencyBiased) -> djogi::Result<Article> {
     let article = Article::get(ctx, id).await?;
     println!("{}: {}", article.id, article.title);
     Ok(article)
@@ -243,7 +231,7 @@ Returns `Err(DjogiError::NotFound)` when no row matches.
 ### Update
 
 ```rust
-async fn publish_article(ctx: &mut DjogiContext, id: HeerId) -> djogi::Result<()> {
+async fn publish_article(ctx: &mut DjogiContext, id: HeerIdRecencyBiased) -> djogi::Result<()> {
     let mut article = Article::get(ctx, id).await?;
     article.published = true;
     article.view_count += 1;
@@ -256,7 +244,7 @@ async fn publish_article(ctx: &mut DjogiContext, id: HeerId) -> djogi::Result<()
 ### Delete
 
 ```rust
-async fn remove_article(ctx: &mut DjogiContext, id: HeerId) -> djogi::Result<()> {
+async fn remove_article(ctx: &mut DjogiContext, id: HeerIdRecencyBiased) -> djogi::Result<()> {
     let article = Article::get(ctx, id).await?;
     article.delete(ctx).await?;
     // article is moved — cannot be used after this point
@@ -347,7 +335,7 @@ move { … })` wrapper is how you spell it:
 ```rust
 use djogi::prelude::*;
 
-async fn transfer_views(ctx: &mut DjogiContext, from_id: HeerId, to_id: HeerId)
+async fn transfer_views(ctx: &mut DjogiContext, from_id: HeerIdRecencyBiased, to_id: HeerIdRecencyBiasedRecencyBiased)
     -> djogi::Result<()>
 {
     atomic(ctx, |tx| Box::pin(async move {
@@ -392,8 +380,8 @@ hand-written DDL, no `raw_*` reach.
 use djogi::prelude::*;
 
 #[djogi::djogi_test(sync_models = [Article])]
-async fn create_and_get(ctx: &mut DjogiContext) {
-    let article = Article::create(ctx, Article {
+async fn create_and_get(mut ctx: DjogiContext) {
+    let article = Article::create(&mut ctx, Article {
         title: "Test Article".into(),
         slug: "test".into(),
         body: "Body text".into(),
@@ -410,13 +398,13 @@ async fn create_and_get(ctx: &mut DjogiContext) {
     assert!(!article.published);
 
     // Fetch back by PK
-    let fetched = Article::get(ctx, article.id).await.unwrap();
+    let fetched = Article::get(&mut ctx, article.id).await.unwrap();
     assert_eq!(fetched.slug, "test");
 }
 
 #[djogi::djogi_test(sync_models = [Article])]
-async fn save_updates_fields(ctx: &mut DjogiContext) {
-    let mut article = Article::create(ctx, Article {
+async fn save_updates_fields(mut ctx: DjogiContext) {
+    let mut article = Article::create(&mut ctx, Article {
         title: "Draft".into(),
         slug: "draft".into(),
         body: "".into(),
@@ -429,16 +417,16 @@ async fn save_updates_fields(ctx: &mut DjogiContext) {
 
     article.published = true;
     article.title = "Published".into();
-    article.save(ctx).await.unwrap();
+    article.save(&mut ctx).await.unwrap();
 
-    let reloaded = Article::get(ctx, article.id).await.unwrap();
+    let reloaded = Article::get(&mut ctx, article.id).await.unwrap();
     assert!(reloaded.published);
     assert_eq!(reloaded.title, "Published");
 }
 
 #[djogi::djogi_test(sync_models = [Article])]
-async fn delete_removes_row(ctx: &mut DjogiContext) {
-    let article = Article::create(ctx, Article {
+async fn delete_removes_row(mut ctx: DjogiContext) {
+    let article = Article::create(&mut ctx, Article {
         title: "To Delete".into(),
         slug: "to-delete".into(),
         body: "".into(),
@@ -450,10 +438,10 @@ async fn delete_removes_row(ctx: &mut DjogiContext) {
     .unwrap();
 
     let id = article.id;
-    article.delete(ctx).await.unwrap();
+    article.delete(&mut ctx).await.unwrap();
 
     assert!(matches!(
-        Article::get(ctx, id).await,
+        Article::get(&mut ctx, id).await,
         Err(DjogiError::NotFound)
     ));
 }

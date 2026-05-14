@@ -50,7 +50,7 @@ pub struct Post {
 
 **What is injected by the macro (not written in the struct):**
 
-- `id: HeerId` — `BIGINT PRIMARY KEY DEFAULT generate_id()`, populated via `RETURNING` after INSERT
+- `id: HeerIdRecencyBiased` — `BIGINT PRIMARY KEY DEFAULT generate_id()`, populated via `RETURNING` after INSERT
 - `created_at: time::OffsetDateTime` — `TIMESTAMPTZ NOT NULL DEFAULT now()`, set by DB on INSERT
 - `updated_at: time::OffsetDateTime` — `TIMESTAMPTZ NOT NULL DEFAULT now()`, updated by Djogi on every `save()`
 
@@ -173,7 +173,7 @@ use djogi::prelude::*;
 
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#234): recursive CTE / bespoke JOIN not exposed by QuerySet.
-async fn raw_examples(ctx: &mut DjogiContext, post_id: HeerId) -> djogi::Result<()> {
+async fn raw_examples(ctx: &mut DjogiContext, post_id: HeerIdRecencyBiased) -> djogi::Result<()> {
     // raw_query — Vec<T> where T: FromPgRow. FromPgRow decoding is
     // positional, so the SELECT list must match Post's column order
     // exactly: the three injected fields (id, created_at, updated_at)

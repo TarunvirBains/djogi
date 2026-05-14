@@ -144,7 +144,7 @@ Without `no_default`, the macro emits:
 impl Default for Product {
     fn default() -> Self {
         Product {
-            id: <djogi::types::HeerId as djogi::PrimaryKey>::sentinel(),
+            id: <djogi::types::HeerIdRecencyBiased as djogi::PrimaryKey>::sentinel(),
             created_at: DateTime::UNIX_EPOCH,
             updated_at: DateTime::UNIX_EPOCH,
             name: Default::default(),         // String: OK
@@ -338,7 +338,7 @@ Users set framework fields (`id`, `created_at`, `updated_at`) to any value; `cre
 
 ```rust
 let article = Article::create(&mut ctx, Article {
-    id: HeerId::ZERO,                  // ignored — DB generates
+    id: <HeerIdRecencyBiased as PrimaryKey>::sentinel(), // ignored — DB generates
     created_at: DateTime::UNIX_EPOCH,  // ignored — DB generates
     updated_at: DateTime::UNIX_EPOCH,  // ignored — DB generates
     title: "Hello".into(),
