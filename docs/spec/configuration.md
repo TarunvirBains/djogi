@@ -85,7 +85,6 @@ cargo install djogi-cli
 ```bash
 # Migrations — registered in djogi-cli today (Phase 7 T6 / T7 / T8)
 djogi migrations compose               # generate migration files from current drift
-djogi migrations compose --dry-run     # preview SQL without writing files
 djogi migrations compose --allow-destructive
 djogi migrations status                # show file/ledger/snapshot state
 

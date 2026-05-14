@@ -156,9 +156,9 @@ use djogi::migrate::repair::{
 | API | What it does |
 |---|---|
 | `apply_plan(ctx, plan, runner_ctx, guard)` | Acquires advisory lock, inserts pending ledger row, dispatches segments transactionally / non-transactionally per `Classification`, persists snapshot, marks ledger `applied`. |
-| `rollback_plan(ctx, plan, runner_ctx, guard)` | Replays the down-side SQL in reverse segment order, marks ledger row removed. Reads `LossyRollbackPolicy` for ops that can't be cleanly reversed. |
-| `fake_apply_plan(ctx, plan, runner_ctx, guard)` | Inserts the ledger row WITHOUT executing SQL — for migrations applied out-of-band (e.g. via a hot-fix `psql` script). Equivalent to `attune --record-ledger` for one version. |
-| `baseline_plan(ctx, plan, runner_ctx, guard)` | Marks an existing schema as the baseline — inserts ledger rows for every committed migration through `<version>` without executing them. Used when adopting Djogi against a pre-existing database. |
+| `rollback_plan(ctx, plan, runner_ctx, guard, lossy_policy, prior_snapshot)` | Replays the down-side SQL in reverse segment order, marks ledger row removed, and applies the caller-selected `LossyRollbackPolicy` for ops that cannot be cleanly reversed. |
+| `fake_apply_plan(ctx, plan, runner_ctx, guard, reason)` | Inserts the ledger row WITHOUT executing SQL — for migrations applied out-of-band (e.g. via a hot-fix `psql` script). Equivalent to `attune --record-ledger` for one version, with the operator reason persisted in the ledger note. |
+| `baseline_plan(ctx, bucket, runner_ctx, guard, reason)` | Marks an existing schema as the baseline for a migration bucket — inserts ledger rows for committed migrations without executing them. Used when adopting Djogi against a pre-existing database. |
 | `verify(ctx, snapshot)` | Compares live `pg_catalog` shape against the snapshot. Returns a `VerifyReport` with per-diagnostic severity. |
 | `repair_*` | Four typed repair flows: checksum drift, partial-apply cleanup, resume after interrupted apply, snapshot rebuild from ledger. |
 

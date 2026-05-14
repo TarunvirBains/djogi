@@ -33,22 +33,22 @@ Secrets — CSRF signing key, session cookie signing key — live in environment
 
 Missing env vars at startup cause Maahi to refuse to mount, with a clear diagnostic naming the missing variable. There is no fallback derivation, no in-process default — these are infrastructure config and must be provisioned.
 
-## CLI Surface
+## Operator Surface
 
-Maahi's CLI surface is rooted at `cargo djogi admin`:
+Maahi's admin CLI commands are planned, but they are not registered in the shipped `djogi` binary yet. Until that surface lands, Maahi bootstrap and password-reset flows are specified as operator requirements rather than executable `djogi admin` commands:
 
 ```bash
 # Bootstrap the first administrator (one-time, requires audit DB access)
-cargo djogi admin set-password --superuser <email>
+djogi admin set-password --superuser <email>   # planned; not shipped today
 
 # Reset a user's password (operator-side fallback; users have no email-driven flow in v1)
-cargo djogi admin reset-password <email>
+djogi admin reset-password <email>             # planned; not shipped today
 
 # Build the Maahi WASM bundle for production deployment
-cargo djogi admin build [--release]
+djogi admin build [--release]                  # planned; not shipped today
 
 # Print the admin URL and current login status (development convenience)
-cargo djogi admin info
+djogi admin info                               # planned; not shipped today
 ```
 
 Forgot-password via email is not part of v1 — the framework has no notification infrastructure to call into. Operators reset passwords via the CLI fallback. An `EmailSender` trait plus integrated forgot-password is anchored to a future Notification Infrastructure phase ([Phase Map](./phase-map.md)).
@@ -57,13 +57,13 @@ Forgot-password via email is not part of v1 — the framework has no notificatio
 
 1. Provision the audit database (already required by [Logging](../logging.md))
 2. Set the env vars: `DJOGI_ADMIN_CSRF_SECRET`, `DJOGI_ADMIN_SESSION_SECRET`, `DATABASE_URL`, `CRUD_LOG_URL`
-3. Compose Maahi's migrations with `cargo djogi migrations compose` — the descriptor differ emits up/down SQL pairs for Maahi's tables (`_admin_users`, `_admin_roles`, `_admin_role_visage_perms`, `_admin_role_model_perms`, `_admin_sessions`, `_admin_pending_actions`). Per the per-target migration model documented in [Logging](../logging.md), Maahi's tables live in the `crud_log` (audit) database; compose main-DB migrations separately if this is a greenfield deployment. Apply the composed plans through the library API (`djogi::migrate::apply_plan` / `rollback_plan` / `fake_apply_plan` / `baseline_plan`) — the operator-facing `djogi migrations apply` CLI dispatcher is deferred to a Phase 7 follow-up, consistent with [Getting Started](../../guide/getting-started.md)
-4. Run `cargo djogi admin set-password --superuser <email>` — creates the first user; prompts interactively for the password, hashes via argon2, writes to `_admin_users` with `is_superuser = TRUE`
+3. Compose Maahi's migrations with `djogi migrations compose` — the descriptor differ emits up/down SQL pairs for Maahi's tables (`_admin_users`, `_admin_roles`, `_admin_role_visage_perms`, `_admin_role_model_perms`, `_admin_sessions`, `_admin_pending_actions`). Per the per-target migration model documented in [Logging](../logging.md), Maahi's tables live in the `crud_log` (audit) database; compose main-DB migrations separately if this is a greenfield deployment. Apply the composed plans through the library API (`djogi::migrate::apply_plan` / `rollback_plan` / `fake_apply_plan` / `baseline_plan`) — the operator-facing `djogi migrations apply` CLI dispatcher is deferred to a Phase 7 follow-up, consistent with [Getting Started](../../guide/getting-started.md)
+4. Create the first admin user through the implementation-specific bootstrap path until the planned `djogi admin set-password --superuser <email>` command ships. The bootstrap operation creates the first user, prompts or receives the password through operator-controlled secret input, hashes via argon2, and writes to `_admin_users` with `is_superuser = TRUE`
 5. Start the application; navigate to `/_admin/`; log in with the bootstrap credentials
 6. From inside Maahi, the superuser creates additional roles and users
 7. **Before relying on `BulkDelete` or above-threshold `InlineSave`**, provision a second admin. The second admin must hold *every action permission required by the operation they are expected to approve*, not merely `BulkDelete` — the approver-coverage rule documented in [Operations](./operations.md) requires the approver to satisfy the full action set the package executes. For `BulkDelete` from a changelist, that is `BulkDelete` on the target model. For `InlineSave`, that may include `Update` on the parent model plus `Create` / `Update` / `Delete` / `BulkDelete` on the through model — the package's actual contents determine the requirement. The dual-control approval gate requires `approver ≠ requester` and does not relax for single-admin deployments; the bootstrap state alone cannot execute either of v1's two approval-gated action kinds. Practical guidance: a second superuser is the simplest provisioning path because superusers cover any action set; a role-bounded second admin must be sized to the operations it will approve.
 
-The bootstrap flow is one-time. Subsequent superuser additions go through `cargo djogi admin set-password --superuser` (re-runnable) or through Maahi itself (existing superuser promotes another user).
+The bootstrap flow is one-time. Subsequent superuser additions go through Maahi itself once an existing superuser can promote another user; the planned `djogi admin set-password --superuser` command will provide a re-runnable CLI fallback when the admin command surface ships.
 
 ---
 

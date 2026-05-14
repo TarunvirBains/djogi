@@ -392,7 +392,7 @@ ERROR: schema snapshot signature mismatch
 
 The schema snapshot may have been modified outside of Djogi's migration library.
 Do not run migrations until this is resolved.
-Run `djogi migrations status --explain` for details.
+Run `djogi migrations status` and inspect the snapshot/ledger diagnostics before continuing.
 ```
 
 > **Warning:** In production deployments, `DJOGI_SIGNING_KEY` must be set. If it is not set and `DJOGI_ENV=production`, the framework refuses to start. This prevents accidental deployment of unsigned snapshots to production environments.
