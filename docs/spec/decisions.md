@@ -28,10 +28,10 @@
 | Power loss / crash | Postgres auto-rollbacks dropped connections — no manual recovery needed |
 | Shell error handling | Print one-liner + save full traceback to `.djogi_shell_errors/`; session never unwound |
 | Shell error log retention | 1 year default; configurable via `error_log_retention` in `Djogi.toml` |
-| Shell verbose mode | `cargo djogi shell --verbose` — prints full tracebacks inline in addition to saving to disk |
+| Shell verbose mode | `djogi shell --verbose` — prints full tracebacks inline in addition to saving to disk |
 | Shell history | `.djogi_history` gitignored; `scripts/` committed and shareable |
 | Shell import/export | `.export`, `.import`, `.bookmark` — named Rhai scripts in `scripts/` |
-| Shell headless execution | `cargo djogi shell --run scripts/name.rhai` — runs script without entering REPL |
+| Shell headless execution | `djogi shell --run scripts/name.rhai` — runs script without entering REPL |
 | Query engine | Djogi-owned `SqlAccumulator` + `ConditionBuilder` — no third-party query builder |
 | Raw escape hatch surface | Raw SQL remains available, but it is no longer an ordinary inherent-method convenience. The raw methods live behind the deliberate bypass harness; see the raw SQL harness decision below and [`raw-sql-escape-hatches.md`](./raw-sql-escape-hatches.md). |
 | Raw SQL bypass harness | 2026-05-06: Raw SQL is treated as djogi's `unsafe`. In this repository's tests, use of `raw_*` requires the `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute and a syntactically attached `// JUSTIFICATION (djogi#<n>):` or `(PIN)` comment. Source-level `djogi::__bypass` references under `tests/` are banned. Tracked at GH #133. |

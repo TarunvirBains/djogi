@@ -24,7 +24,7 @@
 - `CrudLog::objects().json_path_changed("engine.horsepower")` — filtering changes by path in JSONB
 
 ### HeeRanjId Integration
-- Installing HeeRanjId SQL functions and tables via `cargo djogi init` and `db reset`
+- Installing HeeRanjId SQL functions and tables via `djogi init` and `db reset`
 - Startup validation: `NODE_ID` env var → `heer_nodes` check → fail fast if missing
 - Rust wrappers: `<HeerId as PrimaryKeyDbGen>::generate(&mut ctx)` / `generate_many(&mut ctx, n)` calling `heerid_next()` / `generate_ids(n)`. The runtime dispatch goes through `DjogiContext` (Phase 4 retrofit) — pool-or-transaction is selected internally.
 - RanjId wrappers: `<RanjId as PrimaryKeyDbGen>::generate(&mut ctx)` calling `ranjid_next()`. Same `DjogiContext` shape as HeerId.

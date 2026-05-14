@@ -79,7 +79,7 @@ For the full attribute list, see [the models guide](./models.md).
 | `post.save(&mut ctx)` | `async -> Result<()>` | Full-row UPDATE; `updated_at` refreshed |
 | `post.delete(&mut ctx)` | `async -> Result<()>` | DELETE; consumes the instance |
 | `post.refresh_from_db(&mut ctx)` | `async -> Result<Post>` | Returns fresh copy from DB |
-| `Post::create_with_id(&mut ctx, id, value)` | `async -> Result<Post>` | INSERT ... ON CONFLICT DO NOTHING; for pre-generated IDs |
+| `Post::create_with_id(&mut ctx, id, value)` | `async -> Result<Post>` | Only for explicit `pk = HeerId`; INSERT ... ON CONFLICT DO NOTHING for pre-generated IDs |
 | `Post::descriptor()` | `-> &'static ModelDescriptor` | For inventory registration — do not call manually |
 
 All methods take `&mut DjogiContext` — construct one with
@@ -318,7 +318,7 @@ that the migration system and test harness project into SQL. You do not
 write `CREATE TABLE` by hand.
 
 - In **production code**, change the struct, rebuild (`cargo build` emits a
-  drift warning), then run `cargo djogi migrations compose --name
+  drift warning), then run `djogi migrations compose --name
   add_subscriptions` to generate a reviewable `V<ts>__add_subscriptions.sql`
   pair under `migrations/<database>/<app>/`. Library callers apply via
   `djogi::migrate::apply_plan`; see [the migrations guide](./migrations.md).
@@ -371,11 +371,11 @@ pub struct Subscription {
 
 `cargo build` re-runs the proc macro, updates `target/djogi_models.json`,
 and `build.rs` emits a `cargo:warning=` drift line. Run
-`cargo djogi migrations compose --name add_subscription_notes` to write
+`djogi migrations compose --name add_subscription_notes` to write
 `V<ts>__add_subscription_notes.sql` + `.down.sql` into the appropriate
 `migrations/<database>/<app>/` bucket — review the SQL in your PR, then
 apply via the library API (`djogi::migrate::apply_plan`) or
-`cargo djogi migrations attune`. See
+`djogi migrations attune`. See
 [the migrations guide](./migrations.md) for the full compose/status/attune
 contract; the CLI dispatchers for `apply` / `rollback` / `fake` /
 `baseline` / `verify` / `repair` are deferred to a Phase 7 follow-up, so
@@ -556,7 +556,7 @@ for desc in inventory::iter::<ModelDescriptor> {
 | Update a field | `instance.field = value; instance.save(&mut ctx).await?` |
 | Delete | `instance.delete(&mut ctx).await?` (consumes instance) |
 | Refresh stale instance | `instance.refresh_from_db(&mut ctx).await?` |
-| Pre-generated ID insert | `Model::create_with_id(&mut ctx, id, Model { ... }).await?` |
+| Pre-generated ID insert | Explicit `pk = HeerId` models only: `Model::create_with_id(&mut ctx, id, Model { ... }).await?` |
 | Filter query | `Model::objects().filter(\|f\| f.col().eq(v)).fetch_all(&mut ctx).await?` |
 | Count | `Model::objects().filter(\|f\| ...).count(&mut ctx).await?` |
 | Bulk update | `Model::objects().filter(\|f\| ...).update(\|f\| f.col().set(v)).execute(&mut ctx).await?` |

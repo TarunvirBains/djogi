@@ -65,7 +65,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
-heeranjid = "0.1"
 ```
 
 > **Note:** Djogi uses the `time` crate for all datetime types — not
@@ -129,7 +128,7 @@ HeeRanjId provides the Postgres functions behind Djogi's default
 `HeerIdRecencyBiased` primary key. Adopters do not call the `heeranjid` crate
 directly in ordinary Djogi projects: descriptor-driven migration plans include
 the required bootstrap, and `#[djogi::djogi_test]` applies the same bootstrap for
-each isolated test database. Use `cargo djogi migrations compose` for reviewed
+each isolated test database. Use `djogi migrations compose` for reviewed
 DDL and `sync_models = [...]` in tests.
 
 For production sizing of the connection pool — `max_size`, wait
@@ -335,7 +334,7 @@ move { … })` wrapper is how you spell it:
 ```rust
 use djogi::prelude::*;
 
-async fn transfer_views(ctx: &mut DjogiContext, from_id: HeerIdRecencyBiased, to_id: HeerIdRecencyBiasedRecencyBiased)
+async fn transfer_views(ctx: &mut DjogiContext, from_id: HeerIdRecencyBiased, to_id: HeerIdRecencyBiased)
     -> djogi::Result<()>
 {
     atomic(ctx, |tx| Box::pin(async move {

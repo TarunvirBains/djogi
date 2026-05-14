@@ -238,8 +238,8 @@ superseded by `migrations compose`. Every bare `migrate` is superseded by `migra
 The noun-grouped form makes the command surface self-documenting: `djogi migrations <tab>`
 reveals the full surface; no knowledge of which verbs are standalone vs. subcommands is needed.
 
-**Current plan (Phase 7 v2):** `cargo djogi makemigrations`, `cargo djogi migrate`, `cargo djogi
-migrate show`, `cargo djogi migrate repair`, `cargo djogi migrate baseline`, `cargo djogi plan`
+**Current plan (Phase 7 v2):** `djogi makemigrations`, `djogi migrate`, `djogi
+migrate show`, `djogi migrate repair`, `djogi migrate baseline`, `djogi plan`
 (the existing plan uses the cargo-subcommand prefix throughout).
 
 **Change:** The noun-grouped convention replaces all of the above. `djogi plan` is retired;
@@ -248,7 +248,7 @@ its output is absorbed into `migrations status` with structured `HistoryDiagnost
 
 **Binary and invocation forms.** Djogi ships two binaries — `djogi` (standalone) and `cargo-djogi`
 (cargo-subcommand wrapper that forwards to `djogi`). `cargo install djogi-cli` installs both.
-Canonical form throughout this proposal is `djogi migrations …`; `cargo djogi migrations …` is an
+Canonical form throughout this proposal is `djogi migrations …`; `djogi migrations …` is an
 equivalent alias for users who prefer the cargo-subcommand discoverability pattern (`cargo --list`
 inventorying). Both forms produce identical output and identical behaviour.
 

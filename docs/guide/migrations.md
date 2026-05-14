@@ -11,7 +11,7 @@ pub struct User {
 }
 ```
 
-Add `pub bio: Option<String>` to the struct, run `cargo build`, and the build emits a drift warning. Run `cargo djogi migrations compose --name add_user_bio` to generate `migrations/main/auth/V<timestamp>__add_user_bio.sql` (and `.down.sql`). Review the SQL in your PR. Apply via the public `djogi::migrate::apply_plan` library API. `attune` records, squashes, and publishes reviewed migration state; it does not execute migration SQL.
+Add `pub bio: Option<String>` to the struct, run `cargo build`, and the build emits a drift warning. Run `djogi migrations compose --name add_user_bio` to generate `migrations/main/auth/V<timestamp>__add_user_bio.sql` (and `.down.sql`). Review the SQL in your PR. Apply via the public `djogi::migrate::apply_plan` library API. `attune` records, squashes, and publishes reviewed migration state; it does not execute migration SQL.
 
 The system enforces three separate truths:
 
@@ -24,7 +24,7 @@ Drift between any two surfaces is a typed diagnostic, not a silent recovery.
 ## The compose cycle
 
 ```
-edit #[model]   →   cargo build (drift warning)   →   cargo djogi migrations compose
+edit #[model]   →   cargo build (drift warning)   →   djogi migrations compose
                                                          ↓
                                               review V<ts>__name.sql + .down.sql
                                                          ↓
@@ -86,10 +86,10 @@ The `V1:<sha256-hex>` checksum prefix is intentional: future hash algorithms can
 
 ## CLI commands
 
-### `cargo djogi migrations compose`
+### `djogi migrations compose`
 
 ```
-cargo djogi migrations compose [--name <slug>] [--allow-destructive] [--force-overwrite]
+djogi migrations compose [--name <slug>] [--allow-destructive] [--force-overwrite]
 ```
 
 Composes a new migration from descriptor diff against the last committed snapshot.
@@ -100,10 +100,10 @@ Composes a new migration from descriptor diff against the last committed snapsho
 
 Output: `V<timestamp>__<slug>.sql` + `.down.sql` per affected bucket, plus a per-bucket `target/djogi_pending/<database>/<app>.json` staging file.
 
-### `cargo djogi migrations status`
+### `djogi migrations status`
 
 ```
-cargo djogi migrations status
+djogi migrations status
 ```
 
 Read-only. Prints the current state of the ledger grouped by app, including:
@@ -115,10 +115,10 @@ Read-only. Prints the current state of the ledger grouped by app, including:
 
 Status does NOT acquire the workspace lock, so it is safe to run while another operator is mid-apply.
 
-### `cargo djogi migrations attune`
+### `djogi migrations attune`
 
 ```
-cargo djogi migrations attune [<git-target>]
+djogi migrations attune [<git-target>]
                               [--apply]
                               [--record-ledger] [--record-reason "<note>"]
                               [--squash --from <version> [--app <label>]]
@@ -194,7 +194,7 @@ pub struct Event { /* ... */ }
 pub struct Event { /* ... */ }
 ```
 
-`cargo djogi migrations compose` produces a single migration containing the full DAG: drop dependent FKs, prepare shadow column, backfill, swap columns, recreate FKs in dependency order. Composite cycles, partitioned tables, and join tables are handled. PK flips that involve a **custom** PK (declared via `djogi::primary_key!`) — either a Custom-to-Custom shape change or a Custom↔built-in transition — are explicitly rejected at compose time in v0.1.0 with a typed `SchemaOperation::Unsupported` diagnostic that surfaces the `type_name`, `sql_type`, and `default_sql` of both sides; adopters who genuinely need such a flip must write the migration by hand. See `docs/spec/migrations.md` §10.10a (Primary-Key Flip Support Matrix) for the full reject rationale and the post-v0.1.0 extensibility plan.
+`djogi migrations compose` produces a single migration containing the full DAG: drop dependent FKs, prepare shadow column, backfill, swap columns, recreate FKs in dependency order. Composite cycles, partitioned tables, and join tables are handled. PK flips that involve a **custom** PK (declared via `djogi::primary_key!`) — either a Custom-to-Custom shape change or a Custom↔built-in transition — are explicitly rejected at compose time in v0.1.0 with a typed `SchemaOperation::Unsupported` diagnostic that surfaces the `type_name`, `sql_type`, and `default_sql` of both sides; adopters who genuinely need such a flip must write the migration by hand. See `docs/spec/migrations.md` §10.10a (Primary-Key Flip Support Matrix) for the full reject rationale and the post-v0.1.0 extensibility plan.
 
 ## Out-of-order policy
 
@@ -208,10 +208,10 @@ Operators sometimes apply migrations in a different order than they were compose
 
 The policy lives in `RunnerCtx::out_of_order_policy` and defaults from `Djogi.toml::profile`.
 
-## `cargo djogi db reset`
+## `djogi db reset`
 
 ```
-cargo djogi db reset --yes [--maintenance-database <name>]
+djogi db reset --yes [--maintenance-database <name>]
 ```
 
 Drops, recreates, and replays every committed migration against the application database. **Triple-gated**:
@@ -228,10 +228,10 @@ URL paths are percent-decoded and validated against the strict Postgres-identifi
 
 Exit codes: `0` success, `1` runtime error, `2` gate refusal.
 
-## `cargo djogi db seed`
+## `djogi db seed`
 
 ```
-cargo djogi db seed [--database <name>] [--allow-non-localhost]
+djogi db seed [--database <name>] [--allow-non-localhost]
 ```
 
 Runs operator-authored SQL seed files in `seeds/<database>/*.sql` alphabetically. Idempotent — re-runs skip seeds whose `V1:<sha256>` checksum matches the `djogi_seed_runs` ledger; refuses on checksum drift.
@@ -242,10 +242,10 @@ Runs operator-authored SQL seed files in `seeds/<database>/*.sql` alphabetically
 
 Exit codes: `0` success, `1` runtime error (config / network / SQL / checksum drift / malformed URL), `2` gate refusal (non-localhost without `--allow-non-localhost`).
 
-## `cargo djogi docs`
+## `djogi docs`
 
 ```
-cargo djogi docs [--output <path>]
+djogi docs [--output <path>]
 ```
 
 Renders Markdown reference pages from the descriptor inventory — one file per registered model under `<output>/<app>/`, plus a top-level `README.md` index. Output defaults to `target/djogi-docs/` and is byte-deterministic against the same descriptor set.

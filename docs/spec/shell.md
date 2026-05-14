@@ -16,7 +16,7 @@ The closest external analog is Django's `manage.py shell`, but the comparison un
 
 ### 13.1 Invocation
 ```bash
-cargo djogi shell
+djogi shell
 ```
 Starts a Rhai REPL with all registered models pre-loaded, a live database connection, and a persistent command history file.
 
@@ -96,7 +96,7 @@ djogi>
 djogi (txn)> rollback()
 djogi>
 ```
-Power loss / process crash: Postgres handles this correctly at the protocol level. When the shell process dies — cleanly or not — the TCP connection drops and Postgres automatically rolls back any open transaction. No partial commits, no manual cleanup required. The developer reconnects via `cargo djogi shell` and the database is exactly as it was before `begin()`.
+Power loss / process crash: Postgres handles this correctly at the protocol level. When the shell process dies — cleanly or not — the TCP connection drops and Postgres automatically rolls back any open transaction. No partial commits, no manual cleanup required. The developer reconnects via `djogi shell` and the database is exactly as it was before `begin()`.
 Closing the shell with an open transaction always triggers an explicit `ROLLBACK` before exit — never a silent commit.
 Savepoints for complex sessions:
 ```rhai
@@ -182,7 +182,7 @@ djogi>
 ```
 Headless run without entering the REPL:
 ```bash
-cargo djogi shell --run scripts/analysis_q3_vehicles.rhai
+djogi shell --run scripts/analysis_q3_vehicles.rhai
 ```
 Scripts run in the full shell environment with access to all models. They are useful beyond history replay — lightweight data analysis, one-off backfills, or team-shared query libraries.
 Gitignore convention:
@@ -195,7 +195,7 @@ seeds.rhai                # committed — project seed data
 ### 13.8 Seed Scripts
 `seeds.rhai` at project root runs in the full shell environment:
 ```bash
-cargo djogi db seed
+djogi db seed
 ```
 Uses the same model API the developer already knows.
 
@@ -222,7 +222,7 @@ djqry.import("expired_registrations");
 // Compare macro-query against override side-by-side
 djqry.diff("expired_registrations");
 // Reports: row-count delta, first-row diff, EXPLAIN cost comparison, timing.
-// Acts as the local on-demand analog of CI's `cargo djogi djqry verify`.
+// Acts as the local on-demand analog of CI's `djogi djqry verify`.
 
 // Re-fingerprint after manual re-verification
 djqry.sign("expired_registrations");

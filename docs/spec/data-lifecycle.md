@@ -33,9 +33,9 @@ Model/field annotations:
 CLI direction:
 
 ```text
-cargo djogi lifecycle plan
-cargo djogi lifecycle show <plan-id>
-cargo djogi lifecycle apply <plan-id>
+djogi lifecycle plan
+djogi lifecycle show <plan-id>
+djogi lifecycle apply <plan-id>
 ```
 
 Plan capabilities:
@@ -76,9 +76,9 @@ These plans should be reviewable before execution.
 
 Example CLI direction:
 
-- `cargo djogi lifecycle plan`
-- `cargo djogi lifecycle show`
-- `cargo djogi lifecycle apply`
+- `djogi lifecycle plan`
+- `djogi lifecycle show`
+- `djogi lifecycle apply`
 
 The CLI names are provisional, but the planning/review/apply pattern is required.
 

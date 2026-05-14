@@ -804,7 +804,7 @@ The dylib coupling is gated on a research spike that validates (a) `cargo rustc 
 
 ### 9a: Shell (Rhai REPL)
 
-- [ ] `cargo djogi shell` — launches REPL with all models loaded
+- [ ] `djogi shell` — launches REPL with all models loaded
 - [ ] **Shell binary dlopens `libdjogi.so` at startup** (gated on 9-Zero spike outcome — `NO_GO` falls back to static linking for v0)
 - [ ] Synchronous API via `block_on()` — no `.await` in shell
 - [ ] **Parse-vs-eval split:** every submitted line goes through `Engine::compile` first; parse errors print a one-liner with caret positioning and skip `eval_ast` entirely. Only on parse success does the shell dispatch the AST. Removes the wait-then-fail loop on typos that today would round-trip the database before failing
@@ -814,11 +814,11 @@ The dylib coupling is gated on a research spike that validates (a) `cargo rustc 
 - [ ] `pp(value)`, `sql("...")`, `begin()`, `commit()`, `rollback()`, `savepoint()`
 - [ ] Error handling: one-liner + full traceback to `.djogi_shell_errors/`
 - [ ] `.export` / `.import` / `.bookmark` for session scripts
-- [ ] `cargo djogi shell --run script.rhai` for headless execution
+- [ ] `djogi shell --run script.rhai` for headless execution
 - [ ] **djqry authoring loop** — the shell is the primary surface for iterating on `djqry` overrides (§9c). Workflow: *test → optimize → compile → deploy*. Shell commands:
   - `djqry.export(<last_query>, "<name>")` — writes `djqry/<name>.sql` with frontmatter pre-populated from the last executed macro-query: `@name` set, `@on` inferred from the query's target models, `@replaces` captured verbatim, `@signature` computed, `@returns` inferred from the QuerySet's declared return type, `@binds` inferred from the filter closures, and the macro-generated SQL placed in the body as the starting point the author can optimize against
   - `djqry.import("<name>")` — loads an existing `djqry/<name>.sql`, parses its frontmatter + SQL, binds the override into the shell session as a callable, and runs it alongside the macro-query form for side-by-side comparison (row count, first-row diff, timing)
-  - `djqry.diff("<name>")` — runs macro-query and override both, reports result-set diff + `EXPLAIN` cost comparison + timing. Acts as the local on-demand analog of CI's `cargo djogi djqry verify`
+  - `djqry.diff("<name>")` — runs macro-query and override both, reports result-set diff + `EXPLAIN` cost comparison + timing. Acts as the local on-demand analog of CI's `djogi djqry verify`
   - `djqry.sign("<name>")` — re-computes the fingerprint from the current `@replaces` and updates `@signature`, asserting the author has re-verified. Prompts for confirmation before overwriting
 - [ ] **`rhai-dylib` audit** (gates §9a-Plugins below): 30-minute audit of `rhai-dylib` (https://crates.io/crates/rhai-dylib) covering symbol-visibility requirements, `pub extern "Rust"` annotations, Rhai-version compatibility, dylib-loader compatibility (likely `libloading`), and maintenance status. Audit outcome documented in the 9-Zero spike artifact alongside contingency selection. Audit failure scopes Phase 9 to source-form Rhai modules only; precompiled `.so` plugins defer until an alternative crate or upstream fix lands
 
@@ -836,7 +836,7 @@ The analyzer ships as two tiers with different fidelity guarantees. Tier 1 is ma
 
 **Data sources.** Call-site discovery comes from source AST via `syn`. Model metadata (FK topology, visage maps, field descriptors) comes from `target/djogi_models.json`, which is emitted by the existing `#[model]` + `build.rs` pipeline during a normal `cargo build`. The analyzer requires a successful build to run — the metadata file is the FK graph's authoritative source, not a guess inferred from AST.
 
-- [ ] `cargo djogi analyze query` — walks every crate in the workspace, parses `.rs` files with `syn`, finds every QuerySet terminal (`.fetch_all`, `.fetch_one`, `.first`, `.exists`, `.count`, `.delete`, `.update`, `.stream`) and every `raw_query` / `execute_raw` call site
+- [ ] `djogi analyze query` — walks every crate in the workspace, parses `.rs` files with `syn`, finds every QuerySet terminal (`.fetch_all`, `.fetch_one`, `.first`, `.exists`, `.count`, `.delete`, `.update`, `.stream`) and every `raw_query` / `execute_raw` call site
 
 **Tier 1 — mainline, high-signal, low-false-positive (syn + metadata file, no type resolution needed):**
 
@@ -864,13 +864,13 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 - [ ] Build-time generation: a new stage in the existing `build.rs` pipeline (alongside `target/djogi_models.json` emission) parses every `.sql` file, validates frontmatter against descriptor metadata, and emits a generated `{Model}Djqry` zero-sized type per owner with one associated async function per override. Call site reads `VehicleDjqry::expired_registrations(&mut ctx).await?` — parallel to Phase 2's `{Model}Filter` and Phase 3's `{Model}Related` generated types, which is the established convention for per-model namespaced helpers. The `Djqry` suffix is distinctive, grep-able, and zero collision risk. For `@on: _global` overrides the parallel type is `GlobalDjqry`: `GlobalDjqry::fleet_stats(&mut ctx).await?`
 - [ ] Multi-owner: when `@on:` lists several owners, delegating methods are generated on each. All delegates resolve to the same compiled SQL; the graph-aware Tier 2 of §9b uses the `@on:` list to reason about which node-visits the override covers
 - [ ] Drift detection — mandatory: the build pipeline re-computes the AST-shape fingerprint of `@replaces` (structure plus types plus FK topology from `target/djogi_models.json`, not filter literals) and fails the build when it diverges from the stored `@signature`. Failure message names the model graph before and after, asks the author to re-verify, and suggests a new signature value to copy
-- [ ] Drift detection — opt-in: `cargo djogi djqry verify <name>` runs the macro-query and the override against a live database, diffs result sets, reports. CI gates on this; local builds skip it for speed. Local devs may run it on-demand when bumping a signature
+- [ ] Drift detection — opt-in: `djogi djqry verify <name>` runs the macro-query and the override against a live database, diffs result sets, reports. CI gates on this; local builds skip it for speed. Local devs may run it on-demand when bumping a signature
 - [ ] Runtime dispatch: each generated method routes through `ctx.raw_query::<T>(...)` (Phase 5 substrate) and decodes via `FromPgRow`. An override-firing tracing event names the override so Phase 11b / 11e observability surfaces highlight hand-tuned queries distinctly from macro-generated ones
 - [ ] Error modes flagged at build time: missing required frontmatter field, unknown `@on` owner, `@returns` type missing `FromPgRow`, `@binds` arity mismatch with `$N` placeholder count in SQL, reserved-name collision with framework-generated methods, `@signature` mismatch
 - [ ] Scope limits: v1 is read-only (SELECT-shaped overrides). `UPDATE` / `DELETE` / `INSERT` overrides deferred until a concrete use case surfaces — raw `ctx.execute_raw` remains available in the interim
 - [ ] Authoring loop lives in the shell (§9a): `djqry.export`, `djqry.import`, `djqry.diff`, `djqry.sign` close the *test → optimize → compile → deploy* cycle inside the REPL. Authoring a new override never requires leaving the shell to hand-craft frontmatter — `export` captures the canonical macro-query, infers `@returns` / `@binds` from the QuerySet's declared types, computes the initial `@signature`, and seeds the SQL body with the macro-generated query as the baseline for optimization
 
-**Deliverable:** Working shell, `cargo djogi analyze query` lint pass, and `djqry` SQL override registry surfaced as typed model methods with a shell-native authoring loop. (Admin console — Maahi — is Phase 10.)
+**Deliverable:** Working shell, `djogi analyze query` lint pass, and `djqry` SQL override registry surfaced as typed model methods with a shell-native authoring loop. (Admin console — Maahi — is Phase 10.)
 
 ---
 
@@ -898,7 +898,7 @@ The full design is in [`docs/spec/maahi/`](./maahi/index.md). Maahi ships as the
 
 - [ ] `djogi-maahi` workspace crate scaffolded; `djogi`'s `admin` feature pulls it in as optional dep; `djogi::maahi::*` re-exports
 - [ ] `_admin_users` / `_admin_sessions` / `_admin_roles` / `_admin_role_visage_perms` / `_admin_role_model_perms` / `_admin_pending_actions` schemas in the audit DB (per `docs/spec/maahi/architecture.md`, `rbac.md`, `operations.md`); explicit `ON DELETE RESTRICT` on `_admin_users.role_id` and `_admin_roles.parent_role_id`; `ON DELETE CASCADE` on the two `_admin_role_*_perms` tables; `_admin_sessions.token_hash` is HMAC-SHA256 keyed by `session_secret_env` (UNIQUE INDEX); `_admin_pending_actions` ships with partial-unresolved + `expires_at` indexes
-- [ ] `cargo djogi admin set-password --superuser <email>` bootstrap CLI; `reset-password`, `build`, `info` companions
+- [ ] `djogi admin set-password --superuser <email>` bootstrap CLI; `reset-password`, `build`, `info` companions
 
 ### 10b: Permission Model + Feasibility Analysis
 
@@ -925,7 +925,7 @@ The full design is in [`docs/spec/maahi/`](./maahi/index.md). Maahi ships as the
 
 - [ ] Dioxus full-stack components: list view, ModelForm, M2M inline, JSONB nested editor, `AdminClean` validation hook
 - [ ] Role-config UI: hierarchical app → model → visage view/edit checkbox grid, per-model action overrides, system-permission toggles, `Preview Effects` action that walks every model the role can see and shows the resolved field set + action bits
-- [ ] `cargo djogi admin build` WASM bundle pipeline (`dx bundle` integration)
+- [ ] `djogi admin build` WASM bundle pipeline (`dx bundle` integration)
 - [ ] CSRF triple stack (SameSite=Strict + `X-Maahi-CSRF` custom header + Origin/Referer check)
 - [ ] Session rotation on login / password change / role change / tenant switch
 - [ ] Server-side write enforcement that rejects out-of-editable-set fields explicitly (not silent filter)
@@ -1053,32 +1053,32 @@ Full deferral list at [`docs/spec/maahi/phase-map.md`](./maahi/phase-map.md).
 
 ### 11.5a: Scheduled Backups
 
-- [ ] `cargo djogi ops backup setup --daily [--weekly] [--retention 14d]` — generates a platform-appropriate scheduler config (cron fragment, systemd timer unit, or launchd plist) + a backup script that wraps `pg_dump --format=custom` with sane defaults (parallelism, compression)
-- [ ] `cargo djogi ops backup now` — one-shot manual backup
-- [ ] `cargo djogi ops backup verify <file>` — runs `pg_restore --list` to confirm the archive is restorable
+- [ ] `djogi ops backup setup --daily [--weekly] [--retention 14d]` — generates a platform-appropriate scheduler config (cron fragment, systemd timer unit, or launchd plist) + a backup script that wraps `pg_dump --format=custom` with sane defaults (parallelism, compression)
+- [ ] `djogi ops backup now` — one-shot manual backup
+- [ ] `djogi ops backup verify <file>` — runs `pg_restore --list` to confirm the archive is restorable
 - [ ] Storage targets: local path, S3-compatible (via env-var-configured endpoint + credentials), optional `rclone` passthrough
 - [ ] Retention policy enforcement (prune backups older than configured retention)
 
 ### 11.5b: Point-In-Time Recovery (opt-in)
 
-- [ ] `cargo djogi ops pitr setup` — configures WAL archiving to a specified target, generates `restore.conf` template
-- [ ] `cargo djogi ops pitr restore --target-time '...'` — restore drill runbook that produces a new database at a specific wall-clock time
+- [ ] `djogi ops pitr setup` — configures WAL archiving to a specified target, generates `restore.conf` template
+- [ ] `djogi ops pitr restore --target-time '...'` — restore drill runbook that produces a new database at a specific wall-clock time
 
 ### 11.5c: Vacuum / Maintenance Scheduling
 
 - [ ] Per-model autovacuum tuning: `#[model(autovacuum = VacuumPolicy::HighChurn)]` emits per-table `ALTER TABLE ... SET (autovacuum_vacuum_scale_factor = ..., ...)` as DDL routed through Phase 7's migration generation pipeline. Phase 11.5 provides the policy vocabulary + CLI/ops surface; Phase 7 owns the DDL emission and phased execution
-- [ ] `cargo djogi ops vacuum --table <name> [--analyze] [--full]` — on-demand vacuum/analyze
-- [ ] `cargo djogi ops vacuum setup --weekly` — scheduled `VACUUM ANALYZE` across the schema, respecting autovacuum settings
+- [ ] `djogi ops vacuum --table <name> [--analyze] [--full]` — on-demand vacuum/analyze
+- [ ] `djogi ops vacuum setup --weekly` — scheduled `VACUUM ANALYZE` across the schema, respecting autovacuum settings
 
 ### 11.5d: Health Checks
 
-- [ ] `cargo djogi ops doctor` — checks pool utilization, long-running transactions (> N seconds), table bloat estimates, index bloat, replication lag if configured, `pg_stat_statements` top-N slow queries
+- [ ] `djogi ops doctor` — checks pool utilization, long-running transactions (> N seconds), table bloat estimates, index bloat, replication lag if configured, `pg_stat_statements` top-N slow queries
 - [ ] Each check returns a pass/warn/fail with a suggested remediation
 
 ### 11.5e: Operator Runbooks
 
 - [ ] Generate opinionated Markdown runbooks under `docs/ops/` covering: "my backup failed", "restore from last night", "I accidentally dropped a table", "vacuum is blocked"
-- [ ] Runbooks reference the specific `cargo djogi ops` commands that resolve each scenario
+- [ ] Runbooks reference the specific `djogi ops` commands that resolve each scenario
 
 **Deliverable:** Djogi apps get production-grade ops (backups, PITR, vacuum, health, runbooks) without cobbling them together per project.
 

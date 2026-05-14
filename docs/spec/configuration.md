@@ -76,7 +76,7 @@ Logging should be easy to adopt. The intended maintainer workflow is to choose a
 The explicit `crud_delivery` and `event_delivery` keys are escape hatches, not the primary UX. Djogi should document profile-based setup first and treat individual overrides as advanced operations work.
 ---
 
-## 14. CLI — `cargo djogi`
+## 14. CLI — `djogi`
 
 Installed once, used everywhere:
 ```bash

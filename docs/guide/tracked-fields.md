@@ -50,7 +50,7 @@ async fn example(pool: &DjogiPool) -> Result<(), DjogiError> {
 
     // Create a new user. Both fields are written on INSERT.
     let mut user = User::create(&mut ctx, User {
-        id: HeerId::ZERO,
+        id: Default::default(),
         created_at: Default::default(),
         updated_at: Default::default(),
         username: "alice".to_string(),

@@ -23,7 +23,7 @@ adds them.
 - You declare `#[model(tenant_key = "col_name")]` on a model. The named column
   must exist as a user-declared field on the struct.
 - Djogi's descriptor-driven migration flow includes the tenant RLS policy for
-  the model. Use `cargo djogi migrations compose` for generated migration
+  the model. Use `djogi migrations compose` for generated migration
   plans, or the public `djogi::migrate` library APIs when applying plans from
   code. The apply/rollback-style CLI dispatchers are deferred; hand-written RLS
   SQL is an escape hatch, not the default path. The emitted policy is equivalent
@@ -88,7 +88,7 @@ async fn create_post_for_org(
         ctx.set_tenant(&org_id.to_string()).await?;
 
         let post = Post::create(ctx, Post {
-            id: HeerId::ZERO,
+            id: Default::default(),
             created_at: Default::default(),
             updated_at: Default::default(),
             org_id,
@@ -124,7 +124,7 @@ caller has to issue the `SET LOCAL` on the ctx before the terminal method.
 use djogi::prelude::*;
 
 // Async method — bypass is internal; just wrap the call in atomic():
-async fn fetch_one(pool: &DjogiPool, post_id: HeerId) -> djogi::Result<Post> {
+async fn fetch_one(pool: &DjogiPool, post_id: HeerIdRecencyBiased) -> djogi::Result<Post> {
     djogi::transaction::atomic(pool, |ctx| Box::pin(async move {
         let post = Post::get_insecurely(ctx, post_id).await?;
         Ok(post)

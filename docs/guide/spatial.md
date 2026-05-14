@@ -690,7 +690,7 @@ The descriptor-driven migration system consumes the spatial metadata on
 `CREATE INDEX CONCURRENTLY` step — that DDL form cannot run inside a
 transaction, and PostGIS must be installed before it runs. Change the
 `#[model]` struct, rebuild (`cargo build` emits the drift warning), then
-run `cargo djogi migrations compose --name add_places_location` to write
+run `djogi migrations compose --name add_places_location` to write
 the reviewable migration pair under
 `migrations/<database>/<app>/`. The composer emits the geography column
 plus the GiST index in the correct transactional / non-transactional

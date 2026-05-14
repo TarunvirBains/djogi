@@ -50,7 +50,7 @@ pub struct Account {
     pub revision: i32,
 }
 
-async fn transfer(pool: &DjogiPool, account_id: HeerId, amount: i64) -> Result<(), DjogiError> {
+async fn transfer(pool: &DjogiPool, account_id: HeerIdRecencyBiased, amount: i64) -> Result<(), DjogiError> {
     // Writer A loads the account at revision = 3.
     let mut ctx_a = DjogiContext::from_pool(pool.clone());
     let mut account_a = Account::get(&mut ctx_a, account_id).await?;

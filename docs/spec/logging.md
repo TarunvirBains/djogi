@@ -171,19 +171,19 @@ Each target owns its own ledger, snapshot, and advisory-lock scope. Djogi may la
 
 ```bash
 # Wipe app DB only — both log databases untouched
-cargo djogi db reset
+djogi db reset
 
 # Wipe app DB and CRUD log DB — event logs retained
-cargo djogi db reset --wipe-crud-logs
+djogi db reset --wipe-crud-logs
 
 # Wipe all three databases
-cargo djogi db reset --wipe-all-logs
+djogi db reset --wipe-all-logs
 ```
 `db reset` guards (`dev_mode`, localhost URL, `DJOGI_ENV`) apply to all variants.
 
 `db reset` remains app-first UX:
 
-- `cargo djogi db reset` only resets the app database
+- `djogi db reset` only resets the app database
 - explicit flags are required before Djogi touches either logging database
 - the CLI output should name each database being reset so operators do not infer a single-cluster wipe from one command
 

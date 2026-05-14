@@ -54,14 +54,14 @@ Generates:
 
 ```rust
 pub struct UserPublic {
-    pub id: HeerId,
+    pub id: HeerIdRecencyBiased,
     pub created_at: DateTime,
     pub updated_at: DateTime,
     pub display_name: String,
 }
 
 pub struct UserSelfView {
-    pub id: HeerId,
+    pub id: HeerIdRecencyBiased,
     pub created_at: DateTime,
     pub updated_at: DateTime,
     pub display_name: String,
@@ -194,7 +194,7 @@ add variants.
 Handler-level recovery pattern:
 
 ```rust
-async fn get_vehicle(id: HeerId, mut ctx: DjogiContext) -> Result<Json<VehiclePublic>, AppError> {
+async fn get_vehicle(id: HeerIdRecencyBiased, mut ctx: DjogiContext) -> Result<Json<VehiclePublic>, AppError> {
     let vehicle = Vehicle::filter()
         .id_eq(id)
         .prefetch(|r| r.owner())   // <-- the fix site

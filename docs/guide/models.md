@@ -50,7 +50,7 @@ The macro also generates:
 | `impl FromPgRow for Article` | `tokio_postgres::Row` → `Article` decode |
 | `ArticleFields` / `ArticleFilter` | Typed field accessors / programmatic filter builder — used by the `QuerySet` filter API |
 | `Article::descriptor()` | `&'static ModelDescriptor` collected via `inventory::submit!` |
-| `Article::create_with_id(...)` | Pre-generated-ID insertion (HeerId models only) |
+| `Article::create_with_id(...)` | Pre-generated-ID insertion (only when the model explicitly uses `pk = HeerId`) |
 
 For the CRUD method signatures, see the [`Model` trait API](#the-model-trait-api) below.
 
