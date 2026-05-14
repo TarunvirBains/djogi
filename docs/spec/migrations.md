@@ -135,20 +135,16 @@ DROP INDEX vehicles_horsepower_idx;
 ALTER TABLE vehicles DROP COLUMN horsepower;
 ```
 
-If a file must run outside a transaction, it carries the directive:
+Execution mode (transactional vs non-transactional) is **not** carried by a comment directive in the generated SQL file. The composed migration plan tags each segment with `SegmentKind::Transactional` or `SegmentKind::NonTransactional`, and the runner dispatches by segment kind. Operations that force a non-transactional segment — `CREATE INDEX CONCURRENTLY` is the canonical example — originate from `IndexSchema::requires_out_of_transaction` (and equivalents on other operations) on the descriptor; the segment planner reads that flag at compose time and tags the resulting segment accordingly.
 
-```sql
--- djogi:no-transaction
-```
+Segment-metadata contract:
 
-Directive rules:
+- segment kind is set at compose time from operation-level metadata (`IndexSchema::requires_out_of_transaction` and equivalents), not by inspecting the SQL file text
+- the runner reads `SegmentKind` from the composed plan and chooses the transactional or non-transactional execution path from that tag
+- the generated SQL file is a human-review artifact replayed under the kind the composed plan carries — it is **not** the source of truth for execution mode
+- external tooling that round-trips or re-emits a composed migration must preserve segment metadata; a file-level comment directive is not honoured by the current runner
 
-- must appear on the first non-blank, non-comment line of the file
-- applies to the entire file
-- `_up.sql` and `_down.sql` are evaluated independently
-- generated automatically when Djogi knows the file must be non-transactional
-
-If the runner detects a statement Postgres forbids inside a transaction and the directive is missing, execution fails before any SQL runs.
+A future revision may add a `-- djogi:no-transaction` (or equivalent) directive parser/generator so the SQL file itself encodes the execution mode end-to-end and external tooling can rely on the file alone. That directive is **not** part of the current contract — today's contract is segment-metadata-driven, and adopters and tooling must treat the composed plan as authoritative.
 
 Destructive generated SQL uses `-- DJOGI WARNING:` comments in the UP file so code review sees the risk in the forward path, not only in rollback text.
 
@@ -165,11 +161,11 @@ Examples include:
 
 The execution contract remains strict:
 
-- one migration plan applies to one database target at a time
-- each database target has its own ledger
-- each database target has its own snapshot set
-- advisory locking is per target
-- repair, baseline, verify, and apply are per target
+- one migration plan applies to one `(database, app)` bucket at a time
+- each database target has its own ledger (shared across all apps in that target)
+- each database target has its own snapshot set (finer-grained, per `(target, app)`)
+- advisory locking is per bucket — each `(database, app)` bucket has its own advisory-lock key, so independent buckets within the same target do not contend (key derivation in §10.7)
+- repair, baseline, verify, and apply are bucket-scoped
 - cross-database foreign keys are explicitly rejected
 
 Djogi does **not** promise distributed atomic migration across multiple databases. Cross-target coordination is an orchestration concern, not a single transactional migration guarantee.
@@ -220,10 +216,32 @@ No heuristic rename guessing is part of the core differ.
 
 ### 10.6.1 Type-Derived CHECK Projection (djogi#186)
 
-The differ projects a table-level `CHECK` constraint for every column whose
-Rust source type widens to a Postgres column type. The projection is
-type-driven and runs at descriptor → snapshot lowering time, so the resulting
-CHECK serializes into `schema_snapshot.json` and survives every round-trip.
+**Status — contract layer only until djogi#190.** This section describes the
+type-derived CHECK projection contract that djogi#186 puts in place. The
+helper, the differ AMEND DROP+ADD lifecycle, the
+`FieldSqlType::NumericPrecision { precision, scale }` variant, and the
+`IntoFilterValue for u64` shim are wired and unit-tested today. Three pieces
+still keep this contract from reaching production and are gated on
+djogi#190: (1) the `rust_type_to_sql` macro arms for `i8 / u8 / u16 / u32 /
+u64` (no `tokio_postgres::ToSql` impl for `u8 / u16 / u64`, plus `i8 → "char"`
+and `u32 → OID` mismatches); (2) the `project_column` call site that would
+populate `ColumnSchema.check` from a column's Rust source type; and (3) the
+source-Rust-type-aware dispatch the helper itself still lacks (its
+`SMALLINT` arm hard-codes `i8` bounds and its `INTEGER` arm returns `None`,
+so `u8` and `u16` source types cannot be projected correctly without it).
+See "Currently shipped vs deferred" below for the why and what needs to
+land. Until djogi#190 closes, `ColumnSchema.check` is always `None` for
+type-derived CHECKs in production projections, the differ never sees a
+differing CHECK to act on, and no type-derived CHECK constraint reaches
+`schema_snapshot.json` or generated migration SQL. The remainder of this
+section is the contract the projection will honour once that wiring
+activates.
+
+Under the contract, the differ will project a table-level `CHECK` constraint
+for every column whose Rust source type widens to a Postgres column type.
+The projection is type-driven and runs at descriptor → snapshot lowering
+time, so the resulting CHECK will serialize into `schema_snapshot.json` and
+survive every round-trip.
 
 **Mapping table.** Each Rust source type widens to the smallest signed Postgres
 integer that fits its full value range; `u64` widens to `NUMERIC(20, 0)`
@@ -301,8 +319,8 @@ signature. See `decisions.md` "Type-derived CHECK projection (Phase 8.5 v3
 Cluster 2)" for the contract.
 
 **Currently shipped vs deferred.** The projection contract, the AMEND DROP+ADD
-fix, and `IntoFilterValue for u64` ship under djogi#186. Two pieces are gated
-on djogi#190:
+fix, and `IntoFilterValue for u64` ship under djogi#186. Three pieces are
+gated on djogi#190:
 
   * The `rust_type_to_sql` arms for `i8 / u8 / u16 / u32 / u64` are gated on
     djogi#190 (per-field bind/decode shims in the macro emitter) —
@@ -318,14 +336,34 @@ on djogi#190:
     `id` columns whose values exceed `u32::MAX` from day one. djogi#190 must
     add a per-field "rust source type" discriminator on `FieldDescriptor`
     alongside the bind/decode shims, and at that point `project_column` flips
-    on the call to `field_type_check` (gated on the discriminator) and the
-    contract surface lights up for `i8 / u8 / u16 / u32 / u64`.
+    on the call to `field_type_check` (gated on the discriminator). Flipping
+    the call site alone, however, does not project correct bounds for `u8`
+    and `u16` — see the next bullet.
+  * Source-Rust-type-aware dispatch *inside* `field_type_check` itself is
+    also gated on djogi#190. The helper today dispatches on `FieldSqlType`
+    alone: its `SMALLINT` arm hard-codes the `i8` range
+    (`>= -128 AND <= 127`), and its `INTEGER` arm returns `None`. Even
+    after `project_column` flips on with the new source-type discriminator,
+    a `u8 → SMALLINT` column would receive `i8` bounds rather than its own
+    `0 .. 255` range, and a `u16 → INTEGER` column would receive no CHECK
+    at all. djogi#190 must therefore plumb the same `rust_source_type`
+    discriminator into the helper so it can choose between `i8` and `u8`
+    bounds under `SMALLINT` and emit a fresh `u16` arm under `INTEGER`. The
+    `u32 → BIGINT` and `u64 → NUMERIC(20, 0)` paths already encode the
+    correct bounds for their sole expected source type — disambiguation at
+    `BIGINT` is handled at the `project_column` gate above, and
+    `NumericPrecision { precision: 20, scale: 0 }` is unique to `u64` and
+    needs no further discrimination. So the contract surface lights up for
+    `i8 / u8 / u16 / u32 / u64` only when this helper extension lands
+    alongside the `project_column` flip.
 
 The helper, the differ AMEND DROP+ADD lifecycle, and the
 `FieldSqlType::NumericPrecision { precision, scale }` variant are all
-unit-tested today against synthetic descriptor / `ColumnSchema` shapes; only
-the projection wiring sits dormant so the contract layer cannot regress
-production tables before #190 closes the source-type gap.
+unit-tested today against synthetic descriptor / `ColumnSchema` shapes; the
+production wiring (`project_column` call site) and the helper's
+source-Rust-type-aware dispatch for `u8 / u16` both sit dormant so the
+contract layer cannot regress production tables before #190 closes the
+source-type gap.
 
 ### 10.7 Ledger and Locking
 
@@ -371,12 +409,12 @@ Checksum contract:
 
 Advisory lock contract:
 
-- key: `0x444A4F474D494752`
-- decimal: `4994068948568834898`
-- acquired before reading the pending set
-- session-scoped
+- scope: per migration bucket, where bucket = `(database, app)`; independent buckets hash to distinct keys and do not contend on a single global literal key
+- key derivation: `SHA-256("djogi:advisory_lock:" || database || "\0" || app)`, with the first 8 digest bytes interpreted as a big-endian signed 64-bit integer (Postgres `bigint`)
+- prefix: the `djogi:advisory_lock:` byte prefix scopes the keyspace so adopter-side advisory locks that hash arbitrary identifiers cannot collide with Djogi's keys
+- acquired before reading the pending set for the bucket
+- session-scoped — the design intent is that the holder pins a single session (e.g. a dedicated non-pooled `tokio_postgres::Client`) for the full `apply` / `rollback` / `repair` window so pool reuse cannot silently swap the holder; the current runner acquires the lock through a supplied pool-backed `DjogiContext` and per-operation checkouts are not yet pinned to one session for the migration window — pinning is a release-gate hardening item (track ahead of v0.1.0 publish), not a current runtime guarantee
 - released in a finally-equivalent cleanup path
-- lock namespace is per database target
 
 ### 10.8 Apply, Rollback, Repair, and Adoption
 
