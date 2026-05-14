@@ -311,31 +311,34 @@ pub struct Subscription {
 The `Model` trait definition lives there. If you are unsure what a method
 returns or accepts, read that file directly.
 
-**Step 4: Create the table manually (Phase 1).**
+**Step 4: Materialise the table from the descriptor — do not hand-write DDL.**
 
-Match each developer field to its SQL type, plus the three injected
-framework columns:
+Djogi is descriptor-driven: the `#[model]` macro emits a `ModelDescriptor`
+that the migration system and test harness project into SQL. You do not
+write `CREATE TABLE` by hand.
 
-```sql
-CREATE TABLE subscriptions (
-    id                  BIGINT      PRIMARY KEY DEFAULT generate_id(),
-    created_at          TIMESTAMPTZ NOT NULL    DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL    DEFAULT now(),
-    plan_name           TEXT        NOT NULL,
-    status              TEXT        NOT NULL,
-    monthly_price_cents BIGINT      NOT NULL,
-    active              BOOLEAN     NOT NULL
-);
-```
+- In **production code**, change the struct, rebuild (`cargo build` emits a
+  drift warning), then run `cargo djogi migrations compose --name
+  add_subscriptions` to generate a reviewable `V<ts>__add_subscriptions.sql`
+  pair under `migrations/<database>/<app>/`. Library callers apply via
+  `djogi::migrate::apply_plan`; see [the migrations guide](./migrations.md).
+- In **tests**, list the model in `sync_models = [...]` on the
+  `#[djogi::djogi_test]` attribute (Step 5 below) and the harness
+  materialises it into the per-test database through the same projection
+  pipeline the production runner uses.
+
+Either path produces the same shape — `id BIGINT PRIMARY KEY DEFAULT
+generate_id()`, `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`,
+`updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`, plus the developer-owned
+columns — projected from the descriptor, not hand-written.
 
 **Step 5: Write your CRUD code and a test.**
 
 ```rust
-#[djogi::djogi_test]
-async fn create_subscription(ctx: &mut DjogiContext) {
-    // setup: create table (the harness already installed the schema +
-    // seeded the node — see Getting Started guide)
-    setup_subscriptions(ctx).await;
+#[djogi::djogi_test(sync_models = [Subscription])]
+async fn create_subscription(mut ctx: DjogiContext) {
+    // No setup helper — the harness projects the Subscription descriptor
+    // into the per-test database before this body runs.
     let sub = Subscription::create(&mut ctx, Subscription {
         plan_name: "pro".into(),
         status: "active".into(),
@@ -353,8 +356,8 @@ async fn create_subscription(ctx: &mut DjogiContext) {
 
 ## 5. How to Add a New Field
 
-Adding a field is safe — just add it to the struct and update the table
-manually:
+Adding a field is safe — change the struct and let the descriptor-driven
+migration system emit the column:
 
 ```rust
 pub struct Subscription {
@@ -366,19 +369,27 @@ pub struct Subscription {
 }
 ```
 
-Then add the column to Postgres:
+`cargo build` re-runs the proc macro, updates `target/djogi_models.json`,
+and `build.rs` emits a `cargo:warning=` drift line. Run
+`cargo djogi migrations compose --name add_subscription_notes` to write
+`V<ts>__add_subscription_notes.sql` + `.down.sql` into the appropriate
+`migrations/<database>/<app>/` bucket — review the SQL in your PR, then
+apply via the library API (`djogi::migrate::apply_plan`) or
+`cargo djogi migrations attune`. See
+[the migrations guide](./migrations.md) for the full compose/status/attune
+contract; the CLI dispatchers for `apply` / `rollback` / `fake` /
+`baseline` / `verify` / `repair` are deferred to a Phase 7 follow-up, so
+library callers reach for the public `djogi::migrate` entry points
+directly in the interim.
 
-```sql
-ALTER TABLE subscriptions ADD COLUMN notes TEXT;
-```
+In tests, just add the field to the struct — the next `#[djogi::djogi_test(
+sync_models = [Subscription])]` run projects the updated descriptor into
+its throwaway database.
 
-In Phase 1 there is no automatic migration differ. Column changes are
-manual. The migration system is a Phase 6–8 deliverable — see
-[the CLI roadmap](../roadmap/cli.md).
-
-**Renaming a field:** rename the Rust field and update the column. When the
-migration system ships, use `#[field(renamed_from = "old_name")]` to tell
-the differ to generate `RENAME COLUMN` instead of `DROP + ADD`.
+**Renaming a field:** annotate the renamed field with
+`#[field(renamed_from = "old_name")]` so the differ emits a
+`RENAME COLUMN` instead of `DROP + ADD`. Without the annotation the
+descriptor diff is structurally indistinguishable from a drop-and-add.
 
 ---
 

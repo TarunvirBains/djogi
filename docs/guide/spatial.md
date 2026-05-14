@@ -683,35 +683,35 @@ real adoption pressure emerges. That would be an additive, non-breaking change.
 
 ## Migration expectations
 
-When Phase 7's `cargo djogi migrate` ships, it will consume the spatial
-metadata on `IndexSpec` to split the GiST index into a separate
+The descriptor-driven migration system consumes the spatial metadata on
+`IndexSpec` and splits the GiST index into a separate
 `CREATE INDEX CONCURRENTLY` step — that DDL form cannot run inside a
-transaction, and PostGIS must be installed before it runs.
+transaction, and PostGIS must be installed before it runs. Change the
+`#[model]` struct, rebuild (`cargo build` emits the drift warning), then
+run `cargo djogi migrations compose --name add_places_location` to write
+the reviewable migration pair under
+`migrations/<database>/<app>/`. The composer emits the geography column
+plus the GiST index in the correct transactional / non-transactional
+segments — you do not hand-write `ALTER TABLE ... ADD COLUMN GEOGRAPHY` or
+`CREATE INDEX CONCURRENTLY`. Library callers apply via
+`djogi::migrate::apply_plan`; the
+`apply` / `rollback` / `fake` / `baseline` / `verify` / `repair` CLI
+dispatchers are deferred to a Phase 7 follow-up, so reach for the public
+`djogi::migrate` entry points directly in the interim. See
+[the migrations guide](./migrations.md) for the full contract.
 
-Until Phase 7, apply the DDL by hand in your migration files:
-
-```sql
--- Requires the postgis extension to be installed first:
--- CREATE EXTENSION IF NOT EXISTS postgis;
-
-ALTER TABLE places
-  ADD COLUMN location GEOGRAPHY(Point, 4326) NOT NULL;
-
-CREATE INDEX CONCURRENTLY places_location_gix
-  ON places USING GIST (location);
-```
-
-The `places_location_gix` name follows the `{table}_{column}_gix` convention
-that the macro emits into `IndexSpec.name`.
+The composer emits an index name following the `{table}_{column}_gix`
+convention that the macro records in `IndexSpec.name` —
+e.g. `places_location_gix`.
 
 ### Index metadata
 
 The spatial GiST index emitted by `#[derive(Model)]` sets:
 
-- `requires_out_of_transaction = true` — Phase 7 places this index into a
+- `requires_out_of_transaction = true` — the runner places this index into a
   `CREATE INDEX CONCURRENTLY` step that runs outside any transaction.
-- `extension_dependency = Some("postgis")` — Phase 7 verifies the extension
-  is installed before emitting the index DDL.
+- `extension_dependency = Some("postgis")` — the runner verifies the
+  extension is installed before emitting the index DDL.
 
 These fields live on `IndexSpec` in `ModelDescriptor::indexes`. The
 `MigrationShape` contract helper (used in tests) validates that the descriptor
