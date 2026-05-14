@@ -220,10 +220,26 @@ No heuristic rename guessing is part of the core differ.
 
 ### 10.6.1 Type-Derived CHECK Projection (djogi#186)
 
-The differ projects a table-level `CHECK` constraint for every column whose
-Rust source type widens to a Postgres column type. The projection is
-type-driven and runs at descriptor → snapshot lowering time, so the resulting
-CHECK serializes into `schema_snapshot.json` and survives every round-trip.
+**Status — contract layer only until djogi#190.** This section describes the
+type-derived CHECK projection contract that djogi#186 puts in place. The
+helper, the differ AMEND DROP+ADD lifecycle, the
+`FieldSqlType::NumericPrecision { precision, scale }` variant, and the
+`IntoFilterValue for u64` shim are wired and unit-tested today. The piece
+that connects them to production — the `project_column` call site that would
+populate `ColumnSchema.check` from a column's Rust source type — is gated on
+djogi#190 (see "Currently shipped vs deferred" below for the why and what
+needs to land). Until djogi#190 closes, `ColumnSchema.check` is always
+`None` for type-derived CHECKs in production projections, the differ never
+sees a differing CHECK to act on, and no type-derived CHECK constraint
+reaches `schema_snapshot.json` or generated migration SQL. The remainder of
+this section is the contract the projection will honour once that wiring
+activates.
+
+Under the contract, the differ will project a table-level `CHECK` constraint
+for every column whose Rust source type widens to a Postgres column type.
+The projection is type-driven and runs at descriptor → snapshot lowering
+time, so the resulting CHECK will serialize into `schema_snapshot.json` and
+survive every round-trip.
 
 **Mapping table.** Each Rust source type widens to the smallest signed Postgres
 integer that fits its full value range; `u64` widens to `NUMERIC(20, 0)`
