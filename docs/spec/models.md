@@ -180,7 +180,7 @@ Phase 1's `String -> TEXT` rule is the bootstrap mapping, not the long-term publ
 | `RanjId` | `UUID` (opt-in via `#[model(pk = RanjId)]`) |
 | `Option<T>` | nullable wrapper around T's SQL type |
 
-`ForeignKey<T>` and typed `Jsonb<T>` are not yet shipped — see the [Relations spec](./relations.md) and [JSONB spec](./jsonb.md) for their planned design.
+`ForeignKey<T>` and typed `Jsonb<T>` are shipped APIs; see the [Relations spec](./relations.md) and [JSONB spec](./jsonb.md) for their full contracts.
 
 ### 4.5 Field Annotations
 

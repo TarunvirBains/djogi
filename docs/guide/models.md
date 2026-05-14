@@ -160,7 +160,7 @@ With `no_default`, the impl is omitted. Users construct instances field-by-field
 
 ## Field Attributes (`#[field(...)]`)
 
-Attributes in this section are parsed by the macro and propagate into `FieldDescriptor` entries. They're recorded in the descriptor; the migration system (Phase 6) will consume them.
+Attributes in this section are parsed by the macro, propagated into `FieldDescriptor` entries, and consumed by the descriptor-driven migration system.
 
 ### `#[field(unique)]`
 
@@ -190,7 +190,7 @@ pub struct Post {
 
 ### `#[field(max_length = N)]`
 
-Records a length constraint. The migration system uses this when deciding between `VARCHAR(N)` and `TEXT` (Phase 6). Phase 1 only records the value in the descriptor.
+Records a length constraint. The migration system uses this when deciding between `VARCHAR(N)` and `TEXT`.
 
 ```rust
 pub struct Tag {
@@ -201,7 +201,7 @@ pub struct Tag {
 
 ### `#[field(renamed_from = "old_name")]`
 
-Tells the migration differ that this field was previously named `old_name`, so a Phase 6 migration emits `ALTER TABLE RENAME COLUMN` rather than drop+add.
+Tells the migration differ that this field was previously named `old_name`, so generated migration plans emit `ALTER TABLE RENAME COLUMN` rather than drop+add.
 
 ```rust
 #[model(table = "vehicles")]

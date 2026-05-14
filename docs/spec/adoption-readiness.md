@@ -36,7 +36,7 @@ This document maps common app patterns to the earliest Djogi phase at which they
 | Password hashing (Argon2) | 5.5 | `PasswordHash` (feature `auth-argon2`) |
 | Axum integration | 5.5 | `FromRequestParts` (feature `auth-axum`) |
 | Spatial (GeoPoint + ST_DWithin + GIST auto-index) | 6 | PostGIS-backed |
-| Production migrations (`djogi migrations apply`) | 7 | Differ + compose/apply/verify/repair/baseline CLI + target-scoped ledger/snapshot; includes composite unique constraints and composite indexes, but not composite primary keys |
+| Production migrations | 7 | Descriptor differ + `djogi migrations compose`/`status`/`attune`, public `djogi::migrate` library apply path, and target-scoped ledger/snapshot; apply/verify/repair/baseline CLI dispatchers are deferred |
 | Protected-data metadata + field codecs | 7.5 | `#[field(sensitive, codec)]` |
 | Online-safe staged live migrations | 7.5 | Expand/contract classification + resumable backfill/cutover/finalize for supported rollout patterns |
 | Lifecycle hooks + computed properties + composition | 8 | `#[abstract_model]` + `SoftDeletable` / `Auditable` |

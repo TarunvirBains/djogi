@@ -117,15 +117,9 @@ Article::objects()
 ### GIN indexes
 
 The `@>`, `<@`, and `&&` operators benefit from a GIN index on the column.
-GIN index emission is deferred to Phase 7. In the meantime, add the index
-manually in your migration:
-
-```sql
-CREATE INDEX articles_tags_gin ON articles USING gin(tags);
-```
-
-You can annotate the field with `#[field(index = "gin")]` today — the
-descriptor records the intent for Phase 7's migration differ to pick up:
+Annotate the field with `#[field(index = "gin")]`; the descriptor-driven
+migration composer emits the GIN index. Hand-written SQL is only needed when you
+deliberately bypass Djogi's migration surface:
 
 ```rust
 #[field(index = "gin")]

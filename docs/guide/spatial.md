@@ -708,7 +708,7 @@ e.g. `places_location_gix`.
 
 ### Index metadata
 
-The spatial GiST index emitted by `#[derive(Model)]` sets:
+The spatial GiST index emitted by `#[model(...)]` sets:
 
 - `requires_out_of_transaction = true` — the runner places this index into a
   `CREATE INDEX CONCURRENTLY` step that runs outside any transaction.

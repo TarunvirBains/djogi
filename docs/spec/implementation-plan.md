@@ -519,15 +519,15 @@ Filenames are `V<YYYYMMDDHHMMSS>__<slug>.sql` plus `.down.sql`. Every Phase 7 pa
 ### 7d: CLI
 
 - [x] `djogi migrations compose` — compose pending up/down SQL pairs from descriptor drift
-- [x] `djogi migrations apply` — apply pending migrations for one database target, update snapshot
-- [x] `djogi migrations rollback` — roll back the last applied migration for one target
+- [ ] `djogi migrations apply` — deferred CLI dispatcher for applying pending migrations; library callers use `djogi::migrate::apply_plan`
+- [ ] `djogi migrations rollback` — deferred CLI dispatcher for rolling back the last applied migration for one target
 - [x] `djogi migrations status` — show file / snapshot / ledger / live-DB state for one target
-- [x] `djogi migrations verify` — verify snapshot, history, and live DB alignment for one target
-- [x] `djogi migrations repair` — repair failed or partially applied target-local migration state
-- [x] `djogi migrations baseline` — mark an existing schema as adopted without replay
+- [ ] `djogi migrations verify` — deferred CLI dispatcher for snapshot, history, and live-DB verification
+- [ ] `djogi migrations repair` — deferred CLI dispatcher for repairing failed or partially applied target-local migration state
+- [ ] `djogi migrations baseline` — deferred CLI dispatcher for marking an existing schema as adopted without replay
 - [x] `djogi migrations attune` — `--record` / `--squash --from <ver>` with `--publish`; localhost + dev-profile gates on squash
-- [x] `djogi migrations apply --fake` — mark applied without running (T5 path)
-- [x] `djogi db reset` — drop + recreate + migrate (triple-gated: localhost + non-production profile + explicit `--yes`)
+- [ ] `djogi migrations apply --fake` — deferred CLI dispatcher for marking a migration applied without running it
+- [ ] `djogi db reset` — deferred convenience wrapper around drop + recreate + migration apply (triple-gated: localhost + non-production profile + explicit `--yes`)
 - [x] `djogi db seed` — run `seeds/<database>/*.sql` files; `djogi_seed_runs` ledger; checksum-drift refusal; `--allow-non-localhost` opt-in
 - [x] `djogi docs` — render Markdown reference pages from `inventory::iter::<ModelDescriptor>()` to `target/djogi-docs/<app>/<Model>.md`
 
@@ -541,7 +541,7 @@ Phase 7's migration CLI is explicitly target-scoped. App, CRUD-log, and event-lo
 ### 7f: Online / Zero-Downtime Migration Patterns
 
 - [x] Phased migration execution model: the migration runner splits each generated migration into ordered step groups tagged transactional vs non-transactional. Transactional groups run inside `BEGIN/COMMIT`; non-transactional steps — `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, certain `CREATE EXTENSION` cases, some `ALTER TYPE ADD VALUE` operations — run outside any transaction. `atomic()` is available only around transactional steps; attempting to wrap a non-transactional step in `atomic()` produces a clear error ("this step cannot run inside a transaction — see Phase 7f phased-migration model") rather than a silent SQLSTATE from Postgres
-- [x] Advisory-lock-based single-active-migration coordination (no two `djogi migrations apply` invocations apply concurrently against the same database target)
+- [x] Advisory-lock-based single-active-migration coordination (no two library apply sessions run concurrently against the same database target)
 - [ ] Lock-timeout on DDL statements so blocked migrations back off rather than queue behind long transactions (`SET lock_timeout = '5s'` around each DDL) — folded into Phase 7.5's online-safety classification work
 - [ ] Two-phase column rename: emit `ADD COLUMN new_name` + backfill from `old_name` + runtime reads both + drop `old_name` in a follow-up migration. Driven by `#[field(renamed_from = "old_name")]` + an opt-in `#[field(rename_strategy = "two_phase")]` — Phase 7.5 (`ExpandContract` classification)
 - [ ] Two-phase type widening: add new-type column, backfill, cut over, drop old (analogous pattern)
