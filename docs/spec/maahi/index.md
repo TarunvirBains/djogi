@@ -2,22 +2,22 @@
 
 # Maahi — Djogi's Admin Console
 
-Maahi is Djogi's optional admin console: an opt-in, descriptor-driven, role-aware UI that is auto-generated from registered models. Built as a Dioxus full-stack application, it ships behind the `admin` feature flag and runs on Axum. Every list view, form, filter, validation pass, and audit surface derives from `ModelDescriptor` plus the compile-time visage registry already defined in [Visages](../visages.md) — adopters write zero per-model UI code and zero hand-rolled permission tables.
+Maahi is Djogi's planned optional admin console: an opt-in, descriptor-driven, role-aware UI that is auto-generated from registered models. The intended design is a Dioxus full-stack application running on Axum, but Maahi is a Phase 10 surface and is not shipped in the current `djogi` crate or `djogi` CLI. Every list view, form, filter, validation pass, and audit surface derives from `ModelDescriptor` plus the compile-time visage registry already defined in [Visages](../visages.md) — adopters write zero per-model UI code and zero hand-rolled permission tables.
 
-The name names the surface; the feature flag stays generic for discoverability:
+The name names the planned surface; the feature flag stays generic for discoverability once Maahi ships:
 
 ```toml
-# Cargo.toml — Maahi enabled
+# Cargo.toml — planned Maahi opt-in, not available in the current release
 djogi = { version = "0.1", features = ["admin", "axum"] }
 ```
 
 | Surface          | Path                                                          |
 |------------------|---------------------------------------------------------------|
-| Crate            | `djogi-maahi` (workspace member; pulled in via `admin` feature) |
-| Module           | `djogi::maahi`                                                |
-| Feature flag     | `features = ["admin"]`                                        |
+| Crate            | Planned `djogi-maahi` workspace member, pulled in via `admin` feature when shipped |
+| Module           | Planned `djogi::maahi`                                       |
+| Feature flag     | Planned `features = ["admin"]`                               |
 | URL mount        | `/_admin/`                                                    |
-| CLI              | `cargo djogi admin …`                                         |
+| CLI              | Planned `djogi admin ...` commands; no admin subcommand is registered today |
 | Spec             | `docs/spec/maahi/`                                            |
 
 ## Design Philosophy

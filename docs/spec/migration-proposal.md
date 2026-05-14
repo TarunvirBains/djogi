@@ -209,27 +209,16 @@ operators hand-editing the ledger table (T03, C-08 in doc 15).
 ### 2.1 The CLI Surface — `djogi migrations *`
 
 The existing Phase 7 v2 plan uses Django-inspired command names: `makemigrations`, `migrate`.
-This proposal replaces them with noun-grouped verbs throughout. The canonical CLI surface:
+This proposal replaces them with noun-grouped verbs throughout. The shipped CLI surface is narrower than the full target design:
 
 | Command | What it does |
 |---|---|
 | `djogi migrations compose` | Generate migration SQL files from model descriptors (was `makemigrations`) |
-| `djogi migrations compose --dry-run` | Preview generated SQL without writing files |
 | `djogi migrations compose --allow-destructive` | Allow `unexecutableSteps` operations |
 | `djogi migrations compose --name <slug>` | Override auto-generated migration description |
-| `djogi migrations apply` | Apply pending migrations to the DB (was `migrate`) |
-| `djogi migrations apply --fake <version>` | Stamp a migration as applied without running SQL |
-| `djogi migrations apply --allow-out-of-order` | Allow out-of-order apply in CI/prod |
-| `djogi migrations pull` | Fetch the latest migrations from the submodule remote; auto-runs `status` (new) |
-| `djogi migrations pull --fetch-parent` | Fast-forward the parent repo first, then submodule (opt-in) |
-| `djogi migrations pull --apply` | Chain into `migrations apply` after a successful pull |
-| `djogi migrations pull --force` | Discard local submodule changes / unpushed commits (destructive; warns) |
-| `djogi migrations pull --dry-run` | Fetch and report what would change without updating working tree |
-| `djogi migrations status` | Show pending and applied state (was `migrate show`) |
-| `djogi migrations verify` | Compare snapshot against live DB catalog (new) |
-| `djogi migrations repair` | Reconcile drift, clear failure markers, fix ledger (was `migrate repair`) |
-| `djogi migrations repair --rebuild-snapshot` | Regenerate snapshot from ledger + descriptors |
-| `djogi migrations baseline <version>` | Establish ledger floor on an adopted DB |
+| `djogi migrations status` | Show pending and applied migration state |
+| `djogi migrations attune` | Reconcile migration history state through the shipped attune workflow |
+| Planned target verbs | `apply`, `rollback`, `verify`, `repair`, and `baseline` remain deferred CLI surfaces; use `djogi::migrate` library APIs today |
 | `djogi migrations help [<subcommand>]` | Print help for the group or a specific subcommand |
 | `djogi migrations` (no subcommand) | Equivalent to `help` — prints subcommand list + common workflows |
 
@@ -1306,7 +1295,6 @@ One row per locked decision. Every claim in the proposal is auditable to a topic
 | `IndexSpec` partial/functional index support | Decision record R-21 | T08 §Partial and functional indexes |
 | `IndexSpec` JSONB `json_path` support | Decision record R-22 | T11 §JSONB and custom types |
 | Runner uses dedicated single connection | Decision record R-23 | T04 §deadpool and advisory lock lifecycle |
-| `djogi migrations verify` added | Decision record R-24 | T11 §Shadow DB alternative |
 | `HistoryDiagnostic` taxonomy | Decision record R-25 | T01 §Adopt: Three history-diagnostic states |
 | `schema_snapshot.json` `format_version` field | Decision record R-26 | T11 §Snapshot merge conflicts |
 | `run_id` is HeerId | Decision record OI-01 | Prisma pattern; HeerId consistency |

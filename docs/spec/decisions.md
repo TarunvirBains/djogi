@@ -8,7 +8,7 @@
 
 | Decision | Resolution |
 |---|---|
-| Default PK type | HeerId — `BIGINT DEFAULT generate_id()`, database-native, time-ordered |
+| Default PK type | `HeerIdRecencyBiased` / `HeerIdDesc` — `BIGINT DEFAULT generate_id()`, database-native, time-ordered |
 | HeerId ID pattern — default | `create()` uses `DEFAULT generate_id()` + `RETURNING id` |
 | HeerId ID pattern — bulk | `HeerId::generate_many(n)` pre-allocates IDs before bulk INSERT |
 | HeerId ID pattern — form | `HeerId::generate()` at form render time; INSERT with `ON CONFLICT DO NOTHING` |
