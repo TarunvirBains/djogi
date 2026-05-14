@@ -1,17 +1,32 @@
 mod check_justifications;
+mod check_secrets;
 mod check_spatial_ci;
 mod check_test_surface;
 mod gc_target_cache;
 
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: cargo xtask check-justifications | check-spatial-ci | check-test-surface [--list] | gc-target-cache [--dry-run]";
+const USAGE: &str = "usage: cargo xtask <subcommand>\n\
+                     \n\
+                     subcommands:\n\
+                     \x20 check-justifications\n\
+                     \x20 check-secrets [--staged | --stdin]\n\
+                     \x20 check-spatial-ci\n\
+                     \x20 check-test-surface [--list]\n\
+                     \x20 gc-target-cache [--dry-run]";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
 
     match (args.next().as_deref(), args.next().as_deref(), args.next()) {
         (Some("check-justifications"), None, None) => check_justifications::run(),
+        (Some("check-secrets"), None, None) => check_secrets::run(check_secrets::ScanMode::Repo),
+        (Some("check-secrets"), Some("--staged"), None) => {
+            check_secrets::run(check_secrets::ScanMode::Staged)
+        }
+        (Some("check-secrets"), Some("--stdin"), None) => {
+            check_secrets::run(check_secrets::ScanMode::Stdin)
+        }
         (Some("check-spatial-ci"), None, None) => check_spatial_ci::run(),
         (Some("check-test-surface"), None, None) => check_test_surface::run(false),
         (Some("check-test-surface"), Some("--list"), None) => check_test_surface::run(true),

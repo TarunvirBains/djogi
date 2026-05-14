@@ -35,6 +35,7 @@ services:
       - "5432:5432"
     environment:
       POSTGRES_USER: djogi
+      # djogi-allow-secret: local-dev example, intentionally weak.
       POSTGRES_PASSWORD: djogi
       POSTGRES_DB: myapp
     volumes:

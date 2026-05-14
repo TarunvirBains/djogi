@@ -44,6 +44,26 @@ cargo test --lib --workspace
 - Atomic commits: each commit one logical unit, passes tests in
   isolation
 
+## Secrets hygiene
+
+Before every commit, and before pasting issue / PR text into public
+GitHub, run the secret-pattern scanner:
+
+```bash
+cargo xtask check-secrets --staged          # pre-commit
+cargo xtask check-secrets --stdin < draft.md # pre-issue / pre-PR-body
+cargo xtask check-secrets                    # full repo sweep
+```
+
+The scanner reports any URL with embedded `user:password`, any known
+secret env-var assignment, and any PEM private-key block header. Output
+is redacted (the raw value is never echoed). Intentional fixtures and
+anti-pattern examples can be allowlisted with a
+`// djogi-allow-secret: <reason>` marker — see
+[`docs/guide/secrets-hygiene.md`](docs/guide/secrets-hygiene.md) for
+the full allowlist mechanism and a list of recognised placeholder
+forms.
+
 ## Proposing changes
 
 1. **Open an issue first** for non-trivial changes. The

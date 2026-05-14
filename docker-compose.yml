@@ -1,3 +1,7 @@
+# djogi-allow-secret-file: local dev cluster fixture; the `djogi:djogi`
+# credentials are intentionally weak, not production, and never accept remote
+# connections (no ports bound on a public interface). See `cargo xtask
+# check-secrets` for the scanner that consults this marker.
 services:
   postgres:
     image: postgis/postgis:18-3.6

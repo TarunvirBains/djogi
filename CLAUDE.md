@@ -63,6 +63,13 @@ cargo clippy --all-targets --all-features
 # Format
 cargo fmt --all
 
+# Secret-pattern preflight (URLs with creds, named secret env vars, PEM
+# private keys). Runs in CI; also use --staged before commit and --stdin
+# when drafting public issues / PR bodies. See docs/guide/secrets-hygiene.md.
+cargo xtask check-secrets
+cargo xtask check-secrets --staged
+cargo xtask check-secrets --stdin < draft.md
+
 # CLI (Phase 7 + later phases)
 djogi migrations compose             # generate up/down SQL pair from descriptor drift
 djogi migrations status              # show ledger / snapshot / live-DB state

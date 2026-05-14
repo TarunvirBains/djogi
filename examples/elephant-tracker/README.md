@@ -111,6 +111,7 @@ HeeRanjID node id.
 
 ```bash
 # 1. Postgres + PostGIS — for example via docker:
+# djogi-allow-secret: local-dev example, intentionally weak.
 docker run --rm -d --name elephant-pg \
   -e POSTGRES_PASSWORD=djogi -e POSTGRES_USER=djogi \
   -e POSTGRES_DB=djogi_test -p 5432:5432 \
