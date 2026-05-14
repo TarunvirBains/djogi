@@ -10,10 +10,11 @@ Djogi emits an RLS policy for the model's table (consumed by Phase 7's migration
 differ) and generates `DjogiContext::set_tenant(...)` as the runtime entry point
 for activating isolation within a transaction.
 
-Auth — the `DjogiAuth` trait, `EnvAuth`, and web-framework middleware that calls
-`set_tenant` automatically on request entry — belongs to Phase 5.5 and is not
-yet shipped. The data-layer plumbing (policy emission, `set_tenant`, insecure
-bypasses) is available now.
+The auth substrate is shipped: `DjogiAuth`, `AuthContext`, and the model-aware
+auto-`set_tenant` path activate tenant isolation when a context carries a
+tenant id and the queried model is tenant-keyed. Framework middleware and
+provider adapters remain application-layer concerns unless a later adapter crate
+adds them.
 
 ---
 
@@ -21,9 +22,12 @@ bypasses) is available now.
 
 - You declare `#[model(tenant_key = "col_name")]` on a model. The named column
   must exist as a user-declared field on the struct.
-- Djogi emits an RLS policy file at `target/djogi_rls/{table}_rls.sql` — Phase 7
-  picks this up during migration generation. Until Phase 7, hand-write the
-  policy in your migration:
+- Djogi's descriptor-driven migration flow includes the tenant RLS policy for
+  the model. Use `cargo djogi migrations compose` for generated migration
+  plans, or the public `djogi::migrate` library APIs when applying plans from
+  code. The apply/rollback-style CLI dispatchers are deferred; hand-written RLS
+  SQL is an escape hatch, not the default path. The emitted policy is equivalent
+  to:
   ```sql
   ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
   CREATE POLICY tenant_isolation ON posts

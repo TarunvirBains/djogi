@@ -21,7 +21,7 @@ covers connection pooling, transactions, and the raw-SQL escape hatch.
 
 ### Prerequisites
 
-- Rust toolchain (stable, 1.87 or later)
+- Rust toolchain (stable, 1.95 or later)
 - PostgreSQL 18 running locally or via Docker
 
 ### Docker Compose quickstart

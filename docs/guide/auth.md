@@ -45,7 +45,7 @@ use std::pin::Pin;
 
 // `raw_query` requires `T: FromPgRow` — tuples don't implement it, so
 // define a small row struct with a hand-written decoder. `FromPgRow`
-// is auto-derived by `#[derive(Model)]` for full models; for ad-hoc
+// is emitted by `#[model(...)]` for full models; for ad-hoc
 // projections like this, implement it manually following the column
 // order baked into the SELECT.
 struct SessionRow {
