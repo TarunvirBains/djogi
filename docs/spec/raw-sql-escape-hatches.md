@@ -123,7 +123,9 @@ async fn my_test(mut ctx: DjogiContext) {
 }
 ```
 
-The macro injects these imports into the decorated item:
+The macro injects the hidden bypass traits into the decorated item. Adopter
+code must not import `djogi::__bypass` directly; use the bypass attribute plus
+an adjacent `// JUSTIFICATION ...` comment instead.
 
 ```rust
 use ::djogi::__bypass::RawAccessExt;

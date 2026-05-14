@@ -27,7 +27,7 @@ djogi/                  ← this repo — the framework implementation
   bindings/             ← Python, TypeScript, .NET
 ```
 
-Djogi calls into HeeRanjId for ID generation (`generate_id()` / `generate_ids(n)` / `generate_ranj_id()`) but does not own it. HeeRanjId is a standalone crate that Djogi depends on.
+Djogi calls into HeeRanjId for ID generation (`heerid_next()` / `heerid_next_desc()` / `ranjid_next()` / `ranjid_next_desc()`, plus `generate_ids(...)` / `generate_ranjids(...)` batch helpers) but does not own it. HeeRanjId is a standalone crate that Djogi depends on.
 
 ## Commands
 
@@ -122,7 +122,7 @@ artifacts. After `git worktree remove`, prune orphaned caches with
 Djogi is a Model-first framework — narrow in scope, deep within that scope. It targets **Postgres 18 and later, exclusively** (permanent design decisions — JSONB, HeeRanjId, advisory locks, transactional DDL, `RETURNING`, and latest Postgres features all depend on it; earlier versions explicitly unsupported per `docs/spec/decisions.md`). It does **not** wrap or compete with:
 - **Any web framework (Axum, Warp, Actix, Rocket, Poem, …)** — HTTP routing/middleware/extraction. Djogi's core is web-framework-agnostic; per-framework integrations (extractors that surface `DjogiContext`/`AuthContext` from request state, optional router-merging helpers) ship as opt-in sub-feature flags (`axum`, `warp`, `actix`, etc.). Adopters pick whichever HTTP layer fits their app and enable the matching flag — or none, if they wire integration manually.
 - **`tokio-postgres` + `deadpool-postgres`** — Djogi wraps these into a typed ORM layer (`Model`, `QuerySet`, `FromPgRow`, `ConditionBuilder`). Raw SQL remains available as a deliberate escape hatch, gated by the raw SQL bypass harness described in [`docs/spec/raw-sql-escape-hatches.md`](docs/spec/raw-sql-escape-hatches.md).
-- **HeeRanjId** — ID generation. Djogi calls `generate_id()` / `generate_ids(n)` / `generate_ranj_id()`.
+- **HeeRanjId** — ID generation. Djogi calls `heerid_next()` / `heerid_next_desc()` / `ranjid_next()` / `ranjid_next_desc()`, plus `generate_ids(...)` / `generate_ranjids(...)` batch helpers.
 - **Tokio** — async runtime. Used as-is.
 
 ### The `#[derive(Model)]` Macro
@@ -221,9 +221,10 @@ Logging databases are isolated from the app DB so they survive `djogi db reset`.
 
 Two ID formats with a lossless upgrade path:
 
-- **HeerId** (default): `BIGINT DEFAULT generate_id()` — 64-bit, time-ordered, populated via `RETURNING id`
-- **RanjId** (opt-in): `UUID DEFAULT generate_ranj_id()` — 128-bit UUIDv8, sub-millisecond precision, higher node/sequence capacity. Opt in with `#[model(pk = "ranjid")]`
-- **Serial** (opt-in): `#[model(pk = "serial")]` for lookup/reference tables
+- **HeerIdRecencyBiased** (default): `BIGINT DEFAULT heerid_next_desc()` — 64-bit, newest-first sort order, populated via `RETURNING id`
+- **HeerId** (opt-in): `BIGINT DEFAULT heerid_next()` — 64-bit, ascending / time-ordered. Opt in with `#[model(pk = HeerId)]`
+- **RanjId** (opt-in): `UUID DEFAULT ranjid_next()` — 128-bit UUIDv8, sub-millisecond precision, higher node/sequence capacity. Opt in with `#[model(pk = RanjId)]`
+- **Serial** (opt-in): `#[model(pk = Serial)]` for lookup/reference tables
 
 ID generation patterns:
 - Default: DB generates via column default + `RETURNING id`

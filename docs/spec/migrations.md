@@ -404,12 +404,12 @@ djogi docs
 # config / snapshot / plan / ledger plumbing the CLI dispatch needs around
 # them. Adopters who need these flows ahead of the CLI registration can wire
 # the library APIs directly today.
-# djogi migrations apply
-# djogi migrations apply --fake 0005_add_vehicle_horsepower
-# djogi migrations rollback
-# djogi migrations verify
-# djogi migrations repair
-# djogi migrations repair --rebuild-snapshot
+# deferred CLI sketch: djogi migrations apply
+# deferred CLI sketch: djogi migrations apply --fake 0005_add_vehicle_horsepower
+# deferred CLI sketch: djogi migrations rollback
+# deferred CLI sketch: djogi migrations verify
+# deferred CLI sketch: djogi migrations repair
+# deferred CLI sketch: djogi migrations repair --rebuild-snapshot
 # djogi migrations baseline 0001_initial
 ```
 

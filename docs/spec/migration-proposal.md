@@ -512,7 +512,7 @@ can be rich).
 | D025 | `.djogi-migrations-lock` held by another invocation | `pull`, `apply`, `compose`, `repair` (30s timeout) |
 
 Override path at apply time: `--force-apply` (discouraged; writes an `orphan_handled` audit row).
-Standard reconciliation: `djogi migrations verify` → `djogi migrations repair`.
+Standard reconciliation: call `djogi::migrate::verify`, then the relevant `djogi::migrate::repair_*` helper until the deferred verify/repair CLI dispatchers land.
 
 The `build.rs` surface emits plain `cargo:warning=djogi: ...` strings only. No spans, no ANSI
 codes — rustc does not expose rich diagnostic APIs from `build.rs` on stable. Rich colored output
@@ -666,7 +666,7 @@ CREATE TABLE vehicles (
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-$ djogi migrations apply
+$ # deferred CLI sketch: djogi migrations apply
 Acquiring advisory lock 4994068948568834898...ok
 Applying 0001_initial...ok (34ms)
 Snapshot updated: migrations/schema_snapshot.json
@@ -702,7 +702,7 @@ $ cat migrations/0002_add_vehicle_horsepower_up.sql
 
 ALTER TABLE vehicles ADD COLUMN horsepower INTEGER NOT NULL DEFAULT 0;
 
-$ djogi migrations apply
+$ # deferred CLI sketch: djogi migrations apply
 Acquiring advisory lock...ok
 run_id: 7823456789012345678
 Applying 0002_add_vehicle_horsepower...ok (12ms)
@@ -763,7 +763,7 @@ $ cat migrations/0004_add_vehicles_make_idx_up.sql
 
 CREATE INDEX CONCURRENTLY vehicles_make_idx ON vehicles (make);
 
-$ djogi migrations apply
+$ # deferred CLI sketch: djogi migrations apply
 Acquiring advisory lock...ok
 run_id: 7823456789012345679
 Applying 0004_add_vehicles_make_idx (non-transactional)...
@@ -780,7 +780,7 @@ The ledger row for this migration has `execution_mode = 'non_transactional'`, `t
 Scenario: a non-transactional migration with two steps; step 2 fails.
 
 ```
-$ djogi migrations apply
+$ # deferred CLI sketch: djogi migrations apply
 Acquiring advisory lock...ok
 run_id: 7823456789012345680
 Applying 0005_add_two_indexes (non-transactional)...
@@ -791,17 +791,17 @@ Applying 0005_add_two_indexes (non-transactional)...
 error[M007]: migration 0005_add_two_indexes failed at step 2/2
   = applied_steps_count: 1
   = help: vehicles_vin_idx was created (step 1 committed)
-  = help: run `djogi migrations repair` to resolve before applying further migrations
+  = help: run the `djogi::migrate::repair_*` library helper until the deferred repair CLI lands to resolve before applying further migrations
 
 Wrote: migrations/.migration_failure.json
 ```
 
 ```
-$ djogi migrations apply
+$ # deferred CLI sketch: djogi migrations apply
 error: migration failure marker present — resolve before applying
-  = help: run `djogi migrations repair`
+  = help: run the `djogi::migrate::repair_*` library helper until the deferred repair CLI lands
 
-$ djogi migrations repair
+$ # deferred CLI sketch: djogi migrations repair
 Found failure: 0005_add_two_indexes at step 2/2
   Step 1 committed: CREATE INDEX CONCURRENTLY vehicles_vin_idx
 
@@ -844,7 +844,7 @@ UPDATE djogi_schema_migrations
     SET app_label = 'fleet'
     WHERE app_label = 'vehicles';
 
-$ djogi migrations apply
+$ # deferred CLI sketch: djogi migrations apply
 Applying fleet/0002_rename_app_from_vehicles...ok
 
 $ # After apply: remove #[app(renamed_from = "vehicles")] from the macro.
@@ -878,7 +878,7 @@ $ cat migrations/orders/0003_move_shipment_from_fleet_up.sql
 
 SELECT 1; -- marker
 
-$ djogi migrations apply
+$ # deferred CLI sketch: djogi migrations apply
 Applying orders/0003_move_shipment_from_fleet...ok (marker migration)
 
 $ # Remove #[model(moved_from_app = "fleet")] after apply.

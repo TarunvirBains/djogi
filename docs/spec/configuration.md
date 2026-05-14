@@ -157,7 +157,7 @@ the matrix in their `--help` output.
 
 `db seed` uses `--database <name>` to select BOTH the seed directory (`seeds/<name>/`) and the connection target. The CLI splices `<name>` into `database.url`'s path component (via `djogi::migrate::derive_per_database_url`) so seeds always run against the matching DB; a malformed application URL refuses with exit code 1 rather than falling back to the application database. Per-database routing is the linchpin of the three-database architecture (`url` / `crud_log_url` / `event_log_url`) — until config exposes per-DB URL fields directly, the splice gives operators a deterministic route to every cluster database from a single application URL.
 
-`migrations attune` manages local migration-history Git state. It may fetch remote refs when needed to resolve a target, but it does not mutate the database unless `--apply` is explicitly passed. Parent-repo submodule-pointer changes are explicit via `--record` or options that clearly imply recording, such as `--squash`.
+`migrations attune` manages local migration-history Git state. It may fetch remote refs when needed to resolve a target, and `--apply` commits ledger/disk reconciliation changes, but it does not execute migration SQL or apply schema DDL. Parent-repo submodule-pointer changes are explicit via `--record` or options that clearly imply recording, such as `--squash`.
 
 `migrations attune` target contract:
 
