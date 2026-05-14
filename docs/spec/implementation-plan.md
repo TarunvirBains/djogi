@@ -555,11 +555,11 @@ Phase 7's migration CLI is explicitly target-scoped. App, CRUD-log, and event-lo
 
 ---
 
-## Phase 7.5: Live Migrations + Protected Data Metadata & Field Codecs *(shipped)*
+## Phase 7.5: Live-Migration Substrate + Protected Data Metadata & Field Codecs *(substrate shipped; operator runner deferred)*
 
-**Goal:** Add descriptor-level protected-field semantics and storage transforms; add the live-migration substrate that classifies schema operations by online-safety and orchestrates safe rollouts.
+**Goal:** Add descriptor-level protected-field semantics and storage transforms; add the live-migration substrate that classifies schema operations by online-safety and prepares safe rollout plans. Full operator-driven live execution (`djogi live run/resume/finalize`, status, abandon, daemon resume) is documented but deferred in v0.1.0.
 
-Phase 7.5 expanded beyond the original protected-data scope to absorb the live-migration safety classifier (per the v3 plan). The shipped scope:
+Phase 7.5 expanded beyond the original protected-data scope to absorb the live-migration safety classifier (per the v3 plan). The shipped scope is the classifier/planning/protected-field substrate:
 
 **Protected-data side (original scope):**
 
@@ -577,9 +577,12 @@ Phase 7.5 expanded beyond the original protected-data scope to absorb the live-m
       `FastLockDestructiveGuarded` / `ExpandContract` /
       `OfflineOnly`, `#[non_exhaustive]`)
 - [x] `pg_volatility` introspection module
-- [x] Backfill engine, chunk-loop SQL pattern, plan resume,
-      daemon-mode runner
-- [x] `djogi live` CLI commands; `db cleanup-test-dbs`
+- [x] Backfill engine and chunk-loop SQL pattern substrate
+- [ ] `djogi live` plan resume and daemon-mode runner
+      (documented/stubbed; operator runner deferred)
+- [ ] `djogi live` CLI command bodies
+      (show/status/run/resume/finalize/abandon documented/stubbed; not shipped)
+- [x] `db cleanup-test-dbs`
 - [x] EXCLUSION + stored-generated descriptor extension
       (`ExclusionConstraintSpec`, `GeneratedColumnSpec`,
       `ColumnSchema.generated`, `TableSchema.exclusion_constraints`,
@@ -596,7 +599,7 @@ Phase 7.5 expanded beyond the original protected-data scope to absorb the live-m
 
 - T13 (catalog drift detection / runtime-vs-spec divergence audit) — pushed to Phase 8 or a dedicated bug-fix sprint
 
-**Deliverable:** Djogi can classify every schema operation by online-safety, orchestrate safe live-migration rollouts (plan/backfill/resume/daemon), and express protected-field intent once and apply it consistently across generated surfaces.
+**Deliverable:** Djogi can classify schema operations by online-safety, emit the core live-migration plan/backfill substrate, and express protected-field intent once across generated surfaces. Operator orchestration via `djogi live` remains a deferred CLI surface.
 
 ---
 

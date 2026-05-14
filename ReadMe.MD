@@ -1,12 +1,12 @@
 # Djogi
 
-*A Model-first, Postgres-native distributed data engine for Rust. Define your schema as structs; the ORM, migrations, audit trail, admin surface, shell bindings, and in-memory cache predicates all derive from one declaration. Your web framework of choice handles HTTP — Djogi owns the data tier end-to-end.*
+*A Model-first, Postgres-native distributed data engine for Rust. Define your schema as structs; the ORM, migrations, audit trail, planned admin surface, planned shell bindings, and in-memory cache predicates all derive from one declaration. Your web framework of choice handles HTTP — Djogi owns the data tier end-to-end.*
 
 ---
 
 Most Rust data libraries solve one slice — a query builder, or migrations, or an audit log. Djogi treats the data tier as the primary derivation target: every concern that touches your model definition (typed queries, schema evolution, change tracking, RLS, model projections via visages, in-memory cache, cross-runtime predicate algebra) lives in one integrated stack rather than a dozen disjoint crates you wire together yourself. Djogi still aims to do one thing well — that thing is data management.
 
-Define your data schema as Rust structs, and Djogi derives the surrounding data machinery — ORM, migrations, admin UI, audit trail, shell bindings, JSONB schema handling. One definition, one data-layer derivation chain.
+Define your data schema as Rust structs, and Djogi derives the surrounding data machinery — ORM, migrations, audit trail, JSONB schema handling, with admin UI and shell bindings planned as later opt-in surfaces. One definition, one data-layer derivation chain.
 
 Djogi does not own routing, middleware, or rendering. The view layer belongs to whichever Rust web framework the adopter chooses — developers write ordinary handlers for that framework, not Djogi abstractions. Axum is the best-covered integration today (opt in with the `axum` feature flag), but Djogi's core is web-framework-agnostic: Warp, Actix, Rocket, Poem, or any other Rust web framework can drive Djogi models through their own per-framework feature flag or through manual wiring. The rendering layer is similarly the developer's choice — Dioxus, Askama, Maud, or whatever fits.
 
@@ -67,7 +67,7 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 | Shell tooling | **Djogi** (opt-in) | Rhai REPL and model-aware operational tooling for Phase 9 (deferred in v0.1.0) |
 | CRUD logging | **Djogi** | Audit trail, JSON-aware diffing |
 | JSONB schema fields | **Djogi** | `Jsonb<T>` — typed schemas over JSONB columns |
-| Admin tooling | **Djogi** (opt-in) | Auto-generated operational UI derived from `ModelDescriptor`; adapter surface, not Djogi's core identity |
+| Admin tooling | **Djogi** (planned opt-in) | Phase 10 Maahi operational UI derived from `ModelDescriptor`; not shipped in v0.1.0 |
 
 ## Core Dependencies
 
