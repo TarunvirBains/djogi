@@ -59,7 +59,7 @@
 | Migration CLI surface | `djogi migrations compose / status / attune` are shipped today (see [Migrations guide § Library APIs](../guide/migrations.md#library-apis)). The `apply / rollback / fake / baseline / verify / repair` CLI dispatchers are deferred to a Phase 7 follow-up; until they ship, library callers reach the runner via the public `djogi::migrate` entry points (`apply_plan`, `rollback_plan`, `fake_apply_plan`, `baseline_plan`, `verify`, and the `repair_*` family). |
 | Migration history attunement | `djogi migrations attune [target]` adjusts local migration-history Git state; it may fetch if needed, does not mutate the DB unless `--apply` is passed, and only updates the parent repo's submodule pointer with explicit `--record` or options that imply recording |
 | Migration history squashing | `djogi migrations attune --squash` is dev-gated with the same safety contract as `djogi db reset` and must refuse on shared staging/production history |
-| Schema snapshot | Updated only on successful `djogi migrations apply` — reflects actual DB state, never build state |
+| Schema snapshot | Persisted only after a successful run of the library apply path (`djogi::migrate::apply_plan`; the `djogi migrations apply` CLI dispatcher is deferred per the row above) — reflects actual DB state, never build state |
 | Migrations folder | Git submodule — pipeline-managed, invisible to developer day-to-day |
 | Migration down files | Always generated as a pair; data loss on destructive rollback documented in file |
 | Migration runner | Djogi-owned on `tokio-postgres` / `deadpool-postgres` — no `sqlx::migrate` compatibility layer |
