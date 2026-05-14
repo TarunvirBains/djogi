@@ -12,12 +12,15 @@
 //!    session-scoped flag that the future
 //!    `#[model(events)]` outbox writer (wired in a later task)
 //!    consults before queuing an outbox row. The default is "events
-//!    suppressed during a backfill chunk"; opt-in restoration is
-//!    available via `--emit-events` or
-//!    `#[migration(emit_events_during_backfill)]`, both of which
-//!    surface here as `emit_events: bool`. With `emit_events = true`
-//!    the runner does NOT issue the `SET LOCAL` and downstream hooks
-//!    behave normally.
+//!    suppressed during a backfill chunk". An internal `emit_events:
+//!    bool` parameter on this module's entry points, when `true`,
+//!    skips the `SET LOCAL` so downstream hooks behave normally —
+//!    used today by tests. No public adopter-facing opt-in surface is
+//!    wired yet: there is no `--emit-events` CLI flag on `djogi live
+//!    run` / `resume` and no `#[migration]` proc macro attribute. An
+//!    operator-facing opt-in is deferred to a future task; suppression
+//!    is always-on for adopter-driven backfills until that surface
+//!    lands.
 //! 2. The pattern's `UPDATE … WHERE <idempotent-predicate> LIMIT $1
 //!    RETURNING <pk>` query — the actual transformation. Bound count
 //!    is the chunk size; the predicate is supplied by the pattern

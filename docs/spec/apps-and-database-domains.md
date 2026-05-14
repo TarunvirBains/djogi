@@ -218,10 +218,10 @@ migrations/
 
 Granularity differs by artifact:
 
-- **Per `(target, app)` pair:** directory, snapshot (`migrations/<target>/<app>/schema_snapshot.json`), pending build-artifact (`target/djogi_pending/<target>/<app>.json`), and the migration SQL files within each app directory. (Phase 7 v3 OQ-10 ruling 2026-04-23.)
-- **Per `target`:** the `djogi_schema_migrations` ledger table (one per database target, shared across all apps in that target) and the advisory-lock namespace keyed on `SHA-256("djogi:migrations:<target-name>")`. (See `docs/spec/decisions.md` rows "Migration advisory lock key" and "Multi-database migration contract.")
+- **Per `(target, app)` pair:** directory, snapshot (`migrations/<target>/<app>/schema_snapshot.json`), pending build-artifact (`target/djogi_pending/<target>/<app>.json`), the migration SQL files within each app directory (Phase 7 v3 OQ-10 ruling 2026-04-23), and the advisory-lock namespace — keys are derived from `SHA-256("djogi:advisory_lock:" || database || "\0" || app)` (first 8 digest bytes as a big-endian signed 64-bit integer). Independent `(database, app)` buckets hash to distinct keys, so apps within the same target do not contend on a shared lock. (See `docs/spec/decisions.md` row "Migration advisory lock key".)
+- **Per `target`:** the `djogi_schema_migrations` ledger table — one per database target, shared across all apps in that target. (See `docs/spec/decisions.md` row "Multi-database migration contract.")
 
-Apps inside one target are serialized by the same target-level lock; cross-target migrations run independently with their own locks.
+Each `(database, app)` bucket is serialized by its own advisory-lock key, and cross-target migrations run independently with their own locks; independent buckets within one target do not block one another.
 
 ---
 

@@ -140,7 +140,7 @@ Djogi's design intent is explicit: **Rust-first** (idiomatic Rust where user cod
 |---|---|---|---|---|
 | Single-DB target | Yes — Postgres-only, permanent | Multi-DB | Multi-DB | Multi-DB |
 | Postgres-native recursive (`CYCLE … USING path`, `SEARCH BREADTH/DEPTH FIRST BY`) | Yes | LCD-bound | LCD-bound | LCD-bound |
-| Advisory locks | Yes — per-target SHA-256 lock keys | Not surfaced | Not surfaced | Not surfaced |
+| Advisory locks | Yes — per-`(database, app)` SHA-256 lock keys (independent buckets in one target do not contend) | Not surfaced | Not surfaced | Not surfaced |
 | RLS / `set_config()` / tenant_key | Yes — first-class | Not surfaced | Not surfaced | Not surfaced |
 | JSONB native operators | Yes — deep-path | Not surfaced | Via `serde_json::Value` | Not surfaced |
 | FTS (`tsvector` + GIN) | Yes — `#[model(fts(source = "<cols>", dictionary = "<config>"))]` | Not surfaced | Not surfaced | Not surfaced |
