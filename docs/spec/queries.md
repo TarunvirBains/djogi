@@ -100,15 +100,20 @@ Vehicle::objects()
 | `SqlAccumulator` | Owns the raw SQL string + the `Vec<Box<dyn ToSql + Sync + Send>>` bound-values buffer |
 | `tokio_postgres::Client::query` | Executes the built query; rows decode through `FromPgRow` into the model type |
 
-Developers can always drop down to raw `tokio-postgres` directly for queries that exceed the `QuerySet` surface — Djogi is not a leaky abstraction that hides its plumbing:
+Developers can drop down to Djogi's raw SQL helpers for queries that exceed the `QuerySet` surface, but this is an explicit bypass that must be justified at the call site:
 ```rust
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): typed QuerySet does not expose this bespoke predicate shape.
+async fn toyota_with_fill(ctx: &mut DjogiContext) -> djogi::Result<Vec<Vehicle>> {
 let rows = ctx.raw_query::<Vehicle>(
     "SELECT * FROM vehicles WHERE make = $1 AND gas_fill > $2",
     &[&"Toyota", &50_i32],
 ).await?;
+Ok(rows)
+}
 ```
 
-For shapes outside the typed `FromPgRow` decoder (recursive CTEs, custom row tuples, scalar aggregates), `ctx.raw_scalar` and `ctx.raw_fetch_one` cover the remaining cases, and direct access to `tokio_postgres::Client` is one `match ctx.inner_mut()` away.
+For shapes outside the typed `FromPgRow` decoder (recursive CTEs, custom row tuples, scalar aggregates), `ctx.raw_scalar`, `ctx.raw_fetch_one`, and the other `RawAccessExt` helpers cover the remaining cases. Direct `tokio_postgres::Client` access is not a public `DjogiContext` API.
 
 ### 5.7 Performance Contract
 

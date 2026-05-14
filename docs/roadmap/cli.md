@@ -1,6 +1,6 @@
 > [Back to roadmap index](./index.md) | [Shipped guides](../guide/index.md)
 
-# CLI Reference — `cargo djogi`
+# CLI Roadmap — current binary is `djogi`
 
 > **Status: PARTIALLY SHIPPED.** Phase 7 ships
 > `djogi migrations compose / status / attune` and `djogi db reset / seed`
@@ -11,7 +11,7 @@
 > [`docs/guide/migrations.md`](../guide/migrations.md). This roadmap
 > document is preserved as design history.
 
-`cargo djogi` is the Djogi command-line interface. Install it once:
+`djogi` is the shipped Djogi command-line interface. This roadmap also preserves historical and planned command sketches; use the shipped guides for authoritative current syntax. Install it once:
 
 ```bash
 cargo install djogi-cli
@@ -23,12 +23,12 @@ All subcommands run from the project root (the directory containing `Djogi.toml`
 
 ## Migration Commands
 
-### `cargo djogi migrate`
+### Deferred: `djogi migrations apply` (historical `djogi migrations apply` design)
 
 Applies all pending migration files to the database, then updates `migrations/schema_snapshot.json` to reflect the new DB state.
 
 ```bash
-cargo djogi migrate
+djogi migrations apply
 ```
 
 **What it does:**
@@ -61,20 +61,20 @@ If a migration fails, the transaction is rolled back, the snapshot is not update
 | `--database-url URL` | Override `DATABASE_URL` for this invocation |
 
 ```bash
-cargo djogi migrate --dry-run
-cargo djogi migrate --fake 0003
+# deferred: djogi migrations apply --dry-run
+# deferred: djogi migrations apply --fake 0003
 ```
 
 > **Warning:** `--fake` bypasses the migration runner entirely. Use it only when you have applied the SQL by other means (direct `psql`, cloud console, etc.) and need to bring the tracking table in sync. Misuse can leave the snapshot and actual DB state out of sync.
 
 ---
 
-### `cargo djogi rollback`
+### Deferred: `djogi migrations rollback` (historical `djogi migrations rollback` design)
 
 Rolls back the last applied migration by running its `_down.sql` pair, then rewinds `schema_snapshot.json` to the previous version.
 
 ```bash
-cargo djogi rollback
+djogi migrations rollback
 ```
 
 **Example output:**
@@ -92,20 +92,20 @@ Schema rewound to version 0002.
 | `--dry-run` | Show the SQL that would run without executing |
 
 ```bash
-cargo djogi rollback --to 0001
-cargo djogi rollback --dry-run
+# deferred: djogi migrations rollback --to 0001
+# deferred: djogi migrations rollback --dry-run
 ```
 
 > **Warning:** Down migrations for column drops and table drops are destructive — data is not recoverable after rollback. Each down migration file includes a comment warning about data loss. Review the down file before executing `rollback`.
 
 ---
 
-### `cargo djogi plan`
+### `djogi plan`
 
 Shows a human-readable summary of pending migrations without applying them.
 
 ```bash
-cargo djogi plan
+djogi plan
 ```
 
 **Example output:**
@@ -121,7 +121,7 @@ Pending migrations (2):
     + CREATE TABLE tags (3 columns)
       id BIGINT PK, name VARCHAR(100), slug VARCHAR(100)
 
-Run `cargo djogi migrate` to apply.
+Run `djogi migrations apply` to apply.
 ```
 
 If there are no pending migrations:
@@ -132,15 +132,14 @@ No pending migrations. Schema is at version 0003.
 
 ---
 
-### `cargo djogi makemigrations`
+### `djogi migrations compose`
 
 Manually triggers migration generation from current schema drift. Under normal development, `build.rs` generates migration files automatically on every `cargo build`. Use `makemigrations` when you need dry-run output, a custom name, or to explicitly permit destructive operations.
 
 ```bash
-cargo djogi makemigrations
-cargo djogi makemigrations --dry-run          # preview SQL without writing files
-cargo djogi makemigrations --allow-destructive  # permit DROP COLUMN / DROP TABLE
-cargo djogi makemigrations --name "backfill_nulls"  # custom migration name
+djogi migrations compose
+djogi migrations compose --allow-destructive  # permit DROP COLUMN / DROP TABLE
+djogi migrations compose --name "backfill_nulls"  # custom migration name
 ```
 
 | Flag | Description |
@@ -151,12 +150,12 @@ cargo djogi makemigrations --name "backfill_nulls"  # custom migration name
 
 ---
 
-### `cargo djogi verify`
+### `djogi migrations verify`
 
 Verifies the HMAC-SHA256 signature of `migrations/schema_snapshot.json`. Requires `DJOGI_SIGNING_KEY` to be set.
 
 ```bash
-cargo djogi verify
+djogi migrations verify
 ```
 
 **Example output (valid):**
@@ -173,7 +172,7 @@ ERROR: schema snapshot signature mismatch
   Expected: 8f3c2a1b4e7d9f2c...
   Found:    7e1d4f9c3a8b1e5d...
 
-The schema snapshot may have been modified outside of `cargo djogi migrate`.
+The schema snapshot may have been modified outside of `djogi migrations apply`.
 Do not run migrations until this is resolved.
 ```
 
@@ -187,12 +186,12 @@ Do not run migrations until this is resolved.
 
 ## Shell
 
-### `cargo djogi shell`
+### `djogi shell`
 
 Starts an interactive Rhai REPL with all registered models pre-loaded, a live database connection, and persistent command history.
 
 ```bash
-cargo djogi shell
+djogi shell
 ```
 
 The shell holds a dedicated single-threaded Tokio runtime. All terminal methods (`fetch_all`, `fetch_one`, `save`, `delete`, `create`, etc.) execute synchronously — no `.await`, no async ceremony. Blocking is intentional — the shell is for interactive exploration.
@@ -290,7 +289,7 @@ djogi>
 **Headless execution:**
 
 ```bash
-cargo djogi shell --run scripts/backfill_slugs.rhai
+djogi shell --run scripts/backfill_slugs.rhai
 ```
 
 This runs the script in the full shell environment and exits. Useful for CI pipelines, scheduled jobs, and one-off data transformations.
@@ -314,12 +313,12 @@ Raw navigation (up-arrow corrections, typos) is filtered out automatically.
 
 All `db` subcommands are gated on three guards: `dev_mode = true` in `Djogi.toml`, `DATABASE_URL` resolving to localhost, and `DJOGI_ENV != production`. Any guard failing causes a hard error.
 
-### `cargo djogi db reset`
+### `djogi db reset`
 
 Drops and recreates the application database, then applies all migrations from scratch. The CRUD log and event log databases are not touched.
 
 ```bash
-cargo djogi db reset
+djogi db reset
 ```
 
 **Example output:**
@@ -349,28 +348,28 @@ Database reset complete. Schema at version 0003.
 | `--wipe-all-logs` | Also drop and recreate both log databases |
 
 ```bash
-cargo djogi db reset --seed
-cargo djogi db reset --wipe-crud-logs
+djogi db reset --seed
+# planned: djogi db reset --wipe-crud-logs
 ```
 
-### `cargo djogi db seed`
+### `djogi db seed`
 
 Runs `seeds.rhai` against the existing database without dropping or migrating. The seed script runs inside a transaction — if any step fails, the entire seed is rolled back.
 
 ```bash
-cargo djogi db seed
+djogi db seed
 ```
 
 ---
 
 ## Analysis and Maintenance
 
-### `cargo djogi analyze`
+### `djogi analyze`
 
 Generates a table health report for all models registered in the application. Reports on VACUUM needs, bloat estimates, missing indexes, and partition recommendations.
 
 ```bash
-cargo djogi analyze
+djogi analyze
 ```
 
 **Example output:**
@@ -404,12 +403,12 @@ events (24,000,000 rows, partitioned by range:occurred_at)
 
 ---
 
-### `cargo djogi repartition`
+### `djogi repartition`
 
 Generates zero-downtime repartition SQL for a partitioned table. Djogi produces a script using the `CREATE TABLE ... PARTITION OF` pattern with concurrent index builds — no table lock for reads.
 
 ```bash
-cargo djogi repartition events --from "range:occurred_at" --to "hash:user_id:16"
+djogi repartition events --from "range:occurred_at" --to "hash:user_id:16"
 ```
 
 **Example output:**
@@ -425,19 +424,19 @@ Generating repartition SQL for events...
 Written to scripts/repartition_events_2026-04-15.sql
 
 Review carefully before running. Run with:
-  cargo djogi shell --run scripts/repartition_events_2026-04-15.sql
+  djogi shell --run scripts/repartition_events_2026-04-15.sql
 ```
 
 > **Warning:** Repartition scripts are generated for review, not automatic execution. Always inspect the SQL and test on a staging environment before running on production data.
 
 ---
 
-### `cargo djogi rls`
+### `djogi rls`
 
-Generates Row Level Security policy SQL for all models annotated with `#[model(tenant_key = "...")]`. Useful for reviewing what policies will be applied before running `cargo djogi migrate`.
+Generates Row Level Security policy SQL for all models annotated with `#[model(tenant_key = "...")]`. Useful for reviewing what policies will be applied before running `djogi migrations apply`.
 
 ```bash
-cargo djogi rls
+djogi rls
 ```
 
 **Example output:**
@@ -467,12 +466,12 @@ CREATE POLICY invoices_tenant_isolation ON invoices
 
 ## Documentation Commands
 
-### `cargo djogi docs`
+### `djogi docs`
 
 Generates Markdown documentation from the `ModelDescriptor` inventory for all registered models. Output goes to `docs/models/`.
 
 ```bash
-cargo djogi docs
+djogi docs
 ```
 
 **Example output:**
@@ -499,12 +498,12 @@ Each generated file includes: table name, PK type, all fields with their types a
 
 ---
 
-### `cargo djogi check-docs`
+### `djogi check-docs`
 
 Validates that `docs/models/*.md` files are consistent with the live `ModelDescriptor` inventory. Detects documentation that has drifted from the actual model definition — fields added or removed without updating the doc.
 
 ```bash
-cargo djogi check-docs
+djogi check-docs
 ```
 
 **Example output (all valid):**
@@ -529,7 +528,7 @@ Checking docs/models/ against live ModelDescriptor inventory...
     Invoice.md documents:  total_cents, status, due_date
     ModelDescriptor has:   total_cents, status, due_date, paid_at (MISSING FROM DOCS)
 
-Run `cargo djogi docs` to regenerate.
+Run `djogi docs` to regenerate.
 ```
 
 Use `check-docs` in CI to ensure documentation stays current with the model definitions.
@@ -538,12 +537,12 @@ Use `check-docs` in CI to ensure documentation stays current with the model defi
 
 ## Project Scaffolding
 
-### `cargo djogi new my-project`
+### `djogi new my-project`
 
 Scaffolds a new Djogi project with the standard layout, initializes the `migrations/` git submodule, and creates starter files.
 
 ```bash
-cargo djogi new my-project
+djogi new my-project
 ```
 
 **Example output:**
@@ -565,14 +564,14 @@ Project created. Next steps:
   docker compose up -d
   export DATABASE_URL="postgres://djogi:djogi@localhost/my_project"
   export NODE_ID=1
-  cargo djogi db reset --seed
+  djogi db reset --seed
 ```
 
-### `cargo djogi init`
+### `djogi init`
 
 Adds Djogi to an existing Rust project. Updates `Cargo.toml`, creates `Djogi.toml`, `build.rs`, and the `migrations/` submodule without touching `src/`.
 
 ```bash
 cd existing-project
-cargo djogi init
+djogi init
 ```

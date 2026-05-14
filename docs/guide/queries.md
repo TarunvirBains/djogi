@@ -382,8 +382,10 @@ DDL-style reaches for `TRUNCATE` via `ctx.raw_execute`.
 When `QuerySet` can't express the query — recursive CTEs,
 set-returning functions, bespoke joins beyond what `select_related`
 covers — drop to `ctx.raw_query` / `ctx.raw_scalar` / `ctx.raw_execute`
-on `DjogiContext`. See [Models §Rule 3][models-raw] for the
-raw-query surface.
+on `DjogiContext` only as a justified raw-SQL bypass: the enclosing item
+must carry `#[djogi::deliberately_bypass_convention_with_raw_sql]` and an
+adjacent `// JUSTIFICATION ...` comment. See [Models §Rule 3][models-raw]
+for the raw-query surface.
 
 [models-raw]: ./agent-guide.md#rule-3-use-djogiraw-for-queries-the-model-trait-and-queryset-dont-cover
 

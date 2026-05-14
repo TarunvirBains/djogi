@@ -55,14 +55,12 @@ async fn example(pool: &DjogiPool) -> Result<(), DjogiError> {
     let mut ctx = DjogiContext::from_pool(pool.clone());
 
     let user = User::create(&mut ctx, User {
-        id: Default::default(),
-        created_at: Default::default(),
-        updated_at: Default::default(),
         name: "Alice".to_string(),
         meta: Jsonb::new(UserMeta {
             timezone: "UTC".to_string(),
             locale: "en-US".to_string(),
         }),
+        ..Default::default()
     }).await?;
 
     // Filter on a known JSONB subfield via the flat path escape hatch.

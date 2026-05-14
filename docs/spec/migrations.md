@@ -52,7 +52,6 @@ Generation is explicit via CLI:
 
 ```bash
 djogi migrations compose
-djogi migrations compose --dry-run
 djogi migrations compose --allow-destructive
 djogi migrations compose --name add_vehicle_horsepower
 ```

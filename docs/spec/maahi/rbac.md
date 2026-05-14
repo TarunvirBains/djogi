@@ -75,7 +75,7 @@ Cross-app references are prevented by registry validation: the live compile-time
 
 ```sql
 CREATE TABLE _admin_roles (
-    id              BIGINT PRIMARY KEY DEFAULT generate_id(),
+    id              BIGINT PRIMARY KEY DEFAULT heerid_next_desc(),
     name            TEXT UNIQUE NOT NULL,
     parent_role_id  BIGINT REFERENCES _admin_roles(id) ON DELETE RESTRICT,
                                                        -- explicit RESTRICT: deleting a role with child roles

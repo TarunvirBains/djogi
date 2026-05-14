@@ -84,26 +84,35 @@ pub enum UnknownFieldError {
 Examples:
 ```rust
 // DB has: "legacy_ecu_code": "M62B44"
-car.engine.extra().get("legacy_ecu_code").unwrap().try_as_str()
+car.engine.extra()
+    .get("legacy_ecu_code")
+    .ok_or(JsonbError::FieldNotFound { field: "legacy_ecu_code".into() })?
+    .try_as_str()
 // Ok("M62B44")
 
-car.engine.extra().get("legacy_ecu_code").unwrap().try_as_f64()
+car.engine.extra()
+    .get("legacy_ecu_code")
+    .ok_or(JsonbError::FieldNotFound { field: "legacy_ecu_code".into() })?
+    .try_as_f64()
 // Err(TypeMismatch { field: "legacy_ecu_code", expected: "f64", actual: "String" })
 
 // DB has: "boost_psi": "18.5"  ← string, not float — data quality problem
-turbo.extra().get("boost_psi").unwrap().try_as_f64()
+turbo.extra()
+    .get("boost_psi")
+    .ok_or(JsonbError::FieldNotFound { field: "boost_psi".into() })?
+    .try_as_f64()
 // Err(NoImplicitCoercion { field: "boost_psi", value: "18.5", into: "f64" })
 // Not silently Ok(18.5) — the caller must fix the data
 
 // Field does not exist at this level
 car.engine.extra().get("nonexistent")
-// Err(FieldNotFound { field: "nonexistent" })
+// None
 
 // Nested unknown traversal
 car.engine.data.turbo
     .as_ref()
     .and_then(|t| t.extra().get("part_number"))
-    .and_then(|f| f.as_str().ok())
+    .and_then(|f| f.as_str())
 // Some("GT3582R")
 
 // Inspect all unknown fields at a level

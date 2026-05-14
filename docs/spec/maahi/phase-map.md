@@ -8,7 +8,7 @@ Phase 10 ships a real, production-grade admin. Acknowledged v1 expressiveness li
 
 
 
-- Dioxus full-stack renderer on Axum, `cargo djogi admin build` integration
+- Dioxus full-stack renderer on Axum, `planned `djogi admin` build` integration
 - Hybrid `_admin_users` / `_admin_sessions` substrate in the audit DB
 - Visage-grant RBAC with single-parent inheritance — `_admin_role_visage_perms` per `(role, app, model, visage)`; visages remain pure compile-time projections, sourced from the canonical visages emitted by `expose(...)` annotations (no custom user-defined visage structs in v1 — see Phase 10.5 deferral below)
 - Six-action permission model with per-model overrides
@@ -60,11 +60,11 @@ A separate phase, position in the roadmap dependent on adoption demand. The slot
 | Email-driven forgot-password flow                                       | Consumer of `EmailSender`                                      |
 | Email-driven approval notifications                                     | Consumer of `EmailSender`; replaces in-admin-only queue        |
 
-Maahi v1 ships with operator-side CLI fallbacks where notification flows would otherwise live (e.g., `cargo djogi admin reset-password <email>` instead of an email-driven self-service flow).
+Maahi v1 ships with operator-side CLI fallbacks where notification flows would otherwise live (e.g., `planned `djogi admin` reset-password <email>` instead of an email-driven self-service flow).
 
 ## Open Questions
 
-- **Bundle delivery in production.** `cargo djogi admin build` produces a WASM bundle; whether Djogi releases ship a pre-bundled artifact for adopters who don't run a build pipeline is open. Pre-bundling tightens release coupling but reduces adoption friction.
+- **Bundle delivery in production.** `planned `djogi admin` build` produces a WASM bundle; whether Djogi releases ship a pre-bundled artifact for adopters who don't run a build pipeline is open. Pre-bundling tightens release coupling but reduces adoption friction.
 - **Component re-use across `dioxus-desktop`.** The renderer choice keeps the desktop path open. Whether Phase 10 publishes a desktop-shell crate, leaves it to adopters, or formally defers to a follow-up phase is open.
 - **List-view streaming for large result sets.** Pagination is fine for thousands of rows; tens of millions argues for cursor-based streaming with virtualized rendering. v1 defaults to offset pagination; cursor mode is an open question.
 - **Inline diff display on edits.** Showing "what changed" alongside a save confirmation is a quality-of-life feature with non-trivial implementation cost (capturing the pre-image, rendering the diff). Deferred unless there's demand.

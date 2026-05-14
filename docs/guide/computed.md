@@ -84,8 +84,10 @@ later task.** `QuerySet::order_by` accepts a closure returning
 tuple. Neither surface accepts a bare `Expr<T>` today — there is no
 `From<Expr<T>>` impl for `OrderExpr`, and `AnnotationSlot` is sealed on
 `AggregateExpr<V>` and the window-function families. Adopters who need
-to sort or project by a computed expression in v0.1.0 reach for
-`DjogiContext::raw_query` with the SQL fragment inlined.
+to sort or project by a computed expression in v0.1.0 use a justified
+raw-SQL bypass (`DjogiContext::raw_query` under
+`#[djogi::deliberately_bypass_convention_with_raw_sql]` plus an adjacent
+`// JUSTIFICATION ...` comment) with the SQL fragment inlined.
 
 A future cluster (T6's `Q<T>` algebra refactor in 8γ, or the
 follow-up surface task tracked alongside the `{Model}Computed` ZST)

@@ -40,7 +40,7 @@ pub struct Event {
 Generated SQL:
 ```sql
 CREATE TABLE events (
-    id           BIGINT PRIMARY KEY DEFAULT generate_id(),
+    id           BIGINT PRIMARY KEY DEFAULT heerid_next_desc(),
     occurred_at  TIMESTAMPTZ NOT NULL,
     kind         TEXT NOT NULL,
     payload      JSONB NOT NULL,
@@ -63,7 +63,7 @@ pub struct UserEvent {
 Generated SQL:
 ```sql
 CREATE TABLE user_events (
-    id       BIGINT PRIMARY KEY DEFAULT generate_id(),
+    id       BIGINT PRIMARY KEY DEFAULT heerid_next_desc(),
     user_id  BIGINT NOT NULL,
     kind     TEXT NOT NULL,
     ...

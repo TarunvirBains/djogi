@@ -50,11 +50,9 @@ async fn example(pool: &DjogiPool) -> Result<(), DjogiError> {
 
     // Create a new user. Both fields are written on INSERT.
     let mut user = User::create(&mut ctx, User {
-        id: Default::default(),
-        created_at: Default::default(),
-        updated_at: Default::default(),
         username: "alice".to_string(),
         email: Tracked::new("alice@example.com".to_string()),
+        ..Default::default()
     }).await?;
 
     // First save: email has not changed since load — it is clean, so it is

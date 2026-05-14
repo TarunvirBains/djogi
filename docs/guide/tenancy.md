@@ -88,12 +88,10 @@ async fn create_post_for_org(
         ctx.set_tenant(&org_id.to_string()).await?;
 
         let post = Post::create(ctx, Post {
-            id: Default::default(),
-            created_at: Default::default(),
-            updated_at: Default::default(),
             org_id,
             title,
             body,
+            ..Default::default()
         }).await?;
 
         Ok(post)

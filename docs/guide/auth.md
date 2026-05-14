@@ -152,14 +152,14 @@ The `token` parameter is opaque to the trait — implementations decide whether 
 ```rust
 #[derive(Debug, Clone)]
 pub struct AuthContext {
-    pub user_id: HeerId,
+    pub user_id: HeerIdRecencyBiased,
     pub tenant_id: Option<String>,
     pub scopes: Vec<String>,
     pub ext: std::collections::HashMap<String, String>,
 }
 ```
 
-Four fields cover the 95% case. `user_id` is always `HeerId` (Djogi's default PK). `tenant_id` is `Option<String>` — strings rather than `HeerId` because tenant identity formats vary across deployments (UUIDs, slugs, external IDs). `scopes` carries OAuth-style permission strings. `ext` is a free-form string-to-string map for app-specific attributes without forcing trait objects or generics on the struct.
+Four fields cover the 95% case. `user_id` follows Djogi's default PK type, `HeerIdRecencyBiased` / `HeerIdDesc`, unless an application explicitly opts a user model into another PK strategy. `tenant_id` is `Option<String>` — strings rather than `HeerId` because tenant identity formats vary across deployments (UUIDs, slugs, external IDs). `scopes` carries OAuth-style permission strings. `ext` is a free-form string-to-string map for app-specific attributes without forcing trait objects or generics on the struct.
 
 Builders:
 
@@ -339,7 +339,7 @@ A minimal schema that uses every Phase 5.5 primitive:
 
 ```sql
 CREATE TABLE users (
-    id              BIGINT PRIMARY KEY DEFAULT generate_id(),
+    id              BIGINT PRIMARY KEY DEFAULT heerid_next_desc(),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     email           TEXT UNIQUE NOT NULL,

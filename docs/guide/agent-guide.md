@@ -50,7 +50,7 @@ pub struct Post {
 
 **What is injected by the macro (not written in the struct):**
 
-- `id: HeerIdRecencyBiased` — `BIGINT PRIMARY KEY DEFAULT generate_id()`, populated via `RETURNING` after INSERT
+- `id: HeerIdRecencyBiased` — `BIGINT PRIMARY KEY DEFAULT heerid_next_desc()`, populated via `RETURNING` after INSERT
 - `created_at: time::OffsetDateTime` — `TIMESTAMPTZ NOT NULL DEFAULT now()`, set by DB on INSERT
 - `updated_at: time::OffsetDateTime` — `TIMESTAMPTZ NOT NULL DEFAULT now()`, updated by Djogi on every `save()`
 
@@ -63,7 +63,7 @@ These three fields are real struct fields after expansion. You must use
 |---|---|---|
 | `table` | `table = "posts"` | Sets the Postgres table name (required) |
 | `pk` | `pk = Serial` | Use `SERIAL` PK (default is `HeerIdRecencyBiased` / BIGINT descending) |
-| `pk` | `pk = RanjId` | Use `UUID` PK via `generate_ranjid()` |
+| `pk` | `pk = RanjId` | Use `UUID` PK via `ranjid_next()` |
 | `pk` | `pk = HeerId` | Use ascending BIGINT HeerId (historical default) |
 | `no_default` | `no_default` | Suppress generated `Default` impl (needed when fields lack `Default`) |
 | `rationale` | `rationale = "..."` | Documents behavioral constraints — read before writing code |
@@ -285,7 +285,7 @@ foreign key reference — HeerId carries type safety.
 
 **Step 1: Identify the table name and PK type.**
 
-Default PK is `HeerIdRecencyBiased` (64-bit BIGINT via `generate_id()`,
+Default PK is `HeerIdRecencyBiased` (64-bit BIGINT via `heerid_next_desc()`,
 reverse-chronological sort order; Phase 7-Zero-2 T2). Use
 `pk = HeerId` for ascending BIGINT, `pk = RanjId` for UUIDv8 PKs,
 or `pk = Serial` for small reference tables (lookup codes, status
@@ -328,7 +328,7 @@ write `CREATE TABLE` by hand.
   pipeline the production runner uses.
 
 Either path produces the same shape — `id BIGINT PRIMARY KEY DEFAULT
-generate_id()`, `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`,
+heerid_next_desc()`, `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`,
 `updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`, plus the developer-owned
 columns — projected from the descriptor, not hand-written.
 
@@ -374,8 +374,9 @@ and `build.rs` emits a `cargo:warning=` drift line. Run
 `djogi migrations compose --name add_subscription_notes` to write
 `V<ts>__add_subscription_notes.sql` + `.down.sql` into the appropriate
 `migrations/<database>/<app>/` bucket — review the SQL in your PR, then
-apply via the library API (`djogi::migrate::apply_plan`) or
-`djogi migrations attune`. See
+apply via the library API (`djogi::migrate::apply_plan`). Use
+`djogi migrations attune` only for migration-history ledger/disk
+reconciliation; it does not execute migration SQL. See
 [the migrations guide](./migrations.md) for the full compose/status/attune
 contract; the CLI dispatchers for `apply` / `rollback` / `fake` /
 `baseline` / `verify` / `repair` are deferred to a Phase 7 follow-up, so

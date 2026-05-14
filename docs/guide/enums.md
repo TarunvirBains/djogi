@@ -59,11 +59,9 @@ async fn example(pool: &DjogiPool) -> Result<(), DjogiError> {
     let mut ctx = DjogiContext::from_pool(pool.clone());
 
     let post = Post::create(&mut ctx, Post {
-        id: Default::default(),
-        created_at: Default::default(),
-        updated_at: Default::default(),
         title: "Getting started with Djogi".to_string(),
         status: PostStatus::Active,
+        ..Default::default()
     }).await?;
 
     // Filter by enum value.

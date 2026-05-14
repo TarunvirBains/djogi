@@ -113,7 +113,8 @@ pub mod __sealed {
 /// }
 /// ```
 ///
-/// The macro injects `id: HeerId`, `created_at: DateTime`, and
+/// The macro injects the selected primary key type (`HeerIdRecencyBiased` /
+/// `HeerIdDesc` by default), `created_at: DateTime`, and
 /// `updated_at: DateTime` as real public struct fields, generates the `Model`
 /// impl, the `FromPgRow` impl, the `ArticleFields` / `ArticleFilter` /
 /// `ArticleRelated` companion types, and submits the descriptor via

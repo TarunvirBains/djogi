@@ -99,8 +99,10 @@ let top_three_orgs: Vec<(i64, i64)> = Order::objects()
 `AggregateExpr<V>` has no `.asc()` / `.desc()` methods and no
 `Into<Expr<V>>` bridge, so the aggregate cannot compose into the
 ORDER BY slot through the typed surface. For top-N-by-aggregate
-queries today, sort client-side after `fetch_all` or drop to
-`ctx.raw_query(...)`.
+queries today, sort client-side after `fetch_all` or use a justified
+raw-SQL bypass (`ctx.raw_query(...)` under
+`#[djogi::deliberately_bypass_convention_with_raw_sql]` plus an adjacent
+`// JUSTIFICATION ...` comment).
 
 ### `HAVING` — filtering groups
 
@@ -130,8 +132,8 @@ let big_orgs: Vec<(i64, i64)> = Order::objects()
 (`.having(|k, a| a.gt(Expr::literal(10_000_i64)))`) is not available
 in Phase 6.5 for the same reason as aggregate-based ordering — it
 requires the same `AggregateExpr<V>` → `Expr<V>` bridge. Filter
-client-side, or write the HAVING predicate through `ctx.raw_query(...)`
-until the bridge lands.
+client-side, or write the HAVING predicate through the same justified
+raw-SQL bypass until the bridge lands.
 
 ---
 
@@ -207,7 +209,7 @@ Order::objects()
 key-tuple emission produces zero columns (`SELECT , SUM(amount) AS
 __djogi_agg_0 FROM ...`). Until the empty-key SELECT path is fixed, use
 either (a) a non-empty typed key tuple that positionally matches every
-declared grouping set, or (b) `ctx.raw_query(...)` for the composite
+declared grouping set, or (b) a justified raw-SQL bypass for the composite
 `GROUPING SETS` output. See the integration test file
 `tests/integration/phase6_5_aggregates.rs` for the issue's full repro.
 

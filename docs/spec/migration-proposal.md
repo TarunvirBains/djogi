@@ -235,11 +235,9 @@ migrate show`, `djogi migrate repair`, `djogi migrate baseline`, `djogi plan`
 its output is absorbed into `migrations status` with structured `HistoryDiagnostic` taxonomy
 (R-25).
 
-**Binary and invocation forms.** Djogi ships two binaries — `djogi` (standalone) and `cargo-djogi`
-(cargo-subcommand wrapper that forwards to `djogi`). `cargo install djogi-cli` installs both.
-Canonical form throughout this proposal is `djogi migrations …`; `djogi migrations …` is an
-equivalent alias for users who prefer the cargo-subcommand discoverability pattern (`cargo --list`
-inventorying). Both forms produce identical output and identical behaviour.
+**Binary and invocation forms.** The shipped `djogi-cli` package declares the standalone
+`djogi` binary. Canonical form throughout this proposal is `djogi migrations ...`; any
+cargo-subcommand wrapper is a future packaging decision, not a current install surface.
 
 **Help and discoverability.** Every subcommand supports `--help` / `-h`. Running `djogi
 migrations` with no subcommand prints help (does not error). `djogi migrations help
@@ -317,7 +315,7 @@ CREATE TABLE IF NOT EXISTS djogi_schema_migrations (
     total_steps           INTEGER,       -- NULL for transactional; statement count otherwise
     partial_apply_note    TEXT,          -- operator note written during repair
 
-    -- Deployment group: HeerId from SELECT generate_id() at run start
+    -- Deployment group: HeerId from SELECT heerid_next() at run start
     run_id                BIGINT        NOT NULL,
 
     -- App label (empty string = global/flat layout)
@@ -369,7 +367,7 @@ The `applied_at` column stores the moment the row was written, for all row types
 `baseline` and `faked`. The `status` column carries semantic meaning; `applied_at` answers
 "when was this row written," not "when did the migration first run in production." (OI-03)
 
-**The `run_id` column:** One call to `SELECT generate_id()` at the start of each
+**The `run_id` column:** One call to `SELECT heerid_next()` at the start of each
 `djogi migrations apply` invocation produces a HeerId stamped into every ledger row
 written during that run. This is Liquibase's `DEPLOYMENT_ID` concept adapted to HeerId — no
 other Rust migration system provides deployment-level grouping. Post-mortems that ask "what
@@ -661,7 +659,7 @@ $ cat migrations/0001_initial_up.sql
 -- Snapshot-Base: (none)
 
 CREATE TABLE vehicles (
-    id           BIGINT NOT NULL PRIMARY KEY DEFAULT generate_id(),
+    id           BIGINT NOT NULL PRIMARY KEY DEFAULT heerid_next_desc(),
     make         TEXT   NOT NULL,
     model_year   INTEGER NOT NULL,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1099,7 +1097,7 @@ This is a long list, intentionally so. The proposal is additive on top of a stab
 - `migrations/` as a git submodule, pipeline-managed
 - Paired `_up.sql` / `_down.sql` files as the primary review artifact
 - Postgres 18+ exclusively
-- HeerId as the default PK (`BIGINT DEFAULT generate_id()`)
+- HeerIdRecencyBiased as the default PK (`BIGINT DEFAULT heerid_next_desc()`)
 - No regex anywhere in the codebase or documentation
 - Explicit field rename via `#[field(renamed_from = "old_name")]`
 - Explicit table rename via `#[model(renamed_from = "old_table")]`

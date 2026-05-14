@@ -64,7 +64,7 @@ pub struct InternalToken { ... }
 The mirror log table schema (auto-provisioned per model):
 ```sql
 CREATE TABLE vehicle_logs (
-    id          BIGINT PRIMARY KEY DEFAULT generate_id(),
+    id          BIGINT PRIMARY KEY DEFAULT heerid_next_desc(),
     record_id   BIGINT NOT NULL,
     event       TEXT NOT NULL CHECK (event IN ('created', 'updated', 'deleted')),
     changes     JSONB,               -- array of FieldChange — null for created/deleted
@@ -168,13 +168,11 @@ Each target owns its own ledger, snapshot, and advisory-lock scope. Djogi may la
 # Wipe app DB only — both log databases untouched
 djogi db reset
 
-# Wipe app DB and CRUD log DB — event logs retained
-djogi db reset --wipe-crud-logs
-
-# Wipe all three databases
-djogi db reset --wipe-all-logs
+# Log database wipe flags are planned, not registered in the shipped CLI.
+# Until they land, reset log databases through operator-owned maintenance
+# scripts rather than `djogi db reset`.
 ```
-`db reset` guards (`dev_mode`, localhost URL, `DJOGI_ENV`) apply to all variants.
+`db reset` guards (`dev_mode`, localhost URL, `DJOGI_ENV`) apply to the shipped app-database reset path; log-database wipe flows must preserve the same guard posture when implemented.
 
 `db reset` remains app-first UX:
 

@@ -250,7 +250,7 @@ djogi docs [--output <path>]
 
 Renders Markdown reference pages from the descriptor inventory — one file per registered model under `<output>/<app>/`, plus a top-level `README.md` index. Output defaults to `target/djogi-docs/` and is byte-deterministic against the same descriptor set.
 
-Each page covers the table name, every field's name + Rust type + SQL type + nullable + default, declared indexes, and FK targets. The `Default` column is populated from the PK strategy via the projection mirror, so descriptor-emitted defaults (e.g. `generate_id()` for `HeerId` PKs) appear on every model that uses them.
+Each page covers the table name, every field's name + Rust type + SQL type + nullable + default, declared indexes, and FK targets. The `Default` column is populated from the PK strategy via the projection mirror, so descriptor-emitted defaults (for example `heerid_next_desc()` for the default `HeerIdRecencyBiased` PK or `heerid_next()` for explicit `pk = HeerId`) appear on every model that uses them.
 
 ## Test-time helpers
 
