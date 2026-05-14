@@ -68,7 +68,7 @@ Retiring an app takes **two compose cycles**. The tombstone marker sits in sourc
 
 ### Why not just delete the app?
 
-You could: delete `pub struct OldBilling;` from the apps block and let the migration differ infer retirement from snapshot diff. But that makes destructive migrations a CLI-level decision (`djogi migrations apply --allow-destructive`) rather than a PR-level one. Destructive changes should clear the *higher* bar. The tombstone marker:
+You could: delete `pub struct OldBilling;` from the apps block and let the migration differ infer retirement from snapshot diff. But that makes destructive migrations an apply-time decision in the migration runner rather than a PR-level one. Destructive changes should clear the *higher* bar. The tombstone marker:
 
 - Surfaces the retirement in the PR diff (`+ #[app(tombstone)]`) — every code reviewer sees it immediately.
 - Enforces the two-step move-then-retire flow via a compile-fail rule that stops you from tombstoning an app that still has active models pointing at it.
@@ -162,7 +162,7 @@ migrations/
     └── ...
 ```
 
-Each database target has its own ledger; Djogi does not pretend a single `djogi migrations apply` across multiple targets is a distributed transaction. The differ applies one target at a time.
+Each database target has its own ledger; Djogi does not pretend a single migration apply session across multiple targets is a distributed transaction. The differ applies one target at a time.
 
 The synthetic global bucket (`""` label) files under `<default-database>/` without a nested app directory.
 
@@ -195,4 +195,4 @@ Phase 7's migration differ prefers `AppRegistry::all()` since it needs to iterat
 
 The `djogi::App` trait is **convention-sealed**. A determined downstream crate can technically reach into `#[doc(hidden)] pub` items and hand-write an `impl djogi::App for MyFake`, but this is unmistakably an act of "I am reaching into internal API." True hard-sealing of a proc-macro-emitted trait is not achievable in stable Rust when the proc macro lives in a separate crate — every pub path the macro reaches is also reachable by handwritten downstream code.
 
-The correctness invariant that matters — "a forged `App` impl cannot silently break migrations" — is enforced at the use site by Phase 7's migration differ: every `#[model(app = X)]` is cross-checked against `AppRegistry::all()` at `djogi migrations apply` startup, and any model pointing at an `App`-implementing type whose `AppDescriptor` is missing from inventory hard-errors before any SQL executes. Forged `App` impls compile, but they're inert.
+The correctness invariant that matters — "a forged `App` impl cannot silently break migrations" — is enforced at the use site by Phase 7's migration differ: every `#[model(app = X)]` is cross-checked against `AppRegistry::all()` before the migration library applies SQL, and any model pointing at an `App`-implementing type whose `AppDescriptor` is missing from inventory hard-errors before any SQL executes. Forged `App` impls compile, but they're inert.

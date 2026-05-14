@@ -12,7 +12,7 @@ This document maps common app patterns to the earliest Djogi phase at which they
 
 | Pattern | Safe at Phase | Notes |
 |---------|---------------|-------|
-| Basic CRUD on simple models | 1 | `#[derive(Model)]` + `create` / `save` / `delete` / `find` |
+| Basic CRUD on simple models | 1 | `#[model(...)]` + `create` / `save` / `delete` / `objects().filter(...).fetch_*` |
 | Typed queries (filter / order / limit) | 2 | `QuerySet<T>` + `FieldRef` closures |
 | Foreign keys + prefetch / select_related | 3 | `ForeignKey<T>` + M2M through models |
 | Transactions + `atomic` / `on_commit` / savepoints | 4 | `DjogiContext` + `atomic()`; foundation for concurrency-safe write paths |

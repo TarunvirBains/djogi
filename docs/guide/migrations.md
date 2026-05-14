@@ -11,7 +11,7 @@ pub struct User {
 }
 ```
 
-Add `pub bio: Option<String>` to the struct, run `cargo build`, and the build emits a drift warning. Run `cargo djogi migrations compose --name add_user_bio` to generate `migrations/main/auth/V<timestamp>__add_user_bio.sql` (and `.down.sql`). Review the SQL in your PR. Apply via the library API or the `attune` CLI.
+Add `pub bio: Option<String>` to the struct, run `cargo build`, and the build emits a drift warning. Run `cargo djogi migrations compose --name add_user_bio` to generate `migrations/main/auth/V<timestamp>__add_user_bio.sql` (and `.down.sql`). Review the SQL in your PR. Apply via the public `djogi::migrate::apply_plan` library API. `attune` records, squashes, and publishes reviewed migration state; it does not execute migration SQL.
 
 The system enforces three separate truths:
 
@@ -30,7 +30,7 @@ edit #[model]   →   cargo build (drift warning)   →   cargo djogi migrations
                                                          ↓
                                                    commit + open PR
                                                          ↓
-                                          apply (library API or attune)
+                                          apply via `djogi::migrate::apply_plan`
                                                          ↓
                                   schema_snapshot.json updated atomically
 ```

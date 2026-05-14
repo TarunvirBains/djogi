@@ -28,7 +28,7 @@ After macro expansion the struct effectively becomes:
 ```rust
 pub struct Vehicle {
     // Injected by macro — real fields, real DB columns
-    pub id: HeerId,
+    pub id: HeerIdRecencyBiased,
     pub created_at: DateTime,
     pub updated_at: DateTime,
 
@@ -154,7 +154,7 @@ The public API does NOT require user-defined field types to implement `Default`.
 
 ### 4.4 Field Types
 
-The following types are supported in Phase 1. Anything not on this list is roadmap material (see `docs/roadmap/`).
+The following core scalar and container types are supported by the current model layer. Relation and JSONB wrappers are documented in their dedicated specs.
 
 Phase 1's `String -> TEXT` rule is the bootstrap mapping, not the long-term public contract for every string-shaped column. The roadmap treats **bounded character storage** and **unbounded text storage** as distinct schema primitives, because `VARCHAR(n)` versus `TEXT` affects generated DDL, migration diffs, and schema intent even when both decode to Rust strings at runtime.
 

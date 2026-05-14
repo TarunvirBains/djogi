@@ -30,12 +30,12 @@ pub struct Vehicle {
     pub engine: Jsonb<EngineSpec>,         // JSONB column in Postgres
 }
 ```
-`Jsonb<T>` requires `T: JsonSchema + Serialize + DeserializeOwned + Validate`.
+`Jsonb<T>` stores a typed value plus preserved unknown keys. Database encode/decode uses serde; typed path querying requires `T: JsonbSchema` (normally via `#[derive(JsonbSchema)]`).
 Nested `Jsonb<T>` is fully supported — each level of nesting has its own typed schema with its own known/unknown field boundary. There is no depth limit.
 ### 6.2 Internal Layout
 ```rust
 pub struct Jsonb<T> {
-    pub data: T,                            // fully typed, validated on save
+    pub data: T,                            // fully typed value
     extra: IndexMap<String, UnknownField>,  // unknown fields — preserved, never dropped
 }
 ```
@@ -64,16 +64,9 @@ On save, all unknown fields are written back exactly as loaded. No data is ever 
 
 ### 6.4 The `UnknownField` Type
 
-Unknown fields surface as a runtime-typed enum with a fixed, honest set of variants. Nested unknown objects and arrays are not recursed into — they surface as `RawJson` to keep the API boundary clean and avoid becoming a dynamic JSON library.
+Unknown fields surface as `serde_json::Value` through the `UnknownField` type alias. Conversion helpers live on `UnknownFieldExt`; nested objects and arrays remain JSON values rather than becoming a second dynamic schema system.
 ```rust
-pub enum UnknownField {
-    String(String),
-    Bool(bool),
-    Float(f64),
-    Int(i64),
-    Null,
-    RawJson(String),    // unknown nested object or array — raw JSON string
-}
+pub type UnknownField = serde_json::Value;
 ```
 ### 6.5 Accessing Unknown Fields — `UnknownFieldError`
 
@@ -91,30 +84,30 @@ pub enum UnknownFieldError {
 Examples:
 ```rust
 // DB has: "legacy_ecu_code": "M62B44"
-car.engine.extra("legacy_ecu_code")?.as_str()
+car.engine.extra().get("legacy_ecu_code").unwrap().try_as_str()
 // Ok("M62B44")
 
-car.engine.extra("legacy_ecu_code")?.as_f64()
+car.engine.extra().get("legacy_ecu_code").unwrap().try_as_f64()
 // Err(TypeMismatch { field: "legacy_ecu_code", expected: "f64", actual: "String" })
 
 // DB has: "boost_psi": "18.5"  ← string, not float — data quality problem
-turbo.extra("boost_psi")?.as_f64()
+turbo.extra().get("boost_psi").unwrap().try_as_f64()
 // Err(NoImplicitCoercion { field: "boost_psi", value: "18.5", into: "f64" })
 // Not silently Ok(18.5) — the caller must fix the data
 
 // Field does not exist at this level
-car.engine.extra("nonexistent")
+car.engine.extra().get("nonexistent")
 // Err(FieldNotFound { field: "nonexistent" })
 
 // Nested unknown traversal
 car.engine.data.turbo
     .as_ref()
-    .and_then(|t| t.extra("part_number").ok())
+    .and_then(|t| t.extra().get("part_number"))
     .and_then(|f| f.as_str().ok())
 // Some("GT3582R")
 
 // Inspect all unknown fields at a level
-for (key, val) in car.engine.unknown_fields() {
+for (key, val) in car.engine.extra() {
     println!("{}: {:?}", key, val);
 }
 ```
@@ -152,7 +145,7 @@ Vehicle::objects()
     .filter(|f| f.engine().typed().turbo().manufacturer().eq("Garrett"))
     // WHERE engine->'turbo'->>'manufacturer' = 'Garrett'
 ```
-Unknown fields cannot be used in typed filter closures — they are not known at compile time. Raw SQL via `.raw_filter()` is the escape hatch for querying unknown fields.
+Unknown fields cannot be used in typed filter closures because they are not known at compile time. Query them through an explicit raw-SQL helper guarded by `#[djogi::deliberately_bypass_convention_with_raw_sql]` and a local `JUSTIFICATION` comment.
 ### 6.8 Shell Access
 ```rhai
 let car = Vehicle::get(42);
@@ -162,11 +155,11 @@ print(car.engine.horsepower);
 print(car.engine.turbo.boost_psi);
 
 // Unknown fields — Result-returning, explicit
-print(car.engine.extra("legacy_ecu_code").as_str());
-print(car.engine.turbo.extra("part_number").as_str());
+print(car.engine.extra().get("legacy_ecu_code").unwrap().try_as_str());
+print(car.engine.turbo.extra().get("part_number").unwrap().try_as_str());
 
 // Inspect all unknowns
-pp(car.engine.unknown_fields());
+pp(car.engine.extra());
 
 // Filter by nested known field
 let powerful = Vehicle::objects()

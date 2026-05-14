@@ -28,7 +28,7 @@ After macro expansion, the struct gains three injected fields — real struct fi
 ```rust
 // Effective struct after expansion — do not write this by hand
 pub struct Article {
-    pub id: HeerId,           // BIGINT PRIMARY KEY DEFAULT generate_id()
+    pub id: HeerIdRecencyBiased, // BIGINT PRIMARY KEY, backed by HeerIdDesc
     pub created_at: DateTime, // TIMESTAMPTZ NOT NULL DEFAULT now()
     pub updated_at: DateTime, // TIMESTAMPTZ NOT NULL DEFAULT now()
 
@@ -217,7 +217,7 @@ Without `renamed_from`, the differ would treat the rename as drop+add, destroyin
 
 ### `#[field(on_delete = "cascade" | "restrict" | "set_null" | "set_default" | "protect" | "do_nothing")]`
 
-Only valid on `ForeignKey<T>` fields (Phase 3). Stored in `FieldDescriptor::on_delete` for future use.
+Only valid on `ForeignKey<T>` fields (Phase 3). Consumed by migration projection/DDL for the emitted foreign-key action.
 
 ---
 
