@@ -224,10 +224,12 @@ No heuristic rename guessing is part of the core differ.
 type-derived CHECK projection contract that djogi#186 puts in place. The
 helper, the differ AMEND DROP+ADD lifecycle, the
 `FieldSqlType::NumericPrecision { precision, scale }` variant, and the
-`IntoFilterValue for u64` shim are wired and unit-tested today. Two pieces
+`IntoFilterValue for u64` shim are wired and unit-tested today. Three pieces
 still keep this contract from reaching production and are gated on
-djogi#190: the `project_column` call site that would populate
-`ColumnSchema.check` from a column's Rust source type, and the
+djogi#190: (1) the `rust_type_to_sql` macro arms for `i8 / u8 / u16 / u32 /
+u64` (no `tokio_postgres::ToSql` impl for `u8 / u16 / u64`, plus `i8 → "char"`
+and `u32 → OID` mismatches); (2) the `project_column` call site that would
+populate `ColumnSchema.check` from a column's Rust source type; and (3) the
 source-Rust-type-aware dispatch the helper itself still lacks (its
 `SMALLINT` arm hard-codes `i8` bounds and its `INTEGER` arm returns `None`,
 so `u8` and `u16` source types cannot be projected correctly without it).

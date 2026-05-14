@@ -1317,9 +1317,13 @@ fn project_column(
     //   * The differ AMEND DROP+ADD lifecycle ships and is unit-tested
     //     against synthetic `ColumnSchema` instances (see
     //     `check_*_emits_*` tests in `migrate/diff.rs`).
-    //   * Only the wiring at this site sits dormant, so the
-    //     contract-layer infrastructure cannot regress production
-    //     tables before #190 closes the source-type gap.
+    //   * Both the projection call site here and the
+    //     source-Rust-type-aware helper dispatch for `u8 / u16`
+    //     inside `field_type_check` itself remain gated/deferred
+    //     under djogi#190 (the `SMALLINT` arm hard-codes `i8` bounds
+    //     and the `INTEGER` arm returns `None`), so the contract-layer
+    //     infrastructure cannot regress production tables before #190
+    //     closes the source-type gap.
     //
     // FK columns are reserved as `None` here even after #190 lands —
     // FK columns inherit their type from the parent's PK, which is
