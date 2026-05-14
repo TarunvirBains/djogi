@@ -153,13 +153,23 @@ the application logic should be restructured.
 
 For bulk writes or when the dirty-tracking surface does not cover your use
 case, `ctx.raw_execute(sql, &[...])` accepts arbitrary SQL with positional
-`$n` parameters and is transaction-aware:
+`$n` parameters and is transaction-aware. Like every raw escape, it is
+reachable only when the enclosing item is decorated with
+`#[djogi::deliberately_bypass_convention_with_raw_sql]` and the
+adjacent `// JUSTIFICATION (djogi#<n>): ...` comment names the
+typed-surface gap (see [Raw SQL escape hatches](../spec/raw-sql-escape-hatches.md)):
 
 ```rust
-ctx.raw_execute(
-    "UPDATE users SET email = $1 WHERE id = $2",
-    &[&"alice@example.com", &user.id],
-).await?;
+use djogi::prelude::*;
+
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): targeted bulk write bypasses the dirty-tracking pipeline by design.
+async fn force_email(ctx: &mut DjogiContext, user_id: HeerId) -> djogi::Result<u64> {
+    ctx.raw_execute(
+        "UPDATE users SET email = $1 WHERE id = $2",
+        &[&"alice@example.com", &user_id],
+    ).await
+}
 ```
 
 See the [agent guide](./agent-guide.md) for the full raw-query surface.

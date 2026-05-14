@@ -213,13 +213,24 @@ not the Rust field name: `.path::<bool>("darkMode")`.
 
 For advanced JSONB predicates that `path()` does not cover — `?` key existence,
 `@>` containment, `jsonb_array_elements`, recursive path operators — use
-`ctx.raw_execute` or `ctx.raw_query` with hand-written SQL:
+`ctx.raw_execute` or `ctx.raw_query` with hand-written SQL. The raw API is
+djogi's `unsafe`-equivalent: every call site must decorate the enclosing item
+with `#[djogi::deliberately_bypass_convention_with_raw_sql]` and pair it with
+an adjacent `// JUSTIFICATION (djogi#<n>): ...` comment naming the
+typed-surface gap (see [Raw SQL escape hatches](../spec/raw-sql-escape-hatches.md)).
 
 ```rust
-let rows = ctx.raw_query::<User>(
-    "SELECT * FROM users WHERE meta @> $1::jsonb",
-    &[&serde_json::json!({ "locale": "en-US" })],
-).await?;
+use djogi::prelude::*;
+
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): JSONB `@>` containment is not yet exposed by the typed path API.
+async fn users_in_locale(ctx: &mut DjogiContext) -> djogi::Result<Vec<User>> {
+    let rows = ctx.raw_query::<User>(
+        "SELECT * FROM users WHERE meta @> $1::jsonb",
+        &[&serde_json::json!({ "locale": "en-US" })],
+    ).await?;
+    Ok(rows)
+}
 ```
 
 To bind a `Jsonb<T>` value as a parameter in a raw query, the simplest path is

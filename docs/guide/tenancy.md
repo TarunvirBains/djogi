@@ -117,20 +117,30 @@ and hands back `Model::objects()`. To bypass RLS on a queryset fetch, the
 caller has to issue the `SET LOCAL` on the ctx before the terminal method.
 
 ```rust
-// Async method — bypass is internal; just wrap the call in atomic():
-djogi::transaction::atomic(pool, |ctx| Box::pin(async move {
-    let post = Post::get_insecurely(ctx, post_id).await?;
-    Ok(post)
-})).await?;
+use djogi::prelude::*;
 
-// Lazy queryset — caller issues SET LOCAL before the terminal method:
-djogi::transaction::atomic(pool, |ctx| Box::pin(async move {
-    // Emits: tracing::warn!(model = "Post", method = "objects_insecurely", ...)
-    let qs = Post::objects_insecurely();
-    ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
-    let all_posts = qs.fetch_all(ctx).await?;
-    Ok(all_posts)
-})).await?;
+// Async method — bypass is internal; just wrap the call in atomic():
+async fn fetch_one(pool: &DjogiPool, post_id: HeerId) -> djogi::Result<Post> {
+    djogi::transaction::atomic(pool, |ctx| Box::pin(async move {
+        let post = Post::get_insecurely(ctx, post_id).await?;
+        Ok(post)
+    })).await
+}
+
+// Lazy queryset — caller issues SET LOCAL before the terminal method.
+// `ctx.raw_execute` requires the bypass attribute + JUSTIFICATION because raw
+// SQL is djogi's `unsafe`-equivalent (see ../spec/raw-sql-escape-hatches.md).
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): `SET LOCAL row_security` is a session GUC; no typed surface covers it.
+async fn fetch_all_insecurely(pool: &DjogiPool) -> djogi::Result<Vec<Post>> {
+    djogi::transaction::atomic(pool, |ctx| Box::pin(async move {
+        // Emits: tracing::warn!(model = "Post", method = "objects_insecurely", ...)
+        let qs = Post::objects_insecurely();
+        ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+        let all_posts = qs.fetch_all(ctx).await?;
+        Ok(all_posts)
+    })).await
+}
 ```
 
 Every `_insecurely` terminal call emits a `tracing::warn!` with the model name,
@@ -197,14 +207,25 @@ non-owner roles; `FORCE ROW LEVEL SECURITY` is only needed for the owner role.
 When you need to issue queries outside the RLS policy from a context that is
 already transaction-bound (for example, reading a lookup table that does not
 have tenant isolation), issue `SET LOCAL row_security = off` manually via
-`raw_execute`:
+`raw_execute`. `ctx.raw_execute` is part of djogi's raw escape surface, so
+the enclosing item must be decorated with
+`#[djogi::deliberately_bypass_convention_with_raw_sql]` and paired with an
+adjacent `// JUSTIFICATION (djogi#<n>): ...` comment (see
+[Raw SQL escape hatches](../spec/raw-sql-escape-hatches.md)):
 
 ```rust
-ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
-// Queries here bypass RLS until the transaction commits or rolls back.
-let cross_tenant_rows = Post::objects_insecurely().fetch_all(ctx).await?;
-// Re-enable before continuing with tenant-isolated work:
-ctx.raw_execute("SET LOCAL row_security = on", &[]).await?;
+use djogi::prelude::*;
+
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): SET LOCAL row_security toggles a session GUC; no typed surface covers it.
+async fn cross_tenant_window(ctx: &mut DjogiContext) -> djogi::Result<Vec<Post>> {
+    ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+    // Queries here bypass RLS until the transaction commits or rolls back.
+    let cross_tenant_rows = Post::objects_insecurely().fetch_all(ctx).await?;
+    // Re-enable before continuing with tenant-isolated work:
+    ctx.raw_execute("SET LOCAL row_security = on", &[]).await?;
+    Ok(cross_tenant_rows)
+}
 ```
 
 This pattern is what the generated `_insecurely` methods automate internally.

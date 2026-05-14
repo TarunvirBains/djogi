@@ -169,28 +169,42 @@ without the bypass attribute, which is djogi's `unsafe`-equivalent — see
 the [Raw SQL escape hatches spec](../spec/raw-sql-escape-hatches.md):
 
 ```rust
-// raw_query — Vec<T> where T: FromPgRow
-let posts: Vec<Post> = ctx.raw_query(
-    "SELECT id, created_at, updated_at, title, body, published
-     FROM posts WHERE published = $1",
-    &[&true],
-).await?;
+use djogi::prelude::*;
 
-// raw_scalar — single scalar
-let count: i64 = ctx.raw_scalar(
-    "SELECT COUNT(*) FROM posts",
-    &[],
-).await?;
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): recursive CTE / bespoke JOIN not exposed by QuerySet.
+async fn raw_examples(ctx: &mut DjogiContext, post_id: HeerId) -> djogi::Result<()> {
+    // raw_query — Vec<T> where T: FromPgRow
+    let _posts: Vec<Post> = ctx.raw_query(
+        "SELECT id, created_at, updated_at, title, body, published
+         FROM posts WHERE published = $1",
+        &[&true],
+    ).await?;
 
-// raw_execute — no return value (returns rows-affected as u64)
-let updated = ctx.raw_execute(
-    "UPDATE posts SET view_count = view_count + $1 WHERE id = $2",
-    &[&1i32, &post_id],
-).await?;
+    // raw_scalar — single scalar
+    let _count: i64 = ctx.raw_scalar(
+        "SELECT COUNT(*) FROM posts",
+        &[],
+    ).await?;
+
+    // raw_execute — no return value (returns rows-affected as u64)
+    let _updated = ctx.raw_execute(
+        "UPDATE posts SET view_count = view_count + $1 WHERE id = $2",
+        &[&1i32, &post_id],
+    ).await?;
+
+    Ok(())
+}
 ```
 
-All three take `&mut DjogiContext`; the same call site works against a
-pool-backed context or a transaction-backed one.
+The `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute is
+mandatory — it brings the sealed `RawAccessExt` trait into scope for the
+decorated item. Without it, `ctx.raw_*` does not resolve. The adjacent
+`// JUSTIFICATION (djogi#<n>): ...` comment names the typed-surface gap
+the bypass is filling and is enforced under `tests/` by
+`cargo xtask check-justifications` (GH #133). All three methods take
+`&mut DjogiContext`; the same call site works against a pool-backed
+context or a transaction-backed one.
 
 ### Rule 4: Use transactions explicitly
 
