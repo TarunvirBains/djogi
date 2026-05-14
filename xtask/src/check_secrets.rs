@@ -134,6 +134,28 @@ impl SecretKind {
     }
 }
 
+/// Classification of a `scheme://[user:pass@]host[:port]` authority. Shared
+/// between the URL scanner (decides whether to emit a finding) and the
+/// env-var scanner (decides whether to defer to the URL scanner when an
+/// env value happens to be a credentialed URL).
+#[derive(Debug, Eq, PartialEq)]
+enum UrlAuthority {
+    /// Scheme is not in [`CREDENTIAL_URL_SCHEMES`], or the authority has no
+    /// `user:pass@host` shape. The URL scanner does not emit.
+    NotCredential,
+    /// Password slot is a placeholder (shell-var expansion, `<password>`,
+    /// mustache, …). The URL scanner intentionally suppresses; the env
+    /// scanner also defers so doc snippets like
+    /// `DATABASE_URL=postgres://user:${PGPASSWORD}@host` are not noisy.
+    Placeholder,
+    /// `user:pass` pair is in [`KNOWN_DUMMY_USERPASS`]. Same suppression
+    /// policy as [`UrlAuthority::Placeholder`].
+    Dummy,
+    /// Real-looking credentials; `excerpt` is the redacted text suitable
+    /// for a [`Finding`].
+    Real { excerpt: String },
+}
+
 // ===== constants =====
 
 // Each table is kept sorted in ASCII order so `binary_search` is correct and
@@ -624,12 +646,12 @@ fn scan_url_with_credentials(
         }
         let authority = &line[auth_start..auth_end];
 
-        if let Some(finding) = classify_authority(scheme, authority) {
+        if let UrlAuthority::Real { excerpt } = classify_authority(scheme, authority) {
             findings.push(Finding {
                 path: path.map(|p| p.to_owned()),
                 line: line_number,
                 kind: SecretKind::UrlWithCredentials,
-                excerpt: finding,
+                excerpt,
             });
         }
 
@@ -637,35 +659,41 @@ fn scan_url_with_credentials(
     }
 }
 
-fn classify_authority(scheme: &str, authority: &str) -> Option<String> {
+fn classify_authority(scheme: &str, authority: &str) -> UrlAuthority {
     if !is_credential_scheme(scheme) {
-        return None;
+        return UrlAuthority::NotCredential;
     }
-    let at_index = authority.find('@')?;
+    // Split userinfo from host on the LAST '@' rather than the first.
+    // Real-world userinfo sometimes carries an unencoded '@' in the
+    // password slot (RFC 3986 requires percent-encoding but browsers and
+    // many shell tools accept the literal). Splitting on the first '@'
+    // would leak the password tail into `host_and_port`, where the
+    // redacted excerpt would then echo it back; splitting on the last '@'
+    // keeps any extras on the password side, where they are redacted
+    // along with the rest of the password.
+    let Some(at_index) = authority.rfind('@') else {
+        return UrlAuthority::NotCredential;
+    };
     let userinfo = &authority[..at_index];
     let host_and_port = &authority[at_index + 1..];
 
-    let colon_index = userinfo.find(':')?;
+    let Some(colon_index) = userinfo.find(':') else {
+        return UrlAuthority::NotCredential;
+    };
     let user = &userinfo[..colon_index];
     let password = &userinfo[colon_index + 1..];
 
     if password.is_empty() || is_placeholder_value(password) {
-        return None;
+        return UrlAuthority::Placeholder;
     }
     if is_known_dummy_userpass(user, password) {
-        return None;
+        return UrlAuthority::Dummy;
     }
 
-    // Dummy hosts ONLY excuse the very weak local dev creds — they should not
-    // make a real password on localhost silent, because copying a real
-    // production password into a localhost test fixture still leaks it on the
-    // first paste into a public issue.
     let host = strip_port(host_and_port);
-    if is_dummy_host(host) && is_known_dummy_userpass(user, password) {
-        return None;
+    UrlAuthority::Real {
+        excerpt: redact_url(scheme, host),
     }
-
-    Some(redact_url(scheme, user, host))
 }
 
 fn is_credential_scheme(scheme: &str) -> bool {
@@ -728,11 +756,33 @@ fn strip_port(host_and_port: &str) -> &str {
     }
 }
 
-fn redact_url(scheme: &str, user: &str, host: &str) -> String {
-    // Excerpts are deliberately templated — we never echo the password back.
-    let safe_user = if user.is_empty() { "<user>" } else { user };
-    let safe_host = if host.is_empty() { "<host>" } else { host };
-    format!("{scheme}://{safe_user}:<REDACTED>@{safe_host}")
+fn redact_url(scheme: &str, host: &str) -> String {
+    // Excerpts never echo the user, password, or password-tail. Modern
+    // basic-auth token forms place the secret in the user half rather
+    // than the password half (GitHub fine-grained tokens use
+    // `<token>:x-oauth-basic@…`, npm registry uses `<token>:_authToken=…`),
+    // so a template that only redacted the password slot would leak the
+    // token through the user slot. Both halves of the userinfo are
+    // redacted to a single `<REDACTED>` token.
+    //
+    // The host is echoed back only when it parses as a clean hostname or
+    // IPv4 address. Any byte outside `[A-Za-z0-9.-]` falls back to
+    // `<host>`, so a malformed authority (extra '@', escape oddities,
+    // partial percent-encoding) cannot smuggle credential bytes into the
+    // host display field.
+    let safe_host = if is_safe_host_for_display(host) {
+        host
+    } else {
+        "<host>"
+    };
+    format!("{scheme}://<REDACTED>@{safe_host}")
+}
+
+fn is_safe_host_for_display(host: &str) -> bool {
+    !host.is_empty()
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
 }
 
 // ----- pattern 2: env-var assignment -----
@@ -752,17 +802,29 @@ fn scan_env_assignment(
         return;
     }
 
-    // Strip optional `export ` / `set ` prefixes so shell `export FOO=bar`
-    // is parsed the same as `FOO=bar`.
-    let active = trimmed
+    // Normalise leading shape so the same `KEY=value` parser handles all of:
+    //   FOO=bar                              (bare)
+    //   export FOO=bar                       (shell)
+    //   set FOO=bar                          (cmd.exe / some POSIX shells)
+    //   - FOO=bar                            (YAML / compose env list)
+    //   - "FOO=bar"                          (YAML quoted env list)
+    //   - export FOO=bar                     (compose env list of shell line)
+    // YAML list-item entries were previously missed because the trimmed line
+    // started with `- ` and the env-var-shape check rejected the dash.
+    let active = if let Some(rest) = trimmed.strip_prefix("- ") {
+        strip_outer_quotes(rest.trim_start())
+    } else {
+        trimmed
+    };
+    let active = active
         .strip_prefix("export ")
-        .or_else(|| trimmed.strip_prefix("set "))
-        .unwrap_or(trimmed);
+        .or_else(|| active.strip_prefix("set "))
+        .unwrap_or(active);
 
     let Some((key, value_raw)) = split_assignment(active) else {
         return;
     };
-    let key = key.trim_end();
+    let key = normalize_key(key);
     if !is_envvar_like_key(key) {
         return;
     }
@@ -772,12 +834,23 @@ fn scan_env_assignment(
         return;
     }
 
+    // Dedup against the URL scanner. If the value parses as a credentialed
+    // URL whose scheme the URL scanner recognises — real, dummy, or
+    // placeholder — the URL scanner has already acted (emitted, or
+    // intentionally suppressed) and the env scanner defers to avoid double-
+    // reporting and to preserve the existing dummy/placeholder allowlist.
+    //
+    // Critically, this only defers when the URL scanner ACTUALLY recognised
+    // the scheme. Previously the env scanner skipped on any value
+    // containing `://` and `@`, which silently dropped findings for
+    // credential URLs with non-listed schemes (`tcp://`, `ldap://`, etc.).
+    let defer_to_url_scanner = matches!(
+        classify_value_as_credential_url(value),
+        UrlAuthority::Real { .. } | UrlAuthority::Dummy | UrlAuthority::Placeholder,
+    );
+
     if let Some(known) = match_named_secret_var(key) {
-        // For `*_URL` style vars we want at least one finding when the value
-        // contains a credentialed URL, but the URL scanner has already done
-        // that. Avoid double-reporting by suppressing the env-assignment
-        // finding when the value itself parses as a credential URL.
-        if key.ends_with("_URL") && value_contains_credential_url(value) {
+        if defer_to_url_scanner {
             return;
         }
         findings.push(Finding {
@@ -790,8 +863,7 @@ fn scan_env_assignment(
     }
 
     if let Some(suffix) = match_secret_suffix(key) {
-        // Same precaution against double-reporting URLs.
-        if key.ends_with("_URL") && value_contains_credential_url(value) {
+        if defer_to_url_scanner {
             return;
         }
         findings.push(Finding {
@@ -801,6 +873,72 @@ fn scan_env_assignment(
             excerpt: format!("{key}=<REDACTED {bytes} bytes>", bytes = value.len()),
         });
     }
+}
+
+fn normalize_key(key: &str) -> &str {
+    // Trim, then strip a single leading and a single trailing ASCII quote
+    // char independently. Handles JSON `"KEY": "v"`, half-quoted YAML
+    // `"KEY=v"` (where the `=` split leaves an unbalanced quote on one
+    // side), and single-quoted variants. Independent prefix/suffix strip
+    // is intentional — `"KEY=value` (key got a leading quote, value got
+    // none) still cleans up.
+    let key = key.trim();
+    let key = key
+        .strip_prefix('"')
+        .or_else(|| key.strip_prefix('\''))
+        .unwrap_or(key);
+    let key = key
+        .strip_suffix('"')
+        .or_else(|| key.strip_suffix('\''))
+        .unwrap_or(key);
+    key.trim()
+}
+
+fn strip_outer_quotes(s: &str) -> &str {
+    // Strip a single matching pair of surrounding ASCII quotes. Called on
+    // the inner content of a YAML list item so `- "KEY=value"` parses
+    // identically to `- KEY=value`. Unlike `normalize_key`, this requires
+    // BOTH endpoints to match, so a JSON-shaped mapping like
+    // `"KEY":"value"` is not stripped here and instead handled by
+    // `normalize_key`'s asymmetric strip on the split key.
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return &s[1..s.len() - 1];
+        }
+    }
+    s
+}
+
+/// Parse `value` looking for the first `scheme://authority` substring and
+/// classify it via [`classify_authority`]. Used by the env-var scanner to
+/// decide whether to defer to the URL scanner.
+fn classify_value_as_credential_url(value: &str) -> UrlAuthority {
+    let bytes = value.as_bytes();
+    let Some(rel) = find_subslice(bytes, b"://") else {
+        return UrlAuthority::NotCredential;
+    };
+    let scheme_end = rel;
+    let auth_start = scheme_end + 3;
+
+    let mut scheme_start = scheme_end;
+    while scheme_start > 0 && is_scheme_byte(bytes[scheme_start - 1]) {
+        scheme_start -= 1;
+    }
+    if scheme_start == scheme_end {
+        return UrlAuthority::NotCredential;
+    }
+    let scheme = &value[scheme_start..scheme_end];
+
+    let mut auth_end = auth_start;
+    while auth_end < bytes.len() && is_authority_byte(bytes[auth_end]) {
+        auth_end += 1;
+    }
+    let authority = &value[auth_start..auth_end];
+
+    classify_authority(scheme, authority)
 }
 
 fn split_assignment(line: &str) -> Option<(&str, &str)> {
@@ -869,11 +1007,6 @@ fn strip_value_wrappers(value: &str) -> &str {
     trimmed
 }
 
-fn value_contains_credential_url(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    find_subslice(bytes, b"://").is_some() && bytes.contains(&b'@')
-}
-
 // ----- pattern 3: PEM private-key header -----
 
 fn scan_pem_private_key_header(
@@ -913,10 +1046,6 @@ fn is_known_dummy_userpass(user: &str, password: &str) -> bool {
     KNOWN_DUMMY_USERPASS
         .iter()
         .any(|(u, p)| *u == user && *p == password)
-}
-
-fn is_dummy_host(host: &str) -> bool {
-    DUMMY_HOSTS.binary_search(&host).is_ok()
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -1415,6 +1544,203 @@ deleted file mode 100644
         for f in &findings {
             assert!(!f.excerpt.contains("secretpw"));
         }
+    }
+
+    // ---- BLOCK-regression tests (do not delete) ----
+    //
+    // These cover the three blocker classes flagged in the GPT-5.5 xhigh
+    // review of #193: unsafe URL redaction, missed YAML list-item env
+    // entries, and over-broad URL-shaped suppression of env findings.
+
+    /// BLOCK 1 — token-in-user-position must not leak through the redacted
+    /// excerpt. Modern HTTP basic-auth uses the user slot for the secret
+    /// (`<token>:x-oauth-basic@host`), so a "redact password only"
+    /// template would leak the token entirely.
+    #[test]
+    fn redacts_url_does_not_leak_token_in_user_position() {
+        let findings =
+            scan("https://gh_realtokenabcdef0123456789:x-oauth-basic@api.github.com/user");
+        let url_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| matches!(f.kind, SecretKind::UrlWithCredentials))
+            .collect();
+        assert!(
+            !url_findings.is_empty(),
+            "expected a url finding, got {findings:#?}",
+        );
+        for f in &url_findings {
+            assert!(
+                !f.excerpt.contains("gh_realtokenabcdef0123456789"),
+                "user/token slot leaked into excerpt: {}",
+                f.excerpt,
+            );
+            assert!(
+                !f.excerpt.contains("x-oauth-basic"),
+                "password slot leaked into excerpt: {}",
+                f.excerpt,
+            );
+        }
+    }
+
+    /// BLOCK 1 — a password containing an unencoded `@` (real-world DSN
+    /// shape `postgres://u:pa@ss@host/db`) previously split userinfo on
+    /// the FIRST `@`, which left the password tail in `host_and_port` and
+    /// echoed it back through the excerpt.
+    #[test]
+    fn redacts_url_does_not_leak_password_with_embedded_at() {
+        let findings = scan("postgres://u:pa@ss@host.example.com/db");
+        let url_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| matches!(f.kind, SecretKind::UrlWithCredentials))
+            .collect();
+        assert!(
+            !url_findings.is_empty(),
+            "expected a url finding, got {findings:#?}",
+        );
+        for f in &url_findings {
+            assert!(
+                !f.excerpt.contains("pa@ss"),
+                "full password leaked into excerpt: {}",
+                f.excerpt,
+            );
+            // The password tail `ss` must not appear in the excerpt either,
+            // since splitting on the first '@' would have left it as the
+            // displayed host prefix.
+            assert!(
+                !f.excerpt.contains("ss@"),
+                "password tail leaked into host slot: {}",
+                f.excerpt,
+            );
+        }
+    }
+
+    /// BLOCK 1 — a malformed authority must not smuggle credential bytes
+    /// into the host display slot. Anything outside `[A-Za-z0-9.-]` in the
+    /// host position falls back to `<host>`.
+    #[test]
+    fn redacts_url_falls_back_to_placeholder_host_on_unusual_bytes() {
+        // Construct a credential URL where the host portion contains an
+        // unusual byte. `=` is allowed inside the authority walk but is
+        // outside the safe-host charset, so the excerpt should redact the
+        // host.
+        let findings = scan("postgres://u:realpw@weird=host/db");
+        let url_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| matches!(f.kind, SecretKind::UrlWithCredentials))
+            .collect();
+        assert!(!url_findings.is_empty(), "got {findings:#?}");
+        for f in &url_findings {
+            assert!(
+                f.excerpt.contains("<host>"),
+                "expected `<host>` placeholder, got: {}",
+                f.excerpt,
+            );
+        }
+    }
+
+    /// BLOCK 2 — YAML / docker-compose list-item form
+    /// `  - POSTGRES_PASSWORD=value` was previously missed because the
+    /// trimmed line started with `- ` and the env-var-shape check
+    /// rejected the dash. The list-item prefix must be stripped before
+    /// validating the key.
+    #[test]
+    fn flags_env_assignment_in_yaml_list_item() {
+        let findings = scan("      - POSTGRES_PASSWORD=actualleakedvalue");
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f.kind, SecretKind::EnvAssignmentKnown("POSTGRES_PASSWORD"))),
+            "expected POSTGRES_PASSWORD finding, got {findings:#?}",
+        );
+        for f in &findings {
+            assert!(
+                !f.excerpt.contains("actualleakedvalue"),
+                "raw value leaked: {}",
+                f.excerpt,
+            );
+        }
+    }
+
+    /// BLOCK 2 — quoted YAML list-item form
+    /// `- "POSTGRES_PASSWORD=value"`: the outer quotes wrap the whole
+    /// assignment, so the inner content must be unquoted before split.
+    #[test]
+    fn flags_env_assignment_in_quoted_yaml_list_item() {
+        let findings = scan("  - \"PGPASSWORD=actualleakedvalue\"");
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f.kind, SecretKind::EnvAssignmentKnown("PGPASSWORD"))),
+            "expected PGPASSWORD finding, got {findings:#?}",
+        );
+    }
+
+    /// BLOCK 2 — `- export FOO=bar` (a docker-compose env list entry
+    /// invoking a shell `export`) must also parse cleanly.
+    #[test]
+    fn flags_env_assignment_in_yaml_list_with_export() {
+        let findings = scan("  - export DATABASE_PASSWORD=actualleakedvalue");
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f.kind, SecretKind::EnvAssignmentKnown("DATABASE_PASSWORD"))),
+            "got {findings:#?}",
+        );
+    }
+
+    /// BLOCK 3 — a credential-bearing URL with an unlisted scheme must
+    /// still trigger the env-var finding. Previously the env scanner
+    /// suppressed whenever the value merely contained `://` and `@`,
+    /// which silently dropped secrets when the URL scanner had not
+    /// recognised the scheme. Test hosts deliberately avoid the
+    /// `example.com` / `example.org` placeholder needles so the
+    /// whole-value placeholder gate does not pre-empt the env scanner.
+    #[test]
+    fn flags_url_env_var_with_non_credential_scheme() {
+        let findings = scan("DATABASE_URL=tcp://user:realleakedpw@dbhost.acme.internal/db");
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f.kind, SecretKind::EnvAssignmentKnown("DATABASE_URL"))),
+            "expected DATABASE_URL env finding (scheme `tcp` is not recognised \
+             by the url scanner, so the env scanner must report), got {findings:#?}",
+        );
+    }
+
+    /// BLOCK 3 — suffix-form env vars get the same dedup-vs-suppression
+    /// guarantee. A secret-suffix value containing an unlisted-scheme URL
+    /// must still fire.
+    #[test]
+    fn flags_suffix_env_var_with_non_credential_scheme_url() {
+        let findings = scan("MY_SERVICE_TOKEN=ldap://user:realleakedpw@ldap.acme.internal/dc=foo");
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f.kind, SecretKind::EnvAssignmentSuffix("_TOKEN"))),
+            "got {findings:#?}",
+        );
+    }
+
+    /// BLOCK 3 dedup — when the URL scanner DOES emit a finding for the
+    /// same line, the env scanner suppresses to avoid double-reporting.
+    /// This pins the dedup contract.
+    #[test]
+    fn defers_env_finding_when_url_scanner_emits() {
+        let findings = scan("DATABASE_URL=postgres://alice:realleakedpw@db.prod.example/myapp");
+        let url_count = findings
+            .iter()
+            .filter(|f| matches!(f.kind, SecretKind::UrlWithCredentials))
+            .count();
+        let env_count = findings
+            .iter()
+            .filter(|f| matches!(f.kind, SecretKind::EnvAssignmentKnown(_)))
+            .count();
+        assert_eq!(
+            (url_count, env_count),
+            (1, 0),
+            "expected exactly one URL finding and zero env findings (dedup), \
+             got {findings:#?}",
+        );
     }
 
     // ---- sorted-table invariant ----
