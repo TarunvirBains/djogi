@@ -166,7 +166,7 @@ When Phase 5 ships, `tenant_key` will integrate with `djogi::set_tenant()`, `Ten
 
 ### `rationale = "..."` — Phase 5 (warnings and tooling)
 
-An advisory documentation string. Does not affect generated code. Will be surfaced by `cargo djogi docs` and in the admin panel — provides context for AI coding agents, new team members, and schema reviewers.
+An advisory documentation string. Does not affect generated code. Will be surfaced by `djogi docs` and in the admin panel — provides context for AI coding agents, new team members, and schema reviewers.
 
 ```rust
 #[model(
@@ -281,7 +281,7 @@ pub struct User {
 
 ### `#[field(rationale = "...")]` — Phase 5 (tooling)
 
-An advisory documentation string on a field. Will be surfaced by `cargo djogi docs` and in the admin panel.
+An advisory documentation string on a field. Will be surfaced by `djogi docs` and in the admin panel.
 
 ```rust
 #[field(rationale = "Stripe customer ID — set once on first payment, never updated. \

@@ -114,7 +114,7 @@ artifacts. After `git worktree remove`, prune orphaned caches with
 |---|---|
 | `djogi` | Public API: `prelude`, `Model` trait, `QuerySet`, `ForeignKey`, `Jsonb<T>`, `ManyToMany`, app registration |
 | `djogi-macros` | `#[derive(Model)]` proc macro — field injection, trait impls, `ModelDescriptor` emission via `inventory` |
-| `djogi-cli` | `djogi` (standalone) and `cargo djogi` (alias) subcommands via `clap` |
+| `djogi-cli` | Standalone `djogi` binary and subcommands via `clap` |
 | `djogi-shell` | Rhai REPL, model bindings, transaction control |
 
 ### What Djogi Owns vs Delegates
@@ -206,7 +206,7 @@ xtask validator are the enforcement. See [`docs/spec/raw-sql-escape-hatches.md`]
 - Diffs against `migrations/schema_snapshot.json`
 - Generates migration SQL pairs if drift detected; emits compiler warning (not error)
 
-`migrations/` is a git submodule — managed by CI, not by the developer directly. `schema_snapshot.json` is updated only on successful `djogi migrations apply` (the runner persists the snapshot atomically after every transactional segment commits and the ledger row reaches `applied`).
+`migrations/` is a git submodule — managed by CI, not by the developer directly. `schema_snapshot.json` is updated only on successful runs of the library apply path (`djogi::migrate::apply_plan`; the `djogi migrations apply` CLI dispatcher is deferred). The runner persists the snapshot atomically after every transactional segment commits and the ledger row reaches `applied`.
 
 ### Three-Database Architecture
 

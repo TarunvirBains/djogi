@@ -146,18 +146,17 @@ djogi migrations compose --name "backfill_nulls"  # custom migration name
 
 | Flag | Description |
 |---|---|
-| `--dry-run` | Print the SQL that would be generated without writing migration files |
 | `--allow-destructive` | Permit destructive operations (DROP COLUMN, DROP TABLE) in the generated SQL |
 | `--name TEXT` | Use a custom description in the migration filename |
 
 ---
 
-### `djogi migrations verify`
+### `djogi verify`
 
-Verifies the HMAC-SHA256 signature of `migrations/schema_snapshot.json`. Requires `DJOGI_SIGNING_KEY` to be set.
+Verifies repository/package state through the shipped top-level `djogi verify` command. Migration-specific live-DB verification remains a deferred `djogi migrations verify` dispatcher; use `djogi::migrate::verify` from library code until that CLI lands.
 
 ```bash
-djogi migrations verify
+djogi verify
 ```
 
 **Example output (valid):**
@@ -174,15 +173,9 @@ ERROR: schema snapshot signature mismatch
   Expected: 8f3c2a1b4e7d9f2c...
   Found:    7e1d4f9c3a8b1e5d...
 
-The schema snapshot may have been modified outside of `djogi migrations apply`.
+The schema snapshot may have been modified outside of Djogi's migration library.
 Do not run migrations until this is resolved.
 ```
-
-**Flags:**
-
-| Flag | Description |
-|---|---|
-| `--explain` | Print the full signature details and the content hash for debugging |
 
 ---
 

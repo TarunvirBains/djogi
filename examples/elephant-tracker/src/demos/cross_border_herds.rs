@@ -19,7 +19,6 @@
 //!   range table.
 
 use anyhow::Result;
-use djogi::__bypass::RawAccessExt as _;
 use djogi::DjogiContext;
 use postgres_types::ToSql;
 use serde::Serialize;
@@ -35,6 +34,8 @@ struct CrossBorderEntry {
     countries: Vec<String>,
 }
 
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): grouped M2M aggregate demo uses a compact raw SQL query not covered by the typed surface.
 pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> Result<()> {
     // The aggregating query: for every (herd, season) pair, collect the
     // distinct country names. The `HAVING` clause filters down to the

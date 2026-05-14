@@ -152,14 +152,14 @@ The `token` parameter is opaque to the trait — implementations decide whether 
 ```rust
 #[derive(Debug, Clone)]
 pub struct AuthContext {
-    pub user_id: HeerIdRecencyBiased,
+    pub user_id: HeerId,
     pub tenant_id: Option<String>,
     pub scopes: Vec<String>,
     pub ext: std::collections::HashMap<String, String>,
 }
 ```
 
-Four fields cover the 95% case. `user_id` follows Djogi's default PK type, `HeerIdRecencyBiased` / `HeerIdDesc`, unless an application explicitly opts a user model into another PK strategy. `tenant_id` is `Option<String>` — strings rather than `HeerId` because tenant identity formats vary across deployments (UUIDs, slugs, external IDs). `scopes` carries OAuth-style permission strings. `ext` is a free-form string-to-string map for app-specific attributes without forcing trait objects or generics on the struct.
+Four fields cover the 95% case. `user_id` is `HeerId` in the shipped auth substrate; applications whose user model uses Djogi's recency-biased default PK should convert or normalize at the auth boundary until the auth context grows a generic/custom-PK story. `tenant_id` is `Option<String>` — strings rather than `HeerId` because tenant identity formats vary across deployments (UUIDs, slugs, external IDs). `scopes` carries OAuth-style permission strings. `ext` is a free-form string-to-string map for app-specific attributes without forcing trait objects or generics on the struct.
 
 Builders:
 

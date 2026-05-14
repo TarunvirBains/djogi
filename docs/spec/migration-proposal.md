@@ -196,8 +196,10 @@ in source, snapshot already reflects the change) and emits a hard error requirin
 
 ### Pillar 10: First-class repair, baseline, verify, and status commands
 
-`djogi migrations repair`, `djogi migrations baseline`, `djogi migrations
-verify`, and `djogi migrations status` are Phase 7 deliverables, not appendix material.
+the repair, baseline, verify, and status migration flows are Phase 7 engine
+deliverables, not appendix material. `status` is registered in the CLI today;
+repair, baseline, and verify are public library flows with CLI dispatch
+deferred.
 The research finding that motivated this: every system that has been run at production scale
 either built first-class repair/adoption tooling or accumulated painful war stories about
 operators hand-editing the ledger table (T03, C-08 in doc 15).
@@ -387,18 +389,19 @@ Three files, three roles:
 
 1. `djogi_models.json` equals `schema_snapshot.json` for all apps → silent.
 2. Mismatch detected, AND `target/djogi_pending/<app>.json` matches `djogi_models.json` for the
-   drifted app → `cargo:warning=djogi: migration pending — run \`djogi migrations apply\``.
+   drifted app → `cargo:warning=djogi: migration pending — apply via djogi::migrate::apply_plan`.
 3. Mismatch detected, AND no matching pending file → `cargo:warning=djogi: schema drift detected
    — run \`djogi migrations compose\``.
 
 **Lifecycle:** `migrations compose` writes `target/djogi_pending/<app>.json` and generates the
-SQL pair. `migrations apply` consumes the pending file (atomic `tmp → fsync → rename` into the
-submodule snapshot, then deletes the pending file) on successful completion. (OI-04)
+SQL pair. The library apply path consumes the pending file (atomic `tmp → fsync → rename` into the
+submodule snapshot, then deletes the pending file) on successful completion; the matching CLI
+dispatcher is deferred. (OI-04)
 
 **Crash recovery:** If the process is killed between ledger COMMIT and snapshot rename, the DB
-is fully applied but the snapshot is stale. `djogi migrations verify` detects the
-discrepancy. `djogi migrations repair --rebuild-snapshot` regenerates from the current
-ledger plus source descriptors. (OI-06)
+is fully applied but the snapshot is stale. `djogi::migrate::verify` detects the
+discrepancy, and the repair helpers regenerate from the current ledger plus
+source descriptors until the deferred verify/repair CLI dispatchers land. (OI-06)
 
 **Snapshot format:** The `schema_snapshot.json` file includes a top-level `format_version: 1`
 field. The runner rejects snapshots with an unknown `format_version`. After a branch merge that
@@ -492,8 +495,8 @@ per R-20).
 ### 2.6 Drift Detection (New — D-Codes)
 
 The drift detection system uses structured diagnostic codes. Codes are emitted from two surfaces:
-`build.rs` (every build, must be terse) and `djogi migrations verify` (explicit invocation,
-can be rich).
+`build.rs` (every build, must be terse) and the library `djogi::migrate::verify`
+entry point (explicit invocation, can be rich; CLI dispatcher deferred).
 
 | Code | Meaning | Fires at |
 |---|---|---|
@@ -901,14 +904,14 @@ Generated:
 
 $ # Do NOT apply — the tables already exist.
 
-$ djogi migrations baseline 0001_initial
+$ # deferred CLI sketch: djogi migrations baseline 0001_initial
 Acquiring advisory lock...ok
 Inserting baseline ledger rows for migrations up to 0001_initial...
   0001_initial: status=baseline, applied_at=2026-04-22T10:00:00Z, applied_by=postgres
 Snapshot set to: 0001_initial
 Advisory lock released.
 
-$ djogi migrations verify
+$ # deferred CLI sketch: djogi migrations verify
 Comparing snapshot against live DB...
   OK: all 4 tables match snapshot
   OK: all 12 columns match snapshot
@@ -916,9 +919,9 @@ Comparing snapshot against live DB...
 Exit 0 — live DB matches snapshot exactly.
 ```
 
-`migrations baseline` uses the same advisory lock as `migrations apply`. It computes the
+The planned baseline flow uses the same advisory lock as the library apply path. It computes the
 checksum of each migration file and inserts ledger rows with `status = 'baseline'`. The snapshot
-is advanced to the baseline version. Future `migrations compose` and `migrations apply` invocations
+is advanced to the baseline version. Future `migrations compose` and library `apply_plan` invocations
 see a clean starting point and generate only truly new migrations. (R-10, OI-03)
 
 ### 3.9 Detecting out-of-band DB tampering
@@ -927,7 +930,7 @@ Scenario: an operator ran `ALTER TABLE vehicles ADD COLUMN legacy_id TEXT` direc
 production DB. No migration was generated or applied.
 
 ```
-$ djogi migrations verify
+$ # deferred CLI sketch: djogi migrations verify
 Comparing snapshot against live DB...
   WARN: live DB has column vehicles.legacy_id — not in snapshot
   OK: all other 11 columns match snapshot
@@ -940,7 +943,7 @@ $ # 2. Drop the column from the DB and re-add it through a proper migration.
 $ # 3. Document the discrepancy and use --force-apply if circumstances require it.
 ```
 
-`djogi migrations verify` is the operational checkpoint that catches out-of-band drift
+`djogi::migrate::verify` is the operational checkpoint that catches out-of-band drift
 without requiring a shadow DB or live introspection at every build. It compares
 `migrations/schema_snapshot.json` against `information_schema` and `pg_catalog`. (R-24)
 
@@ -1185,7 +1188,7 @@ fully automates zero-downtime DDL. Phase 7.5 is the planned home for the five st
 patterns. v0.1 operators who need `CREATE INDEX CONCURRENTLY` hand-edit the generated SQL and
 add `-- djogi:no-transaction` (five minutes of work).
 
-**P2 — Shadow DB drift detection via `--live` flag (R-29):** `djogi migrations verify`
+**P2 — Shadow DB drift detection via a future `--live` flag (R-29):** `djogi::migrate::verify`
 provides snapshot-vs-live comparison. A full shadow-DB approach (Prisma) requires `CREATE DATABASE`
 permission and a full schema replay per diff. Deferred to v0.2.
 

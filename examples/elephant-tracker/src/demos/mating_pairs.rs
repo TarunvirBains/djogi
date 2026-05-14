@@ -138,7 +138,6 @@
 //! data without further code changes.
 
 use anyhow::Result;
-use djogi::__bypass::RawAccessExt as _;
 use djogi::DjogiContext;
 use djogi::prelude::*;
 use postgres_types::ToSql;
@@ -181,6 +180,8 @@ struct MatingPair {
     score: f64,
 }
 
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): mating-pairs demo ranks a closure self-join that is not expressible through QuerySet yet.
 pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> Result<()> {
     // ── Step 1 (typed Djogi) — per-herd convex hull aggregate ─────
     //

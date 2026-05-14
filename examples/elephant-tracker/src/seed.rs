@@ -18,7 +18,6 @@
 //!   herd so the `cluster-sightings` demo finds real density hotspots.
 
 use anyhow::{Context, Result};
-use djogi::__bypass::{RawAccessExt as _, RawPoolAccessExt as _};
 use djogi::pg::pool::DjogiPool;
 use djogi::prelude::*;
 use djogi::transaction::atomic;
@@ -149,6 +148,8 @@ const HERDS: &[HerdSeed] = &[
 ];
 
 /// Run the full seed.
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): example seed loads hand-written SQL fixture and needs pool access for programmatic seeding.
 pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
     tracing::info!("loading seeds/countries.sql");
     ctx.raw_ddl(COUNTRIES_SQL)
@@ -168,6 +169,8 @@ pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
 }
 
 /// Programmatic seed wrapped in a single `atomic()` scope.
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): example seed reads reference rows with a minimal raw query before typed model inserts.
 async fn seed_programmatic(pool: &DjogiPool) -> Result<()> {
     atomic(pool, |ctx| {
         Box::pin(async move {

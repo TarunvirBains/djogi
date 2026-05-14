@@ -25,7 +25,6 @@
 //! callers request it; no denormalisation drift.
 
 use crate::models::Herd;
-use djogi::__bypass::RawAccessExt as _;
 use djogi::prelude::*;
 
 /// Cheap projection of [`Herd`]. Constructed via `HerdSummary::from(&herd)`
@@ -64,6 +63,8 @@ pub trait HerdSizeQuery {
     ) -> impl std::future::Future<Output = Result<i64, DjogiError>>;
 }
 
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): hand-rolled visage side query uses a scalar aggregate outside the generated visage surface.
 impl HerdSizeQuery for HerdSummary {
     async fn herd_size(&self, ctx: &mut DjogiContext) -> Result<i64, DjogiError> {
         // Raw scalar via the always-available escape hatch. Adopters

@@ -410,7 +410,7 @@ djogi docs
 # deferred CLI sketch: djogi migrations verify
 # deferred CLI sketch: djogi migrations repair
 # deferred CLI sketch: djogi migrations repair --rebuild-snapshot
-# djogi migrations baseline 0001_initial
+# deferred CLI sketch: djogi migrations baseline 0001_initial
 ```
 
 `migrations attune` is the migration-history state-management command.
@@ -419,7 +419,7 @@ Contract:
 
 - it attunes local on-disk migration history to a specified local or remote Git target
 - it may fetch if needed to resolve that target
-- it does not mutate the database unless `--apply` is explicitly passed
+- `--apply` commits ledger/disk reconciliation changes, but it does not execute migration SQL or apply schema DDL
 - it does not update the parent repo's recorded submodule pointer unless `--record` is explicitly passed or a command mode clearly implies recording, such as `--squash`
 - `--squash` is a dev-history operation for creating a new squashed migration set
 - `--squash` is hard-gated behind a four-condition safety contract: localhost database URL resolution, `Djogi.toml::profile != "production"`, `Djogi.toml::[database].dev_mode = true`, and `DJOGI_ENV` env var NOT case-insensitive `"production"`. All four gates are enforced before any I/O so a refusal produces zero side effects on disk or in the ledger

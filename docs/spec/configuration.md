@@ -109,9 +109,9 @@ djogi migrations attune --squash --from V<ts> --apply --publish   # squash and p
 # djogi migrations apply                 # apply pending migrations, update snapshot
 # djogi migrations apply --fake 0005     # mark applied without running SQL
 # djogi migrations rollback              # roll back last migration, rewind snapshot
-# djogi migrations verify                # compare snapshot expectations to the live DB
-# djogi migrations repair                # resolve partial apply or rebuild snapshot state
-# djogi migrations baseline 0001_initial # adopt an existing DB without replaying SQL
+# deferred CLI sketch: djogi migrations verify                # compare snapshot expectations to the live DB
+# deferred CLI sketch: djogi migrations repair                # resolve partial apply or rebuild snapshot state
+# deferred CLI sketch: djogi migrations baseline 0001_initial # adopt an existing DB without replaying SQL
 
 # Database (dev only — triple-gated) — registered today (T8)
 djogi db reset                         # drop → recreate → replay; refuses without --yes / interactive y

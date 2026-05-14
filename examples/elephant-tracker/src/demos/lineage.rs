@@ -49,7 +49,6 @@
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
-use djogi::__bypass::RawAccessExt as _;
 use djogi::DjogiContext;
 use djogi::prelude::*;
 use postgres_types::ToSql;
@@ -96,6 +95,8 @@ struct LineageRow {
     sex: Option<String>,
 }
 
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): lineage demo intentionally shows the raw recursive-CTE shape beside the typed tree builder.
 pub async fn run(
     ctx: &mut DjogiContext,
     matriarch: &str,
@@ -242,6 +243,8 @@ fn render_markdown(
 /// `search_depth_first_by` end-to-end. Same matrilineal direction as
 /// the raw-SQL path above: walks `mother_id` only (single-edge),
 /// rendering shows generation bands (BFS) or matriline chains (DFS).
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): typed lineage mode still uses small raw lookups for demo output rows not covered by QuerySet.
 async fn run_typed(
     ctx: &mut DjogiContext,
     matriarch: &str,
