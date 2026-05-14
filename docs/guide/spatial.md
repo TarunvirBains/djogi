@@ -611,13 +611,14 @@ regardless of call count.
 The test harness macro accepts an `extensions` array of Postgres
 extension names. Each per-test database runs
 `CREATE EXTENSION IF NOT EXISTS "<name>"` after the HeeRanjID install and
-before your setup:
+before your setup. Pair it with `sync_models = [...]` so the harness
+projects the schema from the descriptor — no `raw_ddl`, no setup helper:
 
 ```rust
-#[djogi::djogi_test(extensions = ["postgis"])]
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [Place])]
 async fn within_km_filters_correctly(mut ctx: djogi::DjogiContext) {
-    // postgis is already installed in this per-test database
-    ctx.raw_ddl("CREATE TABLE IF NOT EXISTS places ( … )").await?;
+    // postgis is already installed in this per-test database, and the
+    // `places` table has been synced from the Place descriptor.
     // … run the test …
 }
 ```
@@ -720,36 +721,16 @@ encodes this policy correctly.
 
 ## Testing spatial code
 
-Use `#[djogi::djogi_test]` and provision PostGIS + schema inline at the start
-of each test via `ctx.raw_ddl(...)`. The `CREATE EXTENSION IF NOT EXISTS
-postgis` guard is idempotent — safe to repeat in every test setup:
+Provision PostGIS and the schema through the harness — pass `extensions =
+["postgis"]` so each per-test database auto-installs the extension, and
+`sync_models = [Place]` so the harness projects the schema from the
+descriptor. No `setup()` helper, no `raw_ddl` calls in ordinary tests:
 
 ```rust
 use djogi::prelude::*;
 
-async fn setup(ctx: &mut DjogiContext) {
-    ctx.raw_ddl("CREATE EXTENSION IF NOT EXISTS postgis")
-        .await
-        .expect("install postgis");
-    ctx.raw_ddl(
-        "CREATE TABLE IF NOT EXISTS places (
-             id          BIGINT       PRIMARY KEY DEFAULT generate_id(),
-             name        TEXT         NOT NULL,
-             location    GEOGRAPHY(Point, 4326) NOT NULL,
-             created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
-             updated_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
-         );
-         CREATE INDEX IF NOT EXISTS places_location_gix
-             ON places USING GIST (location)",
-    )
-    .await
-    .expect("setup places");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [Place])]
 async fn within_km_filters_correctly(mut ctx: DjogiContext) {
-    setup(&mut ctx).await;
-
     let sfo = GeoPoint::new(37.6189, -122.3750).unwrap();
     let oak = GeoPoint::new(37.7213, -122.2207).unwrap();  // ~20 km from SFO
     let jfk = GeoPoint::new(40.6413, -73.7781).unwrap();   // ~4151 km from SFO
