@@ -149,6 +149,111 @@
 //! - **Pool-level escape hatch** — see [`RawPoolAccessExtBase::raw_with_client`]
 //!   when binary protocol, `COPY`, or `CREATE EXTENSION` requires bypassing
 //!   the per-statement `tokio_postgres::Statement` cache.
+//! # Connection lifecycle — dirty-by-default
+//!
+//! The pool-backed raw methods on
+//! [`RawAccessExt`](RawAccessExtBase) (`raw_query`, `raw_rows`,
+//! `raw_fetch_one`, `raw_scalar`, `raw_execute`, `raw_ddl`) acquire a
+//! pooled connection through [`crate::context::DjogiContext`]'s execution
+//! helpers, which wrap each checkout in a dirty-by-default guard:
+//!
+//! - **Clean exit (`Ok`).** The connection returns to the pool the
+//!   normal way; the next checkout reuses it.
+//! - **Dirty exit (`Err`, panic, future cancellation).** The connection
+//!   is detached via `deadpool_postgres::Object::take` and dropped
+//!   immediately, closing the underlying `tokio_postgres::Client` and
+//!   socket. The pool will create a fresh physical connection on the
+//!   next demand. The trade-off is one extra physical connection per
+//!   dirty exit, paid for the guarantee that a poisoned session
+//!   (open transaction, uncommitted `SET ROLE`, `SET search_path`,
+//!   advisory lock, half-finished `COPY` stream) cannot leak to the
+//!   next checkout.
+//!
+//! This is the same lifecycle [`crate::pg::pool::DjogiPool::with_client`]
+//! enforces via its `WithClientGuard`. It is required because Djogi runs
+//! its pools with `deadpool_postgres::RecyclingMethod::Fast`, which only
+//! checks `is_closed()` on return — it does **not** issue `ROLLBACK`,
+//! `RESET ALL`, or `DISCARD ALL`.
+//!
+//! ## Post-query decode covered by the guard
+//!
+//! Raw SQL that succeeds server-side but produces a row the framework
+//! cannot decode (e.g. `raw_scalar::<i32>("SELECT
+//! set_config('application_name','poisoned',false)")` — the SQL ran,
+//! the session GUC mutated, and `try_get_scalar` then fails because
+//! the returned text is not an `i32`) is itself a dirty exit.
+//! `raw_query`, `raw_fetch_one`, and `raw_scalar` route through
+//! [`DjogiContext::query_all_with`](crate::context::DjogiContext) /
+//! [`query_opt_with`](crate::context::DjogiContext) so the `FromPgRow` /
+//! `try_get_scalar` decode runs **inside** the `PoolConnGuard`'s
+//! lifetime. A decode failure flips the guard's `Result` to `Err`, so
+//! `Drop` detaches the connection. `raw_execute`, `raw_ddl`, and
+//! `raw_rows` have no post-query decode step — their existing pool
+//! guard already covers the only Err/cancel exit shapes.
+//!
+//! ## Adopter contract
+//!
+//! Even with the dirty-by-default guard, raw SQL that mutates session
+//! state (`SET ROLE`, `SET search_path`, session-scoped
+//! `pg_advisory_lock`, `LISTEN`/`UNLISTEN`, prepared-statement creation
+//! outside the cache, etc.) on the **clean-exit path** still leaves the
+//! connection in a non-default state when it returns to the pool. The
+//! dirty-by-default guard fires on `Err`, panic, and future cancellation
+//! only — not on `Ok`.
+//!
+//! For session-state-affecting raw SQL, wrap the call in
+//! [`crate::transaction::atomic`] **and** either:
+//!
+//! - use a TRANSACTION-LOCAL form so `COMMIT` or `ROLLBACK` clears the
+//!   state automatically — `SET LOCAL key = value` instead of `SET key
+//!   = value`, `set_config(name, value, true)` instead of
+//!   `set_config(name, value, false)`, `pg_advisory_xact_lock(…)`
+//!   instead of `pg_advisory_lock(…)`, etc.; or
+//! - explicitly reset / unlock / `UNLISTEN` / `DEALLOCATE` the
+//!   session-level mutation on **every non-cancel exit** of the closure
+//!   — before returning `Ok`, in every error branch, and in any panic
+//!   recovery. `atomic()` will NOT do this cleanup for you on Err/panic;
+//!   see the next paragraph.
+//!
+//! **`atomic()` is a transaction guard, not a session-state reset
+//! guard.** Its `ROLLBACK` path on Err/panic only unwinds
+//! TRANSACTION-SCOPED state (row writes, sequence allocations, `SET
+//! LOCAL`, `set_config(_, _, true)`, `pg_advisory_xact_lock`).
+//! SESSION-scoped state survives both clean `COMMIT` and `ROLLBACK` —
+//! session advisory locks explicitly ignore transaction rollback per
+//! Postgres semantics, plain `SET` / `SET ROLE` / `SET search_path` are
+//! reset by `ROLLBACK` only when the SAME transaction issued them, and
+//! `LISTEN` / prepared statements bypass transactional rollback
+//! entirely. A `SET search_path = 'audit'` inside an `atomic()` closure
+//! that returns `Ok` commits but the new `search_path` survives
+//! `COMMIT` and rides the connection back to the pool; a
+//! `pg_advisory_lock(...)` acquired inside `atomic()` that subsequently
+//! returns `Err` is NOT released by `ROLLBACK` and the lock leaks.
+//! Adopters must choose transaction-local forms or run explicit reset
+//! on every non-cancel exit for the contract to hold.
+//!
+//! **`atomic()` cancellation caveat.** `atomic()` issues `ROLLBACK` on
+//! the closure's `Err` and panic paths. It does NOT issue `ROLLBACK`
+//! when the entire `atomic()` future is dropped mid-execution (e.g.
+//! `tokio::time::timeout(..., atomic(&pool, |tx| async { ... }))`
+//! firing the timeout before the closure resolves). In that case the
+//! transaction-backed `DjogiContext` drops without async cleanup and
+//! the underlying connection returns to the pool with the transaction
+//! still open. This is a pre-existing transaction-scope hazard tracked
+//! separately from djogi#162; it is not introduced by the pool-path
+//! guard this module describes, but adopters relying on `atomic()` as
+//! a session-state isolation mechanism should avoid wrapping it in
+//! cancellation primitives until that gap is closed.
+//!
+//! Cursors, `COPY` streams, and other multi-round-trip protocol
+//! operations should run through
+//! [`RawPoolAccessExt::raw_with_client`](RawPoolAccessExtBase) — the
+//! `WithClientGuard` there bounds the protocol exchange to a single
+//! checkout and applies the same dirty-detach on dirty exit.
+//!
+//! Tracking issue: [djogi#162](https://github.com/TarunvirBains/djogi/issues/162).
+//! See also [`docs/spec/raw-sql-escape-hatches.md`](https://github.com/TarunvirBains/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md)
+//! for the full contract.
 
 use crate::context::DjogiContext;
 use crate::pg::connection::PgConnection;
