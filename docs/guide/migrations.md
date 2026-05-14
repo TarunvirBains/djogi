@@ -194,7 +194,7 @@ pub struct Event { /* ... */ }
 pub struct Event { /* ... */ }
 ```
 
-`cargo djogi migrations compose` produces a single migration containing the full DAG: drop dependent FKs, prepare shadow column, backfill, swap columns, recreate FKs in dependency order. Composite cycles, partitioned tables, and join tables are handled. PK flips on **custom** PKs (declared via `djogi::primary_key!`) defer to Phase 7.5.
+`cargo djogi migrations compose` produces a single migration containing the full DAG: drop dependent FKs, prepare shadow column, backfill, swap columns, recreate FKs in dependency order. Composite cycles, partitioned tables, and join tables are handled. PK flips that involve a **custom** PK (declared via `djogi::primary_key!`) — either a Custom-to-Custom shape change or a Custom↔built-in transition — are explicitly rejected at compose time in v0.1.0 with a typed `SchemaOperation::Unsupported` diagnostic that surfaces the `type_name`, `sql_type`, and `default_sql` of both sides; adopters who genuinely need such a flip must write the migration by hand. See `docs/spec/migrations.md` §10.10a (Primary-Key Flip Support Matrix) for the full reject rationale and the post-v0.1.0 extensibility plan.
 
 ## Out-of-order policy
 

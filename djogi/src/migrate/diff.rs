@@ -2231,7 +2231,21 @@ fn emit_alter_column(
 /// - kind changes outside the flip pairs (e.g. `HeerId → Serial`)
 /// - column-set changes (composite ↔ single, or composite reshape
 ///   that survives column-rename normalisation)
-/// - custom PK shape changes
+/// - custom PK shape changes (any transition involving
+///   `PkKindSchema::Custom` on either side; see
+///   [`custom_pk_unsupported_reason`] for the typed diagnostic shape)
+///
+/// **Custom PK transitions (djogi#165).** A model declared with a
+/// `djogi::primary_key!` newtype on either side of the diff is rejected
+/// with a dedicated message that names which side carries the custom
+/// kind, the inner SQL types, and the type names. The stock
+/// `pk_flip` family routes (`PkFlipFamily::Heer` / `Ranj`) only know
+/// how to migrate the four built-in asc↔desc pairs — no playbook
+/// exists for arbitrary `Custom → Custom`, `Custom → built-in`, or
+/// `built-in → Custom` shape changes, and quietly emitting a generic
+/// `ALTER COLUMN TYPE` would risk silent data loss when the inner SQL
+/// types differ. See `docs/spec/migrations.md` §10.10a for the v0.1.0
+/// support matrix.
 ///
 /// **PK column rename + supported flip** is recognised as a flip:
 /// the `column_renames` map is applied to `before.primary_key.columns`
@@ -2279,6 +2293,22 @@ fn diff_pk_in_table(
         });
         return;
     }
+    // djogi#165 — route any transition that involves a custom-PK
+    // newtype on either side to its own diagnostic instead of the
+    // generic debug-dump fallback. Rationale in the docstring above
+    // and in `custom_pk_unsupported_reason`.
+    if matches!(&before.primary_key.kind, PkKindSchema::Custom(_))
+        || matches!(&after.primary_key.kind, PkKindSchema::Custom(_))
+    {
+        ops.push(SchemaOperation::Unsupported {
+            reason: custom_pk_unsupported_reason(
+                &after.table,
+                &before.primary_key.kind,
+                &after.primary_key.kind,
+            ),
+        });
+        return;
+    }
     // Anything else in the PK changed — surface as Unsupported so
     // the operator hand-rolls a migration. T9's expand/contract
     // playbook only covers the asc↔desc flips today; other PK
@@ -2292,6 +2322,58 @@ fn diff_pk_in_table(
             after.table, before.primary_key, after.primary_key
         ),
     });
+}
+
+/// Format the v0.1.0 reject diagnostic for a primary-key transition
+/// that involves a `djogi::primary_key!` custom newtype on at least
+/// one side (djogi#165).
+///
+/// The message names the table, classifies the transition into one
+/// of three buckets (`custom-to-custom`, `custom-to-built-in`,
+/// `built-in-to-custom`), surfaces the full `type_name` / `sql_type` /
+/// `default_sql` of the custom side(s) so a same-type but
+/// different-`default_sql` change (e.g. a generator rotation) is
+/// distinguishable from a same-generator type rename, and points
+/// operators at the docs section that explains why `pk_flip.rs` does
+/// not auto-migrate custom shapes in v0.1.0. Kept as a free fn so the
+/// test mod can pin the exact phrasing per bucket.
+fn custom_pk_unsupported_reason(
+    table: &str,
+    before: &PkKindSchema,
+    after: &PkKindSchema,
+) -> String {
+    fn describe(kind: &PkKindSchema) -> String {
+        match kind {
+            PkKindSchema::Custom(c) => format!(
+                "Custom(type_name = `{}`, sql_type = `{}`, default_sql = `{}`)",
+                c.type_name, c.sql_type, c.default_sql,
+            ),
+            other => format!("{other:?}"),
+        }
+    }
+    let before_desc = describe(before);
+    let after_desc = describe(after);
+    let bucket = match (before, after) {
+        (PkKindSchema::Custom(_), PkKindSchema::Custom(_)) => "custom-to-custom",
+        (PkKindSchema::Custom(_), _) => "custom-to-built-in",
+        (_, PkKindSchema::Custom(_)) => "built-in-to-custom",
+        // Defensive: the caller gates on at least one Custom side, but
+        // this fallback keeps the format strictly total without
+        // panicking if a future refactor relaxes the gate.
+        _ => "non-custom",
+    };
+    format!(
+        "table `{table}`: primary key change involves a \
+         `djogi::primary_key!` custom newtype ({bucket}: {before_desc} → \
+         {after_desc}) and is not auto-supported in v0.1.0. The \
+         `pk_flip` family only ships migration playbooks for the four \
+         built-in asc↔desc pairs (HeerId ↔ HeerIdRecencyBiased, \
+         RanjId ↔ RanjIdRecencyBiased); transitions involving a custom \
+         PK newtype must be hand-written so the operator can decide on \
+         the value-preserving cast and the FK cascade strategy. See \
+         `docs/spec/migrations.md` §10.10a for the v0.1.0 support \
+         matrix and rationale."
+    )
 }
 
 fn is_pk_kind_flip(before: &PkKindSchema, after: &PkKindSchema) -> bool {
@@ -2822,6 +2904,201 @@ mod tests {
             delta.classification,
             Classification::Unsupported { .. }
         ));
+    }
+
+    // ── djogi#165 — custom-PK newtype shape flips ─────────────────
+    //
+    // Every transition involving a `djogi::primary_key!`-declared
+    // custom newtype on either side gets the typed reject diagnostic
+    // from `custom_pk_unsupported_reason`. We pin the bucket label
+    // and the type-name surfacing so operators see WHICH custom kind
+    // changed, not a generic `PrimaryKeySchema { ... }` debug dump.
+    //
+    // The four cases below cover the matrix the issue calls out:
+    //   1. same inner SQL type, different Rust newtype name
+    //   2. same Rust newtype name, different inner SQL type
+    //   3. built-in → custom transition
+    //   4. custom → built-in transition
+    //
+    // The tests build descriptors directly via `PkType::Custom(...)`
+    // — the same `CustomPrimaryKeyKind` shape the `primary_key!` macro
+    // emits via inventory at adopter-build time — so we exercise the
+    // exact projection / diff path the runtime takes without needing
+    // the macro fixture to live under `djogi/src/`.
+
+    fn synth_model_with_pk(
+        table: &'static str,
+        type_name: &'static str,
+        pk: PkType,
+    ) -> ModelDescriptor {
+        ModelDescriptor {
+            pk_type: pk,
+            ..synth_model(table, type_name)
+        }
+    }
+
+    /// Build before/after `users` descriptors with `before_pk` and
+    /// `after_pk`, run them through the differ, and return the
+    /// `Classification::Unsupported` reason string. Panics if the
+    /// differ produced any other classification — the four reject
+    /// tests below all assume `Unsupported` is the only correct
+    /// answer for a custom-PK shape change.
+    fn unsupported_pk_reason(before_pk: PkType, after_pk: PkType) -> String {
+        let before = project_one(&synth_model_with_pk("users", "User", before_pk));
+        let after = project_one(&synth_model_with_pk("users", "User", after_pk));
+        let delta = diff_schemas(&before, &after, empty_global());
+        match delta.classification {
+            Classification::Unsupported { reason } => reason,
+            other => panic!("expected Unsupported, got {other:?}"),
+        }
+    }
+
+    const CUSTOM_USER_ID: PkType = PkType::Custom(crate::descriptor::CustomPrimaryKeyKind {
+        type_name: "crate::ids::UserId",
+        sql_type: "BIGINT",
+        default_sql: "user_id_next()",
+    });
+    const CUSTOM_USER_ID_V2: PkType = PkType::Custom(crate::descriptor::CustomPrimaryKeyKind {
+        type_name: "crate::ids::UserIdV2",
+        sql_type: "BIGINT",
+        default_sql: "user_id_next()",
+    });
+    const CUSTOM_USER_ID_UUID: PkType = PkType::Custom(crate::descriptor::CustomPrimaryKeyKind {
+        type_name: "crate::ids::UserId",
+        sql_type: "UUID",
+        default_sql: "gen_random_uuid()",
+    });
+    // Same `type_name` and `sql_type` as `CUSTOM_USER_ID` but a different
+    // `default_sql` — pins the diagnostic surfaces every part of the
+    // `CustomPkKindSchema` identity so operators can see what changed
+    // when the generator function rotates (e.g. shard split, new
+    // sequence cadence).
+    const CUSTOM_USER_ID_NEXT_V2: PkType =
+        PkType::Custom(crate::descriptor::CustomPrimaryKeyKind {
+            type_name: "crate::ids::UserId",
+            sql_type: "BIGINT",
+            default_sql: "user_id_next_v2()",
+        });
+
+    #[test]
+    fn pk_custom_same_inner_type_different_newtype_is_unsupported() {
+        // Same inner SQL type (BIGINT) but the adopter renamed the
+        // Rust newtype from `UserId` to `UserIdV2`. The `type_name`
+        // field of `CustomPrimaryKeyKind` differs, so PartialEq says
+        // "not equal" and the differ rejects with the custom-PK
+        // diagnostic. The reject is intentional even though the
+        // underlying column type is unchanged: a different Rust
+        // newtype implies a different `PrimaryKey` impl, a different
+        // `IntoFilterValue` discriminant, and potentially a different
+        // `bulk_sql` / `default_sql` — the migration engine cannot
+        // tell which fields the adopter changed under the rename.
+        let reason = unsupported_pk_reason(CUSTOM_USER_ID, CUSTOM_USER_ID_V2);
+        assert!(
+            reason.contains("custom-to-custom"),
+            "diagnostic must label the bucket; got: {reason}"
+        );
+        assert!(
+            reason.contains("crate::ids::UserId") && reason.contains("crate::ids::UserIdV2"),
+            "diagnostic must surface both type_names; got: {reason}"
+        );
+        assert!(
+            reason.contains("djogi::primary_key!"),
+            "diagnostic must mention the macro so operators know where to look; got: {reason}"
+        );
+    }
+
+    #[test]
+    fn pk_custom_changed_inner_sql_type_is_unsupported() {
+        // Same `type_name` but the inner SQL type changes from BIGINT
+        // to UUID. This is the dangerous case the issue calls out:
+        // silently emitting an `ALTER COLUMN TYPE` would either fail
+        // outright (no implicit BIGINT→UUID cast) or, worse, succeed
+        // with a USING clause the operator never reviewed and
+        // truncate live row IDs.
+        let reason = unsupported_pk_reason(CUSTOM_USER_ID, CUSTOM_USER_ID_UUID);
+        assert!(
+            reason.contains("custom-to-custom"),
+            "diagnostic must label the bucket; got: {reason}"
+        );
+        assert!(
+            reason.contains("BIGINT") && reason.contains("UUID"),
+            "diagnostic must surface both inner SQL types; got: {reason}"
+        );
+    }
+
+    #[test]
+    fn pk_custom_changed_default_sql_is_unsupported() {
+        // Same `type_name` AND same `sql_type` — only the `default_sql`
+        // changes. `CustomPkKindSchema` derives `PartialEq` over all
+        // three identity fields, so a generator rotation (sequence
+        // bump, shard split, new ID minting service) still fails the
+        // equality check and routes through the custom-PK reject.
+        //
+        // The diagnostic MUST include both `default_sql` strings — without
+        // them the operator would see two identical-looking `Custom(...)`
+        // arms in the surfaced `ComposeError::UnsupportedDelta` and have
+        // no way to tell what the differ actually objected to.
+        let reason = unsupported_pk_reason(CUSTOM_USER_ID, CUSTOM_USER_ID_NEXT_V2);
+        assert!(
+            reason.contains("custom-to-custom"),
+            "diagnostic must label the bucket; got: {reason}"
+        );
+        assert!(
+            reason.contains("user_id_next()") && reason.contains("user_id_next_v2()"),
+            "diagnostic must surface both default_sql generators so the \
+             operator can see what changed; got: {reason}"
+        );
+    }
+
+    #[test]
+    fn pk_builtin_to_custom_is_unsupported() {
+        // Migrating a model from the default HeerId to a custom
+        // newtype lands here. No playbook exists for this transition
+        // — both the column DEFAULT generator (heerid_next() →
+        // user_id_next()) and the FK cascade strategy depend on the
+        // adopter's intent, so we reject and let them hand-write it.
+        let reason = unsupported_pk_reason(PkType::HeerId, CUSTOM_USER_ID);
+        assert!(
+            reason.contains("built-in-to-custom"),
+            "diagnostic must label the bucket; got: {reason}"
+        );
+        assert!(
+            reason.contains("crate::ids::UserId"),
+            "diagnostic must surface the custom side's type_name; got: {reason}"
+        );
+        assert!(
+            reason.contains("HeerId"),
+            "diagnostic must surface the built-in side; got: {reason}"
+        );
+    }
+
+    #[test]
+    fn pk_custom_to_builtin_is_unsupported() {
+        // Reverse direction — a model walks back from a custom
+        // newtype to a built-in. Same reasoning: the value-preserving
+        // cast is adopter-decided, not framework-derivable.
+        let reason = unsupported_pk_reason(CUSTOM_USER_ID, PkType::HeerId);
+        assert!(
+            reason.contains("custom-to-built-in"),
+            "diagnostic must label the bucket; got: {reason}"
+        );
+        assert!(
+            reason.contains("crate::ids::UserId") && reason.contains("HeerId"),
+            "diagnostic must surface both sides; got: {reason}"
+        );
+    }
+
+    #[test]
+    fn pk_custom_unchanged_is_noop() {
+        // Sanity pin — when the custom PK shape is identical on both
+        // sides (same type_name + sql_type + default_sql), the differ
+        // must produce a NoOp. Without this, a stable custom-PK model
+        // would emit a migration on every `compose` run.
+        let m = synth_model_with_pk("users", "User", CUSTOM_USER_ID);
+        let s = project_one(&m);
+        let delta = diff_schemas(&s, &s, empty_global());
+        assert_eq!(delta.classification, Classification::NoOp);
+        assert!(delta.operations.is_empty());
     }
 
     #[test]
