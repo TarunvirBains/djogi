@@ -196,8 +196,10 @@ in source, snapshot already reflects the change) and emits a hard error requirin
 
 ### Pillar 10: First-class repair, baseline, verify, and status commands
 
-`djogi migrations repair`, `djogi migrations baseline`, `djogi migrations
-verify`, and `djogi migrations status` are Phase 7 deliverables, not appendix material.
+the repair, baseline, verify, and status migration flows are Phase 7 engine
+deliverables, not appendix material. `status` is registered in the CLI today;
+repair, baseline, and verify are public library flows with CLI dispatch
+deferred.
 The research finding that motivated this: every system that has been run at production scale
 either built first-class repair/adoption tooling or accumulated painful war stories about
 operators hand-editing the ledger table (T03, C-08 in doc 15).
@@ -209,27 +211,16 @@ operators hand-editing the ledger table (T03, C-08 in doc 15).
 ### 2.1 The CLI Surface — `djogi migrations *`
 
 The existing Phase 7 v2 plan uses Django-inspired command names: `makemigrations`, `migrate`.
-This proposal replaces them with noun-grouped verbs throughout. The canonical CLI surface:
+This proposal replaces them with noun-grouped verbs throughout. The shipped CLI surface is narrower than the full target design:
 
 | Command | What it does |
 |---|---|
 | `djogi migrations compose` | Generate migration SQL files from model descriptors (was `makemigrations`) |
-| `djogi migrations compose --dry-run` | Preview generated SQL without writing files |
 | `djogi migrations compose --allow-destructive` | Allow `unexecutableSteps` operations |
 | `djogi migrations compose --name <slug>` | Override auto-generated migration description |
-| `djogi migrations apply` | Apply pending migrations to the DB (was `migrate`) |
-| `djogi migrations apply --fake <version>` | Stamp a migration as applied without running SQL |
-| `djogi migrations apply --allow-out-of-order` | Allow out-of-order apply in CI/prod |
-| `djogi migrations pull` | Fetch the latest migrations from the submodule remote; auto-runs `status` (new) |
-| `djogi migrations pull --fetch-parent` | Fast-forward the parent repo first, then submodule (opt-in) |
-| `djogi migrations pull --apply` | Chain into `migrations apply` after a successful pull |
-| `djogi migrations pull --force` | Discard local submodule changes / unpushed commits (destructive; warns) |
-| `djogi migrations pull --dry-run` | Fetch and report what would change without updating working tree |
-| `djogi migrations status` | Show pending and applied state (was `migrate show`) |
-| `djogi migrations verify` | Compare snapshot against live DB catalog (new) |
-| `djogi migrations repair` | Reconcile drift, clear failure markers, fix ledger (was `migrate repair`) |
-| `djogi migrations repair --rebuild-snapshot` | Regenerate snapshot from ledger + descriptors |
-| `djogi migrations baseline <version>` | Establish ledger floor on an adopted DB |
+| `djogi migrations status` | Show pending and applied migration state |
+| `djogi migrations attune` | Reconcile migration history state through the shipped attune workflow |
+| Planned target verbs | `apply`, `rollback`, `verify`, `repair`, and `baseline` remain deferred CLI surfaces; use `djogi::migrate` library APIs today |
 | `djogi migrations help [<subcommand>]` | Print help for the group or a specific subcommand |
 | `djogi migrations` (no subcommand) | Equivalent to `help` — prints subcommand list + common workflows |
 
@@ -238,19 +229,17 @@ superseded by `migrations compose`. Every bare `migrate` is superseded by `migra
 The noun-grouped form makes the command surface self-documenting: `djogi migrations <tab>`
 reveals the full surface; no knowledge of which verbs are standalone vs. subcommands is needed.
 
-**Current plan (Phase 7 v2):** `cargo djogi makemigrations`, `cargo djogi migrate`, `cargo djogi
-migrate show`, `cargo djogi migrate repair`, `cargo djogi migrate baseline`, `cargo djogi plan`
+**Current plan (Phase 7 v2):** `djogi makemigrations`, `djogi migrate`, `djogi
+migrate show`, `djogi migrate repair`, `djogi migrate baseline`, `djogi plan`
 (the existing plan uses the cargo-subcommand prefix throughout).
 
 **Change:** The noun-grouped convention replaces all of the above. `djogi plan` is retired;
 its output is absorbed into `migrations status` with structured `HistoryDiagnostic` taxonomy
 (R-25).
 
-**Binary and invocation forms.** Djogi ships two binaries — `djogi` (standalone) and `cargo-djogi`
-(cargo-subcommand wrapper that forwards to `djogi`). `cargo install djogi-cli` installs both.
-Canonical form throughout this proposal is `djogi migrations …`; `cargo djogi migrations …` is an
-equivalent alias for users who prefer the cargo-subcommand discoverability pattern (`cargo --list`
-inventorying). Both forms produce identical output and identical behaviour.
+**Binary and invocation forms.** The shipped `djogi-cli` package declares the standalone
+`djogi` binary. Canonical form throughout this proposal is `djogi migrations ...`; any
+cargo-subcommand wrapper is a future packaging decision, not a current install surface.
 
 **Help and discoverability.** Every subcommand supports `--help` / `-h`. Running `djogi
 migrations` with no subcommand prints help (does not error). `djogi migrations help
@@ -328,7 +317,7 @@ CREATE TABLE IF NOT EXISTS djogi_schema_migrations (
     total_steps           INTEGER,       -- NULL for transactional; statement count otherwise
     partial_apply_note    TEXT,          -- operator note written during repair
 
-    -- Deployment group: HeerId from SELECT generate_id() at run start
+    -- Deployment group: HeerId from SELECT heerid_next() at run start
     run_id                BIGINT        NOT NULL,
 
     -- App label (empty string = global/flat layout)
@@ -380,7 +369,7 @@ The `applied_at` column stores the moment the row was written, for all row types
 `baseline` and `faked`. The `status` column carries semantic meaning; `applied_at` answers
 "when was this row written," not "when did the migration first run in production." (OI-03)
 
-**The `run_id` column:** One call to `SELECT generate_id()` at the start of each
+**The `run_id` column:** One call to `SELECT heerid_next()` at the start of each
 `djogi migrations apply` invocation produces a HeerId stamped into every ledger row
 written during that run. This is Liquibase's `DEPLOYMENT_ID` concept adapted to HeerId — no
 other Rust migration system provides deployment-level grouping. Post-mortems that ask "what
@@ -400,18 +389,19 @@ Three files, three roles:
 
 1. `djogi_models.json` equals `schema_snapshot.json` for all apps → silent.
 2. Mismatch detected, AND `target/djogi_pending/<app>.json` matches `djogi_models.json` for the
-   drifted app → `cargo:warning=djogi: migration pending — run \`djogi migrations apply\``.
+   drifted app → `cargo:warning=djogi: migration pending — apply via djogi::migrate::apply_plan`.
 3. Mismatch detected, AND no matching pending file → `cargo:warning=djogi: schema drift detected
    — run \`djogi migrations compose\``.
 
 **Lifecycle:** `migrations compose` writes `target/djogi_pending/<app>.json` and generates the
-SQL pair. `migrations apply` consumes the pending file (atomic `tmp → fsync → rename` into the
-submodule snapshot, then deletes the pending file) on successful completion. (OI-04)
+SQL pair. The library apply path consumes the pending file (atomic `tmp → fsync → rename` into the
+submodule snapshot, then deletes the pending file) on successful completion; the matching CLI
+dispatcher is deferred. (OI-04)
 
 **Crash recovery:** If the process is killed between ledger COMMIT and snapshot rename, the DB
-is fully applied but the snapshot is stale. `djogi migrations verify` detects the
-discrepancy. `djogi migrations repair --rebuild-snapshot` regenerates from the current
-ledger plus source descriptors. (OI-06)
+is fully applied but the snapshot is stale. `djogi::migrate::verify` detects the
+discrepancy, and the repair helpers regenerate from the current ledger plus
+source descriptors until the deferred verify/repair CLI dispatchers land. (OI-06)
 
 **Snapshot format:** The `schema_snapshot.json` file includes a top-level `format_version: 1`
 field. The runner rejects snapshots with an unknown `format_version`. After a branch merge that
@@ -505,8 +495,8 @@ per R-20).
 ### 2.6 Drift Detection (New — D-Codes)
 
 The drift detection system uses structured diagnostic codes. Codes are emitted from two surfaces:
-`build.rs` (every build, must be terse) and `djogi migrations verify` (explicit invocation,
-can be rich).
+`build.rs` (every build, must be terse) and the library `djogi::migrate::verify`
+entry point (explicit invocation, can be rich; CLI dispatcher deferred).
 
 | Code | Meaning | Fires at |
 |---|---|---|
@@ -525,7 +515,7 @@ can be rich).
 | D025 | `.djogi-migrations-lock` held by another invocation | `pull`, `apply`, `compose`, `repair` (30s timeout) |
 
 Override path at apply time: `--force-apply` (discouraged; writes an `orphan_handled` audit row).
-Standard reconciliation: `djogi migrations verify` → `djogi migrations repair`.
+Standard reconciliation: call `djogi::migrate::verify`, then the relevant `djogi::migrate::repair_*` helper until the deferred verify/repair CLI dispatchers land.
 
 The `build.rs` surface emits plain `cargo:warning=djogi: ...` strings only. No spans, no ANSI
 codes — rustc does not expose rich diagnostic APIs from `build.rs` on stable. Rich colored output
@@ -672,14 +662,14 @@ $ cat migrations/0001_initial_up.sql
 -- Snapshot-Base: (none)
 
 CREATE TABLE vehicles (
-    id           BIGINT NOT NULL PRIMARY KEY DEFAULT generate_id(),
+    id           BIGINT NOT NULL PRIMARY KEY DEFAULT heerid_next_desc(),
     make         TEXT   NOT NULL,
     model_year   INTEGER NOT NULL,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-$ djogi migrations apply
+$ # deferred CLI sketch: djogi migrations apply
 Acquiring advisory lock 4994068948568834898...ok
 Applying 0001_initial...ok (34ms)
 Snapshot updated: migrations/schema_snapshot.json
@@ -715,7 +705,7 @@ $ cat migrations/0002_add_vehicle_horsepower_up.sql
 
 ALTER TABLE vehicles ADD COLUMN horsepower INTEGER NOT NULL DEFAULT 0;
 
-$ djogi migrations apply
+$ # deferred CLI sketch: djogi migrations apply
 Acquiring advisory lock...ok
 run_id: 7823456789012345678
 Applying 0002_add_vehicle_horsepower...ok (12ms)
@@ -776,7 +766,7 @@ $ cat migrations/0004_add_vehicles_make_idx_up.sql
 
 CREATE INDEX CONCURRENTLY vehicles_make_idx ON vehicles (make);
 
-$ djogi migrations apply
+$ # deferred CLI sketch: djogi migrations apply
 Acquiring advisory lock...ok
 run_id: 7823456789012345679
 Applying 0004_add_vehicles_make_idx (non-transactional)...
@@ -793,7 +783,7 @@ The ledger row for this migration has `execution_mode = 'non_transactional'`, `t
 Scenario: a non-transactional migration with two steps; step 2 fails.
 
 ```
-$ djogi migrations apply
+$ # deferred CLI sketch: djogi migrations apply
 Acquiring advisory lock...ok
 run_id: 7823456789012345680
 Applying 0005_add_two_indexes (non-transactional)...
@@ -804,17 +794,17 @@ Applying 0005_add_two_indexes (non-transactional)...
 error[M007]: migration 0005_add_two_indexes failed at step 2/2
   = applied_steps_count: 1
   = help: vehicles_vin_idx was created (step 1 committed)
-  = help: run `djogi migrations repair` to resolve before applying further migrations
+  = help: run the `djogi::migrate::repair_*` library helper until the deferred repair CLI lands to resolve before applying further migrations
 
 Wrote: migrations/.migration_failure.json
 ```
 
 ```
-$ djogi migrations apply
+$ # deferred CLI sketch: djogi migrations apply
 error: migration failure marker present — resolve before applying
-  = help: run `djogi migrations repair`
+  = help: run the `djogi::migrate::repair_*` library helper until the deferred repair CLI lands
 
-$ djogi migrations repair
+$ # deferred CLI sketch: djogi migrations repair
 Found failure: 0005_add_two_indexes at step 2/2
   Step 1 committed: CREATE INDEX CONCURRENTLY vehicles_vin_idx
 
@@ -857,7 +847,7 @@ UPDATE djogi_schema_migrations
     SET app_label = 'fleet'
     WHERE app_label = 'vehicles';
 
-$ djogi migrations apply
+$ # deferred CLI sketch: djogi migrations apply
 Applying fleet/0002_rename_app_from_vehicles...ok
 
 $ # After apply: remove #[app(renamed_from = "vehicles")] from the macro.
@@ -891,7 +881,7 @@ $ cat migrations/orders/0003_move_shipment_from_fleet_up.sql
 
 SELECT 1; -- marker
 
-$ djogi migrations apply
+$ # deferred CLI sketch: djogi migrations apply
 Applying orders/0003_move_shipment_from_fleet...ok (marker migration)
 
 $ # Remove #[model(moved_from_app = "fleet")] after apply.
@@ -914,14 +904,14 @@ Generated:
 
 $ # Do NOT apply — the tables already exist.
 
-$ djogi migrations baseline 0001_initial
+$ # deferred CLI sketch: djogi migrations baseline 0001_initial
 Acquiring advisory lock...ok
 Inserting baseline ledger rows for migrations up to 0001_initial...
   0001_initial: status=baseline, applied_at=2026-04-22T10:00:00Z, applied_by=postgres
 Snapshot set to: 0001_initial
 Advisory lock released.
 
-$ djogi migrations verify
+$ # deferred CLI sketch: djogi migrations verify
 Comparing snapshot against live DB...
   OK: all 4 tables match snapshot
   OK: all 12 columns match snapshot
@@ -929,9 +919,9 @@ Comparing snapshot against live DB...
 Exit 0 — live DB matches snapshot exactly.
 ```
 
-`migrations baseline` uses the same advisory lock as `migrations apply`. It computes the
+The planned baseline flow uses the same advisory lock as the library apply path. It computes the
 checksum of each migration file and inserts ledger rows with `status = 'baseline'`. The snapshot
-is advanced to the baseline version. Future `migrations compose` and `migrations apply` invocations
+is advanced to the baseline version. Future `migrations compose` and library `apply_plan` invocations
 see a clean starting point and generate only truly new migrations. (R-10, OI-03)
 
 ### 3.9 Detecting out-of-band DB tampering
@@ -940,7 +930,7 @@ Scenario: an operator ran `ALTER TABLE vehicles ADD COLUMN legacy_id TEXT` direc
 production DB. No migration was generated or applied.
 
 ```
-$ djogi migrations verify
+$ # deferred CLI sketch: djogi migrations verify
 Comparing snapshot against live DB...
   WARN: live DB has column vehicles.legacy_id — not in snapshot
   OK: all other 11 columns match snapshot
@@ -953,7 +943,7 @@ $ # 2. Drop the column from the DB and re-add it through a proper migration.
 $ # 3. Document the discrepancy and use --force-apply if circumstances require it.
 ```
 
-`djogi migrations verify` is the operational checkpoint that catches out-of-band drift
+`djogi::migrate::verify` is the operational checkpoint that catches out-of-band drift
 without requiring a shadow DB or live introspection at every build. It compares
 `migrations/schema_snapshot.json` against `information_schema` and `pg_catalog`. (R-24)
 
@@ -1110,7 +1100,7 @@ This is a long list, intentionally so. The proposal is additive on top of a stab
 - `migrations/` as a git submodule, pipeline-managed
 - Paired `_up.sql` / `_down.sql` files as the primary review artifact
 - Postgres 18+ exclusively
-- HeerId as the default PK (`BIGINT DEFAULT generate_id()`)
+- HeerIdRecencyBiased as the default PK (`BIGINT DEFAULT heerid_next_desc()`)
 - No regex anywhere in the codebase or documentation
 - Explicit field rename via `#[field(renamed_from = "old_name")]`
 - Explicit table rename via `#[model(renamed_from = "old_table")]`
@@ -1198,7 +1188,7 @@ fully automates zero-downtime DDL. Phase 7.5 is the planned home for the five st
 patterns. v0.1 operators who need `CREATE INDEX CONCURRENTLY` hand-edit the generated SQL and
 add `-- djogi:no-transaction` (five minutes of work).
 
-**P2 — Shadow DB drift detection via `--live` flag (R-29):** `djogi migrations verify`
+**P2 — Shadow DB drift detection via a future `--live` flag (R-29):** `djogi::migrate::verify`
 provides snapshot-vs-live comparison. A full shadow-DB approach (Prisma) requires `CREATE DATABASE`
 permission and a full schema replay per diff. Deferred to v0.2.
 
@@ -1306,7 +1296,6 @@ One row per locked decision. Every claim in the proposal is auditable to a topic
 | `IndexSpec` partial/functional index support | Decision record R-21 | T08 §Partial and functional indexes |
 | `IndexSpec` JSONB `json_path` support | Decision record R-22 | T11 §JSONB and custom types |
 | Runner uses dedicated single connection | Decision record R-23 | T04 §deadpool and advisory lock lifecycle |
-| `djogi migrations verify` added | Decision record R-24 | T11 §Shadow DB alternative |
 | `HistoryDiagnostic` taxonomy | Decision record R-25 | T01 §Adopt: Three history-diagnostic states |
 | `schema_snapshot.json` `format_version` field | Decision record R-26 | T11 §Snapshot merge conflicts |
 | `run_id` is HeerId | Decision record OI-01 | Prisma pattern; HeerId consistency |

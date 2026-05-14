@@ -76,7 +76,7 @@ Logging should be easy to adopt. The intended maintainer workflow is to choose a
 The explicit `crud_delivery` and `event_delivery` keys are escape hatches, not the primary UX. Djogi should document profile-based setup first and treat individual overrides as advanced operations work.
 ---
 
-## 14. CLI — `cargo djogi`
+## 14. CLI — `djogi`
 
 Installed once, used everywhere:
 ```bash
@@ -85,7 +85,6 @@ cargo install djogi-cli
 ```bash
 # Migrations — registered in djogi-cli today (Phase 7 T6 / T7 / T8)
 djogi migrations compose               # generate migration files from current drift
-djogi migrations compose --dry-run     # preview SQL without writing files
 djogi migrations compose --allow-destructive
 djogi migrations status                # show file/ledger/snapshot state
 
@@ -110,9 +109,9 @@ djogi migrations attune --squash --from V<ts> --apply --publish   # squash and p
 # djogi migrations apply                 # apply pending migrations, update snapshot
 # djogi migrations apply --fake 0005     # mark applied without running SQL
 # djogi migrations rollback              # roll back last migration, rewind snapshot
-# djogi migrations verify                # compare snapshot expectations to the live DB
-# djogi migrations repair                # resolve partial apply or rebuild snapshot state
-# djogi migrations baseline 0001_initial # adopt an existing DB without replaying SQL
+# deferred CLI sketch: djogi migrations verify                # compare snapshot expectations to the live DB
+# deferred CLI sketch: djogi migrations repair                # resolve partial apply or rebuild snapshot state
+# deferred CLI sketch: djogi migrations baseline 0001_initial # adopt an existing DB without replaying SQL
 
 # Database (dev only — triple-gated) — registered today (T8)
 djogi db reset                         # drop → recreate → replay; refuses without --yes / interactive y
@@ -124,8 +123,8 @@ djogi db seed --allow-non-localhost    # opt in to remote DBs (CI integration su
 # Documentation — registered today (T8)
 djogi docs                             # render Markdown reference pages from descriptor inventory
 
-# Shell — Phase 8+
-djogi shell
+# Shell — Phase 9 (deferred)
+# djogi shell  # target command is planned for Phase 9; not registered in v0.1.0 CLI
 
 # Project scaffolding — Phase 7+ follow-up
 djogi new my-project                   # scaffold project + init migrations submodule
@@ -158,7 +157,7 @@ the matrix in their `--help` output.
 
 `db seed` uses `--database <name>` to select BOTH the seed directory (`seeds/<name>/`) and the connection target. The CLI splices `<name>` into `database.url`'s path component (via `djogi::migrate::derive_per_database_url`) so seeds always run against the matching DB; a malformed application URL refuses with exit code 1 rather than falling back to the application database. Per-database routing is the linchpin of the three-database architecture (`url` / `crud_log_url` / `event_log_url`) — until config exposes per-DB URL fields directly, the splice gives operators a deterministic route to every cluster database from a single application URL.
 
-`migrations attune` manages local migration-history Git state. It may fetch remote refs when needed to resolve a target, but it does not mutate the database unless `--apply` is explicitly passed. Parent-repo submodule-pointer changes are explicit via `--record` or options that clearly imply recording, such as `--squash`.
+`migrations attune` manages local migration-history Git state. It may fetch remote refs when needed to resolve a target, and `--apply` commits ledger/disk reconciliation changes, but it does not execute migration SQL or apply schema DDL. Parent-repo submodule-pointer changes are explicit via `--record` or options that clearly imply recording, such as `--squash`.
 
 `migrations attune` target contract:
 

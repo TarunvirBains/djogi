@@ -29,14 +29,11 @@ pub trait DjogiAuth: Send + Sync + 'static {
         &'a self,
         ctx: &'a AuthContext,
         action: &'a dyn std::any::Any,
-    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>> {
-        let _ = (ctx, action);
-        Box::pin(async { Ok(()) })
-    }
+    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>>;
 }
 ```
 
-Two methods, one required (`authenticate`) and one defaulted to authenticate-only semantics (`verify`). Both return boxed futures so the trait is **object-safe** — `Arc<dyn DjogiAuth>` works at runtime. The `action: &dyn Any` parameter lets apps pass arbitrary typed `Action` enums without forcing a generic on the trait (which would break object-safety).
+Both methods are required — there is no default body for `verify`. A provider that wants authenticate-only semantics must explicitly return `Ok(())` from `verify`, making the choice visible at the implementation site; the framework refuses to teach fail-open authorization. Every other implementation should fail closed (typically `Err(AuthError::Denied { .. })`) unless an explicit policy authorises the resolved `AuthContext` for the supplied `action`. Both methods return boxed futures so the trait is **object-safe** — `Arc<dyn DjogiAuth>` works at runtime. The `action: &dyn Any` parameter lets apps pass arbitrary typed `Action` enums without forcing a generic on the trait (which would break object-safety); implementations downcast via `action.downcast_ref::<MyAction>()` to recover the concrete type.
 
 ### Implementing a custom provider
 
@@ -46,22 +43,56 @@ use djogi::prelude::*;
 use std::future::Future;
 use std::pin::Pin;
 
+// `raw_query` requires `T: FromPgRow` — tuples don't implement it, so
+// define a small row struct with a hand-written decoder. `FromPgRow`
+// is emitted by `#[model(...)]` for full models; for ad-hoc
+// projections like this, implement it manually following the column
+// order baked into the SELECT.
+struct SessionRow {
+    user_id: HeerId,
+    tenant_id: Option<String>,
+    scopes: Vec<String>,
+}
+
+impl djogi::FromPgRow for SessionRow {
+    const COLUMNS: &'static [&'static str] = &["user_id", "tenant_id", "scopes"];
+    const COLUMN_LIST: &'static str = "user_id, tenant_id, scopes";
+
+    fn from_pg_row(row: &tokio_postgres::Row) -> Result<Self, djogi::DjogiError> {
+        Ok(Self {
+            user_id: row
+                .try_get("user_id")
+                .map_err(|e| djogi::DjogiError::Decode(format!("column `user_id`: {e}")))?,
+            tenant_id: row
+                .try_get("tenant_id")
+                .map_err(|e| djogi::DjogiError::Decode(format!("column `tenant_id`: {e}")))?,
+            scopes: row
+                .try_get("scopes")
+                .map_err(|e| djogi::DjogiError::Decode(format!("column `scopes`: {e}")))?,
+        })
+    }
+}
+
 pub struct MySessionProvider {
-    pool: djogi::DjogiPool,
+    pool: djogi::pg::pool::DjogiPool,
 }
 
 impl DjogiAuth for MySessionProvider {
+    #[djogi::deliberately_bypass_convention_with_raw_sql]
+    // JUSTIFICATION (djogi#234): provider-owned `sessions` table is not modelled
+    // as a djogi `#[model]`; the typed surface does not cover lookup-by-token.
     fn authenticate<'a>(
         &'a self,
         token: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<AuthContext, AuthError>> + Send + 'a>> {
         Box::pin(async move {
             // Look the token up in your sessions table and build AuthContext.
-            // `raw_query` returns Vec<T>; take the first row via `.into_iter().next()`
-            // and map the empty case to AuthError::InvalidToken.
+            // `raw_query::<SessionRow>` returns Vec<SessionRow>; take the first
+            // row via `.into_iter().next()` and map the empty case to
+            // AuthError::InvalidToken.
             let mut ctx = djogi::DjogiContext::from_pool(self.pool.clone());
-            let rows: Vec<(HeerId, Option<String>, Vec<String>)> = ctx
-                .raw_query(
+            let rows: Vec<SessionRow> = ctx
+                .raw_query::<SessionRow>(
                     "SELECT user_id, tenant_id, scopes FROM sessions \
                      WHERE token = $1 AND expires_at > now()",
                     &[&token],
@@ -69,7 +100,7 @@ impl DjogiAuth for MySessionProvider {
                 .await
                 .map_err(|e| AuthError::Provider(Box::new(e)))?;
 
-            let (user_id, tenant_id, scopes) = rows
+            let SessionRow { user_id, tenant_id, scopes } = rows
                 .into_iter()
                 .next()
                 .ok_or(AuthError::InvalidToken)?;
@@ -80,8 +111,39 @@ impl DjogiAuth for MySessionProvider {
             Ok(auth)
         })
     }
+
+    fn verify<'a>(
+        &'a self,
+        ctx: &'a AuthContext,
+        action: &'a dyn std::any::Any,
+    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>> {
+        let _ = (ctx, action);
+        Box::pin(async move {
+            // Fail closed: deny by default. A real provider downcasts
+            // `action` via `action.downcast_ref::<MyAction>()`, evaluates
+            // an explicit policy against the resolved `AuthContext`, and
+            // returns `Ok(())` only when that policy authorises the
+            // caller for the requested action. Returning `Ok(())`
+            // unconditionally is permitted but must be a deliberate,
+            // code-reviewed choice — the trait deliberately has no
+            // default body so the decision is visible at every impl site.
+            Err(AuthError::Denied {
+                reason: "no policy authorises this action".to_string(),
+            })
+        })
+    }
 }
 ```
+
+The `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute is
+mandatory wherever `ctx.raw_*` appears — it brings the sealed
+`djogi::__bypass::RawAccessExt` trait into scope for the decorated item.
+Pair it with an adjacent `// JUSTIFICATION (djogi#<n>): ...` comment that
+names the typed-surface gap the bypass is filling (see
+[Raw SQL escape hatches](../spec/raw-sql-escape-hatches.md)). Modelling
+the sessions table as a `#[model]` and using `Session::objects().filter(...)`
+removes the need for the bypass entirely; the raw form is shown here only
+because adopter-owned schemas frequently predate the model layer.
 
 The `token` parameter is opaque to the trait — implementations decide whether to treat it as a session id, JWT, bearer, cookie value, or anything else. Djogi does not impose a format.
 
@@ -97,7 +159,7 @@ pub struct AuthContext {
 }
 ```
 
-Four fields cover the 95% case. `user_id` is always `HeerId` (Djogi's default PK). `tenant_id` is `Option<String>` — strings rather than `HeerId` because tenant identity formats vary across deployments (UUIDs, slugs, external IDs). `scopes` carries OAuth-style permission strings. `ext` is a free-form string-to-string map for app-specific attributes without forcing trait objects or generics on the struct.
+Four fields cover the 95% case. `user_id` is `HeerId` in the shipped auth substrate; applications whose user model uses Djogi's recency-biased default PK should convert or normalize at the auth boundary until the auth context grows a generic/custom-PK story. `tenant_id` is `Option<String>` — strings rather than `HeerId` because tenant identity formats vary across deployments (UUIDs, slugs, external IDs). `scopes` carries OAuth-style permission strings. `ext` is a free-form string-to-string map for app-specific attributes without forcing trait objects or generics on the struct.
 
 Builders:
 
@@ -277,7 +339,7 @@ A minimal schema that uses every Phase 5.5 primitive:
 
 ```sql
 CREATE TABLE users (
-    id              BIGINT PRIMARY KEY DEFAULT generate_id(),
+    id              BIGINT PRIMARY KEY DEFAULT heerid_next_desc(),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     email           TEXT UNIQUE NOT NULL,

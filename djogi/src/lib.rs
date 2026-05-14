@@ -328,6 +328,38 @@ pub use primary_key::{PrimaryKey, PrimaryKeyClientGen, PrimaryKeyDbGen};
 // in test or feature-enabled builds.
 pub use djogi_macros::djogi_test;
 pub use error::{DbError, DjogiError};
+
+/// Crate-scoped `Result` alias — `Result<T, DjogiError>`.
+///
+/// Every fallible Djogi operation returns a `DjogiError` from a single
+/// public error type, so adopter code can name the success type alone:
+///
+/// ```ignore
+/// use djogi::prelude::*;
+///
+/// async fn publish(ctx: &mut DjogiContext, id: HeerId) -> djogi::Result<Article> {
+///     let mut article = Article::get(ctx, id).await?;
+///     article.published = true;
+///     article.save(ctx).await?;
+///     Ok(article)
+/// }
+/// ```
+///
+/// The alias mirrors the convention exported by `tokio::io::Result`,
+/// `sqlx::Result`, and most other Rust libraries that own a single error
+/// type — adopters expect `djogi::Result<T>` to exist and can write it
+/// without naming `DjogiError` directly. Prefer this alias at API
+/// boundaries; reach for the explicit `Result<T, DjogiError>` form only
+/// when a function returns a non-Djogi error (in which case it should
+/// not be using this alias anyway).
+///
+/// Intentionally **not** re-exported through `djogi::prelude` — including
+/// it would shadow `std::result::Result<T, E>` at every adopter call site
+/// that wrote `Result<T, E>` for a non-djogi error. Spell it
+/// `djogi::Result<T>` at function signatures (same shape as
+/// `tokio::io::Result`, `sqlx::Result`).
+pub type Result<T> = std::result::Result<T, DjogiError>;
+
 pub use expr::{
     AggregateExpr, Case, CaseBuilder, DenseRank, Exists, Expr, OuterRef, QualifyCondition,
     QualifyOp, Rank, RowNumber, Subquery, WindowRanking,
@@ -368,6 +400,75 @@ pub use types::{
 };
 pub use visage::VisageError;
 
+/// The canonical adopter import.
+///
+/// `use djogi::prelude::*;` brings the framework's adopter-facing surface into
+/// scope in a single line: every type a model definition or CRUD call site
+/// needs, every macro the model surface depends on, and the canonical type
+/// re-exports (`HeerId`, `RanjId`, `Date`, `DateTime`).
+///
+/// # Example
+///
+/// ```ignore
+/// use djogi::prelude::*;
+///
+/// #[model(table = "articles")]
+/// pub struct Article {
+///     pub title: String,
+///     pub body: String,
+///     pub published: bool,
+/// }
+///
+/// async fn publish(ctx: &mut DjogiContext, id: HeerId) -> djogi::Result<Article> {
+///     let mut article = Article::get(ctx, id).await?;
+///     article.published = true;
+///     article.save(ctx).await?;
+///     Ok(article)
+/// }
+/// ```
+///
+/// # What is in scope
+///
+/// - **Framework macros** — `#[model]`, `#[djogi_test]`, `apps!`, `primary_key!`,
+///   `#[derive(DjogiEnum)]`, `#[derive(JsonbSchema)]`, plus the serde derives so
+///   adopter-side typed JSONB schemas can `#[derive(Serialize, Deserialize)]`
+///   without an explicit `serde` import line.
+/// - **Core data types** — `Model`, `DjogiContext`, `DjogiError`,
+///   `QuerySet`, `Q<T>`, `FieldRef`, `FilterClause`, `Lookup`, `OrderExpr`,
+///   `ForeignKey<T>`, `OneToOneField<T>`, `ManyToMany<T>`, `Jsonb<T>`,
+///   `Tracked<T>`, the canonical PK newtypes (`HeerId`, `HeerIdDesc`,
+///   `RanjId`, `RanjIdDesc`), and `time` types (`Date`, `DateTime`).
+/// - **Composition primitives** — `Auditable`, `SoftDeletable` (the runtime
+///   trait surfaces; `#[model(auditable)]` / `#[model(soft_deletable)]` emit
+///   the impls).
+/// - **Transaction helpers** — `atomic` (the canonical scope helper) and
+///   `retry_on_conflict` (the lock-conflict / serialization-failure retry
+///   loop).
+/// - **Spatial primitive** — `GeoPoint` is included when the `spatial`
+///   feature is enabled; otherwise it is absent from the prelude.
+///
+/// # What is *not* in scope
+///
+/// - **The crate-scoped `Result<T>` alias.** Adopters spell it
+///   `djogi::Result<T>` at function signatures (the same shape used by
+///   `tokio::io::Result`, `sqlx::Result`, etc.). Pulling it through the
+///   prelude would shadow `std::result::Result<T, E>` at every adopter
+///   call site that uses the two-argument form for a non-djogi error.
+/// - **The raw SQL escape hatches.** `RawAccessExt` / `RawPoolAccessExt`
+///   live on the sealed `djogi::__bypass` module and are reachable only
+///   through the `#[djogi::deliberately_bypass_convention_with_raw_sql]`
+///   attribute — pulling them through the prelude would lose the
+///   "escape hatch is djogi's `unsafe`" framing. See
+///   [`docs/spec/raw-sql-escape-hatches.md`](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
+/// - **Migration substrate.** Items under `djogi::migrate::*` are reached
+///   explicitly when an adopter wraps the migration runner from app code;
+///   the CLI is the canonical surface for routine use.
+/// - **The `__private` macro-emission re-exports.** Macro-emitted code
+///   routes through `::djogi::__private::*` per the path-routing
+///   convention; adopter code never names those paths.
+///
+/// The prelude is the framework's stability commitment for adopter imports —
+/// names land here once they are intended to live for the long haul.
 pub mod prelude {
     #[doc(hidden)]
     pub use crate::apps::AppDiagnostic;
@@ -382,6 +483,12 @@ pub mod prelude {
         RedactionPolicy, RetentionLabel, Sensitivity,
     };
     pub use crate::error::{DbError, DjogiError};
+    // The `djogi::Result<T>` alias is intentionally NOT re-exported through
+    // the prelude. Including it would shadow `std::result::Result<T, E>` at
+    // every adopter call site that wrote `Result<T, E>` for a non-djogi
+    // error, breaking type-resolution for the two-argument form. Adopters
+    // who want the alias spell it `djogi::Result<T>` at function signatures
+    // — the same shape `tokio::io::Result` / `sqlx::Result` use today.
     pub use crate::expr::{
         AggregateExpr, Case, CaseBuilder, DenseRank, Exists, Expr, OuterRef, QualifyCondition,
         QualifyOp, Rank, RowNumber, Subquery, WindowRanking,

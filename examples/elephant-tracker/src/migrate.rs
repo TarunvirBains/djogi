@@ -22,20 +22,19 @@
 //!
 //! `bootstrap::run_phase_zero` takes a `&tokio_postgres::GenericClient`
 //! and runs the install batch in one round-trip.
-//! [`djogi::__bypass::RawPoolAccessExt::raw_with_client`] is the
+//! `RawPoolAccessExt::raw_with_client` is the
 //! documented escape hatch for raw-driver operations — it borrows a
 //! `&mut tokio_postgres::Client` for the closure's duration and
 //! returns the connection to the pool on `Ok` (or detaches on
 //! `Err`/panic to prevent session-state leakage). The inherent
 //! `DjogiPool::with_client` method is `pub(crate)`; example/adopter
 //! code reaches the same behaviour through the sealed
-//! `RawPoolAccessExt` bypass trait, which we bring into scope at the
-//! top of this module. The migrate path uses the same pool the rest
+//! `RawPoolAccessExt` bypass trait, injected by the explicit raw-SQL
+//! bypass attribute. The migrate path uses the same pool the rest
 //! of the example uses — no one-shot connections, no manual
 //! driver-task spawn.
 
 use anyhow::{Context, Result};
-use djogi::__bypass::{RawAccessExt as _, RawPoolAccessExt as _};
 use djogi::{DjogiContext, DjogiError};
 
 /// All DDL the example needs, in dependency order.
@@ -54,6 +53,8 @@ const DROP_ORDER: &[&str] = &[
 ];
 
 /// Run the migration. Idempotent.
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): example migration bootstrap uses raw DDL until descriptor-driven example migrations replace it.
 pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
     tracing::info!("running Phase 0 bootstrap (HeeRanjID + PostGIS + node-id GUC)");
     install_phase_zero(ctx).await?;
@@ -95,6 +96,8 @@ pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
 /// heer.node_id` for every connection going forward; `bootstrap`
 /// adds the database-level `ALTER DATABASE` so freshly-opened pool
 /// connections inherit the GUC even before `post_connect` fires.
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): Phase 0 bootstrap requires direct pool/client access for extension and HeeRanjID installation.
 async fn install_phase_zero(ctx: &mut DjogiContext) -> Result<()> {
     let pool = ctx
         .raw_pool()
@@ -150,6 +153,8 @@ fn parse_database_name(url: &str) -> Option<String> {
 /// The schema mirrors what Djogi's macro-driven differ would emit for
 /// the model declarations in `crate::models`. A real adopter relying
 /// on `djogi migrations compose` does not write this by hand.
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): example migration creates its tables with raw DDL until descriptor-driven example migrations land.
 async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
     // Countries — Serial PK, lookup table.
     ctx.raw_ddl(
@@ -171,7 +176,7 @@ async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
     // sets it up but does not exercise the policy below).
     ctx.raw_ddl(
         "CREATE TABLE researchers (
-            id           BIGINT      PRIMARY KEY DEFAULT generate_id(),
+            id           BIGINT      PRIMARY KEY DEFAULT heerid_next(),
             created_at   TIMESTAMPTZ NOT NULL    DEFAULT now(),
             updated_at   TIMESTAMPTZ NOT NULL    DEFAULT now(),
             org_id       BIGINT      NOT NULL,
@@ -191,7 +196,7 @@ async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
     // Herds — HeerId PK.
     ctx.raw_ddl(
         "CREATE TABLE herds (
-            id                    BIGINT      PRIMARY KEY DEFAULT generate_id(),
+            id                    BIGINT      PRIMARY KEY DEFAULT heerid_next(),
             created_at            TIMESTAMPTZ NOT NULL    DEFAULT now(),
             updated_at            TIMESTAMPTZ NOT NULL    DEFAULT now(),
             name                  TEXT        NOT NULL UNIQUE,
@@ -205,7 +210,7 @@ async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
     // composite uniqueness.
     ctx.raw_ddl(
         "CREATE TABLE herd_ranges (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
+            id          BIGINT      PRIMARY KEY DEFAULT heerid_next(),
             created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
             updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
             herd_id     BIGINT      NOT NULL    REFERENCES herds(id),
@@ -227,7 +232,7 @@ async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
     // query — see the closure-table comment below.
     ctx.raw_ddl(
         "CREATE TABLE elephants (
-            id                    BIGINT      PRIMARY KEY DEFAULT generate_id(),
+            id                    BIGINT      PRIMARY KEY DEFAULT heerid_next(),
             created_at            TIMESTAMPTZ NOT NULL    DEFAULT now(),
             updated_at            TIMESTAMPTZ NOT NULL    DEFAULT now(),
             name                  TEXT        NOT NULL,
@@ -254,7 +259,7 @@ async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
     // upsert idempotency.
     ctx.raw_ddl(
         "CREATE TABLE elephant_ancestries (
-            id           BIGINT      PRIMARY KEY DEFAULT generate_id(),
+            id           BIGINT      PRIMARY KEY DEFAULT heerid_next(),
             created_at   TIMESTAMPTZ NOT NULL    DEFAULT now(),
             updated_at   TIMESTAMPTZ NOT NULL    DEFAULT now(),
             elephant_id  BIGINT      NOT NULL    REFERENCES elephants(id) ON DELETE CASCADE,
@@ -272,7 +277,7 @@ async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
     // Sightings — spatial point + FTS notes + outbox.
     ctx.raw_ddl(
         "CREATE TABLE sightings (
-            id              BIGINT      PRIMARY KEY DEFAULT generate_id(),
+            id              BIGINT      PRIMARY KEY DEFAULT heerid_next(),
             created_at      TIMESTAMPTZ NOT NULL    DEFAULT now(),
             updated_at      TIMESTAMPTZ NOT NULL    DEFAULT now(),
             elephant_id     BIGINT      NOT NULL    REFERENCES elephants(id),
@@ -294,7 +299,7 @@ async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
     // Outbox companion for sightings (the `events` flag).
     ctx.raw_ddl(
         "CREATE TABLE sightings_outbox (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
+            id          BIGINT      PRIMARY KEY DEFAULT heerid_next(),
             row_id      BIGINT      NOT NULL,
             action      TEXT        NOT NULL,
             payload     JSONB       NOT NULL,

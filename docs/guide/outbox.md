@@ -42,7 +42,7 @@ The projected shape is:
 
 ```sql
 CREATE TABLE notifications_outbox (
-    id            BIGINT PRIMARY KEY DEFAULT heerid_next(),
+    id            BIGINT PRIMARY KEY DEFAULT heerid_next_desc(),
     row_id        BIGINT NOT NULL,    -- matches the source table PK type
     action        TEXT NOT NULL
                   CHECK (action IN ('create', 'save', 'delete')),

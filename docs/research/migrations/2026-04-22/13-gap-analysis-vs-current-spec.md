@@ -82,7 +82,7 @@ design choice in `docs/spec/migrations.md` and assigns a status.
 
 ### I-1 · Default PK type is HeerId (BIGINT)
 
-**Decision (SPEC-D):** "Default PK type — HeerId — `BIGINT DEFAULT generate_id()`, database-native,
+**Decision (SPEC-D):** "Default PK type — HeerId — `BIGINT DEFAULT heerid_next()`, database-native,
 time-ordered"
 
 **Status: Validated**

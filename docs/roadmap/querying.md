@@ -515,7 +515,7 @@ Like `djogi::raw::query()` but bypasses Djogi's safety checks (no tenant isolati
 
 ## Shell Queries
 
-In the Djogi shell (`cargo djogi shell`), all terminal methods are synchronous — no `.await`, no async ceremony. The shell holds a dedicated `tokio` runtime and wraps every call in `block_on` internally. The API is identical to application code, minus `.await?`:
+In the Djogi shell (`djogi shell`), all terminal methods are synchronous — no `.await`, no async ceremony. The shell holds a dedicated `tokio` runtime and wraps every call in `block_on` internally. The API is identical to application code, minus `.await?`:
 
 ```rhai
 // Shell — identical API, no await

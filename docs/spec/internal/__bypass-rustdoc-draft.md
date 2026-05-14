@@ -5,7 +5,9 @@ Raw SQL escape hatches for deliberate framework bypasses.
 This module is public but hidden from generated documentation. It exists for
 code that must consciously step outside djogi's typed surface: pin tests,
 framework-internal substrate code, sibling workspace crates, and adopter code
-with a documented typed-surface gap.
+with a documented typed-surface gap. Public callers should normally reach it
+through `#[djogi::deliberately_bypass_convention_with_raw_sql]`, not by writing
+the hidden imports directly.
 
 Raw SQL in djogi is treated culturally the way `unsafe` is in Rust. It is not
 banned, but it must be visible in review. Ordinary code should prefer
@@ -41,15 +43,9 @@ use crate::__bypass::RawAccessExt as DjogiRawAccessExt;
 use crate::__bypass::RawPoolAccessExt as DjogiRawPoolAccessExt;
 ```
 
-Sibling workspace crates and deliberate adopter opt-outs may import the public
-hidden path:
-
-```rust
-use djogi::__bypass::{
-    RawAccessExt as DjogiRawAccessExt,
-    RawPoolAccessExt as DjogiRawPoolAccessExt,
-};
-```
+Sibling workspace crates and deliberate adopter opt-outs use the public bypass
+attribute plus a justification comment; the attribute injects the hidden public
+path inside the decorated item.
 
 Every reach for raw SQL should remain auditable. If a call exists because the
 typed surface cannot express a production-useful SQL shape, track that gap in

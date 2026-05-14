@@ -94,8 +94,8 @@ Specifically:
   for indexed shared-ancestor lookup per candidate pair. We kept
   the raw recursive-CTE form in the `lineage` demo for matrilineal
   descent because that path is naturally single-edge and the
-  inline SQL is the right level of explicitness for the herd-
-  society narrative.
+  inline SQL is currently a documented raw-SQL escape hatch; it is not yet
+  the baseline, and it should stay gated by the Phase 8.5 raw-SQL debt policy.
 - We chose visages with a side-query trait (rather than embedding
   `herd_size` in `HerdRange`) because that's the realistic shape:
   aggregates that are too expensive to denormalize into rows but cheap
@@ -135,9 +135,10 @@ cargo run -p elephant-tracker -- demo lineage --matriarch Wema
 cargo run -p elephant-tracker -- demo lineage --matriarch Wema --format mermaid
 cargo run -p elephant-tracker -- demo lineage --matriarch Wema --format markdown
 
-# Typed-builder mode — pass --typed to switch from raw recursive-CTE
-# SQL to `Elephant::objects().tree_descendants(ElephantRelated::mother(),
-# id)`. Compose --order=bfs|dfs to exercise SEARCH BREADTH/DEPTH FIRST.
+# Preferred typed-builder lineage mode. The CLI still exposes the
+# legacy raw recursive-CTE path above as Phase 8.5 debt; use --typed
+# to exercise `Elephant::objects().tree_descendants(...)` and compose
+# --order=bfs|dfs for SEARCH BREADTH/DEPTH FIRST.
 cargo run -p elephant-tracker -- demo lineage --matriarch Wema --typed
 cargo run -p elephant-tracker -- demo lineage --matriarch Wema --typed --order bfs --format mermaid
 cargo run -p elephant-tracker -- demo lineage --matriarch Wema --typed --order dfs --format markdown
@@ -166,7 +167,9 @@ This example is part of pre-v0.1.0 publish prep. The model definitions
 target Djogi `0.1.0`. The example pre-dates the Phase 7 migration
 runner integration that adopters will eventually use; the `migrate`
 subcommand applies hand-written DDL via `ctx.raw_ddl` and
-`ctx.raw_execute` rather than the descriptor-driven differ.
+`ctx.raw_execute` rather than the descriptor-driven differ. This is
+documented as current-state raw-SQL bypass debt and not a claim that
+the typed escape surface is complete.
 
 ## Layout
 
@@ -199,5 +202,5 @@ elephant-tracker/
         ├── cross_border_herds.rs  # M2M traversal + season filter
         ├── lineage.rs             # recursive-CTE escape hatch
         ├── herd_summaries.rs      # visage + side-query trait
-        └── mating_pairs.rs        # Wright kinship + window-fn ranking (raw SQL)
+        └── mating_pairs.rs        # Wright kinship + window-fn ranking (raw SQL override path; typed path is the preferred end state)
 ```

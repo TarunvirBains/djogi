@@ -128,10 +128,11 @@ Every workstream should review new public API against the idiomatic-Rust guardra
 
 ### 1d: Raw SQL Escape Hatch
 
-- [ ] `djogi::raw::query_as::<T>(pool, sql, params)` → execute raw SQL, return typed model
-- [ ] `djogi::raw::query_scalar::<T>(pool, sql, params)` → return scalar value
-- [ ] `djogi::raw::execute(pool, sql, params)` → execute without return
-- [ ] All raw methods accept both `&PgPool` and `&mut Transaction` (generic over connection)
+- [x] Raw SQL escape hatch shipped — see `djogi::__bypass::RawAccessExt` (`raw_query`, `raw_scalar`, `raw_execute`, plus `raw_rows` / `raw_fetch_one` / `raw_ddl` / `raw_stream` / `raw_stream_with_fetch_size`) and `djogi::__bypass::RawPoolAccessExt` (`raw_pool` / `raw_conn` / `raw_with_client`). All require the `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute and `// JUSTIFICATION ...` comment at the call site; see [`docs/spec/raw-sql-escape-hatches.md`](raw-sql-escape-hatches.md) for the full contract. The pre-1.0 Phase 1d sketch listed three task names under a `djogi::raw` namespace that was never used — `RawAccessExt` is the shipped surface, with the names superseded as follows:
+- [x] Typed-row raw read shipped as `RawAccessExt::raw_query<T>` (called `ctx.raw_query::<T>(sql, params).await`).
+- [x] Scalar raw read shipped as `RawAccessExt::raw_scalar<T>`.
+- [x] Side-effecting raw write shipped as `RawAccessExt::raw_execute`.
+- [x] Raw methods route through `&mut DjogiContext` (which pattern-matches on pool-vs-transaction), so a single call site works for either backing — see `RawAccessExt` impls in `djogi/src/__bypass.rs`.
 
 ### 1e: Connection Generics
 
@@ -254,9 +255,9 @@ Phase 4 is the main query/write power inflection point. It is where Djogi stops 
 
 ### 4a: Transaction API
 
-- [ ] `djogi::transaction::atomic(pool, |txn| async { ... })` — closure-based, returns `Result`
-- [ ] Manual: `let txn = pool.begin().await?; ... txn.commit().await?;`
-- [ ] Savepoint support within transactions
+- [x] `djogi::transaction::atomic(scope, |ctx| Box::pin(async move { ... }))` — closure-based, returns `Result<R, DjogiError>`. The closure receives `&mut DjogiContext` and returns `AtomicFuture<'_, R>` (= `Pin<Box<dyn Future<…>>>`). Implemented at `djogi/src/transaction.rs::atomic`; `IntoAtomicScope` is impl'd for both `&DjogiPool` and `&mut DjogiContext`. The pre-1.0 4a sketch listed a bare `async { ... }` shape; the real signature requires the boxed future.
+- [x] Manual transaction driving — the framework path is `DjogiContext::from_pool(pool)` plus `atomic(...)`. Adopters who truly need to manually drive a transaction without `atomic` reach for `__bypass` per the raw-SQL escape-hatch contract.
+- [x] Savepoint support within transactions — nested `atomic(...)` calls push savepoints (`djogi/src/transaction.rs`).
 - [ ] `on_commit(pool, || { ... })` — callbacks that fire only after outermost commit
 - [ ] Savepoint-aware callback tracking (rollback discards inner callbacks)
 - [ ] `select_for_update()` on QuerySet → `FOR UPDATE` (with `nowait`, `skip_locked`)
@@ -518,15 +519,15 @@ Filenames are `V<YYYYMMDDHHMMSS>__<slug>.sql` plus `.down.sql`. Every Phase 7 pa
 ### 7d: CLI
 
 - [x] `djogi migrations compose` — compose pending up/down SQL pairs from descriptor drift
-- [x] `djogi migrations apply` — apply pending migrations for one database target, update snapshot
-- [x] `djogi migrations rollback` — roll back the last applied migration for one target
+- [ ] `djogi migrations apply` — deferred CLI dispatcher for applying pending migrations; library callers use `djogi::migrate::apply_plan`
+- [ ] `djogi migrations rollback` — deferred CLI dispatcher for rolling back the last applied migration for one target
 - [x] `djogi migrations status` — show file / snapshot / ledger / live-DB state for one target
-- [x] `djogi migrations verify` — verify snapshot, history, and live DB alignment for one target
-- [x] `djogi migrations repair` — repair failed or partially applied target-local migration state
-- [x] `djogi migrations baseline` — mark an existing schema as adopted without replay
+- [ ] `djogi migrations verify` — deferred CLI dispatcher for snapshot, history, and live-DB verification
+- [ ] `djogi migrations repair` — deferred CLI dispatcher for repairing failed or partially applied target-local migration state
+- [ ] `djogi migrations baseline` — deferred CLI dispatcher for marking an existing schema as adopted without replay
 - [x] `djogi migrations attune` — `--record` / `--squash --from <ver>` with `--publish`; localhost + dev-profile gates on squash
-- [x] `djogi migrations apply --fake` — mark applied without running (T5 path)
-- [x] `djogi db reset` — drop + recreate + migrate (triple-gated: localhost + non-production profile + explicit `--yes`)
+- [ ] `djogi migrations apply --fake` — deferred CLI dispatcher for marking a migration applied without running it
+- [ ] `djogi db reset` — deferred convenience wrapper around drop + recreate + migration apply (triple-gated: localhost + non-production profile + explicit `--yes`)
 - [x] `djogi db seed` — run `seeds/<database>/*.sql` files; `djogi_seed_runs` ledger; checksum-drift refusal; `--allow-non-localhost` opt-in
 - [x] `djogi docs` — render Markdown reference pages from `inventory::iter::<ModelDescriptor>()` to `target/djogi-docs/<app>/<Model>.md`
 
@@ -540,7 +541,7 @@ Phase 7's migration CLI is explicitly target-scoped. App, CRUD-log, and event-lo
 ### 7f: Online / Zero-Downtime Migration Patterns
 
 - [x] Phased migration execution model: the migration runner splits each generated migration into ordered step groups tagged transactional vs non-transactional. Transactional groups run inside `BEGIN/COMMIT`; non-transactional steps — `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, certain `CREATE EXTENSION` cases, some `ALTER TYPE ADD VALUE` operations — run outside any transaction. `atomic()` is available only around transactional steps; attempting to wrap a non-transactional step in `atomic()` produces a clear error ("this step cannot run inside a transaction — see Phase 7f phased-migration model") rather than a silent SQLSTATE from Postgres
-- [x] Advisory-lock-based single-active-migration coordination (no two `djogi migrations apply` invocations apply concurrently against the same database target)
+- [x] Advisory-lock-based single-active-migration coordination (no two library apply sessions run concurrently against the same database target)
 - [ ] Lock-timeout on DDL statements so blocked migrations back off rather than queue behind long transactions (`SET lock_timeout = '5s'` around each DDL) — folded into Phase 7.5's online-safety classification work
 - [ ] Two-phase column rename: emit `ADD COLUMN new_name` + backfill from `old_name` + runtime reads both + drop `old_name` in a follow-up migration. Driven by `#[field(renamed_from = "old_name")]` + an opt-in `#[field(rename_strategy = "two_phase")]` — Phase 7.5 (`ExpandContract` classification)
 - [ ] Two-phase type widening: add new-type column, backfill, cut over, drop old (analogous pattern)
@@ -554,11 +555,11 @@ Phase 7's migration CLI is explicitly target-scoped. App, CRUD-log, and event-lo
 
 ---
 
-## Phase 7.5: Live Migrations + Protected Data Metadata & Field Codecs *(shipped)*
+## Phase 7.5: Live-Migration Substrate + Protected Data Metadata & Field Codecs *(substrate shipped; operator runner deferred)*
 
-**Goal:** Add descriptor-level protected-field semantics and storage transforms; add the live-migration substrate that classifies schema operations by online-safety and orchestrates safe rollouts.
+**Goal:** Add descriptor-level protected-field semantics and storage transforms; add the live-migration substrate that classifies schema operations by online-safety and prepares safe rollout plans. Full operator-driven live execution (`djogi live run/resume/finalize`, status, abandon, daemon resume) is documented but deferred in v0.1.0.
 
-Phase 7.5 expanded beyond the original protected-data scope to absorb the live-migration safety classifier (per the v3 plan). The shipped scope:
+Phase 7.5 expanded beyond the original protected-data scope to absorb the live-migration safety classifier (per the v3 plan). The shipped scope is the classifier/planning/protected-field substrate:
 
 **Protected-data side (original scope):**
 
@@ -576,9 +577,12 @@ Phase 7.5 expanded beyond the original protected-data scope to absorb the live-m
       `FastLockDestructiveGuarded` / `ExpandContract` /
       `OfflineOnly`, `#[non_exhaustive]`)
 - [x] `pg_volatility` introspection module
-- [x] Backfill engine, chunk-loop SQL pattern, plan resume,
-      daemon-mode runner
-- [x] `djogi live` CLI commands; `db cleanup-test-dbs`
+- [x] Backfill engine and chunk-loop SQL pattern substrate
+- [ ] `djogi live` plan resume and daemon-mode runner
+      (documented/stubbed; operator runner deferred)
+- [ ] `djogi live` CLI command bodies
+      (show/status/run/resume/finalize/abandon documented/stubbed; not shipped)
+- [x] `db cleanup-test-dbs`
 - [x] EXCLUSION + stored-generated descriptor extension
       (`ExclusionConstraintSpec`, `GeneratedColumnSpec`,
       `ColumnSchema.generated`, `TableSchema.exclusion_constraints`,
@@ -595,7 +599,7 @@ Phase 7.5 expanded beyond the original protected-data scope to absorb the live-m
 
 - T13 (catalog drift detection / runtime-vs-spec divergence audit) — pushed to Phase 8 or a dedicated bug-fix sprint
 
-**Deliverable:** Djogi can classify every schema operation by online-safety, orchestrate safe live-migration rollouts (plan/backfill/resume/daemon), and express protected-field intent once and apply it consistently across generated surfaces.
+**Deliverable:** Djogi can classify schema operations by online-safety, emit the core live-migration plan/backfill substrate, and express protected-field intent once across generated surfaces. Operator orchestration via `djogi live` remains a deferred CLI surface.
 
 ---
 
@@ -803,7 +807,7 @@ The dylib coupling is gated on a research spike that validates (a) `cargo rustc 
 
 ### 9a: Shell (Rhai REPL)
 
-- [ ] `cargo djogi shell` — launches REPL with all models loaded
+- [ ] `djogi shell` — launches REPL with all models loaded
 - [ ] **Shell binary dlopens `libdjogi.so` at startup** (gated on 9-Zero spike outcome — `NO_GO` falls back to static linking for v0)
 - [ ] Synchronous API via `block_on()` — no `.await` in shell
 - [ ] **Parse-vs-eval split:** every submitted line goes through `Engine::compile` first; parse errors print a one-liner with caret positioning and skip `eval_ast` entirely. Only on parse success does the shell dispatch the AST. Removes the wait-then-fail loop on typos that today would round-trip the database before failing
@@ -813,11 +817,11 @@ The dylib coupling is gated on a research spike that validates (a) `cargo rustc 
 - [ ] `pp(value)`, `sql("...")`, `begin()`, `commit()`, `rollback()`, `savepoint()`
 - [ ] Error handling: one-liner + full traceback to `.djogi_shell_errors/`
 - [ ] `.export` / `.import` / `.bookmark` for session scripts
-- [ ] `cargo djogi shell --run script.rhai` for headless execution
+- [ ] `djogi shell --run script.rhai` for headless execution
 - [ ] **djqry authoring loop** — the shell is the primary surface for iterating on `djqry` overrides (§9c). Workflow: *test → optimize → compile → deploy*. Shell commands:
   - `djqry.export(<last_query>, "<name>")` — writes `djqry/<name>.sql` with frontmatter pre-populated from the last executed macro-query: `@name` set, `@on` inferred from the query's target models, `@replaces` captured verbatim, `@signature` computed, `@returns` inferred from the QuerySet's declared return type, `@binds` inferred from the filter closures, and the macro-generated SQL placed in the body as the starting point the author can optimize against
   - `djqry.import("<name>")` — loads an existing `djqry/<name>.sql`, parses its frontmatter + SQL, binds the override into the shell session as a callable, and runs it alongside the macro-query form for side-by-side comparison (row count, first-row diff, timing)
-  - `djqry.diff("<name>")` — runs macro-query and override both, reports result-set diff + `EXPLAIN` cost comparison + timing. Acts as the local on-demand analog of CI's `cargo djogi djqry verify`
+  - `djqry.diff("<name>")` — runs macro-query and override both, reports result-set diff + `EXPLAIN` cost comparison + timing. Acts as the local on-demand analog of CI's `djogi djqry verify`
   - `djqry.sign("<name>")` — re-computes the fingerprint from the current `@replaces` and updates `@signature`, asserting the author has re-verified. Prompts for confirmation before overwriting
 - [ ] **`rhai-dylib` audit** (gates §9a-Plugins below): 30-minute audit of `rhai-dylib` (https://crates.io/crates/rhai-dylib) covering symbol-visibility requirements, `pub extern "Rust"` annotations, Rhai-version compatibility, dylib-loader compatibility (likely `libloading`), and maintenance status. Audit outcome documented in the 9-Zero spike artifact alongside contingency selection. Audit failure scopes Phase 9 to source-form Rhai modules only; precompiled `.so` plugins defer until an alternative crate or upstream fix lands
 
@@ -835,7 +839,7 @@ The analyzer ships as two tiers with different fidelity guarantees. Tier 1 is ma
 
 **Data sources.** Call-site discovery comes from source AST via `syn`. Model metadata (FK topology, visage maps, field descriptors) comes from `target/djogi_models.json`, which is emitted by the existing `#[model]` + `build.rs` pipeline during a normal `cargo build`. The analyzer requires a successful build to run — the metadata file is the FK graph's authoritative source, not a guess inferred from AST.
 
-- [ ] `cargo djogi analyze query` — walks every crate in the workspace, parses `.rs` files with `syn`, finds every QuerySet terminal (`.fetch_all`, `.fetch_one`, `.first`, `.exists`, `.count`, `.delete`, `.update`, `.stream`) and every `raw_query` / `execute_raw` call site
+- [ ] `djogi analyze query` — walks every crate in the workspace, parses `.rs` files with `syn`, finds every QuerySet terminal (`.fetch_all`, `.fetch_one`, `.first`, `.exists`, `.count`, `.delete`, `.update`, `.stream`) and every `raw_query` / `execute_raw` call site
 
 **Tier 1 — mainline, high-signal, low-false-positive (syn + metadata file, no type resolution needed):**
 
@@ -863,13 +867,13 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 - [ ] Build-time generation: a new stage in the existing `build.rs` pipeline (alongside `target/djogi_models.json` emission) parses every `.sql` file, validates frontmatter against descriptor metadata, and emits a generated `{Model}Djqry` zero-sized type per owner with one associated async function per override. Call site reads `VehicleDjqry::expired_registrations(&mut ctx).await?` — parallel to Phase 2's `{Model}Filter` and Phase 3's `{Model}Related` generated types, which is the established convention for per-model namespaced helpers. The `Djqry` suffix is distinctive, grep-able, and zero collision risk. For `@on: _global` overrides the parallel type is `GlobalDjqry`: `GlobalDjqry::fleet_stats(&mut ctx).await?`
 - [ ] Multi-owner: when `@on:` lists several owners, delegating methods are generated on each. All delegates resolve to the same compiled SQL; the graph-aware Tier 2 of §9b uses the `@on:` list to reason about which node-visits the override covers
 - [ ] Drift detection — mandatory: the build pipeline re-computes the AST-shape fingerprint of `@replaces` (structure plus types plus FK topology from `target/djogi_models.json`, not filter literals) and fails the build when it diverges from the stored `@signature`. Failure message names the model graph before and after, asks the author to re-verify, and suggests a new signature value to copy
-- [ ] Drift detection — opt-in: `cargo djogi djqry verify <name>` runs the macro-query and the override against a live database, diffs result sets, reports. CI gates on this; local builds skip it for speed. Local devs may run it on-demand when bumping a signature
+- [ ] Drift detection — opt-in: `djogi djqry verify <name>` runs the macro-query and the override against a live database, diffs result sets, reports. CI gates on this; local builds skip it for speed. Local devs may run it on-demand when bumping a signature
 - [ ] Runtime dispatch: each generated method routes through `ctx.raw_query::<T>(...)` (Phase 5 substrate) and decodes via `FromPgRow`. An override-firing tracing event names the override so Phase 11b / 11e observability surfaces highlight hand-tuned queries distinctly from macro-generated ones
 - [ ] Error modes flagged at build time: missing required frontmatter field, unknown `@on` owner, `@returns` type missing `FromPgRow`, `@binds` arity mismatch with `$N` placeholder count in SQL, reserved-name collision with framework-generated methods, `@signature` mismatch
 - [ ] Scope limits: v1 is read-only (SELECT-shaped overrides). `UPDATE` / `DELETE` / `INSERT` overrides deferred until a concrete use case surfaces — raw `ctx.execute_raw` remains available in the interim
 - [ ] Authoring loop lives in the shell (§9a): `djqry.export`, `djqry.import`, `djqry.diff`, `djqry.sign` close the *test → optimize → compile → deploy* cycle inside the REPL. Authoring a new override never requires leaving the shell to hand-craft frontmatter — `export` captures the canonical macro-query, infers `@returns` / `@binds` from the QuerySet's declared types, computes the initial `@signature`, and seeds the SQL body with the macro-generated query as the baseline for optimization
 
-**Deliverable:** Working shell, `cargo djogi analyze query` lint pass, and `djqry` SQL override registry surfaced as typed model methods with a shell-native authoring loop. (Admin console — Maahi — is Phase 10.)
+**Deliverable:** Working shell, `djogi analyze query` lint pass, and `djqry` SQL override registry surfaced as typed model methods with a shell-native authoring loop. (Admin console — Maahi — is Phase 10.)
 
 ---
 
@@ -897,7 +901,7 @@ The full design is in [`docs/spec/maahi/`](./maahi/index.md). Maahi ships as the
 
 - [ ] `djogi-maahi` workspace crate scaffolded; `djogi`'s `admin` feature pulls it in as optional dep; `djogi::maahi::*` re-exports
 - [ ] `_admin_users` / `_admin_sessions` / `_admin_roles` / `_admin_role_visage_perms` / `_admin_role_model_perms` / `_admin_pending_actions` schemas in the audit DB (per `docs/spec/maahi/architecture.md`, `rbac.md`, `operations.md`); explicit `ON DELETE RESTRICT` on `_admin_users.role_id` and `_admin_roles.parent_role_id`; `ON DELETE CASCADE` on the two `_admin_role_*_perms` tables; `_admin_sessions.token_hash` is HMAC-SHA256 keyed by `session_secret_env` (UNIQUE INDEX); `_admin_pending_actions` ships with partial-unresolved + `expires_at` indexes
-- [ ] `cargo djogi admin set-password --superuser <email>` bootstrap CLI; `reset-password`, `build`, `info` companions
+- [ ] `djogi admin set-password --superuser <email>` bootstrap CLI; `reset-password`, `build`, `info` companions
 
 ### 10b: Permission Model + Feasibility Analysis
 
@@ -924,7 +928,7 @@ The full design is in [`docs/spec/maahi/`](./maahi/index.md). Maahi ships as the
 
 - [ ] Dioxus full-stack components: list view, ModelForm, M2M inline, JSONB nested editor, `AdminClean` validation hook
 - [ ] Role-config UI: hierarchical app → model → visage view/edit checkbox grid, per-model action overrides, system-permission toggles, `Preview Effects` action that walks every model the role can see and shows the resolved field set + action bits
-- [ ] `cargo djogi admin build` WASM bundle pipeline (`dx bundle` integration)
+- [ ] `djogi admin build` WASM bundle pipeline (`dx bundle` integration)
 - [ ] CSRF triple stack (SameSite=Strict + `X-Maahi-CSRF` custom header + Origin/Referer check)
 - [ ] Session rotation on login / password change / role change / tenant switch
 - [ ] Server-side write enforcement that rejects out-of-editable-set fields explicitly (not silent filter)
@@ -1052,32 +1056,32 @@ Full deferral list at [`docs/spec/maahi/phase-map.md`](./maahi/phase-map.md).
 
 ### 11.5a: Scheduled Backups
 
-- [ ] `cargo djogi ops backup setup --daily [--weekly] [--retention 14d]` — generates a platform-appropriate scheduler config (cron fragment, systemd timer unit, or launchd plist) + a backup script that wraps `pg_dump --format=custom` with sane defaults (parallelism, compression)
-- [ ] `cargo djogi ops backup now` — one-shot manual backup
-- [ ] `cargo djogi ops backup verify <file>` — runs `pg_restore --list` to confirm the archive is restorable
+- [ ] `djogi ops backup setup --daily [--weekly] [--retention 14d]` — generates a platform-appropriate scheduler config (cron fragment, systemd timer unit, or launchd plist) + a backup script that wraps `pg_dump --format=custom` with sane defaults (parallelism, compression)
+- [ ] `djogi ops backup now` — one-shot manual backup
+- [ ] `djogi ops backup verify <file>` — runs `pg_restore --list` to confirm the archive is restorable
 - [ ] Storage targets: local path, S3-compatible (via env-var-configured endpoint + credentials), optional `rclone` passthrough
 - [ ] Retention policy enforcement (prune backups older than configured retention)
 
 ### 11.5b: Point-In-Time Recovery (opt-in)
 
-- [ ] `cargo djogi ops pitr setup` — configures WAL archiving to a specified target, generates `restore.conf` template
-- [ ] `cargo djogi ops pitr restore --target-time '...'` — restore drill runbook that produces a new database at a specific wall-clock time
+- [ ] `djogi ops pitr setup` — configures WAL archiving to a specified target, generates `restore.conf` template
+- [ ] `djogi ops pitr restore --target-time '...'` — restore drill runbook that produces a new database at a specific wall-clock time
 
 ### 11.5c: Vacuum / Maintenance Scheduling
 
 - [ ] Per-model autovacuum tuning: `#[model(autovacuum = VacuumPolicy::HighChurn)]` emits per-table `ALTER TABLE ... SET (autovacuum_vacuum_scale_factor = ..., ...)` as DDL routed through Phase 7's migration generation pipeline. Phase 11.5 provides the policy vocabulary + CLI/ops surface; Phase 7 owns the DDL emission and phased execution
-- [ ] `cargo djogi ops vacuum --table <name> [--analyze] [--full]` — on-demand vacuum/analyze
-- [ ] `cargo djogi ops vacuum setup --weekly` — scheduled `VACUUM ANALYZE` across the schema, respecting autovacuum settings
+- [ ] `djogi ops vacuum --table <name> [--analyze] [--full]` — on-demand vacuum/analyze
+- [ ] `djogi ops vacuum setup --weekly` — scheduled `VACUUM ANALYZE` across the schema, respecting autovacuum settings
 
 ### 11.5d: Health Checks
 
-- [ ] `cargo djogi ops doctor` — checks pool utilization, long-running transactions (> N seconds), table bloat estimates, index bloat, replication lag if configured, `pg_stat_statements` top-N slow queries
+- [ ] `djogi ops doctor` — checks pool utilization, long-running transactions (> N seconds), table bloat estimates, index bloat, replication lag if configured, `pg_stat_statements` top-N slow queries
 - [ ] Each check returns a pass/warn/fail with a suggested remediation
 
 ### 11.5e: Operator Runbooks
 
 - [ ] Generate opinionated Markdown runbooks under `docs/ops/` covering: "my backup failed", "restore from last night", "I accidentally dropped a table", "vacuum is blocked"
-- [ ] Runbooks reference the specific `cargo djogi ops` commands that resolve each scenario
+- [ ] Runbooks reference the specific `djogi ops` commands that resolve each scenario
 
 **Deliverable:** Djogi apps get production-grade ops (backups, PITR, vacuum, health, runbooks) without cobbling them together per project.
 

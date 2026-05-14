@@ -1,42 +1,42 @@
 > [Back to README](../../../ReadMe.MD) | [All Specs](../index.md) | [Maahi](./index.md)
 
-# Maahi — Architecture and Auth Substrate
+# Maahi — Planned Architecture and Auth Substrate
 
 ## Dioxus Full-Stack on Axum
 
-Maahi is a single Dioxus full-stack application:
+Maahi is planned as a single Dioxus full-stack application:
 
 - **Server functions** (Dioxus `#[server]`) handle every state-changing operation. Each call carries the session cookie, a CSRF header, and is dispatched against `DjogiContext` so transactions, RLS tenant context, and the descriptor are all native at the call site.
-- **Hydrated client** ships as a WASM bundle; `dx bundle` is the build pipeline, integrated into `cargo djogi admin build` for predictable production output. Asset serving is handled by Dioxus's own Axum integration — no separate `tower_http::services::ServeDir` wiring.
+- **Hydrated client** will ship as a WASM bundle; `dx bundle` is the planned build pipeline, integrated into a future `djogi admin build` for predictable production output. Asset serving is handled by Dioxus's own Axum integration — no separate `tower_http::services::ServeDir` wiring.
 - **Component tree** is descriptor-driven: a `ModelView` component takes a `ModelDescriptor` plus the requesting role's effective `(visibility, actions)` — visage grants resolved across the role chain plus per-model action overrides, per [RBAC](./rbac.md) — and renders list, detail, edit, and create surfaces. Per-field widgets dispatch from `FieldDescriptor::ty` using the table in [UI Surface](./ui.md).
 
 Because Dioxus components are pure Rust, the same component tree is reachable from `dioxus-desktop` for adopters who want a native admin shell. Desktop packaging is not a Phase 10 deliverable, but the renderer choice keeps that path open.
 
 ## Web Framework Integration
 
-Maahi requires the `axum` feature flag in addition to `admin`. Dioxus full-stack runs as an Axum router; merging it into an adopter's existing Axum router is the supported integration path.
+When Maahi ships, it is expected to require the `axum` feature flag in addition to `admin`. Dioxus full-stack runs as an Axum router; merging it into an adopter's existing Axum router is the planned integration path.
 
 ```toml
-# Cargo.toml
+# Planned Cargo.toml shape; not available in v0.1.0-alpha.
 djogi = { version = "0.1", features = ["admin", "axum"] }
 ```
 
-Adopters on other web frameworks run Maahi as a separate process and reverse-proxy `/_admin/` to it. The previous spec's per-framework integration story is narrowed: Maahi is Axum-only by design.
+Adopters on other web frameworks would run Maahi as a separate process and reverse-proxy `/_admin/` to it. The previous spec's per-framework integration story is narrowed: Maahi is Axum-only by design.
 
 ## Workspace Layout
 
-Maahi is its own crate within Djogi's monorepo workspace:
+The target Maahi layout is a separate crate within Djogi's monorepo workspace. This crate is not present in the v0.1.0-alpha workspace yet:
 
 ```text
 djogi/
   djogi/                ← framework library
   djogi-macros/         ← proc macros
-  djogi-cli/            ← cargo djogi binary
-  djogi-shell/          ← Rhai REPL
-  djogi-maahi/          ← admin console (this spec)
+  djogi-cli/            ← djogi binary
+  djogi-shell/          ← planned Rhai REPL
+  djogi-maahi/          ← planned admin console (this spec)
 ```
 
-`djogi`'s `admin` feature pulls in `djogi-maahi` as an optional dep, and `djogi::maahi::*` re-exports the public API. From the adopter's perspective, `cargo add djogi --features admin` is the only thing that changes; the dep tree just gains the Maahi crate transparently.
+The planned `djogi` `admin` feature will pull in `djogi-maahi` as an optional dep, and `djogi::maahi::*` will re-export the public API. From the adopter's perspective, the intended future command is `cargo add djogi --features admin`; in v0.1.0-alpha, that admin surface is not shipped.
 
 **Why a separate crate** (when other specialized features stay as feature flags within `djogi`): Dioxus full-stack is a whole UI framework with WASM-target builds and pre-1.0 release cadence. Pulling Dioxus into `djogi` directly would inflate every adopter's lock file with UI-framework deps even when admin is opt-in — Cargo features gate compilation but not lock-file membership — and Dioxus version churn would force `djogi` minor bumps. Carving Maahi out lets `djogi-maahi` track Dioxus releases independently while `djogi` core stays stable.
 
@@ -44,14 +44,14 @@ The carve-out is Maahi-specific. Spatial, vector, outbox publisher backends, and
 
 ## Auth Substrate — Hybrid `_admin_users`
 
-Maahi authenticates against its own user table, isolated from the application's auth surface but built on the same primitives. This is the hybrid pattern: separate data, shared cryptography.
+The planned Maahi surface authenticates against its own user table, isolated from the application's auth surface but built on the same primitives. This is the hybrid pattern: separate data, shared cryptography.
 
 ```sql
 -- Lives in the audit DB (crud_log_url), not the app DB.
--- Survives `cargo djogi db reset` on the app database.
+-- Survives `djogi db reset` on the app database.
 
 CREATE TABLE _admin_users (
-    id            BIGINT PRIMARY KEY DEFAULT generate_id(),
+    id            BIGINT PRIMARY KEY DEFAULT heerid_next_desc(),
     email         TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,           -- argon2 via djogi::auth::PasswordHash (Phase 5.5)
     role_id       BIGINT REFERENCES _admin_roles(id) ON DELETE RESTRICT,
@@ -67,7 +67,7 @@ CREATE TABLE _admin_users (
 );
 
 CREATE TABLE _admin_sessions (
-    id                   BIGINT PRIMARY KEY DEFAULT generate_id(),
+    id                   BIGINT PRIMARY KEY DEFAULT heerid_next_desc(),
     user_id              BIGINT NOT NULL REFERENCES _admin_users(id) ON DELETE CASCADE,
     token_hash           TEXT NOT NULL,    -- HMAC-SHA256 keyed by session_secret_env over the session token;
                                            -- the cookie carries the plaintext token, the DB carries only the
@@ -91,11 +91,11 @@ CREATE INDEX        _admin_sessions_user_id_idx     ON _admin_sessions (user_id)
 CREATE INDEX        _admin_sessions_expires_at_idx  ON _admin_sessions (expires_at);
 ```
 
-**Why the audit DB.** A `cargo djogi db reset` on the application database during development must not lock administrators out. The audit DB is already provisioned by the three-database architecture defined in [Logging](../logging.md), so Maahi tables ride that pool without adding infrastructure.
+**Why the audit DB.** A `djogi db reset` on the application database during development must not lock administrators out. The audit DB is already provisioned by the three-database architecture defined in [Logging](../logging.md), so Maahi tables ride that pool without adding infrastructure.
 
 **Why hybrid (not direct DjogiAuth reuse).** If the application's own auth substrate is mid-migration or wedged, administrators must still be able to log in to investigate. Sharing primitives (`PasswordHash`, session-cookie crypto, argon2 parameters from Phase 5.5) is desirable; sharing the user table is not.
 
-**Bootstrap.** `cargo djogi admin set-password --superuser <email>` creates the first user with `is_superuser = TRUE`. Subsequent users are created from inside Maahi by anyone with `is_superuser = TRUE` or the `manage_users` system permission ([Operations](./operations.md)).
+**Bootstrap.** `planned `djogi admin` set-password --superuser <email>` creates the first user with `is_superuser = TRUE`. Subsequent users are created from inside Maahi by anyone with `is_superuser = TRUE` or the `manage_users` system permission ([Operations](./operations.md)).
 
 ## Multi-Tenancy
 

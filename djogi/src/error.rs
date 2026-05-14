@@ -162,6 +162,97 @@ impl IdGenerationError {
     }
 }
 
+/// The single error type returned by every Djogi CRUD operation.
+///
+/// Every fallible call site in djogi (`Model::create`, `QuerySet::fetch_all`,
+/// `transaction::atomic`, `DjogiContext::set_tenant`, every raw escape hatch,
+/// every spatial / FTS / JSONB helper) returns `Result<T, DjogiError>`. The
+/// crate-scoped [`crate::Result<T>`] alias spells exactly that — adopter code
+/// signs functions with `-> djogi::Result<T>` and uses `?` to propagate.
+///
+/// # Error taxonomy
+///
+/// `DjogiError` groups failures by where they originate, not by HTTP-style
+/// status code. The most common branches:
+///
+/// - **Database-driver errors** — [`Db`](DjogiError::Db) wraps every
+///   [`tokio_postgres::Error`] (network, constraints, syntax, auth) behind
+///   the [`DbError`] facade so this enum does not leak `tokio_postgres` types.
+/// - **Expected-row-count violations** — [`NotFound`](DjogiError::NotFound)
+///   for zero rows from `Model::get` / `QuerySet::fetch_one`,
+///   [`MultipleObjects`](DjogiError::MultipleObjects) for >1 row from
+///   `fetch_one`. Both carry the offending table name.
+/// - **Concurrency / contention** — [`LockConflict`](DjogiError::LockConflict)
+///   for `40001` / `40P01` / `55P03` SQLSTATE classes (serialization
+///   failures, deadlocks, `NOWAIT` rejections),
+///   [`PoolTimeout`](DjogiError::PoolTimeout) for `deadpool` checkout
+///   exhaustion. Both classify as transient — see
+///   [`DjogiError::is_transient`].
+/// - **Auth / RLS** — [`Auth`](DjogiError::Auth) wraps
+///   [`AuthError`](crate::auth::AuthError) for authentication / authorization
+///   failures from the auth substrate;
+///   [`SetRoleOutsideTransaction`](DjogiError::SetRoleOutsideTransaction)
+///   and [`InvalidRoleName`](DjogiError::InvalidRoleName) surface RLS-
+///   overlay misuse.
+/// - **Misuse / runtime invariants** —
+///   [`Validation`](DjogiError::Validation) for runtime argument validation
+///   failures,
+///   [`MissingIdempotencyKey`](DjogiError::MissingIdempotencyKey) for
+///   upsert-attribute gaps,
+///   [`StreamOutsideTransaction`](DjogiError::StreamOutsideTransaction) for
+///   cursor / `QuerySet::stream` outside `atomic`,
+///   [`UnsupportedAggregate`](DjogiError::UnsupportedAggregate) for IR /
+///   Postgres aggregate mismatches.
+/// - **Decode / serialization** — [`Decode`](DjogiError::Decode) for
+///   `FromPgRow` failures, [`Serde`](DjogiError::Serde) for outbox JSON
+///   serialization, [`Visage`](DjogiError::Visage) for visage-projection
+///   `TryFrom<&Model>` failures.
+/// - **ID generation** — [`IdGeneration`](DjogiError::IdGeneration) wraps
+///   HeeRanjID-side codec failures.
+/// - **Aggregate lifecycle** — [`GoneAggregate`](DjogiError::GoneAggregate)
+///   for terminal "already gone" signals on a previously-observed
+///   aggregate;
+///   [`RelationUnloaded`](DjogiError::RelationUnloaded) for prefetch-cache
+///   misses on a strict-mode resolved-relation accessor.
+/// - **Spatial** — [`Geo`](DjogiError::Geo) (gated on the `spatial` feature)
+///   wraps coordinate / EWKB codec errors.
+///
+/// # Retry classification
+///
+/// [`DjogiError::is_transient`] returns `true` for `LockConflict`,
+/// `PoolTimeout`, and the small set of variants whose failures are expected
+/// to be retryable. The framework also recognises the SQLSTATE classes that
+/// indicate contention vs. other database failures — both classifications
+/// are intended for use in caller-side retry policies (see also
+/// [`retry_on_conflict`](crate::transaction::retry_on_conflict)).
+///
+/// # `#[non_exhaustive]`
+///
+/// Both `DjogiError` and its struct-form variants (`NotFound`,
+/// `MultipleObjects`, `RelationUnloaded`, `GoneAggregate`,
+/// `MissingIdempotencyKey`, `UnsupportedAggregate`, `PoolTimeout`,
+/// `InvalidRoleName`, etc.) are `#[non_exhaustive]`. Downstream `match`
+/// expressions MUST include a wildcard arm, and downstream destructuring
+/// MUST use `..` — adding a new variant or new field to a struct variant
+/// is therefore a non-breaking change. The cost is one extra wildcard arm
+/// at every match site; the benefit is the framework can grow new failure
+/// shapes (Phase 8 added a half-dozen) without breaking adopter code.
+///
+/// Construction from outside this crate is also blocked by the variant-level
+/// `#[non_exhaustive]`. Use the public constructors
+/// (`DjogiError::not_found`, `DjogiError::multiple_objects`, etc.) when
+/// surfacing a Djogi-flavoured error from adopter code; this matches the
+/// pattern set by `std::io::Error`, `hyper::Error`, and similar
+/// well-designed error types.
+///
+/// # Why one error type
+///
+/// Every framework call returning `Result<T, DjogiError>` keeps `?`
+/// propagation ergonomic across CRUD, raw SQL, transactions, auth, and
+/// spatial/JSONB layers. Per-subsystem error types would force adopter
+/// code into manual conversion at every layer boundary — exactly the
+/// friction that drove the framework's "one error type at the public API"
+/// design.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum DjogiError {

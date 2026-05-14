@@ -123,12 +123,9 @@ async fn my_test(mut ctx: DjogiContext) {
 }
 ```
 
-The macro injects these imports into the decorated item:
-
-```rust
-use ::djogi::__bypass::RawAccessExt;
-use ::djogi::__bypass::RawPoolAccessExt;
-```
+The macro injects the hidden bypass traits into the decorated item. Adopter
+code must not import `djogi::__bypass` directly; use the bypass attribute plus
+an adjacent `// JUSTIFICATION ...` comment instead.
 
 When stacked with `#[djogi::djogi_test]`, the bypass attribute is the outer
 attribute so the raw imports land in the test body before `djogi_test` rewrites
@@ -232,18 +229,11 @@ use crate::__bypass::RawAccessExt as DjogiRawAccessExt;
 use crate::__bypass::RawPoolAccessExt as DjogiRawPoolAccessExt;
 ```
 
-Sibling workspace crates and examples use the public hidden path:
-
-```rust
-use djogi::__bypass::{
-    RawAccessExt as DjogiRawAccessExt,
-    RawPoolAccessExt as DjogiRawPoolAccessExt,
-};
-```
-
-Aliases are preferred because they avoid collisions with local trait names.
-These internal and example imports are deliberate raw callers, not ordinary
-integration-test bypasses, so they do not require `JUSTIFICATION` comments.
+Sibling workspace crates and examples should follow the same public bypass
+contract as adopters: decorate the enclosing item with
+`#[djogi::deliberately_bypass_convention_with_raw_sql]` and explain the gap in
+an adjacent `// JUSTIFICATION ...` comment. Direct hidden-trait imports are
+reserved for framework-internal modules.
 
 ## 8. Migration philosophy
 

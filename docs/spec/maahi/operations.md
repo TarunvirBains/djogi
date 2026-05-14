@@ -49,7 +49,7 @@ A bulk action is dangerous in proportion to its blast radius. Maahi gates the mo
 
 ```sql
 CREATE TABLE _admin_pending_actions (
-    id              BIGINT PRIMARY KEY DEFAULT generate_id(),
+    id              BIGINT PRIMARY KEY DEFAULT heerid_next_desc(),
     requested_by    BIGINT NOT NULL REFERENCES _admin_users(id),
     action_kind     TEXT NOT NULL,            -- v1: "BulkDelete" or "InlineSave"; Phase 10.5 extends
     app_name        TEXT NOT NULL,            -- app qualifier per Phase 7-Zero apps subsystem;
@@ -188,7 +188,7 @@ Three options under consideration; v1 picks one. The decision affects who can ad
 - **Option (b): new `_admin_decode_keys` table.** Mutable through Maahi. Most Maahi-native. Recursive gating problem: who can add a decode key? Bootstrap CLI only? Approval queue? Adds spec surface.
 - **Option (c): `decode_pubkey` column on `_admin_users`.** Each operator's key tied to their user record. Simple schema, but couples key identity to user identity (rotating a user's SSH key is a `_admin_users` write).
 
-v1 leans Option (a) for its narrowness, but the choice is open. Whatever is picked, key add/remove for v1 is bootstrap-CLI-only — `cargo djogi admin add-decode-key <pubkey-line>` and the corresponding remove — to avoid the recursive gating problem entirely.
+v1 leans Option (a) for its narrowness, but the choice is open. Whatever is picked, key add/remove for v1 is bootstrap-CLI-only — `planned `djogi admin` add-decode-key <pubkey-line>` and the corresponding remove — to avoid the recursive gating problem entirely.
 
 ### Operator UX — open question
 
@@ -200,7 +200,7 @@ The signing flow:
 4. Operator declares the tenant context (defaults to current `tenant_scope`; `cross_tenant` operators see a tenant picker).
 5. Maahi server validates byte size against `[admin].decode_max_bytes` (default 1 MiB v1; oversize attempts logged and rejected before challenge issuance).
 6. Maahi server emits the challenge.
-7. Operator signs the challenge on their workstation. v1 ships a CLI helper: `cargo djogi admin sign-decode-challenge --challenge-file <path>` that wraps `ssh-keygen -Y sign -n maahi-decode-v1` and emits the signature. (Stretch: ssh-agent socket integration; not v1.)
+7. Operator signs the challenge on their workstation. v1 ships a CLI helper: `planned `djogi admin` sign-decode-challenge --challenge-file <path>` that wraps `ssh-keygen -Y sign -n maahi-decode-v1` and emits the signature. (Stretch: ssh-agent socket integration; not v1.)
 8. Operator pastes the signature into Maahi.
 9. Maahi server verifies signature, decodes, renders the result through the standard visibility pipeline.
 

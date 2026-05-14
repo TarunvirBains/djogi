@@ -12,7 +12,7 @@ This document maps common app patterns to the earliest Djogi phase at which they
 
 | Pattern | Safe at Phase | Notes |
 |---------|---------------|-------|
-| Basic CRUD on simple models | 1 | `#[derive(Model)]` + `create` / `save` / `delete` / `find` |
+| Basic CRUD on simple models | 1 | `#[model(...)]` + `create` / `save` / `delete` / `objects().filter(...).fetch_*` |
 | Typed queries (filter / order / limit) | 2 | `QuerySet<T>` + `FieldRef` closures |
 | Foreign keys + prefetch / select_related | 3 | `ForeignKey<T>` + M2M through models |
 | Transactions + `atomic` / `on_commit` / savepoints | 4 | `DjogiContext` + `atomic()`; foundation for concurrency-safe write paths |
@@ -36,9 +36,10 @@ This document maps common app patterns to the earliest Djogi phase at which they
 | Password hashing (Argon2) | 5.5 | `PasswordHash` (feature `auth-argon2`) |
 | Axum integration | 5.5 | `FromRequestParts` (feature `auth-axum`) |
 | Spatial (GeoPoint + ST_DWithin + GIST auto-index) | 6 | PostGIS-backed |
-| Production migrations (`djogi migrations apply`) | 7 | Differ + compose/apply/verify/repair/baseline CLI + target-scoped ledger/snapshot; includes composite unique constraints and composite indexes, but not composite primary keys |
+| Production migrations | 7 | Descriptor differ + `djogi migrations compose`/`status`/`attune`, public `djogi::migrate` library apply path, and target-scoped ledger/snapshot; apply/verify/repair/baseline CLI dispatchers are deferred |
 | Protected-data metadata + field codecs | 7.5 | `#[field(sensitive, codec)]` |
-| Online-safe staged live migrations | 7.5 | Expand/contract classification + resumable backfill/cutover/finalize for supported rollout patterns |
+| Live-migration planning/classification substrate | 7.5 | Expand/contract classification and backfill planning substrate; operator execution is deferred |
+| Online-safe staged live migrations | Deferred | Not safe to adopt until `djogi live run/resume/finalize` and daemon-mode resume are implemented, tested, and released |
 | Lifecycle hooks + computed properties + composition | 8 | `#[abstract_model]` + `SoftDeletable` / `Auditable` |
 | Partition-aware QuerySet | 8 | `#[model(partition_by)]` |
 | Shell + analyzer + djqry | 9 | Rhai REPL + static query analyzer + `djqry` SQL override registry |

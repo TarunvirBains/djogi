@@ -23,7 +23,7 @@ These documents define Djogi's public contract as a performance-sensitive, Postg
 - [Data Lifecycle & Governance](./data-lifecycle.md) — lifecycle classes, anonymize/archive/purge planning, legal holds
 - [Logging](./logging.md) — three-database architecture, CRUD audit trail, event tracing
 - [Distributed Topology & Residency](./topology.md) — read modes, placement metadata, and topology-aware migration guardrails
-- [Configuration, CLI & Integration](./configuration.md) — `Djogi.toml`, `cargo djogi`, app registration, and web framework integration (`axum` as the concrete example)
+- [Configuration, CLI & Integration](./configuration.md) — `Djogi.toml`, `djogi`, app registration, and web framework integration (`axum` as the concrete example)
 
 ## Tools
 

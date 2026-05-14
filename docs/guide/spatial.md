@@ -48,9 +48,11 @@ djogi = { version = "...", features = ["spatial"] }
   ```
 
   If your application role does not have `CREATE EXTENSION` privileges, a
-  database administrator must install it. `cargo djogi migrate` (Phase 7) will
-  detect the `extension_dependency` metadata on spatial indexes and surface a
-  clear error when PostGIS is absent.
+  database administrator must install it. When the migration that introduces a
+  spatial index is applied via `djogi::migrate::apply_plan` (the public
+  library entry point; the `apply` CLI dispatcher is deferred to a Phase 7
+  follow-up), the runner reads the `extension_dependency` metadata on the
+  index and surfaces a clear error if PostGIS is absent.
 
 ---
 
@@ -611,13 +613,14 @@ regardless of call count.
 The test harness macro accepts an `extensions` array of Postgres
 extension names. Each per-test database runs
 `CREATE EXTENSION IF NOT EXISTS "<name>"` after the HeeRanjID install and
-before your setup:
+before your setup. Pair it with `sync_models = [...]` so the harness
+projects the schema from the descriptor — no `raw_ddl`, no setup helper:
 
 ```rust
-#[djogi::djogi_test(extensions = ["postgis"])]
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [Place])]
 async fn within_km_filters_correctly(mut ctx: djogi::DjogiContext) {
-    // postgis is already installed in this per-test database
-    ctx.raw_ddl("CREATE TABLE IF NOT EXISTS places ( … )").await?;
+    // postgis is already installed in this per-test database, and the
+    // `places` table has been synced from the Place descriptor.
     // … run the test …
 }
 ```
@@ -642,21 +645,37 @@ covers the overwhelming majority of location-based use cases (WGS-84, the
 coordinate system used by GPS and mapping APIs).
 
 For non-4326 work — custom projections, raster columns, geometry rather than
-geography — use the raw-SQL escape hatch:
+geography — use the raw-SQL escape hatch. The `raw_*` methods live on the
+sealed `djogi::__bypass::RawAccessExt` extension trait, so every call site
+must decorate the enclosing item with
+`#[djogi::deliberately_bypass_convention_with_raw_sql]` and pair it with an
+adjacent `// JUSTIFICATION (djogi#<n>): ...` comment naming the
+typed-surface gap (see [Raw SQL escape hatches](../spec/raw-sql-escape-hatches.md)).
 
 ```rust
+use djogi::prelude::*;
+
 // Declare a custom column type in the descriptor:
 // #[field(sql_type = "GEOMETRY(Polygon, 32618)")]
 // pub boundary: SomeCustomType,
 
-// Query via raw SQL:
-let rows = ctx
-    .raw_query::<YourRow>(
-        "SELECT id, ST_AsText(boundary) FROM parcels WHERE \
-         ST_Contains(boundary, ST_Point($1, $2)::geometry)",
-        &[&lon as &(dyn ToSql + Sync), &lat as &(dyn ToSql + Sync)],
-    )
-    .await?;
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): typed spatial surface is locked to GEOGRAPHY(Point, 4326);
+// custom-SRID GEOMETRY columns and ST_Contains have no QuerySet equivalent.
+async fn parcels_containing(
+    ctx: &mut DjogiContext,
+    lon: f64,
+    lat: f64,
+) -> djogi::Result<Vec<YourRow>> {
+    let rows: Vec<YourRow> = ctx
+        .raw_query(
+            "SELECT id, ST_AsText(boundary) FROM parcels WHERE \
+             ST_Contains(boundary, ST_Point($1, $2)::geometry)",
+            &[&lon, &lat],
+        )
+        .await?;
+    Ok(rows)
+}
 ```
 
 A future phase may generalize `GeoPoint` to `GeoPoint<const SRID: u32>` if
@@ -666,35 +685,35 @@ real adoption pressure emerges. That would be an additive, non-breaking change.
 
 ## Migration expectations
 
-When Phase 7's `cargo djogi migrate` ships, it will consume the spatial
-metadata on `IndexSpec` to split the GiST index into a separate
+The descriptor-driven migration system consumes the spatial metadata on
+`IndexSpec` and splits the GiST index into a separate
 `CREATE INDEX CONCURRENTLY` step — that DDL form cannot run inside a
-transaction, and PostGIS must be installed before it runs.
+transaction, and PostGIS must be installed before it runs. Change the
+`#[model]` struct, rebuild (`cargo build` emits the drift warning), then
+run `djogi migrations compose --name add_places_location` to write
+the reviewable migration pair under
+`migrations/<database>/<app>/`. The composer emits the geography column
+plus the GiST index in the correct transactional / non-transactional
+segments — you do not hand-write `ALTER TABLE ... ADD COLUMN GEOGRAPHY` or
+`CREATE INDEX CONCURRENTLY`. Library callers apply via
+`djogi::migrate::apply_plan`; the
+`apply` / `rollback` / `fake` / `baseline` / `verify` / `repair` CLI
+dispatchers are deferred to a Phase 7 follow-up, so reach for the public
+`djogi::migrate` entry points directly in the interim. See
+[the migrations guide](./migrations.md) for the full contract.
 
-Until Phase 7, apply the DDL by hand in your migration files:
-
-```sql
--- Requires the postgis extension to be installed first:
--- CREATE EXTENSION IF NOT EXISTS postgis;
-
-ALTER TABLE places
-  ADD COLUMN location GEOGRAPHY(Point, 4326) NOT NULL;
-
-CREATE INDEX CONCURRENTLY places_location_gix
-  ON places USING GIST (location);
-```
-
-The `places_location_gix` name follows the `{table}_{column}_gix` convention
-that the macro emits into `IndexSpec.name`.
+The composer emits an index name following the `{table}_{column}_gix`
+convention that the macro records in `IndexSpec.name` —
+e.g. `places_location_gix`.
 
 ### Index metadata
 
-The spatial GiST index emitted by `#[derive(Model)]` sets:
+The spatial GiST index emitted by `#[model(...)]` sets:
 
-- `requires_out_of_transaction = true` — Phase 7 places this index into a
+- `requires_out_of_transaction = true` — the runner places this index into a
   `CREATE INDEX CONCURRENTLY` step that runs outside any transaction.
-- `extension_dependency = Some("postgis")` — Phase 7 verifies the extension
-  is installed before emitting the index DDL.
+- `extension_dependency = Some("postgis")` — the runner verifies the
+  extension is installed before emitting the index DDL.
 
 These fields live on `IndexSpec` in `ModelDescriptor::indexes`. The
 `MigrationShape` contract helper (used in tests) validates that the descriptor
@@ -704,36 +723,16 @@ encodes this policy correctly.
 
 ## Testing spatial code
 
-Use `#[djogi::djogi_test]` and provision PostGIS + schema inline at the start
-of each test via `ctx.raw_ddl(...)`. The `CREATE EXTENSION IF NOT EXISTS
-postgis` guard is idempotent — safe to repeat in every test setup:
+Provision PostGIS and the schema through the harness — pass `extensions =
+["postgis"]` so each per-test database auto-installs the extension, and
+`sync_models = [Place]` so the harness projects the schema from the
+descriptor. No `setup()` helper, no `raw_ddl` calls in ordinary tests:
 
 ```rust
 use djogi::prelude::*;
 
-async fn setup(ctx: &mut DjogiContext) {
-    ctx.raw_ddl("CREATE EXTENSION IF NOT EXISTS postgis")
-        .await
-        .expect("install postgis");
-    ctx.raw_ddl(
-        "CREATE TABLE IF NOT EXISTS places (
-             id          BIGINT       PRIMARY KEY DEFAULT generate_id(),
-             name        TEXT         NOT NULL,
-             location    GEOGRAPHY(Point, 4326) NOT NULL,
-             created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
-             updated_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
-         );
-         CREATE INDEX IF NOT EXISTS places_location_gix
-             ON places USING GIST (location)",
-    )
-    .await
-    .expect("setup places");
-}
-
-#[djogi::djogi_test]
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [Place])]
 async fn within_km_filters_correctly(mut ctx: DjogiContext) {
-    setup(&mut ctx).await;
-
     let sfo = GeoPoint::new(37.6189, -122.3750).unwrap();
     let oak = GeoPoint::new(37.7213, -122.2207).unwrap();  // ~20 km from SFO
     let jfk = GeoPoint::new(40.6413, -73.7781).unwrap();   // ~4151 km from SFO
@@ -757,11 +756,14 @@ The following are candidates for a future spatial phase — not committed:
   operator for index-accelerated nearest-neighbor queries.
 - **Raster and topology types** — `RASTER`, PostGIS topology, `pgRouting`
   integration. Out of scope for the typed surface.
-- **Automatic DDL emission for spatial tables** — Phase 7 consumes the
-  `IndexSpec` metadata (`requires_out_of_transaction`,
-  `extension_dependency`) to split GiST index DDL into
-  `CREATE INDEX CONCURRENTLY` steps. The differ emits the split DDL
-  automatically; adopters do not apply spatial index DDL by hand.
+- **`apply` CLI dispatcher for spatial migrations** — the descriptor-driven
+  composer already emits the geography column and the
+  `CREATE INDEX CONCURRENTLY` segment from `IndexSpec` metadata
+  (`requires_out_of_transaction`, `extension_dependency`); applying that
+  migration today goes through `djogi::migrate::apply_plan` directly. The
+  `apply` / `rollback` / `fake` / `baseline` / `verify` / `repair` CLI
+  dispatchers are deferred to a Phase 7 follow-up and will wrap the same
+  library entry points without changing the emitted DDL.
 
 Shipped in Phase 6.5 (previously deferred):
 

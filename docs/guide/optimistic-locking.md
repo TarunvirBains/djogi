@@ -50,7 +50,7 @@ pub struct Account {
     pub revision: i32,
 }
 
-async fn transfer(pool: &DjogiPool, account_id: HeerId, amount: i64) -> Result<(), DjogiError> {
+async fn transfer(pool: &DjogiPool, account_id: HeerIdRecencyBiased, amount: i64) -> Result<(), DjogiError> {
     // Writer A loads the account at revision = 3.
     let mut ctx_a = DjogiContext::from_pool(pool.clone());
     let mut account_a = Account::get(&mut ctx_a, account_id).await?;
@@ -150,7 +150,7 @@ instead. `select_for_update()` on `QuerySet` acquires a row lock before the
 read; no version field is needed:
 
 ```rust
-djogi::transaction::atomic(&pool, |ctx| async move {
+djogi::transaction::atomic(&pool, |ctx| Box::pin(async move {
     let mut account = Account::objects()
         .filter(|f| f.id().eq(account_id))
         .select_for_update()
@@ -160,7 +160,7 @@ djogi::transaction::atomic(&pool, |ctx| async move {
     // save() here does not need a version field; the row lock prevents concurrent writes.
     account.save(ctx).await?;
     Ok::<_, DjogiError>(())
-}).await?;
+})).await?;
 ```
 
 See the [transactions guide](./transactions.md) for the full row-lock surface.

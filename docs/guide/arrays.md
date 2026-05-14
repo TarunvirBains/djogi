@@ -117,15 +117,9 @@ Article::objects()
 ### GIN indexes
 
 The `@>`, `<@`, and `&&` operators benefit from a GIN index on the column.
-GIN index emission is deferred to Phase 7. In the meantime, add the index
-manually in your migration:
-
-```sql
-CREATE INDEX articles_tags_gin ON articles USING gin(tags);
-```
-
-You can annotate the field with `#[field(index = "gin")]` today — the
-descriptor records the intent for Phase 7's migration differ to pick up:
+Annotate the field with `#[field(index = "gin")]`; the descriptor-driven
+migration composer emits the GIN index. Hand-written SQL is only needed when you
+deliberately bypass Djogi's migration surface:
 
 ```rust
 #[field(index = "gin")]
@@ -150,14 +144,29 @@ See the [relations guide](./relations.md) for the explicit-through M2M pattern.
 ## Escape Hatch
 
 For array predicates that the typed operators do not cover — `ANY($1)`,
-`ALL($1)`, unnest-based joins, or element-position access — drop to raw SQL:
+`ALL($1)`, unnest-based joins, or element-position access — drop to raw SQL.
+The `raw_*` methods live on the sealed `djogi::__bypass::RawAccessExt`
+extension trait, so every call site must decorate the enclosing item with
+`#[djogi::deliberately_bypass_convention_with_raw_sql]` and pair it with an
+adjacent `// JUSTIFICATION (djogi#<n>): ...` comment naming the typed-surface
+gap (see [Raw SQL escape hatches](../spec/raw-sql-escape-hatches.md)).
 
 ```rust
-// ANY scalar pattern: "is the given value in the column's array?"
-let found = ctx.raw_query::<Article>(
-    "SELECT * FROM articles WHERE $1 = ANY(tags)",
-    &[&"rust"],
-).await?;
+use djogi::prelude::*;
+
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): scalar-vs-array `ANY($1)` not exposed by QuerySet.
+async fn articles_tagged_with(
+    ctx: &mut DjogiContext,
+    tag: &str,
+) -> djogi::Result<Vec<Article>> {
+    // ANY scalar pattern: "is the given value in the column's array?"
+    let found: Vec<Article> = ctx.raw_query(
+        "SELECT * FROM articles WHERE $1 = ANY(tags)",
+        &[&tag],
+    ).await?;
+    Ok(found)
+}
 ```
 
 `ANY($1)` is a Postgres scalar-vs-array comparison, not the same as

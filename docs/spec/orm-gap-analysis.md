@@ -265,9 +265,9 @@ This is the single biggest functional gap in the current Djogi spec. Real applic
 
 ---
 
-## 9. Admin Renderer — Resolved at Maahi Phase 10
+## 9. Admin Renderer — Planned Maahi Phase 10 Resolution
 
-This section previously argued for replacing Dioxus with HTMX + Askama for the admin renderer. The decision was reversed during Phase 10 design: Maahi (Djogi's admin console) ships as a Dioxus full-stack application. Pure-Rust component tree, type-safe server functions, desktop-renderer reach (`dioxus-desktop`), and richer interactivity ergonomics outweighed the bundle-size advantages of HTMX + Askama for djogi's adopter profile. To keep Dioxus's dep weight off non-admin adopters' lock files, Maahi is carved into its own `djogi-maahi` workspace crate behind the `admin` feature flag — see `CLAUDE.md` for the carve-out reasoning.
+This section previously argued for replacing Dioxus with HTMX + Askama for the admin renderer. The planned Phase 10 decision is Maahi (Djogi's admin console) as a Dioxus full-stack application. Pure-Rust component tree, type-safe server functions, desktop-renderer reach (`dioxus-desktop`), and richer interactivity ergonomics outweighed the bundle-size advantages of HTMX + Askama for djogi's adopter profile. The intended carve-out is a future `djogi-maahi` workspace crate behind an `admin` feature flag; that crate and feature are not shipped in v0.1.0-alpha.
 
 See [`docs/spec/maahi/`](./maahi/index.md) for the authoritative Maahi spec. A `djogi-light-admin` (HTMX + Askama only, no WASM toolchain) is parked in [`docs/roadmap/future-work.md`](../roadmap/future-work.md) if real demand surfaces.
 
@@ -385,7 +385,7 @@ Benefits:
 - Build-time drift detection via `build.rs`
 - Auto-generation of up/down SQL pairs
 - Schema snapshot (`schema_snapshot.json`) as source of truth
-- `cargo djogi migrate` to apply
+- library `djogi::migrate::apply_plan` to apply; the `djogi migrations apply` CLI dispatcher is deferred
 - `--allow-destructive` for DROP operations
 - `--fake` for marking applied without running
 - Rollback (last migration)
@@ -397,14 +397,14 @@ Benefits:
 
 | Capability | Django | Djogi Recommendation |
 |---|---|---|
-| **Rename detection (fields)** | Compares field structure, asks user interactively | Auto-detect via `#[field(renamed_from)]` (already in spec). Also support CLI prompt: `cargo djogi makemigrations --interactive` |
+| **Rename detection (fields)** | Compares field structure, asks user interactively | Auto-detect via `#[field(renamed_from)]` (already in spec). Also support CLI prompt: `djogi makemigrations --interactive` |
 | **Rename detection (models/tables)** | Compares field structure across old/new models | Support `#[model(renamed_from = "old_table")]` annotation |
 | **Data migrations** | `RunPython` / `RunSQL` for data transforms | Support `-- djogi:data` marker in SQL migrations for hand-written data transforms. Or separate `data_migrations/` with Rhai scripts that run in the shell environment |
-| **NOT NULL addition handling** | Prompts for one-off default when adding NOT NULL column to existing table | `cargo djogi makemigrations` should detect this and either prompt or emit `DEFAULT <value>` in the ALTER |
+| **NOT NULL addition handling** | Prompts for one-off default when adding NOT NULL column to existing table | `djogi makemigrations` should detect this and either prompt or emit `DEFAULT <value>` in the ALTER |
 | **Migration dependencies** | Cross-app ordering via FK references | Djogi: migrations are app-scoped. Cross-app FKs create ordering dependencies. Track in `schema_snapshot.json`. |
 | **Merge migrations** | When two branches add migrations, create a merge node | Detect conflicting migration numbers and prompt for merge |
 | **Dry run** | `--dry-run` shows SQL without writing | Already in spec. Confirm it works for both auto-generated and manual migrations. |
-| **SQL collection** | `sqlmigrate` command shows SQL for a migration | Add `cargo djogi migrate show 0005` to display SQL without running |
+| **SQL collection** | `sqlmigrate` command shows SQL for a migration | Add `djogi migrate show 0005` to display SQL without running |
 
 #### Where Djogi Can Do Better
 
@@ -412,7 +412,7 @@ Benefits:
 |---|---|
 | Migrations are Python files with operation objects — heavy, hard to review | Djogi: **plain SQL files**. Readable, editable, reviewable. No framework-specific format. |
 | Django's autodetector is ~2000 lines of Python running 27 detection steps | Djogi: **build-time Rust code** comparing typed `ModelDescriptor` structs. Faster, more reliable, no runtime reflection. |
-| Squashing is complex (replacement graph, partial application detection) | Djogi: **SQL files can be manually concatenated**. Or provide `cargo djogi migrate squash 0001..0010` that merges SQL files. Simpler than Django's replacement system. |
+| Squashing is complex (replacement graph, partial application detection) | Djogi: **SQL files can be manually concatenated**. Or provide `djogi migrate squash 0001..0010` that merges SQL files. Simpler than Django's replacement system. |
 | `RunPython` data migrations can't be represented as SQL | Djogi: data migrations are **Rhai scripts** or **raw SQL** — both are inspectable, no opaque Python. |
 | Django must support 4+ database backends in migrations | Djogi: **Postgres-only SQL**. No backend abstraction. Generated SQL uses Postgres-specific features directly (transactional DDL, `IF NOT EXISTS`, `CONCURRENTLY`, etc.) |
 | Django's `fake_initial` uses runtime introspection to detect existing tables | Djogi: can use Postgres `information_schema` queries at migrate time for the same purpose, more reliably. |
@@ -461,9 +461,9 @@ for car in vehicles {
 
 ---
 
-## 13. Admin Renderer — Same Resolution as §9
+## 13. Admin Renderer — Same Planned Resolution as §9
 
-Earlier draft analysis recommended HTMX + Askama over Dioxus for the admin renderer. The decision was reversed in favor of Dioxus full-stack during Phase 10 design — see §9 above and the Maahi spec at [`docs/spec/maahi/`](./maahi/index.md). The carve-out lives in `djogi-maahi`; per-adopter dep weight is bounded by the optional-dep behind the `admin` feature flag.
+Earlier draft analysis recommended HTMX + Askama over Dioxus for the admin renderer. The planned Phase 10 direction is Dioxus full-stack — see §9 above and the Maahi spec at [`docs/spec/maahi/`](./maahi/index.md). The intended carve-out is a future `djogi-maahi` crate; the optional `admin` dependency surface is not shipped in v0.1.0-alpha.
 
 ---
 
@@ -514,7 +514,7 @@ Earlier draft analysis recommended HTMX + Askama over Dioxus for the admin rende
 - [ ] Admin console: Maahi (Dioxus full-stack via `djogi-maahi`) — see Phase 10
 - [ ] Migration: `CREATE INDEX CONCURRENTLY` support
 - [ ] Migration: merge migration support
-- [ ] Migration: `cargo djogi migrate show` (display SQL)
+- [ ] Migration: `djogi migrate show` (display SQL)
 - [ ] Migration: squash support
 
 ### Tier 3 — Nice to Have

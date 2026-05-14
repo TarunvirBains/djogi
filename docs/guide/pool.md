@@ -173,11 +173,9 @@ on the pool: the inherent `DjogiPool::with_client` method is
 `pub(crate)` (internal substrate uses it directly), and adopter code
 reaches the same behaviour through the sealed
 [`RawPoolAccessExt::raw_with_client`](../spec/raw-sql-escape-hatches.md)
-trait. Bring it into scope with:
-
-```rust
-use djogi::__bypass::RawPoolAccessExt as _;
-```
+trait. Do not import `djogi::__bypass` directly; decorate the enclosing item
+with `#[djogi::deliberately_bypass_convention_with_raw_sql]` and an adjacent
+`// JUSTIFICATION ...` comment so the bypass macro injects the hidden trait.
 
 Use `raw_with_client` for operations that genuinely cannot route
 through `DjogiContext`:
@@ -192,14 +190,17 @@ through `DjogiContext`:
   schema, third-party migration helpers).
 
 ```rust
-use djogi::__bypass::RawPoolAccessExt as _;
-
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): one-time extension bootstrap requires direct driver DDL.
+async fn install_postgis(pool: &DjogiPool) -> djogi::Result<()> {
 pool.raw_with_client(|client| Box::pin(async move {
     client
         .batch_execute("CREATE EXTENSION IF NOT EXISTS postgis")
         .await?;
     Ok(())
 })).await?;
+Ok(())
+}
 ```
 
 The `djogi::__bypass` path is intentionally `#[doc(hidden)]` and
@@ -268,8 +269,6 @@ Adopters who factor closure bodies out into named helpers can spell
 the lifetime explicitly:
 
 ```rust
-use djogi::__bypass::RawPoolAccessExt as _;
-
 fn install_extensions<'a>(
     client: &'a mut tokio_postgres::Client,
 ) -> djogi::pg::pool::ClientFuture<'a, ()> {

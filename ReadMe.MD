@@ -1,12 +1,12 @@
 # Djogi
 
-*A Model-first, Postgres-native distributed data engine for Rust. Define your schema as structs; the ORM, migrations, audit trail, admin surface, shell bindings, and in-memory cache predicates all derive from one declaration. Your web framework of choice handles HTTP — Djogi owns the data tier end-to-end.*
+*A Model-first, Postgres-native distributed data engine for Rust. Define your schema as structs; the ORM, migrations, audit trail, planned admin surface, planned shell bindings, and in-memory cache predicates all derive from one declaration. Your web framework of choice handles HTTP — Djogi owns the data tier end-to-end.*
 
 ---
 
 Most Rust data libraries solve one slice — a query builder, or migrations, or an audit log. Djogi treats the data tier as the primary derivation target: every concern that touches your model definition (typed queries, schema evolution, change tracking, RLS, model projections via visages, in-memory cache, cross-runtime predicate algebra) lives in one integrated stack rather than a dozen disjoint crates you wire together yourself. Djogi still aims to do one thing well — that thing is data management.
 
-Define your data schema as Rust structs, and Djogi derives the surrounding data machinery — ORM, migrations, admin UI, audit trail, shell bindings, JSONB schema handling. One definition, one data-layer derivation chain.
+Define your data schema as Rust structs, and Djogi derives the surrounding data machinery — ORM, migrations, audit trail, JSONB schema handling, with admin UI and shell bindings planned as later opt-in surfaces. One definition, one data-layer derivation chain.
 
 Djogi does not own routing, middleware, or rendering. The view layer belongs to whichever Rust web framework the adopter chooses — developers write ordinary handlers for that framework, not Djogi abstractions. Axum is the best-covered integration today (opt in with the `axum` feature flag), but Djogi's core is web-framework-agnostic: Warp, Actix, Rocket, Poem, or any other Rust web framework can drive Djogi models through their own per-framework feature flag or through manual wiring. The rendering layer is similarly the developer's choice — Dioxus, Askama, Maud, or whatever fits.
 
@@ -20,7 +20,7 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 
 **Public framework rule:** Djogi may be informed by demanding real-world applications, but this repository documents requirements only in product-agnostic systems language. Domain workflows, business policy, and app-specific integrations belong in application crates or separate companion crates, not in Djogi core.
 
-**Postgres only.** Djogi targets PostgreSQL exclusively. This is not a temporary limitation — it is a permanent design decision. Postgres provides the features Djogi's derivation chain depends on: `JSONB` with path operators for typed schema fields, database-native ID generation via HeeRanjId (`generate_id()`, `heerid_next_desc()`, and siblings), advisory locks for migration safety, `RETURNING` clauses, row locks, rich indexing options, strong constraint semantics, and transactional DDL. Abstracting over multiple databases would mean giving up these capabilities or reimplementing them poorly. Every query Djogi generates, every migration it emits, every `Jsonb<T>` filter it compiles targets Postgres directly — no lowest-common-denominator SQL.
+**Postgres only.** Djogi targets PostgreSQL exclusively. This is not a temporary limitation — it is a permanent design decision. Postgres provides the features Djogi's derivation chain depends on: `JSONB` with path operators for typed schema fields, database-native ID generation via HeeRanjId (`heerid_next()`, `heerid_next_desc()`, `ranjid_next()`, `ranjid_next_desc()`, and batch siblings), advisory locks for migration safety, `RETURNING` clauses, row locks, rich indexing options, strong constraint semantics, and transactional DDL. Abstracting over multiple databases would mean giving up these capabilities or reimplementing them poorly. Every query Djogi generates, every migration it emits, every `Jsonb<T>` filter it compiles targets Postgres directly — no lowest-common-denominator SQL.
 
 ## Status
 
@@ -46,13 +46,13 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 
 - **Phase 7** — Migration system. Schema differ, deterministic SQL emitter, runner with advisory-locked transactional / non-transactional segment dispatch, ledger (`djogi_schema_migrations`) with `V1:<sha256-hex>` checksum verification, `apply` / `rollback` / `fake` / `baseline` / `repair` / `verify` library APIs (CLI dispatch deferred to a Phase 7 follow-up — adopters can call the public entry points directly), `build.rs` drift diagnostics + per-bucket pending JSON staging. CLI registered today: `djogi migrations compose` + `status` + `attune` (`--record` / `--squash --from <ver>` with `--publish`), `djogi db reset` (triple-gated: localhost + non-production profile + explicit `--yes`; URL paths are percent-decoded and validated against the strict Postgres-identifier grammar before splicing into DDL — defence-in-depth against URL-injection), `djogi db seed` (`--database <name>` selects BOTH the seed directory and the per-database connection target via path-splice; idempotent `djogi_seed_runs` ledger + checksum-drift refusal + `--allow-non-localhost` opt-in), `djogi docs` (deterministic per-model Markdown reference pages from the descriptor inventory; field table includes a `Default` column populated from the PK strategy via the projection mirror). Filenames: `V<YYYYMMDDHHMMSS>__<slug>.sql` plus `.down.sql`. Per `(database, app)` bucket; cross-database FKs rejected at projection time. Out-of-order policy gates default to `Reject` on production / CI and `AllowWithDiagnostic` on dev. `attune --squash` localhost gate uses byte-level libpq + URL parsers (no regex). Every `db` / `migrations` subcommand obeys a uniform exit-code matrix: `0` success, `1` runtime error (config / network / SQL / replay), `2` refusal (policy gate OR clap-style argument validation) — bundling both refusal classes under `2` so CI scripts can treat any `2` as a soft "operator must intervene" skip without disambiguating gate-vs-arg. See the [migrations guide](./docs/guide/migrations.md) and [migrations spec](./docs/spec/migrations.md).
 
-- **Phase 7.5** — Live-migration substrate + protected-data field attributes. `live_migrate::{plan, plan_file, state, classify}` substrate with `OnlineSafetyClassification` enum (`OnlineSafe` / `FastLockDestructiveGuarded` / `ExpandContract` / `OfflineOnly`, `#[non_exhaustive]`); `pg_volatility` introspection module; backfill engine with chunk-loop SQL pattern, plan resume, daemon-mode runner (T7+T8+T9). Operator surface (T10+T14+T15): `djogi live` CLI commands, spatial cfg gating, `db cleanup-test-dbs`, daemon-mode resume. `#[field(protect = "...")]` and related field-level RLS / audit attributes; `ProtectedFieldMetadata` descriptor surface; macro parsing via raw attribute walking. EXCLUSION + stored-generated descriptor extension: `ExclusionConstraintSpec`, `GeneratedColumnSpec`, `ExclusionElement` types; `ColumnSchema.generated`, `TableSchema.exclusion_constraints` snapshot fields with `#[serde(default)]` for back-compat; `SchemaOperation::{AddExclusionConstraint, DropExclusionConstraint}`; classifier routes EXCLUDE-on-populated and stored-generated-add to `OfflineOnly` (Pg18 has no NOT VALID for EXCLUDE); empty-table fast-path; macro cross-attribute validation rejects `generated` + `default` together with span-precise diagnostic. T13 (catalog drift detection / runtime-vs-spec divergence audit) deferred to Phase 8 or a dedicated bug-fix sprint.
+- **Phase 7.5** — Live-migration substrate + protected-data field attributes. `live_migrate::{plan, plan_file, state, classify}` substrate with `OnlineSafetyClassification` enum (`OnlineSafe` / `FastLockDestructiveGuarded` / `ExpandContract` / `OfflineOnly`, `#[non_exhaustive]`); `pg_volatility` introspection module; backfill engine with chunk-loop SQL pattern and plan state tracking; spatial cfg gating. `#[field(protect = "...")]` and related field-level RLS / audit attributes; `ProtectedFieldMetadata` descriptor surface; macro parsing via raw attribute walking. EXCLUSION + stored-generated descriptor extension: `ExclusionConstraintSpec`, `GeneratedColumnSpec`, `ExclusionElement` types; `ColumnSchema.generated`, `TableSchema.exclusion_constraints` snapshot fields with `#[serde(default)]` for back-compat; `SchemaOperation::{AddExclusionConstraint, DropExclusionConstraint}`; classifier routes EXCLUDE-on-populated and stored-generated-add to `OfflineOnly` (Pg18 has no NOT VALID for EXCLUDE); empty-table fast-path; macro cross-attribute validation rejects `generated` + `default` together with span-precise diagnostic. `djogi live` CLI commands are defined (`show/status/run/resume/finalize/abandon` + daemon-mode resume), but are currently stub/deferred and not released as shipped surface in v0.1.0.
 
 **In flight / coming** — partially merged or design-locked, but not release-complete:
 
 - **Phase 8** — 8α–8ζ implementation clusters are on `main`; 8η predicate/cache correctness and Phase 8.5 publish housekeeping remain before the v0.1.0 publish gate. See the [implementation plan](./docs/spec/implementation-plan.md).
-- **Phase 9** — Rhai shell, analyzer, and model-aware operational tooling.
-- Phase 10 — [Maahi](./docs/spec/maahi/index.md) admin console (Dioxus full-stack; visage-scope-driven RBAC; opt-in via `djogi = { features = ["admin"] }` which pulls in the `djogi-maahi` crate carve-out).
+- **Phase 9** — Rhai shell, analyzer, and model-aware operational tooling (**deferred; not in v0.1.0 shipped surface**).
+- Phase 10 — [Maahi](./docs/spec/maahi/index.md) admin console (Dioxus full-stack; visage-scope-driven RBAC; planned opt-in via `djogi = { features = ["admin"] }` once the `djogi-maahi` crate carve-out ships).
 
 ## What Djogi Owns
 
@@ -60,14 +60,14 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 |---|---|---|
 | HTTP routing, middleware, request/response | Your Rust web framework of choice | Djogi does not own the request lifecycle. Integrations are adapters; Axum is the best-covered example today, and other frameworks are wired through adapters or manually. |
 | DB driver, connection pooling, row mapping | `tokio-postgres` + `deadpool-postgres` + `postgres-types` | Djogi wraps the driver into a typed ORM layer (`Model`, `QuerySet`, `FromPgRow`, `ConditionBuilder`). Raw SQL and pool access remain available through the deliberate bypass harness. |
-| ID generation | HeeRanjId | Calls the HeeRanjId generator family (`generate_id()`, `generate_ids(n)`, `heerid_next_desc()`, `generate_ids_desc(n)`, `generate_ranjid()`, `generate_ranjids_desc(n)`) and owns nothing else |
+| ID generation | HeeRanjId | Calls the HeeRanjId generator family (`heerid_next()`, `heerid_next_desc()`, `ranjid_next()`, `ranjid_next_desc()`, plus `generate_ids(...)` / `generate_ranjids(...)` batch helpers) and owns nothing else |
 | Async runtime | Tokio | Uses it; does not configure it |
 | Model ↔ DB mapping | **Djogi** | Proc macro, field types, QuerySet, relations |
 | Migrations | **Djogi** | Differ, generation, snapshot management |
-| Shell tooling | **Djogi** (opt-in) | Rhai REPL and model-aware operational tooling built on top of the core runtime |
+| Shell tooling | **Djogi** (opt-in) | Rhai REPL and model-aware operational tooling for Phase 9 (deferred in v0.1.0) |
 | CRUD logging | **Djogi** | Audit trail, JSON-aware diffing |
 | JSONB schema fields | **Djogi** | `Jsonb<T>` — typed schemas over JSONB columns |
-| Admin tooling | **Djogi** (opt-in) | Auto-generated operational UI derived from `ModelDescriptor`; adapter surface, not Djogi's core identity |
+| Admin tooling | **Djogi** (planned opt-in) | Phase 10 Maahi operational UI derived from `ModelDescriptor`; not shipped in v0.1.0 |
 
 ## Core Dependencies
 
@@ -80,7 +80,7 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 | `serde` / `serde_json` | Serialization | Model ↔ JSON for shell and API |
 | `rhai` | Embedded scripting shell | Rust-adjacent syntax, sandboxable |
 | `figment` | Layered configuration | env vars + `Djogi.toml` |
-| `clap` | CLI subcommands | `cargo djogi migrate`, etc. |
+| `clap` | CLI subcommands | `djogi migrations compose/status/attune`, `djogi db reset/seed`, `djogi docs`, and related shipped subcommands |
 | `inventory` | Compile-time app/model registration | Cross-crate model discovery |
 | `syn` + `quote` + `proc-macro2` | Proc macro infrastructure | Powers `#[derive(Model)]` |
 | `time` | Datetime field types | Preferred over chrono — cleaner API, no CVE history |
@@ -113,7 +113,7 @@ my-app/
 
 djogi/                      # framework library crate
 djogi-macros/               # proc macro crate (separate crate — required by Rust)
-djogi-cli/                  # cargo djogi binary
+djogi-cli/                  # standalone `djogi` binary
 djogi-shell/                # Rhai engine + model bindings
 ```
 
@@ -149,7 +149,7 @@ The full framework specification lives in [`docs/spec/`](./docs/spec/index.md):
 | [Primary Keys](./docs/spec/primary-keys.md) | Djogi PK surface: `HeerIdRecencyBiased` default, ascending `HeerId`, `RanjId`, `RanjIdRecencyBiased`, generation patterns |
 | [Migrations](./docs/spec/migrations.md) | Build-time drift detection, schema snapshots, differ |
 | [Logging](./docs/spec/logging.md) | Three-database architecture, CRUD audit trail, event tracing |
-| [Configuration & CLI](./docs/spec/configuration.md) | `Djogi.toml`, `cargo djogi`, app registration, and web framework integration (`axum` shown as the concrete example) |
+| [Configuration & CLI](./docs/spec/configuration.md) | `Djogi.toml`, the `djogi` CLI, app registration, and web framework integration (`axum` shown as the concrete example) |
 | [Shell](./docs/spec/shell.md) | Rhai REPL, transactions, import/export, seed scripts |
 | [Maahi (Admin Console)](./docs/spec/maahi/index.md) | Dioxus full-stack admin with visage-scope-driven RBAC, multi-tenancy, six-action permissions, M2M inlines, and the inline-bulk approval threshold |
 | [Scope & Boundaries](./docs/spec/scope.md) | What belongs in Djogi vs an app crate or companion crate |

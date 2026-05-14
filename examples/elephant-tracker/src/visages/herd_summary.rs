@@ -25,7 +25,6 @@
 //! callers request it; no denormalisation drift.
 
 use crate::models::Herd;
-use djogi::__bypass::RawAccessExt as _;
 use djogi::prelude::*;
 
 /// Cheap projection of [`Herd`]. Constructed via `HerdSummary::from(&herd)`
@@ -64,12 +63,13 @@ pub trait HerdSizeQuery {
     ) -> impl std::future::Future<Output = Result<i64, DjogiError>>;
 }
 
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION: temporary Phase 8.5 debt; this count should move to the typed aggregate/query surface rather than remain a raw-SQL example.
 impl HerdSizeQuery for HerdSummary {
     async fn herd_size(&self, ctx: &mut DjogiContext) -> Result<i64, DjogiError> {
-        // Raw scalar via the always-available escape hatch. Adopters
-        // could also reach for `Elephant::objects().filter(...).count()`
-        // once they've bound an `Elephant` model in scope; the raw form
-        // keeps this trait method's intent unambiguous in isolation.
+        // Current-state raw-SQL debt. The typed replacement is
+        // `Elephant::objects().filter(...).count()` once the visage side
+        // query is wired through the typed model surface.
         ctx.raw_scalar(
             "SELECT COUNT(*)::BIGINT FROM elephants WHERE herd_id = $1",
             &[&self.id],

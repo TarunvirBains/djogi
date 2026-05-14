@@ -8,11 +8,12 @@
 //! let mut ctx = DjogiContext::from_pool(pool.clone());
 //! let post = Post::create(&mut ctx, post).await?;
 //!
-//! // Transaction-backed (once `atomic()` lands in Phase 4 Task 1):
-//! ctx.atomic(|ctx| async move {
-//!     Post::create(ctx, post).await?;
+//! // Transaction-backed via the `atomic` free function (re-exported through
+//! // `djogi::prelude`). The closure must return `Pin<Box<dyn Future<…>>>`:
+//! atomic(&mut ctx, |tx| Box::pin(async move {
+//!     Post::create(tx, post).await?;
 //!     Ok(())
-//! }).await?;
+//! })).await?;
 //! ```
 //!
 //! ## Context dispatch
@@ -46,23 +47,96 @@ use std::future::Future;
 
 /// Seal marker for the [`Model`] trait.
 ///
-/// `#[derive(Model)]` emits `impl djogi::model::__sealed::Sealed for T {}`
-/// alongside the `impl Model for T` block. A hand-rolled `impl Model`
-/// that skips `#[derive(Model)]` fails to compile because the sealed
-/// supertrait is unsatisfied — so hostile downstream code cannot
-/// fabricate a `Model` whose `table_name()` or `descriptor().fields[].name`
-/// smuggles SQL into the emitter's `SqlAccumulator::push_sql` sites.
-/// The module is `#[doc(hidden)] pub` because `djogi-macros` emits a
-/// cross-crate path through it; the `__` prefix plus the seal-marker
-/// doc comment are the social signal that downstream code must never
-/// reach into it directly. The threat model defends against accidental
-/// hand-impls, not deliberate framework subversion (which has simpler
-/// routes via `unsafe`).
+/// The `#[model(...)]` attribute macro emits
+/// `impl djogi::model::__sealed::Sealed for T {}` alongside the
+/// `impl Model for T` block. A hand-rolled `impl Model` that skips
+/// `#[model(...)]` fails to compile because the sealed supertrait is
+/// unsatisfied — so hostile downstream code cannot fabricate a `Model`
+/// whose `table_name()` or `descriptor().fields[].name` smuggles SQL
+/// into the emitter's `SqlAccumulator::push_sql` sites. The sibling
+/// `#[derive(Model)]` proc-macro is a no-op stub kept as a placeholder
+/// for future derive-based extensions; it does not produce a working
+/// `Model` impl. The module is `#[doc(hidden)] pub` because `djogi-macros`
+/// emits a cross-crate path through it; the `__` prefix plus the
+/// seal-marker doc comment are the social signal that downstream code
+/// must never reach into it directly. The threat model defends against
+/// accidental hand-impls, not deliberate framework subversion (which
+/// has simpler routes via `unsafe`).
 #[doc(hidden)]
 pub mod __sealed {
     pub trait Sealed {}
 }
 
+/// The contract every adopter struct that participates in djogi's data layer
+/// satisfies. Implemented exclusively by the `#[model(...)]` attribute macro
+/// re-exported through `djogi::prelude` (the sibling `#[derive(Model)]`
+/// proc-macro is a no-op stub); the sealed `__sealed::Sealed` supertrait
+/// makes hand-rolled `impl Model` blocks unsatisfiable, so every `Model` in
+/// production code carries the full derivation chain (descriptor emission,
+/// `FromPgRow`, the `{Model}Fields` / `{Model}Filter` companions, registration).
+///
+/// # What implementing `Model` gives the adopter
+///
+/// - **Single-row CRUD.** [`Model::create`], [`Model::get`], [`Model::save`],
+///   [`Model::delete`], [`Model::refresh_from_db`] — every method takes
+///   `&mut DjogiContext` so the same call site works against a pool-backed
+///   context or a transaction-backed one (the framework pattern-matches on
+///   the inner variant at each `tokio_postgres` boundary).
+/// - **The queryset entry point.** [`Model::objects`] returns a lazy
+///   [`QuerySet<Self>`](crate::query::QuerySet) — filters, ordering,
+///   pagination, distinct, bulk update, bulk delete. Nothing hits the database
+///   until a terminal method is called.
+/// - **Descriptor emission.** The macro emits a `ModelDescriptor` via
+///   `inventory::submit!`, registering the struct with the workspace's
+///   migration differ, app registry, admin console, and shell bindings — all
+///   without any explicit registration call by the adopter.
+/// - **Row decode.** A canonical `impl FromPgRow for Self` is emitted so any
+///   raw-SQL escape hatch (under the bypass attribute — see
+///   [`docs/spec/raw-sql-escape-hatches.md`](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md))
+///   can decode rows into the model with positional, debug-asserted column
+///   reads.
+///
+/// # How to implement (and the only way to)
+///
+/// Adopters never write `impl Model for MyType` by hand. The sealed
+/// supertrait blocks it at compile time. Use the `#[model(...)]` attribute
+/// macro re-exported through `djogi::prelude`:
+///
+/// ```ignore
+/// use djogi::prelude::*;
+///
+/// #[model(table = "articles")]
+/// pub struct Article {
+///     pub title: String,
+///     pub body: String,
+///     pub published: bool,
+/// }
+/// ```
+///
+/// The macro injects the selected primary key type (`HeerIdRecencyBiased` /
+/// `HeerIdDesc` by default), `created_at: DateTime`, and
+/// `updated_at: DateTime` as real public struct fields, generates the `Model`
+/// impl, the `FromPgRow` impl, the `ArticleFields` / `ArticleFilter` /
+/// `ArticleRelated` companion types, and submits the descriptor via
+/// `inventory::submit!` for app/migration registration.
+///
+/// # Where to read further
+///
+/// - **Specification** — [`docs/spec/models.md`](https://github.com/tarunvir/djogi/blob/main/docs/spec/models.md)
+///   for the formal `Model` contract, framework field semantics, and the
+///   `pk = ...` configuration matrix.
+/// - **Getting started** — [`docs/guide/getting-started.md`](https://github.com/tarunvir/djogi/blob/main/docs/guide/getting-started.md)
+///   for an end-to-end walkthrough.
+/// - **Crate root rustdoc** — module table summarising the public surface.
+///
+/// # Why the seal
+///
+/// Every `Model` method composes through emitter sites that trust
+/// `Self::table_name()` and `Self::descriptor().fields[].name` to be
+/// well-formed identifiers. A hand-rolled `impl Model` could smuggle hostile
+/// strings into those positions; the seal removes that route entirely.
+/// Threat model: defends against accidental hand-impls, not deliberate
+/// framework subversion (which has simpler routes via `unsafe`).
 pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// Primary key Rust type.
     /// - `pk = HeerIdRecencyBiased` (default, Phase 7-Zero-2 T2) → `HeerIdDesc`
@@ -326,12 +400,12 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     ///
     /// # Adopter contract
     ///
-    /// Adopters do **not** override this method directly — `#[derive(Model)]`
-    /// emits the override on every macro-generated impl. Hand-written
-    /// `impl Model` blocks (which are themselves discouraged outside of
-    /// internal test fixtures because `__sealed::Sealed` is private) keep
-    /// the default and surface a typed error if a portable predicate
-    /// against the model ever reaches SQL emission.
+    /// Adopters do **not** override this method directly — the `#[model(...)]`
+    /// attribute macro emits the override on every macro-generated impl.
+    /// Hand-written `impl Model` blocks (which are themselves discouraged
+    /// outside of internal test fixtures because `__sealed::Sealed` is
+    /// private) keep the default and surface a typed error if a portable
+    /// predicate against the model ever reaches SQL emission.
     #[doc(hidden)]
     fn __djogi_emit_field_predicate(
         acc: &mut crate::pg::accumulator::SqlAccumulator,

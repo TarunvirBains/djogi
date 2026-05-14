@@ -50,7 +50,7 @@ pub struct Post {
 
 **What is injected by the macro (not written in the struct):**
 
-- `id: HeerId` — `BIGINT PRIMARY KEY DEFAULT generate_id()`, populated via `RETURNING` after INSERT
+- `id: HeerIdRecencyBiased` — `BIGINT PRIMARY KEY DEFAULT heerid_next_desc()`, populated via `RETURNING` after INSERT
 - `created_at: time::OffsetDateTime` — `TIMESTAMPTZ NOT NULL DEFAULT now()`, set by DB on INSERT
 - `updated_at: time::OffsetDateTime` — `TIMESTAMPTZ NOT NULL DEFAULT now()`, updated by Djogi on every `save()`
 
@@ -63,7 +63,7 @@ These three fields are real struct fields after expansion. You must use
 |---|---|---|
 | `table` | `table = "posts"` | Sets the Postgres table name (required) |
 | `pk` | `pk = Serial` | Use `SERIAL` PK (default is `HeerIdRecencyBiased` / BIGINT descending) |
-| `pk` | `pk = RanjId` | Use `UUID` PK via `generate_ranjid()` |
+| `pk` | `pk = RanjId` | Use `UUID` PK via `ranjid_next()` |
 | `pk` | `pk = HeerId` | Use ascending BIGINT HeerId (historical default) |
 | `no_default` | `no_default` | Suppress generated `Default` impl (needed when fields lack `Default`) |
 | `rationale` | `rationale = "..."` | Documents behavioral constraints — read before writing code |
@@ -79,15 +79,17 @@ For the full attribute list, see [the models guide](./models.md).
 | `post.save(&mut ctx)` | `async -> Result<()>` | Full-row UPDATE; `updated_at` refreshed |
 | `post.delete(&mut ctx)` | `async -> Result<()>` | DELETE; consumes the instance |
 | `post.refresh_from_db(&mut ctx)` | `async -> Result<Post>` | Returns fresh copy from DB |
-| `Post::create_with_id(&mut ctx, id, value)` | `async -> Result<Post>` | INSERT ... ON CONFLICT DO NOTHING; for pre-generated IDs |
+| `Post::create_with_id(&mut ctx, id, value)` | `async -> Result<Post>` | Only for explicit `pk = HeerId`; INSERT ... ON CONFLICT DO NOTHING for pre-generated IDs |
 | `Post::descriptor()` | `-> &'static ModelDescriptor` | For inventory registration — do not call manually |
 
 All methods take `&mut DjogiContext` — construct one with
-`DjogiContext::from_pool(pool)` for pool-backed work, or use
-`ctx.atomic(|tx| async { ... })` to run inside a transaction with
-savepoint nesting and on-commit callback dispatch. The context
-pattern-matches on pool-vs-transaction at each `tokio-postgres`
-boundary, so the same call site works for either mode.
+`DjogiContext::from_pool(pool)` for pool-backed work, or wrap a call
+site in `atomic(ctx, |tx| Box::pin(async move { ... })).await?` (the
+free function re-exported from `djogi::prelude`) to run inside a
+transaction with savepoint nesting and on-commit callback dispatch.
+The context pattern-matches on pool-vs-transaction at each
+`tokio-postgres` boundary, so the same call site works for either
+mode.
 
 ---
 
@@ -154,59 +156,105 @@ rationale captures behavioral constraints, write patterns, and ownership
 rules that the type system cannot encode. Ignoring it produces bugs that are
 invisible until production.
 
-### Rule 3: Use `djogi::raw::*` for queries the Model trait and QuerySet don't cover
+### Rule 3: Use `raw_*` escape hatches for queries the Model trait and QuerySet don't cover
 
 The `Model` trait methods cover single-row CRUD (`get`, `create`, `save`,
 `delete`). `Model::objects()` returns a `QuerySet<T>` that covers filters,
 ordering, pagination, distinct, bulk update, and bulk delete — see the
 [queries guide](./queries.md). For anything beyond that surface
-(recursive CTEs, set-returning functions, bespoke JOINs), use the
-raw helpers on `DjogiContext`:
+(recursive CTEs, set-returning functions, bespoke JOINs), reach for the
+raw escape hatches on `DjogiContext`. These methods live on the sealed
+`RawAccessExt` extension trait and are unreachable from `DjogiContext`
+without the bypass attribute, which is djogi's `unsafe`-equivalent — see
+the [Raw SQL escape hatches spec](../spec/raw-sql-escape-hatches.md):
 
 ```rust
-// raw_query — Vec<T> where T: FromPgRow
-let posts: Vec<Post> = ctx.raw_query(
-    "SELECT id, created_at, updated_at, title, body, published
-     FROM posts WHERE published = $1",
-    &[&true],
-).await?;
+use djogi::prelude::*;
 
-// raw_scalar — single scalar
-let count: i64 = ctx.raw_scalar(
-    "SELECT COUNT(*) FROM posts",
-    &[],
-).await?;
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): recursive CTE / bespoke JOIN not exposed by QuerySet.
+async fn raw_examples(ctx: &mut DjogiContext, post_id: HeerIdRecencyBiased) -> djogi::Result<()> {
+    // raw_query — Vec<T> where T: FromPgRow. FromPgRow decoding is
+    // positional, so the SELECT list must match Post's column order
+    // exactly: the three injected fields (id, created_at, updated_at)
+    // followed by the developer-owned fields (title, body, published,
+    // view_count). Missing or reordered columns produce a runtime decode
+    // error, not a compile error.
+    let _posts: Vec<Post> = ctx.raw_query(
+        "SELECT id, created_at, updated_at, title, body, published, view_count
+         FROM posts WHERE published = $1",
+        &[&true],
+    ).await?;
 
-// raw_execute — no return value (returns rows-affected as u64)
-let updated = ctx.raw_execute(
-    "UPDATE posts SET view_count = view_count + $1 WHERE id = $2",
-    &[&1i32, &post_id],
-).await?;
+    // raw_scalar — single scalar
+    let _count: i64 = ctx.raw_scalar(
+        "SELECT COUNT(*) FROM posts",
+        &[],
+    ).await?;
+
+    // raw_execute — no return value (returns rows-affected as u64)
+    let _updated = ctx.raw_execute(
+        "UPDATE posts SET view_count = view_count + $1 WHERE id = $2",
+        &[&1i32, &post_id],
+    ).await?;
+
+    Ok(())
+}
 ```
 
-All three take `&mut DjogiContext`; the same call site works against a
-pool-backed context or a transaction-backed one.
+The `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute is
+mandatory — it brings the sealed `RawAccessExt` trait into scope for the
+decorated item. Without it, `ctx.raw_*` does not resolve. The adjacent
+`// JUSTIFICATION (djogi#<n>): ...` comment names the typed-surface gap
+the bypass is filling and is enforced under `tests/` by
+`cargo xtask check-justifications` (GH #133). All three methods take
+`&mut DjogiContext`; the same call site works against a pool-backed
+context or a transaction-backed one.
 
 ### Rule 4: Use transactions explicitly
 
-Wrap multi-step operations in a transaction by constructing a tx-backed
-`DjogiContext`:
+Wrap multi-step operations in `djogi::transaction::atomic` (re-exported as
+`atomic` through the prelude). The closure receives a transaction-backed
+`DjogiContext`; commit happens on `Ok`, rollback on `Err`:
 
 ```rust
-let tx = pool.begin().await?;
-let mut tx_ctx = DjogiContext::from_transaction(tx);
+use djogi::prelude::*;
 
-let post = Post::create(&mut tx_ctx, Post { ..Default::default() }).await?;
-djogi::raw::execute(
-    &mut tx_ctx,
-    "INSERT INTO tags (post_id, name) VALUES ($1, $2)",
-    |q| q.bind(post.id.as_i64()).bind("rust"),
-).await?;
+async fn create_post_with_tag(
+    ctx: &mut DjogiContext,
+    title: String,
+    body: String,
+) -> djogi::Result<Post> {
+    atomic(ctx, |tx| Box::pin(async move {
+        let post = Post::create(tx, Post {
+            title,
+            body,
+            ..Default::default()
+        }).await?;
 
-tx_ctx.commit().await?;
+        // The tag-write goes through the typed surface — Tag is a
+        // `#[model]` struct with a ForeignKey<Post> field.
+        Tag::create(tx, Tag {
+            post_id: ForeignKey::new(post.id),
+            name: "rust".into(),
+            ..Default::default()
+        }).await?;
+
+        Ok(post)
+    })).await
+}
 ```
 
-If either step fails, drop the context and neither change is persisted.
+If either `create()` returns `Err`, the surrounding `atomic` rolls the
+transaction back and neither row is persisted. Nested `atomic` calls
+push savepoints rather than opening a fresh transaction, so library
+helpers can compose without coordinating with their callers.
+
+For raw SQL inside a transaction, the bypass attribute brings the
+`raw_*` extension methods into scope on the transaction-backed `tx`
+context — see Rule 3 above for the typed-surface check that should run
+first, and the [Raw SQL escape hatches spec](../spec/raw-sql-escape-hatches.md)
+for the full contract.
 
 ### Rule 5: Match field types exactly
 
@@ -237,7 +285,7 @@ foreign key reference — HeerId carries type safety.
 
 **Step 1: Identify the table name and PK type.**
 
-Default PK is `HeerIdRecencyBiased` (64-bit BIGINT via `generate_id()`,
+Default PK is `HeerIdRecencyBiased` (64-bit BIGINT via `heerid_next_desc()`,
 reverse-chronological sort order; Phase 7-Zero-2 T2). Use
 `pk = HeerId` for ascending BIGINT, `pk = RanjId` for UUIDv8 PKs,
 or `pk = Serial` for small reference tables (lookup codes, status
@@ -263,31 +311,34 @@ pub struct Subscription {
 The `Model` trait definition lives there. If you are unsure what a method
 returns or accepts, read that file directly.
 
-**Step 4: Create the table manually (Phase 1).**
+**Step 4: Materialise the table from the descriptor — do not hand-write DDL.**
 
-Match each developer field to its SQL type, plus the three injected
-framework columns:
+Djogi is descriptor-driven: the `#[model]` macro emits a `ModelDescriptor`
+that the migration system and test harness project into SQL. You do not
+write `CREATE TABLE` by hand.
 
-```sql
-CREATE TABLE subscriptions (
-    id                  BIGINT      PRIMARY KEY DEFAULT generate_id(),
-    created_at          TIMESTAMPTZ NOT NULL    DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL    DEFAULT now(),
-    plan_name           TEXT        NOT NULL,
-    status              TEXT        NOT NULL,
-    monthly_price_cents BIGINT      NOT NULL,
-    active              BOOLEAN     NOT NULL
-);
-```
+- In **production code**, change the struct, rebuild (`cargo build` emits a
+  drift warning), then run `djogi migrations compose --name
+  add_subscriptions` to generate a reviewable `V<ts>__add_subscriptions.sql`
+  pair under `migrations/<database>/<app>/`. Library callers apply via
+  `djogi::migrate::apply_plan`; see [the migrations guide](./migrations.md).
+- In **tests**, list the model in `sync_models = [...]` on the
+  `#[djogi::djogi_test]` attribute (Step 5 below) and the harness
+  materialises it into the per-test database through the same projection
+  pipeline the production runner uses.
+
+Either path produces the same shape — `id BIGINT PRIMARY KEY DEFAULT
+heerid_next_desc()`, `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`,
+`updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`, plus the developer-owned
+columns — projected from the descriptor, not hand-written.
 
 **Step 5: Write your CRUD code and a test.**
 
 ```rust
-#[djogi::djogi_test]
-async fn create_subscription(ctx: &mut DjogiContext) {
-    // setup: create table (the harness already installed the schema +
-    // seeded the node — see Getting Started guide)
-    setup_subscriptions(ctx).await;
+#[djogi::djogi_test(sync_models = [Subscription])]
+async fn create_subscription(mut ctx: DjogiContext) {
+    // No setup helper — the harness projects the Subscription descriptor
+    // into the per-test database before this body runs.
     let sub = Subscription::create(&mut ctx, Subscription {
         plan_name: "pro".into(),
         status: "active".into(),
@@ -305,8 +356,8 @@ async fn create_subscription(ctx: &mut DjogiContext) {
 
 ## 5. How to Add a New Field
 
-Adding a field is safe — just add it to the struct and update the table
-manually:
+Adding a field is safe — change the struct and let the descriptor-driven
+migration system emit the column:
 
 ```rust
 pub struct Subscription {
@@ -318,19 +369,28 @@ pub struct Subscription {
 }
 ```
 
-Then add the column to Postgres:
+`cargo build` re-runs the proc macro, updates `target/djogi_models.json`,
+and `build.rs` emits a `cargo:warning=` drift line. Run
+`djogi migrations compose --name add_subscription_notes` to write
+`V<ts>__add_subscription_notes.sql` + `.down.sql` into the appropriate
+`migrations/<database>/<app>/` bucket — review the SQL in your PR, then
+apply via the library API (`djogi::migrate::apply_plan`). Use
+`djogi migrations attune` only for migration-history ledger/disk
+reconciliation; it does not execute migration SQL. See
+[the migrations guide](./migrations.md) for the full compose/status/attune
+contract; the CLI dispatchers for `apply` / `rollback` / `fake` /
+`baseline` / `verify` / `repair` are deferred to a Phase 7 follow-up, so
+library callers reach for the public `djogi::migrate` entry points
+directly in the interim.
 
-```sql
-ALTER TABLE subscriptions ADD COLUMN notes TEXT;
-```
+In tests, just add the field to the struct — the next `#[djogi::djogi_test(
+sync_models = [Subscription])]` run projects the updated descriptor into
+its throwaway database.
 
-In Phase 1 there is no automatic migration differ. Column changes are
-manual. The migration system is a Phase 6–8 deliverable — see
-[the CLI roadmap](../roadmap/cli.md).
-
-**Renaming a field:** rename the Rust field and update the column. When the
-migration system ships, use `#[field(renamed_from = "old_name")]` to tell
-the differ to generate `RENAME COLUMN` instead of `DROP + ADD`.
+**Renaming a field:** annotate the renamed field with
+`#[field(renamed_from = "old_name")]` so the differ emits a
+`RENAME COLUMN` instead of `DROP + ADD`. Without the annotation the
+descriptor diff is structurally indistinguishable from a drop-and-add.
 
 ---
 
@@ -400,7 +460,8 @@ query code.
   emitter always appends `updated_at = now()` to the SET list, even
   when the caller's closure omits it. Parity with single-row `save()`.
   Callers who need to preserve `updated_at` across a bulk write drop to
-  `djogi::raw::execute`.
+  the `raw_execute` escape hatch (under the bypass attribute — see
+  the [Raw SQL escape hatches spec](../spec/raw-sql-escape-hatches.md)).
 
 - **`FieldRef<M, V>` is `Copy + 'static`.** Free to pass around, bind to
   a local, use twice in one closure. The two phantom markers
@@ -496,14 +557,14 @@ for desc in inventory::iter::<ModelDescriptor> {
 | Update a field | `instance.field = value; instance.save(&mut ctx).await?` |
 | Delete | `instance.delete(&mut ctx).await?` (consumes instance) |
 | Refresh stale instance | `instance.refresh_from_db(&mut ctx).await?` |
-| Pre-generated ID insert | `Model::create_with_id(&mut ctx, id, Model { ... }).await?` |
+| Pre-generated ID insert | Explicit `pk = HeerId` models only: `Model::create_with_id(&mut ctx, id, Model { ... }).await?` |
 | Filter query | `Model::objects().filter(\|f\| f.col().eq(v)).fetch_all(&mut ctx).await?` |
 | Count | `Model::objects().filter(\|f\| ...).count(&mut ctx).await?` |
 | Bulk update | `Model::objects().filter(\|f\| ...).update(\|f\| f.col().set(v)).execute(&mut ctx).await?` |
 | Bulk delete | `Model::objects().filter(\|f\| ...).delete(&mut ctx).await?` |
-| Raw query (beyond QuerySet) | `djogi::raw::query_as(&mut ctx, "SELECT ...", \|q\| q.bind(val)).await?` |
-| Raw execute | `djogi::raw::execute(&mut ctx, "UPDATE ...", \|q\| q.bind(val)).await?` |
-| Transactional ops | `let mut tx_ctx = ctx.begin().await?;` → pass `&mut tx_ctx` to methods → `tx_ctx.commit().await?`. `atomic()` (Phase 4 Task 1) is the forthcoming canonical wrapper. |
+| Raw query (beyond QuerySet) | `ctx.raw_query::<T>("SELECT ...", &[&val]).await?` (under `#[djogi::deliberately_bypass_convention_with_raw_sql]`) |
+| Raw execute | `ctx.raw_execute("UPDATE ...", &[&val]).await?` (under `#[djogi::deliberately_bypass_convention_with_raw_sql]`) |
+| Transactional ops | `atomic(&mut ctx, \|tx\| Box::pin(async move { ... })).await?` — re-exported from `djogi::prelude`. Commits on `Ok`, rolls back on `Err`. |
 | Iterate all models | `for desc in inventory::iter::<djogi::ModelDescriptor> { ... }` |
 | Check trait contract | Read `djogi/src/model.rs` |
 | Check field-type mapping | Read `djogi-macros/src/model/attrs.rs::rust_type_to_sql` |

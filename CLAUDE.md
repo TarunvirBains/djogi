@@ -17,8 +17,8 @@ djogi/                  ← this repo — the framework implementation
   djogi/                ← framework library crate
   djogi-macros/         ← proc macro crate (separate crate — required by Rust)
   djogi-cli/            ← djogi binary
-  djogi-shell/          ← Rhai engine + model bindings
-  djogi-maahi/          ← admin console (Dioxus full-stack); behind djogi's `admin` feature
+  djogi-shell/          ← Rhai engine + model bindings (Phase 9 target)
+  djogi-maahi/          ← planned admin console crate (Dioxus full-stack); not present as shipped component in this worktree
 
 ../HeeRanjID/           ← sibling workspace — the HeeRanjId ID system
   heeranjid/            ← core Rust types and conversions
@@ -27,7 +27,7 @@ djogi/                  ← this repo — the framework implementation
   bindings/             ← Python, TypeScript, .NET
 ```
 
-Djogi calls into HeeRanjId for ID generation (`generate_id()` / `generate_ids(n)` / `generate_ranj_id()`) but does not own it. HeeRanjId is a standalone crate that Djogi depends on.
+Djogi calls into HeeRanjId for ID generation (`heerid_next()` / `heerid_next_desc()` / `ranjid_next()` / `ranjid_next_desc()`, plus `generate_ids(...)` / `generate_ranjids(...)` batch helpers) but does not own it. HeeRanjId is a standalone crate that Djogi depends on.
 
 ## Commands
 
@@ -70,7 +70,7 @@ djogi migrations attune              # reconcile disk / ledger / live DB
 djogi db reset --yes                 # drop, recreate, replay (triple-gated)
 djogi db seed                        # run seeds/<database>/*.sql via djogi_seed_runs ledger
 djogi docs                           # render Markdown reference pages from descriptor inventory
-djogi shell                          # Rhai shell (Phase 8+)
+# djogi shell                          # Rhai shell (Phase 9 target; deferred in v0.1.0)
 ```
 
 After implementation work, run `cargo fmt --all` and `cargo clippy --all-targets --all-features` before handoff when feasible, not just targeted tests.
@@ -114,7 +114,7 @@ artifacts. After `git worktree remove`, prune orphaned caches with
 |---|---|
 | `djogi` | Public API: `prelude`, `Model` trait, `QuerySet`, `ForeignKey`, `Jsonb<T>`, `ManyToMany`, app registration |
 | `djogi-macros` | `#[derive(Model)]` proc macro — field injection, trait impls, `ModelDescriptor` emission via `inventory` |
-| `djogi-cli` | `djogi` (standalone) and `cargo djogi` (alias) subcommands via `clap` |
+| `djogi-cli` | Standalone `djogi` binary and subcommands via `clap` |
 | `djogi-shell` | Rhai REPL, model bindings, transaction control |
 
 ### What Djogi Owns vs Delegates
@@ -122,7 +122,7 @@ artifacts. After `git worktree remove`, prune orphaned caches with
 Djogi is a Model-first framework — narrow in scope, deep within that scope. It targets **Postgres 18 and later, exclusively** (permanent design decisions — JSONB, HeeRanjId, advisory locks, transactional DDL, `RETURNING`, and latest Postgres features all depend on it; earlier versions explicitly unsupported per `docs/spec/decisions.md`). It does **not** wrap or compete with:
 - **Any web framework (Axum, Warp, Actix, Rocket, Poem, …)** — HTTP routing/middleware/extraction. Djogi's core is web-framework-agnostic; per-framework integrations (extractors that surface `DjogiContext`/`AuthContext` from request state, optional router-merging helpers) ship as opt-in sub-feature flags (`axum`, `warp`, `actix`, etc.). Adopters pick whichever HTTP layer fits their app and enable the matching flag — or none, if they wire integration manually.
 - **`tokio-postgres` + `deadpool-postgres`** — Djogi wraps these into a typed ORM layer (`Model`, `QuerySet`, `FromPgRow`, `ConditionBuilder`). Raw SQL remains available as a deliberate escape hatch, gated by the raw SQL bypass harness described in [`docs/spec/raw-sql-escape-hatches.md`](docs/spec/raw-sql-escape-hatches.md).
-- **HeeRanjId** — ID generation. Djogi calls `generate_id()` / `generate_ids(n)` / `generate_ranj_id()`.
+- **HeeRanjId** — ID generation. Djogi calls `heerid_next()` / `heerid_next_desc()` / `ranjid_next()` / `ranjid_next_desc()`, plus `generate_ids(...)` / `generate_ranjids(...)` batch helpers.
 - **Tokio** — async runtime. Used as-is.
 
 ### The `#[derive(Model)]` Macro
@@ -206,7 +206,7 @@ xtask validator are the enforcement. See [`docs/spec/raw-sql-escape-hatches.md`]
 - Diffs against `migrations/schema_snapshot.json`
 - Generates migration SQL pairs if drift detected; emits compiler warning (not error)
 
-`migrations/` is a git submodule — managed by CI, not by the developer directly. `schema_snapshot.json` is updated only on successful `djogi migrations apply` (the runner persists the snapshot atomically after every transactional segment commits and the ledger row reaches `applied`).
+`migrations/` is a git submodule — managed by CI, not by the developer directly. `schema_snapshot.json` is updated only on successful runs of the library apply path (`djogi::migrate::apply_plan`; the `djogi migrations apply` CLI dispatcher is deferred). The runner persists the snapshot atomically after every transactional segment commits and the ledger row reaches `applied`.
 
 ### Three-Database Architecture
 
@@ -221,9 +221,10 @@ Logging databases are isolated from the app DB so they survive `djogi db reset`.
 
 Two ID formats with a lossless upgrade path:
 
-- **HeerId** (default): `BIGINT DEFAULT generate_id()` — 64-bit, time-ordered, populated via `RETURNING id`
-- **RanjId** (opt-in): `UUID DEFAULT generate_ranj_id()` — 128-bit UUIDv8, sub-millisecond precision, higher node/sequence capacity. Opt in with `#[model(pk = "ranjid")]`
-- **Serial** (opt-in): `#[model(pk = "serial")]` for lookup/reference tables
+- **HeerIdRecencyBiased** (default): `BIGINT DEFAULT heerid_next_desc()` — 64-bit, newest-first sort order, populated via `RETURNING id`
+- **HeerId** (opt-in): `BIGINT DEFAULT heerid_next()` — 64-bit, ascending / time-ordered. Opt in with `#[model(pk = HeerId)]`
+- **RanjId** (opt-in): `UUID DEFAULT ranjid_next()` — 128-bit UUIDv8, sub-millisecond precision, higher node/sequence capacity. Opt in with `#[model(pk = RanjId)]`
+- **Serial** (opt-in): `#[model(pk = Serial)]` for lookup/reference tables
 
 ID generation patterns:
 - Default: DB generates via column default + `RETURNING id`
@@ -255,7 +256,7 @@ The shell holds a dedicated single-threaded Tokio runtime. Every terminal method
 - FK cascade default is `RESTRICT` — must opt in to `cascade` per field
 - Field renames: annotate with `#[field(renamed_from = "old_name")]` or the differ treats it as drop+add
 - Admin panel is opt-in via `djogi = { features = ["admin"] }` — not bundled by default
-- **Specialized features (spatial, outbox publisher backends, vector, etc.) ship as feature flags within `djogi`, never as separate `djogi-*` crates.** The 5-crate workspace (djogi, djogi-macros, djogi-cli, djogi-shell, djogi-maahi) exists for hard Rust requirements (proc macro must be its own crate, CLI is a binary, shell is its own runtime) plus one carve-out: **djogi-maahi** owns the admin console (Maahi), separated because Dioxus full-stack is categorically heavier than other specialized features — full UI framework with WASM-target builds, pre-1.0 churn isolated from djogi core. The "one `cargo add djogi`" experience is preserved: `features = ["admin"]` pulls in `djogi-maahi` as an optional dep, and `djogi::maahi::*` re-exports the API. The carve-out applies to Maahi only; spatial / vector / outbox / etc. remain feature flags within `djogi`. The phrase "companion crate" in `docs/spec/` refers to user-side / app-side crates, not Djogi-maintained ones.
+- **Specialized features (spatial, outbox publisher backends, vector, etc.) ship as feature flags within `djogi`, never as separate `djogi-*` crates.** The workspace includes crates for hard Rust boundaries (library, macros, CLI, shell runtime) and keeps admin as a planned carve-out: **djogi-maahi** is not in shipped components in this branch and remains a Phase 10 dependency target. The "one `cargo add djogi`" experience is preserved conceptually, but `features = ["admin"]` is not yet available until Maahi ships. The phrase "companion crate" in `docs/spec/` refers to user-side / app-side crates, not Djogi-maintained ones.
 - `Djogi.toml` holds app config; secrets (DATABASE_URL, NODE_ID) live in env vars only
 
 ## Tests must use djogi structs, not raw escape hatches

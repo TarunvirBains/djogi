@@ -73,14 +73,14 @@
 //!      `docs/spec/implementation-plan.md` §9c "Retrofit existing
 //!      examples to use djqry once available."
 //!
-//!   2. **Phase 8.5 (issue #99, closes #84):** typed pair-tuple
-//!      surface lands via `JoinedQuerySet<T, U>` or equivalent,
-//!      enabling closure-self-join + window-fn ranking on pair
-//!      tuples to be fully typed. Once this lands, Step 3's raw SQL
-//!      is replaced with the typed surface in a follow-up commit.
+//!   Issue #99 still tracks the typed pair-tuple surface
+//!   (`JoinedQuerySet<T, U>` or equivalent) for closure self-joins and
+//!   window-fn ranking on pair tuples. That is a general typed-query
+//!   improvement, not the deferral path for this demo's raw SQL.
 //!
-//!   Both retrofit paths are tracked. The current PR ships the raw-SQL
-//!   placeholder.
+//!   The only accepted remaining raw-SQL path for this demo is the
+//!   future djqry showcase candidate above; otherwise Phase 8.5 work
+//!   must remove raw SQL rather than preserve a placeholder.
 //!
 //! ## Composite score
 //!
@@ -138,7 +138,6 @@
 //! data without further code changes.
 
 use anyhow::Result;
-use djogi::__bypass::RawAccessExt as _;
 use djogi::DjogiContext;
 use djogi::prelude::*;
 use postgres_types::ToSql;
@@ -181,6 +180,8 @@ struct MatingPair {
     score: f64,
 }
 
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#234): mating-pairs demo ranks a closure self-join that is not expressible through QuerySet yet.
 pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> Result<()> {
     // ── Step 1 (typed Djogi) — per-herd convex hull aggregate ─────
     //
@@ -284,12 +285,12 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
     //   ElephantDjqry::mating_pairs(&mut ctx, top_n, female_ids,
     //                                male_ids, hull_herds, hull_bytes).await?
     //
-    // Two retrofit paths are tracked as issue #84:
+    // The retrofit path tracked for this raw SQL is issue #84:
     //   - Phase 9c (djqry): SQL is djqry-shaped above; extracts
     //     verbatim to djqry/elephant_mating_pairs.sql.
-    //   - Phase 8.5 (issue #99): typed pair-tuple surface lands,
-    //     replacing Step 3's raw SQL with JoinedQuerySet<T, U> +
-    //     typed RowNumber.qualify ranking.
+    //   - Phase 8.5 (issue #99): typed pair-tuple surface lands as a
+    //     general query improvement, but it is not the deferral path
+    //     for this demo's remaining raw SQL.
     //
     // Cross-reference: `docs/spec/implementation-plan.md` §9c
     // "Retrofit existing examples to use djqry once available."

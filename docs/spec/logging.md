@@ -64,7 +64,7 @@ pub struct InternalToken { ... }
 The mirror log table schema (auto-provisioned per model):
 ```sql
 CREATE TABLE vehicle_logs (
-    id          BIGINT PRIMARY KEY DEFAULT generate_id(),
+    id          BIGINT PRIMARY KEY DEFAULT heerid_next_desc(),
     record_id   BIGINT NOT NULL,
     event       TEXT NOT NULL CHECK (event IN ('created', 'updated', 'deleted')),
     changes     JSONB,               -- array of FieldChange — null for created/deleted
@@ -156,14 +156,9 @@ The operator workflow should stay unified even though the databases are separate
 
 Where a migration affects both app and log schemas, Djogi should generate and apply the required work per target database with explicit labeling of which database each step touches.
 
-Migration execution remains target-scoped:
+Migration execution remains target-scoped at the library and configuration level. The shipped `djogi migrations` CLI currently exposes `compose`, `status`, and `attune` without a `--target` selector; target-specific app/log database flows are represented through configured migration buckets and direct library entry points until a dedicated CLI target selector is registered.
 
-- `djogi migrations compose --target main` composes app-database history
-- `djogi migrations compose --target crud_log` composes CRUD-log history
-- `djogi migrations compose --target event_log` composes event-log history
-- `djogi migrations apply/rollback/status/verify/repair/baseline --target ...` operate on one database target at a time
-
-Each target owns its own ledger, snapshot, and advisory-lock scope. Djogi may later coordinate ordered multi-target workflows, but it does not claim distributed atomic migration across the app, CRUD-log, and event-log databases.
+Each target owns its own ledger, snapshot, and advisory-lock scope. Djogi may later coordinate ordered multi-target workflows, but it does not claim distributed atomic migration across the app, CRUD-log, and event-log databases. The `apply`, `rollback`, `verify`, `repair`, and `baseline` migration dispatchers are deferred CLI surfaces; use the public `djogi::migrate` library APIs for those operations today.
 
 ### 9.3 Log Database Retention
 
@@ -171,19 +166,17 @@ Each target owns its own ledger, snapshot, and advisory-lock scope. Djogi may la
 
 ```bash
 # Wipe app DB only — both log databases untouched
-cargo djogi db reset
+djogi db reset
 
-# Wipe app DB and CRUD log DB — event logs retained
-cargo djogi db reset --wipe-crud-logs
-
-# Wipe all three databases
-cargo djogi db reset --wipe-all-logs
+# Log database wipe flags are planned, not registered in the shipped CLI.
+# Until they land, reset log databases through operator-owned maintenance
+# scripts rather than `djogi db reset`.
 ```
-`db reset` guards (`dev_mode`, localhost URL, `DJOGI_ENV`) apply to all variants.
+`db reset` guards (`dev_mode`, localhost URL, `DJOGI_ENV`) apply to the shipped app-database reset path; log-database wipe flows must preserve the same guard posture when implemented.
 
 `db reset` remains app-first UX:
 
-- `cargo djogi db reset` only resets the app database
+- `djogi db reset` only resets the app database
 - explicit flags are required before Djogi touches either logging database
 - the CLI output should name each database being reset so operators do not infer a single-cluster wipe from one command
 
