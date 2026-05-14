@@ -48,9 +48,11 @@ djogi = { version = "...", features = ["spatial"] }
   ```
 
   If your application role does not have `CREATE EXTENSION` privileges, a
-  database administrator must install it. `cargo djogi migrate` (Phase 7) will
-  detect the `extension_dependency` metadata on spatial indexes and surface a
-  clear error when PostGIS is absent.
+  database administrator must install it. When the migration that introduces a
+  spatial index is applied via `djogi::migrate::apply_plan` (the public
+  library entry point; the `apply` CLI dispatcher is deferred to a Phase 7
+  follow-up), the runner reads the `extension_dependency` metadata on the
+  index and surfaces a clear error if PostGIS is absent.
 
 ---
 
@@ -754,11 +756,14 @@ The following are candidates for a future spatial phase — not committed:
   operator for index-accelerated nearest-neighbor queries.
 - **Raster and topology types** — `RASTER`, PostGIS topology, `pgRouting`
   integration. Out of scope for the typed surface.
-- **Automatic DDL emission for spatial tables** — Phase 7 consumes the
-  `IndexSpec` metadata (`requires_out_of_transaction`,
-  `extension_dependency`) to split GiST index DDL into
-  `CREATE INDEX CONCURRENTLY` steps. The differ emits the split DDL
-  automatically; adopters do not apply spatial index DDL by hand.
+- **`apply` CLI dispatcher for spatial migrations** — the descriptor-driven
+  composer already emits the geography column and the
+  `CREATE INDEX CONCURRENTLY` segment from `IndexSpec` metadata
+  (`requires_out_of_transaction`, `extension_dependency`); applying that
+  migration today goes through `djogi::migrate::apply_plan` directly. The
+  `apply` / `rollback` / `fake` / `baseline` / `verify` / `repair` CLI
+  dispatchers are deferred to a Phase 7 follow-up and will wrap the same
+  library entry points without changing the emitted DDL.
 
 Shipped in Phase 6.5 (previously deferred):
 
