@@ -135,9 +135,10 @@ cargo run -p elephant-tracker -- demo lineage --matriarch Wema
 cargo run -p elephant-tracker -- demo lineage --matriarch Wema --format mermaid
 cargo run -p elephant-tracker -- demo lineage --matriarch Wema --format markdown
 
-# Typed-builder mode — pass --typed to switch from raw recursive-CTE
-# SQL to `Elephant::objects().tree_descendants(ElephantRelated::mother(),
-# id)`. Compose --order=bfs|dfs to exercise SEARCH BREADTH/DEPTH FIRST.
+# Preferred typed-builder lineage mode. The CLI still exposes the
+# legacy raw recursive-CTE path above as Phase 8.5 debt; use --typed
+# to exercise `Elephant::objects().tree_descendants(...)` and compose
+# --order=bfs|dfs for SEARCH BREADTH/DEPTH FIRST.
 cargo run -p elephant-tracker -- demo lineage --matriarch Wema --typed
 cargo run -p elephant-tracker -- demo lineage --matriarch Wema --typed --order bfs --format mermaid
 cargo run -p elephant-tracker -- demo lineage --matriarch Wema --typed --order dfs --format markdown

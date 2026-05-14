@@ -35,16 +35,16 @@ struct CrossBorderEntry {
 }
 
 #[djogi::deliberately_bypass_convention_with_raw_sql]
-// JUSTIFICATION (djogi#234): grouped M2M aggregate demo uses a compact raw SQL query not covered by the typed surface.
+// JUSTIFICATION: temporary Phase 8.5 debt. Grouped M2M aggregation must move to the typed surface rather than remain a raw-SQL showcase.
 pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> Result<()> {
     // The aggregating query: for every (herd, season) pair, collect the
     // distinct country names. The `HAVING` clause filters down to the
     // pairs that span more than one country.
     //
-    // We use raw SQL via `ctx.raw_rows` because the typed `QuerySet`
-    // surface for grouped aggregation through an explicit-through M2M
-    // is in flux as of this example. The raw form is small, readable,
-    // and pins the demo to a stable SQL contract.
+    // Current-state raw-SQL debt: grouped aggregation through an
+    // explicit-through M2M still needs a typed Phase 8.5 replacement.
+    // This is not the selected `djqry` showcase path and should not
+    // remain the stable adopter-facing example.
     const SQL: &str = "SELECT
             h.id           AS herd_id,
             h.name         AS herd_name,

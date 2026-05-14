@@ -3,21 +3,22 @@
 //!
 //! ## What this demonstrates
 //!
-//! Two paths to the same data shape — the demo's `--typed` flag
-//! switches between them so adopters can read both side-by-side:
+//! The typed builder is the preferred path. The legacy raw path still
+//! exists in the current CLI so adopters can compare behavior while
+//! Phase 8.5 removes non-`djqry` raw SQL from the demo surface:
 //!
-//! ### Default mode — raw recursive-CTE SQL via `ctx.raw_rows`
+//! ### Legacy mode — raw recursive-CTE SQL via `ctx.raw_rows`
 //!
-//! Single-edge matrilineal descent rendered via raw SQL. The
-//! canonical escape hatch when you want to keep the SQL inline for
-//! readability — matriarchal society biology is naturally a
-//! single-edge walk through `mother_id`, and the recursive CTE is
-//! short enough that adopters benefit from seeing it written out.
+//! Single-edge matrilineal descent rendered via raw SQL. This is
+//! current-state raw-SQL debt, not the canonical adopter path:
+//! matriarchal society biology is naturally a single-edge walk
+//! through `mother_id`, and the typed builder below is the Phase 8.5
+//! end state for that shape.
 //!
 //! ### Typed mode — `Elephant::objects().tree_descendants(ElephantRelated::mother(), id)`
 //!
-//! Pass `--typed` to switch to Phase 8-Zero Cluster B's typed
-//! tree-walk builder. Compose with `--order=bfs|dfs` to lower into
+//! Pass `--typed` to use Phase 8-Zero Cluster B's typed tree-walk
+//! builder. Compose with `--order=bfs|dfs` to lower into
 //! `SEARCH BREADTH FIRST BY estimated_birth_year` /
 //! `SEARCH DEPTH FIRST BY estimated_birth_year` on the recursive CTE
 //! — clean top-down generation bands (BFS) or matriline-chain walks

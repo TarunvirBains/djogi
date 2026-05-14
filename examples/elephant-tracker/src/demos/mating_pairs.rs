@@ -285,12 +285,12 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
     //   ElephantDjqry::mating_pairs(&mut ctx, top_n, female_ids,
     //                                male_ids, hull_herds, hull_bytes).await?
     //
-    // Two retrofit paths are tracked as issue #84:
+    // The retrofit path tracked for this raw SQL is issue #84:
     //   - Phase 9c (djqry): SQL is djqry-shaped above; extracts
     //     verbatim to djqry/elephant_mating_pairs.sql.
-    //   - Phase 8.5 (issue #99): typed pair-tuple surface lands,
-    //     replacing Step 3's raw SQL with JoinedQuerySet<T, U> +
-    //     typed RowNumber.qualify ranking.
+    //   - Phase 8.5 (issue #99): typed pair-tuple surface lands as a
+    //     general query improvement, but it is not the deferral path
+    //     for this demo's remaining raw SQL.
     //
     // Cross-reference: `docs/spec/implementation-plan.md` §9c
     // "Retrofit existing examples to use djqry once available."
