@@ -73,14 +73,14 @@
 //!      `docs/spec/implementation-plan.md` §9c "Retrofit existing
 //!      examples to use djqry once available."
 //!
-//!   2. **Phase 8.5 (issue #99, closes #84):** typed pair-tuple
-//!      surface lands via `JoinedQuerySet<T, U>` or equivalent,
-//!      enabling closure-self-join + window-fn ranking on pair
-//!      tuples to be fully typed. Once this lands, Step 3's raw SQL
-//!      is replaced with the typed surface in a follow-up commit.
+//!   Issue #99 still tracks the typed pair-tuple surface
+//!   (`JoinedQuerySet<T, U>` or equivalent) for closure self-joins and
+//!   window-fn ranking on pair tuples. That is a general typed-query
+//!   improvement, not the deferral path for this demo's raw SQL.
 //!
-//!   Both retrofit paths are tracked. The current PR ships the raw-SQL
-//!   placeholder.
+//!   The only accepted remaining raw-SQL path for this demo is the
+//!   future djqry showcase candidate above; otherwise Phase 8.5 work
+//!   must remove raw SQL rather than preserve a placeholder.
 //!
 //! ## Composite score
 //!
