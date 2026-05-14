@@ -64,13 +64,12 @@ pub trait HerdSizeQuery {
 }
 
 #[djogi::deliberately_bypass_convention_with_raw_sql]
-// JUSTIFICATION (djogi#234): hand-rolled visage side query uses a scalar aggregate outside the generated visage surface.
+// JUSTIFICATION: temporary Phase 8.5 debt; this count should move to the typed aggregate/query surface rather than remain a raw-SQL example.
 impl HerdSizeQuery for HerdSummary {
     async fn herd_size(&self, ctx: &mut DjogiContext) -> Result<i64, DjogiError> {
-        // Raw scalar via the always-available escape hatch. Adopters
-        // could also reach for `Elephant::objects().filter(...).count()`
-        // once they've bound an `Elephant` model in scope; the raw form
-        // keeps this trait method's intent unambiguous in isolation.
+        // Current-state raw-SQL debt. The typed replacement is
+        // `Elephant::objects().filter(...).count()` once the visage side
+        // query is wired through the typed model surface.
         ctx.raw_scalar(
             "SELECT COUNT(*)::BIGINT FROM elephants WHERE herd_id = $1",
             &[&self.id],

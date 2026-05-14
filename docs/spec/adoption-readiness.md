@@ -38,7 +38,8 @@ This document maps common app patterns to the earliest Djogi phase at which they
 | Spatial (GeoPoint + ST_DWithin + GIST auto-index) | 6 | PostGIS-backed |
 | Production migrations | 7 | Descriptor differ + `djogi migrations compose`/`status`/`attune`, public `djogi::migrate` library apply path, and target-scoped ledger/snapshot; apply/verify/repair/baseline CLI dispatchers are deferred |
 | Protected-data metadata + field codecs | 7.5 | `#[field(sensitive, codec)]` |
-| Online-safe staged live migrations | 7.5 | Expand/contract classification + resumable backfill/cutover/finalize for supported rollout patterns |
+| Live-migration planning/classification substrate | 7.5 | Expand/contract classification and backfill planning substrate; operator execution is deferred |
+| Online-safe staged live migrations | Deferred | Not safe to adopt until `djogi live run/resume/finalize` and daemon-mode resume are implemented, tested, and released |
 | Lifecycle hooks + computed properties + composition | 8 | `#[abstract_model]` + `SoftDeletable` / `Auditable` |
 | Partition-aware QuerySet | 8 | `#[model(partition_by)]` |
 | Shell + analyzer + djqry | 9 | Rhai REPL + static query analyzer + `djqry` SQL override registry |
