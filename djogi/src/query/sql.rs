@@ -2239,6 +2239,119 @@ pub(crate) fn build_delete<T: Model>(
     Ok(acc)
 }
 
+/// Build `INSERT INTO <target> (cols...) SELECT exprs... FROM <source>
+/// [WHERE ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]`.
+///
+/// Closes [djogi#106](https://github.com/TarunvirBains/djogi/issues/106) —
+/// the typed bulk-copy surface from one model's queryset into another
+/// model's table.
+///
+/// # Inputs
+///
+/// - `qs` — source queryset, contributes the source FROM table, the
+///   WHERE clause, ordering, limit, and offset. All other source state
+///   (`prefetch_paths`, `select_related_paths`, `cache_target`,
+///   `lock`, `distinct`) is rejected by
+///   [`crate::query::insert_select::InsertSelectStmt::execute`] before
+///   reaching this emitter, so the emitter itself does not need a
+///   runtime guard.
+/// - `columns` — `(target_column, source_expression)` mappings in
+///   lockstep position. The column list and the SELECT projection are
+///   emitted in the same order; per-column type alignment is enforced
+///   at compile time by [`crate::query::FieldRef::copy_from`].
+///
+/// # Output shape
+///
+/// ```sql
+/// INSERT INTO target_table (target_col1, target_col2, ...)
+/// SELECT source_expr1, source_expr2, ...
+/// FROM source_table
+/// [WHERE ...]
+/// [ORDER BY ...]
+/// [LIMIT $n]
+/// [OFFSET $n]
+/// ```
+///
+/// Framework columns (`id`, `created_at`, `updated_at`) on the target
+/// are populated by their column-level `DEFAULT` clauses — the emitter
+/// never names them unless the closure explicitly maps them. This
+/// matches `Model::create`'s contract.
+///
+/// # Why not `RETURNING`
+///
+/// The terminal contract for djogi#106 returns the affected row count
+/// only — see the module docs on
+/// [`crate::query::insert_select`]. A `RETURNING`-bearing variant can
+/// be added in a follow-up issue without breaking the row-count
+/// terminal.
+///
+/// # Why not the joined-select tail
+///
+/// `select_related_paths` is rejected at the terminal layer, so the
+/// emitter takes the bare [`push_tail`] (not [`push_tail_qualified`])
+/// path. No `LEFT JOIN`s, no column qualification — matches the
+/// minimum coherent surface of the public API.
+///
+/// # Invariants
+///
+/// - `columns` is non-empty (the terminal's
+///   [`crate::query::insert_select::InsertSelectStmt::execute`] returns
+///   `DjogiError::Validation` before reaching here on empty input).
+/// - `columns` has no duplicate `target_column` entries (same source
+///   of validation).
+/// - Every `column.source` is an [`crate::expr::node::ExprNode`] tree
+///   built through the typed `FieldRef::copy_from` constructor — the
+///   `&'static str` column names baked into `ExprNode::Field` flow
+///   straight to `SqlAccumulator::push_sql`, matching the existing
+///   bind-vs-text discipline.
+///
+/// # Source's `lock` is intentionally NOT emitted
+///
+/// Although [`push_tail`] would normally append `qs.lock`'s `FOR UPDATE`
+/// tail, the terminal rejects non-default `LockMode` upstream so the
+/// `LockMode::None` path is the only one this emitter sees. The tail
+/// shim still calls `qs.lock.push_tail(acc)` (a no-op for
+/// `LockMode::None`); preserving the call keeps the emitter
+/// structurally identical to the SELECT path and makes the future
+/// lock-opt-in surface a single-line change at the terminal layer.
+pub(crate) fn build_insert_select<S: Model, T: Model>(
+    qs: &QuerySet<S>,
+    columns: &[crate::query::insert_select::InsertSelectColumn<S, T>],
+) -> Result<SqlAccumulator, PortablePredicateError> {
+    // Emit the INSERT prefix and the target column list. Target column
+    // names are macro-baked `&'static str` literals via FieldRef, so
+    // `push_sql` (not `push_bind`) is correct.
+    let mut acc = SqlAccumulator::new("INSERT INTO ");
+    acc.push_sql(T::table_name());
+    acc.push_sql(" (");
+    for (i, col) in columns.iter().enumerate() {
+        if i > 0 {
+            acc.push_sql(", ");
+        }
+        acc.push_sql(col.target_column());
+    }
+    acc.push_sql(") SELECT ");
+
+    // Emit the source-expression list in lockstep with the target
+    // column list. Each ExprNode flows through emit_expr — literals
+    // bind via push_bind, field refs emit bare column names (validated
+    // by FieldRef construction), and arithmetic / function nodes
+    // recurse through the existing expression emitter.
+    for (i, col) in columns.iter().enumerate() {
+        if i > 0 {
+            acc.push_sql(", ");
+        }
+        crate::expr::sql::emit_expr(&mut acc, col.source(), SqlEmitContext::root())?;
+    }
+
+    // SELECT FROM source_table — followed by the bare tail (WHERE,
+    // ORDER BY, LIMIT, OFFSET, and the LockMode::None no-op).
+    acc.push_sql(" FROM ");
+    acc.push_sql(S::table_name());
+    push_tail(&mut acc, qs)?;
+    Ok(acc)
+}
+
 /// Walk the emitted SELECT list and check that every column's alias (or
 /// plain column name if no `AS` alias) is unique. A collision would cause
 /// the terminal decoder to read the wrong value for one of the columns.
@@ -2898,6 +3011,196 @@ mod tests {
         let acc = build_delete(&qs);
         let sql = acc.sql().trim().to_string();
         assert_eq!(sql, "DELETE FROM fakes");
+    }
+
+    // ── Phase 8.5 Cluster 4B (djogi#106): INSERT...SELECT SQL shape ─────────
+
+    /// A second `Model` impl so the INSERT...SELECT emitter tests can
+    /// distinguish the source from the target by table name. Mirrors the
+    /// outer `Fake` impl byte-for-byte but lands on a different table.
+    struct FakeTarget;
+    impl crate::model::__sealed::Sealed for FakeTarget {}
+    #[allow(clippy::manual_async_fn)]
+    impl Model for FakeTarget {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "fake_targets"
+        }
+        fn pk_value(&self) -> &i64 {
+            unreachable!()
+        }
+        fn descriptor() -> &'static ModelDescriptor {
+            unreachable!()
+        }
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: i64,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx
+        {
+            async { unreachable!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx
+        {
+            async { unreachable!() }
+        }
+    }
+
+    fn build_insert_select<S: Model, T: Model>(
+        qs: &QuerySet<S>,
+        columns: &[crate::query::insert_select::InsertSelectColumn<S, T>],
+    ) -> SqlAccumulator {
+        super::build_insert_select::<S, T>(qs, columns)
+            .expect("test predicate should lower to insert-select SQL")
+    }
+
+    /// Helper — build an `InsertSelectColumn<S, T>` whose source is a
+    /// bare column reference (the most common shape in adopter call
+    /// sites). The post-fix source-tagged constructor pins the source
+    /// model `S` on the operand, which propagates onto the returned
+    /// `InsertSelectColumn<S, T>`.
+    fn col_copy<S: Model, T: Model>(
+        target_column: &'static str,
+        source_column: &'static str,
+    ) -> crate::query::insert_select::InsertSelectColumn<S, T> {
+        let target: crate::query::FieldRef<T, i32> = crate::query::FieldRef::new(target_column);
+        let source: crate::query::FieldRef<S, i32> = crate::query::FieldRef::new(source_column);
+        target.copy_from(source.as_insert_source())
+    }
+
+    #[test]
+    fn insert_select_no_filter_emits_bare_shape() {
+        // The simplest shape — no WHERE, no ORDER BY, no LIMIT. The
+        // emitted SQL is the literal `INSERT ... SELECT ... FROM ...`
+        // with no trailing clause.
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let cols = vec![col_copy::<Fake, FakeTarget>("view_count", "score")];
+        let acc = build_insert_select::<Fake, FakeTarget>(&qs, &cols);
+        let sql = acc.sql().trim().to_string();
+        assert_eq!(
+            sql,
+            "INSERT INTO fake_targets (view_count) SELECT score FROM fakes"
+        );
+    }
+
+    #[test]
+    fn insert_select_multi_column_emits_lockstep_lists() {
+        // Multi-column mapping — the target list and the source-
+        // expression list must appear in lockstep position. Pins the
+        // structural invariant the emitter relies on for type safety.
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let cols = vec![
+            col_copy::<Fake, FakeTarget>("a", "x"),
+            col_copy::<Fake, FakeTarget>("b", "y"),
+            col_copy::<Fake, FakeTarget>("c", "z"),
+        ];
+        let acc = build_insert_select::<Fake, FakeTarget>(&qs, &cols);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("INSERT INTO fake_targets (a, b, c) SELECT x, y, z FROM fakes"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn insert_select_with_filter_emits_where() {
+        // WHERE on the source — composes through the existing push_where
+        // helper. Pins that the WHERE binds line up with the SELECT-side
+        // binds (the SELECT side has no binds when the source is a bare
+        // FieldRef, so the WHERE bind is `$1`).
+        let qs: QuerySet<Fake> = QuerySet::new()
+            .filter(|_| Condition::Leaf(Leaf::eq_raw("published", FilterValue::Bool(true))));
+        let cols = vec![col_copy::<Fake, FakeTarget>("view_count", "score")];
+        let acc = build_insert_select::<Fake, FakeTarget>(&qs, &cols);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("FROM fakes WHERE published = $1"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn insert_select_with_literal_source_pushes_bind() {
+        // Literal source expression — the literal binds as `$1`, the
+        // WHERE filter (if any) binds *after*. Pins that the SELECT
+        // projection's binds precede the WHERE clause's binds.
+        let target: crate::query::FieldRef<FakeTarget, i32> =
+            crate::query::FieldRef::new("status_code");
+        // `InsertSelectSource::literal` is polymorphic in `S`; the
+        // explicit turbofish pins `S = Fake` so this test type-checks
+        // without relying on closure-return inference.
+        let cols =
+            vec![target.copy_from(
+                crate::query::insert_select::InsertSelectSource::<Fake, _>::literal(7i32),
+            )];
+        let qs: QuerySet<Fake> = QuerySet::new()
+            .filter(|_| Condition::Leaf(Leaf::eq_raw("published", FilterValue::Bool(true))));
+        let acc = build_insert_select::<Fake, FakeTarget>(&qs, &cols);
+        let sql = acc.sql();
+        // SELECT binds first ($1), then WHERE binds ($2). The literal
+        // is the SELECT projection's `$1`.
+        assert!(
+            sql.contains("INSERT INTO fake_targets (status_code) SELECT $1 FROM fakes"),
+            "got: {sql}"
+        );
+        assert!(sql.contains("WHERE published = $2"), "got: {sql}");
+    }
+
+    #[test]
+    fn insert_select_with_limit_offset_pushes_tail_binds() {
+        // LIMIT + OFFSET on the source compose into the emitted SQL
+        // through the shared push_tail helper. Pins that the tail
+        // binds appear at the end of the parameter list (after the
+        // SELECT projection's binds and any WHERE binds).
+        let qs: QuerySet<Fake> = QuerySet::new().limit(10).offset(5);
+        let cols = vec![col_copy::<Fake, FakeTarget>("view_count", "score")];
+        let acc = build_insert_select::<Fake, FakeTarget>(&qs, &cols);
+        let sql = acc.sql();
+        assert!(sql.contains("LIMIT $1"), "got: {sql}");
+        assert!(sql.contains("OFFSET $2"), "got: {sql}");
+    }
+
+    #[test]
+    fn insert_select_uses_source_table_in_from_not_target() {
+        // Regression guard: the FROM clause references the SOURCE
+        // table, not the target. A swap would land rows from the
+        // target's contents into the target, which is what the
+        // bypass-pattern raw-SQL escape hatch did wrong in adopter code
+        // pre-djogi#106. Anchor the shape here.
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let cols = vec![col_copy::<Fake, FakeTarget>("view_count", "score")];
+        let acc = build_insert_select::<Fake, FakeTarget>(&qs, &cols);
+        let sql = acc.sql();
+        assert!(sql.contains("INSERT INTO fake_targets"), "got: {sql}");
+        assert!(sql.contains("FROM fakes"), "got: {sql}");
+        // The target table name does NOT appear in a FROM position.
+        // (Using a defensive substring check rather than a regex per
+        // the no-regex rule in CLAUDE.md.)
+        assert!(
+            !sql.contains("FROM fake_targets"),
+            "INSERT...SELECT emitted FROM target table — sql: {sql}"
+        );
     }
 
     // ── Phase 3 Task 5 fix: parent-table qualification under select_related ──
