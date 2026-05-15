@@ -6,8 +6,9 @@ Djogi ships two complementary systems for attaching cross-cutting
 behaviour to model CRUD operations:
 
 - **`#[model(hooks)]` + `ModelHooks`** — per-model lifecycle callbacks
-  that fire at precise points in the `before → DB → outbox → after →
-  on_commit drain` sequence.
+  that fire at precise points in the `before → DB → outbox → after`
+  sequence, with `on_commit` callbacks draining at transaction commit
+  (requires an `atomic()` context — see below).
 - **`#[model(auditable)]` / `#[model(soft_deletable)]`** — one-line
   opt-ins for common composition patterns (who-created-this, logical
   delete) that integrate with the hook sequence without requiring the
@@ -90,7 +91,7 @@ surrounding tenant scope, `AuthContext`, and the `on_commit` queue.
 
 ### Sequencing and error semantics
 
-The canonical execution sequence for `Model::create` is:
+The canonical execution sequence for `Model::create` **inside an `atomic()` block** is:
 
 ```
 auto_set_tenant
@@ -99,11 +100,31 @@ before_create           ← ModelHooks (if #[model(hooks)])
 INSERT … RETURNING
 outbox submission
 after_create            ← ModelHooks (if #[model(hooks)])
-on_commit drain
+[on_commit drain]       ← fires when the surrounding atomic() commits
 ```
 
 `Model::save` follows the same pattern with `before_save` / `after_save`;
 `Model::delete` uses `before_delete` / `after_delete`.
+
+> **`on_commit` requires a transaction-backed context.**
+> `ctx.on_commit(...)` registers callbacks to run after the current
+> transaction commits. When the surrounding `DjogiContext` is pool-backed
+> (i.e. the operation is called outside any `atomic()` block), callbacks
+> registered via `on_commit` are **warned and dropped** — they never fire.
+> To reliably drain `on_commit` callbacks, wrap the operation in
+> `djogi::transaction::atomic(...)`:
+>
+> ```rust
+> djogi::transaction::atomic(&mut ctx, |ctx| async move {
+>     let post = Post::create(Post { title: "Hello".into(), ..Default::default() }, ctx).await?;
+>     // after_create queued ctx.on_commit(...) above — it will drain when
+>     // this atomic block commits.
+>     Ok(post)
+> }).await?;
+> ```
+>
+> See [Transactions](./transactions.md) for the full `on_commit` API and
+> nesting semantics.
 
 Returning `Err` from any hook propagates via `?` and no `after_*` hook
 fires. The transaction-safety guarantee depends on how the operation is
