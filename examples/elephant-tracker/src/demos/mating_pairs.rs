@@ -131,7 +131,7 @@
 //! `now - MATURITY_YEARS years`, see the constant for rationale on
 //! the threshold), of opposite sex, sharing a herd. Cross-herd pairs
 //! score `territory_overlap_pct = 0` under today's binary identity
-//! and drop out before kinship computation. When the typed
+//! and drop out after typed kinship computation in this retrofit. When the typed
 //! pair-side spatial expression lands (#99) this filter widens to
 //! "herds whose territory polygons spatially overlap"; the
 //! composite-score multiplication is already in the right shape to
@@ -507,7 +507,7 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
 /// **Today: binary same-herd / cross-herd identity.** The function
 /// returns `1.0` when both elephants belong to the same herd and
 /// `0.0` otherwise. The composite-score multiplication drops
-/// cross-herd pairs ahead of kinship scoring — they cannot
+/// cross-herd pairs after typed kinship scoring in this retrofit — they cannot
 /// physically meet under the demo's herd-territory model. This
 /// matches the original raw-SQL `CASE WHEN f.herd_id = m.herd_id
 /// THEN 1.0 ELSE 0.0` short-circuit byte-for-byte.
