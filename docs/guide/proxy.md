@@ -214,7 +214,7 @@ i64` and the proxy declares `pub price: f64`, the resulting `FromPgRow`
 decoding will fail. Keep the field set + types identical between proxy and
 parent.
 
-## Composition with `#[derive(SoftDeletable)]` / `#[derive(Auditable)]`
+## Composition with `#[model(soft_deletable)]` / `#[model(auditable)]`
 
 When a proxy AND its parent both use `#[model(soft_deletable)]`, the proxy's
 `default_filter` AND-composes with the parent's soft-delete predicate
@@ -240,4 +240,4 @@ hook fires; the proxy's per-type lifecycle hooks (if any) fire alongside.
 
 - [Models](models.md) — base `#[model(...)]` attribute reference.
 - [Queries](queries.md) — `QuerySet<T>` API, `.filter(...)`, `.order_by(...)`.
-- [Composition](composition.md) — `#[derive(Auditable)]` / `#[derive(SoftDeletable)]`.
+- [Hooks and Composition](./hooks.md) — `#[model(auditable)]`, `#[model(soft_deletable)]`, `ModelHooks`.

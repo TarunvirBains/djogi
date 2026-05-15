@@ -131,17 +131,16 @@ incorrect — Rust does not allow two inherent methods with the same name
 on the same type (E0201). Removing the stub honors the lens resolution
 without the duplicate-method footgun.
 
-### Constraint: stored variant deferred to Phase 8.5
+### Constraint: stored variant is out of scope for v0.1.0
 
 `#[computed(sql = "...", stored)]` (a stored generated column whose value is
-materialised in storage) is **rejected** at parse time with a Phase 8.5
-deferral message. The migration differ has not yet accumulated long-running
-stability evidence post-publish, so generating column DDL from a `stored`
-computed is out of scope for v0.1.0.
+materialised in storage) is **rejected** at parse time. The migration differ
+has not yet accumulated long-running stability evidence post-publish, so
+generating column DDL from a `stored` computed is out of scope for v0.1.0.
 
 Adopters who need stored computed columns in v0.1.0 can:
 
-- Ship a non-stored computed for now; revisit when the deferral lifts.
+- Ship a non-stored computed for now; revisit in a future release.
 - Hand-roll a regular column + a `BEFORE INSERT/UPDATE` trigger via raw SQL
   in a migration. The framework does not auto-generate the trigger.
 
