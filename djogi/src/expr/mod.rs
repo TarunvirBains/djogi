@@ -304,26 +304,37 @@ impl Expr<crate::geo::Polygon> {
     /// let pct = Expr::area_of_intersection(&hull_a, &hull_b)
     ///     / Expr::area_of(&hull_a);
     ///
-    /// // Raw intersection geometry (only decode if inputs are known to overlap).
+    /// // Raw intersection geometry — only decode when the result is
+    /// // guaranteed to be a single POLYGON (see "Decode safety" below).
     /// let overlap_shape: Expr<Polygon> =
     ///     Expr::intersection_of(&hull_a, &hull_b);
     /// ```
     ///
     /// # Decode safety
     ///
-    /// The returned expression decodes as [`crate::geo::Polygon`]. This
-    /// assumption holds when both inputs are polygonal and their interiors
-    /// overlap. For degenerate inputs the decode may fail:
+    /// The returned expression decodes as [`crate::geo::Polygon`]. Decode
+    /// succeeds **only** when `ST_Intersection` returns a single `POLYGON`.
+    /// Even when both inputs are polygonal and their interiors overlap,
+    /// Postgres/PostGIS may return a `MULTIPOLYGON` or `GEOMETRYCOLLECTION`
+    /// (for example, when two polygons share only a thin interior ridge that
+    /// touches a third disconnected region). The decode will fail whenever
+    /// the result is not a simple `POLYGON`:
     ///
-    /// - **Disjoint inputs** — `ST_Intersection` returns an empty geometry
-    ///   (not a polygon); `Polygon::FromSql` will return a decode error.
-    /// - **Boundary-only contact** — the result may be a `LineString` or
-    ///   `Point`; decode will fail.
+    /// - **Disjoint inputs** — `ST_Intersection` returns an empty geometry;
+    ///   `Polygon::FromSql` will return a decode error.
+    /// - **Boundary-only or point contact** — the result is a `LINESTRING`
+    ///   or `POINT`; decode will fail.
+    /// - **Multi-part or collection result** — even for genuinely overlapping
+    ///   polygons, the result may be a `MULTIPOLYGON` or `GEOMETRYCOLLECTION`;
+    ///   decode will fail.
     ///
-    /// For queries that must survive the disjoint case, use
-    /// [`Expr::area_of_intersection`] (which wraps the result in `ST_Area`
-    /// and always returns `f64`), or guard with [`crate::query::field::FieldRef::intersects`]
-    /// before emitting the intersection.
+    /// [`crate::query::field::FieldRef::intersects`] is **not** a sufficient
+    /// guard: it only rules out the disjoint case and still permits
+    /// boundary-only contact and multi-part results.
+    ///
+    /// For queries that must survive any of these cases, prefer
+    /// [`Expr::area_of_intersection`] (wraps the result in `ST_Area` and
+    /// always returns `f64`, yielding `0.0` for non-overlapping pairs).
     ///
     /// # Where
     ///
