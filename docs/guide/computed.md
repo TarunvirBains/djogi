@@ -101,8 +101,10 @@ The macro does **not** emit a Rust-side getter for computed fields. The
 canonical surface is the SQL-projectable ZST: `Vehicle::computed()
 .total_price()` returns `Expr<f64>` and composes with the typed query
 API. For server-side evaluation that is the entire story — adopters
-who only need to filter / sort / annotate by a computed expression pay
-no Rust-side cost.
+who only need to filter by a computed expression pay no Rust-side cost.
+Sort and annotate remain raw-SQL fallback territory until `Expr<T>`
+widens `OrderExpr` and `AnnotationSlot` (see the limitation note
+above).
 
 If you need to evaluate the expression in Rust (e.g. inside a hook or a
 visage `try_from`), write a plain inherent method on your struct with
