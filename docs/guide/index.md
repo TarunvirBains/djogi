@@ -30,7 +30,7 @@ For design history and items still on the horizon, see
 | [Migrations](./migrations.md) | Compose / status / attune / db reset / db seed / docs commands; ledger; library APIs; classifications; out-of-order policy; PK-type flips |
 | [Authentication](./auth.md) | `DjogiAuth` trait, `AuthContext`, `PasswordHash`, auto-`set_tenant`, `with_no_tenant_scope` |
 | [Proxy Models](./proxy.md) | `#[model(proxy_for)]`, `default_filter`, `default_order`, schema-passthrough, bulk-op scoping |
-| [Computed Properties](./computed.md) | `#[computed(sql = "...")`, `{Model}Computed` ZST, `filter_expr`, Rust-trait registration |
+| [Computed Properties](./computed.md) | `#[computed(sql = "...")]`, `{Model}Computed` ZST, `filter_expr`, Rust-trait registration |
 | [Hooks and Composition](./hooks.md) | `#[model(hooks)]`, `ModelHooks`, before/after lifecycle, `#[model(auditable)]`, `#[model(soft_deletable)]`, `.not_deleted()` |
 | [Secrets Hygiene](./secrets-hygiene.md) | `cargo xtask check-secrets`, allowlist markers, pre-commit and pre-issue workflows |
 | [Agent Guide](./agent-guide.md) | For AI coding agents — reading Djogi code, golden path, common mistakes |
