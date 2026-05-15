@@ -54,6 +54,10 @@ cargo xtask check-secrets --staged          # pre-commit
 cargo xtask check-secrets --stdin < draft.md # pre-issue / pre-PR-body
 cargo xtask check-secrets                    # full repo sweep
 ```
+Public GitHub bodies and comments also go through
+`.github/workflows/public-text-secrets.yml` so repository guards cover
+`issues`, `issue_comment`, `pull_request`, `pull_request_review`,
+and `pull_request_review_comment` text without exposing raw secrets in CI logs.
 
 The scanner reports any URL with embedded `user:password`, any known
 secret env-var assignment, and any PEM private-key block header. Output

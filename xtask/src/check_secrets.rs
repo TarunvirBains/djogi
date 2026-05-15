@@ -225,8 +225,9 @@ const NAMED_SECRET_SUFFIXES: &[&str] = &[
     "_PRIVATE_KEY",
     "_REFRESH_TOKEN",
     "_SECRET",
-    "_TOKEN",
+    "_WEBHOOK",
     "_WEBHOOK_SECRET",
+    "_TOKEN",
 ];
 
 /// Substrings that, if present anywhere in the value, mark it as an obvious
@@ -1242,6 +1243,17 @@ mod tests {
         for f in &findings {
             assert!(!f.excerpt.contains("ghp_abcdef1234567890"));
         }
+    }
+
+    #[test]
+    fn flags_webhook_suffix_assignment() {
+        let findings = scan("PAYMENT_WEBHOOK=whsec_0123456789abcdef");
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f.kind, SecretKind::EnvAssignmentSuffix("_WEBHOOK"))),
+            "got {findings:#?}",
+        );
     }
 
     #[test]

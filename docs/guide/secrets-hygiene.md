@@ -86,6 +86,12 @@ so you can locate them in your draft.
 Always run this against any text you intend to paste into a public
 issue, PR description, PR review comment, or chat channel.
 
+For public GitHub objects, this repository also runs a dedicated workflow
+(`.github/workflows/public-text-secrets.yml`) on `issues`, `issue_comment`,
+`pull_request`, `pull_request_review`, and `pull_request_review_comment`
+events using the same `--stdin` mode. The workflow does not log the raw body
+text; only redacted scanner findings are printed on failure.
+
 ## Allowlist (suppression) markers
 
 Both markers must include the trailing **colon** and a one-line
