@@ -394,10 +394,20 @@ where
                 match (push_filter, since.as_ref(), recover_ids.is_empty()) {
                     (true, None, true) => {
                         acc.push_sql(" WHERE ");
+                        // The filter was extracted from a `PortableQuerySet`
+                        // (gated by `QuerySet::try_portable` which only admits
+                        // `Q::Portable`-rooted trees), so every JSON leaf
+                        // inside it transited the `PortablePredicate<T>`
+                        // trusted boundary. Pass `JsonTrust::Trusted` so the
+                        // recursive walker does not reject Djogi-built
+                        // MirJzSON predicates as forgeries. See
+                        // [`crate::query::portable::JsonTrust`] for the
+                        // full propagation contract.
                         crate::query::portable::emit_basic_predicate::<T>(
                             &mut acc,
                             filter.as_ref().expect("push_filter implies filter"),
                             SqlEmitContext::root(),
+                            crate::query::portable::JsonTrust::Trusted,
                         )?;
                     }
                     (false, None, true) => {}

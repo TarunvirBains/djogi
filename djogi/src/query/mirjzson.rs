@@ -975,12 +975,16 @@ mod tests {
 
     use crate::pg::accumulator::SqlAccumulator;
     use crate::query::SqlEmitContext;
-    use crate::query::portable::emit_basic_predicate;
+    use crate::query::portable::{JsonTrust, emit_basic_predicate};
 
     fn emit_predicate(predicate: PortablePredicate<Fake>) -> String {
         let mut acc = SqlAccumulator::new("");
         let bp = predicate.into_inner();
-        emit_basic_predicate::<Fake>(&mut acc, &bp, SqlEmitContext::root())
+        // The predicate came from a `PortablePredicate<Fake>` built via
+        // the MirJzSON trusted-provenance builder, so pass
+        // `JsonTrust::Trusted`. The new untrusted-rejection coverage
+        // lives in `query::portable`'s test module.
+        emit_basic_predicate::<Fake>(&mut acc, &bp, SqlEmitContext::root(), JsonTrust::Trusted)
             .expect("portable JSON predicate must emit SQL");
         let (sql, _binds) = acc.into_parts();
         sql
@@ -1113,7 +1117,10 @@ mod tests {
         fn count_binds(predicate: PortablePredicate<Fake>) -> usize {
             let mut acc = SqlAccumulator::new("");
             let bp = predicate.into_inner();
-            emit_basic_predicate::<Fake>(&mut acc, &bp, SqlEmitContext::root()).unwrap();
+            // Same trust rationale as `emit_predicate` above — the
+            // predicate originated at the MirJzSON trusted boundary.
+            emit_basic_predicate::<Fake>(&mut acc, &bp, SqlEmitContext::root(), JsonTrust::Trusted)
+                .unwrap();
             let (_sql, binds) = acc.into_parts();
             binds.len()
         }

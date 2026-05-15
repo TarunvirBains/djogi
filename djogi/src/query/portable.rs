@@ -167,6 +167,85 @@ pub struct SqlEmitContext {
     parent_table: Option<&'static str>,
 }
 
+/// Trust marker threaded through SQL emission to gate `LookupOp::Json`
+/// lowering against forged Sassi JSON predicates.
+///
+/// # Why this exists
+///
+/// JSON predicates are unusual among `BasicPredicate<T>` leaves: their
+/// SQL emission bypasses the macro-emitted `Model::__djogi_emit_field_predicate`
+/// dispatcher (whose generated arms statically validate column names
+/// against the model's field table) and routes directly to
+/// [`emit_jsahibon_predicate`]. That helper reads `fp.field_name()` —
+/// the Sassi-side caller-supplied `&'static str` — and emits it as a
+/// SQL column reference. If a raw `sassi::Field::<T, JSahibON>::new("col", _)`
+/// predicate reached the helper, the column name would never have
+/// passed Djogi's identifier validator and the SQL would target a
+/// column the Djogi field surface never blessed.
+///
+/// `PortablePredicate<T>` is the sealed wrapper that establishes
+/// trusted Djogi provenance: its crate-private constructors
+/// ([`PortablePredicate::from_djogi_field`],
+/// [`PortablePredicate::always_true`], [`PortablePredicate::always_false`])
+/// and the operator overloads in [`crate::query::predicate`] only mint
+/// JSON leaves through [`crate::query::mirjzson::wrap_predicate`], which
+/// captures the column from Djogi's identifier-validated
+/// `DjogiField::__sql_field()` route.
+///
+/// # How trust propagates
+///
+/// - [`emit_portable_predicate`] passes [`JsonTrust::Trusted`]
+///   unconditionally — `PortablePredicate<T>` is the trusted-construction
+///   boundary; every JSON leaf inside has Djogi provenance.
+/// - Callers that extracted a bare [`BasicPredicate<T>`] from a
+///   [`PortablePredicate<T>`]-rooted path (e.g.
+///   [`crate::query::QuerySet::is_portable`] /
+///   [`crate::query::QuerySet::try_portable`] reduce a `Q::Portable`-only
+///   tree via `try_reduce_q_ref_to_basic`; the refresh fetcher stores
+///   the reduced `Option<BasicPredicate<T>>` and rebroadcasts it on
+///   full-baseline ticks) also pass [`JsonTrust::Trusted`].
+/// - Recursive [`emit_basic_predicate`] calls (under `And` / `Or` /
+///   `Not` / `Xor`) propagate the caller's trust unchanged. The
+///   recursive walker never gains trust mid-walk — a forged JSON leaf
+///   nested inside an `And` still surfaces `UntrustedJsonPredicate`.
+/// - Any other entry point — and in particular the unit-test path that
+///   constructs a raw `sassi::Field::new("forged", _).jsahibon()...`
+///   predicate directly — passes [`JsonTrust::Untrusted`]. The first
+///   JSON leaf returns
+///   [`PortablePredicateError::UntrustedJsonPredicate`] instead of
+///   dispatching to [`emit_jsahibon_predicate`].
+///
+/// Non-JSON field leaves are unaffected by this flag — their dispatch
+/// routes through `Model::__djogi_emit_field_predicate`, whose
+/// macro-emitted arm matrix is gated by statically-validated column
+/// names independently of the trust marker.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum JsonTrust {
+    /// Predicate originated at a Djogi-trusted boundary
+    /// ([`PortablePredicate<T>`] wrapper or a `BasicPredicate<T>` reduced
+    /// from one). `LookupOp::Json` leaves dispatch to
+    /// [`emit_jsahibon_predicate`].
+    Trusted,
+    /// Predicate has unknown provenance — raw Sassi or otherwise.
+    /// `LookupOp::Json` leaves surface
+    /// [`PortablePredicateError::UntrustedJsonPredicate`].
+    ///
+    /// No non-test production code path constructs this variant —
+    /// every caller of [`emit_basic_predicate`] originates at a
+    /// `PortablePredicate<T>` boundary (`emit_portable_predicate`) or
+    /// extracts from a `try_portable`-gated `Q::Portable` tree
+    /// (`refresh.rs` filter pushdown, `queryset.rs::validate_portable_sql_emit`).
+    /// The variant exists so the trust marker is type-system complete
+    /// and the rejection path is unit-testable from
+    /// `query::portable::tests` against a forged raw Sassi predicate.
+    /// `#[allow(dead_code)]` is therefore correct without papering over
+    /// a real bug — see `phase85_195_forged_*` tests in this module
+    /// for the exercising callers.
+    #[allow(dead_code)]
+    Untrusted,
+}
+
 impl SqlEmitContext {
     /// Root context — no parent table, columns emit unqualified.
     /// Used by `build_select`, `build_count`, `build_update`, `build_delete`,
@@ -256,7 +335,14 @@ pub(crate) fn emit_portable_predicate<T: Model>(
     predicate: &PortablePredicate<T>,
     ctx: SqlEmitContext,
 ) -> Result<(), PortablePredicateError> {
-    emit_basic_predicate::<T>(acc, predicate.inner_ref(), ctx)
+    // `PortablePredicate<T>` is the sealed trusted-construction boundary
+    // (see [`JsonTrust`] for the threat model). Its crate-private
+    // constructors mint provenance through `DjogiField` /
+    // `DjogiPresentField` (non-JSON) or the MirJzSON builder in
+    // `query::mirjzson::wrap_predicate` (JSON). Every JSON leaf inside
+    // `inner` is therefore Djogi-trusted and the trust flag is
+    // unconditional here.
+    emit_basic_predicate::<T>(acc, predicate.inner_ref(), ctx, JsonTrust::Trusted)
 }
 
 /// Emit a `BasicPredicate<T>` borrow into `acc`. Recursive helper for
@@ -264,10 +350,17 @@ pub(crate) fn emit_portable_predicate<T: Model>(
 /// `Xor` walk through this without going back through `PortablePredicate`
 /// (which carries provenance metadata that does not change the SQL
 /// shape).
+///
+/// `trust` is the caller's [`JsonTrust`] marker (see that type for the
+/// threat model and propagation rules). Recursive calls under
+/// composite arms forward the same value unchanged — a forged JSON
+/// leaf nested inside an `And` still surfaces
+/// [`PortablePredicateError::UntrustedJsonPredicate`].
 pub(crate) fn emit_basic_predicate<T: Model>(
     acc: &mut SqlAccumulator,
     bp: &BasicPredicate<T>,
     ctx: SqlEmitContext,
+    trust: JsonTrust,
 ) -> Result<(), PortablePredicateError> {
     match bp {
         BasicPredicate::True => {
@@ -287,7 +380,19 @@ pub(crate) fn emit_basic_predicate<T: Model>(
             // emitter under `emit_jsahibon_predicate` is the only valid
             // lowering route — see `query::mirjzson` for the
             // construction-side contract.
+            //
+            // Trusted provenance is enforced here: an untrusted caller
+            // (raw `sassi::Field::new(...).jsahibon()` predicate that did
+            // not transit `PortablePredicate<T>`) surfaces
+            // `UntrustedJsonPredicate` rather than emitting SQL that
+            // would target a never-validated column. See `JsonTrust`
+            // above for the propagation rules.
             if matches!(fp.op(), crate::types::LookupOp::Json) {
+                if !matches!(trust, JsonTrust::Trusted) {
+                    return Err(PortablePredicateError::UntrustedJsonPredicate {
+                        field: fp.field_name(),
+                    });
+                }
                 emit_jsahibon_predicate::<T>(acc, fp, ctx)
             } else {
                 T::__djogi_emit_field_predicate(acc, fp, ctx)
@@ -303,7 +408,7 @@ pub(crate) fn emit_basic_predicate<T: Model>(
                 if i > 0 {
                     acc.push_sql(" AND ");
                 }
-                emit_basic_predicate::<T>(acc, p, ctx)?;
+                emit_basic_predicate::<T>(acc, p, ctx, trust)?;
             }
             acc.push_sql(")");
             Ok(())
@@ -318,14 +423,14 @@ pub(crate) fn emit_basic_predicate<T: Model>(
                 if i > 0 {
                     acc.push_sql(" OR ");
                 }
-                emit_basic_predicate::<T>(acc, p, ctx)?;
+                emit_basic_predicate::<T>(acc, p, ctx, trust)?;
             }
             acc.push_sql(")");
             Ok(())
         }
         BasicPredicate::Not(inner) => {
             acc.push_sql("NOT (");
-            emit_basic_predicate::<T>(acc, inner, ctx)?;
+            emit_basic_predicate::<T>(acc, inner, ctx, trust)?;
             acc.push_sql(")");
             Ok(())
         }
@@ -334,13 +439,13 @@ pub(crate) fn emit_basic_predicate<T: Model>(
             // Same shape `query::q::xor_to_condition_basic` produces in
             // the legacy bridge.
             acc.push_sql("(((NOT (");
-            emit_basic_predicate::<T>(acc, a, ctx)?;
+            emit_basic_predicate::<T>(acc, a, ctx, trust)?;
             acc.push_sql(")) AND (");
-            emit_basic_predicate::<T>(acc, b, ctx)?;
+            emit_basic_predicate::<T>(acc, b, ctx, trust)?;
             acc.push_sql(")) OR ((");
-            emit_basic_predicate::<T>(acc, a, ctx)?;
+            emit_basic_predicate::<T>(acc, a, ctx, trust)?;
             acc.push_sql(") AND (NOT (");
-            emit_basic_predicate::<T>(acc, b, ctx)?;
+            emit_basic_predicate::<T>(acc, b, ctx, trust)?;
             acc.push_sql("))))");
             Ok(())
         }
@@ -383,14 +488,18 @@ use sassi::predicate::{
 /// Emit a `LookupOp::Json` leaf as SQL.
 ///
 /// The function is the **single** SQL-lowering entry point for JSON
-/// predicates. It:
+/// predicates. The caller (always [`emit_basic_predicate`]) has
+/// already enforced the [`JsonTrust::Trusted`] precondition; this
+/// helper assumes its `fp` originated from a Djogi-trusted
+/// `PortablePredicate<T>`-rooted path. It:
 ///
 /// 1. Downcasts `fp.value_as::<JSahibONPredicateBody>()`. A `None`
-///    return indicates a forged `LookupOp::Json` payload (Sassi's
-///    builders always store a `JSahibONPredicateBody` here) — we
-///    surface `UntrustedJsonPredicate` rather than panicking, even
-///    though the type-system seal upstream of this function makes
-///    construction unreachable for adopter code.
+///    return indicates either a future Sassi schema change that
+///    invalidated the `Arc<JSahibONPredicateBody>` payload contract
+///    or an internal Djogi bug — surfaces as
+///    [`PortablePredicateError::UntrustedJsonPredicate`] rather than a
+///    panic for the same defense-in-depth reason the body trust check
+///    lives upstream.
 /// 2. Dispatches on the body variant, walking the
 ///    [`JSahibONPredicateBody`] tree from `sassi::predicate::jsahibon`.
 ///    Each arm emits the guarded two-valued SQL shape documented in
@@ -1635,6 +1744,12 @@ mod tests {
         name: String,
         active: bool,
         maybe_year: Option<i32>,
+        /// JSahibON-typed payload. Tests never construct a `TestModel`
+        /// instance — the field exists so `sassi::Field<TestModel,
+        /// sassi::JSahibON>::new(...)` can take a `fn(&TestModel) ->
+        /// &sassi::JSahibON` extractor for the forged-raw-Sassi JSON
+        /// predicate rejection tests below.
+        payload: sassi::JSahibON,
     }
 
     impl crate::model::__sealed::Sealed for TestModel {}
@@ -2240,5 +2355,214 @@ mod tests {
         // not `parent.rel.field`; this test does not make `rel.field`
         // portable through generated root metadata."
         assert_eq!(sql, "rel.field");
+    }
+
+    // ── #195: forged raw Sassi `LookupOp::Json` rejection ─────────────────
+    //
+    // Spec at `docs/spec/mirjzson-jsonb-integration.md` §"Trusted Portable
+    // Construction" and §"Tests": "Forged standalone Sassi `LookupOp::Json`
+    // predicates without Djogi provenance are rejected by Djogi lowering."
+    //
+    // These tests construct a `BasicPredicate<TestModel>` directly via the
+    // raw Sassi `sassi::Field<T, JSahibON>::new(...).jsahibon()` builder —
+    // bypassing Djogi's [`crate::query::mirjzson::DjogiField<M, MirJzSON>::
+    // jsahibon`] trusted-construction surface. The body downcasts
+    // correctly to a real `JSahibONPredicateBody` (because Sassi's own
+    // builder produced it), so the upstream "downcast None ⇒ forgery"
+    // branch in `emit_jsahibon_predicate` does NOT trigger. The defense
+    // is the [`JsonTrust::Untrusted`] check at the walker dispatch.
+
+    /// Forged `Field<TestModel, JSahibON>` extractor. Sassi requires a
+    /// `fn(&T) -> &V` pointer (non-capturing). `TestModel::payload` is a
+    /// real field on the test struct so the lifetime relation
+    /// `&'a TestModel -> &'a JSahibON` holds without static gymnastics.
+    /// SQL emission never invokes the extractor — the predicate body
+    /// alone determines the SQL shape — so a never-constructed
+    /// `TestModel` is fine.
+    fn forged_jsahibon_extractor(m: &TestModel) -> &sassi::JSahibON {
+        &m.payload
+    }
+
+    #[test]
+    fn phase85_195_forged_raw_sassi_json_predicate_is_rejected_when_untrusted() {
+        // Raw Sassi field builder — no Djogi-provenance stamp. The
+        // `field_name` "forged_payload" never went through Djogi's
+        // identifier validator.
+        let forged: BasicPredicate<TestModel> = SassiField::<TestModel, sassi::JSahibON>::new(
+            "forged_payload",
+            forged_jsahibon_extractor,
+        )
+        .jsahibon()
+        .exists();
+
+        let mut acc = SqlAccumulator::new("");
+        let result = emit_basic_predicate::<TestModel>(
+            &mut acc,
+            &forged,
+            SqlEmitContext::root(),
+            JsonTrust::Untrusted,
+        );
+
+        match result {
+            Err(PortablePredicateError::UntrustedJsonPredicate { field }) => {
+                assert_eq!(field, "forged_payload");
+            }
+            other => panic!("expected UntrustedJsonPredicate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn phase85_195_forged_json_predicate_nested_in_and_is_rejected() {
+        // Trust does not get "promoted" by nesting. The recursive
+        // walker propagates the caller's `JsonTrust` into every
+        // sub-tree, so a forged JSON leaf wrapped inside an
+        // `And([True, forged_json])` still surfaces
+        // `UntrustedJsonPredicate`. Without this propagation, an
+        // attacker could "launder" a forged leaf by composing it with a
+        // trivial trusted operand.
+        let forged_json: BasicPredicate<TestModel> = SassiField::<TestModel, sassi::JSahibON>::new(
+            "forged_payload",
+            forged_jsahibon_extractor,
+        )
+        .jsahibon()
+        .exists();
+        let nested = BasicPredicate::And(vec![BasicPredicate::True, forged_json]);
+
+        let mut acc = SqlAccumulator::new("");
+        let result = emit_basic_predicate::<TestModel>(
+            &mut acc,
+            &nested,
+            SqlEmitContext::root(),
+            JsonTrust::Untrusted,
+        );
+
+        match result {
+            Err(PortablePredicateError::UntrustedJsonPredicate { field }) => {
+                assert_eq!(field, "forged_payload");
+            }
+            other => panic!("expected UntrustedJsonPredicate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn phase85_195_forged_json_predicate_nested_in_or_is_rejected() {
+        // Mirror of the `And` case for `Or`. Same propagation rule.
+        let forged_json: BasicPredicate<TestModel> = SassiField::<TestModel, sassi::JSahibON>::new(
+            "forged_payload",
+            forged_jsahibon_extractor,
+        )
+        .jsahibon()
+        .exists();
+        let nested = BasicPredicate::Or(vec![BasicPredicate::False, forged_json]);
+
+        let mut acc = SqlAccumulator::new("");
+        let result = emit_basic_predicate::<TestModel>(
+            &mut acc,
+            &nested,
+            SqlEmitContext::root(),
+            JsonTrust::Untrusted,
+        );
+
+        assert!(
+            matches!(
+                result,
+                Err(PortablePredicateError::UntrustedJsonPredicate { field }) if field == "forged_payload"
+            ),
+            "expected UntrustedJsonPredicate(forged_payload), got {result:?}",
+        );
+    }
+
+    #[test]
+    fn phase85_195_forged_json_predicate_nested_in_not_is_rejected() {
+        // Negation does not flip trust. `NOT (forged_json)` is still
+        // a forged JSON leaf walk; the walker rejects it.
+        let forged_json: BasicPredicate<TestModel> = SassiField::<TestModel, sassi::JSahibON>::new(
+            "forged_payload",
+            forged_jsahibon_extractor,
+        )
+        .jsahibon()
+        .exists();
+        let nested = BasicPredicate::Not(Box::new(forged_json));
+
+        let mut acc = SqlAccumulator::new("");
+        let result = emit_basic_predicate::<TestModel>(
+            &mut acc,
+            &nested,
+            SqlEmitContext::root(),
+            JsonTrust::Untrusted,
+        );
+
+        assert!(matches!(
+            result,
+            Err(PortablePredicateError::UntrustedJsonPredicate { .. })
+        ));
+    }
+
+    #[test]
+    fn phase85_195_forged_json_predicate_nested_in_xor_is_rejected() {
+        // XOR's binary shape composes both sides through the recursive
+        // walker (the SQL identity `((NOT a) AND b) OR (a AND (NOT b))`
+        // visits each operand twice). A forged JSON leaf on either side
+        // surfaces `UntrustedJsonPredicate` from the first visit.
+        let forged_json: BasicPredicate<TestModel> = SassiField::<TestModel, sassi::JSahibON>::new(
+            "forged_payload",
+            forged_jsahibon_extractor,
+        )
+        .jsahibon()
+        .exists();
+        let nested = BasicPredicate::Xor(Box::new(BasicPredicate::True), Box::new(forged_json));
+
+        let mut acc = SqlAccumulator::new("");
+        let result = emit_basic_predicate::<TestModel>(
+            &mut acc,
+            &nested,
+            SqlEmitContext::root(),
+            JsonTrust::Untrusted,
+        );
+
+        assert!(matches!(
+            result,
+            Err(PortablePredicateError::UntrustedJsonPredicate { .. })
+        ));
+    }
+
+    #[test]
+    fn phase85_195_untrusted_non_json_field_predicate_dispatches_normally() {
+        // Trust gating only applies to `LookupOp::Json` leaves. A
+        // forged non-JSON leaf (`f.score.eq(42)` via raw Sassi) still
+        // routes through `Model::__djogi_emit_field_predicate`. Hand-
+        // written `impl Model for TestModel` keeps the trait default
+        // (returns `UnsupportedModel`), so the walker surfaces that
+        // typed error rather than `UntrustedJsonPredicate`. Confirms
+        // the trust check does NOT short-circuit non-JSON dispatch.
+        let f = SassiField::<TestModel, i32>::new("score", |m| &m.score);
+        let pred: BasicPredicate<TestModel> = f.eq(42);
+
+        let mut acc = SqlAccumulator::new("");
+        let result = emit_basic_predicate::<TestModel>(
+            &mut acc,
+            &pred,
+            SqlEmitContext::root(),
+            JsonTrust::Untrusted,
+        );
+
+        // `TestModel`'s default `__djogi_emit_field_predicate` returns
+        // `UnsupportedModel`; the trust flag does not intercept this
+        // dispatch.
+        match result {
+            Err(PortablePredicateError::UnsupportedModel { .. }) => {}
+            other => panic!("expected UnsupportedModel from non-JSON dispatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn phase85_195_jsontrust_variants_are_distinct() {
+        // Smoke test — exercises the enum's PartialEq / Eq derives so
+        // a future accidental `#[derive]` removal trips compilation
+        // here rather than silently breaking the trust comparison in
+        // `emit_basic_predicate`.
+        assert_ne!(JsonTrust::Trusted, JsonTrust::Untrusted);
+        assert_eq!(JsonTrust::Trusted, JsonTrust::Trusted);
+        assert_eq!(JsonTrust::Untrusted, JsonTrust::Untrusted);
     }
 }

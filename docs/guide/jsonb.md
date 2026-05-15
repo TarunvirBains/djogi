@@ -292,9 +292,15 @@ Projection back to portable / JSON is named so the cache-boundary direction
 is visible at call sites:
 
 ```rust
-let portable: &sassi::JSahibON = mir3.as_jsahibon();   // borrow
-let owned: sassi::JSahibON = mir3.into_jsahibon();     // consume
-let v: serde_json::Value = mir3.into();                // total — every JSahibON projects
+// `as_jsahibon` borrows — `mir3` stays usable afterwards.
+let portable: &sassi::JSahibON = mir3.as_jsahibon();
+
+// Both `into_jsahibon` and the `Into<serde_json::Value>` impl consume the
+// owner. Clone first so the example demonstrates both shapes without
+// re-typing the construction; production code typically picks one
+// projection per ownership transfer.
+let owned: sassi::JSahibON = mir3.clone().into_jsahibon();
+let v: serde_json::Value = mir3.into();
 ```
 
 ### Equality posture
