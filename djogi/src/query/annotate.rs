@@ -497,16 +497,25 @@ macro_rules! impl_window_annotation_slot {
                 }
             }
 
-            // Window functions have pair-aware composition through
-            // `PairWindowExt::partition_by_pair` /
-            // `order_by_pair_asc` / `order_by_pair_desc`. The slot-
-            // level opt-in returns `true` so the joined-annotated
-            // terminal does not reject the slot type itself. A future
-            // refinement can inspect `WindowSpec.partition_by` /
-            // `.order_by` for `.`-qualified entries to catch the
-            // non-pair-aware-composition case at this gate too.
+            // Rank-family windows (`ROW_NUMBER`, `RANK`, `DENSE_RANK`)
+            // have pair-aware composition through
+            // [`PairWindowExt`](crate::query::joined::PairWindowExt) —
+            // `partition_by_pair` / `order_by_pair_asc` /
+            // `order_by_pair_desc` qualify each stored column with the
+            // side's alias (`"l.<col>"` / `"r.<col>"`). The instance is
+            // joined-safe iff every stored column is so qualified
+            // (vacuously safe when there is no PARTITION BY / ORDER BY,
+            // since `ROW_NUMBER() OVER ()` references no columns).
+            //
+            // A user-built `RowNumber::new().partition_by(f.id())` —
+            // the non-pair-aware path — stores the bare `"id"` and
+            // trips this gate, getting rejected at
+            // [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+            // before SQL build instead of silently emitting
+            // `PARTITION BY id` against a `FROM animals AS l CROSS JOIN
+            // animals AS r` where `id` is ambiguous.
             fn is_joined_safe(&self) -> bool {
-                true
+                self.window.is_pair_qualified()
             }
         }
     };
@@ -569,9 +578,26 @@ macro_rules! impl_window_annotation_slot_generic_v {
                 }
             }
 
-            // See `impl_window_annotation_slot!` for the rationale.
+            // Column-argument window functions (`FIRST_VALUE`,
+            // `LAST_VALUE`, `LEAD`, `LAG`, `NTH_VALUE`) carry a
+            // `target_column` constructed via
+            // `target.into_sql_field().column()` — always a bare
+            // column name validated by
+            // [`crate::ident::assert_plain_ident`]. There is no
+            // pair-aware constructor that would qualify the target as
+            // `"l.<col>"` / `"r.<col>"`, so the emitted SQL would be
+            // `FIRST_VALUE(name) OVER (...)` — ambiguous in self-join
+            // contexts where both pair sides carry a `name` column.
+            //
+            // Reporting `false` here makes
+            // [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+            // reject the slot at the safety gate with a typed
+            // `DjogiError::Validation`. A pair-aware constructor (e.g.
+            // `FirstValueWindow::new_pair(PairSide::Left, ...)`) that
+            // composes the side alias into `target_column` is tracked
+            // as a follow-up slice — see `docs/spec/`.
             fn is_joined_safe(&self) -> bool {
-                true
+                false
             }
         }
     };

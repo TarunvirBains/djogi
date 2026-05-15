@@ -3218,16 +3218,268 @@ mod tests {
     }
 
     #[test]
-    fn window_function_slot_is_joined_safe() {
-        // Window functions have pair-aware composition through
-        // `PairWindowExt::partition_by_pair` so they are joined-safe
-        // at the slot level. The composition's `&'static str` is
-        // pair-side-qualified ("l.id" or "r.id") which keeps the
-        // emitted SQL unambiguous.
+    fn empty_window_function_slot_is_vacuously_joined_safe() {
+        // `ROW_NUMBER() OVER ()` references no columns, so it is
+        // unambiguous in joined contexts regardless of pair shape.
+        // The instance-level safety check (`WindowSpec::is_pair_qualified`)
+        // returns `true` for the empty spec.
         let win = crate::expr::RowNumber::new().alias("rank");
         assert!(
             crate::query::annotate::AnnotationSlot::is_joined_safe(&win),
-            "RowNumber must be joined-safe (composes through PairWindowExt)"
+            "empty-window RowNumber must be joined-safe (no column refs to be ambiguous)"
+        );
+    }
+
+    #[test]
+    fn rank_window_with_bare_partition_by_is_not_joined_safe() {
+        // The exact case from the xhigh blocker:
+        //   `RowNumber::new().partition_by(l.id()).alias("rank")`
+        // The non-pair-aware `partition_by` stores a bare `"id"`, which
+        // would emit `PARTITION BY id` against
+        // `FROM animals AS l CROSS JOIN animals AS r` — `id` is
+        // ambiguous on both sides. The safety gate must reject this
+        // before SQL build.
+        let id_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("id");
+        let win = crate::expr::RowNumber::new()
+            .partition_by(id_ref)
+            .alias("rank");
+        assert!(
+            !crate::query::annotate::AnnotationSlot::is_joined_safe(&win),
+            "RowNumber::partition_by(bare) must be rejected by the joined-annotation safety gate"
+        );
+    }
+
+    #[test]
+    fn rank_window_with_bare_order_by_is_not_joined_safe() {
+        // Symmetric coverage: bare `ORDER BY <col>` also disqualifies.
+        let score_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("age");
+        let win = crate::expr::RowNumber::new()
+            .order_by(score_ref.desc())
+            .alias("rank");
+        assert!(
+            !crate::query::annotate::AnnotationSlot::is_joined_safe(&win),
+            "RowNumber::order_by(bare.desc()) must be rejected by the joined-annotation safety gate"
+        );
+    }
+
+    #[test]
+    fn rank_window_with_pair_partition_by_is_joined_safe() {
+        // The accepted alternative: `partition_by_pair(side, field)`
+        // composes the side alias into the stored string
+        // (`"l.id"` / `"r.id"`). The safety gate accepts these.
+        use crate::query::joined::{PairSide, PairWindowExt};
+
+        let id_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("id");
+        let win = crate::expr::RowNumber::new()
+            .partition_by_pair(PairSide::Left, id_ref)
+            .alias("rank");
+        assert!(
+            crate::query::annotate::AnnotationSlot::is_joined_safe(&win),
+            "RowNumber::partition_by_pair must produce a joined-safe slot"
+        );
+    }
+
+    #[test]
+    fn rank_window_with_pair_order_by_is_joined_safe() {
+        use crate::query::joined::{PairSide, PairWindowExt};
+
+        let age_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("age");
+        let win = crate::expr::RowNumber::new()
+            .order_by_pair_desc(PairSide::Right, age_ref)
+            .alias("rank");
+        assert!(
+            crate::query::annotate::AnnotationSlot::is_joined_safe(&win),
+            "RowNumber::order_by_pair_desc must produce a joined-safe slot"
+        );
+    }
+
+    #[test]
+    fn rank_window_with_mixed_pair_and_bare_is_not_joined_safe() {
+        // A single bare column poisons the whole window — matches the
+        // AND across stored entries in `WindowSpec::is_pair_qualified`.
+        use crate::query::joined::{PairSide, PairWindowExt};
+
+        let id_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("id");
+        let age_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("age");
+        let win = crate::expr::RowNumber::new()
+            .partition_by_pair(PairSide::Left, id_ref)
+            .order_by(age_ref.desc()) // bare path — re-introduces ambiguity
+            .alias("rank");
+        assert!(
+            !crate::query::annotate::AnnotationSlot::is_joined_safe(&win),
+            "any single bare column re-introduces ambiguity and disqualifies the slot"
+        );
+    }
+
+    #[test]
+    fn rank_pair_helpers_apply_to_dense_rank_and_rank_too() {
+        // Coverage parity across the rank family: `Rank` and `DenseRank`
+        // implement the same `PairWindowExt` impl and share the
+        // `impl_window_annotation_slot!` `is_joined_safe` body.
+        use crate::query::joined::{PairSide, PairWindowExt};
+
+        let id_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("id");
+
+        let bare_rank = crate::expr::Rank::new().partition_by(id_ref).alias("r");
+        assert!(
+            !crate::query::annotate::AnnotationSlot::is_joined_safe(&bare_rank),
+            "Rank with bare partition_by must be rejected"
+        );
+
+        let pair_rank = crate::expr::Rank::new()
+            .partition_by_pair(PairSide::Left, id_ref)
+            .alias("r");
+        assert!(
+            crate::query::annotate::AnnotationSlot::is_joined_safe(&pair_rank),
+            "Rank with partition_by_pair must be joined-safe"
+        );
+
+        let bare_dense = crate::expr::DenseRank::new()
+            .partition_by(id_ref)
+            .alias("dr");
+        assert!(
+            !crate::query::annotate::AnnotationSlot::is_joined_safe(&bare_dense),
+            "DenseRank with bare partition_by must be rejected"
+        );
+
+        let pair_dense = crate::expr::DenseRank::new()
+            .partition_by_pair(PairSide::Right, id_ref)
+            .alias("dr");
+        assert!(
+            crate::query::annotate::AnnotationSlot::is_joined_safe(&pair_dense),
+            "DenseRank with partition_by_pair must be joined-safe"
+        );
+    }
+
+    #[test]
+    fn first_value_window_is_never_joined_safe() {
+        // The exact case from the xhigh blocker:
+        //   `FirstValueWindow::new(l.name()).alias("first_name")`
+        // emits `FIRST_VALUE(name) OVER (...)` — `name` is bare and
+        // ambiguous in self-joins. Column-arg windows have no
+        // pair-aware constructor, so the slot returns hard `false`
+        // and the gate rejects every instance.
+        let name_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("age");
+        let win = crate::expr::FirstValueWindow::<i64>::new(name_ref).alias("first_age");
+        assert!(
+            !crate::query::annotate::AnnotationSlot::is_joined_safe(&win),
+            "FirstValueWindow must always be rejected in joined annotations \
+             (bare target column has no pair-aware constructor)"
+        );
+    }
+
+    #[test]
+    fn last_value_window_is_never_joined_safe() {
+        let age_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("age");
+        let win = crate::expr::LastValueWindow::<i64>::new(age_ref).alias("last_age");
+        assert!(
+            !crate::query::annotate::AnnotationSlot::is_joined_safe(&win),
+            "LastValueWindow must always be rejected in joined annotations"
+        );
+    }
+
+    #[test]
+    fn lead_window_is_never_joined_safe() {
+        let age_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("age");
+        let win = crate::expr::LeadWindow::<i64>::new(age_ref).alias("next_age");
+        assert!(
+            !crate::query::annotate::AnnotationSlot::is_joined_safe(&win),
+            "LeadWindow must always be rejected in joined annotations"
+        );
+    }
+
+    #[test]
+    fn lag_window_is_never_joined_safe() {
+        let age_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("age");
+        let win = crate::expr::LagWindow::<i64>::new(age_ref).alias("prev_age");
+        assert!(
+            !crate::query::annotate::AnnotationSlot::is_joined_safe(&win),
+            "LagWindow must always be rejected in joined annotations"
+        );
+    }
+
+    #[test]
+    fn nth_value_window_is_never_joined_safe() {
+        let age_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("age");
+        let win = crate::expr::NthValueWindow::<i64>::new(age_ref, 3).alias("third_age");
+        assert!(
+            !crate::query::annotate::AnnotationSlot::is_joined_safe(&win),
+            "NthValueWindow must always be rejected in joined annotations"
+        );
+    }
+
+    #[test]
+    fn percent_rank_window_without_pair_helpers_rejects_bare_partition() {
+        // `PercentRankWindow` has no `PairWindowExt` impl, so its
+        // `partition_by` stores a bare column. The joined-annotation
+        // gate rejects every non-vacuous instance. The vacuous
+        // `PERCENT_RANK() OVER ()` is accepted (no column refs) but is
+        // semantically degenerate.
+        let id_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("id");
+        let win = crate::expr::PercentRankWindow::new()
+            .partition_by(id_ref)
+            .alias("pct");
+        assert!(
+            !crate::query::annotate::AnnotationSlot::is_joined_safe(&win),
+            "PercentRankWindow with bare partition_by must be rejected — \
+             no PairWindowExt impl exists for this type"
+        );
+    }
+
+    #[test]
+    fn cume_dist_window_without_pair_helpers_rejects_bare_order() {
+        let age_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("age");
+        let win = crate::expr::CumeDistWindow::new()
+            .order_by(age_ref.asc())
+            .alias("cd");
+        assert!(
+            !crate::query::annotate::AnnotationSlot::is_joined_safe(&win),
+            "CumeDistWindow with bare order_by must be rejected"
+        );
+    }
+
+    #[test]
+    fn ntile_window_without_pair_helpers_rejects_bare_partition() {
+        let id_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("id");
+        let win = crate::expr::NtileWindow::new(4)
+            .partition_by(id_ref)
+            .alias("q");
+        assert!(
+            !crate::query::annotate::AnnotationSlot::is_joined_safe(&win),
+            "NtileWindow with bare partition_by must be rejected"
+        );
+    }
+
+    #[test]
+    fn tuple_with_unsafe_window_slot_is_not_joined_safe() {
+        // Tuple AND across slots: one unsafe window slot disqualifies
+        // the whole tuple, even alongside the canonical pair-safe
+        // `PairClosureKinshipSum`.
+        let name_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("age");
+        let safe_slot: PairClosureKinshipSum<MiniClosure> = PairClosureKinshipSum::new();
+        let unsafe_slot = crate::expr::FirstValueWindow::<i64>::new(name_ref).alias("first_age");
+        let tuple = (safe_slot, unsafe_slot);
+        assert!(
+            !crate::query::IntoAggregateTuple::is_joined_safe(&tuple),
+            "tuple containing FirstValueWindow must NOT be joined-safe"
+        );
+    }
+
+    #[test]
+    fn tuple_with_only_pair_safe_window_slots_is_joined_safe() {
+        // Positive case: tuple of (pair-aware RowNumber, kinship sum)
+        // is joined-safe end-to-end.
+        use crate::query::joined::{PairSide, PairWindowExt};
+
+        let id_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("id");
+        let safe_window = crate::expr::RowNumber::new()
+            .partition_by_pair(PairSide::Left, id_ref)
+            .alias("rank");
+        let safe_kinship: PairClosureKinshipSum<MiniClosure> = PairClosureKinshipSum::new();
+        let tuple = (safe_window, safe_kinship);
+        assert!(
+            crate::query::IntoAggregateTuple::is_joined_safe(&tuple),
+            "tuple of (pair-aware RowNumber, kinship sum) must be joined-safe"
         );
     }
 
