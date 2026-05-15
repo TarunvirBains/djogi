@@ -135,7 +135,7 @@ async fn install_phase_zero(ctx: &mut DjogiContext) -> Result<()> {
 ///
 /// Done by hand — the no-regex rule applies even at the example layer
 /// — and limited to the slice of URL syntax the example actually
-/// emits. `postgres://user:pass@host:port/dbname?...` is the only
+/// emits. `postgres://<user>:<password>@<host>:<port>/<database>?...` is the only
 /// shape we accept.
 fn parse_database_name(url: &str) -> Option<String> {
     let after_scheme = url.split_once("://")?.1;

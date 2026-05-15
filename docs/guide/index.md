@@ -32,4 +32,5 @@ For design history and items still on the horizon, see
 | [Proxy Models](./proxy.md) | `#[model(proxy_for)]`, `default_filter`, `default_order`, schema-passthrough, bulk-op scoping |
 | [Computed Properties](./computed.md) | `#[computed(sql = "...")]`, `{Model}Computed` ZST, `filter_expr`, Rust-trait registration |
 | [Hooks and Composition](./hooks.md) | `#[model(hooks)]`, `ModelHooks`, before/after lifecycle, `#[model(auditable)]`, `#[model(soft_deletable)]`, `.not_deleted()` |
+| [Secrets Hygiene](./secrets-hygiene.md) | `cargo xtask check-secrets`, allowlist markers, pre-commit and pre-issue workflows |
 | [Agent Guide](./agent-guide.md) | For AI coding agents — reading Djogi code, golden path, common mistakes |

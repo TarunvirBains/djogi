@@ -32,9 +32,14 @@ services:
   postgres:
     image: postgres:18
     ports:
-      - "5432:5432"
+      # Bind to loopback explicitly. The unqualified `"5432:5432"` shorthand
+      # listens on `0.0.0.0` and would expose the dev DB to anything that can
+      # reach the host's IP; loopback keeps the weak local credentials
+      # behind the host's network stack.
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: djogi
+      # djogi-allow-secret: local-dev example, intentionally weak.
       POSTGRES_PASSWORD: djogi
       POSTGRES_DB: myapp
     volumes:

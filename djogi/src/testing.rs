@@ -317,15 +317,17 @@ pub async fn teardown_test_db(cleanup: TestDbCleanup) {
 /// ([`quoted`]) without special-casing it.
 pub const TEST_NON_SUPERUSER_ROLE: &str = "djogi_test_user";
 
+// djogi-allow-secret: the URL shape in the following rustdoc is a doc-shaped
+// illustration of a local-cluster non-superuser, not a real credential.
 /// Password literal for [`TEST_NON_SUPERUSER_ROLE`].
 ///
 /// Bound at compile time and only ever used inside the local test cluster
-/// — the URL emitted by `connect_test_db_as_non_superuser` is a
-/// `postgres://djogi_test_user:djogi_test_user@…/<per-test-db>` shape that
-/// `pg_hba.conf` for development clusters typically accepts via `trust`
-/// or `md5`. The shared helpers (`quoted`, `sql_string_literal`) handle
-/// the SQL identifier / literal escaping so the constant body itself
-/// never needs to be sanitised at the call site.
+/// — the URL emitted by `connect_test_db_as_non_superuser` follows the
+/// shape `postgres://djogi_test_user:djogi_test_user@<host>/<per-test-db>`,
+/// which `pg_hba.conf` for development clusters typically accepts via
+/// `trust` or `md5`. The shared helpers (`quoted`, `sql_string_literal`)
+/// handle the SQL identifier / literal escaping so the constant body
+/// itself never needs to be sanitised at the call site.
 pub const TEST_NON_SUPERUSER_PASSWORD: &str = "djogi_test_user";
 
 /// Open a [`DjogiContext`] backed by a pool that authenticates as a
@@ -1706,6 +1708,8 @@ mod tests {
         // The admin URL's user is the connecting superuser; the derived
         // non-superuser URL must replace, not append, the userinfo.
         let url = build_non_superuser_url(
+            // djogi-allow-secret: synthetic admin URL used to exercise
+            // userinfo stripping; `secret` is a placeholder password.
             "postgres://admin:secret@db.local:5432/main",
             "djogi_test_001",
         )

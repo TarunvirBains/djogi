@@ -110,10 +110,13 @@ heer.node_id = '1'` so every pool connection inherits the
 HeeRanjID node id.
 
 ```bash
-# 1. Postgres + PostGIS — for example via docker:
+# 1. Postgres + PostGIS — for example via docker. We publish the port to
+# `127.0.0.1` only so the weak local credentials cannot be reached from
+# off-host (the bare `-p 5432:5432` shorthand would bind to `0.0.0.0`).
+# djogi-allow-secret: local-dev example, intentionally weak.
 docker run --rm -d --name elephant-pg \
   -e POSTGRES_PASSWORD=djogi -e POSTGRES_USER=djogi \
-  -e POSTGRES_DB=djogi_test -p 5432:5432 \
+  -e POSTGRES_DB=djogi_test -p 127.0.0.1:5432:5432 \
   postgis/postgis:18-3.6
 
 # 2. Apply schema (drop + recreate; idempotent).
