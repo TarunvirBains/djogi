@@ -131,8 +131,8 @@ pub use insert_select::{
 };
 // Phase 8.5 Cluster 4A — typed pair-tuple query surface re-exports.
 pub use joined::{
-    JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, PairClosureKinshipSum,
-    PairOrderExpr, PairSide, PairWindowExt,
+    JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, PairAreaOverlapRatio,
+    PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt,
 };
 pub use order::{Direction, NullsOrder, OrderExpr};
 // Phase 8eta PR2a — public predicate-wrapper surface.

@@ -45,6 +45,7 @@ use djogi::{DjogiContext, DjogiError};
 const DROP_ORDER: &[&str] = &[
     "DROP TABLE IF EXISTS sightings_outbox CASCADE",
     "DROP TABLE IF EXISTS sightings CASCADE",
+    "DROP TABLE IF EXISTS elephant_ancestries CASCADE",
     "DROP TABLE IF EXISTS elephants CASCADE",
     "DROP TABLE IF EXISTS herd_ranges CASCADE",
     "DROP TABLE IF EXISTS herds CASCADE",
@@ -193,15 +194,22 @@ async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
     .await
     .context("create researchers")?;
 
-    // Herds — HeerId PK.
+    // Herds — HeerId PK. `territory` is the materialised convex-hull
+    // polygon over the herd's sightings; populated post-seed by
+    // `seed::populate_herd_territories` once the `sightings` rows exist.
+    // GiST index on `territory` keeps `ST_Intersection` /
+    // `ST_Intersects` predicates index-eligible on the
+    // `PairAreaOverlapRatio` mating-pairs scoring path (Phase 8.5 #99).
     ctx.raw_ddl(
         "CREATE TABLE herds (
             id                    BIGINT      PRIMARY KEY DEFAULT heerid_next(),
             created_at            TIMESTAMPTZ NOT NULL    DEFAULT now(),
             updated_at            TIMESTAMPTZ NOT NULL    DEFAULT now(),
             name                  TEXT        NOT NULL UNIQUE,
-            estimated_population  INTEGER     NOT NULL
-        )",
+            estimated_population  INTEGER     NOT NULL,
+            territory             GEOGRAPHY(Polygon, 4326)
+        );
+        CREATE INDEX herds_territory_gix ON herds USING GIST (territory);",
     )
     .await
     .context("create herds")?;
@@ -275,12 +283,22 @@ async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
     .context("create elephant_ancestries")?;
 
     // Sightings — spatial point + FTS notes + outbox.
+    //
+    // `herd_id` is the denormalized FK that lets the mating-pairs
+    // demo's typed `Sighting::objects().group_by(|s| s.herd_id())`
+    // pre-aggregate convex hulls without traversing
+    // `s.elephant().herd_id()`. The column was added to the Sighting
+    // struct in #100 but the DDL above missed the addition until
+    // Phase 8.5 Cluster A; the post-#100 model definition is the
+    // authority. `NOT NULL` matches the `ForeignKey<Herd>` (non-
+    // optional) shape on the struct.
     ctx.raw_ddl(
         "CREATE TABLE sightings (
             id              BIGINT      PRIMARY KEY DEFAULT heerid_next(),
             created_at      TIMESTAMPTZ NOT NULL    DEFAULT now(),
             updated_at      TIMESTAMPTZ NOT NULL    DEFAULT now(),
             elephant_id     BIGINT      NOT NULL    REFERENCES elephants(id),
+            herd_id         BIGINT      NOT NULL    REFERENCES herds(id),
             observed_by_id  BIGINT      NOT NULL    REFERENCES researchers(id),
             location        GEOGRAPHY(Point, 4326) NOT NULL,
             observed_at     TIMESTAMPTZ NOT NULL,
@@ -291,7 +309,8 @@ async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
         );
         CREATE INDEX sightings_location_gix    ON sightings USING GIST (location);
         CREATE INDEX sightings_search_gin      ON sightings USING GIN (search);
-        CREATE INDEX sightings_elephant_id_idx ON sightings (elephant_id);",
+        CREATE INDEX sightings_elephant_id_idx ON sightings (elephant_id);
+        CREATE INDEX sightings_herd_id_idx     ON sightings (herd_id);",
     )
     .await
     .context("create sightings")?;

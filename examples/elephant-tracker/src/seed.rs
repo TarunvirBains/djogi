@@ -49,11 +49,39 @@ struct HerdSeed {
     /// Sightings are jittered around this point.
     center_lat: f64,
     center_lon: f64,
+    /// Optional wandering-sighting bridge to a neighbour herd's
+    /// territory. When set, the seed adds [`WANDERING_SIGHTINGS_PER_HERD`]
+    /// jittered sightings near `(wander_lat, wander_lon)` in addition
+    /// to the 50 clustered around the home centre. The convex hull
+    /// of all sightings then extends toward the neighbour, so the
+    /// pair-tuple `PairAreaOverlapRatio<Herd, Herd>` annotation
+    /// surfaces a non-binary overlap value for the mating-pairs demo
+    /// — the user-visible payoff of the typed pair-side spatial
+    /// retrofit (#99 closure deliverable; the substrate would
+    /// otherwise return only 0.0 / 1.0 against this geographically-
+    /// disjoint herd layout).
+    ///
+    /// Modelled on real-world elephant migration: Amboseli (Kenya) +
+    /// Maasai-Mara (Kenya) share the Mara/Amboseli ecosystem corridor;
+    /// herds individually centred on each park have observed
+    /// crossings into the other's range. Only those two herds get a
+    /// `wander_to` value — Selous (Tanzania) and Hwange (Zimbabwe) sit
+    /// on different continental ecosystems and stay disjoint by design,
+    /// which keeps the demo's `score > 0` candidate pool meaningfully
+    /// herd-local while surfacing the graduated-overlap case where
+    /// it's biologically plausible.
+    wander_to: Option<(f64, f64)>,
     /// Population estimate at last census.
     estimated_population: i32,
     /// Researcher's name + email + notes.
     researcher: (&'static str, &'static str, &'static str),
 }
+
+/// Number of wandering sightings added per `wander_to`-set herd, on
+/// top of the 50 home-cluster sightings. Five is enough to extend the
+/// convex hull noticeably toward the neighbour without dominating the
+/// home-herd hull (which would over-state the overlap ratio).
+const WANDERING_SIGHTINGS_PER_HERD: usize = 5;
 
 const HERDS: &[HerdSeed] = &[
     HerdSeed {
@@ -75,6 +103,8 @@ const HERDS: &[HerdSeed] = &[
         ],
         center_lat: -2.65,
         center_lon: 36.97,
+        // Wander toward Maasai-Mara-B's centre — shared ecosystem.
+        wander_to: Some((-1.50, 35.07)),
         estimated_population: 78,
         researcher: (
             "Aisha Otieno",
@@ -96,6 +126,8 @@ const HERDS: &[HerdSeed] = &[
         ranges: &[("KEN", "wet"), ("TZA", "dry"), ("UGA", "wet")],
         center_lat: -1.50,
         center_lon: 35.07,
+        // Wander toward Amboseli-A's centre — shared ecosystem.
+        wander_to: Some((-2.65, 36.97)),
         estimated_population: 102,
         researcher: (
             "Brian Kimani",
@@ -116,6 +148,10 @@ const HERDS: &[HerdSeed] = &[
         ranges: &[("TZA", "dry"), ("UGA", "wet")],
         center_lat: -8.50,
         center_lon: 38.00,
+        // No wandering — Selous sits on a different ecosystem, stays
+        // disjoint by design so the demo retains a `score = 0` cohort
+        // for genuinely-disjoint cross-herd pairs.
+        wander_to: None,
         estimated_population: 55,
         researcher: (
             "Catherine Mtui",
@@ -138,6 +174,9 @@ const HERDS: &[HerdSeed] = &[
         ranges: &[("ZWE", "dry"), ("BWA", "wet"), ("BWA", "dry")],
         center_lat: -18.66,
         center_lon: 26.96,
+        // No wandering — Hwange (Zimbabwe/Botswana) is on a different
+        // continental ecosystem from the Kenya/Tanzania herds.
+        wander_to: None,
         estimated_population: 134,
         researcher: (
             "David Ncube",
@@ -203,6 +242,17 @@ async fn seed_programmatic(pool: &DjogiPool) -> Result<()> {
                 sources_visited = report.sources_visited,
                 "materialized ElephantAncestry closure"
             );
+
+            // Materialize per-herd territory polygons from the
+            // sightings we just committed. The mating-pairs demo's
+            // `PairAreaOverlapRatio` annotation reads
+            // `herds.territory` directly on both sides of a self-pair
+            // join so the cross-herd overlap ratio lands in one SQL
+            // pass without per-query convex-hull computation.
+            // Adopters in production refresh this on the sightings
+            // write cadence (event listener, periodic job); the demo
+            // refreshes it once at seed time.
+            populate_herd_territories(ctx).await?;
 
             Ok::<_, DjogiError>(())
         })
@@ -422,6 +472,46 @@ async fn seed_one_herd(
         .await?;
     }
 
+    // 6) Wandering sightings — when `wander_to` is set, add
+    //    [`WANDERING_SIGHTINGS_PER_HERD`] sightings jittered around the
+    //    neighbour herd's centre. This stretches the herd's convex hull
+    //    toward the neighbour so the pair-tuple `PairAreaOverlapRatio`
+    //    annotation surfaces a non-binary overlap value (the user-
+    //    visible payoff of the #99 retrofit). The "wandering" framing
+    //    matches real-world elephant migration patterns through shared
+    //    ecosystem corridors; the matriarch is the observed individual
+    //    here too, mirroring the home-cluster sighting model so we
+    //    don't have to add a separate "scout" elephant.
+    if let Some((wander_lat, wander_lon)) = spec.wander_to {
+        for s in 0..WANDERING_SIGHTINGS_PER_HERD {
+            let lat = wander_lat + rng.jitter(0.05);
+            let lon = wander_lon + rng.jitter(0.05);
+            let days_back = (rng.next_u32() % 90) as i64;
+            let observed_at = now - time::Duration::days(days_back);
+            let notes = format!(
+                "wandering sighting #{} near neighbour herd corridor (matriarch in transit)",
+                s
+            );
+            let _ = Sighting::create(
+                ctx,
+                Sighting {
+                    id: <djogi::HeerId as djogi::PrimaryKey>::sentinel(),
+                    created_at: djogi::DateTime::UNIX_EPOCH,
+                    updated_at: djogi::DateTime::UNIX_EPOCH,
+                    elephant_id: ForeignKey::new(matriarch.id),
+                    herd_id: ForeignKey::new(herd.id),
+                    observed_by_id: ForeignKey::new(researcher.id),
+                    location: GeoPoint::new(lat, lon).map_err(|e| {
+                        DjogiError::Db(djogi::DbError::other(format!("GeoPoint::new: {e}")))
+                    })?,
+                    observed_at,
+                    notes,
+                },
+            )
+            .await?;
+        }
+    }
+
     Ok(())
 }
 
@@ -492,4 +582,71 @@ impl Lcg {
         let n = self.next_u32() as f64 / u32::MAX as f64; // 0..=1
         (n * 2.0 - 1.0) * amplitude
     }
+}
+
+/// Populate every herd's `territory` polygon column from the convex hull
+/// of its sightings.
+///
+/// Runs once at the end of `seed_programmatic` inside the same
+/// `atomic()` transaction, so a partial sighting batch never leaves the
+/// herds half-populated. Uses djogi's typed grouped-aggregate surface
+/// (`Sighting::objects().group_by(|s| s.herd_id()).annotate(|s|
+/// s.location().convex_hull())`) — no raw SQL on this path.
+///
+/// Why this is a separate function, not inlined into the herd loop:
+/// the convex hull needs every sighting for the herd to be committed
+/// before it can be computed. Inlining into `seed_one_herd` would
+/// require an awkward "commit sightings then re-update herd" shape
+/// inside the per-herd scope; pulling the territory pass into a
+/// post-batch step keeps each herd's sighting writes contiguous and
+/// the territory write atomic-but-after.
+///
+/// `ST_ConvexHull(ST_Collect(point...))` returns:
+/// - A `POLYGON` for ≥ 3 non-collinear points — the common case.
+/// - A `LINESTRING` for 2 points or 3 collinear ones.
+/// - A `POINT` for 1 point or fully coincident points.
+///
+/// The `Herd.territory` column is `GEOGRAPHY(Polygon, 4326)`, so the
+/// non-polygon degenerate cases would fail to decode into `Polygon`.
+/// The seed's 50-sightings-per-herd + per-cluster jitter
+/// (`seed_one_herd` step 5) guarantees every herd has ≥ 3
+/// non-collinear sightings, so the polygon shape is always reachable.
+/// Adopters with sparse-sighting herds would handle the degenerate
+/// case by either gating their fetch with `WHERE COUNT(*) >= 3` or
+/// catching the EWKB decode error and falling back to a buffered
+/// `ST_Centroid` for single-point herds.
+async fn populate_herd_territories(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
+    use djogi::HeerId;
+    use std::collections::HashMap;
+
+    // One typed fetch over the grouped-aggregate surface — emits
+    // `SELECT herd_id, ST_ConvexHull(ST_Collect(location::geometry))::geography
+    //  FROM sightings GROUP BY herd_id`. The group_by key comes back
+    // as `ForeignKey<Herd>` because `s.herd_id()` is an FK column on
+    // Sighting; we unwrap to the inner `HeerId` for the lookup map.
+    let hulls_by_fk: Vec<(djogi::ForeignKey<Herd>, djogi::geo::Polygon)> = Sighting::objects()
+        .group_by(|s| s.herd_id())
+        .annotate(|s| s.location().convex_hull())
+        .fetch_all(ctx)
+        .await?;
+    let mut by_herd: HashMap<HeerId, djogi::geo::Polygon> = HashMap::new();
+    for (fk, hull) in hulls_by_fk {
+        by_herd.insert(fk.key(), hull);
+    }
+
+    // Re-fetch every herd and `save()` with the territory populated.
+    // On first seed every herd flips from NULL → Some; on re-seed
+    // unchanged hulls are written back identically (idempotent).
+    let mut herds: Vec<Herd> = Herd::objects().fetch_all(ctx).await?;
+    for herd in herds.iter_mut() {
+        if let Some(hull) = by_herd.remove(&herd.id) {
+            herd.territory = Some(hull);
+            herd.save(ctx).await?;
+        }
+    }
+    tracing::info!(
+        herd_count = herds.len(),
+        "populated Herd.territory convex hulls"
+    );
+    Ok(())
 }

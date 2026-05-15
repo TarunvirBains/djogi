@@ -581,7 +581,14 @@ pub mod prelude {
     // adopters to add a `serde` line to their `Cargo.toml` and a separate
     // `use serde::*` clause is friction the framework can absorb.
     pub use ::serde::{Deserialize, Serialize};
-    // Spatial primitive — gated behind the `spatial` feature flag.
+    // Spatial primitives — gated behind the `spatial` feature flag.
+    // `GeoPoint` covers per-row point geometries (lat/lon); `Polygon`
+    // covers per-row polygonal geometries (convex hulls, territories,
+    // service areas) used by the spatial aggregate surface
+    // (`AggregateExpr<Polygon>` from `.convex_hull()`,
+    // `.union()`/`.mem_union()`) and consumed by pair-tuple spatial
+    // annotations (`PairAreaOverlapRatio<L, R>` over two
+    // per-row polygon columns).
     #[cfg(feature = "spatial")]
-    pub use crate::geo::GeoPoint;
+    pub use crate::geo::{GeoPoint, Polygon};
 }
