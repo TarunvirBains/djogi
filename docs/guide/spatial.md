@@ -19,7 +19,7 @@ built on the Phase 4 expression substrate.
 - Shape predicates on `FieldRef` — `contains`, `intersects`, `touches`,
   `within` — across any two compatible `GeographyValue` types.
 - Bounding-box prefilter (`bounded_by`) and a first-class `distance_to`
-  expression composable into `filter_expr` / `annotate` / `order_by`.
+  expression composable into `filter_expr` and expression-aware ordering.
 - Spatial grouping — `group_by_region` / `count_by_region`,
   `cluster_by_proximity` (DBSCAN), `bucket_by_cell` (geohash).
 - `#[djogi_test(extensions = [...])]` auto-provisions PostGIS (or any
@@ -484,6 +484,111 @@ column-aggregate `AggOp` surface; tracked in
 [#92](https://github.com/TarunvirBains/djogi/issues/92) as Cluster F
 work — same v0.1.0 timeline, separate execution unit because the IR
 shape differs.
+
+---
+
+## Intersection expressions (Phase 8-Zero T17)
+
+Two static constructors on `Expr` expose PostGIS's `ST_Intersection` /
+`ST_Area` pair as typed expressions composable with `filter_expr` and
+arithmetic operators.
+
+> **`annotate` limitation (v0.1.0).** `QuerySet::annotate` accepts a
+> closure returning an `AggregateExpr` or window-function expression — it
+> does **not** accept a bare `Expr<T>` today. `Expr::intersection_of` and
+> `Expr::area_of_intersection` return `Expr<Polygon>` / `Expr<f64>`, so
+> they are not directly usable as `annotate` values. They compose in any
+> expression context that accepts `Expr<T>` — `filter_expr`, arithmetic
+> combinations with other `Expr` nodes, and comparison methods (`.lt`,
+> `.gte`, etc.). Annotating by a bare expression is tracked as a future
+> phase item alongside the broader `Expr<T>` annotation deferral (see
+> [Computed Properties](./computed.md)).
+
+### `Expr::intersection_of` — raw intersection geometry
+
+```rust
+use djogi::{prelude::*, geo::Polygon};
+
+let overlap_shape: Expr<Polygon> =
+    Expr::intersection_of(&hull_a, &hull_b);
+```
+
+Emitted SQL:
+
+```sql
+ST_Intersection($n::bytea::geometry, $m::bytea::geometry)::geography
+```
+
+Both inputs are cast `::bytea::geometry` (PostGIS 3.x has no `geography`
+overload for `ST_Intersection`); the result is cast `::geography` so
+`Polygon`'s `FromSql` codec can decode it.
+
+> **⚠ Decode safety warning.** The expression returns `Expr<Polygon>`.
+> Decoding succeeds **only** when `ST_Intersection` yields a single
+> `POLYGON`. PostGIS may return a different geometry type even for
+> polygonal inputs that genuinely overlap:
+>
+> | Case | PostGIS result | Decode outcome |
+> |---|---|---|
+> | Disjoint inputs | empty geometry | **decode error** |
+> | Boundary-only contact | `LINESTRING` or `POINT` | **decode error** |
+> | Multi-part overlap | `MULTIPOLYGON` or `GEOMETRYCOLLECTION` | **decode error** |
+>
+> `FieldRef::intersects(...)` guards against the disjoint case only — it
+> does NOT guarantee the result will be a single `POLYGON`.
+>
+> **For most use cases, prefer `Expr::area_of_intersection` instead.** It
+> wraps the result in `ST_Area`, always returns `f64`, and yields `0.0`
+> for all non-overlapping pairs without any guard.
+
+### `Expr::area_of_intersection` — overlap area in square meters
+
+```rust
+// Overlap percentage — safe for disjoint polygons (yields 0.0).
+let pct: Expr<f64> =
+    Expr::area_of_intersection(&hull_a, &hull_b) / Expr::area_of(&hull_a);
+```
+
+Emitted SQL:
+
+```sql
+ST_Area(ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography)
+/ ST_Area($3::bytea::geography)
+```
+
+`$1` and `$3` both bind `hull_a`'s EWKB bytes; `$2` binds `hull_b`'s.
+Each `Expr` node compiles to its own `push_bind` call, so the same
+geometry value binds as a fresh parameter at each use site rather than
+being referenced by a shared positional index. The repeated bind is cheap
+(a `Vec<u8>` clone for each side) and keeps the SQL emitter stateless.
+
+`Expr::area_of_intersection(a, b)` and `Expr::area_of(g)` both return
+`Expr<f64>` and compose with the full arithmetic operator set (`/`, `*`,
+`+`, `-`) as well as comparison methods (`.lt`, `.gte`, `.eq`, …). This
+makes overlap-percentage scoring — a common territory-analysis pattern —
+expressible in one typed chain:
+
+```rust
+// Is a at least 50 % covered by b?
+let heavily_overlapping = Zone::objects()
+    .filter_expr(|_| {
+        Expr::area_of_intersection(&hull_a, &hull_b)
+            .gte(Expr::area_of(&hull_a) * Expr::literal(0.5_f64))
+    })
+    .fetch_all(&mut ctx)
+    .await?;
+```
+
+When the inputs are disjoint, `ST_Intersection` returns an empty geometry
+and `ST_Area` over an empty geography returns `0.0` — no special guard is
+needed.
+
+### Choosing between the two
+
+| Need | Use |
+|---|---|
+| Area overlap (ratio, threshold, scoring) | `Expr::area_of_intersection` |
+| Inspect/store the raw intersection shape | `Expr::intersection_of` — only when caller guarantees a simple single-polygon result |
 
 ---
 

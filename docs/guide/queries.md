@@ -382,6 +382,207 @@ DDL-style reaches for `TRUNCATE` via `ctx.raw_execute`.
 
 ---
 
+## Set operations (Phase 8.5)
+
+`QuerySet<T>` exposes four SQL set operators — `union`, `union_all`,
+`intersect`, and `except` — each of which combines two same-model
+querysets into a `SetOpQuerySet<T>`. Both arms must carry the same `T:
+Model`; the result rows decode through `T`'s existing `FromPgRow` impl.
+
+```rust
+use djogi::prelude::*;
+
+// Each set operation consumes both arms, so construct fresh querysets for
+// each call rather than trying to reuse a moved binding.
+
+// UNION — de-duplicated union of both result sets.
+let rows: Vec<Dog> = Dog::objects().filter(|f| f.status().eq(Status::Adopted))
+    .union(Dog::objects().filter(|f| f.status().eq(Status::Fostered)))
+    .fetch_all(&mut ctx).await?;
+
+// UNION ALL — duplicate-preserving union.
+let rows: Vec<Dog> = Dog::objects().filter(|f| f.status().eq(Status::Adopted))
+    .union_all(Dog::objects().filter(|f| f.status().eq(Status::Fostered)))
+    .fetch_all(&mut ctx).await?;
+
+// INTERSECT — rows present in both arms (de-duplicated).
+let rows: Vec<Dog> = Dog::objects().filter(|f| f.status().eq(Status::Adopted))
+    .intersect(Dog::objects().filter(|f| f.status().eq(Status::Fostered)))
+    .fetch_all(&mut ctx).await?;
+
+// EXCEPT — rows in the left arm not in the right arm (de-duplicated).
+let rows: Vec<Dog> = Dog::objects().filter(|f| f.status().eq(Status::Adopted))
+    .except(Dog::objects().filter(|f| f.status().eq(Status::Fostered)))
+    .fetch_all(&mut ctx).await?;
+```
+
+### Outer modifiers
+
+`SetOpQuerySet<T>` exposes `order_by`, `limit`, and `offset` that apply to
+the **combined** result — after the set operator:
+
+```rust
+let rows: Vec<Dog> = Dog::objects()
+    .filter(|f| f.status().eq(Status::Adopted))
+    .union(Dog::objects().filter(|f| f.status().eq(Status::Fostered)))
+    .order_by(|f| f.name().asc())
+    .limit(20)
+    .offset(0)
+    .fetch_all(&mut ctx)
+    .await?;
+```
+
+Per-arm `.order_by(...)` / `.limit(...)` are legal and apply inside each
+arm's parenthesised SQL. Outer ordering applies to the merged row set.
+
+### Available terminals
+
+| Method | Returns |
+|---|---|
+| `.fetch_all(&mut ctx)` | `Result<Vec<T>, DjogiError>` |
+| `.first(&mut ctx)` | `Result<Option<T>, DjogiError>` |
+| `.count(&mut ctx)` | `Result<i64, DjogiError>` |
+
+### Invalid-arm validation
+
+`DjogiError::SetOpArmInvalid` is returned at SQL-build time (before any
+database round-trip) when an arm carries state incompatible with a set-op
+shape:
+
+- `.prefetch(...)` registrations
+- `.select_related(...)` registrations
+- `.select_for_update(...)` / `.nowait()` / `.skip_locked()` row locks
+These leak structural shape (extra projections, locks) into a context where
+the arm is emitted as a plain `SELECT t.* FROM t`. Silently dropping them
+would be a correctness bug.
+
+`DjogiError::SetOpOuterOrderingInvalid` fires when the outer `order_by`
+carries an expression-form term Postgres rejects on set-operation `ORDER
+BY` — for example, `order_by_distance(...)` (which lowers to
+`ST_Distance(...)`). Postgres's grammar restricts set-operation outer `ORDER
+BY` to column names or position numbers. Per-arm spatial ordering is still
+legal; combined-result spatial ordering is not supported today.
+
+### Nested composition
+
+`union` / `union_all` / `intersect` / `except` are also available on
+`SetOpQuerySet<T>`, so operations chain naturally:
+
+```rust
+a.union(b).intersect(c)
+// emits: ((LEFT) UNION (RIGHT)) INTERSECT (c_select)
+```
+
+---
+
+## INSERT SELECT — bulk copy (Phase 8.5)
+
+`QuerySet::insert_into::<T, _, _>(...)` executes a typed
+`INSERT INTO target (cols…) SELECT exprs… FROM source [WHERE …]` —
+copying rows from one model's queryset into another model's table without
+a round-trip through Rust.
+
+```rust
+use djogi::prelude::*;
+
+let cutoff = /* some DateTime */;
+
+// Archive completed orders.
+let rows_copied: u64 = CompletedOrder::objects()
+    .filter(|f| f.completed_at().lt(cutoff))
+    .insert_into::<OrderArchive, _, _>(|target, source| vec![
+        target.order_id().copy_from(source.id().as_insert_source()),
+        target.title().copy_from(source.title().as_insert_source()),
+        target.completed_at().copy_from(source.completed_at().as_insert_source()),
+    ])
+    .execute(&mut ctx)
+    .await?;
+```
+
+The type parameters: `T` = target model (must be named at the call site —
+nothing else in the expression carries it); the two `_` wildcards are the
+closure type and return-shape type, inferred by rustc.
+
+### Column mapping — `as_insert_source` and `copy_from`
+
+`FieldRef::as_insert_source()` wraps a source-side field as an
+`InsertSelectSource<S, V>`. It accepts only calls from the source field
+bag (second closure argument).
+
+`FieldRef::copy_from(source)` pairs a target-side field with a source
+operand. Swapping sides is a compile error:
+
+```rust
+// OK — target field ← source field.
+target.title().copy_from(source.title().as_insert_source())
+
+// Compile error — source/target mismatch caught by the type system.
+source.title().copy_from(target.title().as_insert_source())
+```
+
+Literal values are also valid source operands via `InsertSelectSource::literal`,
+provided the value implements `Into<Expr<V>>` for the target column's type `V`.
+For a `String` column this is straightforward:
+
+```rust
+target.note().copy_from(InsertSelectSource::literal("archived".to_string()))
+```
+
+For custom types such as enums, you must implement `Into<Expr<YourType>>` before
+`literal` accepts the value — see the rustdoc for `InsertSelectSource::literal`
+for the required bridge.
+
+### Framework columns
+
+The target's framework columns (`id`, `created_at`, `updated_at`) are
+populated by their column-level `DEFAULT` clauses — they are never
+included in the emitted INSERT column list unless explicitly mapped in the
+closure. This matches `Model::create`'s contract.
+
+### Rejected source states
+
+`DjogiError::Validation` is returned at execution time — **before any SQL
+is issued** — when the source queryset carries state incompatible with
+INSERT SELECT, or when the column mapping itself is structurally invalid.
+Validation runs even when the source queryset is `.none()`-derived so that
+a programming error does not hide behind a silent `Ok(0)`.
+
+**Column-mapping validations:**
+
+- **Empty mapping** — the closure returned zero column pairs. Postgres
+  rejects `INSERT INTO t () SELECT ...` as a syntax error; Djogi surfaces
+  the diagnostic with the target table name before the SQL leaves the
+  framework.
+- **Duplicate target column** — the same target column appears more than
+  once in the mapping (Postgres SQLSTATE `42701`). Pre-validated so the
+  error message names the offending column rather than the raw SQLSTATE.
+
+**Source-queryset state rejections:**
+
+- `.prefetch(...)` registrations — prefetch is a post-fetch row-stitching
+  step; INSERT SELECT returns no rows.
+- `.select_related(...)` registrations — the join expands the SELECT list;
+  the column mapping closure references single-model columns and cannot
+  silently drop the join.
+- `.select_for_update(...)` / `.nowait()` / `.skip_locked()` row locks —
+  `SELECT ... FOR UPDATE` inside INSERT SELECT is valid Postgres semantics
+  (locking source rows for the archival duration), but the v0.1.0 surface
+  does not compose row locks with INSERT SELECT. Drop the lock call before
+  `.insert_into(...)`.
+- `.distinct()` / `.distinct_on(...)` — deduplication inside INSERT SELECT
+  is also valid Postgres, but `DISTINCT ON` requires the deduplication
+  columns to appear first in `ORDER BY` and in the SELECT projection —
+  neither of which the closure-built mapping guarantees. All non-default
+  distinct modes are rejected in v0.1.0.
+
+### Return value and RETURNING
+
+The terminal returns the affected row count (`u64`). `RETURNING` for
+INSERT SELECT is not in v0.1.0 — follow up with a SELECT on the target
+when you need the inserted rows back.
+
+---
+
 ## Recursive / tree queries
 
 For self-referential data — file-system trees, org charts, message
@@ -431,8 +632,10 @@ For multi-edge graphs (e.g., a pedigree where both `mother_id` and
 `RelationPath`:
 
 ```rust
+// `ElephantRelated::mother()` is the generated `RelationPath` for the
+// `mother_id` self-FK column (`_id` suffix is stripped by the macro).
 let mothers_descendants: RecursiveQuerySet<Elephant> = Elephant::objects()
-    .tree_descendants(Elephant::FIELDS.mother_id().path(), root_id);
+    .tree_descendants(ElephantRelated::mother(), root_id);
 ```
 
 `RecursiveQuerySet` ships three optional modifiers beyond the base
@@ -645,8 +848,6 @@ on `DjogiContext` only as a justified raw-SQL bypass: the enclosing item
 must carry `#[djogi::deliberately_bypass_convention_with_raw_sql]` and an
 adjacent `// JUSTIFICATION ...` comment. See [Models §Rule 3][models-raw]
 for the raw-query surface.
-
-[models-raw]: ./agent-guide.md#rule-3-use-djogiraw-for-queries-the-model-trait-and-queryset-dont-cover
 
 The raw path sits next to the typed one — a query that starts as
 `QuerySet` can pick up a raw tail when a feature isn't shipped yet,

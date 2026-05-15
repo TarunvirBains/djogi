@@ -2,7 +2,7 @@
 
 # Djogi Guides
 
-Documents describing the shipped framework surface (Phases 1 through 7.5).
+Documents describing the shipped framework surface (Phases 1 through 8.5).
 For design history and items still on the horizon, see
 [the roadmap](../roadmap/index.md).
 
@@ -11,7 +11,7 @@ For design history and items still on the horizon, see
 | [Getting Started](./getting-started.md) | Installation, first model, first CRUD, first test |
 | [Connection Pool](./pool.md) | `DjogiPool` builder, `post_connect` hook, `raw_with_client` raw-driver bypass (via `RawPoolAccessExt`), env > TOML > default sizing |
 | [Models](./models.md) | `#[model(...)]` attributes, `#[field(...)]` attributes, Phase 1 field types |
-| [Queries](./queries.md) | `QuerySet<T>`, filter closures, programmatic filters, bulk update/delete, recursive/tree queries, pair-tuple closure self-joins, `.cache(&pool)?` |
+| [Queries](./queries.md) | `QuerySet<T>`, filter closures, programmatic filters, bulk update/delete, set operations (`union`/`intersect`/`except`), INSERT SELECT bulk copy, recursive/tree queries, pair-tuple closure self-joins, `.cache(&pool)?` |
 | [Query Aggregation](./query-aggregation.md) | `group_by` / `rollup` / `cube` / `group_by_sets`, `annotate`, `having`, window frames, DISTINCT aggregates, spatial grouping |
 | [Relations](./relations.md) | `ForeignKey<T>`, `OneToOneField<T>`, prefetch, `select_related`, reverse accessors, explicit-through M2M |
 | [Transactions](./transactions.md) | `DjogiContext`, `atomic()`, savepoint nesting, `on_commit`, row locks, `retry_on_conflict` |
@@ -29,4 +29,7 @@ For design history and items still on the horizon, see
 | [Apps](./apps.md) | `djogi::apps!` subsystem, `#[model(app = ...)]`, retirement flow with tombstones, migration grouping |
 | [Migrations](./migrations.md) | Compose / status / attune / db reset / db seed / docs commands; ledger; library APIs; classifications; out-of-order policy; PK-type flips |
 | [Authentication](./auth.md) | `DjogiAuth` trait, `AuthContext`, `PasswordHash`, auto-`set_tenant`, `with_no_tenant_scope` |
+| [Proxy Models](./proxy.md) | `#[model(proxy_for)]`, `default_filter`, `default_order`, schema-passthrough, bulk-op scoping |
+| [Computed Properties](./computed.md) | `#[computed(sql = "...")]`, `{Model}Computed` ZST, `filter_expr`, Rust-trait registration |
+| [Hooks and Composition](./hooks.md) | `#[model(hooks)]`, `ModelHooks`, before/after lifecycle, `#[model(auditable)]`, `#[model(soft_deletable)]`, `.not_deleted()` |
 | [Agent Guide](./agent-guide.md) | For AI coding agents — reading Djogi code, golden path, common mistakes |

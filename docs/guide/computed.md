@@ -9,9 +9,10 @@ other columns at query time, not stored as its own column. Computed
 properties come in two flavours:
 
 - **SQL-projectable** — defined via `#[computed(sql = "...")]` on a struct
-  field. Used in `.annotate()`, `.filter_expr()`, and `.order_by()` through
-  the `{Model}Computed` ZST. The expression evaluates server-side; no
-  storage column is allocated.
+  field. Used in `.filter_expr()` through the `{Model}Computed` ZST in
+  v0.1.0. The expression evaluates server-side; no storage column is
+  allocated. (`.annotate()` and `.order_by()` support for bare `Expr<T>`
+  is deferred — see the limitations note below.)
 - **Rust-trait** — defined by implementing a Rust trait via
   `#[djogi::trait_impl] impl Trait for Model { ... }`. Used for
   cross-cutting predicates that depend on Rust logic rather than SQL
@@ -100,8 +101,10 @@ The macro does **not** emit a Rust-side getter for computed fields. The
 canonical surface is the SQL-projectable ZST: `Vehicle::computed()
 .total_price()` returns `Expr<f64>` and composes with the typed query
 API. For server-side evaluation that is the entire story — adopters
-who only need to filter / sort / annotate by a computed expression pay
-no Rust-side cost.
+who only need to filter by a computed expression pay no Rust-side cost.
+Sort and annotate remain raw-SQL fallback territory until `Expr<T>`
+widens `OrderExpr` and `AnnotationSlot` (see the limitation note
+above).
 
 If you need to evaluate the expression in Rust (e.g. inside a hook or a
 visage `try_from`), write a plain inherent method on your struct with
@@ -131,17 +134,16 @@ incorrect — Rust does not allow two inherent methods with the same name
 on the same type (E0201). Removing the stub honors the lens resolution
 without the duplicate-method footgun.
 
-### Constraint: stored variant deferred to Phase 8.5
+### Constraint: stored variant is out of scope for v0.1.0
 
 `#[computed(sql = "...", stored)]` (a stored generated column whose value is
-materialised in storage) is **rejected** at parse time with a Phase 8.5
-deferral message. The migration differ has not yet accumulated long-running
-stability evidence post-publish, so generating column DDL from a `stored`
-computed is out of scope for v0.1.0.
+materialised in storage) is **rejected** at parse time. The migration differ
+has not yet accumulated long-running stability evidence post-publish, so
+generating column DDL from a `stored` computed is out of scope for v0.1.0.
 
 Adopters who need stored computed columns in v0.1.0 can:
 
-- Ship a non-stored computed for now; revisit when the deferral lifts.
+- Ship a non-stored computed for now; revisit in a future release.
 - Hand-roll a regular column + a `BEFORE INSERT/UPDATE` trigger via raw SQL
   in a migration. The framework does not auto-generate the trigger.
 
@@ -204,7 +206,8 @@ descriptor-level enumeration outside the Punnu boundary.
 |----------|--------|
 | Does the predicate depend only on existing model columns? | SQL-projectable |
 | Does the predicate need Rust-side runtime state (request context, environment, etc.)? | Rust-trait |
-| Does the predicate need to filter / sort at the database? | SQL-projectable |
+| Does the predicate need to filter at the database in v0.1.0? | SQL-projectable (`.filter_expr`) |
+| Does the predicate need to sort or annotate at the database? | SQL-projectable in a future release; use justified raw-SQL bypass in v0.1.0 |
 | Does the predicate need cross-type dispatch over `Vec<Arc<dyn T>>`? | Rust-trait |
 | Is the expression a single arithmetic / comparison operation? | SQL-projectable |
 | Is the expression a sequence of complex transformations? | Rust-trait |
