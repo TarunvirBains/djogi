@@ -1011,10 +1011,7 @@ mod tests {
             reason: "test fixture",
         };
         assert!(err.is_terminal(), "SetOpArmInvalid must be terminal");
-        assert!(
-            !err.is_transient(),
-            "SetOpArmInvalid must not be transient"
-        );
+        assert!(!err.is_transient(), "SetOpArmInvalid must not be transient");
     }
 
     #[test]
