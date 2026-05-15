@@ -22,7 +22,7 @@
 //    - u8 SMALLINT: reject 256 (above u8::MAX)
 //    - u16 INTEGER: reject 65536 (above u16::MAX)
 //    - u32 BIGINT: reject 4294967296 (above u32::MAX)
-//    - u64 NUMERIC(20,0): reject -1 (below u64::MIN)
+//    - u64 NUMERIC: reject -1 (below u64::MIN), reject 1.5 (fractional, via trunc check)
 //
 // 4. **Decode-side OOB.** If a row somehow lands without the CHECK (e.g.
 //    a schema reapplied before the migration), the decode shim surfaces
@@ -53,7 +53,7 @@ pub struct Phase85C2190NarrowInts {
     // djogi#186 types (SMALLINT and BIGINT, shim-bound from narrower Rust types)
     pub signed_byte: i8,
     pub unsigned_int: u32,
-    // djogi#190 types (u8 → SMALLINT, u16 → INTEGER, u64 → NUMERIC(20,0))
+    // djogi#190 types (u8 → SMALLINT, u16 → INTEGER, u64 → NUMERIC + integrality CHECK)
     pub unsigned_byte: u8,
     pub unsigned_short: u16,
     pub unsigned_long: u64,
@@ -136,7 +136,7 @@ async fn narrow_ints_catalog_has_check_constraints(mut ctx: djogi::DjogiContext)
     // The constraint name follows the `{table}_{column}_check` convention
     // from `migrate::sql::check_constraint_name`.
     let checks: Vec<String> = ctx
-        .raw_query(
+        .raw_rows(
             "SELECT conname::text FROM pg_constraint \
              WHERE conrelid = 'phase8_5_c2_190_narrow_ints'::regclass \
              AND contype = 'c' ORDER BY conname",
@@ -250,9 +250,9 @@ async fn u32_check_rejects_value_above_max(mut ctx: djogi::DjogiContext) {
 
 #[djogi::djogi_test(sync_models = [Phase85C2190NarrowInts])]
 async fn u64_check_rejects_negative_value(mut ctx: djogi::DjogiContext) {
-    // u64::MIN is 0; -1 is below the lower bound of NUMERIC(20,0) column.
-    // With `u64 → NUMERIC(20,0)`, the CHECK `unsigned_long >= 0 AND ...`
-    // must reject this write.
+    // u64::MIN is 0; -1 is below the lower bound of the NUMERIC column.
+    // The CHECK `unsigned_long >= 0 AND ... AND unsigned_long = trunc(unsigned_long)`
+    // must reject this write (the `>= 0` clause fires first).
     let err = ctx
         .raw_execute(
             "INSERT INTO phase8_5_c2_190_narrow_ints \
@@ -267,5 +267,55 @@ async fn u64_check_rejects_negative_value(mut ctx: djogi::DjogiContext) {
     assert!(
         msg.contains("phase8_5_c2_190_narrow_ints_unsigned_long_check"),
         "u64 negative value must cite the CHECK constraint: {msg}"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [Phase85C2190NarrowInts])]
+async fn u64_check_rejects_fractional_value(mut ctx: djogi::DjogiContext) {
+    // djogi#190 Finding 1 — u64 uses bare NUMERIC (not NUMERIC(20,0)).
+    // NUMERIC(20,0) would silently round 1.5 → 2 before the CHECK fires,
+    // making the CHECK useless against fractional inputs. Bare NUMERIC stores
+    // 1.5 unchanged, so the integrality clause `unsigned_long = trunc(unsigned_long)`
+    // must reject the INSERT.
+    //
+    // Raw SQL is the only way to bypass the Rust bind shim (which converts
+    // u64 → Decimal::from(u64), always integral) and insert a fractional
+    // value to test the DB-level integrality CHECK.
+    let err = ctx
+        .raw_execute(
+            "INSERT INTO phase8_5_c2_190_narrow_ints \
+             (signed_byte, unsigned_int, unsigned_byte, unsigned_short, unsigned_long, label) \
+             VALUES (0, 0, 0, 0, 1.5, 'fractional')",
+            &[],
+        )
+        .await
+        .expect_err("fractional value 1.5 must be rejected by the integrality CHECK on u64 NUMERIC column");
+
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("phase8_5_c2_190_narrow_ints_unsigned_long_check"),
+        "u64 fractional value must cite the CHECK constraint: {msg}"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [Phase85C2190NarrowInts])]
+async fn u64_check_rejects_u64_max_plus_one(mut ctx: djogi::DjogiContext) {
+    // u64::MAX + 1 = 18_446_744_073_709_551_616 — above the upper bound.
+    // Raw SQL is needed to insert a value that overflows u64 (unreachable via
+    // the Rust typed surface since u64::MAX is the largest representable value).
+    let err = ctx
+        .raw_execute(
+            "INSERT INTO phase8_5_c2_190_narrow_ints \
+             (signed_byte, unsigned_int, unsigned_byte, unsigned_short, unsigned_long, label) \
+             VALUES (0, 0, 0, 0, 18446744073709551616, 'oob-max')",
+            &[],
+        )
+        .await
+        .expect_err("u64::MAX+1 must be rejected by the upper-bound CHECK");
+
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("phase8_5_c2_190_narrow_ints_unsigned_long_check"),
+        "u64 above-max value must cite the CHECK constraint: {msg}"
     );
 }

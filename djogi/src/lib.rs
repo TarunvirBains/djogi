@@ -125,6 +125,14 @@ pub mod __private {
     pub use futures;
     pub use inventory;
     pub use postgres_types;
+    /// `rust_decimal` re-export for macro-emitted `u64 → Decimal` bind shims.
+    ///
+    /// Macro-emitted code routes `Decimal` through
+    /// `::djogi::__private::rust_decimal::Decimal` so adopter crates do not
+    /// need a direct `rust_decimal` dependency — only `djogi` needs it.
+    /// Per `feedback_macro_path_routing.md`: macro paths route through
+    /// `::djogi::*` only; the macro never names upstream crates directly.
+    pub use rust_decimal;
     pub use serde;
     pub use tokio;
     pub use tokio_postgres;

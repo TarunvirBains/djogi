@@ -2,19 +2,21 @@
 //
 // Verifies that `save()` compiles correctly for models that contain
 // `Option<Tracked<T>>` fields where `T` is a narrow/unsigned integer type
-// (i8/u8/u16/u32/u64). Previously `save_set_fragments` used `is_tracked(ty)`
-// (outermost-only check) rather than `is_tracked_inner(ty)`, so
-// `Option<Tracked<T>>` fell through to the unconditional else branch. For
-// widened types this produced a compile error because the widening
-// `.map(WideType::from)` call received `Option<Tracked<T>>` instead of
-// `Option<T>`.
+// (i8/u8/u16/u32/u64).
 //
-// The fix adds an `else if is_tracked_inner(ty)` branch that correctly
-// extracts `Option<T>` from `Option<Tracked<T>>` and applies widening on the
-// inner type before binding.
+// Save behaviour for Option<Tracked<T>>:
+// - The field is emitted UNCONDITIONALLY on every save() call. Unlike
+//   `Tracked<T>` (which skips the field when not dirty) or `Tracked<Option<T>>`
+//   (which detects any assignment including None ↔ Some transitions),
+//   `Option<Tracked<T>>` cannot distinguish None→Some(clean) or Some→None
+//   transitions from a dirty-check on the inner Tracked alone. Emitting
+//   unconditionally is always correct and prevents silent data loss.
+// - If full dirty-tracking of optional fields is needed — i.e. the save should
+//   only include the field when the Option state OR the inner value has changed
+//   — use `Tracked<Option<T>>` instead (Tracked as the outermost wrapper).
 //
 // This fixture exercises all five narrow/unsigned types in both:
-//   - `Option<Tracked<T>>` — nullable dirty-tracked widened field
+//   - `Option<Tracked<T>>` — nullable unconditionally-emitted widened field
 //   - `Tracked<T>` — non-nullable dirty-tracked widened field (pre-existing, regression guard)
 // The fixture also includes a direct-typed `Option<Tracked<String>>` to
 // confirm the non-widened path still compiles.

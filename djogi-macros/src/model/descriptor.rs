@@ -1100,11 +1100,12 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         "BOOLEAN" => quote! { ::djogi::FieldSqlType::Boolean },
         "TIMESTAMPTZ" => quote! { ::djogi::FieldSqlType::Timestamptz },
         "DATE" => quote! { ::djogi::FieldSqlType::Date },
+        // djogi#190 — u64 now uses bare NUMERIC (no precision/scale) so the
+        // migration projection layer can match on `FieldSqlType::Numeric` with
+        // `RustSourceType::U64` and emit the integrality CHECK. The old
+        // "NUMERIC(20, 0)" arm is removed because u64 no longer emits that
+        // SQL type string.
         "NUMERIC" => quote! { ::djogi::FieldSqlType::Numeric },
-        // djogi#190 — u64 → NUMERIC(20, 0) carrier.
-        "NUMERIC(20, 0)" => quote! {
-            ::djogi::FieldSqlType::NumericPrecision { precision: 20u8, scale: 0u8 }
-        },
         "UUID" => quote! { ::djogi::FieldSqlType::Uuid },
         "JSONB" => quote! { ::djogi::FieldSqlType::Jsonb },
         "TEXT[]" => quote! { ::djogi::FieldSqlType::TextArray },

@@ -84,11 +84,21 @@ impl Default for IsolationState {
 }
 
 // ── DefaultRow — default-`updated_at` watermark branch ──────────────────
+//
+// Also exercises u64 fields: the macro-emitted bind shim must route through
+// `::djogi::__private::rust_decimal::Decimal`, not `::rust_decimal::Decimal`
+// directly. If the shim named `::rust_decimal::Decimal`, this fixture would
+// fail to compile here (rust_decimal is not in this crate's [dependencies]).
 
 #[model(table = "adopter_isolation_default_rows")]
 #[derive(Debug, Clone)]
 pub struct DefaultRow {
     pub label: String,
+    // u64 field: emits a `Decimal::from(v)` bind shim that MUST route through
+    // `::djogi::__private::rust_decimal::Decimal`, not `::rust_decimal::Decimal`.
+    // Compiling here (where rust_decimal is NOT a direct dep) proves isolation.
+    pub counter: u64,
+    pub opt_counter: Option<u64>,
 }
 
 // ── WatermarkedRow — explicit-watermark branch ──────────────────────────

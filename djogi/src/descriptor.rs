@@ -92,12 +92,14 @@ pub enum FieldSqlType {
     /// project to this variant for backward compatibility; future work
     /// (`djogi#188`) migrates those callers to [`Self::NumericPrecision`].
     Numeric,
-    /// `NUMERIC(precision, scale)` — bounded numeric. Used by the integer
-    /// widening projection (`djogi#186`) for `u64 → NUMERIC(20, 0)` and
-    /// reserved for the upcoming `Decimal → NUMERIC(28, 28)` migration
-    /// (`djogi#188`). The differ compares variants structurally (precision
-    /// and scale are part of `PartialEq`), so a precision change emits a
-    /// `ColumnChange::ChangeType` like any other type evolution.
+    /// `NUMERIC(precision, scale)` — bounded numeric. Reserved for the
+    /// upcoming `Decimal → NUMERIC(28, 8)` migration (`djogi#188`). Note:
+    /// `u64` previously used `NUMERIC(20, 0)` but now uses bare [`Self::Numeric`]
+    /// with a CHECK constraint, so `NumericPrecision { precision: 20, scale: 0 }`
+    /// is no longer emitted by the framework. The differ compares variants
+    /// structurally (precision and scale are part of `PartialEq`), so a
+    /// precision change emits a `ColumnChange::ChangeType` like any other
+    /// type evolution.
     NumericPrecision {
         precision: u8,
         scale: u8,
@@ -1439,7 +1441,7 @@ mod protected_field_metadata_tests {
 /// | `U8`             | SMALLINT (INT2)    | `i16::from(v)`   | `u8::try_from(i16)`  |
 /// | `U16`            | INTEGER  (INT4)    | `i32::from(v)`   | `u16::try_from(i32)` |
 /// | `U32`            | BIGINT   (INT8)    | `i64::from(v)`   | `u32::try_from(i64)` |
-/// | `U64`            | NUMERIC(20, 0)     | `Decimal::from(v)` | `Decimal::to_u64()` |
+/// | `U64`            | NUMERIC            | `Decimal::from(v)` | `Decimal::to_u64()` |
 ///
 /// # Why not `i8` in a native `ToSql` impl?
 ///
@@ -1464,7 +1466,12 @@ pub enum RustSourceType {
     U16,
     /// `u32` — stored as BIGINT; range `0..=4294967295`.
     U32,
-    /// `u64` — stored as NUMERIC(20, 0); range `0..=18446744073709551615`.
+    /// `u64` — stored as bare NUMERIC; range `0..=18446744073709551615`.
+    ///
+    /// Uses bare NUMERIC (no precision/scale) so Postgres does not round
+    /// fractional inputs before the CHECK constraint evaluates. The
+    /// projection layer emits `col >= 0 AND col <= u64::MAX AND col = trunc(col)`
+    /// to reject out-of-range and fractional values at the DB level.
     U64,
 }
 

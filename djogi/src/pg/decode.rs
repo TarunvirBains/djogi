@@ -253,11 +253,13 @@ where
 /// Convert a `rust_decimal::Decimal` to `u64`, rejecting fractional and
 /// out-of-range values.
 ///
-/// `NUMERIC(20, 0)` rounds fractional inputs at storage time, but an external
-/// writer using `NUMERIC` (unbounded) or a direct `INSERT … NUMERIC '1.5'`
-/// cast can land a non-integer value in the column. `Decimal::to_u64()` via
-/// `ToPrimitive` silently truncates fractional parts (e.g. `1.5 → 1`), so we
-/// must explicitly reject fractional values before conversion.
+/// u64 columns use bare `NUMERIC` (no precision/scale) as their SQL carrier,
+/// which means Postgres stores values exactly as given without rounding. A
+/// direct `INSERT … NUMERIC '1.5'` can land a fractional value even if the
+/// column carries a CHECK constraint (e.g. applied only after schema migration,
+/// or bypassed via `COPY`). `Decimal::to_u64()` via `ToPrimitive` silently
+/// truncates fractional parts (e.g. `1.5 → 1`), so we must explicitly reject
+/// fractional values before conversion.
 ///
 /// Returns `DjogiError::Decode` for:
 /// - values with a non-zero fractional part (`1.5`, `-0.1`, …)
@@ -284,13 +286,16 @@ fn decimal_to_u64(
     })
 }
 
-/// Decode a `u64` field stored as `NUMERIC(20, 0)`.
+/// Decode a `u64` field stored as bare `NUMERIC`.
 ///
-/// `NUMERIC(20, 0)` is the SQL carrier for `u64` columns: it is the
-/// smallest Postgres numeric type whose positive range covers all
-/// `u64::MAX` (18_446_744_073_709_551_615). The decode path reads a
-/// `rust_decimal::Decimal` and converts via [`decimal_to_u64`], which
-/// explicitly rejects fractional values before conversion.
+/// `NUMERIC` (no precision/scale) is the SQL carrier for `u64` columns.
+/// Unlike `NUMERIC(20, 0)`, bare NUMERIC does NOT round fractional inputs —
+/// it stores exactly what is given. The migration projection layer emits a
+/// database-level CHECK (`col >= 0 AND col <= u64::MAX AND col = trunc(col)`)
+/// to reject fractional and out-of-range values at write time. This decode
+/// function adds a second line of defence on the Rust side via
+/// [`decimal_to_u64`], which explicitly rejects fractional values before
+/// conversion.
 ///
 /// Returns `DjogiError::Decode` if the stored value does not fit in
 /// `u64` (fractional values, negative values, or values exceeding
@@ -308,7 +313,7 @@ pub fn decode_u64_from_decimal(
     decimal_to_u64(dec, name)
 }
 
-/// Decode a nullable `u64` field stored as `NUMERIC(20, 0)`.
+/// Decode a nullable `u64` field stored as bare `NUMERIC`.
 ///
 /// The `Option`-flavoured companion to [`decode_u64_from_decimal`].
 /// Delegates to [`decimal_to_u64`] for the non-null case; see that

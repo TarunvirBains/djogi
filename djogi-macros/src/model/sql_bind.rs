@@ -14,7 +14,7 @@
 //! | `u8`      | `SMALLINT`          | `i16`            | `i16 → u8`         |
 //! | `u16`     | `INTEGER`           | `i32`            | `i32 → u16`        |
 //! | `u32`     | `BIGINT`            | `i64`            | `i64 → u32`        |
-//! | `u64`     | `NUMERIC(20, 0)`    | `Decimal`        | `Decimal → u64`    |
+//! | `u64`     | `NUMERIC`           | `Decimal`        | `Decimal → u64`    |
 //!
 //! This module provides token-stream helpers consumed by `crud.rs` and
 //! `from_row.rs` to emit these shims without duplicating the logic at
@@ -170,14 +170,14 @@ pub fn push_bind_tokens(
         (BindKind::WidenToDecimal, false) => {
             quote! {
                 __acc.push_bind(
-                    ::rust_decimal::Decimal::from(#effective)
+                    ::djogi::__private::rust_decimal::Decimal::from(#effective)
                 )
             }
         }
         (BindKind::WidenToDecimal, true) => {
             quote! {
                 __acc.push_bind(
-                    #effective.map(::rust_decimal::Decimal::from)
+                    #effective.map(::djogi::__private::rust_decimal::Decimal::from)
                 )
             }
         }
@@ -288,8 +288,8 @@ pub fn create_param_tokens(
 
         (BindKind::WidenToDecimal, false) => {
             let pre = quote! {
-                let #bind_name: ::rust_decimal::Decimal =
-                    ::rust_decimal::Decimal::from(#extract);
+                let #bind_name: ::djogi::__private::rust_decimal::Decimal =
+                    ::djogi::__private::rust_decimal::Decimal::from(#extract);
             };
             let entry =
                 quote! { &#bind_name as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) };
@@ -297,8 +297,8 @@ pub fn create_param_tokens(
         }
         (BindKind::WidenToDecimal, true) => {
             let pre = quote! {
-                let #bind_name: Option<::rust_decimal::Decimal> =
-                    #extract.map(::rust_decimal::Decimal::from);
+                let #bind_name: Option<::djogi::__private::rust_decimal::Decimal> =
+                    #extract.map(::djogi::__private::rust_decimal::Decimal::from);
             };
             let entry =
                 quote! { &#bind_name as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) };

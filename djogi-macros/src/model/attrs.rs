@@ -2550,7 +2550,7 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         //   u8  → SMALLINT (INT2)       range: 0..=255
         //   u16 → INTEGER  (INT4)       range: 0..=65535
         //   u32 → BIGINT   (INT8)       range: 0..=4294967295
-        //   u64 → NUMERIC(20, 0)        range: 0..=18446744073709551615
+        //   u64 → NUMERIC               range: 0..=18446744073709551615  (+ integrality CHECK)
         //
         // The macro emits bind shims (widen before binding to tokio-postgres)
         // and decode shims (narrow with a bounds-checked try_from). The
@@ -2561,7 +2561,11 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         "u8" => Some("SMALLINT"),
         "u16" => Some("INTEGER"),
         "u32" => Some("BIGINT"),
-        "u64" => Some("NUMERIC(20, 0)"),
+        // djogi#190 — u64 uses bare NUMERIC (no precision/scale) so Postgres
+        // does not silently round fractional inputs before the CHECK fires.
+        // The CHECK emitted by the projection layer enforces integrality
+        // (col = trunc(col)) in addition to the range bounds.
+        "u64" => Some("NUMERIC"),
         "i16" => Some("SMALLINT"),
         "i32" => Some("INTEGER"),
         "i64" => Some("BIGINT"),

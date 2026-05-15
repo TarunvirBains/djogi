@@ -9,7 +9,7 @@
 //   u8  → SMALLINT : bind as i16::from(v), decode via u8::try_from(i16)
 //   u16 → INTEGER  : bind as i32::from(v), decode via u16::try_from(i32)
 //   u32 → BIGINT   : bind as i64::from(v), decode via u32::try_from(i64)
-//   u64 → NUMERIC(20,0): bind as Decimal::from(v), decode via to_u64()
+//   u64 → NUMERIC      : bind as Decimal::from(v), decode via to_u64()
 //
 // The migration projection layer additionally emits a range CHECK on each
 // column (`RustSourceType` discriminator on `FieldDescriptor`).

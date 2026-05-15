@@ -405,27 +405,35 @@ pub fn expand(
                     }
                 })
             } else if is_tracked_inner(ty) {
-                // Option<Tracked<T>>: dirty-aware but optional.
+                // Option<Tracked<T>>: emitted unconditionally on every save.
                 //
                 // `is_tracked(ty)` is false (the outermost type is `Option`,
                 // not `Tracked`), but `is_tracked_inner(ty)` is true because
                 // the inner type after Option-stripping is `Tracked<T>`.
                 //
-                // Dirty check: `as_ref().map(|t| t.is_dirty()).unwrap_or(false)`.
-                // Inner expr: `as_ref().map(|t| (**t).clone())` → `Option<T>`.
+                // **Why unconditional**: checking `is_dirty()` on the inner
+                // Tracked<T> misses two transitions that change the field value:
+                //   1. None  → Some(clean_value)  — inner is not dirty, but the
+                //      column must change from NULL to the new value.
+                //   2. Some(_) → None             — the Option evaluates to None
+                //      so `as_ref().map(|t| t.is_dirty()).unwrap_or(false)`
+                //      returns false, but the column must be NULLed.
+                // Emitting unconditionally is always correct at the cost of one
+                // extra bind slot when neither transition has occurred. For full
+                // dirty-tracking of optional fields, prefer `Tracked<Option<T>>`
+                // (Tracked is the outer wrapper; it detects any assignment to the
+                // field, including None ↔ Some transitions).
                 //
-                // Two dereferences in `(**t).clone()`:
+                // Inner expr: `as_ref().map(|__t| (**__t).clone())` → `Option<T>`.
+                // Two dereferences in `(**__t).clone()`:
                 //   - First `*`: `&Tracked<T>` → `Tracked<T>` (reference deref)
                 //   - Second `*`: `Tracked<T>` → `T` (via `Tracked: Deref<Target=T>`)
-                // Using a single `(*t).clone()` would clone `Tracked<T>`, not `T`.
-                //
-                // `push_bind_tokens` then receives `Option<T>` with nullable=true
-                // and tracked=false, which correctly applies widening (if any)
-                // inside the `.map(...)` closure.
+                // `push_bind_tokens` receives `Option<T>` (nullable=true,
+                // tracked=false), correctly applying widening (if any).
                 let inner_expr = quote! { self.#f.as_ref().map(|__t| (**__t).clone()) };
                 let push_stmt = push_bind_tokens(&kind, nullable, false, inner_expr);
                 Some(quote! {
-                    if self.#f.as_ref().map(|__t| __t.is_dirty()).unwrap_or(false) {
+                    {
                         if __first { __first = false; } else { __acc.push_sql(", "); }
                         __acc.push_sql(#col_eq);
                         #push_stmt;

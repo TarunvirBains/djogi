@@ -1063,10 +1063,10 @@ fn project_generated_column(spec: &GeneratedColumnSpec) -> GeneratedColumnSchema
 /// so dispatch on `FieldSqlType` alone is unambiguous and the CHECK
 /// reaches `project_column` directly. The bound shape:
 ///
-/// | Rust                     | Postgres column | CHECK expression                          |
-/// |--------------------------|-----------------|-------------------------------------------|
-/// | `time::Date`             | `DATE`          | `<col> <= DATE '9999-12-31'`              |
-/// | `time::OffsetDateTime`   | `TIMESTAMPTZ`   | `<col> <= TIMESTAMP '9999-12-31 …'`       |
+/// | Rust                     | Postgres column | CHECK expression                                      |
+/// |--------------------------|-----------------|-------------------------------------------------------|
+/// | `time::Date`             | `DATE`          | `<col> <= DATE '9999-12-31'`                          |
+/// | `time::OffsetDateTime`   | `TIMESTAMPTZ`   | `<col> <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'`|
 ///
 /// **One-sided upper bound by design.** The `time` crate's default
 /// year range is ISO 8601 -9999 to +9999. Postgres's DATE / TIMESTAMP
@@ -1166,17 +1166,25 @@ fn field_type_check(
         //   u8  → SMALLINT : 0..=255
         //   u16 → INTEGER  : 0..=65535
         //   u32 → BIGINT   : 0..=4294967295
-        //   u64 → NUMERIC  : 0..=18446744073709551615  (u64::MAX)
+        //   u64 → NUMERIC  : 0..=18446744073709551615 AND col = trunc(col)
         //
         // Two-sided CHECKs (lower AND upper) are emitted for all five types:
         // the lower bound guards against negative values written by an
         // external writer; the upper bound guards against values exceeding
         // the Rust type's MAX.
         //
+        // **u64 integrality check**: u64 uses bare `NUMERIC` (no precision/scale).
+        // Unlike `NUMERIC(20, 0)`, bare NUMERIC does NOT round fractional inputs —
+        // it stores exactly what is given. The `col = trunc(col)` predicate in the
+        // CHECK rejects any stored value whose fractional part is non-zero (e.g.
+        // a raw `INSERT … NUMERIC '1.5'`). The decode path (`decode_u64_from_decimal`)
+        // also enforces the same integrality guard on the Rust side, but the DB-level
+        // CHECK prevents the value from landing in the first place.
+        //
         // `None` for columns without a `rust_source_type` discriminator
-        // (i.e. every `i16 → SMALLINT`, `i32 → INTEGER`, `i64 → BIGINT`
-        // column stays unchecked because the Postgres column type already
-        // enforces the full signed range those Rust types represent).
+        // (i.e. every `i16 → SMALLINT`, `i32 → INTEGER`, `i64 → BIGINT`,
+        // and adopter `Decimal → NUMERIC` column stays unchecked because
+        // the Postgres column type already enforces the relevant type bounds).
         FieldSqlType::SmallInt => match rust_source_type {
             Some(RustSourceType::I8) => Some(format!("{qcol} >= -128 AND {qcol} <= 127")),
             Some(RustSourceType::U8) => Some(format!("{qcol} >= 0 AND {qcol} <= 255")),
@@ -1190,19 +1198,26 @@ fn field_type_check(
             Some(RustSourceType::U32) => Some(format!("{qcol} >= 0 AND {qcol} <= 4294967295")),
             _ => None,
         },
-        FieldSqlType::NumericPrecision {
-            precision: 20,
-            scale: 0,
-        } => match rust_source_type {
-            Some(RustSourceType::U64) => {
-                Some(format!("{qcol} >= 0 AND {qcol} <= 18446744073709551615"))
-            }
+        // u64 → bare NUMERIC with range + integrality CHECK.
+        //
+        // The integrality clause (`col = trunc(col)`) is the critical addition
+        // over the old NUMERIC(20, 0) design: bare NUMERIC preserves fractional
+        // inputs unchanged, so the CHECK must explicitly reject them. trunc() is
+        // the standard Postgres function for truncating a NUMERIC toward zero.
+        //
+        // Adopter `Decimal` fields also lower to `FieldSqlType::Numeric` but
+        // carry `rust_source_type: None`, so they fall to the `_ => None` arm
+        // and receive no Rust-derived CHECK.
+        FieldSqlType::Numeric => match rust_source_type {
+            Some(RustSourceType::U64) => Some(format!(
+                "{qcol} >= 0 AND {qcol} <= 18446744073709551615 AND {qcol} = trunc({qcol})"
+            )),
             _ => None,
         },
         // All other `FieldSqlType` variants (`Text`, `Real`,
-        // `DoublePrecision`, `Boolean`, `Numeric`, `Uuid`, `Jsonb`,
-        // arrays, `Citext`, `Geography`, `Custom`, and the unbounded
-        // `NumericPrecision { ..}` precisions used by future
+        // `DoublePrecision`, `Boolean`, `Uuid`, `Jsonb`,
+        // arrays, `Citext`, `Geography`, `Custom`, and all
+        // `NumericPrecision { .. }` precisions used by future
         // `Decimal → NUMERIC(P, S)` work in djogi#188) carry their own
         // type bounds via the column type itself; no Rust-derived
         // CHECK applies. Future families plug into this same match
@@ -1384,13 +1399,14 @@ fn project_column(
     // **Live arms:**
     //   - djogi#187: `Date` / `Timestamptz` → year ±9999 upper-bound
     //     CHECK (unconditional — FieldSqlType alone disambiguates).
-    //   - djogi#190: `SmallInt` / `Integer` / `BigInt` /
-    //     `NumericPrecision(20,0)` → range CHECK gated on the
+    //   - djogi#190: `SmallInt` / `Integer` / `BigInt` / `Numeric`
+    //     → range CHECK (+ integrality for u64) gated on the
     //     `rust_source_type` discriminator. Direct-mapped types
-    //     (`i16 → SmallInt`, `i64 → BigInt`) have `rust_source_type:
-    //     None` and keep `check: None` so no spurious CHECK fires.
-    //     Only the five narrow/unsigned types (i8/u8/u16/u32/u64)
-    //     carry `Some(RustSourceType::*)` and receive a CHECK.
+    //     (`i16 → SmallInt`, `i64 → BigInt`, adopter `Decimal → Numeric`)
+    //     have `rust_source_type: None` and keep `check: None` so no
+    //     spurious CHECK fires. Only the five narrow/unsigned types
+    //     (i8/u8/u16/u32/u64) carry `Some(RustSourceType::*)` and
+    //     receive a CHECK.
     let check: Option<String> = if foreign_key.is_some() {
         // FK columns inherit their type from the parent's PK (BIGINT for
         // HeerId, UUID for RanjId). The Rust-derived CHECK doesn't apply.
@@ -3204,18 +3220,17 @@ mod tests {
         // `i16 → SmallInt`, `i32 → Integer`, `i64 → BigInt` columns have no
         // `rust_source_type` discriminator (`None`). The gate ensures they
         // never receive a narrow/unsigned range CHECK.
+        // Adopter `Decimal → Numeric` also gets no CHECK — the discriminator
+        // is `None` for non-u64 NUMERIC columns.
         for ty in [
             FieldSqlType::SmallInt,
             FieldSqlType::Integer,
             FieldSqlType::BigInt,
-            FieldSqlType::NumericPrecision {
-                precision: 20,
-                scale: 0,
-            },
+            FieldSqlType::Numeric,
         ] {
             assert!(
                 field_type_check(&ty, None, "col").is_none(),
-                "direct-mapped integer SQL type {ty:?} with no rust_source_type \
+                "direct-mapped integer/numeric SQL type {ty:?} with no rust_source_type \
                  must not carry a Rust-derived CHECK",
             );
         }
@@ -3272,19 +3287,27 @@ mod tests {
     }
 
     #[test]
-    fn field_type_check_for_u64_numeric_emits_unsigned_long_bounds() {
+    fn field_type_check_for_u64_numeric_emits_unsigned_long_bounds_with_integrality() {
+        // u64 → bare NUMERIC: range bounds AND integrality check.
+        // The integrality clause (col = trunc(col)) prevents fractional values
+        // stored via raw SQL from bypassing the decode-side rejection.
         let expr = field_type_check(
-            &FieldSqlType::NumericPrecision {
-                precision: 20,
-                scale: 0,
-            },
+            &FieldSqlType::Numeric,
             Some(RustSourceType::U64),
             "huge_count",
         )
-        .expect("u64 → NumericPrecision(20,0) must carry a range CHECK");
+        .expect("u64 → Numeric must carry a range+integrality CHECK");
         assert!(
-            expr.contains("\"huge_count\" >= 0 AND \"huge_count\" <= 18446744073709551615"),
+            expr.contains("\"huge_count\" >= 0"),
+            "u64 CHECK must have lower bound 0: {expr}"
+        );
+        assert!(
+            expr.contains("\"huge_count\" <= 18446744073709551615"),
             "u64 CHECK must cover 0..=u64::MAX: {expr}"
+        );
+        assert!(
+            expr.contains("\"huge_count\" = trunc(\"huge_count\")"),
+            "u64 CHECK must reject fractional values via trunc: {expr}"
         );
     }
 
@@ -3493,14 +3516,7 @@ mod tests {
             },
             FieldDescriptor {
                 rust_source_type: Some(RustSourceType::U64),
-                ..field_descriptor(
-                    "huge_count",
-                    FieldSqlType::NumericPrecision {
-                        precision: 20,
-                        scale: 0,
-                    },
-                    false,
-                )
+                ..field_descriptor("huge_count", FieldSqlType::Numeric, false)
             },
         ];
         let m = ModelDescriptor {
@@ -3516,12 +3532,17 @@ mod tests {
         .expect("ok");
         let col = &buckets[&empty_global()].models["metrics"].columns[1];
         assert_eq!(col.name, "huge_count");
-        let check = col.check.as_deref().expect(
-            "u64 → NumericPrecision(20,0) with RustSourceType::U64 must have a range CHECK",
-        );
+        let check = col
+            .check
+            .as_deref()
+            .expect("u64 → Numeric with RustSourceType::U64 must have a range+integrality CHECK");
         assert!(
             check.contains(">= 0") && check.contains("<= 18446744073709551615"),
             "u64 CHECK must cover 0..=u64::MAX: {check}"
+        );
+        assert!(
+            check.contains("= trunc("),
+            "u64 CHECK must include integrality clause (col = trunc(col)): {check}"
         );
     }
 

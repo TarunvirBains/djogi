@@ -243,23 +243,27 @@ so the resulting CHECK serializes into `schema_snapshot.json` and survives
 every round-trip.
 
 **Mapping table.** Each Rust source type widens to the smallest signed Postgres
-integer that fits its full value range; `u64` widens to `NUMERIC(20, 0)`
-because `u64::MAX > i64::MAX`. The temporal types use a one-sided
-upper-bound CHECK matching `time::Date::MAX_YEAR` / `time::OffsetDateTime::MAX`
-(the lower bound is omitted because Postgres's own date input parser
-rejects every value `time::Date` cannot represent on the lower end —
-Postgres's MIN is 4713 BC, `time::Date`'s MIN is 10000 BC, so values in
-ISO years -9999 to -4713 are physically unreachable through Postgres).
+integer that fits its full value range; `u64` widens to bare `NUMERIC`
+(no precision/scale) because `u64::MAX > i64::MAX`. Bare `NUMERIC` is used
+rather than `NUMERIC(20, 0)` because a precision/scale column silently rounds
+fractional inputs before the CHECK fires — making the CHECK ineffective
+against fractional raw INSERTs. The `col = trunc(col)` clause in the CHECK
+rejects any fractional value at the DB level. The temporal types use a
+one-sided upper-bound CHECK matching `time::Date::MAX_YEAR` /
+`time::OffsetDateTime::MAX`; the `TIMESTAMPTZ` form uses an explicit UTC
+literal (`+00`) so the bound is timezone-invariant (a plain `TIMESTAMP '...'`
+literal against a `TIMESTAMPTZ` column is interpreted in the session timezone,
+widening the effective UTC upper bound by the session UTC offset).
 
-| Rust source              | Postgres column  | Type-derived CHECK expression                       | Status      |
-|--------------------------|------------------|-----------------------------------------------------|-------------|
-| `time::Date`             | `DATE`           | `<col> <= DATE '9999-12-31'`                        | **Live**    |
-| `time::OffsetDateTime`   | `TIMESTAMPTZ`    | `<col> <= TIMESTAMP '9999-12-31 23:59:59.999999'`   | **Live**    |
-| `i8`                     | `SMALLINT`       | `<col> >= -128 AND <col> <= 127`                    | **Live**    |
-| `u8`                     | `SMALLINT`       | `<col> >= 0 AND <col> <= 255`                       | **Live**    |
-| `u16`                    | `INTEGER`        | `<col> >= 0 AND <col> <= 65535`                     | **Live**    |
-| `u32`                    | `BIGINT`         | `<col> >= 0 AND <col> <= 4294967295`                | **Live**    |
-| `u64`                    | `NUMERIC(20, 0)` | `<col> >= 0 AND <col> <= 18446744073709551615`      | **Live**    |
+| Rust source              | Postgres column | Type-derived CHECK expression                                           | Status   |
+|--------------------------|-----------------|-------------------------------------------------------------------------|----------|
+| `time::Date`             | `DATE`          | `<col> <= DATE '9999-12-31'`                                            | **Live** |
+| `time::OffsetDateTime`   | `TIMESTAMPTZ`   | `<col> <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'`                  | **Live** |
+| `i8`                     | `SMALLINT`      | `<col> >= -128 AND <col> <= 127`                                        | **Live** |
+| `u8`                     | `SMALLINT`      | `<col> >= 0 AND <col> <= 255`                                           | **Live** |
+| `u16`                    | `INTEGER`       | `<col> >= 0 AND <col> <= 65535`                                         | **Live** |
+| `u32`                    | `BIGINT`        | `<col> >= 0 AND <col> <= 4294967295`                                    | **Live** |
+| `u64`                    | `NUMERIC`       | `<col> >= 0 AND <col> <= 18446744073709551615 AND <col> = trunc(<col>)` | **Live** |
 
 Identity-mapped widths (`i16`, `i32`, `i64`, `bool`, `String`, `f32`, `f64`,
 ...) project no CHECK because the column type already covers their full range.
