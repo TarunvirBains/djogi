@@ -632,8 +632,10 @@ For multi-edge graphs (e.g., a pedigree where both `mother_id` and
 `RelationPath`:
 
 ```rust
+// `ElephantRelated::mother()` is the generated `RelationPath` for the
+// `mother_id` self-FK column (`_id` suffix is stripped by the macro).
 let mothers_descendants: RecursiveQuerySet<Elephant> = Elephant::objects()
-    .tree_descendants(Elephant::FIELDS.mother_id().path(), root_id);
+    .tree_descendants(ElephantRelated::mother(), root_id);
 ```
 
 `RecursiveQuerySet` ships three optional modifiers beyond the base
