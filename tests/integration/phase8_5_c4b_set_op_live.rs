@@ -20,6 +20,7 @@
 // seeding, `Animal::objects()` for arms, `SetOpQuerySet::fetch_all` /
 // `.count()` / `.first()` for terminals. No raw SQL escape hatches.
 
+use djogi::auth::AuthContext;
 use djogi::prelude::*;
 
 #[model(table = "phase8_5_c4b_set_op_animals", pk = HeerId)]
@@ -29,6 +30,22 @@ pub struct Animal {
     pub species: String,
     pub age_months: i32,
     pub adopted: bool,
+}
+
+// Tenant-keyed model for the validation-ordering test below. Carries
+// `tenant_key = "org_id"` so `auto_set_tenant` is no longer a no-op
+// on this model — the path that issues `SET LOCAL app.tenant_id` is
+// active when auth attaches a tenant_id.
+//
+// Used exclusively by `set_op_invalid_arm_rejects_before_tenant_set`
+// to pin that an invalid arm short-circuits BEFORE `auto_set_tenant`
+// could issue any GUC SET statement.
+#[model(table = "phase8_5_c4b_set_op_tenant_widgets", pk = HeerId, tenant_key = "org_id")]
+#[derive(Debug, Clone)]
+pub struct TenantWidget {
+    pub org_id: String,
+    pub label: String,
+    pub active: bool,
 }
 
 async fn seed_animals(ctx: &mut djogi::DjogiContext) {
@@ -385,4 +402,95 @@ async fn set_op_filter_combined_via_two_disjoint_arms(mut ctx: djogi::DjogiConte
     // elderly (age >= 48): delta (48), epsilon (60) → {delta, epsilon}
     // union (disjoint sets) = {alpha, delta, epsilon, gamma}.
     assert_eq!(names, vec!["alpha", "delta", "epsilon", "gamma"]);
+}
+
+#[djogi::djogi_test(sync_models = [TenantWidget])]
+async fn set_op_invalid_arm_rejects_before_tenant_set(mut ctx: djogi::DjogiContext) {
+    // Pins the validation-vs-tenant-setup ordering contract: a set op
+    // whose arm carries lock state (or any other shape `validate_arm`
+    // rejects) MUST error out without `auto_set_tenant` having issued
+    // the `SET LOCAL app.tenant_id` GUC statement.
+    //
+    // The pre-fix code path called `auto_set_tenant` BEFORE building
+    // the set-op SQL, so an invalid arm still flipped the connection
+    // into the auth's tenant scope — silently mutating session state
+    // the caller never asked for. The fix reorders the terminal so
+    // SQL build (which runs `validate_arm`) happens first; only a
+    // validated set op gets to call `auto_set_tenant`.
+    //
+    // # Why a transaction
+    //
+    // `auto_set_tenant` only fires when auth has a tenant_id AND the
+    // tenant-key-bearing model's descriptor declares one. Wrapping in
+    // an `atomic()` lets us attach an auth context (`set_auth`) and
+    // observe the connection's `applied_tenant_id` without polluting
+    // the pool's connection state. The exact pattern matches the
+    // `phase5_5_auth` tenant-roundtrip tests.
+    let mut tx = ctx.begin().await.expect("begin transaction");
+    tx.set_auth(AuthContext::new(HeerId::from_i64(1).unwrap()).with_tenant("org_a"));
+
+    // Sanity: tenant is NOT applied yet — `set_auth` only attaches the
+    // auth context; the GUC SET happens at the first terminal that
+    // calls `auto_set_tenant`.
+    assert!(
+        tx.applied_tenant_id().is_none(),
+        "applied_tenant_id should be None before any terminal runs"
+    );
+    assert!(
+        !tx.tenant_set,
+        "tenant_set should be false before any terminal runs"
+    );
+
+    // Build an invalid set op: right arm carries a row-level lock.
+    // The validator rejects this with `SetOpArmInvalid` before any
+    // SQL hits the database.
+    let plain = TenantWidget::objects().filter(|f| f.active().eq(true));
+    let locked = TenantWidget::objects()
+        .filter(|f| f.active().eq(false))
+        .select_for_update();
+
+    let err = plain.union(locked).fetch_all(&mut tx).await.unwrap_err();
+    assert!(
+        matches!(err, DjogiError::SetOpArmInvalid { side, .. } if side == "right"),
+        "lock on right arm must surface as SetOpArmInvalid: {err:?}"
+    );
+
+    // The critical assertion: tenant GUC must NOT have been applied
+    // for the invalid set op. The validator runs BEFORE auto_set_tenant,
+    // so the connection's tenant scope stays unchanged across the
+    // failed terminal.
+    assert!(
+        tx.applied_tenant_id().is_none(),
+        "applied_tenant_id must remain None when set-op validation \
+         fails — auto_set_tenant should not have run on an invalid \
+         arm. Got: {:?}",
+        tx.applied_tenant_id()
+    );
+    assert!(
+        !tx.tenant_set,
+        "tenant_set must remain false when set-op validation fails"
+    );
+
+    // Sanity contrast: a VALID set op on the same context DOES apply
+    // the tenant — proving the auth context is wired correctly and
+    // the no-op above was caused by the validation short-circuit, not
+    // by missing tenant_key or missing auth.
+    let valid_left = TenantWidget::objects().filter(|f| f.active().eq(true));
+    let valid_right = TenantWidget::objects().filter(|f| f.active().eq(false));
+    valid_left
+        .union(valid_right)
+        .fetch_all(&mut tx)
+        .await
+        .expect("valid set op should fetch successfully");
+    assert_eq!(
+        tx.applied_tenant_id(),
+        Some("org_a"),
+        "valid set op must propagate the tenant scope via auto_set_tenant"
+    );
+    assert!(
+        tx.tenant_set,
+        "tenant_set must be true after the valid set op runs"
+    );
+
+    tx.commit().await.expect("commit transaction");
 }

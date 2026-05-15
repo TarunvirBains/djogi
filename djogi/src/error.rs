@@ -648,6 +648,42 @@ pub enum DjogiError {
         side: &'static str,
         reason: &'static str,
     },
+
+    /// A [`SetOpQuerySet`](crate::query::SetOpQuerySet)'s outer
+    /// `ORDER BY` carried an expression-form ordering term that
+    /// Postgres rejects on set-operation outer ordering. Phase 8.5
+    /// Cluster 4B (issue #101) introduces this variant alongside the
+    /// typed set-op surface.
+    ///
+    /// # Why this is a typed error, not a silent pass-through
+    ///
+    /// Postgres set-operation `ORDER BY` only accepts output column
+    /// names (or column position numbers) — arbitrary expressions are
+    /// rejected at parse time. Today the only way to produce a
+    /// non-column outer ordering is the spatial
+    /// `order_by_distance(...)` helper, which emits a `ST_Distance(...)`
+    /// expression. Letting that ride through to Postgres would surface
+    /// a low-level parser error (`syntax error at or near "("`,
+    /// `ORDER BY position out of range`, or similar) that does not name
+    /// the offending operation. Djogi catches the case at SQL-build
+    /// time and surfaces a higher-fidelity error before the round
+    /// trip, naming the table and explaining the constraint.
+    ///
+    /// `table` identifies the model whose set-op carries the
+    /// incompatible ordering; `reason` is a short human-readable
+    /// explanation that names the kind of ordering rejected and the
+    /// recommended workaround.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// the caller built an incompatible set-op shape; retrying the
+    /// same call cannot turn an expression-form ordering into a
+    /// column-form one. The fix is at the call site.
+    #[error("set-op outer ORDER BY on `{table}` is incompatible with set-operation: {reason}")]
+    #[non_exhaustive]
+    SetOpOuterOrderingInvalid {
+        table: &'static str,
+        reason: &'static str,
+    },
 }
 
 /// Bridge: convert `tokio_postgres::Error` into `DjogiError`.
@@ -951,6 +987,17 @@ mod tests {
         assert!(
             DjogiError::InvalidRoleName("readonly".into()).is_terminal(),
             "InvalidRoleName must be terminal — a malformed role name is a programming error"
+        );
+        // Phase 8.5 Cluster 4B (#101) — set-op outer ORDER BY rejection.
+        // An expression-form outer ordering cannot become a column-form
+        // one by retrying; the fix is at the call site.
+        assert!(
+            DjogiError::SetOpOuterOrderingInvalid {
+                table: "t",
+                reason: "spatial ST_Distance(...) is an expression, not an output column"
+            }
+            .is_terminal(),
+            "SetOpOuterOrderingInvalid must be terminal — retry cannot reshape the ordering"
         );
     }
 

@@ -70,6 +70,8 @@
 //!
 //! # What is rejected
 //!
+//! ## Arm-level state
+//!
 //! [`SetOpArmInvalid`](DjogiError::SetOpArmInvalid) surfaces at the
 //! terminal level when an arm carries any of:
 //!
@@ -83,6 +85,27 @@
 //! is a plain `SELECT t.* FROM t`. Silently dropping them would be a
 //! correctness bug. The rejection happens at SQL-build time so the
 //! call site reports the error before any database round trip.
+//!
+//! ## Outer ordering expressions
+//!
+//! [`SetOpOuterOrderingInvalid`](DjogiError::SetOpOuterOrderingInvalid)
+//! surfaces when the outer
+//! [`order_by`](SetOpQuerySet::order_by) carries an expression-form
+//! term that Postgres rejects on set-operation outer ORDER BY. Today
+//! the only producer of such a term is the spatial
+//! `order_by_distance(...)` helper (feature-gated; see
+//! `FieldRef::order_by_distance` under `feature = "spatial"`), which
+//! lowers to `ST_Distance(...)`. Postgres's grammar restricts set-
+//! operation outer ORDER BY to **output column names or position
+//! numbers**, so a per-arm spatial order is legal (it lives inside
+//! parenthesised arm parens) but combining sets and ordering the
+//! merged result by distance is not. Djogi catches this at SQL-build
+//! time so the diagnostic names the offending operation; the
+//! Postgres-side message (`syntax error at or near "("`) would not.
+//!
+//! Both validation failures fire *before* any GUC `SET LOCAL` from
+//! tenant auto-wiring — the SQL emitter runs first, tenant scope
+//! propagation runs second on the already-validated query.
 //!
 //! # Why no `.fetch_one()` / `.exists()` on the set-op surface
 //!
@@ -326,6 +349,68 @@ impl<T: Model> Clone for SetOpQuerySet<T> {
 
 // ── Internal helpers ─────────────────────────────────────────────────────
 
+/// Validate that this set-op's outer `ORDER BY` only contains terms that
+/// Postgres accepts on a set-operation outer ordering — i.e. output
+/// column names (rendered as bare identifiers by
+/// [`OrderExpr::Column`]). Expression-form terms (e.g. spatial
+/// `ST_Distance(...)` from `FieldRef::order_by_distance` under
+/// `feature = "spatial"`) are rejected with
+/// [`DjogiError::SetOpOuterOrderingInvalid`].
+///
+/// # Why
+///
+/// Postgres's grammar restricts set-operation `ORDER BY` to the output
+/// projection — column names or `$N` position numbers — because the
+/// expression context (which arm's columns?) is ambiguous on the
+/// combined result. Letting an `ST_Distance(...)` term ride through
+/// would surface a parser error from Postgres without naming the
+/// offending operation. Catching it here keeps the diagnostic
+/// actionable.
+///
+/// # Workaround for adopters
+///
+/// Spatial distance ordering still works on a single arm (per-arm
+/// `.order_by(|f| f.location().order_by_distance(center))` is legal,
+/// because the arm is parenthesised and Postgres allows expression
+/// `ORDER BY` inside the parens). For combined-result spatial ordering,
+/// wrap the entire set-op in a subquery and apply the spatial order
+/// there — not supported by this surface today.
+//
+// `T` is consumed by the spatial-error path (`T::table_name()`) when
+// the `spatial` feature is enabled. Without that feature, the only
+// reachable arm is `OrderExpr::Column { .. }` (which does not need
+// `T`), so clippy correctly flags the parameter as unused. We keep
+// `T` in the signature for API consistency — adding a new
+// expression-form `OrderExpr` variant in the future is much easier
+// with the type parameter already in place — and silence the lint
+// only when the spatial branch is compiled out.
+#[cfg_attr(not(feature = "spatial"), allow(clippy::extra_unused_type_parameters))]
+fn validate_outer_ordering<T: Model>(ordering: &[OrderExpr]) -> Result<(), DjogiError> {
+    for o in ordering {
+        match o {
+            OrderExpr::Column { .. } => {
+                // Bare-column outer ORDER BY is exactly what Postgres
+                // set-op outer accepts. No further check needed —
+                // `OrderExpr::Column` carries macro-validated column
+                // names from `FieldRef::asc` / `desc`.
+            }
+            #[cfg(feature = "spatial")]
+            OrderExpr::SpatialDistance { .. } => {
+                return Err(DjogiError::SetOpOuterOrderingInvalid {
+                    table: T::table_name(),
+                    reason: "spatial distance ordering (ST_Distance(...) from \
+                             `order_by_distance`) is an expression, but Postgres \
+                             set-operation outer ORDER BY accepts only output \
+                             column names. Apply spatial ordering on a per-arm \
+                             basis instead, or wrap the set-op result in a \
+                             subquery before ordering by distance",
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Validate that `qs` carries no state the set-op surface cannot
 /// represent. Returns a typed [`DjogiError::SetOpArmInvalid`] when the
 /// arm has prefetch / select_related / lock / cache bindings.
@@ -424,10 +509,22 @@ fn emit_arm<T: Model + FromPgRow>(
 /// `SELECT FROM (...) AS sub` wrap (for `count`) or no wrap at all
 /// (for `fetch_all` / `first`) is the caller's concern. Emits:
 /// `(<left>) <OP> (<right>) [ORDER BY ...] [LIMIT $n] [OFFSET $n]`.
+///
+/// Validates the outer `ORDER BY` shape before emission via
+/// [`validate_outer_ordering`] — spatial `ST_Distance(...)` ordering on
+/// the combined result is rejected as a typed
+/// [`DjogiError::SetOpOuterOrderingInvalid`] so the constraint surfaces
+/// before the SQL ever reaches Postgres. Arm validation
+/// ([`validate_arm`]) runs inside [`emit_arm`] for each arm.
 fn build_set_op_select_inner<T: Model + FromPgRow>(
     acc: &mut SqlAccumulator,
     sop: &SetOpQuerySet<T>,
 ) -> Result<(), DjogiError> {
+    // Front-load the outer-ordering validation so the error is reported
+    // without us having emitted the arm SQL into `acc` first. Same
+    // before-the-round-trip contract `validate_arm` already follows.
+    validate_outer_ordering::<T>(&sop.ordering)?;
+
     emit_arm(acc, &sop.left, "left")?;
     acc.push_sql(" ");
     acc.push_sql(sop.op.keyword());
@@ -447,6 +544,11 @@ fn build_set_op_select_inner<T: Model + FromPgRow>(
             // references projection-level column names, which are
             // unqualified in the combined result. The single-table
             // queryset path always uses `None` here too.
+            //
+            // `validate_outer_ordering` above guarantees every entry
+            // here is an `OrderExpr::Column` variant; expression-form
+            // terms (spatial `ST_Distance(...)`) would have errored out
+            // already.
             o.emit(acc, None);
         }
     }
@@ -486,6 +588,16 @@ pub(crate) fn build_set_op_select<T: Model + FromPgRow>(
 pub(crate) fn build_set_op_count<T: Model + FromPgRow>(
     sop: &SetOpQuerySet<T>,
 ) -> Result<SqlAccumulator, DjogiError> {
+    // Validate the user-supplied outer ordering before we strip it. The
+    // count path drops outer `ORDER BY` for emission, but if the user
+    // built the queryset with an invalid expression-form ordering we
+    // surface that consistently with `fetch_all` / `first` — same
+    // shape, same diagnostic, regardless of which terminal runs first.
+    // Otherwise a queryset whose outer ordering is invalid would
+    // `.count(...)` cleanly and only error when the caller later
+    // `.fetch_all(...)`s, which is a confusing UX.
+    validate_outer_ordering::<T>(&sop.ordering)?;
+
     let mut acc = SqlAccumulator::new("SELECT COUNT(*) FROM (");
     // Clone the set-op shape but strip the outer ORDER BY / LIMIT /
     // OFFSET so the COUNT(*) reflects the full set-op cardinality.
@@ -876,6 +988,17 @@ where
     /// on `T`'s `tenant_key`. Both arms share the same `T`, so a
     /// single tenant scope covers the entire query (no per-arm tenant
     /// set / clear traffic).
+    ///
+    /// # Ordering of validation vs tenant setup
+    ///
+    /// Arm validation (`SetOpArmInvalid`) and outer-ordering validation
+    /// (`SetOpOuterOrderingInvalid`) run **inside** `build_set_op_select`,
+    /// which is invoked **before** `auto_set_tenant`. This preserves
+    /// the "rejection before any DB round trip" contract for both
+    /// non-tenant-keyed and tenant-keyed models: an invalid arm cannot
+    /// trigger a `SET LOCAL` tenant statement that the caller never
+    /// asked for. The cost of the swap is negligible — SQL build is a
+    /// pure-CPU traversal of an already-built condition tree.
     pub fn fetch_all<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -884,8 +1007,13 @@ where
         T: 'ctx,
     {
         async move {
-            crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
+            // Build + validate first so invalid-arm / invalid-ordering
+            // queries error out cleanly without issuing the tenant GUC
+            // `SET LOCAL` statement that `auto_set_tenant` may run.
+            // Tenant setup is reserved for queries that will actually
+            // execute against the database.
             let acc = build_set_op_select(&self)?;
+            crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
@@ -908,6 +1036,13 @@ where
     ///
     /// Per-arm `.order_by(...)` / `.limit(...)` still apply inside
     /// each arm; the outer `LIMIT 1` caps the post-merge count.
+    ///
+    /// # Ordering of validation vs tenant setup
+    ///
+    /// Same contract as [`fetch_all`](Self::fetch_all) — arm /
+    /// outer-ordering validation runs through `build_set_op_select`
+    /// before `auto_set_tenant`, so an invalid set-op never issues a
+    /// tenant GUC `SET LOCAL` statement.
     pub fn first<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -916,12 +1051,14 @@ where
         T: 'ctx,
     {
         async move {
-            crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
             let mut sop = self;
             // Outer LIMIT is the right knob — Postgres still evaluates
             // both arms but stops emitting after one combined row.
             sop.limit = Some(1);
+            // Build + validate first; only then propagate tenant GUC
+            // (see `fetch_all` for the rationale).
             let acc = build_set_op_select(&sop)?;
+            crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let opt = ctx.query_opt(&sql, &params).await?;
@@ -945,6 +1082,18 @@ where
     ///
     /// Returns `i64` to match Postgres `COUNT(*)`'s `BIGINT` return
     /// type and to leave headroom for huge tables.
+    ///
+    /// # Ordering of validation vs tenant setup
+    ///
+    /// Same contract as [`fetch_all`](Self::fetch_all) — arm /
+    /// outer-ordering validation runs through `build_set_op_count`
+    /// before `auto_set_tenant`, so an invalid set-op never issues a
+    /// tenant GUC `SET LOCAL` statement. Outer ordering is validated
+    /// even though `count` strips it for emission: the user's queryset
+    /// shape is the same one they may have passed to `fetch_all`, and
+    /// a queryset that errors on `fetch_all` should error on `count`
+    /// too — otherwise the same value behaves differently at
+    /// different terminals.
     pub fn count<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -953,8 +1102,10 @@ where
         T: 'ctx,
     {
         async move {
-            crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
+            // Build + validate first; only then propagate tenant GUC
+            // (see `fetch_all` for the rationale).
             let acc = build_set_op_count(&self)?;
+            crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
