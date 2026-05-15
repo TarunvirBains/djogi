@@ -476,17 +476,26 @@ where
             self.aggregates.check_legality()?;
 
             // Reject pair-only aggregates on the single-Model grouped
-            // path. Pair-tuple aggregates require the joined queryset's
-            // `l.` / `r.` / `la.` / `ra.` aliases; the grouped path
-            // emits a single-table FROM with no pair-side scope.
-            // Same diagnostic shape as `AnnotatedQuerySet::fetch_all`.
-            if self.aggregates.requires_closure_pair_join() {
+            // path. Two signals together cover the rejection set: the
+            // narrower `requires_closure_pair_join()` (today:
+            // `PairClosureKinshipSum<C>`) and the broader
+            // `requires_pair_tuple_scope()` (today: also
+            // `PairAreaOverlapRatio<L, R>` — see the matching gate on
+            // `AnnotatedQuerySet::fetch_all` for the design rationale).
+            // The grouped path emits a single-table FROM with no
+            // pair-side scope, so any pair-only slot here would surface
+            // as `42P01 missing FROM-clause entry for table "l"` at
+            // execute time without this gate.
+            if self.aggregates.requires_pair_tuple_scope()
+                || self.aggregates.requires_closure_pair_join()
+            {
                 return Err(crate::DjogiError::Validation(
                     "grouped single-Model annotate cannot host a pair-tuple aggregate \
-                     (e.g. PairClosureKinshipSum). These aggregates reference pair-tuple \
-                     emitter aliases (`l.` / `r.` / `la.` / `ra.`) that are only in scope \
-                     inside a JoinedQuerySet. Use \
-                     `model_objects.self_pairs().left_join_closure_pair::<C>().annotate(...)` \
+                     (e.g. PairClosureKinshipSum, PairAreaOverlapRatio). These aggregates \
+                     reference pair-tuple emitter aliases (`l.` / `r.` / `la.` / `ra.`) that \
+                     are only in scope inside a JoinedQuerySet. Use \
+                     `model_objects.self_pairs().annotate(...)` (or \
+                     `.left_join_closure_pair::<C>().annotate(...)` for closure-pair aggregates) \
                      for the joined-annotated terminal."
                         .to_string(),
                 ));

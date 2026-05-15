@@ -220,6 +220,53 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
         false
     }
 
+    /// Whether this slot's emitted SQL is **only** valid inside a
+    /// pair-tuple `JoinedQuerySet::annotate(...)` terminal — i.e.,
+    /// references the framework-fixed `l.` / `r.` / `la.` / `ra.`
+    /// aliases that a single-Model or grouped FROM clause does not
+    /// provide.
+    ///
+    /// Returns `false` by default. Override to `true` when the slot's
+    /// SQL emitter splices a pair-tuple alias literally:
+    ///
+    ///   - [`PairClosureKinshipSum<C>`](crate::query::PairClosureKinshipSum)
+    ///     emits `SUM(la.path_count * ra.path_count * ...)` referencing
+    ///     the closure-pair `la` / `ra` aliases. Already covered by the
+    ///     existing `requires_closure_pair_join()` signal, but pair-tuple
+    ///     scope is the broader gate (this slot needs both pair-side
+    ///     aliases **and** the closure-pair LEFT JOINs).
+    ///   - [`PairAreaOverlapRatio<L, R>`](crate::query::PairAreaOverlapRatio)
+    ///     (spatial only) emits
+    ///     `ST_Area(ST_Intersection(l.<lcol>, r.<rcol>))` referencing
+    ///     the pair-side `l` / `r` aliases. Does **not** need closure
+    ///     pair joins, so the existing `requires_closure_pair_join()`
+    ///     signal alone would let it sneak past the single-Model /
+    ///     grouped annotate gates. This is the signal that catches it.
+    ///
+    /// [`AnnotatedQuerySet::fetch_all`](crate::query::AnnotatedQuerySet::fetch_all)
+    /// and the grouped annotate terminals consult this through the tuple
+    /// bridge ([`IntoAggregateTuple::requires_pair_tuple_scope`]) before
+    /// SQL build and return a typed `DjogiError::Validation` when the
+    /// aggregate tuple includes any pair-only slot. The diagnostic
+    /// points adopters at the `self_pairs()` / `cross_join_with()`
+    /// entry points for the pair-tuple substrate.
+    ///
+    /// # Why this is separate from `requires_closure_pair_join`
+    ///
+    /// `requires_closure_pair_join()` is the narrower signal: it asks
+    /// whether the slot's SQL references the **closure-pair** `la.` /
+    /// `ra.` aliases specifically. A slot that needs only the pair-side
+    /// `l.` / `r.` aliases (without closure metadata) does not require
+    /// a `left_join_closure_pair::<C>()` and reports `false` to that
+    /// gate. Without the distinct `requires_pair_tuple_scope()` signal,
+    /// such a slot (today: `PairAreaOverlapRatio`) would compile in a
+    /// single-Model `QuerySet::annotate(...)` chain and fail at Postgres
+    /// with `42P01 missing FROM-clause entry for table "l"` at execute
+    /// time. The two-signal design keeps the failure modes typed.
+    fn requires_pair_tuple_scope(&self) -> bool {
+        false
+    }
+
     /// Validate this slot against an optional closure-pair join
     /// captured by the queryset.
     ///
@@ -351,6 +398,26 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     /// self-joins where both sides share columns.
     fn is_joined_safe(&self) -> bool {
         true
+    }
+
+    /// Whether any slot in this aggregate tuple requires pair-tuple
+    /// scope (`l.` / `r.` / `la.` / `ra.` aliases) to produce valid
+    /// SQL.
+    ///
+    /// Forwards to [`AnnotationSlot::requires_pair_tuple_scope`] for
+    /// the single-slot blanket; tuple impls OR across every slot.
+    /// Default `false` covers the `()` / no-annotation case.
+    ///
+    /// [`AnnotatedQuerySet::fetch_all`](crate::query::AnnotatedQuerySet::fetch_all)
+    /// and the grouped annotate terminals consult this before SQL
+    /// build so pair-only slots (`PairClosureKinshipSum`,
+    /// `PairAreaOverlapRatio`) are rejected with a typed
+    /// `DjogiError::Validation` instead of letting Postgres surface a
+    /// `42P01 missing FROM-clause entry for table "l"` error at
+    /// execute time. The diagnostic points adopters at the
+    /// `self_pairs()` / `cross_join_with()` entry points.
+    fn requires_pair_tuple_scope(&self) -> bool {
+        false
     }
 
     /// Validate every slot in this aggregate tuple against the
@@ -665,6 +732,10 @@ where
         AnnotationSlot::is_joined_safe(self)
     }
 
+    fn requires_pair_tuple_scope(&self) -> bool {
+        AnnotationSlot::requires_pair_tuple_scope(self)
+    }
+
     fn validate_against_closure_pair(
         &self,
         closure_pair: Option<&crate::query::joined::ClosurePairJoin>,
@@ -766,6 +837,14 @@ macro_rules! impl_into_aggregate_tuple {
                 // AND across slots: every slot must be joined-safe.
                 true $(
                     && self.$slot.is_joined_safe()
+                )+
+            }
+
+            fn requires_pair_tuple_scope(&self) -> bool {
+                // OR across slots: any pair-only slot poisons the
+                // entire tuple for the single-Model / grouped paths.
+                false $(
+                    || self.$slot.requires_pair_tuple_scope()
                 )+
             }
 
@@ -882,25 +961,32 @@ where
             aggregates.check_legality()?;
 
             // Reject pair-only aggregates on the single-Model annotate
-            // path. Slots whose `requires_closure_pair_join()` returns
-            // true (today: `PairClosureKinshipSum<C>`) reference the
-            // pair-tuple emitter's `la.` / `ra.` closure aliases AND
-            // its `l.` / `r.` pair-side aliases — none of which exist
-            // in a single-Model FROM clause. Without this gate the
-            // query would reach Postgres as `SELECT ..., SUM(la.path *
-            // ra.path * ...) AS __djogi_agg_0 FROM <table> AS t` and
-            // surface a `42P01 missing FROM-clause` error at execute
-            // time. The check turns that into a typed
-            // `DjogiError::Validation` with a remediation hint —
+            // path. Two signals together cover the rejection set:
+            //
+            //   - `requires_closure_pair_join()` (today:
+            //     `PairClosureKinshipSum<C>`) flags slots that reference
+            //     `la.` / `ra.` closure-pair aliases.
+            //   - `requires_pair_tuple_scope()` (today:
+            //     `PairAreaOverlapRatio<L, R>` plus every slot above —
+            //     the closure-pair signal implies pair-tuple scope) flags
+            //     slots that reference `l.` / `r.` pair-side aliases
+            //     without necessarily needing closure metadata.
+            //
+            // Without the broader scope gate, `PairAreaOverlapRatio`
+            // would compile into a single-Model `QuerySet::annotate(...)`
+            // chain and surface as `42P01 missing FROM-clause entry for
+            // table "l"` at execute time. The check turns that into a
+            // typed `DjogiError::Validation` with a remediation hint —
             // same shape the joined path uses for its dual error of
             // "kinship aggregate without closure-pair join".
-            if aggregates.requires_closure_pair_join() {
+            if aggregates.requires_pair_tuple_scope() || aggregates.requires_closure_pair_join() {
                 return Err(DjogiError::Validation(
                     "single-Model QuerySet::annotate cannot host a pair-tuple aggregate \
-                     (e.g. PairClosureKinshipSum). These aggregates reference the pair-tuple \
-                     emitter's `l.` / `r.` / `la.` / `ra.` aliases which are only in scope \
-                     inside a JoinedQuerySet. Use \
-                     `model_objects.self_pairs().left_join_closure_pair::<C>().annotate(...)` \
+                     (e.g. PairClosureKinshipSum, PairAreaOverlapRatio). These aggregates \
+                     reference the pair-tuple emitter's `l.` / `r.` / `la.` / `ra.` aliases \
+                     which are only in scope inside a JoinedQuerySet. Use \
+                     `model_objects.self_pairs().annotate(...)` (or \
+                     `.left_join_closure_pair::<C>().annotate(...)` for closure-pair aggregates) \
                      to reach the joined-annotated terminal."
                         .to_string(),
                 ));
@@ -1554,5 +1640,137 @@ mod tests {
     fn percent_rank_window_alias_rejects_djogi_prefix() {
         use crate::expr::PercentRankWindow;
         let _ = PercentRankWindow::new().alias("__djogi_q");
+    }
+
+    // ── requires_pair_tuple_scope — default + tuple-OR semantics ──────
+    //
+    // The trait method [`AnnotationSlot::requires_pair_tuple_scope`]
+    // defaults to `false`. Tuple impls OR across slots so a single
+    // pair-only slot poisons the tuple for the single-Model / grouped
+    // paths. The end-to-end live-DB rejection on
+    // `AnnotatedQuerySet::fetch_all` and the grouped terminals is
+    // covered by the integration-test surface; these unit tests cover
+    // the signal-propagation invariants.
+
+    /// Ordinary `AggregateExpr` slots (`f.col().sum()` etc.) MUST
+    /// report `requires_pair_tuple_scope() = false`. These slots emit
+    /// bare-column SQL like `SUM(balance)` that runs fine in a single-
+    /// Model FROM clause; they are unrelated to the pair-tuple scope
+    /// signal and must not be rejected by the single-Model annotate
+    /// gate.
+    #[test]
+    fn aggregate_expr_default_requires_pair_tuple_scope_false() {
+        let f: FieldRef<Acc, i64> = FieldRef::new("balance");
+        let sum = f.sum();
+        assert!(
+            !AnnotationSlot::requires_pair_tuple_scope(&sum),
+            "AggregateExpr<V> must default to requires_pair_tuple_scope() = false"
+        );
+        // Forwards through the IntoAggregateTuple blanket too.
+        let tuple_view: &dyn IntoAggregateTuple<Decoded = i64> = &sum;
+        assert!(
+            !tuple_view.requires_pair_tuple_scope(),
+            "IntoAggregateTuple blanket must forward AnnotationSlot::requires_pair_tuple_scope through"
+        );
+    }
+
+    /// Window functions (rank, dense_rank, row_number, …) also default
+    /// to `requires_pair_tuple_scope() = false`. Even pair-qualified
+    /// window specs (`partition_by_pair(...)`) get their own
+    /// `is_joined_safe()` opt-in surface; the pair-tuple-scope signal
+    /// is for slots whose SQL **literally** contains `l.` / `r.` /
+    /// `la.` / `ra.` aliases at emit time. Window-function output
+    /// references the alias name (e.g. `RANK() AS my_rank`), so a
+    /// `RowNumber::new().alias("rank")` is technically usable on a
+    /// single-Model annotate.
+    #[test]
+    fn row_number_default_requires_pair_tuple_scope_false() {
+        let rn = RowNumber::new().alias("rank");
+        assert!(
+            !AnnotationSlot::requires_pair_tuple_scope(&rn),
+            "RowNumber must default to requires_pair_tuple_scope() = false"
+        );
+    }
+
+    /// `()` (the no-aggregation case) MUST report
+    /// `requires_pair_tuple_scope() = false`. Reverse direction of
+    /// `is_joined_safe()` default (which is `true` for `()`) — the
+    /// "OR-across-slots" semantics on the empty set yield `false`.
+    #[test]
+    fn unit_tuple_requires_pair_tuple_scope_false() {
+        let unit: () = ();
+        assert!(
+            !IntoAggregateTuple::requires_pair_tuple_scope(&unit),
+            "() / no-annotation case must report requires_pair_tuple_scope() = false"
+        );
+    }
+
+    /// Tuple impls OR across slots: a 2-tuple where one slot reports
+    /// `requires_pair_tuple_scope() = true` must poison the whole
+    /// tuple. The custom test slot below mimics the override pattern
+    /// `PairClosureKinshipSum` / `PairAreaOverlapRatio` use.
+    #[test]
+    fn tuple_with_pair_only_slot_propagates_through_or() {
+        // Fabricate a minimal AnnotationSlot impl that overrides
+        // `requires_pair_tuple_scope()` to true. Used only here to
+        // exercise the tuple-OR plumbing without coupling annotate.rs's
+        // unit tests to the spatial / closure-pair concrete slot types
+        // (both of which live in joined.rs and pull additional context).
+        struct PairOnlySlot;
+        impl annotation_slot_sealed::Sealed for PairOnlySlot {}
+        impl AnnotationSlot for PairOnlySlot {
+            type Decoded = i64;
+            fn push_column(&self, _acc: &mut SqlAccumulator, _slot: usize) {
+                unreachable!("test slot — emitter never invoked")
+            }
+            fn push_column_bare(&self, _acc: &mut SqlAccumulator, _slot: usize) {
+                unreachable!("test slot — emitter never invoked")
+            }
+            fn push_column_bare_after(
+                &self,
+                _acc: &mut SqlAccumulator,
+                _slot: usize,
+                _has_previous_columns: bool,
+            ) {
+                unreachable!("test slot — emitter never invoked")
+            }
+            fn decode_column(
+                &self,
+                _row: &tokio_postgres::Row,
+                _slot: usize,
+            ) -> Result<i64, tokio_postgres::Error> {
+                unreachable!("test slot — decoder never invoked")
+            }
+            fn is_joined_safe(&self) -> bool {
+                true
+            }
+            fn requires_pair_tuple_scope(&self) -> bool {
+                true
+            }
+        }
+
+        // Standalone — propagates through the single-slot blanket.
+        let pair_only = PairOnlySlot;
+        let tuple_view: &dyn IntoAggregateTuple<Decoded = i64> = &pair_only;
+        assert!(
+            tuple_view.requires_pair_tuple_scope(),
+            "single-slot blanket must forward requires_pair_tuple_scope() = true"
+        );
+
+        // Arity-2: ordinary + pair-only must OR to true.
+        let f: FieldRef<Acc, i64> = FieldRef::new("balance");
+        let pair = (f.sum(), PairOnlySlot);
+        assert!(
+            pair.requires_pair_tuple_scope(),
+            "arity-2 tuple with any pair-only slot must OR to true"
+        );
+
+        // Arity-2: ordinary + ordinary must remain false.
+        let g: FieldRef<Acc, i64> = FieldRef::new("balance");
+        let ordinary = (f.sum(), g.count());
+        assert!(
+            !ordinary.requires_pair_tuple_scope(),
+            "arity-2 tuple of ordinary slots must remain false"
+        );
     }
 }

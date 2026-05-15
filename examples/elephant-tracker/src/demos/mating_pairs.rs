@@ -69,13 +69,16 @@
 //!   `order_by_pair_desc` window-fn methods — not an arbitrary
 //!   `Expr<f64>` derived from `(1 - F) × overlap × age_compat`. The
 //!   demo's score is composed from three different sources (typed
-//!   aggregate output for `F`, Rust-side same-herd binary for
-//!   `overlap`, Rust-side bell-curve for `age_compat`), so the natural
-//!   place to combine them is Rust. A future slice that adds a
-//!   pair-side `Expr`-based `order_by_pair_desc` surface (and a
-//!   pair-tuple `Expr::area_of_intersection` over per-row geometry
-//!   columns) would let the entire ranking pass land in SQL; see #99
-//!   and #65's "What changes when this ships" note.
+//!   aggregate output for `F` on `(Elephant, Elephant)` pairs, typed
+//!   aggregate output for `overlap` on the separate
+//!   `(Herd, Herd)` pair tuple from `Herd::objects().self_pairs()`
+//!   with `PairAreaOverlapRatio`, and Rust-side bell-curve for
+//!   `age_compat`), so the natural place to combine them is Rust. A
+//!   future slice that adds a pair-side `Expr`-based
+//!   `order_by_pair_desc` surface would let the entire ranking pass
+//!   land in SQL; see #99 and #65's "What changes when this ships"
+//!   note. (The pair-tuple `Expr::area_of_intersection` shape is now
+//!   shipped as `PairAreaOverlapRatio<L, R>` — see Step 2.5 below.)
 //!
 //! - **Punnu cache showcase.** Step 2 binds the mature-elephant typed
 //!   fetch to a `Punnu<Elephant>` L1 pool via the canonical

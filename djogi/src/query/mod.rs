@@ -131,9 +131,16 @@ pub use insert_select::{
 };
 // Phase 8.5 Cluster 4A — typed pair-tuple query surface re-exports.
 pub use joined::{
-    JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, PairAreaOverlapRatio,
-    PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt,
+    JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, PairClosureKinshipSum,
+    PairOrderExpr, PairSide, PairWindowExt,
 };
+// `PairAreaOverlapRatio<L, R>` ships only with the `spatial` feature
+// flag enabled: its constructor's `SpatialColumnValue` bound and the
+// `crate::geo::*` types its SQL emitter references are themselves
+// `#[cfg(feature = "spatial")]`. Re-exporting it unconditionally would
+// break no-default-features builds where the symbol does not exist.
+#[cfg(feature = "spatial")]
+pub use joined::PairAreaOverlapRatio;
 pub use order::{Direction, NullsOrder, OrderExpr};
 // Phase 8eta PR2a — public predicate-wrapper surface.
 //

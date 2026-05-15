@@ -656,12 +656,39 @@ herd has accumulated ≥ 3 sightings).
 ### Compose with closure-based kinship in one query
 
 The annotation slot composes inside a pair-tuple annotation tuple
-alongside [`PairClosureKinshipSum<C>`](https://docs.rs/djogi/latest/djogi/query/struct.PairClosureKinshipSum.html),
-so adopter code can emit one query returning the full
+alongside [`PairClosureKinshipSum<C>`](https://docs.rs/djogi/latest/djogi/query/struct.PairClosureKinshipSum.html)
+**when both slots reference the same pair-tuple shape**: same model
+on both sides (`(L, R)` with the same columns), same FROM clause.
+That lets adopters emit one query returning the full
 `(Wright F, territory overlap, …)` tuple per pair without three separate
-round-trips. See the elephant-tracker `mating-pairs` demo
+round-trips:
+
+```rust
+use djogi::query::{PairAreaOverlapRatio, PairClosureKinshipSum};
+
+// One query — kinship + overlap per (left, right) pair.
+let combined: Vec<((Elephant, Elephant), (f64, f64))> = Elephant::objects()
+    .self_pairs()
+    .left_join_closure_pair::<ElephantAncestry>()
+    .annotate(|l, r| (
+        PairClosureKinshipSum::<ElephantAncestry>::new(),
+        PairAreaOverlapRatio::new(l.territory(), r.territory()),
+    ))
+    .fetch_all(&mut ctx)
+    .await?;
+```
+
+The composition requires both slots to share the same `(L, R)` pair
+tuple. The elephant-tracker `mating-pairs` demo
 ([`examples/elephant-tracker/src/demos/mating_pairs.rs`](https://github.com/TarunvirBains/djogi/blob/main/examples/elephant-tracker/src/demos/mating_pairs.rs))
-for the end-to-end shape.
+deliberately keeps the two pair-tuple queries separate — kinship is
+per-elephant-pair (`(Elephant, Elephant)`, joined with the closure of
+elephant ancestries) while overlap is per-herd-pair (`(Herd, Herd)`,
+on the materialised herd territories). When the natural pair-tuple
+shapes differ, two queries plus a Rust-side `HashMap` keyed by herd id
+is the demo pattern; the in-tuple composition above applies whenever
+the kinship and overlap dimensions share the same pair shape (e.g.,
+when an adopter models a per-elephant territory polygon).
 
 ### Choosing between the scalar `Expr` and the pair-side annotation
 

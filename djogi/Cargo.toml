@@ -604,6 +604,31 @@ name = "phase8_5_c4a_mating_pairs_correctness"
 path = "../tests/integration/phase8_5_c4a_mating_pairs_correctness.rs"
 harness = true
 
+# Phase 8.5 Cluster 4A follow-up — pair-only annotation rejection on the
+# single-Model + grouped annotate paths. Verifies the
+# `requires_pair_tuple_scope()` signal added in the cluster-A follow-up
+# is consulted by both `QuerySet::annotate(...).fetch_all` and the
+# grouped annotate terminal, producing typed `DjogiError::Validation`
+# instead of a Postgres `42P01 missing FROM-clause` error at execute
+# time. Requires `spatial` for `PairAreaOverlapRatio`.
+[[test]]
+name = "phase8_5_c4a_pair_only_annotation_rejection"
+path = "../tests/integration/phase8_5_c4a_pair_only_annotation_rejection.rs"
+harness = true
+required-features = ["spatial"]
+
+# Phase 8.5 Cluster 4A follow-up — live PostGIS validation for
+# `PairAreaOverlapRatio<L, R>`. Closes the loop between the unit-level
+# SQL-shape tests and the end-to-end PostGIS arithmetic by seeding
+# controlled polygon geometries and asserting the decoded `f64` ratios
+# match the documented behaviour: 1.0 on coincident polygons, 0.0 on
+# disjoint, in (0, 1) on partial overlap, 0.0 on NULL geography.
+[[test]]
+name = "phase8_5_c4a_pair_area_overlap_ratio_live"
+path = "../tests/integration/phase8_5_c4a_pair_area_overlap_ratio_live.rs"
+harness = true
+required-features = ["spatial"]
+
 [[test]]
 name = "phase8_trait_impl_registry"
 path = "../tests/integration/phase8_trait_impl_registry.rs"

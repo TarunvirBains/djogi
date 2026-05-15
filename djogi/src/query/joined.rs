@@ -1874,6 +1874,25 @@ impl<C: ClosureModel> crate::query::annotate::AnnotationSlot for PairClosureKins
         true
     }
 
+    /// `PairClosureKinshipSum`'s emitted SQL references the closure-pair
+    /// `la.` / `ra.` aliases that exist only inside a pair-tuple
+    /// `JoinedQuerySet::annotate(...)` terminal with a
+    /// `left_join_closure_pair::<C>()` join. Without this signal, a
+    /// `QuerySet::annotate(...)` on a single Model would compile and
+    /// surface as a Postgres `42P01 missing FROM-clause` error at
+    /// execute time. Reporting `true` here makes the single-Model and
+    /// grouped annotate gates surface that as a typed validation error
+    /// before SQL build.
+    ///
+    /// Note: `requires_closure_pair_join()` (above) also returns `true`
+    /// for this slot, so the narrower closure-pair-specific gate would
+    /// reject it independently. The pair-tuple-scope signal is the
+    /// broader invariant — any slot needing `l.` / `r.` aliases sets
+    /// it, regardless of whether closure metadata is also required.
+    fn requires_pair_tuple_scope(&self) -> bool {
+        true
+    }
+
     /// Validate the closure model `C` named on this aggregate against
     /// the queryset's closure-pair join.
     ///
@@ -2119,6 +2138,17 @@ impl<C: ClosureModel> crate::query::annotate::annotation_slot_sealed::Sealed
 /// can compose the inverse pair as a sibling annotation slot in a
 /// 4-arity tuple (`(forward_overlap, reverse_overlap, ...)`) and
 /// combine in Rust.
+///
+/// # Feature gating
+///
+/// `PairAreaOverlapRatio` is part of the spatial surface and is
+/// available only when the `spatial` feature flag is enabled. The
+/// constructor's `V: SpatialColumnValue` bound is itself defined behind
+/// `#[cfg(feature = "spatial")]`, so the struct, its impls, and the
+/// public re-export at `djogi::query::PairAreaOverlapRatio` all compile
+/// only with `spatial`. Build without the flag and the symbol is
+/// simply absent from the crate's public API surface.
+#[cfg(feature = "spatial")]
 pub struct PairAreaOverlapRatio<L: Model, R: Model> {
     /// Bare column name on the left side (without the `l.` alias prefix).
     /// Validated at construction via
@@ -2132,6 +2162,7 @@ pub struct PairAreaOverlapRatio<L: Model, R: Model> {
     _marker: PhantomData<fn() -> (L, R)>,
 }
 
+#[cfg(feature = "spatial")]
 impl<L: Model, R: Model> std::fmt::Debug for PairAreaOverlapRatio<L, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PairAreaOverlapRatio")
@@ -2143,6 +2174,7 @@ impl<L: Model, R: Model> std::fmt::Debug for PairAreaOverlapRatio<L, R> {
     }
 }
 
+#[cfg(feature = "spatial")]
 impl<L: Model, R: Model> Clone for PairAreaOverlapRatio<L, R> {
     fn clone(&self) -> Self {
         Self {
@@ -2153,6 +2185,7 @@ impl<L: Model, R: Model> Clone for PairAreaOverlapRatio<L, R> {
     }
 }
 
+#[cfg(feature = "spatial")]
 impl<L: Model, R: Model> PairAreaOverlapRatio<L, R> {
     /// Construct a new pair-side territory-overlap-ratio annotation.
     ///
@@ -2206,6 +2239,7 @@ impl<L: Model, R: Model> PairAreaOverlapRatio<L, R> {
     }
 }
 
+#[cfg(feature = "spatial")]
 impl<L: Model, R: Model> crate::query::annotate::AnnotationSlot for PairAreaOverlapRatio<L, R> {
     type Decoded = f64;
 
@@ -2257,8 +2291,26 @@ impl<L: Model, R: Model> crate::query::annotate::AnnotationSlot for PairAreaOver
     fn is_joined_safe(&self) -> bool {
         true
     }
+
+    /// `PairAreaOverlapRatio` emits SQL referencing the pair-side `l.`
+    /// / `r.` aliases that exist only inside a pair-tuple
+    /// `JoinedQuerySet::annotate(...)` terminal. Unlike
+    /// [`PairClosureKinshipSum`] (which also returns `true` for
+    /// `requires_closure_pair_join`), this slot does **not** need a
+    /// closure-pair LEFT JOIN — only the base pair-tuple FROM clause
+    /// (`<l_table> AS l CROSS JOIN <r_table> AS r`). Without the
+    /// pair-tuple-scope signal, a `QuerySet::annotate(...)` on a
+    /// single Model would compile and surface as a Postgres
+    /// `42P01 missing FROM-clause entry for table "l"` error at
+    /// execute time. Reporting `true` here makes the single-Model and
+    /// grouped annotate gates surface that as a typed validation error
+    /// before SQL build.
+    fn requires_pair_tuple_scope(&self) -> bool {
+        true
+    }
 }
 
+#[cfg(feature = "spatial")]
 impl<L: Model, R: Model> crate::query::annotate::annotation_slot_sealed::Sealed
     for PairAreaOverlapRatio<L, R>
 {
@@ -3828,12 +3880,18 @@ mod tests {
     // These tests pin the SQL shape, the alias-qualification invariant,
     // and the joined-safe gate so a future refactor can't regress the
     // shape silently.
+    //
+    // The whole bank is gated behind `feature = "spatial"`: the slot
+    // itself ships only with the spatial feature on, and these tests
+    // reference `crate::geo::Polygon` (also spatial-gated) so they
+    // cannot compile in the no-spatial configuration.
 
     /// `PairAreaOverlapRatio::push_column` must emit the
     /// `COALESCE(ST_Area(ST_Intersection(l.<lcol>::geometry,
     ///                                   r.<rcol>::geometry)::geography), 0)::float8
     /// / NULLIF(ST_Area(l.<lcol>::geography), 0)::float8` shape under
     /// the framework-reserved `__djogi_agg_<N>` alias.
+    #[cfg(feature = "spatial")]
     #[test]
     fn pair_area_overlap_ratio_emits_left_normalised_intersection_ratio() {
         // Use `FieldRef` directly — `Mini` is the joined-tests fixture
@@ -3881,6 +3939,7 @@ mod tests {
     /// leading separator when `has_previous_columns=false` — the
     /// grouped-annotate path uses this when the slot is the first
     /// non-key column in the SELECT list.
+    #[cfg(feature = "spatial")]
     #[test]
     fn pair_area_overlap_ratio_bare_after_omits_separator_for_first_column() {
         let l_col: crate::query::FieldRef<Mini, crate::geo::Polygon> =
@@ -3906,6 +3965,7 @@ mod tests {
     /// `PairAreaOverlapRatio` reports `is_joined_safe()` true — the
     /// emitted SQL alias-qualifies both column references explicitly,
     /// so there is no bare-column ambiguity even on self-joins.
+    #[cfg(feature = "spatial")]
     #[test]
     fn pair_area_overlap_ratio_is_joined_safe() {
         let l_col: crate::query::FieldRef<Mini, crate::geo::Polygon> =
@@ -3931,6 +3991,7 @@ mod tests {
     /// closure aliases. The gate must report `false` so a non-closure
     /// joined-annotate terminal accepts the slot without demanding
     /// `.left_join_closure_pair::<C>()`.
+    #[cfg(feature = "spatial")]
     #[test]
     fn pair_area_overlap_ratio_does_not_require_closure_pair_join() {
         let l_col: crate::query::FieldRef<Mini, crate::geo::Polygon> =
@@ -3944,10 +4005,63 @@ mod tests {
         );
     }
 
+    /// `PairAreaOverlapRatio` DOES require pair-tuple scope — the SQL
+    /// it emits references the `l.<lcol>` / `r.<rcol>` aliases which
+    /// are framework-fixed inside a `JoinedQuerySet<L, R>` and absent
+    /// from a single-Model `QuerySet<T>`. Reporting `true` is what
+    /// closes the GPT-5.5 xhigh BLOCK gap: without this signal the
+    /// slot would compile in a `QuerySet::annotate(...)` chain on a
+    /// single Model and fail at Postgres with `42P01 missing
+    /// FROM-clause entry for table "l"` at execute time. The
+    /// `AnnotatedQuerySet::fetch_all` and grouped annotate terminals
+    /// consult this through `IntoAggregateTuple::requires_pair_tuple_scope`
+    /// and surface a typed `DjogiError::Validation` instead.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn pair_area_overlap_ratio_requires_pair_tuple_scope() {
+        let l_col: crate::query::FieldRef<Mini, crate::geo::Polygon> =
+            crate::query::FieldRef::new("territory");
+        let r_col: crate::query::FieldRef<Mini, crate::geo::Polygon> =
+            crate::query::FieldRef::new("territory");
+        let overlap: PairAreaOverlapRatio<Mini, Mini> = PairAreaOverlapRatio::new(l_col, r_col);
+        assert!(
+            crate::query::annotate::AnnotationSlot::requires_pair_tuple_scope(&overlap),
+            "PairAreaOverlapRatio MUST report requires_pair_tuple_scope() = true — its emitted SQL splices the `l.` / `r.` aliases that only exist inside a JoinedQuerySet"
+        );
+        // Forwards through the IntoAggregateTuple blanket too.
+        let tuple_view: &dyn crate::query::IntoAggregateTuple<Decoded = f64> = &overlap;
+        assert!(
+            tuple_view.requires_pair_tuple_scope(),
+            "IntoAggregateTuple blanket must forward AnnotationSlot::requires_pair_tuple_scope through"
+        );
+    }
+
+    /// `PairClosureKinshipSum` also reports
+    /// `requires_pair_tuple_scope() = true`. The narrower
+    /// `requires_closure_pair_join()` signal already covered this slot
+    /// independently, but the broader pair-tuple-scope invariant must
+    /// apply for consistency with `PairAreaOverlapRatio` and any
+    /// future pair-tuple-only slot.
+    #[test]
+    fn pair_closure_kinship_sum_requires_pair_tuple_scope() {
+        let sum: PairClosureKinshipSum<MiniClosure> = PairClosureKinshipSum::new();
+        assert!(
+            crate::query::annotate::AnnotationSlot::requires_pair_tuple_scope(&sum),
+            "PairClosureKinshipSum MUST report requires_pair_tuple_scope() = true — same invariant as PairAreaOverlapRatio"
+        );
+        // The narrower closure-pair-join signal also remains true; the
+        // two are independent overrides on the slot.
+        assert!(
+            crate::query::annotate::AnnotationSlot::requires_closure_pair_join(&sum),
+            "PairClosureKinshipSum's requires_closure_pair_join() must remain true alongside the broader scope signal"
+        );
+    }
+
     /// The full joined-annotate SELECT pipeline must compose
     /// `PairAreaOverlapRatio` cleanly: SELECT pair columns from both
     /// sides + the overlap ratio aliased under `__djogi_agg_0`, with
     /// no spurious `GROUP BY` (the ratio is per-row, not aggregated).
+    #[cfg(feature = "spatial")]
     #[test]
     fn pair_area_overlap_ratio_full_select_shape() {
         let l_col: crate::query::FieldRef<Mini, crate::geo::Polygon> =
@@ -3986,6 +4100,7 @@ mod tests {
     /// macro-style `DjogiField<M, V>` accessor as well — the
     /// `IntoSqlField` bound accepts both flavours (FieldRef + DjogiField),
     /// mirroring `partition_by_pair` / `order_by_pair_*`.
+    #[cfg(feature = "spatial")]
     #[test]
     fn pair_area_overlap_ratio_accepts_djogi_field_handle() {
         // `DjogiField` construction requires a model-aware `extract`

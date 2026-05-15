@@ -10,17 +10,16 @@
 //! alternative — walking a recursive CTE per candidate pair — pays
 //! the recursive walk for every pair, which scales worse than linearly.
 //!
-//! This fixture confirms the claim with a small representative
-//! pedigree (200 elephants across 5 generationerations) and 100 candidate
-//! pairs. It is intentionally a correctness-and-shape benchmark: we
-//! assert that the closure-based path produces identical Wright F
-//! values to the recursive-CTE shape, and we record both runtimes
-//! via `tracing::info!` so a CI-side comparison or local profiling
-//! run has the data without having to invoke `cargo bench`. The full
-//! 5000-elephant production-scale bench lives as a future slice on
-//! `cargo bench`; this fixture's role is regression-pinning the
-//! closure-vs-recursive-CTE equivalence and surfacing the timing for
-//! audit.
+//! This fixture exercises the substrate at the production-shape target
+//! the issue calls for: a 5000-elephant pedigree (5 generations of
+//! 1000 elephants each) and 100 candidate pairs scored. It is both a
+//! correctness gate (closure-vs-recursive-CTE Wright F equivalence
+//! to `1e-9`) and a timing log (`tracing::info!`) for the closure path
+//! vs the per-pair recursive walk. Local timing on a developer workstation
+//! tracks the expected scaling shape — the closure pass dominates seed
+//! time, and the closure-self-join terminal runs as one round trip
+//! regardless of candidate count, while the recursive-CTE alternative
+//! pays a round trip per pair.
 //!
 //! # Why an integration test, not a Criterion bench
 //!
@@ -45,22 +44,23 @@ use djogi::query::{MaterializeClosureOptions, PairClosureKinshipSum};
 use elephant_tracker::models::{Elephant, ElephantAncestry, ElephantTags, Herd};
 use std::time::Instant;
 
-/// Pedigree size — 5 generationerations of 40 elephants each.
+/// Pedigree size — 5 generations of 1000 elephants each. Matches the
+/// 5000-elephant production-shape target in GH #85 T27 part 1.
 ///
-/// Smaller than the issue's 5000-elephant target so the live-Postgres
-/// CI gate stays under 60s. Adopters scaling this fixture for their
-/// own production budgets should bump `GENERATIONS` × `PER_GENERATION`
-/// up to whatever their CI tolerates. The closure-vs-recursive-CTE
-/// scaling ratio is shape-invariant; the absolute timings shift with
-/// hardware but the ratio holds.
+/// The closure-self-join terminal scales as one round trip regardless
+/// of pedigree size; per-pair cost is constant after the closure is
+/// materialised. The recursive-CTE alternative walks the parent chain
+/// per pair so its cost is bounded by `depth × pairs`. With `depth = 5`
+/// and 100 candidate pairs the recursive path remains tractable; the
+/// closure-vs-recursive scaling ratio is shape-invariant so the
+/// equivalence assertion stays meaningful at this size.
 const GENERATIONS: usize = 5;
-const PER_GENERATION: usize = 40;
+const PER_GENERATION: usize = 1000;
 const TOTAL_ELEPHANTS: usize = GENERATIONS * PER_GENERATION;
 
-/// Number of candidate pairs to score in the bench loop. Picked so
-/// the per-pair overhead is dominated by Postgres query latency
-/// rather than Rust-side iteration.
-const CANDIDATE_PAIRS: usize = 50;
+/// Number of candidate pairs to score in the bench loop. Matches the
+/// issue's 100-candidate target.
+const CANDIDATE_PAIRS: usize = 100;
 
 /// Build a generationeric elephant with a deterministic name and the given
 /// parent / sex / herd metadata. Fields the bench doesn't care about
@@ -300,7 +300,7 @@ async fn recursive_cte_path_scores(
     extensions = ["postgis"],
     sync_models = [Herd, Elephant, ElephantAncestry],
 )]
-async fn closure_and_recursive_cte_agree_on_kinship_for_200_elephants(
+async fn closure_and_recursive_cte_agree_on_kinship_at_production_scale(
     mut ctx: djogi::DjogiContext,
 ) {
     // ── Setup ─────────────────────────────────────────────────────
