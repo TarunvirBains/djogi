@@ -214,52 +214,57 @@ Rename behavior is explicit only:
 
 No heuristic rename guessing is part of the core differ.
 
-### 10.6.1 Type-Derived CHECK Projection (djogi#186)
+### 10.6.1 Type-Derived CHECK Projection (djogi#186 / #187 / #190)
 
-**Status — contract layer only until djogi#190.** This section describes the
-type-derived CHECK projection contract that djogi#186 puts in place. The
-helper, the differ AMEND DROP+ADD lifecycle, the
+**Status — temporal arms live; integer arms deferred to djogi#190.** The
+contract layer ships under djogi#186: the `field_type_check` helper, the
+differ AMEND DROP+ADD lifecycle, the
 `FieldSqlType::NumericPrecision { precision, scale }` variant, and the
-`IntoFilterValue for u64` shim are wired and unit-tested today. Three pieces
-still keep this contract from reaching production and are gated on
-djogi#190: (1) the `rust_type_to_sql` macro arms for `i8 / u8 / u16 / u32 /
-u64` (no `tokio_postgres::ToSql` impl for `u8 / u16 / u64`, plus `i8 → "char"`
-and `u32 → OID` mismatches); (2) the `project_column` call site that would
-populate `ColumnSchema.check` from a column's Rust source type; and (3) the
-source-Rust-type-aware dispatch the helper itself still lacks (its
-`SMALLINT` arm hard-codes `i8` bounds and its `INTEGER` arm returns `None`,
-so `u8` and `u16` source types cannot be projected correctly without it).
-See "Currently shipped vs deferred" below for the why and what needs to
-land. Until djogi#190 closes, `ColumnSchema.check` is always `None` for
-type-derived CHECKs in production projections, the differ never sees a
-differing CHECK to act on, and no type-derived CHECK constraint reaches
-`schema_snapshot.json` or generated migration SQL. The remainder of this
-section is the contract the projection will honour once that wiring
-activates.
+`IntoFilterValue for u64` shim. djogi#187 wires the temporal family
+(`time::Date` / `time::OffsetDateTime`) end-to-end through `project_column`
+so `ColumnSchema.check` is populated and the CHECK constraint reaches every
+generated migration SQL and `schema_snapshot.json`. The integer family
+(`i8 / u8 / u16 / u32 / u64`) and the f32 mapping lock are still gated:
+djogi#190 needs to add the per-field "rust source type" discriminator on
+`FieldDescriptor` (without it the helper cannot distinguish `i8 → SMALLINT`
+from `i16 → SMALLINT`, etc.), the `rust_type_to_sql` macro arms (today only
+the signed integers `i16 / i32 / i64` lower as columns; `i8` and the
+unsigned family have no `DjogiSqlType` impl), and the bind / decode shims
+for `u8 / u16 / u64` (no `tokio_postgres::ToSql` impl exists for those
+three). See "Currently shipped vs deferred" below for the per-piece state.
 
-Under the contract, the differ will project a table-level `CHECK` constraint
-for every column whose Rust source type widens to a Postgres column type.
-The projection is type-driven and runs at descriptor → snapshot lowering
-time, so the resulting CHECK will serialize into `schema_snapshot.json` and
-survive every round-trip.
+Under the contract, the differ projects a table-level `CHECK` constraint for
+every column whose Rust source type widens to a Postgres column type. The
+projection is type-driven and runs at descriptor → snapshot lowering time,
+so the resulting CHECK serializes into `schema_snapshot.json` and survives
+every round-trip.
 
 **Mapping table.** Each Rust source type widens to the smallest signed Postgres
 integer that fits its full value range; `u64` widens to `NUMERIC(20, 0)`
-because `u64::MAX > i64::MAX`. The CHECK expression bounds the widened column
-to the Rust source type's natural range.
+because `u64::MAX > i64::MAX`. The temporal types use a one-sided
+upper-bound CHECK matching `time::Date::MAX_YEAR` / `time::OffsetDateTime::MAX`
+(the lower bound is omitted because Postgres's own date input parser
+rejects every value `time::Date` cannot represent on the lower end —
+Postgres's MIN is 4713 BC, `time::Date`'s MIN is 10000 BC, so values in
+ISO years -9999 to -4713 are physically unreachable through Postgres).
 
-| Rust source | Postgres column | Type-derived CHECK expression          |
-|-------------|-----------------|----------------------------------------|
-| `i8`        | `SMALLINT`      | `<col> >= -128 AND <col> <= 127`       |
-| `u8`        | `SMALLINT`      | `<col> >= 0 AND <col> <= 255`          |
-| `u16`       | `INTEGER`       | `<col> >= 0 AND <col> <= 65535`        |
-| `u32`       | `BIGINT`        | `<col> >= 0 AND <col> <= 4294967295`   |
-| `u64`       | `NUMERIC(20, 0)`| `<col> >= 0 AND <col> <= 18446744073709551615` |
+| Rust source              | Postgres column  | Type-derived CHECK expression                       | Status      |
+|--------------------------|------------------|-----------------------------------------------------|-------------|
+| `time::Date`             | `DATE`           | `<col> <= DATE '9999-12-31'`                        | **Live**    |
+| `time::OffsetDateTime`   | `TIMESTAMPTZ`    | `<col> <= TIMESTAMP '9999-12-31 23:59:59.999999'`   | **Live**    |
+| `i8`                     | `SMALLINT`       | `<col> >= -128 AND <col> <= 127`                    | djogi#190   |
+| `u8`                     | `SMALLINT`       | `<col> >= 0 AND <col> <= 255`                       | djogi#190   |
+| `u16`                    | `INTEGER`        | `<col> >= 0 AND <col> <= 65535`                     | djogi#190   |
+| `u32`                    | `BIGINT`         | `<col> >= 0 AND <col> <= 4294967295`                | djogi#190   |
+| `u64`                    | `NUMERIC(20, 0)` | `<col> >= 0 AND <col> <= 18446744073709551615`      | djogi#190   |
 
 Identity-mapped widths (`i16`, `i32`, `i64`, `bool`, `String`, `f32`, `f64`,
 ...) project no CHECK because the column type already covers their full range.
 FK columns inherit the parent PK's identity-width type, so they project no
-CHECK either.
+CHECK either. The `f32 → REAL` mapping is locked at the identity row: see
+`docs/spec/decisions.md` "Type-derived CHECK projection" for why a future
+widening to `DOUBLE PRECISION` would re-open the bug class djogi#185 exists
+to close.
 
 **Constraint naming.** Each projected CHECK becomes a table-level constraint
 named `<table>_<column>_check`, deterministic from `(table, column)`. The
@@ -311,59 +316,68 @@ default (Phase 7.5)` decision row): `ADD CONSTRAINT … NOT VALID` followed by
 a separate `VALIDATE CONSTRAINT` step under `ShareUpdateExclusiveLock`. DROP
 is always catalog-only.
 
+**Inline CHECK on CREATE TABLE.** The SQL emitter renders the projected
+CHECK inline on the column definition using the
+`<col> <type> ... CONSTRAINT <name> CHECK (<expr>)` form rather than the
+unnamed `CHECK (<expr>)` form. The explicit `CONSTRAINT` keyword makes
+the constraint name deterministic — Postgres's auto-naming for unnamed
+inline CHECKs is `{table}_check` / `{table}_check1` / ..., which would
+diverge from the differ's ALTER TABLE DROP CONSTRAINT path
+(`{table}_{column}_check`). With the explicit name on inline emission,
+the CREATE TABLE and ALTER TABLE pathways reach the same constraint slot
+and the differ's drop / amend lifecycle works against both.
+
 **Family extensibility.** The same `field_type_check` projection helper is
-designed to grow with future type families: temporal year bounds (djogi#187),
+designed to grow with future type families: integer widening (djogi#190),
 Decimal precision (djogi#188), and HeerId / RanjId structural validation
 (djogi#189) all plug into the same match without reshaping the helper
 signature. See `decisions.md` "Type-derived CHECK projection (Phase 8.5 v3
 Cluster 2)" for the contract.
 
-**Currently shipped vs deferred.** The projection contract, the AMEND DROP+ADD
-fix, and `IntoFilterValue for u64` ship under djogi#186. Three pieces are
-gated on djogi#190:
+**Currently shipped vs deferred.** The projection contract, the AMEND
+DROP+ADD lifecycle, the `IntoFilterValue for u64` shim, and the temporal
+projection wiring (djogi#187 — `time::Date` / `time::OffsetDateTime` ship
+with year upper-bound CHECKs reaching `ColumnSchema.check`,
+`schema_snapshot.json`, and generated migration SQL) are all live. The
+integer family stays gated on djogi#190:
 
   * The `rust_type_to_sql` arms for `i8 / u8 / u16 / u32 / u64` are gated on
     djogi#190 (per-field bind/decode shims in the macro emitter) —
     `tokio_postgres::ToSql` binds `i8` as `"char"` and `u32` as `OID`, and has
     no impl for `u8 / u16 / u64` at all.
-  * The projection wiring at `migrate/projection.rs::project_column` that
-    invokes `field_type_check` to populate `ColumnSchema.check` is also gated
-    on djogi#190. The descriptor today exposes only `f.sql_type` (a typed
-    `FieldSqlType` such as `BigInt`); it does not carry the Rust source type,
-    so the projection cannot tell `i64 → BIGINT` from `u32 → BIGINT`. Wiring
-    the helper unconditionally would project a `>= 0 AND <= 4294967295` CHECK
-    onto every BIGINT column, including the framework's own HeerId-backed
-    `id` columns whose values exceed `u32::MAX` from day one. djogi#190 must
-    add a per-field "rust source type" discriminator on `FieldDescriptor`
-    alongside the bind/decode shims, and at that point `project_column` flips
-    on the call to `field_type_check` (gated on the discriminator). Flipping
-    the call site alone, however, does not project correct bounds for `u8`
-    and `u16` — see the next bullet.
-  * Source-Rust-type-aware dispatch *inside* `field_type_check` itself is
-    also gated on djogi#190. The helper today dispatches on `FieldSqlType`
-    alone: its `SMALLINT` arm hard-codes the `i8` range
-    (`>= -128 AND <= 127`), and its `INTEGER` arm returns `None`. Even
-    after `project_column` flips on with the new source-type discriminator,
-    a `u8 → SMALLINT` column would receive `i8` bounds rather than its own
-    `0 .. 255` range, and a `u16 → INTEGER` column would receive no CHECK
-    at all. djogi#190 must therefore plumb the same `rust_source_type`
-    discriminator into the helper so it can choose between `i8` and `u8`
-    bounds under `SMALLINT` and emit a fresh `u16` arm under `INTEGER`. The
-    `u32 → BIGINT` and `u64 → NUMERIC(20, 0)` paths already encode the
-    correct bounds for their sole expected source type — disambiguation at
-    `BIGINT` is handled at the `project_column` gate above, and
-    `NumericPrecision { precision: 20, scale: 0 }` is unique to `u64` and
-    needs no further discrimination. So the contract surface lights up for
-    `i8 / u8 / u16 / u32 / u64` only when this helper extension lands
-    alongside the `project_column` flip.
+  * The projection wiring at `migrate/projection.rs::project_column`
+    invokes `field_type_check` for every non-FK column today, but the
+    helper's integer arms (`SmallInt / Integer / BigInt /
+    NumericPrecision { 20, 0 }`) return `None` until djogi#190 lands the
+    per-field "rust source type" discriminator. `FieldSqlType` alone
+    cannot tell `i64 → BIGINT` from `u32 → BIGINT`; making the helper
+    return `Some(u32 bounds)` for every `BIGINT` column would CHECK-bind
+    the framework's own HeerId-backed `id` columns (values exceed
+    `u32::MAX` from day one) and break every adopter table.
+  * Source-Rust-type-aware dispatch *inside* `field_type_check` itself
+    needs to come back under djogi#190's discriminator. Once the
+    descriptor surfaces the Rust source type, the helper's `SMALLINT`
+    arm splits between `i8` (`>= -128 AND <= 127`) and `u8`
+    (`>= 0 AND <= 255`), the `INTEGER` arm emits the `u16`
+    (`>= 0 AND <= 65535`) range, and the `BIGINT` arm splits between
+    `i64` (no CHECK — identity width) and `u32`
+    (`>= 0 AND <= 4294967295`). The `u32 → BIGINT` and
+    `u64 → NUMERIC(20, 0)` paths already encode the correct bounds for
+    their sole expected source type — disambiguation at `BIGINT` is
+    handled at the dispatch site above, and
+    `NumericPrecision { precision: 20, scale: 0 }` is unique to `u64`
+    and needs no further discrimination.
 
-The helper, the differ AMEND DROP+ADD lifecycle, and the
-`FieldSqlType::NumericPrecision { precision, scale }` variant are all
-unit-tested today against synthetic descriptor / `ColumnSchema` shapes; the
-production wiring (`project_column` call site) and the helper's
-source-Rust-type-aware dispatch for `u8 / u16` both sit dormant so the
-contract layer cannot regress production tables before #190 closes the
-source-type gap.
+The bound strings the contract pinned in djogi#186 live in
+`migrate/sql.rs::alter_column_set_check_for_*` SQL-emitter tests (`i8`,
+`u32`, `u64` shapes) and survive the deferral. The temporal arms ship
+under `field_type_check_for_date_emits_year_upper_bound` and
+`field_type_check_for_timestamptz_emits_year_upper_bound` (unit tests),
+`project_column_emits_year_check_for_non_fk_date_column` /
+`..._timestamptz_column` (projection wiring pin tests), and the
+`tests/internal/phase8_5_c2_187_temporal_year_check.rs` integration test
+that exercises both the in-range round-trip and the OOB-upper rejection
+through a raw SQL bypass.
 
 ### 10.7 Ledger and Locking
 

@@ -1057,33 +1057,61 @@ fn project_generated_column(spec: &GeneratedColumnSpec) -> GeneratedColumnSchema
 /// and a redundant CHECK would inflate every snapshot for no safety
 /// win.
 ///
-/// Returns `Some(expr)` for the integer-widening cases that motivate
-/// `djogi#186`:
+/// **Active arms (djogi#187 — temporal year bounds).** Each temporal
+/// `FieldSqlType` variant has exactly one Rust source type that lowers
+/// to it (`time::Date` → `Date`, `time::OffsetDateTime` → `Timestamptz`),
+/// so dispatch on `FieldSqlType` alone is unambiguous and the CHECK
+/// reaches `project_column` directly. The bound shape:
 ///
-/// | Rust | Postgres column | CHECK expression                   |
-/// |------|-----------------|-------------------------------------|
-/// | `i8` | `SMALLINT`      | `<col> >= -128 AND <col> <= 127`    |
-/// | `u32`| `BIGINT`        | `<col> >= 0 AND <col> <= 4294967295`|
+/// | Rust                     | Postgres column | CHECK expression                          |
+/// |--------------------------|-----------------|-------------------------------------------|
+/// | `time::Date`             | `DATE`          | `<col> <= DATE '9999-12-31'`              |
+/// | `time::OffsetDateTime`   | `TIMESTAMPTZ`   | `<col> <= TIMESTAMP '9999-12-31 …'`       |
 ///
-/// (`u8`, `u16`, `u64` are pre-wired here for `djogi#190` — once
-/// tokio-postgres bind/decode shims land, the descriptor will start
-/// surfacing those types and the matching arms below trigger
-/// automatically.)
+/// **One-sided upper bound by design.** The `time` crate's default
+/// year range is ISO 8601 -9999 to +9999. Postgres's DATE / TIMESTAMP
+/// types accept years far outside the upper bound (DATE up to 5874897
+/// AD; TIMESTAMP up to 294276 AD), so the upper-bound CHECK is the
+/// one that actually does work — it rejects Postgres-valid but
+/// `time::Date`-OOB INSERTs that would otherwise corrupt typed reads.
+///
+/// The lower bound is intentionally omitted because Postgres's own
+/// date input parser already rejects every value `time::Date` cannot
+/// represent: ISO year -9999 = 10000 BC, but Postgres's earliest
+/// representable date is 4713 BC (= ISO year -4712). Any literal in
+/// ISO years -9999 to -4713 (= 10000 BC to 4714 BC) fails Postgres's
+/// own type-validation pass and never reaches the CHECK constraint.
+/// A redundant lower-bound CHECK at `4713-01-01 BC` would add no
+/// safety and inflate every DATE / TIMESTAMPTZ column DDL with a 30+
+/// byte clause Postgres cannot test. See
+/// `docs/spec/decisions.md` "Type-derived CHECK projection" for the
+/// rationale.
+///
+/// Adopters who enable the `time/large-dates` feature flag widen the
+/// representable range to ±999_999; the CHECK projected here remains
+/// at the default ±9999 by design — `time::Date::MAX_YEAR` is a
+/// compile-time constant the projection layer cannot inspect without
+/// leaking the feature flag into the descriptor surface.
+///
+/// **Deferred arms (djogi#190 — integer widening).** Integer arms
+/// (`i8 / u8 / u16 / u32 / u64`) were unit-tested in the contract
+/// commit (djogi#186) under
+/// `FieldSqlType::{SmallInt, Integer, BigInt, NumericPrecision { 20, 0 }}`,
+/// but `FieldSqlType` alone cannot distinguish `i8 → SMALLINT` from
+/// `i16 → SMALLINT` (both lower to the same variant), so emitting a
+/// CHECK from `field_type_check` here would also fire on every
+/// adopter `i16` column. djogi#190 lands the per-field "rust source
+/// type" discriminator on `FieldDescriptor` and re-introduces the
+/// integer arms behind that discriminator. Until then, integer arms
+/// return `None`; the bound strings the contract pinned live in
+/// `migrate/sql.rs::alter_column_set_check_for_*` SQL-emitter tests
+/// and survive the deferral.
 ///
 /// The expression references the column by its quoted name so
 /// identifiers using reserved words round-trip cleanly through
 /// Postgres parsing. The descriptor's `name` field is the user's Rust
 /// ident with `r#` stripped, which matches the column-name convention
 /// the rest of the projection / SQL emitter uses.
-///
-/// **Dormant in non-test builds today.** `project_column` does not
-/// invoke this helper yet — see the comment at the projection wiring
-/// for the source-type-discriminator gating. The `#[allow(dead_code)]`
-/// keeps the helper compilable under `-D warnings` until djogi#190
-/// flips the wiring on; the unit tests in this module's `tests` block
-/// exercise it directly so behaviour cannot regress while it sits
-/// dormant.
-#[allow(dead_code)]
 fn field_type_check(
     sql_type: &crate::descriptor::FieldSqlType,
     column_name: &str,
@@ -1092,46 +1120,68 @@ fn field_type_check(
 
     let qcol = quote_ident_for_check(column_name);
     match sql_type {
-        // Note: this match dispatches on the descriptor's typed
-        // `FieldSqlType`, not on the SQL string. The macro's
-        // `rust_type_to_sql` table already routes `i8 → "SMALLINT"`
-        // and `u8 → "SMALLINT"` to the same Postgres column type, so
-        // we can't recover the Rust source from the column type alone.
-        // Today the only `SMALLINT`-producing Rust type with a CHECK is
-        // `i8` — every other `SMALLINT` source (`i16`) is identity and
-        // produces no CHECK. The `u8 → SMALLINT` arm activates only
-        // once djogi#190 wires the macro's `rust_type_to_sql` for `u8`.
-        // The CHECK projection at that point becomes ambiguous on
-        // `SMALLINT` alone; the resolution is to add a typed
-        // discriminant on `FieldDescriptor` (a `rust_source_type` slot)
-        // so the projection can choose between `i8` and `u8` bounds.
-        // For now, only `i8` is reachable, and the chosen bound matches
-        // its range.
-        FieldSqlType::SmallInt => Some(format!("{qcol} >= -128 AND {qcol} <= 127")),
-        // `u32` is the only Rust type today that lowers to BIGINT but
-        // requires a non-default range. `i64 → BIGINT` is identity and
-        // produces no CHECK; the macro routes `i64` → `FieldSqlType::BigInt`
-        // unconditionally. Same ambiguity caveat as `SMALLINT` above
-        // applies once `i64` and `u32` land in the same projection
-        // pipeline — resolved by future `rust_source_type` discriminant.
-        FieldSqlType::BigInt => Some(format!("{qcol} >= 0 AND {qcol} <= 4294967295")),
-        // `u8 → SMALLINT` (range 0..255), `u16 → INTEGER` (range
-        // 0..65535), `u64 → NUMERIC(20, 0)` (range 0..18446744073709551615).
-        // Pre-wired for djogi#190; the matching arms in
-        // `rust_type_to_sql` are gated on the bind/decode shim work.
-        FieldSqlType::Integer => None,
-        FieldSqlType::NumericPrecision {
+        // ── djogi#187 — temporal year upper bound ────────────────────
+        //
+        // `time::Date` / `time::OffsetDateTime` cap at ISO year 9999
+        // by default. Postgres `DATE` / `TIMESTAMPTZ` accept much
+        // higher years (`DATE` up to 5874897 AD; `TIMESTAMPTZ` up to
+        // 294276 AD). External writers (raw SQL migration, BI tool,
+        // sister application) can land a row whose year exceeds the
+        // time crate's MAX. The next typed `SELECT` decoding via
+        // `row.try_get::<Date>` / `row.try_get::<OffsetDateTime>`
+        // fails with `DjogiError::Decode`, and a single bad row
+        // poisons all subsequent reads through the typed surface.
+        //
+        // Project a one-sided upper-bound CHECK so Postgres rejects
+        // OOB-upper writes at the DB layer rather than letting them
+        // land and surface as decode failures on the read side. The
+        // lower bound is omitted because Postgres's own date input
+        // parser rejects every value `time::Date` cannot represent
+        // (Postgres's MIN is 4713 BC; `time::Date`'s MIN is 10000 BC
+        // — values in ISO years -9999 to -4713 are unreachable
+        // through Postgres regardless of CHECK). See the doc comment
+        // above.
+        //
+        // The upper-bound `TIMESTAMP` literal includes microsecond
+        // resolution so `OffsetDateTime::new(..., 23, 59, 59, 999_999)`
+        // round-trips identically and CHECK-equals against the literal.
+        FieldSqlType::Date => Some(format!("{qcol} <= DATE '9999-12-31'")),
+        FieldSqlType::Timestamptz => {
+            Some(format!("{qcol} <= TIMESTAMP '9999-12-31 23:59:59.999999'"))
+        }
+        // ── djogi#190 — integer widening (deferred) ──────────────────
+        //
+        // The integer arms (`SmallInt`, `Integer`, `BigInt`,
+        // `NumericPrecision { precision: 20, scale: 0 }`) sit deferred
+        // until djogi#190 lands the per-field "rust source type"
+        // discriminator on `FieldDescriptor`. `FieldSqlType` alone
+        // cannot tell `i8 → SMALLINT` from `i16 → SMALLINT` or
+        // `u32 → BIGINT` from `i64 → BIGINT` — without the source-type
+        // tracking, every adopter `i16` / `i64` column would be
+        // CHECK-bound to `i8` / `u32` ranges and reject legitimate
+        // values. The deferred pin tests in this module
+        // (`project_column_deferred_no_check_for_*`) lock the current
+        // behaviour in until #190 closes.
+        //
+        // Returning `None` for these variants is the safe default; the
+        // bound strings the djogi#186 contract pinned live in
+        // `migrate/sql.rs::alter_column_set_check_for_*` SQL-emitter
+        // tests and survive the deferral.
+        FieldSqlType::SmallInt
+        | FieldSqlType::Integer
+        | FieldSqlType::BigInt
+        | FieldSqlType::NumericPrecision {
             precision: 20,
             scale: 0,
-        } => Some(format!("{qcol} >= 0 AND {qcol} <= 18446744073709551615")),
+        } => None,
         // All other `FieldSqlType` variants (`Text`, `Real`,
-        // `DoublePrecision`, `Boolean`, `Timestamptz`, `Date`,
-        // `Numeric`, `Uuid`, `Jsonb`, arrays, `Citext`, `Geography`,
-        // `Custom`) carry their own type bounds via the column type
-        // itself; no Rust-derived CHECK applies. Future families
-        // (temporal year bounds — djogi#187, Decimal precision —
-        // djogi#188) plug into this same match without reshaping the
-        // helper signature.
+        // `DoublePrecision`, `Boolean`, `Numeric`, `Uuid`, `Jsonb`,
+        // arrays, `Citext`, `Geography`, `Custom`, and the unbounded
+        // `NumericPrecision { ..}` precisions used by future
+        // `Decimal → NUMERIC(P, S)` work in djogi#188) carry their own
+        // type bounds via the column type itself; no Rust-derived
+        // CHECK applies. Future families plug into this same match
+        // without reshaping the helper signature.
         _ => None,
     }
 }
@@ -1144,11 +1194,6 @@ fn field_type_check(
 /// Wraps the identifier in double quotes and doubles any embedded
 /// double quote (the Postgres rule). Matches the convention every other
 /// SQL emitter in this crate uses for column references.
-///
-/// **Dormant in non-test builds today.** Only `field_type_check`
-/// (also dormant pending djogi#190) calls this; the
-/// `#[allow(dead_code)]` keeps it compilable under `-D warnings`.
-#[allow(dead_code)]
 fn quote_ident_for_check(name: &str) -> String {
     let mut out = String::with_capacity(name.len() + 2);
     out.push('"');
@@ -1292,45 +1337,49 @@ fn project_column(
         None
     };
 
-    // Type-derived CHECK projection (djogi#186, Phase 8.5 v3 Cluster 2)
-    // is intentionally NOT wired through `project_column` yet. The
-    // descriptor exposes `f.sql_type` (a typed `FieldSqlType` such as
-    // `BigInt` / `SmallInt`) but the projection cannot recover the
-    // *Rust source type* from that single field — `i64 → BIGINT` and
-    // `u32 → BIGINT` both lower to `FieldSqlType::BigInt`, and
-    // `i16 → SMALLINT` and `i8 → SMALLINT` both lower to
-    // `FieldSqlType::SmallInt`. Calling the `field_type_check` helper
-    // here would unconditionally emit a `>= 0 AND <= 4294967295` CHECK
-    // for every BIGINT column, including the framework's own
-    // HeerId-backed `id` column and every legitimate adopter `i64`
-    // field. Production HeerIds exceed `u32::MAX` from day one, so
-    // wiring without a source-type discriminator would silently break
-    // every table.
+    // Type-derived CHECK projection (djogi#186 contract, wired in
+    // djogi#187 for temporal types).
     //
-    // Wiring is therefore deferred to djogi#190, which lands the
-    // per-field "rust source type" tracking on `FieldDescriptor`
-    // alongside the macro arms / bind shims for `i8 / u8 / u16 / u32 /
-    // u64`. Until then:
+    // The contract:
     //
-    //   * `field_type_check` ships as a unit-tested helper (see the
-    //     `field_type_check_*` tests below).
-    //   * The differ AMEND DROP+ADD lifecycle ships and is unit-tested
-    //     against synthetic `ColumnSchema` instances (see
-    //     `check_*_emits_*` tests in `migrate/diff.rs`).
-    //   * Both the projection call site here and the
-    //     source-Rust-type-aware helper dispatch for `u8 / u16`
-    //     inside `field_type_check` itself remain gated/deferred
-    //     under djogi#190 (the `SMALLINT` arm hard-codes `i8` bounds
-    //     and the `INTEGER` arm returns `None`), so the contract-layer
-    //     infrastructure cannot regress production tables before #190
-    //     closes the source-type gap.
+    //   * `field_type_check` dispatches on the descriptor's
+    //     `FieldSqlType` to emit a Rust-derived range CHECK for
+    //     widened columns whose Postgres column type accepts values
+    //     outside the Rust source type's representable range.
+    //   * For non-FK columns we call the helper; non-`None` results
+    //     reach `ColumnSchema.check`, the SQL emitter inlines them on
+    //     CREATE TABLE and the differ emits `ColumnChange::SetCheck`
+    //     for ADD / DROP / AMEND lifecycles.
+    //   * FK columns inherit their type from the parent's PK, which is
+    //     always identity-width (BIGINT for HeerId, UUID for RanjId).
+    //     The Rust-derived CHECK doesn't apply, so we hard-code
+    //     `None`.
     //
-    // FK columns are reserved as `None` here even after #190 lands —
-    // FK columns inherit their type from the parent's PK, which is
-    // always identity-width (BIGINT for HeerId, UUID for RanjId), so
-    // no Rust-derived CHECK applies to references regardless of source
-    // type tracking.
-    let check: Option<String> = None;
+    // **Live arms (djogi#187).** `FieldSqlType::Date` (only `time::Date`
+    // lowers here) and `FieldSqlType::Timestamptz` (only
+    // `time::OffsetDateTime` lowers here) carry year ±9999 CHECKs that
+    // project unconditionally — `FieldSqlType` alone disambiguates the
+    // source type for these variants.
+    //
+    // **Deferred arms (djogi#190).** The integer arms
+    // (`SmallInt / Integer / BigInt / NumericPrecision { 20, 0 }`) sit
+    // dormant inside `field_type_check` (return `None`) because
+    // `FieldSqlType` cannot distinguish `i8 → SMALLINT` from
+    // `i16 → SMALLINT`, `u32 → BIGINT` from `i64 → BIGINT`, etc.
+    // Lifting the dispatch to a per-field "rust source type"
+    // discriminator on `FieldDescriptor` is djogi#190's job; until then
+    // the integer CHECK projection cannot reach `project_column`
+    // safely.
+    //
+    // The `project_column_deferred_no_check_for_*` pin tests below
+    // assert the deferred BigInt / SmallInt behaviour stays at `None`
+    // until #190 closes; the `project_column_temporal_check_for_*`
+    // tests assert the live Date / Timestamptz behaviour ships now.
+    let check: Option<String> = if foreign_key.is_some() {
+        None
+    } else {
+        field_type_check(&f.sql_type, f.name)
+    };
 
     ColumnSchema {
         check,
@@ -3014,58 +3063,57 @@ mod tests {
         assert!(msg.contains("GH #158"), "missing issue anchor: {msg}");
     }
 
-    // ── djogi#186 — type-derived CHECK projection ──────────────────────────
+    // ── djogi#187 — temporal year-bounds CHECK projection ──────────────────
     //
-    // `field_type_check` is the projection helper that bounds widened
-    // integer columns to the Rust source type's representable range.
-    // The expected expression for each currently-shipped Rust type
-    // (i8 → SMALLINT, u32 → BIGINT) is pinned here so a future refactor
-    // cannot silently change the bound. The pre-wired arms (u64 →
-    // NUMERIC(20, 0)) are also pinned so when djogi#190 surfaces u64,
-    // the projection emits the documented bound without further code
-    // changes.
+    // `field_type_check` projects a year ±9999 CHECK on `Date` and
+    // `Timestamptz` columns to match `time::Date` and
+    // `time::OffsetDateTime` representable range. These arms ship
+    // active because `FieldSqlType::Date` and
+    // `FieldSqlType::Timestamptz` each have a single Rust source type
+    // that lowers to them, so dispatching on `FieldSqlType` alone is
+    // unambiguous.
 
     #[test]
-    fn field_type_check_for_smallint_emits_i8_bounds() {
-        let expr = field_type_check(&FieldSqlType::SmallInt, "byte_count")
-            .expect("SMALLINT field must carry the i8 type-derived CHECK");
+    fn field_type_check_for_date_emits_year_upper_bound() {
+        let expr = field_type_check(&FieldSqlType::Date, "birthday")
+            .expect("DATE field must carry the time::Date year-bound CHECK");
+        // One-sided upper bound by design — see the doc comment on
+        // `field_type_check`. Postgres's date input parser rejects
+        // every value `time::Date` cannot represent on the lower end
+        // (4713 BC is Postgres's MIN), so the lower-bound CHECK is
+        // redundant.
         assert!(
-            expr.contains("\"byte_count\" >= -128 AND \"byte_count\" <= 127"),
-            "unexpected SMALLINT CHECK expression: {expr}"
+            expr.contains("\"birthday\" <= DATE '9999-12-31'"),
+            "DATE CHECK upper bound: {expr}"
+        );
+        assert!(
+            !expr.contains(">= DATE"),
+            "DATE CHECK is one-sided upper bound (no lower-bound clause): {expr}"
         );
     }
 
     #[test]
-    fn field_type_check_for_bigint_emits_u32_bounds() {
-        let expr = field_type_check(&FieldSqlType::BigInt, "medium_count")
-            .expect("BIGINT field must carry the u32 type-derived CHECK");
+    fn field_type_check_for_timestamptz_emits_year_upper_bound() {
+        let expr = field_type_check(&FieldSqlType::Timestamptz, "occurred_at")
+            .expect("TIMESTAMPTZ field must carry the OffsetDateTime year-bound CHECK");
         assert!(
-            expr.contains("\"medium_count\" >= 0 AND \"medium_count\" <= 4294967295"),
-            "unexpected BIGINT CHECK expression: {expr}"
+            expr.contains("\"occurred_at\" <= TIMESTAMP '9999-12-31 23:59:59.999999'"),
+            "TIMESTAMPTZ CHECK upper bound includes microsecond resolution: {expr}"
         );
-    }
-
-    #[test]
-    fn field_type_check_for_numeric_20_0_emits_u64_bounds() {
-        let expr = field_type_check(
-            &FieldSqlType::NumericPrecision {
-                precision: 20,
-                scale: 0,
-            },
-            "huge_count",
-        )
-        .expect("NUMERIC(20, 0) field must carry the u64 type-derived CHECK");
         assert!(
-            expr.contains("\"huge_count\" >= 0 AND \"huge_count\" <= 18446744073709551615"),
-            "unexpected NUMERIC(20, 0) CHECK expression: {expr}"
+            !expr.contains(">= TIMESTAMP"),
+            "TIMESTAMPTZ CHECK is one-sided upper bound (no lower-bound clause): {expr}"
         );
     }
 
     #[test]
     fn field_type_check_quotes_reserved_word_columns() {
-        // `order` is a Postgres reserved word — must come back quoted.
-        let expr = field_type_check(&FieldSqlType::SmallInt, "order")
-            .expect("SMALLINT field must carry CHECK regardless of column name");
+        // `order` is a Postgres reserved word — the CHECK expression
+        // must round-trip the column name through `quote_ident` so
+        // the parser accepts the column reference. Use a `Date` field
+        // since temporal arms are active today.
+        let expr = field_type_check(&FieldSqlType::Date, "order")
+            .expect("DATE field must carry CHECK regardless of column name");
         assert!(
             expr.contains("\"order\""),
             "CHECK expression must quote reserved-word column names: {expr}"
@@ -3074,21 +3122,17 @@ mod tests {
 
     #[test]
     fn field_type_check_returns_none_for_identity_widths() {
-        // Identity-mapped Rust types (`i16 → SMALLINT` carries no
-        // `i8`-derived CHECK; the projection cannot tell them apart on
-        // the typed `FieldSqlType` alone today, so the chosen rule is
-        // "if the type is SMALLINT, project the narrower bound" — see
-        // the in-source comment on `field_type_check`. The
-        // identity-width arms that genuinely have no CHECK are TEXT,
-        // BOOLEAN, REAL, DOUBLE PRECISION, TIMESTAMPTZ, DATE, NUMERIC
-        // (unbounded), UUID, JSONB, and the array variants.
+        // Identity-mapped Rust types lower to a Postgres column type
+        // that already enforces their representable range; no
+        // Rust-derived CHECK applies. The integer arms (`SmallInt`,
+        // `Integer`, `BigInt`, `NumericPrecision { 20, 0 }`) are
+        // listed here too because they sit deferred under djogi#190
+        // — see the doc comment on `field_type_check`.
         for ty in [
             FieldSqlType::Text,
             FieldSqlType::Boolean,
             FieldSqlType::Real,
             FieldSqlType::DoublePrecision,
-            FieldSqlType::Timestamptz,
-            FieldSqlType::Date,
             FieldSqlType::Numeric,
             FieldSqlType::Uuid,
             FieldSqlType::Jsonb,
@@ -3110,39 +3154,73 @@ mod tests {
                 "non-widened SQL type {ty:?} must not carry a Rust-derived CHECK",
             );
         }
-        // INTEGER is reserved for the future u16 case (djogi#190);
-        // currently unreachable, so no CHECK projects either.
-        assert!(
-            field_type_check(&FieldSqlType::Integer, "col").is_none(),
-            "INTEGER without u16 source carries no CHECK today",
-        );
     }
 
-    // ── djogi#186 — projection wiring deferral pin ─────────────────────────
+    #[test]
+    fn field_type_check_returns_none_for_deferred_integer_widths() {
+        // The integer arms (`SmallInt`, `Integer`, `BigInt`,
+        // `NumericPrecision { precision: 20, scale: 0 }`) sit deferred
+        // until djogi#190 lands the per-field "rust source type"
+        // discriminator on `FieldDescriptor`. `FieldSqlType` alone
+        // cannot tell `i8 → SMALLINT` from `i16 → SMALLINT` or
+        // `u32 → BIGINT` from `i64 → BIGINT`, so emitting an i8 / u32
+        // CHECK here would CHECK-bind every adopter i16 / i64 column
+        // and reject legitimate values.
+        //
+        // The bound strings that the djogi#186 contract pinned live
+        // in `migrate/sql.rs::alter_column_set_check_for_*` SQL-emitter
+        // tests; when djogi#190 closes, the integer dispatch returns
+        // here under the source-type discriminator and a future
+        // `field_type_check_for_*_with_source_type` test set
+        // replaces the assertions in this body with positive bounds
+        // checks.
+        for ty in [
+            FieldSqlType::SmallInt,
+            FieldSqlType::Integer,
+            FieldSqlType::BigInt,
+            FieldSqlType::NumericPrecision {
+                precision: 20,
+                scale: 0,
+            },
+        ] {
+            assert!(
+                field_type_check(&ty, "col").is_none(),
+                "integer SQL type {ty:?} must return None today; \
+                 djogi#190 reactivates dispatch with source-type tracking",
+            );
+        }
+    }
+
+    // ── djogi#186/#190 — integer projection deferral pin ───────────────────
     //
-    // Until djogi#190 lands the per-field "rust source type" discriminator
-    // on `FieldDescriptor`, `project_column` MUST NOT call
-    // `field_type_check`. The descriptor today exposes only `f.sql_type`
-    // (a typed `FieldSqlType` such as `BigInt`); without source-type
-    // tracking, calling the helper would project a `>= 0 AND <=
-    // 4294967295` CHECK onto every BIGINT column, including the
-    // framework's own HeerId-backed `id` columns whose values exceed
-    // `u32::MAX` from day one. The pin tests below assert that
-    // `project_column` keeps `ColumnSchema.check` at `None` for every
-    // descriptor surface today — non-FK BigInt id columns, non-FK BigInt
-    // non-id columns, FK columns, etc.
+    // `project_column` calls `field_type_check` for every non-FK
+    // column (djogi#187 wiring), but the helper's integer arms
+    // (SmallInt / Integer / BigInt / NumericPrecision { 20, 0 })
+    // return `None` until djogi#190 lands the per-field "rust source
+    // type" discriminator on `FieldDescriptor`. `FieldSqlType` alone
+    // cannot tell `i8 → SMALLINT` from `i16 → SMALLINT`, `u32 → BIGINT`
+    // from `i64 → BIGINT`, etc.; lifting the helper to a positive
+    // dispatch without the discriminator would project a
+    // `>= 0 AND <= 4294967295` CHECK onto every BIGINT column,
+    // including the framework's own HeerId-backed `id` columns whose
+    // values exceed `u32::MAX` from day one — breaking every adopter
+    // table.
     //
-    // When djogi#190 lands and adds the source-type discriminator, the
-    // wiring inside `project_column` flips on (gated on the
-    // discriminator), and these pins should be replaced with positive
-    // assertions that the projection emits the correct CHECK for each
-    // source type. The deferral is structural — never delete these
-    // assertions without an accompanying source-type discriminator
-    // landing in `FieldDescriptor`.
+    // The pin tests below assert that `project_column` keeps
+    // `ColumnSchema.check` at `None` for the current integer surface
+    // — non-FK BigInt id columns, non-FK BigInt non-id columns, non-FK
+    // SmallInt columns. When djogi#190 lands and adds the source-type
+    // discriminator, the integer arms inside `field_type_check` flip
+    // on (gated on the discriminator), and these pins should be
+    // replaced with positive assertions that the projection emits the
+    // correct CHECK for each source type. The deferral is structural
+    // — never delete these assertions without an accompanying
+    // source-type discriminator landing in `FieldDescriptor`.
     //
     // See:
-    //   * djogi/src/migrate/projection.rs::project_column (the dormant
-    //     wiring site, kept gated to `None`)
+    //   * djogi/src/migrate/projection.rs::project_column (calls
+    //     `field_type_check` for non-FK columns; integer arms still
+    //     return None until #190)
     //   * docs/spec/migrations.md §10.6.1 ("Currently shipped vs
     //     deferred" subsection)
 
@@ -3245,5 +3323,226 @@ mod tests {
              got {:?}",
             byte_col.check
         );
+    }
+
+    // ── djogi#187 — temporal year-bounds projection (live wiring) ──────────
+    //
+    // The Date and Timestamptz arms of `field_type_check` ship active
+    // — `FieldSqlType::Date` has a single Rust source type
+    // (`time::Date`) and `FieldSqlType::Timestamptz` has a single Rust
+    // source type (`time::OffsetDateTime`), so dispatching on
+    // `FieldSqlType` alone is unambiguous and the CHECK reaches
+    // `ColumnSchema.check` through `project_column`. These pin tests
+    // assert the wiring stays live for adopter Date / Timestamptz
+    // columns AND for the framework-injected `created_at` /
+    // `updated_at` columns.
+
+    #[test]
+    fn project_column_emits_year_check_for_non_fk_date_column() {
+        // Adopter `#[model] struct Product { launch_date: time::Date }`.
+        // Lowers to `FieldSqlType::Date`. The projection must produce
+        // a `<col> <= DATE '9999-12-31'` CHECK so external writers
+        // that land OOB-upper Date values get rejected at the DB
+        // layer rather than poisoning typed reads with
+        // `DjogiError::Decode`. One-sided upper bound by design — see
+        // `field_type_check` doc comment.
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                ..field_descriptor("launch_date", FieldSqlType::Date, false)
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("products", "Product")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let date_col = &buckets[&empty_global()].models["products"].columns[1];
+        assert_eq!(date_col.name, "launch_date");
+        let check = date_col
+            .check
+            .as_ref()
+            .expect("DATE column must carry the time::Date year-bound CHECK (djogi#187)");
+        assert!(
+            check.contains("\"launch_date\" <= DATE '9999-12-31'"),
+            "DATE column CHECK upper bound: {check}"
+        );
+    }
+
+    #[test]
+    fn project_column_emits_year_check_for_non_fk_timestamptz_column() {
+        // Adopter `#[model] struct Event { occurred_at: OffsetDateTime }`.
+        // Lowers to `FieldSqlType::Timestamptz`. The projection must
+        // produce a year-bound CHECK matching `time::OffsetDateTime`'s
+        // representable upper bound so external writers cannot land
+        // OOB-upper rows.
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                ..field_descriptor("occurred_at", FieldSqlType::Timestamptz, false)
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("events", "Event")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let ts_col = &buckets[&empty_global()].models["events"].columns[1];
+        assert_eq!(ts_col.name, "occurred_at");
+        let check = ts_col.check.as_ref().expect(
+            "TIMESTAMPTZ column must carry the OffsetDateTime year-bound CHECK (djogi#187)",
+        );
+        assert!(
+            check.contains("\"occurred_at\" <= TIMESTAMP '9999-12-31 23:59:59.999999'"),
+            "TIMESTAMPTZ column CHECK upper bound: {check}"
+        );
+    }
+
+    #[test]
+    fn project_column_no_year_check_for_fk_column_even_if_temporal() {
+        // FK columns inherit the parent PK's type — always
+        // identity-width (BIGINT for HeerId-family, UUID for
+        // RanjId-family). Even if a future model declared a temporal
+        // PK type (not currently supported), FK columns project no
+        // Rust-derived CHECK because the FK column's bounds follow
+        // the parent's PK shape.
+        //
+        // This pin guards against a future regression where FK
+        // projection accidentally inherits the CHECK string from the
+        // field's `sql_type` rather than the parent's PK type.
+        static OWNER_FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
+        }];
+        // `owner_id` lowers to `Timestamptz` in this synthetic case
+        // because we manually construct a descriptor with a temporal
+        // relation column. The macro wouldn't emit this combination,
+        // but we want to lock the invariant: FK relations never
+        // receive a Rust-derived CHECK regardless of the field's
+        // declared `sql_type`.
+        static VEHICLE_FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                relation_kind: Some(crate::descriptor::RelationKind::ForeignKey),
+                target_type_name: Some("Owner"),
+                ..field_descriptor("owner_id", FieldSqlType::Timestamptz, false)
+            },
+        ];
+        let owner = ModelDescriptor {
+            fields: OWNER_FIELDS,
+            ..synth_model("owners", "Owner")
+        };
+        let vehicle = ModelDescriptor {
+            fields: VEHICLE_FIELDS,
+            ..synth_model("vehicles", "Vehicle")
+        };
+        let buckets = project_from_iters(
+            [&owner, &vehicle],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let owner_fk = &buckets[&empty_global()].models["vehicles"].columns[1];
+        assert_eq!(owner_fk.name, "owner_id");
+        assert!(
+            owner_fk.foreign_key.is_some(),
+            "owner_id must project as FK: {owner_fk:?}"
+        );
+        assert!(
+            owner_fk.check.is_none(),
+            "FK column must never carry a Rust-derived CHECK \
+             regardless of declared sql_type: {:?}",
+            owner_fk.check
+        );
+    }
+
+    #[test]
+    fn project_column_emits_year_check_for_framework_timestamps() {
+        // Framework-injected `created_at` / `updated_at` columns
+        // lower to `FieldSqlType::Timestamptz` like any adopter
+        // OffsetDateTime field. The temporal year CHECK applies here
+        // too — Postgres `now()` always returns a current-era
+        // timestamp so the CHECK is satisfied by the column DEFAULT,
+        // but external writers (raw migrations, BI tools) can still
+        // drift these columns. The CHECK protects against that drift.
+        //
+        // This test constructs an explicit `created_at` / `updated_at`
+        // descriptor (matching the layout the macro would emit) and
+        // verifies the CHECK reaches the projected ColumnSchema. The
+        // column-name match in `project_column` for `DEFAULT now()`
+        // doesn't interfere with the CHECK — the two are independent
+        // column attributes.
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                ..field_descriptor("created_at", FieldSqlType::Timestamptz, false)
+            },
+            FieldDescriptor {
+                ..field_descriptor("updated_at", FieldSqlType::Timestamptz, false)
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("widgets", "Widget")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let cols = &buckets[&empty_global()].models["widgets"].columns;
+        let created_at = cols
+            .iter()
+            .find(|c| c.name == "created_at")
+            .expect("explicit created_at column projected");
+        let updated_at = cols
+            .iter()
+            .find(|c| c.name == "updated_at")
+            .expect("explicit updated_at column projected");
+        for col in [created_at, updated_at] {
+            // Sanity check: the DEFAULT now() routing still fires on
+            // the canonical timestamp column names (the year CHECK
+            // doesn't displace it).
+            assert_eq!(
+                col.default_sql.as_deref(),
+                Some("now()"),
+                "{} keeps DEFAULT now() alongside the year CHECK",
+                col.name
+            );
+            let check = col.check.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "framework Timestamptz column {} must carry the \
+                     OffsetDateTime year-bound CHECK (djogi#187)",
+                    col.name
+                )
+            });
+            assert!(
+                check.contains("TIMESTAMP '9999-12-31 23:59:59.999999'"),
+                "{} CHECK upper bound: {check}",
+                col.name
+            );
+        }
     }
 }
