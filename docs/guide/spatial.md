@@ -19,7 +19,7 @@ built on the Phase 4 expression substrate.
 - Shape predicates on `FieldRef` — `contains`, `intersects`, `touches`,
   `within` — across any two compatible `GeographyValue` types.
 - Bounding-box prefilter (`bounded_by`) and a first-class `distance_to`
-  expression composable into `filter_expr` / `annotate` / `order_by`.
+  expression composable into `filter_expr` and expression-aware ordering.
 - Spatial grouping — `group_by_region` / `count_by_region`,
   `cluster_by_proximity` (DBSCAN), `bucket_by_cell` (geohash).
 - `#[djogi_test(extensions = [...])]` auto-provisions PostGIS (or any
