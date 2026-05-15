@@ -2558,6 +2558,8 @@ mod array_sealed {
     impl Sealed for rust_decimal::Decimal {}
     impl Sealed for crate::types::HeerId {}
     impl Sealed for crate::types::RanjId {}
+    impl Sealed for crate::types::HeerIdDesc {}
+    impl Sealed for crate::types::RanjIdDesc {}
 }
 
 /// Converts a `Vec<V>` element type into the matching [`FilterValue::Array*`]
@@ -2584,6 +2586,8 @@ mod array_sealed {
 /// | `rust_decimal::Decimal` | `NUMERIC[]` |
 /// | [`HeerId`](crate::types::HeerId) | `BIGINT[]` |
 /// | [`RanjId`](crate::types::RanjId) | `UUID[]` |
+/// | [`HeerIdDesc`](crate::types::HeerIdDesc) / [`HeerIdRecencyBiased`](crate::types::HeerIdRecencyBiased) | `BIGINT[]` |
+/// | [`RanjIdDesc`](crate::types::RanjIdDesc) / [`RanjIdRecencyBiased`](crate::types::RanjIdRecencyBiased) | `UUID[]` |
 ///
 /// For adopter-defined newtype or enum element types, see the
 /// [array guide](https://github.com/TarunvirBains/djogi/blob/main/docs/guide/arrays.md)
@@ -2658,6 +2662,16 @@ impl IntoArrayFilterValue for crate::types::HeerId {
 impl IntoArrayFilterValue for crate::types::RanjId {
     fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
         FilterValue::ArrayRanjId(values)
+    }
+}
+impl IntoArrayFilterValue for crate::types::HeerIdDesc {
+    fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
+        FilterValue::ArrayHeerIdDesc(values)
+    }
+}
+impl IntoArrayFilterValue for crate::types::RanjIdDesc {
+    fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
+        FilterValue::ArrayRanjIdDesc(values)
     }
 }
 

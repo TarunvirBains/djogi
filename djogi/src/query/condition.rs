@@ -652,6 +652,12 @@ pub enum FilterValue {
     ArrayHeerId(Vec<crate::types::HeerId>),
     /// `Vec<RanjId>` array parameter (UUID[]). `RanjId` encodes as UUID.
     ArrayRanjId(Vec<crate::types::RanjId>),
+    /// `Vec<HeerIdDesc>` array parameter (BIGINT[]). `HeerIdDesc` /
+    /// `HeerIdRecencyBiased` encodes as INT8, newest-first sort order.
+    ArrayHeerIdDesc(Vec<crate::types::HeerIdDesc>),
+    /// `Vec<RanjIdDesc>` array parameter (UUID[]). `RanjIdDesc` /
+    /// `RanjIdRecencyBiased` encodes as UUID, newest-first sort order.
+    ArrayRanjIdDesc(Vec<crate::types::RanjIdDesc>),
 }
 
 #[cfg(test)]

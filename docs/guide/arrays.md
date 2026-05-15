@@ -34,6 +34,8 @@ The following Rust types are accepted as array element types:
 | `rust_decimal::Decimal` | `NUMERIC[]` |
 | `djogi::HeerId` | `BIGINT[]` |
 | `djogi::RanjId` | `UUID[]` |
+| `djogi::HeerIdRecencyBiased` / `djogi::HeerIdDesc` | `BIGINT[]` |
+| `djogi::RanjIdRecencyBiased` / `djogi::RanjIdDesc` | `UUID[]` |
 
 Any other element type is a compile-time error. A `Vec<MyNewtype>` requires that
 `MyNewtype` implements `DjogiSqlType` for the column type (so Djogi can write the

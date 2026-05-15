@@ -157,6 +157,12 @@ pub(crate) fn push_filter_value(acc: &mut SqlAccumulator, v: FilterValue) {
         FilterValue::ArrayRanjId(v) => {
             acc.push_bind(v);
         }
+        FilterValue::ArrayHeerIdDesc(v) => {
+            acc.push_bind(v);
+        }
+        FilterValue::ArrayRanjIdDesc(v) => {
+            acc.push_bind(v);
+        }
         FilterValue::List(_) | FilterValue::Pair(_, _) => {
             // These are handled at the operator level (see `emit_leaf`) and
             // never reach this function. Unreachable signals a Djogi
@@ -269,6 +275,12 @@ pub(crate) fn push_filter_value_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
         FilterValue::ArrayRanjId(v) => {
             acc.push_bind(v.clone());
         }
+        FilterValue::ArrayHeerIdDesc(v) => {
+            acc.push_bind(v.clone());
+        }
+        FilterValue::ArrayRanjIdDesc(v) => {
+            acc.push_bind(v.clone());
+        }
         FilterValue::List(_) | FilterValue::Pair(_, _) => {
             unreachable!("push_filter_value_ref called with List/Pair — use emit_leaf_ref")
         }
@@ -306,7 +318,9 @@ fn push_list_element(acc: &mut SqlAccumulator, v: FilterValue) {
         | FilterValue::ArrayUuid(_)
         | FilterValue::ArrayDecimal(_)
         | FilterValue::ArrayHeerId(_)
-        | FilterValue::ArrayRanjId(_) => {
+        | FilterValue::ArrayRanjId(_)
+        | FilterValue::ArrayHeerIdDesc(_)
+        | FilterValue::ArrayRanjIdDesc(_) => {
             unreachable!(
                 "nested/null/array FilterValue in IN list — typed FieldRef API prevents this"
             )
@@ -586,7 +600,9 @@ fn push_list_element_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
         | FilterValue::ArrayUuid(_)
         | FilterValue::ArrayDecimal(_)
         | FilterValue::ArrayHeerId(_)
-        | FilterValue::ArrayRanjId(_) => {
+        | FilterValue::ArrayRanjId(_)
+        | FilterValue::ArrayHeerIdDesc(_)
+        | FilterValue::ArrayRanjIdDesc(_) => {
             unreachable!(
                 "nested/null/array FilterValue in IN list — typed FieldRef API prevents this"
             )
