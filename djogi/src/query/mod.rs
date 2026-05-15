@@ -61,6 +61,14 @@ pub mod q;
 pub mod queryset;
 pub mod recursive;
 pub(crate) mod refresh;
+// Phase 8.5 Cluster 4B (#101) — typed set operations between same-model
+// `QuerySet<T>` instances. The module is `pub` so adopters can name
+// `SetOpQuerySet` / `SetOpKind` as parameter and return types; the
+// common case (chained `.union(...)` / `.union_all(...)` /
+// `.intersect(...)` / `.except(...)`) uses the builder methods emitted
+// onto [`QuerySet`] and [`SetOpQuerySet`] themselves so most adopters
+// never name the module path.
+pub mod set_op;
 #[cfg(feature = "spatial")]
 pub mod spatial_grouping;
 pub(crate) mod sql;
@@ -119,6 +127,13 @@ pub use queryset::{
     CachedPortableQuerySet, DistinctMode, IntoDistinctColumns, PortableQuerySet, QuerySet,
 };
 pub use recursive::{RecursiveDirection, RecursiveQuerySet};
+// Phase 8.5 Cluster 4B (#101) — typed set operations. `IntoSetOpArm` is
+// the sealed trait the builder methods take; adopters never name it,
+// but it must be re-exported so trait-method dispatch resolves in
+// downstream crates. `SetOpKind` / `SetOpQuerySet` are named in adopter
+// return / parameter types when threading a chained set-op through
+// helper functions.
+pub use set_op::{IntoSetOpArm, SetOpKind, SetOpQuerySet};
 // `BasicPredicate<T>` is sassi's universal Rust-evaluable predicate algebra.
 // Re-exported here so adopters reach it as `djogi::query::BasicPredicate`
 // without depending on sassi directly. The Cluster 8γ refactor (T6) lifts

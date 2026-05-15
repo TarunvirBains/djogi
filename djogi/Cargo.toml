@@ -556,6 +556,33 @@ name = "phase8_5_predicate_ergonomics"
 path = "../tests/integration/phase8_5_predicate_ergonomics.rs"
 harness = true
 
+# Phase 8.5 Cluster 4B (#101) — typed set operations: SQL-shape pins.
+# Verifies `.union(...)` / `.union_all(...)` / `.intersect(...)` /
+# `.except(...)` emit correct Postgres SQL with parenthesised arms,
+# per-arm modifier preservation, outer ORDER BY / LIMIT / OFFSET
+# placement, count subquery wrapping, nested chaining, and rejection
+# of incompatible arm state (locks / select_related / prefetch /
+# cache binding). No live database — runs against the SQL builder via
+# `__sql_for_test` and `__count_sql_for_test` hidden hooks, plus the
+# `feature = "testing"`-gated `render_set_op_sql_for_testing` mirror.
+[[test]]
+name = "phase8_5_c4b_set_op_sql_shape"
+path = "../tests/internal/phase8_5_c4b_set_op_sql_shape.rs"
+harness = true
+required-features = ["testing"]
+
+# Phase 8.5 Cluster 4B (#101) — typed set operations: live Postgres
+# behavior. Pairs with the SQL-shape test by proving each operator
+# (UNION / UNION ALL / INTERSECT / EXCEPT) produces the row sets
+# Postgres semantics promise, outer ORDER BY/LIMIT/OFFSET applies to
+# the combined result, count reports combined cardinality, nested
+# chains evaluate left-associatively, and incompatible arm state
+# surfaces as a typed `DjogiError::SetOpArmInvalid`.
+[[test]]
+name = "phase8_5_c4b_set_op_live"
+path = "../tests/integration/phase8_5_c4b_set_op_live.rs"
+harness = true
+
 [[test]]
 name = "phase8_trait_impl_registry"
 path = "../tests/integration/phase8_trait_impl_registry.rs"

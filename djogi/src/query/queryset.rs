@@ -2047,6 +2047,45 @@ impl<T: Model + crate::types::Cacheable + Clone> QuerySet<T> {
         self
     }
 
+    /// Test-only mirror of [`bind_cache`](Self::bind_cache) — stamps
+    /// a `cache_target` directly onto the QuerySet without going
+    /// through the [`CachedPortableQuerySet`] terminal indirection.
+    ///
+    /// # Why exposed under `feature = "testing"`
+    ///
+    /// The public adopter path to a cache-bound queryset is
+    /// `.cache(&punnu)`, which returns a [`CachedPortableQuerySet`] —
+    /// not a [`QuerySet`]. Adopters cannot, by design, construct a
+    /// `QuerySet<T>` whose `cache_target` is `Some(_)` and then pass
+    /// it to a set-op builder method like
+    /// [`QuerySet::union`](crate::query::QuerySet::union). Defensive
+    /// validation in
+    /// [`crate::query::set_op::validate_arm`](crate::query::set_op)
+    /// rejects such an arm if it is ever constructed (forward
+    /// compatibility, in case a future API exposes
+    /// `bind_cache`-shaped surface publicly).
+    ///
+    /// The Phase 8.5 Cluster 4B (#101) test suite needs a way to
+    /// exercise that defensive branch from outside the crate. This
+    /// helper is the supported test path: a `#[doc(hidden)]`,
+    /// `feature = "testing"`-gated mirror that does exactly what
+    /// `bind_cache` does. Adopters who do not opt into the `testing`
+    /// feature never see it.
+    ///
+    /// # Not part of the stable API
+    ///
+    /// The `for_test` suffix and `#[doc(hidden)]` flag together
+    /// communicate intent: this exists for in-tree fixture wiring, not
+    /// adopter use. Production code should reach for the gated public
+    /// path ([`cache`](Self::cache)) or, in this set-op context, build
+    /// a cache-free arm before composing the set operation.
+    #[cfg(any(test, feature = "testing"))]
+    #[doc(hidden)]
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn bind_cache_for_test(self, punnu: sassi::Punnu<T>) -> Self {
+        self.bind_cache(punnu)
+    }
+
     /// Bind this QuerySet to a [`sassi::Punnu`] cache, gated by the
     /// trusted portable-predicate reducer.
     ///

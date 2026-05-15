@@ -385,10 +385,10 @@ pub use fts_query::FtsFieldRef;
 pub use query::{
     AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
     ClosureModel, ConditionExt, FieldRef, FilterClause, IntoAggregateTuple, IntoFieldFilterValue,
-    IntoFilterValue, IntoPortableFieldValue, Lookup, MaterializeClosureOptions,
+    IntoFilterValue, IntoPortableFieldValue, IntoSetOpArm, Lookup, MaterializeClosureOptions,
     MaterializeClosureReport, ModelCursorStream, ModelFilter, OrderExpr, PortableQuerySet, Q,
-    QuerySet, RawCursorStream, RecursiveDirection, RecursiveQuerySet, UpdateAssignment, UpdateStmt,
-    VisageQuerySet,
+    QuerySet, RawCursorStream, RecursiveDirection, RecursiveQuerySet, SetOpKind, SetOpQuerySet,
+    UpdateAssignment, UpdateStmt, VisageQuerySet,
 };
 pub use relation::{
     ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
@@ -517,9 +517,10 @@ pub mod prelude {
     pub use crate::query::{
         AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
         ClosureModel, ConditionExt, FieldRef, FilterClause, IntoAggregateTuple,
-        IntoFieldFilterValue, IntoFilterValue, IntoPortableFieldValue, Lookup,
+        IntoFieldFilterValue, IntoFilterValue, IntoPortableFieldValue, IntoSetOpArm, Lookup,
         MaterializeClosureOptions, MaterializeClosureReport, ModelFilter, OrderExpr,
-        PortableQuerySet, Q, QuerySet, RecursiveDirection, RecursiveQuerySet, VisageQuerySet,
+        PortableQuerySet, Q, QuerySet, RecursiveDirection, RecursiveQuerySet, SetOpKind,
+        SetOpQuerySet, VisageQuerySet,
     };
     // `atomic` / `retry_on_conflict` — Phase 4 Task 1 canonical
     // transaction scope + retry helper.
