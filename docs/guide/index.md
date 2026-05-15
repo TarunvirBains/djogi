@@ -11,7 +11,7 @@ For design history and items still on the horizon, see
 | [Getting Started](./getting-started.md) | Installation, first model, first CRUD, first test |
 | [Connection Pool](./pool.md) | `DjogiPool` builder, `post_connect` hook, `raw_with_client` raw-driver bypass (via `RawPoolAccessExt`), env > TOML > default sizing |
 | [Models](./models.md) | `#[model(...)]` attributes, `#[field(...)]` attributes, Phase 1 field types |
-| [Queries](./queries.md) | `QuerySet<T>`, filter closures, programmatic filters, bulk update/delete |
+| [Queries](./queries.md) | `QuerySet<T>`, filter closures, programmatic filters, bulk update/delete, recursive/tree queries, pair-tuple closure self-joins, `.cache(&pool)?` |
 | [Query Aggregation](./query-aggregation.md) | `group_by` / `rollup` / `cube` / `group_by_sets`, `annotate`, `having`, window frames, DISTINCT aggregates, spatial grouping |
 | [Relations](./relations.md) | `ForeignKey<T>`, `OneToOneField<T>`, prefetch, `select_related`, reverse accessors, explicit-through M2M |
 | [Transactions](./transactions.md) | `DjogiContext`, `atomic()`, savepoint nesting, `on_commit`, row locks, `retry_on_conflict` |

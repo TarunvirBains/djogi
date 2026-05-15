@@ -77,15 +77,19 @@
 //!   columns) would let the entire ranking pass land in SQL; see #99
 //!   and #65's "What changes when this ships" note.
 //!
-//! - **Punnu cache showcase.** Step 2 wraps the mature-elephant typed
-//!   fetch with `ctx.punnu::<Elephant>()` insertion so adopters can see
-//!   the integration pattern in action. The CLI runs each demo as a
-//!   one-shot so the cache doesn't surface a second-read cache hit
-//!   within a single `mating-pairs` invocation; a long-lived adopter
-//!   process (a request handler, a periodic scoring job) would see the
-//!   `pool.get(id)` reads return from in-memory L1 without a DB
-//!   round-trip on subsequent calls. The structural wiring is the
-//!   teaching artifact.
+//! - **Punnu cache showcase.** Step 2 binds the mature-elephant typed
+//!   fetch to a `Punnu<Elephant>` L1 pool via the canonical
+//!   `QuerySet::cache(&pool)?.fetch_all(ctx)` modifier — the typed
+//!   surface mirrors rows into the identity map at the row-decode
+//!   boundary, no manual `pool.insert` loop. The demo then performs
+//!   one observable `pool.get(id)` lookup against the warmed pool so
+//!   the showcase reads as well as writes: the returned
+//!   `Arc<Elephant>` is asserted to match the original row and the
+//!   pool size is surfaced via `tracing::info!` for adopters wiring
+//!   `tracing-subscriber`. The CLI exits at end-of-process so the
+//!   pool drops with it; in a long-lived adopter process (request
+//!   handler, periodic scoring job) the same `pool.get(id)` pattern
+//!   serves every subsequent lookup without a DB round-trip.
 //!
 //! ## Composite score
 //!
@@ -96,17 +100,20 @@
 //! ```
 //!
 //! All three factors ship here. Kinship `(1 - F)` comes from the typed
-//! pair-tuple closure self-join above. `territory_overlap_pct` is the
-//! ratio of the female herd's convex hull to the male herd's convex
-//! hull intersection area; in the deterministic seed this is binary
-//! (1.0 same-herd, 0.0 cross-herd) because herd centres are far apart
-//! relative to per-herd sighting jitter, but the same Rust path
-//! computes graduated overlap once the seed is extended with
-//! cross-territory wandering elephants. `age_compatibility` is a
-//! smooth fertility-window product over female age peaked at 20
-//! (sigma 10) and male age peaked at 32 (sigma 15); we report the
-//! geometric mean of the two bells so a one-sided unsuitability
-//! is penalised more than a single-factor average would be.
+//! pair-tuple closure self-join above. `territory_overlap_pct` is a
+//! **binary same-herd / cross-herd identity** today (1.0 when the
+//! female and male share a herd, 0.0 otherwise) — the score multiplier
+//! retains the `[0, 1]` shape so a future graduated overlap can slot
+//! in without changing the surrounding arithmetic. A real
+//! polygon-intersection ratio over per-herd territories would need
+//! either a pair-side typed `Expr::area_of_intersection` over per-row
+//! geometry columns (#99 substrate work) or a Rust-side polygon
+//! intersection helper djogi does not yet ship; both are tracked.
+//! `age_compatibility` is a smooth fertility-window product over
+//! female age peaked at 20 (sigma 10) and male age peaked at 32
+//! (sigma 15); we report the geometric mean of the two bells so a
+//! one-sided unsuitability is penalised more than a single-factor
+//! average would be.
 //!
 //! ## Output formats
 //!
@@ -122,18 +129,14 @@
 //!
 //! Filter: only mature elephants (estimated_birth_year ≤
 //! `now - MATURITY_YEARS years`, see the constant for rationale on
-//! the threshold), of opposite sex, whose herd-territory polygons
-//! spatially overlap. The territory polygon is the convex hull of
-//! every recorded `Sighting.location` belonging to a herd member;
-//! pairs whose hulls don't intersect (`territory_overlap_pct = 0`)
-//! are filtered out before kinship computation. In the
-//! deterministic seed, herd centers are far apart relative to the
-//! per-herd sighting jitter, so `overlap = 1.0` for same-herd
-//! pairs and `overlap = 0` for cross-herd pairs. Adopters who seed
-//! cross-territory wandering elephants (sightings outside the home
-//! range) will see fractional overlaps surface; the demo's filter
-//! and the composite-score multiplication are both ready for that
-//! data without further code changes.
+//! the threshold), of opposite sex, sharing a herd. Cross-herd pairs
+//! score `territory_overlap_pct = 0` under today's binary identity
+//! and drop out before kinship computation. When the typed
+//! pair-side spatial expression lands (#99) this filter widens to
+//! "herds whose territory polygons spatially overlap"; the
+//! composite-score multiplication is already in the right shape to
+//! accept a graduated overlap in `[0, 1]` without further code
+//! changes.
 
 use anyhow::Result;
 use djogi::DjogiContext;
@@ -143,7 +146,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::models::{Elephant, ElephantAncestry, Herd, Sighting};
+use crate::models::{Elephant, ElephantAncestry, Herd};
 use crate::output::{self, Format};
 
 /// Maturity threshold (years). Wild African elephants reach sexual
@@ -196,11 +199,14 @@ struct MatingPair {
     male_name: String,
     male_herd: String,
     f_offspring: f64,
-    /// Fraction in `[0, 1]` of the female's herd-territory polygon
-    /// that overlaps the male's herd-territory polygon. Computed
-    /// from the convex hull of each herd's recorded sightings (a
-    /// rough but operator-meaningful proxy for "where the herd
-    /// actually ranges"). 1.0 is the same-herd self-overlap case.
+    /// Multiplier in `[0, 1]` that gates the kinship × age product on
+    /// territorial co-occurrence. Today the value is a binary
+    /// same-herd / cross-herd identity (1.0 same-herd, 0.0
+    /// cross-herd) because djogi does not yet expose a typed
+    /// pair-side `area_of_intersection` over per-row geometry columns
+    /// nor a Rust-side polygon-intersection helper. The output field
+    /// keeps the `[0, 1]` shape so a future graduated overlap slots in
+    /// without breaking the JSON contract or the score arithmetic.
     territory_overlap_pct: f64,
     /// Smooth fertility-window product. `1.0` is a perfectly-matched
     /// pair at both species peaks; lower values penalise pairs whose
@@ -213,10 +219,12 @@ struct MatingPair {
 ///
 /// Sequence:
 ///
-/// 1. Fetch per-herd convex hulls via the typed
-///    `Sighting::objects().group_by(...).annotate(...)` aggregate.
-/// 2. Fetch mature elephants (typed query) + warm the `Punnu<Elephant>`
-///    L1 cache (showcase).
+/// 1. Fetch the per-herd label lookup (one typed `Herd::objects()`).
+/// 2. Fetch mature elephants via the typed
+///    `Elephant::objects().filter(...).cache(&pool)?.fetch_all(ctx)`
+///    cache-bound terminal — rows land in the `Punnu<Elephant>` L1
+///    pool at row-decode time. Demonstrate an observable
+///    `pool.get(id)` hit immediately after.
 /// 3. Fetch every `(female, male)` mature pair with its Wright F
 ///    coefficient via the typed
 ///    `Elephant::objects().self_pairs().left_join_closure_pair::<ElephantAncestry>().annotate(PairClosureKinshipSum)`
@@ -224,94 +232,124 @@ struct MatingPair {
 /// 4. Compute composite score in Rust (overlap × kinship × age
 ///    compatibility), rank top-N per female, render.
 pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> Result<()> {
-    // ── Step 1 (typed Djogi) — per-herd convex hull aggregate ─────
+    // ── Step 1 (typed Djogi) — per-herd label lookup ──────────────
     //
-    // Demonstrates Cluster C T16/T17's typed
-    // `FieldRef::convex_hull()` aggregate composed with the typed
-    // `group_by(...).annotate(...)` surface. Returns one (herd_id,
-    // hull-Polygon) per herd that has any recorded sightings.
+    // One typed fetch over `Herd::objects()` powers the output
+    // rows' `female_herd` / `male_herd` columns. No JOIN through
+    // raw SQL, no per-pair lookup round trip.
     //
-    // The denormalized `Sighting.herd_id` column (added alongside
-    // this restructure) is what makes the typed `group_by(|s|
-    // s.herd_id())` shape fit — without it, grouping by herd would
-    // require relation traversal (`s.elephant().herd_id()`) which
-    // the framework's grouped-aggregate surface doesn't model.
-    let herd_hulls: Vec<(djogi::ForeignKey<Herd>, djogi::geo::Polygon)> = Sighting::objects()
-        .group_by(|s| s.herd_id())
-        .annotate(|s| s.location().convex_hull())
-        .fetch_all(ctx)
-        .await?;
-    // Set of herd ids that have any recorded sightings — the demo's
-    // territory-overlap predicate requires a hull for both sides, so
-    // mature elephants in herds with zero sightings drop out before
-    // scoring. Captured here so the rest of the pipeline can ask
-    // "does this herd have a territory hull?" in O(1) without
-    // round-tripping the Polygon.
-    let herds_with_hulls: std::collections::BTreeSet<djogi::HeerId> = herd_hulls
-        .iter()
-        .map(|(herd_fk, _)| herd_fk.key())
-        .collect();
-
-    // Per-herd label lookup for the output rows. One typed fetch over
-    // `Herd::objects()` — no JOIN through raw SQL.
+    // An earlier draft of this demo computed per-herd convex hulls
+    // here (`Sighting::objects().group_by(|s| s.herd_id()).annotate(|s|
+    // s.location().convex_hull())`) and then discarded the polygons,
+    // keeping only the herd-ids-with-sightings set. The hull
+    // computation was wasted work — djogi does not yet expose a
+    // Rust-side polygon-intersection helper, and the pair-side typed
+    // `Expr::area_of_intersection` over per-row geometry columns is
+    // tracked under #99 as remaining substrate work. Until that lands,
+    // `territory_overlap_pct` is a binary same-herd / cross-herd
+    // identity (see [`territory_overlap_pct`] below). When the typed
+    // pair-side spatial expression ships, this step can re-introduce
+    // the per-herd hull (or push the intersection entirely into SQL
+    // via the pair-tuple substrate) without changing the demo's
+    // public output shape.
     let herds: Vec<Herd> = Herd::objects().fetch_all(ctx).await?;
     let herd_name_by_id: HashMap<djogi::HeerId, String> =
         herds.into_iter().map(|h| (h.id, h.name)).collect();
 
     // ── Step 2 (typed Djogi + Punnu cache showcase) ───────────────
     //
-    // The Punnu cache integration enumerated in #108 has three shapes
-    // adopters can compose:
+    // Canonical `.cache(&pool)?.fetch_all(ctx)` shape — the cache
+    // binding is opt-in on the queryset, the row-decode pipeline
+    // upserts each row into the bound `Punnu<Elephant>` pool, and the
+    // queryset is required to be portable (the `lte` filter here is).
+    // No manual `pool.insert` loop; row→pool mirroring happens at the
+    // row-decode boundary inside djogi's existing terminal pipeline.
     //
-    // 1. **Punnu-wrapped typed** (preferred for repeat queries in a
-    //    long-lived app — request handler, periodic scoring job). The
-    //    typed fetch hits the DB once, then every row is inserted into
-    //    the per-context `Punnu<Elephant>` L1 pool. Subsequent
-    //    `pool.get(id)` calls return `Arc<Elephant>` without a round
-    //    trip. The pool is invalidated automatically when `Elephant::
-    //    create` / `save` / `delete` runs through djogi's hook
-    //    machinery (cluster 8δ T7.5).
+    // `#[derive(Model)]` auto-emits `impl Cacheable for Elephant`, and
+    // the boot hook registers `Punnu<Elephant>` at `DjogiContext::
+    // from_pool` time — so `ctx.punnu::<Elephant>()` returns `Some` on
+    // any default-derived model. The hook machinery (cluster 8δ T7.5)
+    // also invalidates rows on `Elephant::create` / `save` / `delete`
+    // so adopters do not maintain a manual write-through.
     //
-    // 2. **Bare typed** (the demo path before this slice). Preferred
-    //    when the query is called once per process invocation — no
-    //    cache amortisation possible, and the Punnu insert costs are
-    //    pure overhead.
-    //
-    // 3. **Rust-side post-filter** (preferred when no JSONB index
-    //    exists, or when the table is small enough that fetching all
-    //    rows beats a server-side predicate dispatch). The demo's
-    //    sex-split below is this shape: we fetch the whole mature pool
-    //    and partition by `tags.data.sex` in Rust because JSONB-tags
-    //    isn't typed-filterable today.
-    //
-    // The demo runs shape #1 (Punnu warm-up) followed by shape #3 (sex
-    // partition in Rust). The CLI exit removes the warmed cache when
-    // the process ends, so the cache-hit story is structural; adopters
-    // reading this code see the integration pattern, not a benchmark.
+    // The block below adds the cache-bound fetch and one observable
+    // `pool.get(id)` lookup so the showcase reads as well as writes.
+    // Without an observable read the showcase would be invisible at
+    // runtime — strict-swe (#108 review) blocked the previous shape on
+    // exactly this point.
     let mature_cutoff: i16 = NOW_YEAR - MATURITY_YEARS as i16;
-    let mature_pool: Vec<Elephant> = Elephant::objects()
-        .filter(|e| e.estimated_birth_year().lte(mature_cutoff))
-        .fetch_all(ctx)
-        .await?;
+    let mature_pool: Vec<Elephant> = match ctx.punnu::<Elephant>() {
+        Some(pool) => {
+            let pool = pool.clone();
+            let rows = Elephant::objects()
+                .filter(|e| e.estimated_birth_year().lte(mature_cutoff))
+                .cache(&pool)
+                .map_err(|(_qs, err)| {
+                    anyhow::anyhow!(
+                        "QuerySet::cache(&punnu) rejected the mature-elephant filter \
+                         as non-portable: {err:?}",
+                    )
+                })?
+                .fetch_all(ctx)
+                .await?;
 
-    // Punnu warm-up — insert each row into the framework's per-context
-    // typed L1 cache so adopters can `pool.get(id)` against the same
-    // ctx later without a DB round trip. The boot hook emitted by
-    // `#[derive(Model)]` registers `Punnu<Elephant>` at
-    // `DjogiContext::from_pool` time, so `ctx.punnu::<Elephant>()`
-    // always returns `Some` for a default-derived model.
-    if let Some(pool) = ctx.punnu::<Elephant>() {
-        for e in &mature_pool {
-            // Best-effort insertion. `Punnu::insert` returns
-            // `Err(InsertError::AlreadyExists)` for repeat rows; that
-            // is fine here — repeated demo runs against the same
-            // context would otherwise spam stderr. The pool's
-            // `OnConflict` default is `Replace`, but the typed
-            // surface returns the error variant for the demo's
-            // tracing-and-continue shape.
-            let _ = pool.insert(e.clone()).await;
+            // Observable cache read — `pool.get(id)` is a synchronous
+            // L1 lookup that returns `Arc<Elephant>` for any id the
+            // cache-bound fetch above mirrored in. We sample the
+            // first row, verify the `Arc<Elephant>` round-trips with
+            // the same id (cache miss would return `None`, write-
+            // through bug would return a stale clone with a
+            // different id), and surface the pool size via
+            // `tracing::info!` so adopters wiring
+            // `tracing-subscriber` see the showcase in their logs.
+            if let Some(sample) = rows.first() {
+                let cached: std::sync::Arc<Elephant> = pool.get(&sample.id).expect(
+                    "Punnu<Elephant> cache miss for an id we just \
+                         cache-bound through .cache(&pool)?.fetch_all — \
+                         either the cache-binding pipeline did not \
+                         mirror rows or the pool was invalidated \
+                         between fetch_all and the get(...) call",
+                );
+                debug_assert_eq!(
+                    cached.id, sample.id,
+                    "Punnu<Elephant> returned a different row id than \
+                     the sample we keyed on — cache identity violation",
+                );
+                tracing::info!(
+                    cache_size = pool.len(),
+                    sample_id = ?sample.id,
+                    sample_name = %cached.name.clone().into_inner(),
+                    "Punnu<Elephant> warm — `.cache(&pool)?` mirrored the \
+                     mature-elephant fetch, observable `pool.get(id)` \
+                     returned Arc<Elephant>"
+                );
+            } else {
+                tracing::info!(
+                    cache_size = pool.len(),
+                    "Punnu<Elephant> warm — no mature elephants matched \
+                     the filter; cache stays empty"
+                );
+            }
+
+            rows
         }
-    }
+        None => {
+            // Punnu integration is opt-in at the `DjogiContext`
+            // builder level. Adopters who disable it (or stub it out
+            // in a custom builder) still get the typed fetch
+            // unchanged — the cache showcase is documented in the
+            // module docstring as the value-add path.
+            tracing::info!(
+                "Punnu<Elephant> not registered on this DjogiContext; \
+                 skipping cache showcase and falling back to the bare \
+                 typed fetch"
+            );
+            Elephant::objects()
+                .filter(|e| e.estimated_birth_year().lte(mature_cutoff))
+                .fetch_all(ctx)
+                .await?
+        }
+    };
 
     let mature_females: Vec<&Elephant> = mature_pool
         .iter()
@@ -377,13 +415,11 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
     for ((female, male), f_offspring) in &kinship_pairs {
         let f_herd = female.herd_id.key();
         let m_herd = male.herd_id.key();
-        if !herds_with_hulls.contains(&f_herd) || !herds_with_hulls.contains(&m_herd) {
-            // One side has no recorded sightings, so no territory
-            // polygon. Skipped per the demo's filter contract.
-            continue;
-        }
         let overlap = territory_overlap_pct(f_herd, m_herd);
         if overlap <= 0.0 {
+            // Cross-herd pair under today's binary identity — drops
+            // out before kinship scoring. See module docstring on
+            // when this widens to a graduated overlap.
             continue;
         }
         let f_age = age_for(female.estimated_birth_year);
@@ -465,25 +501,31 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
     Ok(())
 }
 
-/// Compute the territory-overlap fraction for a `(female_herd,
+/// Compute the territory-overlap multiplier for a `(female_herd,
 /// male_herd)` pair.
 ///
-/// **Deterministic-seed behaviour.** The example's seed places herd
-/// centres far enough apart relative to per-herd sighting jitter that
-/// cross-herd convex hulls never intersect. The function returns the
-/// binary same-herd-vs-cross-herd identity that matches the previous
-/// raw-SQL `CASE WHEN f.herd_id = m.herd_id THEN 1.0 ...` short-circuit.
+/// **Today: binary same-herd / cross-herd identity.** The function
+/// returns `1.0` when both elephants belong to the same herd and
+/// `0.0` otherwise. The composite-score multiplication drops
+/// cross-herd pairs ahead of kinship scoring — they cannot
+/// physically meet under the demo's herd-territory model. This
+/// matches the original raw-SQL `CASE WHEN f.herd_id = m.herd_id
+/// THEN 1.0 ELSE 0.0` short-circuit byte-for-byte.
 ///
-/// **What changes for adopters.** Adopter datasets with cross-territory
-/// wandering elephants would surface graduated overlaps in `[0, 1]`. The
-/// real-overlap path requires either a pair-side typed spatial
-/// expression (an `Expr::area_of_intersection` that references
-/// per-row `l.<hull_col>` / `r.<hull_col>` columns rather than the
-/// existing scalar-EWKB form) or a small polygon-intersection helper
-/// in Rust. Both are tracked: the typed pair-side spatial expression
-/// is part of issue #99's remaining substrate work; the Rust-side
-/// helper is a polish-pass amendment to this demo. Until either lands,
-/// the binary fallback is exact for the deterministic seed.
+/// **What changes when graduated overlap ships.** Adopter datasets
+/// with cross-territory wandering elephants (sightings outside the
+/// nominal home range) want a real polygon-intersection ratio in
+/// `[0, 1]`. The real-overlap path needs either a pair-side typed
+/// spatial expression (an `Expr::area_of_intersection` that
+/// references per-row `l.<hull_col>` / `r.<hull_col>` columns rather
+/// than the existing scalar-EWKB form) or a Rust-side
+/// polygon-intersection helper djogi does not yet ship. Both are
+/// tracked under #99 as remaining substrate work on the pair-tuple
+/// closure self-join surface. The function and its callers keep the
+/// `f64` return shape in `[0, 1]` so swapping the implementation
+/// when the substrate lands does not ripple into the composite
+/// score, the JSON output schema, or the markdown / mermaid
+/// renderers.
 fn territory_overlap_pct(female_herd: djogi::HeerId, male_herd: djogi::HeerId) -> f64 {
     if female_herd == male_herd { 1.0 } else { 0.0 }
 }
@@ -592,15 +634,10 @@ fn render_markdown(target: &mut output::OutputTarget, pairs: &[MatingPair]) -> R
             target,
             "_No candidate pairs — verify the seed has mature \
              elephants of both sexes (`tags->>'sex' = 'f'` / `'m'` \
-             populated, `estimated_birth_year` set), every \
-             candidate's `herd_id` corresponds to a herd with \
-             recorded sightings (the `herd_hulls` aggregate drops \
-             herds with zero sightings), and at least two such \
-             elephants share spatially-overlapping herd-territory \
-             polygons. The most common cause is running `migrate` from \
-             a pre-T22 snapshot whose elephants don't have sex tags; \
-             the second is a partial seed where some herds have \
-             no sightings yet._",
+             populated, `estimated_birth_year` set) and at least two \
+             such elephants share a herd. The most common cause is \
+             running `migrate` from a pre-T22 snapshot whose \
+             elephants don't have sex tags._",
         )?;
         return Ok(());
     }
@@ -616,14 +653,13 @@ fn render_markdown(target: &mut output::OutputTarget, pairs: &[MatingPair]) -> R
          The demo's role is showcasing the framework substrate \
          (`materialize_closure` + typed pair-tuple closure self-join \
          + `PairClosureKinshipSum` aggregate), not shipping a kinship \
-         library. `territory_overlap_pct` is the fraction of the \
-         female's herd-territory polygon (convex hull of recorded \
-         sightings) covered by the male's herd-territory polygon — \
-         1.0 for the same-herd case, lower for spatially-disjoint \
-         cross-herd pairs (filtered out before kinship computation \
-         when `overlap = 0`). `age_compatibility` is the geometric \
-         mean of two Gaussian fertility bells (female peaked at 20, \
-         male peaked at 32).\n",
+         library. `territory_overlap_pct` is a binary same-herd / \
+         cross-herd identity today (1.0 same-herd, 0.0 cross-herd) — \
+         a graduated polygon-intersection ratio in `[0, 1]` slots in \
+         when the typed pair-side `Expr::area_of_intersection` lands \
+         on the pair-tuple substrate (tracked under #99). \
+         `age_compatibility` is the geometric mean of two Gaussian \
+         fertility bells (female peaked at 20, male peaked at 32).\n",
     )?;
     output::write_line(
         target,

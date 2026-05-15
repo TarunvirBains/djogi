@@ -216,6 +216,15 @@ fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Resu
             watermark_span,
         )),
         type_name: None,
+        // `wire_portable` is sassi's opt-in postcard wire-portability guard
+        // (added in sassi-codegen 0.1.0-beta.3). Djogi does not surface
+        // `#[cacheable(wire_portable)]` from `#[derive(Model)]` today — the
+        // guard is owned by sassi's own derive surface for consumers writing
+        // hand-authored `#[derive(Cacheable)]`. Initialising to `None` keeps
+        // djogi-macros forward-compatible with sister-repo field additions
+        // without depending on sassi's `..Default::default()` semantics for
+        // a struct that may add non-Default-implementing fields later.
+        wire_portable: None,
         fields: sassi_codegen::CacheableFieldsMode::external(
             quote! { #fields_name },
             quote! { #fields_name::new() },
