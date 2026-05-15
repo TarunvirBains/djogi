@@ -143,7 +143,12 @@
 //! - **`offset`** (OFFSET) — composes with limit for pagination-style
 //!   chunking.
 //! - **`is_empty`** (the `QuerySet::none()` short-circuit) — terminals
-//!   return `Ok(0)` without touching the database.
+//!   return `Ok(0)` without touching the database, **but only after**
+//!   the column-mapping and source-state validation above has passed.
+//!   A `.none()` chain with an empty mapping, duplicate columns, or
+//!   stale post-`.none()` state-adding methods still surfaces a
+//!   [`DjogiError::Validation`] so the programming error does not hide
+//!   behind a silent zero-row return.
 //!
 //! # Tenant / RLS auto-set
 //!
@@ -651,13 +656,18 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     /// Run the accumulated INSERT...SELECT and return the affected row
     /// count.
     ///
-    /// # Short-circuit case (no SQL issued)
-    ///
-    /// Returns `Ok(0)` without touching the database when the source
-    /// queryset is [`QuerySet::none`]-derived (`is_empty() == true`).
-    ///
     /// # Validation rejections (no SQL issued, returns
     /// [`DjogiError::Validation`])
+    ///
+    /// Run **before** the `is_empty()` short-circuit so a programming
+    /// error in the column mapping or source-queryset state still
+    /// surfaces when the source happens to be
+    /// [`QuerySet::none`]-derived. A silent `Ok(0)` under `.none()`
+    /// would mask the bug until a caller removed the `.none()` (or it
+    /// was guarded by an auth / feature-flag branch that flipped) — at
+    /// which point the same SQL the framework would have rejected here
+    /// would suddenly leak out as a live Postgres syntax error or
+    /// SQLSTATE.
     ///
     /// - Empty column mapping (`columns.is_empty()`). Postgres would
     ///   reject `INSERT INTO t () SELECT ...` as syntactically invalid;
@@ -669,6 +679,12 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     ///   `select_related_paths`, a `cache_target`, a non-default
     ///   `LockMode`, or a non-default `DistinctMode`. See the module
     ///   docs for the rationale on each.
+    ///
+    /// # Short-circuit case (no SQL issued)
+    ///
+    /// After validation passes, returns `Ok(0)` without touching the
+    /// database when the source queryset is [`QuerySet::none`]-derived
+    /// (`is_empty() == true`).
     ///
     /// # Tenant / RLS auto-set
     ///
@@ -693,11 +709,15 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
         T: 'ctx,
     {
         async move {
-            // Short-circuit: structural-empty source. Mirrors the
-            // TASK6:empty_contract on bulk update / delete.
-            if self.source.is_empty() {
-                return Ok(0);
-            }
+            // Validation runs BEFORE the `is_empty` short-circuit so a
+            // programming error in the column mapping or in the
+            // source-queryset state still surfaces even when the source
+            // queryset is `QuerySet::none()`-derived. A silent `Ok(0)`
+            // would mask the bug until a caller removed the `.none()`
+            // (or it was guarded by an auth / feature-flag branch that
+            // flipped), at which point the same SQL the framework would
+            // have rejected here would surface as a live Postgres
+            // syntax error / SQLSTATE 42701 / etc.
 
             // Validation: empty column list. The Postgres surface is a
             // syntax error; surface as DjogiError::Validation before
@@ -731,6 +751,15 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
 
             // Validation: reject unsupported source-queryset state.
             // See the module docs for the rationale on each rejection.
+            // `QuerySet::none()` resets every one of these fields back
+            // to its `Self::new()` default (it returns a fresh queryset
+            // with `is_empty = true` set), so a bare `.none()` chain
+            // passes silently here; the rejections only fire when the
+            // adopter chained state-adding methods AFTER `.none()`
+            // (e.g. `Source::objects().none().distinct()` — which
+            // surfaces the distinct rejection rather than silently
+            // succeeding because the bug would surface the moment the
+            // `.none()` was removed).
             if !self.source.prefetch_paths.is_empty() {
                 return Err(DjogiError::Validation(format!(
                     "insert_into::<{}>: source queryset has registered prefetch \
@@ -782,6 +811,17 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
                      restriction with an explicit opt-in",
                     T::table_name(),
                 )));
+            }
+
+            // Short-circuit: structural-empty source. Runs AFTER the
+            // validation block above so a `.none()` source with a
+            // broken column mapping (empty list, duplicate target
+            // column) or stale post-`.none()` state-adding chain still
+            // surfaces the validation error rather than silently
+            // succeeding. Mirrors the TASK6:empty_contract on bulk
+            // update / delete in spirit, but applies validation first.
+            if self.source.is_empty() {
+                return Ok(0);
             }
 
             // Tenant / RLS auto-set. Target first (the INSERT target),

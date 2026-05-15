@@ -366,3 +366,66 @@ async fn insert_select_rejects_distinct_source(mut ctx: djogi::DjogiContext) {
         "expected Validation error for .distinct() on source, got: {err:?}",
     );
 }
+
+// ── Validation under `.none()` ─────────────────────────────────────────────
+//
+// Mapping validation (empty list, duplicate target columns) MUST run
+// BEFORE the `is_empty()` short-circuit. A silent `Ok(0)` under
+// `.none()` would mask the programming error until the `.none()` was
+// removed (or the auth / feature-flag branch that gated it flipped),
+// at which point the same SQL the framework would have rejected here
+// would surface as a live Postgres syntax error.
+
+#[djogi::djogi_test(sync_models = [Phase85C4bSource, Phase85C4bArchive])]
+async fn insert_select_none_with_empty_mapping_still_rejects(mut ctx: djogi::DjogiContext) {
+    // `.none()` + empty column mapping: validation runs first, so the
+    // empty-mapping diagnostic surfaces rather than the structural-empty
+    // short-circuit silently returning `Ok(0)`.
+    let _seeded = seed_sources(&mut ctx).await;
+
+    let err = Phase85C4bSource::objects()
+        .none()
+        .insert_into::<Phase85C4bArchive, _, _>(|_t, _s| {
+            Vec::<InsertSelectColumn<Phase85C4bSource, Phase85C4bArchive>>::new()
+        })
+        .execute(&mut ctx)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DjogiError::Validation(ref msg) if msg.contains("column mapping is empty")),
+        "expected Validation error for empty column mapping under .none(), got: {err:?}",
+    );
+
+    // Archive still empty — no row landed, but for the right reason
+    // (validation rejection, not a silent zero-row short-circuit).
+    let archive_count = Phase85C4bArchive::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(archive_count, 0);
+}
+
+#[djogi::djogi_test(sync_models = [Phase85C4bSource, Phase85C4bArchive])]
+async fn insert_select_none_with_duplicate_target_columns_still_rejects(
+    mut ctx: djogi::DjogiContext,
+) {
+    // `.none()` + duplicate target columns: validation runs first, so
+    // the duplicate-column diagnostic surfaces rather than the
+    // structural-empty short-circuit silently returning `Ok(0)`.
+    let _seeded = seed_sources(&mut ctx).await;
+
+    let err = Phase85C4bSource::objects()
+        .none()
+        .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
+            vec![
+                t.label().copy_from(s.label().as_insert_source()),
+                // Duplicate — same target column.
+                t.label()
+                    .copy_from(InsertSelectSource::literal("override".to_string())),
+            ]
+        })
+        .execute(&mut ctx)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DjogiError::Validation(ref msg) if msg.contains("'label'") && msg.contains("more than once")),
+        "expected Validation error citing duplicate column 'label' under .none(), got: {err:?}",
+    );
+}

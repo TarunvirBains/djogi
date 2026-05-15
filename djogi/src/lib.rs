@@ -384,8 +384,8 @@ pub use fts_query::FtsFieldRef;
 // never reaches for `Condition` directly.
 pub use query::{
     AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
-    ClosureModel, ConditionExt, FieldRef, FilterClause, InsertSelectColumn, InsertSelectStmt,
-    IntoAggregateTuple, IntoFieldFilterValue, IntoFilterValue, IntoInsertColumns,
+    ClosureModel, ConditionExt, FieldRef, FilterClause, InsertSelectColumn, InsertSelectSource,
+    InsertSelectStmt, IntoAggregateTuple, IntoFieldFilterValue, IntoFilterValue, IntoInsertColumns,
     IntoPortableFieldValue, IntoSetOpArm, JoinedAnnotatedQuerySet, JoinedAnnotatedRow,
     JoinedQuerySet, Lookup, MaterializeClosureOptions, MaterializeClosureReport, ModelCursorStream,
     ModelFilter, OrderExpr, PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt,
