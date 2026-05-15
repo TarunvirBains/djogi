@@ -384,10 +384,11 @@ pub use fts_query::FtsFieldRef;
 // never reaches for `Condition` directly.
 pub use query::{
     AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
-    ClosureModel, FieldRef, FilterClause, IntoAggregateTuple, IntoFilterValue, Lookup,
-    MaterializeClosureOptions, MaterializeClosureReport, ModelCursorStream, ModelFilter, OrderExpr,
-    PortableQuerySet, Q, QuerySet, RawCursorStream, RecursiveDirection, RecursiveQuerySet,
-    UpdateAssignment, UpdateStmt, VisageQuerySet,
+    ClosureModel, ConditionExt, FieldRef, FilterClause, IntoAggregateTuple, IntoFieldFilterValue,
+    IntoFilterValue, IntoPortableFieldValue, Lookup, MaterializeClosureOptions,
+    MaterializeClosureReport, ModelCursorStream, ModelFilter, OrderExpr, PortableQuerySet, Q,
+    QuerySet, RawCursorStream, RecursiveDirection, RecursiveQuerySet, UpdateAssignment, UpdateStmt,
+    VisageQuerySet,
 };
 pub use relation::{
     ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
@@ -515,7 +516,8 @@ pub mod prelude {
     // legacy `Condition` callers reach `djogi::query::internal::Condition`.
     pub use crate::query::{
         AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
-        ClosureModel, FieldRef, FilterClause, IntoAggregateTuple, IntoFilterValue, Lookup,
+        ClosureModel, ConditionExt, FieldRef, FilterClause, IntoAggregateTuple,
+        IntoFieldFilterValue, IntoFilterValue, IntoPortableFieldValue, Lookup,
         MaterializeClosureOptions, MaterializeClosureReport, ModelFilter, OrderExpr,
         PortableQuerySet, Q, QuerySet, RecursiveDirection, RecursiveQuerySet, VisageQuerySet,
     };

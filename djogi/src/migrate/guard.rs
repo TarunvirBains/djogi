@@ -212,7 +212,7 @@ impl Drop for WorkspaceGuard {
 ///
 /// `path` is typically `<workspace-root>/.djogi-migrations-lock` —
 /// see [`LOCK_FILE_NAME`]. Callers that want to compose their own
-    /// path (tests, djogi-cli sub-tools that pin the workspace root)
+/// path (tests, djogi-cli sub-tools that pin the workspace root)
 /// pass it directly.
 ///
 /// `timeout` is the bound on the polling loop; production callers

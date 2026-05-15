@@ -2882,7 +2882,13 @@ fn emit_djogi_emit_field_predicate(
                     .as_ref()
                     .expect("Option* portable kind must carry an inner type");
                 let supports_ordering = matches!(info.field_kind, PortableFieldKind::OptionScalar);
-                arms.extend(option_arms(model_name, inner, column, supports_ordering));
+                arms.extend(option_arms(
+                    model_name,
+                    inner,
+                    column,
+                    supports_ordering,
+                    info.tracked_wrapped,
+                ));
                 arms.push(quote! {
                     (#column, op) => ::std::result::Result::Err(
                         ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
@@ -3133,17 +3139,176 @@ fn string_pattern_arms(_model_name: &syn::Ident, column: &str) -> Vec<TokenStrea
 /// three-valued NULL semantics. Inner-`U` ordering (`PresentField`
 /// payloads) is supported when `supports_ordering = true` (i.e. the
 /// kind is `OptionScalar`).
+///
+/// # Tracked-wrapped fields
+///
+/// `tracked_wrapped = true` indicates the original Rust column type was
+/// `Tracked<Option<U>>` (or `Tracked<Option<String>>` /
+/// `Tracked<Option<bool>>`). The `IntoPortableFieldValue<Tracked<V>> for V`
+/// blanket on the field-side surface wraps caller arguments into
+/// `Tracked::new(_)` before storing them in the type-erased
+/// `FieldPredicate::value` payload, so the predicate value reaching
+/// this dispatch is `Tracked<Option<U>>` rather than the bare
+/// `Option<U>` the original arm chain expected. We prepend a
+/// Tracked-aware fallback that downcasts to `Tracked<Option<U>>`
+/// (or `Tracked<U>` for the `.some()`-style payload, which today is
+/// unreachable from the public API but kept symmetric for future
+/// surface additions) and forwards through the same `emit_option_*`
+/// helpers using `Deref::deref` to project the inner reference.
+/// Without this fallback every `f.tracked_optional().eq(Some(v))` /
+/// `.neq(_)` / `.in_([_])` / `.not_in([_])` call against a
+/// `Tracked<Option<U>>` column lands on `ValueTypeMismatch` at runtime.
 fn option_arms(
     model_name: &syn::Ident,
     inner: &syn::Type,
     column: &str,
     supports_ordering: bool,
+    tracked_wrapped: bool,
 ) -> Vec<TokenStream> {
     let mut out = Vec::with_capacity(16);
 
-    // Eq — direct Option<U> path, then inner U via `.some()`.
+    // Pre-built Tracked-aware fallback fragments. Each yields zero-or-more
+    // `if let Some(value) = value_as::<Tracked<…>>(field) { return …; }`
+    // statements that run before the bare-`Option<U>` / `U` chain. Empty
+    // when the field is not Tracked-wrapped — the existing chain stays
+    // identical to the non-Tracked emission so call sites do not pay any
+    // extra type-tag downcast for plain `Option<U>` columns.
+    let tracked_eq_prelude = if tracked_wrapped {
+        quote! {
+            if let ::std::option::Option::Some(value) =
+                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+                    ::djogi::Tracked<::std::option::Option<#inner>>,
+                >(field)
+            {
+                return ::djogi::__private::query::portable_emit::emit_option_eq::<#inner>(
+                    acc, ctx, #column, ::std::ops::Deref::deref(value),
+                );
+            }
+            if let ::std::option::Option::Some(value) =
+                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+                    ::djogi::Tracked<#inner>,
+                >(field)
+            {
+                return ::djogi::__private::query::portable_emit::emit_value_ref::<#inner>(
+                    acc, ctx, #column, " = ", ::std::ops::Deref::deref(value),
+                );
+            }
+        }
+    } else {
+        TokenStream::new()
+    };
+    let tracked_neq_prelude = if tracked_wrapped {
+        quote! {
+            if let ::std::option::Option::Some(value) =
+                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+                    ::djogi::Tracked<::std::option::Option<#inner>>,
+                >(field)
+            {
+                return ::djogi::__private::query::portable_emit::emit_option_neq::<#inner>(
+                    acc, ctx, #column, ::std::ops::Deref::deref(value),
+                );
+            }
+            if let ::std::option::Option::Some(value) =
+                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+                    ::djogi::Tracked<#inner>,
+                >(field)
+            {
+                return ::djogi::__private::query::portable_emit::emit_value_ref::<#inner>(
+                    acc, ctx, #column, " <> ", ::std::ops::Deref::deref(value),
+                );
+            }
+        }
+    } else {
+        TokenStream::new()
+    };
+    // For `in_` / `not_in` the wrapped shape is
+    // `Vec<Tracked<Option<U>>>` (not `Tracked<Vec<Option<U>>>`):
+    // `IntoPortableFieldValue` runs per-element on the user's
+    // `Vec<Option<U>>` argument, wrapping each `Option<U>` into a
+    // `Tracked<Option<U>>` before sassi collects them. The fallback
+    // therefore downcasts the stored payload as `Vec<Tracked<Option<U>>>`,
+    // projects each entry through `Deref` into a fresh `Vec<Option<U>>`
+    // (Option<U> is `Clone` whenever U is — required by the bind path
+    // already), then forwards to the existing scalar-shape helpers so
+    // the SQL emission stays identical to the non-Tracked path.
+    let tracked_in_prelude = if tracked_wrapped {
+        quote! {
+            if let ::std::option::Option::Some(values) =
+                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+                    ::std::vec::Vec<::djogi::Tracked<::std::option::Option<#inner>>>,
+                >(field)
+            {
+                let projected: ::std::vec::Vec<::std::option::Option<#inner>> = values
+                    .iter()
+                    .map(|tracked| <
+                        ::std::option::Option<#inner> as ::std::clone::Clone
+                    >::clone(::std::ops::Deref::deref(tracked)))
+                    .collect();
+                return ::djogi::__private::query::portable_emit::emit_option_in::<#inner>(
+                    acc, ctx, #column, &projected, false,
+                );
+            }
+            if let ::std::option::Option::Some(values) =
+                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+                    ::std::vec::Vec<::djogi::Tracked<#inner>>,
+                >(field)
+            {
+                let projected: ::std::vec::Vec<#inner> = values
+                    .iter()
+                    .map(|tracked| <#inner as ::std::clone::Clone>::clone(
+                        ::std::ops::Deref::deref(tracked),
+                    ))
+                    .collect();
+                return ::djogi::__private::query::portable_emit::emit_present_list::<#inner>(
+                    acc, ctx, #column, &projected, false,
+                );
+            }
+        }
+    } else {
+        TokenStream::new()
+    };
+    let tracked_not_in_prelude = if tracked_wrapped {
+        quote! {
+            if let ::std::option::Option::Some(values) =
+                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+                    ::std::vec::Vec<::djogi::Tracked<::std::option::Option<#inner>>>,
+                >(field)
+            {
+                let projected: ::std::vec::Vec<::std::option::Option<#inner>> = values
+                    .iter()
+                    .map(|tracked| <
+                        ::std::option::Option<#inner> as ::std::clone::Clone
+                    >::clone(::std::ops::Deref::deref(tracked)))
+                    .collect();
+                return ::djogi::__private::query::portable_emit::emit_option_in::<#inner>(
+                    acc, ctx, #column, &projected, true,
+                );
+            }
+            if let ::std::option::Option::Some(values) =
+                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+                    ::std::vec::Vec<::djogi::Tracked<#inner>>,
+                >(field)
+            {
+                let projected: ::std::vec::Vec<#inner> = values
+                    .iter()
+                    .map(|tracked| <#inner as ::std::clone::Clone>::clone(
+                        ::std::ops::Deref::deref(tracked),
+                    ))
+                    .collect();
+                return ::djogi::__private::query::portable_emit::emit_present_list::<#inner>(
+                    acc, ctx, #column, &projected, true,
+                );
+            }
+        }
+    } else {
+        TokenStream::new()
+    };
+
+    // Eq — Tracked<Option<U>> / Tracked<U> first (when Tracked-wrapped),
+    // then direct Option<U>, then inner U via `.some()`.
     out.push(quote! {
         (#column, ::djogi::types::LookupOp::Eq) => {
+            #tracked_eq_prelude
             if let ::std::option::Option::Some(value) =
                 <::djogi::types::FieldPredicate<#model_name>>::value_as::<
                     ::std::option::Option<#inner>,
@@ -3169,9 +3334,10 @@ fn option_arms(
         },
     });
 
-    // Neq — direct Option<U> path, then inner U via `.some()`.
+    // Neq — Tracked-aware fallback, then direct Option<U>, then inner U.
     out.push(quote! {
         (#column, ::djogi::types::LookupOp::Neq) => {
+            #tracked_neq_prelude
             if let ::std::option::Option::Some(value) =
                 <::djogi::types::FieldPredicate<#model_name>>::value_as::<
                     ::std::option::Option<#inner>,
@@ -3197,9 +3363,10 @@ fn option_arms(
         },
     });
 
-    // In — direct Vec<Option<U>> path, then inner Vec<U> via `.some()`.
+    // In — Tracked-aware fallback, then direct Vec<Option<U>>, then inner Vec<U>.
     out.push(quote! {
         (#column, ::djogi::types::LookupOp::In) => {
+            #tracked_in_prelude
             if let ::std::option::Option::Some(values) =
                 <::djogi::types::FieldPredicate<#model_name>>::value_as::<
                     ::std::vec::Vec<::std::option::Option<#inner>>,
@@ -3227,9 +3394,10 @@ fn option_arms(
         },
     });
 
-    // NotIn — direct Vec<Option<U>> path, then inner Vec<U>.
+    // NotIn — Tracked-aware fallback, then direct Vec<Option<U>>, then inner Vec<U>.
     out.push(quote! {
         (#column, ::djogi::types::LookupOp::NotIn) => {
+            #tracked_not_in_prelude
             if let ::std::option::Option::Some(values) =
                 <::djogi::types::FieldPredicate<#model_name>>::value_as::<
                     ::std::vec::Vec<::std::option::Option<#inner>>,
@@ -3274,36 +3442,96 @@ fn option_arms(
         // `Option<U>` ordering is rejected at the `DjogiField` level
         // (no method exposed) and surfaces here as
         // `UnsupportedLookup` if a caller somehow constructs it.
+        //
+        // For Tracked-wrapped fields the same `.some()` surface is
+        // unreachable today (`Tracked<Option<U>>` does not implement
+        // the `DjogiField<M, Option<U>>::some` extension), but a
+        // Tracked-aware preamble keeps the dispatch symmetric: a
+        // future API addition that exposes `.some()` for Tracked
+        // fields will route through the same arms without a second
+        // macro change.
+        // Tracked-aware ordering preludes capture the downcast result and
+        // forward to `emit_value_ref::<Tracked<U>>` / inline the
+        // `BETWEEN` emission for the pair shape. `Tracked<T>: ToSql`
+        // forwards binds to the inner value, so the bound SQL bytes
+        // match what a bare-`U` bind would produce — column comparison
+        // stays exact across the Tracked wrapper.
+        let tracked_ord_prelude = |op_token: &str| {
+            if tracked_wrapped {
+                quote! {
+                    if let ::std::option::Option::Some(value) =
+                        <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+                            ::djogi::Tracked<#inner>,
+                        >(field)
+                    {
+                        return ::djogi::__private::query::portable_emit::emit_value_ref::<
+                            ::djogi::Tracked<#inner>,
+                        >(acc, ctx, #column, #op_token, value);
+                    }
+                }
+            } else {
+                TokenStream::new()
+            }
+        };
+        let tracked_between_prelude = if tracked_wrapped {
+            quote! {
+                if <::djogi::types::FieldPredicate<#model_name>>::value_as::<(
+                    ::djogi::Tracked<#inner>,
+                    ::djogi::Tracked<#inner>,
+                )>(field).is_some()
+                {
+                    return ::djogi::__private::query::portable_emit::emit_pair::<
+                        #model_name, ::djogi::Tracked<#inner>,
+                    >(acc, ctx, #column, field);
+                }
+            }
+        } else {
+            TokenStream::new()
+        };
+        let gt_prelude = tracked_ord_prelude(" > ");
+        let gte_prelude = tracked_ord_prelude(" >= ");
+        let lt_prelude = tracked_ord_prelude(" < ");
+        let lte_prelude = tracked_ord_prelude(" <= ");
         out.extend([
             quote! {
-                (#column, ::djogi::types::LookupOp::Gt) =>
+                (#column, ::djogi::types::LookupOp::Gt) => {
+                    #gt_prelude
                     ::djogi::__private::query::portable_emit::emit_value::<
                         #model_name, #inner,
-                    >(acc, ctx, #column, " > ", field),
+                    >(acc, ctx, #column, " > ", field)
+                },
             },
             quote! {
-                (#column, ::djogi::types::LookupOp::Gte) =>
+                (#column, ::djogi::types::LookupOp::Gte) => {
+                    #gte_prelude
                     ::djogi::__private::query::portable_emit::emit_value::<
                         #model_name, #inner,
-                    >(acc, ctx, #column, " >= ", field),
+                    >(acc, ctx, #column, " >= ", field)
+                },
             },
             quote! {
-                (#column, ::djogi::types::LookupOp::Lt) =>
+                (#column, ::djogi::types::LookupOp::Lt) => {
+                    #lt_prelude
                     ::djogi::__private::query::portable_emit::emit_value::<
                         #model_name, #inner,
-                    >(acc, ctx, #column, " < ", field),
+                    >(acc, ctx, #column, " < ", field)
+                },
             },
             quote! {
-                (#column, ::djogi::types::LookupOp::Lte) =>
+                (#column, ::djogi::types::LookupOp::Lte) => {
+                    #lte_prelude
                     ::djogi::__private::query::portable_emit::emit_value::<
                         #model_name, #inner,
-                    >(acc, ctx, #column, " <= ", field),
+                    >(acc, ctx, #column, " <= ", field)
+                },
             },
             quote! {
-                (#column, ::djogi::types::LookupOp::Between) =>
+                (#column, ::djogi::types::LookupOp::Between) => {
+                    #tracked_between_prelude
                     ::djogi::__private::query::portable_emit::emit_pair::<
                         #model_name, #inner,
-                    >(acc, ctx, #column, field),
+                    >(acc, ctx, #column, field)
+                },
             },
         ]);
     }

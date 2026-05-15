@@ -546,6 +546,16 @@ name = "phase8_5_c2_162_raw_dirty_semantics"
 path = "../tests/internal/phase8_5_c2_162_raw_dirty_semantics.rs"
 harness = true
 
+# Phase 8.5 predicate ergonomics — closes #107 (Option scalar comparisons),
+# #109 (Condition ergonomics — operators + ConditionExt), #166 (Tracked<T>
+# field lookups), and #167 (&str ergonomics for String fields). The fixture
+# exercises one row each through DjogiField portable predicates and
+# `explicit_pg_predicate()` Condition composition.
+[[test]]
+name = "phase8_5_predicate_ergonomics"
+path = "../tests/integration/phase8_5_predicate_ergonomics.rs"
+harness = true
+
 [[test]]
 name = "phase8_trait_impl_registry"
 path = "../tests/integration/phase8_trait_impl_registry.rs"

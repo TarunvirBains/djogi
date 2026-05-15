@@ -245,6 +245,23 @@ pub struct PortableFieldEmitInfo {
     /// `Model::__djogi_emit_field_predicate` override emits for this
     /// field.
     pub field_kind: PortableFieldKind,
+    /// `true` when the original declared `rust_type` was wrapped in
+    /// `Tracked<…>` (e.g. `Tracked<Option<U>>`, `Tracked<String>`).
+    ///
+    /// `Tracked<U>` (non-`Option`) fields keep `rust_type =
+    /// Tracked<U>`, so the existing scalar arms emit
+    /// `emit_value::<M, Tracked<U>>` and the runtime `value_as::<Tracked<U>>`
+    /// downcast already matches.
+    /// `Tracked<Option<U>>` fields, however, classify as `OptionScalar`
+    /// / `OptionString` / `OptionBool` with `option_inner_type = Some(U)`,
+    /// and the macro-emitted `option_arms` only attempt `value_as::<Option<U>>`
+    /// / `value_as::<U>`. Without an additional `value_as::<Tracked<Option<U>>>`
+    /// fallback every predicate built through the supported
+    /// `DjogiField<M, Tracked<Option<U>>>::eq` /
+    /// `.neq` / `.in_` / `.not_in` API would fail at runtime with
+    /// `ValueTypeMismatch`. `crud::option_arms` reads this flag and
+    /// emits the additional Tracked-aware fallback chain.
+    pub tracked_wrapped: bool,
 }
 
 /// Build the per-field metadata vector for a model.
@@ -299,6 +316,13 @@ pub fn build(
         };
 
         let (field_kind, option_inner_type) = classify(&rust_type, fa_opt);
+        // Detect `Tracked<…>` at the outer layer of the declared type.
+        // Required by `crud::option_arms` so `Tracked<Option<U>>` columns
+        // emit a `value_as::<Tracked<Option<U>>>` fallback alongside the
+        // bare `Option<U>` / `U` attempts. Computing this here keeps the
+        // single-source-of-truth contract: every consumer that needs the
+        // Tracked-wrapped fact reads the same bit.
+        let tracked_wrapped = unwrap_tracked(&rust_type).is_some();
 
         out.push(PortableFieldEmitInfo {
             rust_ident: ident.clone(),
@@ -306,6 +330,7 @@ pub fn build(
             rust_type,
             option_inner_type,
             field_kind,
+            tracked_wrapped,
         });
     }
 

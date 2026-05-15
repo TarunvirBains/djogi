@@ -34,6 +34,8 @@
 
 use bytes::BytesMut;
 use postgres_types::{FromSql, IsNull, ToSql, Type};
+use std::cmp::Ordering;
+use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone)]
 pub struct Tracked<T> {
@@ -161,6 +163,44 @@ where
     }
 }
 
+impl<T> PartialEq for Tracked<T>
+where
+    T: PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.value.eq(&other.value)
+    }
+}
+
+impl<T> Eq for Tracked<T> where T: Eq {}
+
+impl<T> PartialOrd for Tracked<T>
+where
+    T: PartialOrd,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.value.partial_cmp(&other.value)
+    }
+}
+
+impl<T> Ord for Tracked<T>
+where
+    T: Ord,
+{
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.value.cmp(&other.value)
+    }
+}
+
+impl<T> Hash for Tracked<T>
+where
+    T: Hash,
+{
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.value.hash(state);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Tracked;
@@ -199,6 +239,17 @@ mod tests {
     fn into_inner_returns_value() {
         let tracked = Tracked::new(String::from("alice"));
         assert_eq!(tracked.into_inner(), "alice");
+    }
+
+    #[test]
+    fn equality_and_order_ignore_dirty_flag() {
+        let clean = Tracked::new(String::from("alice"));
+        let mut dirty = Tracked::new(String::from("alice"));
+        dirty.push_str("");
+
+        assert!(dirty.is_dirty());
+        assert_eq!(clean, dirty);
+        assert_eq!(clean.cmp(&dirty), std::cmp::Ordering::Equal);
     }
 
     #[test]
