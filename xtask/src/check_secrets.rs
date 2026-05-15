@@ -1831,4 +1831,373 @@ deleted file mode 100644
             }
         }
     }
+
+    // ===== workflow file structural assertions =====
+    //
+    // These tests pin shape-level invariants of the `public-text-secrets.yml`
+    // GitHub Actions workflow that operationalises this scanner. They are
+    // NOT a substitute for the workflow's own security review — they protect
+    // against accidental regressions during later edits (e.g. someone
+    // re-adding a `pull_request` trigger, dropping `persist-credentials:
+    // false`, or bolting cargo back onto the comment job).
+    //
+    // We test the file as text rather than parsing the YAML because (a)
+    // xtask has no YAML dependency and (b) the assertions we care about are
+    // literal lexical shape (specific keys present / absent at specific
+    // scopes), not semantic structure that needs a parser.
+    mod workflow_structure {
+        use std::path::{Path, PathBuf};
+
+        /// Path to the workflow under test. Resolved from the xtask crate
+        /// manifest dir; `..` yields the workspace root, then the workflow
+        /// lives at the canonical GitHub Actions location.
+        fn workflow_path() -> PathBuf {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask crate has a workspace-root parent")
+                .join(".github/workflows/public-text-secrets.yml")
+        }
+
+        fn workflow_yaml() -> String {
+            std::fs::read_to_string(workflow_path()).unwrap_or_else(|err| {
+                panic!("failed to read {}: {err}", workflow_path().display(),);
+            })
+        }
+
+        /// Return the slice of `yaml` that constitutes the body of the
+        /// top-level job named `name`. A job header is the literal
+        /// `  <name>:` line at 2-space indent. The body continues until
+        /// the next 2-space-indented sibling key (next job) or EOF.
+        ///
+        /// Panics if no header is found — that signals a workflow rename
+        /// or restructure and the test should fail loudly.
+        fn job_body<'a>(yaml: &'a str, name: &str) -> &'a str {
+            let header = format!("  {name}:");
+
+            // Locate the header line by byte offset.
+            let mut offset = 0usize;
+            let mut header_end: Option<usize> = None;
+            for line in yaml.split_inclusive('\n') {
+                let line_no_trailing_nl = line.strip_suffix('\n').unwrap_or(line);
+                if line_no_trailing_nl == header {
+                    header_end = Some(offset + line.len());
+                    break;
+                }
+                offset += line.len();
+            }
+            let body_start = header_end
+                .unwrap_or_else(|| panic!("missing job block `{name}:` in workflow YAML"));
+
+            // Walk subsequent lines, looking for the next 2-space-indented
+            // sibling key. Such lines start with exactly 2 spaces followed
+            // by a non-space, non-`-` character (job names begin with a
+            // letter). Comment-only lines and lines at deeper indent stay
+            // in the body.
+            let mut cursor = body_start;
+            let mut body_end = yaml.len();
+            for line in yaml[body_start..].split_inclusive('\n') {
+                let trimmed_end = line.strip_suffix('\n').unwrap_or(line);
+                let bytes = trimmed_end.as_bytes();
+                if bytes.len() >= 3
+                    && bytes[0] == b' '
+                    && bytes[1] == b' '
+                    && bytes[2] != b' '
+                    && bytes[2] != b'#'
+                    && bytes[2] != b'-'
+                {
+                    body_end = cursor;
+                    break;
+                }
+                cursor += line.len();
+            }
+            &yaml[body_start..body_end]
+        }
+
+        /// Split a job body into per-step slices. A step starts with a
+        /// 6-space-indented `- ` (the YAML sequence dash for items under
+        /// `    steps:`). Each returned slice begins at that step's dash
+        /// line and ends at the next step's dash line (or job body end).
+        fn steps_of(body: &str) -> Vec<&str> {
+            const STEP_PREFIX: &str = "      - ";
+            let mut steps = Vec::new();
+            let mut current_start: Option<usize> = None;
+            let mut offset = 0usize;
+            for line in body.split_inclusive('\n') {
+                if line.starts_with(STEP_PREFIX) {
+                    if let Some(start) = current_start {
+                        steps.push(&body[start..offset]);
+                    }
+                    current_start = Some(offset);
+                }
+                offset += line.len();
+            }
+            if let Some(start) = current_start {
+                steps.push(&body[start..]);
+            }
+            steps
+        }
+
+        // ---- top-level shape ----
+
+        /// The PR trigger must be `pull_request_target` (base-branch
+        /// context), never `pull_request` (PR head context). Distinguish
+        /// from the `pull_request_review*` triggers by requiring the
+        /// exact 2-space-indented key match.
+        #[test]
+        fn workflow_uses_pull_request_target_not_pull_request() {
+            let yaml = workflow_yaml();
+            assert!(
+                yaml.contains("pull_request_target:"),
+                "workflow must use the `pull_request_target` trigger",
+            );
+            for line in yaml.lines() {
+                assert_ne!(
+                    line.trim_end(),
+                    "  pull_request:",
+                    "untrusted `pull_request` trigger is forbidden; use `pull_request_target`",
+                );
+            }
+        }
+
+        /// The workflow-level `permissions:` block must default to
+        /// `contents: read` only. Anything wider (`issues: write`,
+        /// `pull-requests: write`, etc.) at the workflow level would
+        /// silently grant those scopes to the cargo / Rust scan job too.
+        #[test]
+        fn workflow_top_level_permissions_are_contents_read_only() {
+            let yaml = workflow_yaml();
+            let needle = "\npermissions:\n  contents: read\n";
+            assert!(
+                yaml.contains(needle),
+                "top-level permissions block must be exactly `contents: read`; \
+                 found workflow without it",
+            );
+            // The block ends at the next top-level key (no leading space).
+            // Verify no write scope is granted at the workflow level by
+            // scanning the line directly after the `permissions:` header.
+            let start = yaml
+                .find("\npermissions:\n")
+                .expect("permissions: block present")
+                + "\npermissions:\n".len();
+            let rest = &yaml[start..];
+            let block_end = rest
+                .find("\n\n")
+                .or_else(|| rest.find("\njobs:"))
+                .unwrap_or(rest.len());
+            let block = &rest[..block_end];
+            for line in block.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                assert!(
+                    !trimmed.contains(": write"),
+                    "top-level permissions block must not grant any write \
+                     scope; offending line: `{line}`",
+                );
+            }
+        }
+
+        // ---- scan job: no write scopes, no token, trusted refs only ----
+
+        #[test]
+        fn scan_job_has_no_write_permissions() {
+            let yaml = workflow_yaml();
+            let body = job_body(&yaml, "scan");
+            for line in body.lines() {
+                // Comments may use phrasing like "write scopes" without a
+                // colon; the literal `: write` token is the YAML scope key.
+                assert!(
+                    !line.contains(": write"),
+                    "scan job must not grant any `: write` scope; offending line: `{line}`",
+                );
+            }
+        }
+
+        #[test]
+        fn scan_job_binds_no_github_token() {
+            let yaml = workflow_yaml();
+            let body = job_body(&yaml, "scan");
+            // Comments can mention `GITHUB_TOKEN` (and do, by design); the
+            // YAML env binding is `GITHUB_TOKEN: ${{ ... }}` at the start
+            // of a non-comment line. Walk every non-comment line and
+            // assert no `GITHUB_TOKEN:` env key appears.
+            for line in body.lines() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with('#') {
+                    continue;
+                }
+                assert!(
+                    !trimmed.starts_with("GITHUB_TOKEN:"),
+                    "scan job must not bind GITHUB_TOKEN to any step or job env; \
+                     offending line: `{line}`",
+                );
+            }
+        }
+
+        #[test]
+        fn all_scan_checkouts_set_persist_credentials_false() {
+            let yaml = workflow_yaml();
+            let body = job_body(&yaml, "scan");
+            let mut checkout_steps = 0usize;
+            for step in steps_of(body) {
+                if step.contains("uses: actions/checkout@") {
+                    checkout_steps += 1;
+                    assert!(
+                        step.contains("persist-credentials: false"),
+                        "every scan-job checkout step must set \
+                         `persist-credentials: false`; offending step:\n{step}",
+                    );
+                }
+            }
+            assert!(
+                checkout_steps >= 2,
+                "expected at least the djogi + sassi-reference checkouts in \
+                 the scan job, found {checkout_steps}",
+            );
+        }
+
+        #[test]
+        fn scanner_checkout_pins_trusted_default_branch_ref() {
+            let yaml = workflow_yaml();
+            let body = job_body(&yaml, "scan");
+            // The scanner (djogi-source) checkout is identified as the one
+            // that does NOT pin `repository: TarunvirBains/sassi`.
+            let djogi_checkout = steps_of(body)
+                .into_iter()
+                .find(|step| {
+                    step.contains("uses: actions/checkout@")
+                        && !step.contains("repository: TarunvirBains/sassi")
+                })
+                .expect("scan job must contain a djogi-source checkout step");
+            assert!(
+                djogi_checkout.contains("ref: ${{ github.event.repository.default_branch }}"),
+                "scanner checkout must pin an explicit trusted `ref:` (the \
+                 repository's default branch) on every trigger; offending \
+                 step:\n{djogi_checkout}",
+            );
+        }
+
+        // ---- comment job: no checkout, no cargo, minimal write scope ----
+
+        #[test]
+        fn comment_job_has_no_checkout_step() {
+            let yaml = workflow_yaml();
+            let body = job_body(&yaml, "comment_and_fail");
+            assert!(
+                !body.contains("uses: actions/checkout@"),
+                "comment_and_fail job must NOT run actions/checkout (no \
+                 source code on disk, no path for cargo to walk)",
+            );
+        }
+
+        #[test]
+        fn comment_job_invokes_no_cargo() {
+            let yaml = workflow_yaml();
+            let body = job_body(&yaml, "comment_and_fail");
+            for line in body.lines() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with('#') {
+                    continue;
+                }
+                assert!(
+                    !trimmed.contains("cargo "),
+                    "comment_and_fail job must NOT invoke cargo; offending line: `{line}`",
+                );
+            }
+            assert!(
+                !body.contains("rust-toolchain"),
+                "comment_and_fail job must NOT install a Rust toolchain",
+            );
+        }
+
+        #[test]
+        fn comment_job_permissions_are_narrow_writes_only() {
+            let yaml = workflow_yaml();
+            let body = job_body(&yaml, "comment_and_fail");
+            // Confirm the permissions block exists and only contains the
+            // expected scopes: actions: read, issues: write, pull-requests:
+            // write. No `contents: write`, `packages: write`, etc.
+            assert!(
+                body.contains("permissions:"),
+                "comment_and_fail job must declare an explicit `permissions:` block",
+            );
+            assert!(
+                body.contains("issues: write"),
+                "comment_and_fail job must grant `issues: write` for comments",
+            );
+            assert!(
+                body.contains("pull-requests: write"),
+                "comment_and_fail job must grant `pull-requests: write` for PR comments",
+            );
+            assert!(
+                body.contains("actions: read"),
+                "comment_and_fail job must grant `actions: read` to download the report artifact",
+            );
+            for forbidden in ["contents: write", "packages: write", "deployments: write"] {
+                assert!(
+                    !body.contains(forbidden),
+                    "comment_and_fail job must not grant `{forbidden}`",
+                );
+            }
+        }
+
+        #[test]
+        fn comment_job_hard_fails_on_findings() {
+            let yaml = workflow_yaml();
+            let body = job_body(&yaml, "comment_and_fail");
+            // Job-level `if:` gates on scan-job has_findings == 'true', so
+            // any step in this job runs only when findings exist. The
+            // hard-fail step must exit 1 unconditionally and run even if
+            // the comment-posting step crashed.
+            let hard_fail_step = steps_of(body)
+                .into_iter()
+                .find(|step| step.contains("name: Hard-fail on findings"))
+                .expect("comment_and_fail job must contain a `Hard-fail on findings` step");
+            assert!(
+                hard_fail_step.contains("if: always()"),
+                "hard-fail step must run with `if: always()` so post-step \
+                 failures do not mask the red workflow status:\n{hard_fail_step}",
+            );
+            assert!(
+                hard_fail_step.contains("exit 1"),
+                "hard-fail step must `exit 1`:\n{hard_fail_step}",
+            );
+        }
+
+        // ---- artifact handoff: scan uploads, comment downloads ----
+
+        #[test]
+        fn scan_job_uploads_redacted_report_artifact() {
+            let yaml = workflow_yaml();
+            let body = job_body(&yaml, "scan");
+            let upload_step = steps_of(body)
+                .into_iter()
+                .find(|step| step.contains("uses: actions/upload-artifact@"))
+                .expect("scan job must upload the redacted scanner report");
+            assert!(
+                upload_step.contains("name: check-secrets-report"),
+                "upload artifact must be named `check-secrets-report`:\n{upload_step}",
+            );
+            // Only uploads when findings exist — `if: steps.scan.outputs.has_findings == 'true'`
+            assert!(
+                upload_step.contains("has_findings == 'true'"),
+                "upload artifact step must gate on has_findings == 'true':\n{upload_step}",
+            );
+        }
+
+        #[test]
+        fn comment_job_downloads_redacted_report_artifact() {
+            let yaml = workflow_yaml();
+            let body = job_body(&yaml, "comment_and_fail");
+            let download_step = steps_of(body)
+                .into_iter()
+                .find(|step| step.contains("uses: actions/download-artifact@"))
+                .expect("comment_and_fail job must download the redacted scanner report");
+            assert!(
+                download_step.contains("name: check-secrets-report"),
+                "download artifact name must match the upload name:\n{download_step}",
+            );
+        }
+    }
 }
