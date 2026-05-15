@@ -1,7 +1,8 @@
 # `MirJzSON` JSONB Integration Spec
 
 **Date:** 2026-05-14
-**Status:** v3 Djogi-owned draft after split review — initial slice landing 2026-05-15
+**Status:** v3 Djogi-owned draft after split review — initial slice +
+macro justification gate landing 2026-05-15
 **Owning repo:** `/home/tarunvir/projects/djogi/`
 **Issue:** https://github.com/TarunvirBains/djogi/issues/195
 **Sassi contract:** `/home/tarunvir/projects/sassi/docs/specs/2026-05-14-jsahibon-portable-json-design-v3.md`
@@ -41,16 +42,38 @@
   + `djogi::query::mirjzson::*`).
 - Adopter guide: `docs/guide/jsonb.md` §MirJzSON section.
 
+## Implemented (Phase 8.5 issue #195) — macro gate
+
+The `#[mirjzson(justification = "...")]` attribute described under
+§Model Gating below is now emitted and enforced by `#[model]`. The macro:
+
+- Detects every `MirJzSON` / `Option<MirJzSON>` field (last-segment
+  ident match — covers bare, `djogi::`, `djogi::jsonb::`, `crate::`,
+  `super::`, and `::djogi::*` path forms uniformly).
+- Requires `#[mirjzson(justification = "...")]` on every such field
+  and rejects missing annotations at expand time with a span-precise
+  field-level diagnostic.
+- Validates the justification literal: present, non-empty after trim,
+  not in an ASCII case-insensitive placeholder denylist (`TODO`,
+  `TBD`, `FIXME`, `?`, `none`, `external`, `see comment`, and
+  similar), and at least 12 trimmed bytes.
+- Rejects `#[mirjzson(...)]` on any field whose type is not
+  `MirJzSON` / `Option<MirJzSON>` (including `Jsonb<T>` — the typed
+  schema IS the justification).
+- Consumes the attribute from the rewritten struct so rustc never
+  emits `unknown attribute mirjzson`.
+- Maps `MirJzSON` to `JSONB` in the descriptor pipeline through
+  `rust_type_to_sql` and accepts it for `#[field(index = "gin")]`.
+
+Lihaaf compile fixtures pin the gate: `phase85_195_mirjzson_basic`,
+`phase85_195_mirjzson_optional`, and `phase85_195_mirjzson_mixed_with_jsonb`
+in `djogi-macros/tests/compile_pass/`; eight compile-fail fixtures cover
+missing annotations, empty / placeholder / too-short justifications,
+attribute-on-wrong-type, attribute-on-`Jsonb<T>`, bare `#[mirjzson]`,
+unknown key, non-string value, and duplicate attributes.
+
 ## Pending follow-up (still tracked under #195)
 
-- **Macro justification gate.** The
-  `#[mirjzson(justification = "...")]` attribute described under
-  §Model Gating below is not yet emitted by `#[derive(Model)]` /
-  `#[model]`. Adopters can use `MirJzSON` and `Option<MirJzSON>` fields
-  today; the gate is purely additive and lands without breaking
-  existing field declarations. The future macro will accept the
-  attribute, validate that the justification string is non-empty and
-  non-vague, and strip it from the rewritten struct.
 - **Cluster portability gate explicit rejection.** Adding
   `PortablePredicateError::UntrustedJsonPredicate` rejection at the
   `try_portable` / cache-refresh boundary is wired through the existing

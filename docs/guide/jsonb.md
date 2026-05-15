@@ -327,10 +327,12 @@ embedded dots — anything a JSON object key can legally hold):
 ```rust
 use djogi::prelude::*;
 
-#[model(table = "events")]
+#[model(table = "events", no_default)]
 pub struct Event {
     pub kind: String,
-    // Future spec — see [Model gating](#model-gating-pending-macro-surface) below.
+    // `MirJzSON` requires the per-field justification — see
+    // [Model gating](#model-gating--mirjzsonjustification--) below.
+    #[mirjzson(justification = "event payload schema is owned by upstream emitter SDK")]
     pub payload: MirJzSON,
 }
 
@@ -410,6 +412,11 @@ The optional case distinguishes `None` (column SQL NULL) from
 ```rust
 #[model(table = "events")]
 pub struct Event {
+    // `Option<MirJzSON>` inherits `None` from `Option::default()`, so the
+    // model does not need `#[model(no_default)]`. The per-field
+    // justification gate still applies — every `Option<MirJzSON>` field
+    // records why the schema is external.
+    #[mirjzson(justification = "optional cache key payload owned by the upstream emitter")]
     pub maybe_payload: Option<MirJzSON>,
 }
 
@@ -463,22 +470,48 @@ level — the `PortablePredicate<T>` wrapper that flows into `QuerySet::filter`
 can only be minted by Djogi-internal field methods. There is no way to smuggle
 a forged `LookupOp::Json` predicate past Djogi's identifier validator.
 
-### Model gating — pending macro surface
+### Model gating — `#[mirjzson(justification = "...")]`
 
-The MirJzSON v1 spec calls for a per-field justification attribute:
+Every model field typed `MirJzSON` or `Option<MirJzSON>` **must** carry a
+specific justification recorded on the field itself:
 
 ```rust
-#[mirjzson(justification = "payload schema is owned by upstream partner SDK")]
-pub payload: MirJzSON,
+#[model(table = "audit_logs", no_default)]
+#[derive(Debug, Clone)]
+pub struct AuditLog {
+    pub source: String,
+    #[mirjzson(justification = "payload schema is owned by upstream partner SDK")]
+    pub payload: MirJzSON,
+}
 ```
 
-The macro-side enforcement of this attribute is **not yet shipped** in the
-initial MirJzSON slice. The runtime / SQL / type-safe surface is complete —
-adopters can use `MirJzSON` and `Option<MirJzSON>` model fields today — and
-the justification gate will land as a follow-up to issue #195. Until then,
-add a one-line comment above each `MirJzSON` field explaining why the schema
-is genuinely external; the future macro will accept the attribute without a
-code-change at the field site (the attribute is additive, not breaking).
+The macro consumes the attribute at expand time — adopters never see a
+stray `unknown attribute mirjzson` rustc error — and enforces three rules:
+
+1. **Required on every `MirJzSON` / `Option<MirJzSON>` field.** A field
+   typed `MirJzSON` (or its nullable form) without `#[mirjzson(...)]`
+   fails at expand time with a span at the field, naming the missing
+   attribute.
+2. **Rejected on any other field type.** A `#[mirjzson(...)]` annotation
+   on a `String`, `i64`, `Jsonb<T>`, or other non-`MirJzSON` field fails
+   at expand time. `Jsonb<T>` is the typed-schema sibling — the schema
+   IS the justification, and the gate would be redundant.
+3. **The justification must be a specific reason.** Empty strings, an
+   ASCII case-insensitive denylist of placeholders (`TODO`, `TBD`,
+   `FIXME`, `?`, `none`, `external`, `see comment`, and similar), and
+   values shorter than 12 trimmed bytes are rejected with a message
+   pointing back at the spec example.
+
+The bar exists because reaching for `MirJzSON` is stepping off the
+typed-schema invariant `Jsonb<T>` carries. That step deserves a deliberate,
+specific, recorded reason — the field-level annotation makes the choice
+visible at every call site that touches the type and at every PR diff
+that introduces a new one.
+
+`MirJzSON` is intentionally not `Default`, so models with a bare
+(non-optional) `MirJzSON` field declare `#[model(no_default)]`. Optional
+fields (`Option<MirJzSON>`) inherit `Default::default()` as `None` and
+do not require the opt-out.
 
 ### Escape hatches
 

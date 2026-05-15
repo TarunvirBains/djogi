@@ -17,6 +17,7 @@ pub mod from_row;
 pub mod hooks;
 pub mod indexes;
 pub mod inject;
+pub mod mirjzson;
 pub mod outer_ref;
 pub mod portable_field_emit;
 pub mod protected;
@@ -59,6 +60,16 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // empty-SQL strings, unknown keys, and `#[field(...)]`-with-
     // `#[computed(...)]` collisions.
     let computed_attrs = computed::parse_computed_attrs(&struct_item)?;
+
+    // Phase 8.5 issue #195 — MirJzSON gate. Every `MirJzSON` /
+    // `Option<MirJzSON>` field must carry
+    // `#[mirjzson(justification = "...")]`, and the attribute is
+    // rejected on any other field type. Captured here for the strip
+    // step below; future consumers (descriptor emission, doc surfaces)
+    // can read the justification without re-parsing. Runs BEFORE the
+    // attribute-strip pass so the `#[mirjzson(...)]` attributes are
+    // still on the struct when the validator walks the fields.
+    let _mirjzson_attrs = mirjzson::parse_mirjzson_attrs(&struct_item)?;
 
     // Phase 8β BLOCK-4 fix — remove computed fields from the struct
     // before any downstream pass walks `struct_item.fields`. Computed
@@ -165,9 +176,18 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
             // attribute macro. The semantics were captured into
             // `_computed_attrs` above; T4.5's emitter consumes the
             // captured state.
-            field
-                .attrs
-                .retain(|a| !a.path().is_ident("field") && !a.path().is_ident("computed"));
+            //
+            // Phase 8.5 #195 — `#[mirjzson(...)]` rides the same strip
+            // path. The MirJzSON gate captured the justification above;
+            // rustc has no notion of `mirjzson` as a helper attribute on
+            // `#[model]` so leaving it in place would produce an
+            // `unknown attribute` rustc error instead of the typed
+            // gate-violation diagnostic this macro already emits.
+            field.attrs.retain(|a| {
+                !a.path().is_ident("field")
+                    && !a.path().is_ident("computed")
+                    && !a.path().is_ident("mirjzson")
+            });
         }
     }
 
