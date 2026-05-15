@@ -774,6 +774,34 @@ surface accepts column references only on its
 `Expr`-based pair-side `order_by` is tracked on #99's substrate
 roadmap.
 
+### Pair-side spatial overlap — `PairAreaOverlapRatio<L, R>`
+
+For the spatial pair-shape — "what fraction of `L.territory` overlaps
+`R.territory`?" — the pair-tuple substrate composes with the typed
+spatial annotation
+[`PairAreaOverlapRatio<L, R>`](https://docs.rs/djogi/latest/djogi/query/struct.PairAreaOverlapRatio.html):
+
+```rust
+use djogi::prelude::*;
+use djogi::query::PairAreaOverlapRatio;
+
+// Per-pair territory overlap ratio across every herd-pair.
+let overlaps: Vec<((Herd, Herd), f64)> = Herd::objects()
+    .self_pairs()
+    .include_equal_pk()  // same-herd pairs report 1.0
+    .annotate(|l, r| PairAreaOverlapRatio::new(l.territory(), r.territory()))
+    .fetch_all(&mut ctx)
+    .await?;
+```
+
+The annotation emits
+`COALESCE(ST_Area(ST_Intersection(l.col::geometry, r.col::geometry)::geography), 0)::float8
+ / NULLIF(ST_Area(l.col::geography), 0)::float8` per pair. The ratio is
+left-normalised and asymmetric — see the
+[spatial guide's pair-side section](./spatial.md#pair-side-territory-overlap-phase-85-99)
+for the full SQL shape, NULL/disjoint/degenerate semantics, and the
+column-type rules.
+
 ---
 
 ## Cache-bound terminals — `.cache(&pool)?`

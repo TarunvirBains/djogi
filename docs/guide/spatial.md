@@ -592,6 +592,113 @@ needed.
 
 ---
 
+## Pair-side territory overlap (Phase 8.5 #99)
+
+`Expr::area_of_intersection(&a, &b)` above takes two `Polygon` *values* —
+EWKB blobs known at query-build time — and binds them as `bytea` literals.
+This is the right shape when the application has the two geometries in
+hand before issuing the query (e.g. comparing a candidate match against a
+stored reference shape).
+
+When the geometries live on *per-row* columns of a joined pair-tuple —
+"for each `(L, R)` pair, what fraction of `L.territory` overlaps
+`R.territory`?" — the scalar `Expr` API does not apply: the values are
+not known at query-build time, they are read out of each row pair by the
+SQL engine.
+
+[`PairAreaOverlapRatio<L, R>`](https://docs.rs/djogi/latest/djogi/query/struct.PairAreaOverlapRatio.html)
+fills this gap. It is the pair-tuple annotation slot that emits
+
+```sql
+COALESCE(ST_Area(ST_Intersection(l.<lcol>::geometry,
+                                  r.<rcol>::geometry)::geography), 0)::float8
+  / NULLIF(ST_Area(l.<lcol>::geography), 0)::float8
+```
+
+as one SELECT-list column per pair on a `JoinedQuerySet<L, R>`.
+
+```rust
+use djogi::prelude::*;
+use djogi::query::PairAreaOverlapRatio;
+
+// Per-pair territory overlap ratio in [0, 1] across every herd-pair.
+let overlaps: Vec<((Herd, Herd), f64)> = Herd::objects()
+    .self_pairs()
+    .include_equal_pk()
+    .annotate(|l, r| PairAreaOverlapRatio::new(l.territory(), r.territory()))
+    .fetch_all(&mut ctx)
+    .await?;
+```
+
+### What the ratio means
+
+The denominator is always the *left* side's area. The ratio is
+asymmetric: `overlap(A, B) = area(A ∩ B) / area(A)`, the fraction of
+A's territory shared with B. For Jaccard-style symmetry, fetch the
+inverse pair too and combine in Rust.
+
+| Geometry case | Ratio |
+|---|---|
+| Fully-coincident territories (same polygon) | `1.0` |
+| Disjoint territories | `0.0` |
+| Partial overlap | fraction in `(0, 1)` |
+| `NULL` on either side | `0.0` (NULLIF + decode-as-`Option<f64>`) |
+
+### When the column may be `Option<Polygon>`
+
+Both bare (`territory: Polygon`) and nullable (`territory: Option<Polygon>`)
+column types are admitted by the constructor — the
+[`SpatialColumnValue`](https://docs.rs/djogi/latest/djogi/geo/trait.SpatialColumnValue.html)
+seal admits both. Nullable shapes are the common case in adopter schemas
+where territory polygons are materialised lazily (e.g. only after a
+herd has accumulated ≥ 3 sightings).
+
+### Compose with closure-based kinship in one query
+
+The annotation slot composes inside a pair-tuple annotation tuple
+alongside [`PairClosureKinshipSum<C>`](https://docs.rs/djogi/latest/djogi/query/struct.PairClosureKinshipSum.html)
+**when both slots reference the same pair-tuple shape**: same model
+on both sides (`(L, R)` with the same columns), same FROM clause.
+That lets adopters emit one query returning the full
+`(Wright F, territory overlap, …)` tuple per pair without three separate
+round-trips:
+
+```rust
+use djogi::query::{PairAreaOverlapRatio, PairClosureKinshipSum};
+
+// One query — kinship + overlap per (left, right) pair.
+let combined: Vec<((Elephant, Elephant), (f64, f64))> = Elephant::objects()
+    .self_pairs()
+    .left_join_closure_pair::<ElephantAncestry>()
+    .annotate(|l, r| (
+        PairClosureKinshipSum::<ElephantAncestry>::new(),
+        PairAreaOverlapRatio::new(l.territory(), r.territory()),
+    ))
+    .fetch_all(&mut ctx)
+    .await?;
+```
+
+The composition requires both slots to share the same `(L, R)` pair
+tuple. The elephant-tracker `mating-pairs` demo
+([`examples/elephant-tracker/src/demos/mating_pairs.rs`](https://github.com/TarunvirBains/djogi/blob/main/examples/elephant-tracker/src/demos/mating_pairs.rs))
+deliberately keeps the two pair-tuple queries separate — kinship is
+per-elephant-pair (`(Elephant, Elephant)`, joined with the closure of
+elephant ancestries) while overlap is per-herd-pair (`(Herd, Herd)`,
+on the materialised herd territories). When the natural pair-tuple
+shapes differ, two queries plus a Rust-side `HashMap` keyed by herd id
+is the demo pattern; the in-tuple composition above applies whenever
+the kinship and overlap dimensions share the same pair shape (e.g.,
+when an adopter models a per-elephant territory polygon).
+
+### Choosing between the scalar `Expr` and the pair-side annotation
+
+| You have... | Use |
+|---|---|
+| Two `Polygon` values known at query-build time | `Expr::area_of_intersection(&a, &b)` |
+| Two `Polygon` columns on a joined pair-tuple | `PairAreaOverlapRatio::new(l.col(), r.col())` |
+
+---
+
 ## Spatial grouping (Phase 6.5)
 
 Three entry points integrate spatial reasoning with the grouped-aggregation

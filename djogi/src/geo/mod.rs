@@ -382,6 +382,70 @@ impl GeographyValue for MultiPolygon {
     }
 }
 
+// ── Sealed SpatialColumnValue trait — admits Option<G> nullable spatial columns ─
+
+/// Private sealing module for [`SpatialColumnValue`]. Downstream crates
+/// cannot name `Sealed`, so `SpatialColumnValue` stays a closed set.
+#[cfg(feature = "spatial")]
+mod sealed_spatial_column_value {
+    pub trait Sealed {}
+}
+
+/// Sealed marker trait: this value type is valid as the Rust-side type
+/// of a SQL geography column referenced by a pair-tuple spatial
+/// annotation (e.g. [`crate::query::PairAreaOverlapRatio`]).
+///
+/// # Why a separate trait from [`GeographyValue`]
+///
+/// `GeographyValue` is implemented by concrete geometry types
+/// (`Polygon`, `GeoPoint`, …) and carries an EWKB encode/decode
+/// contract used by the scalar `Expr::area_of` / `area_of_intersection`
+/// constructors that bind already-known geometries as `bytea` literals.
+///
+/// `SpatialColumnValue` is for the *column-reference* case: the
+/// annotation only needs the column's static name; the actual value
+/// lives in the row and is materialised by Postgres. A column can be
+/// non-nullable (`territory: Polygon`) or nullable (`territory:
+/// Option<Polygon>`); both are valid column types, but `Option<G>`
+/// doesn't satisfy `GeographyValue` (encoding a `None` to EWKB has no
+/// meaning at the type level — it would be a NULL value, which the
+/// scalar path handles via `bytea` NULL binds, not Rust-side encoding).
+///
+/// Splitting the bound keeps the scalar API's tight EWKB contract
+/// intact (every `GeographyValue` round-trips a concrete geometry)
+/// while letting the column-reference API accept nullable columns —
+/// the common case in adopter schemas where territory polygons may
+/// not yet be materialised for every row.
+///
+/// # Implementations
+///
+/// - Every `G: GeographyValue` (the bare-column case, e.g.
+///   `territory: Polygon`).
+/// - `Option<G>` for every `G: GeographyValue` (the nullable-column
+///   case, e.g. `territory: Option<Polygon>`).
+///
+/// # Sealing rationale
+///
+/// `Sealed` lives in [`sealed_spatial_column_value`], a `pub(crate)`
+/// module — downstream crates can name the trait as a bound but cannot
+/// add new impls. This matches the seal on `GeographyValue` and keeps
+/// the typed pair-spatial annotation surface from being extended via
+/// user code injecting a non-spatial value type.
+#[cfg(feature = "spatial")]
+pub trait SpatialColumnValue: sealed_spatial_column_value::Sealed {}
+
+#[cfg(feature = "spatial")]
+impl<G> sealed_spatial_column_value::Sealed for G where G: GeographyValue {}
+
+#[cfg(feature = "spatial")]
+impl<G> SpatialColumnValue for G where G: GeographyValue {}
+
+#[cfg(feature = "spatial")]
+impl<G> sealed_spatial_column_value::Sealed for Option<G> where G: GeographyValue {}
+
+#[cfg(feature = "spatial")]
+impl<G> SpatialColumnValue for Option<G> where G: GeographyValue {}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(all(test, feature = "spatial"))]

@@ -69,13 +69,16 @@
 //!   `order_by_pair_desc` window-fn methods — not an arbitrary
 //!   `Expr<f64>` derived from `(1 - F) × overlap × age_compat`. The
 //!   demo's score is composed from three different sources (typed
-//!   aggregate output for `F`, Rust-side same-herd binary for
-//!   `overlap`, Rust-side bell-curve for `age_compat`), so the natural
-//!   place to combine them is Rust. A future slice that adds a
-//!   pair-side `Expr`-based `order_by_pair_desc` surface (and a
-//!   pair-tuple `Expr::area_of_intersection` over per-row geometry
-//!   columns) would let the entire ranking pass land in SQL; see #99
-//!   and #65's "What changes when this ships" note.
+//!   aggregate output for `F` on `(Elephant, Elephant)` pairs, typed
+//!   aggregate output for `overlap` on the separate
+//!   `(Herd, Herd)` pair tuple from `Herd::objects().self_pairs()`
+//!   with `PairAreaOverlapRatio`, and Rust-side bell-curve for
+//!   `age_compat`), so the natural place to combine them is Rust. A
+//!   future slice that adds a pair-side `Expr`-based
+//!   `order_by_pair_desc` surface would let the entire ranking pass
+//!   land in SQL; see #99 and #65's "What changes when this ships"
+//!   note. (The pair-tuple `Expr::area_of_intersection` shape is now
+//!   shipped as `PairAreaOverlapRatio<L, R>` — see Step 2.5 below.)
 //!
 //! - **Punnu cache showcase.** Step 2 binds the mature-elephant typed
 //!   fetch to a `Punnu<Elephant>` L1 pool via the canonical
@@ -91,6 +94,29 @@
 //!   handler, periodic scoring job) the same `pool.get(id)` pattern
 //!   serves every subsequent lookup without a DB round-trip.
 //!
+//! - **Pair-tuple spatial overlap retrofit (Phase 8.5 #99 closure).**
+//!   The territory-overlap factor is the typed pair-tuple
+//!   `PairAreaOverlapRatio<Herd, Herd>` annotation on a
+//!   `Herd::objects().self_pairs()` join, reading the materialised
+//!   `Herd.territory` convex-hull polygon (populated at seed time from
+//!   sighting clusters) on both sides of the pair. The annotation
+//!   emits
+//!
+//!   ```sql
+//!   COALESCE(ST_Area(ST_Intersection(l.territory::geometry, r.territory::geometry)::geography), 0)::float8
+//!     / NULLIF(ST_Area(l.territory::geography), 0)::float8
+//!   ```
+//!
+//!   in one SQL pass over every herd-pair, returning
+//!   `Vec<((Herd, Herd), f64)>`. The pre-retrofit binary
+//!   same-herd=1.0 / cross-herd=0.0 fallback is gone: same-herd pairs
+//!   now report `1.0` because both sides reference the same hull
+//!   (intersection = the hull itself = denominator). Cross-herd pairs
+//!   report whatever fraction of the female-herd hull spatially
+//!   overlaps the male-herd hull — non-binary `(0, 1)` values surface
+//!   when adopter herds have wandering elephants whose sightings
+//!   straddle two herd ranges.
+//!
 //! ## Composite score
 //!
 //! The v3 plan calls for a multi-factor score:
@@ -99,21 +125,27 @@
 //! score = (1 - F) × territory_overlap_pct × age_compatibility
 //! ```
 //!
-//! All three factors ship here. Kinship `(1 - F)` comes from the typed
-//! pair-tuple closure self-join above. `territory_overlap_pct` is a
-//! **binary same-herd / cross-herd identity** today (1.0 when the
-//! female and male share a herd, 0.0 otherwise) — the score multiplier
-//! retains the `[0, 1]` shape so a future graduated overlap can slot
-//! in without changing the surrounding arithmetic. A real
-//! polygon-intersection ratio over per-herd territories would need
-//! either a pair-side typed `Expr::area_of_intersection` over per-row
-//! geometry columns (#99 substrate work) or a Rust-side polygon
-//! intersection helper djogi does not yet ship; both are tracked.
-//! `age_compatibility` is a smooth fertility-window product over
-//! female age peaked at 20 (sigma 10) and male age peaked at 32
-//! (sigma 15); we report the geometric mean of the two bells so a
-//! one-sided unsuitability is penalised more than a single-factor
-//! average would be.
+//! All three factors ship here.
+//!
+//! - **Kinship `(1 - F)`** comes from the typed pair-tuple
+//!   closure self-join above (Step 3).
+//! - **`territory_overlap_pct`** comes from the typed
+//!   `PairAreaOverlapRatio<Herd, Herd>` annotation on a
+//!   `Herd::objects().self_pairs()` join (Step 2.5). The
+//!   pre-retrofit binary same-herd / cross-herd identity is replaced
+//!   by a real `ST_Area(ST_Intersection(...)) / ST_Area(left)` ratio
+//!   computed in one SQL pass. The decoded value is in `[0, 1]`:
+//!   `1.0` for same-herd or fully-coincident territories, `0.0` for
+//!   fully-disjoint, and any fraction in between for partial
+//!   overlap. The composite-score arithmetic gates kinship × age on
+//!   this ratio so a perfectly-compatible cross-herd pair with no
+//!   territorial overlap still scores zero (they cannot physically
+//!   meet).
+//! - **`age_compatibility`** is a smooth fertility-window product
+//!   over female age peaked at 20 (sigma 10) and male age peaked at
+//!   32 (sigma 15); we report the geometric mean of the two bells so
+//!   a one-sided unsuitability is penalised more than a single-
+//!   factor average would be.
 //!
 //! ## Output formats
 //!
@@ -129,19 +161,17 @@
 //!
 //! Filter: only mature elephants (estimated_birth_year ≤
 //! `now - MATURITY_YEARS years`, see the constant for rationale on
-//! the threshold), of opposite sex, sharing a herd. Cross-herd pairs
-//! score `territory_overlap_pct = 0` under today's binary identity
-//! and drop out after typed kinship computation in this retrofit. When the typed
-//! pair-side spatial expression lands (#99) this filter widens to
-//! "herds whose territory polygons spatially overlap"; the
-//! composite-score multiplication is already in the right shape to
-//! accept a graduated overlap in `[0, 1]` without further code
-//! changes.
+//! the threshold) of opposite sex. Pairs whose herd territories do
+//! not overlap at all (`territory_overlap_pct = 0.0`) drop out
+//! after kinship computation — there is no plausible meeting under
+//! the herd-territory model. Pairs whose territories partially
+//! overlap (the cross-herd wandering case) survive at a
+//! correspondingly-discounted score.
 
 use anyhow::Result;
 use djogi::DjogiContext;
 use djogi::prelude::*;
-use djogi::query::PairClosureKinshipSum;
+use djogi::query::{PairAreaOverlapRatio, PairClosureKinshipSum};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -199,14 +229,19 @@ struct MatingPair {
     male_name: String,
     male_herd: String,
     f_offspring: f64,
-    /// Multiplier in `[0, 1]` that gates the kinship × age product on
-    /// territorial co-occurrence. Today the value is a binary
-    /// same-herd / cross-herd identity (1.0 same-herd, 0.0
-    /// cross-herd) because djogi does not yet expose a typed
-    /// pair-side `area_of_intersection` over per-row geometry columns
-    /// nor a Rust-side polygon-intersection helper. The output field
-    /// keeps the `[0, 1]` shape so a future graduated overlap slots in
-    /// without breaking the JSON contract or the score arithmetic.
+    /// Multiplier in `[0, 1]` that gates the kinship × age product
+    /// on territorial co-occurrence — the fraction of the female
+    /// herd's territory that overlaps the male herd's territory.
+    ///
+    /// Computed by the typed pair-tuple
+    /// `PairAreaOverlapRatio<Herd, Herd>` annotation on a
+    /// `Herd::objects().self_pairs().include_equal_pk()` join: the
+    /// SQL emits `ST_Area(ST_Intersection(l.territory, r.territory)) /
+    /// ST_Area(l.territory)` over the materialised `Herd.territory`
+    /// convex-hull polygon (populated at seed time from sighting
+    /// clusters). `1.0` for same-herd or perfectly-coincident
+    /// territories; `0.0` for fully-disjoint; any fraction in
+    /// between for partial overlap.
     territory_overlap_pct: f64,
     /// Smooth fertility-window product. `1.0` is a perfectly-matched
     /// pair at both species peaks; lower values penalise pairs whose
@@ -238,23 +273,15 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
     // rows' `female_herd` / `male_herd` columns. No JOIN through
     // raw SQL, no per-pair lookup round trip.
     //
-    // An earlier draft of this demo computed per-herd convex hulls
-    // here (`Sighting::objects().group_by(|s| s.herd_id()).annotate(|s|
-    // s.location().convex_hull())`) and then discarded the polygons,
-    // keeping only the herd-ids-with-sightings set. The hull
-    // computation was wasted work — djogi does not yet expose a
-    // Rust-side polygon-intersection helper, and the pair-side typed
-    // `Expr::area_of_intersection` over per-row geometry columns is
-    // tracked under #99 as remaining substrate work. Until that lands,
-    // `territory_overlap_pct` is a binary same-herd / cross-herd
-    // identity (see [`territory_overlap_pct`] below). When the typed
-    // pair-side spatial expression ships, this step can re-introduce
-    // the per-herd hull (or push the intersection entirely into SQL
-    // via the pair-tuple substrate) without changing the demo's
-    // public output shape.
+    // The convex-hull computation that used to live in this step's
+    // earlier draft has moved to seed time
+    // (`seed::populate_herd_territories`) and persists in the
+    // `Herd.territory` column. Step 2.5 below reaches the persisted
+    // polygons through `Herd::objects()` and feeds them to the
+    // pair-tuple territory-overlap surface in one SQL pass.
     let herds: Vec<Herd> = Herd::objects().fetch_all(ctx).await?;
     let herd_name_by_id: HashMap<djogi::HeerId, String> =
-        herds.into_iter().map(|h| (h.id, h.name)).collect();
+        herds.iter().map(|h| (h.id, h.name.clone())).collect();
 
     // ── Step 2 (typed Djogi + Punnu cache showcase) ───────────────
     //
@@ -362,6 +389,51 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
     let female_ids: Vec<djogi::HeerId> = mature_females.iter().map(|e| e.id).collect();
     let male_ids: Vec<djogi::HeerId> = mature_males.iter().map(|e| e.id).collect();
 
+    // ── Step 2.5 (typed pair-tuple territory overlap) ──────────────
+    //
+    // For every `(female_herd, male_herd)` pair compute the fraction
+    // of the female herd's territory polygon that overlaps the male
+    // herd's territory polygon. Emits one SQL pass via the
+    // `PairAreaOverlapRatio<Herd, Herd>` typed annotation:
+    //
+    //   Herd::objects()
+    //       .self_pairs()
+    //       .include_equal_pk()  // same-herd pairs report 1.0 here
+    //       .annotate(|l, r| PairAreaOverlapRatio::new(l.territory(), r.territory()))
+    //       .fetch_all(ctx)
+    //
+    // The substrate emits:
+    //
+    //   SELECT l.*, r.*,
+    //          COALESCE(ST_Area(ST_Intersection(l.territory::geometry,
+    //                                           r.territory::geometry)::geography), 0)::float8
+    //          / NULLIF(ST_Area(l.territory::geography), 0)::float8
+    //          AS __djogi_agg_0
+    //   FROM herds AS l CROSS JOIN herds AS r;
+    //
+    // and decodes the result back into `Vec<((Herd, Herd), f64)>` —
+    // one row per herd-pair with the territory-overlap ratio. The
+    // `include_equal_pk()` modifier opts in to the diagonal so
+    // same-herd pairs surface a clean `1.0` (perfectly coincident
+    // territories — same polygon on both sides). NULL territory on
+    // either side yields a NULL ratio which the slot decodes as 0.0.
+    let overlap_pairs: Vec<((Herd, Herd), f64)> = Herd::objects()
+        .self_pairs()
+        .include_equal_pk()
+        .annotate(|l, r| PairAreaOverlapRatio::new(l.territory(), r.territory()))
+        .fetch_all(ctx)
+        .await?;
+    let mut overlap_by_herd_pair: HashMap<(djogi::HeerId, djogi::HeerId), f64> =
+        HashMap::with_capacity(overlap_pairs.len());
+    for ((l_herd, r_herd), ratio) in overlap_pairs {
+        // `ST_Area(ST_Intersection(...))/ST_Area(l)` can drift
+        // marginally above 1.0 for fully-coincident geographies due
+        // to floating-point on the geography spheroid; clamp into
+        // `[0, 1]` so the downstream score keeps the `[0, 1]`
+        // contract for adopters wiring this output into UI gauges.
+        overlap_by_herd_pair.insert((l_herd.id, r_herd.id), ratio.clamp(0.0, 1.0));
+    }
+
     // ── Step 3 (typed pair-tuple closure self-join) ────────────────
     //
     // The retrofit centre of this demo. The Wright F coefficient per
@@ -415,11 +487,14 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
     for ((female, male), f_offspring) in &kinship_pairs {
         let f_herd = female.herd_id.key();
         let m_herd = male.herd_id.key();
-        let overlap = territory_overlap_pct(f_herd, m_herd);
+        let overlap = overlap_by_herd_pair
+            .get(&(f_herd, m_herd))
+            .copied()
+            .unwrap_or(0.0);
         if overlap <= 0.0 {
-            // Cross-herd pair under today's binary identity — drops
-            // out before kinship scoring. See module docstring on
-            // when this widens to a graduated overlap.
+            // Fully-disjoint herds — they cannot physically meet
+            // under the herd-territory model. Drop the pair before
+            // multiplying through the rest of the score.
             continue;
         }
         let f_age = age_for(female.estimated_birth_year);
@@ -499,35 +574,6 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
         Format::Mermaid => render_mermaid(&mut target, &ranked)?,
     }
     Ok(())
-}
-
-/// Compute the territory-overlap multiplier for a `(female_herd,
-/// male_herd)` pair.
-///
-/// **Today: binary same-herd / cross-herd identity.** The function
-/// returns `1.0` when both elephants belong to the same herd and
-/// `0.0` otherwise. The composite-score multiplication drops
-/// cross-herd pairs after typed kinship scoring in this retrofit — they cannot
-/// physically meet under the demo's herd-territory model. This
-/// matches the original raw-SQL `CASE WHEN f.herd_id = m.herd_id
-/// THEN 1.0 ELSE 0.0` short-circuit byte-for-byte.
-///
-/// **What changes when graduated overlap ships.** Adopter datasets
-/// with cross-territory wandering elephants (sightings outside the
-/// nominal home range) want a real polygon-intersection ratio in
-/// `[0, 1]`. The real-overlap path needs either a pair-side typed
-/// spatial expression (an `Expr::area_of_intersection` that
-/// references per-row `l.<hull_col>` / `r.<hull_col>` columns rather
-/// than the existing scalar-EWKB form) or a Rust-side
-/// polygon-intersection helper djogi does not yet ship. Both are
-/// tracked under #99 as remaining substrate work on the pair-tuple
-/// closure self-join surface. The function and its callers keep the
-/// `f64` return shape in `[0, 1]` so swapping the implementation
-/// when the substrate lands does not ripple into the composite
-/// score, the JSON output schema, or the markdown / mermaid
-/// renderers.
-fn territory_overlap_pct(female_herd: djogi::HeerId, male_herd: djogi::HeerId) -> f64 {
-    if female_herd == male_herd { 1.0 } else { 0.0 }
 }
 
 /// Compute an elephant's age in years given its `estimated_birth_year`.
@@ -653,11 +699,12 @@ fn render_markdown(target: &mut output::OutputTarget, pairs: &[MatingPair]) -> R
          The demo's role is showcasing the framework substrate \
          (`materialize_closure` + typed pair-tuple closure self-join \
          + `PairClosureKinshipSum` aggregate), not shipping a kinship \
-         library. `territory_overlap_pct` is a binary same-herd / \
-         cross-herd identity today (1.0 same-herd, 0.0 cross-herd) — \
-         a graduated polygon-intersection ratio in `[0, 1]` slots in \
-         when the typed pair-side `Expr::area_of_intersection` lands \
-         on the pair-tuple substrate (tracked under #99). \
+         library. `territory_overlap_pct` is the typed pair-tuple \
+         `PairAreaOverlapRatio<Herd, Herd>` annotation on a \
+         `Herd::objects().self_pairs()` join — emits \
+         `ST_Area(ST_Intersection(l.territory, r.territory))/ST_Area(l.territory)` \
+         in one SQL pass, with `Herd.territory` populated at seed \
+         time as the convex hull of each herd's sightings. \
          `age_compatibility` is the geometric mean of two Gaussian \
          fertility bells (female peaked at 20, male peaked at 32).\n",
     )?;
@@ -738,11 +785,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn territory_overlap_pct_binary_same_herd() {
-        let h1 = djogi::HeerId::from_i64(100).unwrap();
-        let h2 = djogi::HeerId::from_i64(200).unwrap();
-        assert_eq!(territory_overlap_pct(h1, h1), 1.0);
-        assert_eq!(territory_overlap_pct(h1, h2), 0.0);
-    }
+    // Territory overlap is now computed by Postgres via the typed
+    // `PairAreaOverlapRatio<Herd, Herd>` annotation (see Step 2.5 of
+    // `run`). There is no Rust-side `territory_overlap_pct` function
+    // to unit-test in this module; the pair-side SQL emission is
+    // pinned by `djogi::query::joined::tests::pair_area_overlap_*` and
+    // the end-to-end behaviour is exercised by the elephant-tracker
+    // `cargo run -- demo mating-pairs --format json` workflow.
 }
