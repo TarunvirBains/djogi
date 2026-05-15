@@ -207,30 +207,27 @@ pub enum SpatialExpr {
         geom_ewkb: Vec<u8>,
     },
 
-    /// `ST_Intersection($1::bytea::geometry, $2::bytea::geometry)`
+    /// `ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography`
     ///
-    /// Returns a geometry — the spatial intersection of the two bound
-    /// geometries. The empty geometry is the natural sentinel when the
-    /// two inputs do not overlap; Postgres's `ST_Area` over an empty
-    /// geometry returns `0.0`, which is the correct "no overlap"
-    /// answer for the territory-overlap-percentage demo use case.
+    /// Returns a geography-typed geometry — the spatial intersection of the
+    /// two bound geometry inputs. The result is cast to `::geography` so
+    /// [`crate::geo::Polygon`]'s `FromSql` implementation can decode it via
+    /// the geography codec. Both input arguments are cast `::bytea::geometry`
+    /// because PostGIS 3.x has no `geography` overload for `ST_Intersection`
+    /// (matches the input-side discipline of the geometry-only shape predicates
+    /// `ST_Contains` / `ST_Touches` / `ST_Within`).
     ///
-    /// Both args are bound as raw EWKB `bytea` and cast at query time —
-    /// matches the cast discipline of the geometry-only shape predicates
-    /// (`ST_Contains` / `ST_Touches` / `ST_Within`) which have no
-    /// `geography` overload in PostGIS 3.x.
+    /// # Output type and decode safety
     ///
-    /// # No public typed constructor today
+    /// The caller-facing constructor [`super::Expr::intersection_of`] returns
+    /// `Expr<`[`crate::geo::Polygon`]`>`, which is the expected result type when
+    /// intersecting two polygon-shaped inputs. For non-overlapping inputs,
+    /// PostGIS returns an empty or non-polygon geometry that will fail to decode
+    /// as `Polygon`; callers who need to handle the disjoint case should use
+    /// [`super::Expr::area_of_intersection`] instead (which wraps the result
+    /// in `ST_Area` and always returns `f64`).
     ///
-    /// This variant is reachable only by IR-level construction; the public
-    /// surface ships [`super::Expr::area_of_intersection`] (which uses the
-    /// fused [`Self::AreaOfIntersection`] variant) because the framework
-    /// does not yet model a geometry-typed `Expr<G>` (no `Expr<Polygon>`
-    /// codec path). Splitting the standalone `intersection_of` constructor
-    /// out is a future-phase amendment once geometry-typed `Expr` lands;
-    /// the variant exists today so the SpatialExpr family is structurally
-    /// complete and tests can pin its emission shape.
-    #[allow(dead_code)]
+    /// Constructed by [`super::Expr::intersection_of`].
     Intersection {
         /// EWKB encoding of the first geometry argument.
         a_ewkb: Vec<u8>,
@@ -241,15 +238,24 @@ pub enum SpatialExpr {
     /// `ST_Area(ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography)`
     ///
     /// Composed shape — returns `f64` square meters of the intersection of
-    /// two bound geometries. Equivalent to nesting [`Self::Intersection`]
-    /// inside [`Self::Area`], emitted as a single inline form because the
-    /// IR does not currently model geometry-typed intermediate `Expr` nodes
-    /// (see the rustdoc on [`Self::Intersection`]).
+    /// two bound geometries. Emitted as a single inline form rather than
+    /// nesting [`Self::Intersection`] inside [`Self::Area`] so that both
+    /// the input geometry cast and the intermediate `::geography` cast are
+    /// co-located in one arm, keeping the emitter readable and the SQL output
+    /// predictable.
+    ///
+    /// When the two inputs are disjoint `ST_Intersection` returns an empty
+    /// geometry; `ST_Area` over an empty geography returns `0.0`, so the
+    /// ratio `area_of_intersection(a, b) / area_of(a)` yields `0.0` for
+    /// non-overlapping pairs without any guard.
     ///
     /// This is the canonical territory-overlap-percentage expression: the
     /// demo uses it as the numerator of
     /// `area_of_intersection(a, b) / area_of(a)`. Constructed by
     /// [`super::Expr::area_of_intersection`].
+    ///
+    /// For the raw intersection geometry without the area wrapper, use
+    /// [`Self::Intersection`] (minted by [`super::Expr::intersection_of`]).
     AreaOfIntersection {
         /// EWKB encoding of the first geometry argument.
         a_ewkb: Vec<u8>,
@@ -312,6 +318,15 @@ impl SpatialExpr {
     /// ```
     /// where `$1 = min_lon`, `$2 = min_lat`, `$3 = max_lon`, `$4 = max_lat`.
     /// The `&&` operator enables GiST index usage for cheap bbox prefiltering.
+    ///
+    /// `Intersection` emits:
+    /// ```sql
+    /// ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography
+    /// ```
+    /// Both inputs are cast `::geometry` (no `geography` overload for
+    /// `ST_Intersection` in PostGIS 3.x). The result is cast `::geography`
+    /// so `Polygon::FromSql` can decode it. Constructed by
+    /// [`super::Expr::intersection_of`].
     ///
     /// The parameter numbers shown are relative to when `emit` is called —
     /// the accumulator's global counter determines the actual `$n` values
@@ -403,16 +418,24 @@ impl SpatialExpr {
                 acc.push_sql(")");
             }
             SpatialExpr::Intersection { a_ewkb, b_ewkb } => {
-                // ST_Intersection($1::bytea::geometry, $2::bytea::geometry) —
-                // PostGIS 3.x has no `geography` overload for ST_Intersection;
-                // both args go through the `::geometry` cast pair (matches
-                // the discipline of `emit_binary_predicate` for non-Intersects
-                // shape predicates).
+                // ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography
+                //
+                // Input args: PostGIS 3.x has no `geography` overload for
+                // ST_Intersection, so both args go through the `::geometry`
+                // cast pair — matches the discipline of `emit_binary_predicate`
+                // for the geometry-only shape predicates (Contains / Touches /
+                // WithinShape).
+                //
+                // Output cast: `::geography` so Postgres reports the result
+                // as the `geography` type and `Polygon::FromSql::accepts`
+                // returns `true`, enabling Djogi's typed codec to decode the
+                // intersection result. Without the cast the result type is
+                // `geometry` and the codec rejects it.
                 acc.push_sql("ST_Intersection(");
                 push_ewkb_arg(acc, a_ewkb, EwkbCast::Geometry);
                 acc.push_sql(", ");
                 push_ewkb_arg(acc, b_ewkb, EwkbCast::Geometry);
-                acc.push_sql(")");
+                acc.push_sql(")::geography");
             }
             SpatialExpr::AreaOfIntersection { a_ewkb, b_ewkb } => {
                 // ST_Area(ST_Intersection(..)::geography) — composed inline
@@ -1098,9 +1121,12 @@ mod tests {
     }
 
     /// `Intersection { a_ewkb, b_ewkb }` emits
-    /// `ST_Intersection($1::bytea::geometry, $2::bytea::geometry)` — both args
-    /// double-cast to geometry because PostGIS 3.x has no `geography`
-    /// overload for `ST_Intersection`.
+    /// `ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography`:
+    ///
+    /// - Input args: `::bytea::geometry` on each arg because PostGIS 3.x
+    ///   has no `geography` input overload for `ST_Intersection`.
+    /// - Output cast: `::geography` so `Polygon::FromSql` can decode the
+    ///   intersection result (the codec requires a `geography`-typed column).
     #[test]
     fn intersection_emits_st_intersection_with_geometry_cast() {
         let expr = SpatialExpr::Intersection {
@@ -1114,19 +1140,29 @@ mod tests {
             sql.contains("ST_Intersection("),
             "expected ST_Intersection, got: {sql}"
         );
-        // Both args carry the geometry cast.
+        // Both input args carry the ::geometry cast — ST_Intersection has no
+        // geography input overload in PostGIS 3.x.
         assert!(
             sql.contains("$1::bytea::geometry"),
-            "expected $1::bytea::geometry, got: {sql}"
+            "expected $1::bytea::geometry for input arg, got: {sql}"
         );
         assert!(
             sql.contains("$2::bytea::geometry"),
-            "expected $2::bytea::geometry, got: {sql}"
+            "expected $2::bytea::geometry for input arg, got: {sql}"
         );
-        // Must NOT use the geography path — that overload doesn't exist.
+        // The output is cast to ::geography so Polygon::FromSql can decode it.
+        // The cast appears at the end of the expression, not on the input args.
         assert!(
-            !sql.contains("::geography"),
-            "ST_Intersection has no geography overload; got: {sql}"
+            sql.ends_with("::geography"),
+            "expected output ::geography cast for Polygon decode, got: {sql}"
+        );
+        // The input arg portion must NOT embed ::geography — that overload doesn't exist.
+        // Verify by checking that "bytea::geography" does not appear (would mean an
+        // input arg was cast to geography, which is wrong).
+        assert!(
+            !sql.contains("::bytea::geography"),
+            "ST_Intersection has no geography input overload; input args must use \
+             ::bytea::geometry, not ::bytea::geography; got: {sql}"
         );
         assert_eq!(acc.bind_count(), 2);
     }
@@ -1162,6 +1198,111 @@ mod tests {
     // bare-emission test moved alongside, see
     // `djogi/src/query/field.rs::convex_hull_emits_*` (added in
     // round-4) for the new bare and windowed emission tests.
+
+    // ── Phase 8.5 Cluster 4D — Intersection public constructor tests ──────────
+
+    /// The `Expr::intersection_of` constructor must build an `Intersection`
+    /// node that emits the same SQL as the bare variant test above: both input
+    /// args are `::bytea::geometry`-cast and the output is `::geography`-cast.
+    /// This verifies the typed constructor wires through `ExprNode::Spatial`.
+    #[test]
+    fn intersection_of_constructor_emits_correct_sql() {
+        use crate::expr::{Expr, node::ExprNode};
+        use crate::geo::Polygon;
+        use crate::pg::accumulator::SqlAccumulator;
+
+        // Build a minimal valid polygon as the input geometry.
+        let pts = vec![
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(0.0, 1.0).unwrap(),
+            GeoPoint::new(1.0, 1.0).unwrap(),
+            GeoPoint::new(0.0, 0.0).unwrap(),
+        ];
+        let poly_a = Polygon::with_ring(pts.clone()).unwrap();
+        let poly_b = Polygon::with_ring(pts).unwrap();
+
+        let expr: Expr<Polygon> = Expr::intersection_of(&poly_a, &poly_b);
+
+        // Extract and emit the inner node.
+        let mut acc = SqlAccumulator::new("");
+        // `expr.node` is crate-private; reach through ExprNode::Spatial.
+        if let ExprNode::Spatial(spatial) = &expr.node {
+            spatial.emit(&mut acc);
+        } else {
+            panic!("intersection_of must wrap ExprNode::Spatial");
+        }
+
+        let sql = acc.sql();
+        assert!(
+            sql.contains("ST_Intersection("),
+            "constructor must emit ST_Intersection; got: {sql}"
+        );
+        assert!(
+            sql.contains("$1::bytea::geometry"),
+            "first arg must use ::bytea::geometry; got: {sql}"
+        );
+        assert!(
+            sql.contains("$2::bytea::geometry"),
+            "second arg must use ::bytea::geometry; got: {sql}"
+        );
+        assert!(
+            sql.ends_with("::geography"),
+            "output must be cast to ::geography; got: {sql}"
+        );
+        assert!(
+            !sql.contains("::bytea::geography"),
+            "input args must not use ::geography (no such overload); got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            2,
+            "Intersection binds exactly 2 EWKB params; got {}",
+            acc.bind_count()
+        );
+    }
+
+    /// `intersection_of` injection-safety: both EWKB byte sequences must flow
+    /// through `push_bind` and never appear literally in the SQL text.
+    #[test]
+    fn intersection_of_injection_safe() {
+        use crate::expr::{Expr, node::ExprNode};
+        use crate::geo::Polygon;
+        use crate::pg::accumulator::SqlAccumulator;
+
+        let pts = vec![
+            GeoPoint::new(10.0, 20.0).unwrap(),
+            GeoPoint::new(10.0, 21.0).unwrap(),
+            GeoPoint::new(11.0, 21.0).unwrap(),
+            GeoPoint::new(10.0, 20.0).unwrap(),
+        ];
+        let poly_a = Polygon::with_ring(pts.clone()).unwrap();
+        let poly_b = Polygon::with_ring(pts).unwrap();
+
+        let expr: Expr<Polygon> = Expr::intersection_of(&poly_a, &poly_b);
+        let mut acc = SqlAccumulator::new("");
+        if let ExprNode::Spatial(spatial) = &expr.node {
+            spatial.emit(&mut acc);
+        } else {
+            panic!("intersection_of must wrap ExprNode::Spatial");
+        }
+        let sql = acc.sql();
+
+        // Coordinate values must not appear in the SQL — they're in bind params.
+        assert!(
+            !sql.contains("10.0") && !sql.contains("20.0") && !sql.contains("21.0"),
+            "coordinate values must not appear literally in SQL; got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            2,
+            "EWKB bytes must be bind params, not embedded in SQL; got {}",
+            acc.bind_count()
+        );
+        assert!(
+            sql.contains("$1") && sql.contains("$2"),
+            "expected $1 and $2 placeholders; got: {sql}"
+        );
+    }
 
     /// Composition contract — sequential emission keeps bind counters in
     /// lockstep so `area_of_intersection / area_of` ratios bind correctly
