@@ -541,9 +541,15 @@ let pct: Expr<f64> =
 Emitted SQL:
 
 ```sql
-ST_Area(ST_Intersection($n::bytea::geometry, $m::bytea::geometry)::geography)
-/ ST_Area($m::bytea::geography)
+ST_Area(ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography)
+/ ST_Area($3::bytea::geography)
 ```
+
+`$1` and `$3` both bind `hull_a`'s EWKB bytes; `$2` binds `hull_b`'s.
+Each `Expr` node compiles to its own `push_bind` call, so the same
+geometry value binds as a fresh parameter at each use site rather than
+being referenced by a shared positional index. The repeated bind is cheap
+(a `Vec<u8>` clone for each side) and keeps the SQL emitter stateless.
 
 `Expr::area_of_intersection(a, b)` and `Expr::area_of(g)` both return
 `Expr<f64>` and compose with the full arithmetic operator set (`/`, `*`,

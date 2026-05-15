@@ -159,7 +159,7 @@ impl djogi::hooks::ModelHooks for Post {
     {
         // self.created_by is already populated here (or None for auth-less contexts).
         if self.created_by.is_none() {
-            return Err(djogi::DjogiError::validation("created_by is required"));
+            return Err(djogi::DjogiError::Validation("created_by is required".into()));
         }
         Ok(())
     }
@@ -244,18 +244,28 @@ and the hard `DELETE` never fires; the row is marked soft-deleted instead.
 
 ---
 
-## Composition metadata in `ModelDescriptor`
+## Composition metadata in `FieldDescriptor`
 
-When any of `hooks`, `auditable`, or `soft_deletable` are opted in, the
-macro records them in `ModelDescriptor::composition`:
+When `auditable` or `soft_deletable` are opted in, the macro marks the
+composition-contributed field with a `composed_via` tag on its
+`FieldDescriptor`:
 
-- `composition.has_hooks` — `true` when `#[model(hooks)]` is set.
-- `composition.auditable` — `true` when `#[model(auditable)]` is set.
-- `composition.soft_deletable` — `true` when `#[model(soft_deletable)]`
-  is set.
+- **`FieldDescriptor::composed_via: Option<&'static str>`** — set to
+  `Some("Auditable")` on the `created_by` field when `#[model(auditable)]`
+  is active; set to `Some("SoftDeletable")` on the `deleted_at` field when
+  `#[model(soft_deletable)]` is active. All other fields carry
+  `composed_via: None`.
 
-The `djogi docs` command renders these flags in the model's reference
-page so the composition surface is discoverable in generated documentation.
+This tag lets `djogi docs` (and admin tooling such as `djogi-maahi`) identify
+which fields originate from composition opt-ins versus adopter-declared
+domain fields, so generated reference pages can annotate the provenance
+correctly.
+
+**Hooks presence is not recorded in the descriptor.** Whether a model
+implements `ModelHooks` is witnessed at compile time by the sealed `HasHooks`
+marker trait — the framework does not expose a runtime `bool` flag for hook
+registration, because hook dispatch is monomorphised away entirely at link
+time for models without `#[model(hooks)]`.
 
 ---
 
