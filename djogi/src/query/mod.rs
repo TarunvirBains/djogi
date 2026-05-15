@@ -90,9 +90,11 @@ pub use closure::{ClosureModel, MaterializeClosureOptions, MaterializeClosureRep
 // PR2b/PR2c/PR2d. `FieldRef` / `IntoFilterValue` / `OptionalRelationRef`
 // remain re-exported as before — generated `{Model}Fields` accessors still
 // return `FieldRef` until PR3 flips the macro emission.
+pub use condition::ConditionExt;
 pub use field::{
     DjogiField, DjogiPortableOrd, DjogiPresentField, ExplicitPgPredicateField, FieldRef,
-    IntoFilterValue, IntoSqlField, OptionalRelationRef,
+    IntoFieldFilterValue, IntoFilterValue, IntoPortableFieldValue, IntoSqlField,
+    OptionalRelationRef,
 };
 pub use filter::{FilterClause, Lookup, ModelFilter};
 pub use order::{Direction, NullsOrder, OrderExpr};

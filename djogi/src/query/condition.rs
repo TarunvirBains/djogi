@@ -8,6 +8,7 @@
 
 use crate::HeerId;
 use crate::RanjId;
+use std::ops::{BitAnd, BitOr, Not};
 
 /// A filter condition. Built by `FieldRef` lookup methods; composed via
 /// `.and()` / `.or()` / `Condition::not`.
@@ -247,14 +248,78 @@ impl Condition {
     /// — users rarely write double-negation by accident and the emitter can
     /// handle it correctly either way.
     ///
-    /// Deliberately an associated function (not `impl std::ops::Not`) so the
-    /// call-site reads `Condition::not(cond)` matching `Condition::and(a, b)`
-    /// / `Condition::or(a, b)`. A unary `!cond` operator would be terser but
-    /// would split the combinator API across two idioms.
+    /// Two equivalent spellings exist: this associated function
+    /// (`Condition::not(cond)`, matching `Condition::and(a, b)` /
+    /// `Condition::or(a, b)`) and the unary [`std::ops::Not`] operator
+    /// (`!cond`) defined below. The associated form is preserved for
+    /// adopter call sites that prefer the function-style symmetry; the
+    /// `!` operator is the terser idiom and pairs with the `&` / `|`
+    /// composition operators on the same type.
     #[allow(clippy::should_implement_trait)]
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn not(inner: Condition) -> Condition {
         Condition::Not(Box::new(inner))
+    }
+}
+
+/// Fluent method-style composition for [`Condition`].
+///
+/// The inherent associated constructors [`Condition::and`] /
+/// [`Condition::or`] stay in place for backwards compatibility, so the
+/// method spelling lives on an extension trait. `djogi::prelude::*`
+/// re-exports this trait, letting adopter code write
+/// `field.eq(v).and(other.eq(w))` without naming the trait.
+///
+/// Negation deliberately stays off this trait. Adding `fn not(self) ->
+/// Condition` here would alias the inherent `std::ops::Not::not(self) ->
+/// Self::Output` impl below, and any caller importing the prelude
+/// (`use djogi::prelude::*;`) plus `std::ops::Not` would see two
+/// reachable `.not()` methods on `Condition` and trigger an
+/// "ambiguous method call" error. The two existing spellings — the
+/// associated function [`Condition::not`] and the unary `!cond`
+/// operator — already cover both styles; method chaining for negation
+/// is `(!cond)` or `Condition::not(cond)`.
+pub trait ConditionExt {
+    /// Combine `self` and `other` with SQL `AND`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    fn and(self, other: Condition) -> Condition;
+
+    /// Combine `self` and `other` with SQL `OR`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    fn or(self, other: Condition) -> Condition;
+}
+
+impl ConditionExt for Condition {
+    fn and(self, other: Condition) -> Condition {
+        Condition::and(self, other)
+    }
+
+    fn or(self, other: Condition) -> Condition {
+        Condition::or(self, other)
+    }
+}
+
+impl BitAnd for Condition {
+    type Output = Condition;
+
+    fn bitand(self, rhs: Condition) -> Self::Output {
+        Condition::and(self, rhs)
+    }
+}
+
+impl BitOr for Condition {
+    type Output = Condition;
+
+    fn bitor(self, rhs: Condition) -> Self::Output {
+        Condition::or(self, rhs)
+    }
+}
+
+impl Not for Condition {
+    type Output = Condition;
+
+    fn not(self) -> Self::Output {
+        Condition::not(self)
     }
 }
 
@@ -657,6 +722,27 @@ mod tests {
         } else {
             panic!("expected And, got {combined:?}");
         }
+    }
+
+    #[test]
+    fn condition_ext_methods_compose_left_to_right() {
+        let a = Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true)));
+        let b = Condition::Leaf(Leaf::eq_raw("b", FilterValue::Bool(false)));
+        let c = Condition::Leaf(Leaf::eq_raw("c", FilterValue::Bool(true)));
+
+        let combined = a.and(b).or(c);
+
+        assert!(matches!(combined, Condition::Or(parts) if parts.len() == 2));
+    }
+
+    #[test]
+    fn condition_operators_delegate_to_existing_constructors() {
+        let a = Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true)));
+        let b = Condition::Leaf(Leaf::eq_raw("b", FilterValue::Bool(false)));
+
+        assert!(matches!(a.clone() & b.clone(), Condition::And(parts) if parts.len() == 2));
+        assert!(matches!(a.clone() | b.clone(), Condition::Or(parts) if parts.len() == 2));
+        assert!(matches!(!a, Condition::Not(_)));
     }
 
     #[test]

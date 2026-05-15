@@ -14,8 +14,8 @@
 //! - **Type safety.** `M` binds a ref to one model, so mixing
 //!   `UserFields.id()` with a `Post`-targeted QuerySet is a compile error,
 //!   not a runtime SQL error. `V` binds the lookup's RHS to the column's
-//!   Rust type, so `view_count.eq("hello")` fails at `IntoFilterValue` —
-//!   again at compile time.
+//!   Rust type, so `view_count.eq("hello")` fails at the field-argument
+//!   conversion bound — again at compile time.
 //! - **Zero runtime cost.** `FieldRef` is two phantom markers plus a
 //!   `&'static str`; the whole struct is `Copy` and disappears after the
 //!   leaf is built. No boxing, no reflection, no string formatting.
@@ -31,10 +31,19 @@
 //! use djogi::prelude::*;
 //!
 //! let qs = Post::objects().filter(|f| {
-//!     f.published().eq(true)
-//!         .and_with(f.view_count().gte(100))
+//!     f.published().eq(true) & f.view_count().gte(100)
 //! });
 //! ```
+//!
+//! Use `&` / `|` / `!` for composition — both portable
+//! [`PortablePredicate`](crate::query::PortablePredicate) and SQL-only
+//! [`Condition`](crate::query::internal::Condition) honor the operator
+//! traits, so a single closure can mix the two without naming either type.
+//! For SQL-only predicates, the [`ConditionExt`](crate::query::ConditionExt)
+//! trait (in scope through the prelude) additionally exposes `.and(...)` /
+//! `.or(...)` method-chain forms; negation stays on the unary `!` operator
+//! and the associated function
+//! [`Condition::not`](crate::query::internal::Condition::not).
 //!
 //! Users never call `FieldRef::new` directly — the macro stamps it for each
 //! column. The `#[doc(hidden)]` constructor exists so macro output compiles,
@@ -50,6 +59,7 @@ use crate::jsonb::Jsonb;
 use crate::model::Model;
 use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
 use crate::query::predicate::PortablePredicate;
+use crate::tracked::Tracked;
 use std::marker::PhantomData;
 
 /// Typed reference to a model column.
@@ -493,6 +503,7 @@ impl DjogiPortableOrd for crate::RanjId {}
 impl DjogiPortableOrd for crate::HeerIdDesc {}
 impl DjogiPortableOrd for crate::RanjIdDesc {}
 impl DjogiPortableOrd for rust_decimal::Decimal {}
+impl<V> DjogiPortableOrd for Tracked<V> where V: DjogiPortableOrd {}
 
 /// Djogi root field wrapper.
 ///
@@ -809,15 +820,21 @@ where
 {
     /// `column = value`. Portable: evaluates in Punnu and emits SQL.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn eq(self, value: V) -> PortablePredicate<M> {
-        let inner = self.portable.eq(value);
+    pub fn eq<P>(self, value: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<V>,
+    {
+        let inner = self.portable.eq(value.into_portable_field_value());
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
     }
 
     /// `column <> value`. Portable: evaluates in Punnu and emits SQL.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn neq(self, value: V) -> PortablePredicate<M> {
-        let inner = self.portable.neq(value);
+    pub fn neq<P>(self, value: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<V>,
+    {
+        let inner = self.portable.neq(value.into_portable_field_value());
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
     }
 
@@ -827,8 +844,17 @@ where
     /// any `IntoIterator<Item = V>` so callers can pass `Vec<V>`,
     /// `&[V]::iter().copied()`, or a custom range without preallocating.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn in_<I: IntoIterator<Item = V>>(self, values: I) -> PortablePredicate<M> {
-        let inner = self.portable.in_(values.into_iter().collect());
+    pub fn in_<I, P>(self, values: I) -> PortablePredicate<M>
+    where
+        I: IntoIterator<Item = P>,
+        P: IntoPortableFieldValue<V>,
+    {
+        let inner = self.portable.in_(
+            values
+                .into_iter()
+                .map(P::into_portable_field_value)
+                .collect(),
+        );
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
     }
 
@@ -836,8 +862,17 @@ where
     ///
     /// An empty list lowers to SQL `TRUE` and Punnu `true`.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn not_in<I: IntoIterator<Item = V>>(self, values: I) -> PortablePredicate<M> {
-        let inner = self.portable.not_in(values.into_iter().collect());
+    pub fn not_in<I, P>(self, values: I) -> PortablePredicate<M>
+    where
+        I: IntoIterator<Item = P>,
+        P: IntoPortableFieldValue<V>,
+    {
+        let inner = self.portable.not_in(
+            values
+                .into_iter()
+                .map(P::into_portable_field_value)
+                .collect(),
+        );
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
     }
 }
@@ -857,37 +892,55 @@ where
 {
     /// `column > value`. Portable: requires `V: DjogiPortableOrd`.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn gt(self, value: V) -> PortablePredicate<M> {
-        let inner = self.portable.gt(value);
+    pub fn gt<P>(self, value: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<V>,
+    {
+        let inner = self.portable.gt(value.into_portable_field_value());
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
     }
 
     /// `column >= value`. Portable: requires `V: DjogiPortableOrd`.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn gte(self, value: V) -> PortablePredicate<M> {
-        let inner = self.portable.gte(value);
+    pub fn gte<P>(self, value: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<V>,
+    {
+        let inner = self.portable.gte(value.into_portable_field_value());
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
     }
 
     /// `column < value`. Portable: requires `V: DjogiPortableOrd`.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn lt(self, value: V) -> PortablePredicate<M> {
-        let inner = self.portable.lt(value);
+    pub fn lt<P>(self, value: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<V>,
+    {
+        let inner = self.portable.lt(value.into_portable_field_value());
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
     }
 
     /// `column <= value`. Portable: requires `V: DjogiPortableOrd`.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn lte(self, value: V) -> PortablePredicate<M> {
-        let inner = self.portable.lte(value);
+    pub fn lte<P>(self, value: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<V>,
+    {
+        let inner = self.portable.lte(value.into_portable_field_value());
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
     }
 
     /// `column BETWEEN low AND high` (inclusive). Portable: requires
     /// `V: DjogiPortableOrd`.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn between(self, low: V, high: V) -> PortablePredicate<M> {
-        let inner = self.portable.between(low, high);
+    pub fn between<P>(self, low: P, high: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<V>,
+    {
+        let inner = self.portable.between(
+            low.into_portable_field_value(),
+            high.into_portable_field_value(),
+        );
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
     }
 }
@@ -1060,29 +1113,53 @@ where
 {
     /// `column IS NOT NULL AND column = value`. Portable.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn eq(self, value: U) -> PortablePredicate<M> {
-        let inner = self.portable.eq(value);
+    pub fn eq<P>(self, value: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<U>,
+    {
+        let inner = self.portable.eq(value.into_portable_field_value());
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
     }
 
     /// `column IS NOT NULL AND column <> value`. Portable.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn neq(self, value: U) -> PortablePredicate<M> {
-        let inner = self.portable.neq(value);
+    pub fn neq<P>(self, value: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<U>,
+    {
+        let inner = self.portable.neq(value.into_portable_field_value());
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
     }
 
     /// `column IS NOT NULL AND column IN (v1, …)`. Portable.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn in_<I: IntoIterator<Item = U>>(self, values: I) -> PortablePredicate<M> {
-        let inner = self.portable.in_(values.into_iter().collect());
+    pub fn in_<I, P>(self, values: I) -> PortablePredicate<M>
+    where
+        I: IntoIterator<Item = P>,
+        P: IntoPortableFieldValue<U>,
+    {
+        let inner = self.portable.in_(
+            values
+                .into_iter()
+                .map(P::into_portable_field_value)
+                .collect(),
+        );
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
     }
 
     /// `column IS NOT NULL AND column NOT IN (v1, …)`. Portable.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn not_in<I: IntoIterator<Item = U>>(self, values: I) -> PortablePredicate<M> {
-        let inner = self.portable.not_in(values.into_iter().collect());
+    pub fn not_in<I, P>(self, values: I) -> PortablePredicate<M>
+    where
+        I: IntoIterator<Item = P>,
+        P: IntoPortableFieldValue<U>,
+    {
+        let inner = self.portable.not_in(
+            values
+                .into_iter()
+                .map(P::into_portable_field_value)
+                .collect(),
+        );
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
     }
 }
@@ -1093,37 +1170,106 @@ where
 {
     /// `column IS NOT NULL AND column > value`. Portable.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn gt(self, value: U) -> PortablePredicate<M> {
-        let inner = self.portable.gt(value);
+    pub fn gt<P>(self, value: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<U>,
+    {
+        let inner = self.portable.gt(value.into_portable_field_value());
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
     }
 
     /// `column IS NOT NULL AND column >= value`. Portable.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn gte(self, value: U) -> PortablePredicate<M> {
-        let inner = self.portable.gte(value);
+    pub fn gte<P>(self, value: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<U>,
+    {
+        let inner = self.portable.gte(value.into_portable_field_value());
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
     }
 
     /// `column IS NOT NULL AND column < value`. Portable.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn lt(self, value: U) -> PortablePredicate<M> {
-        let inner = self.portable.lt(value);
+    pub fn lt<P>(self, value: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<U>,
+    {
+        let inner = self.portable.lt(value.into_portable_field_value());
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
     }
 
     /// `column IS NOT NULL AND column <= value`. Portable.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn lte(self, value: U) -> PortablePredicate<M> {
-        let inner = self.portable.lte(value);
+    pub fn lte<P>(self, value: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<U>,
+    {
+        let inner = self.portable.lte(value.into_portable_field_value());
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
     }
 
     /// `column IS NOT NULL AND low <= column <= high`. Portable.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
-    pub fn between(self, low: U, high: U) -> PortablePredicate<M> {
-        let inner = self.portable.between(low, high);
+    pub fn between<P>(self, low: P, high: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<U>,
+    {
+        let inner = self.portable.between(
+            low.into_portable_field_value(),
+            high.into_portable_field_value(),
+        );
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+}
+
+impl<M: Model, U> DjogiField<M, Option<U>>
+where
+    U: DjogiPortableOrd,
+{
+    /// `column > value` for a nullable scalar column. `NULL` rows are excluded.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn gt<P>(self, value: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<U>,
+    {
+        self.some().gt(value)
+    }
+
+    /// `column >= value` for a nullable scalar column. `NULL` rows are excluded.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn gte<P>(self, value: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<U>,
+    {
+        self.some().gte(value)
+    }
+
+    /// `column < value` for a nullable scalar column. `NULL` rows are excluded.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn lt<P>(self, value: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<U>,
+    {
+        self.some().lt(value)
+    }
+
+    /// `column <= value` for a nullable scalar column. `NULL` rows are excluded.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn lte<P>(self, value: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<U>,
+    {
+        self.some().lte(value)
+    }
+
+    /// `column BETWEEN low AND high` for a nullable scalar column.
+    /// `NULL` rows are excluded.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn between<P>(self, low: P, high: P) -> PortablePredicate<M>
+    where
+        P: IntoPortableFieldValue<U>,
+    {
+        self.some().between(low, high)
     }
 }
 
@@ -1135,10 +1281,7 @@ where
 // macro emission without leaving callers stranded. PR3 widens or trims as
 // the macro flip surfaces additional methods.
 
-impl<M: Model, V> ExplicitPgPredicateField<M, V>
-where
-    V: IntoFilterValue,
-{
+impl<M: Model, V> ExplicitPgPredicateField<M, V> {
     /// `column = value` — equality through database-locale comparison
     /// rules. Forwarded from [`FieldRef::eq`].
     ///
@@ -1147,45 +1290,66 @@ where
     /// rejection path for adopters who reach for this method
     /// deliberately.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn eq(self, value: V) -> Condition {
+    pub fn eq<P>(self, value: P) -> Condition
+    where
+        P: IntoFieldFilterValue<V>,
+    {
         self.sql.eq(value)
     }
 
     /// `column <> value` — forwarded from [`FieldRef::neq`].
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn neq(self, value: V) -> Condition {
+    pub fn neq<P>(self, value: P) -> Condition
+    where
+        P: IntoFieldFilterValue<V>,
+    {
         self.sql.neq(value)
     }
 
     /// `column > value` — forwarded from [`FieldRef::gt`]. Database-locale
     /// ordering.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn gt(self, value: V) -> Condition {
+    pub fn gt<P>(self, value: P) -> Condition
+    where
+        P: IntoFieldFilterValue<V>,
+    {
         self.sql.gt(value)
     }
 
     /// `column >= value` — forwarded from [`FieldRef::gte`].
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn gte(self, value: V) -> Condition {
+    pub fn gte<P>(self, value: P) -> Condition
+    where
+        P: IntoFieldFilterValue<V>,
+    {
         self.sql.gte(value)
     }
 
     /// `column < value` — forwarded from [`FieldRef::lt`].
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn lt(self, value: V) -> Condition {
+    pub fn lt<P>(self, value: P) -> Condition
+    where
+        P: IntoFieldFilterValue<V>,
+    {
         self.sql.lt(value)
     }
 
     /// `column <= value` — forwarded from [`FieldRef::lte`].
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn lte(self, value: V) -> Condition {
+    pub fn lte<P>(self, value: P) -> Condition
+    where
+        P: IntoFieldFilterValue<V>,
+    {
         self.sql.lte(value)
     }
 
     /// `column BETWEEN low AND high` — forwarded from
     /// [`FieldRef::between`].
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn between(self, low: V, high: V) -> Condition {
+    pub fn between<P>(self, low: P, high: P) -> Condition
+    where
+        P: IntoFieldFilterValue<V>,
+    {
         self.sql.between(low, high)
     }
 
@@ -1193,25 +1357,36 @@ where
     /// Forwarded from [`FieldRef::iexact`]. Distinct from the portable
     /// ASCII-stable `DjogiField::iexact`.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn iexact(self, value: V) -> Condition {
+    pub fn iexact<P>(self, value: P) -> Condition
+    where
+        P: IntoFieldFilterValue<V>,
+    {
         self.sql.iexact(value)
     }
 }
 
-impl<M: Model, V: IntoFilterValue> ExplicitPgPredicateField<M, V> {
+impl<M: Model, V> ExplicitPgPredicateField<M, V> {
     /// `column IN (v1, …)`. Forwarded from [`FieldRef::in_list`].
     ///
     /// Named `in_list` to match the `FieldRef` naming convention rather
     /// than `in_` — the explicit-PG view is intentionally close to the
     /// existing SQL surface.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn in_list<I: IntoIterator<Item = V>>(self, values: I) -> Condition {
+    pub fn in_list<I, P>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = P>,
+        P: IntoFieldFilterValue<V>,
+    {
         self.sql.in_list(values)
     }
 
     /// `column NOT IN (v1, …)`. Forwarded from [`FieldRef::not_in_list`].
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn not_in_list<I: IntoIterator<Item = V>>(self, values: I) -> Condition {
+    pub fn not_in_list<I, P>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = P>,
+        P: IntoFieldFilterValue<V>,
+    {
         self.sql.not_in_list(values)
     }
 }
@@ -1697,6 +1872,167 @@ pub trait IntoFilterValue {
     fn into_filter_value(self) -> FilterValue;
 }
 
+/// Convert a lookup argument into the SQL bind value for a specific field type.
+///
+/// `IntoFilterValue` answers "can this value become a SQL bind?" while this
+/// trait answers "can this value be used against this field's declared type?".
+/// That distinction lets `FieldRef<M, String>::eq("x")`,
+/// `FieldRef<M, Option<i16>>::lte(1970_i16)`, and
+/// `FieldRef<M, Tracked<String>>::eq("x")` compile without allowing
+/// unrelated mismatches such as `FieldRef<M, i32>::eq("x")`.
+///
+/// # Shipped impls
+///
+/// - `impl<V: IntoFilterValue> IntoFieldFilterValue<V> for V` — the blanket
+///   that keeps every existing `field.eq(v)` call site compiling (passing
+///   the column's declared `V` directly).
+/// - `IntoFieldFilterValue<String> for &str` — accept `&str` literals against
+///   `String` columns (issue #167).
+/// - `impl<V: IntoFilterValue> IntoFieldFilterValue<Option<V>> for V` and
+///   `IntoFieldFilterValue<Option<String>> for &str` — pass the inner scalar
+///   against a nullable column; NULL rows are excluded by SQL three-valued
+///   logic at emission time (issue #107).
+/// - `impl<V: IntoFilterValue> IntoFieldFilterValue<Tracked<V>> for V` and
+///   `IntoFieldFilterValue<Tracked<String>> for &str` — pass the inner value
+///   against a `Tracked<V>` column; dirty-flag state is irrelevant on the
+///   SQL bind path (issue #166).
+///
+/// # Why not blanket `Into<FilterValue>`?
+///
+/// A bare `Into<FilterValue>` bound on `eq` would silently widen every typed
+/// `FieldRef<M, V>::eq` call to accept any SQL-bindable value, dropping the
+/// column-type check at the API boundary. The `FieldValue` type parameter
+/// here keeps the mismatch error at the field-argument conversion bound
+/// (`view_count.eq("hello")` fails at `&str: IntoFieldFilterValue<i64>`,
+/// which is intentionally not impl'd).
+pub trait IntoFieldFilterValue<FieldValue> {
+    /// Convert `self` into the SQL bind value the field's lookup leaf carries.
+    ///
+    /// The returned [`FilterValue`] feeds the typed Postgres bind site in
+    /// `query::sql`. Implementors must return a variant whose runtime type
+    /// matches what the column's emitter expects (e.g. `FilterValue::String`
+    /// for `String` / `Option<String>` / `Tracked<String>` columns).
+    fn into_field_filter_value(self) -> FilterValue;
+}
+
+impl<V> IntoFieldFilterValue<V> for V
+where
+    V: IntoFilterValue,
+{
+    fn into_field_filter_value(self) -> FilterValue {
+        self.into_filter_value()
+    }
+}
+
+impl IntoFieldFilterValue<String> for &str {
+    fn into_field_filter_value(self) -> FilterValue {
+        FilterValue::String(self.to_owned())
+    }
+}
+
+impl<V> IntoFieldFilterValue<Option<V>> for V
+where
+    V: IntoFilterValue,
+{
+    fn into_field_filter_value(self) -> FilterValue {
+        self.into_filter_value()
+    }
+}
+
+impl IntoFieldFilterValue<Option<String>> for &str {
+    fn into_field_filter_value(self) -> FilterValue {
+        FilterValue::String(self.to_owned())
+    }
+}
+
+impl<V> IntoFieldFilterValue<Tracked<V>> for V
+where
+    V: IntoFilterValue,
+{
+    fn into_field_filter_value(self) -> FilterValue {
+        self.into_filter_value()
+    }
+}
+
+impl IntoFieldFilterValue<Tracked<String>> for &str {
+    fn into_field_filter_value(self) -> FilterValue {
+        FilterValue::String(self.to_owned())
+    }
+}
+
+/// Convert an argument into the value type Sassi evaluates for portable fields.
+///
+/// Portable predicates need a real `V` for `sassi::Field<M, V>`, not just a
+/// SQL bind. These impls keep the public lookup ergonomics aligned with the SQL
+/// surface while preserving the field's declared type for in-memory predicate
+/// evaluation. Mirrors [`IntoFieldFilterValue`] one impl at a time — the SQL
+/// emitter and Punnu agree on which forms reach each field type.
+///
+/// # Shipped impls
+///
+/// - `impl<V> IntoPortableFieldValue<V> for V` — the identity blanket: any
+///   value type can stand in as its own portable form (so existing
+///   `field.eq(v)` call sites continue to compile against `DjogiField<M, V>`).
+/// - `IntoPortableFieldValue<String> for &str` — wraps `&str` in `String`
+///   for portable equality against String columns (issue #167).
+/// - `impl<V> IntoPortableFieldValue<Option<V>> for V` and
+///   `IntoPortableFieldValue<Option<String>> for &str` — wrap the inner value
+///   in `Some(_)` for portable comparison against nullable columns. Sassi's
+///   `Field<M, Option<V>>::eq(Some(v))` evaluates `None` rows as false,
+///   matching SQL three-valued logic (issue #107).
+/// - `impl<V> IntoPortableFieldValue<Tracked<V>> for V` and
+///   `IntoPortableFieldValue<Tracked<String>> for &str` — wrap the inner
+///   value in `Tracked::new(_)` (always clean). [`Tracked<T>`]'s
+///   `PartialEq` / `PartialOrd` / `Ord` / `Hash` ignore the dirty flag, so
+///   comparing a freshly-constructed `Tracked` against a loaded row's
+///   `Tracked` reduces to comparing inner `T` values (issue #166).
+pub trait IntoPortableFieldValue<FieldValue> {
+    /// Convert `self` into the field's declared portable value type.
+    ///
+    /// The returned value flows into Sassi's `Field<M, FieldValue>::eq` /
+    /// `.gt` / `.in_` / etc. as the right-hand-side operand. Implementors
+    /// must produce a value whose [`PartialEq`] / [`PartialOrd`] / [`Hash`]
+    /// behaviour matches the on-disk column ordering — otherwise Punnu and
+    /// the database row will disagree at evaluation time.
+    fn into_portable_field_value(self) -> FieldValue;
+}
+
+impl<V> IntoPortableFieldValue<V> for V {
+    fn into_portable_field_value(self) -> V {
+        self
+    }
+}
+
+impl IntoPortableFieldValue<String> for &str {
+    fn into_portable_field_value(self) -> String {
+        self.to_owned()
+    }
+}
+
+impl<V> IntoPortableFieldValue<Option<V>> for V {
+    fn into_portable_field_value(self) -> Option<V> {
+        Some(self)
+    }
+}
+
+impl IntoPortableFieldValue<Option<String>> for &str {
+    fn into_portable_field_value(self) -> Option<String> {
+        Some(self.to_owned())
+    }
+}
+
+impl<V> IntoPortableFieldValue<Tracked<V>> for V {
+    fn into_portable_field_value(self) -> Tracked<V> {
+        Tracked::new(self)
+    }
+}
+
+impl IntoPortableFieldValue<Tracked<String>> for &str {
+    fn into_portable_field_value(self) -> Tracked<String> {
+        Tracked::new(self.to_owned())
+    }
+}
+
 // One impl per SQL-bindable type Djogi ships with. New types (e.g. Decimal
 // in Phase 5) extend both `FilterValue` and this trait in lockstep.
 impl IntoFilterValue for String {
@@ -1835,87 +2171,111 @@ impl IntoFilterValue for rust_decimal::Decimal {
 
 // ── Generic lookup methods (any V: IntoFilterValue) ───────────────────────
 
-impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
+impl<M: Model, V> FieldRef<M, V> {
     /// `column = value` — SQL equality.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn eq(self, value: V) -> Condition {
+    pub fn eq<P>(self, value: P) -> Condition
+    where
+        P: IntoFieldFilterValue<V>,
+    {
         Condition::Leaf(Leaf::new(
             self.column,
             LookupOp::Eq,
-            value.into_filter_value(),
+            value.into_field_filter_value(),
         ))
     }
 
     /// `column <> value` — SQL inequality.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn neq(self, value: V) -> Condition {
+    pub fn neq<P>(self, value: P) -> Condition
+    where
+        P: IntoFieldFilterValue<V>,
+    {
         Condition::Leaf(Leaf::new(
             self.column,
             LookupOp::Neq,
-            value.into_filter_value(),
+            value.into_field_filter_value(),
         ))
     }
 
     /// `column > value`.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn gt(self, value: V) -> Condition {
+    pub fn gt<P>(self, value: P) -> Condition
+    where
+        P: IntoFieldFilterValue<V>,
+    {
         Condition::Leaf(Leaf::new(
             self.column,
             LookupOp::Gt,
-            value.into_filter_value(),
+            value.into_field_filter_value(),
         ))
     }
 
     /// `column >= value`.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn gte(self, value: V) -> Condition {
+    pub fn gte<P>(self, value: P) -> Condition
+    where
+        P: IntoFieldFilterValue<V>,
+    {
         Condition::Leaf(Leaf::new(
             self.column,
             LookupOp::Gte,
-            value.into_filter_value(),
+            value.into_field_filter_value(),
         ))
     }
 
     /// `column < value`.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn lt(self, value: V) -> Condition {
+    pub fn lt<P>(self, value: P) -> Condition
+    where
+        P: IntoFieldFilterValue<V>,
+    {
         Condition::Leaf(Leaf::new(
             self.column,
             LookupOp::Lt,
-            value.into_filter_value(),
+            value.into_field_filter_value(),
         ))
     }
 
     /// `column <= value`.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn lte(self, value: V) -> Condition {
+    pub fn lte<P>(self, value: P) -> Condition
+    where
+        P: IntoFieldFilterValue<V>,
+    {
         Condition::Leaf(Leaf::new(
             self.column,
             LookupOp::Lte,
-            value.into_filter_value(),
+            value.into_field_filter_value(),
         ))
     }
 
     /// `column BETWEEN a AND b` (inclusive on both ends per SQL spec).
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn between(self, a: V, b: V) -> Condition {
+    pub fn between<P>(self, a: P, b: P) -> Condition
+    where
+        P: IntoFieldFilterValue<V>,
+    {
         Condition::Leaf(Leaf::new(
             self.column,
             LookupOp::Between,
             FilterValue::Pair(
-                Box::new(a.into_filter_value()),
-                Box::new(b.into_filter_value()),
+                Box::new(a.into_field_filter_value()),
+                Box::new(b.into_field_filter_value()),
             ),
         ))
     }
 
     /// Case-insensitive equality — `LOWER(column) = LOWER(value)`.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn iexact(self, value: V) -> Condition {
+    pub fn iexact<P>(self, value: P) -> Condition
+    where
+        P: IntoFieldFilterValue<V>,
+    {
         Condition::Leaf(Leaf::new(
             self.column,
             LookupOp::IExact,
-            value.into_filter_value(),
+            value.into_field_filter_value(),
         ))
     }
 }
@@ -1930,15 +2290,19 @@ impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
 // from a `Range`, a `Map`, or a DB cursor without a preallocated Vec. `Vec<V>`
 // itself still works because `Vec: IntoIterator`, so existing callsites keep
 // compiling without change.
-impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
+impl<M: Model, V> FieldRef<M, V> {
     /// `column IN (v1, v2, …)`. An empty iterator is allowed and renders as
     /// SQL `FALSE` at emission time (Task 6).
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn in_list<I: IntoIterator<Item = V>>(self, values: I) -> Condition {
+    pub fn in_list<I, P>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = P>,
+        P: IntoFieldFilterValue<V>,
+    {
         let list = FilterValue::List(
             values
                 .into_iter()
-                .map(IntoFilterValue::into_filter_value)
+                .map(P::into_field_filter_value)
                 .collect::<Vec<_>>(),
         );
         Condition::Leaf(Leaf::new(self.column, LookupOp::In, list))
@@ -1947,11 +2311,15 @@ impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
     /// `column NOT IN (v1, v2, …)`. An empty iterator is allowed and renders
     /// as SQL `TRUE` at emission time.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn not_in_list<I: IntoIterator<Item = V>>(self, values: I) -> Condition {
+    pub fn not_in_list<I, P>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = P>,
+        P: IntoFieldFilterValue<V>,
+    {
         let list = FilterValue::List(
             values
                 .into_iter()
-                .map(IntoFilterValue::into_filter_value)
+                .map(P::into_field_filter_value)
                 .collect::<Vec<_>>(),
         );
         Condition::Leaf(Leaf::new(self.column, LookupOp::NotIn, list))
@@ -3813,6 +4181,110 @@ mod tests {
         }
     }
 
+    /// FIX_BEFORE_BETA-4: the new
+    /// `impl<M, U> DjogiField<M, Option<U>> where U: DjogiPortableOrd`
+    /// block routes `gt` / `gte` / `lt` / `lte` / `between` through the
+    /// present-field surface (`self.some().gt(value)` and friends).
+    /// The resulting `PortablePredicate` must carry the inner-`U` payload
+    /// (matching `DjogiField<M, Option<U>>::some().gt(value)`) and the
+    /// underlying Sassi op — anything else means the routing is wrong
+    /// and the runtime emit will fail with `ValueTypeMismatch` because
+    /// `option_arms`'s ordering arms downcast to `U`, not `Option<U>`.
+    #[test]
+    fn djogi_field_optional_ordering_routes_through_present_field_payloads() {
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<i64>>(
+            "maybe_age",
+            |row| &row.maybe_age,
+        );
+
+        for (predicate, expected_op) in [
+            (f.gt(7_i64).into_inner(), sassi::LookupOp::Gt),
+            (f.gte(7_i64).into_inner(), sassi::LookupOp::Gte),
+            (f.lt(7_i64).into_inner(), sassi::LookupOp::Lt),
+            (f.lte(7_i64).into_inner(), sassi::LookupOp::Lte),
+        ] {
+            match predicate {
+                sassi::BasicPredicate::Field(field) => {
+                    assert_eq!(field.field_name(), "maybe_age");
+                    assert_eq!(field.op(), expected_op);
+                    // The macro-emitted `option_arms` ordering branch
+                    // downcasts the type-erased payload as the inner
+                    // `U` (here `i64`) — never `Option<i64>` — because
+                    // `Option<U>` ordering would disagree with SQL
+                    // three-valued NULL semantics.
+                    assert_eq!(
+                        field.value_as::<i64>(),
+                        Some(&7),
+                        "ordering arm payload must be inner U, not Option<U>",
+                    );
+                    assert!(
+                        field.value_as::<Option<i64>>().is_none(),
+                        "Option<U> downcast must NOT match — that would route to a NULL-aware arm by mistake",
+                    );
+                }
+                other => panic!("expected Field predicate, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn djogi_field_optional_between_routes_through_present_field_pair() {
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<i64>>(
+            "maybe_age",
+            |row| &row.maybe_age,
+        );
+
+        match f.between(10_i64, 20_i64).into_inner() {
+            sassi::BasicPredicate::Field(field) => {
+                assert_eq!(field.field_name(), "maybe_age");
+                assert_eq!(field.op(), sassi::LookupOp::Between);
+                // `option_arms`'s Between branch under `supports_ordering`
+                // calls `emit_pair::<M, U>` which downcasts as `(U, U)` —
+                // confirm the payload matches the contract.
+                assert_eq!(field.value_as::<(i64, i64)>(), Some(&(10_i64, 20_i64)));
+                assert!(field.value_as::<(Option<i64>, Option<i64>)>().is_none());
+            }
+            other => panic!("expected Between field predicate, got {other:?}"),
+        }
+    }
+
+    /// Issue #167 coverage extension — `Option<String>` field accepts
+    /// `&str` lookup arguments. Mirrors the non-Option `String` ergonomics
+    /// for nullable text columns.
+    #[test]
+    fn djogi_field_optional_string_accepts_borrowed_str_for_eq() {
+        // FakeRow doesn't carry an Option<String>, but `__make_djogi_field`
+        // accepts any extractor function; reuse `title` and reinterpret the
+        // value for the test. The call shape is what matters.
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<String>>(
+            "tagline",
+            |_row| {
+                // Stable per-call reference into a static `None`. The
+                // closure is never executed in this unit test (no
+                // matching against an actual row); its existence
+                // satisfies the `extract: fn(&M) -> &V` signature only.
+                static NONE: Option<String> = None;
+                &NONE
+            },
+        );
+
+        match f.eq("hello").into_inner() {
+            sassi::BasicPredicate::Field(field) => {
+                assert_eq!(field.field_name(), "tagline");
+                assert_eq!(field.op(), sassi::LookupOp::Eq);
+                // `IntoPortableFieldValue<Option<String>> for &str` (issue
+                // #167) wraps `"hello"` as `Some("hello".to_owned())` for
+                // the Sassi payload, so the direct Option<String> downcast
+                // matches.
+                assert_eq!(
+                    field.value_as::<Option<String>>(),
+                    Some(&Some("hello".to_owned())),
+                );
+            }
+            other => panic!("expected Eq field predicate, got {other:?}"),
+        }
+    }
+
     #[test]
     fn djogi_field_string_contains_routes_to_portable_case_contract() {
         let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, String>("title", |row| {
@@ -3856,8 +4328,34 @@ mod tests {
         let g = f;
         let h = f;
         // Both uses of `f` post-move must compile because FieldRef: Copy.
-        let _ = g.eq("a".to_string());
-        let _ = h.neq("b".to_string());
+        let _ = g.eq("a");
+        let _ = h.neq("b");
+    }
+
+    #[test]
+    fn field_ref_option_scalar_accepts_inner_value_lookup() {
+        let f: FieldRef<Fake, Option<i16>> = FieldRef::new("estimated_birth_year");
+        let c = f.lte(1990_i16);
+        if let Condition::Leaf(leaf) = c {
+            assert_eq!(leaf.column, "estimated_birth_year");
+            assert_eq!(leaf.op, LookupOp::Lte);
+            assert!(matches!(leaf.value, FilterValue::I16(1990)));
+        } else {
+            panic!("expected Leaf");
+        }
+    }
+
+    #[test]
+    fn field_ref_tracked_string_accepts_inner_str_lookup() {
+        let f: FieldRef<Fake, Tracked<String>> = FieldRef::new("label");
+        let c = f.eq("alpha");
+        if let Condition::Leaf(leaf) = c {
+            assert_eq!(leaf.column, "label");
+            assert_eq!(leaf.op, LookupOp::Eq);
+            assert!(matches!(leaf.value, FilterValue::String(ref s) if s == "alpha"));
+        } else {
+            panic!("expected Leaf");
+        }
     }
 
     #[test]

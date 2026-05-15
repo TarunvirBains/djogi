@@ -106,9 +106,9 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `DjogiField`
-   --> djogi/src/query/field.rs:533:26
+   --> djogi/src/query/field.rs:544:26
     |
-533 | pub struct DjogiField<M: Model, V> {
+544 | pub struct DjogiField<M: Model, V> {
     |                          ^^^^^ required by this bound in `DjogiField`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -133,9 +133,9 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
 18 | #[model(table = "phase8_proxy_runtime_vehicles")]
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `FieldRef`
-  --> djogi/src/query/field.rs:65:24
+  --> djogi/src/query/field.rs:75:24
    |
-65 | pub struct FieldRef<M: Model, V> {
+75 | pub struct FieldRef<M: Model, V> {
    |                        ^^^^^ required by this bound in `FieldRef`
    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -183,12 +183,12 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
   18 | #[model(table = "phase8_proxy_runtime_vehicles")]
      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `djogi::query::field::djogi_field_macro_support::__make_djogi_field`
-    --> djogi/src/query/field.rs:1679:12
+    --> djogi/src/query/field.rs:1854:12
      |
-1677 |     pub fn __make_djogi_field<M, V>(column: &'static str, extract: fn(&M) -> &V) -> DjogiField<M, V>
+1852 |     pub fn __make_djogi_field<M, V>(column: &'static str, extract: fn(&M) -> &V) -> DjogiField<M, V>
      |            ------------------ required by a bound in this function
-1678 |     where
-1679 |         M: Model,
+1853 |     where
+1854 |         M: Model,
      |            ^^^^^ required by this bound in `__make_djogi_field`
      = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -209,9 +209,9 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `djogi::query::field::__macro_support::__make_field_ref`
-   --> djogi/src/query/field.rs:191:32
+   --> djogi/src/query/field.rs:201:32
     |
-191 |     pub fn __make_field_ref<M: Model, V>(
+201 |     pub fn __make_field_ref<M: Model, V>(
     |                                ^^^^^ required by this bound in `__make_field_ref`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
