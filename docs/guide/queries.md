@@ -432,7 +432,7 @@ For multi-edge graphs (e.g., a pedigree where both `mother_id` and
 
 ```rust
 let mothers_descendants: RecursiveQuerySet<Elephant> = Elephant::objects()
-    .tree_descendants(root_id, Elephant::FIELDS.mother_id().path());
+    .tree_descendants(Elephant::FIELDS.mother_id().path(), root_id);
 ```
 
 `RecursiveQuerySet` ships three optional modifiers beyond the base
