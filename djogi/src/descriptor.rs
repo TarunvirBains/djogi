@@ -108,6 +108,21 @@ pub enum FieldSqlType {
     IntegerArray,
     BigIntArray,
     BoolArray,
+    /// `SMALLINT[]` — one-dimensional array of 16-bit integers.
+    SmallIntArray,
+    /// `REAL[]` — one-dimensional array of single-precision floats.
+    RealArray,
+    /// `DOUBLE PRECISION[]` — one-dimensional array of double-precision floats.
+    DoublePrecisionArray,
+    /// `TIMESTAMPTZ[]` — one-dimensional array of timezone-aware timestamps.
+    TimestamptzArray,
+    /// `DATE[]` — one-dimensional array of calendar dates.
+    DateArray,
+    /// `UUID[]` — one-dimensional array of UUIDs. Also used for `Vec<RanjId>`
+    /// columns, since `RanjId` is encoded as `UUID` on the wire.
+    UuidArray,
+    /// `NUMERIC[]` — one-dimensional array of arbitrary-precision decimals.
+    NumericArray,
     /// Case-insensitive text (Postgres `CITEXT`). Declared in Phase 1;
     /// used by the SQL linting plan in later phases.
     Citext,
@@ -163,6 +178,13 @@ impl std::fmt::Display for FieldSqlType {
             FieldSqlType::IntegerArray => write!(f, "INTEGER[]"),
             FieldSqlType::BigIntArray => write!(f, "BIGINT[]"),
             FieldSqlType::BoolArray => write!(f, "BOOLEAN[]"),
+            FieldSqlType::SmallIntArray => write!(f, "SMALLINT[]"),
+            FieldSqlType::RealArray => write!(f, "REAL[]"),
+            FieldSqlType::DoublePrecisionArray => write!(f, "DOUBLE PRECISION[]"),
+            FieldSqlType::TimestamptzArray => write!(f, "TIMESTAMPTZ[]"),
+            FieldSqlType::DateArray => write!(f, "DATE[]"),
+            FieldSqlType::UuidArray => write!(f, "UUID[]"),
+            FieldSqlType::NumericArray => write!(f, "NUMERIC[]"),
             FieldSqlType::Citext => write!(f, "CITEXT"),
             FieldSqlType::Geography { subtype, srid } => {
                 write!(f, "geography({subtype}, {srid})")

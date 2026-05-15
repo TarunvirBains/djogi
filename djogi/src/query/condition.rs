@@ -634,6 +634,30 @@ pub enum FilterValue {
     ArrayI64(Vec<i64>),
     /// `Vec<bool>` array parameter (BOOL[]).
     ArrayBool(Vec<bool>),
+    /// `Vec<i16>` array parameter (INT2[]).
+    ArrayI16(Vec<i16>),
+    /// `Vec<f32>` array parameter (FLOAT4[]).
+    ArrayF32(Vec<f32>),
+    /// `Vec<f64>` array parameter (FLOAT8[]).
+    ArrayF64(Vec<f64>),
+    /// `Vec<time::OffsetDateTime>` array parameter (TIMESTAMPTZ[]).
+    ArrayDateTime(Vec<time::OffsetDateTime>),
+    /// `Vec<time::Date>` array parameter (DATE[]).
+    ArrayDate(Vec<time::Date>),
+    /// `Vec<uuid::Uuid>` array parameter (UUID[]).
+    ArrayUuid(Vec<uuid::Uuid>),
+    /// `Vec<rust_decimal::Decimal>` array parameter (NUMERIC[]).
+    ArrayDecimal(Vec<rust_decimal::Decimal>),
+    /// `Vec<HeerId>` array parameter (BIGINT[]). `HeerId` encodes as INT8.
+    ArrayHeerId(Vec<crate::types::HeerId>),
+    /// `Vec<RanjId>` array parameter (UUID[]). `RanjId` encodes as UUID.
+    ArrayRanjId(Vec<crate::types::RanjId>),
+    /// `Vec<HeerIdDesc>` array parameter (BIGINT[]). `HeerIdDesc` /
+    /// `HeerIdRecencyBiased` encodes as INT8, newest-first sort order.
+    ArrayHeerIdDesc(Vec<crate::types::HeerIdDesc>),
+    /// `Vec<RanjIdDesc>` array parameter (UUID[]). `RanjIdDesc` /
+    /// `RanjIdRecencyBiased` encodes as UUID, newest-first sort order.
+    ArrayRanjIdDesc(Vec<crate::types::RanjIdDesc>),
 }
 
 #[cfg(test)]

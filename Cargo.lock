@@ -592,11 +592,13 @@ dependencies = [
  "djogi",
  "proc-macro2",
  "quote",
+ "rust_decimal",
  "sassi",
  "sassi-codegen",
  "serde",
  "serde_json",
  "syn 2.0.117",
+ "uuid",
 ]
 
 [[package]]
