@@ -9,9 +9,10 @@ other columns at query time, not stored as its own column. Computed
 properties come in two flavours:
 
 - **SQL-projectable** — defined via `#[computed(sql = "...")]` on a struct
-  field. Used in `.annotate()`, `.filter_expr()`, and `.order_by()` through
-  the `{Model}Computed` ZST. The expression evaluates server-side; no
-  storage column is allocated.
+  field. Used in `.filter_expr()` through the `{Model}Computed` ZST in
+  v0.1.0. The expression evaluates server-side; no storage column is
+  allocated. (`.annotate()` and `.order_by()` support for bare `Expr<T>`
+  is deferred — see the limitations note below.)
 - **Rust-trait** — defined by implementing a Rust trait via
   `#[djogi::trait_impl] impl Trait for Model { ... }`. Used for
   cross-cutting predicates that depend on Rust logic rather than SQL
@@ -203,7 +204,8 @@ descriptor-level enumeration outside the Punnu boundary.
 |----------|--------|
 | Does the predicate depend only on existing model columns? | SQL-projectable |
 | Does the predicate need Rust-side runtime state (request context, environment, etc.)? | Rust-trait |
-| Does the predicate need to filter / sort at the database? | SQL-projectable |
+| Does the predicate need to filter at the database in v0.1.0? | SQL-projectable (`.filter_expr`) |
+| Does the predicate need to sort or annotate at the database? | SQL-projectable in a future release; use justified raw-SQL bypass in v0.1.0 |
 | Does the predicate need cross-type dispatch over `Vec<Arc<dyn T>>`? | Rust-trait |
 | Is the expression a single arithmetic / comparison operation? | SQL-projectable |
 | Is the expression a sequence of complex transformations? | Rust-trait |

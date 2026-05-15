@@ -115,12 +115,12 @@ after_create            ← ModelHooks (if #[model(hooks)])
 > `djogi::transaction::atomic(...)`:
 >
 > ```rust
-> djogi::transaction::atomic(&mut ctx, |ctx| async move {
->     let post = Post::create(Post { title: "Hello".into(), ..Default::default() }, ctx).await?;
+> djogi::transaction::atomic(&mut ctx, |ctx| Box::pin(async move {
+>     let post = Post::create(ctx, Post { title: "Hello".into(), ..Default::default() }).await?;
 >     // after_create queued ctx.on_commit(...) above — it will drain when
 >     // this atomic block commits.
 >     Ok(post)
-> }).await?;
+> })).await?;
 > ```
 >
 > See [Transactions](./transactions.md) for the full `on_commit` API and
