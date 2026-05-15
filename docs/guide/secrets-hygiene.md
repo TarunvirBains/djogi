@@ -96,7 +96,7 @@ postgres://<user>:<password>@<host>/<database>
 
 For public GitHub objects, this repository also runs a dedicated workflow
 (`.github/workflows/public-text-secrets.yml`) on `issues`, `issue_comment`,
-`pull_request`, `pull_request_review`, and `pull_request_review_comment`
+`pull_request_target`, `pull_request_review`, and `pull_request_review_comment`
 events using the same `--stdin` mode. The workflow does not log the raw body
 text; only redacted scanner findings are printed on failure.
 
