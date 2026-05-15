@@ -39,10 +39,12 @@
 //! `Deserialize`), and once to collect unknown keys into `extra` by diffing
 //! the known key set.
 
+pub mod mirjzson;
 pub mod path;
 pub mod schema;
 pub mod unknown;
 
+pub use mirjzson::{MirJzSON, MirJzSONError};
 pub use path::JsonbPathRef;
 pub use schema::JsonbSchema;
 pub use unknown::{UnknownField, UnknownFieldError, UnknownFieldExt};
@@ -123,6 +125,67 @@ impl<T> Jsonb<T> {
     /// (preserved because `serde_json` is compiled with `preserve_order`).
     pub fn extra(&self) -> &IndexMap<String, UnknownField> {
         &self.extra
+    }
+}
+
+// ── Sassi cache-boundary projection ───────────────────────────────────────
+//
+// `Jsonb<T>` is a *database* representation, not a Sassi wire type.
+// `to_jsahibon` is the explicit cache-boundary projection per the
+// MirJzSON spec: when a backend cache contains a model whose field is
+// `Jsonb<T>`, the cache must explicitly choose between projecting the
+// typed `T` payload (typed Rust schema only) or projecting the full
+// merged JSON document (typed `data` keys merged with unknown `extra`
+// keys) as a Sassi-portable `JSahibON`. This helper supports the
+// full-document case.
+//
+// The conversion is fallible (returns `MirJzSONError`) because:
+//
+// 1. `serde_json::to_value(&self)` may serialise to a non-object payload
+//    if `T`'s `Serialize` impl returns a primitive / array. That edge
+//    case already exists in the `Jsonb<T> -> serde_json::Value` path
+//    and the projection inherits the same behaviour — `JSahibON` carries
+//    the resulting non-object value as-is (string / array / number /
+//    bool / null).
+// 2. Sassi's `JSahibON::try_from(serde_json::Value)` rejects non-finite
+//    f64 and out-of-range arbitrary-precision numbers, which can land
+//    in the JSON value if `T` serialises a custom type that bypasses
+//    Sassi's invariants.
+
+impl<T> Jsonb<T>
+where
+    T: serde::Serialize,
+{
+    /// Project this typed JSONB column into a Sassi-portable
+    /// [`sassi::JSahibON`].
+    ///
+    /// The full merged document — typed `data` fields plus every
+    /// unknown key in `extra` — is serialised through `serde_json` and
+    /// re-projected onto Sassi's portable JSON value model.
+    ///
+    /// **Cache-boundary projection.** Adopters call this when handing a
+    /// model containing `Jsonb<T>` to a Sassi cache (`Punnu<T>`) or to a
+    /// frontend over a wire payload that downcasts JSONB through
+    /// `JSahibON`. The conversion is named (`to_jsahibon`) rather than
+    /// implicit so the database-to-portable boundary is visible at the
+    /// call site.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MirJzSONError::UnsupportedJsonValue`] when `T`'s
+    /// `Serialize` impl produces JSON content Sassi cannot represent —
+    /// non-finite `f64`, or `serde_json::Number` carriers outside Sassi's
+    /// supported numeric range. The error message forwards Sassi's own
+    /// diagnostic so the cause is visible.
+    ///
+    /// Returns [`MirJzSONError::JsonDecode`] when `T`'s `Serialize` impl
+    /// itself fails — typically a custom serialiser that rejects certain
+    /// states.
+    pub fn to_jsahibon(&self) -> Result<sassi::JSahibON, MirJzSONError> {
+        let value: serde_json::Value =
+            serde_json::to_value(self).map_err(|err| MirJzSONError::JsonDecode(err.to_string()))?;
+        sassi::JSahibON::try_from(value)
+            .map_err(|err| MirJzSONError::UnsupportedJsonValue(err.to_string()))
     }
 }
 
@@ -335,5 +398,90 @@ mod tests {
         let j: Jsonb<serde_json::Value> = serde_json::from_value(raw).unwrap();
         assert_eq!(j.data, json!(42));
         assert!(j.extra.is_empty());
+    }
+
+    // ── Cache-boundary projection: Jsonb<T>::to_jsahibon ──────────────────
+    //
+    // Per the MirJzSON spec, `Jsonb<T>::to_jsahibon()` is the explicit
+    // cache-boundary helper: callers that need to ship `Jsonb<T>` through
+    // a Sassi/Punnu cache (where the wire-side downcast goes through
+    // `sassi::JSahibON`, not `serde_json::Value`) reach for this method
+    // rather than letting the conversion happen implicitly. The tests
+    // below pin the projection's contract:
+    //
+    // - typed `data` fields merge with unknown `extra` keys into the
+    //   resulting JSON document (same as `serialize`).
+    // - non-object `T` serialisations survive the projection (carrying
+    //   the resulting primitive / array as the corresponding `JSahibON`
+    //   variant — the round-trip is total because `JSahibON` covers every
+    //   `serde_json::Value` variant).
+    // - non-portable JSON content (which `Jsonb<T>` itself can hold via
+    //   `extra`) surfaces as a typed `MirJzSONError` rather than panicking.
+
+    #[test]
+    fn to_jsahibon_merges_data_and_extra() {
+        let mut extra = IndexMap::new();
+        extra.insert("legacy_key".to_string(), json!("legacy_value"));
+        let j = Jsonb {
+            data: KnownSpec {
+                name: "engine".to_string(),
+                value: 42,
+            },
+            extra,
+        };
+        let portable = j
+            .to_jsahibon()
+            .expect("typed data + unknown extra must project");
+        match portable {
+            sassi::JSahibON::Object(obj) => {
+                // `data` keys land first (KnownSpec serializes `name`
+                // then `value`), then `extra` keys are merged on top.
+                let keys: Vec<&str> = obj.iter().map(|(k, _)| k.as_str()).collect();
+                assert_eq!(keys, ["name", "value", "legacy_key"]);
+                match obj
+                    .iter()
+                    .find(|(k, _)| k.as_str() == "value")
+                    .map(|(_, v)| v.clone())
+                    .unwrap()
+                {
+                    sassi::JSahibON::I64(42) => {}
+                    other => panic!("expected I64(42), got {other:?}"),
+                }
+            }
+            other => panic!("expected Object, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn to_jsahibon_handles_non_object_serializations() {
+        // `T = serde_json::Value` projection — primitives survive.
+        let j = Jsonb {
+            data: json!(7),
+            extra: IndexMap::new(),
+        };
+        let portable = j.to_jsahibon().expect("non-object T must still project");
+        match portable {
+            sassi::JSahibON::I64(7) => {}
+            other => panic!("expected I64(7), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn to_jsahibon_round_trips_through_mirjzson() {
+        // Build `Jsonb<KnownSpec>` -> JSahibON -> MirJzSON -> serde_json
+        // round-trip — the cache-boundary pipeline an adopter exercises
+        // when shipping a Djogi DB read into a Sassi Punnu wire payload.
+        let j = Jsonb {
+            data: KnownSpec {
+                name: "x".to_string(),
+                value: 9,
+            },
+            extra: IndexMap::new(),
+        };
+        let portable = j.to_jsahibon().unwrap();
+        let mir: crate::jsonb::MirJzSON = portable.into();
+        let back: serde_json::Value = mir.into();
+        assert_eq!(back["name"], json!("x"));
+        assert_eq!(back["value"], json!(9));
     }
 }

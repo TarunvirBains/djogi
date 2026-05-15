@@ -82,7 +82,12 @@ heeranjid.workspace = true
 # at Cluster 8η T13. `watermark-time` opts the `time`-crate-backed
 # `MonotonicWatermark` impl in (matches djogi's `time` crate baseline);
 # default features (`serde`, `runtime-tokio`) stay enabled.
-sassi = { path = "../sassi-reference/sassi", features = ["watermark-time"] }
+# `serde-json-bridge` enables `TryFrom<serde_json::Value> for JSahibON`
+# and the round-trip `From<JSahibON> for serde_json::Value` impls Djogi
+# routes its `MirJzSON` codec through (Phase 8.5 #195). Sassi owns the
+# numeric carrier-selection rules and the structural-equality contract;
+# Djogi never reimplements them.
+sassi = { path = "../sassi-reference/sassi", features = ["watermark-time", "serde-json-bridge"] }
 tokio-postgres.workspace = true
 postgres-types.workspace = true
 deadpool-postgres.workspace = true

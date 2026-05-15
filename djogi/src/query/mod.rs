@@ -57,6 +57,16 @@ pub mod insert_select;
 // entry points.
 pub mod joined;
 pub(crate) mod lock;
+// Phase 8.5 djogi#195 — `MirJzSON` JSON predicate builders.
+//
+// Wraps Sassi's `JSahibONFieldRef` / `JSahibONOptionFieldRef` /
+// `JSahibONPathRef` / `JSahibONValueRef` surfaces with Djogi
+// trusted-provenance stamping. Adopter code reaches this through
+// `DjogiField<M, MirJzSON>::jsahibon()` (re-exported via the impl
+// blocks in the module itself); the module path stays `pub` so the
+// builder types are nameable when adopter code declares helper
+// functions that consume a `DjogiJSahibONFieldRef<M>`.
+pub mod mirjzson;
 pub mod order;
 // Phase 8eta PR2a — Djogi-owned portable predicate substrate.
 //
@@ -117,7 +127,12 @@ pub use field::{
     IntoFieldFilterValue, IntoFilterValue, IntoPortableFieldValue, IntoSqlField,
     OptionalRelationRef,
 };
+// Phase 8.5 djogi#195 — MirJzSON JSON predicate builder re-exports.
 pub use filter::{FilterClause, Lookup, ModelFilter};
+pub use mirjzson::{
+    DjogiJSahibONFieldRef, DjogiJSahibONOptionFieldRef, DjogiJSahibONPathRef,
+    DjogiJSahibONValueRef, MirJzSONFieldRef, MirJzSONOptionFieldRef,
+};
 // Phase 8.5 Cluster 4B (djogi#106) — public re-export for the
 // INSERT...SELECT surface. `InsertSelectColumn<S, T>` is the typed
 // (target_column, source_expression) leaf carrying both source and

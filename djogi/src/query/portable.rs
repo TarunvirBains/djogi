@@ -117,6 +117,35 @@ pub enum PortablePredicateError {
         /// `&'static str` describing the unrecognised Sassi variant.
         kind: &'static str,
     },
+
+    /// A Sassi `LookupOp::Json` predicate reached the SQL emitter without
+    /// trusted Djogi provenance.
+    ///
+    /// Djogi requires every JSON predicate to be constructed through
+    /// [`DjogiField<M, MirJzSON>::jsahibon`] (or its `Option<MirJzSON>`
+    /// sibling) so the column name routes through Djogi's identifier
+    /// validator and the predicate carries a [`DjogiFieldProvenance`]
+    /// stamp. Raw `sassi::Field::new("payload", _).jsahibon()...`
+    /// predicates lack the stamp and would smuggle a caller-supplied
+    /// `&'static str` past Djogi's identifier gate; lowering them is a
+    /// hard refusal.
+    ///
+    /// Adopters who hit this error are reaching into Sassi directly for
+    /// JSON predicate construction — re-route through
+    /// `DjogiField<M, MirJzSON>::jsahibon()` to fix.
+    ///
+    /// [`DjogiField<M, MirJzSON>::jsahibon`]:
+    ///     crate::query::mirjzson::DjogiJSahibONFieldRef
+    /// [`DjogiFieldProvenance`]: crate::query::field::DjogiFieldProvenance
+    #[error(
+        "field {field} JSON predicate lacks Djogi trusted provenance — \
+         construct through `DjogiField<M, MirJzSON>::jsahibon()` instead of \
+         raw `sassi::Field::new(...).jsahibon()`"
+    )]
+    UntrustedJsonPredicate {
+        /// The Sassi `field_name` reported on the predicate leaf.
+        field: &'static str,
+    },
 }
 
 /// SQL-emission context threaded through the direct-`Q<T>` walker.
@@ -249,7 +278,21 @@ pub(crate) fn emit_basic_predicate<T: Model>(
             acc.push_sql("FALSE");
             Ok(())
         }
-        BasicPredicate::Field(fp) => T::__djogi_emit_field_predicate(acc, fp, ctx),
+        BasicPredicate::Field(fp) => {
+            // `LookupOp::Json` leaves bypass the macro-emitted
+            // `__djogi_emit_field_predicate` override because their SQL
+            // shape (guarded, two-valued, path-extracted) does not match
+            // any of the per-(field, op) arms the macro emits for regular
+            // scalar / string / bool columns. The Djogi-owned JSON SQL
+            // emitter under `emit_jsahibon_predicate` is the only valid
+            // lowering route — see `query::mirjzson` for the
+            // construction-side contract.
+            if matches!(fp.op(), crate::types::LookupOp::Json) {
+                emit_jsahibon_predicate::<T>(acc, fp, ctx)
+            } else {
+                T::__djogi_emit_field_predicate(acc, fp, ctx)
+            }
+        }
         BasicPredicate::And(parts) => {
             if parts.is_empty() {
                 acc.push_sql("TRUE");
@@ -307,6 +350,699 @@ pub(crate) fn emit_basic_predicate<T: Model>(
         // surface this as `DjogiError::Predicate(_)`.
         _ => Err(PortablePredicateError::UnsupportedPredicateKind {
             kind: "BasicPredicate::<unknown>",
+        }),
+    }
+}
+
+// ── MirJzSON / JSahibON predicate SQL emission ────────────────────────────
+//
+// Djogi-owned SQL lowering for `LookupOp::Json` leaves. Called from
+// `emit_basic_predicate` when the dispatched `FieldPredicate<T>` carries
+// `op == LookupOp::Json`. The contract:
+//
+// 1. Every leaf emits a two-valued SQL boolean (`TRUE` or `FALSE`) before
+//    composition under `NOT`, `XOR`, `AND`, `OR`. SQL `NULL` never leaks
+//    out of a leaf — `COALESCE(_, FALSE)` and `CASE WHEN ... ELSE FALSE
+//    END` wrappers are mandatory.
+// 2. Missing path / type mismatch / SQL NULL → `FALSE` (except `missing()`
+//    which is `TRUE`).
+// 3. JSON `null` and SQL `NULL` are kept distinct.
+// 4. Key predicates guard `jsonb_typeof(j) = 'object'`.
+// 5. Array predicates guard `jsonb_typeof(j) = 'array'`.
+// 6. Numeric comparisons preflight `jsonb_typeof(j) = 'number'` and bind
+//    `u64` through `rust_decimal::Decimal` (never through `as i64`).
+// 7. All paths / keys / scalar operands / JSON operands / lengths are
+//    bound parameters. No path/key interpolation.
+
+use crate::types::FieldPredicate;
+use sassi::JSahibON;
+use sassi::predicate::{
+    JCompareOp, JInPolarity, JPath, JSahibONPredicateBody, JScalarKind, JScalarValue, JTypeKind,
+};
+
+/// Emit a `LookupOp::Json` leaf as SQL.
+///
+/// The function is the **single** SQL-lowering entry point for JSON
+/// predicates. It:
+///
+/// 1. Downcasts `fp.value_as::<JSahibONPredicateBody>()`. A `None`
+///    return indicates a forged `LookupOp::Json` payload (Sassi's
+///    builders always store a `JSahibONPredicateBody` here) — we
+///    surface `UntrustedJsonPredicate` rather than panicking, even
+///    though the type-system seal upstream of this function makes
+///    construction unreachable for adopter code.
+/// 2. Dispatches on the body variant, walking the
+///    [`JSahibONPredicateBody`] tree from `sassi::predicate::jsahibon`.
+///    Each arm emits the guarded two-valued SQL shape documented in
+///    [`docs/spec/mirjzson-jsonb-integration.md`][spec] under the
+///    "SQL Mapping" section.
+///
+/// [spec]: ../../docs/spec/mirjzson-jsonb-integration.md
+fn emit_jsahibon_predicate<T: Model>(
+    acc: &mut SqlAccumulator,
+    fp: &FieldPredicate<T>,
+    ctx: SqlEmitContext,
+) -> Result<(), PortablePredicateError> {
+    let body: &JSahibONPredicateBody = match fp.value_as::<JSahibONPredicateBody>() {
+        Some(body) => body,
+        None => {
+            // Sassi's `JSahibONPathRef::predicate` always stores an
+            // `Arc<JSahibONPredicateBody>` under the type-erased
+            // `FieldPredicate::value` payload. A `LookupOp::Json` leaf
+            // whose payload does NOT downcast is therefore a forgery
+            // (or a future Sassi schema change that broke the
+            // contract). Both surface as a typed error rather than a
+            // panic.
+            return Err(PortablePredicateError::UntrustedJsonPredicate {
+                field: fp.field_name(),
+            });
+        }
+    };
+    emit_jsahibon_body(acc, fp.field_name(), body, ctx)
+}
+
+/// Emit the JSON expression `(column #> $path_text_array)` into the
+/// accumulator. This is the uniform `j` expression for both root and
+/// path predicates per the spec — `path = []` binds an empty
+/// `text[]::text[]` and Postgres's `#>` operator returns the column
+/// itself.
+///
+/// `path` is bound as a `Vec<String>` parameter — every segment is a
+/// bound value, never interpolated into SQL. This is the path-
+/// smuggling defence: even if a caller somehow constructed a
+/// `JPath::from_segments([malicious_segment])`, the segments only
+/// appear in the bound `$n` slot.
+fn push_j_expression(
+    acc: &mut SqlAccumulator,
+    column: &'static str,
+    path: &JPath,
+    ctx: SqlEmitContext,
+) {
+    acc.push_sql("(");
+    ctx.push_column(acc, column);
+    acc.push_sql(" #> ");
+    // `path.segments()` returns `&[String]`; cloning into an owned `Vec` is
+    // the canonical bind shape for postgres-types' `Vec<String>` -> `text[]`
+    // codec. `to_vec()` is the idiomatic spelling per clippy's
+    // `iter_cloned_collect` lint.
+    let segments: Vec<String> = path.segments().to_vec();
+    acc.push_bind(segments);
+    acc.push_sql(")");
+}
+
+/// Push a `text[]` array bind for a key list. Used by `HasAnyKey` /
+/// `HasAllKeys` per the spec.
+fn push_key_array_bind(acc: &mut SqlAccumulator, keys: &[String]) {
+    let owned: Vec<String> = keys.to_vec();
+    acc.push_bind(owned);
+}
+
+/// Emit a `JSahibON`-bound parameter (the full JSON value) as a
+/// `jsonb` bind. The value is serialised to `serde_json::Value` so
+/// postgres-types' `serde_json::Value` `ToSql` codec handles the
+/// JSONB framing — this is the same path `Jsonb<T>` already uses.
+fn push_jsonb_value_bind(acc: &mut SqlAccumulator, value: &JSahibON) {
+    let json: serde_json::Value = value.clone().into();
+    acc.push_bind(json);
+}
+
+/// Emit a `numeric` bind for a JSON scalar operand. `i64` / `u64` /
+/// `f64` all bind through `rust_decimal::Decimal` for unlimited-
+/// precision comparison against `(j #>> '{}')::numeric` — the spec's
+/// safe numeric preflight shape. Strings and booleans surface as a
+/// `ValueTypeMismatch` because numeric arms must guard on
+/// `jsonb_typeof(j) = 'number'` first; the caller is responsible for
+/// matching the scalar kind against the arm.
+fn push_numeric_bind(
+    acc: &mut SqlAccumulator,
+    operand: &JScalarValue,
+) -> Result<(), PortablePredicateError> {
+    match operand {
+        JScalarValue::I64(value) => {
+            acc.push_bind(rust_decimal::Decimal::from(*value));
+            Ok(())
+        }
+        JScalarValue::U64(value) => {
+            // `Decimal::from(u64)` is infallible (u64::MAX < Decimal::MAX).
+            // This is the spec's required "bind u64 through Decimal,
+            // never through as i64" path; the test fixtures include
+            // `u64::MAX` to lock it in.
+            acc.push_bind(rust_decimal::Decimal::from(*value));
+            Ok(())
+        }
+        JScalarValue::F64(value) => {
+            // `JFiniteF64` enforces the finite-only invariant at
+            // construction time, so `try_from(f64)` cannot fail here.
+            // The conversion through `Decimal::from_f64` may still
+            // return `None` for unrepresentable values (very large
+            // magnitudes outside Decimal's mantissa); we forward that
+            // as a typed error rather than panicking.
+            match rust_decimal::Decimal::try_from(value.get()) {
+                Ok(d) => {
+                    acc.push_bind(d);
+                    Ok(())
+                }
+                Err(_) => Err(PortablePredicateError::UnsupportedPredicateKind {
+                    kind: "JSahibON::F64 operand exceeds Decimal range",
+                }),
+            }
+        }
+        JScalarValue::String(_) | JScalarValue::Bool(_) => {
+            // Reachable only if the caller paired a non-numeric scalar
+            // kind with a numeric arm — Sassi's typed builders prevent
+            // this on the construction side, but we surface a typed
+            // error rather than emitting wrong SQL.
+            Err(PortablePredicateError::UnsupportedPredicateKind {
+                kind: "non-numeric operand in numeric JSON comparison",
+            })
+        }
+        // `JScalarValue` is `#[non_exhaustive]`; a future Sassi variant
+        // lands here as a typed error rather than `unreachable!`.
+        _ => Err(PortablePredicateError::UnsupportedPredicateKind {
+            kind: "JSahibON scalar operand variant unknown to Djogi SQL emission",
+        }),
+    }
+}
+
+/// Emit a text bind for a string operand. Used by string scalar
+/// comparison arms.
+fn push_text_bind(
+    acc: &mut SqlAccumulator,
+    operand: &JScalarValue,
+) -> Result<(), PortablePredicateError> {
+    match operand {
+        JScalarValue::String(value) => {
+            acc.push_bind(value.clone());
+            Ok(())
+        }
+        // Wildcard arm covers every non-String variant — including the
+        // future-Sassi-variant case (`JScalarValue` is `#[non_exhaustive]`).
+        _ => Err(PortablePredicateError::UnsupportedPredicateKind {
+            kind: "non-string operand in string JSON comparison",
+        }),
+    }
+}
+
+/// Emit a boolean bind for a boolean operand.
+fn push_bool_bind(
+    acc: &mut SqlAccumulator,
+    operand: &JScalarValue,
+) -> Result<(), PortablePredicateError> {
+    match operand {
+        JScalarValue::Bool(value) => {
+            acc.push_bind(*value);
+            Ok(())
+        }
+        // Wildcard arm covers every non-Bool variant — including the
+        // future-Sassi-variant case (`JScalarValue` is `#[non_exhaustive]`).
+        _ => Err(PortablePredicateError::UnsupportedPredicateKind {
+            kind: "non-boolean operand in boolean JSON comparison",
+        }),
+    }
+}
+
+/// Map a Sassi `JCompareOp` to its SQL token (with surrounding spaces).
+///
+/// `JCompareOp` is `#[non_exhaustive]`. The match below covers every
+/// v0.1 variant; future additions land in the wildcard arm with `=`
+/// (rather than `unreachable!`) and surface as a SQL miscompilation —
+/// which gets caught by integration tests immediately. The defensive
+/// wildcard is preferable to a panic because the caller (a Djogi-
+/// trusted builder) cannot have routed an unknown op through this
+/// path without going through Sassi's own constructors.
+fn compare_op_token(op: JCompareOp) -> &'static str {
+    match op {
+        JCompareOp::Eq => " = ",
+        JCompareOp::Neq => " <> ",
+        JCompareOp::Gt => " > ",
+        JCompareOp::Gte => " >= ",
+        JCompareOp::Lt => " < ",
+        JCompareOp::Lte => " <= ",
+        // Wildcard — `JCompareOp` is `#[non_exhaustive]`. Returning `=`
+        // is a deliberate fallback (rather than an `unreachable!`)
+        // because the caller is a Djogi-trusted builder; a future
+        // Sassi variant adoption is the only realistic route here and
+        // the SQL parity tests will catch any miscompilation.
+        _ => " = ",
+    }
+}
+
+/// Map a [`JTypeKind`] to the literal `jsonb_typeof` result text.
+///
+/// `jsonb_typeof(jsonb)` returns one of `'object'`, `'array'`,
+/// `'string'`, `'number'`, `'boolean'`, `'null'`. Sassi's `JTypeKind`
+/// collapses the three numeric carriers under `Number`; the mapping
+/// is exact otherwise.
+fn jsonb_typeof_literal(kind: JTypeKind) -> &'static str {
+    match kind {
+        JTypeKind::Null => "'null'",
+        JTypeKind::Bool => "'boolean'",
+        JTypeKind::Number => "'number'",
+        JTypeKind::String => "'string'",
+        JTypeKind::Array => "'array'",
+        JTypeKind::Object => "'object'",
+        // `JTypeKind` is `#[non_exhaustive]`. Future variants
+        // miscompile to `'null'`; SQL parity tests catch any drift.
+        _ => "'null'",
+    }
+}
+
+/// Walk a [`JSahibONPredicateBody`] and emit its guarded two-valued
+/// SQL shape. The function returns one SQL fragment that evaluates to
+/// `TRUE` or `FALSE` — never `NULL`. Composition under `NOT`/`XOR`/
+/// `AND`/`OR` therefore stays well-defined.
+fn emit_jsahibon_body(
+    acc: &mut SqlAccumulator,
+    column: &'static str,
+    body: &JSahibONPredicateBody,
+    ctx: SqlEmitContext,
+) -> Result<(), PortablePredicateError> {
+    match body {
+        // `Exists` — `(column #> $path) IS NOT NULL`. SQL NULL on a
+        // missing path naturally projects to `FALSE` through
+        // `IS NOT NULL`, so no `COALESCE` wrapper is needed here.
+        JSahibONPredicateBody::Exists { path } => {
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(" IS NOT NULL");
+            Ok(())
+        }
+        // `Missing` — the dual of `Exists`. The only predicate variant
+        // that returns `TRUE` on a missing path.
+        JSahibONPredicateBody::Missing { path } => {
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(" IS NULL");
+            Ok(())
+        }
+        // `IsJsonNull` — `COALESCE(j = 'null'::jsonb, FALSE)`. The
+        // `COALESCE` is mandatory because `j IS NULL` (the SQL `NULL`
+        // arising from a missing path) would propagate to NULL
+        // through the `=` operator.
+        JSahibONPredicateBody::IsJsonNull { path } => {
+            acc.push_sql("COALESCE(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(" = 'null'::jsonb, FALSE)");
+            Ok(())
+        }
+        JSahibONPredicateBody::IsNotJsonNull { path } => {
+            acc.push_sql("COALESCE(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(" <> 'null'::jsonb, FALSE)");
+            Ok(())
+        }
+        // `Type(kind)` — `COALESCE(jsonb_typeof(j) = '<kind>', FALSE)`.
+        JSahibONPredicateBody::Type { path, kind } => {
+            acc.push_sql("COALESCE(jsonb_typeof(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(") = ");
+            acc.push_sql(jsonb_typeof_literal(*kind));
+            acc.push_sql(", FALSE)");
+            Ok(())
+        }
+        // `HasKey` — guards `jsonb_typeof = 'object'` so the predicate
+        // matches Sassi's portable "key is an object key" semantics.
+        // Postgres `?` (jsonb-existence) would also match string-typed
+        // arrays element-wise — we do NOT want that.
+        JSahibONPredicateBody::HasKey { path, key } => {
+            acc.push_sql("COALESCE(jsonb_typeof(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(") = 'object' AND ");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(" ? ");
+            acc.push_bind(key.as_str().to_owned());
+            acc.push_sql(", FALSE)");
+            Ok(())
+        }
+        JSahibONPredicateBody::HasAnyKey { path, keys } => {
+            acc.push_sql("COALESCE(jsonb_typeof(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(") = 'object' AND ");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(" ?| ");
+            push_key_array_bind(acc, keys);
+            acc.push_sql(", FALSE)");
+            Ok(())
+        }
+        JSahibONPredicateBody::HasAllKeys { path, keys } => {
+            acc.push_sql("COALESCE(jsonb_typeof(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(") = 'object' AND ");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(" ?& ");
+            push_key_array_bind(acc, keys);
+            acc.push_sql(", FALSE)");
+            Ok(())
+        }
+        // `ScalarCompare` — guarded two-valued SQL. Numeric arms go
+        // through `CASE WHEN ... THEN ... ELSE FALSE END` so the cast
+        // is preflighted. String and boolean arms restrict the
+        // operator set to equality (Sassi's contract — string/bool
+        // ordering is excluded from `JOrderedScalar`); we surface
+        // `UnsupportedPredicateKind` if a non-equality op arrives.
+        JSahibONPredicateBody::ScalarCompare {
+            path,
+            op,
+            scalar_kind,
+            operand,
+        } => emit_scalar_compare(acc, column, path, *op, *scalar_kind, operand, ctx),
+        // `ScalarIn` — guarded two-valued list membership. Empty list
+        // short-circuits to `FALSE` (or `TRUE` for `NotIn`) per Sassi
+        // semantics, *but only after* the type-mismatch / missing-path
+        // guard returns `FALSE` so an empty `not_in` on a string field
+        // still returns `FALSE` (not `TRUE`).
+        JSahibONPredicateBody::ScalarIn {
+            path,
+            scalar_kind,
+            operands,
+            polarity,
+        } => emit_scalar_in(acc, column, path, *scalar_kind, operands, *polarity, ctx),
+        // `ScalarBetween` — numeric only per Sassi. Emits the safe
+        // `CASE` shape with `numeric BETWEEN $low AND $high`.
+        JSahibONPredicateBody::ScalarBetween {
+            path,
+            scalar_kind,
+            low,
+            high,
+        } => emit_scalar_between(acc, column, path, *scalar_kind, low, high, ctx),
+        // `JsonEq` — `COALESCE(j = $jsonb, FALSE)`. Postgres `jsonb =
+        // jsonb` is order-insensitive on objects (treats `{"a":1,
+        // "b":2}` == `{"b":2, "a":1}`) and numeric-strict (does NOT
+        // soften `1` vs `1.0`). The spec calls out object equality as
+        // order-insensitive matching Sassi; numeric softening parity
+        // between Postgres and Sassi is a known divergence that
+        // surfaces only when comparing two integer-shaped numbers
+        // with different scale text representations (`1.0` vs `1`).
+        // The shipped behaviour matches the spec contract literally.
+        JSahibONPredicateBody::JsonEq { path, value } => {
+            acc.push_sql("COALESCE(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(" = ");
+            push_jsonb_value_bind(acc, value);
+            acc.push_sql(", FALSE)");
+            Ok(())
+        }
+        JSahibONPredicateBody::JsonNeq { path, value } => {
+            acc.push_sql("COALESCE(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(" <> ");
+            push_jsonb_value_bind(acc, value);
+            acc.push_sql(", FALSE)");
+            Ok(())
+        }
+        // `ArrayContains` — guarded `@>` against a single-element
+        // jsonb array. The element is bound as a JSONB array of one
+        // element so Postgres's `@>` finds the element by structural
+        // equality.
+        JSahibONPredicateBody::ArrayContains { path, element } => {
+            acc.push_sql("COALESCE(jsonb_typeof(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(") = 'array' AND ");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(" @> ");
+            // Wrap the element in a single-element JSON array so
+            // Postgres's `jsonb @> jsonb` operator does the right
+            // thing for "array contains element".
+            let array = serde_json::Value::Array(vec![element.clone().into()]);
+            acc.push_bind(array);
+            acc.push_sql(", FALSE)");
+            Ok(())
+        }
+        // `ArrayLen` — `CASE WHEN jsonb_typeof(j) = 'array' THEN
+        // jsonb_array_length(j) <op> $len ELSE FALSE END`. The
+        // `jsonb_array_length` call ONLY runs inside the
+        // `jsonb_typeof = 'array'` arm so non-arrays return `FALSE`
+        // without erroring on the array-length call (per the spec's
+        // "non-arrays return false and never call
+        // jsonb_array_length" requirement).
+        JSahibONPredicateBody::ArrayLen { path, op, len } => {
+            acc.push_sql("CASE WHEN jsonb_typeof(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(") = 'array' THEN jsonb_array_length(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(")");
+            acc.push_sql(compare_op_token(*op));
+            // Lengths are `u64` from Sassi; bind through Decimal for
+            // the same reason scalar `u64` operands do (the column
+            // is i64-sized, but the comparison target may exceed
+            // i64). Realistically `jsonb_array_length` returns `int`,
+            // so any `len > i32::MAX` will simply never match — but
+            // the bind path stays consistent with the rest of the
+            // numeric surface.
+            acc.push_bind(rust_decimal::Decimal::from(*len));
+            acc.push_sql(" ELSE FALSE END");
+            Ok(())
+        }
+        // `#[non_exhaustive]` — a future Sassi variant lands here as
+        // a typed error rather than `unreachable!`.
+        _ => Err(PortablePredicateError::UnsupportedPredicateKind {
+            kind: "JSahibONPredicateBody::<unknown>",
+        }),
+    }
+}
+
+/// Emit a `ScalarCompare` JSON predicate. Per the spec:
+///
+/// - Numeric kinds emit `CASE WHEN jsonb_typeof = 'number' THEN
+///   (j #>> '{}')::numeric <op> $operand ELSE FALSE END` so the cast
+///   is preflighted and the operand is bound through `Decimal` (never
+///   `as i64`).
+/// - String kind emits `COALESCE(jsonb_typeof = 'string' AND
+///   (j #>> '{}')::text <op> $operand, FALSE)`. The op set Sassi
+///   permits for strings is `Eq` / `Neq` — ordering is excluded by
+///   `JOrderedScalar`.
+/// - Boolean kind emits the analogous shape with
+///   `jsonb_typeof = 'boolean'` and a `boolean` bind.
+fn emit_scalar_compare(
+    acc: &mut SqlAccumulator,
+    column: &'static str,
+    path: &JPath,
+    op: JCompareOp,
+    scalar_kind: JScalarKind,
+    operand: &JScalarValue,
+    ctx: SqlEmitContext,
+) -> Result<(), PortablePredicateError> {
+    match scalar_kind {
+        JScalarKind::I64 | JScalarKind::U64 | JScalarKind::F64 => {
+            acc.push_sql("CASE WHEN jsonb_typeof(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(") = 'number' THEN (");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(" #>> '{}'::text[])::numeric");
+            acc.push_sql(compare_op_token(op));
+            push_numeric_bind(acc, operand)?;
+            acc.push_sql(" ELSE FALSE END");
+            Ok(())
+        }
+        JScalarKind::String => {
+            // Sassi's `JScalar for String` does not implement
+            // `JOrderedScalar`, so the builder side never produces
+            // `Gt` / `Gte` / `Lt` / `Lte` over strings. Guard against
+            // a hypothetical forged input.
+            if matches!(
+                op,
+                JCompareOp::Gt | JCompareOp::Gte | JCompareOp::Lt | JCompareOp::Lte
+            ) {
+                return Err(PortablePredicateError::UnsupportedPredicateKind {
+                    kind: "ordering operator on JSON string operand",
+                });
+            }
+            acc.push_sql("COALESCE(jsonb_typeof(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(") = 'string' AND (");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(" #>> '{}'::text[])");
+            acc.push_sql(compare_op_token(op));
+            push_text_bind(acc, operand)?;
+            acc.push_sql(", FALSE)");
+            Ok(())
+        }
+        JScalarKind::Bool => {
+            // Sassi excludes ordering on booleans, same as strings.
+            if matches!(
+                op,
+                JCompareOp::Gt | JCompareOp::Gte | JCompareOp::Lt | JCompareOp::Lte
+            ) {
+                return Err(PortablePredicateError::UnsupportedPredicateKind {
+                    kind: "ordering operator on JSON boolean operand",
+                });
+            }
+            acc.push_sql("COALESCE(jsonb_typeof(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(") = 'boolean' AND ((");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(" #>> '{}'::text[])::boolean");
+            acc.push_sql(compare_op_token(op));
+            push_bool_bind(acc, operand)?;
+            acc.push_sql("), FALSE)");
+            Ok(())
+        }
+        // `JScalarKind` is `#[non_exhaustive]`. Future Sassi additions
+        // (e.g. a hypothetical decimal-typed scalar kind) land here as
+        // a typed error rather than `unreachable!`.
+        _ => Err(PortablePredicateError::UnsupportedPredicateKind {
+            kind: "JSahibON scalar kind unknown to Djogi SQL emission",
+        }),
+    }
+}
+
+/// Emit a `ScalarIn` JSON predicate. Per the spec, missing/type-
+/// mismatch returns `FALSE` BEFORE the empty-list identity fires —
+/// so `not_in([])` on a non-string column returns `FALSE`, not `TRUE`.
+fn emit_scalar_in(
+    acc: &mut SqlAccumulator,
+    column: &'static str,
+    path: &JPath,
+    scalar_kind: JScalarKind,
+    operands: &[JScalarValue],
+    polarity: JInPolarity,
+    ctx: SqlEmitContext,
+) -> Result<(), PortablePredicateError> {
+    let in_token = match polarity {
+        JInPolarity::In => " IN (",
+        JInPolarity::NotIn => " NOT IN (",
+        // `#[non_exhaustive]` — future Sassi additions default to `IN`
+        // (the conservative cache-safe shape).
+        _ => " IN (",
+    };
+
+    // The kind guard is the same as `ScalarCompare`. We hold the
+    // guard token outside the `IN (...)` shape so an empty operand
+    // list still emits the guard — Sassi's evaluator returns `FALSE`
+    // on empty `in_` after the kind guard, and `FALSE` after the
+    // kind guard for empty `not_in`. The shape:
+    //
+    //   CASE WHEN <kind guard> THEN
+    //     <extracted scalar> [NOT] IN ($1, $2, ...)
+    //   ELSE FALSE END
+    //
+    // ...where the empty `(?, ?, ?)` arm short-circuits to `FALSE`
+    // (or in the `NotIn` case, to `TRUE` inside the kind-guard).
+
+    match scalar_kind {
+        JScalarKind::I64 | JScalarKind::U64 | JScalarKind::F64 => {
+            acc.push_sql("CASE WHEN jsonb_typeof(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(") = 'number' THEN ");
+            if operands.is_empty() {
+                // `JInPolarity` is `#[non_exhaustive]`. Future variants
+                // default to `FALSE` (the conservative cache-safe
+                // shape); SQL parity tests catch any miscompilation.
+                acc.push_sql(match polarity {
+                    JInPolarity::In => "FALSE",
+                    JInPolarity::NotIn => "TRUE",
+                    _ => "FALSE",
+                });
+            } else {
+                acc.push_sql("((");
+                push_j_expression(acc, column, path, ctx);
+                acc.push_sql(" #>> '{}'::text[])::numeric");
+                acc.push_sql(in_token);
+                for (i, operand) in operands.iter().enumerate() {
+                    if i > 0 {
+                        acc.push_sql(", ");
+                    }
+                    push_numeric_bind(acc, operand)?;
+                }
+                acc.push_sql("))");
+            }
+            acc.push_sql(" ELSE FALSE END");
+            Ok(())
+        }
+        JScalarKind::String => {
+            acc.push_sql("CASE WHEN jsonb_typeof(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(") = 'string' THEN ");
+            if operands.is_empty() {
+                // `JInPolarity` is `#[non_exhaustive]`. Future variants
+                // default to `FALSE` (the conservative cache-safe
+                // shape); SQL parity tests catch any miscompilation.
+                acc.push_sql(match polarity {
+                    JInPolarity::In => "FALSE",
+                    JInPolarity::NotIn => "TRUE",
+                    _ => "FALSE",
+                });
+            } else {
+                acc.push_sql("((");
+                push_j_expression(acc, column, path, ctx);
+                acc.push_sql(" #>> '{}'::text[])");
+                acc.push_sql(in_token);
+                for (i, operand) in operands.iter().enumerate() {
+                    if i > 0 {
+                        acc.push_sql(", ");
+                    }
+                    push_text_bind(acc, operand)?;
+                }
+                acc.push_sql("))");
+            }
+            acc.push_sql(" ELSE FALSE END");
+            Ok(())
+        }
+        JScalarKind::Bool => {
+            acc.push_sql("CASE WHEN jsonb_typeof(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(") = 'boolean' THEN ");
+            if operands.is_empty() {
+                // `JInPolarity` is `#[non_exhaustive]`. Future variants
+                // default to `FALSE` (the conservative cache-safe
+                // shape); SQL parity tests catch any miscompilation.
+                acc.push_sql(match polarity {
+                    JInPolarity::In => "FALSE",
+                    JInPolarity::NotIn => "TRUE",
+                    _ => "FALSE",
+                });
+            } else {
+                acc.push_sql("(((");
+                push_j_expression(acc, column, path, ctx);
+                acc.push_sql(" #>> '{}'::text[])::boolean)");
+                acc.push_sql(in_token);
+                for (i, operand) in operands.iter().enumerate() {
+                    if i > 0 {
+                        acc.push_sql(", ");
+                    }
+                    push_bool_bind(acc, operand)?;
+                }
+                acc.push_sql("))");
+            }
+            acc.push_sql(" ELSE FALSE END");
+            Ok(())
+        }
+        // `JScalarKind` is `#[non_exhaustive]` — see analogous comment
+        // in `emit_scalar_compare`.
+        _ => Err(PortablePredicateError::UnsupportedPredicateKind {
+            kind: "JSahibON scalar kind unknown to Djogi SQL emission",
+        }),
+    }
+}
+
+/// Emit a `ScalarBetween` JSON predicate. Sassi restricts `between`
+/// to `JOrderedScalar` (numeric kinds only), so the SQL emission
+/// branches on `JScalarKind::I64 | U64 | F64` and surfaces a typed
+/// error for any other kind reaching here through a forged input.
+fn emit_scalar_between(
+    acc: &mut SqlAccumulator,
+    column: &'static str,
+    path: &JPath,
+    scalar_kind: JScalarKind,
+    low: &JScalarValue,
+    high: &JScalarValue,
+    ctx: SqlEmitContext,
+) -> Result<(), PortablePredicateError> {
+    match scalar_kind {
+        JScalarKind::I64 | JScalarKind::U64 | JScalarKind::F64 => {
+            acc.push_sql("CASE WHEN jsonb_typeof(");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(") = 'number' THEN ((");
+            push_j_expression(acc, column, path, ctx);
+            acc.push_sql(" #>> '{}'::text[])::numeric BETWEEN ");
+            push_numeric_bind(acc, low)?;
+            acc.push_sql(" AND ");
+            push_numeric_bind(acc, high)?;
+            acc.push_sql(") ELSE FALSE END");
+            Ok(())
+        }
+        // `String` / `Bool` and any future non-numeric variants.
+        // `JScalarKind` is `#[non_exhaustive]`.
+        _ => Err(PortablePredicateError::UnsupportedPredicateKind {
+            kind: "BETWEEN on non-numeric JSON operand",
         }),
     }
 }

@@ -413,6 +413,19 @@ impl DjogiFieldProvenance {
     fn mint_provenance() -> Self {
         Self { _seal: () }
     }
+
+    /// Mint a provenance marker for the MirJzSON JSON predicate builder
+    /// (`query::mirjzson::DjogiField<M, MirJzSON>::jsahibon()`).
+    ///
+    /// `pub(crate)` so the sibling `query::mirjzson` module can reach
+    /// it; crate-internal code outside `query::*` cannot reach the
+    /// constructor because `DjogiFieldProvenance`'s only field is
+    /// private. The MirJzSON-specific name documents the single
+    /// legitimate caller and keeps the trust surface auditable in
+    /// `grep`.
+    pub(crate) fn __mirjzson_mint() -> Self {
+        Self::mint_provenance()
+    }
 }
 
 /// Marker trait for value types whose direct portable ordering methods
@@ -544,6 +557,21 @@ impl<V> DjogiPortableOrd for Tracked<V> where V: DjogiPortableOrd {}
 pub struct DjogiField<M: Model, V> {
     portable: sassi::Field<M, V>,
     sql: FieldRef<M, V>,
+    /// Memory-side extractor — `fn(&M) -> &V` function pointer captured by
+    /// the model macro at `#[model]` expansion time. Duplicates the same
+    /// pointer that lives inside `portable` (Sassi keeps that field
+    /// `pub(crate)` in its own crate, so we cannot read it from here).
+    ///
+    /// Needed by the MirJzSON `.jsahibon()` lift path
+    /// (`crate::query::mirjzson::DjogiField<M, MirJzSON>::jsahibon`): the
+    /// lift transmutes this pointer to `fn(&M) -> &sassi::JSahibON` under
+    /// `MirJzSON`'s `#[repr(transparent)]` invariant, then constructs a
+    /// fresh `sassi::Field<M, JSahibON>` so Sassi's typed predicate
+    /// builder chain can take over.
+    ///
+    /// `pub(crate)` so the broader query module can read it without
+    /// exposing the raw pointer in the public API.
+    pub(crate) extractor: fn(&M) -> &V,
 }
 
 /// Optional-value present-only predicate view.
@@ -1350,6 +1378,21 @@ where
 // the macro flip surfaces additional methods.
 
 impl<M: Model, V> ExplicitPgPredicateField<M, V> {
+    /// Crate-private column-name accessor.
+    ///
+    /// Consumed by the MirJzSON SQL-only entry point
+    /// (`query::mirjzson::ExplicitPgPredicateField<M, MirJzSON>::mirjzson`)
+    /// when constructing `MirJzSONFieldRef<M>` — the future
+    /// PostgreSQL-only operator surface needs the column name on hand
+    /// to emit `Condition::MirJzSON(_)` shapes that bind the column
+    /// reference. Public users do not consume this accessor; the
+    /// adopter-facing predicate methods on `ExplicitPgPredicateField`
+    /// route through `self.sql.<method>(value)` directly.
+    #[doc(hidden)]
+    pub(crate) fn __column(self) -> &'static str {
+        self.sql.column()
+    }
+
     /// `column = value` — equality through database-locale comparison
     /// rules. Forwarded from [`FieldRef::eq`].
     ///
@@ -1923,7 +1966,11 @@ pub mod djogi_field_macro_support {
     {
         let sql: FieldRef<M, V> = __make_field_ref::<M, V>(None, column);
         let portable = ::sassi::Field::<M, V>::new(column, extract);
-        DjogiField { portable, sql }
+        DjogiField {
+            portable,
+            sql,
+            extractor: extract,
+        }
     }
 }
 
