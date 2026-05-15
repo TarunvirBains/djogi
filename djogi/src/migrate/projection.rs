@@ -3093,9 +3093,16 @@ mod tests {
             FieldSqlType::Uuid,
             FieldSqlType::Jsonb,
             FieldSqlType::TextArray,
+            FieldSqlType::SmallIntArray,
             FieldSqlType::IntegerArray,
             FieldSqlType::BigIntArray,
+            FieldSqlType::RealArray,
+            FieldSqlType::DoublePrecisionArray,
             FieldSqlType::BoolArray,
+            FieldSqlType::TimestamptzArray,
+            FieldSqlType::DateArray,
+            FieldSqlType::UuidArray,
+            FieldSqlType::NumericArray,
             FieldSqlType::Citext,
         ] {
             assert!(

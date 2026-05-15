@@ -77,6 +77,16 @@ serde_json.workspace = true
 # djogi's own consumption — same workspace `exclude = ["sassi-reference"]`
 # trick keeps cargo from absorbing the symlink tree into djogi's workspace.
 sassi = { path = "../sassi-reference/sassi" }
+# uuid — needed by Phase 8.5 #171 typed-array compile-pass fixture
+# (`typed_array_elements.rs`) which declares `Vec<uuid::Uuid>` model fields and
+# exercises the `contains`/`overlap` operators on them. `uuid` is already a
+# workspace dep (djogi uses it for `RanjId` encoding); the dev-dep here makes
+# the crate name resolvable in lihaaf fixture binaries.
+uuid.workspace = true
+# rust_decimal — needed by the same typed-array fixture for `Vec<Decimal>`
+# field declarations and array operators. Already a workspace dep (djogi uses
+# it for NUMERIC columns).
+rust_decimal.workspace = true
 
 # Lihaaf v0.1 — fast, parallel proc-macro test harness. djogi-macros is
 # the canonical adopter that drove lihaaf's design (lihaaf spec §9.1).
@@ -107,7 +117,7 @@ sassi = { path = "../sassi-reference/sassi" }
 dylib_crate = "djogi"
 extern_crates = ["djogi", "djogi-macros"]
 features = []
-dev_deps = ["serde", "serde_json", "sassi"]
+dev_deps = ["serde", "serde_json", "sassi", "uuid", "rust_decimal"]
 edition = "2024"
 fixture_dirs = ["tests/compile_fail", "tests/compile_pass"]
 

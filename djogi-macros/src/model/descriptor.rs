@@ -1086,9 +1086,16 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         "UUID" => quote! { ::djogi::FieldSqlType::Uuid },
         "JSONB" => quote! { ::djogi::FieldSqlType::Jsonb },
         "TEXT[]" => quote! { ::djogi::FieldSqlType::TextArray },
+        "SMALLINT[]" => quote! { ::djogi::FieldSqlType::SmallIntArray },
         "INTEGER[]" => quote! { ::djogi::FieldSqlType::IntegerArray },
         "BIGINT[]" => quote! { ::djogi::FieldSqlType::BigIntArray },
+        "REAL[]" => quote! { ::djogi::FieldSqlType::RealArray },
+        "DOUBLE PRECISION[]" => quote! { ::djogi::FieldSqlType::DoublePrecisionArray },
         "BOOLEAN[]" => quote! { ::djogi::FieldSqlType::BoolArray },
+        "TIMESTAMPTZ[]" => quote! { ::djogi::FieldSqlType::TimestamptzArray },
+        "DATE[]" => quote! { ::djogi::FieldSqlType::DateArray },
+        "UUID[]" => quote! { ::djogi::FieldSqlType::UuidArray },
+        "NUMERIC[]" => quote! { ::djogi::FieldSqlType::NumericArray },
         // Spatial — all GeographyValue types map to the typed Geography variant
         // with the matching GeographySubtype discriminant so Phase 7's
         // migration differ can compare subtypes by discriminant rather than

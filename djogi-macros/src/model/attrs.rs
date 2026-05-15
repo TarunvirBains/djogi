@@ -2587,9 +2587,44 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         | "djogi::RanjIdRecencyBiased" => Some("UUID"),
         "serde_json::Value" | "Value" => Some("JSONB"),
         "Vec<String>" => Some("TEXT[]"),
+        "Vec<i16>" => Some("SMALLINT[]"),
         "Vec<i32>" => Some("INTEGER[]"),
         "Vec<i64>" => Some("BIGINT[]"),
+        "Vec<f32>" => Some("REAL[]"),
+        "Vec<f64>" => Some("DOUBLE PRECISION[]"),
         "Vec<bool>" => Some("BOOLEAN[]"),
+        // Timestamp/date arrays — all canonical path forms (bare, djogi::, djogi::types::)
+        "Vec<DateTime>"
+        | "Vec<time::OffsetDateTime>"
+        | "Vec<OffsetDateTime>"
+        | "Vec<djogi::DateTime>"
+        | "Vec<djogi::types::DateTime>" => Some("TIMESTAMPTZ[]"),
+        "Vec<Date>" | "Vec<time::Date>" | "Vec<djogi::Date>" | "Vec<djogi::types::Date>" => {
+            Some("DATE[]")
+        }
+        // UUID arrays
+        "Vec<Uuid>" | "Vec<uuid::Uuid>" => Some("UUID[]"),
+        // Decimal arrays
+        "Vec<Decimal>" | "Vec<rust_decimal::Decimal>" => Some("NUMERIC[]"),
+        // Built-in PK type arrays — HeerId family → BIGINT[], RanjId family → UUID[]
+        "Vec<HeerId>"
+        | "Vec<HeerIdDesc>"
+        | "Vec<HeerIdRecencyBiased>"
+        | "Vec<djogi::HeerId>"
+        | "Vec<djogi::HeerIdDesc>"
+        | "Vec<djogi::HeerIdRecencyBiased>"
+        | "Vec<djogi::types::HeerId>"
+        | "Vec<djogi::types::HeerIdDesc>"
+        | "Vec<djogi::types::HeerIdRecencyBiased>" => Some("BIGINT[]"),
+        "Vec<RanjId>"
+        | "Vec<RanjIdDesc>"
+        | "Vec<RanjIdRecencyBiased>"
+        | "Vec<djogi::RanjId>"
+        | "Vec<djogi::RanjIdDesc>"
+        | "Vec<djogi::RanjIdRecencyBiased>"
+        | "Vec<djogi::types::RanjId>"
+        | "Vec<djogi::types::RanjIdDesc>"
+        | "Vec<djogi::types::RanjIdRecencyBiased>" => Some("UUID[]"),
         // Spatial — all GeographyValue-implementing types map to the
         // corresponding GEOGRAPHY(<SUBTYPE>, 4326) SQL type. The `spatial`
         // feature flag lives on the `djogi` runtime crate, not here; the

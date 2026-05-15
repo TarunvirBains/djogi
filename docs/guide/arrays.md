@@ -15,6 +15,34 @@ one-dimensional.
 
 ---
 
+## Supported element types
+
+The following Rust types are accepted as array element types:
+
+| Rust type | Postgres column type |
+|---|---|
+| `String` | `TEXT[]` |
+| `i16` | `SMALLINT[]` |
+| `i32` | `INTEGER[]` |
+| `i64` | `BIGINT[]` |
+| `f32` | `REAL[]` |
+| `f64` | `DOUBLE PRECISION[]` |
+| `bool` | `BOOLEAN[]` |
+| `djogi::DateTime` / `time::OffsetDateTime` | `TIMESTAMPTZ[]` |
+| `djogi::Date` / `time::Date` | `DATE[]` |
+| `uuid::Uuid` | `UUID[]` |
+| `rust_decimal::Decimal` | `NUMERIC[]` |
+| `djogi::HeerId` | `BIGINT[]` |
+| `djogi::RanjId` | `UUID[]` |
+
+Any other element type is a compile-time error. A `Vec<MyNewtype>` requires that
+`MyNewtype` implements `DjogiSqlType` for the column type (so Djogi can write the
+migration) **and** `IntoArrayFilterValue` (so array operators work). The
+`IntoArrayFilterValue` trait is sealed — extending it to adopter-defined newtypes
+or enums requires a framework change and a corresponding `DjogiSqlType` impl.
+
+---
+
 ## Contract
 
 | Method | SQL | Meaning |
@@ -33,6 +61,29 @@ emits `array_length(tags, 1) > $1`.
 
 ---
 
+## Routing to array operators
+
+The `contains`, `contained_by`, and `overlap` methods live on
+[`ExplicitPgPredicateField`](crate::query::ExplicitPgPredicateField), not on
+`DjogiField` directly. These operators produce Postgres-only predicates that
+cannot be evaluated in Punnu's in-memory cache; calling `.explicit_pg_predicate()`
+makes the portability trade-off explicit.
+
+```rust
+AuditLog::objects()
+    .filter(|f| f.touched_ids().explicit_pg_predicate().contains(&ids))
+```
+
+`len()` is the exception — it returns `Expr<i32>` and is available directly on
+`DjogiField<M, Vec<V>>`:
+
+```rust
+AuditLog::objects()
+    .filter(|f| f.tags().len().gt(3_i32))
+```
+
+---
+
 ## Example
 
 ```rust
@@ -43,7 +94,7 @@ use djogi::prelude::*;
 pub struct Article {
     pub title: String,
     pub tags: Vec<String>,
-    pub reviewer_ids: Vec<i64>,
+    pub reviewer_ids: Vec<djogi::HeerId>,
 }
 
 async fn example(pool: &DjogiPool) -> Result<(), DjogiError> {
@@ -51,23 +102,27 @@ async fn example(pool: &DjogiPool) -> Result<(), DjogiError> {
 
     // Find articles tagged with both "rust" AND "postgres".
     let both = Article::objects()
-        .filter(|f| f.tags().contains(&["rust".to_string(), "postgres".to_string()]))
+        .filter(|f| {
+            f.tags()
+                .explicit_pg_predicate()
+                .contains(&["rust".to_string(), "postgres".to_string()])
+        })
         .fetch_all(&mut ctx).await?;
     // WHERE tags @> ARRAY[$1, $2]
 
     // Find articles whose tag set is fully within an allowed list.
     let allowed = ["rust".to_string(), "async".to_string(), "postgres".to_string()];
     let contained = Article::objects()
-        .filter(|f| f.tags().contained_by(&allowed))
+        .filter(|f| f.tags().explicit_pg_predicate().contained_by(&allowed))
         .fetch_all(&mut ctx).await?;
     // WHERE tags <@ ARRAY[$1, $2, $3]
 
     // Find articles that share at least one reviewer with a given set.
-    let known_ids = [7_i64, 12, 99];
+    let known_ids: Vec<djogi::HeerId> = vec![];
     let overlapping = Article::objects()
-        .filter(|f| f.reviewer_ids().overlap(&known_ids))
+        .filter(|f| f.reviewer_ids().explicit_pg_predicate().overlap(&known_ids))
         .fetch_all(&mut ctx).await?;
-    // WHERE reviewer_ids && ARRAY[$1, $2, $3]
+    // WHERE reviewer_ids && ARRAY[...]
 
     // Find articles with more than three tags.
     let long_tagged = Article::objects()
@@ -84,16 +139,16 @@ async fn example(pool: &DjogiPool) -> Result<(), DjogiError> {
 
 ## Common Patterns
 
-### Text arrays vs integer arrays vs custom type arrays
+### Text arrays vs integer arrays vs HeerId arrays
 
-Any `V` that implements `postgres_types::ToSql` + `postgres_types::FromSql`
-can appear as an array element type. Common choices:
+Any `V` that appears in the [supported element types table](#supported-element-types)
+can be the element type of a `Vec<V>` column. Common choices:
 
 - `Vec<String>` — text tags, labels, permission strings
 - `Vec<i32>` / `Vec<i64>` — integer IDs, status codes
+- `Vec<djogi::HeerId>` — references to other model rows stored denormalised
 - `Vec<f64>` — numeric scores or weights
-- `Vec<YourDjogiEnum>` — typed enum arrays (requires `DjogiEnum` to derive
-  `postgres_types::ToSql` / `FromSql`, which `#[derive(DjogiEnum)]` provides)
+- `Vec<rust_decimal::Decimal>` — monetary or precise decimal arrays
 
 The operators (`contains`, `contained_by`, `overlap`) work identically for all
 element types. The type system enforces that the argument's element type matches
@@ -107,7 +162,9 @@ standard `and_with` / `or_with` combinators:
 ```rust
 Article::objects()
     .filter(|f| {
-        f.tags().contains(&["rust".to_string()])
+        f.tags()
+            .explicit_pg_predicate()
+            .contains(&["rust".to_string()])
             .and_with(f.tags().len().gte(2_i32))
     })
     .fetch_all(&mut ctx).await?;
@@ -171,5 +228,5 @@ async fn articles_tagged_with(
 
 `ANY($1)` is a Postgres scalar-vs-array comparison, not the same as
 `col @> ARRAY[$1]` — they test the opposite direction. Use the typed
-`.contains(vec![v])` form when you mean "column array contains this value",
-which emits `col @> ARRAY[$1]`.
+`.explicit_pg_predicate().contains(vec![v])` form when you mean "column array
+contains this value", which emits `col @> ARRAY[$1]`.

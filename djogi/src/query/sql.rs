@@ -121,13 +121,40 @@ pub(crate) fn push_filter_value(acc: &mut SqlAccumulator, v: FilterValue) {
         FilterValue::ArrayString(v) => {
             acc.push_bind(v);
         }
+        FilterValue::ArrayI16(v) => {
+            acc.push_bind(v);
+        }
         FilterValue::ArrayI32(v) => {
             acc.push_bind(v);
         }
         FilterValue::ArrayI64(v) => {
             acc.push_bind(v);
         }
+        FilterValue::ArrayF32(v) => {
+            acc.push_bind(v);
+        }
+        FilterValue::ArrayF64(v) => {
+            acc.push_bind(v);
+        }
         FilterValue::ArrayBool(v) => {
+            acc.push_bind(v);
+        }
+        FilterValue::ArrayDateTime(v) => {
+            acc.push_bind(v);
+        }
+        FilterValue::ArrayDate(v) => {
+            acc.push_bind(v);
+        }
+        FilterValue::ArrayUuid(v) => {
+            acc.push_bind(v);
+        }
+        FilterValue::ArrayDecimal(v) => {
+            acc.push_bind(v);
+        }
+        FilterValue::ArrayHeerId(v) => {
+            acc.push_bind(v);
+        }
+        FilterValue::ArrayRanjId(v) => {
             acc.push_bind(v);
         }
         FilterValue::List(_) | FilterValue::Pair(_, _) => {
@@ -206,13 +233,40 @@ pub(crate) fn push_filter_value_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
         FilterValue::ArrayString(v) => {
             acc.push_bind(v.clone());
         }
+        FilterValue::ArrayI16(v) => {
+            acc.push_bind(v.clone());
+        }
         FilterValue::ArrayI32(v) => {
             acc.push_bind(v.clone());
         }
         FilterValue::ArrayI64(v) => {
             acc.push_bind(v.clone());
         }
+        FilterValue::ArrayF32(v) => {
+            acc.push_bind(v.clone());
+        }
+        FilterValue::ArrayF64(v) => {
+            acc.push_bind(v.clone());
+        }
         FilterValue::ArrayBool(v) => {
+            acc.push_bind(v.clone());
+        }
+        FilterValue::ArrayDateTime(v) => {
+            acc.push_bind(v.clone());
+        }
+        FilterValue::ArrayDate(v) => {
+            acc.push_bind(v.clone());
+        }
+        FilterValue::ArrayUuid(v) => {
+            acc.push_bind(v.clone());
+        }
+        FilterValue::ArrayDecimal(v) => {
+            acc.push_bind(v.clone());
+        }
+        FilterValue::ArrayHeerId(v) => {
+            acc.push_bind(v.clone());
+        }
+        FilterValue::ArrayRanjId(v) => {
             acc.push_bind(v.clone());
         }
         FilterValue::List(_) | FilterValue::Pair(_, _) => {
@@ -241,9 +295,18 @@ fn push_list_element(acc: &mut SqlAccumulator, v: FilterValue) {
         | FilterValue::List(_)
         | FilterValue::Pair(_, _)
         | FilterValue::ArrayString(_)
+        | FilterValue::ArrayI16(_)
         | FilterValue::ArrayI32(_)
         | FilterValue::ArrayI64(_)
-        | FilterValue::ArrayBool(_) => {
+        | FilterValue::ArrayF32(_)
+        | FilterValue::ArrayF64(_)
+        | FilterValue::ArrayBool(_)
+        | FilterValue::ArrayDateTime(_)
+        | FilterValue::ArrayDate(_)
+        | FilterValue::ArrayUuid(_)
+        | FilterValue::ArrayDecimal(_)
+        | FilterValue::ArrayHeerId(_)
+        | FilterValue::ArrayRanjId(_) => {
             unreachable!(
                 "nested/null/array FilterValue in IN list — typed FieldRef API prevents this"
             )
@@ -512,9 +575,18 @@ fn push_list_element_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
         | FilterValue::List(_)
         | FilterValue::Pair(_, _)
         | FilterValue::ArrayString(_)
+        | FilterValue::ArrayI16(_)
         | FilterValue::ArrayI32(_)
         | FilterValue::ArrayI64(_)
-        | FilterValue::ArrayBool(_) => {
+        | FilterValue::ArrayF32(_)
+        | FilterValue::ArrayF64(_)
+        | FilterValue::ArrayBool(_)
+        | FilterValue::ArrayDateTime(_)
+        | FilterValue::ArrayDate(_)
+        | FilterValue::ArrayUuid(_)
+        | FilterValue::ArrayDecimal(_)
+        | FilterValue::ArrayHeerId(_)
+        | FilterValue::ArrayRanjId(_) => {
             unreachable!(
                 "nested/null/array FilterValue in IN list — typed FieldRef API prevents this"
             )

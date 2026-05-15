@@ -2546,17 +2546,48 @@ impl<M: Model, V> FieldRef<M, V> {
 mod array_sealed {
     pub trait Sealed {}
     impl Sealed for String {}
+    impl Sealed for i16 {}
     impl Sealed for i32 {}
     impl Sealed for i64 {}
+    impl Sealed for f32 {}
+    impl Sealed for f64 {}
     impl Sealed for bool {}
+    impl Sealed for time::OffsetDateTime {}
+    impl Sealed for time::Date {}
+    impl Sealed for uuid::Uuid {}
+    impl Sealed for rust_decimal::Decimal {}
+    impl Sealed for crate::types::HeerId {}
+    impl Sealed for crate::types::RanjId {}
 }
 
 /// Converts a `Vec<V>` element type into the matching [`FilterValue::Array*`]
 /// variant for use in array operator conditions.
 ///
-/// Sealed so that only the Djogi-blessed array element types (`String`, `i32`,
-/// `i64`, `bool`) can be used with the array operator methods on
-/// `FieldRef<M, Vec<V>>`. Downstream code cannot implement this trait.
+/// Sealed so that only the Djogi-blessed array element types can be used with
+/// the array operator methods on `FieldRef<M, Vec<V>>`. Downstream code cannot
+/// implement this trait.
+///
+/// # Supported element types
+///
+/// | Rust type | Postgres column type |
+/// |---|---|
+/// | `String` | `TEXT[]` |
+/// | `i16` | `SMALLINT[]` |
+/// | `i32` | `INTEGER[]` |
+/// | `i64` | `BIGINT[]` |
+/// | `f32` | `REAL[]` |
+/// | `f64` | `DOUBLE PRECISION[]` |
+/// | `bool` | `BOOLEAN[]` |
+/// | `time::OffsetDateTime` | `TIMESTAMPTZ[]` |
+/// | `time::Date` | `DATE[]` |
+/// | `uuid::Uuid` | `UUID[]` |
+/// | `rust_decimal::Decimal` | `NUMERIC[]` |
+/// | [`HeerId`](crate::types::HeerId) | `BIGINT[]` |
+/// | [`RanjId`](crate::types::RanjId) | `UUID[]` |
+///
+/// For adopter-defined newtype or enum element types, see the
+/// [array guide](https://github.com/TarunvirBains/djogi/blob/main/docs/guide/arrays.md)
+/// for the `DjogiSqlType` extension path.
 pub trait IntoArrayFilterValue: array_sealed::Sealed {
     /// Wrap a `Vec<Self>` in the corresponding `FilterValue::Array*` variant.
     fn into_array_filter_value(values: Vec<Self>) -> FilterValue
@@ -2569,6 +2600,11 @@ impl IntoArrayFilterValue for String {
         FilterValue::ArrayString(values)
     }
 }
+impl IntoArrayFilterValue for i16 {
+    fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
+        FilterValue::ArrayI16(values)
+    }
+}
 impl IntoArrayFilterValue for i32 {
     fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
         FilterValue::ArrayI32(values)
@@ -2579,9 +2615,49 @@ impl IntoArrayFilterValue for i64 {
         FilterValue::ArrayI64(values)
     }
 }
+impl IntoArrayFilterValue for f32 {
+    fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
+        FilterValue::ArrayF32(values)
+    }
+}
+impl IntoArrayFilterValue for f64 {
+    fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
+        FilterValue::ArrayF64(values)
+    }
+}
 impl IntoArrayFilterValue for bool {
     fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
         FilterValue::ArrayBool(values)
+    }
+}
+impl IntoArrayFilterValue for time::OffsetDateTime {
+    fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
+        FilterValue::ArrayDateTime(values)
+    }
+}
+impl IntoArrayFilterValue for time::Date {
+    fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
+        FilterValue::ArrayDate(values)
+    }
+}
+impl IntoArrayFilterValue for uuid::Uuid {
+    fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
+        FilterValue::ArrayUuid(values)
+    }
+}
+impl IntoArrayFilterValue for rust_decimal::Decimal {
+    fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
+        FilterValue::ArrayDecimal(values)
+    }
+}
+impl IntoArrayFilterValue for crate::types::HeerId {
+    fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
+        FilterValue::ArrayHeerId(values)
+    }
+}
+impl IntoArrayFilterValue for crate::types::RanjId {
+    fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
+        FilterValue::ArrayRanjId(values)
     }
 }
 
