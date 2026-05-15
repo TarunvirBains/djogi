@@ -847,8 +847,6 @@ must carry `#[djogi::deliberately_bypass_convention_with_raw_sql]` and an
 adjacent `// JUSTIFICATION ...` comment. See [Models §Rule 3][models-raw]
 for the raw-query surface.
 
-[models-raw]: ./agent-guide.md#rule-3-use-djogiraw-for-queries-the-model-trait-and-queryset-dont-cover
-
 The raw path sits next to the typed one — a query that starts as
 `QuerySet` can pick up a raw tail when a feature isn't shipped yet,
 without migrating the entire call site.

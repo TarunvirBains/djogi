@@ -54,7 +54,7 @@ impl djogi::hooks::ModelHooks for Post {
         ctx: &mut djogi::DjogiContext,
     ) -> Result<(), djogi::DjogiError> {
         // Queue a search-index update to fire after commit.
-        ctx.on_commit(|| { /* … */ });
+        ctx.on_commit(|| async { /* … */ Ok(()) });
         Ok(())
     }
 }
