@@ -105,10 +105,23 @@ on_commit drain
 `Model::save` follows the same pattern with `before_save` / `after_save`;
 `Model::delete` uses `before_delete` / `after_delete`.
 
-Returning `Err` from any hook aborts the operation: the surrounding
-transaction rolls back via standard `?` propagation and no `after_*` hook
-fires. This means error-checking in a `before_*` hook is always safe —
-the partial write is rolled back before it reaches the caller.
+Returning `Err` from any hook propagates via `?` and no `after_*` hook
+fires. The transaction-safety guarantee depends on how the operation is
+called:
+
+- **Inside `atomic()`** — returning `Err` rolls back every write in the
+  surrounding transaction, including any writes made earlier in the same
+  `atomic` block. The partial state is never visible to other connections.
+- **Outside `atomic()` (autocommit)** — each SQL statement commits
+  individually. Returning `Err` from a `before_*` hook prevents the
+  _current_ SQL write (INSERT / UPDATE / DELETE) from being issued, but
+  any earlier autocommitted writes in the same call chain are not
+  rolled back.
+
+As a result, error-checking in a `before_*` hook is reliable only for the
+write that hook gates, not for writes that already committed. When you need
+all-or-nothing semantics across multiple writes, wrap the entire operation
+in `djogi::transaction::atomic(...)`.
 
 ---
 
@@ -219,28 +232,41 @@ post.deleted_at = Some(djogi::DateTime::now_utc());
 post.save(&mut ctx).await?;
 ```
 
-If you want soft-delete to intercept `Model::delete`, implement
-`ModelHooks::before_delete` on the model. Return `Err` to abort the actual
-`DELETE` statement after writing the soft-delete timestamp via `save`:
+### Soft-delete in practice: the explicit update path
+
+The reliable pattern for soft deletion is the explicit update path shown
+above — set `deleted_at` and call `save()`. Do this at every call site that
+would otherwise call `delete()`, or centralise it in a domain method:
 
 ```rust
-impl djogi::hooks::ModelHooks for Post {
-    async fn before_delete(&mut self, ctx: &mut djogi::DjogiContext)
+impl Post {
+    pub async fn soft_delete(&mut self, ctx: &mut djogi::DjogiContext)
         -> Result<(), djogi::DjogiError>
     {
-        // Redirect hard-delete to soft-delete.
         self.deleted_at = Some(djogi::DateTime::now_utc());
-        self.save(ctx).await?;
-        // Returning Err aborts the actual DELETE statement.
-        Err(djogi::DjogiError::Validation(
-            "hard delete blocked — use deleted_at to check for soft-deleted rows".into(),
-        ))
+        self.save(ctx).await
     }
 }
 ```
 
-Callers that invoke `post.delete(&mut ctx).await` will receive this error
-and the hard `DELETE` never fires; the row is marked soft-deleted instead.
+> **Why not intercept `Model::delete` via `before_delete`?**
+>
+> A `before_delete` hook that calls `save()` then returns `Err` looks
+> like it redirects hard-delete to soft-delete, but the semantics are
+> unreliable **outside** an `atomic()` transaction. Because `save()`
+> autocommits when called in an autocommit context, the soft-delete
+> timestamp is durably written even if the hook then returns `Err`. The
+> caller receives an error but the row has already been marked deleted —
+> contradictory behaviour. Inside `atomic()` the rollback semantics are
+> correct (both the `save()` and the aborted `DELETE` are rolled back on
+> `Err`), but the pattern still surprises callers who expect
+> `post.delete(&mut ctx).await?` to succeed on a soft-deletable model.
+>
+> Use the explicit `soft_delete` domain method above and do not hook
+> `before_delete` for the purpose of intercepting hard deletes. Reserve
+> `before_delete` for genuine pre-condition guards (e.g. "refuse delete
+> if the post has published comments") where returning `Err` without any
+> prior write is safe.
 
 ---
 

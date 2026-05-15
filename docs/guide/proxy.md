@@ -216,13 +216,28 @@ parent.
 
 ## Composition with `#[model(soft_deletable)]` / `#[model(auditable)]`
 
-When a proxy AND its parent both use `#[model(soft_deletable)]`, the proxy's
-`default_filter` AND-composes with the parent's soft-delete predicate
-(`deleted_at IS NULL`). The proxy inherits the parent's soft-delete and
-applies its own filter on top — no silent override.
+**`#[model(soft_deletable)]` — no automatic default-filter inheritance.**
+Soft-delete awareness is opt-in at every queryset. If the parent model
+carries `#[model(soft_deletable)]`, the proxy's `default_filter` does
+**not** automatically AND-compose a `deleted_at IS NULL` predicate. Each
+queryset — proxy or parent — must call `.not_deleted()` explicitly when
+soft-deleted rows should be excluded:
 
-Same for `#[model(auditable)]` populator behaviour: the parent's auditable
-hook fires; the proxy's per-type lifecycle hooks (if any) fire alongside.
+```rust
+// Correct: call .not_deleted() on the proxy queryset when needed.
+ActiveVehicle::objects()
+    .not_deleted()
+    .fetch_all(&mut ctx).await?;
+```
+
+Automatic soft-delete default-filter composition (making `objects()`
+exclude soft-deleted rows without an explicit `.not_deleted()` call) is
+planned for a later phase. See [Hooks and Composition](./hooks.md) for the
+`.not_deleted()` filter and the shipped soft-delete contract.
+
+**`#[model(auditable)]` populator behaviour:** the parent's auditable
+composition populator fires; the proxy's per-type lifecycle hooks (if any)
+fire alongside in the normal hook sequence.
 
 ## Constraints summary
 

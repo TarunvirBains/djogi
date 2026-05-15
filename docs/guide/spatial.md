@@ -490,8 +490,19 @@ shape differs.
 ## Intersection expressions (Phase 8-Zero T17)
 
 Two static constructors on `Expr` expose PostGIS's `ST_Intersection` /
-`ST_Area` pair as typed expressions composable with `annotate`,
-`filter_expr`, and arithmetic operators.
+`ST_Area` pair as typed expressions composable with `filter_expr` and
+arithmetic operators.
+
+> **`annotate` limitation (v0.1.0).** `QuerySet::annotate` accepts a
+> closure returning an `AggregateExpr` or window-function expression — it
+> does **not** accept a bare `Expr<T>` today. `Expr::intersection_of` and
+> `Expr::area_of_intersection` return `Expr<Polygon>` / `Expr<f64>`, so
+> they are not directly usable as `annotate` values. They compose in any
+> expression context that accepts `Expr<T>` — `filter_expr`, arithmetic
+> combinations with other `Expr` nodes, and comparison methods (`.lt`,
+> `.gte`, etc.). Annotating by a bare expression is tracked as a future
+> phase item alongside the broader `Expr<T>` annotation deferral (see
+> [Computed Properties](./computed.md)).
 
 ### `Expr::intersection_of` — raw intersection geometry
 
