@@ -1143,7 +1143,16 @@ fn field_type_check(
         // round-trips identically and CHECK-equals against the literal.
         FieldSqlType::Date => Some(format!("{qcol} <= DATE '9999-12-31'")),
         FieldSqlType::Timestamptz => {
-            Some(format!("{qcol} <= TIMESTAMP '9999-12-31 23:59:59.999999'"))
+            // Emit an explicit UTC timestamptz literal so the CHECK is
+            // timezone-invariant. Using `TIMESTAMP '...'` (without TZ) against
+            // a TIMESTAMPTZ column makes Postgres interpret the literal in the
+            // session timezone, which shifts the effective upper bound by the
+            // session UTC offset. `TIMESTAMPTZ '...+00'` is always interpreted
+            // as UTC regardless of session timezone, matching the
+            // `time::OffsetDateTime` MAX of `9999-12-31 23:59:59.999999 UTC`.
+            Some(format!(
+                "{qcol} <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
+            ))
         }
         // ── djogi#190 — integer widening (live, gated on rust_source_type) ──
         //
@@ -3105,13 +3114,38 @@ mod tests {
     fn field_type_check_for_timestamptz_emits_year_upper_bound() {
         let expr = field_type_check(&FieldSqlType::Timestamptz, None, "occurred_at")
             .expect("TIMESTAMPTZ field must carry the OffsetDateTime year-bound CHECK");
+        // The literal must use the TIMESTAMPTZ type keyword with an explicit +00
+        // UTC offset so the comparison is timezone-invariant. Using TIMESTAMP
+        // (without TZ) against a TIMESTAMPTZ column would make Postgres interpret
+        // the literal in the session timezone, shifting the effective upper bound.
         assert!(
-            expr.contains("\"occurred_at\" <= TIMESTAMP '9999-12-31 23:59:59.999999'"),
-            "TIMESTAMPTZ CHECK upper bound includes microsecond resolution: {expr}"
+            expr.contains("\"occurred_at\" <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"),
+            "TIMESTAMPTZ CHECK must use explicit UTC offset +00, not bare TIMESTAMP: {expr}"
         );
         assert!(
-            !expr.contains(">= TIMESTAMP"),
+            !expr.contains(">= TIMESTAMPTZ"),
             "TIMESTAMPTZ CHECK is one-sided upper bound (no lower-bound clause): {expr}"
+        );
+        // Must not use the plain TIMESTAMP form (which is timezone-sensitive).
+        assert!(
+            !expr.contains("<= TIMESTAMP '"),
+            "TIMESTAMPTZ CHECK must not use plain TIMESTAMP literal (timezone-sensitive): {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_timestamptz_is_utc_explicit() {
+        // The +00 suffix is mandatory — a non-UTC session timezone must not
+        // change the CHECK semantics. This test documents the invariant that the
+        // projected SQL is always the same string regardless of caller context.
+        let expr1 = field_type_check(&FieldSqlType::Timestamptz, None, "ts")
+            .expect("TIMESTAMPTZ must produce a CHECK");
+        let expr2 = field_type_check(&FieldSqlType::Timestamptz, None, "ts")
+            .expect("repeated call must produce the same CHECK");
+        assert_eq!(expr1, expr2, "CHECK expression must be deterministic");
+        assert!(
+            expr1.contains("+00'"),
+            "CHECK literal must carry explicit +00 UTC offset: {expr1}"
         );
     }
 
@@ -3575,7 +3609,7 @@ mod tests {
             "TIMESTAMPTZ column must carry the OffsetDateTime year-bound CHECK (djogi#187)",
         );
         assert!(
-            check.contains("\"occurred_at\" <= TIMESTAMP '9999-12-31 23:59:59.999999'"),
+            check.contains("\"occurred_at\" <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"),
             "TIMESTAMPTZ column CHECK upper bound: {check}"
         );
     }
@@ -3705,8 +3739,8 @@ mod tests {
                 )
             });
             assert!(
-                check.contains("TIMESTAMP '9999-12-31 23:59:59.999999'"),
-                "{} CHECK upper bound: {check}",
+                check.contains("TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"),
+                "{} CHECK upper bound must use UTC-explicit TIMESTAMPTZ form: {check}",
                 col.name
             );
         }

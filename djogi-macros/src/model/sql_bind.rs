@@ -125,11 +125,20 @@ pub fn push_bind_tokens(
 
     // For widened types, extract the inner value from Tracked first.
     let effective = if tracked && !nullable {
-        // Tracked<T>: (*field_expr).clone() → T
+        // Tracked<T>: `(*field_expr).clone()` applies `Tracked`'s Deref impl
+        // (`Tracked<T>: Deref<Target=T>`) to reach the inner `T`, then clones it.
+        // `field_expr` is an owned `Tracked<T>`, so one deref suffices.
         quote! { (*#field_expr).clone() }
     } else if tracked && nullable {
-        // Option<Tracked<T>>: map to Option<T>
-        quote! { #field_expr.as_ref().map(|__t| (*__t).clone()) }
+        // Option<Tracked<T>>: extract `Option<T>` by mapping through two derefs.
+        //
+        // `field_expr.as_ref()` → `Option<&Tracked<T>>`.
+        // In the closure `__t: &Tracked<T>`:
+        //   - `*__t`  → `Tracked<T>` (deref the `&` reference)
+        //   - `**__t` → `T` (deref via `Tracked<T>: Deref<Target=T>`)
+        // Using `(*__t).clone()` would clone `Tracked<T>` (wrong);
+        // `(**__t).clone()` clones the inner `T` (correct).
+        quote! { #field_expr.as_ref().map(|__t| (**__t).clone()) }
     } else {
         field_expr
     };
@@ -208,16 +217,23 @@ pub fn create_param_tokens(
 
     // Expr to extract the field value, unwrapping Tracked<T> if needed.
     //
-    // Uses the `(*val_expr).clone()` pattern (matches the save-path convention
-    // in crud.rs): `Deref::deref` returns `&T`, and `.clone()` copies the
-    // inner value. This avoids the ambiguity of `*moved_tracked` with the raw
-    // deref operator.
+    // `tracked=true, nullable=false` — `Tracked<T>`: one deref via Tracked's
+    // `Deref<Target=T>` impl gives the inner `T`. `(*val_expr).clone()` works
+    // because `val_expr` is an owned `Tracked<T>` value, not a reference.
+    //
+    // `tracked=true, nullable=true` — `Option<Tracked<T>>`: two derefs are needed.
+    // `.as_ref()` gives `Option<&Tracked<T>>`; in the closure `__t: &Tracked<T>`:
+    //   - `*__t`  = `Tracked<T>` (deref the `&` reference — first deref)
+    //   - `**__t` = `T`          (via `Tracked<T>: Deref<Target=T>` — second deref)
+    // `(*__t).clone()` would clone `Tracked<T>` (wrong — the widening
+    // conversion then fails: e.g. `i32::from(Tracked<u16>)` is not implemented);
+    // `(**__t).clone()` clones the inner `T` (correct).
     let extract = if tracked && !nullable {
         // Tracked<T>: (*value.field).clone() → T
         quote! { (*#val_expr).clone() }
     } else if tracked && nullable {
         // Option<Tracked<T>>: map through to get Option<T>.
-        quote! { #val_expr.as_ref().map(|__t| (*__t).clone()) }
+        quote! { #val_expr.as_ref().map(|__t| (**__t).clone()) }
     } else {
         val_expr.clone()
     };

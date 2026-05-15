@@ -155,3 +155,53 @@ async fn temporal_year_check_rejects_oob_timestamptz(mut ctx: djogi::DjogiContex
          constraint name (got: {msg})"
     );
 }
+
+#[djogi::djogi_test(sync_models = [Phase85C2187TemporalRow])]
+async fn timestamptz_check_is_utc_invariant_under_non_utc_session_timezone(
+    mut ctx: djogi::DjogiContext,
+) {
+    // ── Behaviour 4: TIMESTAMPTZ CHECK is UTC-explicit, not session-tz-sensitive ─
+    //
+    // Regression guard for the djogi#187 fix: the projected CHECK uses
+    // `TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'` (UTC-explicit), NOT the
+    // old `TIMESTAMP '...'` (plain, session-timezone-interpreted) form.
+    //
+    // With the broken form, a session running in UTC-5 (e.g. America/New_York
+    // during standard time) would interpret the CHECK literal in local time,
+    // widening the effective UTC upper bound by 5 hours — values up to
+    // `10000-01-01 04:59:59 UTC` would pass the broken CHECK. Year 10000 AD
+    // is within Postgres's native TIMESTAMPTZ range (which extends to 294276 AD),
+    // so such a row would land and corrupt subsequent typed reads.
+    //
+    // With the correct UTC-explicit form, a value of `10000-01-01 00:00:00+00`
+    // (just over the UTC bound) is rejected regardless of the session timezone.
+    //
+    // Test strategy:
+    //   1. SET LOCAL timezone to UTC-5 (`Etc/GMT+5`) for the current transaction.
+    //   2. INSERT `TIMESTAMPTZ '10000-01-01 00:00:00+00'` (4 hours 59 min 59 s
+    //      below the broken UTC-5 local bound, but above the correct UTC bound).
+    //   3. Expect a CHECK violation naming `recorded_at_check`.
+    ctx.raw_execute("SET LOCAL timezone = 'Etc/GMT+5'", &[])
+        .await
+        .expect("SET LOCAL timezone must succeed in a transaction context");
+
+    let err = ctx
+        .raw_execute(
+            "INSERT INTO phase8_5_c2_187_temporal_rows \
+             (event_on, recorded_at, label) \
+             VALUES (DATE '2026-05-15', TIMESTAMPTZ '10000-01-01 00:00:00+00', 'tz-boundary')",
+            &[],
+        )
+        .await
+        .expect_err(
+            "TIMESTAMPTZ value '10000-01-01 00:00:00+00' must be rejected by the UTC-explicit \
+             CHECK even when the session timezone is UTC-5 (Etc/GMT+5)",
+        );
+
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("phase8_5_c2_187_temporal_rows_recorded_at_check"),
+        "OOB Timestamptz INSERT under non-UTC session timezone must reference the \
+         type-derived CHECK constraint name (got: {msg})"
+    );
+}

@@ -404,6 +404,33 @@ pub fn expand(
                         #push_stmt;
                     }
                 })
+            } else if is_tracked_inner(ty) {
+                // Option<Tracked<T>>: dirty-aware but optional.
+                //
+                // `is_tracked(ty)` is false (the outermost type is `Option`,
+                // not `Tracked`), but `is_tracked_inner(ty)` is true because
+                // the inner type after Option-stripping is `Tracked<T>`.
+                //
+                // Dirty check: `as_ref().map(|t| t.is_dirty()).unwrap_or(false)`.
+                // Inner expr: `as_ref().map(|t| (**t).clone())` → `Option<T>`.
+                //
+                // Two dereferences in `(**t).clone()`:
+                //   - First `*`: `&Tracked<T>` → `Tracked<T>` (reference deref)
+                //   - Second `*`: `Tracked<T>` → `T` (via `Tracked: Deref<Target=T>`)
+                // Using a single `(*t).clone()` would clone `Tracked<T>`, not `T`.
+                //
+                // `push_bind_tokens` then receives `Option<T>` with nullable=true
+                // and tracked=false, which correctly applies widening (if any)
+                // inside the `.map(...)` closure.
+                let inner_expr = quote! { self.#f.as_ref().map(|__t| (**__t).clone()) };
+                let push_stmt = push_bind_tokens(&kind, nullable, false, inner_expr);
+                Some(quote! {
+                    if self.#f.as_ref().map(|__t| __t.is_dirty()).unwrap_or(false) {
+                        if __first { __first = false; } else { __acc.push_sql(", "); }
+                        __acc.push_sql(#col_eq);
+                        #push_stmt;
+                    }
+                })
             } else {
                 // Non-Tracked: unconditional — behavioral regression guard for
                 // models that do not opt into dirty tracking.
@@ -425,12 +452,25 @@ pub fn expand(
     // and call mark_clean(). `Tracked::new(T)` already constructs with dirty=false
     // so this is defensive — but required by the Task 2 contract so that future
     // in-place rehydration changes cannot silently break the invariant.
+    //
+    // Two shapes:
+    // - `Tracked<T>`: `self.#f.mark_clean()`
+    // - `Option<Tracked<T>>`: `if let Some(ref mut __t) = self.#f { __t.mark_clean(); }`
     let mark_clean_fragments: Vec<TokenStream> = user_fields
         .iter()
         .zip(user_field_types.iter())
         .filter_map(|(f, ty)| {
             if is_tracked(ty) {
                 Some(quote! { self.#f.mark_clean(); })
+            } else if is_tracked_inner(ty) {
+                // Option<Tracked<T>>: mark clean if Some.
+                // `ref mut __t` borrows the inner Tracked<T> in place;
+                // `mark_clean()` takes `&mut self`.
+                Some(quote! {
+                    if let ::std::option::Option::Some(ref mut __t) = self.#f {
+                        __t.mark_clean();
+                    }
+                })
             } else {
                 None
             }
@@ -2078,6 +2118,66 @@ pub fn expand(
                 quote! {}
             };
 
+            // ── Bind shims for the INSERT params ────────────────────────────
+            //
+            // Route every user field through `create_param_tokens` so widened
+            // types (i8/u8 → i16, u16 → i32, u32 → i64, u64 → Decimal) get
+            // the correct SQL wire type. Previously the insert params were
+            // built as a direct `&[&(dyn ToSql + Sync)]` slice, bypassing the
+            // shims that `create` / `create_with_id` / bulk paths use — this
+            // caused silent type-mismatch failures for models with narrow or
+            // unsigned integer fields (djogi#GPT-5.5 BLOCK 1).
+            //
+            // Mirrors the pattern in the `create_body` section above: each
+            // widened field gets a named `let __bind_N: WideType = …` pre-
+            // declaration, and the slice entry references that binding. Direct
+            // types emit an empty pre-declaration and bind the field value
+            // inline.
+            let (cof_insert_pre_decls, cof_insert_entries): (Vec<TokenStream>, Vec<TokenStream>) =
+                user_fields
+                    .iter()
+                    .zip(user_field_types.iter())
+                    .enumerate()
+                    .map(|(slot, (f, ty))| {
+                        let kind = bind_kind(ty);
+                        let nullable = is_nullable(ty);
+                        let tracked = is_tracked_inner(ty);
+                        let val_expr = quote! { row.#f };
+                        create_param_tokens(&kind, nullable, tracked, val_expr, slot)
+                    })
+                    .unzip();
+
+            // ── Bind shim for the fallback SELECT key param ──────────────────
+            //
+            // The fallback SELECT after an ON CONFLICT hit binds the idempotency
+            // key value as `$1`. If the key field is a widened type, the old
+            // direct `&row.#key_ident as &(dyn ToSql + Sync)` would fail or
+            // send the wrong wire type. Look up the key field's type in the
+            // user-field list and apply `create_param_tokens` on slot 0.
+            let (cof_key_pre_decl, cof_key_entry) =
+                if let Some(idx) = user_fields.iter().position(|f| f == &key_ident) {
+                    let key_ty = &user_field_types[idx];
+                    create_param_tokens(
+                        &bind_kind(key_ty),
+                        is_nullable(key_ty),
+                        is_tracked_inner(key_ty),
+                        quote! { row.#key_ident },
+                        0,
+                    )
+                } else {
+                    // Key field not found — this is unreachable when the macro
+                    // attribute is validated correctly (the key must be an
+                    // existing field). Fallback to direct bind so downstream
+                    // compilation surfaces the name-resolution error naturally.
+                    (
+                        TokenStream::new(),
+                        quote! {
+                            &row.#key_ident
+                                as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)
+                        },
+                    )
+                };
+
             quote! {
                 /// Idempotent create — insert a row keyed off the
                 /// descriptor's `idempotency_key` attribute, or
@@ -2109,8 +2209,12 @@ pub fn expand(
                     row: Self,
                 ) -> ::std::result::Result<(Self, bool), ::djogi::DjogiError> {
                     #auto_set_tenant
+                    // Widened-type temporaries (empty for direct-mapped types).
+                    // Must be declared before the slice literal so the borrows
+                    // live long enough.
+                    #(#cof_insert_pre_decls)*
                     let __insert_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
-                        #(&row.#user_fields as &(dyn ::djogi::__private::postgres_types::ToSql + Sync),)*
+                        #(#cof_insert_entries,)*
                     ];
                     let __maybe_inserted = ctx.__query_opt_for_macros(
                         #insert_or_nothing_sql,
@@ -2127,9 +2231,12 @@ pub fn expand(
                             // existing row by the idempotency key.
                             // The key-field value comes from the
                             // caller's `row` input (unchanged across
-                            // the insert attempt).
+                            // the insert attempt). Widened-type
+                            // temporary for the key field (empty for
+                            // direct-mapped key types).
+                            #cof_key_pre_decl
                             let __select_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
-                                &row.#key_ident as &(dyn ::djogi::__private::postgres_types::ToSql + Sync),
+                                #cof_key_entry,
                             ];
                             let __raw = ctx.__query_one_for_macros(
                                 #select_by_key_sql,
