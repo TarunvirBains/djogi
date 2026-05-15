@@ -52,6 +52,7 @@ use quote::quote;
 use syn::ItemStruct;
 
 use super::attrs::{FieldAttrs, ModelAttrs};
+use super::sql_bind::{bind_kind, decode_field_tokens, is_nullable, is_tracked_inner};
 
 /// Emit `impl FromPgRow for <Struct>` — the canonical row-decode
 /// contract used by every CRUD terminal and QuerySet terminal.
@@ -82,9 +83,12 @@ pub fn expand(
     // runtime.
     let column_list: String = col_names.join(", ");
 
-    // Per-column decode token: delegates to `decode_at` which holds
-    // the debug-build column-name guard and the
-    // `tokio_postgres::Error → DjogiError::Decode` mapping.
+    // Per-column decode token: delegates to `decode_at` for direct types
+    // and to the appropriate `decode_narrowed` / `decode_u64_from_decimal`
+    // variant for widened types (i8/u8 → i16, u16 → i32, u32 → i64,
+    // u64 → Decimal). The `sql_bind` module determines the bind kind from
+    // the field's Rust type; the debug-build column-name guard runs on the
+    // wide read inside each helper.
     let field_assignments: Vec<TokenStream> = struct_item
         .fields
         .iter()
@@ -92,8 +96,12 @@ pub fn expand(
         .enumerate()
         .map(|(i, (field, col_name))| {
             let fname = field.ident.as_ref().expect("only named structs supported");
+            let kind = bind_kind(&field.ty);
+            let nullable = is_nullable(&field.ty);
+            let tracked = is_tracked_inner(&field.ty);
+            let decode_expr = decode_field_tokens(&kind, nullable, tracked, i, col_name);
             quote! {
-                #fname: ::djogi::__private::pg::decode_at::<_>(row, #i, #col_name)?
+                #fname: #decode_expr
             }
         })
         .collect();

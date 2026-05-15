@@ -188,3 +188,201 @@ where
 {
     row.try_get(idx).map_err(DjogiError::from)
 }
+
+/// Decode a column stored as a wider type `W` and narrow it to target type `N`.
+///
+/// Used by `#[model]` for fields whose Rust source type is narrower than the
+/// SQL carrier: `i8 / u8 → SMALLINT (i16)`, `u16 → INTEGER (i32)`,
+/// `u32 → BIGINT (i64)`.  The debug-build column-name guard from
+/// [`decode_at`] runs on the wide read; the subsequent narrowing applies
+/// `N::try_from(wide_value)`.
+///
+/// Returns `DjogiError::Decode` if the stored value is out of the narrow
+/// type's representable range. This is the second line of defence behind
+/// the type-derived CHECK that `#[model]` emits via the projection layer —
+/// it fires when a row lands without the CHECK in place (e.g. a schema
+/// snapshot reapplied before the migration ran, or a direct `COPY … FROM`
+/// that bypasses check constraints).
+///
+/// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
+#[doc(hidden)]
+pub fn decode_narrowed<'a, W, N>(
+    row: &'a Row,
+    idx: usize,
+    name: &'static str,
+) -> Result<N, DjogiError>
+where
+    W: FromSql<'a> + std::fmt::Display + Copy,
+    N: TryFrom<W>,
+    <N as TryFrom<W>>::Error: std::fmt::Display,
+{
+    let wide: W = decode_at(row, idx, name)?;
+    N::try_from(wide).map_err(|e| {
+        DjogiError::Decode(format!("column `{name}`: value {wide} out of range: {e}",))
+    })
+}
+
+/// Decode a nullable column stored as a wider type `W` and narrow to `N`.
+///
+/// The `Option`-flavoured companion to [`decode_narrowed`] for nullable
+/// fields. Decodes `Option<W>` from the wire and maps the inner value
+/// through `N::try_from`, propagating `DjogiError::Decode` on
+/// out-of-range values.
+///
+/// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
+#[doc(hidden)]
+pub fn decode_narrowed_opt<'a, W, N>(
+    row: &'a Row,
+    idx: usize,
+    name: &'static str,
+) -> Result<Option<N>, DjogiError>
+where
+    W: FromSql<'a> + std::fmt::Display + Copy,
+    N: TryFrom<W>,
+    <N as TryFrom<W>>::Error: std::fmt::Display,
+{
+    let wide: Option<W> = decode_at(row, idx, name)?;
+    wide.map(|w| {
+        N::try_from(w).map_err(|e| {
+            DjogiError::Decode(format!("column `{name}`: value {w} out of range: {e}",))
+        })
+    })
+    .transpose()
+}
+
+/// Decode a `u64` field stored as `NUMERIC(20, 0)`.
+///
+/// `NUMERIC(20, 0)` is the SQL carrier for `u64` columns: it is the
+/// smallest Postgres numeric type whose positive range covers all
+/// `u64::MAX` (18_446_744_073_709_551_615). The decode path reads a
+/// `rust_decimal::Decimal` and converts via `Decimal::to_u64()`.
+///
+/// Returns `DjogiError::Decode` if the stored value does not fit in
+/// `u64` (negative values or values exceeding `u64::MAX` stored by an
+/// external writer that bypassed the type-derived CHECK).
+///
+/// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
+#[doc(hidden)]
+pub fn decode_u64_from_decimal(
+    row: &Row,
+    idx: usize,
+    name: &'static str,
+) -> Result<u64, DjogiError> {
+    use rust_decimal::prelude::ToPrimitive as _;
+    let dec: rust_decimal::Decimal = decode_at(row, idx, name)?;
+    dec.to_u64().ok_or_else(|| {
+        DjogiError::Decode(format!(
+            "column `{name}`: Decimal value {dec} out of u64 range",
+        ))
+    })
+}
+
+/// Decode a nullable `u64` field stored as `NUMERIC(20, 0)`.
+///
+/// The `Option`-flavoured companion to [`decode_u64_from_decimal`].
+///
+/// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
+#[doc(hidden)]
+pub fn decode_opt_u64_from_decimal(
+    row: &Row,
+    idx: usize,
+    name: &'static str,
+) -> Result<Option<u64>, DjogiError> {
+    use rust_decimal::prelude::ToPrimitive as _;
+    let dec: Option<rust_decimal::Decimal> = decode_at(row, idx, name)?;
+    dec.map(|d| {
+        d.to_u64().ok_or_else(|| {
+            DjogiError::Decode(format!(
+                "column `{name}`: Decimal value {d} out of u64 range",
+            ))
+        })
+    })
+    .transpose()
+}
+
+/// Name-based variant of [`decode_narrowed`] for the `FromJoinedPgRow` path.
+///
+/// `FromJoinedPgRow` decodes columns by prefixed name rather than ordinal
+/// index. This helper decodes `W` by the given column name and narrows to `N`,
+/// matching the semantics of [`decode_narrowed`] but accepting a dynamically
+/// computed `&str` name instead of a `&'static str` ordinal-path name.
+///
+/// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
+#[doc(hidden)]
+pub fn decode_narrowed_by_name<'a, W, N>(row: &'a Row, col_name: &str) -> Result<N, DjogiError>
+where
+    W: FromSql<'a> + std::fmt::Display + Copy,
+    N: TryFrom<W>,
+    <N as TryFrom<W>>::Error: std::fmt::Display,
+{
+    let wide: W = row
+        .try_get::<_, W>(col_name)
+        .map_err(|e| DjogiError::Decode(format!("column `{col_name}`: {e}")))?;
+    N::try_from(wide).map_err(|e| {
+        DjogiError::Decode(format!(
+            "column `{col_name}`: value {wide} out of range: {e}",
+        ))
+    })
+}
+
+/// Nullable name-based variant of [`decode_narrowed_by_name`].
+///
+/// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
+#[doc(hidden)]
+pub fn decode_narrowed_opt_by_name<'a, W, N>(
+    row: &'a Row,
+    col_name: &str,
+) -> Result<Option<N>, DjogiError>
+where
+    W: FromSql<'a> + std::fmt::Display + Copy,
+    N: TryFrom<W>,
+    <N as TryFrom<W>>::Error: std::fmt::Display,
+{
+    let wide: Option<W> = row
+        .try_get::<_, Option<W>>(col_name)
+        .map_err(|e| DjogiError::Decode(format!("column `{col_name}`: {e}")))?;
+    wide.map(|w| {
+        N::try_from(w).map_err(|e| {
+            DjogiError::Decode(format!("column `{col_name}`: value {w} out of range: {e}",))
+        })
+    })
+    .transpose()
+}
+
+/// Name-based variant of [`decode_u64_from_decimal`].
+///
+/// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
+#[doc(hidden)]
+pub fn decode_u64_from_decimal_by_name(row: &Row, col_name: &str) -> Result<u64, DjogiError> {
+    use rust_decimal::prelude::ToPrimitive as _;
+    let dec: rust_decimal::Decimal = row
+        .try_get::<_, rust_decimal::Decimal>(col_name)
+        .map_err(|e| DjogiError::Decode(format!("column `{col_name}`: {e}")))?;
+    dec.to_u64().ok_or_else(|| {
+        DjogiError::Decode(format!(
+            "column `{col_name}`: Decimal value {dec} out of u64 range",
+        ))
+    })
+}
+
+/// Nullable name-based variant of [`decode_u64_from_decimal`].
+///
+/// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
+#[doc(hidden)]
+pub fn decode_opt_u64_from_decimal_by_name(
+    row: &Row,
+    col_name: &str,
+) -> Result<Option<u64>, DjogiError> {
+    use rust_decimal::prelude::ToPrimitive as _;
+    let dec: Option<rust_decimal::Decimal> = row
+        .try_get::<_, Option<rust_decimal::Decimal>>(col_name)
+        .map_err(|e| DjogiError::Decode(format!("column `{col_name}`: {e}")))?;
+    dec.map(|d| {
+        d.to_u64().ok_or_else(|| {
+            DjogiError::Decode(format!(
+                "column `{col_name}`: Decimal value {d} out of u64 range",
+            ))
+        })
+    })
+    .transpose()
+}

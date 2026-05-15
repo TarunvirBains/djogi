@@ -38,6 +38,7 @@ use quote::quote;
 use syn::ItemStruct;
 
 use super::attrs::{FieldAttrs, ModelAttrs};
+use super::sql_bind::{bind_kind, decode_joined_field_tokens, is_nullable, is_tracked_inner};
 
 /// Generate the `FromJoinedPgRow` impl for `struct_item`.
 ///
@@ -51,11 +52,11 @@ pub fn expand(
     let name = &struct_item.ident;
     let (impl_generics, ty_generics, where_clause) = struct_item.generics.split_for_impl();
 
-    // One prefix-aware `try_get` per field. `format!` happens once per call —
-    // the overhead is a small String allocation per field per decoded row,
-    // swamped by the DB decode cost itself. The tokio-postgres `try_get`
-    // signature is `try_get<'a, I, T>(&'a self, idx: I)` — we fix `I = &str`
-    // (the column name) and let Rust infer `T` from the field's declared type.
+    // One prefix-aware decode per field. For direct types, uses
+    // `row.try_get::<_, _>` (same as before). For widened types
+    // (i8/u8/u16/u32/u64), delegates to the appropriate
+    // `decode_narrowed_by_name` / `decode_u64_from_decimal_by_name` variant
+    // so the narrowing conversion is applied after the wide-type read.
     let field_assignments: Vec<TokenStream> = struct_item
         .fields
         .iter()
@@ -64,8 +65,15 @@ pub fn expand(
             // Raw identifiers (`r#type`) must strip the `r#` prefix to match
             // the SQL column name — same rule as `from_row::expand`.
             let col_name = crate::syn_util::column_name_from_field(f);
+            let kind = bind_kind(&f.ty);
+            let nullable = is_nullable(&f.ty);
+            let tracked = is_tracked_inner(&f.ty);
+            let col_name_expr = quote! {
+                &::std::format!("{}{}", prefix, #col_name) as &str
+            };
+            let decode_expr = decode_joined_field_tokens(&kind, nullable, tracked, col_name_expr);
             quote! {
-                #fname: row.try_get::<_, _>(&::std::format!("{}{}", prefix, #col_name) as &str)?
+                #fname: #decode_expr
             }
         })
         .collect();

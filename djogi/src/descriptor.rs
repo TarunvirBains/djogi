@@ -1415,6 +1415,59 @@ mod protected_field_metadata_tests {
     }
 }
 
+/// The Rust source type of a model field when its Rust type does not have a
+/// native `tokio_postgres::ToSql` / `FromSql` implementation that targets the
+/// desired SQL column type.
+///
+/// When a `#[model]` field uses one of these Rust types, the `#[model]` macro
+/// emits bind shims that widen the value to a wire-compatible type before
+/// binding, and decode shims that narrow the wire value back with a
+/// bounds-checked `try_from` / `to_u64`. The migration projection layer
+/// (`djogi::migrate::projection::field_type_check`) reads this discriminator
+/// to emit a per-column range CHECK that rejects external writes outside the
+/// Rust type's representable range.
+///
+/// `None` on `FieldDescriptor` means the field maps directly to the SQL
+/// carrier (e.g. `i32 → INTEGER`, `i64 → BIGINT`, `String → TEXT`); no
+/// shim or range CHECK is emitted.
+///
+/// # Wire-type mapping
+///
+/// | `RustSourceType` | SQL carrier        | Bind shim        | Decode shim          |
+/// |------------------|--------------------|------------------|----------------------|
+/// | `I8`             | SMALLINT (INT2)    | `i16::from(v)`   | `i8::try_from(i16)`  |
+/// | `U8`             | SMALLINT (INT2)    | `i16::from(v)`   | `u8::try_from(i16)`  |
+/// | `U16`            | INTEGER  (INT4)    | `i32::from(v)`   | `u16::try_from(i32)` |
+/// | `U32`            | BIGINT   (INT8)    | `i64::from(v)`   | `u32::try_from(i64)` |
+/// | `U64`            | NUMERIC(20, 0)     | `Decimal::from(v)` | `Decimal::to_u64()` |
+///
+/// # Why not `i8` in a native `ToSql` impl?
+///
+/// `postgres-types` does implement `ToSql` for `i8`, but it maps to the
+/// Postgres pseudo-type `"char"` (a 1-byte type used internally by system
+/// catalogs), **not** to `SMALLINT`. A djogi model field typed `i8` carries
+/// a `SMALLINT` column (range-checked to `−128..=127`) so adopters get a
+/// proper SQL integer type. The bind shim bridges the gap.
+///
+/// # Why not `u32` in a native `ToSql` impl?
+///
+/// `postgres-types` implements `ToSql for u32` targeting `OID`, not `BIGINT`.
+/// A djogi `u32` field carries a `BIGINT` column (CHECK `0..=4294967295`);
+/// the bind shim bridges the gap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RustSourceType {
+    /// `i8` — stored as SMALLINT; range `−128..=127`.
+    I8,
+    /// `u8` — stored as SMALLINT; range `0..=255`.
+    U8,
+    /// `u16` — stored as INTEGER; range `0..=65535`.
+    U16,
+    /// `u32` — stored as BIGINT; range `0..=4294967295`.
+    U32,
+    /// `u64` — stored as NUMERIC(20, 0); range `0..=18446744073709551615`.
+    U64,
+}
+
 /// Metadata for a single model field.
 ///
 /// `ModelDescriptor::fields` is the complete schema contract — it
@@ -1596,6 +1649,24 @@ pub struct FieldDescriptor {
     /// SoftDeletable>` / `<M as Auditable>`) rather than from this
     /// metadata slot.
     pub composed_via: Option<&'static str>,
+
+    /// Rust source type discriminator for fields whose Rust type has no
+    /// native `tokio_postgres::ToSql` / `FromSql` impl targeting the SQL
+    /// carrier, or whose native impl maps to the **wrong** Postgres type.
+    ///
+    /// When `Some`, the `#[model]` macro emits bind shims (widen before
+    /// binding) and decode shims (narrow with a bounds-checked `try_from`).
+    /// The migration projection layer reads this field to emit a per-column
+    /// range CHECK that rejects external writes outside the Rust type's
+    /// representable range.
+    ///
+    /// `None` for framework columns (`id`, `created_at`, `updated_at`) and
+    /// for user fields whose Rust type maps directly to the SQL carrier
+    /// (`i16 → SMALLINT`, `i32 → INTEGER`, `i64 → BIGINT`, `String → TEXT`,
+    /// etc.). See [`RustSourceType`] for the full mapping table.
+    ///
+    /// Phase 8.5 Cluster 2 (djogi#190 — integer widening bind/decode shims).
+    pub rust_source_type: Option<RustSourceType>,
 }
 
 /// Adopter-supplied override for the Postgres volatility class of a
@@ -1672,6 +1743,10 @@ pub const fn field_descriptor(
         // `None`. Composition-derive emitters (Auditable / SoftDeletable)
         // override this on the specific contributed columns.
         composed_via: None,
+        // Phase 8.5 Cluster 2 (djogi#190) — source-type discriminator.
+        // Defaults to `None` (direct bind — no shim needed). The macro
+        // sets `Some(RustSourceType::*)` for i8 / u8 / u16 / u32 / u64.
+        rust_source_type: None,
     }
 }
 

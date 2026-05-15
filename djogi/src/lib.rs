@@ -144,7 +144,12 @@ pub mod __private {
         /// Canonical row-decode trait (T3). Emitted by `#[model]` with
         /// `const COLUMNS`, `const COLUMN_LIST`, and an ordinal
         /// `from_pg_row` body guarded by per-column `debug_assert!`s.
-        pub use crate::pg::decode::{FromJoinedPgRow, FromPgRow, decode_at, try_get_scalar};
+        pub use crate::pg::decode::{
+            FromJoinedPgRow, FromPgRow, decode_at, decode_narrowed, decode_narrowed_by_name,
+            decode_narrowed_opt, decode_narrowed_opt_by_name, decode_opt_u64_from_decimal,
+            decode_opt_u64_from_decimal_by_name, decode_u64_from_decimal,
+            decode_u64_from_decimal_by_name, try_get_scalar,
+        };
         pub use ::postgres_types::{FromSql, ToSql, Type as PgType};
         pub use ::tokio_postgres::Row as PgRow;
         pub use ::tokio_postgres::Statement;
@@ -294,7 +299,8 @@ pub use descriptor::{
     ComputedFieldDescriptor, DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor,
     FieldSqlType, GeographySubtype, IndexColumnSpec, IndexKind, IndexNameKind, IndexNameTarget,
     IndexNullsOrder, IndexOrder, IndexSpec, IndexTarget, IndexType, ModelDescriptor, PartitionSpec,
-    PkType, ProtectedFieldMetadata, RedactionPolicy, RetentionLabel, Sensitivity, index_name,
+    PkType, ProtectedFieldMetadata, RedactionPolicy, RetentionLabel, RustSourceType, Sensitivity,
+    index_name,
 };
 // Top-level `djogi::GeoPoint` re-export for spatial models. Feature-gated so
 // the symbol does not appear in default-feature builds or `cargo doc` output
@@ -483,7 +489,7 @@ pub mod prelude {
         DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType,
         GeographySubtype, IndexColumnSpec, IndexKind, IndexNullsOrder, IndexOrder, IndexSpec,
         IndexTarget, IndexType, ModelDescriptor, PartitionSpec, PkType, ProtectedFieldMetadata,
-        RedactionPolicy, RetentionLabel, Sensitivity,
+        RedactionPolicy, RetentionLabel, RustSourceType, Sensitivity,
     };
     pub use crate::error::{DbError, DjogiError};
     // The `djogi::Result<T>` alias is intentionally NOT re-exported through

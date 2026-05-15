@@ -22,6 +22,7 @@ use crate::model::attrs::{
     RelationKind as MacroRelationKind, detect_relation, field_sql_type_category,
     on_delete_str_to_tokens, rust_type_to_sql, unwrap_option, unwrap_schema_type,
 };
+use crate::model::sql_bind::rust_source_type_tokens_for_type;
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::ItemStruct;
@@ -75,6 +76,9 @@ fn framework_field_descriptor(name: &str, sql_type_tokens: TokenStream, pk: bool
             // Phase 8α T2.5 — framework-injected columns are never
             // contributed by a composition derive.
             composed_via: ::std::option::Option::None,
+            // Framework-injected columns use identity-mapped types
+            // (HeerId → BIGINT, DateTime → TIMESTAMPTZ, etc.); no shim.
+            rust_source_type: ::std::option::Option::None,
         }
     }
 }
@@ -482,6 +486,16 @@ fn try_expand(
                 quote! { ::std::option::Option::None }
             };
 
+            // Phase 8.5 Cluster 2 (djogi#190) — source-type discriminator.
+            // FK columns always get `None` (their type is the target's PK,
+            // which is always identity-width). Relation fields are scalar
+            // proxies for the FK column; the source type is irrelevant there.
+            let rust_source_type_tokens: TokenStream = if relation.is_some() {
+                quote! { ::std::option::Option::None }
+            } else {
+                rust_source_type_tokens_for_type(&inner_ty)
+            };
+
             quote! {
                 ::djogi::FieldDescriptor {
                     name: #name,
@@ -527,6 +541,10 @@ fn try_expand(
                     // field-name + attribute opt-in to eliminate the
                     // adopter false-positive risk); `None` otherwise.
                     composed_via: #composed_via_tokens,
+                    // Phase 8.5 Cluster 2 (djogi#190) — bind/decode
+                    // source-type discriminator. `Some(RustSourceType::*)`
+                    // for i8/u8/u16/u32/u64; `None` for direct-mapped types.
+                    rust_source_type: #rust_source_type_tokens,
                 }
             }
         })
@@ -1083,6 +1101,10 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         "TIMESTAMPTZ" => quote! { ::djogi::FieldSqlType::Timestamptz },
         "DATE" => quote! { ::djogi::FieldSqlType::Date },
         "NUMERIC" => quote! { ::djogi::FieldSqlType::Numeric },
+        // djogi#190 — u64 → NUMERIC(20, 0) carrier.
+        "NUMERIC(20, 0)" => quote! {
+            ::djogi::FieldSqlType::NumericPrecision { precision: 20u8, scale: 0u8 }
+        },
         "UUID" => quote! { ::djogi::FieldSqlType::Uuid },
         "JSONB" => quote! { ::djogi::FieldSqlType::Jsonb },
         "TEXT[]" => quote! { ::djogi::FieldSqlType::TextArray },
