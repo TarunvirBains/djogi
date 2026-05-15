@@ -1,12 +1,19 @@
 # djogi-allow-secret-file: local dev cluster fixture; the `djogi:djogi`
-# credentials are intentionally weak, not production, and never accept remote
-# connections (no ports bound on a public interface). See `cargo xtask
-# check-secrets` for the scanner that consults this marker.
+# credentials are intentionally weak, not production, and the published port
+# is bound to the loopback interface only (`127.0.0.1`), so the container
+# never accepts remote connections. See `cargo xtask check-secrets` for the
+# scanner that consults this marker.
 services:
   postgres:
     image: postgis/postgis:18-3.6
     ports:
-      - "5432:5432"
+      # Bind to loopback explicitly. Docker's default `"5432:5432"` shorthand
+      # listens on `0.0.0.0`, which would expose the dev DB to anything that
+      # can reach the host's IP — coffee-shop wifi, a misconfigured firewall,
+      # a container on the same bridge network. Loopback keeps the
+      # intentionally weak `djogi:djogi` credentials behind the host's
+      # network stack.
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: djogi
       POSTGRES_PASSWORD: djogi
