@@ -707,6 +707,31 @@ where
             // rejected combos surface as DjogiError::UnsupportedAggregate.
             aggregates.check_legality()?;
 
+            // Reject pair-only aggregates on the single-Model annotate
+            // path. Slots whose `requires_closure_pair_join()` returns
+            // true (today: `PairClosureKinshipSum<C>`) reference the
+            // pair-tuple emitter's `la.` / `ra.` closure aliases AND
+            // its `l.` / `r.` pair-side aliases — none of which exist
+            // in a single-Model FROM clause. Without this gate the
+            // query would reach Postgres as `SELECT ..., SUM(la.path *
+            // ra.path * ...) AS __djogi_agg_0 FROM <table> AS t` and
+            // surface a `42P01 missing FROM-clause` error at execute
+            // time. The check turns that into a typed
+            // `DjogiError::Validation` with a remediation hint —
+            // same shape the joined path uses for its dual error of
+            // "kinship aggregate without closure-pair join".
+            if aggregates.requires_closure_pair_join() {
+                return Err(DjogiError::Validation(
+                    "single-Model QuerySet::annotate cannot host a pair-tuple aggregate \
+                     (e.g. PairClosureKinshipSum). These aggregates reference the pair-tuple \
+                     emitter's `l.` / `r.` / `la.` / `ra.` aliases which are only in scope \
+                     inside a JoinedQuerySet. Use \
+                     `model_objects.self_pairs().left_join_closure_pair::<C>().annotate(...)` \
+                     to reach the joined-annotated terminal."
+                        .to_string(),
+                ));
+            }
+
             let acc = build_annotated_select_for_fetch(
                 &qs,
                 |acc| {

@@ -279,6 +279,7 @@ mod tests {
         // rendered SQL shape before any database round-trip.
         use crate::expr::sql::emit_expr;
         use crate::pg::accumulator::SqlAccumulator;
+        use crate::query::portable::SqlEmitContext;
 
         let fref = FtsFieldRef::<FakeBook>::__new("search", "english");
         let cond = fref.matches(TsQuery::new("planet & earth"));
@@ -288,7 +289,8 @@ mod tests {
         };
 
         let mut acc = SqlAccumulator::new("book");
-        emit_expr(&mut acc, &expr.node).expect("FTS expression should lower to SQL");
+        emit_expr(&mut acc, &expr.node, SqlEmitContext::root())
+            .expect("FTS expression should lower to SQL");
         let sql = acc.sql();
 
         assert!(
@@ -302,12 +304,14 @@ mod tests {
     fn fts_rank_sql_emission() {
         use crate::expr::sql::emit_expr;
         use crate::pg::accumulator::SqlAccumulator;
+        use crate::query::portable::SqlEmitContext;
 
         let fref = FtsFieldRef::<FakeBook>::__new("search", "english");
         let rank_expr = fref.rank(TsQuery::new("planet & earth"));
 
         let mut acc = SqlAccumulator::new("book");
-        emit_expr(&mut acc, &rank_expr.node).expect("FTS expression should lower to SQL");
+        emit_expr(&mut acc, &rank_expr.node, SqlEmitContext::root())
+            .expect("FTS expression should lower to SQL");
         let sql = acc.sql();
 
         assert!(

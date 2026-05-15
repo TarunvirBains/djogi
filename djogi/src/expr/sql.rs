@@ -35,21 +35,21 @@
 //! [`crate::query::sql::emit_condition`] takes a
 //! `parent_table: Option<&'static str>` argument so `select_related`
 //! joined queries qualify bare column references as `{table}.{col}`.
-//! The expression IR does **not** carry that argument: its scope is
-//! single-table expressions (field-vs-field, arithmetic, literal),
-//! and joined expressions would need a separate design pass that
-//! answers ownership questions (which table owns `OuterRef { column }`?
-//! which child table sources an aggregate over a joined collection?).
+//! The expression IR now threads the same qualifier through
+//! [`emit_expr`] via [`SqlEmitContext`]: the
+//! [`ExprNode::Field { column }`] arm calls
+//! [`SqlEmitContext::push_column`] so a pair-tuple joined query's
+//! `filter_expr` emits `l.<col>` / `r.<col>` instead of bare names
+//! when the WHERE clause is qualified for either pair side.
 //!
-//! Concretely: `Condition::Expr` inside a `select_related` filter
-//! emits a bare column reference, which Postgres flags as ambiguous if
-//! the child contributes a same-named column. Stay on the basic
-//! `filter` closure when combining with `select_related`; `filter_expr`
-//! is aimed at non-joined predicates.
+//! Non-joined callers (the vast majority — single-Model `filter`,
+//! aggregate scalar terminals, `update`, `delete`, etc.) pass
+//! [`SqlEmitContext::root()`] which qualifies nothing, preserving
+//! the bare-column emission Phase 2 shipped.
 
 use crate::expr::node::{AggOp, CmpOp, ExprNode, SubqueryNode};
 use crate::pg::accumulator::SqlAccumulator;
-use crate::query::portable::PortablePredicateError;
+use crate::query::portable::{PortablePredicateError, SqlEmitContext};
 
 /// Check whether an [`ExprNode`] tree contains any aggregate whose `DISTINCT`
 /// modifier combination Postgres would reject or that Djogi cannot currently
@@ -304,15 +304,30 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
 ///   the sealed trait + phantom-typed wrapper is the seal.
 /// - `ExprNode::Field { column }`'s column string is always a
 ///   validated identifier (see
-///   [`crate::query::field::FieldRef::new`]); safe to `acc.push_sql(*column)`.
+///   [`crate::query::field::FieldRef::new`]); safe to push under
+///   [`SqlEmitContext::push_column`].
+///
+/// # `ctx`
+///
+/// Threads the parent-table qualifier through to every
+/// [`ExprNode::Field`] arm. Joined-query call sites (the pair-tuple
+/// emitter's `filter_expr` on either side, single-Model
+/// `select_related`'s filter path) pass [`SqlEmitContext::joined(alias)`]
+/// so a bare column reference renders as `<alias>.<column>`. Non-joined
+/// call sites pass [`SqlEmitContext::root()`] for the historical
+/// bare-column emission.
 pub(crate) fn emit_expr(
     acc: &mut SqlAccumulator,
     node: &ExprNode,
+    ctx: SqlEmitContext,
 ) -> Result<(), PortablePredicateError> {
     match node {
         ExprNode::Field { column } => {
-            // Bare column reference — validated at FieldRef construction.
-            acc.push_sql(column);
+            // Qualified column reference — `ctx.push_column` prepends
+            // the parent-table alias when set (joined / pair-tuple
+            // paths) and emits bare otherwise (non-joined). The column
+            // string is always validated at FieldRef construction.
+            ctx.push_column(acc, column);
         }
         // Phase 8β T4.2 — raw SQL fragment escape hatch for
         // `#[computed(sql = "...")]`. Wrapped in outer parens for
@@ -337,19 +352,19 @@ pub(crate) fn emit_expr(
             crate::query::sql::push_filter_value(acc, v.clone());
         }
         ExprNode::Add(lhs, rhs) => {
-            emit_arith(acc, lhs, " + ", rhs)?;
+            emit_arith(acc, lhs, " + ", rhs, ctx)?;
         }
         ExprNode::Sub(lhs, rhs) => {
-            emit_arith(acc, lhs, " - ", rhs)?;
+            emit_arith(acc, lhs, " - ", rhs, ctx)?;
         }
         ExprNode::Mul(lhs, rhs) => {
-            emit_arith(acc, lhs, " * ", rhs)?;
+            emit_arith(acc, lhs, " * ", rhs, ctx)?;
         }
         ExprNode::Div(lhs, rhs) => {
-            emit_arith(acc, lhs, " / ", rhs)?;
+            emit_arith(acc, lhs, " / ", rhs, ctx)?;
         }
         ExprNode::Cmp { op, lhs, rhs } => {
-            emit_expr(acc, lhs)?;
+            emit_expr(acc, lhs, ctx)?;
             acc.push_sql(match op {
                 CmpOp::Eq => " = ",
                 CmpOp::Neq => " <> ",
@@ -358,7 +373,7 @@ pub(crate) fn emit_expr(
                 CmpOp::Lt => " < ",
                 CmpOp::Lte => " <= ",
             });
-            emit_expr(acc, rhs)?;
+            emit_expr(acc, rhs, ctx)?;
         }
         ExprNode::Aggregate {
             op,
@@ -417,36 +432,38 @@ pub(crate) fn emit_expr(
                     if *distinct {
                         acc.push_sql("DISTINCT ");
                     }
-                    emit_expr(acc, arg)?;
+                    emit_expr(acc, arg, ctx)?;
                     acc.push_sql(", ");
                     acc.push_bind(sep.clone());
                     push_aggregate_order_by(acc, order_by);
                     acc.push_sql(")");
                 }
-                AggOp::Count => emit_unary_agg(acc, "COUNT(", *distinct, arg, order_by)?,
-                AggOp::Sum => emit_unary_agg(acc, "SUM(", *distinct, arg, order_by)?,
-                AggOp::Avg => emit_unary_agg(acc, "AVG(", *distinct, arg, order_by)?,
-                AggOp::Min => emit_unary_agg(acc, "MIN(", *distinct, arg, order_by)?,
-                AggOp::Max => emit_unary_agg(acc, "MAX(", *distinct, arg, order_by)?,
-                AggOp::ArrayAgg => emit_unary_agg(acc, "ARRAY_AGG(", *distinct, arg, order_by)?,
+                AggOp::Count => emit_unary_agg(acc, "COUNT(", *distinct, arg, order_by, ctx)?,
+                AggOp::Sum => emit_unary_agg(acc, "SUM(", *distinct, arg, order_by, ctx)?,
+                AggOp::Avg => emit_unary_agg(acc, "AVG(", *distinct, arg, order_by, ctx)?,
+                AggOp::Min => emit_unary_agg(acc, "MIN(", *distinct, arg, order_by, ctx)?,
+                AggOp::Max => emit_unary_agg(acc, "MAX(", *distinct, arg, order_by, ctx)?,
+                AggOp::ArrayAgg => {
+                    emit_unary_agg(acc, "ARRAY_AGG(", *distinct, arg, order_by, ctx)?
+                }
                 // JSONB_AGG (not JSON_AGG) — Djogi standardises on JSONB
                 // for all JSON wire and storage. See docs/spec/decisions.md.
-                AggOp::JsonAgg => emit_unary_agg(acc, "JSONB_AGG(", *distinct, arg, order_by)?,
+                AggOp::JsonAgg => emit_unary_agg(acc, "JSONB_AGG(", *distinct, arg, order_by, ctx)?,
                 // BOOL_AND / BOOL_OR accept DISTINCT (no-op for booleans
                 // but valid Postgres syntax).
-                AggOp::BoolAnd => emit_unary_agg(acc, "BOOL_AND(", *distinct, arg, order_by)?,
-                AggOp::BoolOr => emit_unary_agg(acc, "BOOL_OR(", *distinct, arg, order_by)?,
+                AggOp::BoolAnd => emit_unary_agg(acc, "BOOL_AND(", *distinct, arg, order_by, ctx)?,
+                AggOp::BoolOr => emit_unary_agg(acc, "BOOL_OR(", *distinct, arg, order_by, ctx)?,
                 // EVERY is the SQL-standard alias for BOOL_AND. Both produce
                 // identical results in Postgres; the IR carries the alias
                 // separately so the emitter renders the keyword the user
                 // wrote (call to `.every()` → `EVERY(col)`, never silently
                 // rewritten to `BOOL_AND(col)`).
-                AggOp::Every => emit_unary_agg(acc, "EVERY(", *distinct, arg, order_by)?,
+                AggOp::Every => emit_unary_agg(acc, "EVERY(", *distinct, arg, order_by, ctx)?,
                 // Bitwise integer aggregates — Postgres returns the
                 // operand's own integer type, so no narrowing cast.
-                AggOp::BitAnd => emit_unary_agg(acc, "BIT_AND(", *distinct, arg, order_by)?,
-                AggOp::BitOr => emit_unary_agg(acc, "BIT_OR(", *distinct, arg, order_by)?,
-                AggOp::BitXor => emit_unary_agg(acc, "BIT_XOR(", *distinct, arg, order_by)?,
+                AggOp::BitAnd => emit_unary_agg(acc, "BIT_AND(", *distinct, arg, order_by, ctx)?,
+                AggOp::BitOr => emit_unary_agg(acc, "BIT_OR(", *distinct, arg, order_by, ctx)?,
+                AggOp::BitXor => emit_unary_agg(acc, "BIT_XOR(", *distinct, arg, order_by, ctx)?,
                 // Statistics aggregates — Postgres returns NUMERIC for
                 // integer inputs and DOUBLE PRECISION for float; the
                 // typed surface narrows everywhere via the cast slot
@@ -455,12 +472,16 @@ pub(crate) fn emit_expr(
                 // STDDEV_SAMP / VAR_SAMP respectively; preserved as
                 // distinct keywords so the emitter honours the caller's
                 // spelling (matching the EVERY/BOOL_AND alias treatment).
-                AggOp::StddevPop => emit_unary_agg(acc, "STDDEV_POP(", *distinct, arg, order_by)?,
-                AggOp::StddevSamp => emit_unary_agg(acc, "STDDEV_SAMP(", *distinct, arg, order_by)?,
-                AggOp::Stddev => emit_unary_agg(acc, "STDDEV(", *distinct, arg, order_by)?,
-                AggOp::VarPop => emit_unary_agg(acc, "VAR_POP(", *distinct, arg, order_by)?,
-                AggOp::VarSamp => emit_unary_agg(acc, "VAR_SAMP(", *distinct, arg, order_by)?,
-                AggOp::Variance => emit_unary_agg(acc, "VARIANCE(", *distinct, arg, order_by)?,
+                AggOp::StddevPop => {
+                    emit_unary_agg(acc, "STDDEV_POP(", *distinct, arg, order_by, ctx)?
+                }
+                AggOp::StddevSamp => {
+                    emit_unary_agg(acc, "STDDEV_SAMP(", *distinct, arg, order_by, ctx)?
+                }
+                AggOp::Stddev => emit_unary_agg(acc, "STDDEV(", *distinct, arg, order_by, ctx)?,
+                AggOp::VarPop => emit_unary_agg(acc, "VAR_POP(", *distinct, arg, order_by, ctx)?,
+                AggOp::VarSamp => emit_unary_agg(acc, "VAR_SAMP(", *distinct, arg, order_by, ctx)?,
+                AggOp::Variance => emit_unary_agg(acc, "VARIANCE(", *distinct, arg, order_by, ctx)?,
                 // Binary (two-arg) aggregates — `arg` carries y / key,
                 // `arg2` carries x / value. Routed through the shared
                 // `emit_binary_agg` helper which handles the
@@ -477,6 +498,7 @@ pub(crate) fn emit_expr(
                     arg2.as_deref()
                         .expect("CovarPop aggregate must have arg2 set"),
                     order_by,
+                    ctx,
                 )?,
                 AggOp::CovarSamp => emit_binary_agg(
                     acc,
@@ -486,6 +508,7 @@ pub(crate) fn emit_expr(
                     arg2.as_deref()
                         .expect("CovarSamp aggregate must have arg2 set"),
                     order_by,
+                    ctx,
                 )?,
                 AggOp::Corr => emit_binary_agg(
                     acc,
@@ -494,6 +517,7 @@ pub(crate) fn emit_expr(
                     arg,
                     arg2.as_deref().expect("Corr aggregate must have arg2 set"),
                     order_by,
+                    ctx,
                 )?,
                 // Regression family — every variant takes (y, x) and
                 // returns DOUBLE PRECISION except REGR_COUNT (BIGINT).
@@ -508,6 +532,7 @@ pub(crate) fn emit_expr(
                     arg2.as_deref()
                         .expect("RegrAvgx aggregate must have arg2 set"),
                     order_by,
+                    ctx,
                 )?,
                 AggOp::RegrAvgy => emit_binary_agg(
                     acc,
@@ -517,6 +542,7 @@ pub(crate) fn emit_expr(
                     arg2.as_deref()
                         .expect("RegrAvgy aggregate must have arg2 set"),
                     order_by,
+                    ctx,
                 )?,
                 AggOp::RegrCount => emit_binary_agg(
                     acc,
@@ -526,6 +552,7 @@ pub(crate) fn emit_expr(
                     arg2.as_deref()
                         .expect("RegrCount aggregate must have arg2 set"),
                     order_by,
+                    ctx,
                 )?,
                 AggOp::RegrIntercept => emit_binary_agg(
                     acc,
@@ -535,6 +562,7 @@ pub(crate) fn emit_expr(
                     arg2.as_deref()
                         .expect("RegrIntercept aggregate must have arg2 set"),
                     order_by,
+                    ctx,
                 )?,
                 AggOp::RegrR2 => emit_binary_agg(
                     acc,
@@ -544,6 +572,7 @@ pub(crate) fn emit_expr(
                     arg2.as_deref()
                         .expect("RegrR2 aggregate must have arg2 set"),
                     order_by,
+                    ctx,
                 )?,
                 AggOp::RegrSlope => emit_binary_agg(
                     acc,
@@ -553,6 +582,7 @@ pub(crate) fn emit_expr(
                     arg2.as_deref()
                         .expect("RegrSlope aggregate must have arg2 set"),
                     order_by,
+                    ctx,
                 )?,
                 AggOp::RegrSxx => emit_binary_agg(
                     acc,
@@ -562,6 +592,7 @@ pub(crate) fn emit_expr(
                     arg2.as_deref()
                         .expect("RegrSxx aggregate must have arg2 set"),
                     order_by,
+                    ctx,
                 )?,
                 AggOp::RegrSxy => emit_binary_agg(
                     acc,
@@ -571,6 +602,7 @@ pub(crate) fn emit_expr(
                     arg2.as_deref()
                         .expect("RegrSxy aggregate must have arg2 set"),
                     order_by,
+                    ctx,
                 )?,
                 AggOp::RegrSyy => emit_binary_agg(
                     acc,
@@ -580,6 +612,7 @@ pub(crate) fn emit_expr(
                     arg2.as_deref()
                         .expect("RegrSyy aggregate must have arg2 set"),
                     order_by,
+                    ctx,
                 )?,
                 // JSON-object aggregates — both binary, both build an
                 // object from (key, value) pairs. JSON_OBJECT_AGG
@@ -595,6 +628,7 @@ pub(crate) fn emit_expr(
                     arg2.as_deref()
                         .expect("JsonObjectAgg aggregate must have arg2 set"),
                     order_by,
+                    ctx,
                 )?,
                 AggOp::JsonbObjectAgg => emit_binary_agg(
                     acc,
@@ -604,6 +638,7 @@ pub(crate) fn emit_expr(
                     arg2.as_deref()
                         .expect("JsonbObjectAgg aggregate must have arg2 set"),
                     order_by,
+                    ctx,
                 )?,
                 // GROUPING(col) — single-column form. Postgres also
                 // supports a variadic GROUPING(c1, c2, …, cN) that
@@ -613,21 +648,21 @@ pub(crate) fn emit_expr(
                 // rationale). The structural shape (one arg, no
                 // separator) matches every other unary aggregate, so
                 // routes through `emit_unary_agg`.
-                AggOp::Grouping => emit_unary_agg(acc, "GROUPING(", *distinct, arg, order_by)?,
+                AggOp::Grouping => emit_unary_agg(acc, "GROUPING(", *distinct, arg, order_by, ctx)?,
                 // Ordered-set aggregates (Cluster E T7) — emit
                 // `OP(arg) WITHIN GROUP (ORDER BY target)`. The arg
                 // slot carries the function-call literal (percentile
                 // fraction); the target lives in within_group_order_by.
                 AggOp::PercentileCont => {
                     acc.push_sql("PERCENTILE_CONT(");
-                    emit_expr(acc, arg)?;
+                    emit_expr(acc, arg, ctx)?;
                     acc.push_sql(") WITHIN GROUP (ORDER BY ");
                     emit_within_group_target(acc, within_group_order_by);
                     acc.push_sql(")");
                 }
                 AggOp::PercentileDisc => {
                     acc.push_sql("PERCENTILE_DISC(");
-                    emit_expr(acc, arg)?;
+                    emit_expr(acc, arg, ctx)?;
                     acc.push_sql(") WITHIN GROUP (ORDER BY ");
                     emit_within_group_target(acc, within_group_order_by);
                     acc.push_sql(")");
@@ -646,28 +681,28 @@ pub(crate) fn emit_expr(
                 // GROUP target column's type).
                 AggOp::HypotheticalRank => {
                     acc.push_sql("RANK(");
-                    emit_expr(acc, arg)?;
+                    emit_expr(acc, arg, ctx)?;
                     acc.push_sql(") WITHIN GROUP (ORDER BY ");
                     emit_within_group_target(acc, within_group_order_by);
                     acc.push_sql(")");
                 }
                 AggOp::HypotheticalDenseRank => {
                     acc.push_sql("DENSE_RANK(");
-                    emit_expr(acc, arg)?;
+                    emit_expr(acc, arg, ctx)?;
                     acc.push_sql(") WITHIN GROUP (ORDER BY ");
                     emit_within_group_target(acc, within_group_order_by);
                     acc.push_sql(")");
                 }
                 AggOp::HypotheticalPercentRank => {
                     acc.push_sql("PERCENT_RANK(");
-                    emit_expr(acc, arg)?;
+                    emit_expr(acc, arg, ctx)?;
                     acc.push_sql(") WITHIN GROUP (ORDER BY ");
                     emit_within_group_target(acc, within_group_order_by);
                     acc.push_sql(")");
                 }
                 AggOp::HypotheticalCumeDist => {
                     acc.push_sql("CUME_DIST(");
-                    emit_expr(acc, arg)?;
+                    emit_expr(acc, arg, ctx)?;
                     acc.push_sql(") WITHIN GROUP (ORDER BY ");
                     emit_within_group_target(acc, within_group_order_by);
                     acc.push_sql(")");
@@ -694,6 +729,7 @@ pub(crate) fn emit_expr(
                     arg,
                     order_by,
                     filter.as_deref(),
+                    ctx,
                 )?,
                 // Cluster E round-5 BLOCK-2 closure: ConvexHull
                 // migrated from SpatialExpr::ConvexHull to a proper
@@ -710,6 +746,7 @@ pub(crate) fn emit_expr(
                     arg,
                     order_by,
                     filter.as_deref(),
+                    ctx,
                 )?,
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialCollect => emit_spatial_unary_agg(
@@ -721,6 +758,7 @@ pub(crate) fn emit_expr(
                     arg,
                     order_by,
                     filter.as_deref(),
+                    ctx,
                 )?,
                 // T13 — region / bounding-box aggregates. `ST_Extent` /
                 // `ST_3DExtent` return `box2d` / `box3d` respectively,
@@ -739,6 +777,7 @@ pub(crate) fn emit_expr(
                     arg,
                     order_by,
                     filter.as_deref(),
+                    ctx,
                 )?,
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialExtent => emit_spatial_unary_agg(
@@ -750,6 +789,7 @@ pub(crate) fn emit_expr(
                     arg,
                     order_by,
                     filter.as_deref(),
+                    ctx,
                 )?,
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialExtent3D => emit_spatial_unary_agg(
@@ -761,6 +801,7 @@ pub(crate) fn emit_expr(
                     arg,
                     order_by,
                     filter.as_deref(),
+                    ctx,
                 )?,
                 // T14 — line / polygon aggregates. `ST_MakeLine` is
                 // order-sensitive (the per-aggregate ORDER BY controls
@@ -779,6 +820,7 @@ pub(crate) fn emit_expr(
                     arg,
                     order_by,
                     filter.as_deref(),
+                    ctx,
                 )?,
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialLineAgg => emit_spatial_unary_agg(
@@ -790,6 +832,7 @@ pub(crate) fn emit_expr(
                     arg,
                     order_by,
                     filter.as_deref(),
+                    ctx,
                 )?,
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialPolygonAgg => emit_spatial_unary_agg(
@@ -806,6 +849,7 @@ pub(crate) fn emit_expr(
                     arg,
                     order_by,
                     filter.as_deref(),
+                    ctx,
                 )?,
                 // T15 — clustering aggregates. Both return `geometry[]`
                 // at the Postgres level; the trailing `::geography[]`
@@ -823,6 +867,7 @@ pub(crate) fn emit_expr(
                     arg,
                     order_by,
                     filter.as_deref(),
+                    ctx,
                 )?,
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialClusterWithin(distance) => {
@@ -841,14 +886,14 @@ pub(crate) fn emit_expr(
                     if *distinct {
                         acc.push_sql("DISTINCT ");
                     }
-                    emit_expr(acc, arg)?;
+                    emit_expr(acc, arg, ctx)?;
                     acc.push_sql("::geometry, ");
                     acc.push_bind(*distance);
                     push_aggregate_order_by(acc, order_by);
                     acc.push_sql(")");
                     if let Some(cond) = filter.as_deref() {
                         acc.push_sql(" FILTER (WHERE ");
-                        emit_expr(acc, cond)?;
+                        emit_expr(acc, cond, ctx)?;
                         acc.push_sql(")");
                     }
                     if needs_filter_paren {
@@ -870,6 +915,7 @@ pub(crate) fn emit_expr(
                     arg,
                     order_by,
                     filter.as_deref(),
+                    ctx,
                 )?,
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialPolygonize => emit_spatial_unary_agg(
@@ -881,6 +927,7 @@ pub(crate) fn emit_expr(
                     arg,
                     order_by,
                     filter.as_deref(),
+                    ctx,
                 )?,
             }
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
@@ -903,7 +950,7 @@ pub(crate) fn emit_expr(
                 && let Some(cond) = filter
             {
                 acc.push_sql(" FILTER (WHERE ");
-                emit_expr(acc, cond)?;
+                emit_expr(acc, cond, ctx)?;
                 acc.push_sql(")");
             }
 
@@ -934,13 +981,13 @@ pub(crate) fn emit_expr(
             acc.push_sql("CASE ");
             for (cond, val) in arms {
                 acc.push_sql("WHEN ");
-                emit_expr(acc, cond)?;
+                emit_expr(acc, cond, ctx)?;
                 acc.push_sql(" THEN ");
-                emit_expr(acc, val)?;
+                emit_expr(acc, val, ctx)?;
                 acc.push_sql(" ");
             }
             acc.push_sql("ELSE ");
-            emit_expr(acc, otherwise)?;
+            emit_expr(acc, otherwise, ctx)?;
             acc.push_sql(" END");
         }
         ExprNode::Exists(sub) => {
@@ -1122,12 +1169,13 @@ fn emit_unary_agg(
     distinct: bool,
     arg: &ExprNode,
     order_by: &[crate::query::order::OrderExpr],
+    ctx: SqlEmitContext,
 ) -> Result<(), PortablePredicateError> {
     acc.push_sql(keyword_opener);
     if distinct {
         acc.push_sql("DISTINCT ");
     }
-    emit_expr(acc, arg)?;
+    emit_expr(acc, arg, ctx)?;
     push_aggregate_order_by(acc, order_by);
     acc.push_sql(")");
     Ok(())
@@ -1154,14 +1202,15 @@ fn emit_binary_agg(
     arg: &ExprNode,
     arg2: &ExprNode,
     order_by: &[crate::query::order::OrderExpr],
+    ctx: SqlEmitContext,
 ) -> Result<(), PortablePredicateError> {
     acc.push_sql(keyword_opener);
     if distinct {
         acc.push_sql("DISTINCT ");
     }
-    emit_expr(acc, arg)?;
+    emit_expr(acc, arg, ctx)?;
     acc.push_sql(", ");
-    emit_expr(acc, arg2)?;
+    emit_expr(acc, arg2, ctx)?;
     push_aggregate_order_by(acc, order_by);
     acc.push_sql(")");
     Ok(())
@@ -1274,6 +1323,7 @@ fn emit_spatial_unary_agg(
     arg: &ExprNode,
     order_by: &[crate::query::order::OrderExpr],
     filter: Option<&ExprNode>,
+    ctx: SqlEmitContext,
 ) -> Result<(), PortablePredicateError> {
     let has_outer_wrap = !outer_wrap_open.is_empty();
     // Parens needed for FILTER attachment ONLY when there's no outer
@@ -1289,14 +1339,14 @@ fn emit_spatial_unary_agg(
     if distinct {
         acc.push_sql("DISTINCT ");
     }
-    emit_expr(acc, arg)?;
+    emit_expr(acc, arg, ctx)?;
     acc.push_sql("::geometry");
     push_aggregate_order_by(acc, order_by);
     acc.push_sql(")"); // close inner aggregate (ST_Collect / ST_Union / etc.)
 
     if let Some(cond) = filter {
         acc.push_sql(" FILTER (WHERE ");
-        emit_expr(acc, cond)?;
+        emit_expr(acc, cond, ctx)?;
         acc.push_sql(")");
     }
 
@@ -1447,24 +1497,26 @@ fn emit_arith(
     lhs: &ExprNode,
     op: &'static str,
     rhs: &ExprNode,
+    ctx: SqlEmitContext,
 ) -> Result<(), PortablePredicateError> {
-    emit_wrapped_if_arith(acc, lhs)?;
+    emit_wrapped_if_arith(acc, lhs, ctx)?;
     acc.push_sql(op);
-    emit_wrapped_if_arith(acc, rhs)?;
+    emit_wrapped_if_arith(acc, rhs, ctx)?;
     Ok(())
 }
 
 fn emit_wrapped_if_arith(
     acc: &mut SqlAccumulator,
     node: &ExprNode,
+    ctx: SqlEmitContext,
 ) -> Result<(), PortablePredicateError> {
     match node {
         ExprNode::Add(..) | ExprNode::Sub(..) | ExprNode::Mul(..) | ExprNode::Div(..) => {
             acc.push_sql("(");
-            emit_expr(acc, node)?;
+            emit_expr(acc, node, ctx)?;
             acc.push_sql(")");
         }
-        _ => emit_expr(acc, node)?,
+        _ => emit_expr(acc, node, ctx)?,
     }
     Ok(())
 }
@@ -1549,7 +1601,8 @@ mod tests {
         let f: FieldRef<Post, i32> = FieldRef::new("view_count");
         let expr = f.as_expr().eq(Expr::literal(100i32));
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &expr.node).expect("expression should lower to SQL");
+        emit_expr(&mut acc, &expr.node, SqlEmitContext::root())
+            .expect("expression should lower to SQL");
         let sql = acc.sql();
         assert!(sql.contains("view_count = $1"), "got: {sql}");
     }
@@ -1563,7 +1616,8 @@ mod tests {
         let b: FieldRef<Post, i64> = FieldRef::new("editor_id");
         let expr = a.as_expr().eq(b.as_expr());
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &expr.node).expect("expression should lower to SQL");
+        emit_expr(&mut acc, &expr.node, SqlEmitContext::root())
+            .expect("expression should lower to SQL");
         let sql = acc.sql();
         assert_eq!(sql.trim(), "author_id = editor_id");
         assert!(!sql.contains('$'), "no binds expected, got: {sql}");
@@ -1577,7 +1631,8 @@ mod tests {
         let f: FieldRef<Post, i32> = FieldRef::new("view_count");
         let expr = f.as_expr() + Expr::literal(1i32);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &expr.node).expect("expression should lower to SQL");
+        emit_expr(&mut acc, &expr.node, SqlEmitContext::root())
+            .expect("expression should lower to SQL");
         let sql = acc.sql();
         assert!(sql.contains("view_count + $1"), "got: {sql}");
     }
@@ -1594,7 +1649,8 @@ mod tests {
         let c: FieldRef<Post, i32> = FieldRef::new("c");
         let expr = (a.as_expr() + b.as_expr()) * c.as_expr();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &expr.node).expect("expression should lower to SQL");
+        emit_expr(&mut acc, &expr.node, SqlEmitContext::root())
+            .expect("expression should lower to SQL");
         let sql = acc.sql();
         assert_eq!(sql.trim(), "(a + b) * c", "got: {sql}");
     }
@@ -1609,7 +1665,8 @@ mod tests {
     fn raw_sql_fragment_emits_verbatim_with_outer_parens() {
         let expr: Expr<f64> = Expr::__raw_sql_fragment("base_price * (1.0 + tax_rate)");
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &expr.node).expect("expression should lower to SQL");
+        emit_expr(&mut acc, &expr.node, SqlEmitContext::root())
+            .expect("expression should lower to SQL");
         let sql = acc.sql();
         assert_eq!(sql.trim(), "(base_price * (1.0 + tax_rate))");
     }
@@ -1623,7 +1680,8 @@ mod tests {
         let expr = Expr::<f64>::__raw_sql_fragment("base_price * (1.0 + tax_rate)")
             .gte(Expr::literal(100.0_f64));
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &expr.node).expect("expression should lower to SQL");
+        emit_expr(&mut acc, &expr.node, SqlEmitContext::root())
+            .expect("expression should lower to SQL");
         let sql = acc.sql();
         assert!(
             sql.contains("(base_price * (1.0 + tax_rate)) >= $1"),
@@ -1642,7 +1700,8 @@ mod tests {
         let c: FieldRef<Post, i32> = FieldRef::new("c");
         let expr = a.as_expr() + (b.as_expr() - c.as_expr());
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &expr.node).expect("expression should lower to SQL");
+        emit_expr(&mut acc, &expr.node, SqlEmitContext::root())
+            .expect("expression should lower to SQL");
         let sql = acc.sql();
         assert_eq!(sql.trim(), "a + (b - c)", "got: {sql}");
     }
@@ -1662,7 +1721,8 @@ mod tests {
         let c: FieldRef<Post, i32> = FieldRef::new("c");
         let expr = a.as_expr() + b.as_expr() + c.as_expr();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &expr.node).expect("expression should lower to SQL");
+        emit_expr(&mut acc, &expr.node, SqlEmitContext::root())
+            .expect("expression should lower to SQL");
         let sql = acc.sql();
         assert_eq!(sql.trim(), "(a + b) + c", "got: {sql}");
     }
@@ -1677,7 +1737,8 @@ mod tests {
     fn emit_current_year_no_binds() {
         let expr = Expr::current_year();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &expr.node).expect("expression should lower to SQL");
+        emit_expr(&mut acc, &expr.node, SqlEmitContext::root())
+            .expect("expression should lower to SQL");
         let sql = acc.sql();
         assert_eq!(
             sql.trim(),
@@ -1705,7 +1766,8 @@ mod tests {
         let f: FieldRef<Post, i32> = FieldRef::new("estimated_birth_year");
         let age = Expr::current_year() - f.as_expr();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &age.node).expect("expression should lower to SQL");
+        emit_expr(&mut acc, &age.node, SqlEmitContext::root())
+            .expect("expression should lower to SQL");
         let sql = acc.sql();
         // The token stream must reference both halves and the subtraction
         // operator. Existing arithmetic emitter wraps each side in parens
@@ -1736,7 +1798,8 @@ mod tests {
         let f: FieldRef<Post, i32> = FieldRef::new("estimated_birth_year");
         let predicate = (Expr::current_year() - f.as_expr()).gte(Expr::literal(15i32));
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &predicate.node).expect("expression should lower to SQL");
+        emit_expr(&mut acc, &predicate.node, SqlEmitContext::root())
+            .expect("expression should lower to SQL");
         let sql = acc.sql();
         assert!(
             sql.contains("EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER"),

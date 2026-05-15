@@ -1565,6 +1565,7 @@ mod tests {
     use crate::descriptor::ModelDescriptor;
     use crate::expr::sql::emit_expr;
     use crate::pg::accumulator::SqlAccumulator;
+    use crate::query::portable::SqlEmitContext;
 
     // Inert local model — mirrors the `Fake` stub used across the
     // expr/query unit tests. Only `table_name` matters for these
@@ -1631,7 +1632,8 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.sum();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut qb, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = qb.sql();
         assert_eq!(sql.trim(), "SUM(amount)", "got: {sql}");
     }
@@ -1641,7 +1643,8 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.count();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut qb, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = qb.sql();
         assert_eq!(sql.trim(), "COUNT(amount)", "got: {sql}");
     }
@@ -1651,7 +1654,8 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.count_star();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut qb, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = qb.sql();
         assert_eq!(sql.trim(), "COUNT(*)", "got: {sql}");
     }
@@ -1663,7 +1667,8 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.avg();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut qb, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = qb.sql();
         assert_eq!(sql.trim(), "AVG(amount)", "got: {sql}");
     }
@@ -1672,12 +1677,14 @@ mod tests {
     fn emit_min_max_field() {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &f.min().node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut qb, &f.min().node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(qb.sql().trim(), "MIN(amount)");
 
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &f.max().node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut qb, &f.max().node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(qb.sql().trim(), "MAX(amount)");
     }
 
@@ -1691,7 +1698,8 @@ mod tests {
         let cond = f.as_expr().lt(Expr::literal(0i64));
         let agg = g.count().filter(cond);
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut qb, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = qb.sql();
         assert!(
             sql.contains("COUNT(amount) FILTER (WHERE amount < $1)"),
@@ -1710,7 +1718,8 @@ mod tests {
         let h: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = h.count().filter(a).filter(b);
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut qb, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = qb.sql();
         // Second filter (gt) should appear; first (lt) should not.
         assert!(sql.contains("amount > $1"), "got: {sql}");
@@ -1725,7 +1734,8 @@ mod tests {
         let f: FieldRef<Txn, String> = FieldRef::new("tag");
         let agg = f.array_agg();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut qb, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = qb.sql();
         assert_eq!(sql.trim(), "ARRAY_AGG(tag)", "got: {sql}");
     }
@@ -1735,7 +1745,8 @@ mod tests {
         let f: FieldRef<Txn, String> = FieldRef::new("tag");
         let agg = f.json_agg();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut qb, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = qb.sql();
         assert_eq!(sql.trim(), "JSONB_AGG(tag)", "got: {sql}");
     }
@@ -1745,7 +1756,8 @@ mod tests {
         let f: FieldRef<Txn, String> = FieldRef::new("tag");
         let agg = f.string_agg(", ");
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut qb, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = qb.sql();
         // Column is bare, separator is a bound parameter ($1).
         assert!(sql.contains("STRING_AGG(tag, $1)"), "got: {sql}");
@@ -1756,7 +1768,8 @@ mod tests {
         let f: FieldRef<Txn, bool> = FieldRef::new("active");
         let agg = f.bool_and();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut qb, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = qb.sql();
         assert_eq!(sql.trim(), "BOOL_AND(active)", "got: {sql}");
     }
@@ -1766,7 +1779,8 @@ mod tests {
         let f: FieldRef<Txn, bool> = FieldRef::new("active");
         let agg = f.bool_or();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut qb, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = qb.sql();
         assert_eq!(sql.trim(), "BOOL_OR(active)", "got: {sql}");
     }
@@ -1778,7 +1792,8 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.sum().distinct();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert!(
             acc.sql().contains("SUM(DISTINCT amount)"),
             "got: {}",
@@ -1791,7 +1806,8 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.count().distinct();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert!(
             acc.sql().contains("COUNT(DISTINCT amount)"),
             "got: {}",
@@ -1804,7 +1820,8 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.avg().distinct();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert!(
             acc.sql().contains("AVG(DISTINCT amount)"),
             "got: {}",
@@ -1818,7 +1835,8 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.min().distinct();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert!(
             acc.sql().contains("MIN(DISTINCT amount)"),
             "got: {}",
@@ -1831,7 +1849,8 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.max().distinct();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert!(
             acc.sql().contains("MAX(DISTINCT amount)"),
             "got: {}",
@@ -1844,7 +1863,8 @@ mod tests {
         let f: FieldRef<Txn, String> = FieldRef::new("tag");
         let agg = f.array_agg().distinct();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert!(
             acc.sql().contains("ARRAY_AGG(DISTINCT tag)"),
             "got: {}",
@@ -1857,7 +1877,8 @@ mod tests {
         let f: FieldRef<Txn, String> = FieldRef::new("tag");
         let agg = f.json_agg().distinct();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert!(
             acc.sql().contains("JSONB_AGG(DISTINCT tag)"),
             "got: {}",
@@ -1873,7 +1894,8 @@ mod tests {
         let f: FieldRef<Txn, bool> = FieldRef::new("active");
         let agg = f.bool_and().distinct();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert!(
             acc.sql().contains("BOOL_AND(DISTINCT active)"),
             "got: {}",
@@ -1886,7 +1908,8 @@ mod tests {
         let f: FieldRef<Txn, bool> = FieldRef::new("active");
         let agg = f.bool_or().distinct();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert!(
             acc.sql().contains("BOOL_OR(DISTINCT active)"),
             "got: {}",
@@ -2073,7 +2096,7 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("id");
         let agg = f.array_agg().order_by(f.asc());
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node)
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
             .expect("aggregate expression should lower to SQL");
         let sql = acc.sql().to_string();
         assert!(
@@ -2089,7 +2112,7 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("id");
         let agg = f.array_agg().distinct().order_by(f.asc());
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node)
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
             .expect("aggregate expression should lower to SQL");
         let sql = acc.sql().to_string();
         assert!(
@@ -2105,7 +2128,7 @@ mod tests {
         let g: FieldRef<Txn, i64> = FieldRef::new("rank");
         let agg = f.array_agg().order_by(g.desc()).order_by(f.asc());
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node)
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
             .expect("aggregate expression should lower to SQL");
         let sql = acc.sql().to_string();
         assert!(
@@ -2122,7 +2145,7 @@ mod tests {
         let g: FieldRef<Txn, i64> = FieldRef::new("rank");
         let agg = f.string_agg(", ").order_by(g.asc());
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node)
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
             .expect("aggregate expression should lower to SQL");
         let sql = acc.sql().to_string();
         // Bind index is the first available, which depends on accumulator state;
@@ -2156,7 +2179,7 @@ mod tests {
         let g: FieldRef<Txn, i64> = FieldRef::new("rank");
         let agg = f.string_agg(", ").distinct().order_by(g.asc());
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node)
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
             .expect("aggregate expression should lower to SQL");
         let sql = acc.sql().to_string();
         assert!(
@@ -2177,7 +2200,7 @@ mod tests {
             .filter(g.as_expr().gt(Expr::literal(0i64)))
             .order_by(f.asc());
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node)
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
             .expect("aggregate expression should lower to SQL");
         let sql = acc.sql().to_string();
         assert!(
@@ -2317,7 +2340,8 @@ mod tests {
         let f: FieldRef<Txn, i32> = FieldRef::new("flags");
         let agg = f.bit_and();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "BIT_AND(flags)");
     }
 
@@ -2326,7 +2350,8 @@ mod tests {
         let f: FieldRef<Txn, i32> = FieldRef::new("flags");
         let agg = f.bit_or();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "BIT_OR(flags)");
     }
 
@@ -2335,7 +2360,8 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("checksum_part");
         let agg = f.bit_xor();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "BIT_XOR(checksum_part)");
     }
 
@@ -2347,7 +2373,8 @@ mod tests {
         let f: FieldRef<Txn, i32> = FieldRef::new("flags");
         let agg = f.bit_and().distinct();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "BIT_AND(DISTINCT flags)");
     }
 
@@ -2358,7 +2385,8 @@ mod tests {
         let g: FieldRef<Txn, i64> = FieldRef::new("active_at");
         let agg = f.bit_or().filter(g.as_expr().gt(Expr::literal(0i64)));
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = acc.sql().to_string();
         assert!(
             sql.contains("BIT_OR(flags)") && sql.contains(" FILTER (WHERE active_at > "),
@@ -2374,7 +2402,8 @@ mod tests {
         let f: FieldRef<Txn, i32> = FieldRef::new("flags");
         let agg = f.bit_and().distinct().order_by(f.asc());
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "BIT_AND(DISTINCT flags ORDER BY flags ASC)");
     }
 
@@ -2388,7 +2417,8 @@ mod tests {
         let f: FieldRef<Txn, String> = FieldRef::new("region");
         let agg = f.grouping();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "GROUPING(region)");
     }
 
@@ -2421,7 +2451,8 @@ mod tests {
         let f_val: FieldRef<Txn, String> = FieldRef::new("name");
         let agg = f_key.json_object_agg(f_val);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "JSON_OBJECT_AGG(id, name)");
     }
 
@@ -2431,7 +2462,8 @@ mod tests {
         let f_val: FieldRef<Txn, String> = FieldRef::new("name");
         let agg = f_key.jsonb_object_agg(f_val);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "JSONB_OBJECT_AGG(id, name)");
     }
 
@@ -2444,7 +2476,8 @@ mod tests {
         let f_val: FieldRef<Txn, i64> = FieldRef::new("v");
         let agg = f_key.jsonb_object_agg(f_val);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "JSONB_OBJECT_AGG(k, v)");
     }
 
@@ -2460,10 +2493,18 @@ mod tests {
         let f_v2: FieldRef<Txn, String> = FieldRef::new("v");
         let mut acc1 = SqlAccumulator::new("");
         let mut acc2 = SqlAccumulator::new("");
-        emit_expr(&mut acc1, &f_k1.json_object_agg(f_v1).node)
-            .expect("aggregate expression should lower to SQL");
-        emit_expr(&mut acc2, &f_k2.jsonb_object_agg(f_v2).node)
-            .expect("aggregate expression should lower to SQL");
+        emit_expr(
+            &mut acc1,
+            &f_k1.json_object_agg(f_v1).node,
+            SqlEmitContext::root(),
+        )
+        .expect("aggregate expression should lower to SQL");
+        emit_expr(
+            &mut acc2,
+            &f_k2.jsonb_object_agg(f_v2).node,
+            SqlEmitContext::root(),
+        )
+        .expect("aggregate expression should lower to SQL");
         assert_eq!(acc1.sql(), "JSON_OBJECT_AGG(k, v)");
         assert_eq!(acc2.sql(), "JSONB_OBJECT_AGG(k, v)");
         assert_ne!(acc1.sql(), acc2.sql());
@@ -2490,7 +2531,8 @@ mod tests {
         let f_x: FieldRef<Txn, f64> = FieldRef::new("hours");
         let agg = f_y.regr_slope(f_x);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "REGR_SLOPE(price, hours)");
     }
 
@@ -2500,7 +2542,8 @@ mod tests {
         let f_x: FieldRef<Txn, f64> = FieldRef::new("hours");
         let agg = f_y.regr_intercept(f_x);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "REGR_INTERCEPT(price, hours)");
     }
 
@@ -2510,7 +2553,8 @@ mod tests {
         let f_x: FieldRef<Txn, f64> = FieldRef::new("hours");
         let agg = f_y.regr_r2(f_x);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "REGR_R2(price, hours)");
     }
 
@@ -2520,7 +2564,8 @@ mod tests {
         let f_x: FieldRef<Txn, f64> = FieldRef::new("hours");
         let agg = f_y.regr_count(f_x);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "REGR_COUNT(price, hours)");
     }
 
@@ -2541,15 +2586,19 @@ mod tests {
         let f_y: FieldRef<Txn, f64> = FieldRef::new("y");
         let f_x: FieldRef<Txn, f64> = FieldRef::new("x");
         let mut acc1 = SqlAccumulator::new("");
-        emit_expr(&mut acc1, &f_y.regr_avgx(f_x).node)
+        emit_expr(&mut acc1, &f_y.regr_avgx(f_x).node, SqlEmitContext::root())
             .expect("aggregate expression should lower to SQL");
         assert_eq!(acc1.sql(), "REGR_AVGX(y, x)");
 
         let f_y2: FieldRef<Txn, f64> = FieldRef::new("y");
         let f_x2: FieldRef<Txn, f64> = FieldRef::new("x");
         let mut acc2 = SqlAccumulator::new("");
-        emit_expr(&mut acc2, &f_y2.regr_avgy(f_x2).node)
-            .expect("aggregate expression should lower to SQL");
+        emit_expr(
+            &mut acc2,
+            &f_y2.regr_avgy(f_x2).node,
+            SqlEmitContext::root(),
+        )
+        .expect("aggregate expression should lower to SQL");
         assert_eq!(acc2.sql(), "REGR_AVGY(y, x)");
     }
 
@@ -2562,21 +2611,21 @@ mod tests {
         let f_x: FieldRef<Txn, f64> = FieldRef::new("x");
 
         let mut acc1 = SqlAccumulator::new("");
-        emit_expr(&mut acc1, &f_y.regr_sxx(f_x).node)
+        emit_expr(&mut acc1, &f_y.regr_sxx(f_x).node, SqlEmitContext::root())
             .expect("aggregate expression should lower to SQL");
         assert_eq!(acc1.sql(), "REGR_SXX(y, x)");
 
         let f_y2: FieldRef<Txn, f64> = FieldRef::new("y");
         let f_x2: FieldRef<Txn, f64> = FieldRef::new("x");
         let mut acc2 = SqlAccumulator::new("");
-        emit_expr(&mut acc2, &f_y2.regr_sxy(f_x2).node)
+        emit_expr(&mut acc2, &f_y2.regr_sxy(f_x2).node, SqlEmitContext::root())
             .expect("aggregate expression should lower to SQL");
         assert_eq!(acc2.sql(), "REGR_SXY(y, x)");
 
         let f_y3: FieldRef<Txn, f64> = FieldRef::new("y");
         let f_x3: FieldRef<Txn, f64> = FieldRef::new("x");
         let mut acc3 = SqlAccumulator::new("");
-        emit_expr(&mut acc3, &f_y3.regr_syy(f_x3).node)
+        emit_expr(&mut acc3, &f_y3.regr_syy(f_x3).node, SqlEmitContext::root())
             .expect("aggregate expression should lower to SQL");
         assert_eq!(acc3.sql(), "REGR_SYY(y, x)");
     }
@@ -2615,7 +2664,8 @@ mod tests {
         let f_x: FieldRef<Txn, f64> = FieldRef::new("cost");
         let agg = f_y.covar_pop(f_x);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "COVAR_POP(revenue, cost)");
     }
 
@@ -2625,7 +2675,8 @@ mod tests {
         let f_x: FieldRef<Txn, i64> = FieldRef::new("cost");
         let agg = f_y.covar_samp(f_x);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "COVAR_SAMP(revenue, cost)");
     }
 
@@ -2635,7 +2686,8 @@ mod tests {
         let f_x: FieldRef<Txn, f64> = FieldRef::new("score_b");
         let agg = f_y.corr(f_x);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "CORR(score_a, score_b)");
     }
 
@@ -2648,7 +2700,8 @@ mod tests {
         let f_x: FieldRef<Txn, f64> = FieldRef::new("cost");
         let agg = f_y.covar_pop(f_x).distinct();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "COVAR_POP(DISTINCT revenue, cost)");
     }
 
@@ -2663,7 +2716,8 @@ mod tests {
         // a.covar(b) → COVAR(a, b) — self is the first arg.
         let agg_ab = f_a.covar_pop(f_b);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg_ab.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg_ab.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "COVAR_POP(a_col, b_col)");
 
         // b.covar(a) → COVAR(b, a) — receiver order is the SQL order.
@@ -2671,7 +2725,8 @@ mod tests {
         let f_b2: FieldRef<Txn, f64> = FieldRef::new("b_col");
         let agg_ba = f_b2.covar_pop(f_a2);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg_ba.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg_ba.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "COVAR_POP(b_col, a_col)");
     }
 
@@ -2727,7 +2782,8 @@ mod tests {
         let f: FieldRef<Txn, f64> = FieldRef::new("score");
         let agg = f.stddev_pop();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "STDDEV_POP(score)");
     }
 
@@ -2736,7 +2792,8 @@ mod tests {
         let f: FieldRef<Txn, f64> = FieldRef::new("score");
         let agg = f.stddev_samp();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "STDDEV_SAMP(score)");
     }
 
@@ -2748,7 +2805,8 @@ mod tests {
         let f: FieldRef<Txn, f64> = FieldRef::new("score");
         let agg = f.stddev();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "STDDEV(score)");
     }
 
@@ -2757,7 +2815,8 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("score");
         let agg = f.var_pop();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "VAR_POP(score)");
     }
 
@@ -2766,7 +2825,8 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("score");
         let agg = f.var_samp();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "VAR_SAMP(score)");
     }
 
@@ -2775,7 +2835,8 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("score");
         let agg = f.variance();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "VARIANCE(score)");
     }
 
@@ -2787,7 +2848,8 @@ mod tests {
         let f: FieldRef<Txn, f64> = FieldRef::new("score");
         let agg = f.stddev_pop().distinct();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "STDDEV_POP(DISTINCT score)");
     }
 
@@ -2801,9 +2863,10 @@ mod tests {
         let f2: FieldRef<Txn, f64> = FieldRef::new("score");
         let mut acc1 = SqlAccumulator::new("");
         let mut acc2 = SqlAccumulator::new("");
-        emit_expr(&mut acc1, &f1.stddev_samp().node)
+        emit_expr(&mut acc1, &f1.stddev_samp().node, SqlEmitContext::root())
             .expect("aggregate expression should lower to SQL");
-        emit_expr(&mut acc2, &f2.stddev().node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc2, &f2.stddev().node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc1.sql(), "STDDEV_SAMP(score)");
         assert_eq!(acc2.sql(), "STDDEV(score)");
         assert_ne!(acc1.sql(), acc2.sql());
@@ -2816,9 +2879,9 @@ mod tests {
         let f2: FieldRef<Txn, i64> = FieldRef::new("score");
         let mut acc1 = SqlAccumulator::new("");
         let mut acc2 = SqlAccumulator::new("");
-        emit_expr(&mut acc1, &f1.var_samp().node)
+        emit_expr(&mut acc1, &f1.var_samp().node, SqlEmitContext::root())
             .expect("aggregate expression should lower to SQL");
-        emit_expr(&mut acc2, &f2.variance().node)
+        emit_expr(&mut acc2, &f2.variance().node, SqlEmitContext::root())
             .expect("aggregate expression should lower to SQL");
         assert_eq!(acc1.sql(), "VAR_SAMP(score)");
         assert_eq!(acc2.sql(), "VARIANCE(score)");
@@ -2850,7 +2913,8 @@ mod tests {
         let f: FieldRef<Txn, bool> = FieldRef::new("active");
         let agg = f.every();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "EVERY(active)");
     }
 
@@ -2861,7 +2925,8 @@ mod tests {
         let f: FieldRef<Txn, bool> = FieldRef::new("active");
         let agg = f.every().distinct();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "EVERY(DISTINCT active)");
     }
 
@@ -2893,7 +2958,8 @@ mod tests {
         let f: FieldRef<Txn, f64> = FieldRef::new("ms");
         let agg = f.percentile_cont(0.5);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = acc.sql().to_string();
         assert!(
             sql.starts_with("PERCENTILE_CONT($")
@@ -2907,7 +2973,8 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.percentile_disc(0.95);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = acc.sql().to_string();
         assert!(
             sql.starts_with("PERCENTILE_DISC($")
@@ -2922,7 +2989,8 @@ mod tests {
         let f: FieldRef<Txn, String> = FieldRef::new("category");
         let agg = f.mode();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         assert_eq!(acc.sql(), "MODE() WITHIN GROUP (ORDER BY category ASC)");
     }
 
@@ -2963,7 +3031,8 @@ mod tests {
         let other: FieldRef<Txn, i64> = FieldRef::new("rank");
         let agg = f.percentile_cont(0.95).within_group_order_by(other.desc());
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = acc.sql().to_string();
         assert!(
             sql.contains(") WITHIN GROUP (ORDER BY rank DESC)"),
@@ -3057,7 +3126,8 @@ mod tests {
             .percentile_cont(0.5)
             .filter(g.as_expr().gt(Expr::literal(0i64)));
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = acc.sql().to_string();
         assert!(
             sql.contains(") WITHIN GROUP (ORDER BY ms ASC) FILTER (WHERE active > "),
@@ -3090,7 +3160,8 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("salary");
         let agg = f.rank_of(7_500);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = acc.sql().to_string();
         assert!(
             sql.starts_with("RANK($") && sql.contains(") WITHIN GROUP (ORDER BY salary ASC)"),
@@ -3103,7 +3174,8 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("salary");
         let agg = f.dense_rank_of(7_500);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = acc.sql().to_string();
         assert!(
             sql.starts_with("DENSE_RANK($") && sql.contains(") WITHIN GROUP (ORDER BY salary ASC)"),
@@ -3116,7 +3188,8 @@ mod tests {
         let f: FieldRef<Txn, f64> = FieldRef::new("ms");
         let agg = f.percent_rank_of(100.0);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = acc.sql().to_string();
         assert!(
             sql.starts_with("PERCENT_RANK($") && sql.contains(") WITHIN GROUP (ORDER BY ms ASC)"),
@@ -3129,7 +3202,8 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.cume_dist_of(500);
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = acc.sql().to_string();
         assert!(
             sql.starts_with("CUME_DIST($") && sql.contains(") WITHIN GROUP (ORDER BY amount ASC)"),
@@ -3197,7 +3271,8 @@ mod tests {
         let other: FieldRef<Txn, i64> = FieldRef::new("base_salary");
         let agg = f.rank_of(7_500).within_group_order_by(other.desc());
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &agg.node).expect("aggregate expression should lower to SQL");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
+            .expect("aggregate expression should lower to SQL");
         let sql = acc.sql().to_string();
         assert!(
             sql.contains(") WITHIN GROUP (ORDER BY base_salary DESC)"),

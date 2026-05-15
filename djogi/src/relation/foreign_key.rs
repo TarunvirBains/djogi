@@ -513,11 +513,12 @@ mod tests {
         use crate::expr::sql::emit_expr;
         use crate::pg::accumulator::SqlAccumulator;
         use crate::query::field::FieldRef;
+        use crate::query::portable::SqlEmitContext;
 
         let fk_col: FieldRef<Dummy, ForeignKey<Dummy>> = FieldRef::new("ledger_id");
         let expr: crate::expr::Expr<HeerId> = fk_col.as_pk_expr();
         let mut acc = SqlAccumulator::new("");
-        emit_expr(&mut acc, &expr.node).expect("expression emission");
+        emit_expr(&mut acc, &expr.node, SqlEmitContext::root()).expect("expression emission");
         assert_eq!(acc.sql().trim(), "ledger_id", "got: {}", acc.sql());
     }
 

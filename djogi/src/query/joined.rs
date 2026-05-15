@@ -229,12 +229,53 @@ pub(crate) struct ClosurePairJoin {
     // construction. Keeping them on the struct documents the full
     // column shape for future audits.
     /// Depth column (e.g. `"depth"`) — needed by typed aggregate emitters
-    /// that walk the closure for Wright-style depth-weighted sums.
-    #[allow(dead_code)]
+    /// that walk the closure for Wright-style depth-weighted sums and by
+    /// terminal-time identifier validation
+    /// ([`Self::validate_idents`]).
     pub(crate) depth_column: &'static str,
-    /// Path-multiplicity column (e.g. `"path_count"`).
-    #[allow(dead_code)]
+    /// Path-multiplicity column (e.g. `"path_count"`). Used by
+    /// [`PairClosureKinshipSum`]'s SUM emission and by terminal-time
+    /// identifier validation ([`Self::validate_idents`]).
     pub(crate) path_count_column: &'static str,
+}
+
+impl ClosurePairJoin {
+    /// Validate this closure-pair join's metadata identifiers against
+    /// the Postgres unquoted-identifier contract AND the
+    /// framework-reserved `__djogi_` prefix block before SQL emission.
+    ///
+    /// Each of `table`, `source_column`, `ancestor_column`,
+    /// `depth_column`, `path_count_column` is checked via
+    /// [`crate::ident::check_user_supplied_ident`] — the same gate
+    /// [`crate::query::closure::validate_closure_metadata_idents`]
+    /// applies to the `materialize_closure` SQL builder. Both code
+    /// paths splice closure-model `&'static str` accessor return
+    /// values into emitted SQL via `push_sql`; both need to validate
+    /// before that splice or a hand-rolled `impl ClosureModel` with a
+    /// hostile / malformed return value could smuggle SQL fragments
+    /// through the accumulator.
+    ///
+    /// Called at terminal-call time (before
+    /// [`build_joined_select`] / [`build_joined_count`] /
+    /// [`build_joined_annotated_select_for_fetch`]) so a bad
+    /// identifier surfaces as a typed [`DjogiError::Validation`]
+    /// before any SQL string contains the offending bytes.
+    pub(crate) fn validate_idents(&self) -> Result<(), DjogiError> {
+        for (label, col) in [
+            ("closure table", self.table),
+            ("source_column", self.source_column),
+            ("ancestor_column", self.ancestor_column),
+            ("depth_column", self.depth_column),
+            ("path_count_column", self.path_count_column),
+        ] {
+            crate::ident::check_user_supplied_ident(col, true).map_err(|e| {
+                DjogiError::Validation(format!(
+                    "ClosurePairJoin {label} identifier {col:?} rejected: {e:?}"
+                ))
+            })?;
+        }
+        Ok(())
+    }
 }
 
 /// Lazy pair-tuple query builder.
@@ -390,59 +431,6 @@ impl<L: Model, R: Model> JoinedQuerySet<L, R> {
         self
     }
 
-    /// Attach a closure-pair LEFT JOIN to this query for Wright-style
-    /// shared-ancestor aggregation.
-    ///
-    /// The bound [`ClosureModel`] `C` names the closure table and column
-    /// shape; the emitter splices:
-    ///
-    /// ```sql
-    /// LEFT JOIN <closure_table> AS la ON la.<source_col> = l.<pk>
-    /// LEFT JOIN <closure_table> AS ra ON ra.<source_col> = r.<pk>
-    ///                              AND ra.<ancestor_col> = la.<ancestor_col>
-    /// ```
-    ///
-    /// after the cross-join and before the WHERE clause. The right-side
-    /// `AND ra.<ancestor> = la.<ancestor>` predicate is the
-    /// shared-ancestor semi-join — only rows whose ancestor matches both
-    /// sides survive, and `path_count` multiplicity stays per-side so
-    /// the typed aggregate [`PairClosureKinshipSum::<C>`] can sum
-    /// `la.path_count × ra.path_count × 0.5^(la.depth + ra.depth + 1)`
-    /// across them.
-    ///
-    /// This only makes structural sense for **single-model self-joins**
-    /// (where `L = R` and `C::Source = L`); enforced at the type level
-    /// by the `C: ClosureModel<Source = L>` and `L = R` bounds.
-    ///
-    /// # Panics
-    ///
-    /// Panics at SQL build time (not at this builder call) if the
-    /// underlying source model has no primary-key column — the closure
-    /// emitter needs a stable PK column for the `la.<source> = l.<pk>`
-    /// join predicate.
-    #[must_use = "joined querysets are lazy — dropping one silently omits the query"]
-    pub fn left_join_closure_pair<C>(mut self) -> Self
-    where
-        C: ClosureModel<Source = L>,
-        // `R` is a sibling of `L` in the pair — for kinship-shape semantics
-        // (Wright over a self-join), the right side must share `L`'s
-        // identity. We capture that with a runtime check on the table
-        // names plus the descriptor-level pk shape, rather than a
-        // compile-time `L = R` bound, because the compile-time bound would
-        // forbid `L = R` self-joins from co-existing with `L != R` cross
-        // joins on the same builder type. The runtime check fires once at
-        // SQL build time.
-    {
-        self.closure_pair = Some(ClosurePairJoin {
-            table: C::table(),
-            source_column: C::source_column(),
-            ancestor_column: C::ancestor_column(),
-            depth_column: C::depth_column(),
-            path_count_column: C::path_count_column(),
-        });
-        self
-    }
-
     /// Promote this pair-tuple query into the annotated form, attaching
     /// aggregate / window expressions to the pair-side SELECT list.
     ///
@@ -469,6 +457,96 @@ impl<L: Model, R: Model> JoinedQuerySet<L, R> {
             qualify: None,
             _a: PhantomData,
         }
+    }
+}
+
+// ── Self-join-only methods (require L = R at compile time) ──────────
+//
+// Methods that only make structural sense on a single-model self-join
+// (`(L, L)`) live in this impl block, which is reachable only when the
+// two type parameters of `JoinedQuerySet<L, R>` are the same model.
+// Heterogeneous pair queries (`(Animal, Widget)`) cannot reach these
+// methods — the trait resolver does not consider this block for
+// `JoinedQuerySet<Animal, Widget>` and the method is invisible at
+// the call site.
+
+/// Methods reachable only when the pair-tuple's two sides are the same
+/// model — the typed entry surface for closure-self-join (Wright-style
+/// shared-ancestor) queries.
+///
+/// `left_join_closure_pair` lives here (not on the L≠R impl block) so
+/// the closure's `C: ClosureModel<Source = L>` bound is structurally
+/// consistent with the queryset's right side: the right LEFT JOIN
+/// emits `ra.<source_col> = r.<pk>` where `r` is also an `L` row,
+/// which only makes sense when L = R. The previous v0.1.0 substrate
+/// allowed this method on heterogeneous pair querysets and produced
+/// bogus SQL that referenced `<L's closure>.<L's source> = <R's pk>`;
+/// the type-level fix moves enforcement to compile time, so
+/// `Animal::objects().cross_join_with(Widget::objects()).left_join_closure_pair::<AnimalAncestry>()`
+/// fails to compile with `no method named left_join_closure_pair found
+/// for struct JoinedQuerySet<Animal, Widget>`.
+impl<L: Model> JoinedQuerySet<L, L> {
+    /// Attach a closure-pair LEFT JOIN to this self-join for
+    /// Wright-style shared-ancestor aggregation.
+    ///
+    /// The bound [`ClosureModel`] `C` names the closure table and
+    /// column shape; the emitter splices:
+    ///
+    /// ```sql
+    /// LEFT JOIN <closure_table> AS la ON la.<source_col> = l.<pk>
+    /// LEFT JOIN <closure_table> AS ra ON ra.<source_col> = r.<pk>
+    ///                              AND ra.<ancestor_col> = la.<ancestor_col>
+    /// ```
+    ///
+    /// after the cross-join and before the WHERE clause. The right-side
+    /// `AND ra.<ancestor> = la.<ancestor>` predicate is the
+    /// shared-ancestor semi-join — only rows whose ancestor matches
+    /// both sides survive, and `path_count` multiplicity stays per-side
+    /// so the typed aggregate [`PairClosureKinshipSum::<C>`] can sum
+    /// `la.path_count × ra.path_count × 0.5^(la.depth + ra.depth + 1)`
+    /// across them.
+    ///
+    /// # Type-level L = R requirement
+    ///
+    /// This method only compiles when the pair-tuple's two sides are
+    /// the same model. `C::Source = L` plus the impl-block's `L = R`
+    /// witness means every alias substitution the closure-pair join
+    /// emits is structurally well-defined: `la.<src> = l.<pk>` and
+    /// `ra.<src> = r.<pk>` both bind to `L`'s primary key column, with
+    /// `L`'s row identity on both sides.
+    ///
+    /// # Closure metadata validation
+    ///
+    /// The closure model's table name plus the four column accessors
+    /// (`source_column`, `ancestor_column`, `depth_column`,
+    /// `path_count_column`) are validated against the Postgres
+    /// unquoted-identifier contract at terminal-call time
+    /// ([`JoinedQuerySet::fetch_all`] / [`count`](Self::count) /
+    /// [`JoinedAnnotatedQuerySet::fetch_all`]) via
+    /// [`crate::query::closure::validate_closure_metadata_idents`] so a
+    /// hand-rolled `impl ClosureModel` cannot smuggle SQL through the
+    /// `push_sql` sites the closure-pair emitter calls. A bad identifier
+    /// surfaces as [`DjogiError::Validation`] before SQL build.
+    ///
+    /// # Panics
+    ///
+    /// Panics at SQL build time (not at this builder call) if the
+    /// underlying source model has no primary-key column — the closure
+    /// emitter needs a stable PK column for the `la.<source> = l.<pk>`
+    /// join predicate.
+    #[must_use = "joined querysets are lazy — dropping one silently omits the query"]
+    pub fn left_join_closure_pair<C>(mut self) -> Self
+    where
+        C: ClosureModel<Source = L>,
+    {
+        self.closure_pair = Some(ClosurePairJoin {
+            table: C::table(),
+            source_column: C::source_column(),
+            ancestor_column: C::ancestor_column(),
+            depth_column: C::depth_column(),
+            path_count_column: C::path_count_column(),
+        });
+        self
     }
 }
 
@@ -499,6 +577,15 @@ where
         async move {
             if self.left.is_empty() || self.right.is_empty() {
                 return Ok(Vec::new());
+            }
+            // Validate closure-pair metadata identifiers before SQL
+            // build so a hand-rolled `impl ClosureModel` with bad
+            // accessor strings surfaces as `DjogiError::Validation`
+            // instead of letting the malformed SQL reach Postgres or
+            // the bind binder. Same gate the `materialize_closure`
+            // helper applies for its own SQL build.
+            if let Some(cp) = self.closure_pair.as_ref() {
+                cp.validate_idents()?;
             }
             // Auto-tenant: a pair-tuple query can be tenanted on the left
             // side, right side, or both. We dispatch sequentially with `?`
@@ -539,6 +626,16 @@ impl<L: Model, R: Model> JoinedQuerySet<L, R> {
         async move {
             if self.left.is_empty() || self.right.is_empty() {
                 return Ok(0);
+            }
+            // Validate closure-pair metadata identifiers before SQL
+            // build — same gate as fetch_all. The count emitter
+            // currently omits the closure-pair LEFT JOINs (counting
+            // semi-join cardinality is a future refinement), but the
+            // identifiers were captured at builder time and are still
+            // a public-API contract the caller can violate; reject
+            // here for consistency with fetch_all's validation surface.
+            if let Some(cp) = self.closure_pair.as_ref() {
+                cp.validate_idents()?;
             }
             auto_set_tenant::<L>(ctx).await?;
             auto_set_tenant::<R>(ctx).await?;
@@ -775,8 +872,6 @@ where
             if self.inner.left.is_empty() || self.inner.right.is_empty() {
                 return Ok(Vec::new());
             }
-            auto_set_tenant::<L>(ctx).await?;
-            auto_set_tenant::<R>(ctx).await?;
 
             let JoinedAnnotatedQuerySet {
                 inner,
@@ -806,6 +901,19 @@ where
                         .to_string(),
                 ));
             }
+
+            // Validate closure-pair metadata identifiers before SQL
+            // build — same gate as `JoinedQuerySet::fetch_all`. The
+            // annotated path also splices `cp.table` / `cp.*_column`
+            // into emitted SQL via `push_closure_pair_joins`, so a
+            // hand-rolled `impl ClosureModel` with bad accessor
+            // strings would smuggle SQL fragments without this check.
+            if let Some(cp) = inner.closure_pair.as_ref() {
+                cp.validate_idents()?;
+            }
+
+            auto_set_tenant::<L>(ctx).await?;
+            auto_set_tenant::<R>(ctx).await?;
 
             let acc =
                 build_joined_annotated_select_for_fetch(&inner, &aggregates, qualify.as_ref())
@@ -973,6 +1081,21 @@ where
 
     push_closure_pair_joins::<L, R>(&mut acc, jqs);
     push_joined_where::<L, R>(&mut acc, jqs)?;
+
+    // When the queryset has a closure-pair LEFT JOIN AND the
+    // annotation tuple includes a closure-pair-requiring aggregate
+    // (today: `PairClosureKinshipSum`), aggregate per pair via
+    // `GROUP BY l.<pk>, r.<pk>` so the closure-row multiplicity (one
+    // SQL row per shared ancestor) collapses to one output row per
+    // `(L, R)` pair. The aggregate's `push_column` emits the bare
+    // SUM body (no OVER) so the outer GROUP BY drives aggregation
+    // cleanly. Postgres 18 honours functional-dependency rules:
+    // every non-aggregate column on the SELECT list is functionally
+    // determined by the GROUP BY (`l.id` is L's PK, `r.id` is R's
+    // PK, so `l.*` and `r.*` are determined and need not be named
+    // in GROUP BY explicitly).
+    push_joined_group_by_if_needed::<L, R, A>(&mut acc, jqs, aggregates);
+
     push_joined_order_by(&mut acc, &jqs.ordering);
 
     if let Some(n) = jqs.limit {
@@ -984,6 +1107,49 @@ where
         acc.push_bind(n);
     }
     Ok(acc)
+}
+
+/// Emit `GROUP BY <l_alias>.<l_pk>, <r_alias>.<r_pk>` when the
+/// annotated joined queryset needs per-pair aggregation.
+///
+/// Today the only annotation type that triggers this is
+/// [`PairClosureKinshipSum`]; the generic check `requires_closure_pair_join`
+/// captures the same predicate. Both sides default to `id` when the
+/// descriptor's PK column is missing — this is the same fallback
+/// `push_closure_pair_joins` uses for the ON-clause emission, so the
+/// SELECT-list aggregate's GROUP BY key matches the closure join's
+/// row binding precisely.
+///
+/// Note on simple-PK assumption: the `l.id, r.id` partition shape
+/// only handles single-column PKs (HeerId / RanjId / Serial / Custom
+/// with an `id` column). Composite-PK models would need multi-column
+/// GROUP BY emission; that case is structurally out of scope for the
+/// v0.1.0 pair-tuple substrate because `PairClosureKinshipSum` itself
+/// references `l.id` / `r.id` as the partition keys. The legacy
+/// window-form had the same restriction; the GROUP-BY rewrite does
+/// not regress it.
+fn push_joined_group_by_if_needed<L, R, A>(
+    acc: &mut SqlAccumulator,
+    jqs: &JoinedQuerySet<L, R>,
+    aggregates: &A,
+) where
+    L: Model,
+    R: Model,
+    A: IntoAggregateTuple,
+{
+    if !aggregates.requires_closure_pair_join() || jqs.closure_pair.is_none() {
+        return;
+    }
+    let l_pk = L::descriptor().pk_column().unwrap_or("id");
+    let r_pk = R::descriptor().pk_column().unwrap_or("id");
+    acc.push_sql(" GROUP BY ");
+    acc.push_sql(LEFT_ALIAS);
+    acc.push_sql(".");
+    acc.push_sql(l_pk);
+    acc.push_sql(", ");
+    acc.push_sql(RIGHT_ALIAS);
+    acc.push_sql(".");
+    acc.push_sql(r_pk);
 }
 
 fn push_aliased_columns<M: Model + crate::pg::decode::FromPgRow>(
@@ -1417,23 +1583,27 @@ impl<C: ClosureModel> crate::query::annotate::AnnotationSlot for PairClosureKins
     fn push_column(&self, acc: &mut SqlAccumulator, slot: usize) {
         acc.push_sql(", ");
         Self::emit_inline(acc);
-        // OVER (PARTITION BY l.<pk>, r.<pk>) — per-pair partitioning so
-        // the aggregate value is per-pair, not table-wide.
+        // Bare aggregate emission — no `OVER (...)` window clause.
         //
-        // PK columns: we cannot easily reach `L::pk_column()` from this
-        // impl because `AnnotationSlot` doesn't carry an `L` parameter.
-        // Both sides default to `id` for HeerId / RanjId / Serial PKs;
-        // for `Composite` or `None` PK kinds this slot is structurally
-        // unsuitable (no per-pair identity column to partition on). Use
-        // the `id` literal directly here — `JoinedAnnotatedQuerySet`'s
-        // pre-build legality check could narrow this further; for v0.1.0
-        // the `id` literal matches every model the pair-tuple surface
-        // realistically supports.
-        acc.push_sql(" OVER (PARTITION BY ");
-        acc.push_sql(LEFT_ALIAS);
-        acc.push_sql(".id, ");
-        acc.push_sql(RIGHT_ALIAS);
-        acc.push_sql(".id)");
+        // Earlier substrate emitted `SUM(...) OVER (PARTITION BY
+        // l.<pk>, r.<pk>)` so the kinship value was the same on every
+        // row of a pair's `(la, ra)` cross-product. That kept the
+        // aggregate value correct per row but DID NOT collapse the
+        // cross-product to one row per pair — the SELECT decode loop
+        // happily pushed every `(L, R, la_row, ra_row)` quadruple into
+        // the output `Vec<((L, R), f64)>`, returning M×N duplicates
+        // per pair when both sides had multiple closure rows for a
+        // shared ancestor.
+        //
+        // The fix uses a true `GROUP BY l.<pk>, r.<pk>` (emitted by
+        // `build_joined_annotated_inner`'s `requires_closure_pair_join`
+        // path) so the aggregate collapses to one row per pair, and
+        // every non-aggregate SELECT-list column is functionally
+        // determined by the GROUP BY (Postgres 18 honours the
+        // PK-functional-dependency rule for `l.id` / `r.id` against
+        // `l.*` / `r.*`). The aggregate emitted here is the bare SUM
+        // body — no OVER clause — so it composes cleanly with the
+        // outer GROUP BY.
         acc.push_sql(" AS ");
         acc.push_sql(annotation_alias(slot));
     }
@@ -1858,11 +2028,16 @@ mod tests {
         );
         // ::float8 keeps decoded f64 well-typed.
         assert!(sql.contains(")::float8"), "::float8 cast missing: {sql}");
-        // OVER (PARTITION BY l.id, r.id) — per-pair partitioning so the
-        // aggregate is evaluated per pair, not table-wide.
+        // No OVER clause — per-pair aggregation is now driven by the
+        // outer GROUP BY (`build_joined_annotated_inner` emits
+        // `GROUP BY l.<pk>, r.<pk>` when the aggregate tuple reports
+        // `requires_closure_pair_join`). Window form was emitting
+        // M×N rows per pair when both sides had multiple closure rows
+        // sharing an ancestor; the bare aggregate + GROUP BY collapses
+        // the closure cross-product to one output row per pair.
         assert!(
-            sql.contains("OVER (PARTITION BY l.id, r.id)"),
-            "per-pair PARTITION BY missing: {sql}"
+            !sql.contains("OVER ("),
+            "kinship-sum must NOT emit window OVER clause — outer GROUP BY drives aggregation: {sql}"
         );
         assert!(
             sql.contains(" AS __djogi_agg_0"),
@@ -1883,6 +2058,393 @@ mod tests {
         assert!(
             tuple_view.requires_closure_pair_join(),
             "IntoAggregateTuple blanket must forward to AnnotationSlot::requires_closure_pair_join"
+        );
+    }
+
+    // ── GPT-5.5 xhigh round-1 fixes — coverage backfill ─────────────────
+    //
+    // The xhigh review surfaced five merge blockers in the substrate
+    // commit. Each fix below adds a focused unit test that pins the
+    // intended behaviour after the fix so the next regression surfaces
+    // in `cargo test -p djogi --lib query::joined::tests` instead of
+    // taking the production code with it.
+
+    #[test]
+    fn build_joined_annotated_inner_emits_group_by_when_kinship_aggregate_requires_pair_join() {
+        // Kinship aggregation now uses bare SUM + outer GROUP BY
+        // l.<pk>, r.<pk>. Previously the aggregate emitted `OVER
+        // (PARTITION BY l.id, r.id)` so the SQL value was correct
+        // per row but the row count fell out as `|L| × |R| ×
+        // |la_rows| × |ra_rows|` — every pair surfaced once per
+        // matching closure cross-product entry. The GROUP BY collapses
+        // back to one row per pair.
+        let jqs: JoinedQuerySet<Mini, Mini> = QuerySet::<Mini>::new()
+            .self_pairs()
+            .left_join_closure_pair::<MiniClosure>();
+        let annotated = jqs.annotate(|_l, _r| PairClosureKinshipSum::<MiniClosure>::new());
+        let acc = build_joined_annotated_select_for_fetch(
+            &annotated.inner,
+            &annotated.aggregates,
+            annotated.qualify.as_ref(),
+        )
+        .expect("emit");
+        let sql = acc.sql();
+        assert!(
+            sql.contains(" GROUP BY l.id, r.id"),
+            "per-pair GROUP BY must be emitted when closure-pair aggregate is in the tuple: {sql}"
+        );
+        // And bare aggregate (no OVER) — the GROUP BY drives
+        // aggregation, not a window partition.
+        assert!(
+            !sql.contains("OVER ("),
+            "kinship-sum must emit bare aggregate when GROUP BY is in scope: {sql}"
+        );
+    }
+
+    #[test]
+    fn build_joined_annotated_inner_omits_group_by_when_no_pair_aggregate() {
+        // Plain self-join + window annotate (no closure-pair aggregate)
+        // does NOT emit GROUP BY. The GROUP BY emission is gated on
+        // `requires_closure_pair_join()`, so ordinary annotated joined
+        // queries keep their per-row SELECT shape.
+        let jqs: JoinedQuerySet<Mini, Mini> = QuerySet::<Mini>::new().self_pairs();
+        let annotated = jqs.annotate(|_l, _r| {
+            crate::expr::RowNumber::new()
+                .partition_by_pair(
+                    PairSide::Left,
+                    crate::query::FieldRef::<Mini, HeerId>::new("id"),
+                )
+                .alias("rank")
+        });
+        let acc = build_joined_annotated_select_for_fetch(
+            &annotated.inner,
+            &annotated.aggregates,
+            annotated.qualify.as_ref(),
+        )
+        .expect("emit");
+        let sql = acc.sql();
+        assert!(
+            !sql.contains("GROUP BY"),
+            "non-kinship annotated joined query must NOT emit GROUP BY: {sql}"
+        );
+    }
+
+    #[test]
+    fn closure_pair_join_validate_idents_accepts_clean_metadata() {
+        // MiniClosure's accessors are all plain identifiers — should
+        // validate cleanly.
+        let cp = ClosurePairJoin {
+            table: "mini_ancestries",
+            source_column: "mini_id",
+            ancestor_column: "ancestor_id",
+            depth_column: "depth",
+            path_count_column: "path_count",
+        };
+        assert!(cp.validate_idents().is_ok());
+    }
+
+    #[test]
+    fn closure_pair_join_validate_idents_rejects_sql_injection_table() {
+        // A hostile / typo'd ClosureModel that returned a "table name"
+        // containing whitespace would smuggle SQL into the LEFT JOIN
+        // emission. `validate_idents` catches this before the SQL
+        // string ever reaches the accumulator.
+        let cp = ClosurePairJoin {
+            table: "ancestries; DROP TABLE users;--",
+            source_column: "mini_id",
+            ancestor_column: "ancestor_id",
+            depth_column: "depth",
+            path_count_column: "path_count",
+        };
+        let err = cp.validate_idents().expect_err("must reject");
+        match err {
+            DjogiError::Validation(msg) => {
+                assert!(
+                    msg.contains("closure table") && msg.contains("DROP TABLE"),
+                    "validation error must name the offending field + content: {msg}"
+                );
+            }
+            other => panic!("expected DjogiError::Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn closure_pair_join_validate_idents_rejects_reserved_djogi_prefix() {
+        // A user-supplied identifier that lands in the framework-
+        // reserved `__djogi_` namespace is rejected — same gate the
+        // materialize-closure path uses.
+        let cp = ClosurePairJoin {
+            table: "mini_ancestries",
+            source_column: "__djogi_internal_source",
+            ancestor_column: "ancestor_id",
+            depth_column: "depth",
+            path_count_column: "path_count",
+        };
+        let err = cp.validate_idents().expect_err("must reject");
+        match err {
+            DjogiError::Validation(msg) => {
+                assert!(
+                    msg.contains("source_column") && msg.contains("__djogi_internal_source"),
+                    "validation error must name the offending column: {msg}"
+                );
+            }
+            other => panic!("expected DjogiError::Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn closure_pair_join_validate_idents_rejects_each_column_in_turn() {
+        // Cover every column slot. Each malformed identifier should
+        // surface labelled with its slot name so an on-call engineer
+        // can map the validation error back to the offending
+        // ClosureModel impl method.
+        for (which, bad_label, mut cp) in [
+            (
+                "ancestor_column",
+                "ancestor_column",
+                ClosurePairJoin {
+                    table: "mini_ancestries",
+                    source_column: "mini_id",
+                    ancestor_column: "0bad",
+                    depth_column: "depth",
+                    path_count_column: "path_count",
+                },
+            ),
+            (
+                "depth_column",
+                "depth_column",
+                ClosurePairJoin {
+                    table: "mini_ancestries",
+                    source_column: "mini_id",
+                    ancestor_column: "ancestor_id",
+                    depth_column: "0bad",
+                    path_count_column: "path_count",
+                },
+            ),
+            (
+                "path_count_column",
+                "path_count_column",
+                ClosurePairJoin {
+                    table: "mini_ancestries",
+                    source_column: "mini_id",
+                    ancestor_column: "ancestor_id",
+                    depth_column: "depth",
+                    path_count_column: "0bad",
+                },
+            ),
+        ] {
+            // suppress unused-var warning by reading once
+            let _ = (&which, &mut cp);
+            let err = cp.validate_idents().expect_err("must reject");
+            let msg = match err {
+                DjogiError::Validation(s) => s,
+                other => panic!("expected DjogiError::Validation, got {other:?}"),
+            };
+            assert!(
+                msg.contains(bad_label),
+                "{which}: must label offending slot, got {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn left_join_closure_pair_fetch_all_rejects_bad_closure_metadata() {
+        use crate::context::DjogiContext;
+        // Hand-roll a hostile ClosureModel whose path_count_column
+        // returns an injection string. The validation gate runs before
+        // SQL build, so the fetch_all terminal returns
+        // DjogiError::Validation rather than reaching the bind binder.
+        struct HostileClosure;
+        impl crate::model::__sealed::Sealed for HostileClosure {}
+        #[allow(clippy::manual_async_fn)]
+        impl crate::model::Model for HostileClosure {
+            type Pk = HeerId;
+            type Fields = ();
+            fn table_name() -> &'static str {
+                "mini_ancestries"
+            }
+            fn pk_value(&self) -> &Self::Pk {
+                unreachable!()
+            }
+            fn descriptor() -> &'static ModelDescriptor {
+                &MINI_CLOSURE_DESC
+            }
+            fn get(
+                _ctx: &mut DjogiContext,
+                _id: Self::Pk,
+            ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
+                async { unreachable!() }
+            }
+            fn create(
+                _ctx: &mut DjogiContext,
+                _v: Self,
+            ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
+                async { unreachable!() }
+            }
+            fn save<'ctx>(
+                &'ctx mut self,
+                _ctx: &'ctx mut DjogiContext,
+            ) -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx {
+                async { unreachable!() }
+            }
+            fn delete(
+                self,
+                _ctx: &mut DjogiContext,
+            ) -> impl Future<Output = Result<(), DjogiError>> + Send {
+                async { unreachable!() }
+            }
+            fn refresh_from_db<'ctx>(
+                &'ctx self,
+                _ctx: &'ctx mut DjogiContext,
+            ) -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx {
+                async { unreachable!() }
+            }
+        }
+        impl FromPgRow for HostileClosure {
+            const COLUMNS: &'static [&'static str] =
+                &["mini_id", "ancestor_id", "depth", "path_count"];
+            const COLUMN_LIST: &'static str = "mini_id, ancestor_id, depth, path_count";
+            fn from_pg_row(_row: &tokio_postgres::Row) -> Result<Self, DjogiError> {
+                unreachable!()
+            }
+        }
+        impl crate::query::ClosureModel for HostileClosure {
+            type Source = Mini;
+            fn source_column() -> &'static str {
+                "mini_id"
+            }
+            fn ancestor_column() -> &'static str {
+                "ancestor_id"
+            }
+            fn depth_column() -> &'static str {
+                "depth"
+            }
+            fn path_count_column() -> &'static str {
+                // Smuggled SQL fragment. `validate_idents` should
+                // reject this — same gate the `materialize_closure`
+                // helper applies for its own identifier accessors.
+                "path_count; DROP TABLE users;--"
+            }
+        }
+        let jqs: JoinedQuerySet<Mini, Mini> = QuerySet::<Mini>::new()
+            .self_pairs()
+            .left_join_closure_pair::<HostileClosure>();
+        // Validate directly on the captured ClosurePairJoin — this is
+        // the exact call the terminal makes before SQL build.
+        let cp = jqs.closure_pair.as_ref().expect("closure_pair set");
+        let err = cp.validate_idents().expect_err("must reject");
+        match err {
+            DjogiError::Validation(msg) => {
+                assert!(
+                    msg.contains("path_count_column"),
+                    "must label offending slot: {msg}"
+                );
+            }
+            other => panic!("expected DjogiError::Validation, got {other:?}"),
+        }
+    }
+
+    // ── Blocker 1 — Heterogeneous closure-pair join compile-fail ───────
+    //
+    // The fix moves `left_join_closure_pair` from the `impl<L, R>` block
+    // to `impl<L> JoinedQuerySet<L, L>` so a heterogeneous pair
+    // (`cross_join_with(other_model)`) cannot reach the method. The
+    // companion compile-fail fixture in
+    // `djogi-macros/tests/compile_fail/phase8_5_cluster4a_heterogeneous_closure_pair_rejected.rs`
+    // exercises this at lihaaf-fixture level — the compiler emits
+    // `no method named left_join_closure_pair found for struct
+    // JoinedQuerySet<Animal, Widget>`.
+    //
+    // Below is a compile-pass test that pins the L = L self-join entry
+    // shape stays reachable. If a future refactor accidentally narrows
+    // the L = L impl block (e.g. requires additional bounds the
+    // self-join entry doesn't carry), this test stops compiling.
+
+    #[test]
+    fn left_join_closure_pair_compiles_on_self_pairs() {
+        let _jqs: JoinedQuerySet<Mini, Mini> = QuerySet::<Mini>::new()
+            .self_pairs()
+            .left_join_closure_pair::<MiniClosure>();
+    }
+
+    // ── Blocker 4 — expression filter alias qualification ──────────────
+
+    #[test]
+    fn filter_expr_on_joined_query_emits_alias_qualified_column() {
+        use crate::expr::Expr;
+        // Direct test of the joined `Q::Expression(_)` emission path.
+        // Build a Q::Expression wrapping an Expr<bool> whose LHS is a
+        // bare field reference, then drop it through `emit_q::<Mini>`
+        // with `SqlEmitContext::joined("l")`. The pre-fix emitter
+        // pushed the bare column string, so the joined WHERE rendered
+        // `name = $1` — Postgres flags it as ambiguous when L and R
+        // share columns (a self-join always does). The fix threads
+        // `SqlEmitContext` through `Q::Expression(_)` so bare column
+        // refs in expression filters qualify with the side's alias.
+        let name_ref: crate::query::FieldRef<Mini, String> = crate::query::FieldRef::new("name");
+        let bool_expr: Expr<bool> = name_ref.as_expr().eq(Expr::literal("alpha".to_string()));
+        // Wrap as a `Q::Expression(_)` — the exact arm the joined
+        // WHERE emitter walks when `filter_expr` (or `Q::Expression`)
+        // contributes a clause.
+        let q: crate::query::Q<Mini> = crate::query::Q::Expression(bool_expr);
+
+        // Joined-context emission ("l" alias) must qualify the column.
+        let mut acc_left = crate::pg::accumulator::SqlAccumulator::new("");
+        crate::query::sql::emit_q::<Mini>(
+            &mut acc_left,
+            &q,
+            crate::query::SqlEmitContext::joined(LEFT_ALIAS),
+        )
+        .expect("emit");
+        let sql_left = acc_left.sql();
+        assert!(
+            sql_left.contains("l.name = $"),
+            "joined-context filter_expr must alias-qualify as `l.name`: {sql_left}"
+        );
+
+        // Same expression under the right side's alias.
+        let mut acc_right = crate::pg::accumulator::SqlAccumulator::new("");
+        crate::query::sql::emit_q::<Mini>(
+            &mut acc_right,
+            &q,
+            crate::query::SqlEmitContext::joined(RIGHT_ALIAS),
+        )
+        .expect("emit");
+        let sql_right = acc_right.sql();
+        assert!(
+            sql_right.contains("r.name = $"),
+            "joined-context filter_expr must alias-qualify as `r.name`: {sql_right}"
+        );
+
+        // Sanity: root context still emits bare (non-joined queries).
+        let mut acc_root = crate::pg::accumulator::SqlAccumulator::new("");
+        crate::query::sql::emit_q::<Mini>(&mut acc_root, &q, crate::query::SqlEmitContext::root())
+            .expect("emit");
+        let sql_root = acc_root.sql();
+        assert!(
+            sql_root.starts_with("name = $"),
+            "root-context emission must remain bare (Phase 2 contract): {sql_root}"
+        );
+    }
+
+    // ── Blocker 5 — pair aggregate on single-Model annotate ────────────
+    //
+    // The single-Model `AnnotatedQuerySet::fetch_all` is async-only
+    // (needs a `DjogiContext`), so this case is exercised in
+    // integration tests when a live DB is available. The unit
+    // surface below verifies the `requires_closure_pair_join`
+    // signal is propagated through `IntoAggregateTuple` correctly —
+    // single-Model terminals consult the same flag.
+
+    #[test]
+    fn pair_aggregate_into_aggregate_tuple_signals_pair_only() {
+        let sum: PairClosureKinshipSum<MiniClosure> = PairClosureKinshipSum::new();
+        let tuple_view: &dyn crate::query::IntoAggregateTuple<Decoded = f64> = &sum;
+        assert!(
+            tuple_view.requires_closure_pair_join(),
+            "PairClosureKinshipSum reports it requires a closure-pair join through the tuple bridge \
+             — single-Model annotate's `requires_closure_pair_join` check uses this same signal \
+             to reject the slot at terminal-call time"
         );
     }
 }
