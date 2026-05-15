@@ -1540,7 +1540,7 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "sassi"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "sassi-codegen"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1570,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "sassi-macros"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",

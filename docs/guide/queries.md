@@ -84,11 +84,14 @@ Post::objects().exclude(|f| f.title().eq("draft".to_string()))
 // NOT (title = $1)
 ```
 
-### Lookup methods on `FieldRef<T, V>`
+### Lookup methods
 
-The typed closure surface exposes the following lookups. Non-string
-methods are available on every `FieldRef<T, V>`; string-only methods
-require `V = String`.
+The typed closure surface exposes the following lookups. The
+`{Model}Fields` ZST received by the closure returns
+`DjogiField<T, V>` handles; the `DjogiField` API wraps the inner
+`FieldRef<T, V>` and exposes the portable (cache-binding eligible)
+variants alongside it. Non-string methods are available on any `V`;
+string-only methods require `V = String`.
 
 | Method | SQL | Applies to |
 |---|---|---|
@@ -97,8 +100,10 @@ require `V = String`.
 | `.gt(v)` / `.gte(v)` | `col > $1` / `col >= $1` | any |
 | `.lt(v)` / `.lte(v)` | `col < $1` / `col <= $1` | any |
 | `.between(a, b)` | `col BETWEEN $1 AND $2` | any |
-| `.in_list(it)` | `col IN ($1, $2, …)`; empty → `FALSE` | any; accepts `IntoIterator<Item = V>` |
-| `.not_in_list(it)` | `col NOT IN (…)`; empty → `TRUE` | any |
+| `.in_(it)` | `col IN ($1, $2, …)`; empty → `FALSE` | any; portable / cache-binding eligible; accepts `IntoIterator<Item = V>` |
+| `.not_in(it)` | `col NOT IN (…)`; empty → `TRUE` | any; portable / cache-binding eligible |
+| `.in_list(it)` | `col IN ($1, $2, …)`; empty → `FALSE` | any; non-portable (raw `Condition`); accepts `IntoIterator<Item = V>` |
+| `.not_in_list(it)` | `col NOT IN (…)`; empty → `TRUE` | any; non-portable (raw `Condition`) |
 | `.is_null()` / `.is_not_null()` | `col IS [NOT] NULL` | any `V` (column need not be `Option<T>`) |
 | `.iexact(v)` | `LOWER(col) = LOWER($1)` | any |
 | `.contains(s)` / `.icontains(s)` | `col ILIKE '%…%'` | `V = String` only |
@@ -374,6 +379,260 @@ let n = Post::objects()
 pending struct — there's no payload to carry across a split). An
 unfiltered queryset deletes every row in the table; "wipe this table"
 DDL-style reaches for `TRUNCATE` via `ctx.raw_execute`.
+
+---
+
+## Recursive / tree queries
+
+For self-referential data — file-system trees, org charts, message
+threads, biological pedigrees — Djogi exposes a typed recursive query
+surface that emits a Postgres `WITH RECURSIVE ... SELECT * FROM ...`
+CTE under the hood. No raw SQL, no `JUSTIFICATION` bypass.
+
+The shipped surface (Phase 8-Zero Cluster B, GH #65) has two layers:
+
+### Tree-edge sugar — `Model::tree_descendants` / `Model::tree_ancestors`
+
+When the model declares `#[model(tree_edge = "parent_id")]` (or any
+self-FK column name), `Model::tree_descendants(root_id)` and
+`Model::tree_ancestors(node_id)` resolve that edge automatically:
+
+```rust
+use djogi::prelude::*;
+
+#[model(table = "categories", tree_edge = "parent_id")]
+#[derive(Debug, Clone)]
+pub struct Category {
+    pub name: String,
+    pub parent_id: Option<ForeignKey<Category>>,
+}
+
+// Every descendant of `root_id`, in DB-order.
+let subtree: Vec<Category> = Category::tree_descendants(root_id)?
+    .fetch_all(&mut ctx)
+    .await?;
+
+// Every ancestor of `node_id`, ending at the root.
+let chain: Vec<Category> = Category::tree_ancestors(node_id)?
+    .fetch_all(&mut ctx)
+    .await?;
+```
+
+Both sugar methods return `Result<RecursiveQuerySet<T>, DjogiError>`.
+`Err(DjogiError::Validation)` is returned when the model has no
+`#[model(tree_edge = "...")]` declaration — the error message names
+the model and points at the explicit-path API below.
+
+### Explicit-path API — `QuerySet::tree_descendants` / `tree_ancestors`
+
+For multi-edge graphs (e.g., a pedigree where both `mother_id` and
+`father_id` matter) reach for the lower-level
+`QuerySet::tree_descendants` / `tree_ancestors` with an explicit typed
+`RelationPath`:
+
+```rust
+let mothers_descendants: RecursiveQuerySet<Elephant> = Elephant::objects()
+    .tree_descendants(Elephant::FIELDS.mother_id().path(), root_id);
+```
+
+`RecursiveQuerySet` ships three optional modifiers beyond the base
+`filter` / `order_by`:
+
+- **`.with_max_depth(n: u32)`** — adds `AND parent.depth < $n` in the
+  recursive term. When omitted, the walk runs to natural exhaustion or
+  until the always-on `CYCLE` clause fires.
+- **`CYCLE id SET is_cycle USING cycle_path`** — emitted unconditionally
+  on every recursive query. Postgres marks cyclic paths and stops
+  re-visiting them, so a corrupt self-FK graph never hangs. The
+  de-cycling column is framework-internal (`__djogi_`-prefixed) and is
+  stripped before rows are decoded.
+- **`.search_breadth_first_by(field)`** / **`.search_depth_first_by(field)`**
+  — emit Postgres' `SEARCH BREADTH FIRST BY <col>` / `SEARCH DEPTH FIRST
+  BY <col>` annotation and prepend the framework-generated
+  `ORDER BY __djogi_search_seq` on the outer SELECT so callers see
+  traversal order without writing the sort term manually. These are
+  mutually exclusive (last call wins).
+
+All three stack with `.filter(...)` and `.order_by(...)`, which append
+tiebreakers after the search-sequence column when both are present.
+
+### Materialised closure — `Model::materialize_closure`
+
+For repeat-read traversals (kinship lookups, permission inheritance,
+tree-coloring jobs) the recursive CTE is run once into a denormalised
+closure table:
+
+```rust
+use djogi::prelude::*;
+
+#[model(table = "category_ancestries")]
+#[derive(Debug, Clone)]
+pub struct CategoryAncestry {
+    pub category_id: ForeignKey<Category>,
+    pub ancestor_id: ForeignKey<Category>,
+    pub depth: i32,
+    // COUNT(*) — always BIGINT on Postgres; must be i64.
+    pub path_count: i64,
+}
+
+impl djogi::query::ClosureModel for CategoryAncestry {
+    type Source = Category;
+
+    fn source_column() -> &'static str { "category_id" }
+    fn ancestor_column() -> &'static str { "ancestor_id" }
+    fn depth_column() -> &'static str { "depth" }
+    fn path_count_column() -> &'static str { "path_count" }
+}
+
+// Walks the recursive CTE once and writes one row per
+// (descendant, ancestor, depth, path_count) tuple. `UNION ALL`
+// preserves multi-path multiplicity for kinship-style summations.
+let summary = Category::materialize_closure::<CategoryAncestry>(
+    &mut ctx,
+    Default::default(),
+).await?;
+```
+
+Adopters that hit the closure table from a queryset use the pair-tuple
+substrate below to JOIN both sides of a candidate pair to the
+materialised closure in one round-trip.
+
+---
+
+## Pair-tuple closure self-joins
+
+Some queries are inherently pair-shaped: "for every (left, right) pair
+in this table, compute something that depends on a JOIN of both rows
+against a third table." Wright F kinship over a materialised pedigree
+closure is the canonical example. Djogi exposes a typed pair-tuple
+substrate so adopters write these queries without raw SQL.
+
+The shipped surface (Phase 8.5 Cluster 4A, GH #99) is rooted at
+`QuerySet::self_pairs()`:
+
+```rust
+use djogi::prelude::*;
+use djogi::query::PairClosureKinshipSum;
+
+// Every (female, male) candidate pair with its Wright F coefficient
+// in a single round-trip.
+let kinship_pairs: Vec<((Elephant, Elephant), f64)> = Elephant::objects()
+    .self_pairs()                                          // (L, R = L)
+    .filter_left(|f| f.id().in_(female_ids))               // narrow left
+    .filter_right(|m| m.id().in_(male_ids))                // narrow right
+    .left_join_closure_pair::<ElephantAncestry>()          // la / ra
+    .annotate(|_l, _r| PairClosureKinshipSum::<ElephantAncestry>::new())
+    .fetch_all(&mut ctx)
+    .await?;
+```
+
+What the substrate emits:
+
+```sql
+SELECT l.<cols> AS l_<cols>, r.<cols> AS r_<cols>,
+       COALESCE(SUM(la.path_count * ra.path_count
+                    * POWER(0.5, la.depth + ra.depth + 1)), 0)
+       ::float8 AS __djogi_agg_0
+FROM   elephants AS l
+CROSS JOIN elephants AS r
+LEFT JOIN elephant_ancestries AS la ON la.elephant_id = l.id
+LEFT JOIN elephant_ancestries AS ra ON ra.elephant_id = r.id
+                                   AND ra.ancestor_id = la.ancestor_id
+WHERE  l.id <> r.id
+  AND  l.id = ANY($1) AND r.id = ANY($2)
+GROUP BY l.id, r.id;
+```
+
+Surface notes:
+
+- **`.filter_left(...)` / `.filter_right(...)`** accept the same closure
+  shape as `QuerySet::filter` — typed `FieldRef<L, V>` / `FieldRef<R, V>`
+  handles, fluent `and_with` / `or_with` combinators.
+- **`.left_join_closure_pair::<C>()`** requires `C` to be a closure-table
+  model (typically the output of `Model::materialize_closure::<C>`). The
+  per-pair `GROUP BY l.id, r.id` is auto-emitted because the closure-pair
+  annotations report `requires_closure_pair_join()` at validation time.
+- **`PairClosureKinshipSum<C>`** is the typed annotation slot for the
+  Wright F sum. Other pair-shaped aggregates live in `djogi::query` next
+  to it; adopters can add their own by implementing the
+  `PairClosureAnnotation` trait. The aggregate output lands under the
+  framework-reserved `__djogi_agg_0` alias and decodes to the
+  `(_, _, T)` slot of the `Vec<((L, R), T)>` terminal.
+- **`.include_equal_pk()`** opts in to the `l.id = r.id` self-pair —
+  useful for diagonal kinship lookups; the default `WHERE l.id <> r.id`
+  drops them.
+
+Composite scores that mix pair-aggregate output with Rust-side state
+(score from kinship × Rust-side overlap × Rust-side age product) land
+their final ranking in Rust; the typed pair-tuple `qualify(...)` window
+surface accepts column references only on its
+`partition_by_pair` / `order_by_pair_desc` methods, not arbitrary
+`Expr<f64>` derived from external state. A future slice that adds an
+`Expr`-based pair-side `order_by` is tracked on #99's substrate
+roadmap.
+
+---
+
+## Cache-bound terminals — `.cache(&pool)?`
+
+Repeat-read query patterns (request handlers re-reading the same row
+across endpoints, periodic scoring jobs re-evaluating the same
+candidate set) amortise the DB round-trip by binding a queryset to a
+`Punnu<T>` L1 identity-map pool. Djogi's typed surface for this
+(Phase 8.5 Cluster 4A, GH #108) is the `.cache(&pool)?` modifier:
+
+```rust
+use djogi::prelude::*;
+
+// `#[derive(Model)]` auto-emits `impl Cacheable for Post` on every
+// default-deriving model, and the boot hook registers a per-context
+// `Punnu<Post>` at `DjogiContext::from_pool` time — so adopters get
+// the pool handle through `ctx.punnu::<Post>()` without manual glue.
+let pool = ctx
+    .punnu::<Post>()
+    .expect("Punnu<Post> registered by the boot hook on default-derive")
+    .clone();
+
+let recent: Vec<Post> = Post::objects()
+    .filter(|f| f.published().eq(true))
+    .order_by(|f| f.created_at().desc())
+    .limit(20)
+    .cache(&pool)?                              // ← portable-gated binding
+    .fetch_all(&mut ctx)
+    .await?;
+
+// Subsequent lookups against the same pool hit L1, no DB round-trip:
+let arc: Option<std::sync::Arc<Post>> = pool.get(&recent[0].id);
+```
+
+Surface contract:
+
+- `.cache(&pool)` returns
+  `Result<CachedPortableQuerySet<'_, T>, (QuerySet<T>, PortablePredicateError)>`.
+  The error variant returns ownership of the original queryset so the
+  caller can fall back to a non-cached path on the same call site.
+- Cache binding is **portable-gated**: every filter must reduce to
+  `sassi::BasicPredicate<T>`. Ordinary closure filters using typed
+  `FieldRef<T, V>` lookups (`eq`, `lte`, `in_`, …) are portable today.
+  Filters that smuggle raw `Condition` payloads, JSONB-path lookups
+  beyond the typed surface, or expression-backed comparisons are
+  intentionally non-portable.
+- Cache binding only applies to row-returning terminals (`fetch_all`,
+  `fetch_one`, `first`); `count` runs unchanged because `COUNT(*)`
+  returns no rows for the identity map to absorb.
+- Row mirroring happens at row-decode time in the existing terminal
+  pipeline — there is no separate post-fetch insertion loop, and no
+  "insert one row that succeeded but lost the second" failure mode
+  visible to the caller.
+- `Punnu::insert` is invalidated automatically when `Model::create`,
+  `Model::save`, or `Model::delete` runs through djogi's hook
+  machinery (cluster 8δ T7.5). Adopters do not maintain a manual
+  write-through.
+
+For adopters who need to inspect whether a queryset is
+cache-eligible ahead of binding, `QuerySet::try_portable()` returns
+the same `Result<PortableQuerySet<T>, ...>` as `.cache(...)` but
+without consuming the pool handle.
 
 ---
 
