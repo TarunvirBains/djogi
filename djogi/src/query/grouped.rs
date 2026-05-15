@@ -474,6 +474,24 @@ where
             // Validate DISTINCT modifier combinations before building SQL —
             // rejected combos surface as DjogiError::UnsupportedAggregate.
             self.aggregates.check_legality()?;
+
+            // Reject pair-only aggregates on the single-Model grouped
+            // path. Pair-tuple aggregates require the joined queryset's
+            // `l.` / `r.` / `la.` / `ra.` aliases; the grouped path
+            // emits a single-table FROM with no pair-side scope.
+            // Same diagnostic shape as `AnnotatedQuerySet::fetch_all`.
+            if self.aggregates.requires_closure_pair_join() {
+                return Err(crate::DjogiError::Validation(
+                    "grouped single-Model annotate cannot host a pair-tuple aggregate \
+                     (e.g. PairClosureKinshipSum). These aggregates reference pair-tuple \
+                     emitter aliases (`l.` / `r.` / `la.` / `ra.`) that are only in scope \
+                     inside a JoinedQuerySet. Use \
+                     `model_objects.self_pairs().left_join_closure_pair::<C>().annotate(...)` \
+                     for the joined-annotated terminal."
+                        .to_string(),
+                ));
+            }
+
             let acc = crate::query::sql::build_grouped_annotated_select(&self)
                 .map_err(crate::DjogiError::from)?;
             // Defensive alias-collision check — fires only if a future API

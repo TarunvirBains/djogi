@@ -76,14 +76,31 @@ use std::marker::PhantomData;
 
 // ── Sealed seal ──────────────────────────────────────────────────────
 
-mod sealed {
+// Sealed marker for [`IntoAggregateTuple`] impls.
+//
+// Phase 8.5 Cluster 4A widens this from `mod` to `pub(crate) mod` so
+// pair-tuple slot types implemented in `query::joined` (which compose
+// through the existing `impl<S: AnnotationSlot> IntoAggregateTuple for
+// S` blanket) can satisfy the bound through `AnnotationSlot::Sealed`.
+// `Sealed` remains un-namable outside `djogi` because the module is
+// `pub(crate)`.
+pub(crate) mod sealed {
     //! Crate-private seal. Downstream code cannot name
     //! `sealed::Sealed`, so the only `IntoAggregateTuple` impls are
     //! the framework-blessed ones below.
     pub trait Sealed {}
 }
 
-mod annotation_slot_sealed {
+// Sealed marker for [`AnnotationSlot`] impls.
+//
+// Phase 8.5 Cluster 4A widens the inner module from `mod` to
+// `pub(crate) mod` so the pair-tuple surface (`query::joined`) can
+// implement `AnnotationSlot` for `PairClosureKinshipSum<C>` and the
+// blanket `impl<S: AnnotationSlot> IntoAggregateTuple for S` picks up
+// the new slot without weakening the seal against downstream crates
+// — `Sealed` stays un-namable outside `djogi` because the module is
+// `pub(crate)`.
+pub(crate) mod annotation_slot_sealed {
     pub trait Sealed {}
 }
 
@@ -141,6 +158,93 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
 
     /// Validate runtime invariants before SQL emission.
     fn check_legality(&self) -> Result<(), crate::DjogiError> {
+        Ok(())
+    }
+
+    /// Whether this annotation slot needs a closure-pair LEFT JOIN
+    /// (i.e. `la` / `ra` aliases) to be in scope to produce valid SQL.
+    ///
+    /// Returns `false` by default — virtually every annotation slot is
+    /// independent of a pair-tuple's closure join. The single override
+    /// today is [`PairClosureKinshipSum`](crate::query::PairClosureKinshipSum):
+    /// it emits SQL that references `la.<path_count>` / `ra.<depth>` so
+    /// without a closure-pair join in the FROM clause it produces a
+    /// Postgres `42P01 missing FROM-clause` error at execute time.
+    ///
+    /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+    /// consults this through the tuple bridge
+    /// ([`IntoAggregateTuple::requires_closure_pair_join`]) before SQL
+    /// build and returns a typed `DjogiError::Validation` when the
+    /// aggregate tuple needs the join but the queryset has no
+    /// `closure_pair` set, replacing the cryptic Postgres error with a
+    /// pre-build diagnostic.
+    fn requires_closure_pair_join(&self) -> bool {
+        false
+    }
+
+    /// Whether this slot's emitted SQL is safe to use inside a
+    /// pair-tuple `JoinedQuerySet::annotate(...)` terminal.
+    ///
+    /// Returns `false` by default. Override to `true` only when the
+    /// slot's emitter either:
+    ///   - References pair-side closure aliases (`la.` / `ra.`)
+    ///     explicitly — `PairClosureKinshipSum<C>`.
+    ///   - Composes through pair-aware builders that qualify column
+    ///     references (`l.col` / `r.col`) — window functions invoked
+    ///     via `partition_by_pair` / `order_by_pair_asc` /
+    ///     `order_by_pair_desc`.
+    ///
+    /// Ordinary [`AggregateExpr<V>`] (e.g. `f.age().sum()`) keeps
+    /// the default `false`: it emits a bare-column SQL fragment like
+    /// `SUM(age) OVER ()` which is structurally ambiguous in joined
+    /// contexts where both sides may share column names (a guarantee
+    /// on self-joins, typical on heterogeneous joins).
+    ///
+    /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+    /// consults this through the tuple bridge
+    /// ([`IntoAggregateTuple::is_joined_safe`]) before SQL build and
+    /// rejects the entire tuple with a typed `DjogiError::Validation`
+    /// when any slot is not joined-safe. The diagnostic message points
+    /// adopters at the pair-aware alternatives.
+    ///
+    /// Note: window functions return `true` here even if the user
+    /// composes them with the non-pair `partition_by(field)` instead
+    /// of `partition_by_pair(side, field)` — that would still emit a
+    /// bare column reference. Detecting that variant requires
+    /// inspecting the `WindowSpec.partition_by` / `.order_by` strings
+    /// for `.`-qualification; a follow-on slice will tighten the gate.
+    /// For now, the slot-level opt-in keeps the surface minimal while
+    /// the ambiguous case (`AggregateExpr` with no pair-aware path)
+    /// stays rejected.
+    fn is_joined_safe(&self) -> bool {
+        false
+    }
+
+    /// Validate this slot against an optional closure-pair join
+    /// captured by the queryset.
+    ///
+    /// Default returns `Ok(())`. Override on slots that splice
+    /// `ClosureModel` metadata (column-name `&'static str` accessors)
+    /// into emitted SQL — today only
+    /// [`PairClosureKinshipSum<C>`](crate::query::PairClosureKinshipSum)
+    /// fits — to:
+    ///   (1) Run [`crate::query::closure::validate_closure_metadata_idents::<C>`]
+    ///       so a hand-rolled `impl ClosureModel` cannot smuggle SQL
+    ///       through the slot's `push_sql` sites.
+    ///   (2) When `closure_pair` is `Some(cp)`, compare each captured
+    ///       identifier on `cp` against `C`'s same-named accessor so
+    ///       a `left_join_closure_pair::<C1>()` paired with
+    ///       `PairClosureKinshipSum::<C2>::new()` (C1 ≠ C2) is
+    ///       rejected before SQL build instead of surfacing as a
+    ///       Postgres `42703 column does not exist` error.
+    ///
+    /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+    /// calls this through the tuple bridge
+    /// ([`IntoAggregateTuple::validate_against_closure_pair`]).
+    fn validate_against_closure_pair(
+        &self,
+        #[allow(unused_variables)] closure_pair: Option<&crate::query::joined::ClosurePairJoin>,
+    ) -> Result<(), crate::DjogiError> {
         Ok(())
     }
 }
@@ -211,6 +315,62 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     /// to walk its nodes through
     /// [`crate::expr::sql::check_aggregate_legality`].
     fn check_legality(&self) -> Result<(), crate::DjogiError> {
+        Ok(())
+    }
+
+    /// Whether any slot in this aggregate tuple requires a closure-pair
+    /// LEFT JOIN to be in scope to produce valid SQL.
+    ///
+    /// Single-slot impls (the blanket `impl<S> IntoAggregateTuple for S
+    /// where S: AnnotationSlot`) forward to
+    /// [`AnnotationSlot::requires_closure_pair_join`]; tuple impls OR
+    /// across every slot. Default `false` covers the `()` /
+    /// no-annotation case.
+    ///
+    /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+    /// queries this before SQL build so the cluster-4A
+    /// `PairClosureKinshipSum` slot is rejected with a typed
+    /// `DjogiError::Validation` when the queryset has no `closure_pair`
+    /// set, instead of letting Postgres surface a missing-FROM-clause
+    /// error.
+    fn requires_closure_pair_join(&self) -> bool {
+        false
+    }
+
+    /// Whether **every** slot in this aggregate tuple is safe to use
+    /// inside a pair-tuple `JoinedQuerySet::annotate(...)` terminal.
+    ///
+    /// Forwards to [`AnnotationSlot::is_joined_safe`] for the single-
+    /// slot blanket; tuple impls AND across slots. Default `true`
+    /// covers the `()` / no-annotation case (vacuously safe).
+    ///
+    /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+    /// queries this before SQL build to reject ordinary
+    /// `AggregateExpr<V>` slots (e.g. `f.age().sum()`) that would emit
+    /// bare-column SQL like `SUM(age) OVER ()` — ambiguous on
+    /// self-joins where both sides share columns.
+    fn is_joined_safe(&self) -> bool {
+        true
+    }
+
+    /// Validate every slot in this aggregate tuple against the
+    /// queryset's optional closure-pair join. Forwards to
+    /// [`AnnotationSlot::validate_against_closure_pair`] per slot
+    /// (single-slot blanket calls once; tuple impls walk every slot
+    /// and propagate the first error).
+    ///
+    /// Default returns `Ok(())` — `()` and tuples-of-no-pair-aggregates
+    /// trivially validate.
+    ///
+    /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+    /// calls this before SQL build so a `PairClosureKinshipSum<C>`
+    /// slot whose `C`'s metadata is hostile or mismatched against the
+    /// join's `C` surfaces as a typed `DjogiError::Validation` before
+    /// any SQL is emitted.
+    fn validate_against_closure_pair(
+        &self,
+        #[allow(unused_variables)] closure_pair: Option<&crate::query::joined::ClosurePairJoin>,
+    ) -> Result<(), crate::DjogiError> {
         Ok(())
     }
 }
@@ -336,6 +496,27 @@ macro_rules! impl_window_annotation_slot {
                     )))
                 }
             }
+
+            // Rank-family windows (`ROW_NUMBER`, `RANK`, `DENSE_RANK`)
+            // have pair-aware composition through
+            // [`PairWindowExt`](crate::query::joined::PairWindowExt) —
+            // `partition_by_pair` / `order_by_pair_asc` /
+            // `order_by_pair_desc` qualify each stored column with the
+            // side's alias (`"l.<col>"` / `"r.<col>"`). The instance is
+            // joined-safe iff every stored column is so qualified
+            // (vacuously safe when there is no PARTITION BY / ORDER BY,
+            // since `ROW_NUMBER() OVER ()` references no columns).
+            //
+            // A user-built `RowNumber::new().partition_by(f.id())` —
+            // the non-pair-aware path — stores the bare `"id"` and
+            // trips this gate, getting rejected at
+            // [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+            // before SQL build instead of silently emitting
+            // `PARTITION BY id` against a `FROM animals AS l CROSS JOIN
+            // animals AS r` where `id` is ambiguous.
+            fn is_joined_safe(&self) -> bool {
+                self.window.is_pair_qualified()
+            }
         }
     };
 }
@@ -396,6 +577,28 @@ macro_rules! impl_window_annotation_slot_generic_v {
                     )))
                 }
             }
+
+            // Column-argument window functions (`FIRST_VALUE`,
+            // `LAST_VALUE`, `LEAD`, `LAG`, `NTH_VALUE`) carry a
+            // `target_column` constructed via
+            // `target.into_sql_field().column()` — always a bare
+            // column name validated by
+            // [`crate::ident::assert_plain_ident`]. There is no
+            // pair-aware constructor that would qualify the target as
+            // `"l.<col>"` / `"r.<col>"`, so the emitted SQL would be
+            // `FIRST_VALUE(name) OVER (...)` — ambiguous in self-join
+            // contexts where both pair sides carry a `name` column.
+            //
+            // Reporting `false` here makes
+            // [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+            // reject the slot at the safety gate with a typed
+            // `DjogiError::Validation`. A pair-aware constructor (e.g.
+            // `FirstValueWindow::new_pair(PairSide::Left, ...)`) that
+            // composes the side alias into `target_column` is tracked
+            // as a follow-up slice — see `docs/spec/`.
+            fn is_joined_safe(&self) -> bool {
+                false
+            }
         }
     };
 }
@@ -452,6 +655,21 @@ where
 
     fn check_legality(&self) -> Result<(), crate::DjogiError> {
         AnnotationSlot::check_legality(self)
+    }
+
+    fn requires_closure_pair_join(&self) -> bool {
+        AnnotationSlot::requires_closure_pair_join(self)
+    }
+
+    fn is_joined_safe(&self) -> bool {
+        AnnotationSlot::is_joined_safe(self)
+    }
+
+    fn validate_against_closure_pair(
+        &self,
+        closure_pair: Option<&crate::query::joined::ClosurePairJoin>,
+    ) -> Result<(), crate::DjogiError> {
+        AnnotationSlot::validate_against_closure_pair(self, closure_pair)
     }
 }
 
@@ -534,6 +752,29 @@ macro_rules! impl_into_aggregate_tuple {
             fn check_legality(&self) -> Result<(), crate::DjogiError> {
                 $(
                     self.$slot.check_legality()?;
+                )+
+                Ok(())
+            }
+
+            fn requires_closure_pair_join(&self) -> bool {
+                false $(
+                    || self.$slot.requires_closure_pair_join()
+                )+
+            }
+
+            fn is_joined_safe(&self) -> bool {
+                // AND across slots: every slot must be joined-safe.
+                true $(
+                    && self.$slot.is_joined_safe()
+                )+
+            }
+
+            fn validate_against_closure_pair(
+                &self,
+                closure_pair: Option<&crate::query::joined::ClosurePairJoin>,
+            ) -> Result<(), crate::DjogiError> {
+                $(
+                    self.$slot.validate_against_closure_pair(closure_pair)?;
                 )+
                 Ok(())
             }
@@ -639,6 +880,31 @@ where
             // Validate DISTINCT modifier combinations before building SQL —
             // rejected combos surface as DjogiError::UnsupportedAggregate.
             aggregates.check_legality()?;
+
+            // Reject pair-only aggregates on the single-Model annotate
+            // path. Slots whose `requires_closure_pair_join()` returns
+            // true (today: `PairClosureKinshipSum<C>`) reference the
+            // pair-tuple emitter's `la.` / `ra.` closure aliases AND
+            // its `l.` / `r.` pair-side aliases — none of which exist
+            // in a single-Model FROM clause. Without this gate the
+            // query would reach Postgres as `SELECT ..., SUM(la.path *
+            // ra.path * ...) AS __djogi_agg_0 FROM <table> AS t` and
+            // surface a `42P01 missing FROM-clause` error at execute
+            // time. The check turns that into a typed
+            // `DjogiError::Validation` with a remediation hint —
+            // same shape the joined path uses for its dual error of
+            // "kinship aggregate without closure-pair join".
+            if aggregates.requires_closure_pair_join() {
+                return Err(DjogiError::Validation(
+                    "single-Model QuerySet::annotate cannot host a pair-tuple aggregate \
+                     (e.g. PairClosureKinshipSum). These aggregates reference the pair-tuple \
+                     emitter's `l.` / `r.` / `la.` / `ra.` aliases which are only in scope \
+                     inside a JoinedQuerySet. Use \
+                     `model_objects.self_pairs().left_join_closure_pair::<C>().annotate(...)` \
+                     to reach the joined-annotated terminal."
+                        .to_string(),
+                ));
+            }
 
             let acc = build_annotated_select_for_fetch(
                 &qs,

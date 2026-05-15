@@ -601,11 +601,18 @@ pub(crate) fn emit_condition(
         }
         // Expression-IR bridge — delegates to the dedicated emitter in
         // `expr::sql`. The expression tree carries its own column
-        // references + literals + nested arithmetic; `parent_table` is
-        // deliberately not threaded through (see the module-level
-        // comment in `expr::sql` for the scope note on select_related
-        // interaction, deferred to Task 5).
-        Condition::Expr(expr) => crate::expr::sql::emit_expr(acc, &expr.node),
+        // references + literals + nested arithmetic; the `parent_table`
+        // qualifier is threaded through as an `SqlEmitContext` so
+        // joined-query call sites (pair-tuple `filter_expr`,
+        // select_related's filter path) emit `<alias>.<col>` instead of
+        // bare names.
+        Condition::Expr(expr) => {
+            let ctx = match parent_table {
+                Some(t) => SqlEmitContext::joined(t),
+                None => SqlEmitContext::root(),
+            };
+            crate::expr::sql::emit_expr(acc, &expr.node, ctx)
+        }
         // ── Array operators (Phase 5 Task 5) ─────────────────────────────
         //
         // All three operators take the form `col OP $n` where `$n` is a
@@ -912,7 +919,7 @@ pub(crate) fn emit_q<T: Model>(
             acc.push_bind(pattern.clone());
             Ok(())
         }
-        Q::Expression(expr) => crate::expr::sql::emit_expr(acc, &expr.node),
+        Q::Expression(expr) => crate::expr::sql::emit_expr(acc, &expr.node, ctx),
         Q::Array(ArrayPredicate::Contains(leaf, _)) => {
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" @> ");
@@ -1138,7 +1145,7 @@ fn push_grouped_tail(
 ) -> Result<(), PortablePredicateError> {
     if let Some(h) = having {
         acc.push_sql(" HAVING ");
-        crate::expr::sql::emit_expr(acc, h)?;
+        crate::expr::sql::emit_expr(acc, h, SqlEmitContext::root())?;
     }
 
     if !order.is_empty() {
@@ -1369,7 +1376,7 @@ fn emit_aggregate_inner(
             true,
             _,
         ) => {
-            crate::expr::sql::emit_expr(acc, agg)?;
+            crate::expr::sql::emit_expr(acc, agg, SqlEmitContext::root())?;
             // Bare emission ended with `WRAP(AGG(...))::cast`. Pop
             // the cast and the wrapper close so the next push falls
             // between the AGG(...)'s close paren and the wrapper's.
@@ -1418,7 +1425,7 @@ fn emit_aggregate_inner(
                 }
             );
             if has_filter {
-                crate::expr::sql::emit_expr(acc, agg)?;
+                crate::expr::sql::emit_expr(acc, agg, SqlEmitContext::root())?;
                 let popped_cast = acc.pop_sql_suffix(suffix);
                 debug_assert!(
                     popped_cast,
@@ -1435,7 +1442,7 @@ fn emit_aggregate_inner(
                 acc.push_sql(suffix);
             } else {
                 acc.push_sql("(");
-                crate::expr::sql::emit_expr(acc, agg)?;
+                crate::expr::sql::emit_expr(acc, agg, SqlEmitContext::root())?;
                 let popped_cast = acc.pop_sql_suffix(suffix);
                 debug_assert!(
                     popped_cast,
@@ -1449,7 +1456,7 @@ fn emit_aggregate_inner(
         // Spatial WITHOUT window — bare emit already includes the
         // cast adjacent to the aggregate. Nothing to splice.
         (Some(_), false, _) => {
-            crate::expr::sql::emit_expr(acc, agg)?;
+            crate::expr::sql::emit_expr(acc, agg, SqlEmitContext::root())?;
         }
         // Non-spatial WITH explicit cast_to — paren-wrap (AGG OVER)?,
         // then `::ty`. Window may or may not be present; the existing
@@ -1457,14 +1464,14 @@ fn emit_aggregate_inner(
         // attaches cleanly.
         (None, _, Some(ty)) => {
             acc.push_sql("(");
-            crate::expr::sql::emit_expr(acc, agg)?;
+            crate::expr::sql::emit_expr(acc, agg, SqlEmitContext::root())?;
             emit_window_clause(acc);
             acc.push_sql(")::");
             acc.push_sql(ty);
         }
         // Non-spatial, no cast — bare emit + optional OVER.
         (None, _, None) => {
-            crate::expr::sql::emit_expr(acc, agg)?;
+            crate::expr::sql::emit_expr(acc, agg, SqlEmitContext::root())?;
             emit_window_clause(acc);
         }
     }
@@ -2195,7 +2202,7 @@ pub(crate) fn build_update<T: Model>(
                 push_filter_value(&mut acc, v.clone());
             }
             crate::query::update::AssignmentValue::Expr(node) => {
-                crate::expr::sql::emit_expr(&mut acc, node)?;
+                crate::expr::sql::emit_expr(&mut acc, node, SqlEmitContext::root())?;
             }
         }
     }

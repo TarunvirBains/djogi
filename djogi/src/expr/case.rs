@@ -165,6 +165,7 @@ mod tests {
     use crate::expr::sql::emit_expr;
     use crate::pg::accumulator::SqlAccumulator;
     use crate::query::field::FieldRef;
+    use crate::query::portable::SqlEmitContext;
 
     // Inert local model — mirrors the stub pattern used across the
     // expr / query unit tests. Only `table_name` matters; no CRUD
@@ -231,7 +232,8 @@ mod tests {
         )
         .otherwise(Expr::literal("ok".to_string()));
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &expr.node).expect("case expression should lower to SQL");
+        emit_expr(&mut qb, &expr.node, SqlEmitContext::root())
+            .expect("case expression should lower to SQL");
         let sql = qb.sql();
         assert_eq!(
             sql.trim(),
@@ -257,7 +259,8 @@ mod tests {
         )
         .otherwise(Expr::literal("ok".to_string()));
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &expr.node).expect("case expression should lower to SQL");
+        emit_expr(&mut qb, &expr.node, SqlEmitContext::root())
+            .expect("case expression should lower to SQL");
         let sql = qb.sql();
         assert_eq!(
             sql.trim(),

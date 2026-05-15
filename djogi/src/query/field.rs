@@ -5108,7 +5108,8 @@ mod distance_tests {
         let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
         let agg = field.convex_hull();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(
             acc.sql(),
             "ST_ConvexHull(ST_Collect(location::geometry))::geography"
@@ -5126,7 +5127,8 @@ mod distance_tests {
         let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
         let agg = field.convex_hull().distinct();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(
             acc.sql(),
             "ST_ConvexHull(ST_Collect(DISTINCT location::geometry))::geography"
@@ -5147,7 +5149,8 @@ mod distance_tests {
             .convex_hull()
             .filter(confidence.as_expr().gt(Expr::literal(0.5_f64)));
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         let sql = acc.sql().to_string();
         assert!(
             sql.starts_with("ST_ConvexHull(ST_Collect("),
@@ -5213,7 +5216,8 @@ mod distance_tests {
         let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
         let agg = field.centroid();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(
             acc.sql(),
             "ST_Centroid(ST_Collect(location::geometry))::geography"
@@ -5227,7 +5231,8 @@ mod distance_tests {
         let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
         let agg = field.collect();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(acc.sql(), "ST_Collect(location::geometry)::geography");
     }
 
@@ -5240,7 +5245,8 @@ mod distance_tests {
         let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
         let agg = field.centroid().distinct();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(
             acc.sql(),
             "ST_Centroid(ST_Collect(DISTINCT location::geometry))::geography"
@@ -5268,7 +5274,8 @@ mod distance_tests {
             .centroid()
             .filter(confidence.as_expr().gt(Expr::literal(0.5_f64)));
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         let sql = acc.sql().to_string();
         assert!(
             sql.starts_with("ST_Centroid(ST_Collect(location::geometry)"),
@@ -5496,7 +5503,8 @@ mod distance_tests {
         let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
         let agg = field.union();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(acc.sql(), "ST_Union(territory::geometry)::geography");
     }
 
@@ -5508,7 +5516,8 @@ mod distance_tests {
         let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
         let agg = field.union().distinct();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(
             acc.sql(),
             "ST_Union(DISTINCT territory::geometry)::geography"
@@ -5542,7 +5551,8 @@ mod distance_tests {
         let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
         let agg = field.extent();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         // box2d → geometry → geography cast chain — ST_Extent has no
         // direct geography cast, the two-step cast keeps the typed
         // surface decoding into Polygon.
@@ -5575,7 +5585,8 @@ mod distance_tests {
         let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
         let agg = field.extent_3d();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(
             acc.sql(),
             "ST_3DExtent(location::geometry)::geometry::geography"
@@ -5596,7 +5607,8 @@ mod distance_tests {
             .extent()
             .filter(confidence.as_expr().gt(Expr::literal(0.5_f64)));
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         let sql = acc.sql().to_string();
         assert!(
             sql.starts_with("(ST_Extent(location::geometry)"),
@@ -5647,7 +5659,8 @@ mod distance_tests {
         let field: FieldRef<Fake, GeoPoint> = FieldRef::new("position");
         let agg = field.make_line();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(acc.sql(), "ST_MakeLine(position::geometry)::geography");
     }
 
@@ -5663,7 +5676,8 @@ mod distance_tests {
         let recorded_at: FieldRef<Fake, i64> = FieldRef::new("recorded_at");
         let agg = position.make_line().order_by(recorded_at.asc());
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(
             acc.sql(),
             "ST_MakeLine(position::geometry ORDER BY recorded_at ASC)::geography"
@@ -5701,7 +5715,8 @@ mod distance_tests {
         let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
         let agg = field.polygon_agg();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(acc.sql(), "ST_Collect(territory::geometry)::geography");
     }
 
@@ -5713,7 +5728,8 @@ mod distance_tests {
         let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
         let agg = field.polygon_agg().distinct();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(
             acc.sql(),
             "ST_Collect(DISTINCT territory::geometry)::geography"
@@ -5751,7 +5767,8 @@ mod distance_tests {
         let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
         let agg = field.cluster_intersecting();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(
             acc.sql(),
             "ST_ClusterIntersecting(territory::geometry)::geography[]"
@@ -5792,7 +5809,8 @@ mod distance_tests {
         let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
         let agg = field.cluster_within(500.0);
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(
             acc.sql(),
             "ST_ClusterWithin(territory::geometry, $1)::geography[]"
@@ -5848,7 +5866,8 @@ mod distance_tests {
         let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
         let agg = field.mem_union();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(acc.sql(), "ST_MemUnion(territory::geometry)::geography");
     }
 
@@ -5889,7 +5908,8 @@ mod distance_tests {
         let field: FieldRef<Fake, LineString> = FieldRef::new("edge");
         let agg = field.polygonize();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(acc.sql(), "ST_Polygonize(edge::geometry)::geography");
     }
 
@@ -5901,7 +5921,8 @@ mod distance_tests {
         let field: FieldRef<Fake, LineString> = FieldRef::new("edge");
         let agg = field.polygonize().distinct();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(
             acc.sql(),
             "ST_Polygonize(DISTINCT edge::geometry)::geography"
@@ -5938,7 +5959,8 @@ mod distance_tests {
         let field: FieldRef<Fake, LineString> = FieldRef::new("path");
         let agg = field.line_agg();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(acc.sql(), "ST_LineAgg(path::geometry)::geography");
     }
 
@@ -5950,7 +5972,8 @@ mod distance_tests {
         let field: FieldRef<Fake, LineString> = FieldRef::new("path");
         let agg = field.line_agg().distinct();
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         assert_eq!(acc.sql(), "ST_LineAgg(DISTINCT path::geometry)::geography");
     }
 
@@ -5969,7 +5992,8 @@ mod distance_tests {
             .line_agg()
             .filter(len_m.as_expr().gt(Expr::literal(100.0_f64)));
         let mut acc = SqlAccumulator::new("");
-        crate::expr::sql::emit_expr(&mut acc, &agg.node).expect("aggregate emission");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node, crate::query::SqlEmitContext::root())
+            .expect("aggregate emission");
         let sql = acc.sql().to_string();
         assert!(
             sql.starts_with("(ST_LineAgg(path::geometry)"),

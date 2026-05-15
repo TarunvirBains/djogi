@@ -258,6 +258,51 @@ impl WindowBuilder {
 }
 
 impl WindowSpec {
+    /// Whether every column reference stored in this window spec is
+    /// pair-side-qualified (`l.<col>` or `r.<col>`).
+    ///
+    /// # What
+    ///
+    /// Inspects [`Self::partition_by`] and the column part of every
+    /// [`Self::order_by`] entry. Returns `true` iff every stored
+    /// reference starts with `"l."` or `"r."` — the exact prefixes that
+    /// [`PairWindowExt::partition_by_pair`](crate::query::joined::PairWindowExt::partition_by_pair),
+    /// [`PairWindowExt::order_by_pair_asc`](crate::query::joined::PairWindowExt::order_by_pair_asc),
+    /// and
+    /// [`PairWindowExt::order_by_pair_desc`](crate::query::joined::PairWindowExt::order_by_pair_desc)
+    /// produce. A vacuous window (no partition, no order) returns `true`
+    /// — `OVER ()` references no columns and is unambiguous.
+    ///
+    /// # Why
+    ///
+    /// The joined-annotation safety gate in
+    /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+    /// rejects window slots whose emitted SQL could resolve to either
+    /// pair side. Bare column references (e.g. `PARTITION BY id`) are
+    /// ambiguous in self-join contexts where both `l` and `r` carry an
+    /// `id` column. Pair-qualified references (`PARTITION BY l.id`)
+    /// are unambiguous by construction.
+    ///
+    /// # How
+    ///
+    /// Plain column idents are validated by
+    /// [`crate::ident::assert_plain_ident`] to contain only ASCII
+    /// alphanumerics and underscore, so a non-pair-aware `partition_by`
+    /// call can never store a string containing `.`. Only the
+    /// `intern_alias_column` helper inside [`crate::query::joined`]
+    /// composes `"<alias>.<col>"` strings, and it only emits the
+    /// `LEFT_ALIAS` (`"l"`) / `RIGHT_ALIAS` (`"r"`) prefixes. So a
+    /// `starts_with("l.")` / `starts_with("r.")` check is a faithful
+    /// proxy for "this column was registered through `PairWindowExt`".
+    ///
+    /// This method is the per-instance safety witness for window slots
+    /// whose `is_joined_safe` impl forwards here.
+    pub(crate) fn is_pair_qualified(&self) -> bool {
+        let is_pair_prefixed = |s: &str| s.starts_with("l.") || s.starts_with("r.");
+        self.partition_by.iter().all(|c| is_pair_prefixed(c))
+            && self.order_by.iter().all(|(c, _)| is_pair_prefixed(c))
+    }
+
     /// Emit ` OVER (PARTITION BY ... ORDER BY ... frame EXCLUDE ...)` onto
     /// `acc`. The leading space is part of the emission — callers append
     /// this directly after the aggregate function call and optional FILTER
@@ -619,5 +664,111 @@ mod tests {
             "missing ROWS frame: {sql}"
         );
         assert!(sql.contains("EXCLUDE TIES"), "missing EXCLUDE: {sql}");
+    }
+
+    // ── is_pair_qualified ────────────────────────────────────────────────
+
+    #[test]
+    fn is_pair_qualified_true_for_empty_spec() {
+        // A vacuous `OVER ()` window references no columns — trivially
+        // unambiguous in joined contexts.
+        let spec = WindowSpec::default();
+        assert!(
+            spec.is_pair_qualified(),
+            "empty WindowSpec must be vacuously pair-qualified"
+        );
+    }
+
+    #[test]
+    fn is_pair_qualified_true_for_left_qualified_partition() {
+        let spec = WindowSpec {
+            partition_by: vec!["l.id"],
+            ..Default::default()
+        };
+        assert!(
+            spec.is_pair_qualified(),
+            "`PARTITION BY l.id` must be pair-qualified"
+        );
+    }
+
+    #[test]
+    fn is_pair_qualified_true_for_right_qualified_partition() {
+        let spec = WindowSpec {
+            partition_by: vec!["r.id"],
+            ..Default::default()
+        };
+        assert!(
+            spec.is_pair_qualified(),
+            "`PARTITION BY r.id` must be pair-qualified"
+        );
+    }
+
+    #[test]
+    fn is_pair_qualified_true_for_mixed_sides() {
+        let spec = WindowSpec {
+            partition_by: vec!["l.id", "r.name"],
+            order_by: vec![("l.score", Direction::Desc)],
+            ..Default::default()
+        };
+        assert!(
+            spec.is_pair_qualified(),
+            "mixed l./r. qualifiers across partition+order must be pair-qualified"
+        );
+    }
+
+    #[test]
+    fn is_pair_qualified_false_for_bare_partition() {
+        // The exact emission the blocker calls out: `partition_by(l.id())`
+        // through the non-pair-aware path stores a bare `"id"`.
+        let spec = WindowSpec {
+            partition_by: vec!["id"],
+            ..Default::default()
+        };
+        assert!(
+            !spec.is_pair_qualified(),
+            "bare `PARTITION BY id` must NOT be pair-qualified — ambiguous in self-joins"
+        );
+    }
+
+    #[test]
+    fn is_pair_qualified_false_for_bare_order_by() {
+        let spec = WindowSpec {
+            order_by: vec![("score", Direction::Desc)],
+            ..Default::default()
+        };
+        assert!(
+            !spec.is_pair_qualified(),
+            "bare `ORDER BY score DESC` must NOT be pair-qualified"
+        );
+    }
+
+    #[test]
+    fn is_pair_qualified_false_when_any_entry_is_bare() {
+        // One bare slot poisons the whole spec — matches the AND logic in
+        // the joined-annotation gate.
+        let spec = WindowSpec {
+            partition_by: vec!["l.id", "name"],
+            order_by: vec![("r.score", Direction::Desc)],
+            ..Default::default()
+        };
+        assert!(
+            !spec.is_pair_qualified(),
+            "any single bare column must disqualify the whole spec"
+        );
+    }
+
+    #[test]
+    fn is_pair_qualified_false_for_unrelated_prefix() {
+        // Defense-in-depth: a column literally named with a `.` prefix
+        // cannot occur today (idents are validated to be alnum/underscore
+        // only), but assert the check rejects anything that's not l./r.
+        let spec = WindowSpec {
+            partition_by: vec!["la.path_count"],
+            ..Default::default()
+        };
+        assert!(
+            !spec.is_pair_qualified(),
+            "`la.` prefix (closure-pair alias) is not a pair-window-qualified prefix"
+        );
     }
 }

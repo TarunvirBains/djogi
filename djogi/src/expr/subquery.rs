@@ -528,6 +528,7 @@ mod tests {
     use crate::descriptor::ModelDescriptor;
     use crate::expr::sql::emit_expr;
     use crate::pg::accumulator::SqlAccumulator;
+    use crate::query::portable::SqlEmitContext;
 
     // Inert local model — only `table_name` matters for emission tests.
     struct Ledger;
@@ -665,7 +666,7 @@ mod tests {
         let qs: QuerySet<Entry> = QuerySet::new();
         let expr = Exists::new(qs).as_expr();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &expr.node).expect("subquery emission");
+        emit_expr(&mut qb, &expr.node, SqlEmitContext::root()).expect("subquery emission");
         let sql = qb.sql();
         assert_eq!(sql.trim(), "EXISTS (SELECT 1 FROM entries)", "got: {sql}");
     }
@@ -681,7 +682,7 @@ mod tests {
         let qs: QuerySet<Entry> = QuerySet::new();
         let expr = Subquery::new(qs, id_col).as_expr();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &expr.node).expect("expression emission");
+        emit_expr(&mut qb, &expr.node, SqlEmitContext::root()).expect("expression emission");
         let sql = qb.sql();
         assert_eq!(sql.trim(), "(SELECT id FROM entries)", "got: {sql}");
     }
@@ -698,7 +699,7 @@ mod tests {
         let qs: QuerySet<Entry> = QuerySet::new().filter_struct(active.eq(true));
         let expr = Exists::new(qs).as_expr();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &expr.node).expect("expression emission");
+        emit_expr(&mut qb, &expr.node, SqlEmitContext::root()).expect("expression emission");
         let sql = qb.sql();
         assert_eq!(
             sql.trim(),
@@ -721,7 +722,7 @@ mod tests {
             QuerySet::new().filter_expr(|_| inner_col.as_expr().eq(outer_ref.as_expr()));
         let expr = Exists::new(qs).as_expr();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &expr.node).expect("expression emission");
+        emit_expr(&mut qb, &expr.node, SqlEmitContext::root()).expect("expression emission");
         let sql = qb.sql();
         assert_eq!(
             sql.trim(),
@@ -739,7 +740,7 @@ mod tests {
         let qs: QuerySet<Entry> = QuerySet::new().filter(|_| memo.eq("opening".to_string()));
         let expr = Subquery::new(qs, id_col).as_expr();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &expr.node).expect("expression emission");
+        emit_expr(&mut qb, &expr.node, SqlEmitContext::root()).expect("expression emission");
         let sql = qb.sql();
         // One bind for the "opening" literal — assert structural shape
         // with the bind placeholder.
@@ -764,7 +765,7 @@ mod tests {
         let qs: QuerySet<Entry> = QuerySet::new().filter_struct(memo.eq("opening".to_string()));
         let expr = Subquery::new(qs, id_col).as_expr();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &expr.node).expect("expression emission");
+        emit_expr(&mut qb, &expr.node, SqlEmitContext::root()).expect("expression emission");
         let sql = qb.sql();
         assert_eq!(
             sql.trim(),
@@ -780,7 +781,7 @@ mod tests {
         let r: OuterRef<Ledger, i64> = OuterRef::new("id");
         let expr: Expr<i64> = r.as_expr();
         let mut qb = SqlAccumulator::new("");
-        emit_expr(&mut qb, &expr.node).expect("expression emission");
+        emit_expr(&mut qb, &expr.node, SqlEmitContext::root()).expect("expression emission");
         assert_eq!(qb.sql().trim(), "id", "got: {}", qb.sql());
     }
 

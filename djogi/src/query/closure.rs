@@ -354,33 +354,8 @@ where
         }
 
         // Validate every closure-model column-name accessor up-front.
-        // The trait surfaces them as `&'static str` from the adopter's
-        // hand-written impl — without this gate a typo (or hostile
-        // override) could smuggle SQL into the emitter's
-        // `push_sql` sites. `check_user_supplied_ident(value, true)`
-        // enforces the four-rule contract (Postgres unquoted identifier
-        // shape) *plus* the reserved-keyword block *plus* the
-        // framework-reserved `__djogi_` prefix block. Adopter-provided
-        // names are user-supplied identifiers, so the reservation rule
-        // applies here as well as at window aliases / FTS / outbox
-        // (see `docs/spec/reserved-identifiers.md`).
-        for (label, col) in [
-            ("closure table", C::table()),
-            ("source_column", C::source_column()),
-            ("ancestor_column", C::ancestor_column()),
-            ("depth_column", C::depth_column()),
-            ("path_count_column", C::path_count_column()),
-        ] {
-            check_user_supplied_ident(col, true).map_err(|e| {
-                DjogiError::Validation(format!(
-                    "ClosureModel<{}>::{} returned invalid identifier {:?}: {:?}",
-                    std::any::type_name::<C>(),
-                    label,
-                    col,
-                    e,
-                ))
-            })?;
-        }
+        // See [`validate_closure_metadata_idents`] for the contract.
+        validate_closure_metadata_idents::<C>()?;
 
         auto_set_tenant::<T>(ctx).await?;
 
@@ -403,6 +378,53 @@ where
             sources_visited: sources_visited.max(0) as usize,
         })
     }
+}
+
+/// Validate that the closure-model `C`'s four column-name accessors
+/// and table name satisfy the Postgres unquoted-identifier contract
+/// AND the framework-reserved `__djogi_` prefix block.
+///
+/// Called by [`materialize_closure_impl`] and by
+/// [`crate::query::joined::JoinedQuerySet::left_join_closure_pair`]
+/// terminal paths — every code path that splices a closure model's
+/// `&'static str` accessor return values into emitted SQL must run
+/// these names through this gate first. Without it a typo, hostile
+/// override, or hand-rolled `impl ClosureModel` could smuggle raw SQL
+/// fragments through the `push_sql` sites the closure emitters call.
+///
+/// `check_user_supplied_ident(value, true)` enforces the four-rule
+/// contract (Postgres unquoted-identifier shape, ≤ 63 bytes, not a
+/// reserved keyword, not in the `__djogi_` framework-reserved prefix
+/// namespace) for each name. See `docs/spec/reserved-identifiers.md`
+/// for the policy that places adopter-provided closure accessor
+/// strings under the "user-supplied identifier" contract — same as
+/// window aliases, FTS dictionary names, and outbox table names.
+///
+/// # Errors
+///
+/// Returns [`DjogiError::Validation`] for the first failing identifier,
+/// labelled with the role (`"closure table"`, `"source_column"`,
+/// `"ancestor_column"`, `"depth_column"`, `"path_count_column"`) and
+/// the underlying [`crate::ident::IdentError`].
+pub(crate) fn validate_closure_metadata_idents<C: ClosureModel>() -> Result<(), DjogiError> {
+    for (label, col) in [
+        ("closure table", C::table()),
+        ("source_column", C::source_column()),
+        ("ancestor_column", C::ancestor_column()),
+        ("depth_column", C::depth_column()),
+        ("path_count_column", C::path_count_column()),
+    ] {
+        check_user_supplied_ident(col, true).map_err(|e| {
+            DjogiError::Validation(format!(
+                "ClosureModel<{}>::{} returned invalid identifier {:?}: {:?}",
+                std::any::type_name::<C>(),
+                label,
+                col,
+                e,
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 /// Pure SQL emitter for the materialize-closure CTE — never touches a
