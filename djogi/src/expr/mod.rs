@@ -316,9 +316,9 @@ impl Expr<crate::geo::Polygon> {
     /// succeeds **only** when `ST_Intersection` returns a single `POLYGON`.
     /// Even when both inputs are polygonal and their interiors overlap,
     /// Postgres/PostGIS may return a `MULTIPOLYGON` or `GEOMETRYCOLLECTION`
-    /// (for example, when two polygons share only a thin interior ridge that
-    /// touches a third disconnected region). The decode will fail whenever
-    /// the result is not a simple `POLYGON`:
+    /// (for example, when two non-convex polygons overlap such that the
+    /// intersection splits into two disconnected sub-regions). The decode will
+    /// fail whenever the result is not a simple `POLYGON`:
     ///
     /// - **Disjoint inputs** — `ST_Intersection` returns an empty geometry;
     ///   `Polygon::FromSql` will return a decode error.

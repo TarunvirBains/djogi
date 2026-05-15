@@ -220,12 +220,24 @@ pub enum SpatialExpr {
     /// # Output type and decode safety
     ///
     /// The caller-facing constructor [`super::Expr::intersection_of`] returns
-    /// `Expr<`[`crate::geo::Polygon`]`>`, which is the expected result type when
-    /// intersecting two polygon-shaped inputs. For non-overlapping inputs,
-    /// PostGIS returns an empty or non-polygon geometry that will fail to decode
-    /// as `Polygon`; callers who need to handle the disjoint case should use
-    /// [`super::Expr::area_of_intersection`] instead (which wraps the result
-    /// in `ST_Area` and always returns `f64`).
+    /// `Expr<`[`crate::geo::Polygon`]`>`. Decode succeeds **only** when
+    /// `ST_Intersection` returns a single `POLYGON`. Even when both inputs are
+    /// polygonal and their interiors overlap, PostGIS may return a
+    /// `MULTIPOLYGON` or `GEOMETRYCOLLECTION`. The following cases all
+    /// decode-error as `Polygon`:
+    ///
+    /// - **Disjoint inputs** — `ST_Intersection` returns an empty geometry.
+    /// - **Boundary-only or point contact** — the result is a `LINESTRING` or
+    ///   `POINT`.
+    /// - **Multi-part or collection result** — even for genuinely overlapping
+    ///   polygons, the result may be a `MULTIPOLYGON` or `GEOMETRYCOLLECTION`.
+    ///
+    /// [`crate::query::field::FieldRef::intersects`] is **not** sufficient to
+    /// guarantee a single polygon; it only rules out the disjoint case.
+    ///
+    /// For queries that must survive any of these cases, prefer
+    /// [`super::Expr::area_of_intersection`] (wraps the result in `ST_Area`
+    /// and always returns `f64`, yielding `0.0` for non-overlapping pairs).
     ///
     /// Constructed by [`super::Expr::intersection_of`].
     Intersection {
