@@ -51,6 +51,17 @@ framework fits their app.
   dynamic-query use cases.
 - Cursor-backed `QuerySet::stream` and `stream_with_fetch_size` terminals for
   large-result iteration without materializing every row.
+- Typed set operations between same-model `QuerySet<T>`s —
+  `QuerySet::union` / `union_all` / `intersect` / `except` produce a typed
+  `SetOpQuerySet<T>` whose `fetch_all` / `first` / `count` terminals emit
+  parenthesised `(LEFT) <OP> (RIGHT)` SQL with renumbered positional binds.
+  Outer `ORDER BY` / `LIMIT` / `OFFSET` apply to the combined result;
+  per-arm `ORDER BY` / `LIMIT` / `DISTINCT` ride inside each arm's parens
+  per Postgres rules. Chained (`a.union(b).intersect(c)`) and nested
+  composition work through the sealed `IntoSetOpArm<T>` trait; arms
+  carrying `.prefetch(...)`, `.select_related(...)`, locks, or `.cache(...)`
+  surface a typed `DjogiError::SetOpArmInvalid` at the terminal before
+  any SQL is issued.
 - Raw SQL escape hatches on `DjogiContext` — `raw_query`, `raw_fetch_one`,
   `raw_scalar`, `raw_execute`, and `raw_stream` — always available alongside
   the typed surface.

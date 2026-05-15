@@ -608,6 +608,46 @@ pub enum DjogiError {
     /// known one.
     #[error("predicate cannot be lowered to SQL: {0}")]
     Predicate(#[from] crate::query::PortablePredicateError),
+
+    /// A [`SetOpQuerySet`](crate::query::SetOpQuerySet) arm carried
+    /// state that cannot ride through a Postgres set-operation
+    /// subquery: registered prefetch paths, registered select_related
+    /// paths, a row-level lock, or a cache binding. Phase 8.5 Cluster
+    /// 4B (issue #101) introduces this variant alongside the typed
+    /// set-op surface (`.union(...)` / `.union_all(...)` /
+    /// `.intersect(...)` / `.except(...)`).
+    ///
+    /// # Why this is a typed error, not a silent drop
+    ///
+    /// Quietly stripping `select_related` / `prefetch` registrations
+    /// when an arm enters a set op would silently change the row
+    /// shape the caller expected: `select_related` extends the
+    /// projection, prefetch fans out follow-up queries on the
+    /// returned rows. Both would either change the column count
+    /// (breaking the set-op type compatibility rule) or silently drop
+    /// data the caller asked for. Returning a typed error at the
+    /// terminal — before any SQL hits the database — keeps the
+    /// failure mode actionable. Locks (`FOR UPDATE`) inside a set-op
+    /// subquery are rejected by Postgres at parse time anyway; we
+    /// surface a higher-fidelity error before the round trip.
+    ///
+    /// `side` identifies which arm tripped the check (`"left"` or
+    /// `"right"`); `reason` is a short human-readable explanation
+    /// that names the offending registration.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// the caller built an incompatible set-op shape; retrying the
+    /// same call cannot turn a `.cache(...)`-bound arm into a
+    /// cache-free one.
+    #[error(
+        "set-op arm `{side}` on `{table}` is incompatible with set-operation subquery: {reason}"
+    )]
+    #[non_exhaustive]
+    SetOpArmInvalid {
+        table: &'static str,
+        side: &'static str,
+        reason: &'static str,
+    },
 }
 
 /// Bridge: convert `tokio_postgres::Error` into `DjogiError`.

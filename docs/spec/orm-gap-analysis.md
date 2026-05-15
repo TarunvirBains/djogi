@@ -47,7 +47,7 @@ This document maps every functional capability in Django's ORM, identifies what 
 | **`only()` / `defer()`** | Partial field loading | Add — select only needed columns. Rust can enforce at type level (phantom types or builder return types) |
 | **`none()`** | Empty QuerySet that never queries | Add — useful for conditional composition |
 | **`reverse()`** | Reverse current ordering | Add |
-| **`union()` / `intersection()` / `difference()`** | Set operations (UNION / INTERSECT / EXCEPT) | Add |
+| **`union()` / `intersection()` / `difference()`** | Set operations (UNION / INTERSECT / EXCEPT) | Shipped — Phase 8.5 Cluster 4B (#101). `QuerySet::union` / `union_all` / `intersect` / `except` return a typed `SetOpQuerySet<T>` with `fetch_all` / `first` / `count` terminals and outer `ORDER BY` / `LIMIT` / `OFFSET`. |
 | **`explain()`** | Return EXPLAIN output | Add — invaluable for debugging |
 | **`iterator()` / chunked evaluation** | Memory-efficient streaming without caching | Add — use Postgres cursors via `tokio-postgres` `query_raw()` stream |
 | **`earliest()` / `latest()`** | Get by ordering field | Add — convenience over `.order_by(...).first()` |
@@ -350,7 +350,7 @@ Benefits:
 
 - [ ] Window functions (Rank, RowNumber, Lag, Lead, etc.)
 - [ ] Database functions (Coalesce, Greatest, Least, NullIf, Lower, Upper, Concat, Now)
-- [ ] `union()` / `intersection()` / `difference()` — set operations
+- [x] `union()` / `intersection()` / `difference()` — set operations (Phase 8.5 Cluster 4B / #101 — shipped as `QuerySet::union` / `union_all` / `intersect` / `except` returning `SetOpQuerySet<T>`)
 - [ ] `explain()` — query plan output
 - [ ] `in_bulk()` — batch PK lookup
 - [ ] `only()` / `defer()` — partial field loading (compile-time safe)
@@ -500,7 +500,7 @@ Earlier draft analysis recommended HTMX + Askama over Dioxus for the admin rende
 
 - [ ] Window functions (Rank, RowNumber, Lag, Lead, etc.)
 - [ ] Database functions (Coalesce, Greatest, Least, NullIf, Lower, Upper, Concat, Now)
-- [ ] `union()` / `intersection()` / `difference()` — set operations
+- [x] `union()` / `intersection()` / `difference()` — set operations (Phase 8.5 Cluster 4B / #101 — shipped as `QuerySet::union` / `union_all` / `intersect` / `except` returning `SetOpQuerySet<T>`)
 - [ ] `explain()` — query plan output
 - [ ] `in_bulk()` — batch PK lookup
 - [ ] `only()` / `defer()` — partial field loading (compile-time safe)
