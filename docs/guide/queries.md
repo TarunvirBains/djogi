@@ -84,11 +84,14 @@ Post::objects().exclude(|f| f.title().eq("draft".to_string()))
 // NOT (title = $1)
 ```
 
-### Lookup methods on `FieldRef<T, V>`
+### Lookup methods
 
-The typed closure surface exposes the following lookups. Non-string
-methods are available on every `FieldRef<T, V>`; string-only methods
-require `V = String`.
+The typed closure surface exposes the following lookups. The
+`{Model}Fields` ZST received by the closure returns
+`DjogiField<T, V>` handles; the `DjogiField` API wraps the inner
+`FieldRef<T, V>` and exposes the portable (cache-binding eligible)
+variants alongside it. Non-string methods are available on any `V`;
+string-only methods require `V = String`.
 
 | Method | SQL | Applies to |
 |---|---|---|
@@ -97,8 +100,10 @@ require `V = String`.
 | `.gt(v)` / `.gte(v)` | `col > $1` / `col >= $1` | any |
 | `.lt(v)` / `.lte(v)` | `col < $1` / `col <= $1` | any |
 | `.between(a, b)` | `col BETWEEN $1 AND $2` | any |
-| `.in_list(it)` | `col IN ($1, $2, …)`; empty → `FALSE` | any; accepts `IntoIterator<Item = V>` |
-| `.not_in_list(it)` | `col NOT IN (…)`; empty → `TRUE` | any |
+| `.in_(it)` | `col IN ($1, $2, …)`; empty → `FALSE` | any; portable / cache-binding eligible; accepts `IntoIterator<Item = V>` |
+| `.not_in(it)` | `col NOT IN (…)`; empty → `TRUE` | any; portable / cache-binding eligible |
+| `.in_list(it)` | `col IN ($1, $2, …)`; empty → `FALSE` | any; non-portable (raw `Condition`); accepts `IntoIterator<Item = V>` |
+| `.not_in_list(it)` | `col NOT IN (…)`; empty → `TRUE` | any; non-portable (raw `Condition`) |
 | `.is_null()` / `.is_not_null()` | `col IS [NOT] NULL` | any `V` (column need not be `Option<T>`) |
 | `.iexact(v)` | `LOWER(col) = LOWER($1)` | any |
 | `.contains(s)` / `.icontains(s)` | `col ILIKE '%…%'` | `V = String` only |
@@ -430,11 +435,26 @@ let mothers_descendants: RecursiveQuerySet<Elephant> = Elephant::objects()
     .tree_descendants(root_id, Elephant::FIELDS.mother_id().path());
 ```
 
-A future slice will land a `RecursiveQuerySet::with_max_depth(n)`
-modifier and a built-in `CYCLE` clause for de-cycling visit paths;
-both are tracked on the recursive-queries roadmap. The current shape
-already filters on `(parent_id IS NOT NULL)` boundaries so a
-disconnected node never hangs the recursive expansion.
+`RecursiveQuerySet` ships three optional modifiers beyond the base
+`filter` / `order_by`:
+
+- **`.with_max_depth(n: u32)`** — adds `AND parent.depth < $n` in the
+  recursive term. When omitted, the walk runs to natural exhaustion or
+  until the always-on `CYCLE` clause fires.
+- **`CYCLE id SET is_cycle USING cycle_path`** — emitted unconditionally
+  on every recursive query. Postgres marks cyclic paths and stops
+  re-visiting them, so a corrupt self-FK graph never hangs. The
+  de-cycling column is framework-internal (`__djogi_`-prefixed) and is
+  stripped before rows are decoded.
+- **`.search_breadth_first_by(field)`** / **`.search_depth_first_by(field)`**
+  — emit Postgres' `SEARCH BREADTH FIRST BY <col>` / `SEARCH DEPTH FIRST
+  BY <col>` annotation and prepend the framework-generated
+  `ORDER BY __djogi_search_seq` on the outer SELECT so callers see
+  traversal order without writing the sort term manually. These are
+  mutually exclusive (last call wins).
+
+All three stack with `.filter(...)` and `.order_by(...)`, which append
+tiebreakers after the search-sequence column when both are present.
 
 ### Materialised closure — `Model::materialize_closure`
 
@@ -451,7 +471,17 @@ pub struct CategoryAncestry {
     pub category_id: ForeignKey<Category>,
     pub ancestor_id: ForeignKey<Category>,
     pub depth: i32,
-    pub path_count: i32,
+    // COUNT(*) — always BIGINT on Postgres; must be i64.
+    pub path_count: i64,
+}
+
+impl djogi::query::ClosureModel for CategoryAncestry {
+    type Source = Category;
+
+    fn source_column() -> &'static str { "category_id" }
+    fn ancestor_column() -> &'static str { "ancestor_id" }
+    fn depth_column() -> &'static str { "depth" }
+    fn path_count_column() -> &'static str { "path_count" }
 }
 
 // Walks the recursive CTE once and writes one row per
