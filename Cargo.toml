@@ -40,13 +40,14 @@ indexmap = { version = "2", features = ["serde"] }
 deadpool-postgres = "0.14"
 bytes = "1"
 
-# HeeRanjId — 0.3 adds the `HeerIdDesc` and `RanjIdDesc` reverse-chronological
-# ID siblings consumed by Phase 7-Zero (`pk = "heerid_desc"` /
-# `pk = "ranjid_desc"`). The 0.2 helpers (`install_schema`, `seed_default_node`,
-# SQL constants, `postgres_types::ToSql`/`FromSql` impls for `HeerId` /
-# `RanjId`) are preserved; the `postgres` feature additionally covers the
-# new *Desc types.
-heeranjid = { version = "0.3.6", features = ["postgres"] }
+# HeeRanjId — 0.3 added `HeerIdDesc` / `RanjIdDesc` reverse-chronological ID
+# siblings consumed by Phase 7-Zero (`pk = "heerid_desc"` / `pk = "ranjid_desc"`).
+# 0.4 tightens the serde wire contract: human-readable formats (serde_json) keep
+# the decimal-string representation that 0.3 already used; non-human-readable
+# formats (postcard, bincode) now emit the inner primitive directly so binary
+# wire sizes are minimal. The `postgres` feature additionally covers the *Desc
+# types and the `ToSql`/`FromSql` impls for all four ID types.
+heeranjid = { version = "0.4.0", features = ["postgres"] }
 
 # Proc macro
 syn = { version = "2", features = ["full", "extra-traits"] }

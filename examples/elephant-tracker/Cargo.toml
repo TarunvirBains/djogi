@@ -22,7 +22,7 @@ description = "Runnable Djogi example: tracking African elephant herds across bo
 # verification confirmed the pre-Cluster-D feature set covers
 # everything Cluster D adds.
 djogi = { path = "../../djogi", features = ["spatial", "outbox"] }
-heeranjid = "0.3"
+heeranjid = "0.4"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # `migrate.rs` reaches the underlying client through the
 # `RawPoolAccessExt::raw_with_client` raw-driver bypass on

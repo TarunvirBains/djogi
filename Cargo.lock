@@ -855,9 +855,9 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "heeranjid"
-version = "0.3.6"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ac235e3270bc243838ed63d2c217b47f264d1e9146da01076736d38677db2dc"
+checksum = "084a8e4f7d8c2a036cc4873caa1923db84d84ef35ff0387094e3599fe2f7b3e8"
 dependencies = [
  "bytes",
  "postgres-types",
