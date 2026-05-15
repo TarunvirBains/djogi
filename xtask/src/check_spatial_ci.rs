@@ -70,7 +70,7 @@ fn run_inner() -> Result<(), String> {
     }
     if active_workflow_lines
         .iter()
-        .filter(|line| line.as_str() == "image: postgis/postgis:18-3.6")
+        .filter(|line| *line == "image: postgis/postgis:18-3.6")
         .count()
         < 2
     {
