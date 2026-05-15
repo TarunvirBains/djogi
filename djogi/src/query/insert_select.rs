@@ -6,17 +6,23 @@
 //! # What
 //!
 //! [`QuerySet::insert_into`] (defined in this module) consumes a source
-//! [`QuerySet<S>`] and a typed `|T::Fields, S::Fields| -> Vec<InsertSelectColumn>`
-//! closure, returning an inert [`InsertSelectStmt<S, T>`] that runs when
-//! the caller invokes [`InsertSelectStmt::execute`] with a
-//! `&mut DjogiContext`. The terminal returns the affected row count.
+//! [`QuerySet<S>`] and a typed
+//! `|T::Fields, S::Fields| -> Vec<InsertSelectColumn<S, T>>` closure, returning
+//! an inert [`InsertSelectStmt<S, T>`] that runs when the caller invokes
+//! [`InsertSelectStmt::execute`] with a `&mut DjogiContext`. The terminal
+//! returns the affected row count.
 //!
-//! [`FieldRef::copy_from`] is the typed column-mapping constructor:
-//! `target_col.copy_from(source_expr)` produces one [`InsertSelectColumn`]
-//! where the target column's `V` is pinned to the source [`Expr<V>`]'s
-//! `V` at compile time. Type mismatch (e.g. mapping a `String` target
-//! column to an `i32` source) fails to compile rather than producing a
-//! runtime Postgres type error.
+//! [`FieldRef::copy_from`] is the typed column-mapping constructor — but
+//! it is only callable on a target-side field, and accepts only a
+//! source-side operand. The source-side operand is the
+//! [`InsertSelectSource<S, V>`] type built from a source field via
+//! [`FieldRef::as_insert_source`] / [`crate::query::DjogiField::as_insert_source`]
+//! or from a Rust scalar via [`InsertSelectSource::literal`]. Both the
+//! target column's `V` and the source operand's `V` are matched at compile
+//! time, AND the source model `S` is pinned to the closure's source bag via
+//! the closure's return type — passing a target-side value where a
+//! source-side operand is required (or vice-versa) is rejected by the type
+//! system, not the runtime emitter.
 //!
 //! # Why
 //!
@@ -31,6 +37,8 @@
 //! # How
 //!
 //! ```ignore
+//! use djogi::prelude::*;
+//!
 //! // Archive completed orders into an archive table. The `_, _` placeholders
 //! // are the closure type and the return-shape type — Rust infers both, but
 //! // the target model `T` is the one type parameter the call site must name
@@ -39,9 +47,9 @@
 //! CompletedOrder::objects()
 //!     .filter(|f| f.completed_at().lt(cutoff))
 //!     .insert_into::<OrderArchive, _, _>(|target, source| vec![
-//!         target.order_id().copy_from(source.id().as_expr()),
-//!         target.title().copy_from(source.title().as_expr()),
-//!         target.completed_at().copy_from(source.completed_at().as_expr()),
+//!         target.order_id().copy_from(source.id().as_insert_source()),
+//!         target.title().copy_from(source.title().as_insert_source()),
+//!         target.completed_at().copy_from(source.completed_at().as_insert_source()),
 //!     ])
 //!     .execute(&mut ctx)
 //!     .await?;
@@ -71,10 +79,27 @@
 //! supplied by the caller are ignored; the database populates them.
 //! Adopters who want to copy the source's `id` into the target (e.g. to
 //! preserve the original identity on an archive table) explicitly map it
-//! via `target.original_id().copy_from(source.id().as_expr())` against an
-//! adopter-declared user column. Adopters who name `target.id()` directly
-//! against an FK-typed PK column take responsibility for the resulting
-//! collision behaviour just as they would in `Model::create_with_id`.
+//! via `target.original_id().copy_from(source.id().as_insert_source())`
+//! against an adopter-declared user column. Adopters who name
+//! `target.id()` directly against an FK-typed PK column take responsibility
+//! for the resulting collision behaviour just as they would in
+//! `Model::create_with_id`.
+//!
+//! # Source/target identity is type-checked
+//!
+//! The typed surface refuses to compile when the source and target sides
+//! are swapped at the mapping site. Concretely:
+//!
+//! - `target_field.copy_from(source_field.as_insert_source())` — OK.
+//! - `source_field.copy_from(target_field.as_insert_source())` — fails
+//!   to compile (`InsertSelectColumn<T, S>` does not implement
+//!   `IntoInsertColumns<S, T>`).
+//! - `target_field.copy_from(target_field.as_insert_source())` — fails
+//!   to compile (`InsertSelectColumn<T, T>` does not implement
+//!   `IntoInsertColumns<S, T>` when `S != T`).
+//!
+//! See `djogi/tests/compile_fail/insert_select_*` for the pinned
+//! compile-fail fixtures.
 //!
 //! # Rejected source state
 //!
@@ -145,6 +170,7 @@
 use crate::DjogiError;
 use crate::context::DjogiContext;
 use crate::expr::Expr;
+use crate::expr::arithmetic::Numeric;
 use crate::expr::node::ExprNode;
 use crate::model::Model;
 use crate::pg::accumulator::as_params;
@@ -156,50 +182,251 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::marker::PhantomData;
 
+/// Source-tagged expression operand for [`FieldRef::copy_from`] /
+/// [`crate::query::DjogiField::copy_from`].
+///
+/// # What
+///
+/// `InsertSelectSource<S, V>` wraps the source-side projection IR for one
+/// position in an `INSERT INTO ... SELECT ...` mapping. The phantom `S`
+/// pins the operand to a specific source model so the mapping cannot
+/// silently cross model boundaries; the phantom `V` pins the value type
+/// so a target column of type `V` can only be fed by a source operand of
+/// the matching `V`.
+///
+/// # How to construct
+///
+/// - **From a source field** — call
+///   [`FieldRef::as_insert_source`] / [`crate::query::DjogiField::as_insert_source`].
+///   The receiver's `M` pins the wrapper's `S`, so building an operand
+///   from a target field gives an operand tagged with the target model —
+///   which the closure return type then rejects.
+/// - **From a Rust scalar** — call [`InsertSelectSource::literal`]. `S`
+///   is free at construction and inferred from the closure context (a
+///   constant has no source identity of its own).
+/// - **From an arithmetic composition** — use `+` / `-` / `*` / `/` on
+///   `InsertSelectSource<S, V>` where `V: Numeric`. Same-`S` operands
+///   compose; mixing two different source tags fails to compile.
+///
+/// # Why phantom-only
+///
+/// The IR payload (the crate-private `ExprNode` enum) is type-erased at
+/// the leaf — the SQL emitter walks one monomorphic function regardless
+/// of `S` or `V`. `S` and `V` are present strictly to drive compile-time
+/// checks at the mapping site; they never appear in the rendered SQL
+/// or in the `SqlAccumulator`'s bind list. Cf. the parallel design on
+/// [`crate::expr::Expr<V>`] — same rationale.
+///
+/// `Debug` + `Clone` are derived because the inner IR tree is both.
+/// `Copy` is intentionally NOT implemented — the IR contains boxed
+/// sub-nodes, so cheap-looking `Copy` would hide allocation costs in
+/// arithmetic chains.
+#[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
+#[derive(Debug, Clone)]
+pub struct InsertSelectSource<S: Model, V> {
+    pub(crate) node: ExprNode,
+    _phantom: PhantomData<fn() -> (S, V)>,
+}
+
+impl<S: Model, V> InsertSelectSource<S, V> {
+    /// Build a literal source operand from a Rust scalar.
+    ///
+    /// The `S` parameter is polymorphic and inferred from the closure
+    /// context — a literal has no source identity of its own, so any
+    /// `S` satisfies the construction site. The closure's return-type
+    /// inference then pins `S` to the source model the enclosing
+    /// `QuerySet<S>::insert_into` call uses.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Every archived row gets the same constant `status = "ARCHIVED"`.
+    /// .insert_into::<OrderArchive, _, _>(|target, _source| vec![
+    ///     target.status().copy_from(InsertSelectSource::literal("ARCHIVED".to_string())),
+    /// ])
+    /// ```
+    ///
+    /// `V: Into<Expr<V>>` is satisfied by every scalar Djogi binds today
+    /// (the crate-private `crate::expr::literal` module is the source of
+    /// truth for the bindable set); the `Into` conversion routes through
+    /// the same typed seal that [`Expr::literal`] uses.
+    #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
+    pub fn literal(v: V) -> Self
+    where
+        V: Into<Expr<V>>,
+    {
+        let expr: Expr<V> = v.into();
+        Self {
+            node: expr.node,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Package an already-constructed [`ExprNode`] into a tagged
+    /// `InsertSelectSource<S, V>`. Crate-private so downstream code
+    /// cannot fabricate a wrong-`S`-tagged source operand by bypassing
+    /// the typed constructors ([`FieldRef::as_insert_source`] and
+    /// [`InsertSelectSource::literal`]).
+    ///
+    /// Used internally by the arithmetic operator overloads on
+    /// [`InsertSelectSource`] to wrap the freshly-built node without
+    /// repeating the `PhantomData` boilerplate at every call site.
+    pub(crate) fn from_node(node: ExprNode) -> Self {
+        Self {
+            node,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+// ── Arithmetic operator overloads on `InsertSelectSource<S, V>` ──────────────
+//
+// Mirror the typed arithmetic surface on [`crate::expr::Expr<V>`] —
+// same-`S` and same-`V` composition produces same-`S` and same-`V`
+// output. Different `S` tags do not compose (the impl bounds reject
+// the mix at compile time), matching the soundness invariant we
+// established for the column-mapping site itself.
+//
+// The Numeric bound is the sealed marker from `crate::expr::arithmetic`
+// — same set of accepted scalar types as `Expr<V>` arithmetic
+// (`i16`/`i32`/`i64`/`f32`/`f64`/`time::Duration`).
+
+impl<S: Model, V: Numeric> std::ops::Add for InsertSelectSource<S, V> {
+    type Output = InsertSelectSource<S, V>;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        InsertSelectSource::from_node(ExprNode::Add(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
+impl<S: Model, V: Numeric> std::ops::Sub for InsertSelectSource<S, V> {
+    type Output = InsertSelectSource<S, V>;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        InsertSelectSource::from_node(ExprNode::Sub(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
+impl<S: Model, V: Numeric> std::ops::Mul for InsertSelectSource<S, V> {
+    type Output = InsertSelectSource<S, V>;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        InsertSelectSource::from_node(ExprNode::Mul(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
+impl<S: Model, V: Numeric> std::ops::Div for InsertSelectSource<S, V> {
+    type Output = InsertSelectSource<S, V>;
+
+    fn div(self, rhs: Self) -> Self::Output {
+        InsertSelectSource::from_node(ExprNode::Div(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
+// Heterogeneous datetime + interval arithmetic — `OffsetDateTime + Duration`
+// produces `OffsetDateTime`. Mirrors the matching impl on `Expr<T>` in
+// `crate::expr::arithmetic`. Same-source-tag constraint is the same as the
+// same-type arithmetic above.
+
+impl<S: Model> std::ops::Add<InsertSelectSource<S, time::Duration>>
+    for InsertSelectSource<S, time::OffsetDateTime>
+{
+    type Output = InsertSelectSource<S, time::OffsetDateTime>;
+
+    fn add(self, rhs: InsertSelectSource<S, time::Duration>) -> Self::Output {
+        InsertSelectSource::from_node(ExprNode::Add(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
+impl<S: Model> std::ops::Sub<InsertSelectSource<S, time::Duration>>
+    for InsertSelectSource<S, time::OffsetDateTime>
+{
+    type Output = InsertSelectSource<S, time::OffsetDateTime>;
+
+    fn sub(self, rhs: InsertSelectSource<S, time::Duration>) -> Self::Output {
+        InsertSelectSource::from_node(ExprNode::Sub(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
+/// Source-side construction — promote a source [`FieldRef`] into an
+/// [`InsertSelectSource`] tagged with the same source model.
+///
+/// Mirrors [`FieldRef::as_expr`] but pins the source model `S` so the
+/// resulting operand can only land in an INSERT...SELECT mapping whose
+/// closure return type names the same `S`.
+///
+/// # Example
+///
+/// ```ignore
+/// .insert_into::<OrderArchive, _, _>(|target, source| vec![
+///     // `source.id()` is `FieldRef<CompletedOrder, HeerIdDesc>`;
+///     // `as_insert_source()` lifts it to `InsertSelectSource<CompletedOrder, HeerIdDesc>`.
+///     target.original_id().copy_from(source.id().as_insert_source()),
+/// ])
+/// ```
+///
+/// Calling this on a target-side field (e.g. `target.col().as_insert_source()`)
+/// produces an `InsertSelectSource<TargetModel, V>` — which the closure's
+/// return type then rejects because it expects an
+/// `InsertSelectSource<SourceModel, V>` to land in `InsertSelectColumn<SourceModel, T>`.
+impl<S: Model, V> FieldRef<S, V> {
+    /// Lift this source-side column reference into a tagged
+    /// [`InsertSelectSource<S, V>`] for use inside [`copy_from`].
+    ///
+    /// [`copy_from`]: FieldRef::copy_from
+    #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
+    pub fn as_insert_source(self) -> InsertSelectSource<S, V> {
+        InsertSelectSource::from_node(ExprNode::Field {
+            column: self.column(),
+        })
+    }
+}
+
 /// A single `(target_column, source_expression)` mapping that becomes
 /// one position in the `INSERT (...) SELECT ...` shape.
 ///
 /// # What
 ///
-/// Produced exclusively by [`FieldRef::copy_from`] — the closure call
-/// `target.col().copy_from(source.col().as_expr())` returns a single
-/// `InsertSelectColumn` with `target_column = "col"` (the macro-baked
-/// column name from the target [`FieldRef`]) and `source = source.col`'s
-/// IR tree.
+/// Produced exclusively by [`FieldRef::copy_from`] /
+/// [`crate::query::DjogiField::copy_from`] — the closure call
+/// `target.col().copy_from(source.col().as_insert_source())` returns a
+/// single `InsertSelectColumn<S, T>` with `target_column = "col"` (the
+/// macro-baked column name from the target [`FieldRef`]) and `source =`
+/// `source.col`'s tagged IR tree.
+///
+/// # Type parameters
+///
+/// - `S` — the source model. Pinned by the source operand
+///   ([`InsertSelectSource<S, V>`]). When the closure returns
+///   `Vec<InsertSelectColumn<S, T>>`, `S` must match the
+///   `QuerySet<S>::insert_into` receiver's source model.
+/// - `T` — the target model. Pinned by the target [`FieldRef<T, V>`] the
+///   `copy_from` method is called on. When the closure returns
+///   `Vec<InsertSelectColumn<S, T>>`, `T` must match the
+///   `insert_into::<T, _, _>` generic on the call site.
+///
+/// Mismatch on either side fails to compile at the closure-return
+/// inference step — see the module docs and the compile-fail fixtures
+/// under `djogi/tests/compile_fail/insert_select_*`.
 ///
 /// # Invariants
 ///
 /// - `target_column` is a `&'static str` baked by the `#[model]` macro,
 ///   never user input — it flows straight into `SqlAccumulator::push_sql`.
-/// - `source` is an `ExprNode` (`crate::expr::node::ExprNode`, the
-///   crate-private IR enum) that the emitter walks via the existing
-///   `crate::expr::sql::emit_expr` path. Literal values stored inside
-///   `ExprNode::Literal` go through `push_filter_value` → `push_bind`.
+/// - `source` is the crate-private `ExprNode` tree built through the
+///   typed constructors on [`InsertSelectSource<S, V>`]. The leaf
+///   `Field` variant carries a macro-validated `&'static str` column
+///   name; the `Literal` variant binds through `push_filter_value` →
+///   `push_bind`.
 /// - The compile-time `V` matching on [`FieldRef::copy_from`] guarantees
-///   the target column's value type matches the source expression's
-///   value type at compile time — there is no runtime type-coercion
-///   surface here.
-///
-/// # Why model-erased
-///
-/// The struct does not carry the source or target model in its type:
-/// the source's `S::table_name()` comes from the [`QuerySet<S>`]
-/// upstream, and the target's `T::table_name()` comes from
-/// [`QuerySet::insert_into`]'s `T` generic. Threading `(S, T)` into
-/// every `InsertSelectColumn` would force two extra type parameters
-/// on the `Vec<InsertSelectColumn>` return shape from the closure, and
-/// the closure would then have to write `vec![...]` of items with
-/// identical phantom-data tags — a pattern Rust does not infer
-/// gracefully. Erasing the model parameters at the leaf and pinning
-/// `(S, T)` in [`InsertSelectStmt<S, T>`] keeps the closure return type
-/// `Vec<InsertSelectColumn>` (clean) while preserving the same
-/// compile-time `V`-matching guarantee on each individual leaf.
+///   the target column's value type matches the source operand's value
+///   type at compile time — there is no runtime type-coercion surface
+///   here.
 ///
 /// `Debug` + `Clone` are derived — see the `InsertSelectStmt: Clone`
 /// rationale on [`InsertSelectStmt`].
-#[derive(Debug, Clone)]
 #[must_use = "column mappings are lazy — drop one and the INSERT silently omits the column"]
-pub struct InsertSelectColumn {
+pub struct InsertSelectColumn<S: Model, T: Model> {
     /// Target column name — macro-baked literal, never user input.
     pub(crate) target_column: &'static str,
     /// Source-side expression IR — emitted via the shared
@@ -207,9 +434,40 @@ pub struct InsertSelectColumn {
     /// is supplied by the upstream `QuerySet<S>` at SQL emission time;
     /// this node only carries the projection.
     pub(crate) source: ExprNode,
+    /// Phantom tag pinning the source and target model identity at
+    /// compile time without owning either. `fn() -> (S, T)` matches
+    /// the variance pattern on [`QuerySet<S>`] and
+    /// [`crate::query::UpdateStmt`].
+    _phantom: PhantomData<fn() -> (S, T)>,
 }
 
-impl InsertSelectColumn {
+impl<S: Model, T: Model> std::fmt::Debug for InsertSelectColumn<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InsertSelectColumn")
+            .field("source_table", &S::table_name())
+            .field("target_table", &T::table_name())
+            .field("target_column", &self.target_column)
+            .field("source", &self.source)
+            .finish()
+    }
+}
+
+// `Clone` is hand-rolled, not derived: deriving would impose `S: Clone`
+// and `T: Clone` (because the `PhantomData<fn() -> (S, T)>` field appears
+// to "own" the type parameters from `derive(Clone)`'s perspective). The
+// manual impl mirrors the [`InsertSelectStmt`] pattern below and matches
+// the same workaround applied to [`QuerySet<T>`].
+impl<S: Model, T: Model> Clone for InsertSelectColumn<S, T> {
+    fn clone(&self) -> Self {
+        InsertSelectColumn {
+            target_column: self.target_column,
+            source: self.source.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<S: Model, T: Model> InsertSelectColumn<S, T> {
     /// Internal accessor for the target column name. Used by the SQL
     /// emitter (`crate::query::sql::build_insert_select`) to render the
     /// `INSERT (col1, col2, ...)` list.
@@ -226,85 +484,110 @@ impl InsertSelectColumn {
     }
 }
 
-/// Typed constructor — `target_col.copy_from(source_expr)` produces a
-/// single [`InsertSelectColumn`] for the closure passed to
+/// Typed constructor — `target_col.copy_from(source_operand)` produces a
+/// single [`InsertSelectColumn<S, T>`] for the closure passed to
 /// [`QuerySet::insert_into`].
 ///
 /// The compile-time `V` is shared between the target column and the
-/// source expression — a mismatch (target is `FieldRef<T, String>`,
-/// source is `Expr<i32>`) fails to compile at the call site rather
-/// than producing a runtime Postgres "column type mismatch" surface.
+/// source operand — a mismatch (target is `FieldRef<T, String>`,
+/// source is `InsertSelectSource<S, i32>`) fails to compile at the call
+/// site rather than producing a runtime Postgres "column type mismatch"
+/// surface.
 ///
-/// # Source shapes
+/// The compile-time `S` is pinned by the source operand and surfaced on
+/// the returned `InsertSelectColumn<S, T>` — together with the closure's
+/// return-type inference, that pins both the source and target model
+/// identity at the mapping site.
 ///
-/// `Expr<V>` covers every shape the source can take:
+/// # Source operand shapes
 ///
-/// - **Plain column copy** — `source.col().as_expr()` (the common
-///   case). Emits a bare `col` reference inside the source `FROM`
-///   scope.
-/// - **Constant** — `Expr::literal(42i32)`. Emits a single bind.
-/// - **Computed expression** — arithmetic, function calls, etc. from
-///   the existing [`crate::expr::Expr<V>`] surface.
+/// [`InsertSelectSource<S, V>`] covers every shape the source operand
+/// can take:
+///
+/// - **Plain column copy** — `source.col().as_insert_source()` (the
+///   common case). Emits a bare `col` reference inside the source
+///   `FROM` scope.
+/// - **Constant** — `InsertSelectSource::literal(42i32)`. Emits a single
+///   bind.
+/// - **Computed expression** — arithmetic (`+` / `-` / `*` / `/`) on
+///   `InsertSelectSource<S, V: Numeric>` composes same-source operands
+///   into a single source projection.
 ///
 /// # Example
 ///
 /// ```ignore
 /// CompletedOrder::objects()
 ///     .filter(|f| f.completed_at().lt(cutoff))
-///     .insert_into::<OrderArchive>(|target, source| vec![
+///     .insert_into::<OrderArchive, _, _>(|target, source| vec![
 ///         // Column-to-column copy.
-///         target.order_id().copy_from(source.id().as_expr()),
+///         target.order_id().copy_from(source.id().as_insert_source()),
 ///         // Compose with arithmetic — bump every score by 1 at archive time.
-///         target.score().copy_from(source.score().as_expr() + Expr::literal(1i32)),
+///         target.score().copy_from(
+///             source.score().as_insert_source() + InsertSelectSource::literal(1i32),
+///         ),
 ///         // Constant — every archived row carries the same status.
-///         target.status().copy_from(Expr::literal("ARCHIVED".to_string())),
+///         target.status().copy_from(InsertSelectSource::literal("ARCHIVED".to_string())),
 ///     ])
 ///     .execute(&mut ctx)
 ///     .await?;
 /// ```
-impl<M: Model, V> FieldRef<M, V> {
-    /// Bind this target column to a source expression for an
+impl<T: Model, V> FieldRef<T, V> {
+    /// Bind this target column to a source-tagged operand for an
     /// `INSERT INTO ... SELECT ...` statement.
     ///
     /// `V` must match between target and source — the type system pins
-    /// the column types in lockstep at compile time.
+    /// the column types in lockstep at compile time. `S` is pinned by
+    /// the source operand and propagated into the returned
+    /// [`InsertSelectColumn<S, T>`]; closure-return inference then ties
+    /// `S` to the enclosing [`QuerySet<S>::insert_into`] receiver, so a
+    /// mismatched source identity is rejected by the type system at the
+    /// closure boundary.
     #[must_use = "column mappings are lazy — drop one and the INSERT silently omits the column"]
-    pub fn copy_from(self, source: Expr<V>) -> InsertSelectColumn {
+    pub fn copy_from<S: Model>(self, source: InsertSelectSource<S, V>) -> InsertSelectColumn<S, T> {
         InsertSelectColumn {
             target_column: self.column(),
             source: source.node,
+            _phantom: PhantomData,
         }
     }
 }
 
 /// Closure-return shape for [`QuerySet::insert_into`]. The closure can
-/// return either a single [`InsertSelectColumn`] or a
-/// `Vec<InsertSelectColumn>` — this trait bridges both so the user
+/// return either a single [`InsertSelectColumn<S, T>`] or a
+/// `Vec<InsertSelectColumn<S, T>>` — this trait bridges both so the user
 /// writes the natural thing at the call site.
 ///
-/// Sealed-by-convention: only the two shipped impls (`InsertSelectColumn`
-/// and `Vec<InsertSelectColumn>`) exist, and there is no public trait
-/// method that a downstream impl would add value beyond. Users do not
-/// implement this trait by hand.
+/// The `<S, T>` parameters are the trait's discriminator: a single
+/// closure-return type implements `IntoInsertColumns<S, T>` for exactly
+/// one `(S, T)` pair, so the closure's inferred return type ties the
+/// source and target identity into the `QuerySet<S>::insert_into::<T, _, _>`
+/// receiver. Wrong-side mappings (e.g. returning
+/// `Vec<InsertSelectColumn<T, S>>` where `S != T`) do not implement
+/// `IntoInsertColumns<S, T>` and fail to compile.
+///
+/// Sealed-by-convention: only the two shipped impls
+/// (`InsertSelectColumn<S, T>` and `Vec<InsertSelectColumn<S, T>>`)
+/// exist, and there is no public trait method that a downstream impl
+/// would add value beyond. Users do not implement this trait by hand.
 ///
 /// Mirrors the [`crate::query::IntoAssignments`] trait pattern from the
 /// bulk-update surface — same closure-return ergonomics, same sealed-
 /// by-convention discipline.
-pub trait IntoInsertColumns {
+pub trait IntoInsertColumns<S: Model, T: Model> {
     /// Flatten `self` into the ordered list of column mappings the
     /// INSERT...SELECT emitter renders as
     /// `INSERT (...) SELECT ... FROM ...`.
-    fn into_insert_columns(self) -> Vec<InsertSelectColumn>;
+    fn into_insert_columns(self) -> Vec<InsertSelectColumn<S, T>>;
 }
 
-impl IntoInsertColumns for InsertSelectColumn {
-    fn into_insert_columns(self) -> Vec<InsertSelectColumn> {
+impl<S: Model, T: Model> IntoInsertColumns<S, T> for InsertSelectColumn<S, T> {
+    fn into_insert_columns(self) -> Vec<InsertSelectColumn<S, T>> {
         vec![self]
     }
 }
 
-impl IntoInsertColumns for Vec<InsertSelectColumn> {
-    fn into_insert_columns(self) -> Vec<InsertSelectColumn> {
+impl<S: Model, T: Model> IntoInsertColumns<S, T> for Vec<InsertSelectColumn<S, T>> {
+    fn into_insert_columns(self) -> Vec<InsertSelectColumn<S, T>> {
         self
     }
 }
@@ -314,11 +597,12 @@ impl IntoInsertColumns for Vec<InsertSelectColumn> {
 /// returns the affected row count.
 ///
 /// The struct is `Clone` because [`QuerySet<S>`] is `Clone` and the
-/// columns vector clones cheaply (each [`InsertSelectColumn`] carries
-/// a `&'static str` and an `ExprNode` tree that is `Clone` already).
-/// Cloning an `InsertSelectStmt` to retry on a transient failure
-/// (deadlock, serialization error) is a constant-cost operation that
-/// does not re-run the user's column-mapping closure.
+/// columns vector clones cheaply (each [`InsertSelectColumn<S, T>`]
+/// carries a `&'static str` and a crate-private `ExprNode` tree that
+/// is `Clone` already). Cloning an `InsertSelectStmt` to retry on a
+/// transient failure (deadlock, serialization error) is a constant-
+/// cost operation that does not re-run the user's column-mapping
+/// closure.
 ///
 /// `Clone` / `Debug` are hand-rolled (not derived) so they do not
 /// require `S: Clone` / `T: Clone` / `S: Debug` / `T: Debug` —
@@ -336,7 +620,7 @@ pub struct InsertSelectStmt<S: Model, T: Model> {
     /// closure the user passed to [`QuerySet::insert_into`]. Ordered —
     /// the emitter renders the INSERT column list and the SELECT
     /// projection in lockstep position.
-    pub(crate) columns: Vec<InsertSelectColumn>,
+    pub(crate) columns: Vec<InsertSelectColumn<S, T>>,
     /// Covariant `T` tag — matches [`QuerySet<T>`]'s variance so the
     /// statement composes with the same `Send + Sync` story.
     pub(crate) _target: PhantomData<fn() -> T>,
@@ -367,19 +651,18 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     /// Run the accumulated INSERT...SELECT and return the affected row
     /// count.
     ///
-    /// # Short-circuit cases (no SQL issued)
+    /// # Short-circuit case (no SQL issued)
     ///
-    /// Returns `Ok(0)` without touching the database when:
-    /// - The source queryset is [`QuerySet::none`]-derived
-    ///   (`is_empty() == true`), or
-    /// - The columns mapping is empty (an empty column list would be a
-    ///   Postgres syntax error and is surfaced as a validation failure
-    ///   instead — see the rejection list below).
+    /// Returns `Ok(0)` without touching the database when the source
+    /// queryset is [`QuerySet::none`]-derived (`is_empty() == true`).
     ///
     /// # Validation rejections (no SQL issued, returns
     /// [`DjogiError::Validation`])
     ///
-    /// - Empty column mapping (`columns.is_empty()`).
+    /// - Empty column mapping (`columns.is_empty()`). Postgres would
+    ///   reject `INSERT INTO t () SELECT ...` as syntactically invalid;
+    ///   the framework pre-validates so the diagnostic carries the
+    ///   target table name rather than the bare SQLSTATE.
     /// - Duplicate target column in the mapping (Postgres `42701`
     ///   surfaced before the SQL leaves the framework).
     /// - Source queryset carries `prefetch_paths`,
@@ -529,10 +812,12 @@ impl<S: Model> QuerySet<S> {
     /// The closure receives the target model's default-constructed
     /// `T::Fields` AND the source model's default-constructed
     /// `S::Fields`; it returns one or more typed
-    /// [`InsertSelectColumn`]s (either a single mapping or a `Vec`) via
-    /// the [`FieldRef::copy_from`] builder. Each mapping pins the
-    /// target column's value type to the source expression's value
-    /// type at compile time.
+    /// [`InsertSelectColumn<S, T>`]s (either a single mapping or a
+    /// `Vec`) via the [`FieldRef::copy_from`] builder. Each mapping
+    /// pins the target column's value type to the source operand's
+    /// value type at compile time, AND ties the source operand's model
+    /// identity to the closure's source bag via the
+    /// [`IntoInsertColumns<S, T>`] trait bound on the return type.
     ///
     /// # Framework-column semantics
     ///
@@ -577,9 +862,9 @@ impl<S: Model> QuerySet<S> {
     /// CompletedOrder::objects()
     ///     .filter(|f| f.completed_at().lt(cutoff))
     ///     .insert_into::<OrderArchive, _, _>(|target, source| vec![
-    ///         target.original_id().copy_from(source.id().as_expr()),
-    ///         target.title().copy_from(source.title().as_expr()),
-    ///         target.completed_at().copy_from(source.completed_at().as_expr()),
+    ///         target.original_id().copy_from(source.id().as_insert_source()),
+    ///         target.title().copy_from(source.title().as_insert_source()),
+    ///         target.completed_at().copy_from(source.completed_at().as_insert_source()),
     ///     ])
     ///     .execute(&mut ctx)
     ///     .await?;
@@ -597,7 +882,7 @@ impl<S: Model> QuerySet<S> {
     where
         T: Model,
         F: FnOnce(T::Fields, S::Fields) -> I,
-        I: IntoInsertColumns,
+        I: IntoInsertColumns<S, T>,
     {
         let columns = f(T::Fields::default(), S::Fields::default()).into_insert_columns();
         InsertSelectStmt {
@@ -727,7 +1012,8 @@ mod tests {
     fn field_ref_copy_from_field_builds_column_mapping() {
         let target_col: FieldRef<Target, i32> = FieldRef::new("view_count");
         let source_col: FieldRef<Source, i32> = FieldRef::new("score");
-        let mapping = target_col.copy_from(source_col.as_expr());
+        let mapping: InsertSelectColumn<Source, Target> =
+            target_col.copy_from(source_col.as_insert_source());
         assert_eq!(mapping.target_column(), "view_count");
         // Source is a bare field reference — ExprNode::Field.
         assert!(matches!(
@@ -739,7 +1025,12 @@ mod tests {
     #[test]
     fn field_ref_copy_from_literal_builds_column_mapping() {
         let target_col: FieldRef<Target, i32> = FieldRef::new("status_code");
-        let mapping = target_col.copy_from(Expr::literal(42i32));
+        // `InsertSelectSource::literal` is polymorphic in `S`; the
+        // explicit annotation here pins `S = Source` so the test type-
+        // checks without relying on closure inference. Real adopter code
+        // gets `S` inferred from the closure return type.
+        let mapping: InsertSelectColumn<Source, Target> =
+            target_col.copy_from(InsertSelectSource::<Source, _>::literal(42i32));
         assert_eq!(mapping.target_column(), "status_code");
         // Source is a literal — ExprNode::Literal.
         assert!(matches!(mapping.source(), ExprNode::Literal(_)));
@@ -749,8 +1040,8 @@ mod tests {
     fn into_insert_columns_single_wraps_in_vec() {
         let target_col: FieldRef<Target, i32> = FieldRef::new("view_count");
         let source_col: FieldRef<Source, i32> = FieldRef::new("score");
-        let mapping = target_col.copy_from(source_col.as_expr());
-        let v = mapping.into_insert_columns();
+        let mapping = target_col.copy_from(source_col.as_insert_source());
+        let v: Vec<InsertSelectColumn<Source, Target>> = mapping.into_insert_columns();
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].target_column(), "view_count");
     }
@@ -761,9 +1052,9 @@ mod tests {
         let target_b: FieldRef<Target, bool> = FieldRef::new("published");
         let source_a: FieldRef<Source, i32> = FieldRef::new("score");
         let source_b: FieldRef<Source, bool> = FieldRef::new("active");
-        let vs = vec![
-            target_a.copy_from(source_a.as_expr()),
-            target_b.copy_from(source_b.as_expr()),
+        let vs: Vec<InsertSelectColumn<Source, Target>> = vec![
+            target_a.copy_from(source_a.as_insert_source()),
+            target_b.copy_from(source_b.as_insert_source()),
         ];
         let out = vs.into_insert_columns();
         assert_eq!(out.len(), 2);
@@ -779,7 +1070,7 @@ mod tests {
             // two-argument shape (target_fields, source_fields).
             let target_col: FieldRef<Target, i32> = FieldRef::new("view_count");
             let source_col: FieldRef<Source, i32> = FieldRef::new("score");
-            vec![target_col.copy_from(source_col.as_expr())]
+            vec![target_col.copy_from(source_col.as_insert_source())]
         });
         assert_eq!(stmt.columns.len(), 1);
         assert_eq!(stmt.columns[0].target_column(), "view_count");
@@ -795,7 +1086,7 @@ mod tests {
         let stmt = qs.insert_into::<Target, _, _>(|_t, _s| {
             let target_col: FieldRef<Target, i32> = FieldRef::new("view_count");
             let source_col: FieldRef<Source, i32> = FieldRef::new("score");
-            vec![target_col.copy_from(source_col.as_expr())]
+            vec![target_col.copy_from(source_col.as_insert_source())]
         });
         let cloned = stmt.clone();
         assert_eq!(cloned.columns.len(), 1);
@@ -810,9 +1101,26 @@ mod tests {
         let stmt = qs.insert_into::<Target, _, _>(|_t, _s| {
             let target_col: FieldRef<Target, i32> = FieldRef::new("view_count");
             let source_col: FieldRef<Source, i32> = FieldRef::new("score");
-            target_col.copy_from(source_col.as_expr())
+            target_col.copy_from(source_col.as_insert_source())
         });
         assert_eq!(stmt.columns.len(), 1);
         assert_eq!(stmt.columns[0].target_column(), "view_count");
+    }
+
+    #[test]
+    fn insert_select_source_arithmetic_composes_same_source_tag() {
+        // `source.col + literal` — Numeric arithmetic on
+        // `InsertSelectSource<S, V>` produces an `InsertSelectSource<S, V>`
+        // whose source tag matches the operand's. The compile-fail
+        // sibling for cross-source arithmetic lives at
+        // `djogi/tests/compile_fail/insert_select_cross_source_arithmetic.rs`.
+        let source_col: FieldRef<Source, i32> = FieldRef::new("score");
+        let target_col: FieldRef<Target, i32> = FieldRef::new("view_count");
+        let composed: InsertSelectSource<Source, i32> =
+            source_col.as_insert_source() + InsertSelectSource::<Source, _>::literal(1i32);
+        let mapping: InsertSelectColumn<Source, Target> = target_col.copy_from(composed);
+        assert_eq!(mapping.target_column(), "view_count");
+        // The composed node is an Add — leaf is bare-Field + Literal.
+        assert!(matches!(mapping.source(), ExprNode::Add(_, _)));
     }
 }

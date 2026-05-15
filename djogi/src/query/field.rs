@@ -740,17 +740,23 @@ impl<M: Model, V: IntoFilterValue> DjogiField<M, V> {
 // The macro-emitted `{Model}Fields` accessors return `DjogiField<M, V>`
 // after Phase 8eta PR3, so the typed INSERT...SELECT column-mapping
 // builder must surface here in addition to the underlying `FieldRef`
-// impl (`FieldRef::copy_from` in `query::insert_select`). The forwarding
-// pattern mirrors `DjogiField::set` / `set_expr` above and the rest of
-// the wrapper methods on this type.
+// impl (`FieldRef::copy_from` / `FieldRef::as_insert_source` in
+// `query::insert_select`). The forwarding pattern mirrors
+// `DjogiField::set` / `set_expr` above and the rest of the wrapper
+// methods on this type.
 impl<M: Model, V> DjogiField<M, V> {
-    /// Bind this target column to a source expression for an
+    /// Bind this target column to a source-tagged operand for an
     /// `INSERT INTO ... SELECT ...` statement — see
     /// [`FieldRef::copy_from`](crate::query::field::FieldRef::copy_from)
-    /// for the full contract and rationale.
+    /// for the full contract and the source/target identity guarantee.
     ///
     /// `V` must match between target and source — the type system pins
-    /// the column types in lockstep at compile time.
+    /// the column types in lockstep at compile time. `S` is pinned by
+    /// the source operand and propagated onto the returned column
+    /// mapping; closure-return inference then ties `S` to the
+    /// enclosing `QuerySet<S>::insert_into` receiver, so a mismatched
+    /// source identity is rejected by the type system at the closure
+    /// boundary.
     ///
     /// # Example
     ///
@@ -760,20 +766,40 @@ impl<M: Model, V> DjogiField<M, V> {
     /// CompletedOrder::objects()
     ///     .filter(|f| f.completed_at().lt(cutoff))
     ///     .insert_into::<OrderArchive, _, _>(|target, source| vec![
-    ///         target.original_id().copy_from(source.id().as_expr()),
-    ///         target.title().copy_from(source.title().as_expr()),
-    ///         target.completed_at().copy_from(source.completed_at().as_expr()),
-    ///         target.status().copy_from(Expr::literal("ARCHIVED".to_string())),
+    ///         target.original_id().copy_from(source.id().as_insert_source()),
+    ///         target.title().copy_from(source.title().as_insert_source()),
+    ///         target.completed_at().copy_from(source.completed_at().as_insert_source()),
+    ///         target.status().copy_from(InsertSelectSource::literal("ARCHIVED".to_string())),
     ///     ])
     ///     .execute(&mut ctx)
     ///     .await?;
     /// ```
     #[must_use = "column mappings are lazy — drop one and the INSERT silently omits the column"]
-    pub fn copy_from(
+    pub fn copy_from<S: Model>(
         self,
-        source: crate::expr::Expr<V>,
-    ) -> crate::query::insert_select::InsertSelectColumn {
+        source: crate::query::insert_select::InsertSelectSource<S, V>,
+    ) -> crate::query::insert_select::InsertSelectColumn<S, M> {
         self.sql.copy_from(source)
+    }
+
+    /// Lift this source-side column reference into a tagged
+    /// [`InsertSelectSource<M, V>`](crate::query::insert_select::InsertSelectSource)
+    /// for use inside [`copy_from`](DjogiField::copy_from) on a
+    /// target-side field.
+    ///
+    /// Mirrors [`FieldRef::as_insert_source`] — see that method for the
+    /// full contract and the source/target identity guarantee.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// .insert_into::<OrderArchive, _, _>(|target, source| vec![
+    ///     target.original_id().copy_from(source.id().as_insert_source()),
+    /// ])
+    /// ```
+    #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
+    pub fn as_insert_source(self) -> crate::query::insert_select::InsertSelectSource<M, V> {
+        self.sql.as_insert_source()
     }
 }
 

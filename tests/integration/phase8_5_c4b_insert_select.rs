@@ -34,8 +34,8 @@ pub struct Phase85C4bArchive {
     /// framework-column semantics). The column type matches the
     /// source's PK type (`HeerIdDesc`) so the closure-built column
     /// mapping type-checks at compile time —
-    /// `target.original_id().copy_from(source.id().as_expr())`
-    /// where both sides are `Expr<HeerIdDesc>`. This is the Phase
+    /// `target.original_id().copy_from(source.id().as_insert_source())`
+    /// where both sides resolve to `HeerIdDesc`. This is the Phase
     /// 7-Zero-2 "ambient PK kinds are usable in any field position"
     /// pattern.
     pub original_id: djogi::HeerIdDesc,
@@ -81,10 +81,10 @@ async fn insert_select_copies_all_rows_no_filter(mut ctx: djogi::DjogiContext) {
     let n = Phase85C4bSource::objects()
         .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
             vec![
-                t.original_id().copy_from(s.id().as_expr()),
-                t.label().copy_from(s.label().as_expr()),
-                t.published().copy_from(s.published().as_expr()),
-                t.view_count().copy_from(s.view_count().as_expr()),
+                t.original_id().copy_from(s.id().as_insert_source()),
+                t.label().copy_from(s.label().as_insert_source()),
+                t.published().copy_from(s.published().as_insert_source()),
+                t.view_count().copy_from(s.view_count().as_insert_source()),
             ]
         })
         .execute(&mut ctx)
@@ -106,10 +106,10 @@ async fn insert_select_with_filter_copies_subset(mut ctx: djogi::DjogiContext) {
         .filter(|f| f.published().eq(true))
         .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
             vec![
-                t.original_id().copy_from(s.id().as_expr()),
-                t.label().copy_from(s.label().as_expr()),
-                t.published().copy_from(s.published().as_expr()),
-                t.view_count().copy_from(s.view_count().as_expr()),
+                t.original_id().copy_from(s.id().as_insert_source()),
+                t.label().copy_from(s.label().as_insert_source()),
+                t.published().copy_from(s.published().as_insert_source()),
+                t.view_count().copy_from(s.view_count().as_insert_source()),
             ]
         })
         .execute(&mut ctx)
@@ -137,19 +137,23 @@ async fn insert_select_with_filter_copies_subset(mut ctx: djogi::DjogiContext) {
 
 #[djogi::djogi_test(sync_models = [Phase85C4bSource, Phase85C4bArchive])]
 async fn insert_select_with_literal_source_emits_constant(mut ctx: djogi::DjogiContext) {
-    // Source expression is `Expr::literal(...)` — every archived row
-    // gets the same constant value for that column. Useful for
-    // archival markers ("status = ARCHIVED for every row").
+    // Source operand is `InsertSelectSource::literal(...)` — every
+    // archived row gets the same constant value for that column.
+    // Useful for archival markers ("status = ARCHIVED for every row").
     let _seeded = seed_sources(&mut ctx).await;
 
     let n = Phase85C4bSource::objects()
         .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
             vec![
-                t.original_id().copy_from(s.id().as_expr()),
-                t.label().copy_from(s.label().as_expr()),
-                t.published().copy_from(s.published().as_expr()),
+                t.original_id().copy_from(s.id().as_insert_source()),
+                t.label().copy_from(s.label().as_insert_source()),
+                t.published().copy_from(s.published().as_insert_source()),
                 // Constant — every archived row gets view_count = 0.
-                t.view_count().copy_from(Expr::literal(0i32)),
+                // `InsertSelectSource::literal` is polymorphic in the
+                // source model; `S` is inferred from the closure's
+                // return type as the enclosing source model
+                // (`Phase85C4bSource`).
+                t.view_count().copy_from(InsertSelectSource::literal(0i32)),
             ]
         })
         .execute(&mut ctx)
@@ -179,10 +183,10 @@ async fn insert_select_framework_columns_populated_by_defaults(mut ctx: djogi::D
     let _n = Phase85C4bSource::objects()
         .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
             vec![
-                t.original_id().copy_from(s.id().as_expr()),
-                t.label().copy_from(s.label().as_expr()),
-                t.published().copy_from(s.published().as_expr()),
-                t.view_count().copy_from(s.view_count().as_expr()),
+                t.original_id().copy_from(s.id().as_insert_source()),
+                t.label().copy_from(s.label().as_insert_source()),
+                t.published().copy_from(s.published().as_insert_source()),
+                t.view_count().copy_from(s.view_count().as_insert_source()),
             ]
         })
         .execute(&mut ctx)
@@ -229,10 +233,10 @@ async fn insert_select_with_order_by_and_limit_chunks_oldest_first(mut ctx: djog
         .limit(2)
         .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
             vec![
-                t.original_id().copy_from(s.id().as_expr()),
-                t.label().copy_from(s.label().as_expr()),
-                t.published().copy_from(s.published().as_expr()),
-                t.view_count().copy_from(s.view_count().as_expr()),
+                t.original_id().copy_from(s.id().as_insert_source()),
+                t.label().copy_from(s.label().as_insert_source()),
+                t.published().copy_from(s.published().as_insert_source()),
+                t.view_count().copy_from(s.view_count().as_insert_source()),
             ]
         })
         .execute(&mut ctx)
@@ -269,10 +273,10 @@ async fn insert_select_none_short_circuits(mut ctx: djogi::DjogiContext) {
         .none()
         .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
             vec![
-                t.original_id().copy_from(s.id().as_expr()),
-                t.label().copy_from(s.label().as_expr()),
-                t.published().copy_from(s.published().as_expr()),
-                t.view_count().copy_from(s.view_count().as_expr()),
+                t.original_id().copy_from(s.id().as_insert_source()),
+                t.label().copy_from(s.label().as_insert_source()),
+                t.published().copy_from(s.published().as_insert_source()),
+                t.view_count().copy_from(s.view_count().as_insert_source()),
             ]
         })
         .execute(&mut ctx)
@@ -301,7 +305,9 @@ async fn insert_select_rejects_empty_column_mapping(mut ctx: djogi::DjogiContext
     let _seeded = seed_sources(&mut ctx).await;
 
     let err = Phase85C4bSource::objects()
-        .insert_into::<Phase85C4bArchive, _, _>(|_t, _s| Vec::<InsertSelectColumn>::new())
+        .insert_into::<Phase85C4bArchive, _, _>(|_t, _s| {
+            Vec::<InsertSelectColumn<Phase85C4bSource, Phase85C4bArchive>>::new()
+        })
         .execute(&mut ctx)
         .await
         .unwrap_err();
@@ -326,9 +332,10 @@ async fn insert_select_rejects_duplicate_target_columns(mut ctx: djogi::DjogiCon
     let err = Phase85C4bSource::objects()
         .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
             vec![
-                t.label().copy_from(s.label().as_expr()),
+                t.label().copy_from(s.label().as_insert_source()),
                 // Duplicate — same target column.
-                t.label().copy_from(Expr::literal("override".to_string())),
+                t.label()
+                    .copy_from(InsertSelectSource::literal("override".to_string())),
             ]
         })
         .execute(&mut ctx)
@@ -349,7 +356,7 @@ async fn insert_select_rejects_distinct_source(mut ctx: djogi::DjogiContext) {
     let err = Phase85C4bSource::objects()
         .distinct()
         .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
-            vec![t.label().copy_from(s.label().as_expr())]
+            vec![t.label().copy_from(s.label().as_insert_source())]
         })
         .execute(&mut ctx)
         .await

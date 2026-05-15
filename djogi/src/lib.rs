@@ -518,13 +518,13 @@ pub mod prelude {
     // legacy `Condition` callers reach `djogi::query::internal::Condition`.
     pub use crate::query::{
         AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
-        ClosureModel, ConditionExt, FieldRef, FilterClause, InsertSelectColumn, InsertSelectStmt,
-        IntoAggregateTuple, IntoFieldFilterValue, IntoFilterValue, IntoInsertColumns,
-        IntoPortableFieldValue, IntoSetOpArm, JoinedAnnotatedQuerySet, JoinedAnnotatedRow,
-        JoinedQuerySet, Lookup, MaterializeClosureOptions, MaterializeClosureReport, ModelFilter,
-        OrderExpr, PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt, PortableQuerySet,
-        Q, QuerySet, RecursiveDirection, RecursiveQuerySet, SetOpKind, SetOpQuerySet,
-        VisageQuerySet,
+        ClosureModel, ConditionExt, FieldRef, FilterClause, InsertSelectColumn, InsertSelectSource,
+        InsertSelectStmt, IntoAggregateTuple, IntoFieldFilterValue, IntoFilterValue,
+        IntoInsertColumns, IntoPortableFieldValue, IntoSetOpArm, JoinedAnnotatedQuerySet,
+        JoinedAnnotatedRow, JoinedQuerySet, Lookup, MaterializeClosureOptions,
+        MaterializeClosureReport, ModelFilter, OrderExpr, PairClosureKinshipSum, PairOrderExpr,
+        PairSide, PairWindowExt, PortableQuerySet, Q, QuerySet, RecursiveDirection,
+        RecursiveQuerySet, SetOpKind, SetOpQuerySet, VisageQuerySet,
     };
     // `atomic` / `retry_on_conflict` — Phase 4 Task 1 canonical
     // transaction scope + retry helper.

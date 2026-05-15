@@ -14,14 +14,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source_fields| vec![...])` returns an inert
   `InsertSelectStmt<S, T>`; `.execute(&mut ctx).await` runs the
   cross-table copy and returns the affected row count. Each column
-  mapping (`target.col().copy_from(source_expr)`) pins the target
-  column's value type to the source `Expr<V>`'s value type at compile
-  time. Target framework columns (`id`, `created_at`, `updated_at`) are
-  populated by their DB defaults, matching `Model::create`'s contract.
-  Tenant / RLS auto-set fires for both target and source. Unsupported
-  source state (`prefetch`, `select_related`, `cache`, locks, distinct)
-  is rejected at the terminal with `DjogiError::Validation`. Replaces
-  the previous bypass-attribute-only path
+  mapping (`target.col().copy_from(source.col().as_insert_source())`)
+  pins the target column's value type AND the source operand's source
+  model identity at compile time via the new
+  `InsertSelectSource<S, V>` source-tagged operand and the
+  `InsertSelectColumn<S, T>` doubly-tagged mapping. Constants use
+  `InsertSelectSource::literal(v)` (polymorphic in `S`, inferred from
+  the closure return type); arithmetic composition on
+  `InsertSelectSource<S, V: Numeric>` (`+` / `-` / `*` / `/`) preserves
+  the source tag. A type-erased mapping (target field as "source"
+  operand, or source field as "target" column) is rejected by the
+  closure-return inference, not by the runtime emitter — pinned by
+  compile-fail fixtures under
+  `djogi/tests/compile_fail/insert_select_*`. Target framework columns
+  (`id`, `created_at`, `updated_at`) are populated by their DB
+  defaults, matching `Model::create`'s contract. Tenant / RLS auto-set
+  fires for both target and source. Unsupported source state
+  (`prefetch`, `select_related`, `cache`, locks, distinct) is rejected
+  at the terminal with `DjogiError::Validation`. Replaces the previous
+  bypass-attribute-only path
   (`#[deliberately_bypass_convention_with_raw_sql]` +
   `ctx.raw_execute(...)`) for cross-table archival / migration shapes.
 

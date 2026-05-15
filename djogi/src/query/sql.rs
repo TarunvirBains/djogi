@@ -2316,7 +2316,7 @@ pub(crate) fn build_delete<T: Model>(
 /// lock-opt-in surface a single-line change at the terminal layer.
 pub(crate) fn build_insert_select<S: Model, T: Model>(
     qs: &QuerySet<S>,
-    columns: &[crate::query::insert_select::InsertSelectColumn],
+    columns: &[crate::query::insert_select::InsertSelectColumn<S, T>],
 ) -> Result<SqlAccumulator, PortablePredicateError> {
     // Emit the INSERT prefix and the target column list. Target column
     // names are macro-baked `&'static str` literals via FieldRef, so
@@ -3069,21 +3069,24 @@ mod tests {
 
     fn build_insert_select<S: Model, T: Model>(
         qs: &QuerySet<S>,
-        columns: &[crate::query::insert_select::InsertSelectColumn],
+        columns: &[crate::query::insert_select::InsertSelectColumn<S, T>],
     ) -> SqlAccumulator {
         super::build_insert_select::<S, T>(qs, columns)
             .expect("test predicate should lower to insert-select SQL")
     }
 
-    /// Helper — build an `InsertSelectColumn` whose source is a bare
-    /// column reference (the most common shape in adopter call sites).
+    /// Helper — build an `InsertSelectColumn<S, T>` whose source is a
+    /// bare column reference (the most common shape in adopter call
+    /// sites). The post-fix source-tagged constructor pins the source
+    /// model `S` on the operand, which propagates onto the returned
+    /// `InsertSelectColumn<S, T>`.
     fn col_copy<S: Model, T: Model>(
         target_column: &'static str,
         source_column: &'static str,
-    ) -> crate::query::insert_select::InsertSelectColumn {
+    ) -> crate::query::insert_select::InsertSelectColumn<S, T> {
         let target: crate::query::FieldRef<T, i32> = crate::query::FieldRef::new(target_column);
         let source: crate::query::FieldRef<S, i32> = crate::query::FieldRef::new(source_column);
-        target.copy_from(source.as_expr())
+        target.copy_from(source.as_insert_source())
     }
 
     #[test]
@@ -3144,7 +3147,13 @@ mod tests {
         // projection's binds precede the WHERE clause's binds.
         let target: crate::query::FieldRef<FakeTarget, i32> =
             crate::query::FieldRef::new("status_code");
-        let cols = vec![target.copy_from(crate::expr::Expr::literal(7i32))];
+        // `InsertSelectSource::literal` is polymorphic in `S`; the
+        // explicit turbofish pins `S = Fake` so this test type-checks
+        // without relying on closure-return inference.
+        let cols =
+            vec![target.copy_from(
+                crate::query::insert_select::InsertSelectSource::<Fake, _>::literal(7i32),
+            )];
         let qs: QuerySet<Fake> = QuerySet::new()
             .filter(|_| Condition::Leaf(Leaf::eq_raw("published", FilterValue::Bool(true))));
         let acc = build_insert_select::<Fake, FakeTarget>(&qs, &cols);

@@ -127,11 +127,13 @@ use djogi::prelude::*;
 CompletedOrder::objects()
     .filter(|f| f.completed_at().lt(cutoff))
     .insert_into::<OrderArchive, _, _>(|target, source| vec![
-        target.original_id().copy_from(source.id().as_expr()),
-        target.title().copy_from(source.title().as_expr()),
-        target.completed_at().copy_from(source.completed_at().as_expr()),
-        // A constant column on every archived row.
-        target.status().copy_from(Expr::literal("ARCHIVED".to_string())),
+        target.original_id().copy_from(source.id().as_insert_source()),
+        target.title().copy_from(source.title().as_insert_source()),
+        target.completed_at().copy_from(source.completed_at().as_insert_source()),
+        // A constant column on every archived row. `InsertSelectSource::literal`
+        // is polymorphic in the source model; `S` is inferred from the closure
+        // return type as the enclosing source model.
+        target.status().copy_from(InsertSelectSource::literal("ARCHIVED".to_string())),
     ])
     .execute(&mut ctx).await?;
 ```
@@ -139,10 +141,18 @@ CompletedOrder::objects()
 Contract:
 
 - The closure receives `(T::Fields, S::Fields)` and returns one or more
-  [`InsertSelectColumn`]s via `target_field.copy_from(source_expr)`. Each
-  mapping pins the target column's `V` to the source `Expr<V>`'s `V` at
-  compile time — a type mismatch fails to compile rather than producing
-  a runtime Postgres type error.
+  [`InsertSelectColumn<S, T>`]s via
+  `target_field.copy_from(source_operand)`, where `source_operand` is an
+  [`InsertSelectSource<S, V>`] built from `source.col().as_insert_source()`
+  or [`InsertSelectSource::literal(...)`]. Each mapping pins the target
+  column's `V` to the source operand's `V` at compile time — a type
+  mismatch fails to compile rather than producing a runtime Postgres type
+  error.
+- Source/target identity is type-checked: passing a target-side field
+  where a source-side operand is required (or vice-versa) is rejected
+  by the type system at the closure-return inference step, not the
+  runtime emitter. See the pinned compile-fail fixtures under
+  `djogi/tests/compile_fail/insert_select_*` for the negative cases.
 - The target's framework columns (`id`, `created_at`, `updated_at`) are
   populated by their column-level `DEFAULT` clauses — the emitter never
   names them unless the closure explicitly maps them. Matches
