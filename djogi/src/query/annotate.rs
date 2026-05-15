@@ -181,6 +181,72 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
     fn requires_closure_pair_join(&self) -> bool {
         false
     }
+
+    /// Whether this slot's emitted SQL is safe to use inside a
+    /// pair-tuple `JoinedQuerySet::annotate(...)` terminal.
+    ///
+    /// Returns `false` by default. Override to `true` only when the
+    /// slot's emitter either:
+    ///   - References pair-side closure aliases (`la.` / `ra.`)
+    ///     explicitly — `PairClosureKinshipSum<C>`.
+    ///   - Composes through pair-aware builders that qualify column
+    ///     references (`l.col` / `r.col`) — window functions invoked
+    ///     via `partition_by_pair` / `order_by_pair_asc` /
+    ///     `order_by_pair_desc`.
+    ///
+    /// Ordinary [`AggregateExpr<V>`] (e.g. `f.age().sum()`) keeps
+    /// the default `false`: it emits a bare-column SQL fragment like
+    /// `SUM(age) OVER ()` which is structurally ambiguous in joined
+    /// contexts where both sides may share column names (a guarantee
+    /// on self-joins, typical on heterogeneous joins).
+    ///
+    /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+    /// consults this through the tuple bridge
+    /// ([`IntoAggregateTuple::is_joined_safe`]) before SQL build and
+    /// rejects the entire tuple with a typed `DjogiError::Validation`
+    /// when any slot is not joined-safe. The diagnostic message points
+    /// adopters at the pair-aware alternatives.
+    ///
+    /// Note: window functions return `true` here even if the user
+    /// composes them with the non-pair `partition_by(field)` instead
+    /// of `partition_by_pair(side, field)` — that would still emit a
+    /// bare column reference. Detecting that variant requires
+    /// inspecting the `WindowSpec.partition_by` / `.order_by` strings
+    /// for `.`-qualification; a follow-on slice will tighten the gate.
+    /// For now, the slot-level opt-in keeps the surface minimal while
+    /// the ambiguous case (`AggregateExpr` with no pair-aware path)
+    /// stays rejected.
+    fn is_joined_safe(&self) -> bool {
+        false
+    }
+
+    /// Validate this slot against an optional closure-pair join
+    /// captured by the queryset.
+    ///
+    /// Default returns `Ok(())`. Override on slots that splice
+    /// `ClosureModel` metadata (column-name `&'static str` accessors)
+    /// into emitted SQL — today only
+    /// [`PairClosureKinshipSum<C>`](crate::query::PairClosureKinshipSum)
+    /// fits — to:
+    ///   (1) Run [`crate::query::closure::validate_closure_metadata_idents::<C>`]
+    ///       so a hand-rolled `impl ClosureModel` cannot smuggle SQL
+    ///       through the slot's `push_sql` sites.
+    ///   (2) When `closure_pair` is `Some(cp)`, compare each captured
+    ///       identifier on `cp` against `C`'s same-named accessor so
+    ///       a `left_join_closure_pair::<C1>()` paired with
+    ///       `PairClosureKinshipSum::<C2>::new()` (C1 ≠ C2) is
+    ///       rejected before SQL build instead of surfacing as a
+    ///       Postgres `42703 column does not exist` error.
+    ///
+    /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+    /// calls this through the tuple bridge
+    /// ([`IntoAggregateTuple::validate_against_closure_pair`]).
+    fn validate_against_closure_pair(
+        &self,
+        #[allow(unused_variables)] closure_pair: Option<&crate::query::joined::ClosurePairJoin>,
+    ) -> Result<(), crate::DjogiError> {
+        Ok(())
+    }
 }
 
 /// Type-level bridge from the closure return type of
@@ -269,6 +335,43 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     /// error.
     fn requires_closure_pair_join(&self) -> bool {
         false
+    }
+
+    /// Whether **every** slot in this aggregate tuple is safe to use
+    /// inside a pair-tuple `JoinedQuerySet::annotate(...)` terminal.
+    ///
+    /// Forwards to [`AnnotationSlot::is_joined_safe`] for the single-
+    /// slot blanket; tuple impls AND across slots. Default `true`
+    /// covers the `()` / no-annotation case (vacuously safe).
+    ///
+    /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+    /// queries this before SQL build to reject ordinary
+    /// `AggregateExpr<V>` slots (e.g. `f.age().sum()`) that would emit
+    /// bare-column SQL like `SUM(age) OVER ()` — ambiguous on
+    /// self-joins where both sides share columns.
+    fn is_joined_safe(&self) -> bool {
+        true
+    }
+
+    /// Validate every slot in this aggregate tuple against the
+    /// queryset's optional closure-pair join. Forwards to
+    /// [`AnnotationSlot::validate_against_closure_pair`] per slot
+    /// (single-slot blanket calls once; tuple impls walk every slot
+    /// and propagate the first error).
+    ///
+    /// Default returns `Ok(())` — `()` and tuples-of-no-pair-aggregates
+    /// trivially validate.
+    ///
+    /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+    /// calls this before SQL build so a `PairClosureKinshipSum<C>`
+    /// slot whose `C`'s metadata is hostile or mismatched against the
+    /// join's `C` surfaces as a typed `DjogiError::Validation` before
+    /// any SQL is emitted.
+    fn validate_against_closure_pair(
+        &self,
+        #[allow(unused_variables)] closure_pair: Option<&crate::query::joined::ClosurePairJoin>,
+    ) -> Result<(), crate::DjogiError> {
+        Ok(())
     }
 }
 
@@ -393,6 +496,18 @@ macro_rules! impl_window_annotation_slot {
                     )))
                 }
             }
+
+            // Window functions have pair-aware composition through
+            // `PairWindowExt::partition_by_pair` /
+            // `order_by_pair_asc` / `order_by_pair_desc`. The slot-
+            // level opt-in returns `true` so the joined-annotated
+            // terminal does not reject the slot type itself. A future
+            // refinement can inspect `WindowSpec.partition_by` /
+            // `.order_by` for `.`-qualified entries to catch the
+            // non-pair-aware-composition case at this gate too.
+            fn is_joined_safe(&self) -> bool {
+                true
+            }
         }
     };
 }
@@ -452,6 +567,11 @@ macro_rules! impl_window_annotation_slot_generic_v {
                         $display
                     )))
                 }
+            }
+
+            // See `impl_window_annotation_slot!` for the rationale.
+            fn is_joined_safe(&self) -> bool {
+                true
             }
         }
     };
@@ -513,6 +633,17 @@ where
 
     fn requires_closure_pair_join(&self) -> bool {
         AnnotationSlot::requires_closure_pair_join(self)
+    }
+
+    fn is_joined_safe(&self) -> bool {
+        AnnotationSlot::is_joined_safe(self)
+    }
+
+    fn validate_against_closure_pair(
+        &self,
+        closure_pair: Option<&crate::query::joined::ClosurePairJoin>,
+    ) -> Result<(), crate::DjogiError> {
+        AnnotationSlot::validate_against_closure_pair(self, closure_pair)
     }
 }
 
@@ -603,6 +734,23 @@ macro_rules! impl_into_aggregate_tuple {
                 false $(
                     || self.$slot.requires_closure_pair_join()
                 )+
+            }
+
+            fn is_joined_safe(&self) -> bool {
+                // AND across slots: every slot must be joined-safe.
+                true $(
+                    && self.$slot.is_joined_safe()
+                )+
+            }
+
+            fn validate_against_closure_pair(
+                &self,
+                closure_pair: Option<&crate::query::joined::ClosurePairJoin>,
+            ) -> Result<(), crate::DjogiError> {
+                $(
+                    self.$slot.validate_against_closure_pair(closure_pair)?;
+                )+
+                Ok(())
             }
         }
     };

@@ -37,14 +37,15 @@
 //! rows, multi-Model joins, closure-self-joins for kinship — had only two
 //! escape hatches: raw SQL through the bypass attribute, or a custom typed
 //! sub-query layer (the deferred djqry plan). Both produce strings the typed
-//! projection pipeline never sees, which is exactly the gap GH #99 (closes
-//! #84) tracks.
+//! projection pipeline never sees, which is exactly the gap GH #99 (substrate
+//! for #84) tracks.
 //!
 //! The mating-pairs demo is the canonical validation target: until Step 3's
 //! closure self-join + Wright F + window-fn ranking can be expressed without
 //! `raw_rows`, the typed pair-tuple surface design is incomplete (per the
-//! #99 acceptance criteria). This module + its [`JoinedAnnotatedQuerySet`]
-//! + closure-pair extensions cover that shape.
+//! #99 acceptance criteria). This module plus its [`JoinedAnnotatedQuerySet`]
+//! and closure-pair extensions contribute to that surface; the full
+//! mating-pairs retrofit and Punnu showcase ride in follow-on tasks.
 //!
 //! # How — SQL emission
 //!
@@ -90,6 +91,7 @@
 
 use crate::DjogiError;
 use crate::context::DjogiContext;
+use crate::descriptor::PkType;
 use crate::model::Model;
 use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::{FromJoinedPgRow, FromPgRow, try_get_scalar};
@@ -208,8 +210,20 @@ impl PairOrderExpr {
 /// per-pair "shared ancestor" aggregator: only rows whose ancestor matches
 /// both sides survive, and `path_count` multiplicity is preserved on
 /// both sides for Wright-F summation.
+///
+/// # Visibility
+///
+/// `#[doc(hidden)] pub` so the
+/// [`crate::query::annotate::AnnotationSlot::validate_against_closure_pair`]
+/// trait method (used by [`JoinedAnnotatedQuerySet::fetch_all`] to
+/// detect closure-model mismatches across join + aggregate) can name
+/// it without a private-in-public visibility leak. The struct is not
+/// constructible outside the crate (every field is `pub(crate)` and
+/// the only constructor is `left_join_closure_pair`), and
+/// `AnnotationSlot` itself is sealed.
+#[doc(hidden)]
 #[derive(Debug, Clone)]
-pub(crate) struct ClosurePairJoin {
+pub struct ClosurePairJoin {
     /// Closure table name (e.g. `"elephant_ancestries"`).
     pub(crate) table: &'static str,
     /// Column on the closure pointing back at the source-model row
@@ -221,13 +235,13 @@ pub(crate) struct ClosurePairJoin {
     // The depth and path_count columns are stored here for future
     // legality assertions (e.g. cross-check between this closure-pair
     // join's bound `C` and a kinship-sum aggregate's bound `C` — both
-    // should agree on the column shape). They are not read on the
-    // emission hot path today because the typed kinship-sum aggregate
-    // routes through its own `C: ClosureModel` bound via
-    // `PairClosureKinshipSum::path_count_column()` etc., so the same
-    // values reach SQL via two different routes that agree by
-    // construction. Keeping them on the struct documents the full
-    // column shape for future audits.
+    // should agree on the column shape). They are read on the
+    // mismatch-detection hot path by
+    // `PairClosureKinshipSum<C>::validate_against_closure_pair` so a
+    // `left_join_closure_pair::<C1>` paired with a
+    // `PairClosureKinshipSum::<C2>` (C1 ≠ C2) gets rejected before
+    // SQL build instead of surfacing as a Postgres
+    // `42703 column does not exist`.
     /// Depth column (e.g. `"depth"`) — needed by typed aggregate emitters
     /// that walk the closure for Wright-style depth-weighted sums and by
     /// terminal-time identifier validation
@@ -276,6 +290,96 @@ impl ClosurePairJoin {
         }
         Ok(())
     }
+}
+
+/// Resolve a model's primary-key column for pair-tuple paths that
+/// reference per-row identity (`l.<pk>` / `r.<pk>` in WHERE, ON-clauses,
+/// and GROUP BY emitters).
+///
+/// Returns `Ok(col)` only for **single-column** PK shapes:
+/// [`PkType::HeerId`], [`PkType::RanjId`], [`PkType::HeerIdDesc`],
+/// [`PkType::RanjIdDesc`], [`PkType::Serial`], and `Custom(_)` — all
+/// inject a single `id` column on the source table.
+///
+/// Returns [`DjogiError::Validation`] for:
+///
+/// - [`PkType::None`] — the model has no primary key, so `l.<pk> <>
+///   r.<pk>` self-pair anti-equality and `la.<src> = l.<pk>`
+///   closure-pair joins both have no column to reference.
+/// - [`PkType::Composite`] — multi-column PKs would need multi-column
+///   `(l.c1, l.c2) <> (r.c1, r.c2)` emission, multi-column closure
+///   join keys, and multi-column GROUP BY. The v0.1.0 pair-tuple
+///   substrate does not implement multi-column emission, so composite
+///   PKs are rejected at the terminal-call gate rather than silently
+///   degenerating to a single-column emission (the pre-fix
+///   `unwrap_or("id")` fallback).
+///
+/// Called from the terminals before SQL build:
+/// [`JoinedQuerySet::fetch_all`], [`JoinedQuerySet::count`], and
+/// [`JoinedAnnotatedQuerySet::fetch_all`] each invoke this for both
+/// sides whenever the path requires per-row identity (self-pair
+/// anti-equality, closure-pair joins, or pair-aggregate GROUP BY).
+/// The validated `&'static str` is then threaded through the emitter
+/// helpers as a parameter so no helper carries a silent
+/// `unwrap_or("id")` fallback.
+pub(crate) fn validated_pk_column_for_pair_identity<M: Model>() -> Result<&'static str, DjogiError>
+{
+    let desc = M::descriptor();
+    match &desc.pk_type {
+        PkType::HeerId
+        | PkType::RanjId
+        | PkType::HeerIdDesc
+        | PkType::RanjIdDesc
+        | PkType::Serial
+        | PkType::Custom(_) => Ok(desc.pk_column().expect(
+            "single-column PK shapes always produce a column via ModelDescriptor::pk_column",
+        )),
+        PkType::None => Err(DjogiError::Validation(format!(
+            "model {} has no primary key (PkType::None); pair-tuple paths that reference \
+             per-row identity (`l.<pk> <> r.<pk>` self-pair anti-equality, closure-pair \
+             joins, or pair-aggregate GROUP BY) require a single-column PK. Either give \
+             the model a PK or build the query through a path that does not need row \
+             identity (cross-join with `include_equal_pk` and no closure-pair join).",
+            M::table_name()
+        ))),
+        PkType::Composite(cols) => Err(DjogiError::Validation(format!(
+            "model {} has a composite primary key ({:?}); the v0.1.0 pair-tuple substrate \
+             does not emit multi-column anti-equality, closure-pair join keys, or GROUP BY. \
+             A future slice will add multi-column emission; until then, pair-tuple paths \
+             that require per-row identity are rejected at the terminal gate.",
+            M::table_name(),
+            cols
+        ))),
+    }
+}
+
+/// Validate per-row identity for both sides of a pair-tuple terminal
+/// when the path needs it (self-pair anti-equality, closure-pair joins,
+/// pair-aggregate GROUP BY).
+///
+/// Returns the validated `(left_pk, right_pk)` pair when validation
+/// succeeds, or [`DjogiError::Validation`] when either side's PK shape
+/// is unsupported. The terminal threads the resolved pair into
+/// `build_joined_select` / `build_joined_count` /
+/// `build_joined_annotated_select_for_fetch` as parameters so the
+/// emitter helpers never re-look-up via `pk_column().unwrap_or("id")`.
+///
+/// `needs_identity` is the conjunction of the per-row-identity
+/// triggers: `exclude_equal_pk` (self-pair WHERE), `closure_pair.is_some()`
+/// (closure-pair LEFT JOIN ON-clauses), and any
+/// `requires_closure_pair_join()` aggregate slot in the tuple (pair-
+/// aggregate GROUP BY). The function short-circuits to `Ok((None, None))`
+/// when none of these apply; the emitters then know per-row identity is
+/// not needed and skip the per-side PK reference paths entirely.
+pub(crate) fn validate_pair_identity_pk<L: Model, R: Model>(
+    needs_identity: bool,
+) -> Result<(Option<&'static str>, Option<&'static str>), DjogiError> {
+    if !needs_identity {
+        return Ok((None, None));
+    }
+    let l_pk = validated_pk_column_for_pair_identity::<L>()?;
+    let r_pk = validated_pk_column_for_pair_identity::<R>()?;
+    Ok((Some(l_pk), Some(r_pk)))
 }
 
 /// Lazy pair-tuple query builder.
@@ -587,13 +691,22 @@ where
             if let Some(cp) = self.closure_pair.as_ref() {
                 cp.validate_idents()?;
             }
+            // Validate per-row identity PK shape for both sides when
+            // the path needs it (self-pair anti-equality or
+            // closure-pair join). Rejects `PkType::None` and
+            // `PkType::Composite` at the terminal gate so the emitters
+            // can `expect` a single-column PK rather than silently
+            // falling back to `"id"`. See
+            // [`validated_pk_column_for_pair_identity`].
+            let needs_identity = self.exclude_equal_pk || self.closure_pair.is_some();
+            let (l_pk, r_pk) = validate_pair_identity_pk::<L, R>(needs_identity)?;
             // Auto-tenant: a pair-tuple query can be tenanted on the left
             // side, right side, or both. We dispatch sequentially with `?`
             // propagation so a misconfigured tenancy fails loudly before
             // the SQL round-trip.
             auto_set_tenant::<L>(ctx).await?;
             auto_set_tenant::<R>(ctx).await?;
-            let acc = build_joined_select(&self).map_err(DjogiError::from)?;
+            let acc = build_joined_select(&self, l_pk, r_pk).map_err(DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
@@ -637,9 +750,15 @@ impl<L: Model, R: Model> JoinedQuerySet<L, R> {
             if let Some(cp) = self.closure_pair.as_ref() {
                 cp.validate_idents()?;
             }
+            // Validate PK shape for the anti-equality path. The count
+            // builder does NOT emit closure-pair LEFT JOINs, so the
+            // closure-pair branch is not an identity trigger here —
+            // only `exclude_equal_pk` is.
+            let needs_identity = self.exclude_equal_pk;
+            let (l_pk, r_pk) = validate_pair_identity_pk::<L, R>(needs_identity)?;
             auto_set_tenant::<L>(ctx).await?;
             auto_set_tenant::<R>(ctx).await?;
-            let acc = build_joined_count(&self).map_err(DjogiError::from)?;
+            let acc = build_joined_count(&self, l_pk, r_pk).map_err(DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
@@ -912,12 +1031,66 @@ where
                 cp.validate_idents()?;
             }
 
+            // Validate the aggregate tuple's closure-pair metadata
+            // against the queryset's closure-pair join. Catches:
+            //   (1) hostile `impl ClosureModel` returning bad
+            //       identifier strings from `PairClosureKinshipSum<C>`'s
+            //       column accessors (closure metadata smuggling).
+            //   (2) mismatch between `left_join_closure_pair::<C1>()`
+            //       and `PairClosureKinshipSum::<C2>::new()` where C1
+            //       ≠ C2 — the aggregate would reference closure
+            //       column names the join clauses do not provide.
+            // The default impl is a no-op for slots that don't carry
+            // a `C: ClosureModel` parameter; only `PairClosureKinshipSum`
+            // overrides it today.
+            aggregates.validate_against_closure_pair(inner.closure_pair.as_ref())?;
+
+            // Reject ordinary single-Model aggregates on joined
+            // annotations until a pair-aware API exists. Slot impls
+            // opt into joined-context safety by overriding
+            // `AnnotationSlot::is_joined_safe`; tuple impls AND
+            // across slots. `AggregateExpr<V>` keeps the default
+            // `false` because its emitted SQL is a bare-column
+            // expression (`SUM(age) OVER ()`) that's ambiguous in
+            // joined contexts where both sides may share columns.
+            // See the doc comment on `is_joined_safe`.
+            if !aggregates.is_joined_safe() {
+                return Err(DjogiError::Validation(
+                    "joined-queryset `.annotate(...)` rejected an annotation slot that is \
+                     not joined-context-safe. Ordinary single-Model aggregates \
+                     (e.g. `l.age().sum()`) emit a bare column reference like `SUM(age) \
+                     OVER ()` that is ambiguous when both pair sides share column names \
+                     (always true for self-joins). Use a pair-aware annotation: \
+                     `PairClosureKinshipSum<C>` for kinship summation, or a window \
+                     function with `partition_by_pair(PairSide::Left, ...)` / \
+                     `order_by_pair_asc(PairSide::Right, ...)`. A pair-aware ordinary \
+                     aggregate surface is a future slice."
+                        .to_string(),
+                ));
+            }
+
+            // Validate PK shape for any identity-required path:
+            // `exclude_equal_pk` (self-pair anti-equality),
+            // `closure_pair.is_some()` (closure-pair LEFT JOINs),
+            // or `requires_closure_pair_join()` (pair-aggregate
+            // GROUP BY). Rejects `PkType::None` / `PkType::Composite`
+            // at the gate so the emitters never silently fall back.
+            let needs_identity = inner.exclude_equal_pk
+                || inner.closure_pair.is_some()
+                || aggregates.requires_closure_pair_join();
+            let (l_pk, r_pk) = validate_pair_identity_pk::<L, R>(needs_identity)?;
+
             auto_set_tenant::<L>(ctx).await?;
             auto_set_tenant::<R>(ctx).await?;
 
-            let acc =
-                build_joined_annotated_select_for_fetch(&inner, &aggregates, qualify.as_ref())
-                    .map_err(DjogiError::from)?;
+            let acc = build_joined_annotated_select_for_fetch(
+                &inner,
+                &aggregates,
+                qualify.as_ref(),
+                l_pk,
+                r_pk,
+            )
+            .map_err(DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
@@ -960,6 +1133,8 @@ where
 /// where available, plus the side prefix.
 pub(crate) fn build_joined_select<L, R>(
     jqs: &JoinedQuerySet<L, R>,
+    l_pk: Option<&'static str>,
+    r_pk: Option<&'static str>,
 ) -> Result<SqlAccumulator, crate::query::PortablePredicateError>
 where
     L: Model + crate::pg::decode::FromPgRow,
@@ -978,8 +1153,8 @@ where
     acc.push_sql(" AS ");
     acc.push_sql(RIGHT_ALIAS);
 
-    push_closure_pair_joins::<L, R>(&mut acc, jqs);
-    push_joined_where::<L, R>(&mut acc, jqs)?;
+    push_closure_pair_joins::<L, R>(&mut acc, jqs, l_pk, r_pk);
+    push_joined_where::<L, R>(&mut acc, jqs, l_pk, r_pk)?;
     push_joined_order_by(&mut acc, &jqs.ordering);
 
     if let Some(n) = jqs.limit {
@@ -1010,6 +1185,8 @@ where
 /// query, which is a future refinement.
 pub(crate) fn build_joined_count<L: Model, R: Model>(
     jqs: &JoinedQuerySet<L, R>,
+    l_pk: Option<&'static str>,
+    r_pk: Option<&'static str>,
 ) -> Result<SqlAccumulator, crate::query::PortablePredicateError> {
     let mut acc = SqlAccumulator::new("SELECT COUNT(*) FROM ");
     acc.push_sql(L::table_name());
@@ -1019,7 +1196,7 @@ pub(crate) fn build_joined_count<L: Model, R: Model>(
     acc.push_sql(R::table_name());
     acc.push_sql(" AS ");
     acc.push_sql(RIGHT_ALIAS);
-    push_joined_where::<L, R>(&mut acc, jqs)?;
+    push_joined_where::<L, R>(&mut acc, jqs, l_pk, r_pk)?;
     Ok(acc)
 }
 
@@ -1034,13 +1211,15 @@ pub(crate) fn build_joined_annotated_select_for_fetch<L, R, A>(
     jqs: &JoinedQuerySet<L, R>,
     aggregates: &A,
     qualify: Option<&crate::expr::QualifyCondition>,
+    l_pk: Option<&'static str>,
+    r_pk: Option<&'static str>,
 ) -> Result<SqlAccumulator, crate::query::PortablePredicateError>
 where
     L: Model + crate::pg::decode::FromPgRow,
     R: Model + crate::pg::decode::FromPgRow,
     A: IntoAggregateTuple,
 {
-    let inner = build_joined_annotated_inner::<L, R, A>(jqs, aggregates)?;
+    let inner = build_joined_annotated_inner::<L, R, A>(jqs, aggregates, l_pk, r_pk)?;
     let Some(qualify) = qualify else {
         return Ok(inner);
     };
@@ -1059,6 +1238,8 @@ where
 fn build_joined_annotated_inner<L, R, A>(
     jqs: &JoinedQuerySet<L, R>,
     aggregates: &A,
+    l_pk: Option<&'static str>,
+    r_pk: Option<&'static str>,
 ) -> Result<SqlAccumulator, crate::query::PortablePredicateError>
 where
     L: Model + crate::pg::decode::FromPgRow,
@@ -1079,8 +1260,8 @@ where
     acc.push_sql(" AS ");
     acc.push_sql(RIGHT_ALIAS);
 
-    push_closure_pair_joins::<L, R>(&mut acc, jqs);
-    push_joined_where::<L, R>(&mut acc, jqs)?;
+    push_closure_pair_joins::<L, R>(&mut acc, jqs, l_pk, r_pk);
+    push_joined_where::<L, R>(&mut acc, jqs, l_pk, r_pk)?;
 
     // When the queryset has a closure-pair LEFT JOIN AND the
     // annotation tuple includes a closure-pair-requiring aggregate
@@ -1094,7 +1275,7 @@ where
     // determined by the GROUP BY (`l.id` is L's PK, `r.id` is R's
     // PK, so `l.*` and `r.*` are determined and need not be named
     // in GROUP BY explicitly).
-    push_joined_group_by_if_needed::<L, R, A>(&mut acc, jqs, aggregates);
+    push_joined_group_by_if_needed::<L, R, A>(&mut acc, jqs, aggregates, l_pk, r_pk);
 
     push_joined_order_by(&mut acc, &jqs.ordering);
 
@@ -1114,24 +1295,27 @@ where
 ///
 /// Today the only annotation type that triggers this is
 /// [`PairClosureKinshipSum`]; the generic check `requires_closure_pair_join`
-/// captures the same predicate. Both sides default to `id` when the
-/// descriptor's PK column is missing — this is the same fallback
-/// `push_closure_pair_joins` uses for the ON-clause emission, so the
-/// SELECT-list aggregate's GROUP BY key matches the closure join's
-/// row binding precisely.
+/// captures the same predicate. The PK columns are passed in pre-
+/// validated by [`validated_pk_column_for_pair_identity`] — the terminal
+/// runs that gate at terminal-call time, so a `None` in either side's
+/// slot here is an emitter-internal invariant break (the terminal
+/// should have rejected the path before SQL build).
 ///
-/// Note on simple-PK assumption: the `l.id, r.id` partition shape
-/// only handles single-column PKs (HeerId / RanjId / Serial / Custom
-/// with an `id` column). Composite-PK models would need multi-column
-/// GROUP BY emission; that case is structurally out of scope for the
-/// v0.1.0 pair-tuple substrate because `PairClosureKinshipSum` itself
-/// references `l.id` / `r.id` as the partition keys. The legacy
-/// window-form had the same restriction; the GROUP-BY rewrite does
-/// not regress it.
+/// Note on simple-PK assumption: the `l.<pk>, r.<pk>` partition shape
+/// only handles single-column PKs (HeerId / RanjId / Serial /
+/// HeerIdDesc / RanjIdDesc / Custom). Composite-PK models would need
+/// multi-column GROUP BY emission; that case is rejected by
+/// [`validated_pk_column_for_pair_identity`] before reaching this
+/// helper, so a `Composite` PK would surface as a typed
+/// [`DjogiError::Validation`] at the terminal rather than silently
+/// degenerating to first-column-only GROUP BY (the pre-fix
+/// `unwrap_or("id")` behaviour).
 fn push_joined_group_by_if_needed<L, R, A>(
     acc: &mut SqlAccumulator,
     jqs: &JoinedQuerySet<L, R>,
     aggregates: &A,
+    l_pk: Option<&'static str>,
+    r_pk: Option<&'static str>,
 ) where
     L: Model,
     R: Model,
@@ -1140,8 +1324,14 @@ fn push_joined_group_by_if_needed<L, R, A>(
     if !aggregates.requires_closure_pair_join() || jqs.closure_pair.is_none() {
         return;
     }
-    let l_pk = L::descriptor().pk_column().unwrap_or("id");
-    let r_pk = R::descriptor().pk_column().unwrap_or("id");
+    let l_pk = l_pk.expect(
+        "terminal must validate left PK via validated_pk_column_for_pair_identity \
+         when the aggregate tuple requires a closure-pair join",
+    );
+    let r_pk = r_pk.expect(
+        "terminal must validate right PK via validated_pk_column_for_pair_identity \
+         when the aggregate tuple requires a closure-pair join",
+    );
     acc.push_sql(" GROUP BY ");
     acc.push_sql(LEFT_ALIAS);
     acc.push_sql(".");
@@ -1175,15 +1365,31 @@ fn push_aliased_columns<M: Model + crate::pg::decode::FromPgRow>(
     }
 }
 
+/// Emit the two `LEFT JOIN <closure_table>` clauses for a closure-pair
+/// queryset (`la` and `ra` aliases) when the queryset has a
+/// `ClosurePairJoin` set. No-op otherwise.
+///
+/// PK columns are pre-validated by
+/// [`validated_pk_column_for_pair_identity`] — the terminal runs that
+/// gate at terminal-call time so a None here is an emitter-internal
+/// invariant break. The `expect` calls point at the validator.
 fn push_closure_pair_joins<L: Model, R: Model>(
     acc: &mut SqlAccumulator,
     jqs: &JoinedQuerySet<L, R>,
+    l_pk: Option<&'static str>,
+    r_pk: Option<&'static str>,
 ) {
     let Some(cp) = jqs.closure_pair.as_ref() else {
         return;
     };
-    let l_pk = L::descriptor().pk_column().unwrap_or("id");
-    let r_pk = R::descriptor().pk_column().unwrap_or("id");
+    let l_pk = l_pk.expect(
+        "terminal must validate left PK via validated_pk_column_for_pair_identity \
+         before emitting closure-pair LEFT JOIN ON-clauses",
+    );
+    let r_pk = r_pk.expect(
+        "terminal must validate right PK via validated_pk_column_for_pair_identity \
+         before emitting closure-pair LEFT JOIN ON-clauses",
+    );
 
     // LEFT JOIN <closure> AS la ON la.<source> = l.<pk>
     acc.push_sql(" LEFT JOIN ");
@@ -1223,13 +1429,20 @@ fn push_closure_pair_joins<L: Model, R: Model>(
     acc.push_sql(cp.ancestor_column);
 }
 
+/// Emit the joined-queryset `WHERE` clause — anti-equality (when
+/// `exclude_equal_pk` is set) plus the left and right side conditions.
+///
+/// `l_pk` / `r_pk` are passed in pre-validated by
+/// [`validated_pk_column_for_pair_identity`] when the path needs the
+/// `l.<pk> <> r.<pk>` anti-equality (i.e. `exclude_equal_pk` is true).
+/// When the anti-equality is not in scope, both PK columns are
+/// permitted to be `None` because no identity column is emitted.
 fn push_joined_where<L: Model, R: Model>(
     acc: &mut SqlAccumulator,
     jqs: &JoinedQuerySet<L, R>,
+    l_pk: Option<&'static str>,
+    r_pk: Option<&'static str>,
 ) -> Result<(), crate::query::PortablePredicateError> {
-    let l_pk = L::descriptor().pk_column().unwrap_or("id");
-    let r_pk = R::descriptor().pk_column().unwrap_or("id");
-
     // Build WHERE in two stages: the pair-side anti-equality first
     // (when set), then the left and right side conditions if they are
     // not vacuously true. Each non-trivial clause is joined with ` AND `.
@@ -1259,6 +1472,14 @@ fn push_joined_where<L: Model, R: Model>(
         match *tag {
             "pair" => {
                 // l.<pk> <> r.<pk>
+                let l_pk = l_pk.expect(
+                    "terminal must validate left PK via validated_pk_column_for_pair_identity \
+                     before emitting self-pair anti-equality (exclude_equal_pk=true)",
+                );
+                let r_pk = r_pk.expect(
+                    "terminal must validate right PK via validated_pk_column_for_pair_identity \
+                     before emitting self-pair anti-equality (exclude_equal_pk=true)",
+                );
                 acc.push_sql(LEFT_ALIAS);
                 acc.push_sql(".");
                 acc.push_sql(l_pk);
@@ -1644,6 +1865,88 @@ impl<C: ClosureModel> crate::query::annotate::AnnotationSlot for PairClosureKins
     fn requires_closure_pair_join(&self) -> bool {
         true
     }
+
+    /// `PairClosureKinshipSum`'s emitted SQL references closure-pair
+    /// aliases (`la.<col>` / `ra.<col>`) which are pair-side-specific by
+    /// construction — there is no bare-column ambiguity even in
+    /// self-join contexts.
+    fn is_joined_safe(&self) -> bool {
+        true
+    }
+
+    /// Validate the closure model `C` named on this aggregate against
+    /// the queryset's closure-pair join.
+    ///
+    /// Runs the same identifier gate `materialize_closure` uses on its
+    /// own column accessors (via
+    /// [`crate::query::closure::validate_closure_metadata_idents`]) so a
+    /// hand-rolled hostile `impl ClosureModel` cannot smuggle SQL
+    /// fragments through the aggregate's `push_sql` sites.
+    ///
+    /// When `closure_pair` is `Some(cp)`, also enforces that the
+    /// aggregate's `C` matches the join's `C` by comparing every
+    /// captured identifier on `cp` against `C`'s same-named accessor.
+    /// This catches the
+    /// `left_join_closure_pair::<C1>() ... PairClosureKinshipSum::<C2>::new()`
+    /// (C1 ≠ C2) mismatch case before SQL build — the aggregate
+    /// would otherwise reference closure columns the join clauses do
+    /// not provide and surface as a Postgres `42703 column does not
+    /// exist` error at execute time.
+    fn validate_against_closure_pair(
+        &self,
+        closure_pair: Option<&crate::query::joined::ClosurePairJoin>,
+    ) -> Result<(), crate::DjogiError> {
+        // (1) C's own identifier validation — always run, even when
+        // the queryset has no closure-pair join. The terminal's
+        // `requires_closure_pair_join` gate would already reject the
+        // missing-join case before reaching SQL emission, but a hostile
+        // `C` could still corrupt diagnostic strings; better to gate
+        // before any `push_sql` of `C::*_column()` returns.
+        crate::query::closure::validate_closure_metadata_idents::<C>()?;
+
+        // (2) Aggregate-C vs join-C metadata mismatch — only meaningful
+        // when a closure-pair join is captured.
+        if let Some(cp) = closure_pair {
+            let c_table = C::table();
+            let c_source = C::source_column();
+            let c_ancestor = C::ancestor_column();
+            let c_depth = C::depth_column();
+            let c_path_count = C::path_count_column();
+            if cp.table != c_table
+                || cp.source_column != c_source
+                || cp.ancestor_column != c_ancestor
+                || cp.depth_column != c_depth
+                || cp.path_count_column != c_path_count
+            {
+                return Err(crate::DjogiError::Validation(format!(
+                    "ClosureModel mismatch on PairClosureKinshipSum: \
+                     `left_join_closure_pair::<...>()` captured \
+                     {{ table: {join_table:?}, source: {join_source:?}, \
+                     ancestor: {join_ancestor:?}, depth: {join_depth:?}, \
+                     path_count: {join_path_count:?} }} but \
+                     PairClosureKinshipSum<{c_type}> emits \
+                     {{ table: {c_table:?}, source: {c_source:?}, \
+                     ancestor: {c_ancestor:?}, depth: {c_depth:?}, \
+                     path_count: {c_path_count:?} }}. \
+                     The aggregate and the join must reference the same \
+                     ClosureModel — use the same `C` type parameter on both \
+                     `left_join_closure_pair::<C>()` and `PairClosureKinshipSum::<C>::new()`.",
+                    join_table = cp.table,
+                    join_source = cp.source_column,
+                    join_ancestor = cp.ancestor_column,
+                    join_depth = cp.depth_column,
+                    join_path_count = cp.path_count_column,
+                    c_type = std::any::type_name::<C>(),
+                    c_table = c_table,
+                    c_source = c_source,
+                    c_ancestor = c_ancestor,
+                    c_depth = c_depth,
+                    c_path_count = c_path_count,
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Local mirror of `query::annotate::aggregate_alias` — the slot →
@@ -1771,10 +2074,63 @@ mod tests {
     static MINI_DESC: ModelDescriptor =
         model_descriptor("Mini", "minis", PkType::HeerId, MINI_FIELDS);
 
+    /// Test helper: pre-validate PK shape (as the terminals do at
+    /// runtime) and emit the joined SELECT. Mirrors the
+    /// `JoinedQuerySet::fetch_all` glue so test bodies stay focused on
+    /// SQL shape rather than on threading the validator + emitter.
+    fn build_joined_select_for_test<L, R>(
+        jqs: &JoinedQuerySet<L, R>,
+    ) -> Result<SqlAccumulator, crate::query::PortablePredicateError>
+    where
+        L: Model + crate::pg::decode::FromPgRow,
+        R: Model + crate::pg::decode::FromPgRow,
+    {
+        let needs_identity = jqs.exclude_equal_pk || jqs.closure_pair.is_some();
+        let (l_pk, r_pk) = validate_pair_identity_pk::<L, R>(needs_identity)
+            .expect("test fixtures use single-column PKs that pass the validator");
+        build_joined_select(jqs, l_pk, r_pk)
+    }
+
+    /// Test helper companion for [`build_joined_count`] — same
+    /// validator gate as the count terminal.
+    fn build_joined_count_for_test<L, R>(
+        jqs: &JoinedQuerySet<L, R>,
+    ) -> Result<SqlAccumulator, crate::query::PortablePredicateError>
+    where
+        L: Model,
+        R: Model,
+    {
+        let needs_identity = jqs.exclude_equal_pk;
+        let (l_pk, r_pk) = validate_pair_identity_pk::<L, R>(needs_identity)
+            .expect("test fixtures use single-column PKs that pass the validator");
+        build_joined_count(jqs, l_pk, r_pk)
+    }
+
+    /// Test helper companion for
+    /// [`build_joined_annotated_select_for_fetch`] — runs the same
+    /// validator gate the annotated terminal does.
+    fn build_joined_annotated_select_for_fetch_for_test<L, R, A>(
+        jqs: &JoinedQuerySet<L, R>,
+        aggregates: &A,
+        qualify: Option<&crate::expr::QualifyCondition>,
+    ) -> Result<SqlAccumulator, crate::query::PortablePredicateError>
+    where
+        L: Model + crate::pg::decode::FromPgRow,
+        R: Model + crate::pg::decode::FromPgRow,
+        A: IntoAggregateTuple,
+    {
+        let needs_identity = jqs.exclude_equal_pk
+            || jqs.closure_pair.is_some()
+            || aggregates.requires_closure_pair_join();
+        let (l_pk, r_pk) = validate_pair_identity_pk::<L, R>(needs_identity)
+            .expect("test fixtures use single-column PKs that pass the validator");
+        build_joined_annotated_select_for_fetch(jqs, aggregates, qualify, l_pk, r_pk)
+    }
+
     #[test]
     fn self_pairs_emits_cross_join_and_exclude_equal_pk() {
         let jqs: JoinedQuerySet<Mini, Mini> = QuerySet::<Mini>::new().self_pairs();
-        let acc = build_joined_select(&jqs).expect("emit");
+        let acc = build_joined_select_for_test(&jqs).expect("emit");
         let sql = acc.sql();
         assert!(
             sql.contains("FROM minis AS l CROSS JOIN minis AS r"),
@@ -1804,7 +2160,7 @@ mod tests {
     fn cross_join_with_does_not_emit_exclude_pk_default() {
         let jqs: JoinedQuerySet<Mini, Mini> =
             QuerySet::<Mini>::new().cross_join_with(QuerySet::<Mini>::new());
-        let acc = build_joined_select(&jqs).expect("emit");
+        let acc = build_joined_select_for_test(&jqs).expect("emit");
         let sql = acc.sql();
         assert!(
             !sql.contains("WHERE l.id <> r.id"),
@@ -1821,7 +2177,7 @@ mod tests {
     fn include_equal_pk_drops_anti_equality_filter() {
         let jqs: JoinedQuerySet<Mini, Mini> =
             QuerySet::<Mini>::new().self_pairs().include_equal_pk();
-        let acc = build_joined_select(&jqs).expect("emit");
+        let acc = build_joined_select_for_test(&jqs).expect("emit");
         let sql = acc.sql();
         assert!(
             !sql.contains("WHERE l.id <> r.id"),
@@ -1833,7 +2189,7 @@ mod tests {
     fn limit_offset_emit_after_select_body() {
         let jqs: JoinedQuerySet<Mini, Mini> =
             QuerySet::<Mini>::new().self_pairs().limit(10).offset(5);
-        let acc = build_joined_select(&jqs).expect("emit");
+        let acc = build_joined_select_for_test(&jqs).expect("emit");
         let sql = acc.sql();
         // LIMIT / OFFSET appear at end, in that order.
         let limit_idx = sql.find("LIMIT").expect("LIMIT in SQL");
@@ -1854,7 +2210,7 @@ mod tests {
             .self_pairs()
             .order_by_left(|_f| name_ref.asc())
             .order_by_right(|_f| id_ref.desc());
-        let acc = build_joined_select(&jqs).expect("emit");
+        let acc = build_joined_select_for_test(&jqs).expect("emit");
         let sql = acc.sql();
         assert!(
             sql.contains("ORDER BY l.name ASC, r.id DESC"),
@@ -1872,7 +2228,7 @@ mod tests {
                 direction: crate::query::order::Direction::Asc,
                 nulls: crate::query::order::NullsOrder::Default,
             });
-        let acc = build_joined_count(&jqs).expect("emit");
+        let acc = build_joined_count_for_test(&jqs).expect("emit");
         let sql = acc.sql();
         assert!(
             sql.starts_with("SELECT COUNT(*) FROM minis AS l CROSS JOIN minis AS r"),
@@ -1986,7 +2342,7 @@ mod tests {
         let jqs: JoinedQuerySet<Mini, Mini> = QuerySet::<Mini>::new()
             .self_pairs()
             .left_join_closure_pair::<MiniClosure>();
-        let acc = build_joined_select(&jqs).expect("emit");
+        let acc = build_joined_select_for_test(&jqs).expect("emit");
         let sql = acc.sql();
         // Left closure LEFT JOIN — la binds to the left side's PK.
         assert!(
@@ -2082,7 +2438,7 @@ mod tests {
             .self_pairs()
             .left_join_closure_pair::<MiniClosure>();
         let annotated = jqs.annotate(|_l, _r| PairClosureKinshipSum::<MiniClosure>::new());
-        let acc = build_joined_annotated_select_for_fetch(
+        let acc = build_joined_annotated_select_for_fetch_for_test(
             &annotated.inner,
             &annotated.aggregates,
             annotated.qualify.as_ref(),
@@ -2116,7 +2472,7 @@ mod tests {
                 )
                 .alias("rank")
         });
-        let acc = build_joined_annotated_select_for_fetch(
+        let acc = build_joined_annotated_select_for_fetch_for_test(
             &annotated.inner,
             &annotated.aggregates,
             annotated.qualify.as_ref(),
@@ -2445,6 +2801,504 @@ mod tests {
             "PairClosureKinshipSum reports it requires a closure-pair join through the tuple bridge \
              — single-Model annotate's `requires_closure_pair_join` check uses this same signal \
              to reject the slot at terminal-call time"
+        );
+    }
+
+    // ── GPT-5.5 xhigh round-2 fixes — coverage backfill ──────────────────
+    //
+    // Round 2 surfaced four merge blockers in the round-1 substrate:
+    //   1. PairClosureKinshipSum<C> emitted C's metadata without
+    //      validation, and no gate tied the aggregate's C to the join's C.
+    //   2. The emitters fell back to `pk_column().unwrap_or("id")` for
+    //      `PkType::None` / `PkType::Composite` models — silent
+    //      degradation rather than a typed error.
+    //   3. Joined annotations accepted ordinary `AggregateExpr<V>` which
+    //      emits bare-column SQL — ambiguous on self-joins.
+    //   4. Source comments and fixture comments used GH close keywords
+    //      against #99 / #84 (fixed via wording sweep — covered by grep
+    //      verification at commit time rather than a unit test).
+
+    // ── Blocker 1.A — PairClosureKinshipSum<C> validates C's metadata ────
+
+    #[test]
+    fn pair_closure_kinship_sum_validates_clean_closure_metadata() {
+        // Sanity: a clean ClosureModel passes the aggregate's validator
+        // both standalone (closure_pair = None) and when paired with a
+        // matching captured closure.
+        let sum: PairClosureKinshipSum<MiniClosure> = PairClosureKinshipSum::new();
+        assert!(
+            crate::query::annotate::AnnotationSlot::validate_against_closure_pair(&sum, None)
+                .is_ok(),
+            "clean ClosureModel passes the standalone metadata gate"
+        );
+
+        let matching_cp = ClosurePairJoin {
+            table: MiniClosure::table(),
+            source_column: MiniClosure::source_column(),
+            ancestor_column: MiniClosure::ancestor_column(),
+            depth_column: MiniClosure::depth_column(),
+            path_count_column: MiniClosure::path_count_column(),
+        };
+        assert!(
+            crate::query::annotate::AnnotationSlot::validate_against_closure_pair(
+                &sum,
+                Some(&matching_cp)
+            )
+            .is_ok(),
+            "matching ClosureModel passes the join-C-vs-aggregate-C gate"
+        );
+    }
+
+    #[test]
+    fn pair_closure_kinship_sum_rejects_hostile_closure_metadata_in_aggregate() {
+        // Hand-roll a hostile ClosureModel whose `path_count_column`
+        // returns a SQL-injection string. The aggregate's emitter would
+        // splice that string directly via `push_sql`, so the validator
+        // must reject before any SQL is emitted — same gate
+        // `materialize_closure` uses for its own column accessors.
+        struct HostileForAggregate;
+        impl crate::model::__sealed::Sealed for HostileForAggregate {}
+        #[allow(clippy::manual_async_fn)]
+        impl crate::model::Model for HostileForAggregate {
+            type Pk = HeerId;
+            type Fields = ();
+            fn table_name() -> &'static str {
+                "mini_ancestries"
+            }
+            fn pk_value(&self) -> &Self::Pk {
+                unreachable!()
+            }
+            fn descriptor() -> &'static ModelDescriptor {
+                &MINI_CLOSURE_DESC
+            }
+            fn get(
+                _ctx: &mut DjogiContext,
+                _id: Self::Pk,
+            ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
+                async { unreachable!() }
+            }
+            fn create(
+                _ctx: &mut DjogiContext,
+                _v: Self,
+            ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
+                async { unreachable!() }
+            }
+            fn save<'ctx>(
+                &'ctx mut self,
+                _ctx: &'ctx mut DjogiContext,
+            ) -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx {
+                async { unreachable!() }
+            }
+            fn delete(
+                self,
+                _ctx: &mut DjogiContext,
+            ) -> impl Future<Output = Result<(), DjogiError>> + Send {
+                async { unreachable!() }
+            }
+            fn refresh_from_db<'ctx>(
+                &'ctx self,
+                _ctx: &'ctx mut DjogiContext,
+            ) -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx {
+                async { unreachable!() }
+            }
+        }
+        impl FromPgRow for HostileForAggregate {
+            const COLUMNS: &'static [&'static str] =
+                &["mini_id", "ancestor_id", "depth", "path_count"];
+            const COLUMN_LIST: &'static str = "mini_id, ancestor_id, depth, path_count";
+            fn from_pg_row(_row: &tokio_postgres::Row) -> Result<Self, DjogiError> {
+                unreachable!()
+            }
+        }
+        impl crate::query::ClosureModel for HostileForAggregate {
+            type Source = Mini;
+            fn source_column() -> &'static str {
+                "mini_id"
+            }
+            fn ancestor_column() -> &'static str {
+                "ancestor_id"
+            }
+            fn depth_column() -> &'static str {
+                "depth"
+            }
+            fn path_count_column() -> &'static str {
+                "path_count) FROM pg_class; --"
+            }
+        }
+        let sum: PairClosureKinshipSum<HostileForAggregate> = PairClosureKinshipSum::new();
+        let err = crate::query::annotate::AnnotationSlot::validate_against_closure_pair(&sum, None)
+            .expect_err("hostile aggregate C must be rejected before SQL emission");
+        match err {
+            DjogiError::Validation(msg) => {
+                assert!(
+                    msg.contains("path_count_column") || msg.contains("path_count)"),
+                    "validation error must point at the offending C accessor: {msg}"
+                );
+            }
+            other => panic!("expected DjogiError::Validation, got {other:?}"),
+        }
+    }
+
+    // ── Blocker 1.B — Mismatched aggregate-C vs join-C is rejected ───────
+
+    #[test]
+    fn pair_closure_kinship_sum_rejects_mismatched_closure_join() {
+        // Synthesise a closure-pair join captured for one ClosureModel,
+        // paired with a PairClosureKinshipSum aggregate for a *different*
+        // ClosureModel. The aggregate's emitted SQL would reference
+        // closure column names the join clauses do not provide — Postgres
+        // would surface a `42703 column does not exist` at execute time.
+        // The validate_against_closure_pair gate must catch this
+        // before SQL build.
+        //
+        // We construct the join descriptor by hand with different column
+        // names than `MiniClosure` exposes; `PairClosureKinshipSum<MiniClosure>`
+        // would emit references to `MiniClosure::path_count_column()` =
+        // `"path_count"` and `MiniClosure::depth_column()` = `"depth"`,
+        // but the join's ancestor_column / depth_column / etc. do not
+        // match — so the gate fires.
+        let mismatched_cp = ClosurePairJoin {
+            table: "different_closure_table",
+            source_column: "different_source",
+            ancestor_column: "different_ancestor",
+            depth_column: "different_depth",
+            path_count_column: "different_path_count",
+        };
+        let sum: PairClosureKinshipSum<MiniClosure> = PairClosureKinshipSum::new();
+        let err = crate::query::annotate::AnnotationSlot::validate_against_closure_pair(
+            &sum,
+            Some(&mismatched_cp),
+        )
+        .expect_err("mismatched aggregate-C vs join-C must be rejected");
+        match err {
+            DjogiError::Validation(msg) => {
+                assert!(
+                    msg.contains("ClosureModel mismatch"),
+                    "validation message must name the mismatch: {msg}"
+                );
+                // The diagnostic should surface both the join's and the
+                // aggregate's column-name views so adopters can see the
+                // mismatch concretely.
+                assert!(
+                    msg.contains("different_path_count") && msg.contains("path_count"),
+                    "diagnostic must surface join and aggregate column shapes: {msg}"
+                );
+            }
+            other => panic!("expected DjogiError::Validation, got {other:?}"),
+        }
+    }
+
+    // ── Blocker 2 — PK shape gate ────────────────────────────────────────
+
+    /// Inert no-PK model — `PkType::None`. Identity-required paths must
+    /// reject this at the terminal gate.
+    struct NoPkModel;
+    impl crate::model::__sealed::Sealed for NoPkModel {}
+    #[allow(clippy::manual_async_fn)]
+    impl crate::model::Model for NoPkModel {
+        type Pk = HeerId;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "no_pk_minis"
+        }
+        fn pk_value(&self) -> &Self::Pk {
+            unreachable!()
+        }
+        fn descriptor() -> &'static ModelDescriptor {
+            &NO_PK_MODEL_DESC
+        }
+        fn get(
+            _ctx: &mut DjogiContext,
+            _id: Self::Pk,
+        ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn create(
+            _ctx: &mut DjogiContext,
+            _v: Self,
+        ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut DjogiContext,
+        ) -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx {
+            async { unreachable!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut DjogiContext,
+        ) -> impl Future<Output = Result<(), DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut DjogiContext,
+        ) -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx {
+            async { unreachable!() }
+        }
+    }
+    impl FromPgRow for NoPkModel {
+        const COLUMNS: &'static [&'static str] = &["name"];
+        const COLUMN_LIST: &'static str = "name";
+        fn from_pg_row(_row: &tokio_postgres::Row) -> Result<Self, DjogiError> {
+            unreachable!()
+        }
+    }
+    static NO_PK_MODEL_FIELDS: &[FieldDescriptor] =
+        &[field_descriptor("name", FieldSqlType::Text, false)];
+    static NO_PK_MODEL_DESC: ModelDescriptor =
+        model_descriptor("NoPkModel", "no_pk_minis", PkType::None, NO_PK_MODEL_FIELDS);
+
+    /// Inert composite-PK model — `PkType::Composite(&["a", "b"])`.
+    /// Identity-required paths must reject this at the terminal gate
+    /// because the v0.1.0 substrate emits single-column anti-equality
+    /// / join keys / GROUP BY, not multi-column tuples.
+    struct CompositePkModel;
+    impl crate::model::__sealed::Sealed for CompositePkModel {}
+    #[allow(clippy::manual_async_fn)]
+    impl crate::model::Model for CompositePkModel {
+        type Pk = HeerId;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "composite_pk_minis"
+        }
+        fn pk_value(&self) -> &Self::Pk {
+            unreachable!()
+        }
+        fn descriptor() -> &'static ModelDescriptor {
+            &COMPOSITE_PK_MODEL_DESC
+        }
+        fn get(
+            _ctx: &mut DjogiContext,
+            _id: Self::Pk,
+        ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn create(
+            _ctx: &mut DjogiContext,
+            _v: Self,
+        ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut DjogiContext,
+        ) -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx {
+            async { unreachable!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut DjogiContext,
+        ) -> impl Future<Output = Result<(), DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut DjogiContext,
+        ) -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx {
+            async { unreachable!() }
+        }
+    }
+    impl FromPgRow for CompositePkModel {
+        const COLUMNS: &'static [&'static str] = &["a", "b"];
+        const COLUMN_LIST: &'static str = "a, b";
+        fn from_pg_row(_row: &tokio_postgres::Row) -> Result<Self, DjogiError> {
+            unreachable!()
+        }
+    }
+    static COMPOSITE_PK_MODEL_FIELDS: &[FieldDescriptor] = &[
+        field_descriptor("a", FieldSqlType::Text, false),
+        field_descriptor("b", FieldSqlType::Text, false),
+    ];
+    static COMPOSITE_PK_COLS: &[&str] = &["a", "b"];
+    static COMPOSITE_PK_MODEL_DESC: ModelDescriptor = model_descriptor(
+        "CompositePkModel",
+        "composite_pk_minis",
+        PkType::Composite(COMPOSITE_PK_COLS),
+        COMPOSITE_PK_MODEL_FIELDS,
+    );
+
+    #[test]
+    fn validated_pk_column_for_pair_identity_accepts_simple_pks() {
+        // Single-column PK shapes pass the validator and return
+        // `id` (or whatever the descriptor names).
+        let pk =
+            validated_pk_column_for_pair_identity::<Mini>().expect("HeerId PK should validate");
+        assert_eq!(pk, "id");
+    }
+
+    #[test]
+    fn validated_pk_column_for_pair_identity_rejects_no_pk() {
+        let err = validated_pk_column_for_pair_identity::<NoPkModel>()
+            .expect_err("PkType::None must be rejected");
+        match err {
+            DjogiError::Validation(msg) => {
+                assert!(msg.contains("no primary key") || msg.contains("PkType::None"));
+                assert!(
+                    msg.contains("no_pk_minis"),
+                    "diagnostic must name the model table: {msg}"
+                );
+            }
+            other => panic!("expected DjogiError::Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validated_pk_column_for_pair_identity_rejects_composite_pk() {
+        let err = validated_pk_column_for_pair_identity::<CompositePkModel>()
+            .expect_err("PkType::Composite must be rejected for this slice");
+        match err {
+            DjogiError::Validation(msg) => {
+                assert!(
+                    msg.contains("composite primary key"),
+                    "diagnostic must mention composite PK: {msg}"
+                );
+                // Diagnostic should surface the columns so adopters can
+                // see what would need multi-column emission.
+                assert!(
+                    msg.contains("\"a\"") && msg.contains("\"b\""),
+                    "diagnostic must surface the composite columns: {msg}"
+                );
+            }
+            other => panic!("expected DjogiError::Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_pair_identity_pk_short_circuits_when_not_needed() {
+        // When no identity-required path is in scope, even no-PK models
+        // are accepted — the validator returns `(None, None)` and the
+        // emitters never reference a PK column.
+        let result = validate_pair_identity_pk::<NoPkModel, CompositePkModel>(false)
+            .expect("no-identity path accepts any PK shape");
+        assert_eq!(result, (None, None));
+    }
+
+    #[test]
+    fn validate_pair_identity_pk_validates_both_sides_when_needed() {
+        // When identity is required, both sides are validated. A
+        // single-column / no-pk pairing rejects on the no-pk side.
+        let err = validate_pair_identity_pk::<Mini, NoPkModel>(true)
+            .expect_err("right side has no PK; must reject");
+        match err {
+            DjogiError::Validation(msg) => {
+                assert!(msg.contains("no primary key") || msg.contains("PkType::None"));
+            }
+            other => panic!("expected DjogiError::Validation, got {other:?}"),
+        }
+    }
+
+    // ── Blocker 3 — Joined annotations reject ordinary AggregateExpr ─────
+
+    #[test]
+    fn aggregate_expr_is_not_joined_safe_by_default() {
+        // Build a plain SUM(age) AggregateExpr<i64>. In joined
+        // contexts it would emit `, SUM(age) OVER ()` referencing a
+        // bare `age` column — ambiguous when both pair sides have
+        // an `age` column (always true for self-joins).
+        let age_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("age");
+        let agg: crate::expr::AggregateExpr<i64> = age_ref.sum();
+        assert!(
+            !crate::query::annotate::AnnotationSlot::is_joined_safe(&agg),
+            "AggregateExpr<V> must not be joined-safe by default — it emits bare-column SQL"
+        );
+    }
+
+    #[test]
+    fn pair_closure_kinship_sum_is_joined_safe() {
+        // The pair-tuple-native aggregate references closure-pair
+        // aliases (`la.` / `ra.`) so there is no bare-column
+        // ambiguity. It is the canonical joined-safe slot.
+        let sum: PairClosureKinshipSum<MiniClosure> = PairClosureKinshipSum::new();
+        assert!(
+            crate::query::annotate::AnnotationSlot::is_joined_safe(&sum),
+            "PairClosureKinshipSum must be joined-safe"
+        );
+    }
+
+    #[test]
+    fn window_function_slot_is_joined_safe() {
+        // Window functions have pair-aware composition through
+        // `PairWindowExt::partition_by_pair` so they are joined-safe
+        // at the slot level. The composition's `&'static str` is
+        // pair-side-qualified ("l.id" or "r.id") which keeps the
+        // emitted SQL unambiguous.
+        let win = crate::expr::RowNumber::new().alias("rank");
+        assert!(
+            crate::query::annotate::AnnotationSlot::is_joined_safe(&win),
+            "RowNumber must be joined-safe (composes through PairWindowExt)"
+        );
+    }
+
+    #[test]
+    fn into_aggregate_tuple_is_joined_safe_ands_across_slots() {
+        // Tuple impls AND across slots — one unsafe slot makes the
+        // whole tuple unsafe.
+        let age_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("age");
+        let safe_slot: PairClosureKinshipSum<MiniClosure> = PairClosureKinshipSum::new();
+        let unsafe_slot: crate::expr::AggregateExpr<i64> = age_ref.sum();
+        let tuple = (safe_slot, unsafe_slot);
+        assert!(
+            !crate::query::IntoAggregateTuple::is_joined_safe(&tuple),
+            "tuple with an AggregateExpr slot must NOT be joined-safe"
+        );
+    }
+
+    #[test]
+    fn empty_tuple_is_joined_safe() {
+        // `()` annotation is vacuously safe — no slots to emit.
+        assert!(
+            crate::query::IntoAggregateTuple::is_joined_safe(&()),
+            "() annotation must be joined-safe"
+        );
+    }
+
+    /// End-to-end gate: simulate the joined-annotated terminal's
+    /// pre-build gate sequence — `check_legality` →
+    /// `requires_closure_pair_join` → `validate_against_closure_pair`
+    /// → `is_joined_safe` → `validate_pair_identity_pk` — for an
+    /// ordinary `AggregateExpr` aggregate on a self-join queryset.
+    ///
+    /// Pins that `Animal::objects().self_pairs().annotate(|l, _|
+    /// l.age().sum())` (or `Mini` in this fixture's case) reaches the
+    /// `!is_joined_safe()` reject arm before any SQL is built.
+    /// `JoinedAnnotatedQuerySet::fetch_all` is async-only, so the
+    /// terminal itself is exercised by integration tests; this unit
+    /// test pins the gate's specific decision against the same
+    /// IntoAggregateTuple signals the async terminal consults.
+    #[test]
+    fn joined_annotate_rejects_ordinary_aggregate_expr_via_gate() {
+        // Construct the same shape the user would build:
+        //   Mini::objects().self_pairs().annotate(|l, _| l.age().sum())
+        // (Mini's `Fields = ()` so we route through FieldRef directly.)
+        let age_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("age");
+        let jqs: JoinedQuerySet<Mini, Mini> = QuerySet::<Mini>::new().self_pairs();
+        let annotated = jqs.annotate(|_l, _r| age_ref.sum());
+
+        // The terminal's gate sequence — emulated for sync test.
+        // 1. check_legality must pass for the slot itself.
+        assert!(annotated.aggregates.check_legality().is_ok());
+
+        // 2. requires_closure_pair_join is false — ordinary aggregate
+        //    doesn't need closure-pair join.
+        assert!(!annotated.aggregates.requires_closure_pair_join());
+
+        // 3. validate_against_closure_pair is Ok — ordinary aggregate
+        //    carries no `C: ClosureModel` to validate.
+        assert!(
+            annotated
+                .aggregates
+                .validate_against_closure_pair(annotated.inner.closure_pair.as_ref())
+                .is_ok()
+        );
+
+        // 4. is_joined_safe is false — this is the rejection signal.
+        //    `JoinedAnnotatedQuerySet::fetch_all` consults exactly
+        //    this in its gate and returns DjogiError::Validation.
+        assert!(
+            !annotated.aggregates.is_joined_safe(),
+            "ordinary AggregateExpr in joined.annotate must trip the is_joined_safe gate"
         );
     }
 }

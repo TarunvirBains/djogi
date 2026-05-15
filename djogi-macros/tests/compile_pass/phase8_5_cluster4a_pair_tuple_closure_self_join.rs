@@ -9,8 +9,8 @@
 // summation.
 //
 // Pins issue #99's "closure-self-join case" coverage at the type level.
-// The runtime end-to-end is the mating-pairs demo's retrofit (issue
-// #99's #84-closure deliverable).
+// The runtime end-to-end is the mating-pairs demo's retrofit (substrate
+// for #84 lives behind #99 — this fixture contributes to that path).
 //
 // Uses a hand-rolled `ClosureModel` impl pattern rather than a macro
 // because `#[model(closure_for = ...)]` is not in scope for v0.1.0 —
