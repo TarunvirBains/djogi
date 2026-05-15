@@ -236,28 +236,25 @@ impl Expr<f64> {
     ///     / Expr::area_of(&hull_a);
     /// ```
     ///
-    /// Emitted as a single inline form rather than nesting two separate
-    /// IR nodes — the framework does not yet model geometry-typed
-    /// intermediate `Expr` nodes (that would require a phantom-typed
-    /// geometry codec on `Expr<G>`), so the composed call site is a
-    /// dedicated SpatialExpr variant.
+    /// Emitted as a single inline form rather than nesting `intersection_of`
+    /// inside `area_of` — keeping the two geometry casts co-located in one
+    /// emitter arm makes the SQL output predictable and the emitter arm
+    /// self-contained.
     ///
     /// # Empty intersection
     ///
     /// When the two geometries do not overlap, `ST_Intersection` returns
     /// an empty geometry and `ST_Area` over an empty geometry returns
     /// `0.0`. The ratio path therefore yields `0.0` for non-overlapping
-    /// pairs without any explicit guard.
+    /// pairs without any explicit guard. For cases where the raw
+    /// intersection geometry is needed rather than its area, see
+    /// [`Expr::intersection_of`].
     ///
     /// # Where
     ///
     /// - [`crate::expr::spatial::SpatialExpr::AreaOfIntersection`] — IR variant.
     /// - [`Self::area_of`] — denominator of the demo's overlap-pct ratio.
-    /// - A standalone `intersection_of` constructor that returns the raw
-    ///   intersecting geometry (rather than its area) is deferred — the IR
-    ///   variant exists at [`crate::expr::spatial::SpatialExpr::Intersection`]
-    ///   but no public typed constructor mints it today; see issue #72 for
-    ///   the prerequisites (typed geometry-valued `Expr` intermediates).
+    /// - [`Self::intersection_of`] — raw intersection geometry (as `Expr<Polygon>`).
     #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
     pub fn area_of_intersection<A, B>(a: &A, b: &B) -> Expr<f64>
     where
@@ -266,6 +263,92 @@ impl Expr<f64> {
     {
         Expr::from_node(ExprNode::Spatial(
             crate::expr::spatial::SpatialExpr::AreaOfIntersection {
+                a_ewkb: a.to_ewkb_bytes(),
+                b_ewkb: b.to_ewkb_bytes(),
+            },
+        ))
+    }
+}
+
+#[cfg(feature = "spatial")]
+impl Expr<crate::geo::Polygon> {
+    /// `ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography`
+    /// — the spatial intersection of two bound geometries, returned as a
+    /// typed `Expr<`[`crate::geo::Polygon`]`>`.
+    ///
+    /// # SQL emission
+    ///
+    /// Emits:
+    /// ```sql
+    /// ST_Intersection($n::bytea::geometry, $m::bytea::geometry)::geography
+    /// ```
+    ///
+    /// Both inputs are cast `::bytea::geometry` because PostGIS 3.x has no
+    /// `geography` input overload for `ST_Intersection`. The result is cast
+    /// `::geography` so [`crate::geo::Polygon`]'s `FromSql` implementation
+    /// can decode it (the geography codec accepts columns whose Postgres type
+    /// name is `"geography"`; without the cast the result is typed `"geometry"`
+    /// and the codec rejects it).
+    ///
+    /// # Typical use
+    ///
+    /// Use this when you need the raw intersection geometry for further
+    /// spatial analysis — for example, to examine the shape of the overlap
+    /// region. For the simpler territory-overlap-percentage pattern (area of
+    /// intersection over area of one input), prefer
+    /// [`Expr::area_of_intersection`] / [`Expr::area_of`], which handle the
+    /// empty-geometry sentinel cleanly:
+    ///
+    /// ```ignore
+    /// // Overlap percentage (safe for disjoint polygons — yields 0.0).
+    /// let pct = Expr::area_of_intersection(&hull_a, &hull_b)
+    ///     / Expr::area_of(&hull_a);
+    ///
+    /// // Raw intersection geometry — only decode when the result is
+    /// // guaranteed to be a single POLYGON (see "Decode safety" below).
+    /// let overlap_shape: Expr<Polygon> =
+    ///     Expr::intersection_of(&hull_a, &hull_b);
+    /// ```
+    ///
+    /// # Decode safety
+    ///
+    /// The returned expression decodes as [`crate::geo::Polygon`]. Decode
+    /// succeeds **only** when `ST_Intersection` returns a single `POLYGON`.
+    /// Even when both inputs are polygonal and their interiors overlap,
+    /// Postgres/PostGIS may return a `MULTIPOLYGON` or `GEOMETRYCOLLECTION`
+    /// (for example, when two non-convex polygons overlap such that the
+    /// intersection splits into two disconnected sub-regions). The decode will
+    /// fail whenever the result is not a simple `POLYGON`:
+    ///
+    /// - **Disjoint inputs** — `ST_Intersection` returns an empty geometry;
+    ///   `Polygon::FromSql` will return a decode error.
+    /// - **Boundary-only or point contact** — the result is a `LINESTRING`
+    ///   or `POINT`; decode will fail.
+    /// - **Multi-part or collection result** — even for genuinely overlapping
+    ///   polygons, the result may be a `MULTIPOLYGON` or `GEOMETRYCOLLECTION`;
+    ///   decode will fail.
+    ///
+    /// [`crate::query::field::FieldRef::intersects`] is **not** a sufficient
+    /// guard: it only rules out the disjoint case and still permits
+    /// boundary-only contact and multi-part results.
+    ///
+    /// For queries that must survive any of these cases, prefer
+    /// [`Expr::area_of_intersection`] (wraps the result in `ST_Area` and
+    /// always returns `f64`, yielding `0.0` for non-overlapping pairs).
+    ///
+    /// # Where
+    ///
+    /// - [`crate::expr::spatial::SpatialExpr::Intersection`] — IR variant.
+    /// - [`Expr::area_of_intersection`] — safe area-ratio form for the disjoint case.
+    /// - [`Expr::area_of`] — area of a single geometry.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn intersection_of<A, B>(a: &A, b: &B) -> Expr<crate::geo::Polygon>
+    where
+        A: crate::geo::GeographyValue,
+        B: crate::geo::GeographyValue,
+    {
+        Expr::from_node(ExprNode::Spatial(
+            crate::expr::spatial::SpatialExpr::Intersection {
                 a_ewkb: a.to_ewkb_bytes(),
                 b_ewkb: b.to_ewkb_bytes(),
             },
