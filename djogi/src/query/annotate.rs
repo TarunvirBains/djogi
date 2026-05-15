@@ -76,14 +76,31 @@ use std::marker::PhantomData;
 
 // ── Sealed seal ──────────────────────────────────────────────────────
 
-mod sealed {
+// Sealed marker for [`IntoAggregateTuple`] impls.
+//
+// Phase 8.5 Cluster 4A widens this from `mod` to `pub(crate) mod` so
+// pair-tuple slot types implemented in `query::joined` (which compose
+// through the existing `impl<S: AnnotationSlot> IntoAggregateTuple for
+// S` blanket) can satisfy the bound through `AnnotationSlot::Sealed`.
+// `Sealed` remains un-namable outside `djogi` because the module is
+// `pub(crate)`.
+pub(crate) mod sealed {
     //! Crate-private seal. Downstream code cannot name
     //! `sealed::Sealed`, so the only `IntoAggregateTuple` impls are
     //! the framework-blessed ones below.
     pub trait Sealed {}
 }
 
-mod annotation_slot_sealed {
+// Sealed marker for [`AnnotationSlot`] impls.
+//
+// Phase 8.5 Cluster 4A widens the inner module from `mod` to
+// `pub(crate) mod` so the pair-tuple surface (`query::joined`) can
+// implement `AnnotationSlot` for `PairClosureKinshipSum<C>` and the
+// blanket `impl<S: AnnotationSlot> IntoAggregateTuple for S` picks up
+// the new slot without weakening the seal against downstream crates
+// — `Sealed` stays un-namable outside `djogi` because the module is
+// `pub(crate)`.
+pub(crate) mod annotation_slot_sealed {
     pub trait Sealed {}
 }
 
@@ -142,6 +159,27 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
     /// Validate runtime invariants before SQL emission.
     fn check_legality(&self) -> Result<(), crate::DjogiError> {
         Ok(())
+    }
+
+    /// Whether this annotation slot needs a closure-pair LEFT JOIN
+    /// (i.e. `la` / `ra` aliases) to be in scope to produce valid SQL.
+    ///
+    /// Returns `false` by default — virtually every annotation slot is
+    /// independent of a pair-tuple's closure join. The single override
+    /// today is [`PairClosureKinshipSum`](crate::query::PairClosureKinshipSum):
+    /// it emits SQL that references `la.<path_count>` / `ra.<depth>` so
+    /// without a closure-pair join in the FROM clause it produces a
+    /// Postgres `42P01 missing FROM-clause` error at execute time.
+    ///
+    /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+    /// consults this through the tuple bridge
+    /// ([`IntoAggregateTuple::requires_closure_pair_join`]) before SQL
+    /// build and returns a typed `DjogiError::Validation` when the
+    /// aggregate tuple needs the join but the queryset has no
+    /// `closure_pair` set, replacing the cryptic Postgres error with a
+    /// pre-build diagnostic.
+    fn requires_closure_pair_join(&self) -> bool {
+        false
     }
 }
 
@@ -212,6 +250,25 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     /// [`crate::expr::sql::check_aggregate_legality`].
     fn check_legality(&self) -> Result<(), crate::DjogiError> {
         Ok(())
+    }
+
+    /// Whether any slot in this aggregate tuple requires a closure-pair
+    /// LEFT JOIN to be in scope to produce valid SQL.
+    ///
+    /// Single-slot impls (the blanket `impl<S> IntoAggregateTuple for S
+    /// where S: AnnotationSlot`) forward to
+    /// [`AnnotationSlot::requires_closure_pair_join`]; tuple impls OR
+    /// across every slot. Default `false` covers the `()` /
+    /// no-annotation case.
+    ///
+    /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+    /// queries this before SQL build so the cluster-4A
+    /// `PairClosureKinshipSum` slot is rejected with a typed
+    /// `DjogiError::Validation` when the queryset has no `closure_pair`
+    /// set, instead of letting Postgres surface a missing-FROM-clause
+    /// error.
+    fn requires_closure_pair_join(&self) -> bool {
+        false
     }
 }
 
@@ -453,6 +510,10 @@ where
     fn check_legality(&self) -> Result<(), crate::DjogiError> {
         AnnotationSlot::check_legality(self)
     }
+
+    fn requires_closure_pair_join(&self) -> bool {
+        AnnotationSlot::requires_closure_pair_join(self)
+    }
 }
 
 impl sealed::Sealed for () {}
@@ -536,6 +597,12 @@ macro_rules! impl_into_aggregate_tuple {
                     self.$slot.check_legality()?;
                 )+
                 Ok(())
+            }
+
+            fn requires_closure_pair_join(&self) -> bool {
+                false $(
+                    || self.$slot.requires_closure_pair_join()
+                )+
             }
         }
     };

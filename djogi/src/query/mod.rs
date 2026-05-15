@@ -43,6 +43,11 @@ pub mod condition;
 pub mod field;
 pub mod filter;
 pub mod grouped;
+// Phase 8.5 Cluster 4A — typed pair-tuple query surface
+// (`JoinedQuerySet<L, R>` + `JoinedAnnotatedQuerySet<L, R, A>`). Closes
+// GH #99 (which closes #84). See `query::joined` for the design rationale,
+// SQL emission shape, and entry points.
+pub mod joined;
 pub(crate) mod lock;
 pub mod order;
 // Phase 8eta PR2a — Djogi-owned portable predicate substrate.
@@ -105,6 +110,11 @@ pub use field::{
     OptionalRelationRef,
 };
 pub use filter::{FilterClause, Lookup, ModelFilter};
+// Phase 8.5 Cluster 4A — typed pair-tuple query surface re-exports.
+pub use joined::{
+    JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, PairClosureKinshipSum,
+    PairOrderExpr, PairSide, PairWindowExt,
+};
 pub use order::{Direction, NullsOrder, OrderExpr};
 // Phase 8eta PR2a — public predicate-wrapper surface.
 //
