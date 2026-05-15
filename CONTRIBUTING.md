@@ -54,6 +54,14 @@ cargo xtask check-secrets --staged          # pre-commit
 cargo xtask check-secrets --stdin < draft.md # pre-issue / pre-PR-body
 cargo xtask check-secrets                    # full repo sweep
 ```
+
+Do not post real local credentials or raw connection URLs in public text.
+If you need to reference a database example, use placeholders such as:
+
+```bash
+postgres://<user>:<password>@<host>:<port>/<database>
+```
+
 Public GitHub bodies and comments also go through
 `.github/workflows/public-text-secrets.yml` so repository guards cover
 `issues`, `issue_comment`, `pull_request`, `pull_request_review`,

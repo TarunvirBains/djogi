@@ -185,8 +185,10 @@ const CREDENTIAL_URL_SCHEMES: &[&str] = &[
 /// Env-var names that always carry secrets when assigned a real value.
 /// Sorted so new entries are easy to slot in.
 const NAMED_SECRET_VARS: &[&str] = &[
+    "API_KEY",
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
+    "CLIENT_SECRET",
     "CRUD_LOG_URL",
     "DATABASE_PASSWORD",
     "DATABASE_URL",
@@ -683,18 +685,29 @@ fn classify_authority(scheme: &str, authority: &str) -> UrlAuthority {
     };
     let user = &userinfo[..colon_index];
     let password = &userinfo[colon_index + 1..];
+    let host = strip_port(host_and_port);
 
     if password.is_empty() || is_placeholder_value(password) {
         return UrlAuthority::Placeholder;
     }
-    if is_known_dummy_userpass(user, password) {
+    if is_known_dummy_userpass(user, password) && is_local_dummy_host(host) {
         return UrlAuthority::Dummy;
     }
 
-    let host = strip_port(host_and_port);
     UrlAuthority::Real {
         excerpt: redact_url(scheme, host),
     }
+}
+
+fn is_local_dummy_host(host: &str) -> bool {
+    if host.is_empty() {
+        return false;
+    }
+    let host_lower = host.to_ascii_lowercase();
+    DUMMY_HOSTS
+        .binary_search(&host)
+        .or_else(|_| DUMMY_HOSTS.binary_search(&host_lower.as_str()))
+        .is_ok()
 }
 
 fn is_credential_scheme(scheme: &str) -> bool {
@@ -1155,6 +1168,28 @@ mod tests {
     }
 
     #[test]
+    fn denies_known_dummy_userpass_on_service_host() {
+        let findings = scan("postgres://postgres:postgres@service.company.internal/db");
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f.kind, SecretKind::UrlWithCredentials)),
+            "expected remote dummy pair URL to be flagged, got {findings:#?}",
+        );
+    }
+
+    #[test]
+    fn denies_known_dummy_userpass_on_https_service_host() {
+        let findings = scan("https://user:password@api.company.internal/v1");
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f.kind, SecretKind::UrlWithCredentials)),
+            "expected remote auth-bearing URL to be flagged, got {findings:#?}",
+        );
+    }
+
+    #[test]
     fn allows_placeholder_password_in_url() {
         let findings = scan("postgres://user:<password>@host/db");
         assert!(findings.is_empty(), "got {findings:#?}");
@@ -1254,6 +1289,34 @@ mod tests {
                 .any(|f| matches!(f.kind, SecretKind::EnvAssignmentSuffix("_WEBHOOK"))),
             "got {findings:#?}",
         );
+    }
+
+    #[test]
+    fn flags_api_key_assignment() {
+        let findings = scan("API_KEY=abc123def456abcdef");
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f.kind, SecretKind::EnvAssignmentKnown("API_KEY"))),
+            "got {findings:#?}",
+        );
+        for f in &findings {
+            assert!(!f.excerpt.contains("abc123def456abcdef"));
+        }
+    }
+
+    #[test]
+    fn flags_client_secret_assignment() {
+        let findings = scan("CLIENT_SECRET=super-secret-value");
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f.kind, SecretKind::EnvAssignmentKnown("CLIENT_SECRET"))),
+            "got {findings:#?}",
+        );
+        for f in &findings {
+            assert!(!f.excerpt.contains("super-secret-value"));
+        }
     }
 
     #[test]

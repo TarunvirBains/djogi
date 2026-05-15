@@ -86,6 +86,14 @@ so you can locate them in your draft.
 Always run this against any text you intend to paste into a public
 issue, PR description, PR review comment, or chat channel.
 
+Do not paste local credentials or raw DB URLs in public places.
+Use placeholders instead:
+
+```text
+postgres://<user>:<password>@<host>:<port>/<database>
+postgres://<user>:<password>@<host>/<database>
+```
+
 For public GitHub objects, this repository also runs a dedicated workflow
 (`.github/workflows/public-text-secrets.yml`) on `issues`, `issue_comment`,
 `pull_request`, `pull_request_review`, and `pull_request_review_comment`
