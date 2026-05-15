@@ -115,7 +115,57 @@ Ok(rows)
 
 For shapes outside the typed `FromPgRow` decoder (recursive CTEs, custom row tuples, scalar aggregates), `ctx.raw_scalar`, `ctx.raw_fetch_one`, and the other `RawAccessExt` helpers cover the remaining cases. Direct `tokio_postgres::Client` access is not a public `DjogiContext` API.
 
-### 5.7 Performance Contract
+### 5.7 Typed INSERT ... SELECT (Phase 8.5 Cluster 4B — djogi#106)
+
+Adopter shape — copy rows from one model's queryset into another model's
+table, with closure-built column mappings:
+
+```rust
+use djogi::prelude::*;
+
+// Archive completed orders into an archive table.
+CompletedOrder::objects()
+    .filter(|f| f.completed_at().lt(cutoff))
+    .insert_into::<OrderArchive, _, _>(|target, source| vec![
+        target.original_id().copy_from(source.id().as_expr()),
+        target.title().copy_from(source.title().as_expr()),
+        target.completed_at().copy_from(source.completed_at().as_expr()),
+        // A constant column on every archived row.
+        target.status().copy_from(Expr::literal("ARCHIVED".to_string())),
+    ])
+    .execute(&mut ctx).await?;
+```
+
+Contract:
+
+- The closure receives `(T::Fields, S::Fields)` and returns one or more
+  [`InsertSelectColumn`]s via `target_field.copy_from(source_expr)`. Each
+  mapping pins the target column's `V` to the source `Expr<V>`'s `V` at
+  compile time — a type mismatch fails to compile rather than producing
+  a runtime Postgres type error.
+- The target's framework columns (`id`, `created_at`, `updated_at`) are
+  populated by their column-level `DEFAULT` clauses — the emitter never
+  names them unless the closure explicitly maps them. Matches
+  `Model::create`'s contract.
+- The terminal returns the affected row count.
+- WHERE / ORDER BY / LIMIT / OFFSET on the source are emitted into the
+  SELECT side; `QuerySet::none()` short-circuits to `Ok(0)`.
+- The terminal returns `DjogiError::Validation` when the source carries
+  state that cannot be safely represented in INSERT...SELECT
+  (`prefetch`, `select_related`, `cache`, a non-default `LockMode`, or
+  a non-default `DistinctMode`).
+
+Related framework gaps not covered by this surface:
+
+- Set operations (`UNION` / `INTERSECT` / `EXCEPT`) — djogi#101.
+- `LATERAL` joins — djogi#102.
+- `VALUES` inline relations as join sources — djogi#103.
+- `MERGE INTO ... USING ...` — djogi#178.
+- PG18 `OLD` / `NEW` in `RETURNING` — djogi#180.
+- `RETURNING` for INSERT...SELECT — follow-up issue; current terminal
+  returns the affected row count only.
+
+### 5.8 Performance Contract
 
 The query API is expected to support efficient Postgres forms for the workload shapes Djogi targets. That means:
 

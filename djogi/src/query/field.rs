@@ -735,6 +735,48 @@ impl<M: Model, V: IntoFilterValue> DjogiField<M, V> {
     }
 }
 
+// Phase 8.5 Cluster 4B (djogi#106) — INSERT...SELECT column mapping.
+//
+// The macro-emitted `{Model}Fields` accessors return `DjogiField<M, V>`
+// after Phase 8eta PR3, so the typed INSERT...SELECT column-mapping
+// builder must surface here in addition to the underlying `FieldRef`
+// impl (`FieldRef::copy_from` in `query::insert_select`). The forwarding
+// pattern mirrors `DjogiField::set` / `set_expr` above and the rest of
+// the wrapper methods on this type.
+impl<M: Model, V> DjogiField<M, V> {
+    /// Bind this target column to a source expression for an
+    /// `INSERT INTO ... SELECT ...` statement — see
+    /// [`FieldRef::copy_from`](crate::query::field::FieldRef::copy_from)
+    /// for the full contract and rationale.
+    ///
+    /// `V` must match between target and source — the type system pins
+    /// the column types in lockstep at compile time.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use djogi::prelude::*;
+    ///
+    /// CompletedOrder::objects()
+    ///     .filter(|f| f.completed_at().lt(cutoff))
+    ///     .insert_into::<OrderArchive, _, _>(|target, source| vec![
+    ///         target.original_id().copy_from(source.id().as_expr()),
+    ///         target.title().copy_from(source.title().as_expr()),
+    ///         target.completed_at().copy_from(source.completed_at().as_expr()),
+    ///         target.status().copy_from(Expr::literal("ARCHIVED".to_string())),
+    ///     ])
+    ///     .execute(&mut ctx)
+    ///     .await?;
+    /// ```
+    #[must_use = "column mappings are lazy — drop one and the INSERT silently omits the column"]
+    pub fn copy_from(
+        self,
+        source: crate::expr::Expr<V>,
+    ) -> crate::query::insert_select::InsertSelectColumn {
+        self.sql.copy_from(source)
+    }
+}
+
 impl<M: Model, V> DjogiField<M, V> {
     /// `COUNT(column)`.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]

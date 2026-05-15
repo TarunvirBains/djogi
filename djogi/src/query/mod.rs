@@ -43,6 +43,11 @@ pub mod condition;
 pub mod field;
 pub mod filter;
 pub mod grouped;
+// Phase 8.5 Cluster 4B (djogi#106) — typed bulk-copy surface
+// `INSERT INTO target (cols...) SELECT exprs... FROM source [WHERE ...]`.
+// Closes the framework gap that previously forced adopters to fall back
+// to `ctx.raw_execute(...)` for cross-table archival / migration shapes.
+pub mod insert_select;
 // Phase 8.5 Cluster 4A — typed pair-tuple query surface
 // (`JoinedQuerySet<L, R>` + `JoinedAnnotatedQuerySet<L, R, A>`).
 // Substrate for GH #99 (which is itself the substrate for #84). This
@@ -113,6 +118,13 @@ pub use field::{
     OptionalRelationRef,
 };
 pub use filter::{FilterClause, Lookup, ModelFilter};
+// Phase 8.5 Cluster 4B (djogi#106) — public re-export for the
+// INSERT...SELECT surface. `InsertSelectColumn` is the typed
+// (target_column, source_expression) leaf, `IntoInsertColumns` is the
+// closure-return shape (single mapping OR `Vec` of mappings), and
+// `InsertSelectStmt<S, T>` is the inert terminal-pending statement
+// returned by `QuerySet::insert_into`.
+pub use insert_select::{InsertSelectColumn, InsertSelectStmt, IntoInsertColumns};
 // Phase 8.5 Cluster 4A — typed pair-tuple query surface re-exports.
 pub use joined::{
     JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, PairClosureKinshipSum,

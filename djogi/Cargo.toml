@@ -583,6 +583,16 @@ name = "phase8_5_c4b_set_op_live"
 path = "../tests/integration/phase8_5_c4b_set_op_live.rs"
 harness = true
 
+# Phase 8.5 Cluster 4B issue #106 — typed INSERT...SELECT live coverage.
+# Pins the row-copy round trip end-to-end against a real database:
+# projection alignment, framework-column defaults, WHERE composition,
+# ORDER BY + LIMIT chunking, the none() short-circuit, and the v0.1
+# validation rejections (empty mapping, duplicate columns, distinct).
+[[test]]
+name = "phase8_5_c4b_insert_select"
+path = "../tests/integration/phase8_5_c4b_insert_select.rs"
+harness = true
+
 [[test]]
 name = "phase8_trait_impl_registry"
 path = "../tests/integration/phase8_trait_impl_registry.rs"
