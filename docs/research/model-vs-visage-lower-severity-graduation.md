@@ -412,9 +412,7 @@ hypothetical-friction work and stays unfiled. The umbrella is the
 correct artefact today; a standalone issue should be filed when
 adopter feedback supports it.
 
-**Anchor.** Post-v0.1.0 adopter feedback. Or earlier if an
-explicit M2M-heavy adopter (KindNudge has many M2M relations) finds
-the through-model visage emissions an active nuisance.
+**Anchor.** Post-v0.1.0 adopter feedback. Or earlier if any M2M-heavy adopter reports through-model visage emissions as an active nuisance.
 
 **Proposed issue title.**
 
