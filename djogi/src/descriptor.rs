@@ -1434,15 +1434,30 @@ mod protected_field_metadata_tests {
 /// carrier (e.g. `i32 → INTEGER`, `i64 → BIGINT`, `String → TEXT`); no
 /// shim or range CHECK is emitted.
 ///
+/// **Two roles, one discriminator.** Not every `Some(...)` value implies
+/// shim emission. The integer-widening variants
+/// (`I8` / `U8` / `U16` / `U32` / `U64`) drive both bind/decode shims AND
+/// the type-derived CHECK projection (the Rust type has no native `ToSql`
+/// targeting the SQL carrier, or its native impl targets the wrong Postgres
+/// type). The structural-bounds variants (`Decimal`) drive **only** the
+/// type-derived CHECK projection — `rust_decimal::Decimal` already has the
+/// correct `ToSql for NUMERIC` / `FromSql from NUMERIC` impls in
+/// `postgres-types`, so no bind / decode shim is required; the discriminator
+/// exists solely to disambiguate adopter `Decimal → NUMERIC` columns from
+/// `u64 → NUMERIC` columns at projection time (djogi#188). Both kinds of
+/// variant share the same descriptor slot because both feed the same
+/// projection dispatch in `migrate/projection.rs::field_type_check`.
+///
 /// # Wire-type mapping
 ///
-/// | `RustSourceType` | SQL carrier        | Bind shim        | Decode shim          |
-/// |------------------|--------------------|------------------|----------------------|
-/// | `I8`             | SMALLINT (INT2)    | `i16::from(v)`   | `i8::try_from(i16)`  |
-/// | `U8`             | SMALLINT (INT2)    | `i16::from(v)`   | `u8::try_from(i16)`  |
-/// | `U16`            | INTEGER  (INT4)    | `i32::from(v)`   | `u16::try_from(i32)` |
-/// | `U32`            | BIGINT   (INT8)    | `i64::from(v)`   | `u32::try_from(i64)` |
-/// | `U64`            | NUMERIC            | `Decimal::from(v)` | `Decimal::to_u64()` |
+/// | `RustSourceType` | SQL carrier        | Bind shim          | Decode shim          | CHECK projection                      |
+/// |------------------|--------------------|--------------------|----------------------|---------------------------------------|
+/// | `I8`             | SMALLINT (INT2)    | `i16::from(v)`     | `i8::try_from(i16)`  | range `−128..=127`                    |
+/// | `U8`             | SMALLINT (INT2)    | `i16::from(v)`     | `u8::try_from(i16)`  | range `0..=255`                       |
+/// | `U16`            | INTEGER  (INT4)    | `i32::from(v)`     | `u16::try_from(i32)` | range `0..=65535`                     |
+/// | `U32`            | BIGINT   (INT8)    | `i64::from(v)`     | `u32::try_from(i64)` | range `0..=4294967295`                |
+/// | `U64`            | NUMERIC            | `Decimal::from(v)` | `Decimal::to_u64()`  | range + integrality (`col = trunc`)   |
+/// | `Decimal`        | NUMERIC            | none (native impl) | none (native impl)   | structural `mantissa ≤ 2^96 − 1`      |
 ///
 /// # Why not `i8` in a native `ToSql` impl?
 ///
@@ -1457,6 +1472,21 @@ mod protected_field_metadata_tests {
 /// `postgres-types` implements `ToSql for u32` targeting `OID`, not `BIGINT`.
 /// A djogi `u32` field carries a `BIGINT` column (CHECK `0..=4294967295`);
 /// the bind shim bridges the gap.
+///
+/// # Why mark `Decimal` here when there is no shim?
+///
+/// `rust_decimal::Decimal` (96-bit mantissa, scale 0..=28) admits at most 29
+/// significant decimal digits; Postgres `NUMERIC` is unbounded. Without a
+/// CHECK, an external writer (raw SQL migration, BI tool, sister application)
+/// can land a value with 100 digits or scale 50, and the typed `SELECT`
+/// decode via `rust_decimal::Decimal::FromSql` then fails with
+/// `DjogiError::Decode` — the same single-bad-row poisoning class as the
+/// integer family. djogi#188 closes the hole by projecting a structural CHECK
+/// on adopter Decimal columns. The discriminator value `Decimal` exists so the
+/// projection layer can distinguish a `u64 → NUMERIC` column (range +
+/// integrality CHECK) from an adopter `Decimal → NUMERIC` column (structural
+/// CHECK). Bare `Numeric` with `rust_source_type: None` would conflate the
+/// two and emit the wrong CHECK shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RustSourceType {
     /// `i8` — stored as SMALLINT; range `−128..=127`.
@@ -1474,6 +1504,17 @@ pub enum RustSourceType {
     /// projection layer emits `col >= 0 AND col <= u64::MAX AND col = trunc(col)`
     /// to reject out-of-range and fractional values at the DB level.
     U64,
+    /// `rust_decimal::Decimal` — stored as bare NUMERIC; structural bound
+    /// enforces the 96-bit mantissa and scale ≤ 28 limits of the Rust type.
+    ///
+    /// No bind / decode shim is emitted — `rust_decimal::Decimal` already
+    /// implements `postgres_types::ToSql for NUMERIC` and the matching
+    /// `FromSql`. The discriminator exists solely so the projection layer
+    /// can emit `scale(col) <= 28 AND abs(col) * power(10::numeric,
+    /// scale(col)) <= 79228162514264337593543950335` against an adopter
+    /// Decimal column instead of the U64 range CHECK that fires when
+    /// `rust_source_type == Some(U64)`. djogi#188.
+    Decimal,
 }
 
 /// Metadata for a single model field.
@@ -1675,6 +1716,33 @@ pub struct FieldDescriptor {
     ///
     /// Phase 8.5 Cluster 2 (djogi#190 — integer widening bind/decode shims).
     pub rust_source_type: Option<RustSourceType>,
+
+    /// Adopter-supplied `#[field(check = "<sql expr>")]` raw-SQL CHECK
+    /// expression. `None` for the common case (no adopter CHECK).
+    ///
+    /// **Raw SQL escape.** The expression is treated identically to a raw
+    /// SQL fragment — djogi does NOT parse, sanitize, or validate the
+    /// SQL beyond rejecting empty / whitespace-only strings at macro-parse
+    /// time. The expression is emitted verbatim into both the
+    /// `CREATE TABLE … CONSTRAINT <table>_<column>_check CHECK (<expr>)`
+    /// form and the `ALTER TABLE … ADD CONSTRAINT … CHECK (<expr>)` form
+    /// in migrations. Adopters are responsible for the expression's
+    /// correctness; the same "this is your `unsafe`" cultural posture
+    /// described in `docs/spec/raw-sql-escape-hatches.md` applies — at
+    /// review time, every `#[field(check = "...")]` callsite should be
+    /// reviewable as raw SQL.
+    ///
+    /// **Combination with type-derived CHECKs.** When a column also
+    /// receives a type-derived CHECK (e.g. an adopter `u32` field with
+    /// `#[field(check = "port > 0")]`), the projection layer combines the
+    /// two with logical `AND` into a single constraint slot (`<table>_<col>_check`).
+    /// The combined expression is `(<type-derived>) AND (<adopter>)`.
+    /// Both clauses must pass for an INSERT / UPDATE to land. The single
+    /// constraint slot keeps the ADD / DROP / AMEND lifecycle in the
+    /// differ unchanged.
+    ///
+    /// djogi#105.
+    pub check_sql: Option<&'static str>,
 }
 
 /// Adopter-supplied override for the Postgres volatility class of a
@@ -1755,6 +1823,10 @@ pub const fn field_descriptor(
         // Defaults to `None` (direct bind — no shim needed). The macro
         // sets `Some(RustSourceType::*)` for i8 / u8 / u16 / u32 / u64.
         rust_source_type: None,
+        // Phase 8.5 Cluster 2 (djogi#105) — adopter `#[field(check)]`
+        // raw-SQL CHECK expression. Defaults to `None` (no adopter
+        // check); the macro fills `Some(<expr>)` from the attribute.
+        check_sql: None,
     }
 }
 

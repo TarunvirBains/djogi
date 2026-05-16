@@ -582,6 +582,22 @@ name = "phase8_5_c2_190_integer_widening"
 path = "../tests/internal/phase8_5_c2_190_integer_widening.rs"
 harness = true
 
+# Phase 8.5 Cluster 2 — adopter `#[field(check)]` (#105) and Decimal
+# structural CHECK projection (#188). Exercises:
+#   - Decimal round-trip across the rust_decimal representable range.
+#   - Raw-NUMERIC OOB rejection for scale > 28 and coefficient > 2^96 - 1.
+#   - Adopter `#[field(check = "...")]` accept/reject through the typed
+#     surface for fields without a type-derived CHECK (f64 / DOUBLE PRECISION).
+#   - Combined type-derived + adopter CHECK on a `u32` column: both clauses
+#     enforced via the projection layer's AND-merge into a single constraint.
+#   - Catalog assertions on the deployed constraint expressions (pg_get_constraintdef).
+# OOB-rejection cases need raw_execute because rust_decimal cannot construct
+# values outside its representable range and u32 cannot exceed u32::MAX.
+[[test]]
+name = "phase8_5_c2_105_188_check_decimal"
+path = "../tests/internal/phase8_5_c2_105_188_check_decimal.rs"
+harness = true
+
 # Phase 8.5 Cluster 3 issue #110 — round-2 dogfood discovery across six
 # typed-surface categories. Each scenario uses `#[djogi_test]` and the
 # typed surface only; gaps surface as compile-fail callsites that are
