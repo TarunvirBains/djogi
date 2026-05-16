@@ -249,6 +249,9 @@ pub fn derive_per_database_url(application_url: &str, database: &str) -> Option<
 /// reasonably include spaces, capitals, or version prefixes (`01_init`,
 /// `02 reference data.sql`); we leave validation of the recorded name
 /// to the unique-key constraint on `djogi_seed_runs.seed_name`.
+// The public `SeedError` enum intentionally keeps rich operator context on
+// its variants instead of boxing away seed names, paths, and source errors.
+#[allow(clippy::result_large_err)]
 pub fn discover_seeds(
     workspace_root: &Path,
     database: &str,

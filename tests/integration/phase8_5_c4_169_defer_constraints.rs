@@ -274,7 +274,8 @@ async fn defer_constraints_rejects_empty_named_scope(mut ctx: djogi::DjogiContex
     // refactor cannot un-pin one direction.
     let result = atomic(&mut ctx, |ctx| {
         Box::pin(async move {
-            ctx.set_constraints_immediate(DeferScope::Named(&[])).await?;
+            ctx.set_constraints_immediate(DeferScope::Named(&[]))
+                .await?;
             Ok::<_, DjogiError>(())
         })
     })
@@ -330,8 +331,12 @@ async fn immediate_fk_cycle_fails_without_runtime_defer(mut ctx: djogi::DjogiCon
     // runtime `defer_constraints(All)`, inserting the cycle's first
     // row (peer_id pointing at a not-yet-existing peer) must raise
     // FK violation 23503.
-    let id_a = djogi::HeerId::generate(&mut ctx).await.expect("pre-allocate id_a");
-    let id_b = djogi::HeerId::generate(&mut ctx).await.expect("pre-allocate id_b");
+    let id_a = djogi::HeerId::generate(&mut ctx)
+        .await
+        .expect("pre-allocate id_a");
+    let id_b = djogi::HeerId::generate(&mut ctx)
+        .await
+        .expect("pre-allocate id_b");
 
     let result = atomic(&mut ctx, |ctx| {
         Box::pin(async move {

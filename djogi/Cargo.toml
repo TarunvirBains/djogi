@@ -620,7 +620,7 @@ harness = true
 # `retry_on_conflict`.
 [[test]]
 name = "phase8_5_c4_168_isolation_level"
-path = "../tests/integration/phase8_5_c4_168_isolation_level.rs"
+path = "../tests/internal/phase8_5_c4_168_isolation_level.rs"
 harness = true
 
 # Phase 8.5 Cluster 4 (#169) — typed deferred-constraints surface.

@@ -121,11 +121,8 @@ async fn assert_atomic_with_observes_level(ctx: &mut DjogiContext, level: Isolat
     let expected = expected_guc_for_level(level);
     let observed: String = atomic_with(level, ctx, |tx| {
         Box::pin(async move {
-            tx.raw_scalar::<String>(
-                "SELECT current_setting('transaction_isolation')",
-                &[],
-            )
-            .await
+            tx.raw_scalar::<String>("SELECT current_setting('transaction_isolation')", &[])
+                .await
         })
     })
     .await
@@ -349,9 +346,7 @@ async fn atomic_with_composes_with_retry_on_conflict(mut ctx: djogi::DjogiContex
 // ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [IsoWidget])]
-async fn atomic_with_with_retry_on_conflict_recovers_from_real_40001(
-    mut ctx: djogi::DjogiContext,
-) {
+async fn atomic_with_with_retry_on_conflict_recovers_from_real_40001(mut ctx: djogi::DjogiContext) {
     let barrier = Arc::new(Barrier::new(2));
     let runs_a = Arc::new(AtomicUsize::new(0));
     let runs_b = Arc::new(AtomicUsize::new(0));
@@ -444,7 +439,8 @@ async fn atomic_with_with_retry_on_conflict_recovers_from_real_40001(
         .await
         .expect("post-join count");
     assert_eq!(
-        count, 2,
+        count,
+        2,
         "both transactions must commit a row after SSI retry resolves; \
          saw {count} rows (runs_a = {a_runs}, runs_b = {b_runs})",
         a_runs = runs_a.load(Ordering::SeqCst),

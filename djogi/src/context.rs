@@ -1640,7 +1640,8 @@ where
     // deferrable)` map. Reject orphan specs + duplicate constraint
     // names here — both were silent in the prior implementation.
     let mut deferrable_by_constraint_name: BTreeMap<String, (&str, &str, bool)> = BTreeMap::new();
-    for ((model_type_name, field_name), (deferrable, _initially_deferred)) in &deferrability_by_field
+    for ((model_type_name, field_name), (deferrable, _initially_deferred)) in
+        &deferrability_by_field
     {
         // Resolve the owning table.
         let table = match table_by_type.get(model_type_name) {
@@ -1653,7 +1654,8 @@ where
             }
         };
         let constraint_name = crate::migrate::sql::fk_constraint_name(table, field_name);
-        if let Some((first_model, first_field, _)) = deferrable_by_constraint_name.get(&constraint_name)
+        if let Some((first_model, first_field, _)) =
+            deferrable_by_constraint_name.get(&constraint_name)
         {
             // Collision — two distinct (model, field) pairs that
             // truncate-merge to the same conventional FK name. Fail
@@ -2349,12 +2351,9 @@ mod tests {
         // inventory shape, not the per-name validation.
         let models: [crate::descriptor::ModelDescriptor; 0] = [];
         let specs = [synth_spec("Ghost", "haunts", true, false)];
-        let err = super::validate_constraint_names_against_inventory(
-            &[],
-            models.iter(),
-            specs.iter(),
-        )
-        .expect_err("orphan spec must be rejected");
+        let err =
+            super::validate_constraint_names_against_inventory(&[], models.iter(), specs.iter())
+                .expect_err("orphan spec must be rejected");
         let DjogiError::OrphanDeferrabilitySpec {
             model_type_name,
             field_name,
@@ -2390,12 +2389,9 @@ mod tests {
             synth_spec("Alpha", "shared_col", true, false),
             synth_spec("Beta", "shared_col", true, false),
         ];
-        let err = super::validate_constraint_names_against_inventory(
-            &[],
-            models.iter(),
-            specs.iter(),
-        )
-        .expect_err("duplicate constraint name must be rejected");
+        let err =
+            super::validate_constraint_names_against_inventory(&[], models.iter(), specs.iter())
+                .expect_err("duplicate constraint name must be rejected");
         let DjogiError::DuplicateConstraintName {
             constraint_name,
             first_model,
