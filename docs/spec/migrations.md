@@ -600,7 +600,7 @@ The model-level declaration grammar (`#[model(indexes(...))]`), the unique-const
 
 ---
 
-### DDL metadata coverage gaps
+### 10.10b DDL metadata coverage gaps
 
 The following operational DDL features are not yet surfaced as model or field
 attributes. Adopters who need them must hand-write SQL in a separate migration
