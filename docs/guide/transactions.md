@@ -113,7 +113,7 @@ typed isolation surface participates in the standard retry loop:
 ```rust
 use djogi::transaction::{atomic_with, retry_on_conflict, IsolationLevel};
 
-retry_on_conflict(&mut ctx, 3, |ctx| async move {
+retry_on_conflict(&mut ctx, 3, async |ctx| {
     atomic_with(IsolationLevel::Serializable, ctx, |tx| Box::pin(async move {
         // ... reads + writes that must observe a serial schedule ...
         Ok::<_, DjogiError>(())
@@ -270,7 +270,7 @@ typed errors above) is terminal. `retry_on_conflict(ctx, attempts,
 closure)` drives retry using the same predicate.
 
 ```rust
-djogi::transaction::retry_on_conflict(ctx, 3, |ctx| async move {
+djogi::transaction::retry_on_conflict(ctx, 3, async |ctx| {
     let row = Post::objects()
         .filter(|f| f.id().eq(id))
         .nowait()

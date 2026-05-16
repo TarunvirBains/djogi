@@ -117,7 +117,7 @@ pub type AtomicFuture<'a, R> = Pin<Box<dyn Future<Output = Result<R, DjogiError>
 /// the `atomic_with` call in `retry_on_conflict` to re-run on `40001`:
 ///
 /// ```ignore
-/// retry_on_conflict(&mut ctx, 3, |ctx| async move {
+/// retry_on_conflict(&mut ctx, 3, async |ctx| {
 ///     atomic_with(IsolationLevel::Serializable, ctx, |tx| Box::pin(async move {
 ///         // ... reads + writes ...
 ///         Ok::<_, DjogiError>(())
@@ -694,7 +694,7 @@ where
 /// ```ignore
 /// use djogi::transaction::{atomic_with, retry_on_conflict, IsolationLevel};
 ///
-/// retry_on_conflict(&mut ctx, 3, |ctx| async move {
+/// retry_on_conflict(&mut ctx, 3, async |ctx| {
 ///     atomic_with(IsolationLevel::Serializable, ctx, |tx| Box::pin(async move {
 ///         // ... reads + writes that must observe a serial schedule ...
 ///         Ok::<_, DjogiError>(())
