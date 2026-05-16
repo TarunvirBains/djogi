@@ -460,9 +460,13 @@ pub use visage::VisageError;
 /// - **Composition primitives** — `Auditable`, `SoftDeletable` (the runtime
 ///   trait surfaces; `#[model(auditable)]` / `#[model(soft_deletable)]` emit
 ///   the impls).
-/// - **Transaction helpers** — `atomic` (the canonical scope helper) and
-///   `retry_on_conflict` (the lock-conflict / serialization-failure retry
-///   loop).
+/// - **Transaction helpers** — `atomic` (the canonical scope helper),
+///   `atomic_with` (sibling that opens at an explicit Postgres
+///   isolation level), `retry_on_conflict` (the lock-conflict /
+///   serialization-failure retry loop), `IsolationLevel`
+///   (`READ COMMITTED` / `REPEATABLE READ` / `SERIALIZABLE` typed
+///   surface for `atomic_with`), and `DeferScope` (the typed scope
+///   for `DjogiContext::defer_constraints` / `set_constraints_immediate`).
 /// - **Spatial primitive** — `GeoPoint` is included when the `spatial`
 ///   feature is enabled; otherwise it is absent from the prelude.
 ///
@@ -544,9 +548,13 @@ pub mod prelude {
         PairSide, PairWindowExt, PortableQuerySet, Q, QuerySet, RecursiveDirection,
         RecursiveQuerySet, SetOpKind, SetOpQuerySet, VisageQuerySet,
     };
-    // `atomic` / `retry_on_conflict` — Phase 4 Task 1 canonical
-    // transaction scope + retry helper.
-    pub use crate::transaction::{atomic, retry_on_conflict};
+    // `atomic` / `atomic_with` / `retry_on_conflict` — Phase 4 Task 1
+    // canonical transaction scope + retry helper, plus the Phase 8.5
+    // typed isolation-level surface (#168) and the typed deferred-
+    // constraints scope (#169).
+    pub use crate::transaction::{
+        DeferScope, IsolationLevel, atomic, atomic_with, retry_on_conflict,
+    };
     pub use crate::visage::VisageError;
     // Relation wrappers — unresolved (`ForeignKey`, `OneToOneField`) are
     // what user model structs declare; resolved (`ForeignKeyResolved`,

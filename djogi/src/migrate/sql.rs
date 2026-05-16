@@ -1301,7 +1301,12 @@ fn unique_constraint_name(table: &str, column: &str) -> String {
 /// Constraint name for a column-level FK constraint, e.g.
 /// `posts_author_id_fkey`. Postgres's auto-generated FK names use
 /// the `_fkey` suffix; we follow suit.
-fn fk_constraint_name(table: &str, column: &str) -> String {
+///
+/// `pub(crate)` so the runtime
+/// `DjogiContext::defer_constraints` validator (Phase 8.5 #169) can
+/// reach the same composition the migration emitter uses, keeping
+/// declarative-time and runtime constraint names in lockstep.
+pub(crate) fn fk_constraint_name(table: &str, column: &str) -> String {
     truncate_constraint(format!("{table}_{column}_fkey"))
 }
 

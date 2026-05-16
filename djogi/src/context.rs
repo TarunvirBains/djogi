@@ -1343,6 +1343,408 @@ impl DjogiContext {
         self.execute(&sql, &[]).await?;
         Ok(())
     }
+
+    /// Switch the deferrable-constraint mode for the remainder of the
+    /// current transaction to **DEFERRED**.
+    ///
+    /// Emits `SET CONSTRAINTS { ALL | <name> [, ...] } DEFERRED`. The
+    /// new mode applies to the remainder of the transaction; Postgres
+    /// resets the constraint mode at COMMIT/ROLLBACK.
+    ///
+    /// # Use case
+    ///
+    /// Deferring constraints to commit time lets a transaction insert
+    /// rows that temporarily violate referential integrity, as long as
+    /// the inconsistency is resolved by the time the transaction
+    /// commits. The canonical example is a **circular FK** — two rows
+    /// in distinct tables each referencing the other. Neither INSERT
+    /// can name a parent row that does not yet exist, but with both
+    /// FKs declared `DEFERRABLE` and deferred at the start of the
+    /// transaction, the commit-time check sees both rows present and
+    /// the cycle resolves cleanly.
+    ///
+    /// # Validation (typed surface value-add)
+    ///
+    /// For [`crate::transaction::DeferScope::Named`], every name is
+    /// validated against the framework's `DeferrabilitySpec`
+    /// inventory before any SQL is emitted:
+    ///
+    /// - **Unknown name** → [`DjogiError::UnknownConstraintName`].
+    ///   The expected name shape is the conventional
+    ///   `<table>_<column>_fkey` (truncated to 63 bytes for long
+    ///   names); see `crate::migrate::sql::fk_constraint_name`.
+    /// - **Name found but declared non-deferrable** →
+    ///   [`DjogiError::ConstraintNotDeferrable`]. Postgres would
+    ///   raise SQLSTATE `0A000` on a non-deferrable constraint at SQL
+    ///   time; the framework surfaces the same misuse with the
+    ///   model-declaration remediation hint before the round trip.
+    ///
+    /// `DeferScope::All` skips per-constraint validation — Postgres'
+    /// `SET CONSTRAINTS ALL DEFERRED` is a blanket statement that
+    /// applies to every deferrable constraint in scope; non-
+    /// deferrable constraints are simply ignored by Postgres.
+    ///
+    /// # Errors
+    ///
+    /// - [`DjogiError::ConstraintModeOutsideTransaction`] if `self` is
+    ///   pool-backed. `SET CONSTRAINTS` is transaction-scoped; calling
+    ///   it on a pool-backed context is meaningless and almost
+    ///   certainly a caller bug.
+    /// - [`DjogiError::UnknownConstraintName`] (for `Named` payloads
+    ///   carrying a typo / removed FK / never-declared constraint).
+    /// - [`DjogiError::ConstraintNotDeferrable`] (for `Named` payloads
+    ///   pointing at a non-deferrable constraint).
+    /// - [`DjogiError::Db`] for any underlying Postgres error
+    ///   (e.g. constraint exists in the live DB but not in any
+    ///   registered descriptor — unusual; usually means a hand-rolled
+    ///   constraint or a stale snapshot).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use djogi::transaction::{atomic, DeferScope};
+    ///
+    /// atomic(&mut ctx, |ctx| Box::pin(async move {
+    ///     ctx.defer_constraints(DeferScope::All).await?;
+    ///     // Insert two rows whose FKs reference each other in a
+    ///     // cycle — works only when constraints are deferred to
+    ///     // commit time.
+    ///     let a = NodeA::create(ctx, NodeA { b_id: peer_b, .. }).await?;
+    ///     let b = NodeB::create(ctx, NodeB { a_id: a.id, .. }).await?;
+    ///     Ok::<_, DjogiError>(())
+    /// })).await?;
+    /// ```
+    pub async fn defer_constraints(
+        &mut self,
+        scope: crate::transaction::DeferScope,
+    ) -> Result<(), DjogiError> {
+        self.set_constraint_mode(scope, crate::transaction::ConstraintMode::Deferred)
+            .await
+    }
+
+    /// Switch the deferrable-constraint mode for the remainder of the
+    /// current transaction to **IMMEDIATE**.
+    ///
+    /// The mirror of [`Self::defer_constraints`]. Use when an earlier
+    /// `defer_constraints` call needs to be reversed before the next
+    /// statement runs — e.g. to force constraint checks at a specific
+    /// point in the transaction rather than waiting for COMMIT.
+    ///
+    /// # Behaviour
+    ///
+    /// - Same transaction-scope-only invariant as
+    ///   [`Self::defer_constraints`]: returns
+    ///   [`DjogiError::ConstraintModeOutsideTransaction`] when called
+    ///   on a pool-backed context.
+    /// - Same `Named`-payload validation: unknown names raise
+    ///   [`DjogiError::UnknownConstraintName`], non-deferrable
+    ///   constraints raise
+    ///   [`DjogiError::ConstraintNotDeferrable`]. (A non-deferrable
+    ///   constraint is **always** in IMMEDIATE mode; explicitly
+    ///   setting it to IMMEDIATE is a no-op SQL-wise, but the
+    ///   framework still surfaces the typo as
+    ///   `ConstraintNotDeferrable` for symmetric ergonomics with
+    ///   `defer_constraints`.)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use djogi::transaction::{atomic, DeferScope};
+    ///
+    /// atomic(&mut ctx, |ctx| Box::pin(async move {
+    ///     ctx.defer_constraints(DeferScope::All).await?;
+    ///     // ... mid-transaction work that benefits from deferred checks ...
+    ///     ctx.set_constraints_immediate(DeferScope::All).await?;
+    ///     // ... remaining statements run with checks at every statement ...
+    ///     Ok::<_, DjogiError>(())
+    /// })).await?;
+    /// ```
+    pub async fn set_constraints_immediate(
+        &mut self,
+        scope: crate::transaction::DeferScope,
+    ) -> Result<(), DjogiError> {
+        self.set_constraint_mode(scope, crate::transaction::ConstraintMode::Immediate)
+            .await
+    }
+
+    /// Shared body for [`Self::defer_constraints`] and
+    /// [`Self::set_constraints_immediate`]. Centralises the pool-
+    /// rejection + name-validation + SQL emission so the two helpers
+    /// stay in lockstep.
+    async fn set_constraint_mode(
+        &mut self,
+        scope: crate::transaction::DeferScope,
+        mode: crate::transaction::ConstraintMode,
+    ) -> Result<(), DjogiError> {
+        // Step 1 — refuse pool-backed contexts. `SET CONSTRAINTS` is
+        // transaction-scoped; outside a transaction it would either
+        // evaporate after the single implicit statement-transaction
+        // or fail outright. Both outcomes are caller errors, so
+        // surface a typed terminal error before touching SQL.
+        match &self.inner {
+            ContextInner::Pool(_) => return Err(DjogiError::ConstraintModeOutsideTransaction),
+            ContextInner::Transaction(_) => {}
+        }
+
+        // Step 2 — compose the SQL based on scope. `All` is a single
+        // statement; `Named` validates each name against the
+        // descriptor inventory before emitting.
+        let sql = match scope {
+            crate::transaction::DeferScope::All => {
+                format!("SET CONSTRAINTS ALL {}", mode.as_sql_keyword())
+            }
+            crate::transaction::DeferScope::Named(names) => {
+                validate_constraint_names_against_descriptors(names)?;
+                build_set_constraints_named_sql(names, mode)
+            }
+        };
+
+        // Step 3 — emit. `execute` handles the pool guard / detach
+        // semantics correctly even for a transaction-backed context
+        // (which dispatches to the transaction connection without
+        // going through the pool guard).
+        self.execute(&sql, &[]).await?;
+        Ok(())
+    }
+}
+
+/// Validate every constraint name in `names` against the
+/// `DeferrabilitySpec` inventory.
+///
+/// - Returns `Err(UnknownConstraintName)` for the first name that
+///   does not match any registered FK constraint.
+/// - Returns `Err(ConstraintNotDeferrable)` for the first name that
+///   matches a registered FK whose `deferrable = false`.
+/// - Returns `Ok(())` when every name matches a deferrable FK.
+///
+/// The constraint-name convention follows
+/// `crate::migrate::sql::fk_constraint_name` —
+/// `<table>_<column>_fkey`, truncated to 63 bytes for long names.
+/// Walking the inventory at every call site is acceptable because:
+///
+/// 1. `defer_constraints` is a transaction-control call, not a
+///    hot-path operation — adopters call it once per atomic scope.
+/// 2. The inventory is fixed at link time; an iteration is O(models
+///    × FK-fields), which for any realistic app fits well under the
+///    SQL round-trip cost.
+fn validate_constraint_names_against_descriptors(names: &[&str]) -> Result<(), DjogiError> {
+    use crate::descriptor::{DeferrabilitySpec, ModelDescriptor};
+
+    // Build a (constraint_name → deferrable) map by walking the
+    // model descriptor inventory once. Each FK field on a registered
+    // model contributes one entry, keyed on the conventional
+    // `<table>_<column>_fkey` (truncated) name.
+    //
+    // `DeferrabilitySpec` carries `(model_type_name, field_name,
+    // deferrable, initially_deferred)`. The macro emits
+    // `field_name` from `column_name_from_field`, so it IS the
+    // Postgres column name (raw-ident `r#type` is stripped to
+    // `type`); same source as `FieldDescriptor::name`. We only need
+    // to recover the model's *table* name from
+    // `ModelDescriptor::type_name → table_name`.
+    let mut table_by_type: std::collections::HashMap<&'static str, &'static str> =
+        std::collections::HashMap::new();
+    for m in inventory::iter::<ModelDescriptor> {
+        table_by_type.insert(m.type_name, m.table_name);
+    }
+
+    let mut deferrable_by_constraint_name: std::collections::HashMap<String, bool> =
+        std::collections::HashMap::new();
+    for spec in inventory::iter::<DeferrabilitySpec> {
+        // Recover the table for this FK's owning model.
+        let table = match table_by_type.get(spec.model_type_name) {
+            Some(t) => *t,
+            // Unusual — a DeferrabilitySpec without a matching
+            // ModelDescriptor. Skip silently; the descriptor is the
+            // source of truth, and a missing one means the FK isn't
+            // really registered (the macros emit both submits side
+            // by side, so this only fires under pathological
+            // partial-emit conditions).
+            None => continue,
+        };
+        let name = crate::migrate::sql::fk_constraint_name(table, spec.field_name);
+        deferrable_by_constraint_name.insert(name, spec.deferrable);
+    }
+
+    // Now validate each adopter-supplied name.
+    for name in names {
+        match deferrable_by_constraint_name.get(*name) {
+            Some(true) => continue, // deferrable, OK
+            Some(false) => return Err(DjogiError::ConstraintNotDeferrable((*name).to_string())),
+            None => return Err(DjogiError::UnknownConstraintName((*name).to_string())),
+        }
+    }
+    Ok(())
+}
+
+/// Compose `SET CONSTRAINTS "name1", "name2", ... <mode>` from a slice
+/// of pre-validated constraint names + a mode keyword.
+///
+/// Every name has already passed
+/// [`validate_constraint_names_against_descriptors`] (which routes
+/// through the FK-name convention that excludes injection-shaped
+/// bytes), so the names are safe to interpolate inside double quotes.
+/// Postgres double-quoted identifiers permit any non-`"` byte; the FK
+/// convention emits ASCII identifier characters only, so no escaping
+/// is needed beyond the surrounding quotes. The double-quoted form
+/// also lets Postgres accept reserved-keyword constraint names — the
+/// FK convention doesn't generate those today, but the quoting is
+/// defensive against future naming-convention changes.
+fn build_set_constraints_named_sql(
+    names: &[&str],
+    mode: crate::transaction::ConstraintMode,
+) -> String {
+    let mut sql = String::with_capacity(
+        "SET CONSTRAINTS  ".len()
+            + mode.as_sql_keyword().len()
+            + names.iter().map(|n| n.len() + 4).sum::<usize>(),
+    );
+    sql.push_str("SET CONSTRAINTS ");
+    for (i, name) in names.iter().enumerate() {
+        if i > 0 {
+            sql.push_str(", ");
+        }
+        sql.push('"');
+        sql.push_str(name);
+        sql.push('"');
+    }
+    sql.push(' ');
+    sql.push_str(mode.as_sql_keyword());
+    sql
+}
+
+impl DjogiContext {
+    /// Allocate a fresh pool-backed [`DjogiContext`] that shares
+    /// `self`'s pool, `Sassi` cache registry, and auth context but
+    /// holds an independent pool checkout per operation.
+    ///
+    /// Use this to compose `tokio::try_join!` (or similar) over two
+    /// independent typed reads on the same pool — each clone's
+    /// operations check out their own connection, so the two futures
+    /// run truly concurrently without aliasing one transaction's
+    /// connection.
+    ///
+    /// # When to use this
+    ///
+    /// The natural shape:
+    ///
+    /// ```ignore
+    /// let (alpha, beta) = tokio::try_join!(
+    ///     Post::objects().filter(|f| f.kind().eq("alpha")).fetch_all(&mut ctx),
+    ///     Post::objects().filter(|f| f.kind().eq("beta")).fetch_all(&mut ctx),
+    /// )?;
+    /// ```
+    ///
+    /// does not compile because both branches need `&mut ctx` at the
+    /// same time (`E0499`). Clone the context first:
+    ///
+    /// ```ignore
+    /// let mut ctx_a = ctx.clone_for_concurrent_reads()?;
+    /// let mut ctx_b = ctx.clone_for_concurrent_reads()?;
+    /// let (alpha, beta) = tokio::try_join!(
+    ///     Post::objects().filter(|f| f.kind().eq("alpha")).fetch_all(&mut ctx_a),
+    ///     Post::objects().filter(|f| f.kind().eq("beta")).fetch_all(&mut ctx_b),
+    /// )?;
+    /// ```
+    ///
+    /// Each `fetch_all` checks out its own connection. The two
+    /// queries run concurrently on independent connections — true
+    /// parallelism, no protocol aliasing.
+    ///
+    /// # What the clone carries over
+    ///
+    /// - **Pool** — same `DjogiPool` handle (Arc-cloned). The clone
+    ///   draws from the same pool; checkouts are independent.
+    /// - **`Sassi` cache registry** — same `Arc<Sassi>`. Both contexts
+    ///   share the cache state, so a write through one clone is
+    ///   visible to a subsequent read through the other (provided the
+    ///   write committed).
+    /// - **Auth context** — cloned (so RLS still applies). Mutating
+    ///   `set_auth` on one clone does NOT propagate to the other —
+    ///   each clone owns its own auth state.
+    /// - **Tenant-scope-suppression flag** — copied.
+    ///
+    /// # What the clone does NOT carry over
+    ///
+    /// - **`applied_tenant_id`** — transaction-scoped state, set
+    ///   only via `set_config(..., true)` inside an open transaction.
+    ///   A pool-backed clone has no active transaction, so the
+    ///   in-memory tracker resets to `None`.
+    /// - **`tenant_set`** — same rationale as `applied_tenant_id`.
+    /// - **`on_commit` queue** — each clone owns its own queue.
+    ///   Callbacks registered on the parent BEFORE the clone are not
+    ///   inherited; callbacks registered on either clone after
+    ///   cloning fire only on that clone's `commit()` (and only if
+    ///   the clone enters its own `atomic()`).
+    /// - **Savepoint depth** — clones start at depth 0 because they
+    ///   have no transaction. (This method rejects transaction-
+    ///   backed contexts; see Errors.)
+    ///
+    /// # Errors
+    ///
+    /// Returns
+    /// [`DjogiError::ConcurrentReadsRequirePoolContext`](crate::DjogiError::ConcurrentReadsRequirePoolContext)
+    /// when called on a transaction-backed context. A transaction
+    /// owns one Postgres connection; cloning would either alias that
+    /// connection across futures (Postgres protocol violation) or
+    /// silently break the transaction boundary. Move the
+    /// concurrent-reads block outside the surrounding `atomic()`
+    /// scope, or fetch sequentially within the transaction.
+    ///
+    /// # Why sync (no `await`)
+    ///
+    /// The clone allocates no new database resources — it copies the
+    /// pool handle (Arc clone), the Sassi registry (Arc clone), and
+    /// the auth state. Each subsequent CRUD call on the clone
+    /// performs its own pool checkout asynchronously, so the cost of
+    /// async amortises across the actual work, not the cheap clone
+    /// setup. A synchronous return mirrors `share_pool` (the
+    /// existing sibling helper) and avoids gratuitous `.await?`
+    /// noise at every call site.
+    ///
+    /// # Example with mixed reads
+    ///
+    /// ```ignore
+    /// use djogi::DjogiContext;
+    ///
+    /// async fn dashboard(ctx: &mut DjogiContext) -> Result<(Vec<Post>, Vec<User>), DjogiError> {
+    ///     let mut ctx_posts = ctx.clone_for_concurrent_reads()?;
+    ///     let mut ctx_users = ctx.clone_for_concurrent_reads()?;
+    ///     tokio::try_join!(
+    ///         Post::objects().fetch_all(&mut ctx_posts),
+    ///         User::objects().fetch_all(&mut ctx_users),
+    ///     )
+    /// }
+    /// ```
+    pub fn clone_for_concurrent_reads(&self) -> Result<DjogiContext, DjogiError> {
+        let pool = match &self.inner {
+            ContextInner::Pool(p) => p.clone(),
+            ContextInner::Transaction(_) => {
+                return Err(DjogiError::ConcurrentReadsRequirePoolContext);
+            }
+        };
+
+        Ok(DjogiContext {
+            inner: ContextInner::Pool(pool),
+            savepoint_depth: 0,
+            // Each clone owns its own `on_commit` queue. Inherited
+            // callbacks make no sense — the clone has no transaction
+            // to commit, and on_commit on a pool-backed context is
+            // already a `track_caller`-warned silent-drop. Starting
+            // empty keeps the contract clean.
+            on_commit: Vec::new(),
+            tenant_set: false,
+            auth: self.auth.clone(),
+            tenant_scope_suppressed: self.tenant_scope_suppressed,
+            // Transaction-scoped GUC state — resets to None on a
+            // fresh pool-backed clone (no active transaction).
+            applied_tenant_id: None,
+            // Share the parent's Sassi registry by Arc-cloning so
+            // cache writes through one clone are visible to reads
+            // through the other.
+            sassi: std::sync::Arc::clone(&self.sassi),
+        })
+    }
 }
 
 /// Validate a Postgres role name for `SET LOCAL ROLE`.
@@ -1629,5 +2031,48 @@ mod tests {
         assert!(super::validate_role_name("app_readonly_role").is_ok());
         assert!(super::validate_role_name("_internal").is_ok());
         assert!(super::validate_role_name("role1").is_ok());
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 8.5 #169 — SET CONSTRAINTS SQL composition tests.
+    //
+    // These tests pin the SQL shape emitted by `defer_constraints` /
+    // `set_constraints_immediate` for both `DeferScope::All` and
+    // `DeferScope::Named`. They are no-DB tests because the
+    // composition is deterministic and the live-PG round-trip is
+    // covered by `tests/integration/phase8_5_c4_169_defer_constraints.rs`.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn build_set_constraints_named_sql_emits_quoted_names_and_deferred_keyword() {
+        let sql = super::build_set_constraints_named_sql(
+            &["posts_author_id_fkey"],
+            crate::transaction::ConstraintMode::Deferred,
+        );
+        assert_eq!(sql, r#"SET CONSTRAINTS "posts_author_id_fkey" DEFERRED"#);
+    }
+
+    #[test]
+    fn build_set_constraints_named_sql_emits_quoted_names_and_immediate_keyword() {
+        let sql = super::build_set_constraints_named_sql(
+            &["posts_author_id_fkey"],
+            crate::transaction::ConstraintMode::Immediate,
+        );
+        assert_eq!(sql, r#"SET CONSTRAINTS "posts_author_id_fkey" IMMEDIATE"#);
+    }
+
+    #[test]
+    fn build_set_constraints_named_sql_joins_multiple_names_with_commas() {
+        // Postgres' `SET CONSTRAINTS` grammar allows multiple
+        // constraint names separated by commas. The emitter joins
+        // every name + the leading/trailing keywords.
+        let sql = super::build_set_constraints_named_sql(
+            &["a_fkey", "b_fkey", "c_fkey"],
+            crate::transaction::ConstraintMode::Deferred,
+        );
+        assert_eq!(
+            sql,
+            r#"SET CONSTRAINTS "a_fkey", "b_fkey", "c_fkey" DEFERRED"#
+        );
     }
 }

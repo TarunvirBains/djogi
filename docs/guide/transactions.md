@@ -2,8 +2,10 @@
 
 # Transactions
 
-Phase 4's transaction substrate: `DjogiContext`, `atomic()`, savepoint
-nesting, `on_commit` callbacks, row locks, and `retry_on_conflict`.
+Phase 4's transaction substrate plus Phase 8.5's transaction-control
+helpers: `DjogiContext`, `atomic()` / `atomic_with()`, savepoint
+nesting, on-commit callbacks, row locks, isolation levels, deferred
+constraints, concurrent-reads cloning, and `retry_on_conflict`.
 
 ## Contract
 
@@ -71,12 +73,200 @@ Row locks are only meaningful inside `atomic()`. On a pool-backed
 context, the lock releases immediately when the implicit per-statement
 transaction closes — no protection against concurrent writers.
 
+## Isolation levels — `atomic_with`
+
+`atomic()` opens the outermost transaction at Postgres' session
+default isolation level (typically `READ COMMITTED`). When a scope
+needs `REPEATABLE READ` or `SERIALIZABLE`, use `atomic_with`:
+
+```rust
+use djogi::prelude::*;
+use djogi::transaction::{atomic_with, IsolationLevel};
+
+atomic_with(IsolationLevel::Serializable, &mut ctx, |ctx| Box::pin(async move {
+    // Serializable Snapshot Isolation — Postgres aborts a conflicting
+    // transaction with SQLSTATE 40001 if the interleaving could not be
+    // reproduced by some serial schedule.
+    let total = Account::objects().sum(ctx, |f| f.balance()).await?;
+    Account::create(ctx, Account { balance: total / 2, ..Default::default() }).await?;
+    Ok::<_, DjogiError>(())
+})).await?;
+```
+
+### Variant matrix
+
+| `IsolationLevel`    | Postgres keyword    | Snapshot fixed at | Serialization-failure surface     |
+|---------------------|---------------------|-------------------|------------------------------------|
+| `ReadCommitted`     | `READ COMMITTED`    | Each statement    | Never (statement-local snapshot)   |
+| `RepeatableRead`    | `REPEATABLE READ`   | First statement   | `40001` at conflict — commit time  |
+| `Serializable`      | `SERIALIZABLE`      | First statement   | `40001` via SSI — commit or read   |
+
+`READ UNCOMMITTED` is intentionally not exposed: Postgres aliases it
+to `READ COMMITTED` server-side, so it offers no weaker guarantees.
+
+### Retry composition
+
+Both `RepeatableRead` and `Serializable` raise SQLSTATE `40001` on
+commit-time conflict. Wrap `atomic_with` in `retry_on_conflict` so the
+typed isolation surface participates in the standard retry loop:
+
+```rust
+use djogi::transaction::{atomic_with, retry_on_conflict, IsolationLevel};
+
+retry_on_conflict(&mut ctx, 3, |ctx| async move {
+    atomic_with(IsolationLevel::Serializable, ctx, |tx| Box::pin(async move {
+        // ... reads + writes that must observe a serial schedule ...
+        Ok::<_, DjogiError>(())
+    })).await
+}).await?;
+```
+
+`is_transient()` classifies `40001` as retryable; the loop re-runs
+the closure up to `attempts` times.
+
+### SAVEPOINT vs SET LOCAL semantics
+
+`atomic_with(level, &mut tx_ctx, ...)` — **rejected** with
+[`DjogiError::IsolationLevelOnNestedScope`]. Postgres pins the
+isolation level for the entire transaction at the outer `BEGIN`;
+`SAVEPOINT` does not open a sub-transaction with its own isolation
+knob. Use `atomic()` for nested scopes — the savepoint inherits the
+outermost transaction's isolation level.
+
+## Deferred constraints — `defer_constraints`
+
+`SET CONSTRAINTS` is a Postgres transaction-control statement that
+flips deferrable constraints between IMMEDIATE (check at every
+statement) and DEFERRED (check at COMMIT). The canonical use case is
+the **circular FK** pattern: two rows with reciprocal FKs that cannot
+be inserted in either order without temporarily violating referential
+integrity.
+
+```rust
+use djogi::prelude::*;
+use djogi::transaction::{atomic, DeferScope};
+
+atomic(&mut ctx, |ctx| Box::pin(async move {
+    // Defer ALL deferrable constraints to commit time for the
+    // remainder of this transaction.
+    ctx.defer_constraints(DeferScope::All).await?;
+
+    // Insert the cycle. Neither row names a parent that exists yet,
+    // but Postgres only checks the FKs at commit — by then both
+    // rows are present and the cycle resolves.
+    let a = NodeA::create(ctx, NodeA { peer_b: peer_b_id, ..Default::default() }).await?;
+    let b = NodeB::create(ctx, NodeB { peer_a: a.id, ..Default::default() }).await?;
+
+    Ok::<_, DjogiError>(())
+})).await?;
+```
+
+### `DeferScope::Named` and typed validation
+
+For finer-grained control, target specific constraints by name. The
+framework validates each name against the model-descriptor inventory
+before any SQL is emitted:
+
+```rust
+ctx.defer_constraints(
+    DeferScope::Named(&["posts_author_id_fkey", "comments_post_id_fkey"]),
+).await?;
+```
+
+The validator checks:
+
+- **Unknown name** → [`DjogiError::UnknownConstraintName`]. The
+  expected shape is `<table>_<column>_fkey` (Postgres' convention),
+  truncated to 63 bytes for long names.
+- **Non-deferrable constraint** →
+  [`DjogiError::ConstraintNotDeferrable`]. Declare the FK as
+  `#[field(deferrable = true)]` (and optionally
+  `initially_deferred = true`) at the model declaration.
+
+This is the typed-surface value-add over
+`raw_execute("SET CONSTRAINTS ...")` — Postgres would raise `42704`
+or `0A000` after a round trip; the framework surfaces the misuse
+synchronously with the model-declaration remediation hint.
+
+### Mirror: `set_constraints_immediate`
+
+`set_constraints_immediate(scope)` reverses an earlier
+`defer_constraints` call. Same scope semantics; useful for forcing
+constraint checks at a specific point mid-transaction rather than
+waiting for COMMIT.
+
+### Transaction-scope-only invariant
+
+Both helpers reject pool-backed contexts with
+[`DjogiError::ConstraintModeOutsideTransaction`]. `SET CONSTRAINTS`
+is transaction-scoped; outside a transaction it would either
+evaporate after the implicit statement-transaction or fail outright.
+Wrap the call in `atomic()` so the helper has a transaction to bind
+to.
+
+## Concurrent reads — `clone_for_concurrent_reads`
+
+`&mut DjogiContext` is exclusive, so the natural `tokio::try_join!`
+shape over two typed reads on the same context fails to compile
+(`E0499`):
+
+```rust
+// Does NOT compile — both branches need `&mut ctx`.
+let (alpha, beta) = tokio::try_join!(
+    Post::objects().filter(|f| f.kind().eq("alpha")).fetch_all(&mut ctx),
+    Post::objects().filter(|f| f.kind().eq("beta")).fetch_all(&mut ctx),
+)?;
+```
+
+Clone the context first so each branch has its own pool-backed
+handle:
+
+```rust
+let mut ctx_a = ctx.clone_for_concurrent_reads()?;
+let mut ctx_b = ctx.clone_for_concurrent_reads()?;
+let (alpha, beta) = tokio::try_join!(
+    Post::objects().filter(|f| f.kind().eq("alpha")).fetch_all(&mut ctx_a),
+    Post::objects().filter(|f| f.kind().eq("beta")).fetch_all(&mut ctx_b),
+)?;
+```
+
+Each clone draws from the same pool but checks out its own
+connection per operation — the two futures run truly concurrently
+without aliasing one transaction's connection.
+
+### What carries over
+
+- **Pool** — same `DjogiPool` (Arc-cloned). Independent checkouts.
+- **`Sassi` cache registry** — same `Arc<Sassi>`. Cache writes
+  through one clone are visible to reads through the other.
+- **Auth context** — cloned. RLS still applies.
+- **Tenant-scope-suppression flag** — copied.
+
+### What does NOT carry over
+
+- **Transaction-scoped state** (`applied_tenant_id`, `tenant_set`) —
+  resets to none on the clone. The clone is pool-backed; it has no
+  transaction.
+- **`on_commit` queue** — each clone owns its own queue.
+- **Savepoint depth** — clones start at zero.
+
+### Transaction-context rejection
+
+`clone_for_concurrent_reads` is only valid on pool-backed contexts —
+calling it on a transaction-backed context returns
+[`DjogiError::ConcurrentReadsRequirePoolContext`]. A transaction
+owns one Postgres connection; cloning would either alias that
+connection across futures (protocol violation) or silently break the
+transaction boundary. Move the concurrent-reads block outside the
+surrounding `atomic()`, or fetch sequentially within the transaction.
+
 ## Error classification
 
 `DjogiError::is_transient()` / `is_terminal()` classify whether a
 retry of the same closure may succeed. `LockConflict` and raw
 `Db(DbError)` with SQLSTATE `40001` / `40P01` / `55P03` are transient;
-everything else is terminal. `retry_on_conflict(ctx, attempts,
+everything else (including all the Phase 8.5 transaction-control
+typed errors above) is terminal. `retry_on_conflict(ctx, attempts,
 closure)` drives retry using the same predicate.
 
 ```rust
