@@ -2538,6 +2538,34 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
     let s = s.strip_prefix("::").unwrap_or(&s);
     match s {
         "String" => Some("TEXT"),
+        // Narrow / unsigned integer widening (djogi#186 + djogi#190).
+        //
+        // Postgres has no native unsigned integer types, and its `i8`
+        // column type (the `"char"` pseudo-type) is not suitable for
+        // user-facing model fields. Djogi widens each type to the
+        // smallest signed Postgres integer type whose positive range
+        // covers the full Rust type range:
+        //
+        //   i8  → SMALLINT (INT2)       range: -128..=127
+        //   u8  → SMALLINT (INT2)       range: 0..=255
+        //   u16 → INTEGER  (INT4)       range: 0..=65535
+        //   u32 → BIGINT   (INT8)       range: 0..=4294967295
+        //   u64 → NUMERIC               range: 0..=18446744073709551615  (+ integrality CHECK)
+        //
+        // The macro emits bind shims (widen before binding to tokio-postgres)
+        // and decode shims (narrow with a bounds-checked try_from). The
+        // FieldDescriptor carries a `rust_source_type` discriminator so
+        // the migration projection layer can emit a range CHECK for the
+        // column that matches the Rust type's representable range.
+        "i8" => Some("SMALLINT"),
+        "u8" => Some("SMALLINT"),
+        "u16" => Some("INTEGER"),
+        "u32" => Some("BIGINT"),
+        // djogi#190 — u64 uses bare NUMERIC (no precision/scale) so Postgres
+        // does not silently round fractional inputs before the CHECK fires.
+        // The CHECK emitted by the projection layer enforces integrality
+        // (col = trunc(col)) in addition to the range bounds.
+        "u64" => Some("NUMERIC"),
         "i16" => Some("SMALLINT"),
         "i32" => Some("INTEGER"),
         "i64" => Some("BIGINT"),

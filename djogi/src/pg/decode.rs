@@ -188,3 +188,303 @@ where
 {
     row.try_get(idx).map_err(DjogiError::from)
 }
+
+/// Decode a column stored as a wider type `W` and narrow it to target type `N`.
+///
+/// Used by `#[model]` for fields whose Rust source type is narrower than the
+/// SQL carrier: `i8 / u8 → SMALLINT (i16)`, `u16 → INTEGER (i32)`,
+/// `u32 → BIGINT (i64)`.  The debug-build column-name guard from
+/// [`decode_at`] runs on the wide read; the subsequent narrowing applies
+/// `N::try_from(wide_value)`.
+///
+/// Returns `DjogiError::Decode` if the stored value is out of the narrow
+/// type's representable range. This is the second line of defence behind
+/// the type-derived CHECK that `#[model]` emits via the projection layer —
+/// it fires when a row lands without the CHECK in place (e.g. a schema
+/// snapshot reapplied before the migration ran, or a direct `COPY … FROM`
+/// that bypasses check constraints).
+///
+/// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
+#[doc(hidden)]
+pub fn decode_narrowed<'a, W, N>(
+    row: &'a Row,
+    idx: usize,
+    name: &'static str,
+) -> Result<N, DjogiError>
+where
+    W: FromSql<'a> + std::fmt::Display + Copy,
+    N: TryFrom<W>,
+    <N as TryFrom<W>>::Error: std::fmt::Display,
+{
+    let wide: W = decode_at(row, idx, name)?;
+    N::try_from(wide).map_err(|e| {
+        DjogiError::Decode(format!("column `{name}`: value {wide} out of range: {e}",))
+    })
+}
+
+/// Decode a nullable column stored as a wider type `W` and narrow to `N`.
+///
+/// The `Option`-flavoured companion to [`decode_narrowed`] for nullable
+/// fields. Decodes `Option<W>` from the wire and maps the inner value
+/// through `N::try_from`, propagating `DjogiError::Decode` on
+/// out-of-range values.
+///
+/// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
+#[doc(hidden)]
+pub fn decode_narrowed_opt<'a, W, N>(
+    row: &'a Row,
+    idx: usize,
+    name: &'static str,
+) -> Result<Option<N>, DjogiError>
+where
+    W: FromSql<'a> + std::fmt::Display + Copy,
+    N: TryFrom<W>,
+    <N as TryFrom<W>>::Error: std::fmt::Display,
+{
+    let wide: Option<W> = decode_at(row, idx, name)?;
+    wide.map(|w| {
+        N::try_from(w).map_err(|e| {
+            DjogiError::Decode(format!("column `{name}`: value {w} out of range: {e}",))
+        })
+    })
+    .transpose()
+}
+
+/// Convert a `rust_decimal::Decimal` to `u64`, rejecting fractional and
+/// out-of-range values.
+///
+/// u64 columns use bare `NUMERIC` (no precision/scale) as their SQL carrier,
+/// which means Postgres stores values exactly as given without rounding. A
+/// direct `INSERT … NUMERIC '1.5'` can land a fractional value even if the
+/// column carries a CHECK constraint (e.g. applied only after schema migration,
+/// or bypassed via `COPY`). `Decimal::to_u64()` via `ToPrimitive` silently
+/// truncates fractional parts (e.g. `1.5 → 1`), so we must explicitly reject
+/// fractional values before conversion.
+///
+/// Returns `DjogiError::Decode` for:
+/// - values with a non-zero fractional part (`1.5`, `-0.1`, …)
+/// - negative values (`-1`)
+/// - values exceeding `u64::MAX` (`18_446_744_073_709_551_616`)
+///
+/// Private helper — all four `decode_*_u64_from_decimal` variants delegate
+/// here so the rejection logic is in one place.
+fn decimal_to_u64(
+    dec: rust_decimal::Decimal,
+    col: impl std::fmt::Display,
+) -> Result<u64, DjogiError> {
+    use rust_decimal::prelude::ToPrimitive as _;
+    // fract() returns the fractional part; for integer values it is zero.
+    if !dec.fract().is_zero() {
+        return Err(DjogiError::Decode(format!(
+            "column `{col}`: Decimal value {dec} has a fractional part and cannot be decoded as u64",
+        )));
+    }
+    dec.to_u64().ok_or_else(|| {
+        DjogiError::Decode(format!(
+            "column `{col}`: Decimal value {dec} out of u64 range",
+        ))
+    })
+}
+
+/// Decode a `u64` field stored as bare `NUMERIC`.
+///
+/// `NUMERIC` (no precision/scale) is the SQL carrier for `u64` columns.
+/// Unlike `NUMERIC(20, 0)`, bare NUMERIC does NOT round fractional inputs —
+/// it stores exactly what is given. The migration projection layer emits a
+/// database-level CHECK (`col >= 0 AND col <= u64::MAX AND col = trunc(col)`)
+/// to reject fractional and out-of-range values at write time. This decode
+/// function adds a second line of defence on the Rust side via
+/// [`decimal_to_u64`], which explicitly rejects fractional values before
+/// conversion.
+///
+/// Returns `DjogiError::Decode` if the stored value does not fit in
+/// `u64` (fractional values, negative values, or values exceeding
+/// `u64::MAX` stored by an external writer that bypassed the type-derived
+/// CHECK).
+///
+/// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
+#[doc(hidden)]
+pub fn decode_u64_from_decimal(
+    row: &Row,
+    idx: usize,
+    name: &'static str,
+) -> Result<u64, DjogiError> {
+    let dec: rust_decimal::Decimal = decode_at(row, idx, name)?;
+    decimal_to_u64(dec, name)
+}
+
+/// Decode a nullable `u64` field stored as bare `NUMERIC`.
+///
+/// The `Option`-flavoured companion to [`decode_u64_from_decimal`].
+/// Delegates to [`decimal_to_u64`] for the non-null case; see that
+/// function for the rejection contract (fractional values, out-of-range).
+///
+/// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
+#[doc(hidden)]
+pub fn decode_opt_u64_from_decimal(
+    row: &Row,
+    idx: usize,
+    name: &'static str,
+) -> Result<Option<u64>, DjogiError> {
+    let dec: Option<rust_decimal::Decimal> = decode_at(row, idx, name)?;
+    dec.map(|d| decimal_to_u64(d, name)).transpose()
+}
+
+/// Name-based variant of [`decode_narrowed`] for the `FromJoinedPgRow` path.
+///
+/// `FromJoinedPgRow` decodes columns by prefixed name rather than ordinal
+/// index. This helper decodes `W` by the given column name and narrows to `N`,
+/// matching the semantics of [`decode_narrowed`] but accepting a dynamically
+/// computed `&str` name instead of a `&'static str` ordinal-path name.
+///
+/// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
+#[doc(hidden)]
+pub fn decode_narrowed_by_name<'a, W, N>(row: &'a Row, col_name: &str) -> Result<N, DjogiError>
+where
+    W: FromSql<'a> + std::fmt::Display + Copy,
+    N: TryFrom<W>,
+    <N as TryFrom<W>>::Error: std::fmt::Display,
+{
+    let wide: W = row
+        .try_get::<_, W>(col_name)
+        .map_err(|e| DjogiError::Decode(format!("column `{col_name}`: {e}")))?;
+    N::try_from(wide).map_err(|e| {
+        DjogiError::Decode(format!(
+            "column `{col_name}`: value {wide} out of range: {e}",
+        ))
+    })
+}
+
+/// Nullable name-based variant of [`decode_narrowed_by_name`].
+///
+/// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
+#[doc(hidden)]
+pub fn decode_narrowed_opt_by_name<'a, W, N>(
+    row: &'a Row,
+    col_name: &str,
+) -> Result<Option<N>, DjogiError>
+where
+    W: FromSql<'a> + std::fmt::Display + Copy,
+    N: TryFrom<W>,
+    <N as TryFrom<W>>::Error: std::fmt::Display,
+{
+    let wide: Option<W> = row
+        .try_get::<_, Option<W>>(col_name)
+        .map_err(|e| DjogiError::Decode(format!("column `{col_name}`: {e}")))?;
+    wide.map(|w| {
+        N::try_from(w).map_err(|e| {
+            DjogiError::Decode(format!("column `{col_name}`: value {w} out of range: {e}",))
+        })
+    })
+    .transpose()
+}
+
+/// Name-based variant of [`decode_u64_from_decimal`].
+///
+/// Delegates to [`decimal_to_u64`] for the conversion; see that function
+/// for the fractional-rejection and out-of-range contract.
+///
+/// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
+#[doc(hidden)]
+pub fn decode_u64_from_decimal_by_name(row: &Row, col_name: &str) -> Result<u64, DjogiError> {
+    let dec: rust_decimal::Decimal = row
+        .try_get::<_, rust_decimal::Decimal>(col_name)
+        .map_err(|e| DjogiError::Decode(format!("column `{col_name}`: {e}")))?;
+    decimal_to_u64(dec, col_name)
+}
+
+/// Nullable name-based variant of [`decode_u64_from_decimal`].
+///
+/// Delegates to [`decimal_to_u64`] for the non-null case; see that function
+/// for the fractional-rejection and out-of-range contract.
+///
+/// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
+#[doc(hidden)]
+pub fn decode_opt_u64_from_decimal_by_name(
+    row: &Row,
+    col_name: &str,
+) -> Result<Option<u64>, DjogiError> {
+    let dec: Option<rust_decimal::Decimal> = row
+        .try_get::<_, Option<rust_decimal::Decimal>>(col_name)
+        .map_err(|e| DjogiError::Decode(format!("column `{col_name}`: {e}")))?;
+    dec.map(|d| decimal_to_u64(d, col_name)).transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decimal_to_u64;
+    use rust_decimal::Decimal;
+    use std::str::FromStr as _;
+
+    #[test]
+    fn decimal_to_u64_rejects_fractional_value() {
+        // 1.5 has a non-zero fractional part — must be rejected, not truncated.
+        let dec = Decimal::from_str("1.5").unwrap();
+        let err = decimal_to_u64(dec, "col").unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("fractional"),
+            "error for fractional decimal must mention 'fractional': {msg}"
+        );
+    }
+
+    #[test]
+    fn decimal_to_u64_rejects_negative_fractional() {
+        // Negative fractional — both the fractional and sign checks apply.
+        // The fractional check fires first.
+        let dec = Decimal::from_str("-0.1").unwrap();
+        let err = decimal_to_u64(dec, "col").unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("fractional"),
+            "error for negative fractional must mention 'fractional': {msg}"
+        );
+    }
+
+    #[test]
+    fn decimal_to_u64_rejects_value_above_u64_max() {
+        // u64::MAX + 1 = 18_446_744_073_709_551_616 — out of u64 range.
+        let dec = Decimal::from_str("18446744073709551616").unwrap();
+        let err = decimal_to_u64(dec, "col").unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("out of u64 range"),
+            "error for out-of-range value must mention 'out of u64 range': {msg}"
+        );
+    }
+
+    #[test]
+    fn decimal_to_u64_rejects_negative_integer() {
+        // -1 is a valid integer but out of u64 range (u64::MIN is 0).
+        let dec = Decimal::from_str("-1").unwrap();
+        let err = decimal_to_u64(dec, "col").unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("out of u64 range"),
+            "error for negative integer must mention 'out of u64 range': {msg}"
+        );
+    }
+
+    #[test]
+    fn decimal_to_u64_accepts_zero() {
+        let dec = Decimal::from_str("0").unwrap();
+        assert_eq!(decimal_to_u64(dec, "col").unwrap(), 0u64);
+    }
+
+    #[test]
+    fn decimal_to_u64_accepts_u64_max() {
+        // u64::MAX = 18_446_744_073_709_551_615.
+        let dec = Decimal::from_str("18446744073709551615").unwrap();
+        assert_eq!(
+            decimal_to_u64(dec, "col").unwrap(),
+            u64::MAX,
+            "u64::MAX must decode without error"
+        );
+    }
+
+    #[test]
+    fn decimal_to_u64_accepts_positive_integer() {
+        let dec = Decimal::from_str("42").unwrap();
+        assert_eq!(decimal_to_u64(dec, "col").unwrap(), 42u64);
+    }
+}

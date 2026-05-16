@@ -546,6 +546,30 @@ name = "phase8_5_c2_162_raw_dirty_semantics"
 path = "../tests/internal/phase8_5_c2_162_raw_dirty_semantics.rs"
 harness = true
 
+# Phase 8.5 Cluster 2 issue #187 — temporal year-bounds CHECK projection
+# for `time::Date` / `time::OffsetDateTime` columns. Internal because the
+# OOB-rejection assertions construct DATE/TIMESTAMP literals at years
+# outside the `time` crate's default ±9999 range, which the typed Rust
+# surface cannot produce. Exercises `raw_execute` through the bypass
+# attribute to prove the CHECK rejects external OOB writes.
+[[test]]
+name = "phase8_5_c2_187_temporal_year_check"
+path = "../tests/internal/phase8_5_c2_187_temporal_year_check.rs"
+harness = true
+
+# Phase 8.5 Cluster 2 — narrow/unsigned integer type-derived CHECK (closes #190, #186).
+# Round-trips boundary values for i8/u8/u16/u32/u64 through the typed surface and
+# verifies OOB rejection via type-derived CHECK constraints. OOB-rejection assertions
+# use `raw_execute` through the bypass attribute (values unreachable via the typed
+# surface, e.g. SMALLINT 256 for u8, fractional 1.5 for u64 NUMERIC). The u64 tests
+# also verify the integrality CHECK (`col = trunc(col)`) introduced when u64 was
+# moved from NUMERIC(20,0) to bare NUMERIC to prevent silent rounding of fractional
+# inputs before CHECK evaluation.
+[[test]]
+name = "phase8_5_c2_190_integer_widening"
+path = "../tests/internal/phase8_5_c2_190_integer_widening.rs"
+harness = true
+
 # Phase 8.5 predicate ergonomics — closes #107 (Option scalar comparisons),
 # #109 (Condition ergonomics — operators + ConditionExt), #166 (Tracked<T>
 # field lookups), and #167 (&str ergonomics for String fields). The fixture

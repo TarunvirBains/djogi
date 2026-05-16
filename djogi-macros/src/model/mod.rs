@@ -23,6 +23,7 @@ pub mod protected;
 pub mod proxy;
 pub mod relations;
 pub mod schema_const;
+pub mod sql_bind;
 pub mod stubs;
 pub mod visage_ctx;
 pub mod visage_fields;

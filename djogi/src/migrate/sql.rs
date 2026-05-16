@@ -460,7 +460,7 @@ fn emit_add_table(t: &TableSchema) -> OperationSql {
         }
         first = false;
         up.push_str("    ");
-        write_column_definition(&mut up, col);
+        write_column_definition(&mut up, col, &t.table);
     }
     // Composite / declarative PK constraint — emit at the table level
     // when the PK shape calls for it. Single-column non-Composite PKs
@@ -552,7 +552,7 @@ fn emit_add_column(table: &str, col: &ColumnSchema) -> OperationSql {
     let qc = quote_ident(&col.name);
     let mut up = String::with_capacity(128);
     let _ = write!(up, "ALTER TABLE {qt} ADD COLUMN ");
-    write_column_definition(&mut up, col);
+    write_column_definition(&mut up, col, table);
     up.push(';');
     let down = format!("ALTER TABLE {qt} DROP COLUMN {qc};");
     OperationSql {
@@ -1293,7 +1293,21 @@ fn truncate_constraint(name: String) -> String {
 /// `PRIMARY KEY` is inlined here only for the single-column,
 /// non-Composite, non-Custom PK shapes — those go through
 /// [`pk_table_clause`] at the table level.
-fn write_column_definition(out: &mut String, col: &ColumnSchema) {
+///
+/// **`table` parameter** is needed to compute the deterministic
+/// constraint name for an inline CHECK clause
+/// (`{table}_{column}_check`, see [`check_constraint_name`]).
+/// Postgres auto-generates constraint names for unnamed CHECKs in
+/// inconsistent shapes (`{table}_check`, `{table}_check1`, etc.); the
+/// explicit `CONSTRAINT` keyword makes the name deterministic so:
+///
+///   1. The ALTER TABLE DROP CONSTRAINT path from the differ
+///      ([`ColumnChange::SetCheck(None)`]) reaches the same constraint
+///      slot inline CREATE TABLE produced.
+///   2. Adopter-facing error messages reference a predictable
+///      constraint name that mirrors the migration emitter's
+///      ALTER-TABLE path.
+fn write_column_definition(out: &mut String, col: &ColumnSchema, table: &str) {
     let qn = quote_ident(&col.name);
     out.push_str(&qn);
     out.push(' ');
@@ -1334,7 +1348,17 @@ fn write_column_definition(out: &mut String, col: &ColumnSchema) {
         out.push_str(" UNIQUE");
     }
     if let Some(check) = &col.check {
-        let _ = write!(out, " CHECK ({check})");
+        // Emit `CONSTRAINT <name> CHECK (...)` rather than a bare
+        // `CHECK (...)` so the constraint name matches the
+        // ALTER-TABLE-emitted shape from
+        // [`ColumnChange::SetCheck(Some(_))`]. The differ's
+        // DROP / AMEND paths reference the constraint by name; an
+        // inline auto-named CHECK would create a different name
+        // (`{table}_check` / `{table}_check1` per Postgres's
+        // auto-naming) and the differ would fail to drop it.
+        let constraint = check_constraint_name(table, &col.name);
+        let qcons = quote_ident(&constraint);
+        let _ = write!(out, " CONSTRAINT {qcons} CHECK ({check})");
     }
     if let Some(fk) = &col.foreign_key {
         // Cascade source-of-truth lives on `ForeignKeySchema.on_delete`
@@ -1996,6 +2020,78 @@ mod tests {
                 .contains("CHECK (\"huge_count\" >= 0 AND \"huge_count\" <= 18446744073709551615)"),
             "u64 CHECK expression wraps the projected bound: {}",
             sql.up
+        );
+    }
+
+    // ── djogi#187 — type-derived temporal year-bounds CHECKs ───────────────
+    //
+    // Mirrors `alter_column_set_check_uses_named_constraint` for the
+    // temporal column types whose Rust source range (±9999 years for
+    // `time::Date` / `time::OffsetDateTime`) is narrower than the
+    // Postgres column type's range. The expression strings come from
+    // `migrate::projection::field_type_check`; these tests pin the SQL
+    // the emitter wraps around them. Together with the
+    // `field_type_check_for_*` tests in `projection.rs` this covers
+    // the full descriptor → SQL pipeline for the temporal arms.
+
+    #[test]
+    fn alter_column_set_check_for_time_date() {
+        // One-sided upper-bound CHECK: `time::Date::MAX_YEAR = 9999`
+        // is the effective protective bound (Postgres's date input
+        // parser rejects everything below `time::Date::MIN_YEAR`
+        // naturally). See `migrate::projection::field_type_check` doc
+        // comment for the lower-bound rationale.
+        let sql = emit_alter_column(
+            "products",
+            "launch_date",
+            &ColumnChange::SetCheck(Some("\"launch_date\" <= DATE '9999-12-31'".to_string())),
+        );
+        assert!(
+            sql.up
+                .contains("ADD CONSTRAINT \"products_launch_date_check\""),
+            "Date CHECK uses table+column constraint name: {}",
+            sql.up
+        );
+        assert!(
+            sql.up
+                .contains("CHECK (\"launch_date\" <= DATE '9999-12-31')"),
+            "Date CHECK expression wraps the projected bound: {}",
+            sql.up
+        );
+        assert!(
+            sql.down
+                .contains("DROP CONSTRAINT \"products_launch_date_check\""),
+            "Date CHECK rollback drops the named constraint: {}",
+            sql.down
+        );
+    }
+
+    #[test]
+    fn alter_column_set_check_for_time_offset_datetime() {
+        let sql = emit_alter_column(
+            "events",
+            "occurred_at",
+            &ColumnChange::SetCheck(Some(
+                "\"occurred_at\" <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'".to_string(),
+            )),
+        );
+        assert!(
+            sql.up
+                .contains("ADD CONSTRAINT \"events_occurred_at_check\""),
+            "Timestamptz CHECK uses table+column constraint name: {}",
+            sql.up
+        );
+        assert!(
+            sql.up
+                .contains("CHECK (\"occurred_at\" <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00')"),
+            "Timestamptz CHECK expression wraps the projected bound: {}",
+            sql.up
+        );
+        assert!(
+            sql.down
+                .contains("DROP CONSTRAINT \"events_occurred_at_check\""),
+            "Timestamptz CHECK rollback drops the named constraint: {}",
+            sql.down
         );
     }
 

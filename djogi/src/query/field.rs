@@ -2141,17 +2141,15 @@ impl IntoFilterValue for i64 {
 // - `u8`  → `I16`     (smallint)        — u8 max 255 fits in int2's 32_767.
 // - `u16` → `I32`     (integer)         — u16 max 65_535 exceeds i16's 32_767.
 // - `u32` → `I64`     (bigint)          — u32 max ~4.3B exceeds i32's ~2.1B.
-// - `u64` → `Decimal` (NUMERIC(20, 0))  — u64 max ~18.4 quintillion exceeds
+// - `u64` → `Decimal` (bare NUMERIC)     — u64 max ~18.4 quintillion exceeds
 //                                         i64 max ~9.2 quintillion, so signed
 //                                         widening loses the upper half. The
 //                                         lossless route is `rust_decimal::Decimal`,
 //                                         which Postgres `NUMERIC` accepts. The
 //                                         column-side type-derived CHECK from
-//                                         djogi#186 mirrors this binding so
-//                                         `u64` filter values round-trip
-//                                         exactly through `NUMERIC(20, 0)`
-//                                         once `u64` columns become reachable
-//                                         (gated on djogi#190 macro shim work).
+//                                         djogi#190 enforces both range bounds
+//                                         and integrality (`col = trunc(col)`)
+//                                         on the bare NUMERIC column.
 impl IntoFilterValue for i8 {
     fn into_filter_value(self) -> FilterValue {
         FilterValue::I16(i16::from(self))
@@ -6293,7 +6291,7 @@ mod distance_tests {
         // djogi#186 (Phase 8.5 v3 Cluster 2) — `u64` was previously
         // omitted from `IntoFilterValue` because `u64::MAX > i64::MAX`
         // makes the simple signed widening unsound. The fix uses
-        // `rust_decimal::Decimal`, which Postgres `NUMERIC(20, 0)`
+        // `rust_decimal::Decimal`, which Postgres bare `NUMERIC`
         // round-trips losslessly.
         match 0u64.into_filter_value() {
             FilterValue::Decimal(v) => assert_eq!(v, rust_decimal::Decimal::from(0u64)),

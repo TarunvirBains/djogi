@@ -103,6 +103,9 @@ use syn::ItemStruct;
 
 use super::attrs::{FieldAttrs, ModelAttrs, PkStrategy};
 use super::portable_field_emit::{PortableFieldEmitInfo, PortableFieldKind};
+use super::sql_bind::{
+    bind_kind, create_param_tokens, is_nullable, is_tracked_inner, push_bind_tokens,
+};
 
 /// Generate the full `impl Model for T` block.
 ///
@@ -285,12 +288,26 @@ pub fn expand(
     };
     // Create params: one &(dyn ToSql + Sync) per user field, in order.
     // Used to build the __params vec in the create body.
-    let create_param_entries: Vec<TokenStream> = user_fields
-        .iter()
-        .map(|f| {
-            quote! { &value.#f as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
-        })
-        .collect();
+    //
+    // For widened types (i8/u8 → i16, u16 → i32, u32 → i64, u64 → Decimal),
+    // `create_param_tokens` returns a pre-declaration (`let __bind_N: WideType
+    // = widen(value.field)`) and a slice entry (`&__bind_N as …`). The
+    // declarations must appear before the slice literal so the borrows are
+    // valid. For direct types, the pre-declaration is empty and the entry is
+    // `&value.field as …`.
+    let (create_param_pre_decls, create_param_entries): (Vec<TokenStream>, Vec<TokenStream>) =
+        user_fields
+            .iter()
+            .zip(user_field_types.iter())
+            .enumerate()
+            .map(|(slot, (f, ty))| {
+                let kind = bind_kind(ty);
+                let nullable = is_nullable(ty);
+                let tracked = is_tracked_inner(ty);
+                let val_expr = quote! { value.#f };
+                create_param_tokens(&kind, nullable, tracked, val_expr, slot)
+            })
+            .unzip();
 
     // -------------------------------------------------------------------------
     // `save` — dirty-aware SqlAccumulator-based SET emission (Task 2).
@@ -371,25 +388,68 @@ pub fn expand(
             }
             let col_str = crate::syn_util::column_name_from_ident(f);
             let col_eq = format!("{col_str} = ");
+            let kind = bind_kind(ty);
+            let nullable = is_nullable(ty);
             if is_tracked(ty) {
                 // Tracked<T>: emit only when dirty.
-                // Bind the inner T via `(*self.<f>).clone()` — Deref<Target=T>
-                // so the dereference gives `&T` and clone() gives `T`.
+                // `(*self.<f>).clone()` gives the inner `T` via Deref.
+                // Pass tracked=false because we've already extracted T;
+                // `push_bind_tokens` sees T, not Tracked<T>.
+                let inner_expr = quote! { (*self.#f).clone() };
+                let push_stmt = push_bind_tokens(&kind, nullable, false, inner_expr);
                 Some(quote! {
                     if self.#f.is_dirty() {
                         if __first { __first = false; } else { __acc.push_sql(", "); }
                         __acc.push_sql(#col_eq);
-                        __acc.push_bind((*self.#f).clone());
+                        #push_stmt;
+                    }
+                })
+            } else if is_tracked_inner(ty) {
+                // Option<Tracked<T>>: emitted unconditionally on every save.
+                //
+                // `is_tracked(ty)` is false (the outermost type is `Option`,
+                // not `Tracked`), but `is_tracked_inner(ty)` is true because
+                // the inner type after Option-stripping is `Tracked<T>`.
+                //
+                // **Why unconditional**: checking `is_dirty()` on the inner
+                // Tracked<T> misses two transitions that change the field value:
+                //   1. None  → Some(clean_value)  — inner is not dirty, but the
+                //      column must change from NULL to the new value.
+                //   2. Some(_) → None             — the Option evaluates to None
+                //      so `as_ref().map(|t| t.is_dirty()).unwrap_or(false)`
+                //      returns false, but the column must be NULLed.
+                // Emitting unconditionally is always correct at the cost of one
+                // extra bind slot when neither transition has occurred. For full
+                // dirty-tracking of optional fields, prefer `Tracked<Option<T>>`
+                // (Tracked is the outer wrapper; it detects any assignment to the
+                // field, including None ↔ Some transitions).
+                //
+                // Inner expr: `as_ref().map(|__t| (**__t).clone())` → `Option<T>`.
+                // Two dereferences in `(**__t).clone()`:
+                //   - First `*`: `&Tracked<T>` → `Tracked<T>` (reference deref)
+                //   - Second `*`: `Tracked<T>` → `T` (via `Tracked: Deref<Target=T>`)
+                // `push_bind_tokens` receives `Option<T>` (nullable=true,
+                // tracked=false), correctly applying widening (if any).
+                let inner_expr = quote! { self.#f.as_ref().map(|__t| (**__t).clone()) };
+                let push_stmt = push_bind_tokens(&kind, nullable, false, inner_expr);
+                Some(quote! {
+                    {
+                        if __first { __first = false; } else { __acc.push_sql(", "); }
+                        __acc.push_sql(#col_eq);
+                        #push_stmt;
                     }
                 })
             } else {
                 // Non-Tracked: unconditional — behavioral regression guard for
                 // models that do not opt into dirty tracking.
+                // `self.#f.clone()` may be T or Option<T>; tracked=false.
+                let field_expr = quote! { self.#f.clone() };
+                let push_stmt = push_bind_tokens(&kind, nullable, false, field_expr);
                 Some(quote! {
                     {
                         if __first { __first = false; } else { __acc.push_sql(", "); }
                         __acc.push_sql(#col_eq);
-                        __acc.push_bind(self.#f.clone());
+                        #push_stmt;
                     }
                 })
             }
@@ -400,12 +460,25 @@ pub fn expand(
     // and call mark_clean(). `Tracked::new(T)` already constructs with dirty=false
     // so this is defensive — but required by the Task 2 contract so that future
     // in-place rehydration changes cannot silently break the invariant.
+    //
+    // Two shapes:
+    // - `Tracked<T>`: `self.#f.mark_clean()`
+    // - `Option<Tracked<T>>`: `if let Some(ref mut __t) = self.#f { __t.mark_clean(); }`
     let mark_clean_fragments: Vec<TokenStream> = user_fields
         .iter()
         .zip(user_field_types.iter())
         .filter_map(|(f, ty)| {
             if is_tracked(ty) {
                 Some(quote! { self.#f.mark_clean(); })
+            } else if is_tracked_inner(ty) {
+                // Option<Tracked<T>>: mark clean if Some.
+                // `ref mut __t` borrows the inner Tracked<T> in place;
+                // `mark_clean()` takes `&mut self`.
+                Some(quote! {
+                    if let ::std::option::Option::Some(ref mut __t) = self.#f {
+                        __t.mark_clean();
+                    }
+                })
             } else {
                 None
             }
@@ -925,6 +998,10 @@ pub fn expand(
             // `value.<parent>` and have the upsert key off the updated
             // parent_id. Aborted hooks never reach this point.
             #sequence_upsert_preamble
+            // Widened-type temporaries (empty for direct-mapped types).
+            // Must be declared before the slice literal so the borrows live
+            // long enough.
+            #(#create_param_pre_decls)*
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #(#create_param_entries,)*
             ];
@@ -1395,6 +1472,8 @@ pub fn expand(
                 ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
                     #auto_set_tenant
                     let __id_i64: i64 = id.as_i64();
+                    // Widened-type temporaries (empty for direct-mapped types).
+                    #(#create_param_pre_decls)*
                     let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                         &__id_i64,
                         #(#create_param_entries,)*
@@ -1481,18 +1560,40 @@ pub fn expand(
     //
     // Zero-user-field branch never reaches this — n_user >= 1 gated by
     // the per-method body.
+    // Per-row bind tokens for bulk_create / bulk_upsert's VALUES tail.
+    // Uses per-field `push_bind_tokens` so widened types (u8/u16/u64/…)
+    // emit the appropriate widening call before `__acc.push_bind`. Rows
+    // come from `rows.into_iter()` so each `row` is an owned value;
+    // `row.#field` moves the field out of the row, which is fine since
+    // each row is consumed once per iteration.
     let per_row_binds: TokenStream = if n_user == 0 {
         quote! {}
     } else {
-        let first_field = &user_fields[0];
-        let rest_fields = &user_fields[1..];
+        let field_bind_stmts: Vec<TokenStream> = user_fields
+            .iter()
+            .zip(user_field_types.iter())
+            .enumerate()
+            .map(|(i, (f, ty))| {
+                let kind = bind_kind(ty);
+                let nullable = is_nullable(ty);
+                let tracked = is_tracked_inner(ty);
+                let field_expr = quote! { row.#f };
+                let push_stmt = push_bind_tokens(&kind, nullable, tracked, field_expr);
+                if i == 0 {
+                    quote! {
+                        __acc.push_sql("(");
+                        #push_stmt;
+                    }
+                } else {
+                    quote! {
+                        __acc.push_sql(", ");
+                        #push_stmt;
+                    }
+                }
+            })
+            .collect();
         quote! {
-            __acc.push_sql("(");
-            __acc.push_bind(row.#first_field);
-            #(
-                __acc.push_sql(", ");
-                __acc.push_bind(row.#rest_fields);
-            )*
+            #(#field_bind_stmts)*
             __acc.push_sql(")");
         }
     };
@@ -1631,14 +1732,28 @@ pub fn expand(
         // quoting the tree is valid.
         quote! {}
     } else {
-        let all_fields_iter = user_fields.iter();
+        // Like `per_row_binds` but with the PK bound first (`id` column).
+        // Uses `push_bind_tokens` for each user field so widened types get
+        // the appropriate shim.
+        let user_field_bind_stmts: Vec<TokenStream> = user_fields
+            .iter()
+            .zip(user_field_types.iter())
+            .map(|(f, ty)| {
+                let kind = bind_kind(ty);
+                let nullable = is_nullable(ty);
+                let tracked = is_tracked_inner(ty);
+                let field_expr = quote! { row.#f };
+                let push_stmt = push_bind_tokens(&kind, nullable, tracked, field_expr);
+                quote! {
+                    __acc.push_sql(", ");
+                    #push_stmt;
+                }
+            })
+            .collect();
         quote! {
             __acc.push_sql("(");
             #pk_bind_for_id_first
-            #(
-                __acc.push_sql(", ");
-                __acc.push_bind(row.#all_fields_iter);
-            )*
+            #(#user_field_bind_stmts)*
             __acc.push_sql(")");
         }
     };
@@ -2011,6 +2126,66 @@ pub fn expand(
                 quote! {}
             };
 
+            // ── Bind shims for the INSERT params ────────────────────────────
+            //
+            // Route every user field through `create_param_tokens` so widened
+            // types (i8/u8 → i16, u16 → i32, u32 → i64, u64 → Decimal) get
+            // the correct SQL wire type. Previously the insert params were
+            // built as a direct `&[&(dyn ToSql + Sync)]` slice, bypassing the
+            // shims that `create` / `create_with_id` / bulk paths use — this
+            // caused silent type-mismatch failures for models with narrow or
+            // unsigned integer fields (djogi#GPT-5.5 BLOCK 1).
+            //
+            // Mirrors the pattern in the `create_body` section above: each
+            // widened field gets a named `let __bind_N: WideType = …` pre-
+            // declaration, and the slice entry references that binding. Direct
+            // types emit an empty pre-declaration and bind the field value
+            // inline.
+            let (cof_insert_pre_decls, cof_insert_entries): (Vec<TokenStream>, Vec<TokenStream>) =
+                user_fields
+                    .iter()
+                    .zip(user_field_types.iter())
+                    .enumerate()
+                    .map(|(slot, (f, ty))| {
+                        let kind = bind_kind(ty);
+                        let nullable = is_nullable(ty);
+                        let tracked = is_tracked_inner(ty);
+                        let val_expr = quote! { row.#f };
+                        create_param_tokens(&kind, nullable, tracked, val_expr, slot)
+                    })
+                    .unzip();
+
+            // ── Bind shim for the fallback SELECT key param ──────────────────
+            //
+            // The fallback SELECT after an ON CONFLICT hit binds the idempotency
+            // key value as `$1`. If the key field is a widened type, the old
+            // direct `&row.#key_ident as &(dyn ToSql + Sync)` would fail or
+            // send the wrong wire type. Look up the key field's type in the
+            // user-field list and apply `create_param_tokens` on slot 0.
+            let (cof_key_pre_decl, cof_key_entry) =
+                if let Some(idx) = user_fields.iter().position(|f| f == &key_ident) {
+                    let key_ty = &user_field_types[idx];
+                    create_param_tokens(
+                        &bind_kind(key_ty),
+                        is_nullable(key_ty),
+                        is_tracked_inner(key_ty),
+                        quote! { row.#key_ident },
+                        0,
+                    )
+                } else {
+                    // Key field not found — this is unreachable when the macro
+                    // attribute is validated correctly (the key must be an
+                    // existing field). Fallback to direct bind so downstream
+                    // compilation surfaces the name-resolution error naturally.
+                    (
+                        TokenStream::new(),
+                        quote! {
+                            &row.#key_ident
+                                as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)
+                        },
+                    )
+                };
+
             quote! {
                 /// Idempotent create — insert a row keyed off the
                 /// descriptor's `idempotency_key` attribute, or
@@ -2042,8 +2217,12 @@ pub fn expand(
                     row: Self,
                 ) -> ::std::result::Result<(Self, bool), ::djogi::DjogiError> {
                     #auto_set_tenant
+                    // Widened-type temporaries (empty for direct-mapped types).
+                    // Must be declared before the slice literal so the borrows
+                    // live long enough.
+                    #(#cof_insert_pre_decls)*
                     let __insert_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
-                        #(&row.#user_fields as &(dyn ::djogi::__private::postgres_types::ToSql + Sync),)*
+                        #(#cof_insert_entries,)*
                     ];
                     let __maybe_inserted = ctx.__query_opt_for_macros(
                         #insert_or_nothing_sql,
@@ -2060,9 +2239,12 @@ pub fn expand(
                             // existing row by the idempotency key.
                             // The key-field value comes from the
                             // caller's `row` input (unchanged across
-                            // the insert attempt).
+                            // the insert attempt). Widened-type
+                            // temporary for the key field (empty for
+                            // direct-mapped key types).
+                            #cof_key_pre_decl
                             let __select_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
-                                &row.#key_ident as &(dyn ::djogi::__private::postgres_types::ToSql + Sync),
+                                #cof_key_entry,
                             ];
                             let __raw = ctx.__query_one_for_macros(
                                 #select_by_key_sql,
@@ -2343,7 +2525,9 @@ pub fn expand(
                 format!(" DO UPDATE SET {bulk_upsert_set_list} RETURNING {column_list}");
             let insecure_valid_cols_lit = bulk_valid_columns.iter().map(|s| quote! { #s });
 
-            // Per-row binds for the upsert path (same as `upsert_per_row_binds`).
+            // Per-row binds for the upsert path (same shape as
+            // `id_first_per_row_binds`). Uses `push_bind_tokens` for
+            // user fields so widened types get the appropriate shim.
             let insecure_upsert_per_row_binds: TokenStream = {
                 let pk_bind = match &model_attrs.pk {
                     PkStrategy::HeerId => quote! { __acc.push_bind(row.id.as_i64()); },
@@ -2354,14 +2538,25 @@ pub fn expand(
                     PkStrategy::None => unreachable!("handled by early return"),
                     PkStrategy::Custom(_) => quote! { __acc.push_bind(row.id); },
                 };
-                let uf = user_fields.iter();
+                let uf_bind_stmts: Vec<TokenStream> = user_fields
+                    .iter()
+                    .zip(user_field_types.iter())
+                    .map(|(f, ty)| {
+                        let kind = bind_kind(ty);
+                        let nullable = is_nullable(ty);
+                        let tracked = is_tracked_inner(ty);
+                        let field_expr = quote! { row.#f };
+                        let push_stmt = push_bind_tokens(&kind, nullable, tracked, field_expr);
+                        quote! {
+                            __acc.push_sql(", ");
+                            #push_stmt;
+                        }
+                    })
+                    .collect();
                 quote! {
                     __acc.push_sql("(");
                     #pk_bind
-                    #(
-                        __acc.push_sql(", ");
-                        __acc.push_bind(row.#uf);
-                    )*
+                    #(#uf_bind_stmts)*
                     __acc.push_sql(")");
                 }
             };
