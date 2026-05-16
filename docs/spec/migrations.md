@@ -333,11 +333,19 @@ collide on the constraint name slot. The pair is symmetric, easy to read in
 audit logs, and reuses both existing emitter arms unchanged.
 
 **Online safety.** All three lifecycle operations classify as `OnlineSafe` on
-empty tables. On populated tables, the ADD case routes through the two-phase
+empty tables. On populated tables, the v0.1.0-alpha apply path
+(`djogi::migrate::apply_plan` consuming SQL from `migrate/sql.rs`) emits a
+single-statement `ALTER TABLE … ADD CONSTRAINT … CHECK (…)`, which acquires
+`AccessExclusiveLock` for the duration of validation. The two-phase
 constraint validation default (per the `Two-phase constraint validation
-default (Phase 7.5)` decision row): `ADD CONSTRAINT … NOT VALID` followed by
-a separate `VALIDATE CONSTRAINT` step under `ShareUpdateExclusiveLock`. DROP
-is always catalog-only.
+default (Phase 7.5)` decision row) — `ADD CONSTRAINT … NOT VALID` followed
+by a separate `VALIDATE CONSTRAINT` step under `ShareUpdateExclusiveLock` —
+is the planned Phase 7.5 live-plan rollout shape. The pattern catalogue at
+`live_migrate::patterns::TwoPhaseValidate` covers the foreign-key arm today;
+the CHECK / NOT NULL arms are queued behind the live-plan runner surface
+(`djogi live run` / `djogi live finalize`), which remains stubbed / deferred
+in v0.1.0 per the `Live-plan dashboard deferral (Phase 10 / Maahi)` decision
+row. DROP is always catalog-only.
 
 **Inline CHECK on CREATE TABLE.** The SQL emitter renders the projected
 CHECK inline on the column definition using the

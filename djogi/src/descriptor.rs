@@ -88,19 +88,36 @@ pub enum FieldSqlType {
     Boolean,
     Timestamptz,
     Date,
-    /// Bare `NUMERIC` — unbounded precision/scale. Existing Decimal columns
-    /// project to this variant for backward compatibility; future work
-    /// (`djogi#188`) migrates those callers to [`Self::NumericPrecision`].
+    /// Bare `NUMERIC` — unbounded precision/scale. Used for two distinct
+    /// adopter source types, disambiguated at projection time by the
+    /// `FieldDescriptor::rust_source_type` discriminator (`RustSourceType`):
+    ///
+    /// * `Some(RustSourceType::U64)` — `u64` columns, with a range +
+    ///   integrality CHECK (`col >= 0 AND col <= u64::MAX AND col = trunc(col)`).
+    /// * `Some(RustSourceType::Decimal)` — `rust_decimal::Decimal` columns,
+    ///   with a structural CHECK enforcing the 96-bit mantissa / scale ≤ 28
+    ///   representable range (`djogi#188`).
+    /// * `None` — adopter custom types whose `DjogiSqlType::SQL_TYPE`
+    ///   resolves to `"NUMERIC"`; no Rust-derived CHECK is projected because
+    ///   the framework cannot know an adopter scalar type's representable
+    ///   range.
+    ///
+    /// The bare variant preserves the adopter's full precision and scale
+    /// verbatim — Postgres does not round inputs before the CHECK fires.
     Numeric,
-    /// `NUMERIC(precision, scale)` — bounded numeric. Reserved for future
-    /// `Decimal` precision/scale projection (`djogi#188`; the correct `(P, S)`
-    /// default is unresolved and the issue is intentionally deferred). Note:
-    /// `u64` previously used `NUMERIC(20, 0)` but now uses bare [`Self::Numeric`]
-    /// with a CHECK constraint, so `NumericPrecision { precision: 20, scale: 0 }`
-    /// is no longer emitted by the framework. The differ compares variants
-    /// structurally (precision and scale are part of `PartialEq`), so a
-    /// precision change emits a `ColumnChange::ChangeType` like any other
-    /// type evolution.
+    /// `NUMERIC(precision, scale)` — bounded numeric. Not currently emitted
+    /// by the framework for any built-in Rust source type: `u64` historically
+    /// used `NUMERIC(20, 0)` but is now `Numeric` + CHECK, and
+    /// `rust_decimal::Decimal` (djogi#188) ships as `Numeric` + structural
+    /// CHECK rather than a bounded `NUMERIC(P, S)` shape (see the
+    /// `Decimal precision and scale projection (djogi#188)` decision row
+    /// for why every fixed `(P, S)` default either rejects realistic adopter
+    /// values or silently rounds them). The variant is retained so adopter
+    /// custom types (`DjogiSqlType::SQL_TYPE = "NUMERIC(P, S)"`) and any
+    /// future bounded-NUMERIC use cases reach the differ without a fresh
+    /// variant. The differ compares variants structurally (precision and
+    /// scale are part of `PartialEq`), so a precision change emits a
+    /// `ColumnChange::ChangeType` like any other type evolution.
     NumericPrecision {
         precision: u8,
         scale: u8,

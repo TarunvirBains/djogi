@@ -1181,10 +1181,13 @@ fn field_type_check(
         // also enforces the same integrality guard on the Rust side, but the DB-level
         // CHECK prevents the value from landing in the first place.
         //
-        // `None` for columns without a `rust_source_type` discriminator
-        // (i.e. every `i16 → SMALLINT`, `i32 → INTEGER`, `i64 → BIGINT`,
-        // and adopter `Decimal → NUMERIC` column stays unchecked because
-        // the Postgres column type already enforces the relevant type bounds).
+        // `None` for direct-mapped integer columns without a
+        // `rust_source_type` discriminator (`i16 → SMALLINT`,
+        // `i32 → INTEGER`, `i64 → BIGINT`); the Postgres column type
+        // already enforces the relevant range. Adopter `Decimal → NUMERIC`
+        // columns reach the `FieldSqlType::Numeric` arm below — they carry
+        // `Some(RustSourceType::Decimal)` and project a structural CHECK
+        // (djogi#188), not None.
         FieldSqlType::SmallInt => match rust_source_type {
             Some(RustSourceType::I8) => Some(format!("{qcol} >= -128 AND {qcol} <= 127")),
             Some(RustSourceType::U8) => Some(format!("{qcol} >= 0 AND {qcol} <= 255")),
@@ -1234,9 +1237,12 @@ fn field_type_check(
         // Postgres semantics: CHECK constraints treat NULL as satisfied,
         // so nullable Decimal columns work without modification. The
         // `power()` and `scale()` calls are stable Postgres functions
-        // (no extensions required); per-row overhead is <5 µs (NUMERIC
-        // arithmetic + one function call), well inside the umbrella
-        // issue #185's <2 µs / <5 µs class budget for the family.
+        // (no extensions required); per-row overhead is one NUMERIC
+        // arithmetic operation plus one function call. The umbrella
+        // issue #185 records a per-write budget target for the family
+        // but is still open — a measured-µs claim against that budget
+        // is left to #185's benchmark workstream rather than asserted
+        // here.
         //
         // The performance trade-off versus a column-side `NUMERIC(P, S)`
         // was deliberate (see `docs/spec/decisions.md` "Decimal precision
@@ -1266,12 +1272,13 @@ fn field_type_check(
         },
         // All other `FieldSqlType` variants (`Text`, `Real`,
         // `DoublePrecision`, `Boolean`, `Uuid`, `Jsonb`,
-        // arrays, `Citext`, `Geography`, `Custom`, and all
-        // `NumericPrecision { .. }` precisions used by future
-        // `Decimal → NUMERIC(P, S)` work in djogi#188) carry their own
-        // type bounds via the column type itself; no Rust-derived
-        // CHECK applies. Future families plug into this same match
-        // without reshaping the helper signature.
+        // arrays, `Citext`, `Geography`, `Custom`, and every
+        // `NumericPrecision { .. }` instance — djogi#188 ships
+        // `rust_decimal::Decimal` as bare `Numeric` + structural CHECK,
+        // not as `NumericPrecision`) carry their own type bounds via
+        // the column type itself; no Rust-derived CHECK applies. Future
+        // families plug into this same match without reshaping the
+        // helper signature.
         _ => None,
     }
 }
