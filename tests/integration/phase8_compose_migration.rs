@@ -217,20 +217,22 @@ fn composed_columns_match_hand_declared_baseline() {
 
     // Strip the table-name preamble (`CREATE TABLE "<name>" (`) and
     // the trailing PK / closing paren, then compare the column-
-    // definition body. Equal bodies prove the differ treated the
-    // composed columns identically to hand-declared columns.
-    fn column_body(sql: &str) -> &str {
+    // definition body. Normalize generated constraint names because
+    // CHECK names deliberately include the table name; the invariant
+    // here is that composed-vs-hand-declared field emission is otherwise
+    // identical.
+    fn normalized_column_body(sql: &str, table_name: &str) -> String {
         let open = sql
             .find('(')
             .expect("CREATE TABLE SQL must contain an opening paren");
         let close = sql
             .rfind(')')
             .expect("CREATE TABLE SQL must contain a closing paren");
-        &sql[open + 1..close]
+        sql[open + 1..close].replace(table_name, "$TABLE")
     }
     assert_eq!(
-        column_body(&composed_sql),
-        column_body(&baseline_sql),
+        normalized_column_body(&composed_sql, "phase8_compose_round_trip"),
+        normalized_column_body(&baseline_sql, "phase8_compose_round_trip_baseline"),
         "composed `Auditable + SoftDeletable` model must emit the same column body \
          as a hand-declared model with the same fields; emission must NOT depend \
          on `composed_via`. composed:\n{composed_sql}\n\nbaseline:\n{baseline_sql}",

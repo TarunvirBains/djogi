@@ -48,33 +48,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # `sassi-reference` is a path-dep symlink in local dev (points at the
-      # sister `~/projects/sassi` workspace so cargo picks up uncommitted
-      # sassi changes immediately). On GHA the symlink target does not
-      # exist — clone the public TarunvirBains/sassi repo into the
-      # `sassi-reference/` slot so the workspace-root
-      # `[patch."https://github.com/TarunvirBains/sassi.git"]` resolves
-      # (redirects to `sassi-reference/sassi` and `sassi-reference/sassi-codegen`)
-      # and the `djogi-macros` local path deps to those same paths resolve.
-      #
-      # Pinned to Sassi commit 2074c58 — includes WirePortable, the
-      # Lihaaf fixture migration, and the external-field codegen API used
-      # by djogi-macros. Matches the rev declared in djogi/Cargo.toml.
-      # Keep this exact SHA until Djogi moves back to a published Sassi
-      # version or a dedicated compatibility tag.
-      - name: Checkout sassi sister repo
-        uses: actions/checkout@v6
-        with:
-          repository: TarunvirBains/sassi
-          # Full 40-character SHA; actions/checkout@v6 rejects short SHAs
-          # unless the commit is reachable from the fetched refs.
-          ref: 2074c58892f2d15060923f0ba43cfd8493bfafc0
-          path: sassi-reference
-          # SHA pinning requires a full fetch — actions/checkout@v6
-          # defaults to `fetch-depth: 1`, which only fetches named
-          # refs. Drop to a full clone so the SHA resolves.
-          fetch-depth: 0
-
       # Ubuntu-latest GHA runners ship with ~14GB of free disk. Phase 7-Zero
       # pushed the workspace test footprint past that ceiling — 22
       # `#[djogi_test]`s (each provisioning a per-test Postgres DB) + the
@@ -192,7 +165,7 @@ jobs:
       # in lihaaf's published Cargo.lock rather than resolving fresh; this
       # makes the install deterministic across CI runs.
       - name: Install lihaaf (compile-fixture CI gate)
-        run: cargo install lihaaf --version 0.1.0-alpha.4 --locked
+        run: cargo install lihaaf --version 0.1.0-beta.4 --locked
 
       - name: Build
         run: cargo build --workspace
@@ -269,20 +242,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # See `check` job for rationale.
-      - name: Checkout sassi sister repo
-        uses: actions/checkout@v6
-        with:
-          repository: TarunvirBains/sassi
-          # Full 40-character SHA; actions/checkout@v6 rejects short SHAs
-          # unless the commit is reachable from the fetched refs.
-          ref: 2074c58892f2d15060923f0ba43cfd8493bfafc0
-          path: sassi-reference
-          # SHA pinning requires a full fetch — actions/checkout@v6
-          # defaults to `fetch-depth: 1`, which only fetches named
-          # refs. Drop to a full clone so the SHA resolves.
-          fetch-depth: 0
-
       - name: Install MSRV toolchain (matches workspace.package.rust-version)
         uses: dtolnay/rust-toolchain@1.95.0
 
@@ -344,20 +303,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
-
-      # See `check` job for rationale.
-      - name: Checkout sassi sister repo
-        uses: actions/checkout@v6
-        with:
-          repository: TarunvirBains/sassi
-          # Full 40-character SHA; actions/checkout@v6 rejects short SHAs
-          # unless the commit is reachable from the fetched refs.
-          ref: 2074c58892f2d15060923f0ba43cfd8493bfafc0
-          path: sassi-reference
-          # SHA pinning requires a full fetch — actions/checkout@v6
-          # defaults to `fetch-depth: 1`, which only fetches named
-          # refs. Drop to a full clone so the SHA resolves.
-          fetch-depth: 0
 
       - name: Free disk space on GHA runner
         if: ${{ !env.ACT }}

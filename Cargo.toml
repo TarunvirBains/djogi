@@ -1,13 +1,10 @@
 [workspace]
 members = ["djogi", "djogi-macros", "djogi-cli", "djogi-shell", "examples/elephant-tracker", "xtask"]
-# Local sibling-repo symlinks (per `reference_sibling_repos.md`) live alongside
-# this workspace as `*-reference` directories. They are gitignored and may
-# point at sibling Rust workspaces (e.g. `sassi-reference -> ../sassi`).
-# Excluding them prevents cargo from treating their `Cargo.toml` files as
-# members of djogi's workspace — without this, a path-dep into
-# `../sassi-reference/sassi` would walk back up to djogi's workspace root
-# when resolving sassi's `dep.workspace = true` inheritance and fail with
-# `dependency.<name> was not found in workspace.dependencies`.
+# Local sibling-repo symlinks (per `reference_sibling_repos.md`) can live
+# alongside this workspace as `*-reference` directories. They are gitignored
+# and excluded so Cargo never treats an incidental sibling checkout as a djogi
+# workspace member. The committed dependency graph resolves Sassi from
+# crates.io; local sibling overrides should stay local.
 exclude = ["sassi-reference"]
 resolver = "2"
 
@@ -128,40 +125,3 @@ phf = { version = "0.13", features = ["macros"] }
 # `[dev-dependencies]` (dev-deps are stripped from published tarballs anyway).
 djogi = { path = "djogi", version = "0.1.0" }
 djogi-macros = { path = "djogi-macros", version = "0.1.0" }
-
-# Workspace-only `[patch]` for the Sassi git source. Adopters of the
-# published `djogi` crate see only `djogi/Cargo.toml`'s declared dep
-# (`sassi = { git = "https://github.com/TarunvirBains/sassi.git",
-# rev = "...", features = [...] }`) — that declaration is the
-# reproducible source of truth and is what `cargo` resolves for them.
-#
-# Inside this workspace the patch redirects the same git URL to the
-# local `sassi-reference/sassi` symlink so:
-#
-#   1. djogi-macros (lihaaf dev-dep) and djogi (production dep) resolve
-#      to a single `sassi` crate instance (one lockfile entry, one
-#      compiled artifact). Without the patch they would resolve to two
-#      separate sources (path + git) and double-compile.
-#   2. The Phase 8δ T7 lihaaf compile-fail snapshots that reference
-#      `sassi-reference/sassi/src/cacheable.rs:LL:1` stay byte-stable.
-#      A bare git+rev dep would emit
-#      `<CARGO_HOME>/git/checkouts/sassi-<hash>/<rev>/sassi/src/...`
-#      which is neither user-portable (the `<CARGO_HOME>` prefix is
-#      user-specific) nor lihaaf-normalizable (lihaaf only normalizes
-#      `<CARGO_HOME>/registry/...` → `$CARGO/registry/...`; the
-#      `git/checkouts/` subtree has no placeholder).
-#   3. Day-to-day developer flow against the sister `~/projects/sassi`
-#      checkout is preserved — uncommitted Sassi changes remain visible
-#      to djogi without a re-pin.
-#
-# `[patch]` sections live only in the workspace root and are stripped
-# from `cargo publish` tarballs, so this override never reaches
-# adopters. CI clones the same Sassi rev into the `sassi-reference/`
-# slot (see `.github/workflows/ci.yml`), which keeps the patch
-# resolvable in the CI environment too. When Sassi cuts the
-# `v0.1.0-beta.3` tag (or the eventual `0.1` crates.io release) and
-# djogi flips to a registry version (Cluster 8η T13), this patch block
-# is removed in the same change.
-[patch."https://github.com/TarunvirBains/sassi.git"]
-sassi = { path = "sassi-reference/sassi" }
-sassi-codegen = { path = "sassi-reference/sassi-codegen" }

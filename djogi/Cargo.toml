@@ -77,15 +77,9 @@ rust_decimal.workspace = true
 heeranjid.workspace = true
 # sassi — sibling Rust crate providing the universal predicate algebra
 # (`BasicPredicate<T>`), the typed in-memory pool (`Punnu<T>`), and
-# cross-runtime trait queries. Pinned to a git rev on
-# `TarunvirBains/sassi` main (no v0.1.0-beta.3 tag yet) so the workspace
-# resolves reproducibly without a local `sassi-reference/` checkout;
-# flips to `version = "0.1"` from crates.io at Cluster 8η T13 once the
-# beta is published. The pinned rev is `2074c588`, the JSahibON +
-# WirePortable change that `MirJzSON` builds on; sassi #22 / #23 are
-# closed and the API surface djogi consumes here is stable. The newer
-# sassi main HEAD only carries CI / release-doc edits (no API shift),
-# so re-pinning is mechanical when needed.
+# cross-runtime trait queries. Djogi consumes the published beta so local
+# development, CI, and adopters resolve the same registry source. Beta.3
+# contains the JSahibON + WirePortable API surface that `MirJzSON` builds on.
 # `watermark-time` opts the `time`-crate-backed `MonotonicWatermark`
 # impl in (matches djogi's `time` crate baseline); default features
 # (`serde`, `runtime-tokio`) stay enabled.
@@ -94,7 +88,7 @@ heeranjid.workspace = true
 # routes its `MirJzSON` codec through (Phase 8.5 #195). Sassi owns the
 # numeric carrier-selection rules and the structural-equality contract;
 # Djogi never reimplements them.
-sassi = { git = "https://github.com/TarunvirBains/sassi.git", rev = "2074c58892f2d15060923f0ba43cfd8493bfafc0", features = ["watermark-time", "serde-json-bridge"] }
+sassi = { version = "0.1.0-beta.3", features = ["watermark-time", "serde-json-bridge"] }
 tokio-postgres.workspace = true
 postgres-types.workspace = true
 deadpool-postgres.workspace = true
@@ -626,7 +620,7 @@ harness = true
 # `retry_on_conflict`.
 [[test]]
 name = "phase8_5_c4_168_isolation_level"
-path = "../tests/integration/phase8_5_c4_168_isolation_level.rs"
+path = "../tests/internal/phase8_5_c4_168_isolation_level.rs"
 harness = true
 
 # Phase 8.5 Cluster 4 (#169) — typed deferred-constraints surface.

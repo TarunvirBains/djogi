@@ -1543,6 +1543,8 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 [[package]]
 name = "sassi"
 version = "0.1.0-beta.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "389a1f283e76d3e291d29e32539bd0da935ac743c1763f4471e6845ea004e1f4"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1565,6 +1567,8 @@ dependencies = [
 [[package]]
 name = "sassi-codegen"
 version = "0.1.0-beta.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01efbf2a49bac099660daa7069b5c5d3ca6f6e386d772e8de4883601b76d6a2e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1574,6 +1578,8 @@ dependencies = [
 [[package]]
 name = "sassi-macros"
 version = "0.1.0-beta.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2e18970ea2ef48a1a72988f509d20b18df56c0dfe6cd29f384d65fe1f1c362f"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",

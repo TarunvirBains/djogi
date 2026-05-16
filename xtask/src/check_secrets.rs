@@ -2051,8 +2051,8 @@ deleted file mode 100644
                 }
             }
             assert!(
-                checkout_steps >= 2,
-                "expected at least the djogi + sassi-reference checkouts in \
+                checkout_steps == 1,
+                "expected exactly the trusted djogi checkout in \
                  the scan job, found {checkout_steps}",
             );
         }
@@ -2061,14 +2061,10 @@ deleted file mode 100644
         fn scanner_checkout_pins_trusted_default_branch_ref() {
             let yaml = workflow_yaml();
             let body = job_body(&yaml, "scan");
-            // The scanner (djogi-source) checkout is identified as the one
-            // that does NOT pin `repository: TarunvirBains/sassi`.
+            // The scanner checkout is the only checkout in the scan job.
             let djogi_checkout = steps_of(body)
                 .into_iter()
-                .find(|step| {
-                    step.contains("uses: actions/checkout@")
-                        && !step.contains("repository: TarunvirBains/sassi")
-                })
+                .find(|step| step.contains("uses: actions/checkout@"))
                 .expect("scan job must contain a djogi-source checkout step");
             assert!(
                 djogi_checkout.contains("ref: ${{ github.event.repository.default_branch }}"),

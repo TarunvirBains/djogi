@@ -1470,7 +1470,10 @@ mod tests {
     #[test]
     fn empty_defer_constraints_scope_is_terminal_and_names_alternative() {
         let err = DjogiError::EmptyDeferConstraintsScope;
-        assert!(err.is_terminal(), "EmptyDeferConstraintsScope must be terminal");
+        assert!(
+            err.is_terminal(),
+            "EmptyDeferConstraintsScope must be terminal"
+        );
         assert!(
             !err.is_transient(),
             "EmptyDeferConstraintsScope must not be transient"
