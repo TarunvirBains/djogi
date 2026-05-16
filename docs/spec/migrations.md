@@ -618,5 +618,5 @@ issue for implementation.
 | Generated column expression changes (PG 15+) | differ-automatic (verify status) | Confirm the differ emits `DROP EXPRESSION` + `SET EXPRESSION AS` rather than column-recreate; hand-write if not | [#221](https://github.com/TarunvirBains/djogi/issues/221) |
 
 All six pieces are tracked under the [#172](https://github.com/TarunvirBains/djogi/issues/172)
-umbrella. The closing condition for the umbrella is all six sub-issues landed and
+umbrella. The closing condition for the umbrella is all six pieces across five sub-issues (#217–#221) landed and
 `docs/spec/migrations.md` + `docs/guide/models.md` reflecting the final attribute contracts.
