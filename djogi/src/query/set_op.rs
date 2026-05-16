@@ -440,8 +440,9 @@ fn validate_arm<T: Model>(qs: &QuerySet<T>, side: &'static str) -> Result<(), Dj
         return Err(DjogiError::SetOpArmInvalid {
             table: T::table_name(),
             side,
-            reason: "arm has a row-level lock (FOR UPDATE / NOWAIT / SKIP LOCKED); \
-                     Postgres rejects FOR UPDATE inside a set-op subquery",
+            reason: "arm has a row-level lock (FOR UPDATE / FOR SHARE / NOWAIT \
+                     / SKIP LOCKED); Postgres rejects FOR UPDATE and FOR \
+                     SHARE inside a set-op subquery",
         });
     }
     if qs.cache_target.is_some() {

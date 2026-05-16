@@ -33,10 +33,13 @@
 //! - `distinct` / `distinct_on` — already handled by the `CYCLE id` clause
 //!   the SQL builder always emits; a second DISTINCT on top would be both
 //!   redundant and prone to suppressing legitimately-distinct rows.
-//! - `select_for_update` / `nowait` / `skip_locked` — row locks on a
-//!   recursive walk acquire one lock per visited row in walk order. Pre-
-//!   1.0 we ban this until we have a clear "lock the whole subtree
-//!   atomically" story (out of scope for Phase 8-Zero).
+//! - `select_for_update` / `nowait` / `skip_locked` /
+//!   `select_for_share` / `for_share_nowait` / `for_share_skip_locked`
+//!   — row locks on a recursive walk acquire one lock per visited row
+//!   in walk order. Pre-1.0 we ban this until we have a clear "lock
+//!   the whole subtree atomically" story (out of scope for Phase
+//!   8-Zero). The FOR SHARE family (djogi#104) inherits the same
+//!   exclusion.
 //! - `prefetch` / `select_related` — fan-out over a tree multiplies the
 //!   round trips by the size of the subtree; the right shape is a single
 //!   joined recursive CTE the user expresses directly. Banning the wrong

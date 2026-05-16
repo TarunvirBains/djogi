@@ -1,26 +1,40 @@
-//! Row-level locking for SELECT queries — `FOR UPDATE` and its
-//! NOWAIT / SKIP LOCKED variants.
+//! Row-level locking for SELECT queries — `FOR UPDATE` / `FOR SHARE`
+//! and their NOWAIT / SKIP LOCKED variants.
 //!
-//! Phase 4 Task 7 adds lock-mode state to [`QuerySet`](crate::query::QuerySet)
-//! and emits the matching SQL tail during [`crate::query::sql::build_select`].
-//! The three non-default variants map onto Postgres' row-locking clauses
-//! in the read path:
+//! Phase 4 Task 7 added lock-mode state to [`QuerySet`](crate::query::QuerySet)
+//! for the FOR UPDATE family; djogi#104 (Phase 8.5) added the FOR SHARE
+//! family on the same enum so the SQL emitter has a single tail
+//! emitter for every row-lock shape. The matching tail is appended
+//! during [`crate::query::sql::build_select`]. The six non-default
+//! variants map onto Postgres' row-locking clauses in the read path:
 //!
-//! | Variant               | Emits                     | Behaviour on contention              |
-//! |-----------------------|---------------------------|--------------------------------------|
-//! | `None` (default)      | (no tail)                 | ordinary SELECT, no lock             |
-//! | `ForUpdate`           | `FOR UPDATE`              | blocks until the lock is released    |
-//! | `ForUpdateNowait`     | `FOR UPDATE NOWAIT`       | errors immediately with SQLSTATE 55P03 |
-//! | `ForUpdateSkipLocked` | `FOR UPDATE SKIP LOCKED`  | silently skips rows locked elsewhere |
+//! | Variant                | Emits                     | Behaviour on contention                 |
+//! |------------------------|---------------------------|-----------------------------------------|
+//! | `None` (default)       | (no tail)                 | ordinary SELECT, no lock                |
+//! | `ForUpdate`            | `FOR UPDATE`              | exclusive; blocks until released        |
+//! | `ForUpdateNowait`      | `FOR UPDATE NOWAIT`       | exclusive; errors with SQLSTATE 55P03   |
+//! | `ForUpdateSkipLocked`  | `FOR UPDATE SKIP LOCKED`  | exclusive; silently skips locked rows   |
+//! | `ForShare`             | `FOR SHARE`              | shared; blocks writers, allows readers  |
+//! | `ForShareNowait`       | `FOR SHARE NOWAIT`       | shared; errors with SQLSTATE 55P03      |
+//! | `ForShareSkipLocked`   | `FOR SHARE SKIP LOCKED`  | shared; silently skips locked rows      |
 //!
-//! # Pool-backed `FOR UPDATE` is a footgun — surface it loudly
+//! `FOR SHARE` acquires a non-exclusive lock that blocks `UPDATE` /
+//! `DELETE` of the same row but allows other readers to take the same
+//! shared lock concurrently. Use it when multiple sessions need to
+//! read-and-decide against the same row without any one of them
+//! intending to write (e.g., two services checking a balance before
+//! routing a transfer). For exclusive locking (read-then-write within
+//! the same transaction), use the FOR UPDATE family.
 //!
-//! A `FOR UPDATE` lock is held until the end of the enclosing
-//! transaction. A pool-backed [`DjogiContext`](crate::DjogiContext)
-//! auto-commits each statement, so a `SELECT ... FOR UPDATE` on a
-//! pool-backed context acquires the lock, then releases it instantly
-//! when the implicit transaction closes — **no protection whatsoever**
-//! against a concurrent writer between `fetch_*` and `save`.
+//! # Pool-backed locks are a footgun — surface it loudly
+//!
+//! Every row-level lock — `FOR UPDATE` or `FOR SHARE` — is held until
+//! the end of the enclosing transaction. A pool-backed
+//! [`DjogiContext`](crate::DjogiContext) auto-commits each statement,
+//! so a `SELECT ... FOR UPDATE` (or `... FOR SHARE`) on a pool-backed
+//! context acquires the lock, then releases it instantly when the
+//! implicit transaction closes — **no protection whatsoever** against
+//! a concurrent writer between `fetch_*` and any follow-up step.
 //!
 //! Terminal methods that execute the SELECT do NOT reject pool-backed
 //! contexts when a non-`None` lock is set — that would be a runtime
@@ -34,14 +48,13 @@
 /// Row-level lock mode accumulated on a [`QuerySet`](crate::query::QuerySet).
 ///
 /// Crate-private: users configure the lock via the typed builder
-/// methods (`select_for_update` / `nowait` / `skip_locked`). The
-/// builders have last-call-wins semantics — `.nowait()` and
-/// `.skip_locked()` may be called standalone (they imply
-/// `FOR UPDATE`), and chaining either after `.select_for_update()`
-/// simply overwrites the base variant. Keeping the enum `pub(crate)`
-/// means downstream code cannot hand-construct a variant that bypasses
-/// the `push_tail` emitter, which is the only path that produces
-/// Postgres-valid lock SQL.
+/// methods (`select_for_update` / `nowait` / `skip_locked` and the
+/// FOR SHARE companions `select_for_share` / `for_share_nowait` /
+/// `for_share_skip_locked`). The builders have last-call-wins
+/// semantics — every modifier overwrites the prior variant outright.
+/// Keeping the enum `pub(crate)` means downstream code cannot
+/// hand-construct a variant that bypasses the `push_tail` emitter,
+/// which is the only path that produces Postgres-valid lock SQL.
 ///
 /// `Default` is `None` so a fresh `QuerySet<T>` carries no lock tail
 /// — the same behaviour shipped before Task 7 landed.
@@ -64,6 +77,20 @@ pub(crate) enum LockMode {
     /// another session, returning only unlocked rows. The typical
     /// shape for work-queue consumers.
     ForUpdateSkipLocked,
+    /// `FOR SHARE` — acquire a shared (non-exclusive) row lock for
+    /// the duration of the enclosing transaction. Blocks `UPDATE` /
+    /// `DELETE` of the locked rows but allows other readers to take
+    /// the same `FOR SHARE` lock concurrently. djogi#104.
+    ForShare,
+    /// `FOR SHARE NOWAIT` — same shared-lock semantics as
+    /// [`LockMode::ForShare`], but fail immediately with Postgres
+    /// SQLSTATE `55P03` (`lock_not_available`) when another session
+    /// holds a conflicting writer lock. djogi#104.
+    ForShareNowait,
+    /// `FOR SHARE SKIP LOCKED` — same shared-lock semantics as
+    /// [`LockMode::ForShare`], but silently skip rows currently
+    /// locked exclusively by another session. djogi#104.
+    ForShareSkipLocked,
 }
 
 impl LockMode {
@@ -85,6 +112,15 @@ impl LockMode {
             }
             LockMode::ForUpdateSkipLocked => {
                 acc.push_sql(" FOR UPDATE SKIP LOCKED");
+            }
+            LockMode::ForShare => {
+                acc.push_sql(" FOR SHARE");
+            }
+            LockMode::ForShareNowait => {
+                acc.push_sql(" FOR SHARE NOWAIT");
+            }
+            LockMode::ForShareSkipLocked => {
+                acc.push_sql(" FOR SHARE SKIP LOCKED");
             }
         }
     }
@@ -121,6 +157,51 @@ mod tests {
         let mut acc = SqlAccumulator::new("");
         LockMode::ForUpdateSkipLocked.push_tail(&mut acc);
         assert_eq!(acc.sql().trim(), "FOR UPDATE SKIP LOCKED");
+    }
+
+    // ── FOR SHARE family (djogi#104) ─────────────────────────────────
+
+    #[test]
+    fn for_share_emits_bare_clause() {
+        let mut acc = SqlAccumulator::new("");
+        LockMode::ForShare.push_tail(&mut acc);
+        assert_eq!(acc.sql().trim(), "FOR SHARE");
+    }
+
+    #[test]
+    fn for_share_nowait_emits_nowait() {
+        let mut acc = SqlAccumulator::new("");
+        LockMode::ForShareNowait.push_tail(&mut acc);
+        assert_eq!(acc.sql().trim(), "FOR SHARE NOWAIT");
+    }
+
+    #[test]
+    fn for_share_skip_locked_emits_skip_locked() {
+        let mut acc = SqlAccumulator::new("");
+        LockMode::ForShareSkipLocked.push_tail(&mut acc);
+        assert_eq!(acc.sql().trim(), "FOR SHARE SKIP LOCKED");
+    }
+
+    #[test]
+    fn for_share_tails_use_distinct_keywords_from_for_update() {
+        // Regression guard: each FOR SHARE variant emits the FOR SHARE
+        // keyword, never FOR UPDATE. A copy-paste slip on the
+        // `push_tail` arm would surface here before any integration
+        // test exercises the SQL emitter end-to-end.
+        for (mode, expected) in [
+            (LockMode::ForShare, "FOR SHARE"),
+            (LockMode::ForShareNowait, "FOR SHARE NOWAIT"),
+            (LockMode::ForShareSkipLocked, "FOR SHARE SKIP LOCKED"),
+        ] {
+            let mut acc = SqlAccumulator::new("");
+            mode.push_tail(&mut acc);
+            let sql = acc.sql().trim().to_owned();
+            assert_eq!(sql, expected, "wrong tail for {mode:?}");
+            assert!(
+                !sql.contains("FOR UPDATE"),
+                "FOR SHARE tail must not contain FOR UPDATE — got {sql:?} for {mode:?}"
+            );
+        }
     }
 
     #[test]

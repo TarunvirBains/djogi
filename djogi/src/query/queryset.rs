@@ -272,11 +272,12 @@ pub struct QuerySet<T: Model> {
     /// path follow-up query — and combining them would leak that
     /// distinction into the type.
     pub(crate) select_related_paths: Vec<ErasedSelectRelated>,
-    /// Row-level lock mode — Phase 4 Task 7. Default [`LockMode::None`]
-    /// emits no tail; the three `ForUpdate*` variants append `FOR
-    /// UPDATE [NOWAIT|SKIP LOCKED]` to the SELECT. See
-    /// [`crate::query::lock`] for the full behaviour table and the
-    /// pool-backed footgun note.
+    /// Row-level lock mode — Phase 4 Task 7 shipped the `ForUpdate*`
+    /// family; djogi#104 added the `ForShare*` family. Default
+    /// [`LockMode::None`] emits no tail; non-default variants append
+    /// `FOR UPDATE` / `FOR SHARE` (optionally `NOWAIT` / `SKIP LOCKED`)
+    /// to the SELECT. See [`crate::query::lock`] for the full behaviour
+    /// table and the pool-backed footgun note.
     pub(crate) lock: crate::query::lock::LockMode,
     /// Optional Punnu binding — Cluster 8δ T7.3. When `Some(handle)`,
     /// every terminal method that produces user-facing rows
@@ -1107,6 +1108,94 @@ impl<T: Model> QuerySet<T> {
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn skip_locked(mut self) -> Self {
         self.lock = crate::query::lock::LockMode::ForUpdateSkipLocked;
+        self
+    }
+
+    /// Append `FOR SHARE` to the emitted SELECT — acquire a shared
+    /// (non-exclusive) row-level lock on every selected row for the
+    /// duration of the enclosing transaction. Multiple concurrent
+    /// readers may take the same `FOR SHARE` lock; writers (`UPDATE` /
+    /// `DELETE`) block until the lock is released.
+    ///
+    /// Use this when several sessions need to read-and-decide against
+    /// the same row without any of them intending to write
+    /// (e.g., two services verifying an account balance before routing
+    /// a transfer). For read-then-write inside the same transaction,
+    /// reach for [`select_for_update`](QuerySet::select_for_update)
+    /// instead — `FOR SHARE` does not protect against a peer reader
+    /// upgrading to a writer.
+    ///
+    /// # Footgun — wrap in `atomic()`
+    ///
+    /// A `FOR SHARE` lock is scoped to the active transaction. A
+    /// pool-backed context auto-commits each statement, so
+    /// `Account::objects().select_for_share().fetch_one(&mut pool_ctx)`
+    /// acquires the lock and releases it the instant the implicit
+    /// transaction closes — **no mutual exclusion** against a
+    /// concurrent writer between the fetch and the subsequent decide
+    /// step. Every correctness-sensitive use of `select_for_share`
+    /// MUST sit inside an [`atomic()`](crate::transaction::atomic)
+    /// scope.
+    ///
+    /// # Chaining with contention variants
+    ///
+    /// `select_for_share` only sets the base FOR SHARE mode. To pick
+    /// up `NOWAIT` / `SKIP LOCKED` semantics, call the dedicated
+    /// FOR SHARE methods [`for_share_nowait`](QuerySet::for_share_nowait)
+    /// or [`for_share_skip_locked`](QuerySet::for_share_skip_locked)
+    /// directly. The historical [`nowait`](QuerySet::nowait) /
+    /// [`skip_locked`](QuerySet::skip_locked) modifiers
+    /// **unconditionally promote to the FOR UPDATE family** for
+    /// backward compatibility — chaining them after `select_for_share`
+    /// silently swaps the base lock back to FOR UPDATE, which is a
+    /// footgun. Use the FOR SHARE-named modifiers when the base lock
+    /// is FOR SHARE.
+    ///
+    /// djogi#104.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn select_for_share(mut self) -> Self {
+        self.lock = crate::query::lock::LockMode::ForShare;
+        self
+    }
+
+    /// Set the SELECT lock to `FOR SHARE NOWAIT` — acquire a shared
+    /// (non-exclusive) row lock if available, else return immediately
+    /// with Postgres SQLSTATE `55P03` (`lock_not_available`), which
+    /// terminals classify as
+    /// [`DjogiError::LockConflict`](crate::DjogiError::LockConflict).
+    ///
+    /// Callable standalone (implies `select_for_share`). Combining
+    /// with [`for_share_skip_locked`](QuerySet::for_share_skip_locked)
+    /// — last call wins.
+    ///
+    /// See [`select_for_share`](QuerySet::select_for_share) for the
+    /// pool-backed footgun and the rationale for keeping the FOR
+    /// SHARE and FOR UPDATE contention modifiers on separate methods.
+    /// djogi#104.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn for_share_nowait(mut self) -> Self {
+        self.lock = crate::query::lock::LockMode::ForShareNowait;
+        self
+    }
+
+    /// Set the SELECT lock to `FOR SHARE SKIP LOCKED` — silently skip
+    /// rows currently locked exclusively by another session and return
+    /// only the unlocked rows under a shared lock.
+    ///
+    /// The FOR SHARE analogue of
+    /// [`skip_locked`](QuerySet::skip_locked): useful for multi-reader
+    /// scans that should make progress on the unlocked subset without
+    /// blocking on rows another session is mid-write on.
+    ///
+    /// Callable standalone (implies `select_for_share`). Combining
+    /// with [`for_share_nowait`](QuerySet::for_share_nowait) — last
+    /// call wins.
+    ///
+    /// See [`select_for_share`](QuerySet::select_for_share) for the
+    /// pool-backed footgun. djogi#104.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn for_share_skip_locked(mut self) -> Self {
+        self.lock = crate::query::lock::LockMode::ForShareSkipLocked;
         self
     }
 
