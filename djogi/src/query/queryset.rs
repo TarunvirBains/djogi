@@ -2370,10 +2370,17 @@ fn validate_portable_sql_emit<T: crate::model::Model>(
     predicate: &sassi::BasicPredicate<T>,
 ) -> Result<(), PortablePredicateError> {
     let mut acc = crate::pg::accumulator::SqlAccumulator::new("");
+    // The predicate was produced by `try_reduce_q_ref_to_basic`, which
+    // only descends `Q::Portable` / `Q::Compound` / `Q::Xor` / `Q::Negated`.
+    // Every Field leaf therefore came out of a `PortablePredicate<T>`
+    // (the trusted-construction boundary); JSON leaves transited the
+    // MirJzSON builder. Pass `JsonTrust::Trusted` so the walker does
+    // not reject Djogi-built JSON predicates during the gate.
     crate::query::portable::emit_basic_predicate::<T>(
         &mut acc,
         predicate,
         crate::query::SqlEmitContext::root(),
+        crate::query::portable::JsonTrust::Trusted,
     )
 }
 

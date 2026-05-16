@@ -2418,13 +2418,18 @@ fn parse_index_method(s: &str, span: proc_macro2::Span) -> syn::Result<()> {
 }
 
 /// `true` when `ty` is an accepted target for `#[field(index = "gin")]` —
-/// i.e. `Jsonb<T>`, `Vec<T>`, or `TsVector`, unwrapping one layer of
-/// `Option<…>` so nullable columns are accepted too.
+/// i.e. `Jsonb<T>`, `MirJzSON`, `Vec<T>`, or `TsVector`, unwrapping one
+/// layer of `Option<…>` so nullable columns are accepted too.
 ///
 /// Uses last-segment name matching so bare idents, `djogi::Jsonb<T>`,
-/// `djogi::fts::TsVector`, and similar qualified forms all resolve. Phase
-/// 7-Zero v3 T2 Q4 codifies this set; anything outside it must declare
-/// the index at the model level where opclass can be specified.
+/// `djogi::jsonb::MirJzSON`, `djogi::fts::TsVector`, and similar qualified
+/// forms all resolve. Phase 7-Zero v3 T2 Q4 codifies this set; anything
+/// outside it must declare the index at the model level where opclass
+/// can be specified.
+///
+/// Phase 8.5 #195 adds `MirJzSON` to the set — it is the raw-JSONB
+/// sibling of `Jsonb<T>` and shares the same GIN-index suitability for
+/// containment / `jsonb_path_ops` lookups.
 fn is_gin_compatible_type(ty: &syn::Type) -> bool {
     let (inner, _) = unwrap_option(ty);
     let syn::Type::Path(syn::TypePath { path, qself: None }) = inner else {
@@ -2432,7 +2437,12 @@ fn is_gin_compatible_type(ty: &syn::Type) -> bool {
     };
     path.segments
         .last()
-        .map(|seg| matches!(seg.ident.to_string().as_str(), "Jsonb" | "Vec" | "TsVector"))
+        .map(|seg| {
+            matches!(
+                seg.ident.to_string().as_str(),
+                "Jsonb" | "MirJzSON" | "Vec" | "TsVector"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -2527,6 +2537,25 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         && let Some(last) = path.segments.last()
         && last.ident == "Jsonb"
         && matches!(last.arguments, syn::PathArguments::AngleBracketed(_))
+    {
+        return Some("JSONB");
+    }
+
+    // Phase 8.5 #195 — `MirJzSON` (Djogi's raw / unschemed JSONB
+    // escape hatch) lowers to JSONB. Mirrors the `Jsonb<T>` matcher
+    // shape: last-segment ident match, no generic arguments
+    // (`MirJzSON` is nullary). Covers bare `MirJzSON`, `djogi::MirJzSON`,
+    // `djogi::jsonb::MirJzSON`, `crate::MirJzSON`, `super::MirJzSON`,
+    // and `::djogi::*::MirJzSON` path forms uniformly.
+    //
+    // The macro-level `#[mirjzson(justification = "...")]` gate
+    // (`super::mirjzson`) enforces the adopter-visible discipline; this
+    // arm just maps the type to the right SQL column type so descriptor
+    // emission and migration diffs work without extra surface.
+    if let syn::Type::Path(syn::TypePath { qself: None, path }) = ty
+        && let Some(last) = path.segments.last()
+        && last.ident == "MirJzSON"
+        && matches!(last.arguments, syn::PathArguments::None)
     {
         return Some("JSONB");
     }

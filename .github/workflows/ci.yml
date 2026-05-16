@@ -52,20 +52,23 @@ jobs:
       # sister `~/projects/sassi` workspace so cargo picks up uncommitted
       # sassi changes immediately). On GHA the symlink target does not
       # exist — clone the public TarunvirBains/sassi repo into the
-      # `sassi-reference/` slot so `path = "../sassi-reference/sassi"` in
-      # `djogi/Cargo.toml` and `djogi-macros/Cargo.toml` resolves.
+      # `sassi-reference/` slot so the workspace-root
+      # `[patch."https://github.com/TarunvirBains/sassi.git"]` resolves
+      # (redirects to `sassi-reference/sassi` and `sassi-reference/sassi-codegen`)
+      # and the `djogi-macros` local path deps to those same paths resolve.
       #
-      # Pinned to Sassi commit c143f373 because it includes the Lihaaf
-      # fixture migration and the external-field codegen API used by
-      # djogi-macros. Keep this exact SHA until Djogi moves back to a
-      # published Sassi version or a dedicated compatibility tag.
+      # Pinned to Sassi commit 2074c58 — includes WirePortable, the
+      # Lihaaf fixture migration, and the external-field codegen API used
+      # by djogi-macros. Matches the rev declared in djogi/Cargo.toml.
+      # Keep this exact SHA until Djogi moves back to a published Sassi
+      # version or a dedicated compatibility tag.
       - name: Checkout sassi sister repo
         uses: actions/checkout@v6
         with:
           repository: TarunvirBains/sassi
           # Full 40-character SHA; actions/checkout@v6 rejects short SHAs
           # unless the commit is reachable from the fetched refs.
-          ref: c143f373c333876fa744e9aae6bd38881a8126c8
+          ref: 2074c58892f2d15060923f0ba43cfd8493bfafc0
           path: sassi-reference
           # SHA pinning requires a full fetch — actions/checkout@v6
           # defaults to `fetch-depth: 1`, which only fetches named
@@ -273,7 +276,7 @@ jobs:
           repository: TarunvirBains/sassi
           # Full 40-character SHA; actions/checkout@v6 rejects short SHAs
           # unless the commit is reachable from the fetched refs.
-          ref: c143f373c333876fa744e9aae6bd38881a8126c8
+          ref: 2074c58892f2d15060923f0ba43cfd8493bfafc0
           path: sassi-reference
           # SHA pinning requires a full fetch — actions/checkout@v6
           # defaults to `fetch-depth: 1`, which only fetches named
@@ -349,7 +352,7 @@ jobs:
           repository: TarunvirBains/sassi
           # Full 40-character SHA; actions/checkout@v6 rejects short SHAs
           # unless the commit is reachable from the fetched refs.
-          ref: c143f373c333876fa744e9aae6bd38881a8126c8
+          ref: 2074c58892f2d15060923f0ba43cfd8493bfafc0
           path: sassi-reference
           # SHA pinning requires a full fetch — actions/checkout@v6
           # defaults to `fetch-depth: 1`, which only fetches named
