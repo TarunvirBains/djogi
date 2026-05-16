@@ -656,26 +656,76 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
                 format!("ALTER TABLE {qt} ALTER COLUMN {qc} TYPE {from} USING {qc}::{from};");
             (up, down, "change TYPE", None)
         }
-        ColumnChange::SetCheck(Some(expr)) => {
+        ColumnChange::SetCheck { from, to } => {
             // Postgres has no `ALTER COLUMN ... SET CHECK`; check
             // constraints live at the table level. Emit a named
-            // table-level constraint so the down side can drop it
-            // by name.
+            // table-level constraint so DROP / ADD reach the same
+            // constraint-name slot deterministically.
+            //
+            // The variant carries both prior (`from`) and target (`to`)
+            // expressions so the down side can fully restore the
+            // pre-operation CHECK state — no lossy comment placeholder.
+            // GPT-5.5 review pinned the lossy-rollback gap: the previous
+            // `SetCheck(Option<String>)` rendered the drop arm as DROP
+            // up / comment-only down, which left the column
+            // unconstrained after rollback (visible whenever a type
+            // migration on a checked column was rolled back).
             let constraint = check_constraint_name(table, column);
             let qcons = quote_ident(&constraint);
-            let up = format!("ALTER TABLE {qt} ADD CONSTRAINT {qcons} CHECK ({expr});");
-            let down = format!("ALTER TABLE {qt} DROP CONSTRAINT {qcons};");
-            (up, down, "set CHECK", None)
-        }
-        ColumnChange::SetCheck(None) => {
-            let constraint = check_constraint_name(table, column);
-            let qcons = quote_ident(&constraint);
-            let up = format!("ALTER TABLE {qt} DROP CONSTRAINT {qcons};");
-            let down = format!(
-                "-- NOTE: prior CHECK expression for `{table}.{column}` not recoverable.\n\
-                 -- Rollback requires hand-writing the original CHECK clause."
-            );
-            (up, down, "drop CHECK", None)
+            let (up, down, label) = match (from, to) {
+                (Some(prior), None) => {
+                    // DROP — drop the existing constraint on apply;
+                    // re-add the prior expression on rollback.
+                    (
+                        format!("ALTER TABLE {qt} DROP CONSTRAINT {qcons};"),
+                        format!("ALTER TABLE {qt} ADD CONSTRAINT {qcons} CHECK ({prior});"),
+                        "drop CHECK",
+                    )
+                }
+                (None, Some(expr)) => {
+                    // ADD — install the new constraint on apply; drop
+                    // it on rollback (no prior to restore).
+                    (
+                        format!("ALTER TABLE {qt} ADD CONSTRAINT {qcons} CHECK ({expr});"),
+                        format!("ALTER TABLE {qt} DROP CONSTRAINT {qcons};"),
+                        "set CHECK",
+                    )
+                }
+                (Some(prior), Some(expr)) => {
+                    // AMEND in one step — drop then re-add inside a
+                    // single emitted SQL chunk. The differ currently
+                    // splits AMEND across two `SetCheck` entries; this
+                    // arm is the structural completion for callers
+                    // that prefer the merged form.
+                    (
+                        format!(
+                            "ALTER TABLE {qt} DROP CONSTRAINT {qcons};\n\
+                             ALTER TABLE {qt} ADD CONSTRAINT {qcons} CHECK ({expr});"
+                        ),
+                        format!(
+                            "ALTER TABLE {qt} DROP CONSTRAINT {qcons};\n\
+                             ALTER TABLE {qt} ADD CONSTRAINT {qcons} CHECK ({prior});"
+                        ),
+                        "amend CHECK",
+                    )
+                }
+                (None, None) => {
+                    // No-op pair. The differ never produces this shape
+                    // (the (None, None) and (Some(b), Some(a)) where
+                    // b == a cases are filtered upstream). If it ever
+                    // does, emit a no-op SQL comment rather than
+                    // garbage SQL.
+                    (
+                        format!(
+                            "-- noop SetCheck on `{table}.{column}` (from == to == None); \
+                             likely a differ bug.\n"
+                        ),
+                        format!("-- noop SetCheck rollback on `{table}.{column}`.\n"),
+                        "noop CHECK",
+                    )
+                }
+            };
+            (up, down, label, None)
         }
         ColumnChange::SetUnique(true) => {
             let constraint = unique_constraint_name(table, column);
@@ -1302,8 +1352,8 @@ fn truncate_constraint(name: String) -> String {
 /// explicit `CONSTRAINT` keyword makes the name deterministic so:
 ///
 ///   1. The ALTER TABLE DROP CONSTRAINT path from the differ
-///      ([`ColumnChange::SetCheck(None)`]) reaches the same constraint
-///      slot inline CREATE TABLE produced.
+///      ([`ColumnChange::SetCheck`] with `to: None`) reaches the same
+///      constraint slot inline CREATE TABLE produced.
 ///   2. Adopter-facing error messages reference a predictable
 ///      constraint name that mirrors the migration emitter's
 ///      ALTER-TABLE path.
@@ -1351,7 +1401,7 @@ fn write_column_definition(out: &mut String, col: &ColumnSchema, table: &str) {
         // Emit `CONSTRAINT <name> CHECK (...)` rather than a bare
         // `CHECK (...)` so the constraint name matches the
         // ALTER-TABLE-emitted shape from
-        // [`ColumnChange::SetCheck(Some(_))`]. The differ's
+        // [`ColumnChange::SetCheck`] (with `to: Some(_)`). The differ's
         // DROP / AMEND paths reference the constraint by name; an
         // inline auto-named CHECK would create a different name
         // (`{table}_check` / `{table}_check1` per Postgres's
@@ -1511,9 +1561,9 @@ fn on_delete_sql(d: OnDeleteSchema) -> &'static str {
 mod tests {
     use super::*;
     use crate::migrate::schema::{
-        ColumnSchema, ForeignKeySchema, IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema,
-        IndexOrderSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema, OnDeleteSchema,
-        PkKindSchema, PrimaryKeySchema, RelationKindSchema, TableSchema, AppliedSchema,
+        AppliedSchema, ColumnSchema, ForeignKeySchema, IndexColumnSchema, IndexKindSchema,
+        IndexNullsOrderSchema, IndexOrderSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema,
+        OnDeleteSchema, PkKindSchema, PrimaryKeySchema, RelationKindSchema, TableSchema,
     };
 
     fn col(name: &str, ty: &str, nullable: bool) -> ColumnSchema {
@@ -1970,11 +2020,20 @@ mod tests {
         let sql = emit_alter_column(
             "users",
             "email",
-            &ColumnChange::SetCheck(Some("email <> ''".to_string())),
+            &ColumnChange::SetCheck {
+                from: None,
+                to: Some("email <> ''".to_string()),
+            },
         );
         assert!(sql.up.contains("ADD CONSTRAINT \"users_email_check\""));
         assert!(sql.up.contains("CHECK (email <> '')"));
+        // Pure ADD has no prior to restore — rollback is DROP only.
         assert!(sql.down.contains("DROP CONSTRAINT \"users_email_check\""));
+        assert!(
+            !sql.down.contains("ADD CONSTRAINT"),
+            "ADD-only rollback must not re-add: {}",
+            sql.down
+        );
     }
 
     // ── djogi#186 — type-derived integer-bound CHECKs ──────────────────────
@@ -1991,9 +2050,12 @@ mod tests {
         let sql = emit_alter_column(
             "widgets",
             "maybe_signed_byte",
-            &ColumnChange::SetCheck(Some(
-                "\"maybe_signed_byte\" >= -128 AND \"maybe_signed_byte\" <= 127".to_string(),
-            )),
+            &ColumnChange::SetCheck {
+                from: None,
+                to: Some(
+                    "\"maybe_signed_byte\" >= -128 AND \"maybe_signed_byte\" <= 127".to_string(),
+                ),
+            },
         );
         assert!(
             sql.up
@@ -2020,9 +2082,10 @@ mod tests {
         let sql = emit_alter_column(
             "widgets",
             "medium_count",
-            &ColumnChange::SetCheck(Some(
-                "\"medium_count\" >= 0 AND \"medium_count\" <= 4294967295".to_string(),
-            )),
+            &ColumnChange::SetCheck {
+                from: None,
+                to: Some("\"medium_count\" >= 0 AND \"medium_count\" <= 4294967295".to_string()),
+            },
         );
         assert!(
             sql.up
@@ -2054,9 +2117,12 @@ mod tests {
         let sql = emit_alter_column(
             "widgets",
             "huge_count",
-            &ColumnChange::SetCheck(Some(
-                "\"huge_count\" >= 0 AND \"huge_count\" <= 18446744073709551615".to_string(),
-            )),
+            &ColumnChange::SetCheck {
+                from: None,
+                to: Some(
+                    "\"huge_count\" >= 0 AND \"huge_count\" <= 18446744073709551615".to_string(),
+                ),
+            },
         );
         assert!(
             sql.up
@@ -2093,7 +2159,10 @@ mod tests {
         let sql = emit_alter_column(
             "products",
             "launch_date",
-            &ColumnChange::SetCheck(Some("\"launch_date\" <= DATE '9999-12-31'".to_string())),
+            &ColumnChange::SetCheck {
+                from: None,
+                to: Some("\"launch_date\" <= DATE '9999-12-31'".to_string()),
+            },
         );
         assert!(
             sql.up
@@ -2120,9 +2189,12 @@ mod tests {
         let sql = emit_alter_column(
             "events",
             "occurred_at",
-            &ColumnChange::SetCheck(Some(
-                "\"occurred_at\" <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'".to_string(),
-            )),
+            &ColumnChange::SetCheck {
+                from: None,
+                to: Some(
+                    "\"occurred_at\" <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'".to_string(),
+                ),
+            },
         );
         assert!(
             sql.up
@@ -2148,10 +2220,20 @@ mod tests {
     fn alter_column_drop_check_emits_drop_constraint_only() {
         // The DROP scenario from the lifecycle contract: descriptor
         // evolves from u32 → i64. `field_type_check` returns `None` on
-        // the new descriptor, the differ emits `SetCheck(None)`, and
-        // the SQL emitter produces a single DROP CONSTRAINT statement
-        // with a documented-not-recoverable down side.
-        let sql = emit_alter_column("widgets", "medium_count", &ColumnChange::SetCheck(None));
+        // the new descriptor, the differ emits
+        // `SetCheck { from: Some(prior), to: None }`, and the SQL
+        // emitter produces a single DROP CONSTRAINT statement on the
+        // up side. The down side restores the prior CHECK via
+        // ADD CONSTRAINT — fully recoverable rollback (GPT-5.5 fix).
+        let prior = "\"medium_count\" >= 0 AND \"medium_count\" <= 4294967295";
+        let sql = emit_alter_column(
+            "widgets",
+            "medium_count",
+            &ColumnChange::SetCheck {
+                from: Some(prior.to_string()),
+                to: None,
+            },
+        );
         assert!(
             sql.up
                 .contains("DROP CONSTRAINT \"widgets_medium_count_check\""),
@@ -2160,8 +2242,25 @@ mod tests {
         );
         assert!(
             !sql.up.contains("ADD CONSTRAINT"),
-            "drop CHECK must not also add a constraint: {}",
+            "drop CHECK must not also add a constraint on the up side: {}",
             sql.up
+        );
+        // GPT-5.5 fix: down side restores the prior CHECK losslessly.
+        assert!(
+            sql.down
+                .contains("ADD CONSTRAINT \"widgets_medium_count_check\""),
+            "drop CHECK rollback must ADD the prior constraint: {}",
+            sql.down
+        );
+        assert!(
+            sql.down.contains(&format!("CHECK ({prior})")),
+            "drop CHECK rollback must restore the prior expression: {}",
+            sql.down
+        );
+        assert!(
+            sql.lossy.is_none(),
+            "drop CHECK rollback is lossless when `from` is known: {:?}",
+            sql.lossy
         );
     }
 
@@ -2170,22 +2269,33 @@ mod tests {
         // The AMEND scenario from the lifecycle contract: descriptor
         // evolves from u32 → u64 (or any CHECK expression change).
         // The differ at `migrate/diff.rs::emit_alter_column` emits two
-        // ColumnChange entries in order — `SetCheck(None)` then
-        // `SetCheck(Some(new))` — and the SQL emitter renders them as
-        // a clean DROP-then-ADD pair against the same constraint name
-        // slot. Without the differ's two-step emission the second
-        // ALTER would collide on the existing constraint name.
+        // ColumnChange entries in order — `SetCheck { from: Some(b), to: None }`
+        // then `SetCheck { from: None, to: Some(a) }` — and the SQL
+        // emitter renders them as a clean DROP-then-ADD pair against
+        // the same constraint name slot. Without the differ's two-step
+        // emission the second ALTER would collide on the existing
+        // constraint name.
         //
         // This test simulates the SQL pair the emitter produces when
         // the differ supplies the two changes in order. Walk the two
         // emissions and verify their SQL forms compose correctly.
-        let drop_sql = emit_alter_column("widgets", "amount", &ColumnChange::SetCheck(None));
+        let prior_expr = "\"amount\" >= 0 AND \"amount\" <= 4294967295";
+        let new_expr = "\"amount\" >= 0 AND \"amount\" <= 18446744073709551615";
+        let drop_sql = emit_alter_column(
+            "widgets",
+            "amount",
+            &ColumnChange::SetCheck {
+                from: Some(prior_expr.to_string()),
+                to: None,
+            },
+        );
         let add_sql = emit_alter_column(
             "widgets",
             "amount",
-            &ColumnChange::SetCheck(Some(
-                "\"amount\" >= 0 AND \"amount\" <= 18446744073709551615".to_string(),
-            )),
+            &ColumnChange::SetCheck {
+                from: None,
+                to: Some(new_expr.to_string()),
+            },
         );
         // The first emission drops the existing constraint.
         assert!(
@@ -2214,10 +2324,7 @@ mod tests {
         );
     }
 
-    fn assert_type_change_check_sql_order(
-        before_check: Option<&str>,
-        after_check: Option<&str>,
-    ) {
+    fn assert_type_change_check_sql_order(before_check: Option<&str>, after_check: Option<&str>) {
         let before = applied_schema_with_amount_check("INTEGER", before_check);
         let after = applied_schema_with_amount_check("BIGINT", after_check);
         let delta = crate::migrate::diff::diff_schemas(
@@ -2230,21 +2337,80 @@ mod tests {
         );
         let statements = lower_delta(&delta).expect("lower delta");
         assert_eq!(statements.len(), 3, "expected 3 migration statements");
+        // ── UP ordering: drop existing CHECK, alter type, add new CHECK.
         assert!(
-            statements[0].up.contains("DROP CONSTRAINT \"widgets_amount_check\""),
+            statements[0]
+                .up
+                .contains("DROP CONSTRAINT \"widgets_amount_check\""),
             "first statement must drop existing CHECK: {}",
             statements[0].up
         );
         assert!(
-            statements[1].up
+            statements[1]
+                .up
                 .contains("ALTER TABLE \"widgets\" ALTER COLUMN \"amount\" TYPE BIGINT"),
             "second statement must alter column type: {}",
             statements[1].up
         );
         assert!(
-            statements[2].up.contains("ADD CONSTRAINT \"widgets_amount_check\""),
+            statements[2]
+                .up
+                .contains("ADD CONSTRAINT \"widgets_amount_check\""),
             "third statement must add replacement CHECK: {}",
             statements[2].up
+        );
+
+        // ── DOWN ordering: the composed down file walks ops in reverse,
+        // so the rollback order is statements[2].down, [1].down, [0].down.
+        // GPT-5.5 fix: every step's down must restore the previous state.
+        // This is the central assertion the lossy-rollback bug was missing.
+
+        // statements[2] = add new CHECK; its rollback drops the new CHECK
+        // (no prior to restore — the prior is restored by statements[0].down).
+        assert!(
+            statements[2]
+                .down
+                .contains("DROP CONSTRAINT \"widgets_amount_check\""),
+            "third statement rollback must drop the new CHECK: {}",
+            statements[2].down
+        );
+
+        // statements[1] = alter column TYPE; rollback reverts to INTEGER.
+        assert!(
+            statements[1]
+                .down
+                .contains("ALTER TABLE \"widgets\" ALTER COLUMN \"amount\" TYPE INTEGER"),
+            "second statement rollback must revert type: {}",
+            statements[1].down
+        );
+
+        // statements[0] = drop original CHECK; rollback re-adds it with
+        // the original expression — the GPT-5.5 BLOCK fix in action.
+        let before_expr = before_check.expect("before_check should be Some for this helper");
+        assert!(
+            statements[0]
+                .down
+                .contains("ADD CONSTRAINT \"widgets_amount_check\""),
+            "first statement rollback must re-add the original CHECK: {}",
+            statements[0].down
+        );
+        assert!(
+            statements[0]
+                .down
+                .contains(&format!("CHECK ({before_expr})")),
+            "first statement rollback must restore the original CHECK expression \
+             `{before_expr}`, got: {}",
+            statements[0].down
+        );
+        assert!(
+            statements[0].lossy.is_none()
+                && statements[1].lossy.is_none()
+                && statements[2].lossy.is_none(),
+            "type-change-with-CHECK rollback is now fully recoverable; lossy: \
+             {:?} / {:?} / {:?}",
+            statements[0].lossy,
+            statements[1].lossy,
+            statements[2].lossy,
         );
     }
 
@@ -2262,6 +2428,286 @@ mod tests {
             Some("\"amount\" >= 0 AND \"amount\" <= 4294967295"),
             Some("\"amount\" >= 0 AND \"amount\" <= 18446744073709551615"),
         );
+    }
+
+    // ── GPT-5.5 BLOCK: CHECK rollback restoration (issue #105/#188) ──────
+    //
+    // The previous IR's `SetCheck(Option<String>)` carried only the
+    // target check expression, so the down-side rollback for the DROP
+    // arm could only emit a comment ("prior CHECK not recoverable").
+    // For a type migration on a checked column, this left the column
+    // unconstrained after rollback even though the prior expression was
+    // structurally available in the differ. The refactor to
+    // `SetCheck { from, to }` carries both, so the down-side restores
+    // exactly. These tests pin that behaviour for the three lifecycle
+    // shapes the differ produces.
+
+    #[test]
+    fn type_change_unchanged_check_down_restores_original_check() {
+        // Type-only change with the same CHECK on both sides.
+        // Down composes in reverse: drop new CHECK, alter type back,
+        // ADD original CHECK. Asserts every step in
+        // `assert_type_change_check_sql_order` for the unchanged-check case.
+        assert_type_change_check_sql_order(
+            Some("\"amount\" >= 0 AND \"amount\" <= 4294967295"),
+            Some("\"amount\" >= 0 AND \"amount\" <= 4294967295"),
+        );
+    }
+
+    #[test]
+    fn type_change_changed_check_down_restores_old_not_new_check() {
+        // Type change where the CHECK expression also changes.
+        // The critical assertion: the down-side restores the OLD
+        // check (`4294967295`), not the new check (`18446744073709551615`).
+        // This is the exact case GPT-5.5 review flagged as BLOCK.
+        let before_expr = "\"amount\" >= 0 AND \"amount\" <= 4294967295";
+        let after_expr = "\"amount\" >= 0 AND \"amount\" <= 18446744073709551615";
+        let before = applied_schema_with_amount_check("INTEGER", Some(before_expr));
+        let after = applied_schema_with_amount_check("BIGINT", Some(after_expr));
+        let delta = crate::migrate::diff::diff_schemas(
+            &before,
+            &after,
+            crate::migrate::BucketKey {
+                database: "main".to_string(),
+                app: "".to_string(),
+            },
+        );
+        let statements = lower_delta(&delta).expect("lower delta");
+        // The first op's down side restores the OLD expression.
+        assert!(
+            statements[0]
+                .down
+                .contains(&format!("CHECK ({before_expr})")),
+            "rollback of the DROP step must restore the OLD CHECK \
+             ({before_expr}), got: {}",
+            statements[0].down
+        );
+        assert!(
+            !statements[0].down.contains(after_expr),
+            "rollback of the DROP step must NOT contain the NEW CHECK \
+             expression ({after_expr}); that would imply the rollback \
+             left the new expression behind: {}",
+            statements[0].down
+        );
+    }
+
+    #[test]
+    fn type_change_without_prior_check_has_no_check_steps() {
+        // Sanity check: when the before-side has no CHECK, the differ
+        // emits ONLY the type-change step (no SetCheck pair). Down
+        // simply reverts the type — there's no CHECK to restore.
+        let before = applied_schema_with_amount_check("INTEGER", None);
+        let after = applied_schema_with_amount_check("BIGINT", None);
+        let delta = crate::migrate::diff::diff_schemas(
+            &before,
+            &after,
+            crate::migrate::BucketKey {
+                database: "main".to_string(),
+                app: "".to_string(),
+            },
+        );
+        let statements = lower_delta(&delta).expect("lower delta");
+        assert_eq!(statements.len(), 1, "type-only change emits one statement");
+        assert!(
+            statements[0]
+                .up
+                .contains("ALTER TABLE \"widgets\" ALTER COLUMN \"amount\" TYPE BIGINT"),
+            "the single statement is the type change: {}",
+            statements[0].up
+        );
+        assert!(
+            statements[0]
+                .down
+                .contains("ALTER TABLE \"widgets\" ALTER COLUMN \"amount\" TYPE INTEGER"),
+            "rollback reverts the type: {}",
+            statements[0].down
+        );
+    }
+
+    #[test]
+    fn amend_check_only_down_restores_original_expression() {
+        // CHECK expression change without a type change (AMEND-only).
+        // Up: drop b, add a. Down (reversed): drop a, add b.
+        // The composed down file rolls back to the original CHECK.
+        let before_expr = "\"amount\" >= 0 AND \"amount\" <= 4294967295";
+        let after_expr = "\"amount\" >= 0 AND \"amount\" <= 18446744073709551615";
+        let before = applied_schema_with_amount_check("BIGINT", Some(before_expr));
+        let after = applied_schema_with_amount_check("BIGINT", Some(after_expr));
+        let delta = crate::migrate::diff::diff_schemas(
+            &before,
+            &after,
+            crate::migrate::BucketKey {
+                database: "main".to_string(),
+                app: "".to_string(),
+            },
+        );
+        let statements = lower_delta(&delta).expect("lower delta");
+        assert_eq!(
+            statements.len(),
+            2,
+            "AMEND emits two statements: {statements:?}"
+        );
+
+        // Up: step 0 drops old CHECK; step 1 adds new CHECK.
+        assert!(
+            statements[0]
+                .up
+                .contains("DROP CONSTRAINT \"widgets_amount_check\""),
+            "up step 0: drop old CHECK: {}",
+            statements[0].up
+        );
+        assert!(
+            statements[1].up.contains(&format!(
+                "ADD CONSTRAINT \"widgets_amount_check\" CHECK ({after_expr})"
+            )),
+            "up step 1: add new CHECK: {}",
+            statements[1].up
+        );
+
+        // Down (the file walks ops in reverse):
+        // step 1's down drops the new CHECK,
+        // step 0's down re-adds the original CHECK with the OLD expression.
+        assert!(
+            statements[1]
+                .down
+                .contains("DROP CONSTRAINT \"widgets_amount_check\""),
+            "down step 1 (composed first in reverse): drops the new CHECK: {}",
+            statements[1].down
+        );
+        assert!(
+            statements[0].down.contains(&format!(
+                "ADD CONSTRAINT \"widgets_amount_check\" CHECK ({before_expr})"
+            )),
+            "down step 0 (composed last): restores the ORIGINAL CHECK ({before_expr}): {}",
+            statements[0].down
+        );
+        assert!(
+            statements[0].lossy.is_none() && statements[1].lossy.is_none(),
+            "AMEND rollback is fully recoverable: {:?} / {:?}",
+            statements[0].lossy,
+            statements[1].lossy,
+        );
+    }
+
+    #[test]
+    fn pure_drop_check_down_restores_prior() {
+        // Pure DROP (no type change): descriptor evolves from a CHECKed
+        // column to no CHECK. Up: DROP CONSTRAINT. Down: ADD
+        // CONSTRAINT with the prior expression (lossless rollback).
+        let prior_expr = "\"amount\" >= 0 AND \"amount\" <= 4294967295";
+        let before = applied_schema_with_amount_check("BIGINT", Some(prior_expr));
+        let after = applied_schema_with_amount_check("BIGINT", None);
+        let delta = crate::migrate::diff::diff_schemas(
+            &before,
+            &after,
+            crate::migrate::BucketKey {
+                database: "main".to_string(),
+                app: "".to_string(),
+            },
+        );
+        let statements = lower_delta(&delta).expect("lower delta");
+        assert_eq!(statements.len(), 1, "pure DROP emits one statement");
+        assert!(
+            statements[0]
+                .up
+                .contains("DROP CONSTRAINT \"widgets_amount_check\""),
+            "up: drop CHECK: {}",
+            statements[0].up
+        );
+        assert!(
+            statements[0].down.contains(&format!(
+                "ADD CONSTRAINT \"widgets_amount_check\" CHECK ({prior_expr})"
+            )),
+            "down: restore prior CHECK losslessly: {}",
+            statements[0].down
+        );
+        assert!(
+            statements[0].lossy.is_none(),
+            "pure DROP rollback is now lossless: {:?}",
+            statements[0].lossy,
+        );
+    }
+
+    #[test]
+    fn pure_add_check_down_drops_without_residue() {
+        // Pure ADD (no type change, no prior CHECK): descriptor evolves
+        // from no CHECK to a CHECKed column. Up: ADD CONSTRAINT.
+        // Down: DROP CONSTRAINT (no prior to restore).
+        let new_expr = "\"amount\" >= 0 AND \"amount\" <= 4294967295";
+        let before = applied_schema_with_amount_check("BIGINT", None);
+        let after = applied_schema_with_amount_check("BIGINT", Some(new_expr));
+        let delta = crate::migrate::diff::diff_schemas(
+            &before,
+            &after,
+            crate::migrate::BucketKey {
+                database: "main".to_string(),
+                app: "".to_string(),
+            },
+        );
+        let statements = lower_delta(&delta).expect("lower delta");
+        assert_eq!(statements.len(), 1, "pure ADD emits one statement");
+        assert!(
+            statements[0].up.contains(&format!(
+                "ADD CONSTRAINT \"widgets_amount_check\" CHECK ({new_expr})"
+            )),
+            "up: install CHECK: {}",
+            statements[0].up
+        );
+        assert!(
+            statements[0]
+                .down
+                .contains("DROP CONSTRAINT \"widgets_amount_check\""),
+            "down: drop CHECK on rollback: {}",
+            statements[0].down
+        );
+        assert!(
+            !statements[0].down.contains("ADD CONSTRAINT"),
+            "pure ADD rollback must not re-install anything: {}",
+            statements[0].down
+        );
+    }
+
+    #[test]
+    fn amend_merged_form_renders_drop_then_add_on_both_sides() {
+        // The structural completeness test for the SQL emitter's merged
+        // AMEND arm — `SetCheck { from: Some, to: Some }`. The differ
+        // splits AMEND across two entries today, but the emitter
+        // handles the merged form too for future callers (e.g. a
+        // higher-level optimizer that collapses adjacent SetCheck pairs).
+        let sql = emit_alter_column(
+            "widgets",
+            "amount",
+            &ColumnChange::SetCheck {
+                from: Some("\"amount\" >= 0".to_string()),
+                to: Some("\"amount\" > 0".to_string()),
+            },
+        );
+        // Up: drop the prior, add the new (single emit, two ALTERs).
+        assert!(
+            sql.up.contains("DROP CONSTRAINT \"widgets_amount_check\""),
+            "merged AMEND up drops first: {}",
+            sql.up
+        );
+        assert!(
+            sql.up
+                .contains("ADD CONSTRAINT \"widgets_amount_check\" CHECK (\"amount\" > 0)"),
+            "merged AMEND up adds the new: {}",
+            sql.up
+        );
+        // Down: drop the new, add back the prior.
+        assert!(
+            sql.down
+                .contains("DROP CONSTRAINT \"widgets_amount_check\""),
+            "merged AMEND down drops the new first: {}",
+            sql.down
+        );
+        assert!(
+            sql.down
+                .contains("ADD CONSTRAINT \"widgets_amount_check\" CHECK (\"amount\" >= 0)"),
+            "merged AMEND down restores the prior: {}",
+            sql.down
+        );
+        assert!(sql.lossy.is_none(), "merged AMEND rollback is lossless");
     }
 
     #[test]

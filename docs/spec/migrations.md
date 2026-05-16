@@ -295,42 +295,71 @@ naming function lives at `djogi/src/migrate/sql.rs::check_constraint_name` and
 truncates to Postgres' 63-byte identifier limit by appending an 8-char hex
 digest to a 54-byte stem.
 
+**IR shape — `SetCheck { from, to }`.** Each `ColumnChange::SetCheck` entry
+carries both the prior CHECK expression (`from`) and the target CHECK
+expression (`to`). The SQL emitter uses `from` for the down-side rollback
+so every CHECK transition has a fully recoverable rollback path with no
+"prior expression not recoverable" comment placeholder. (The earlier
+`SetCheck(Option<String>)` design dropped the prior expression on the
+floor and made the down side of any DROP arm structurally lossy — visible
+whenever a type migration on a checked column was rolled back.)
+
 **ADD lifecycle.** Descriptor evolves from a column with no CHECK (e.g. `i64`)
 to a column whose Rust source projects a CHECK (e.g. `u32`). The differ at
-`migrate/diff.rs::emit_alter_column` emits `ColumnChange::SetCheck(Some(expr))`
-which the SQL emitter renders as:
+`migrate/diff.rs::emit_alter_column` emits
+`ColumnChange::SetCheck { from: None, to: Some(expr) }` which the SQL emitter
+renders as:
 
 ```sql
+-- up
 ALTER TABLE <table> ADD CONSTRAINT <table>_<column>_check CHECK (<expr>);
+
+-- down (rollback)
+ALTER TABLE <table> DROP CONSTRAINT <table>_<column>_check;
 ```
 
 **DROP lifecycle.** Descriptor evolves from a column whose Rust source projects
 a CHECK (e.g. `u32`) to a column with no CHECK (e.g. `i64`). The differ emits
-`ColumnChange::SetCheck(None)` which renders as:
+`ColumnChange::SetCheck { from: Some(prior), to: None }` which renders as:
 
 ```sql
+-- up
 ALTER TABLE <table> DROP CONSTRAINT <table>_<column>_check;
-```
 
-The down-migration carries a documented-not-recoverable comment because the
-prior CHECK expression is not preserved in the diff.
+-- down (rollback — restores the prior expression losslessly)
+ALTER TABLE <table> ADD CONSTRAINT <table>_<column>_check CHECK (<prior>);
+```
 
 **AMEND lifecycle.** Descriptor evolves from a column with one CHECK to a
 column with a different CHECK (e.g. `u16` → `u32`, or any `#[field(check)]`
 expression edit). The differ detects the AMEND case explicitly and emits two
-`ColumnChange` entries in order — `SetCheck(None)` followed by
-`SetCheck(Some(new))` — so the SQL pair is:
+`ColumnChange` entries in order:
 
-```sql
-ALTER TABLE <table> DROP CONSTRAINT <table>_<column>_check;
-ALTER TABLE <table> ADD CONSTRAINT <table>_<column>_check CHECK (<new_expr>);
+```rust
+ColumnChange::SetCheck { from: Some(old), to: None }
+ColumnChange::SetCheck { from: None, to: Some(new) }
 ```
 
-The two-step emission is required because the SQL emitter for
-`SetCheck(Some(expr))` synthesizes the same constraint name regardless of
-whether one already exists; without the explicit DROP, the second ALTER would
-collide on the constraint name slot. The pair is symmetric, easy to read in
-audit logs, and reuses both existing emitter arms unchanged.
+The composed up file runs the two steps forward (drop old, add new). The
+composed down file walks them in reverse (per
+`compose::compose_down_text`), giving the operator: drop the new CHECK,
+then re-add the old CHECK. The combined SQL pair is:
+
+```sql
+-- up
+ALTER TABLE <table> DROP CONSTRAINT <table>_<column>_check;
+ALTER TABLE <table> ADD CONSTRAINT <table>_<column>_check CHECK (<new_expr>);
+
+-- down (rollback — restores the original CHECK losslessly)
+ALTER TABLE <table> DROP CONSTRAINT <table>_<column>_check;
+ALTER TABLE <table> ADD CONSTRAINT <table>_<column>_check CHECK (<old_expr>);
+```
+
+The two-step emission is required because the SQL emitter for an `ADD`
+step synthesizes the same constraint name regardless of whether one
+already exists; without the explicit DROP, the second ALTER would collide
+on the constraint name slot. The pair is symmetric, easy to read in audit
+logs, and reuses both existing emitter arms unchanged.
 
 **Online safety.** All three lifecycle operations classify as `OnlineSafe` on
 empty tables. On populated tables, the v0.1.0-alpha apply path
@@ -455,8 +484,10 @@ column, whether it came from the framework, the adopter, or both.
 **Lifecycle.** The combined CHECK rides the same ADD / DROP / AMEND
 machinery as the type-derived CHECK (see §10.6.1 above). Adding or
 changing an adopter `#[field(check)]` expression triggers the differ's
-AMEND path — `SetCheck(None)` followed by `SetCheck(Some(<new combined>))`
-— which produces a `DROP CONSTRAINT … ; ADD CONSTRAINT …` SQL pair.
+AMEND path — `SetCheck { from: Some(old), to: None }` followed by
+`SetCheck { from: None, to: Some(<new combined>) }` — which produces
+a `DROP CONSTRAINT … ; ADD CONSTRAINT …` SQL pair whose rollback
+restores the prior combined expression losslessly.
 
 **FK columns.** Adopter CHECKs are honoured on FK columns even though
 the type-derived CHECK is suppressed on FKs (FK column types inherit

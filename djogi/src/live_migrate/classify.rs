@@ -482,9 +482,12 @@ fn classify_column_change(
         // §7: "Add CHECK constraint to populated table" → ExpandContract
         // when above `validation_threshold_rows`; below threshold the
         // ADD CHECK validates inline as a single statement and stays
-        // OnlineSafe. SET CHECK to None (drop) is always catalog-only.
-        ColumnChange::SetCheck(new_check) => {
-            if new_check.is_some() {
+        // OnlineSafe. Pure DROP (`to = None`) is always catalog-only.
+        // `from` carries the prior expression for non-lossy rollback
+        // but does not change the online-safety classification — the
+        // forward step's lock window is governed entirely by `to`.
+        ColumnChange::SetCheck { to, .. } => {
+            if to.is_some() {
                 classify_validation_against_threshold(ctx)
             } else {
                 OnlineSafetyClassification::OnlineSafe
@@ -1931,7 +1934,10 @@ mod tests {
         let op = SchemaOperation::AlterColumn {
             table: "users".to_string(),
             column: "age".to_string(),
-            change: ColumnChange::SetCheck(Some("age >= 0".to_string())),
+            change: ColumnChange::SetCheck {
+                from: None,
+                to: Some("age >= 0".to_string()),
+            },
         };
         assert_eq!(
             classify_operation(&op, &ctx),
@@ -1945,7 +1951,10 @@ mod tests {
         let op = SchemaOperation::AlterColumn {
             table: "users".to_string(),
             column: "age".to_string(),
-            change: ColumnChange::SetCheck(Some("age >= 0".to_string())),
+            change: ColumnChange::SetCheck {
+                from: None,
+                to: Some("age >= 0".to_string()),
+            },
         };
         assert_eq!(
             classify_operation(&op, &ctx),
@@ -1959,12 +1968,36 @@ mod tests {
         let op = SchemaOperation::AlterColumn {
             table: "users".to_string(),
             column: "age".to_string(),
-            change: ColumnChange::SetCheck(Some("age >= 0".to_string())),
+            change: ColumnChange::SetCheck {
+                from: None,
+                to: Some("age >= 0".to_string()),
+            },
         };
         // Unknown row count → conservative staged-validation path.
         assert_eq!(
             classify_operation(&op, &ctx),
             OnlineSafetyClassification::ExpandContract
+        );
+    }
+
+    #[test]
+    fn set_check_drop_is_online_safe_regardless_of_prior() {
+        // GPT-5.5 review redesign: SetCheck now carries `from` so
+        // rollback restores the prior CHECK. The classifier still
+        // routes purely on `to` — a pure DROP (to = None) is
+        // catalog-only regardless of whether `from` is Some or None.
+        let (_unused, ctx) = ctx_app(Some(200_000));
+        let op = SchemaOperation::AlterColumn {
+            table: "users".to_string(),
+            column: "age".to_string(),
+            change: ColumnChange::SetCheck {
+                from: Some("age >= 0".to_string()),
+                to: None,
+            },
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OnlineSafe
         );
     }
 

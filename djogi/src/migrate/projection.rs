@@ -1214,23 +1214,37 @@ fn field_type_check(
         // function for truncating a NUMERIC toward zero.
         //
         // **Decimal (djogi#188)** — bare NUMERIC with a structural CHECK
-        // bounding the value to `rust_decimal::Decimal`'s representable
-        // range:
+        // bounding the value to `rust_decimal::Decimal`'s **exact
+        // representable** range. The CHECK enforces no-silent-loss
+        // semantics: Postgres rejects any write that the typed Rust
+        // path would otherwise rescale, round, or fail to fit.
         //
-        //   * `scale(col) <= 28` — the rust_decimal scale field is 5 bits
-        //     of an i32 word and is hard-capped at 28 (per the
-        //     rust_decimal Postgres `FromSql` impl, scales beyond 28 fail
-        //     to decode).
+        //   * `scale(col) <= 28` — `rust_decimal::Decimal` carries
+        //     5 scale bits inside an i32 word, capping representable
+        //     scale at `Decimal::MAX_SCALE = 28`. The pinned
+        //     rust_decimal Postgres `FromSql` impl (see
+        //     `rust_decimal::postgres::common::checked_from_postgres`)
+        //     does **not** reject scale > 28 outright — it silently
+        //     rescales the incoming NUMERIC to scale 28 with rounding
+        //     (`result.rescale((scale as u32).min(Self::MAX_SCALE))`).
+        //     This CHECK rejects such writes at the DB layer so the
+        //     value Postgres holds matches the value Rust will decode,
+        //     bit for bit, with no silent precision loss on the way in.
         //   * `abs(col) * power(10::numeric, scale(col)) <= 79228162514264337593543950335`
         //     — the rust_decimal coefficient is a 96-bit unsigned mantissa,
         //     i.e. `coefficient <= 2^96 - 1 = 79_228_162_514_264_337_593_543_950_335`.
         //     For any NUMERIC `col` with scale `s`, the coefficient is
         //     `|col| * 10^s`; the CHECK enforces this stays within the
-        //     96-bit envelope.
+        //     96-bit envelope. Values that overflow this envelope cause
+        //     `checked_from_postgres` to return `None` (a hard decode
+        //     failure surfaced as `DjogiError::Decode`) — this CHECK
+        //     rejects them at the DB layer before they can poison a
+        //     typed read.
         //
         // The two-clause shape rejects both kinds of out-of-range value:
         //   - A 100-digit integer at scale 0 → coefficient > 2^96-1 → rejected.
-        //   - A value with scale 50 → scale check fails → rejected.
+        //   - A value with scale 50 → scale check fails → rejected
+        //     (preventing the silent rescale-and-round path).
         // For valid rust_decimal values (e.g. `49.99` with scale 2,
         // coefficient `4999`), both clauses pass.
         //
@@ -1252,7 +1266,10 @@ fn field_type_check(
         // precision/scale defaults silently round adopter writes —
         // worse than rejecting them. Bare NUMERIC with a structural
         // CHECK preserves the adopter's full precision/scale choice
-        // and rejects only values that rust_decimal cannot decode.
+        // and rejects only values that fall outside rust_decimal's
+        // exact-representable domain — i.e., values that would either
+        // be silently rescaled / rounded on decode (scale > 28) or
+        // outright fail to decode (coefficient > 2^96 - 1).
         //
         // No `rust_source_type` discriminator (the fall-through `_` arm)
         // means a bare-NUMERIC column whose Rust source is neither `u64`
