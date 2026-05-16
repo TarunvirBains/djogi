@@ -4,12 +4,27 @@
 // compile them. Compile-fails / awkward shapes / clean compiles each map to a
 // verdict the round-2 summary comment on #110 reports.
 //
+// Lifecycle of a scenario:
+//   - When discovery surfaces a gap, the scenario carries a `// GAP(<id>)`
+//     marker and the workaround that an adopter would reach for today.
+//   - When the underlying issue closes, the scenario is flipped to a
+//     `// REGRESSION (closes #<id> via PR #<n>)` positive assertion that
+//     locks the now-supported call shape against future regression. The
+//     marker stays anchored to the GH closing PR so the audit trail is
+//     traceable.
+//
+// As of 2026-05-15 the following sibling issues are closed and the matching
+// scenarios are positive regressions: #107 (Option<scalar>), #109 (Condition
+// ergonomics), #166 (Tracked<T> typed lookup), #167 (&str → String
+// coercion at FieldRef::eq callsites), and #171 (typed-array element
+// expansion). Still-open gap markers cover #105, #168, #169, #170, #172, and
+// #173 — those scenarios continue to document the workaround adopters reach
+// for today and route to the named GH issue.
+//
 // Every scenario uses `#[djogi::djogi_test(sync_models = [...])]` and the
 // typed surface only — no raw_* escape hatches (per CLAUDE.md). When a gap
-// surfaces, the workaround in this file is the same one an adopter would
-// reach for today (`.to_string()` coercion, raw filter via a lookup-by-id
-// fallback, a separate query, etc.). Each workaround carries a `// GAP(<id>)`
-// marker pointing at the GH issue filed under #110.
+// is still live, the scenario body falls back to a typed workaround (a
+// separate query, an `.is_not_null()` predicate, etc.) — never to raw SQL.
 
 use djogi::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -21,12 +36,12 @@ use serde::{Deserialize, Serialize};
 
 // Category 1 model: scalar columns + Tracked<T> + Option<scalar>.
 //
-// Probes:
-//   - `Tracked<String>` field accessor: does FieldRef carry the Tracked
-//     wrapper through to lookup?
-//   - `Option<i32>` comparison surface (sibling of #107).
-//   - `&str` vs `String` coercion at `.eq` callsites.
-//   - `Vec<HeerId>` as a typed `IN (...)` payload via the typed `in_list`.
+// Probes (per scenario):
+//   - 1.A — `Tracked<String>` portable lookup (closed by #166).
+//   - 1.B — `HeerId` typed `IN (...)` payload via `DjogiField::in_`.
+//   - 1.C — `&str` → `String` coercion at portable lookup callsites
+//     (closed by #167).
+//   - 1.D — `Option<i32>` portable comparison surface (closed by #107).
 #[model(table = "djogi_dogfood_widgets", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct DogfoodWidget {
@@ -36,10 +51,14 @@ pub struct DogfoodWidget {
     pub balance: i64,
 }
 
-// Category 4 model: probes Postgres types djogi may not surface typed.
+// Category 4 model: probes Postgres typed-array element coverage and the
+// remaining Postgres-type gaps.
 //
-// Anything the framework already supports goes here as a sanity check; the
-// gaps are what's *missing* from this struct's field type repertoire.
+// Post-#171 the typed-array element repertoire is wide enough that this
+// model can declare arrays directly for the small-int / wide-float / ID
+// families. The remaining Postgres-type gaps (INTERVAL, INET/CIDR/MACADDR,
+// MONEY, RANGE, DOMAIN) are still absent from the field repertoire — that
+// absence is the scenario-4.B probe.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct CoverageMeta {
     pub note: String,
@@ -51,6 +70,14 @@ pub struct DogfoodCoverage {
     pub tags: Vec<String>,
     pub view_counts: Vec<i32>,
     pub flags: Vec<bool>,
+    // Three array element types added by #171 (PR #205). Exercising one
+    // representative from each newly-supported family — small int / wide
+    // float / HeerId — keeps the regression coverage tight without
+    // duplicating the per-type SQL-binding pins that live in
+    // `djogi-macros/tests/compile_pass/typed_array_elements.rs`.
+    pub priorities: Vec<i16>,
+    pub measurements: Vec<f64>,
+    pub related_ids: Vec<HeerId>,
     pub meta: Jsonb<CoverageMeta>,
 }
 
@@ -80,21 +107,18 @@ pub struct DogfoodAsync {
 
 // Scenario 1.A — typed lookup against a `Tracked<String>` field.
 //
-// VERDICT: NEEDS GAP ISSUE — `FieldRef<M, Tracked<String>>` has no `.eq`,
-// `.in_list`, or any other lookup, because `Tracked<T>` does not implement
-// `IntoFilterValue` (verified by `grep -rn 'IntoFilterValue for Tracked'`).
-// Adopter workaround today: route through the inner `String` via a separate
-// `Model::get` lookup or fall back to `raw_*` (see
-// `examples/elephant-tracker/src/demos/lineage.rs` for the existing real
-// instance of this gap, with a comment from the demo author dated before
-// #110 was filed).
+// REGRESSION (closes #166 via PR #196): `DjogiField<M, Tracked<U>>` carries
+// the same portable predicate surface as the underlying `U`, so
+// `f.tracked_label().eq("alpha-tracked")` lowers to a `Tracked<String>`
+// inner-value comparison. The wiring lives in the
+// `IntoPortableFieldValue<Tracked<V>> for V` blanket plus the
+// `IntoPortableFieldValue<Tracked<String>> for &str` borrow-coercion impl in
+// `djogi/src/query/field.rs` (search for `IntoPortableFieldValue`).
 //
-// Stand-in (compiles): we use the plain `String` `label` column to filter,
-// then walk results to re-check the `tracked_label`. An adopter facing a
-// model whose only candidate-key field is `Tracked<String>` cannot reach
-// the typed surface at all.
+// Locks the now-supported call shape so a future change to `Tracked<T>`
+// portable wiring is caught at compile time.
 #[djogi::djogi_test(sync_models = [DogfoodWidget])]
-async fn cat1_a_tracked_string_filter_gap(mut ctx: djogi::DjogiContext) {
+async fn cat1_a_tracked_string_filter_regression(mut ctx: djogi::DjogiContext) {
     let alpha = DogfoodWidget::create(
         &mut ctx,
         DogfoodWidget {
@@ -121,33 +145,34 @@ async fn cat1_a_tracked_string_filter_gap(mut ctx: djogi::DjogiContext) {
     .await
     .expect("create beta");
 
-    // GAP(djogi#166): this would be the natural call but does not compile —
-    //   DogfoodWidget::objects()
-    //       .filter(|f| f.tracked_label().eq("alpha-tracked".to_string()))
-    // because `DjogiField<DogfoodWidget, Tracked<String>>` carries the
-    // `Tracked` wrapper through to the lookup `value: V` parameter and
-    // `Tracked<String>` doesn't implement `IntoFilterValue` /
-    // `postgres_types::ToSql`. See djogi#166 for the typed-surface fix
-    // proposal.
-    //
-    // Workaround: filter on the plain `label` column, then verify the
-    // tracked sibling out-of-band.
-    let rows = DogfoodWidget::objects()
-        .filter(|f| f.label().eq("alpha".to_string()))
+    // Closed-#166 call shape — direct `&str` against a `Tracked<String>`
+    // column. Both the `&str → Tracked<String>` and the
+    // `String → Tracked<String>` coercion arms are exercised.
+    let by_borrowed_str = DogfoodWidget::objects()
+        .filter(|f| f.tracked_label().eq("alpha-tracked"))
         .fetch_all(&mut ctx)
         .await
-        .expect("plain string filter");
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].id, alpha.id);
-    assert_eq!(&*rows[0].tracked_label, "alpha-tracked");
+        .expect("tracked<string> filter via &str");
+    assert_eq!(by_borrowed_str.len(), 1);
+    assert_eq!(by_borrowed_str[0].id, alpha.id);
+    assert_eq!(&*by_borrowed_str[0].tracked_label, "alpha-tracked");
+
+    let by_owned_string = DogfoodWidget::objects()
+        .filter(|f| f.tracked_label().eq("alpha-tracked".to_string()))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("tracked<string> filter via String");
+    assert_eq!(by_owned_string.len(), 1);
+    assert_eq!(by_owned_string[0].id, alpha.id);
 }
 
 // Scenario 1.B — `Vec<HeerId>` as a typed `IN (...)` payload.
 //
-// VERDICT: COMPILES CLEANLY — `FieldRef<M, HeerId>::in_list(values)` accepts
-// any `IntoIterator<Item = V>`, and `HeerId: IntoFilterValue` (verified at
-// `djogi/src/query/field.rs:1787`). False positive from the round-2
-// brainstorm — round 2 does not file a gap here.
+// VERDICT: COMPILES CLEANLY — the portable `DjogiField::in_` surface accepts
+// any `IntoIterator<Item = P>` where `P: IntoPortableFieldValue<HeerId>`, and
+// `HeerId` satisfies the identity blanket `IntoPortableFieldValue<HeerId> for
+// HeerId`. False positive from the round-2 brainstorm — kept as a positive
+// sanity check that the portable HeerId IN-list surface stays healthy.
 #[djogi::djogi_test(sync_models = [DogfoodWidget])]
 async fn cat1_b_heerid_in_list_compiles(mut ctx: djogi::DjogiContext) {
     let a = DogfoodWidget::create(
@@ -203,15 +228,14 @@ async fn cat1_b_heerid_in_list_compiles(mut ctx: djogi::DjogiContext) {
 
 // Scenario 1.C — `&str` vs `String` coercion at lookup callsites.
 //
-// VERDICT: ERGONOMIC FRICTION CONFIRMED — `FieldRef<M, String>::eq(value: V)`
-// where `V = String`. A natural `.eq("literal")` does NOT compile because
-// `&str` is not `String`. Adopters always write `.eq("literal".to_string())`
-// (verified across 10+ existing test files via grep). Routes through GH
-// issue separate from #107 (which targets `Option<scalar>`).
-//
-// Stand-in: the workaround that adopters use today.
+// REGRESSION (closes #167 via PR #196): `f.label().eq("alpha")` now compiles
+// on a `String` column. The wiring is the
+// `IntoPortableFieldValue<String> for &str` borrow-coercion impl in
+// `djogi/src/query/field.rs`. Both the borrowed (`&str`) and owned
+// (`String`) call shapes are valid; the borrowed shape is the ergonomic
+// default adopters reach for.
 #[djogi::djogi_test(sync_models = [DogfoodWidget])]
-async fn cat1_c_str_vs_string_coercion_friction(mut ctx: djogi::DjogiContext) {
+async fn cat1_c_str_to_string_coercion_regression(mut ctx: djogi::DjogiContext) {
     DogfoodWidget::create(
         &mut ctx,
         DogfoodWidget {
@@ -225,26 +249,38 @@ async fn cat1_c_str_vs_string_coercion_friction(mut ctx: djogi::DjogiContext) {
     .await
     .expect("create");
 
-    // GAP(djogi#167): natural call shape that does NOT compile:
-    //   .filter(|f| f.label().eq("alpha"))    // E0308: expected String, found &str
-    // Adopter workaround:
-    let n = DogfoodWidget::objects()
+    // Closed-#167 borrow-coercion call shape — no `.to_string()` needed.
+    let by_borrowed_str = DogfoodWidget::objects()
+        .filter(|f| f.label().eq("alpha"))
+        .count(&mut ctx)
+        .await
+        .expect("count via &str");
+    assert_eq!(by_borrowed_str, 1);
+
+    // Pre-#167 owned-`String` call shape still compiles — the coercion
+    // expanded the accepted set, it did not remove the existing path.
+    let by_owned_string = DogfoodWidget::objects()
         .filter(|f| f.label().eq("alpha".to_string()))
         .count(&mut ctx)
         .await
-        .expect("count");
-    assert_eq!(n, 1);
+        .expect("count via String");
+    assert_eq!(by_owned_string, 1);
 }
 
 // Scenario 1.D — `Option<i32>` comparison through the typed surface.
 //
-// VERDICT: GAP ALREADY TRACKED BY #107 — Option<i16> example in the existing
-// issue body. `.maybe_count().lte(10)` does not compile. We exercise the
-// typed `is_not_null` / `is_null` surface that DOES compile to keep this
-// scenario as a regression guard once #107 lands.
+// REGRESSION (closes #107 via PR #196): `DjogiField<M, Option<U>>` exposes
+// the ordering predicates (`gt` / `gte` / `lt` / `lte` / `between`) directly
+// on the nullable field — each lowers to `column IS NOT NULL AND column <op>
+// value`, so SQL-NULL rows are excluded from the comparison. The wiring
+// lives in the `impl<M: Model, U: DjogiPortableOrd> DjogiField<M, Option<U>>`
+// block in `djogi/src/query/field.rs`. The `eq`/`neq`/`in_`/`not_in`
+// equality surface accepts both bare-`U` (lowered to `Some(_)`) and
+// `Option<U>` (preserving `None` as `IS NULL`) via the
+// `IntoPortableFieldValue<Option<V>> for V` blanket.
 #[djogi::djogi_test(sync_models = [DogfoodWidget])]
-async fn cat1_d_option_scalar_lookup_blocked_by_107(mut ctx: djogi::DjogiContext) {
-    DogfoodWidget::create(
+async fn cat1_d_option_scalar_lookup_regression(mut ctx: djogi::DjogiContext) {
+    let with_count = DogfoodWidget::create(
         &mut ctx,
         DogfoodWidget {
             label: "with-count".to_string(),
@@ -256,7 +292,7 @@ async fn cat1_d_option_scalar_lookup_blocked_by_107(mut ctx: djogi::DjogiContext
     )
     .await
     .expect("create with count");
-    DogfoodWidget::create(
+    let no_count = DogfoodWidget::create(
         &mut ctx,
         DogfoodWidget {
             label: "no-count".to_string(),
@@ -269,20 +305,63 @@ async fn cat1_d_option_scalar_lookup_blocked_by_107(mut ctx: djogi::DjogiContext
     .await
     .expect("create without count");
 
-    // What works today (typed):
-    let with_count = DogfoodWidget::objects()
+    // Existing `is_not_null` / `is_null` surface still works — kept as part
+    // of the regression coverage so a future change can't silently drop it.
+    let not_null = DogfoodWidget::objects()
         .filter(|f| f.maybe_count().is_not_null())
         .count(&mut ctx)
         .await
         .expect("not-null count");
-    assert_eq!(with_count, 1);
+    assert_eq!(not_null, 1);
 
-    // GAP(#107): the natural value comparison does not compile —
-    //   .filter(|f| f.maybe_count().lte(10))
-    //   E0599: method `lte` is not satisfied for `DjogiField<_, Option<i32>>`
-    // Adopter workaround: `.is_not_null()` then Rust-side numeric filter on
-    // results, OR `.explicit_pg_predicate().lte(10)` if PG predicate access
-    // exists at this site (it does for many shapes — see #107).
+    let is_null = DogfoodWidget::objects()
+        .filter(|f| f.maybe_count().is_null())
+        .count(&mut ctx)
+        .await
+        .expect("is-null count");
+    assert_eq!(is_null, 1);
+
+    // Closed-#107 ordering predicates on `Option<i32>`. Each excludes SQL
+    // NULL rows via the `IS NOT NULL AND` prefix the portable wiring emits.
+    let lte_10 = DogfoodWidget::objects()
+        .filter(|f| f.maybe_count().lte(10_i32))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("lte on Option<i32>");
+    assert_eq!(lte_10.len(), 1);
+    assert_eq!(lte_10[0].id, with_count.id);
+
+    let gte_3 = DogfoodWidget::objects()
+        .filter(|f| f.maybe_count().gte(3_i32))
+        .count(&mut ctx)
+        .await
+        .expect("gte on Option<i32>");
+    assert_eq!(gte_3, 1);
+
+    let between_1_and_9 = DogfoodWidget::objects()
+        .filter(|f| f.maybe_count().between(1_i32, 9_i32))
+        .count(&mut ctx)
+        .await
+        .expect("between on Option<i32>");
+    assert_eq!(between_1_and_9, 1);
+
+    // Closed-#107 equality with bare-`U` and `Option<U>` via the blanket
+    // `IntoPortableFieldValue<Option<V>> for V`.
+    let eq_some = DogfoodWidget::objects()
+        .filter(|f| f.maybe_count().eq(5_i32))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("eq bare-i32 on Option<i32>");
+    assert_eq!(eq_some.len(), 1);
+    assert_eq!(eq_some[0].id, with_count.id);
+
+    let eq_none = DogfoodWidget::objects()
+        .filter(|f| f.maybe_count().eq(None::<i32>))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("eq None on Option<i32>");
+    assert_eq!(eq_none.len(), 1);
+    assert_eq!(eq_none[0].id, no_count.id);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -291,18 +370,18 @@ async fn cat1_d_option_scalar_lookup_blocked_by_107(mut ctx: djogi::DjogiContext
 
 // Scenario 2.A — multi-condition `.filter(|f| ...)` shape.
 //
-// VERDICT: COMPILES, ERGONOMIC FRICTION DOCUMENTED BY #109 — adopter has to
-// reach for `Q::Condition(...)` or chain multiple `.filter(...)` calls. The
-// in-closure way to AND two leaf conditions is verbose. Q algebra exists
-// (BitAnd/BitOr/Not on `Q<T>`), but inside the closure the field accessors
-// return `Condition` (not `Q<T>`), so you can't write
-// `f.a().eq(x) & f.b().eq(y)`.
-//
-// Stand-in shape compiles by chaining `.filter()` calls (each AND-ed onto
-// the queryset's condition tree).
+// REGRESSION (closes #109 via PR #196): the `PortablePredicate<T>` returned
+// by `f.col().eq(_)` (and the rest of the portable lookup surface) now
+// supports `&` / `|` / `^` / `!` operators in-closure, and the `Condition`
+// returned by `.explicit_pg_predicate().eq(_)` carries inherent `.and(_)` /
+// `.or(_)` methods plus the same operators via the `ConditionExt` trait. The
+// operator matrix is closed over `PortablePredicate<T>`, `Predicate<T>`, and
+// `Condition` so any mix of the three composes without a manual
+// `Q::Compound { ... }` at the call site (see
+// `djogi/src/query/predicate.rs` for the full grid).
 #[djogi::djogi_test(sync_models = [DogfoodWidget])]
-async fn cat2_a_multi_condition_chain_friction(mut ctx: djogi::DjogiContext) {
-    DogfoodWidget::create(
+async fn cat2_a_multi_condition_in_closure_regression(mut ctx: djogi::DjogiContext) {
+    let primary = DogfoodWidget::create(
         &mut ctx,
         DogfoodWidget {
             label: "match".to_string(),
@@ -314,7 +393,7 @@ async fn cat2_a_multi_condition_chain_friction(mut ctx: djogi::DjogiContext) {
     )
     .await
     .expect("create match");
-    DogfoodWidget::create(
+    let _non_match = DogfoodWidget::create(
         &mut ctx,
         DogfoodWidget {
             label: "match".to_string(),
@@ -327,28 +406,59 @@ async fn cat2_a_multi_condition_chain_friction(mut ctx: djogi::DjogiContext) {
     .await
     .expect("create non-match");
 
-    // What compiles today — chained `.filter(...)` calls AND together.
-    let n = DogfoodWidget::objects()
-        .filter(|f| f.label().eq("match".to_string()))
-        .filter(|f| f.balance().eq(100i64))
+    // Pre-#109 multi-`.filter()` chain still works — each call is AND-ed
+    // onto the condition tree. Kept as a regression anchor for the
+    // existing path.
+    let by_chain = DogfoodWidget::objects()
+        .filter(|f| f.label().eq("match"))
+        .filter(|f| f.balance().eq(100_i64))
         .count(&mut ctx)
         .await
         .expect("chained-filter AND");
-    assert_eq!(n, 1);
+    assert_eq!(by_chain, 1);
 
-    // GAP(#109): natural in-closure shape that does NOT compile —
-    //   .filter(|f| f.label().eq("match".to_string())
-    //               .and(f.balance().eq(100i64)))
-    // because `.and(...)` is `Condition::and(a, b)` (associated function).
-    // Adopter alternative: `Condition::and(c1, c2)` — verbose; documented
-    // in #109. No new gap to file.
+    // Closed-#109 in-closure `&` operator on `PortablePredicate<T>`.
+    let by_amp = DogfoodWidget::objects()
+        .filter(|f| f.label().eq("match") & f.balance().eq(100_i64))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("in-closure `&` AND on PortablePredicate");
+    assert_eq!(by_amp.len(), 1);
+    assert_eq!(by_amp[0].id, primary.id);
+
+    // Closed-#109 in-closure `|` operator. Two leaves, only one matches
+    // `balance = 100`, so OR returns both rows.
+    let by_pipe = DogfoodWidget::objects()
+        .filter(|f| f.balance().eq(100_i64) | f.balance().eq(999_i64))
+        .count(&mut ctx)
+        .await
+        .expect("in-closure `|` OR on PortablePredicate");
+    assert_eq!(by_pipe, 2);
+
+    // Closed-#109 `.and(_)` / `.or(_)` method form via `ConditionExt`. The
+    // closure returns a `Condition` because both leaves go through
+    // `.explicit_pg_predicate()`. AND of two matching leaves yields one
+    // row.
+    let by_method_and = DogfoodWidget::objects()
+        .filter(|f| {
+            f.label()
+                .explicit_pg_predicate()
+                .eq("match")
+                .and(f.balance().explicit_pg_predicate().eq(100_i64))
+        })
+        .count(&mut ctx)
+        .await
+        .expect("Condition::and via ConditionExt");
+    assert_eq!(by_method_and, 1);
 }
 
-// Scenario 2.B — `Q<T>` operator algebra (BitAnd/BitOr/Not).
+// Scenario 2.B — `Q<T>` operator algebra (BitAnd/BitOr/Not) outside the
+// closure.
 //
 // VERDICT: COMPILES CLEANLY when adopter assembles outside the closure —
-// false positive ruled out. The friction in #109 is purely the in-closure
-// shape from scenario 2.A.
+// false positive ruled out. The in-closure shape #109 originally flagged is
+// now also supported (scenario 2.A regression); this scenario locks the
+// `filter_struct(...)` entry point that takes a pre-built `Q<T>`.
 #[djogi::djogi_test(sync_models = [DogfoodWidget])]
 async fn cat2_b_q_algebra_outside_closure(mut ctx: djogi::DjogiContext) {
     DogfoodWidget::create(
@@ -529,21 +639,39 @@ async fn cat3_c_defer_constraints_gap(mut ctx: djogi::DjogiContext) {
 // Category 4 — Type-coverage gaps
 // ────────────────────────────────────────────────────────────────────────────
 
-// Scenario 4.A — Postgres typed arrays for supported element types.
+// Scenario 4.A — Postgres typed arrays across the sealed element-type set.
 //
-// VERDICT: COMPILES CLEANLY for `String / i32 / i64 / bool` (verified via
-// `IntoArrayFilterValue` sealed trait at `djogi/src/query/field.rs:2087`).
-// `Vec<HeerId>` / `Vec<RanjId>` / `Vec<i16>` / `Vec<f64>` / `Vec<DateTime>`
-// are *not* in the sealed allow-list — see djogi#171 for the sealed-set
-// extension proposal.
+// REGRESSION (closes #171 via PR #205): the `IntoArrayFilterValue` sealed
+// trait in `djogi/src/query/field.rs` now spans `String`, `i16`, `i32`,
+// `i64`, `f32`, `f64`, `bool`, `time::OffsetDateTime`, `time::Date`,
+// `uuid::Uuid`, `rust_decimal::Decimal`, and the `HeerId` / `RanjId` family
+// (plus the `*Desc` siblings). Array operator methods (`@>` / `<@` / `&&`)
+// remain gated behind `.explicit_pg_predicate()` so the portable surface
+// keeps to portable lookups — that routing is unchanged.
+//
+// Coverage:
+//   - `Vec<String>`, `Vec<i32>`, `Vec<bool>` — the pre-#171 baseline, kept
+//     as a sanity check that the original sealed entries still wire up.
+//   - `Vec<i16>`, `Vec<f64>`, `Vec<HeerId>` — three representatives from
+//     the post-#171 expansion exercising the small-int / wide-float / ID
+//     family arms of the `FilterValue::Array*` discriminant.
+//
+// Adopter-defined newtype / enum element types are NOT covered by #171 and
+// route through the separate `DjogiSqlType` extension path documented in
+// `docs/guide/arrays.md`.
 #[djogi::djogi_test(sync_models = [DogfoodCoverage])]
-async fn cat4_a_typed_arrays_supported_elements(mut ctx: djogi::DjogiContext) {
+async fn cat4_a_typed_arrays_sealed_set_regression(mut ctx: djogi::DjogiContext) {
+    let related = djogi::HeerId::from_i64(424_242).expect("valid HeerId");
+    let other = djogi::HeerId::from_i64(525_252).expect("valid HeerId");
     let row = DogfoodCoverage::create(
         &mut ctx,
         DogfoodCoverage {
             tags: vec!["alpha".to_string(), "beta".to_string()],
             view_counts: vec![1, 2, 3],
             flags: vec![true, false],
+            priorities: vec![1_i16, 7_i16],
+            measurements: vec![1.5_f64, 2.5_f64],
+            related_ids: vec![related],
             meta: Jsonb::new(CoverageMeta {
                 note: "n".to_string(),
             }),
@@ -553,11 +681,8 @@ async fn cat4_a_typed_arrays_supported_elements(mut ctx: djogi::DjogiContext) {
     .await
     .expect("create coverage");
 
-    // Array typed surface: contains / overlap / contained_by ride
-    // through `explicit_pg_predicate()` because they emit
-    // PostgreSQL-specific operators (`@>`, `&&`, `<@`) — DjogiField's
-    // root surface keeps to portable lookups only. This is the existing
-    // post-Phase-8eta routing, not a new gap.
+    // Pre-#171 sealed entries — `@>` (contains) and `&&` (overlap) on
+    // `Vec<String>` / `Vec<i32>`. Kept as regression anchors.
     let by_tag = DogfoodCoverage::objects()
         .filter(|f| {
             f.tags()
@@ -566,15 +691,54 @@ async fn cat4_a_typed_arrays_supported_elements(mut ctx: djogi::DjogiContext) {
         })
         .count(&mut ctx)
         .await
-        .expect("array contains");
+        .expect("array contains on Vec<String>");
     assert_eq!(by_tag, 1);
 
     let by_views = DogfoodCoverage::objects()
-        .filter(|f| f.view_counts().explicit_pg_predicate().overlap(&[2i32, 99]))
+        .filter(|f| {
+            f.view_counts()
+                .explicit_pg_predicate()
+                .overlap(&[2_i32, 99_i32])
+        })
         .count(&mut ctx)
         .await
-        .expect("array overlap");
+        .expect("array overlap on Vec<i32>");
     assert_eq!(by_views, 1);
+
+    // Post-#171 sealed entries — one representative per newly-covered
+    // family. `<@` / `@>` / `&&` route through the same
+    // `IntoArrayFilterValue` plumbing.
+    let by_priorities = DogfoodCoverage::objects()
+        .filter(|f| f.priorities().explicit_pg_predicate().contains(&[7_i16]))
+        .count(&mut ctx)
+        .await
+        .expect("array contains on Vec<i16>");
+    assert_eq!(by_priorities, 1);
+
+    let by_measurements = DogfoodCoverage::objects()
+        .filter(|f| {
+            f.measurements()
+                .explicit_pg_predicate()
+                .overlap(&[2.5_f64, 99.0_f64])
+        })
+        .count(&mut ctx)
+        .await
+        .expect("array overlap on Vec<f64>");
+    assert_eq!(by_measurements, 1);
+
+    let by_related = DogfoodCoverage::objects()
+        .filter(|f| f.related_ids().explicit_pg_predicate().contains(&[related]))
+        .count(&mut ctx)
+        .await
+        .expect("array contains on Vec<HeerId>");
+    assert_eq!(by_related, 1);
+
+    let no_match = DogfoodCoverage::objects()
+        .filter(|f| f.related_ids().explicit_pg_predicate().contains(&[other]))
+        .count(&mut ctx)
+        .await
+        .expect("array contains miss on Vec<HeerId>");
+    assert_eq!(no_match, 0);
 
     let _ = row.id;
 }
