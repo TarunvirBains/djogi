@@ -146,14 +146,22 @@ Djogi must enable Sassi's `serde-json-bridge` feature, or an equivalent
 Sassi-owned conversion helper, so all `serde_json::Value` conversion semantics
 come from Sassi.
 
-Expected dependency shape:
+Expected dependency shape in `djogi/Cargo.toml`:
 
 ```toml
 sassi = {
-    path = "../sassi-reference/sassi",
+    git = "https://github.com/TarunvirBains/sassi.git",
+    rev = "2074c58892f2d15060923f0ba43cfd8493bfafc0",
     features = ["watermark-time", "serde-json-bridge"],
 }
 ```
+
+Inside the djogi workspace, a `[patch]` table in the workspace-root
+`Cargo.toml` redirects this git source to a local `sassi-reference/`
+checkout (a symlink to the sibling `~/projects/sassi` tree or a CI
+clone of the same rev). This is a workspace-only build convenience and
+never surfaces to adopters: `[patch]` sections are stripped from
+published tarballs.
 
 Djogi must not reimplement `JSahibON` equality, numeric matching, path
 traversal, or predicate truth rules. It imports Sassi's public types and
