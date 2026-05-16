@@ -176,8 +176,15 @@ ctx.defer_constraints(
 The validator checks:
 
 - **Unknown name** → [`DjogiError::UnknownConstraintName`]. The
-  expected shape is `<table>_<column>_fkey` (Postgres' convention),
-  truncated to 63 bytes for long names.
+  expected shape is `<table>_<column>_fkey` (Postgres' convention)
+  for names that fit inside Postgres' 63-byte identifier limit. When
+  the conventional `<table>_<column>_fkey` would exceed 63 bytes, the
+  framework substitutes a deterministic 54-byte prefix plus an 8-char
+  hex digest — Postgres' own tail-truncation rule is **not** used,
+  because two distinct constraints can otherwise collide post-
+  truncation. The migration emitter writes the same name explicitly
+  (`CONSTRAINT <name> REFERENCES ...`), so the runtime validator and
+  the on-disk DDL stay byte-for-byte in lockstep at any name length.
 - **Non-deferrable constraint** →
   [`DjogiError::ConstraintNotDeferrable`]. Declare the FK as
   `#[field(deferrable = true)]` (and optionally
