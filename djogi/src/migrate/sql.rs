@@ -1513,7 +1513,7 @@ mod tests {
     use crate::migrate::schema::{
         ColumnSchema, ForeignKeySchema, IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema,
         IndexOrderSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema, OnDeleteSchema,
-        PkKindSchema, PrimaryKeySchema, RelationKindSchema, TableSchema,
+        PkKindSchema, PrimaryKeySchema, RelationKindSchema, TableSchema, AppliedSchema,
     };
 
     fn col(name: &str, ty: &str, nullable: bool) -> ColumnSchema {
@@ -1568,6 +1568,55 @@ mod tests {
             rls_enabled: false,
             table: name.to_string(),
             tenant_key: None,
+        }
+    }
+
+    fn table_with_amount_and_check(
+        table: &str,
+        sql_type: &str,
+        check: Option<&str>,
+    ) -> TableSchema {
+        let mut t = synth_table(table);
+        t.columns = vec![
+            id_column_heerid(),
+            ColumnSchema {
+                check: check.map(|s| s.to_string()),
+                default_sql: None,
+                foreign_key: None,
+                generated: None,
+                identity: None,
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: "amount".to_string(),
+                nullable: false,
+                on_delete: None,
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: sql_type.to_string(),
+                unique: false,
+            },
+        ];
+        t
+    }
+
+    fn applied_schema_with_amount_check(sql_type: &str, check: Option<&str>) -> AppliedSchema {
+        let mut models = std::collections::BTreeMap::new();
+        models.insert(
+            "widgets".to_string(),
+            table_with_amount_and_check("widgets", sql_type, check),
+        );
+        AppliedSchema {
+            djogi_version: "0.1.0".to_string(),
+            enums: std::collections::BTreeMap::new(),
+            format_version: "1".to_string(),
+            generated_at: "2026-05-10T00:00:00Z".to_string(),
+            indexes: vec![],
+            models,
+            registered_apps: vec!["".to_string()],
         }
     }
 
@@ -2162,6 +2211,56 @@ mod tests {
                 .contains("CHECK (\"amount\" >= 0 AND \"amount\" <= 18446744073709551615)"),
             "AMEND step 2 carries the new CHECK expression: {}",
             add_sql.up
+        );
+    }
+
+    fn assert_type_change_check_sql_order(
+        before_check: Option<&str>,
+        after_check: Option<&str>,
+    ) {
+        let before = applied_schema_with_amount_check("INTEGER", before_check);
+        let after = applied_schema_with_amount_check("BIGINT", after_check);
+        let delta = crate::migrate::diff::diff_schemas(
+            &before,
+            &after,
+            crate::migrate::BucketKey {
+                database: "main".to_string(),
+                app: "".to_string(),
+            },
+        );
+        let statements = lower_delta(&delta).expect("lower delta");
+        assert_eq!(statements.len(), 3, "expected 3 migration statements");
+        assert!(
+            statements[0].up.contains("DROP CONSTRAINT \"widgets_amount_check\""),
+            "first statement must drop existing CHECK: {}",
+            statements[0].up
+        );
+        assert!(
+            statements[1].up
+                .contains("ALTER TABLE \"widgets\" ALTER COLUMN \"amount\" TYPE BIGINT"),
+            "second statement must alter column type: {}",
+            statements[1].up
+        );
+        assert!(
+            statements[2].up.contains("ADD CONSTRAINT \"widgets_amount_check\""),
+            "third statement must add replacement CHECK: {}",
+            statements[2].up
+        );
+    }
+
+    #[test]
+    fn alter_column_type_change_orders_drop_then_add_for_unchanged_check() {
+        assert_type_change_check_sql_order(
+            Some("\"amount\" >= 0 AND \"amount\" <= 4294967295"),
+            Some("\"amount\" >= 0 AND \"amount\" <= 4294967295"),
+        );
+    }
+
+    #[test]
+    fn alter_column_type_change_orders_drop_then_add_for_changed_check() {
+        assert_type_change_check_sql_order(
+            Some("\"amount\" >= 0 AND \"amount\" <= 4294967295"),
+            Some("\"amount\" >= 0 AND \"amount\" <= 18446744073709551615"),
         );
     }
 

@@ -2113,7 +2113,14 @@ fn emit_alter_column(
                 change,
             });
         };
-        if before.sql_type != after.sql_type {
+        let type_changed = before.sql_type != after.sql_type;
+        if type_changed && before.check.is_some() {
+            // If the old CHECK still references the pre-conversion type,
+            // drop it before the type migration to avoid Postgres re-validating
+            // it against the new type shape.
+            push(ColumnChange::SetCheck(None));
+        }
+        if type_changed {
             push(ColumnChange::ChangeType {
                 from: before.sql_type.clone(),
                 to: after.sql_type.clone(),
@@ -2150,20 +2157,26 @@ fn emit_alter_column(
         // The orderingness matters: DROP must precede ADD so the
         // re-issued `ADD CONSTRAINT <name>` lands in the open
         // constraint-name slot. `Vec` push order preserves this.
-        match (&before.check, &after.check) {
-            (None, None) => {}                 // unchanged
-            (Some(b), Some(a)) if b == a => {} // unchanged
-            (Some(_), Some(_)) => {
-                // AMEND — drop the old constraint, then add the new.
-                push(ColumnChange::SetCheck(None));
-                push(ColumnChange::SetCheck(after.check.clone()));
+        if type_changed && before.check.is_some() {
+            if let Some(check) = &after.check {
+                push(ColumnChange::SetCheck(Some(check.clone())));
             }
-            // ADD (None → Some) and DROP (Some → None) collapse to a
-            // single `SetCheck(after.check.clone())` because the
-            // emitter's two arms (`SetCheck(Some)` / `SetCheck(None)`)
-            // already DTRT for each direction.
-            (None, Some(_)) | (Some(_), None) => {
-                push(ColumnChange::SetCheck(after.check.clone()));
+        } else {
+            match (&before.check, &after.check) {
+                (None, None) => {}                 // unchanged
+                (Some(b), Some(a)) if b == a => {} // unchanged
+                (Some(_), Some(_)) => {
+                    // AMEND — drop the old constraint, then add the new.
+                    push(ColumnChange::SetCheck(None));
+                    push(ColumnChange::SetCheck(after.check.clone()));
+                }
+                // ADD (None → Some) and DROP (Some → None) collapse to a
+                // single `SetCheck(after.check.clone())` because the
+                // emitter's two arms (`SetCheck(Some)` / `SetCheck(None)`)
+                // already DTRT for each direction.
+                (None, Some(_)) | (Some(_), None) => {
+                    push(ColumnChange::SetCheck(after.check.clone()));
+                }
             }
         }
         if before.unique != after.unique {
@@ -3319,6 +3332,13 @@ mod tests {
     // any direction.
 
     fn build_table_with_check(check: Option<&str>) -> crate::migrate::schema::AppliedSchema {
+        build_table_with_check_and_type(check, "BIGINT")
+    }
+
+    fn build_table_with_check_and_type(
+        check: Option<&str>,
+        sql_type: &str,
+    ) -> crate::migrate::schema::AppliedSchema {
         use crate::migrate::schema::{
             AppliedSchema, ColumnSchema, PkKindSchema, PrimaryKeySchema, TableSchema,
         };
@@ -3361,7 +3381,7 @@ mod tests {
             relation_kind: None,
             renamed_from: None,
             sequence_within: None,
-            sql_type: "BIGINT".to_string(),
+            sql_type: sql_type.to_string(),
             unique: false,
         };
         let mut models = BTreeMap::new();
@@ -3507,6 +3527,65 @@ mod tests {
         assert!(
             matches!(changes.get(1), Some(ColumnChange::SetCheck(Some(s))) if s == "\"amount\" >= 0 AND \"amount\" <= 18446744073709551615"),
             "AMEND CHECK emits SetCheck(Some(new)) second with the post-change expression: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn check_type_change_readds_same_check_after_type_change() {
+        // When converting SQL type, an unchanged CHECK still needs a
+        // drop+re-add around `ALTER COLUMN TYPE`, otherwise Postgres
+        // can re-validate the old expression first and fail.
+        let check_expr = "\"amount\" >= 0 AND \"amount\" <= 4294967295";
+        let before = build_table_with_check_and_type(Some(check_expr), "INTEGER");
+        let after = build_table_with_check_and_type(Some(check_expr), "BIGINT");
+        let delta = diff_schemas(&before, &after, empty_global());
+        let changes = alter_column_changes_for(&delta, "amount");
+        assert_eq!(
+            changes.len(),
+            3,
+            "unchanged CHECK plus type migration must emit drop/type/readd steps: {changes:?}"
+        );
+        assert!(
+            matches!(changes.first(), Some(ColumnChange::SetCheck(None))),
+            "existing CHECK must be dropped before ALTER TYPE: {changes:?}"
+        );
+        assert!(
+            matches!(changes.get(1), Some(ColumnChange::ChangeType { from, to }) if from == "INTEGER" && to == "BIGINT"),
+            "ALTER TYPE should be between drop and re-add: {changes:?}"
+        );
+        assert!(
+            matches!(changes.get(2), Some(ColumnChange::SetCheck(Some(s))) if s == check_expr),
+            "same CHECK should be re-added after type conversion: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn check_type_change_reorders_drop_and_readd_for_changed_check() {
+        // Type migration with a CHECK expression change must still drop the
+        // pre-migration CHECK before TYPE and re-add the post-migration
+        // CHECK after it.
+        let before_expr = "\"amount\" >= 0 AND \"amount\" <= 4294967295";
+        let after_expr = "\"amount\" >= 0 AND \"amount\" <= 18446744073709551615";
+        let before = build_table_with_check_and_type(Some(before_expr), "INTEGER");
+        let after = build_table_with_check_and_type(Some(after_expr), "BIGINT");
+        let delta = diff_schemas(&before, &after, empty_global());
+        let changes = alter_column_changes_for(&delta, "amount");
+        assert_eq!(
+            changes.len(),
+            3,
+            "changed CHECK + type migration must emit drop/type/readd steps: {changes:?}"
+        );
+        assert!(
+            matches!(changes.first(), Some(ColumnChange::SetCheck(None))),
+            "existing CHECK must be dropped before ALTER TYPE: {changes:?}"
+        );
+        assert!(
+            matches!(changes.get(1), Some(ColumnChange::ChangeType { from, to }) if from == "INTEGER" && to == "BIGINT"),
+            "ALTER TYPE should be between drop and re-add: {changes:?}"
+        );
+        assert!(
+            matches!(changes.get(2), Some(ColumnChange::SetCheck(Some(s))) if s == after_expr),
+            "new CHECK should be re-added after type conversion: {changes:?}"
         );
     }
 
