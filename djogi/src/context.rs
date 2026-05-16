@@ -1494,6 +1494,14 @@ impl DjogiContext {
                 format!("SET CONSTRAINTS ALL {}", mode.as_sql_keyword())
             }
             crate::transaction::DeferScope::Named(names) => {
+                // GPT-5.5 xhigh follow-up: reject `Named(&[])` before
+                // emitting `SET CONSTRAINTS  DEFERRED` (note the
+                // extra space + missing list). Postgres would raise
+                // SQLSTATE `42601` after a round trip; the typed
+                // error names the misuse synchronously.
+                if names.is_empty() {
+                    return Err(DjogiError::EmptyDeferConstraintsScope);
+                }
                 validate_constraint_names_against_descriptors(names)?;
                 build_set_constraints_named_sql(names, mode)
             }
@@ -1511,66 +1519,165 @@ impl DjogiContext {
 /// Validate every constraint name in `names` against the
 /// `DeferrabilitySpec` inventory.
 ///
-/// - Returns `Err(UnknownConstraintName)` for the first name that
-///   does not match any registered FK constraint.
-/// - Returns `Err(ConstraintNotDeferrable)` for the first name that
-///   matches a registered FK whose `deferrable = false`.
-/// - Returns `Ok(())` when every name matches a deferrable FK.
-///
-/// The constraint-name convention follows
-/// `crate::migrate::sql::fk_constraint_name` —
-/// `<table>_<column>_fkey`, truncated to 63 bytes for long names.
-/// Walking the inventory at every call site is acceptable because:
-///
-/// 1. `defer_constraints` is a transaction-control call, not a
-///    hot-path operation — adopters call it once per atomic scope.
-/// 2. The inventory is fixed at link time; an iteration is O(models
-///    × FK-fields), which for any realistic app fits well under the
-///    SQL round-trip cost.
+/// Thin wrapper that threads the live `inventory::iter::<...>()`
+/// streams into [`validate_constraint_names_against_inventory`] so
+/// the validator is unit-testable with synthetic inventories. See
+/// that function for the full contract.
 fn validate_constraint_names_against_descriptors(names: &[&str]) -> Result<(), DjogiError> {
     use crate::descriptor::{DeferrabilitySpec, ModelDescriptor};
 
-    // Build a (constraint_name → deferrable) map by walking the
-    // model descriptor inventory once. Each FK field on a registered
-    // model contributes one entry, keyed on the conventional
-    // `<table>_<column>_fkey` (truncated) name.
-    //
-    // `DeferrabilitySpec` carries `(model_type_name, field_name,
-    // deferrable, initially_deferred)`. The macro emits
-    // `field_name` from `column_name_from_field`, so it IS the
-    // Postgres column name (raw-ident `r#type` is stripped to
-    // `type`); same source as `FieldDescriptor::name`. We only need
-    // to recover the model's *table* name from
-    // `ModelDescriptor::type_name → table_name`.
-    let mut table_by_type: std::collections::HashMap<&'static str, &'static str> =
-        std::collections::HashMap::new();
-    for m in inventory::iter::<ModelDescriptor> {
+    validate_constraint_names_against_inventory(
+        names,
+        inventory::iter::<ModelDescriptor>(),
+        inventory::iter::<DeferrabilitySpec>(),
+    )
+}
+
+/// Walk `(table_for(model_type), field_name) → (deferrable,
+/// initially_deferred)` maps built from the supplied inventories and
+/// validate every adopter-supplied constraint name.
+///
+/// Contract — fail-closed by design (GPT-5.5 xhigh follow-up for
+/// djogi#169):
+///
+/// 1. **Conflicting [`DeferrabilitySpec`]s** sharing
+///    `(model_type_name, field_name)` but disagreeing on
+///    `(deferrable, initially_deferred)` raise
+///    [`DjogiError::ConflictingDeferrabilitySpec`]. Mirrors the
+///    projection-time gate at
+///    [`crate::migrate::projection::ProjectionError::ConflictingDeferrabilitySpec`]
+///    so runtime and migration-time agree. Idempotent duplicates
+///    (same key, identical values) are accepted.
+///
+/// 2. **Orphan [`DeferrabilitySpec`]s** — `model_type_name` with no
+///    matching [`ModelDescriptor`] — raise
+///    [`DjogiError::OrphanDeferrabilitySpec`]. The previous
+///    implementation silently skipped these, which masked the real
+///    root cause when the adopter then asked about a
+///    `<expected_table>_<field>_fkey` they thought they had declared.
+///
+/// 3. **Duplicate constraint names** — two distinct
+///    `(model_type_name, field_name)` pairs whose conventional
+///    `<table>_<column>_fkey` strings collide (Postgres' 63-byte
+///    identifier limit can truncate-merge long names) — raise
+///    [`DjogiError::DuplicateConstraintName`]. Without this gate the
+///    validator would have to pick one side's `deferrable` answer,
+///    which is non-deterministic against inventory iteration order.
+///
+/// 4. **Unknown adopter-supplied name** raises
+///    [`DjogiError::UnknownConstraintName`].
+///
+/// 5. **Non-deferrable adopter-supplied name** raises
+///    [`DjogiError::ConstraintNotDeferrable`].
+///
+/// 6. Otherwise returns `Ok(())`.
+///
+/// Failures (1)–(3) surface before the per-name validation pass so a
+/// misconfigured inventory cannot mask a misconfigured `Named` payload
+/// with a different error code.
+///
+/// The constraint-name convention follows
+/// [`crate::migrate::sql::fk_constraint_name`] —
+/// `<table>_<column>_fkey`, truncated to 63 bytes for long names.
+/// Walking the inventory at every call site is acceptable because
+/// `defer_constraints` is a transaction-control call, not a hot-path
+/// operation — adopters call it once per atomic scope, and the
+/// inventory is fixed at link time.
+fn validate_constraint_names_against_inventory<'a, M, D>(
+    names: &[&str],
+    models: M,
+    specs: D,
+) -> Result<(), DjogiError>
+where
+    M: IntoIterator<Item = &'a crate::descriptor::ModelDescriptor>,
+    D: IntoIterator<Item = &'a crate::descriptor::DeferrabilitySpec>,
+{
+    use std::collections::{BTreeMap, HashMap};
+
+    // Resolve table_name from type_name. `ModelDescriptor` uniqueness
+    // is enforced at migration-projection time
+    // (`ProjectionError::DuplicateModelTypeName`), but the runtime
+    // validator runs without that gate, so a misconfigured inventory
+    // could in principle reach us. `BTreeMap::insert` returns the
+    // previous value; we treat idempotent reinsertion (same table)
+    // as a no-op and disagreement as Postgres' problem to surface —
+    // we do not duplicate the projection-time error here because
+    // `defer_constraints` does not need a canonical descriptor; it
+    // only needs the `(table, field) → deferrable` map for the
+    // FK-name composition. A type-name with two distinct tables is
+    // already a build-failure in any non-degenerate `cargo build`
+    // (`build.rs` runs the projection differ).
+    let mut table_by_type: HashMap<&str, &str> = HashMap::new();
+    for m in models {
         table_by_type.insert(m.type_name, m.table_name);
     }
 
-    let mut deferrable_by_constraint_name: std::collections::HashMap<String, bool> =
-        std::collections::HashMap::new();
-    for spec in inventory::iter::<DeferrabilitySpec> {
-        // Recover the table for this FK's owning model.
-        let table = match table_by_type.get(spec.model_type_name) {
-            Some(t) => *t,
-            // Unusual — a DeferrabilitySpec without a matching
-            // ModelDescriptor. Skip silently; the descriptor is the
-            // source of truth, and a missing one means the FK isn't
-            // really registered (the macros emit both submits side
-            // by side, so this only fires under pathological
-            // partial-emit conditions).
-            None => continue,
-        };
-        let name = crate::migrate::sql::fk_constraint_name(table, spec.field_name);
-        deferrable_by_constraint_name.insert(name, spec.deferrable);
+    // Detect duplicate / conflicting `DeferrabilitySpec`s while
+    // building the `(type, field) → (deferrable, initially_deferred)`
+    // map. Mirrors `migrate::projection::project_from_iters_with_deferrability`'s
+    // round-7 fix; we use a `BTreeMap` (deterministic iteration) but
+    // the determinism here is for diagnostic stability — the actual
+    // gate is "no two specs may disagree". Idempotent reinsertion
+    // (same key, identical value) is accepted.
+    let mut deferrability_by_field: BTreeMap<(&str, &str), (bool, bool)> = BTreeMap::new();
+    for spec in specs {
+        let key = (spec.model_type_name, spec.field_name);
+        let value = (spec.deferrable, spec.initially_deferred);
+        if let Some(prev) = deferrability_by_field.get(&key)
+            && *prev != value
+        {
+            return Err(DjogiError::ConflictingDeferrabilitySpec {
+                model_type_name: spec.model_type_name.to_string(),
+                field_name: spec.field_name.to_string(),
+                first: *prev,
+                second: value,
+            });
+        }
+        deferrability_by_field.insert(key, value);
     }
 
-    // Now validate each adopter-supplied name.
+    // Compose the runtime `constraint_name → (model_type, field,
+    // deferrable)` map. Reject orphan specs + duplicate constraint
+    // names here — both were silent in the prior implementation.
+    let mut deferrable_by_constraint_name: BTreeMap<String, (&str, &str, bool)> = BTreeMap::new();
+    for ((model_type_name, field_name), (deferrable, _initially_deferred)) in &deferrability_by_field
+    {
+        // Resolve the owning table.
+        let table = match table_by_type.get(model_type_name) {
+            Some(t) => *t,
+            None => {
+                return Err(DjogiError::OrphanDeferrabilitySpec {
+                    model_type_name: (*model_type_name).to_string(),
+                    field_name: (*field_name).to_string(),
+                });
+            }
+        };
+        let constraint_name = crate::migrate::sql::fk_constraint_name(table, field_name);
+        if let Some((first_model, first_field, _)) = deferrable_by_constraint_name.get(&constraint_name)
+        {
+            // Collision — two distinct (model, field) pairs that
+            // truncate-merge to the same conventional FK name. Fail
+            // closed; the adopter must shorten the offending
+            // identifier.
+            return Err(DjogiError::DuplicateConstraintName {
+                constraint_name,
+                first_model: (*first_model).to_string(),
+                first_field: (*first_field).to_string(),
+                second_model: (*model_type_name).to_string(),
+                second_field: (*field_name).to_string(),
+            });
+        }
+        deferrable_by_constraint_name
+            .insert(constraint_name, (model_type_name, field_name, *deferrable));
+    }
+
+    // Per-name validation. Inventory shape is now known consistent.
     for name in names {
         match deferrable_by_constraint_name.get(*name) {
-            Some(true) => continue, // deferrable, OK
-            Some(false) => return Err(DjogiError::ConstraintNotDeferrable((*name).to_string())),
+            Some((_, _, true)) => continue, // deferrable, OK
+            Some((_, _, false)) => {
+                return Err(DjogiError::ConstraintNotDeferrable((*name).to_string()));
+            }
             None => return Err(DjogiError::UnknownConstraintName((*name).to_string())),
         }
     }
@@ -2074,5 +2181,238 @@ mod tests {
             sql,
             r#"SET CONSTRAINTS "a_fkey", "b_fkey", "c_fkey" DEFERRED"#
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 8.5 #169 — runtime validator inventory gates (GPT-5.5
+    // xhigh follow-up). These tests construct synthetic
+    // `ModelDescriptor` + `DeferrabilitySpec` slices and verify that
+    // the runtime validator fails closed on every misconfigured
+    // inventory shape:
+    //
+    // - conflicting deferrability specs (same key, disagreeing
+    //   values)
+    // - orphan deferrability specs (no matching model descriptor)
+    // - duplicate constraint names (two distinct fields whose
+    //   `<table>_<column>_fkey` convention collides)
+    //
+    // Idempotent duplicates (same key, identical values) are
+    // accepted. These tests pin the negative + positive paths so a
+    // future refactor cannot silently re-introduce the
+    // last-writer-wins / silent-skip behaviour the GPT-5.5 review
+    // flagged.
+    // -------------------------------------------------------------------------
+
+    /// Build a `ModelDescriptor` skeleton sufficient for the
+    /// validator helper, which only reads `type_name` and
+    /// `table_name`. Forwards to the public
+    /// [`crate::descriptor::model_descriptor`] const-helper so the
+    /// shape stays in lockstep with the schema-projection tests.
+    fn synth_model(
+        type_name: &'static str,
+        table_name: &'static str,
+    ) -> crate::descriptor::ModelDescriptor {
+        crate::descriptor::model_descriptor(
+            type_name,
+            table_name,
+            crate::descriptor::PkType::HeerIdDesc,
+            &[],
+        )
+    }
+
+    fn synth_spec(
+        model_type_name: &'static str,
+        field_name: &'static str,
+        deferrable: bool,
+        initially_deferred: bool,
+    ) -> crate::descriptor::DeferrabilitySpec {
+        crate::descriptor::DeferrabilitySpec {
+            model_type_name,
+            field_name,
+            deferrable,
+            initially_deferred,
+        }
+    }
+
+    #[test]
+    fn validator_accepts_deferrable_fk_named_by_convention() {
+        // Positive control: the conventional `<table>_<column>_fkey`
+        // name for a deferrable spec passes.
+        let models = [synth_model("DeferNode", "djogi_defer_nodes")];
+        let specs = [synth_spec("DeferNode", "peer_id", true, true)];
+        super::validate_constraint_names_against_inventory(
+            &["djogi_defer_nodes_peer_id_fkey"],
+            models.iter(),
+            specs.iter(),
+        )
+        .expect("conventional FK name on deferrable spec must validate");
+    }
+
+    #[test]
+    fn validator_rejects_unknown_name_with_typed_error() {
+        let models = [synth_model("DeferNode", "djogi_defer_nodes")];
+        let specs = [synth_spec("DeferNode", "peer_id", true, true)];
+        let err = super::validate_constraint_names_against_inventory(
+            &["typo_fkey"],
+            models.iter(),
+            specs.iter(),
+        )
+        .expect_err("unknown name must be rejected");
+        assert!(
+            matches!(err, DjogiError::UnknownConstraintName(ref n) if n == "typo_fkey"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validator_rejects_non_deferrable_named_constraint() {
+        let models = [synth_model("Post", "posts")];
+        let specs = [synth_spec("Post", "author_id", false, false)];
+        let err = super::validate_constraint_names_against_inventory(
+            &["posts_author_id_fkey"],
+            models.iter(),
+            specs.iter(),
+        )
+        .expect_err("non-deferrable name must be rejected");
+        assert!(
+            matches!(
+                err,
+                DjogiError::ConstraintNotDeferrable(ref n) if n == "posts_author_id_fkey"
+            ),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validator_accepts_idempotent_duplicate_deferrability_spec() {
+        // Two `DeferrabilitySpec`s with the same (model, field, …
+        // values) collapse cleanly. The macro can in principle re-emit
+        // (cross-crate re-exports), so the validator must accept the
+        // idempotent shape.
+        let models = [synth_model("Post", "posts")];
+        let specs = [
+            synth_spec("Post", "author_id", true, false),
+            synth_spec("Post", "author_id", true, false),
+        ];
+        super::validate_constraint_names_against_inventory(
+            &["posts_author_id_fkey"],
+            models.iter(),
+            specs.iter(),
+        )
+        .expect("idempotent duplicate must validate");
+    }
+
+    #[test]
+    fn validator_rejects_conflicting_deferrability_spec_with_typed_error() {
+        // Two `DeferrabilitySpec`s with the same (model, field) key
+        // but disagreeing on `(deferrable, initially_deferred)` must
+        // raise `ConflictingDeferrabilitySpec` — mirrors the
+        // projection-time gate at `migrate::projection`.
+        let models = [synth_model("Post", "posts")];
+        let specs = [
+            synth_spec("Post", "author_id", true, false),
+            synth_spec("Post", "author_id", true, true),
+        ];
+        let err = super::validate_constraint_names_against_inventory(
+            &["posts_author_id_fkey"],
+            models.iter(),
+            specs.iter(),
+        )
+        .expect_err("conflicting spec must be rejected");
+        let DjogiError::ConflictingDeferrabilitySpec {
+            model_type_name,
+            field_name,
+            first,
+            second,
+        } = err
+        else {
+            panic!("expected ConflictingDeferrabilitySpec, got: {err:?}");
+        };
+        assert_eq!(model_type_name, "Post");
+        assert_eq!(field_name, "author_id");
+        assert_eq!(first, (true, false));
+        assert_eq!(second, (true, true));
+    }
+
+    #[test]
+    fn validator_rejects_orphan_deferrability_spec_with_typed_error() {
+        // A `DeferrabilitySpec` whose `model_type_name` has no
+        // matching `ModelDescriptor` must raise `OrphanDeferrabilitySpec`.
+        // The prior implementation silently skipped these, masking the
+        // real root cause (missing descriptor) behind an
+        // `UnknownConstraintName` against the
+        // `<table>_<field>_fkey` the adopter expected to exist.
+        //
+        // Empty `models` slice forces every spec to be an orphan. The
+        // validator must error before it even looks at the `names`
+        // payload — pass empty `names` to make the test focus on the
+        // inventory shape, not the per-name validation.
+        let models: [crate::descriptor::ModelDescriptor; 0] = [];
+        let specs = [synth_spec("Ghost", "haunts", true, false)];
+        let err = super::validate_constraint_names_against_inventory(
+            &[],
+            models.iter(),
+            specs.iter(),
+        )
+        .expect_err("orphan spec must be rejected");
+        let DjogiError::OrphanDeferrabilitySpec {
+            model_type_name,
+            field_name,
+        } = err
+        else {
+            panic!("expected OrphanDeferrabilitySpec, got: {err:?}");
+        };
+        assert_eq!(model_type_name, "Ghost");
+        assert_eq!(field_name, "haunts");
+    }
+
+    #[test]
+    fn validator_rejects_duplicate_constraint_name_with_typed_error() {
+        // Two distinct `(model_type, field)` pairs whose conventional
+        // FK names collide must raise `DuplicateConstraintName`.
+        // Postgres' 63-byte identifier limit can truncate-merge long
+        // names; the validator has no way to know which FK the
+        // adopter meant. Construct a synthetic collision by giving
+        // two models tables that produce the same truncated name
+        // when combined with a long-enough field name.
+        //
+        // The fk_constraint_name convention is `<table>_<column>_fkey`;
+        // construct two distinct (table, column) tuples that yield
+        // identical 63-byte strings. The simplest pinned shape: same
+        // `table` + same `column` but two different `type_name`s
+        // (which is exactly the collision case adopters can produce
+        // by accident when proxy / inheritance lands).
+        let models = [
+            synth_model("Alpha", "shared_table"),
+            synth_model("Beta", "shared_table"),
+        ];
+        let specs = [
+            synth_spec("Alpha", "shared_col", true, false),
+            synth_spec("Beta", "shared_col", true, false),
+        ];
+        let err = super::validate_constraint_names_against_inventory(
+            &[],
+            models.iter(),
+            specs.iter(),
+        )
+        .expect_err("duplicate constraint name must be rejected");
+        let DjogiError::DuplicateConstraintName {
+            constraint_name,
+            first_model,
+            first_field,
+            second_model,
+            second_field,
+        } = err
+        else {
+            panic!("expected DuplicateConstraintName, got: {err:?}");
+        };
+        assert_eq!(constraint_name, "shared_table_shared_col_fkey");
+        // BTreeMap iteration order over the spec keys is sorted by
+        // (model_type, field). Alpha < Beta, so Alpha is observed
+        // first.
+        assert_eq!(first_model, "Alpha");
+        assert_eq!(first_field, "shared_col");
+        assert_eq!(second_model, "Beta");
+        assert_eq!(second_field, "shared_col");
     }
 }
