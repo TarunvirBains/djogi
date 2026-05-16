@@ -214,15 +214,15 @@ Rename behavior is explicit only:
 
 No heuristic rename guessing is part of the core differ.
 
-### 10.6.1 Type-Derived CHECK Projection (djogi#186 / #187 / #190)
+### 10.6.1 Type-Derived CHECK Projection (djogi#186 / #187 / #188 / #190)
 
-**Status — temporal and integer arms both live (djogi#187 + djogi#190).** The
-contract layer ships under djogi#186: the `field_type_check` helper, the
-differ AMEND DROP+ADD lifecycle, the
-`FieldSqlType::NumericPrecision { precision, scale }` variant, and the
-`IntoFilterValue for u64` shim. djogi#187 wires the temporal family
-(`time::Date` / `time::OffsetDateTime`) end-to-end through `project_column`.
-djogi#190 wires the integer family (`i8 / u8 / u16 / u32 / u64`) with:
+**Status — temporal, integer, and Decimal arms all live.** The contract layer
+ships under djogi#186: the `field_type_check` helper, the differ AMEND
+DROP+ADD lifecycle, the `FieldSqlType::NumericPrecision { precision, scale }`
+variant, and the `IntoFilterValue for u64` shim. djogi#187 wires the temporal
+family (`time::Date` / `time::OffsetDateTime`) end-to-end through
+`project_column`. djogi#190 wires the integer family
+(`i8 / u8 / u16 / u32 / u64`) with:
 
 - `rust_type_to_sql` macro arms for all five narrow / unsigned types.
 - `rust_source_type: Option<RustSourceType>` discriminator on
@@ -233,6 +233,21 @@ djogi#190 wires the integer family (`i8 / u8 / u16 / u32 / u64`) with:
 - Decode shims with bounds-checked narrowing (from_row.rs, from_joined_row.rs).
 - `field_type_check` dispatch gated on the discriminator so only the five
   widened types receive a range CHECK; direct-mapped types keep `check: None`.
+
+djogi#188 wires the Decimal arm with a discriminator-only path —
+`RustSourceType::Decimal` rides on the same descriptor slot but signals only
+the projection layer (no bind/decode shim, since `rust_decimal::Decimal`
+implements `postgres_types::ToSql for NUMERIC` and the matching `FromSql`
+natively). The arm emits a structural CHECK enforcing the 96-bit mantissa /
+scale-≤-28 representable range; bare `NUMERIC` stays the column type so
+adopter-supplied values keep their full precision (no rounding).
+
+djogi#105 adds the adopter-supplied `#[field(check = "<sql>")]` attribute.
+The string is treated as a raw SQL escape — djogi does not parse or
+sanitize the expression beyond rejecting empty / whitespace-only literals
+at macro-parse time. When a column carries both a type-derived CHECK and
+an adopter CHECK, the projection layer combines them with logical `AND`
+into a single constraint slot (`<table>_<column>_check`).
 
 See "Currently shipped vs deferred" below for the full piece-by-piece state.
 
@@ -255,15 +270,16 @@ literal (`+00`) so the bound is timezone-invariant (a plain `TIMESTAMP '...'`
 literal against a `TIMESTAMPTZ` column is interpreted in the session timezone,
 widening the effective UTC upper bound by the session UTC offset).
 
-| Rust source              | Postgres column | Type-derived CHECK expression                                           | Status   |
-|--------------------------|-----------------|-------------------------------------------------------------------------|----------|
-| `time::Date`             | `DATE`          | `<col> <= DATE '9999-12-31'`                                            | **Live** |
-| `time::OffsetDateTime`   | `TIMESTAMPTZ`   | `<col> <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'`                  | **Live** |
-| `i8`                     | `SMALLINT`      | `<col> >= -128 AND <col> <= 127`                                        | **Live** |
-| `u8`                     | `SMALLINT`      | `<col> >= 0 AND <col> <= 255`                                           | **Live** |
-| `u16`                    | `INTEGER`       | `<col> >= 0 AND <col> <= 65535`                                         | **Live** |
-| `u32`                    | `BIGINT`        | `<col> >= 0 AND <col> <= 4294967295`                                    | **Live** |
-| `u64`                    | `NUMERIC`       | `<col> >= 0 AND <col> <= 18446744073709551615 AND <col> = trunc(<col>)` | **Live** |
+| Rust source              | Postgres column | Type-derived CHECK expression                                                                          | Status   |
+|--------------------------|-----------------|--------------------------------------------------------------------------------------------------------|----------|
+| `time::Date`             | `DATE`          | `<col> <= DATE '9999-12-31'`                                                                           | **Live** |
+| `time::OffsetDateTime`   | `TIMESTAMPTZ`   | `<col> <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'`                                                 | **Live** |
+| `i8`                     | `SMALLINT`      | `<col> >= -128 AND <col> <= 127`                                                                       | **Live** |
+| `u8`                     | `SMALLINT`      | `<col> >= 0 AND <col> <= 255`                                                                          | **Live** |
+| `u16`                    | `INTEGER`       | `<col> >= 0 AND <col> <= 65535`                                                                        | **Live** |
+| `u32`                    | `BIGINT`        | `<col> >= 0 AND <col> <= 4294967295`                                                                   | **Live** |
+| `u64`                    | `NUMERIC`       | `<col> >= 0 AND <col> <= 18446744073709551615 AND <col> = trunc(<col>)`                                | **Live** |
+| `rust_decimal::Decimal`  | `NUMERIC`       | `scale(<col>) <= 28 AND abs(<col>) * power(10::numeric, scale(<col>)) <= 79228162514264337593543950335` | **Live** |
 
 Identity-mapped widths (`i16`, `i32`, `i64`, `bool`, `String`, `f32`, `f64`,
 ...) project no CHECK because the column type already covers their full range.
@@ -279,49 +295,86 @@ naming function lives at `djogi/src/migrate/sql.rs::check_constraint_name` and
 truncates to Postgres' 63-byte identifier limit by appending an 8-char hex
 digest to a 54-byte stem.
 
+**IR shape — `SetCheck { from, to }`.** Each `ColumnChange::SetCheck` entry
+carries both the prior CHECK expression (`from`) and the target CHECK
+expression (`to`). The SQL emitter uses `from` for the down-side rollback
+so every CHECK transition has a fully recoverable rollback path with no
+"prior expression not recoverable" comment placeholder. (The earlier
+`SetCheck(Option<String>)` design dropped the prior expression on the
+floor and made the down side of any DROP arm structurally lossy — visible
+whenever a type migration on a checked column was rolled back.)
+
 **ADD lifecycle.** Descriptor evolves from a column with no CHECK (e.g. `i64`)
 to a column whose Rust source projects a CHECK (e.g. `u32`). The differ at
-`migrate/diff.rs::emit_alter_column` emits `ColumnChange::SetCheck(Some(expr))`
-which the SQL emitter renders as:
+`migrate/diff.rs::emit_alter_column` emits
+`ColumnChange::SetCheck { from: None, to: Some(expr) }` which the SQL emitter
+renders as:
 
 ```sql
+-- up
 ALTER TABLE <table> ADD CONSTRAINT <table>_<column>_check CHECK (<expr>);
+
+-- down (rollback)
+ALTER TABLE <table> DROP CONSTRAINT <table>_<column>_check;
 ```
 
 **DROP lifecycle.** Descriptor evolves from a column whose Rust source projects
 a CHECK (e.g. `u32`) to a column with no CHECK (e.g. `i64`). The differ emits
-`ColumnChange::SetCheck(None)` which renders as:
+`ColumnChange::SetCheck { from: Some(prior), to: None }` which renders as:
 
 ```sql
+-- up
 ALTER TABLE <table> DROP CONSTRAINT <table>_<column>_check;
-```
 
-The down-migration carries a documented-not-recoverable comment because the
-prior CHECK expression is not preserved in the diff.
+-- down (rollback — restores the prior expression losslessly)
+ALTER TABLE <table> ADD CONSTRAINT <table>_<column>_check CHECK (<prior>);
+```
 
 **AMEND lifecycle.** Descriptor evolves from a column with one CHECK to a
 column with a different CHECK (e.g. `u16` → `u32`, or any `#[field(check)]`
 expression edit). The differ detects the AMEND case explicitly and emits two
-`ColumnChange` entries in order — `SetCheck(None)` followed by
-`SetCheck(Some(new))` — so the SQL pair is:
+`ColumnChange` entries in order:
 
-```sql
-ALTER TABLE <table> DROP CONSTRAINT <table>_<column>_check;
-ALTER TABLE <table> ADD CONSTRAINT <table>_<column>_check CHECK (<new_expr>);
+```rust
+ColumnChange::SetCheck { from: Some(old), to: None }
+ColumnChange::SetCheck { from: None, to: Some(new) }
 ```
 
-The two-step emission is required because the SQL emitter for
-`SetCheck(Some(expr))` synthesizes the same constraint name regardless of
-whether one already exists; without the explicit DROP, the second ALTER would
-collide on the constraint name slot. The pair is symmetric, easy to read in
-audit logs, and reuses both existing emitter arms unchanged.
+The composed up file runs the two steps forward (drop old, add new). The
+composed down file walks them in reverse (per
+`compose::compose_down_text`), giving the operator: drop the new CHECK,
+then re-add the old CHECK. The combined SQL pair is:
+
+```sql
+-- up
+ALTER TABLE <table> DROP CONSTRAINT <table>_<column>_check;
+ALTER TABLE <table> ADD CONSTRAINT <table>_<column>_check CHECK (<new_expr>);
+
+-- down (rollback — restores the original CHECK losslessly)
+ALTER TABLE <table> DROP CONSTRAINT <table>_<column>_check;
+ALTER TABLE <table> ADD CONSTRAINT <table>_<column>_check CHECK (<old_expr>);
+```
+
+The two-step emission is required because the SQL emitter for an `ADD`
+step synthesizes the same constraint name regardless of whether one
+already exists; without the explicit DROP, the second ALTER would collide
+on the constraint name slot. The pair is symmetric, easy to read in audit
+logs, and reuses both existing emitter arms unchanged.
 
 **Online safety.** All three lifecycle operations classify as `OnlineSafe` on
-empty tables. On populated tables, the ADD case routes through the two-phase
+empty tables. On populated tables, the v0.1.0-alpha apply path
+(`djogi::migrate::apply_plan` consuming SQL from `migrate/sql.rs`) emits a
+single-statement `ALTER TABLE … ADD CONSTRAINT … CHECK (…)`, which acquires
+`AccessExclusiveLock` for the duration of validation. The two-phase
 constraint validation default (per the `Two-phase constraint validation
-default (Phase 7.5)` decision row): `ADD CONSTRAINT … NOT VALID` followed by
-a separate `VALIDATE CONSTRAINT` step under `ShareUpdateExclusiveLock`. DROP
-is always catalog-only.
+default (Phase 7.5)` decision row) — `ADD CONSTRAINT … NOT VALID` followed
+by a separate `VALIDATE CONSTRAINT` step under `ShareUpdateExclusiveLock` —
+is the planned Phase 7.5 live-plan rollout shape. The pattern catalogue at
+`live_migrate::patterns::TwoPhaseValidate` covers the foreign-key arm today;
+the CHECK / NOT NULL arms are queued behind the live-plan runner surface
+(`djogi live run` / `djogi live finalize`), which remains stubbed / deferred
+in v0.1.0 per the `Live-plan dashboard deferral (Phase 10 / Maahi)` decision
+row. DROP is always catalog-only.
 
 **Inline CHECK on CREATE TABLE.** The SQL emitter renders the projected
 CHECK inline on the column definition using the
@@ -335,11 +388,11 @@ the CREATE TABLE and ALTER TABLE pathways reach the same constraint slot
 and the differ's drop / amend lifecycle works against both.
 
 **Family extensibility.** The same `field_type_check` projection helper is
-designed to grow with future type families: Decimal precision (djogi#188) and
-HeerId / RanjId structural validation (djogi#189) plug into the same match
-without reshaping the helper signature. Integer widening (djogi#190) is now
-live. See `decisions.md` "Type-derived CHECK projection (Phase 8.5 v3
-Cluster 2)" for the contract.
+designed to grow with future type families. djogi#188 (Decimal precision) is
+now live alongside djogi#187 (temporal) and djogi#190 (integer); HeerId /
+RanjId structural validation (djogi#189) plugs into the same match without
+reshaping the helper signature when that work lands. See `decisions.md`
+"Type-derived CHECK projection (Phase 8.5 v3 Cluster 2)" for the contract.
 
 **Currently shipped.** The full projection contract is now live:
 
@@ -349,6 +402,12 @@ Cluster 2)" for the contract.
   * djogi#187 — temporal wiring: `time::Date` / `time::OffsetDateTime`
     year upper-bound CHECKs reach `ColumnSchema.check`,
     `schema_snapshot.json`, and generated migration SQL.
+  * djogi#188 — Decimal wiring: `rust_decimal::Decimal` model fields
+    project a structural CHECK enforcing the 96-bit mantissa / scale-≤-28
+    representable range. The column stays bare `NUMERIC`; the CHECK is
+    discriminator-driven via `RustSourceType::Decimal` so adopter
+    `Decimal` fields are distinguished from `u64 → NUMERIC` columns at
+    projection time without a bind / decode shim.
   * djogi#190 — integer widening: `i8 / u8 / u16 / u32 / u64` model
     fields compile, bind, decode, and receive type-derived CHECKs.
     `RustSourceType` discriminator on `FieldDescriptor` gates dispatch
@@ -363,7 +422,87 @@ and `field_type_check_for_timestamptz_emits_year_upper_bound` (unit tests),
 `..._timestamptz_column` (projection wiring tests), and the
 `tests/internal/phase8_5_c2_187_temporal_year_check.rs` integration test.
 The integer widening end-to-end coverage lives in
-`tests/internal/phase8_5_c2_190_integer_widening.rs`.
+`tests/internal/phase8_5_c2_190_integer_widening.rs`. The Decimal arm and
+the adopter `#[field(check)]` AND-merge contract are covered by
+`field_type_check_for_decimal_numeric_emits_structural_bounds`,
+`project_column_emits_decimal_structural_check_for_non_fk_numeric_column`,
+the `combine_check_expressions_*` projection unit tests, and
+`tests/internal/phase8_5_c2_105_188_check_decimal.rs`.
+
+### 10.6.2 Adopter `#[field(check = "<sql>")]` (djogi#105)
+
+Adopters can declare arbitrary CHECK constraints on any model field via
+`#[field(check = "<sql expression>")]`. The expression is emitted verbatim
+into the column's CHECK constraint inside both inline `CREATE TABLE` form
+(`CONSTRAINT <table>_<column>_check CHECK (<expr>)`) and ALTER-TABLE form
+(`ALTER TABLE … ADD CONSTRAINT … CHECK (<expr>)`).
+
+```rust
+#[derive(djogi::Model)]
+#[model(table = "animals")]
+pub struct Animal {
+    pub name: String,
+    #[field(check = "weight_kg > 0")]
+    pub weight_kg: f64,
+}
+```
+
+**Raw SQL escape.** The expression is treated identically to a raw SQL
+fragment. djogi performs **no parsing, no sanitization, and no semantic
+validation** beyond rejecting empty / whitespace-only literals at parse
+time. Adopters are responsible for:
+
+- The expression's syntactic correctness against the column's Postgres type.
+- Its idempotency — CHECK predicates must be `IMMUTABLE` to be acceptable
+  to Postgres (no `now()`, no volatile function calls, no references to
+  other tables / rows).
+- Identifier handling — column names referenced inside the expression
+  must be the Postgres column name. If the field name happens to collide
+  with a reserved keyword, the expression author quotes the identifier
+  manually (e.g. `"\"order\" >= 0"`).
+
+The same `unsafe`-style cultural posture from
+`docs/spec/raw-sql-escape-hatches.md` applies — every callsite is
+reviewable as raw SQL.
+
+**Combination with type-derived CHECKs.** When a column also receives a
+type-derived CHECK (e.g. an adopter `u32` field with
+`#[field(check = "port > 0")]`), the projection layer combines the two
+with logical `AND` into a single constraint slot:
+
+```sql
+CONSTRAINT "<table>_<column>_check" CHECK (
+    (<type-derived-expr>) AND (<adopter-expr>)
+)
+```
+
+Both clauses must pass for an INSERT / UPDATE to land. The single
+constraint slot keeps the ADD / DROP / AMEND lifecycle in the differ
+unchanged — `<table>_<column>_check` carries exactly one CHECK per
+column, whether it came from the framework, the adopter, or both.
+
+**Lifecycle.** The combined CHECK rides the same ADD / DROP / AMEND
+machinery as the type-derived CHECK (see §10.6.1 above). Adding or
+changing an adopter `#[field(check)]` expression triggers the differ's
+AMEND path — `SetCheck { from: Some(old), to: None }` followed by
+`SetCheck { from: None, to: Some(<new combined>) }` — which produces
+a `DROP CONSTRAINT … ; ADD CONSTRAINT …` SQL pair whose rollback
+restores the prior combined expression losslessly.
+
+**FK columns.** Adopter CHECKs are honoured on FK columns even though
+the type-derived CHECK is suppressed on FKs (FK column types inherit
+from the parent's PK, which is always identity-width). The adopter may
+want a domain invariant on the FK column itself — e.g.
+`#[field(check = "owner_id > 0")]` to reject the HeerId sentinel value
+zero on a non-null FK column. The projection emits the adopter
+expression directly with no `AND`-merge wrapping in this case.
+
+**Validation rules.** `FieldAttrs::parse` rejects empty and
+whitespace-only literals with a span-precise diagnostic. Every other
+string is accepted at parse time; SQL-level rejection happens at
+migration apply (Postgres returns a `42601` syntax error or `42703`
+column-not-found error on bad expressions, with the full constraint
+name in the error message so operators can locate the offending field).
 
 ### 10.7 Ledger and Locking
 

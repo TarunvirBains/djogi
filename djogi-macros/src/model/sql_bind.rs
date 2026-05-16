@@ -465,6 +465,12 @@ pub fn decode_joined_field_tokens(
 /// Unlike [`rust_source_type_tokens`], this function discriminates between
 /// `i8` and `u8` (both widen to `i16` but carry different `RustSourceType`
 /// variants for the CHECK projection).
+///
+/// `Decimal` / `rust_decimal::Decimal` returns `Some(RustSourceType::Decimal)`
+/// even though the bind/decode path is `BindKind::Direct` (no shim) —
+/// the discriminator is read by the projection layer to emit a
+/// structural CHECK enforcing rust_decimal's 96-bit-mantissa / scale-≤-28
+/// representable range. djogi#188.
 pub fn rust_source_type_tokens_for_type(ty: &Type) -> TokenStream {
     let (inner, _nullable) = unwrap_schema_type(ty);
     let s = quote::quote!(#inner).to_string().replace(' ', "");
@@ -475,6 +481,13 @@ pub fn rust_source_type_tokens_for_type(ty: &Type) -> TokenStream {
         "u16" => quote! { ::std::option::Option::Some(::djogi::RustSourceType::U16) },
         "u32" => quote! { ::std::option::Option::Some(::djogi::RustSourceType::U32) },
         "u64" => quote! { ::std::option::Option::Some(::djogi::RustSourceType::U64) },
+        // djogi#188 — adopter `Decimal` columns project a structural CHECK
+        // bounded by `rust_decimal::Decimal`'s 96-bit mantissa + scale ≤ 28.
+        // No shim is emitted (rust_decimal has a native postgres-types impl);
+        // the discriminator only steers the projection layer.
+        "Decimal" | "rust_decimal::Decimal" => {
+            quote! { ::std::option::Option::Some(::djogi::RustSourceType::Decimal) }
+        }
         _ => quote! { ::std::option::Option::None },
     }
 }

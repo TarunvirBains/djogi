@@ -79,6 +79,9 @@ fn framework_field_descriptor(name: &str, sql_type_tokens: TokenStream, pk: bool
             // Framework-injected columns use identity-mapped types
             // (HeerId → BIGINT, DateTime → TIMESTAMPTZ, etc.); no shim.
             rust_source_type: ::std::option::Option::None,
+            // Framework-injected columns carry no adopter
+            // `#[field(check = "...")]`; the slot is always `None`.
+            check_sql: ::std::option::Option::None,
         }
     }
 }
@@ -496,6 +499,19 @@ fn try_expand(
                 rust_source_type_tokens_for_type(&inner_ty)
             };
 
+            // Phase 8.5 Cluster 2 (djogi#105) — adopter `#[field(check = "...")]`
+            // raw-SQL CHECK expression. The string is already validated as
+            // non-empty / non-whitespace by `FieldAttrs::parse`; emit it
+            // verbatim into the descriptor so the projection layer can
+            // combine it with any type-derived CHECK.
+            let check_sql_tokens: TokenStream = match &fa.check {
+                Some(expr) => {
+                    let expr_str = expr.as_str();
+                    quote! { ::std::option::Option::Some(#expr_str) }
+                }
+                None => quote! { ::std::option::Option::None },
+            };
+
             quote! {
                 ::djogi::FieldDescriptor {
                     name: #name,
@@ -545,6 +561,10 @@ fn try_expand(
                     // source-type discriminator. `Some(RustSourceType::*)`
                     // for i8/u8/u16/u32/u64; `None` for direct-mapped types.
                     rust_source_type: #rust_source_type_tokens,
+                    // Phase 8.5 Cluster 2 (djogi#105) — adopter
+                    // `#[field(check = "<sql>")]` raw-SQL CHECK expression.
+                    // `None` for fields without an adopter check.
+                    check_sql: #check_sql_tokens,
                 }
             }
         })

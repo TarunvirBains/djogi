@@ -1181,10 +1181,13 @@ fn field_type_check(
         // also enforces the same integrality guard on the Rust side, but the DB-level
         // CHECK prevents the value from landing in the first place.
         //
-        // `None` for columns without a `rust_source_type` discriminator
-        // (i.e. every `i16 → SMALLINT`, `i32 → INTEGER`, `i64 → BIGINT`,
-        // and adopter `Decimal → NUMERIC` column stays unchecked because
-        // the Postgres column type already enforces the relevant type bounds).
+        // `None` for direct-mapped integer columns without a
+        // `rust_source_type` discriminator (`i16 → SMALLINT`,
+        // `i32 → INTEGER`, `i64 → BIGINT`); the Postgres column type
+        // already enforces the relevant range. Adopter `Decimal → NUMERIC`
+        // columns reach the `FieldSqlType::Numeric` arm below — they carry
+        // `Some(RustSourceType::Decimal)` and project a structural CHECK
+        // (djogi#188), not None.
         FieldSqlType::SmallInt => match rust_source_type {
             Some(RustSourceType::I8) => Some(format!("{qcol} >= -128 AND {qcol} <= 127")),
             Some(RustSourceType::U8) => Some(format!("{qcol} >= 0 AND {qcol} <= 255")),
@@ -1198,31 +1201,138 @@ fn field_type_check(
             Some(RustSourceType::U32) => Some(format!("{qcol} >= 0 AND {qcol} <= 4294967295")),
             _ => None,
         },
-        // u64 → bare NUMERIC with range + integrality CHECK.
+        // ── djogi#190 (u64) and djogi#188 (Decimal) share the bare-NUMERIC
+        //    column type but project distinct CHECK shapes. The
+        //    `rust_source_type` discriminator routes each Rust source to
+        //    the right CHECK. ────────────────────────────────────────────
         //
-        // The integrality clause (`col = trunc(col)`) is the critical addition
-        // over the old NUMERIC(20, 0) design: bare NUMERIC preserves fractional
-        // inputs unchanged, so the CHECK must explicitly reject them. trunc() is
-        // the standard Postgres function for truncating a NUMERIC toward zero.
+        // **u64** — bare NUMERIC with range + integrality CHECK.
+        // The integrality clause (`col = trunc(col)`) is the critical
+        // addition over the old NUMERIC(20, 0) design: bare NUMERIC
+        // preserves fractional inputs unchanged, so the CHECK must
+        // explicitly reject them. `trunc()` is the standard Postgres
+        // function for truncating a NUMERIC toward zero.
         //
-        // Adopter `Decimal` fields also lower to `FieldSqlType::Numeric` but
-        // carry `rust_source_type: None`, so they fall to the `_ => None` arm
-        // and receive no Rust-derived CHECK.
+        // **Decimal (djogi#188)** — bare NUMERIC with a structural CHECK
+        // bounding the value to `rust_decimal::Decimal`'s **exact
+        // representable** range. The CHECK enforces no-silent-loss
+        // semantics: Postgres rejects any write that the typed Rust
+        // path would otherwise rescale, round, or fail to fit.
+        //
+        //   * `scale(col) <= 28` — `rust_decimal::Decimal` carries
+        //     5 scale bits inside an i32 word, capping representable
+        //     scale at `Decimal::MAX_SCALE = 28`. The pinned
+        //     rust_decimal Postgres `FromSql` impl (see
+        //     `rust_decimal::postgres::common::checked_from_postgres`)
+        //     does **not** reject scale > 28 outright — it silently
+        //     rescales the incoming NUMERIC to scale 28 with rounding
+        //     (`result.rescale((scale as u32).min(Self::MAX_SCALE))`).
+        //     This CHECK rejects such writes at the DB layer so the
+        //     value Postgres holds matches the value Rust will decode,
+        //     bit for bit, with no silent precision loss on the way in.
+        //   * `abs(col) * power(10::numeric, scale(col)) <= 79228162514264337593543950335`
+        //     — the rust_decimal coefficient is a 96-bit unsigned mantissa,
+        //     i.e. `coefficient <= 2^96 - 1 = 79_228_162_514_264_337_593_543_950_335`.
+        //     For any NUMERIC `col` with scale `s`, the coefficient is
+        //     `|col| * 10^s`; the CHECK enforces this stays within the
+        //     96-bit envelope. Values that overflow this envelope cause
+        //     `checked_from_postgres` to return `None` (a hard decode
+        //     failure surfaced as `DjogiError::Decode`) — this CHECK
+        //     rejects them at the DB layer before they can poison a
+        //     typed read.
+        //
+        // The two-clause shape rejects both kinds of out-of-range value:
+        //   - A 100-digit integer at scale 0 → coefficient > 2^96-1 → rejected.
+        //   - A value with scale 50 → scale check fails → rejected
+        //     (preventing the silent rescale-and-round path).
+        // For valid rust_decimal values (e.g. `49.99` with scale 2,
+        // coefficient `4999`), both clauses pass.
+        //
+        // Postgres semantics: CHECK constraints treat NULL as satisfied,
+        // so nullable Decimal columns work without modification. The
+        // `power()` and `scale()` calls are stable Postgres functions
+        // (no extensions required); per-row overhead is one NUMERIC
+        // arithmetic operation plus one function call. The umbrella
+        // issue #185 records a per-write budget target for the family
+        // but is still open — a measured-µs claim against that budget
+        // is left to #185's benchmark workstream rather than asserted
+        // here.
+        //
+        // The performance trade-off versus a column-side `NUMERIC(P, S)`
+        // was deliberate (see `docs/spec/decisions.md` "Decimal precision
+        // and scale projection (djogi#188)"): `NUMERIC(28, 28)` admits
+        // ±9.x (one integer digit) and rejects ordinary adopter values
+        // like `49.99`; `NUMERIC(29, 14)` or similar arbitrary
+        // precision/scale defaults silently round adopter writes —
+        // worse than rejecting them. Bare NUMERIC with a structural
+        // CHECK preserves the adopter's full precision/scale choice
+        // and rejects only values that fall outside rust_decimal's
+        // exact-representable domain — i.e., values that would either
+        // be silently rescaled / rounded on decode (scale > 28) or
+        // outright fail to decode (coefficient > 2^96 - 1).
+        //
+        // No `rust_source_type` discriminator (the fall-through `_` arm)
+        // means a bare-NUMERIC column whose Rust source is neither `u64`
+        // nor `Decimal` — i.e., a user-defined type with
+        // `DjogiSqlType::SQL_TYPE = "NUMERIC"`. Those columns carry no
+        // type-derived CHECK because the framework does not know the
+        // representable range of an adopter scalar type.
         FieldSqlType::Numeric => match rust_source_type {
             Some(RustSourceType::U64) => Some(format!(
                 "{qcol} >= 0 AND {qcol} <= 18446744073709551615 AND {qcol} = trunc({qcol})"
+            )),
+            Some(RustSourceType::Decimal) => Some(format!(
+                "scale({qcol}) <= 28 AND \
+                 abs({qcol}) * power(10::numeric, scale({qcol})) <= 79228162514264337593543950335"
             )),
             _ => None,
         },
         // All other `FieldSqlType` variants (`Text`, `Real`,
         // `DoublePrecision`, `Boolean`, `Uuid`, `Jsonb`,
-        // arrays, `Citext`, `Geography`, `Custom`, and all
-        // `NumericPrecision { .. }` precisions used by future
-        // `Decimal → NUMERIC(P, S)` work in djogi#188) carry their own
-        // type bounds via the column type itself; no Rust-derived
-        // CHECK applies. Future families plug into this same match
-        // without reshaping the helper signature.
+        // arrays, `Citext`, `Geography`, `Custom`, and every
+        // `NumericPrecision { .. }` instance — djogi#188 ships
+        // `rust_decimal::Decimal` as bare `Numeric` + structural CHECK,
+        // not as `NumericPrecision`) carry their own type bounds via
+        // the column type itself; no Rust-derived CHECK applies. Future
+        // families plug into this same match without reshaping the
+        // helper signature.
         _ => None,
+    }
+}
+
+/// Combine a type-derived CHECK with an adopter `#[field(check = "...")]`
+/// expression into a single constraint slot.
+///
+/// Both forms produce an `Option<String>`; the combination rules:
+///
+/// - Neither present → `None` (no CHECK constraint).
+/// - Only one present → the present one verbatim (no extra parentheses).
+/// - Both present → `({type-derived}) AND ({adopter})` — single SQL
+///   expression, both clauses must pass.
+///
+/// The single constraint slot keeps the ADD / DROP / AMEND lifecycle in
+/// the differ unchanged: a column has at most one CHECK at
+/// `<table>_<column>_check`. Constraint name uniqueness is guaranteed by
+/// `migrate/sql.rs::check_constraint_name`. The combined-expression
+/// approach loses a small amount of fault-diagnostic granularity (a CHECK
+/// violation surfaces the whole `(A) AND (B)` expression rather than
+/// pinpointing which clause failed), but Postgres includes the full
+/// expression text in the error message so adopters can still tell the
+/// type bound from the adopter bound on inspection.
+///
+/// Defensive normalisation: both inputs are `trim()`'d to avoid
+/// `"(expr1 ) AND ( expr2)"` whitespace artefacts in snapshot output.
+/// The differ compares CHECK expressions by string equality, so any
+/// drift in whitespace would emit a spurious AMEND on every compose.
+fn combine_check_expressions(
+    type_derived: Option<String>,
+    adopter: Option<&str>,
+) -> Option<String> {
+    match (type_derived, adopter) {
+        (None, None) => None,
+        (Some(t), None) => Some(t),
+        (None, Some(a)) => Some(a.trim().to_string()),
+        (Some(t), Some(a)) => Some(format!("({}) AND ({})", t.trim(), a.trim())),
     }
 }
 
@@ -1378,42 +1488,53 @@ fn project_column(
     };
 
     // Type-derived CHECK projection (djogi#186 contract; djogi#187 for
-    // temporal types; djogi#190 for integer widening).
+    // temporal types; djogi#190 for integer widening; djogi#188 for
+    // Decimal structural bounds; djogi#105 for adopter
+    // `#[field(check)]` expressions).
     //
     // The contract:
     //
     //   * `field_type_check` dispatches on the descriptor's
-    //     `FieldSqlType` + `rust_source_type` to emit a Rust-derived
-    //     range CHECK for widened columns whose Postgres column type
-    //     accepts values outside the Rust source type's representable
-    //     range.
+    //     `FieldSqlType` + `rust_source_type` to emit a type-derived
+    //     CHECK for widened or structurally-bounded columns whose
+    //     Postgres column type accepts values outside the Rust source
+    //     type's representable range.
+    //   * Adopter-supplied `#[field(check = "<expr>")]` flows through
+    //     `f.check_sql` and is combined with the type-derived CHECK
+    //     via logical `AND` so a single constraint slot
+    //     (`<table>_<column>_check`) carries both. The differ's ADD /
+    //     DROP / AMEND lifecycle stays unchanged.
     //   * For non-FK columns we call the helper; non-`None` results
     //     reach `ColumnSchema.check`, the SQL emitter inlines them on
     //     CREATE TABLE and the differ emits `ColumnChange::SetCheck`
     //     for ADD / DROP / AMEND lifecycles.
     //   * FK columns inherit their type from the parent's PK, which is
     //     always identity-width (BIGINT for HeerId, UUID for RanjId).
-    //     The Rust-derived CHECK doesn't apply, so we hard-code
-    //     `None`.
+    //     The Rust-derived CHECK doesn't apply, so the type-derived
+    //     half is hard-coded `None`. Adopter `#[field(check)]` on an
+    //     FK column is still honoured — the adopter may want a domain
+    //     invariant on the FK column itself (e.g., `owner_id > 0`),
+    //     and there is no structural reason to forbid it.
     //
-    // **Live arms:**
+    // **Live arms inside `field_type_check`:**
     //   - djogi#187: `Date` / `Timestamptz` → year ±9999 upper-bound
     //     CHECK (unconditional — FieldSqlType alone disambiguates).
     //   - djogi#190: `SmallInt` / `Integer` / `BigInt` / `Numeric`
     //     → range CHECK (+ integrality for u64) gated on the
     //     `rust_source_type` discriminator. Direct-mapped types
-    //     (`i16 → SmallInt`, `i64 → BigInt`, adopter `Decimal → Numeric`)
-    //     have `rust_source_type: None` and keep `check: None` so no
-    //     spurious CHECK fires. Only the five narrow/unsigned types
-    //     (i8/u8/u16/u32/u64) carry `Some(RustSourceType::*)` and
-    //     receive a CHECK.
-    let check: Option<String> = if foreign_key.is_some() {
+    //     (`i16 → SmallInt`, `i64 → BigInt`) have `rust_source_type: None`
+    //     and keep `check: None` so no spurious CHECK fires.
+    //   - djogi#188: `Numeric` + `Some(RustSourceType::Decimal)` →
+    //     structural CHECK enforcing rust_decimal's 96-bit mantissa /
+    //     scale-≤-28 representable range.
+    let type_derived_check: Option<String> = if foreign_key.is_some() {
         // FK columns inherit their type from the parent's PK (BIGINT for
         // HeerId, UUID for RanjId). The Rust-derived CHECK doesn't apply.
         None
     } else {
         field_type_check(&f.sql_type, f.rust_source_type, f.name)
     };
+    let check: Option<String> = combine_check_expressions(type_derived_check, f.check_sql);
 
     ColumnSchema {
         check,
@@ -3220,8 +3341,14 @@ mod tests {
         // `i16 → SmallInt`, `i32 → Integer`, `i64 → BigInt` columns have no
         // `rust_source_type` discriminator (`None`). The gate ensures they
         // never receive a narrow/unsigned range CHECK.
-        // Adopter `Decimal → Numeric` also gets no CHECK — the discriminator
-        // is `None` for non-u64 NUMERIC columns.
+        //
+        // A bare-NUMERIC column with `rust_source_type: None` is reached only
+        // by user-defined scalar types (`DjogiSqlType::SQL_TYPE = "NUMERIC"`).
+        // Those have no representable-range claim that the framework can
+        // make on the adopter's behalf, so they keep `check: None`.
+        // Adopter `Decimal` columns are NOT in this set — they carry
+        // `Some(RustSourceType::Decimal)` and project the structural
+        // CHECK via the Numeric arm of `field_type_check` (djogi#188).
         for ty in [
             FieldSqlType::SmallInt,
             FieldSqlType::Integer,
@@ -3692,6 +3819,283 @@ mod tests {
             "FK column must never carry a Rust-derived CHECK \
              regardless of declared sql_type: {:?}",
             owner_fk.check
+        );
+    }
+
+    // ── djogi#188 — Decimal structural CHECK projection ────────────────────
+    //
+    // `Decimal` columns (`rust_decimal::Decimal`) lower to `FieldSqlType::Numeric`
+    // and carry `Some(RustSourceType::Decimal)`. The projection emits a
+    // structural CHECK bounding the value to rust_decimal's representable
+    // range (96-bit mantissa, scale ≤ 28).
+
+    #[test]
+    fn field_type_check_for_decimal_numeric_emits_structural_bounds() {
+        let expr = field_type_check(
+            &FieldSqlType::Numeric,
+            Some(RustSourceType::Decimal),
+            "price",
+        )
+        .expect("Decimal → Numeric must carry the rust_decimal structural CHECK");
+        // The scale clause caps the fractional-digit count at 28.
+        assert!(
+            expr.contains("scale(\"price\") <= 28"),
+            "Decimal CHECK must cap scale at 28: {expr}"
+        );
+        // The mantissa clause keeps `|col| * 10^scale(col)` inside the
+        // 96-bit unsigned range (2^96 - 1).
+        assert!(
+            expr.contains("abs(\"price\") * power(10::numeric, scale(\"price\"))"),
+            "Decimal CHECK must scale value back to integer coefficient form: {expr}"
+        );
+        assert!(
+            expr.contains("79228162514264337593543950335"),
+            "Decimal CHECK upper-bound must be 2^96 - 1 (79228162514264337593543950335): {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_decimal_arm_quotes_reserved_word_column() {
+        // The Decimal CHECK references the column three times (scale,
+        // scale, abs+power); all three must round-trip the column name
+        // through `quote_ident_for_check` so a reserved-word column name
+        // parses cleanly.
+        let expr = field_type_check(
+            &FieldSqlType::Numeric,
+            Some(RustSourceType::Decimal),
+            "order",
+        )
+        .expect("Decimal CHECK must fire regardless of column name");
+        assert_eq!(
+            expr.matches("\"order\"").count(),
+            3,
+            "Decimal CHECK references the column three times; all must be quoted: {expr}"
+        );
+    }
+
+    #[test]
+    fn project_column_emits_decimal_structural_check_for_non_fk_numeric_column() {
+        // Adopter `pub price: Decimal` → `FieldSqlType::Numeric` with
+        // `rust_source_type: Some(RustSourceType::Decimal)`. The
+        // projection must produce the structural CHECK so external
+        // writers cannot land values outside rust_decimal's
+        // representable range and corrupt typed `FromSql` reads with
+        // `DjogiError::Decode`.
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                rust_source_type: Some(RustSourceType::Decimal),
+                ..field_descriptor("price", FieldSqlType::Numeric, false)
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("products", "Product")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-16T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let price_col = &buckets[&empty_global()].models["products"].columns[1];
+        assert_eq!(price_col.name, "price");
+        let check = price_col
+            .check
+            .as_deref()
+            .expect("Decimal column with RustSourceType::Decimal must carry the structural CHECK");
+        assert!(
+            check.contains("scale(\"price\") <= 28"),
+            "Decimal CHECK must cap scale at 28: {check}"
+        );
+        assert!(
+            check.contains("79228162514264337593543950335"),
+            "Decimal CHECK must reference 2^96 - 1 as upper coefficient bound: {check}"
+        );
+    }
+
+    // ── djogi#105 — adopter `#[field(check = "...")]` projection ───────────
+    //
+    // The macro emits `FieldDescriptor::check_sql` from the parsed
+    // `#[field(check = "...")]` attribute. The projection layer combines
+    // it with any type-derived CHECK via logical `AND` into a single
+    // constraint slot.
+
+    #[test]
+    fn combine_check_expressions_neither_present_returns_none() {
+        assert!(combine_check_expressions(None, None).is_none());
+    }
+
+    #[test]
+    fn combine_check_expressions_only_type_derived() {
+        let combined = combine_check_expressions(Some("\"qty\" >= 0".into()), None);
+        assert_eq!(combined.as_deref(), Some("\"qty\" >= 0"));
+    }
+
+    #[test]
+    fn combine_check_expressions_only_adopter() {
+        let combined = combine_check_expressions(None, Some("weight_kg > 0"));
+        assert_eq!(combined.as_deref(), Some("weight_kg > 0"));
+    }
+
+    #[test]
+    fn combine_check_expressions_both_present_combines_with_and() {
+        let combined = combine_check_expressions(
+            Some("\"port\" >= 0 AND \"port\" <= 65535".into()),
+            Some("port <> 0"),
+        );
+        assert_eq!(
+            combined.as_deref(),
+            Some("(\"port\" >= 0 AND \"port\" <= 65535) AND (port <> 0)")
+        );
+    }
+
+    #[test]
+    fn combine_check_expressions_trims_whitespace_for_stable_diff() {
+        // Snapshot comparison is byte-equality; any whitespace drift
+        // between projection runs would emit a spurious AMEND.
+        let combined =
+            combine_check_expressions(Some("  type_clause  ".into()), Some("   adopter_clause   "));
+        assert_eq!(
+            combined.as_deref(),
+            Some("(type_clause) AND (adopter_clause)")
+        );
+    }
+
+    #[test]
+    fn project_column_propagates_adopter_check_sql_only() {
+        // Plain column with no type-derived CHECK — adopter
+        // `#[field(check = "weight_kg > 0")]` becomes the single
+        // CHECK expression in the projected ColumnSchema.
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                check_sql: Some("weight_kg > 0"),
+                ..field_descriptor("weight_kg", FieldSqlType::DoublePrecision, false)
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("animals", "Animal")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-16T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let col = &buckets[&empty_global()].models["animals"].columns[1];
+        assert_eq!(col.name, "weight_kg");
+        assert_eq!(
+            col.check.as_deref(),
+            Some("weight_kg > 0"),
+            "adopter #[field(check)] on a DoublePrecision column lands verbatim"
+        );
+    }
+
+    #[test]
+    fn project_column_combines_type_check_and_adopter_check_on_u32() {
+        // u32 column with adopter `#[field(check = "port > 0")]`.
+        // The combined CHECK reflects both clauses; both must pass.
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                rust_source_type: Some(RustSourceType::U32),
+                check_sql: Some("port > 0"),
+                ..field_descriptor("port", FieldSqlType::BigInt, false)
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("listeners", "Listener")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-16T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let col = &buckets[&empty_global()].models["listeners"].columns[1];
+        let check = col
+            .check
+            .as_deref()
+            .expect("u32 column with adopter check must carry the combined type+adopter CHECK");
+        // Combined shape: `(<u32 range>) AND (<adopter>)`.
+        assert!(
+            check.contains("\"port\" >= 0 AND \"port\" <= 4294967295"),
+            "combined CHECK must include the u32 range bound: {check}"
+        );
+        assert!(
+            check.contains("port > 0"),
+            "combined CHECK must include the adopter expression verbatim: {check}"
+        );
+        assert!(
+            check.starts_with("("),
+            "combined CHECK must wrap each clause in parens: {check}"
+        );
+        assert!(
+            check.contains(") AND ("),
+            "combined CHECK must AND the two clauses: {check}"
+        );
+    }
+
+    #[test]
+    fn project_column_emits_adopter_check_on_fk_column() {
+        // FK columns inherit the parent PK's identity-width type so
+        // the type-derived CHECK is suppressed. The adopter's
+        // `#[field(check = "...")]` survives — there is no structural
+        // reason to forbid domain invariants on FK columns, and the
+        // adopter may want one (e.g., `owner_id > 0` to reject the
+        // HeerId sentinel value zero on a non-null FK column).
+        static OWNER_FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
+        }];
+        static VEHICLE_FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                relation_kind: Some(crate::descriptor::RelationKind::ForeignKey),
+                target_type_name: Some("Owner"),
+                check_sql: Some("owner_id > 0"),
+                ..field_descriptor("owner_id", FieldSqlType::BigInt, false)
+            },
+        ];
+        let owner = ModelDescriptor {
+            fields: OWNER_FIELDS,
+            ..synth_model("owners", "Owner")
+        };
+        let vehicle = ModelDescriptor {
+            fields: VEHICLE_FIELDS,
+            ..synth_model("vehicles", "Vehicle")
+        };
+        let buckets = project_from_iters(
+            [&owner, &vehicle],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-16T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let owner_fk = &buckets[&empty_global()].models["vehicles"].columns[1];
+        assert_eq!(owner_fk.name, "owner_id");
+        assert!(
+            owner_fk.foreign_key.is_some(),
+            "owner_id must project as FK: {owner_fk:?}"
+        );
+        // Adopter CHECK survives the FK projection path.
+        assert_eq!(
+            owner_fk.check.as_deref(),
+            Some("owner_id > 0"),
+            "adopter #[field(check)] on FK column must reach ColumnSchema.check"
         );
     }
 

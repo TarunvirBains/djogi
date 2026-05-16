@@ -373,7 +373,36 @@ pub enum ColumnChange {
     ChangeType { from: String, to: String },
 
     /// `SET / DROP CHECK` constraint at the column level.
-    SetCheck(Option<String>),
+    ///
+    /// Carries **both** the prior CHECK expression (`from`) and the new
+    /// CHECK expression (`to`) so the SQL emitter can render a fully
+    /// reversible down-migration. Without `from`, a `DROP CHECK`
+    /// rollback would have no way to restore the original constraint
+    /// — the same lossy-rollback gap GPT-5.5 review flagged for type
+    /// migrations on checked columns.
+    ///
+    /// Variant semantics — `(from, to)` pair:
+    ///
+    /// - `(None, None)` — never emitted; the differ filters no-op.
+    /// - `(Some(b), Some(a))` with `b == a` — never emitted; differ
+    ///   filters identical.
+    /// - `(None, Some(expr))` — ADD CHECK. Up: `ADD CONSTRAINT ...
+    ///   CHECK (expr)`. Down: `DROP CONSTRAINT ...`.
+    /// - `(Some(prior), None)` — DROP CHECK. Up: `DROP CONSTRAINT ...`.
+    ///   Down: `ADD CONSTRAINT ... CHECK (prior)` — fully recoverable.
+    /// - `(Some(b), Some(a))` with `b != a` — currently the differ
+    ///   splits AMEND into two emissions: `(Some(b), None)` then
+    ///   `(None, Some(a))`. The SQL emitter handles the merged form
+    ///   too (DROP+ADD in one statement pair) for callers that may
+    ///   want it later.
+    SetCheck {
+        /// Prior CHECK expression (the constraint already on the column).
+        /// `None` when no CHECK existed before the operation.
+        from: Option<String>,
+        /// Target CHECK expression (the constraint after the operation).
+        /// `None` to drop the constraint without replacement.
+        to: Option<String>,
+    },
 
     /// Column-level `UNIQUE` constraint flipped.
     SetUnique(bool),
@@ -2113,7 +2142,21 @@ fn emit_alter_column(
                 change,
             });
         };
-        if before.sql_type != after.sql_type {
+        let type_changed = before.sql_type != after.sql_type;
+        if type_changed && before.check.is_some() {
+            // If the old CHECK still references the pre-conversion type,
+            // drop it before the type migration to avoid Postgres re-validating
+            // it against the new type shape. The `from` carries the prior
+            // expression so rollback can ADD it back after rolling the
+            // type change back — without this, the down-side rollback
+            // would leave the column un-checked (the bug GPT-5.5 review
+            // flagged: lossy CHECK rollback on type-changed columns).
+            push(ColumnChange::SetCheck {
+                from: before.check.clone(),
+                to: None,
+            });
+        }
+        if type_changed {
             push(ColumnChange::ChangeType {
                 from: before.sql_type.clone(),
                 to: after.sql_type.clone(),
@@ -2125,45 +2168,69 @@ fn emit_alter_column(
         if before.default_sql != after.default_sql {
             push(ColumnChange::SetDefault(after.default_sql.clone()));
         }
-        // CHECK constraint transitions — djogi#186 (Phase 8.5 v3 Cluster 2).
+        // CHECK constraint transitions — djogi#186 (Phase 8.5 v3 Cluster 2),
+        // GPT-5.5 review (non-lossy rollback).
         //
-        // The SQL emitter for `SetCheck(Some(expr))` synthesizes a
-        // table-level constraint named `<table>_<column>_check`
-        // (`migrate/sql.rs::check_constraint_name`) and emits
-        // `ALTER TABLE … ADD CONSTRAINT … CHECK (<expr>);`. That works
-        // cleanly for the ADD case (no prior CHECK) and the DROP case
-        // (`SetCheck(None)` emits `ALTER TABLE … DROP CONSTRAINT …`).
-        // The AMEND case — both `before.check` and `after.check` are
-        // `Some` with different expressions — would emit an `ADD
-        // CONSTRAINT` against a constraint name that already exists,
-        // which Postgres rejects.
+        // Each emitted `SetCheck` carries both `from` (the CHECK on the
+        // column at the start of this operation) and `to` (the CHECK
+        // after this operation). The SQL emitter uses `from` for the
+        // down-side, so rollback restores the prior CHECK rather than
+        // leaving a comment-only placeholder.
         //
-        // The motivating scenario is the integer-widening lifecycle:
-        // a column evolves from `u32` to a wider Rust type that picks
-        // a different bound, or an adopter changes a `#[field(check)]`
-        // expression. The AMEND emits two ColumnChange entries —
-        // `SetCheck(None)` followed by `SetCheck(Some(new))` — so the
-        // SQL pair is `DROP CONSTRAINT … ; ADD CONSTRAINT … CHECK (…);`.
-        // Two ALTERs, symmetric, easy to read in audit logs, and
-        // reuses both existing emitter arms unchanged.
+        // The AMEND case stays as a two-step DROP+ADD pair so each
+        // step maps cleanly to one `OperationSql` (one up, one down).
+        // Composing the down file in reverse order (per
+        // `compose::compose_down_text`) gives the operator:
+        //   step 2 down (DROP new), then step 1 down (ADD old) —
+        // returning the column to its prior CHECK shape.
         //
-        // The orderingness matters: DROP must precede ADD so the
-        // re-issued `ADD CONSTRAINT <name>` lands in the open
-        // constraint-name slot. `Vec` push order preserves this.
-        match (&before.check, &after.check) {
-            (None, None) => {}                 // unchanged
-            (Some(b), Some(a)) if b == a => {} // unchanged
-            (Some(_), Some(_)) => {
-                // AMEND — drop the old constraint, then add the new.
-                push(ColumnChange::SetCheck(None));
-                push(ColumnChange::SetCheck(after.check.clone()));
+        // For the type-change path, the post-type CHECK re-add carries
+        // `from: None` because the prior `SetCheck { from: before.check,
+        // to: None }` already dropped the original constraint at the
+        // moment this entry runs. The composed down file rolls back
+        // in reverse: drop the post-type CHECK, alter the type back,
+        // re-add the original CHECK. Non-lossy.
+        if type_changed && before.check.is_some() {
+            if let Some(check) = &after.check {
+                push(ColumnChange::SetCheck {
+                    from: None,
+                    to: Some(check.clone()),
+                });
             }
-            // ADD (None → Some) and DROP (Some → None) collapse to a
-            // single `SetCheck(after.check.clone())` because the
-            // emitter's two arms (`SetCheck(Some)` / `SetCheck(None)`)
-            // already DTRT for each direction.
-            (None, Some(_)) | (Some(_), None) => {
-                push(ColumnChange::SetCheck(after.check.clone()));
+        } else {
+            match (&before.check, &after.check) {
+                (None, None) => {}                 // unchanged
+                (Some(b), Some(a)) if b == a => {} // unchanged
+                (Some(b), Some(a)) => {
+                    // AMEND — drop the old constraint, then add the new.
+                    // Each step carries its full (from, to) so rollback
+                    // is symmetric.
+                    push(ColumnChange::SetCheck {
+                        from: Some(b.clone()),
+                        to: None,
+                    });
+                    push(ColumnChange::SetCheck {
+                        from: None,
+                        to: Some(a.clone()),
+                    });
+                }
+                // ADD (None → Some) — one entry, lossless rollback via
+                // DROP CONSTRAINT.
+                (None, Some(a)) => {
+                    push(ColumnChange::SetCheck {
+                        from: None,
+                        to: Some(a.clone()),
+                    });
+                }
+                // DROP (Some → None) — one entry. `from` carries the
+                // prior expression so rollback re-installs it via
+                // ADD CONSTRAINT.
+                (Some(b), None) => {
+                    push(ColumnChange::SetCheck {
+                        from: Some(b.clone()),
+                        to: None,
+                    });
+                }
             }
         }
         if before.unique != after.unique {
@@ -3308,17 +3375,26 @@ mod tests {
     //
     // The differ at this site (line ~2128) detects CHECK transitions
     // and emits ColumnChange::SetCheck variants. The AMEND case
-    // (`Some(old) → Some(new)` with `old != new`) used to emit a
-    // single `SetCheck(Some(new))`, which the SQL emitter renders as
-    // `ALTER TABLE … ADD CONSTRAINT <name> CHECK (…)` — Postgres
-    // rejects because the constraint name already exists from the
-    // prior projection. The fix emits `SetCheck(None)` followed by
-    // `SetCheck(Some(new))` so the SQL pair is `DROP CONSTRAINT` then
-    // `ADD CONSTRAINT`. These tests pin all four cells of the CHECK
-    // transition matrix so a future refactor cannot silently regress
-    // any direction.
+    // (`Some(old) → Some(new)` with `old != new`) was originally lowered
+    // as a single `ADD CONSTRAINT` against the existing constraint name,
+    // which Postgres rejects because the name already exists from the
+    // prior projection. The fix emits two `SetCheck` entries — first
+    // `{ from: Some(old), to: None }` (drop) followed by
+    // `{ from: None, to: Some(new) }` (add) — so the SQL pair is
+    // `DROP CONSTRAINT` then `ADD CONSTRAINT`. GPT-5.5 review extended
+    // the variant to carry `from` so each step's rollback restores the
+    // pre-step state symmetrically. These tests pin all four cells of
+    // the CHECK transition matrix so a future refactor cannot silently
+    // regress any direction.
 
     fn build_table_with_check(check: Option<&str>) -> crate::migrate::schema::AppliedSchema {
+        build_table_with_check_and_type(check, "BIGINT")
+    }
+
+    fn build_table_with_check_and_type(
+        check: Option<&str>,
+        sql_type: &str,
+    ) -> crate::migrate::schema::AppliedSchema {
         use crate::migrate::schema::{
             AppliedSchema, ColumnSchema, PkKindSchema, PrimaryKeySchema, TableSchema,
         };
@@ -3361,7 +3437,7 @@ mod tests {
             relation_kind: None,
             renamed_from: None,
             sequence_within: None,
-            sql_type: "BIGINT".to_string(),
+            sql_type: sql_type.to_string(),
             unique: false,
         };
         let mut models = BTreeMap::new();
@@ -3441,10 +3517,11 @@ mod tests {
     fn check_add_emits_single_set_check_some() {
         // ADD scenario — descriptor evolves from i64 (no CHECK) to a
         // type that projects a CHECK. The differ emits a single
-        // SetCheck(Some(...)) which the emitter renders as
-        // `ALTER TABLE … ADD CONSTRAINT … CHECK (…)`.
+        // SetCheck { from: None, to: Some(new) } which the emitter
+        // renders as `ALTER TABLE … ADD CONSTRAINT … CHECK (…)`.
+        let after_expr = "\"amount\" >= 0 AND \"amount\" <= 4294967295";
         let before = build_table_with_check(None);
-        let after = build_table_with_check(Some("\"amount\" >= 0 AND \"amount\" <= 4294967295"));
+        let after = build_table_with_check(Some(after_expr));
         let delta = diff_schemas(&before, &after, empty_global());
         let changes = alter_column_changes_for(&delta, "amount");
         assert_eq!(
@@ -3453,17 +3530,23 @@ mod tests {
             "ADD CHECK is a single ColumnChange entry: {changes:?}"
         );
         assert!(
-            matches!(changes.first(), Some(ColumnChange::SetCheck(Some(_)))),
-            "ADD CHECK emits SetCheck(Some(...)): {changes:?}"
+            matches!(
+                changes.first(),
+                Some(ColumnChange::SetCheck { from: None, to: Some(s) }) if s == after_expr
+            ),
+            "ADD CHECK emits SetCheck {{ from: None, to: Some(new) }}: {changes:?}"
         );
     }
 
     #[test]
     fn check_drop_emits_single_set_check_none() {
         // DROP scenario — descriptor evolves from u32 (with CHECK) to
-        // i64 (no CHECK). The differ emits a single SetCheck(None)
-        // which the emitter renders as `ALTER TABLE … DROP CONSTRAINT …`.
-        let before = build_table_with_check(Some("\"amount\" >= 0 AND \"amount\" <= 4294967295"));
+        // i64 (no CHECK). The differ emits a single
+        // SetCheck { from: Some(prior), to: None } which the emitter
+        // renders as `ALTER TABLE … DROP CONSTRAINT …` and a
+        // recoverable down-side that restores `prior`.
+        let prior_expr = "\"amount\" >= 0 AND \"amount\" <= 4294967295";
+        let before = build_table_with_check(Some(prior_expr));
         let after = build_table_with_check(None);
         let delta = diff_schemas(&before, &after, empty_global());
         let changes = alter_column_changes_for(&delta, "amount");
@@ -3473,8 +3556,11 @@ mod tests {
             "DROP CHECK is a single ColumnChange entry: {changes:?}"
         );
         assert!(
-            matches!(changes.first(), Some(ColumnChange::SetCheck(None))),
-            "DROP CHECK emits SetCheck(None): {changes:?}"
+            matches!(
+                changes.first(),
+                Some(ColumnChange::SetCheck { from: Some(s), to: None }) if s == prior_expr
+            ),
+            "DROP CHECK emits SetCheck {{ from: Some(prior), to: None }}: {changes:?}"
         );
     }
 
@@ -3483,16 +3569,18 @@ mod tests {
         // AMEND scenario — the central djogi#186 lifecycle case.
         // Descriptor evolves from u32 → u64 (or any other CHECK
         // expression change). The differ MUST emit two ColumnChange
-        // entries in order: SetCheck(None) then SetCheck(Some(new)).
+        // entries in order:
+        //   SetCheck { from: Some(b), to: None }
+        //   SetCheck { from: None, to: Some(a) }
         // The SQL emitter renders these as `DROP CONSTRAINT …; ADD
         // CONSTRAINT … CHECK (…);` — two separate ALTERs against the
         // same constraint name slot, which Postgres accepts cleanly.
-        // Without this two-step emission the second ALTER would
-        // collide on the constraint name from the first.
-        let before = build_table_with_check(Some("\"amount\" >= 0 AND \"amount\" <= 4294967295"));
-        let after = build_table_with_check(Some(
-            "\"amount\" >= 0 AND \"amount\" <= 18446744073709551615",
-        ));
+        // Each step now carries its own (from, to) so the down side
+        // restores the previous state symmetrically (GPT-5.5 fix).
+        let before_expr = "\"amount\" >= 0 AND \"amount\" <= 4294967295";
+        let after_expr = "\"amount\" >= 0 AND \"amount\" <= 18446744073709551615";
+        let before = build_table_with_check(Some(before_expr));
+        let after = build_table_with_check(Some(after_expr));
         let delta = diff_schemas(&before, &after, empty_global());
         let changes = alter_column_changes_for(&delta, "amount");
         assert_eq!(
@@ -3501,12 +3589,98 @@ mod tests {
             "AMEND CHECK emits exactly two ColumnChange entries: {changes:?}"
         );
         assert!(
-            matches!(changes.first(), Some(ColumnChange::SetCheck(None))),
-            "AMEND CHECK emits SetCheck(None) first: {changes:?}"
+            matches!(
+                changes.first(),
+                Some(ColumnChange::SetCheck { from: Some(b), to: None }) if b == before_expr
+            ),
+            "AMEND step 1: SetCheck {{ from: Some(prior), to: None }}: {changes:?}"
         );
         assert!(
-            matches!(changes.get(1), Some(ColumnChange::SetCheck(Some(s))) if s == "\"amount\" >= 0 AND \"amount\" <= 18446744073709551615"),
-            "AMEND CHECK emits SetCheck(Some(new)) second with the post-change expression: {changes:?}"
+            matches!(
+                changes.get(1),
+                Some(ColumnChange::SetCheck { from: None, to: Some(a) }) if a == after_expr
+            ),
+            "AMEND step 2: SetCheck {{ from: None, to: Some(new) }}: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn check_type_change_readds_same_check_after_type_change() {
+        // When converting SQL type, an unchanged CHECK still needs a
+        // drop+re-add around `ALTER COLUMN TYPE`, otherwise Postgres
+        // can re-validate the old expression first and fail. The
+        // first step's `from` carries the prior expression so the
+        // down-side rollback restores it after reverting the type.
+        let check_expr = "\"amount\" >= 0 AND \"amount\" <= 4294967295";
+        let before = build_table_with_check_and_type(Some(check_expr), "INTEGER");
+        let after = build_table_with_check_and_type(Some(check_expr), "BIGINT");
+        let delta = diff_schemas(&before, &after, empty_global());
+        let changes = alter_column_changes_for(&delta, "amount");
+        assert_eq!(
+            changes.len(),
+            3,
+            "unchanged CHECK plus type migration must emit drop/type/readd steps: {changes:?}"
+        );
+        assert!(
+            matches!(
+                changes.first(),
+                Some(ColumnChange::SetCheck { from: Some(b), to: None }) if b == check_expr
+            ),
+            "existing CHECK must be dropped before ALTER TYPE \
+             (carrying `from` for rollback): {changes:?}"
+        );
+        assert!(
+            matches!(changes.get(1), Some(ColumnChange::ChangeType { from, to }) if from == "INTEGER" && to == "BIGINT"),
+            "ALTER TYPE should be between drop and re-add: {changes:?}"
+        );
+        assert!(
+            matches!(
+                changes.get(2),
+                Some(ColumnChange::SetCheck { from: None, to: Some(s) }) if s == check_expr
+            ),
+            "same CHECK should be re-added after type conversion \
+             (forward-only `to`; the prior is restored by step 0's down): \
+             {changes:?}"
+        );
+    }
+
+    #[test]
+    fn check_type_change_reorders_drop_and_readd_for_changed_check() {
+        // Type migration with a CHECK expression change must still drop the
+        // pre-migration CHECK before TYPE and re-add the post-migration
+        // CHECK after it. The drop step carries the OLD expression in
+        // `from`; the readd step carries the NEW expression in `to`.
+        // Rollback walks down in reverse: drop new, revert type, ADD old.
+        let before_expr = "\"amount\" >= 0 AND \"amount\" <= 4294967295";
+        let after_expr = "\"amount\" >= 0 AND \"amount\" <= 18446744073709551615";
+        let before = build_table_with_check_and_type(Some(before_expr), "INTEGER");
+        let after = build_table_with_check_and_type(Some(after_expr), "BIGINT");
+        let delta = diff_schemas(&before, &after, empty_global());
+        let changes = alter_column_changes_for(&delta, "amount");
+        assert_eq!(
+            changes.len(),
+            3,
+            "changed CHECK + type migration must emit drop/type/readd steps: {changes:?}"
+        );
+        assert!(
+            matches!(
+                changes.first(),
+                Some(ColumnChange::SetCheck { from: Some(b), to: None }) if b == before_expr
+            ),
+            "existing CHECK must be dropped before ALTER TYPE \
+             with `from` carrying the OLD expression for rollback: {changes:?}"
+        );
+        assert!(
+            matches!(changes.get(1), Some(ColumnChange::ChangeType { from, to }) if from == "INTEGER" && to == "BIGINT"),
+            "ALTER TYPE should be between drop and re-add: {changes:?}"
+        );
+        assert!(
+            matches!(
+                changes.get(2),
+                Some(ColumnChange::SetCheck { from: None, to: Some(s) }) if s == after_expr
+            ),
+            "new CHECK should be re-added after type conversion \
+             (the OLD expression is restored by step 0's down side): {changes:?}"
         );
     }
 

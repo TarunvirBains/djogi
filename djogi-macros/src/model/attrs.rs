@@ -1553,6 +1553,36 @@ pub struct FieldAttrs {
     /// expressions are likewise rejected at parse time.
     #[darling(skip)]
     pub generated: Option<syn::LitStr>,
+
+    /// `#[field(check = "<sql expr>")]` — Phase 8.5 djogi#105.
+    ///
+    /// Adopter-supplied CHECK constraint expression. The string is
+    /// emitted verbatim into both inline CREATE TABLE form
+    /// (`CONSTRAINT <table>_<column>_check CHECK (<expr>)`) and the
+    /// migration differ's ALTER TABLE form
+    /// (`ALTER TABLE … ADD CONSTRAINT … CHECK (<expr>)`).
+    ///
+    /// **Raw SQL escape.** The expression is treated identically to a
+    /// raw SQL fragment — djogi performs **no parsing, no sanitization,
+    /// and no semantic validation** beyond rejecting empty /
+    /// whitespace-only strings at parse time. Adopters are responsible
+    /// for the expression's correctness against their column type and
+    /// for ensuring it is idempotent (no side effects, no dependence on
+    /// `now()` etc.). The same `unsafe`-style cultural posture from
+    /// `docs/spec/raw-sql-escape-hatches.md` applies: every callsite
+    /// should be reviewable as raw SQL.
+    ///
+    /// **Combination with type-derived CHECKs.** When a column also
+    /// receives a type-derived CHECK (e.g. an adopter `u32` field with
+    /// `#[field(check = "port > 0")]`), the projection layer combines
+    /// the two with logical `AND` into a single constraint slot
+    /// (`<table>_<column>_check`). Both clauses must pass for an
+    /// INSERT / UPDATE to land. The single constraint slot keeps the
+    /// ADD / DROP / AMEND lifecycle in the differ unchanged.
+    ///
+    /// Set via darling. `FieldAttrs::parse` post-validates non-empty.
+    #[darling(default)]
+    pub check: Option<String>,
 }
 
 /// Per-field visage exposure spec — parsed from `#[field(expose(...))]`.
@@ -2058,6 +2088,11 @@ impl FieldAttrs {
             // list: the field-level redirect table below catches it
             // with a dedicated "implicit STORED" diagnostic.
             "generated",
+            // Phase 8.5 djogi#105 — adopter-supplied `#[field(check = "<expr>")]`
+            // raw-SQL CHECK constraint. Validated as non-empty in
+            // `FieldAttrs::parse`; emitted verbatim into descriptors,
+            // snapshots, and migration SQL.
+            "check",
         ];
         // Phase 7-Zero v3 T2 Q2/v2 #8 — `nulls_not_distinct` is deliberately
         // out of scope at the field level. The feature lives on the model-
@@ -2392,6 +2427,32 @@ impl FieldAttrs {
                  declaration with both a DEFAULT and a GENERATED ALWAYS \
                  AS (...) STORED clause — the generation expression is \
                  the value source. Drop the `default` attribute.",
+            ));
+        }
+
+        // Phase 8.5 djogi#105 — `#[field(check = "<expr>")]` raw-SQL CHECK
+        // expression validation. The string is treated as a raw SQL fragment
+        // and emitted verbatim into migration DDL; djogi does NOT parse or
+        // sanitize the SQL. The only parse-time guard is that the expression
+        // must be non-empty / non-whitespace-only — an empty CHECK would
+        // produce `CHECK ()` which is invalid SQL and would only surface as
+        // an obscure failure at `cargo build` / migration apply time.
+        //
+        // The span is recovered from the field's raw attribute tokens so the
+        // diagnostic points at the offending literal rather than the whole
+        // field declaration — mirrors the on_delete / outbox / generated
+        // validation pattern above.
+        if let Some(expr) = &attrs.check
+            && expr.trim().is_empty()
+        {
+            let span = find_named_str_lit_span(field, "check").unwrap_or_else(|| field.span());
+            return Err(syn::Error::new(
+                span,
+                "`#[field(check = \"\")]` is not allowed — \
+                 expression must be a non-empty SQL fragment. \
+                 The string is emitted verbatim into the column's \
+                 CHECK constraint; an empty literal produces \
+                 invalid SQL.",
             ));
         }
 
