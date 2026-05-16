@@ -597,3 +597,26 @@ exact reason without grepping the differ.
 Tracking issue: [djogi#165](https://github.com/TarunvirBains/djogi/issues/165).
 
 The model-level declaration grammar (`#[model(indexes(...))]`), the unique-constraint-vs-unique-index lowering rules, the deterministic name format, and the `concurrently = true` operator contract — including the apply-time advisory warning — are specified in the [indexing spec](./indexing.md). This chapter covers only how `IndexSpec` feeds the differ and the generated DDL; the contract itself lives there.
+
+---
+
+### DDL metadata coverage gaps
+
+The following operational DDL features are not yet surfaced as model or field
+attributes. Adopters who need them must hand-write SQL in a separate migration
+segment appended after `djogi migrations compose`. The table below records
+the gap, the intended attribute name, the current workaround, and the tracking
+issue for implementation.
+
+| Feature | Planned attribute | Workaround today | Tracking |
+|---|---|---|---|
+| `COMMENT ON TABLE` | `#[model(table_comment = "...")]` | Append `COMMENT ON TABLE <t> IS '...'` to the composed migration SQL | [#217](https://github.com/TarunvirBains/djogi/issues/217) |
+| `COMMENT ON COLUMN` | `#[field(comment = "...")]` | Append `COMMENT ON COLUMN <t>.<c> IS '...'` to the composed migration SQL | [#217](https://github.com/TarunvirBains/djogi/issues/217) |
+| Per-table storage parameters (`fillfactor`, `autovacuum_*`, …) | `#[model(storage_params = "key=val, ...")]` | Append `ALTER TABLE <t> SET (key=val, ...)` after table creation; remove after applying | [#218](https://github.com/TarunvirBains/djogi/issues/218) |
+| `CREATE TABLE … TABLESPACE <name>` | `#[model(tablespace = "...")]` | Append `ALTER TABLE <t> SET TABLESPACE <name>` after table creation — note: `SET TABLESPACE` acquires `ACCESS EXCLUSIVE` and rewrites the physical file | [#219](https://github.com/TarunvirBains/djogi/issues/219) |
+| `ALTER COLUMN … TYPE … USING <expr>` | `#[field(type_change_using = "...")]` | Hand-edit the `ALTER COLUMN TYPE` statement in the composed SQL to add `USING (<expr>)` | [#220](https://github.com/TarunvirBains/djogi/issues/220) |
+| Generated column expression changes (PG 15+) | differ-automatic (verify status) | Confirm the differ emits `DROP EXPRESSION` + `SET EXPRESSION AS` rather than column-recreate; hand-write if not | [#221](https://github.com/TarunvirBains/djogi/issues/221) |
+
+All six pieces are tracked under the [#172](https://github.com/TarunvirBains/djogi/issues/172)
+umbrella. The closing condition for the umbrella is all six sub-issues landed and
+`docs/spec/migrations.md` + `docs/guide/models.md` reflecting the final attribute contracts.

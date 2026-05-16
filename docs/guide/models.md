@@ -250,6 +250,40 @@ Phase 1 maps these Rust types to SQL column types:
 
 For relation field types like `ForeignKey<T>` and `OneToOneField<T>`, see the [relations guide](./relations.md).
 
+### Postgres type coverage gaps
+
+Some Postgres column types have no first-class Rust-side mapping today. Adopters can
+reach them via `FieldSqlType::Custom` (or a `DjogiSqlType`-implementing newtype) paired
+with a manual `postgres_types::ToSql` / `FromSql` implementation.
+
+| Postgres type | Status | Workaround today | Tracking |
+|---|---|---|---|
+| `INTERVAL` | gap — no Rust newtype or wire codec | `Custom("INTERVAL")` + adopter newtype; note: `with-chrono-0_4` is not enabled (chrono is banned from the workspace) | [#212](https://github.com/TarunvirBains/djogi/issues/212) |
+| `INET` / `CIDR` | gap — no macro mapping | `Custom("INET")` / `Custom("CIDR")` + adopter newtype | [#213](https://github.com/TarunvirBains/djogi/issues/213) |
+| `MACADDR` | gap — no newtype or codec | `Custom("MACADDR")` + adopter newtype | [#213](https://github.com/TarunvirBains/djogi/issues/213) |
+| `MONEY` | decision pending — `NUMERIC` recommended for new tables | Use `rust_decimal::Decimal` with a `NUMERIC` column; `Custom("MONEY")` for legacy columns | [#214](https://github.com/TarunvirBains/djogi/issues/214) |
+| `int4range` / `int8range` / `numrange` / `tsrange` / `tstzrange` / `daterange` | gap — requires design spike; largest type-coverage piece | `Custom("int4range")` etc. + adopter newtype | [#215](https://github.com/TarunvirBains/djogi/issues/215) |
+| `DOMAIN <name> AS <base>` | gap — `#[field(domain = "...")]` planned; Piece A (reference only) for v0.1.0 | `Custom("<domain_name>")` + adopter newtype matching the base-type encoding | [#216](https://github.com/TarunvirBains/djogi/issues/216) |
+
+Tracked under the [#170](https://github.com/TarunvirBains/djogi/issues/170) umbrella.
+
+### DDL metadata attribute gaps
+
+The following Postgres DDL metadata features have no typed `#[model]` or `#[field]`
+attribute surface yet. Adopters who need them must append hand-written SQL after
+`djogi migrations compose`.
+
+| Feature | Planned attribute | Workaround today | Tracking |
+|---|---|---|---|
+| `COMMENT ON TABLE` | `#[model(table_comment = "...")]` | Append `COMMENT ON TABLE <t> IS '...'` to the composed migration | [#217](https://github.com/TarunvirBains/djogi/issues/217) |
+| `COMMENT ON COLUMN` | `#[field(comment = "...")]` | Append `COMMENT ON COLUMN <t>.<c> IS '...'` to the composed migration | [#217](https://github.com/TarunvirBains/djogi/issues/217) |
+| Storage parameters (`fillfactor`, `autovacuum_*`, …) | `#[model(storage_params = "key=val, ...")]` | Append `ALTER TABLE <t> SET (key=val, ...)` after table creation | [#218](https://github.com/TarunvirBains/djogi/issues/218) |
+| `CREATE TABLE … TABLESPACE <name>` | `#[model(tablespace = "...")]` | Append `ALTER TABLE <t> SET TABLESPACE <name>` after table creation | [#219](https://github.com/TarunvirBains/djogi/issues/219) |
+| `ALTER COLUMN … TYPE … USING <expr>` | `#[field(type_change_using = "...")]` | Hand-edit the `ALTER COLUMN TYPE` statement in the composed SQL | [#220](https://github.com/TarunvirBains/djogi/issues/220) |
+| Generated column expression changes (PG 15+) | differ-automatic | Verify the differ emits `DROP EXPRESSION` + `SET EXPRESSION AS`; hand-write if not | [#221](https://github.com/TarunvirBains/djogi/issues/221) |
+
+Tracked under the [#172](https://github.com/TarunvirBains/djogi/issues/172) umbrella.
+
 ---
 
 ## The `Model` Trait API
