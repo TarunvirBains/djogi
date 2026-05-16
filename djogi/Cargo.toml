@@ -617,6 +617,42 @@ name = "phase8_5_predicate_ergonomics"
 path = "../tests/integration/phase8_5_predicate_ergonomics.rs"
 harness = true
 
+# Phase 8.5 Cluster 4 (#168) — typed isolation-level surface.
+# Verifies `atomic_with(IsolationLevel::{ReadCommitted, RepeatableRead,
+# Serializable}, ...)` opens a Postgres transaction at the requested
+# level, mirrors `atomic`'s commit/rollback semantics, rejects nested-
+# savepoint isolation requests with
+# `DjogiError::IsolationLevelOnNestedScope`, and composes with
+# `retry_on_conflict`.
+[[test]]
+name = "phase8_5_c4_168_isolation_level"
+path = "../tests/integration/phase8_5_c4_168_isolation_level.rs"
+harness = true
+
+# Phase 8.5 Cluster 4 (#169) — typed deferred-constraints surface.
+# Verifies `DjogiContext::defer_constraints(DeferScope::All)` and
+# `defer_constraints(DeferScope::Named(&[...]))` against a model
+# carrying a `DEFERRABLE INITIALLY DEFERRED` self-FK, plus the
+# `set_constraints_immediate` reversal helper, the
+# `UnknownConstraintName` typed validation, and the pool-backed
+# `ConstraintModeOutsideTransaction` rejection.
+[[test]]
+name = "phase8_5_c4_169_defer_constraints"
+path = "../tests/integration/phase8_5_c4_169_defer_constraints.rs"
+harness = true
+
+# Phase 8.5 Cluster 3 (#173) — typed concurrent-reads helper.
+# Verifies `DjogiContext::clone_for_concurrent_reads` allocates an
+# independent pool-backed context that shares the parent's
+# Sassi/Punnu registry + auth state, enabling `tokio::try_join!`
+# over two typed reads without `E0499` borrow conflict. The
+# transaction-backed rejection path surfaces
+# `DjogiError::ConcurrentReadsRequirePoolContext`.
+[[test]]
+name = "phase8_5_c4_173_concurrent_reads"
+path = "../tests/integration/phase8_5_c4_173_concurrent_reads.rs"
+harness = true
+
 # Phase 8.5 Cluster 4B (#101) — typed set operations: SQL-shape pins.
 # Verifies `.union(...)` / `.union_all(...)` / `.intersect(...)` /
 # `.except(...)` emit correct Postgres SQL with parenthesised arms,

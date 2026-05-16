@@ -1301,7 +1301,12 @@ fn unique_constraint_name(table: &str, column: &str) -> String {
 /// Constraint name for a column-level FK constraint, e.g.
 /// `posts_author_id_fkey`. Postgres's auto-generated FK names use
 /// the `_fkey` suffix; we follow suit.
-fn fk_constraint_name(table: &str, column: &str) -> String {
+///
+/// `pub(crate)` so the runtime
+/// `DjogiContext::defer_constraints` validator (Phase 8.5 #169) can
+/// reach the same composition the migration emitter uses, keeping
+/// declarative-time and runtime constraint names in lockstep.
+pub(crate) fn fk_constraint_name(table: &str, column: &str) -> String {
     truncate_constraint(format!("{table}_{column}_fkey"))
 }
 
@@ -1422,9 +1427,26 @@ fn write_column_definition(out: &mut String, col: &ColumnSchema, table: &str) {
         // hazard. The mirrored `ColumnSchema.on_delete` field stays
         // for adopters that walk columns directly — only the SQL
         // emitter no longer reads it.
+        //
+        // Emit `CONSTRAINT <name> REFERENCES (...)` rather than a bare
+        // `REFERENCES (...)` so the FK name matches the deterministic
+        // shape from [`fk_constraint_name`]. Postgres auto-names
+        // unnamed FKs as `{table}_{column}_fkey`, which agrees with
+        // the Djogi convention for short names but silently TAIL-
+        // TRUNCATES at 63 bytes for long names — whereas Djogi's
+        // convention preserves a 54-byte stem and appends an 8-char
+        // hash. Two non-matching names mean the runtime
+        // [`DjogiContext::defer_constraints`] validator (Phase 8.5
+        // #169) would happily approve a `SET CONSTRAINTS
+        // "<djogi_hashed_name>" DEFERRED` that Postgres rejects with
+        // `42704` (constraint does not exist). Explicit naming locks
+        // the emitter and the validator into lockstep for any name
+        // length. (GPT-5.5 xhigh BLOCK follow-up for djogi#169.)
+        let constraint = fk_constraint_name(table, &col.name);
+        let qcons = quote_ident(&constraint);
         let qref_t = quote_ident(&fk.ref_table);
         let qref_c = quote_ident(&fk.ref_column);
-        let _ = write!(out, " REFERENCES {qref_t} ({qref_c})");
+        let _ = write!(out, " CONSTRAINT {qcons} REFERENCES {qref_t} ({qref_c})");
         let _ = write!(out, " ON DELETE {}", on_delete_sql(fk.on_delete));
         out.push_str(render_deferrable_clause(
             fk.deferrable,
@@ -1936,6 +1958,190 @@ mod tests {
         assert!(
             !sql.up.contains("DEFERRABLE"),
             "non-deferrable FK must not emit a deferrability clause: {}",
+            sql.up
+        );
+    }
+
+    #[test]
+    fn add_table_inline_fk_names_constraint_explicitly_short_name() {
+        // GPT-5.5 xhigh BLOCK follow-up for djogi#169: the inline-FK
+        // path inside `CREATE TABLE` must emit `CONSTRAINT <name>
+        // REFERENCES ...` so the runtime
+        // `DjogiContext::defer_constraints` validator (which derives
+        // the expected name via [`fk_constraint_name`]) and the
+        // emitted DDL agree byte-for-byte. The short-name case is the
+        // simpler half of the pair below — the conventional
+        // `posts_user_id_fkey` fits inside Postgres' 63-byte identifier
+        // limit, so Djogi's name and Postgres' auto-name happen to
+        // agree. We still pin the explicit `CONSTRAINT ...` shape so a
+        // future emitter regression that drops the keyword cannot
+        // silently re-introduce the auto-naming reliance.
+        let fk_col = ColumnSchema {
+            foreign_key: Some(ForeignKeySchema {
+                deferrable: true,
+                initially_deferred: false,
+                on_delete: OnDeleteSchema::Restrict,
+                ref_column: "id".to_string(),
+                ref_table: "users".to_string(),
+            }),
+            on_delete: Some(OnDeleteSchema::Restrict),
+            relation_kind: Some(RelationKindSchema::ForeignKey),
+            ..col("user_id", "BIGINT", false)
+        };
+        let mut t = synth_table("posts");
+        t.columns = vec![id_column_heerid(), fk_col];
+        let sql = emit_add_table(&t);
+        let expected_name = fk_constraint_name("posts", "user_id");
+        assert_eq!(
+            expected_name, "posts_user_id_fkey",
+            "short-name sanity: the convention must produce the verbatim \
+             `{{table}}_{{column}}_fkey` for inputs that fit inside 63 bytes",
+        );
+        assert!(
+            sql.up
+                .contains(" CONSTRAINT \"posts_user_id_fkey\" REFERENCES \"users\" (\"id\")"),
+            "inline FK must emit explicit `CONSTRAINT <name> REFERENCES ...`; \
+             got: {}",
+            sql.up
+        );
+        // The existing surrounding clauses (cascade + deferrability)
+        // must still emit unchanged.
+        assert!(
+            sql.up
+                .contains("ON DELETE RESTRICT DEFERRABLE INITIALLY IMMEDIATE"),
+            "explicit constraint name must preserve cascade + deferrability \
+             order; got: {}",
+            sql.up
+        );
+    }
+
+    #[test]
+    fn add_table_inline_fk_uses_djogi_hashed_name_for_long_identifiers() {
+        // GPT-5.5 xhigh BLOCK regression for djogi#169: when the
+        // conventional name `<table>_<column>_fkey` exceeds Postgres'
+        // 63-byte identifier limit, Postgres' auto-naming TAIL-
+        // TRUNCATES (lopping bytes off the right) while Djogi's
+        // [`fk_constraint_name`] preserves a 54-byte stem and appends
+        // an 8-char hex digest. The two names differ, so an unnamed
+        // inline FK would name the constraint differently from what
+        // the runtime `defer_constraints` validator expects, and a
+        // `SET CONSTRAINTS "<djogi_hashed_name>" DEFERRED` would raise
+        // SQLSTATE `42704` against Postgres' truncated name.
+        //
+        // Constraint-name math:
+        //   table  = "djogi_some_very_long_table_for_fk_regression"  (44 bytes)
+        //   column = "author_user_account_id_reference"              (31 bytes)
+        //   "{table}_{column}_fkey" = 44 + 1 + 31 + 5 = 81 bytes  (>63)
+        // Therefore the convention falls into the truncate branch and
+        // emits `<54-byte stem>_<8 hex>` for a total of 63 bytes.
+        let table = "djogi_some_very_long_table_for_fk_regression";
+        let column = "author_user_account_id_reference";
+        let conventional = format!("{table}_{column}_fkey");
+        assert!(
+            conventional.len() > 63,
+            "test precondition: conventional name {conventional:?} \
+             ({} bytes) must exceed Postgres' 63-byte limit so the \
+             hashed branch is exercised",
+            conventional.len(),
+        );
+
+        let fk_col = ColumnSchema {
+            foreign_key: Some(ForeignKeySchema {
+                deferrable: true,
+                initially_deferred: true,
+                on_delete: OnDeleteSchema::Cascade,
+                ref_column: "id".to_string(),
+                ref_table: "users".to_string(),
+            }),
+            on_delete: Some(OnDeleteSchema::Cascade),
+            relation_kind: Some(RelationKindSchema::ForeignKey),
+            ..col(column, "BIGINT", false)
+        };
+        let mut t = synth_table(table);
+        t.columns = vec![id_column_heerid(), fk_col];
+        let sql = emit_add_table(&t);
+
+        let expected_name = fk_constraint_name(table, column);
+        assert_eq!(
+            expected_name.len(),
+            63,
+            "convention must produce exactly 63 bytes for over-long inputs; \
+             got {} bytes: {expected_name}",
+            expected_name.len(),
+        );
+        assert_ne!(
+            expected_name, conventional,
+            "the convention must NOT equal the conventional name when the \
+             input would overflow; otherwise the regression is not exercised",
+        );
+
+        // The hashed name must appear verbatim inside the emitted DDL,
+        // wrapped in the explicit `CONSTRAINT ... REFERENCES ...`
+        // shape — proving the emitter and the runtime validator name
+        // the same constraint slot.
+        let expected_fragment =
+            format!(" CONSTRAINT \"{expected_name}\" REFERENCES \"users\" (\"id\")");
+        assert!(
+            sql.up.contains(&expected_fragment),
+            "emitted DDL must contain `{expected_fragment}` so the runtime \
+             `defer_constraints` validator's expected name matches; got: {}",
+            sql.up
+        );
+
+        // Cascade + deferrability behaviour must round-trip unchanged
+        // — the fix touches only the constraint-name slot.
+        assert!(
+            sql.up
+                .contains("ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED"),
+            "explicit constraint name must preserve cascade + deferrability \
+             order; got: {}",
+            sql.up
+        );
+
+        // The runtime validator's `fk_constraint_name(table, column)`
+        // must reach the same string the emitter wrote. This pins the
+        // lockstep contract directly: any future change that splits
+        // the two sites would have to update both call sites for this
+        // assertion to keep passing.
+        let runtime_expected = fk_constraint_name(table, column);
+        assert!(
+            sql.up.contains(&format!("\"{runtime_expected}\"")),
+            "runtime validator's derived name `{runtime_expected}` must \
+             appear verbatim in emitted DDL; got: {}",
+            sql.up
+        );
+    }
+
+    #[test]
+    fn add_column_inline_fk_uses_explicit_constraint_name() {
+        // The ALTER-TABLE-ADD-COLUMN path also flows through
+        // `write_column_definition`, so the explicit-CONSTRAINT fix
+        // must apply there too — otherwise a new FK column added to
+        // an existing table reintroduces the auto-naming hazard.
+        let column = "author_user_account_id_reference";
+        let fk_col = ColumnSchema {
+            foreign_key: Some(ForeignKeySchema {
+                deferrable: true,
+                initially_deferred: false,
+                on_delete: OnDeleteSchema::SetNull,
+                ref_column: "id".to_string(),
+                ref_table: "users".to_string(),
+            }),
+            on_delete: Some(OnDeleteSchema::SetNull),
+            relation_kind: Some(RelationKindSchema::ForeignKey),
+            nullable: true,
+            ..col(column, "BIGINT", true)
+        };
+        let sql = emit_add_column("djogi_some_very_long_table_for_fk_regression", &fk_col);
+        let expected_name =
+            fk_constraint_name("djogi_some_very_long_table_for_fk_regression", column);
+        assert_eq!(expected_name.len(), 63);
+        assert!(
+            sql.up.contains(&format!(
+                " CONSTRAINT \"{expected_name}\" REFERENCES \"users\" (\"id\")"
+            )),
+            "ALTER TABLE ADD COLUMN inline FK must carry the explicit \
+             `CONSTRAINT <hashed_name> REFERENCES ...` shape; got: {}",
             sql.up
         );
     }

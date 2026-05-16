@@ -684,6 +684,315 @@ pub enum DjogiError {
         table: &'static str,
         reason: &'static str,
     },
+
+    /// `djogi::transaction::atomic_with(level, &mut tx_ctx, ...)` was
+    /// invoked on a transaction-backed [`crate::DjogiContext`] — i.e.
+    /// inside an already-open `atomic()` scope. Phase 8.5 Cluster 4
+    /// (issue #168) introduces this variant alongside the typed
+    /// [`crate::transaction::IsolationLevel`] surface.
+    ///
+    /// Postgres pins the isolation level for the entire transaction at
+    /// the outer `BEGIN`; `SAVEPOINT` does not open a sub-transaction
+    /// with its own isolation knob, and `SET TRANSACTION ISOLATION
+    /// LEVEL` issued after the first non-control statement is rejected
+    /// with SQLSTATE `25001` (active SQL transaction). Surfacing this
+    /// as a typed variant lets callers branch on the misuse before
+    /// the SQL flies; the alternative would be a deferred SQLSTATE
+    /// surprise that names neither the outer BEGIN nor the requested
+    /// level.
+    ///
+    /// The variant carries the [`crate::transaction::IsolationLevel`]
+    /// the caller requested so log lines and error reports identify
+    /// what was rejected. Use [`crate::transaction::atomic`] for
+    /// nested scopes — the savepoint inherits the outermost
+    /// transaction's isolation level.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] — a
+    /// nested-scope isolation request is a programming error, not a
+    /// race condition. Retrying the same closure cannot turn a
+    /// savepoint into a fresh outermost transaction.
+    #[error(
+        "atomic_with(level={requested}) called inside an open atomic() scope; \
+         Postgres pins the isolation level at the outer BEGIN, savepoints \
+         cannot change it — use atomic() for nested scopes, or move the \
+         atomic_with call outside the enclosing transaction"
+    )]
+    IsolationLevelOnNestedScope {
+        /// Isolation level the caller requested. `&'static`-like —
+        /// the enum is `Copy` so logging callers can read it without
+        /// borrowing the variant.
+        requested: crate::transaction::IsolationLevel,
+    },
+
+    /// `DjogiContext::defer_constraints` / `set_constraints_immediate`
+    /// was invoked on a pool-backed context rather than inside an
+    /// `atomic()` transaction. Phase 8.5 Cluster 4 (issue #169)
+    /// introduces this variant alongside the typed
+    /// [`crate::transaction::DeferScope`] surface.
+    ///
+    /// `SET CONSTRAINTS` is transaction-scoped in Postgres — outside a
+    /// transaction it would either fail outright or, on the
+    /// implicit per-statement transaction surrounding a single
+    /// statement, evaporate before any subsequent statement could
+    /// observe the deferred state. Both outcomes are programming
+    /// errors, so the framework refuses to issue the SQL.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// retrying cannot turn a pool-backed context into a
+    /// transactional one. Wrap the call in
+    /// [`crate::transaction::atomic`] to get a transaction scope.
+    #[error(
+        "defer_constraints / set_constraints_immediate can only be called \
+         inside an atomic() transaction; pool-backed contexts have no \
+         transaction scope for SET CONSTRAINTS to bind to"
+    )]
+    ConstraintModeOutsideTransaction,
+
+    /// `DjogiContext::defer_constraints` /
+    /// `set_constraints_immediate` was called with a
+    /// [`crate::transaction::DeferScope::Named`] payload that
+    /// referenced an unknown constraint. Phase 8.5 Cluster 4 (issue
+    /// #169) introduces this variant.
+    ///
+    /// "Unknown" means the constraint name was not found on any
+    /// `#[derive(Model)]`-emitted [`crate::DeferrabilitySpec`]
+    /// inventory entry. The lookup uses the conventional
+    /// `<table>_<column>_fkey` shape (`{table}_{column}_fkey`,
+    /// truncated to Postgres' 63-byte identifier limit when
+    /// necessary) for foreign-key constraints declared in
+    /// adopter `#[model]` structs.
+    ///
+    /// Surfacing the typo as a typed error before the SQL flies is
+    /// the value-add over `ctx.raw_execute("SET CONSTRAINTS \"typo\"
+    /// DEFERRED")`: Postgres would raise `42704
+    /// (undefined_object)` for an unknown constraint, but only
+    /// after a round trip and without naming the descriptor it
+    /// should have come from.
+    ///
+    /// The variant carries the offending name so log lines identify
+    /// what was rejected. Classified as **terminal** by
+    /// [`DjogiError::is_transient`] — retrying cannot turn an
+    /// unknown name into a known one.
+    #[error(
+        "unknown constraint name {0:?} — no `#[derive(Model)]`-declared FK \
+         registers under that name. Expected names follow the convention \
+         `<table>_<column>_fkey` (truncated to 63 bytes for long names)"
+    )]
+    UnknownConstraintName(String),
+
+    /// `DjogiContext::defer_constraints` was called with a
+    /// [`crate::transaction::DeferScope::Named`] payload that
+    /// referenced a constraint declared as
+    /// non-deferrable (`#[field(deferrable = false)]`, the default).
+    /// Phase 8.5 Cluster 4 (issue #169) introduces this variant.
+    ///
+    /// Postgres rejects `SET CONSTRAINTS <name> DEFERRED` on a
+    /// non-deferrable constraint with SQLSTATE `0A000`
+    /// (feature_not_supported). The framework checks the descriptor's
+    /// [`crate::DeferrabilitySpec`] inventory and surfaces a typed
+    /// error before the SQL flies — same value-add as
+    /// [`Self::UnknownConstraintName`].
+    ///
+    /// The fix is at the model declaration: declare the FK as
+    /// `#[field(deferrable = true)]` (and optionally
+    /// `initially_deferred = true` for `DEFERRABLE INITIALLY
+    /// DEFERRED`). The constraint must be deferrable to participate
+    /// in `SET CONSTRAINTS` at runtime.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] — a
+    /// non-deferrable constraint cannot be deferred at runtime
+    /// regardless of how many retries.
+    #[error(
+        "constraint {0:?} is not declared deferrable; SET CONSTRAINTS only \
+         applies to constraints declared `DEFERRABLE`. Declare the FK with \
+         `#[field(deferrable = true)]` (and optionally `initially_deferred = \
+         true`) at the model declaration"
+    )]
+    ConstraintNotDeferrable(String),
+
+    /// `DjogiContext::defer_constraints` /
+    /// `set_constraints_immediate` was called with
+    /// [`crate::transaction::DeferScope::Named`] carrying an empty
+    /// slice. Phase 8.5 Cluster 4 (issue #169) — GPT-5.5 xhigh
+    /// follow-up fix.
+    ///
+    /// `SET CONSTRAINTS <name list> DEFERRED|IMMEDIATE` requires at
+    /// least one name; Postgres rejects the bare-comma grammar with
+    /// SQLSTATE `42601` (syntax error). Composing the SQL from an
+    /// empty slice would produce `SET CONSTRAINTS  DEFERRED` — an
+    /// extra space + missing list. Reject before SQL composition so
+    /// the caller gets a typed error naming the misuse rather than a
+    /// deferred Postgres parse error.
+    ///
+    /// The canonical fix is one of:
+    /// - drop the `Named` wrapper and use [`DeferScope::All`](crate::transaction::DeferScope::All)
+    ///   if the intent is "every deferrable constraint";
+    /// - skip the call entirely when the names slice is empty;
+    /// - pass at least one valid constraint name.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// retrying with the same empty slice cannot succeed.
+    #[error(
+        "DeferScope::Named requires at least one constraint name; \
+         empty slices produce malformed `SET CONSTRAINTS` SQL. Use \
+         `DeferScope::All` to target every deferrable constraint, or \
+         skip the call when the list is empty"
+    )]
+    EmptyDeferConstraintsScope,
+
+    /// Runtime inventory walk for
+    /// [`DjogiContext::defer_constraints`] /
+    /// [`DjogiContext::set_constraints_immediate`] observed two
+    /// [`crate::DeferrabilitySpec`] entries sharing the same
+    /// `(model_type_name, field_name)` key but disagreeing on
+    /// `(deferrable, initially_deferred)`. Phase 8.5 Cluster 4 (issue
+    /// #169) — GPT-5.5 xhigh follow-up fix.
+    ///
+    /// `inventory::iter` order is not deterministic across builds.
+    /// A silent last-writer-wins on a disagreeing duplicate would
+    /// make the runtime validator non-deterministic — one build
+    /// would accept a `SET CONSTRAINTS <name> DEFERRED` request, the
+    /// next would reject it as `ConstraintNotDeferrable`. Mirror the
+    /// projection-time [`ConflictingDeferrabilitySpec`] gate in
+    /// `migrate::projection` so the framework fails closed at both
+    /// schema-build time and transaction-control time.
+    ///
+    /// Idempotent duplicates (same key, identical values) are
+    /// accepted — they can arise from `inventory::submit!` chains
+    /// across crates re-exporting the same model and carry no
+    /// semantic disagreement.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// the conflict is a build-time inventory misconfiguration, not
+    /// a race condition. Fix is at the model declaration.
+    ///
+    /// [`ConflictingDeferrabilitySpec`]: crate::migrate::projection::ProjectionError::ConflictingDeferrabilitySpec
+    #[error(
+        "conflicting DeferrabilitySpec inventory entries for \
+         {model_type_name}.{field_name}: \
+         first = {first:?}, second = {second:?}. Two `#[derive(Model)]` \
+         emissions disagree on `(deferrable, initially_deferred)`; \
+         resolve the duplicate model definition at the source"
+    )]
+    ConflictingDeferrabilitySpec {
+        /// Rust type name carrying the FK field.
+        model_type_name: String,
+        /// Field name (Postgres column name).
+        field_name: String,
+        /// `(deferrable, initially_deferred)` from the first spec
+        /// the validator observed.
+        first: (bool, bool),
+        /// `(deferrable, initially_deferred)` from the second spec
+        /// the validator observed.
+        second: (bool, bool),
+    },
+
+    /// Runtime inventory walk for
+    /// [`DjogiContext::defer_constraints`] /
+    /// [`DjogiContext::set_constraints_immediate`] observed a
+    /// [`crate::DeferrabilitySpec`] whose `model_type_name` has no
+    /// matching [`crate::ModelDescriptor`] entry. Phase 8.5 Cluster
+    /// 4 (issue #169) — GPT-5.5 xhigh follow-up fix.
+    ///
+    /// The descriptor is the source of truth for `type_name →
+    /// table_name`. A `DeferrabilitySpec` without a matching
+    /// `ModelDescriptor` means the FK is not really registered, but
+    /// would be silently skipped by the prior implementation. That
+    /// silent skip is the bug: a valid-looking constraint name
+    /// `<expected_table>_<field>_fkey` would then surface as
+    /// [`UnknownConstraintName`](Self::UnknownConstraintName)
+    /// instead of the actual root cause (the missing descriptor).
+    ///
+    /// `#[derive(Model)]` emits the descriptor + the deferrability
+    /// spec side by side, so an orphan spec only fires under
+    /// pathological partial-emission conditions — typically a
+    /// hand-written `inventory::submit!` outside the macro.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// the cause is a build-time inventory misconfiguration.
+    #[error(
+        "orphan DeferrabilitySpec for {model_type_name}.{field_name}: \
+         no matching ModelDescriptor is registered in the inventory. \
+         `#[derive(Model)]` emits both side by side; the orphan \
+         indicates a hand-written `inventory::submit!` outside the \
+         macro or a partial-emit bug"
+    )]
+    OrphanDeferrabilitySpec {
+        /// Rust type name carrying the orphan FK field.
+        model_type_name: String,
+        /// Field name (Postgres column name).
+        field_name: String,
+    },
+
+    /// Runtime inventory walk for
+    /// [`DjogiContext::defer_constraints`] /
+    /// [`DjogiContext::set_constraints_immediate`] observed two
+    /// distinct `(model_type_name, field_name)` pairs whose
+    /// conventional FK constraint names collide. Phase 8.5 Cluster
+    /// 4 (issue #169) — GPT-5.5 xhigh follow-up fix.
+    ///
+    /// The constraint-name convention is
+    /// `<table>_<column>_fkey` (truncated to Postgres' 63-byte
+    /// identifier limit). Truncation can produce collisions for
+    /// long table or column names — and a collision means the
+    /// runtime validator has no way to know which FK the adopter
+    /// meant. Fail closed.
+    ///
+    /// The fix at the model declaration is to shorten the offending
+    /// table or column name, or to declare an explicit constraint
+    /// name once that surface lands (out of scope for #169).
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// the conflict is a build-time naming collision.
+    #[error(
+        "FK constraint name {constraint_name:?} collides across two \
+         distinct fields: ({first_model}.{first_field}) and \
+         ({second_model}.{second_field}). Postgres' 63-byte identifier \
+         limit truncates long `<table>_<column>_fkey` strings; shorten \
+         the offending table or column name to disambiguate"
+    )]
+    DuplicateConstraintName {
+        /// The constraint name that two distinct fields produce.
+        constraint_name: String,
+        /// First model the validator observed under this name.
+        first_model: String,
+        /// First field the validator observed under this name.
+        first_field: String,
+        /// Second model the validator observed under this name.
+        second_model: String,
+        /// Second field the validator observed under this name.
+        second_field: String,
+    },
+
+    /// `DjogiContext::clone_for_concurrent_reads` was invoked on a
+    /// transaction-backed context. Phase 8.5 Cluster 3 (issue #173)
+    /// introduces this variant alongside the typed concurrent-reads
+    /// helper.
+    ///
+    /// A transaction owns one Postgres connection; cloning the
+    /// context for concurrent reads would either hand out aliasing
+    /// access to the same connection (Postgres protocol violation)
+    /// or silently break the transaction boundary. Both are
+    /// programming errors, so the framework refuses.
+    ///
+    /// The correct shape for concurrent reads is on a pool-backed
+    /// context: each clone gets a fresh pool checkout, the two
+    /// contexts operate on independent connections, and
+    /// `tokio::try_join!` over typed reads composes without an
+    /// `E0499` mutable-borrow conflict.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// retrying cannot turn a transaction-backed context into a
+    /// pool-backed one. Move the concurrent-reads block outside the
+    /// surrounding `atomic()`.
+    #[error(
+        "clone_for_concurrent_reads requires a pool-backed DjogiContext; \
+         transaction-backed contexts own a single connection that cannot \
+         be aliased across concurrent reads. Move the concurrent-reads \
+         block outside the surrounding atomic() scope, or fetch \
+         sequentially"
+    )]
+    ConcurrentReadsRequirePoolContext,
 }
 
 /// Bridge: convert `tokio_postgres::Error` into `DjogiError`.
@@ -788,6 +1097,15 @@ impl DjogiError {
     /// | [`PoolTimeout`](Self::PoolTimeout) | transient |
     /// | [`SetRoleOutsideTransaction`](Self::SetRoleOutsideTransaction) | terminal |
     /// | [`InvalidRoleName`](Self::InvalidRoleName) | terminal |
+    /// | [`IsolationLevelOnNestedScope`](Self::IsolationLevelOnNestedScope) | terminal |
+    /// | [`ConstraintModeOutsideTransaction`](Self::ConstraintModeOutsideTransaction) | terminal |
+    /// | [`UnknownConstraintName`](Self::UnknownConstraintName) | terminal |
+    /// | [`ConstraintNotDeferrable`](Self::ConstraintNotDeferrable) | terminal |
+    /// | [`EmptyDeferConstraintsScope`](Self::EmptyDeferConstraintsScope) | terminal |
+    /// | [`ConflictingDeferrabilitySpec`](Self::ConflictingDeferrabilitySpec) | terminal |
+    /// | [`OrphanDeferrabilitySpec`](Self::OrphanDeferrabilitySpec) | terminal |
+    /// | [`DuplicateConstraintName`](Self::DuplicateConstraintName) | terminal |
+    /// | [`ConcurrentReadsRequirePoolContext`](Self::ConcurrentReadsRequirePoolContext) | terminal |
     ///
     /// The Db row reflects the existing `is_lock_error`
     /// classifier: Postgres SQLSTATEs `40001` (serialization
@@ -1040,6 +1358,199 @@ mod tests {
         assert!(
             msg.contains("readonly\\\"; DROP TABLE"),
             "expected debug-quoted role name in error message, got: {msg}"
+        );
+    }
+
+    /// Phase 8.5 #168 — `IsolationLevelOnNestedScope` is a programming
+    /// error. Postgres pins isolation at the outer BEGIN; retrying the
+    /// same nested call cannot make Postgres reset isolation
+    /// mid-transaction. The variant must classify as terminal so
+    /// generic retry helpers do not pointlessly re-run the closure.
+    #[test]
+    fn isolation_level_on_nested_scope_is_terminal() {
+        let err = DjogiError::IsolationLevelOnNestedScope {
+            requested: crate::transaction::IsolationLevel::Serializable,
+        };
+        assert!(
+            err.is_terminal(),
+            "IsolationLevelOnNestedScope must be terminal"
+        );
+        assert!(
+            !err.is_transient(),
+            "IsolationLevelOnNestedScope must not be transient"
+        );
+    }
+
+    /// Phase 8.5 #168 — `Display` for `IsolationLevelOnNestedScope`
+    /// includes the requested isolation level so operators reading
+    /// logs can identify what was rejected without consulting the
+    /// stack trace.
+    #[test]
+    fn isolation_level_on_nested_scope_display_includes_level() {
+        let err = DjogiError::IsolationLevelOnNestedScope {
+            requested: crate::transaction::IsolationLevel::RepeatableRead,
+        };
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("REPEATABLE READ"),
+            "expected requested isolation level in message, got: {msg}"
+        );
+    }
+
+    /// Phase 8.5 #169 — `ConstraintModeOutsideTransaction` mirrors the
+    /// `SetRoleOutsideTransaction` classification: a caller invoking a
+    /// transaction-scoped helper on a pool-backed context must
+    /// restructure their code to wrap the call in `atomic()`, not back
+    /// off and retry.
+    #[test]
+    fn constraint_mode_outside_transaction_is_terminal() {
+        let err = DjogiError::ConstraintModeOutsideTransaction;
+        assert!(
+            err.is_terminal(),
+            "ConstraintModeOutsideTransaction must be terminal"
+        );
+        assert!(
+            !err.is_transient(),
+            "ConstraintModeOutsideTransaction must not be transient"
+        );
+    }
+
+    /// Phase 8.5 #169 — `UnknownConstraintName` is a validation
+    /// error; retry with the same string would fail again. The
+    /// variant carries the offending name verbatim so log scrapers
+    /// can identify what was rejected.
+    #[test]
+    fn unknown_constraint_name_is_terminal() {
+        let err = DjogiError::UnknownConstraintName("typo_fkey".into());
+        assert!(err.is_terminal());
+        assert!(!err.is_transient());
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("typo_fkey"),
+            "expected offending name in message, got: {msg}"
+        );
+    }
+
+    /// Phase 8.5 #169 — `ConstraintNotDeferrable` is terminal because
+    /// a constraint declared non-deferrable cannot be deferred at
+    /// runtime; the fix is at the model declaration. Verifies that
+    /// the message names the offending constraint.
+    #[test]
+    fn constraint_not_deferrable_is_terminal() {
+        let err = DjogiError::ConstraintNotDeferrable("posts_author_id_fkey".into());
+        assert!(err.is_terminal());
+        assert!(!err.is_transient());
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("posts_author_id_fkey"),
+            "expected offending name in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("deferrable"),
+            "expected remediation hint mentioning `deferrable`, got: {msg}"
+        );
+    }
+
+    /// Phase 8.5 #173 — `ConcurrentReadsRequirePoolContext` is
+    /// terminal because the fix is structural (move outside
+    /// `atomic()`), not transient. Mirrors the
+    /// `SetRoleOutsideTransaction` shape.
+    #[test]
+    fn concurrent_reads_require_pool_context_is_terminal() {
+        let err = DjogiError::ConcurrentReadsRequirePoolContext;
+        assert!(err.is_terminal());
+        assert!(!err.is_transient());
+    }
+
+    /// Phase 8.5 #169 (GPT-5.5 xhigh follow-up) —
+    /// `EmptyDeferConstraintsScope` is terminal because the empty
+    /// slice is a programming error that retries cannot resolve.
+    /// The message must mention `DeferScope::All` as the remediation
+    /// hint for the common "I just meant everything" mistake.
+    #[test]
+    fn empty_defer_constraints_scope_is_terminal_and_names_alternative() {
+        let err = DjogiError::EmptyDeferConstraintsScope;
+        assert!(err.is_terminal(), "EmptyDeferConstraintsScope must be terminal");
+        assert!(
+            !err.is_transient(),
+            "EmptyDeferConstraintsScope must not be transient"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("DeferScope::All"),
+            "expected `DeferScope::All` remediation hint in message, got: {msg}"
+        );
+    }
+
+    /// Phase 8.5 #169 (GPT-5.5 xhigh follow-up) —
+    /// `ConflictingDeferrabilitySpec` mirrors the projection-time
+    /// gate at runtime. The fix is at the model declaration; retrying
+    /// cannot resolve the underlying inventory disagreement.
+    #[test]
+    fn conflicting_deferrability_spec_is_terminal_and_carries_payload() {
+        let err = DjogiError::ConflictingDeferrabilitySpec {
+            model_type_name: "Post".into(),
+            field_name: "author_id".into(),
+            first: (true, false),
+            second: (true, true),
+        };
+        assert!(
+            err.is_terminal(),
+            "ConflictingDeferrabilitySpec must be terminal"
+        );
+        assert!(!err.is_transient());
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Post.author_id"),
+            "expected `model.field` in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("(true, false)") && msg.contains("(true, true)"),
+            "expected both conflicting (deferrable, initially_deferred) tuples in message, got: {msg}"
+        );
+    }
+
+    /// Phase 8.5 #169 (GPT-5.5 xhigh follow-up) —
+    /// `OrphanDeferrabilitySpec` is terminal because the inventory
+    /// shape is fixed at link time; no amount of retrying re-emits
+    /// the missing `ModelDescriptor`.
+    #[test]
+    fn orphan_deferrability_spec_is_terminal_and_names_field() {
+        let err = DjogiError::OrphanDeferrabilitySpec {
+            model_type_name: "Ghost".into(),
+            field_name: "haunts".into(),
+        };
+        assert!(err.is_terminal());
+        assert!(!err.is_transient());
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Ghost.haunts"),
+            "expected `model.field` in message, got: {msg}"
+        );
+    }
+
+    /// Phase 8.5 #169 (GPT-5.5 xhigh follow-up) —
+    /// `DuplicateConstraintName` is terminal; the fix is at the
+    /// model declaration, not at the retry site.
+    #[test]
+    fn duplicate_constraint_name_is_terminal_and_carries_both_fields() {
+        let err = DjogiError::DuplicateConstraintName {
+            constraint_name: "long_table_long_column_fkey".into(),
+            first_model: "Alpha".into(),
+            first_field: "ref".into(),
+            second_model: "Beta".into(),
+            second_field: "ref".into(),
+        };
+        assert!(err.is_terminal());
+        assert!(!err.is_transient());
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Alpha") && msg.contains("Beta"),
+            "expected both colliding models in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("long_table_long_column_fkey"),
+            "expected colliding constraint name in message, got: {msg}"
         );
     }
 }

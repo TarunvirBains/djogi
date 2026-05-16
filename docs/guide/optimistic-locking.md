@@ -97,7 +97,7 @@ match:
 use djogi::transaction::retry_on_conflict;
 
 // ctx is a DjogiContext — obtained from DjogiContext::from_pool or inside atomic().
-retry_on_conflict(&mut ctx, 3, |ctx| async move {
+retry_on_conflict(&mut ctx, 3, async |ctx| {
     let mut account = Account::get(ctx, account_id).await?;
     account.balance += amount;
     account.save(ctx).await?;

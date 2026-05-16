@@ -1343,6 +1343,515 @@ impl DjogiContext {
         self.execute(&sql, &[]).await?;
         Ok(())
     }
+
+    /// Switch the deferrable-constraint mode for the remainder of the
+    /// current transaction to **DEFERRED**.
+    ///
+    /// Emits `SET CONSTRAINTS { ALL | <name> [, ...] } DEFERRED`. The
+    /// new mode applies to the remainder of the transaction; Postgres
+    /// resets the constraint mode at COMMIT/ROLLBACK.
+    ///
+    /// # Use case
+    ///
+    /// Deferring constraints to commit time lets a transaction insert
+    /// rows that temporarily violate referential integrity, as long as
+    /// the inconsistency is resolved by the time the transaction
+    /// commits. The canonical example is a **circular FK** — two rows
+    /// in distinct tables each referencing the other. Neither INSERT
+    /// can name a parent row that does not yet exist, but with both
+    /// FKs declared `DEFERRABLE` and deferred at the start of the
+    /// transaction, the commit-time check sees both rows present and
+    /// the cycle resolves cleanly.
+    ///
+    /// # Validation (typed surface value-add)
+    ///
+    /// For [`crate::transaction::DeferScope::Named`], every name is
+    /// validated against the framework's `DeferrabilitySpec`
+    /// inventory before any SQL is emitted:
+    ///
+    /// - **Unknown name** → [`DjogiError::UnknownConstraintName`].
+    ///   The expected name shape is the conventional
+    ///   `<table>_<column>_fkey` (truncated to 63 bytes for long
+    ///   names); see `crate::migrate::sql::fk_constraint_name`.
+    /// - **Name found but declared non-deferrable** →
+    ///   [`DjogiError::ConstraintNotDeferrable`]. Postgres would
+    ///   raise SQLSTATE `0A000` on a non-deferrable constraint at SQL
+    ///   time; the framework surfaces the same misuse with the
+    ///   model-declaration remediation hint before the round trip.
+    ///
+    /// `DeferScope::All` skips per-constraint validation — Postgres'
+    /// `SET CONSTRAINTS ALL DEFERRED` is a blanket statement that
+    /// applies to every deferrable constraint in scope; non-
+    /// deferrable constraints are simply ignored by Postgres.
+    ///
+    /// # Errors
+    ///
+    /// - [`DjogiError::ConstraintModeOutsideTransaction`] if `self` is
+    ///   pool-backed. `SET CONSTRAINTS` is transaction-scoped; calling
+    ///   it on a pool-backed context is meaningless and almost
+    ///   certainly a caller bug.
+    /// - [`DjogiError::UnknownConstraintName`] (for `Named` payloads
+    ///   carrying a typo / removed FK / never-declared constraint).
+    /// - [`DjogiError::ConstraintNotDeferrable`] (for `Named` payloads
+    ///   pointing at a non-deferrable constraint).
+    /// - [`DjogiError::Db`] for any underlying Postgres error
+    ///   (e.g. constraint exists in the live DB but not in any
+    ///   registered descriptor — unusual; usually means a hand-rolled
+    ///   constraint or a stale snapshot).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use djogi::transaction::{atomic, DeferScope};
+    ///
+    /// atomic(&mut ctx, |ctx| Box::pin(async move {
+    ///     ctx.defer_constraints(DeferScope::All).await?;
+    ///     // Insert two rows whose FKs reference each other in a
+    ///     // cycle — works only when constraints are deferred to
+    ///     // commit time.
+    ///     let a = NodeA::create(ctx, NodeA { b_id: peer_b, .. }).await?;
+    ///     let b = NodeB::create(ctx, NodeB { a_id: a.id, .. }).await?;
+    ///     Ok::<_, DjogiError>(())
+    /// })).await?;
+    /// ```
+    pub async fn defer_constraints(
+        &mut self,
+        scope: crate::transaction::DeferScope,
+    ) -> Result<(), DjogiError> {
+        self.set_constraint_mode(scope, crate::transaction::ConstraintMode::Deferred)
+            .await
+    }
+
+    /// Switch the deferrable-constraint mode for the remainder of the
+    /// current transaction to **IMMEDIATE**.
+    ///
+    /// The mirror of [`Self::defer_constraints`]. Use when an earlier
+    /// `defer_constraints` call needs to be reversed before the next
+    /// statement runs — e.g. to force constraint checks at a specific
+    /// point in the transaction rather than waiting for COMMIT.
+    ///
+    /// # Behaviour
+    ///
+    /// - Same transaction-scope-only invariant as
+    ///   [`Self::defer_constraints`]: returns
+    ///   [`DjogiError::ConstraintModeOutsideTransaction`] when called
+    ///   on a pool-backed context.
+    /// - Same `Named`-payload validation: unknown names raise
+    ///   [`DjogiError::UnknownConstraintName`], non-deferrable
+    ///   constraints raise
+    ///   [`DjogiError::ConstraintNotDeferrable`]. (A non-deferrable
+    ///   constraint is **always** in IMMEDIATE mode; explicitly
+    ///   setting it to IMMEDIATE is a no-op SQL-wise, but the
+    ///   framework still surfaces the typo as
+    ///   `ConstraintNotDeferrable` for symmetric ergonomics with
+    ///   `defer_constraints`.)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use djogi::transaction::{atomic, DeferScope};
+    ///
+    /// atomic(&mut ctx, |ctx| Box::pin(async move {
+    ///     ctx.defer_constraints(DeferScope::All).await?;
+    ///     // ... mid-transaction work that benefits from deferred checks ...
+    ///     ctx.set_constraints_immediate(DeferScope::All).await?;
+    ///     // ... remaining statements run with checks at every statement ...
+    ///     Ok::<_, DjogiError>(())
+    /// })).await?;
+    /// ```
+    pub async fn set_constraints_immediate(
+        &mut self,
+        scope: crate::transaction::DeferScope,
+    ) -> Result<(), DjogiError> {
+        self.set_constraint_mode(scope, crate::transaction::ConstraintMode::Immediate)
+            .await
+    }
+
+    /// Shared body for [`Self::defer_constraints`] and
+    /// [`Self::set_constraints_immediate`]. Centralises the pool-
+    /// rejection + name-validation + SQL emission so the two helpers
+    /// stay in lockstep.
+    async fn set_constraint_mode(
+        &mut self,
+        scope: crate::transaction::DeferScope,
+        mode: crate::transaction::ConstraintMode,
+    ) -> Result<(), DjogiError> {
+        // Step 1 — refuse pool-backed contexts. `SET CONSTRAINTS` is
+        // transaction-scoped; outside a transaction it would either
+        // evaporate after the single implicit statement-transaction
+        // or fail outright. Both outcomes are caller errors, so
+        // surface a typed terminal error before touching SQL.
+        match &self.inner {
+            ContextInner::Pool(_) => return Err(DjogiError::ConstraintModeOutsideTransaction),
+            ContextInner::Transaction(_) => {}
+        }
+
+        // Step 2 — compose the SQL based on scope. `All` is a single
+        // statement; `Named` validates each name against the
+        // descriptor inventory before emitting.
+        let sql = match scope {
+            crate::transaction::DeferScope::All => {
+                format!("SET CONSTRAINTS ALL {}", mode.as_sql_keyword())
+            }
+            crate::transaction::DeferScope::Named(names) => {
+                // GPT-5.5 xhigh follow-up: reject `Named(&[])` before
+                // emitting `SET CONSTRAINTS  DEFERRED` (note the
+                // extra space + missing list). Postgres would raise
+                // SQLSTATE `42601` after a round trip; the typed
+                // error names the misuse synchronously.
+                if names.is_empty() {
+                    return Err(DjogiError::EmptyDeferConstraintsScope);
+                }
+                validate_constraint_names_against_descriptors(names)?;
+                build_set_constraints_named_sql(names, mode)
+            }
+        };
+
+        // Step 3 — emit. `execute` handles the pool guard / detach
+        // semantics correctly even for a transaction-backed context
+        // (which dispatches to the transaction connection without
+        // going through the pool guard).
+        self.execute(&sql, &[]).await?;
+        Ok(())
+    }
+}
+
+/// Validate every constraint name in `names` against the
+/// `DeferrabilitySpec` inventory.
+///
+/// Thin wrapper that threads the live `inventory::iter::<...>()`
+/// streams into [`validate_constraint_names_against_inventory`] so
+/// the validator is unit-testable with synthetic inventories. See
+/// that function for the full contract.
+fn validate_constraint_names_against_descriptors(names: &[&str]) -> Result<(), DjogiError> {
+    use crate::descriptor::{DeferrabilitySpec, ModelDescriptor};
+
+    validate_constraint_names_against_inventory(
+        names,
+        inventory::iter::<ModelDescriptor>(),
+        inventory::iter::<DeferrabilitySpec>(),
+    )
+}
+
+/// Walk `(table_for(model_type), field_name) → (deferrable,
+/// initially_deferred)` maps built from the supplied inventories and
+/// validate every adopter-supplied constraint name.
+///
+/// Contract — fail-closed by design (GPT-5.5 xhigh follow-up for
+/// djogi#169):
+///
+/// 1. **Conflicting [`DeferrabilitySpec`]s** sharing
+///    `(model_type_name, field_name)` but disagreeing on
+///    `(deferrable, initially_deferred)` raise
+///    [`DjogiError::ConflictingDeferrabilitySpec`]. Mirrors the
+///    projection-time gate at
+///    [`crate::migrate::projection::ProjectionError::ConflictingDeferrabilitySpec`]
+///    so runtime and migration-time agree. Idempotent duplicates
+///    (same key, identical values) are accepted.
+///
+/// 2. **Orphan [`DeferrabilitySpec`]s** — `model_type_name` with no
+///    matching [`ModelDescriptor`] — raise
+///    [`DjogiError::OrphanDeferrabilitySpec`]. The previous
+///    implementation silently skipped these, which masked the real
+///    root cause when the adopter then asked about a
+///    `<expected_table>_<field>_fkey` they thought they had declared.
+///
+/// 3. **Duplicate constraint names** — two distinct
+///    `(model_type_name, field_name)` pairs whose conventional
+///    `<table>_<column>_fkey` strings collide (Postgres' 63-byte
+///    identifier limit can truncate-merge long names) — raise
+///    [`DjogiError::DuplicateConstraintName`]. Without this gate the
+///    validator would have to pick one side's `deferrable` answer,
+///    which is non-deterministic against inventory iteration order.
+///
+/// 4. **Unknown adopter-supplied name** raises
+///    [`DjogiError::UnknownConstraintName`].
+///
+/// 5. **Non-deferrable adopter-supplied name** raises
+///    [`DjogiError::ConstraintNotDeferrable`].
+///
+/// 6. Otherwise returns `Ok(())`.
+///
+/// Failures (1)–(3) surface before the per-name validation pass so a
+/// misconfigured inventory cannot mask a misconfigured `Named` payload
+/// with a different error code.
+///
+/// The constraint-name convention follows
+/// [`crate::migrate::sql::fk_constraint_name`] —
+/// `<table>_<column>_fkey`, truncated to 63 bytes for long names.
+/// Walking the inventory at every call site is acceptable because
+/// `defer_constraints` is a transaction-control call, not a hot-path
+/// operation — adopters call it once per atomic scope, and the
+/// inventory is fixed at link time.
+fn validate_constraint_names_against_inventory<'a, M, D>(
+    names: &[&str],
+    models: M,
+    specs: D,
+) -> Result<(), DjogiError>
+where
+    M: IntoIterator<Item = &'a crate::descriptor::ModelDescriptor>,
+    D: IntoIterator<Item = &'a crate::descriptor::DeferrabilitySpec>,
+{
+    use std::collections::{BTreeMap, HashMap};
+
+    // Resolve table_name from type_name. `ModelDescriptor` uniqueness
+    // is enforced at migration-projection time
+    // (`ProjectionError::DuplicateModelTypeName`), but the runtime
+    // validator runs without that gate, so a misconfigured inventory
+    // could in principle reach us. `BTreeMap::insert` returns the
+    // previous value; we treat idempotent reinsertion (same table)
+    // as a no-op and disagreement as Postgres' problem to surface —
+    // we do not duplicate the projection-time error here because
+    // `defer_constraints` does not need a canonical descriptor; it
+    // only needs the `(table, field) → deferrable` map for the
+    // FK-name composition. A type-name with two distinct tables is
+    // already a build-failure in any non-degenerate `cargo build`
+    // (`build.rs` runs the projection differ).
+    let mut table_by_type: HashMap<&str, &str> = HashMap::new();
+    for m in models {
+        table_by_type.insert(m.type_name, m.table_name);
+    }
+
+    // Detect duplicate / conflicting `DeferrabilitySpec`s while
+    // building the `(type, field) → (deferrable, initially_deferred)`
+    // map. Mirrors `migrate::projection::project_from_iters_with_deferrability`'s
+    // round-7 fix; we use a `BTreeMap` (deterministic iteration) but
+    // the determinism here is for diagnostic stability — the actual
+    // gate is "no two specs may disagree". Idempotent reinsertion
+    // (same key, identical value) is accepted.
+    let mut deferrability_by_field: BTreeMap<(&str, &str), (bool, bool)> = BTreeMap::new();
+    for spec in specs {
+        let key = (spec.model_type_name, spec.field_name);
+        let value = (spec.deferrable, spec.initially_deferred);
+        if let Some(prev) = deferrability_by_field.get(&key)
+            && *prev != value
+        {
+            return Err(DjogiError::ConflictingDeferrabilitySpec {
+                model_type_name: spec.model_type_name.to_string(),
+                field_name: spec.field_name.to_string(),
+                first: *prev,
+                second: value,
+            });
+        }
+        deferrability_by_field.insert(key, value);
+    }
+
+    // Compose the runtime `constraint_name → (model_type, field,
+    // deferrable)` map. Reject orphan specs + duplicate constraint
+    // names here — both were silent in the prior implementation.
+    let mut deferrable_by_constraint_name: BTreeMap<String, (&str, &str, bool)> = BTreeMap::new();
+    for ((model_type_name, field_name), (deferrable, _initially_deferred)) in &deferrability_by_field
+    {
+        // Resolve the owning table.
+        let table = match table_by_type.get(model_type_name) {
+            Some(t) => *t,
+            None => {
+                return Err(DjogiError::OrphanDeferrabilitySpec {
+                    model_type_name: (*model_type_name).to_string(),
+                    field_name: (*field_name).to_string(),
+                });
+            }
+        };
+        let constraint_name = crate::migrate::sql::fk_constraint_name(table, field_name);
+        if let Some((first_model, first_field, _)) = deferrable_by_constraint_name.get(&constraint_name)
+        {
+            // Collision — two distinct (model, field) pairs that
+            // truncate-merge to the same conventional FK name. Fail
+            // closed; the adopter must shorten the offending
+            // identifier.
+            return Err(DjogiError::DuplicateConstraintName {
+                constraint_name,
+                first_model: (*first_model).to_string(),
+                first_field: (*first_field).to_string(),
+                second_model: (*model_type_name).to_string(),
+                second_field: (*field_name).to_string(),
+            });
+        }
+        deferrable_by_constraint_name
+            .insert(constraint_name, (model_type_name, field_name, *deferrable));
+    }
+
+    // Per-name validation. Inventory shape is now known consistent.
+    for name in names {
+        match deferrable_by_constraint_name.get(*name) {
+            Some((_, _, true)) => continue, // deferrable, OK
+            Some((_, _, false)) => {
+                return Err(DjogiError::ConstraintNotDeferrable((*name).to_string()));
+            }
+            None => return Err(DjogiError::UnknownConstraintName((*name).to_string())),
+        }
+    }
+    Ok(())
+}
+
+/// Compose `SET CONSTRAINTS "name1", "name2", ... <mode>` from a slice
+/// of pre-validated constraint names + a mode keyword.
+///
+/// Every name has already passed
+/// [`validate_constraint_names_against_descriptors`] (which routes
+/// through the FK-name convention that excludes injection-shaped
+/// bytes), so the names are safe to interpolate inside double quotes.
+/// Postgres double-quoted identifiers permit any non-`"` byte; the FK
+/// convention emits ASCII identifier characters only, so no escaping
+/// is needed beyond the surrounding quotes. The double-quoted form
+/// also lets Postgres accept reserved-keyword constraint names — the
+/// FK convention doesn't generate those today, but the quoting is
+/// defensive against future naming-convention changes.
+fn build_set_constraints_named_sql(
+    names: &[&str],
+    mode: crate::transaction::ConstraintMode,
+) -> String {
+    let mut sql = String::with_capacity(
+        "SET CONSTRAINTS  ".len()
+            + mode.as_sql_keyword().len()
+            + names.iter().map(|n| n.len() + 4).sum::<usize>(),
+    );
+    sql.push_str("SET CONSTRAINTS ");
+    for (i, name) in names.iter().enumerate() {
+        if i > 0 {
+            sql.push_str(", ");
+        }
+        sql.push('"');
+        sql.push_str(name);
+        sql.push('"');
+    }
+    sql.push(' ');
+    sql.push_str(mode.as_sql_keyword());
+    sql
+}
+
+impl DjogiContext {
+    /// Allocate a fresh pool-backed [`DjogiContext`] that shares
+    /// `self`'s pool, `Sassi` cache registry, and auth context but
+    /// holds an independent pool checkout per operation.
+    ///
+    /// Use this to compose `tokio::try_join!` (or similar) over two
+    /// independent typed reads on the same pool — each clone's
+    /// operations check out their own connection, so the two futures
+    /// run truly concurrently without aliasing one transaction's
+    /// connection.
+    ///
+    /// # When to use this
+    ///
+    /// The natural shape:
+    ///
+    /// ```ignore
+    /// let (alpha, beta) = tokio::try_join!(
+    ///     Post::objects().filter(|f| f.kind().eq("alpha")).fetch_all(&mut ctx),
+    ///     Post::objects().filter(|f| f.kind().eq("beta")).fetch_all(&mut ctx),
+    /// )?;
+    /// ```
+    ///
+    /// does not compile because both branches need `&mut ctx` at the
+    /// same time (`E0499`). Clone the context first:
+    ///
+    /// ```ignore
+    /// let mut ctx_a = ctx.clone_for_concurrent_reads()?;
+    /// let mut ctx_b = ctx.clone_for_concurrent_reads()?;
+    /// let (alpha, beta) = tokio::try_join!(
+    ///     Post::objects().filter(|f| f.kind().eq("alpha")).fetch_all(&mut ctx_a),
+    ///     Post::objects().filter(|f| f.kind().eq("beta")).fetch_all(&mut ctx_b),
+    /// )?;
+    /// ```
+    ///
+    /// Each `fetch_all` checks out its own connection. The two
+    /// queries run concurrently on independent connections — true
+    /// parallelism, no protocol aliasing.
+    ///
+    /// # What the clone carries over
+    ///
+    /// - **Pool** — same `DjogiPool` handle (Arc-cloned). The clone
+    ///   draws from the same pool; checkouts are independent.
+    /// - **`Sassi` cache registry** — same `Arc<Sassi>`. Both contexts
+    ///   share the cache state, so a write through one clone is
+    ///   visible to a subsequent read through the other (provided the
+    ///   write committed).
+    /// - **Auth context** — cloned (so RLS still applies). Mutating
+    ///   `set_auth` on one clone does NOT propagate to the other —
+    ///   each clone owns its own auth state.
+    /// - **Tenant-scope-suppression flag** — copied.
+    ///
+    /// # What the clone does NOT carry over
+    ///
+    /// - **`applied_tenant_id`** — transaction-scoped state, set
+    ///   only via `set_config(..., true)` inside an open transaction.
+    ///   A pool-backed clone has no active transaction, so the
+    ///   in-memory tracker resets to `None`.
+    /// - **`tenant_set`** — same rationale as `applied_tenant_id`.
+    /// - **`on_commit` queue** — each clone owns its own queue.
+    ///   Callbacks registered on the parent BEFORE the clone are not
+    ///   inherited; callbacks registered on either clone after
+    ///   cloning fire only on that clone's `commit()` (and only if
+    ///   the clone enters its own `atomic()`).
+    /// - **Savepoint depth** — clones start at depth 0 because they
+    ///   have no transaction. (This method rejects transaction-
+    ///   backed contexts; see Errors.)
+    ///
+    /// # Errors
+    ///
+    /// Returns
+    /// [`DjogiError::ConcurrentReadsRequirePoolContext`](crate::DjogiError::ConcurrentReadsRequirePoolContext)
+    /// when called on a transaction-backed context. A transaction
+    /// owns one Postgres connection; cloning would either alias that
+    /// connection across futures (Postgres protocol violation) or
+    /// silently break the transaction boundary. Move the
+    /// concurrent-reads block outside the surrounding `atomic()`
+    /// scope, or fetch sequentially within the transaction.
+    ///
+    /// # Why sync (no `await`)
+    ///
+    /// The clone allocates no new database resources — it copies the
+    /// pool handle (Arc clone), the Sassi registry (Arc clone), and
+    /// the auth state. Each subsequent CRUD call on the clone
+    /// performs its own pool checkout asynchronously, so the cost of
+    /// async amortises across the actual work, not the cheap clone
+    /// setup. A synchronous return mirrors `share_pool` (the
+    /// existing sibling helper) and avoids gratuitous `.await?`
+    /// noise at every call site.
+    ///
+    /// # Example with mixed reads
+    ///
+    /// ```ignore
+    /// use djogi::DjogiContext;
+    ///
+    /// async fn dashboard(ctx: &mut DjogiContext) -> Result<(Vec<Post>, Vec<User>), DjogiError> {
+    ///     let mut ctx_posts = ctx.clone_for_concurrent_reads()?;
+    ///     let mut ctx_users = ctx.clone_for_concurrent_reads()?;
+    ///     tokio::try_join!(
+    ///         Post::objects().fetch_all(&mut ctx_posts),
+    ///         User::objects().fetch_all(&mut ctx_users),
+    ///     )
+    /// }
+    /// ```
+    pub fn clone_for_concurrent_reads(&self) -> Result<DjogiContext, DjogiError> {
+        let pool = match &self.inner {
+            ContextInner::Pool(p) => p.clone(),
+            ContextInner::Transaction(_) => {
+                return Err(DjogiError::ConcurrentReadsRequirePoolContext);
+            }
+        };
+
+        Ok(DjogiContext {
+            inner: ContextInner::Pool(pool),
+            savepoint_depth: 0,
+            // Each clone owns its own `on_commit` queue. Inherited
+            // callbacks make no sense — the clone has no transaction
+            // to commit, and on_commit on a pool-backed context is
+            // already a `track_caller`-warned silent-drop. Starting
+            // empty keeps the contract clean.
+            on_commit: Vec::new(),
+            tenant_set: false,
+            auth: self.auth.clone(),
+            tenant_scope_suppressed: self.tenant_scope_suppressed,
+            // Transaction-scoped GUC state — resets to None on a
+            // fresh pool-backed clone (no active transaction).
+            applied_tenant_id: None,
+            // Share the parent's Sassi registry by Arc-cloning so
+            // cache writes through one clone are visible to reads
+            // through the other.
+            sassi: std::sync::Arc::clone(&self.sassi),
+        })
+    }
 }
 
 /// Validate a Postgres role name for `SET LOCAL ROLE`.
@@ -1629,5 +2138,281 @@ mod tests {
         assert!(super::validate_role_name("app_readonly_role").is_ok());
         assert!(super::validate_role_name("_internal").is_ok());
         assert!(super::validate_role_name("role1").is_ok());
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 8.5 #169 — SET CONSTRAINTS SQL composition tests.
+    //
+    // These tests pin the SQL shape emitted by `defer_constraints` /
+    // `set_constraints_immediate` for both `DeferScope::All` and
+    // `DeferScope::Named`. They are no-DB tests because the
+    // composition is deterministic and the live-PG round-trip is
+    // covered by `tests/integration/phase8_5_c4_169_defer_constraints.rs`.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn build_set_constraints_named_sql_emits_quoted_names_and_deferred_keyword() {
+        let sql = super::build_set_constraints_named_sql(
+            &["posts_author_id_fkey"],
+            crate::transaction::ConstraintMode::Deferred,
+        );
+        assert_eq!(sql, r#"SET CONSTRAINTS "posts_author_id_fkey" DEFERRED"#);
+    }
+
+    #[test]
+    fn build_set_constraints_named_sql_emits_quoted_names_and_immediate_keyword() {
+        let sql = super::build_set_constraints_named_sql(
+            &["posts_author_id_fkey"],
+            crate::transaction::ConstraintMode::Immediate,
+        );
+        assert_eq!(sql, r#"SET CONSTRAINTS "posts_author_id_fkey" IMMEDIATE"#);
+    }
+
+    #[test]
+    fn build_set_constraints_named_sql_joins_multiple_names_with_commas() {
+        // Postgres' `SET CONSTRAINTS` grammar allows multiple
+        // constraint names separated by commas. The emitter joins
+        // every name + the leading/trailing keywords.
+        let sql = super::build_set_constraints_named_sql(
+            &["a_fkey", "b_fkey", "c_fkey"],
+            crate::transaction::ConstraintMode::Deferred,
+        );
+        assert_eq!(
+            sql,
+            r#"SET CONSTRAINTS "a_fkey", "b_fkey", "c_fkey" DEFERRED"#
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 8.5 #169 — runtime validator inventory gates (GPT-5.5
+    // xhigh follow-up). These tests construct synthetic
+    // `ModelDescriptor` + `DeferrabilitySpec` slices and verify that
+    // the runtime validator fails closed on every misconfigured
+    // inventory shape:
+    //
+    // - conflicting deferrability specs (same key, disagreeing
+    //   values)
+    // - orphan deferrability specs (no matching model descriptor)
+    // - duplicate constraint names (two distinct fields whose
+    //   `<table>_<column>_fkey` convention collides)
+    //
+    // Idempotent duplicates (same key, identical values) are
+    // accepted. These tests pin the negative + positive paths so a
+    // future refactor cannot silently re-introduce the
+    // last-writer-wins / silent-skip behaviour the GPT-5.5 review
+    // flagged.
+    // -------------------------------------------------------------------------
+
+    /// Build a `ModelDescriptor` skeleton sufficient for the
+    /// validator helper, which only reads `type_name` and
+    /// `table_name`. Forwards to the public
+    /// [`crate::descriptor::model_descriptor`] const-helper so the
+    /// shape stays in lockstep with the schema-projection tests.
+    fn synth_model(
+        type_name: &'static str,
+        table_name: &'static str,
+    ) -> crate::descriptor::ModelDescriptor {
+        crate::descriptor::model_descriptor(
+            type_name,
+            table_name,
+            crate::descriptor::PkType::HeerIdDesc,
+            &[],
+        )
+    }
+
+    fn synth_spec(
+        model_type_name: &'static str,
+        field_name: &'static str,
+        deferrable: bool,
+        initially_deferred: bool,
+    ) -> crate::descriptor::DeferrabilitySpec {
+        crate::descriptor::DeferrabilitySpec {
+            model_type_name,
+            field_name,
+            deferrable,
+            initially_deferred,
+        }
+    }
+
+    #[test]
+    fn validator_accepts_deferrable_fk_named_by_convention() {
+        // Positive control: the conventional `<table>_<column>_fkey`
+        // name for a deferrable spec passes.
+        let models = [synth_model("DeferNode", "djogi_defer_nodes")];
+        let specs = [synth_spec("DeferNode", "peer_id", true, true)];
+        super::validate_constraint_names_against_inventory(
+            &["djogi_defer_nodes_peer_id_fkey"],
+            models.iter(),
+            specs.iter(),
+        )
+        .expect("conventional FK name on deferrable spec must validate");
+    }
+
+    #[test]
+    fn validator_rejects_unknown_name_with_typed_error() {
+        let models = [synth_model("DeferNode", "djogi_defer_nodes")];
+        let specs = [synth_spec("DeferNode", "peer_id", true, true)];
+        let err = super::validate_constraint_names_against_inventory(
+            &["typo_fkey"],
+            models.iter(),
+            specs.iter(),
+        )
+        .expect_err("unknown name must be rejected");
+        assert!(
+            matches!(err, DjogiError::UnknownConstraintName(ref n) if n == "typo_fkey"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validator_rejects_non_deferrable_named_constraint() {
+        let models = [synth_model("Post", "posts")];
+        let specs = [synth_spec("Post", "author_id", false, false)];
+        let err = super::validate_constraint_names_against_inventory(
+            &["posts_author_id_fkey"],
+            models.iter(),
+            specs.iter(),
+        )
+        .expect_err("non-deferrable name must be rejected");
+        assert!(
+            matches!(
+                err,
+                DjogiError::ConstraintNotDeferrable(ref n) if n == "posts_author_id_fkey"
+            ),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validator_accepts_idempotent_duplicate_deferrability_spec() {
+        // Two `DeferrabilitySpec`s with the same (model, field, …
+        // values) collapse cleanly. The macro can in principle re-emit
+        // (cross-crate re-exports), so the validator must accept the
+        // idempotent shape.
+        let models = [synth_model("Post", "posts")];
+        let specs = [
+            synth_spec("Post", "author_id", true, false),
+            synth_spec("Post", "author_id", true, false),
+        ];
+        super::validate_constraint_names_against_inventory(
+            &["posts_author_id_fkey"],
+            models.iter(),
+            specs.iter(),
+        )
+        .expect("idempotent duplicate must validate");
+    }
+
+    #[test]
+    fn validator_rejects_conflicting_deferrability_spec_with_typed_error() {
+        // Two `DeferrabilitySpec`s with the same (model, field) key
+        // but disagreeing on `(deferrable, initially_deferred)` must
+        // raise `ConflictingDeferrabilitySpec` — mirrors the
+        // projection-time gate at `migrate::projection`.
+        let models = [synth_model("Post", "posts")];
+        let specs = [
+            synth_spec("Post", "author_id", true, false),
+            synth_spec("Post", "author_id", true, true),
+        ];
+        let err = super::validate_constraint_names_against_inventory(
+            &["posts_author_id_fkey"],
+            models.iter(),
+            specs.iter(),
+        )
+        .expect_err("conflicting spec must be rejected");
+        let DjogiError::ConflictingDeferrabilitySpec {
+            model_type_name,
+            field_name,
+            first,
+            second,
+        } = err
+        else {
+            panic!("expected ConflictingDeferrabilitySpec, got: {err:?}");
+        };
+        assert_eq!(model_type_name, "Post");
+        assert_eq!(field_name, "author_id");
+        assert_eq!(first, (true, false));
+        assert_eq!(second, (true, true));
+    }
+
+    #[test]
+    fn validator_rejects_orphan_deferrability_spec_with_typed_error() {
+        // A `DeferrabilitySpec` whose `model_type_name` has no
+        // matching `ModelDescriptor` must raise `OrphanDeferrabilitySpec`.
+        // The prior implementation silently skipped these, masking the
+        // real root cause (missing descriptor) behind an
+        // `UnknownConstraintName` against the
+        // `<table>_<field>_fkey` the adopter expected to exist.
+        //
+        // Empty `models` slice forces every spec to be an orphan. The
+        // validator must error before it even looks at the `names`
+        // payload — pass empty `names` to make the test focus on the
+        // inventory shape, not the per-name validation.
+        let models: [crate::descriptor::ModelDescriptor; 0] = [];
+        let specs = [synth_spec("Ghost", "haunts", true, false)];
+        let err = super::validate_constraint_names_against_inventory(
+            &[],
+            models.iter(),
+            specs.iter(),
+        )
+        .expect_err("orphan spec must be rejected");
+        let DjogiError::OrphanDeferrabilitySpec {
+            model_type_name,
+            field_name,
+        } = err
+        else {
+            panic!("expected OrphanDeferrabilitySpec, got: {err:?}");
+        };
+        assert_eq!(model_type_name, "Ghost");
+        assert_eq!(field_name, "haunts");
+    }
+
+    #[test]
+    fn validator_rejects_duplicate_constraint_name_with_typed_error() {
+        // Two distinct `(model_type, field)` pairs whose conventional
+        // FK names collide must raise `DuplicateConstraintName`.
+        // Postgres' 63-byte identifier limit can truncate-merge long
+        // names; the validator has no way to know which FK the
+        // adopter meant. Construct a synthetic collision by giving
+        // two models tables that produce the same truncated name
+        // when combined with a long-enough field name.
+        //
+        // The fk_constraint_name convention is `<table>_<column>_fkey`;
+        // construct two distinct (table, column) tuples that yield
+        // identical 63-byte strings. The simplest pinned shape: same
+        // `table` + same `column` but two different `type_name`s
+        // (which is exactly the collision case adopters can produce
+        // by accident when proxy / inheritance lands).
+        let models = [
+            synth_model("Alpha", "shared_table"),
+            synth_model("Beta", "shared_table"),
+        ];
+        let specs = [
+            synth_spec("Alpha", "shared_col", true, false),
+            synth_spec("Beta", "shared_col", true, false),
+        ];
+        let err = super::validate_constraint_names_against_inventory(
+            &[],
+            models.iter(),
+            specs.iter(),
+        )
+        .expect_err("duplicate constraint name must be rejected");
+        let DjogiError::DuplicateConstraintName {
+            constraint_name,
+            first_model,
+            first_field,
+            second_model,
+            second_field,
+        } = err
+        else {
+            panic!("expected DuplicateConstraintName, got: {err:?}");
+        };
+        assert_eq!(constraint_name, "shared_table_shared_col_fkey");
+        // BTreeMap iteration order over the spec keys is sorted by
+        // (model_type, field). Alpha < Beta, so Alpha is observed
+        // first.
+        assert_eq!(first_model, "Alpha");
+        assert_eq!(first_field, "shared_col");
+        assert_eq!(second_model, "Beta");
+        assert_eq!(second_field, "shared_col");
     }
 }

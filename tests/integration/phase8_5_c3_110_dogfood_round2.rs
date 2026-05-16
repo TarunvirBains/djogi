@@ -13,13 +13,14 @@
 //     marker stays anchored to the GH closing PR so the audit trail is
 //     traceable.
 //
-// As of 2026-05-15 the following sibling issues are closed and the matching
+// As of 2026-05-16 the following sibling issues are closed and the matching
 // scenarios are positive regressions: #107 (Option<scalar>), #109 (Condition
 // ergonomics), #166 (Tracked<T> typed lookup), #167 (&str → String
-// coercion at FieldRef::eq callsites), and #171 (typed-array element
-// expansion). Still-open gap markers cover #105, #168, #169, #170, #172, and
-// #173 — those scenarios continue to document the workaround adopters reach
-// for today and route to the named GH issue.
+// coercion at FieldRef::eq callsites), #168 (typed isolation-level surface),
+// #169 (typed deferred-constraints surface), #171 (typed-array element
+// expansion), and #173 (concurrent-reads helper). Still-open gap markers
+// cover #105, #170, and #172 — those scenarios continue to document the
+// workaround adopters reach for today and route to the named GH issue.
 //
 // Every scenario uses `#[djogi::djogi_test(sync_models = [...])]` and the
 // typed surface only — no raw_* escape hatches (per CLAUDE.md). When a gap
@@ -562,33 +563,26 @@ async fn cat3_a_nested_atomic_emits_savepoint(mut ctx: djogi::DjogiContext) {
 
 // Scenario 3.B — explicit isolation level on a transaction.
 //
-// VERDICT: NEEDS GAP ISSUE — no public typed surface to choose isolation
-// level. `atomic()` always opens a default-isolation transaction; there
-// is no `atomic_with(IsolationLevel::Serializable, |ctx| { ... })` shape
-// nor `ctx.set_isolation(...)` setter (verified by `grep -rn
-// 'ISOLATION LEVEL\|isolation_level\|IsolationLevel' djogi/src/`, which
-// returns zero matches outside doc comments).
-//
-// Stand-in: the test compiles because it uses the default isolation —
-// but the workaround for SERIALIZABLE today is `raw_execute("SET TRANSACTION
-// ISOLATION LEVEL SERIALIZABLE")` inside an atomic block, which is gated by
-// the bypass attribute.
+// REGRESSION (closes #168 via this PR): `djogi::transaction::atomic_with`
+// + the `IsolationLevel` enum now expose the typed isolation surface.
+// `atomic_with(IsolationLevel::Serializable, &mut ctx, |ctx| ...)` opens
+// the transaction at `BEGIN ISOLATION LEVEL SERIALIZABLE`; `RepeatableRead`
+// and `ReadCommitted` route through the same entry point. Nested
+// savepoint scopes reject with
+// `DjogiError::IsolationLevelOnNestedScope` because Postgres pins
+// isolation at the outer BEGIN.
 #[djogi::djogi_test(sync_models = [DogfoodWidget])]
-async fn cat3_b_isolation_level_gap(mut ctx: djogi::DjogiContext) {
-    // GAP(djogi#168): the natural call shape that does not exist:
-    //   djogi::transaction::atomic_with(
-    //       IsolationLevel::Serializable,
-    //       &mut ctx,
-    //       |ctx| Box::pin(async move { ... }),
-    //   )
-    // Adopter has to fall back to `raw_execute("SET TRANSACTION ISOLATION
-    // LEVEL SERIALIZABLE")` under the bypass attribute.
-    djogi::transaction::atomic(&mut ctx, |ctx| {
+async fn cat3_b_isolation_level_typed_surface(mut ctx: djogi::DjogiContext) {
+    use djogi::transaction::{IsolationLevel, atomic_with};
+
+    // The natural call shape that #168 unblocks — `atomic_with(level, ctx, closure)`
+    // opens the outermost transaction at the requested level.
+    atomic_with(IsolationLevel::Serializable, &mut ctx, |ctx| {
         Box::pin(async move {
             DogfoodWidget::create(
                 ctx,
                 DogfoodWidget {
-                    label: "default-iso".to_string(),
+                    label: "serializable-iso".to_string(),
                     tracked_label: Tracked::new("z".to_string()),
                     maybe_count: None,
                     balance: 0,
@@ -600,39 +594,91 @@ async fn cat3_b_isolation_level_gap(mut ctx: djogi::DjogiContext) {
         })
     })
     .await
-    .expect("default-isolation atomic");
+    .expect("serializable-isolation atomic_with");
+
+    // The other two variants compose through the same entry point.
+    atomic_with(IsolationLevel::RepeatableRead, &mut ctx, |ctx| {
+        Box::pin(async move {
+            let _count = DogfoodWidget::objects().count(ctx).await?;
+            Ok::<_, djogi::DjogiError>(())
+        })
+    })
+    .await
+    .expect("repeatable-read atomic_with");
+
+    atomic_with(IsolationLevel::ReadCommitted, &mut ctx, |ctx| {
+        Box::pin(async move {
+            let _count = DogfoodWidget::objects().count(ctx).await?;
+            Ok::<_, djogi::DjogiError>(())
+        })
+    })
+    .await
+    .expect("read-committed atomic_with");
 }
 
 // Scenario 3.C — deferred constraints / `SET CONSTRAINTS ALL DEFERRED`.
 //
-// VERDICT: NEEDS GAP ISSUE — `INITIALLY DEFERRED` exists at the FK/index
-// declaration layer (verified at `djogi/src/live_migrate/patterns/...`),
-// but there is no public typed surface to flip a deferrable-but-immediate
-// constraint to deferred for the duration of a transaction (the
-// `SET CONSTRAINTS ALL DEFERRED` shape). Adopters needing circular FK
-// inserts in a single transaction must reach for raw_execute today.
+// REGRESSION (closes #169 via this PR): `DjogiContext::defer_constraints`
+// + the `DeferScope` enum now expose the typed deferred-constraints
+// surface. `DeferScope::All` emits `SET CONSTRAINTS ALL DEFERRED`;
+// `DeferScope::Named(&[...])` validates each name against the
+// descriptor inventory before emitting `SET CONSTRAINTS "name" DEFERRED`.
+// Both helpers reject pool-backed contexts with
+// `DjogiError::ConstraintModeOutsideTransaction`.
+//
+// This scenario exercises the typed-surface compilation against
+// `DogfoodWidget`, plus the pool-rejection invariant. The full
+// circular-FK live-PG round trip lives in
+// `tests/integration/phase8_5_c4_169_defer_constraints.rs`.
 #[djogi::djogi_test(sync_models = [DogfoodWidget])]
-async fn cat3_c_defer_constraints_gap(mut ctx: djogi::DjogiContext) {
-    // GAP(djogi#169): natural call shape that does not exist:
-    //   djogi::transaction::atomic(&mut ctx, |ctx| Box::pin(async move {
-    //       ctx.defer_constraints(DeferScope::All).await?;
-    //       // ... circular FK inserts ...
-    //       Ok::<_, DjogiError>(())
-    //   })).await?;
-    // Stand-in: scenario compiles only because we don't actually have a
-    // circular-FK shape to exercise.
-    DogfoodWidget::create(
-        &mut ctx,
-        DogfoodWidget {
-            label: "no-circular".to_string(),
-            tracked_label: Tracked::new("n".to_string()),
-            maybe_count: None,
-            balance: 0,
-            ..Default::default()
-        },
-    )
+async fn cat3_c_defer_constraints_typed_surface(mut ctx: djogi::DjogiContext) {
+    use djogi::transaction::DeferScope;
+
+    // The natural call shape that #169 unblocks — `defer_constraints` /
+    // `set_constraints_immediate` inside `atomic()`.
+    djogi::transaction::atomic(&mut ctx, |ctx| {
+        Box::pin(async move {
+            // Defer all deferrable constraints for the remainder of
+            // this transaction. `DeferScope::All` skips per-name
+            // validation; Postgres applies the flip to every
+            // deferrable constraint in scope.
+            ctx.defer_constraints(DeferScope::All).await?;
+
+            // The model has no FKs — the SET CONSTRAINTS ALL DEFERRED
+            // statement still runs (Postgres accepts it as a no-op
+            // when no deferrable constraints exist), proving the
+            // typed surface composes correctly.
+            DogfoodWidget::create(
+                ctx,
+                DogfoodWidget {
+                    label: "deferred-scope".to_string(),
+                    tracked_label: Tracked::new("n".to_string()),
+                    maybe_count: None,
+                    balance: 0,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+            // Reverse the flip mid-transaction.
+            ctx.set_constraints_immediate(DeferScope::All).await?;
+            Ok::<_, djogi::DjogiError>(())
+        })
+    })
     .await
-    .expect("create");
+    .expect("defer_constraints(All) inside atomic");
+
+    // Pool-backed rejection — `defer_constraints` outside an open
+    // `atomic()` MUST surface
+    // `DjogiError::ConstraintModeOutsideTransaction`.
+    let err = ctx
+        .defer_constraints(DeferScope::All)
+        .await
+        .expect_err("pool-backed defer_constraints must surface ConstraintModeOutsideTransaction");
+    assert!(
+        matches!(err, djogi::DjogiError::ConstraintModeOutsideTransaction),
+        "expected ConstraintModeOutsideTransaction, got {err:?}",
+    );
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -877,22 +923,18 @@ async fn cat6_a_question_mark_through_djogi_error(mut ctx: djogi::DjogiContext) 
 
 // Scenario 6.B — `tokio::try_join!` with two queries on `&mut DjogiContext`.
 //
-// VERDICT: NEEDS GAP ISSUE — `&mut DjogiContext` is exclusive, so two
-// concurrent queries cannot both borrow it at once. The natural shape:
+// REGRESSION (closes #173 via this PR): `DjogiContext::clone_for_concurrent_reads`
+// allocates an independent pool-backed context that shares the parent's
+// pool, Sassi registry, and auth — letting two `&mut DjogiContext`
+// references coexist for concurrent typed reads.
 //
-//   tokio::try_join!(
-//       DogfoodAsync::objects().filter(...).fetch_all(ctx),
-//       DogfoodAsync::objects().filter(...).fetch_all(ctx),
-//   )
-//
-// fails E0499 ("cannot borrow `*ctx` as mutable more than once at a time").
-// Adopters need EITHER (a) a "shared" context shape that hands out two
-// independent pooled connections (only valid for read-only queries
-// outside a transaction), or (b) a documented sequential-fetch idiom.
-//
-// Routed to djogi#173 (Cluster 3 — small typed helper).
+// `tokio::try_join!` over two clones now compiles and runs on
+// independent pool checkouts. The helper rejects transaction-backed
+// contexts with `DjogiError::ConcurrentReadsRequirePoolContext` —
+// concurrent reads within one transaction would alias a single
+// connection.
 #[djogi::djogi_test(sync_models = [DogfoodAsync])]
-async fn cat6_b_try_join_borrow_gap(mut ctx: djogi::DjogiContext) {
+async fn cat6_b_try_join_concurrent_reads(mut ctx: djogi::DjogiContext) {
     DogfoodAsync::create(
         &mut ctx,
         DogfoodAsync {
@@ -914,25 +956,24 @@ async fn cat6_b_try_join_borrow_gap(mut ctx: djogi::DjogiContext) {
     .await
     .expect("beta");
 
-    // GAP(djogi#173): the natural concurrent shape that does NOT compile —
-    //   let (a, b) = tokio::try_join!(
-    //       DogfoodAsync::objects().filter(|f| f.kind().eq("alpha".to_string())).fetch_all(&mut ctx),
-    //       DogfoodAsync::objects().filter(|f| f.kind().eq("beta".to_string())).fetch_all(&mut ctx),
-    //   )?;
-    //
-    // E0499 because both branches need `&mut ctx`.
-    //
-    // Adopter workaround: sequential fetches.
-    let alpha = DogfoodAsync::objects()
-        .filter(|f| f.kind().eq("alpha".to_string()))
-        .fetch_all(&mut ctx)
-        .await
-        .expect("alpha fetch");
-    let beta = DogfoodAsync::objects()
-        .filter(|f| f.kind().eq("beta".to_string()))
-        .fetch_all(&mut ctx)
-        .await
-        .expect("beta fetch");
-    assert_eq!(alpha.len(), 1);
-    assert_eq!(beta.len(), 1);
+    // The natural concurrent shape that #173 unblocks — clone the
+    // pool-backed context twice and `try_join!` the two fetches.
+    let mut ctx_a = ctx
+        .clone_for_concurrent_reads()
+        .expect("clone_for_concurrent_reads must succeed on a pool-backed context");
+    let mut ctx_b = ctx
+        .clone_for_concurrent_reads()
+        .expect("clone_for_concurrent_reads must succeed on a pool-backed context");
+
+    let (alpha, beta) = tokio::try_join!(
+        DogfoodAsync::objects()
+            .filter(|f| f.kind().eq("alpha".to_string()))
+            .fetch_all(&mut ctx_a),
+        DogfoodAsync::objects()
+            .filter(|f| f.kind().eq("beta".to_string()))
+            .fetch_all(&mut ctx_b),
+    )
+    .expect("concurrent try_join! across two clones");
+    assert_eq!(alpha.len(), 1, "alpha branch saw exactly one row");
+    assert_eq!(beta.len(), 1, "beta branch saw exactly one row");
 }
