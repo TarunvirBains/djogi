@@ -2072,7 +2072,7 @@ mod tests {
             "events",
             "occurred_at",
             &ColumnChange::SetCheck(Some(
-                "\"occurred_at\" <= TIMESTAMP '9999-12-31 23:59:59.999999'".to_string(),
+                "\"occurred_at\" <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'".to_string(),
             )),
         );
         assert!(
@@ -2083,7 +2083,7 @@ mod tests {
         );
         assert!(
             sql.up
-                .contains("CHECK (\"occurred_at\" <= TIMESTAMP '9999-12-31 23:59:59.999999')"),
+                .contains("CHECK (\"occurred_at\" <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00')"),
             "Timestamptz CHECK expression wraps the projected bound: {}",
             sql.up
         );

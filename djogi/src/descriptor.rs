@@ -92,8 +92,9 @@ pub enum FieldSqlType {
     /// project to this variant for backward compatibility; future work
     /// (`djogi#188`) migrates those callers to [`Self::NumericPrecision`].
     Numeric,
-    /// `NUMERIC(precision, scale)` — bounded numeric. Reserved for the
-    /// upcoming `Decimal → NUMERIC(28, 8)` migration (`djogi#188`). Note:
+    /// `NUMERIC(precision, scale)` — bounded numeric. Reserved for future
+    /// `Decimal` precision/scale projection (`djogi#188`; the correct `(P, S)`
+    /// default is unresolved and the issue is intentionally deferred). Note:
     /// `u64` previously used `NUMERIC(20, 0)` but now uses bare [`Self::Numeric`]
     /// with a CHECK constraint, so `NumericPrecision { precision: 20, scale: 0 }`
     /// is no longer emitted by the framework. The differ compares variants
