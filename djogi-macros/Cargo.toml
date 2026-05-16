@@ -39,12 +39,9 @@ darling.workspace = true
 # `::sassi::*` directly. `sassi-codegen` is `proc-macro = false`, so a
 # proc-macro crate is permitted to depend on it as a regular library (the
 # directionality cargo restricts is the reverse: a non-proc-macro crate
-# cannot depend on a proc-macro crate as a runtime dep). Path-dep mirrors
-# the existing `sassi-reference/` symlink layout already used by the
-# `sassi` dev-dep below; the workspace `exclude = ["sassi-reference"]`
-# clause keeps cargo from absorbing the symlink tree into djogi's
-# workspace.
-sassi-codegen = { path = "../sassi-reference/sassi-codegen" }
+# cannot depend on a proc-macro crate as a runtime dep). The registry version
+# stays in lock-step with the `sassi` beta consumed by `djogi`.
+sassi-codegen = "0.1.0-beta.3"
 
 [dev-dependencies]
 # djogi as a dev-dep forms a cycle (djogi depends on djogi-macros as a
@@ -73,10 +70,10 @@ serde_json.workspace = true
 # (`phase8_lookup_op_regex_lifted_to_basic_predicate.rs`) which references
 # `sassi::LookupOp` directly to prove the no-regex-engine invariant
 # (`decisions.md` rows 107 + 108): sassi's `LookupOp` enum has no `Regex`
-# / `IRegex` variants, so the fixture build MUST fail. Path-dep mirrors
-# djogi's own consumption — same workspace `exclude = ["sassi-reference"]`
-# trick keeps cargo from absorbing the symlink tree into djogi's workspace.
-sassi = { path = "../sassi-reference/sassi" }
+# / `IRegex` variants, so the fixture build MUST fail. Use the same published
+# beta as djogi's runtime dependency so fixture diagnostics exercise the
+# adopter-visible source.
+sassi = "0.1.0-beta.3"
 # uuid — needed by Phase 8.5 #171 typed-array compile-pass fixture
 # (`typed_array_elements.rs`) which declares `Vec<uuid::Uuid>` model fields and
 # exercises the `contains`/`overlap` operators on them. `uuid` is already a
@@ -93,7 +90,7 @@ rust_decimal.workspace = true
 # Lihaaf is the **sole** macro-fixture gate; trybuild has been removed
 # from djogi entirely.
 #
-# CI installs lihaaf via `cargo install lihaaf --version 0.1.0-alpha.4
+# CI installs lihaaf via `cargo install lihaaf --version 0.1.0-beta.4
 # --locked` and runs `cargo lihaaf --manifest-path djogi-macros/Cargo.toml
 # -j 4`. The 138 compile_fail `.stderr` snapshots under
 # `tests/compile_fail/` ARE committed so CI succeeds without `--bless`.

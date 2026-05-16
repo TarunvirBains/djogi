@@ -150,18 +150,14 @@ Expected dependency shape in `djogi/Cargo.toml`:
 
 ```toml
 sassi = {
-    git = "https://github.com/TarunvirBains/sassi.git",
-    rev = "2074c58892f2d15060923f0ba43cfd8493bfafc0",
+    version = "0.1.0-beta.3",
     features = ["watermark-time", "serde-json-bridge"],
 }
 ```
 
-Inside the djogi workspace, a `[patch]` table in the workspace-root
-`Cargo.toml` redirects this git source to a local `sassi-reference/`
-checkout (a symlink to the sibling `~/projects/sassi` tree or a CI
-clone of the same rev). This is a workspace-only build convenience and
-never surfaces to adopters: `[patch]` sections are stripped from
-published tarballs.
+Djogi resolves Sassi from crates.io in local development, CI, and adopter
+builds. Local sibling-repo experimentation should use a local Cargo override
+rather than a committed workspace patch.
 
 Djogi must not reimplement `JSahibON` equality, numeric matching, path
 traversal, or predicate truth rules. It imports Sassi's public types and
