@@ -184,6 +184,14 @@ pub struct TableSchema {
     /// table DDL.
     pub rls_enabled: bool,
 
+    /// `#[model(storage_params = "key=val, ...")]` value when set —
+    /// Phase 8.5 djogi#218. Lowered to `ALTER TABLE <t> SET
+    /// (key=val, ...)` by the migration composer after table creation;
+    /// the differ surfaces value changes via
+    /// [`crate::migrate::diff::SchemaOperation::SetStorageParams`].
+    #[serde(default)]
+    pub storage_params: Option<String>,
+
     /// Postgres table name. Redundant with the `models` map key
     /// but stored explicitly so a `TableSchema` value is
     /// self-contained (e.g. when iterating `applied.models.values()`).
@@ -201,14 +209,6 @@ pub struct TableSchema {
     /// to install. `None` is the common case.
     #[serde(default)]
     pub table_comment: Option<String>,
-
-    /// `#[model(storage_params = "key=val, ...")]` value when set —
-    /// Phase 8.5 djogi#218. Lowered to `ALTER TABLE <t> SET
-    /// (key=val, ...)` by the migration composer after table creation;
-    /// the differ surfaces value changes via
-    /// [`crate::migrate::diff::SchemaOperation::SetStorageParams`].
-    #[serde(default)]
-    pub storage_params: Option<String>,
 
     /// `#[model(tablespace = "<name>")]` value when set — Phase 8.5
     /// djogi#219. Lowered to `ALTER TABLE <t> SET TABLESPACE <name>`.
