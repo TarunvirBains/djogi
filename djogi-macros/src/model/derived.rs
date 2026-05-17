@@ -719,9 +719,13 @@ fn validate_sql_surface(sql: &str, span: Span) -> syn::Result<()> {
             span,
             format!(
                 "derived `sql` references the aggregate or window construct \
-                 `{hit}` — derived expressions are per-row scalars; aggregates \
-                 and window functions belong to a future `#[annotation]` \
-                 attribute (E_DJG_VDF_009)"
+                 `{hit}` — Tier 1 rejects aggregates and window functions in \
+                 `#[derived]` `sql` today (derived expressions are per-row \
+                 scalars). The future aggregate / window surface is locked but \
+                 not yet implemented: Shape Q (QuerySet `.annotate(...)`) and \
+                 Shape V (`#[derived(..., aggregate = true)]`); the `aggregate \
+                 = true` marker is not accepted by the parser yet \
+                 (E_DJG_VDF_009)"
             ),
         ));
     }

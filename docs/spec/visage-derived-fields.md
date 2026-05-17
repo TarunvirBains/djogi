@@ -346,8 +346,11 @@ Validations performed at parse time:
    aggregates outside this list slip through and surface at query
    time as Postgres errors. The guard exists to catch the foot-gun
    where an adopter accidentally tries to scope an aggregate to a
-   per-row projection; comprehensive aggregate support belongs to a
-   future `#[annotation]` attribute (see [Non-goals](#non-goals)).
+   per-row projection; aggregates and window functions must route
+   through **Shape Q** (QuerySet-side `.annotate(...)`) or **Shape V**
+   (`#[derived(..., aggregate = true)]` with the explicit opt-in marker)
+   — both locked in [`docs/spec/decisions.md`](./decisions.md#aggregate-annotation-declaration-site)
+   (see [Non-goals](#non-goals) item 2).
    Tokens inside single-quoted strings and dollar-quoted bodies are
    skipped so `'COUNT'` does not false-positive.
 
@@ -1780,9 +1783,25 @@ issue or named future phase.
 1. **SQL-to-Rust automatic translation.** Adopters write both `sql`
    and `rust`. The framework does not infer one from the other.
    Tracking: future spec round if adopter friction proves serious.
-2. **Aggregates and window functions.** Out of scope for `#[derived]`.
-   A separate `#[annotation]` attribute will own per-queryset bound
-   aggregates and window functions. Tracking: future phase.
+2. **Aggregates and window functions.** Out of scope for `#[derived]`
+   Tier 1. The declaration site for any future aggregate / window-function
+   surface is **locked** by [the aggregate-annotation declaration-site
+   decision in `docs/spec/decisions.md`](./decisions.md#aggregate-annotation-declaration-site): per-query
+   group-by aggregates land as a typed `.annotate(...)` on
+   `QuerySet<T>` / `VisageQuerySet<V>` (**Shape Q**), and per-row
+   window expressions / correlated-subquery scalars land on the
+   existing `#[derived]` helper attribute with an explicit
+   `aggregate = true` opt-in marker (**Shape V**). No future surface
+   places aggregate declarations on **model fields**; the locked rule
+   exists pre-emptively because the same Shape A bundling that the
+   Path B reshape eliminated for `#[computed(sql, expose)]` would
+   silently re-emerge if a model-field-level `#[annotation(sql, expose)]`
+   attribute landed. The `aggregate = true` marker is also the
+   deliberate opt-in that relaxes Tier 1's
+   [E_DJG_VDF_009](#error-taxonomy) aggregate rejection — without it,
+   aggregates inside `#[derived]` `sql` continue to fail at parse
+   time. Tracking: future phase (no earlier scheduling commitment,
+   ahead of which a `docs/spec/aggregate-annotations.md` spec ships).
 3. **Filter / order-by on derived fields from `VisageQuerySet`.**
    Tier 2 / Tier 3 work; see [Capability tiers](#capability-tiers).
 4. **Cross-model `$N` references.** Reserved syntax only;
@@ -2286,8 +2305,15 @@ The following ship as anchored deferrals to named future phases.
   queryset predicate-pushdown cluster.
 - **Tier 3: ordering and annotation.** `ORDER BY <derived>` and
   `.annotate(...)`. Anchored to Tier 2's completion.
-- **`#[annotation]` attribute for aggregates and window functions.**
-  Per-queryset bound expressions; separate spec.
+- **Aggregate and window-function projections.** Declaration site
+  locked pre-implementation per [the aggregate-annotation
+  declaration-site decision in `docs/spec/decisions.md`](./decisions.md#aggregate-annotation-declaration-site):
+  per-query aggregates land on `QuerySet` / `VisageQuerySet` via
+  `.annotate(...)` (Shape Q); per-row aggregates land on the
+  `#[derived]` helper attribute with an explicit `aggregate = true`
+  marker (Shape V); never on a model field. Implementation spec
+  (`docs/spec/aggregate-annotations.md`) ships when this work is
+  scheduled and amends the locked rules rather than supplanting them.
 - **Cross-model `$N` references.** Locked grammar; design pending.
 - **Relation-form derived intersection.** Anchored to the
   peer-projection cluster's contract; this spec specifies the contract.

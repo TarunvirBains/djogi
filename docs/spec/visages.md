@@ -283,7 +283,14 @@ Djogi should prefer compile-time diagnostics over runtime surprises.
 The following are explicitly deferred beyond the minimum Phase 4.5 surface:
 
 - custom user-defined visage scopes
-- visage renaming rules beyond the default canonical names
+- visage renaming rules beyond the default canonical names — when this
+  feature is taken up, the spec that introduces it MUST address the
+  relation-embedding declaration-site churn flagged in
+  [`docs/research/model-vs-visage-lower-severity-graduation.md`](../research/model-vs-visage-lower-severity-graduation.md)
+  §Surface 3 (rename of `User::Public` → `User::Summary` cannot force
+  touching every source model that embeds the visage; a target-side
+  `#[model(embeddable_as = [...])]` alias or equivalent indirection
+  is one candidate shape)
 - partial JSON subfield visages
 - fallible transforms during visage generation
 - route-specific wrapper DTO generation

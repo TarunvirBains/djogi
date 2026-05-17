@@ -18,7 +18,7 @@ The override path is viable. Lihaaf and Phase 9 can build djogi as a
 dylib via a per-invocation `cargo rustc -p djogi --lib --crate-type=dylib`
 plus `RUSTFLAGS="-C prefer-dynamic"` (when the consumer is also link-time,
 not `dlopen`). No change to `djogi/Cargo.toml` is required; existing
-`cargo build` consumers (KindNudge, application crates) continue to
+`cargo build` consumers (application crates) continue to
 receive the rlib at zero extra build cost.
 
 Two operational notes:
@@ -244,7 +244,7 @@ a per-platform smoke test if any of them target macOS or Windows.
   and reference the exact same djogi dylib (not a re-link).
 - **Whether the djogi `[lib]` PR is needed: NO** for the lihaaf use
   case and Phase 9 link-time consumers. The override path keeps
-  zero-impact on KindNudge and other application consumers. The
+  zero-impact on application consumers. The
   manifest-change path remains a viable fallback if a future use case
   needs cargo-driven dylib resolution (e.g., if lihaaf grows a Cargo
   metadata phase that needs djogi to advertise dylib in its manifest)
