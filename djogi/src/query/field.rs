@@ -1181,6 +1181,26 @@ impl<M: Model> DjogiField<M, String> {
     pub fn string_agg(self, sep: impl Into<String>) -> crate::expr::AggregateExpr<String> {
         self.sql.string_agg(sep)
     }
+
+    /// Trigram similarity score expression — `similarity(col, $pattern)`.
+    ///
+    /// Returns an `Expr<f64>` that evaluates the `pg_trgm` `similarity()`
+    /// function per row. Use in `order_by` for ranked results or in
+    /// `annotate` to surface the score as a named column.
+    ///
+    /// For the predicate form (`WHERE similarity(...) >= threshold`), see
+    /// [`ExplicitPgPredicateField::trgm_similar_to`] via
+    /// `f.col().explicit_pg_predicate().trgm_similar_to(pattern, threshold)`.
+    ///
+    /// Requires the `pg_trgm` Postgres extension. Enable with
+    /// `djogi = { features = ["trgm"] }`.
+    ///
+    /// See [`FieldRef::trgm_similarity`] for full documentation.
+    #[cfg(feature = "trgm")]
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn trgm_similarity(self, pattern: impl Into<String>) -> crate::expr::Expr<f64> {
+        self.sql.trgm_similarity(pattern)
+    }
 }
 
 impl<M: Model> DjogiField<M, bool> {
@@ -1572,6 +1592,22 @@ impl<M: Model> ExplicitPgPredicateField<M, String> {
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn iregex(self, value: impl Into<String>) -> Condition {
         self.sql.iregex(value)
+    }
+
+    /// Trigram similarity predicate —
+    /// `similarity(col, $pattern) >= $threshold`.
+    ///
+    /// Requires the `pg_trgm` Postgres extension. Both `pattern` and
+    /// `threshold` are positional bind parameters — no user text is
+    /// interpolated into SQL.
+    ///
+    /// Enable with `djogi = { features = ["trgm"] }`.
+    ///
+    /// See [`FieldRef::trgm_similar_to`] for full documentation.
+    #[cfg(feature = "trgm")]
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn trgm_similar_to(self, pattern: impl Into<String>, threshold: f64) -> Condition {
+        self.sql.trgm_similar_to(pattern, threshold)
     }
 }
 
@@ -2534,6 +2570,97 @@ impl<M: Model> FieldRef<M, String> {
             LookupOp::IRegex,
             FilterValue::String(value.into()),
         ))
+    }
+}
+
+// ── pg_trgm — trigram similarity lookups (gated on `trgm` feature) ──────────
+//
+// Implementation on `FieldRef<M, String>` (the SQL-only handle). The public
+// surface is forwarded from:
+//   - `ExplicitPgPredicateField<M, String>::trgm_similar_to` — predicate
+//     (`WHERE similarity(col, $n) >= $m`). Reached via
+//     `f.col().explicit_pg_predicate().trgm_similar_to(pattern, threshold)`.
+//   - `DjogiField<M, String>::trgm_similarity` — score expression
+//     (`similarity(col, $n)`). Reached via `f.col().trgm_similarity(pattern)`
+//     in `order_by` / `annotate` / `filter_expr` closures.
+//
+// Both bind pattern and threshold as positional parameters — no user text is
+// interpolated into SQL.
+#[cfg(feature = "trgm")]
+impl<M: Model> FieldRef<M, String> {
+    /// Trigram similarity predicate —
+    /// `similarity(col, $pattern) >= $threshold`.
+    ///
+    /// **Adopters:** reach this via
+    /// `f.col().explicit_pg_predicate().trgm_similar_to(pattern, threshold)`
+    /// (the same path as `regex`/`iregex`). This `FieldRef` method is the
+    /// implementation target; `ExplicitPgPredicateField` forwards to it.
+    ///
+    /// Returns a `Condition` that filters rows where the column value is at
+    /// least `threshold`-similar to `pattern` under the `pg_trgm`
+    /// `similarity()` function. Similarity is a value in `[0.0, 1.0]`; a
+    /// threshold of `0.3` is a common starting point for fuzzy name lookups.
+    ///
+    /// # Extension requirement
+    ///
+    /// Requires `pg_trgm` installed in the target Postgres database:
+    ///
+    /// ```sql
+    /// CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    /// ```
+    ///
+    /// # Index acceleration
+    ///
+    /// Declare a GIN index with `gin_trgm_ops` opclass for sub-linear
+    /// performance. GiST indexes with `gist_trgm_ops` are also supported and
+    /// perform better for `ORDER BY similarity(...)` ranking.
+    ///
+    /// # SQL shape
+    ///
+    /// Emits: `similarity(<col>, $1) >= $2`
+    ///
+    /// Both `pattern` and `threshold` are positional bind parameters —
+    /// neither is interpolated into SQL.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn trgm_similar_to(self, pattern: impl Into<String>, threshold: f64) -> Condition {
+        Condition::Expr(crate::expr::Expr::from_node(
+            crate::expr::node::ExprNode::TrgmSimilarTo {
+                column: self.column,
+                pattern: pattern.into(),
+                threshold,
+            },
+        ))
+    }
+
+    /// Trigram similarity score expression —
+    /// `similarity(col, $pattern)`.
+    ///
+    /// **Adopters:** reach this via `f.col().trgm_similarity(pattern)` directly
+    /// on the `DjogiField` returned by generated `{Model}Fields` accessors.
+    /// This `FieldRef` method is the implementation target that both
+    /// `DjogiField::trgm_similarity` and direct `FieldRef` callsites forward to.
+    ///
+    /// Returns an `Expr<f64>` that Postgres evaluates per row as the
+    /// `similarity()` value (`[0.0, 1.0]`) between the column and the supplied
+    /// pattern. Use it in `order_by` to rank results by closeness, or in
+    /// `annotate` to surface the score as a named computed column.
+    ///
+    /// # Extension requirement
+    ///
+    /// Requires `pg_trgm` installed in the target Postgres database.
+    ///
+    /// # SQL shape
+    ///
+    /// Emits: `similarity(<col>, $1)`
+    ///
+    /// The `pattern` value is a positional bind parameter — never
+    /// interpolated into SQL.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn trgm_similarity(self, pattern: impl Into<String>) -> crate::expr::Expr<f64> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::TrgmSimilarityScore {
+            column: self.column,
+            pattern: pattern.into(),
+        })
     }
 }
 

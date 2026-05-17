@@ -25,6 +25,7 @@ For design history and items still on the horizon, see
 | [JSONB Fields](./jsonb.md) | `Jsonb<T>`, unknown-field preservation, flat path querying, `#[derive(JsonbSchema)]` typed paths |
 | [Array Fields](./arrays.md) | `Vec<V>` columns, `contains` / `contained_by` / `overlap` / `len`, GIN index intent |
 | [Full-Text Search](./fts.md) | `#[model(fts = "...")]`, generated `tsvector`, `QuerySet::search` terminals |
+| [Trigram Similarity](./trgm.md) | `trgm_similar_to`, `trgm_similarity`, GIN/GiST index setup (requires `trgm` feature + `pg_trgm` extension) |
 | [Spatial](./spatial.md) | `GeoPoint`, `within_km`, `order_by_distance`, PostGIS integration (requires `spatial` feature) |
 | [Tenancy](./tenancy.md) | `#[model(tenant_key)]`, RLS policy emission, `set_tenant`, `_insecurely()` bypass |
 | [Apps](./apps.md) | `djogi::apps!` subsystem, `#[model(app = ...)]`, retirement flow with tombstones, migration grouping |

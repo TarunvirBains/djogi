@@ -437,6 +437,55 @@ pub(crate) enum ExprNode {
         query_text: String,
     },
 
+    // ── pg_trgm (gated on `trgm` feature) ──────────────────────────────────
+    /// `similarity(col, $pattern) >= $threshold` — trigram similarity
+    /// predicate from the `pg_trgm` Postgres extension.
+    ///
+    /// Evaluates the `similarity()` function (returns a value in
+    /// `[0.0, 1.0]`) and compares the result against a caller-supplied
+    /// threshold. The expression evaluates to `boolean`, so it fits into
+    /// [`Condition::Expr(Expr<bool>)`][crate::query::condition::Condition::Expr].
+    ///
+    /// Column name is validated at `FieldRef` construction via
+    /// `assert_plain_ident`. Both `pattern` and `threshold` are always
+    /// bound as positional parameters — no user text is interpolated into
+    /// the SQL fragment.
+    ///
+    /// Emitter renders: `similarity(<col>, $n) >= $m`
+    ///
+    /// Gate: `#[cfg(feature = "trgm")]` — enable with
+    /// `djogi = { features = ["trgm"] }`.
+    #[cfg(feature = "trgm")]
+    TrgmSimilarTo {
+        /// The `TEXT` column — safe to push as raw SQL (validated at
+        /// `FieldRef` construction via `assert_plain_ident`).
+        column: &'static str,
+        /// Pattern string — bound as `$n`, never interpolated into SQL.
+        pattern: String,
+        /// Minimum similarity threshold (0.0–1.0) — bound as `$m`.
+        threshold: f64,
+    },
+
+    /// `similarity(col, $pattern)` — trigram similarity score expression.
+    ///
+    /// Evaluates the `pg_trgm` `similarity()` function per row, returning
+    /// an `f64` in `[0.0, 1.0]`. Useful in `order_by` for ranked results
+    /// or in `annotate` to surface the score as a named column.
+    ///
+    /// Column name is validated at `FieldRef` construction; pattern is
+    /// always bound as a positional parameter.
+    ///
+    /// Emitter renders: `similarity(<col>, $n)`
+    ///
+    /// Gate: `#[cfg(feature = "trgm")]`.
+    #[cfg(feature = "trgm")]
+    TrgmSimilarityScore {
+        /// The `TEXT` column — safe to push as raw SQL.
+        column: &'static str,
+        /// Pattern string — bound as `$n`, never interpolated.
+        pattern: String,
+    },
+
     /// A Postgres `INTERVAL` literal derived from a `time::Duration`.
     ///
     /// Emitted as the raw SQL token `INTERVAL '{microseconds} microseconds'` —
