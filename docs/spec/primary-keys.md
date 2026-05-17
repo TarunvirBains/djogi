@@ -93,7 +93,7 @@ Nodes are treated as infrastructure — pinned per service instance, registered 
 `heer_nodes` as part of deployment.
 
 HeeRanjID deployment guidance currently lives in
-https://github.com/TarunvirBains/HeeRanjID/blob/main/sql/README.md; this issue tracks
+https://github.com/TarunvirBains/heeranjid-sql/blob/main/README.md; this issue tracks
 an explicit multi-node provisioning playbook:
 https://github.com/TarunvirBains/HeeRanjID/issues/49.
 

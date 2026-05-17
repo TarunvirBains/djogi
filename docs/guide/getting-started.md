@@ -148,7 +148,7 @@ first, then start the service with its selected `NODE_ID` and run
 Djogi checks this on startup and fails fast if the selected node is not
 registered.
 HeeRanjID deployment references are in
-https://github.com/TarunvirBains/HeeRanjID/blob/main/sql/README.md and
+https://github.com/TarunvirBains/heeranjid-sql/blob/main/README.md and
 the open sibling issue that tracks an explicit provisioning playbook:
 https://github.com/TarunvirBains/HeeRanjID/issues/49.
 

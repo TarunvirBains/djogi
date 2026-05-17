@@ -113,7 +113,7 @@ For deployments with multiple writers, register and provision each node in
 `heer_nodes` first, then start each service with its selected `NODE_ID`
 and existing migration/startup flow. Do not copy/paste the hard-coded `1`
 assumption. See
-https://github.com/TarunvirBains/HeeRanjID/blob/main/sql/README.md and
+https://github.com/TarunvirBains/heeranjid-sql/blob/main/README.md and
 https://github.com/TarunvirBains/HeeRanjID/issues/49.
 
 ```bash
