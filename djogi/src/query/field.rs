@@ -1181,6 +1181,44 @@ impl<M: Model> DjogiField<M, String> {
     pub fn string_agg(self, sep: impl Into<String>) -> crate::expr::AggregateExpr<String> {
         self.sql.string_agg(sep)
     }
+
+    /// Trigram similarity score expression — `similarity(col, $pattern)`.
+    ///
+    /// Returns an `Expr<f64>` that evaluates the `pg_trgm` `similarity()`
+    /// function per row. Compose with the `Expr<T>` comparison API inside
+    /// `filter_expr` to apply a per-query numeric threshold:
+    ///
+    /// ```ignore
+    /// qs.filter_expr(|f| {
+    ///     f.bio().trgm_similarity("query").gte(Expr::literal(0.3_f64))
+    /// })
+    /// ```
+    ///
+    /// **Index acceleration:** the function-form predicate emitted by
+    /// `trgm_similarity(...).gte(...)` is **not** accelerated by
+    /// `gin_trgm_ops` / `gist_trgm_ops` — those opclasses target the `%`
+    /// operator family, not arbitrary `similarity(...)` >= comparisons.
+    /// For index-accelerated trgm scans, use
+    /// [`ExplicitPgPredicateField::trgm_similar_to`] via
+    /// `f.col().explicit_pg_predicate().trgm_similar_to(pattern)` (the
+    /// threshold for that path is the session GUC
+    /// `pg_trgm.similarity_threshold`, default `0.3`).
+    ///
+    /// **Future work:** using `Expr<f64>` as an `order_by` target or as
+    /// an `annotate` payload requires generic `Expr<T>` integration on
+    /// `OrderExpr` and `AnnotationSlot`, which is not yet implemented.
+    /// See `docs/guide/trgm.md` for the current limitations and the
+    /// tracked follow-up.
+    ///
+    /// Requires the `pg_trgm` Postgres extension. Enable with
+    /// `djogi = { features = ["trgm"] }`.
+    ///
+    /// See [`FieldRef::trgm_similarity`] for full documentation.
+    #[cfg(feature = "trgm")]
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn trgm_similarity(self, pattern: impl Into<String>) -> crate::expr::Expr<f64> {
+        self.sql.trgm_similarity(pattern)
+    }
 }
 
 impl<M: Model> DjogiField<M, bool> {
@@ -1572,6 +1610,32 @@ impl<M: Model> ExplicitPgPredicateField<M, String> {
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn iregex(self, value: impl Into<String>) -> Condition {
         self.sql.iregex(value)
+    }
+
+    /// Trigram similarity predicate — `<col> % $pattern`.
+    ///
+    /// Compiles to the `%` operator, which is the indexable strategy
+    /// member of the `gin_trgm_ops` and `gist_trgm_ops` opclasses — a
+    /// GIN or GiST index built with one of those opclasses accelerates
+    /// the predicate.
+    ///
+    /// **Threshold:** the threshold for `%` is the session GUC
+    /// `pg_trgm.similarity_threshold` (Postgres default `0.3`). For a
+    /// per-query numeric threshold use
+    /// [`DjogiField::trgm_similarity`] inside `filter_expr` — that form
+    /// is NOT index-accelerated by the trgm opclasses.
+    ///
+    /// The pattern is a positional bind parameter — no user text is
+    /// interpolated into SQL.
+    ///
+    /// Requires the `pg_trgm` Postgres extension. Enable with
+    /// `djogi = { features = ["trgm"] }`.
+    ///
+    /// See [`FieldRef::trgm_similar_to`] for full documentation.
+    #[cfg(feature = "trgm")]
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn trgm_similar_to(self, pattern: impl Into<String>) -> Condition {
+        self.sql.trgm_similar_to(pattern)
     }
 }
 
@@ -2534,6 +2598,144 @@ impl<M: Model> FieldRef<M, String> {
             LookupOp::IRegex,
             FilterValue::String(value.into()),
         ))
+    }
+}
+
+// ── pg_trgm — trigram similarity lookups (gated on `trgm` feature) ──────────
+//
+// Implementation on `FieldRef<M, String>` (the SQL-only handle). The public
+// surface is forwarded from:
+//   - `ExplicitPgPredicateField<M, String>::trgm_similar_to` — predicate
+//     compiling to the `%` operator (`WHERE <col> % $n`). Reached via
+//     `f.col().explicit_pg_predicate().trgm_similar_to(pattern)`. Index-
+//     accelerated by `gin_trgm_ops` / `gist_trgm_ops`. Threshold is the
+//     session GUC `pg_trgm.similarity_threshold`.
+//   - `DjogiField<M, String>::trgm_similarity` — score expression
+//     (`similarity(col, $n)`). Reached via `f.col().trgm_similarity(pattern)`
+//     in `filter_expr` closures for per-query numeric thresholds. NOT
+//     accelerated by the trgm opclasses (function-form predicate, not
+//     operator).
+//
+// The pattern always rides through `push_bind` as a positional parameter —
+// no user text is interpolated into SQL.
+#[cfg(feature = "trgm")]
+impl<M: Model> FieldRef<M, String> {
+    /// Trigram similarity predicate — `<col> % $pattern`.
+    ///
+    /// **Adopters:** reach this via
+    /// `f.col().explicit_pg_predicate().trgm_similar_to(pattern)` (the same
+    /// path as `regex`/`iregex`). This `FieldRef` method is the
+    /// implementation target; `ExplicitPgPredicateField` forwards to it.
+    ///
+    /// Returns a `Condition` that filters rows where the column value is
+    /// trigram-similar to `pattern` under Postgres's `%` operator. The
+    /// `%` operator is the indexable strategy member of the
+    /// `gin_trgm_ops` and `gist_trgm_ops` opclasses, so a GIN or GiST
+    /// index built with one of those opclasses accelerates this
+    /// predicate.
+    ///
+    /// # Threshold
+    ///
+    /// The threshold for `%` is the session GUC
+    /// `pg_trgm.similarity_threshold` (Postgres default `0.3`). Override
+    /// per-session with `SET pg_trgm.similarity_threshold = 0.4;` or
+    /// per-transaction with `SET LOCAL ...` inside a `BEGIN`/`COMMIT`
+    /// block.
+    ///
+    /// For a per-query numeric threshold without touching the GUC, use
+    /// [`Self::trgm_similarity`] inside `filter_expr` with the
+    /// `Expr<T>` comparison API. That form is NOT accelerated by the
+    /// trgm opclasses.
+    ///
+    /// # Extension requirement
+    ///
+    /// Requires `pg_trgm` installed in the target Postgres database:
+    ///
+    /// ```sql
+    /// CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    /// ```
+    ///
+    /// Djogi's migration runner installs `pg_trgm` automatically through
+    /// the Phase 0 bootstrap migration when any index in the descriptor
+    /// inventory declares `extension_dependency: Some("pg_trgm")`. See
+    /// `docs/guide/trgm.md` for the per-app vs Phase 0 split.
+    ///
+    /// # Index acceleration
+    ///
+    /// Declare a GIN index with `gin_trgm_ops` opclass for high read
+    /// throughput; GiST with `gist_trgm_ops` for queries that also use
+    /// the `<->` distance operator (not yet exposed at the typed surface).
+    /// Without a trgm-opclass index, the `%` operator falls back to a
+    /// sequential scan with per-row similarity computation.
+    ///
+    /// # SQL shape
+    ///
+    /// Emits: `<col> % $1`
+    ///
+    /// The `pattern` value is a positional bind parameter — never
+    /// interpolated into SQL.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn trgm_similar_to(self, pattern: impl Into<String>) -> Condition {
+        Condition::Expr(crate::expr::Expr::from_node(
+            crate::expr::node::ExprNode::TrgmSimilarTo {
+                column: self.column,
+                pattern: pattern.into(),
+            },
+        ))
+    }
+
+    /// Trigram similarity score expression —
+    /// `similarity(col, $pattern)`.
+    ///
+    /// **Adopters:** reach this via `f.col().trgm_similarity(pattern)` directly
+    /// on the `DjogiField` returned by generated `{Model}Fields` accessors.
+    /// This `FieldRef` method is the implementation target that both
+    /// `DjogiField::trgm_similarity` and direct `FieldRef` callsites forward to.
+    ///
+    /// Returns an `Expr<f64>` that Postgres evaluates per row as the
+    /// `similarity()` value (`[0.0, 1.0]`) between the column and the
+    /// supplied pattern. Compose with the `Expr<T>` comparison API
+    /// inside `filter_expr` to apply a per-query numeric threshold:
+    ///
+    /// ```ignore
+    /// qs.filter_expr(|f| {
+    ///     f.bio().trgm_similarity("query").gte(Expr::literal(0.3_f64))
+    /// })
+    /// ```
+    ///
+    /// # Index acceleration
+    ///
+    /// The function-form predicate emitted by `trgm_similarity(...).gte(...)`
+    /// is **not** accelerated by `gin_trgm_ops` / `gist_trgm_ops` — those
+    /// opclasses target the operator family (`%`, `<%`, `<<%`, `<->`,
+    /// `<<->`, `<<<->`, `=`), not arbitrary `similarity(...)` comparisons.
+    /// For index-accelerated trgm scans, use [`Self::trgm_similar_to`].
+    ///
+    /// # Future work
+    ///
+    /// Using `Expr<f64>` as an `order_by` target or as an `annotate`
+    /// payload requires generic `Expr<T>` integration on `OrderExpr`
+    /// and `AnnotationSlot`, which is not yet implemented. The same
+    /// gap affects `TsRank` / `TsRankCd` in the FTS feature and any
+    /// future score-producing expression. See `docs/guide/trgm.md`
+    /// for the documented limitations and the tracked follow-up.
+    ///
+    /// # Extension requirement
+    ///
+    /// Requires `pg_trgm` installed in the target Postgres database.
+    ///
+    /// # SQL shape
+    ///
+    /// Emits: `similarity(<col>, $1)`
+    ///
+    /// The `pattern` value is a positional bind parameter — never
+    /// interpolated into SQL.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn trgm_similarity(self, pattern: impl Into<String>) -> crate::expr::Expr<f64> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::TrgmSimilarityScore {
+            column: self.column,
+            pattern: pattern.into(),
+        })
     }
 }
 

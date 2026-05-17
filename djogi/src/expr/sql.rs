@@ -1112,6 +1112,47 @@ pub(crate) fn emit_expr(
             );
         }
 
+        // ── pg_trgm (gated on `trgm` feature) ─────────────────────────────
+        #[cfg(feature = "trgm")]
+        ExprNode::TrgmSimilarTo { column, pattern } => {
+            // <col> % $n
+            // The `%` operator is the indexable strategy member of
+            // `gin_trgm_ops` / `gist_trgm_ops`; emitting this form rather
+            // than `similarity(...) >= ...` is what makes a GIN/GiST
+            // trgm index actually accelerate the predicate. The
+            // threshold for `%` comes from the session GUC
+            // `pg_trgm.similarity_threshold` (default 0.3); per-query
+            // numeric thresholds go through `TrgmSimilarityScore`
+            // composed inside `filter_expr`.
+            //
+            // column: validated identifier; routed through
+            // `ctx.push_column` so joined / self-pair callers qualify
+            // the reference as `<alias>.<col>` instead of a bare name.
+            // pattern: user-supplied — always a bind parameter.
+            ctx.push_column(acc, column);
+            acc.push_sql(" % ");
+            acc.push_bind(pattern.to_owned());
+        }
+        #[cfg(feature = "trgm")]
+        ExprNode::TrgmSimilarityScore { column, pattern } => {
+            // similarity(<col>, $n)
+            // Returns f64 per row. Composed via the typed `Expr<T>`
+            // comparison API inside `filter_expr` for per-query numeric
+            // thresholds. NOT index-accelerated by the trgm opclasses —
+            // those target the operator family, not the function form.
+            //
+            // column: routed through `ctx.push_column` for the same
+            // joined-query qualification as `TrgmSimilarTo` above.
+            // Follow-up: the FTS arms (`TsMatch` / `TsRank` / `TsRankCd`)
+            // have the same bare-push bug via `emit_ts`; fix is tracked
+            // separately so this commit stays narrow to #147.
+            acc.push_sql("similarity(");
+            ctx.push_column(acc, column);
+            acc.push_sql(", ");
+            acc.push_bind(pattern.to_owned());
+            acc.push_sql(")");
+        }
+
         // ── Spatial (gated on `spatial` feature) ───────────────────────────
         #[cfg(feature = "spatial")]
         ExprNode::Spatial(s) => {
@@ -1811,6 +1852,74 @@ mod tests {
             acc.bind_count(),
             1,
             "exactly one bind for the threshold; got {}",
+            acc.bind_count()
+        );
+    }
+
+    // ── Phase 8.5 #147 — trgm joined-context column qualification ─────────
+    //
+    // Regression guard for BLOCK-2: both trgm emitter arms used bare
+    // `acc.push_sql(column)` before this fix, which silently dropped the
+    // table alias in joined / self-pair query contexts. These tests emit
+    // each variant under `SqlEmitContext::joined("u")` and assert the
+    // column appears as `u.<col>` — the form that prevents Postgres
+    // "column reference is ambiguous" errors when the same column name
+    // exists on both sides of a JOIN.
+
+    /// `TrgmSimilarTo` under a joined context must emit `<alias>.<col> % $1`.
+    ///
+    /// Without the `ctx.push_column` fix the column would be bare, producing
+    /// an ambiguous column reference when used inside a pair-tuple or
+    /// select_related joined query.
+    #[cfg(feature = "trgm")]
+    #[test]
+    fn trgm_similar_to_joined_context_qualifies_column() {
+        use crate::expr::node::ExprNode;
+        let node = ExprNode::TrgmSimilarTo {
+            column: "bio",
+            pattern: "rust".to_owned(),
+        };
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &node, SqlEmitContext::joined("u"))
+            .expect("TrgmSimilarTo emission must succeed");
+        let sql = acc.sql();
+        assert!(
+            sql.contains("u.bio % $1"),
+            "joined context must qualify column as `u.bio`; got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            1,
+            "exactly one bind (pattern); got {}",
+            acc.bind_count()
+        );
+    }
+
+    /// `TrgmSimilarityScore` under a joined context must emit
+    /// `similarity(<alias>.<col>, $1)`.
+    ///
+    /// Without the `ctx.push_column` fix the column inside `similarity()`
+    /// would be bare, ambiguous in joined contexts.
+    #[cfg(feature = "trgm")]
+    #[test]
+    fn trgm_similarity_score_joined_context_qualifies_column() {
+        use crate::expr::node::ExprNode;
+        let node = ExprNode::TrgmSimilarityScore {
+            column: "bio",
+            pattern: "rust".to_owned(),
+        };
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &node, SqlEmitContext::joined("u"))
+            .expect("TrgmSimilarityScore emission must succeed");
+        let sql = acc.sql();
+        assert!(
+            sql.contains("similarity(u.bio, $1)"),
+            "joined context must qualify column as `u.bio`; got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            1,
+            "exactly one bind (pattern); got {}",
             acc.bind_count()
         );
     }
