@@ -17,6 +17,14 @@
 //    days fields, and `i64::MIN` / `i64::MAX` on the microseconds
 //    field, round-trip without overflow on either the bind or the
 //    decode side.
+// 5. **Filter execution.** `QuerySet::filter(|f| f.duration().eq(...))`
+//    emits a correctly-typed `$1` bind for `INTERVAL` and returns only
+//    the matching row — pins the `FilterValue::Interval` → `push_bind`
+//    path at SQL-execution level.
+// 6. **Bulk-update execution.** `QuerySet::update(|f| f.duration().set(...))`
+//    emits the correct `SET duration = $1` clause, executing through the
+//    same `push_bind` path — pins the `UpdateAssignment` → `Interval`
+//    bind at SQL-execution level.
 //
 // # No raw_execute required
 //
@@ -252,5 +260,103 @@ async fn interval_boundary_components_round_trip(mut ctx: djogi::DjogiContext) {
             days: i32::MAX,
             microseconds: i64::MIN,
         })
+    );
+}
+
+// ── Runtime filter / bulk-update execution (FIX_BEFORE_BETA-1 / djogi#212) ───
+//
+// These tests pin the `FilterValue::Interval` → `push_bind` and
+// `UpdateAssignment` → `push_bind` paths at SQL-execution level.
+// Compile-fixture coverage (`phase8_5_c4_212_interval_field.rs`) proves the
+// surface type-checks; these tests prove it executes correctly against a live
+// Postgres INTERVAL column.
+
+#[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
+async fn interval_filter_eq_returns_matching_row(mut ctx: djogi::DjogiContext) {
+    // Two rows with distinct durations. Only the one matching the filter
+    // predicate must come back from `fetch_all`.
+    let target_duration = Interval::days_only(7);
+    let other_duration = Interval::months_only(3);
+
+    Phase85C4212IntervalRow::create(
+        &mut ctx,
+        Phase85C4212IntervalRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            duration: target_duration,
+            maybe_duration: None,
+            label: "filter-target".into(),
+        },
+    )
+    .await
+    .expect("create filter-target row");
+
+    Phase85C4212IntervalRow::create(
+        &mut ctx,
+        Phase85C4212IntervalRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            duration: other_duration,
+            maybe_duration: None,
+            label: "filter-other".into(),
+        },
+    )
+    .await
+    .expect("create filter-other row");
+
+    let results = Phase85C4212IntervalRow::objects()
+        .filter(|f| f.duration().eq(target_duration))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("filter by Interval eq must execute without error");
+
+    assert_eq!(
+        results.len(),
+        1,
+        "filter should return exactly one matching row"
+    );
+    assert_eq!(results[0].label, "filter-target");
+    assert_eq!(results[0].duration, target_duration);
+}
+
+#[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
+async fn interval_bulk_update_sets_duration(mut ctx: djogi::DjogiContext) {
+    // Create a row, bulk-update its `duration` through the typed SET path,
+    // then re-fetch to confirm the new value persisted in the DB.
+    let initial = Interval::days_only(10);
+    let updated = Interval::microseconds_only(500_000);
+
+    let row = Phase85C4212IntervalRow::create(
+        &mut ctx,
+        Phase85C4212IntervalRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            duration: initial,
+            maybe_duration: None,
+            label: "bulk-update-target".into(),
+        },
+    )
+    .await
+    .expect("create row for bulk update");
+
+    let n = Phase85C4212IntervalRow::objects()
+        .filter(|f| f.duration().eq(initial))
+        .update(|f| f.duration().set(updated))
+        .execute(&mut ctx)
+        .await
+        .expect("bulk update of Interval field must execute without error");
+
+    assert_eq!(n, 1, "exactly one row should be updated");
+
+    let fetched = Phase85C4212IntervalRow::get(&mut ctx, row.id)
+        .await
+        .expect("re-fetch after bulk update");
+
+    assert_eq!(
+        fetched.duration, updated,
+        "duration must reflect the bulk-updated value"
     );
 }
