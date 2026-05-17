@@ -924,13 +924,24 @@ Model` so a generic `V: DjogiVisage` consumer reaches the source table
 via `<V::Model as Model>::table_name()` without threading the source
 model in as a separate type parameter at every call site.
 
-The trait is sealed via its `DjogiVisageOf<Self::Model>` supertrait,
-which routes through `crate::visage_boundary::private::Sealed<M>` —
-the same closed-world seal that already gates the marker pairing.
-The macro emits one impl pair per visage (`impl Sealed<Source> for
-Visage` plus `impl DjogiVisageOf<Source> for Visage` plus `impl
-DjogiVisage for Visage { type Model = Source; ... }`); downstream
-code cannot satisfy either side.
+The trait has two supertraits: `DjogiVisageOf<Self::Model>` carries
+the visage ↔ source-model pairing for generic code that names only
+`V`; a separate metadata-only `private::Sealed` (no reflexive
+blanket, re-exported as `::djogi::__private::DjogiVisageSealed` for
+macro emission) is the closed-world gate on `DjogiVisage` itself.
+`DjogiVisageOf<Self::Model>` alone is not a sufficient seal because
+`visage_boundary::private::Sealed<M>` carries a reflexive
+`impl<M: Model> Sealed<M> for M` blanket — every model already
+satisfies `DjogiVisageOf<M>` trivially, so a hand-rolled
+`impl DjogiVisage for MyModel { type Model = Self; ... }` would pass
+the pairing supertrait unchallenged. The metadata seal has no reflexive
+blanket; the single emitter is the `#[model]` macro. The macro emits
+`impl ::djogi::__private::DjogiVisageSealed for {Visage}`,
+`impl DjogiVisageOf<{Source}> for {Visage}`, and
+`impl DjogiVisage for {Visage}` in one pass. The seal is at the
+existing `__private` convention boundary — downstream code naming
+`djogi::__private::DjogiVisageSealed` is outside the public contract
+and the framework reserves the right to break it without notice.
 
 When a model is declared less-public than its generated visage (the
 unusual but legal case of `pub(crate) struct Inner` paired with `pub
@@ -1111,16 +1122,23 @@ protection against adopters who have already decided to reach into
 ### Relation to existing `DjogiVisageOf<M>`
 
 The existing `DjogiVisageOf<M>` (marker trait, no associated items)
-continues to seal the model-to-visage pairing. The new `DjogiVisage`
-trait carries the projection contract and additionally **supertypes
-its source-model pairing through `DjogiVisageOf<Self::Model>`** —
-the single seal closes both the marker pairing and the metadata
-trait. Every `impl DjogiVisage for V` for a model-backed flat
-projection therefore implicitly demands the matching
-`impl DjogiVisageOf<M> for V` (emitted by the same macro pass),
-where `M` is the source model — the two traits compose:
-`DjogiVisageOf<M>` says "V is a visage of M"; `DjogiVisage` says
-"V has this projection shape."
+continues to carry the visage ↔ source-model pairing through its
+`visage_boundary::private::Sealed<M>` supertrait. `DjogiVisage`
+supertypes **both** `DjogiVisageOf<Self::Model>` (pairing) **and** a
+separate metadata-only `private::Sealed` re-exported as
+`::djogi::__private::DjogiVisageSealed`. The two supertraits serve
+distinct roles and are **not** the same seal:
+`DjogiVisageOf<Self::Model>` says "V is a projection of M" and is
+useful for generic code that names only `V`; `private::Sealed` is the
+closed-world gate. They must be separate because
+`visage_boundary::private::Sealed<M>` carries a reflexive
+`impl<M: Model> Sealed<M> for M` blanket — every model satisfies
+`DjogiVisageOf<M>` already, so `DjogiVisageOf<Self::Model>` alone
+would not prevent a hand-rolled `impl DjogiVisage for MyModel`.
+The metadata seal has no reflexive blanket. Every `impl DjogiVisage
+for V` therefore implicitly demands both supertraits (emitted by the
+same macro pass): `DjogiVisageOf<M>` says "V is a visage of M";
+`private::Sealed` says "V was registered by the macro".
 
 The reflexive `impl<M: Model> DjogiVisageOf<M> for M` blanket
 continues to hold for the marker trait; **no blanket
@@ -2072,10 +2090,13 @@ remains unchecked.
     `<V::Model as Model>::table_name()` — the `type Model: Model`
     supertrait bound makes that callable from generic code, and a
     parallel `TABLE` const would duplicate state the supertrait
-    already pins. The seal is the `DjogiVisageOf<Self::Model>`
-    supertrait (re-exported as `__private::VisageSealed`), so the
-    single closed-world seal covers both the marker pairing and the
-    metadata trait.
+    already pins. `DjogiVisage` carries two supertraits:
+    `DjogiVisageOf<Self::Model>` for the source-model pairing and a
+    separate metadata-only `private::Sealed` (re-exported as
+    `__private::DjogiVisageSealed`) as the closed-world gate. The
+    macro emits both the pairing impl and the metadata seal impl; the
+    two supertraits serve distinct roles and neither alone covers
+    both.
   - The `__private::ProjectionEntry` sealed type (with the standard
     "do not name this" warning matching the existing
     `__private::VisageSealed` precedent).
