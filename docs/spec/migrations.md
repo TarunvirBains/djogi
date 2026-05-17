@@ -80,16 +80,38 @@ Djogi uses three file roles:
 
 `schema_snapshot.json` is updated exactly once per successful apply flow, via atomic file replacement (`tmp -> fsync -> rename`). It is never updated by `build.rs`.
 
-Snapshot format includes at minimum:
+Snapshot format — the complete `AppliedSchema` top-level shape (keys alphabetical, as emitted by the runtime):
 
 ```json
 {
-  "format_version": 1,
-  "version": "0005_add_vehicle_horsepower",
-  "migrated_at": "2026-04-22T10:00:00Z",
-  "models": {}
+  "djogi_version": "0.1.0",
+  "enums": {},
+  "format_version": "1",
+  "generated_at": "2026-04-25T00:00:00Z",
+  "indexes": [],
+  "models": {},
+  "registered_apps": [""]
 }
 ```
+
+Field semantics:
+
+| Field | Type | Role |
+|---|---|---|
+| `djogi_version` | string | Djogi version that wrote this snapshot. Informational; the loader does not gate on it. Useful for forensics when a snapshot looks wrong. |
+| `enums` | object | Postgres `CREATE TYPE` entries for `#[derive(DjogiEnum)]` registrations, keyed by the SQL type name. Empty object when no enums are registered. |
+| `format_version` | **string** | Snapshot format version — always `"1"` today. The value is a JSON string, not a number. |
+| `generated_at` | string | RFC 3339 UTC timestamp of the last successful apply that wrote this snapshot. Informational only. |
+| `indexes` | array | Flat index list, sorted by `(table, name)` for determinism. Each entry carries its owning `table` name. |
+| `models` | object | Per-table snapshots for this `(target, app)` bucket, keyed by Postgres table name. |
+| `registered_apps` | array | App labels registered when this snapshot was written. The synthetic global bucket (no `#[model(app = ...)]`) is represented by `""`. Sorted alphabetically. |
+
+**Snapshot parsing contract.**
+
+- All snapshot structs carry `#[serde(deny_unknown_fields)]`.
+- The loader uses a two-stage parse. In the first stage it peeks `format_version` using a permissive `serde_json::Value` parse — so a version mismatch surfaces as an actionable `"snapshot format version '...' is not supported by this Djogi"` error rather than a confusing `unknown field` or `missing field` error from a field the older shape doesn't recognise. In the second stage it runs the full strict structural deserialize.
+- A leading UTF-8 BOM (`EF BB BF`) is stripped on load; it is never emitted on write.
+- **Bump policy.** Additive fields marked `#[serde(default)]` do not require a `format_version` bump — older snapshots load cleanly because the default supplies the missing value, and no unrecognised field name appears on the wire. Renames, removals, and variant reshapes require a bump because there is no defaulting bridge across those changes.
 
 If a non-transactional migration fails partway through, the snapshot remains unchanged. Partial state is represented by the ledger and the local failure marker file, not by writing an intermediate snapshot.
 
