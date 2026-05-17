@@ -1078,17 +1078,83 @@ impl<M: Model, V> FieldRef<M, V> {
     ///
     /// # Variadic form
     ///
-    /// Postgres accepts `GROUPING(c1, c2, …, cN)` and returns a bitmask
-    /// in that case. Djogi v0.1.0 ships the single-column form only;
-    /// the variadic form is tracked at
-    /// <https://github.com/TarunvirBains/djogi/issues/94> (needs an
-    /// N-arg slot on the IR and a typed bitmask return type). Callers
-    /// needing the bitmask form today can compose two single-column
-    /// calls (`g1 * 2 + g0`) or use `ctx.raw_scalar`.
+    /// Postgres also accepts `GROUPING(c1, c2, …, cN)` returning a
+    /// bitmask. Use the free function [`crate::grouping_of`] for that
+    /// shape — bit `i` of the result is `1` when `columns[i]` was
+    /// rolled up. Implemented in #94.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn grouping(self) -> AggregateExpr<i32> {
         AggregateExpr::unary_agg(AggOp::Grouping, self.column(), None)
     }
+}
+
+/// `GROUPING(c1, c2, …, cN)` — variadic bitmask form.
+///
+/// Returns `AggregateExpr<i32>` carrying a bitmask: bit `i` (zero-
+/// indexed, lsb-first) is `1` if `columns[i]` was rolled up in the
+/// current row under `GROUP BY ROLLUP` / `CUBE` / `GROUPING SETS`,
+/// else `0`. With three columns `(a, b, c)`, the row that rolls up
+/// `c` only yields bitmask `0b100 == 4`; the row that rolls up
+/// `a` and `c` yields `0b101 == 5`.
+///
+/// Postgres returns `INTEGER` for this form regardless of input
+/// column types — the bitmask is positional, not value-derived —
+/// so the typed surface pins `Out = i32`.
+///
+/// # Why a free function and not a method on `FieldRef`
+///
+/// The columns flagged by a single `GROUPING(...)` call can have
+/// different value types (`GROUPING(region, dept_id)` where one
+/// is `String` and the other `i64`). A method on `FieldRef<M, V>`
+/// would either need a marker trait + tuple machinery (compile-
+/// time cost without a usability win) or accept `&[&'static str]`
+/// just like this free function — at which point the receiver
+/// becomes uninformative. Keeping the variadic constructor as a
+/// free function avoids paying for tuple-of-fields plumbing that
+/// no other aggregate uses.
+///
+/// # Panics
+///
+/// Panics if `columns` is empty — Postgres rejects `GROUPING()`
+/// with no args. The panic surfaces the framework-bug at the
+/// construction site rather than at fetch time as a Postgres
+/// syntax error. Also panics (via [`crate::ident::assert_plain_ident`])
+/// if any column name is not a plain SQL identifier (ASCII letter
+/// or underscore followed by ASCII alphanumerics or underscores,
+/// up to 63 bytes) — same contract every other framework-baked
+/// `&'static str` column reference upholds.
+///
+/// # Example
+///
+/// ```ignore
+/// // SELECT region, dept, SUM(sales),
+/// //        GROUPING(region, dept) AS subtotal_bitmask
+/// // FROM   sales
+/// // GROUP BY ROLLUP(region, dept);
+/// use djogi::prelude::*;
+/// use djogi::grouping_of;
+/// Sales::objects()
+///     .rollup(|f| (f.region(), f.dept()))
+///     .annotate(|_f| (
+///         /* ... sum ... */,
+///         grouping_of(&["region", "dept"]),
+///     ))
+///     .fetch_all(&mut ctx).await?;
+/// ```
+#[must_use = "aggregates are lazy — dropping one silently omits the column"]
+pub fn grouping_of(columns: &[&'static str]) -> AggregateExpr<i32> {
+    assert!(
+        !columns.is_empty(),
+        "djogi::grouping_of: column list must be non-empty — Postgres rejects GROUPING() with no args"
+    );
+    let args: Vec<crate::expr::node::ExprNode> = columns
+        .iter()
+        .map(|&col| {
+            crate::ident::assert_plain_ident(col, "GROUPING column");
+            crate::expr::node::ExprNode::Field { column: col }
+        })
+        .collect();
+    AggregateExpr::from_node(crate::expr::node::ExprNode::GroupingVariadic { args })
 }
 
 // ── PERCENTILE_CONT / PERCENTILE_DISC / MODE — ordered-set aggregates ────────
@@ -2441,6 +2507,53 @@ mod tests {
         let _: AggregateExpr<i32> = f_str.grouping();
         let _: AggregateExpr<i32> = f_i64.grouping();
         let _: AggregateExpr<i32> = f_bool.grouping();
+    }
+
+    // ── GROUPING variadic (#94) ───────────────────────────────────────────
+
+    #[test]
+    fn grouping_of_two_args_emits_comma_separated() {
+        let agg = crate::grouping_of(&["region", "dept"]);
+        // Inspect the IR shape.
+        match &agg.node {
+            crate::expr::node::ExprNode::GroupingVariadic { args } => {
+                assert_eq!(args.len(), 2);
+                for (a, expected) in args.iter().zip(["region", "dept"]) {
+                    match a {
+                        crate::expr::node::ExprNode::Field { column } => {
+                            assert_eq!(*column, expected)
+                        }
+                        _ => panic!("expected Field, got {a:?}"),
+                    }
+                }
+            }
+            other => panic!("expected GroupingVariadic, got {other:?}"),
+        }
+        // Emit and check SQL shape.
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root()).expect("emit");
+        assert_eq!(acc.sql(), "GROUPING(region, dept)");
+    }
+
+    #[test]
+    fn grouping_of_three_args_emits_comma_separated() {
+        let agg = crate::grouping_of(&["region", "dept", "product"]);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root()).expect("emit");
+        assert_eq!(acc.sql(), "GROUPING(region, dept, product)");
+    }
+
+    #[test]
+    #[should_panic(expected = "GROUPING() with no args")]
+    fn grouping_of_empty_panics() {
+        let _ = crate::grouping_of(&[]);
+    }
+
+    #[test]
+    fn grouping_of_legality_accepted() {
+        // No modifiers possible on GroupingVariadic — must pass legality.
+        let agg = crate::grouping_of(&["region", "dept"]);
+        assert!(crate::expr::sql::check_aggregate_legality(&agg.node).is_ok());
     }
 
     // ── JSON object aggregates (T9) ───────────────────────────────────────

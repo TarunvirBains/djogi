@@ -120,6 +120,32 @@ pub(crate) enum ExprNode {
         rhs: Box<ExprNode>,
     },
 
+    /// `GROUPING(c1, c2, …, cN)` — variadic grouping-set bitmask.
+    /// Bit `i` of the result is `1` iff `columns[i]` was rolled up in the
+    /// current row under `GROUP BY ROLLUP` / `CUBE` / `GROUPING SETS`, else
+    /// `0`.
+    ///
+    /// The single-column form `GROUPING(col)` continues to use
+    /// `ExprNode::Aggregate { op: AggOp::Grouping, ... }` — the variadic
+    /// IR layout adds a new variant rather than retrofitting an N-arg
+    /// slot onto `Aggregate` because GROUPING is the only aggregate
+    /// taking 2+ column args and Postgres rejects every aggregate
+    /// modifier on it (DISTINCT / ORDER BY / FILTER / OVER all error).
+    /// A dedicated variant keeps the bulk-of-aggregate fields
+    /// (`distinct`, `filter`, `window`, `order_by`, `within_group_order_by`)
+    /// from polluting a metadata function that cannot accept them.
+    ///
+    /// Each arg is `ExprNode::Field { column }` with `column` validated
+    /// at constructor time via `crate::ident::assert_plain_ident`. No
+    /// other `ExprNode` shape is accepted at the typed-surface level —
+    /// the free function `grouping_of` only takes `&[&'static str]`.
+    GroupingVariadic {
+        /// Non-empty list of column references being flagged. Empty
+        /// arg list is rejected at the constructor (Postgres also
+        /// rejects `GROUPING()` with 0 args).
+        args: Vec<ExprNode>,
+    },
+
     /// Aggregate function call — `COUNT(*)` / `COUNT(col)` / `SUM(col)`
     /// / `AVG(col)` / `MIN(col)` / `MAX(col)` with an optional
     /// `FILTER (WHERE ...)` post-filter clause and an optional window
@@ -850,10 +876,9 @@ pub(crate) enum AggOp {
     /// otherwise. Returns `INTEGER` at the Postgres level; the typed
     /// surface decodes into `i32`.
     ///
-    /// Single-column form only for v0.1.0; the variadic
-    /// `GROUPING(c1, c2, …, cN)` form (which returns a bitmask) is a
-    /// follow-up task because it needs an N-arg slot and a typed bitmask
-    /// return type.
+    /// Single-column form. The variadic `GROUPING(c1, …, cN)` ships
+    /// through the dedicated [`ExprNode::GroupingVariadic`] variant
+    /// rather than reshaping this op's arg slot.
     Grouping,
     /// `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)` — continuous
     /// percentile (interpolating between adjacent values when the

@@ -283,6 +283,16 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             }
             check_aggregate_legality(otherwise)
         }
+        // GROUPING variadic carries no modifier slots — the IR shape
+        // structurally excludes DISTINCT/ORDER BY/FILTER/OVER on this
+        // variant — so the legality of the node itself is trivial. Walk
+        // the args in case a nested aggregate was somehow constructed.
+        ExprNode::GroupingVariadic { args } => {
+            for a in args {
+                check_aggregate_legality(a)?;
+            }
+            Ok(())
+        }
         // Leaf nodes and variants with no sub-expressions are trivially valid.
         _ => Ok(()),
     }
@@ -1159,6 +1169,30 @@ pub(crate) fn emit_expr(
             // Delegate entirely to `SpatialExpr::emit`, which handles all
             // bind-parameter placement for PostGIS functions.
             s.emit(acc);
+        }
+
+        ExprNode::GroupingVariadic { args } => {
+            // `GROUPING(c1, c2, …, cN)` — variadic bitmask form.
+            // Args are framework-validated identifiers (every element is
+            // `ExprNode::Field { column }` produced by `grouping_of`,
+            // which assert_plain_ident-validates every entry); routed
+            // through `emit_expr` recursively so a future select_related
+            // pass picks up the parent-table qualifier via `ctx`.
+            //
+            // GROUPING does not accept any aggregate modifier — DISTINCT,
+            // ORDER BY, FILTER, OVER all produce Postgres syntax errors —
+            // so this arm renders only the bare function call. The legality
+            // check `check_aggregate_legality` validates the single-arg
+            // form's modifier rejection; the variadic form has no modifier
+            // slots in the IR by design.
+            acc.push_sql("GROUPING(");
+            for (i, a) in args.iter().enumerate() {
+                if i > 0 {
+                    acc.push_sql(", ");
+                }
+                emit_expr(acc, a, ctx)?;
+            }
+            acc.push_sql(")");
         }
     }
     Ok(())
