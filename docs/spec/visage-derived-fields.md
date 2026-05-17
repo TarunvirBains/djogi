@@ -977,6 +977,7 @@ The `ProjectionEntry` discriminant is sealed off the public surface.
 ```rust
 pub trait DjogiVisage:
     crate::visage_boundary::DjogiVisageOf<<Self as DjogiVisage>::Model>
+    + private::Sealed
 {
     /// Source model the visage is a projection of. Every macro-emitted
     /// `impl DjogiVisage for {Visage}` sets `type Model = {Source}`.
