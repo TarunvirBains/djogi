@@ -367,6 +367,13 @@ Production deployments that previously hard-coded
 `DjogiPool::from_database_config` to size against their actual
 concurrency budget.
 
+That `post_connect` block is a single-node example when `SET heer.node_id = '1'`
+is present. For multi-node deployments, register each node in HeeRanjID first, then
+set the service-specific `NODE_ID` before startup and migrations; the pool should set
+`heer.node_id` only from that deployment-selected value.
+See https://github.com/TarunvirBains/heeranjid-sql/blob/main/README.md and
+https://github.com/TarunvirBains/HeeRanjID/issues/49.
+
 ---
 
 ## Reference

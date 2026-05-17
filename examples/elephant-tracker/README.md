@@ -107,7 +107,14 @@ You need a running Postgres 18 with the PostGIS 3.x extension installed
 (Djogi targets PG 18+ exclusively). The connecting role must own the
 target database — the migrate step issues `ALTER DATABASE ... SET
 heer.node_id = '1'` so every pool connection inherits the
-HeeRanjID node id.
+HeeRanjID node id for this single-node example.
+
+For deployments with multiple writers, register and provision each node in
+`heer_nodes` first, then start each service with its selected `NODE_ID`
+and existing migration/startup flow. Do not copy/paste the hard-coded `1`
+assumption. See
+https://github.com/TarunvirBains/heeranjid-sql/blob/main/README.md and
+https://github.com/TarunvirBains/HeeRanjID/issues/49.
 
 ```bash
 # 1. Postgres + PostGIS — for example via docker. We publish the port to

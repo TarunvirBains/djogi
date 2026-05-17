@@ -45,6 +45,7 @@ Each entry inside `indexes(...)` is either `index(...)` (non-unique by default) 
 - `nulls_not_distinct = true` on a non-`unique(...)` entry is rejected. (It has no meaning on a plain index.)
 - A raw-identifier column reference (`r#yield`) normalises to its unraw form before the column-existence check — `fields = [r#yield]` matches `pub r#yield: String`.
 - A `name = "..."` override must not collide with a name the emitter would generate for any other declared index (implicit, spatial, or user-declared). Collisions fail at macro expansion with a span-precise error.
+- An `expr = "..."` declaration does not accept the top-level `opclass = "..."` key. In v0.1.0 the descriptor has no path to bind an operator class to an expression target — Postgres syntax positions the opclass inside the expression slot (`(expr opclass)`), and the current `IndexDeclTarget::Expression` variant holds a raw SQL string only, with no per-opclass slot. If the expression index requires a non-default opclass (for example `lower(email) text_pattern_ops` or a trigram GIN expression with `gin_trgm_ops`), use `raw_ddl` under `#[djogi::deliberately_bypass_convention_with_raw_sql]` to issue the `CREATE INDEX` statement directly (see [Raw SQL Escape Hatches](./raw-sql-escape-hatches.md) §2). Per-expression opclass binding is additive future descriptor work.
 
 ---
 
@@ -286,5 +287,6 @@ IndexTarget::Columns(&[
 - [Models](./models.md) §4.5 — field-level `#[field(index)]` / `#[field(unique)]`.
 - [Migrations](./migrations.md) — the Phase 7 differ's consumption of `IndexSpec`, the apply-time advisory warning, and the non-transactional migration rule for `concurrently = true`.
 - [Primary Keys](./primary-keys.md) — public `HeerIdRecencyBiased` / `RanjIdRecencyBiased` naming, plus the underlying `HeerIdDesc` / `RanjIdDesc` migration semantics.
+- [Raw SQL Escape Hatches](./raw-sql-escape-hatches.md) — the bypass harness for DDL not yet expressible through the typed descriptor surface (e.g. expression indexes with non-default opclasses).
 - [Decisions](./decisions.md) — rows for concurrent index creation, unique-constraint default, column ordering, per-column spec, predicate validation.
 - This section is the tracked frozen contract for the Phase 7-Zero indexing grammar, lowering rules, and apply-time advisory-warning specification.
