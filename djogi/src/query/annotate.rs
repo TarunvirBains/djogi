@@ -1773,4 +1773,227 @@ mod tests {
             "arity-2 tuple of ordinary slots must remain false"
         );
     }
+
+    // ── Issue #95 — f64 qualify for PercentRankWindow / CumeDistWindow ───────
+    //
+    // These tests pin the SQL lowering for f64 qualify thresholds on the two
+    // FLOAT8-returning zero-arg window functions. Each test covers:
+    //   - The correct derived-table shape (`SELECT * FROM (...) AS __djogi_q WHERE …`).
+    //   - The correct operator (`<`, `<=`, `>=`, `>`, `=`).
+    //   - A single bind slot allocated (the f64 threshold).
+    //   - No `QUALIFY` token in the emitted SQL (Postgres 18 has no QUALIFY clause).
+    //
+    // The tests do NOT execute against a live database — they assert on the SQL
+    // text emitted by `build_annotated_select_for_fetch`. Live-DB coverage is
+    // provided by the existing window bench tests once the framework types are
+    // exercised through `.annotate(...).qualify(...)`.
+
+    #[test]
+    fn percent_rank_qualify_lt_lowers_to_derived_table_where_f64() {
+        use crate::expr::PercentRankWindow;
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let annotated = QuerySet::<Acc>::new()
+            .annotate(|_| {
+                PercentRankWindow::new()
+                    .order_by(amount.desc())
+                    .alias("amount_pct")
+            })
+            .qualify(|w| w.lt(0.5));
+
+        let acc = build_annotated_select_for_fetch(
+            &annotated.qs,
+            |acc| annotated.aggregates.push_columns(acc),
+            annotated.qualify.as_ref(),
+        )
+        .expect("annotated select for percent_rank qualify lt");
+        let sql = acc.sql();
+
+        // Inner select emits PERCENT_RANK with OVER clause and alias.
+        assert!(
+            sql.contains("PERCENT_RANK() OVER (ORDER BY amount DESC) AS amount_pct"),
+            "inner PERCENT_RANK emission missing, got: {sql}"
+        );
+        // Outer WHERE references the alias with the correct operator and a bind slot.
+        assert!(
+            sql.contains(") AS __djogi_q WHERE amount_pct < $"),
+            "outer WHERE predicate missing or malformed, got: {sql}"
+        );
+        // No literal QUALIFY token — Postgres 18 does not support it.
+        assert!(
+            !sql.contains("QUALIFY"),
+            "QUALIFY token must not appear, got: {sql}"
+        );
+        // Exactly one bind slot: the f64 threshold.
+        let (_, binds) = acc.into_parts();
+        assert_eq!(
+            binds.len(),
+            1,
+            "expected exactly one bind slot (the f64 threshold)"
+        );
+    }
+
+    #[test]
+    fn percent_rank_qualify_gte_lowers_to_derived_table_where_f64() {
+        use crate::expr::PercentRankWindow;
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let annotated = QuerySet::<Acc>::new()
+            .annotate(|_| {
+                PercentRankWindow::new()
+                    .order_by(amount.desc())
+                    .alias("top_pct")
+            })
+            .qualify(|w| w.gte(0.9));
+
+        let acc = build_annotated_select_for_fetch(
+            &annotated.qs,
+            |acc| annotated.aggregates.push_columns(acc),
+            annotated.qualify.as_ref(),
+        )
+        .expect("annotated select for percent_rank qualify gte");
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains(") AS __djogi_q WHERE top_pct >= $"),
+            "outer WHERE must use >= operator, got: {sql}"
+        );
+        let (_, binds) = acc.into_parts();
+        assert_eq!(binds.len(), 1, "expected exactly one f64 bind slot");
+    }
+
+    #[test]
+    fn cume_dist_qualify_lte_lowers_to_derived_table_where_f64() {
+        use crate::expr::CumeDistWindow;
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let annotated = QuerySet::<Acc>::new()
+            .annotate(|_| {
+                CumeDistWindow::new()
+                    .order_by(amount.asc())
+                    .alias("cume_dist")
+            })
+            .qualify(|w| w.lte(0.25));
+
+        let acc = build_annotated_select_for_fetch(
+            &annotated.qs,
+            |acc| annotated.aggregates.push_columns(acc),
+            annotated.qualify.as_ref(),
+        )
+        .expect("annotated select for cume_dist qualify lte");
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("CUME_DIST() OVER (ORDER BY amount ASC) AS cume_dist"),
+            "inner CUME_DIST emission missing, got: {sql}"
+        );
+        assert!(
+            sql.contains(") AS __djogi_q WHERE cume_dist <= $"),
+            "outer WHERE must use <= operator, got: {sql}"
+        );
+        assert!(
+            !sql.contains("QUALIFY"),
+            "QUALIFY token must not appear, got: {sql}"
+        );
+        let (_, binds) = acc.into_parts();
+        assert_eq!(
+            binds.len(),
+            1,
+            "expected exactly one bind slot (the f64 threshold)"
+        );
+    }
+
+    #[test]
+    fn cume_dist_qualify_gt_lowers_to_derived_table_where_f64() {
+        use crate::expr::CumeDistWindow;
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let annotated = QuerySet::<Acc>::new()
+            .annotate(|_| {
+                CumeDistWindow::new()
+                    .order_by(amount.asc())
+                    .alias("cume_dist")
+            })
+            .qualify(|w| w.gt(0.0));
+
+        let acc = build_annotated_select_for_fetch(
+            &annotated.qs,
+            |acc| annotated.aggregates.push_columns(acc),
+            annotated.qualify.as_ref(),
+        )
+        .expect("annotated select for cume_dist qualify gt");
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains(") AS __djogi_q WHERE cume_dist > $"),
+            "outer WHERE must use > operator, got: {sql}"
+        );
+        let (_, binds) = acc.into_parts();
+        assert_eq!(binds.len(), 1, "expected exactly one f64 bind slot");
+    }
+
+    #[test]
+    fn percent_rank_qualify_eq_lowers_to_derived_table_where_f64() {
+        // Equality on FLOAT8 is valid SQL for exact boundary values (e.g.
+        // the first row's PERCENT_RANK is exactly 0.0). This test pins the
+        // SQL shape; adopters should prefer lt/lte/gte/gt for thresholds.
+        use crate::expr::PercentRankWindow;
+        let score: FieldRef<Acc, i64> = FieldRef::new("score");
+        let annotated = QuerySet::<Acc>::new()
+            .annotate(|_| PercentRankWindow::new().order_by(score.desc()).alias("pct"))
+            .qualify(|w| w.eq(0.0));
+
+        let acc = build_annotated_select_for_fetch(
+            &annotated.qs,
+            |acc| annotated.aggregates.push_columns(acc),
+            annotated.qualify.as_ref(),
+        )
+        .expect("annotated select for percent_rank qualify eq");
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains(") AS __djogi_q WHERE pct = $"),
+            "outer WHERE must use = operator, got: {sql}"
+        );
+        let (_, binds) = acc.into_parts();
+        assert_eq!(binds.len(), 1, "expected exactly one f64 bind slot");
+    }
+
+    #[test]
+    #[should_panic(expected = "qualify can only reference a window annotation")]
+    fn percent_rank_qualify_without_alias_panics() {
+        // Calling a qualify helper before `.alias("…")` must panic with the
+        // standard "alias not set" diagnostic — same contract as the rank family.
+        use crate::expr::PercentRankWindow;
+        let _ = PercentRankWindow::new().lt(0.5);
+    }
+
+    #[test]
+    #[should_panic(expected = "qualify can only reference a window annotation")]
+    fn cume_dist_qualify_without_alias_panics() {
+        use crate::expr::CumeDistWindow;
+        let _ = CumeDistWindow::new().gte(0.9);
+    }
+
+    #[test]
+    fn percent_rank_qualify_bind_count_is_one_f64() {
+        // Narrowly pins that exactly ONE bind slot is consumed by the qualify
+        // predicate. The f64 threshold must not be emitted inline into the SQL
+        // text (SQL injection safety) and must not consume two slots.
+        use crate::expr::PercentRankWindow;
+        let cond = PercentRankWindow::new().alias("pct").lt(0.75);
+        let mut acc = crate::pg::accumulator::SqlAccumulator::new("");
+        cond.push_outer_where(&mut acc);
+        assert_eq!(
+            acc.bind_count(),
+            1,
+            "qualify predicate must consume exactly one bind slot"
+        );
+        assert!(
+            acc.sql().contains("$1"),
+            "bind placeholder must appear in SQL, got: {}",
+            acc.sql()
+        );
+        assert!(
+            !acc.sql().contains("0.75"),
+            "threshold value must NOT appear verbatim in SQL text (injection safety), got: {}",
+            acc.sql()
+        );
+    }
 }
