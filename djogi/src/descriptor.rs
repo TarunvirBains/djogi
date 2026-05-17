@@ -1760,6 +1760,28 @@ pub struct FieldDescriptor {
     ///
     /// djogi#105.
     pub check_sql: Option<&'static str>,
+
+    /// Adopter-supplied `#[field(comment = "<text>")]` free-text column
+    /// comment, lowered by the migration composer to
+    /// `COMMENT ON COLUMN <table>.<column> IS '<text>'`. Emitted
+    /// immediately after the column appears in either `CREATE TABLE`
+    /// (initial creation) or `ADD COLUMN` (later addition); the differ
+    /// surfaces value changes via
+    /// [`crate::migrate::diff::ColumnChange::SetComment`].
+    ///
+    /// `None` for fields that declare no comment — the common case.
+    ///
+    /// **Quoting.** The string is the adopter's prose, verbatim — the
+    /// composer owns single-quote escaping at SQL-emission time (per
+    /// the standard Postgres lexer rule that a doubled apostrophe
+    /// `''` inside a `'…'` literal collapses to one apostrophe under
+    /// `standard_conforming_strings = on`, which is the PG 18 default
+    /// and is required by djogi). The descriptor carries the original
+    /// text so adopters round-tripping comments through `pg_dump` /
+    /// `pg_description` see exactly what they wrote.
+    ///
+    /// Phase 8.5 Cluster 4 (djogi#217).
+    pub comment: Option<&'static str>,
 }
 
 /// Adopter-supplied override for the Postgres volatility class of a
@@ -1844,6 +1866,12 @@ pub const fn field_descriptor(
         // raw-SQL CHECK expression. Defaults to `None` (no adopter
         // check); the macro fills `Some(<expr>)` from the attribute.
         check_sql: None,
+        // Phase 8.5 Cluster 4 (djogi#217) — adopter
+        // `#[field(comment = "…")]` column-level free-text comment
+        // lowered to `COMMENT ON COLUMN <t>.<c> IS '<text>'`. Defaults
+        // to `None` (no comment); the macro fills `Some(<text>)` from
+        // the attribute.
+        comment: None,
     }
 }
 
@@ -2319,6 +2347,50 @@ pub struct ModelDescriptor {
     /// case. `&'static [...]` rather than `Vec` to keep the descriptor
     /// `inventory`-submittable with no allocation at registration.
     pub computed_fields: &'static [ComputedFieldDescriptor],
+
+    // ── DDL metadata (Phase 8.5 Cluster 4 — djogi#172 umbrella) ─────────────
+    /// Adopter-supplied `#[model(table_comment = "<text>")]` free-text
+    /// table comment, lowered by the migration composer to
+    /// `COMMENT ON TABLE <table> IS '<text>'` immediately after the
+    /// `CREATE TABLE` statement. The differ surfaces table-comment
+    /// changes via
+    /// [`crate::migrate::diff::SchemaOperation::SetTableComment`],
+    /// which lowers to a single `COMMENT ON TABLE` (or `... IS NULL`
+    /// when the comment is dropped).
+    ///
+    /// `None` for models that declare no table-level comment — the
+    /// common case.
+    ///
+    /// **Quoting.** Same contract as [`FieldDescriptor::comment`]:
+    /// adopter prose stored verbatim, composer doubles apostrophes at
+    /// SQL-emission time.
+    ///
+    /// Phase 8.5 Cluster 4 (djogi#217).
+    pub table_comment: Option<&'static str>,
+
+    /// Adopter-supplied `#[model(storage_params = "key=val, ...")]`
+    /// per-table storage-parameter list. Lowered by the migration
+    /// composer to `ALTER TABLE <table> SET (key=val, ...)`.
+    ///
+    /// The value is a comma-separated Postgres storage-parameter
+    /// fragment stored verbatim after macro-time non-empty validation;
+    /// the SQL emitter parses only the parameter keys so reversible
+    /// changes can reset keys that disappeared from the new value.
+    ///
+    /// Phase 8.5 Cluster 4 (djogi#218).
+    pub storage_params: Option<&'static str>,
+
+    /// Adopter-supplied `#[model(tablespace = "<name>")]` target
+    /// tablespace. Lowered by the migration composer to
+    /// `ALTER TABLE <table> SET TABLESPACE <name>` after table
+    /// creation or when the snapshot value changes.
+    ///
+    /// Validated at macro parse time as a plain Postgres identifier and
+    /// quoted by the SQL emitter. `None` means no explicit tablespace
+    /// (the database default).
+    ///
+    /// Phase 8.5 Cluster 4 (djogi#219).
+    pub tablespace: Option<&'static str>,
 }
 
 /// Descriptor for one `#[computed(sql = "...")]` field — Phase 8 Cluster
@@ -2579,6 +2651,19 @@ pub const fn model_descriptor(
         // Defaults to the empty slice; populated by the macro when one or
         // more struct fields carry `#[computed(sql = "...")]`.
         computed_fields: &[],
+        // Phase 8.5 Cluster 4 (djogi#217) — adopter
+        // `#[model(table_comment = "…")]` lowered to
+        // `COMMENT ON TABLE`. Defaults to `None` (no comment); the
+        // macro fills `Some(<text>)` from the attribute.
+        table_comment: None,
+        // Phase 8.5 Cluster 4 (djogi#218) — adopter
+        // `#[model(storage_params = "key=val, ...")]` lowered to
+        // `ALTER TABLE ... SET (...)`. Defaults to `None`.
+        storage_params: None,
+        // Phase 8.5 Cluster 4 (djogi#219) — adopter
+        // `#[model(tablespace = "...")]` lowered to `ALTER TABLE ...
+        // SET TABLESPACE`. Defaults to `None`.
+        tablespace: None,
     }
 }
 

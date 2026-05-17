@@ -513,6 +513,7 @@ async fn verify_detects_missing_table_as_d601(mut ctx: djogi::DjogiContext) {
             app: None,
             columns: vec![djogi::migrate::ColumnSchema {
                 check: None,
+            comment: None,
                 default_sql: None,
                 foreign_key: None,
                 generated: None,
@@ -544,6 +545,9 @@ async fn verify_detects_missing_table_as_d601(mut ctx: djogi::DjogiContext) {
             renamed_from: None,
             rls_enabled: false,
             table: "ghost_users".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         },
     );
@@ -1532,6 +1536,7 @@ async fn verify_detects_default_drift_as_d607(mut ctx: djogi::DjogiContext) {
     let mut snap = empty_snapshot();
     let mut id_col = djogi::migrate::ColumnSchema {
         check: None,
+            comment: None,
         default_sql: None,
         foreign_key: None,
         generated: None,
@@ -1573,6 +1578,9 @@ async fn verify_detects_default_drift_as_d607(mut ctx: djogi::DjogiContext) {
             renamed_from: None,
             rls_enabled: false,
             table: "t5_b5_default".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         },
     );
@@ -1601,6 +1609,7 @@ async fn verify_detects_pk_mismatch_as_d608(mut ctx: djogi::DjogiContext) {
     let mut snap = empty_snapshot();
     let id_col = djogi::migrate::ColumnSchema {
         check: None,
+            comment: None,
         default_sql: None,
         foreign_key: None,
         generated: None,
@@ -1640,6 +1649,9 @@ async fn verify_detects_pk_mismatch_as_d608(mut ctx: djogi::DjogiContext) {
             renamed_from: None,
             rls_enabled: false,
             table: "t5_b6_pk".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         },
     );
@@ -1675,6 +1687,7 @@ async fn verify_detects_deferrable_fk_drift_as_d609(mut ctx: djogi::DjogiContext
 
     let id_col = djogi::migrate::ColumnSchema {
         check: None,
+            comment: None,
         default_sql: None,
         foreign_key: None,
         generated: None,
@@ -1712,6 +1725,9 @@ async fn verify_detects_deferrable_fk_drift_as_d609(mut ctx: djogi::DjogiContext
             renamed_from: None,
             rls_enabled: false,
             table: "t5_fk_parent".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         },
     );
@@ -1723,6 +1739,7 @@ async fn verify_detects_deferrable_fk_drift_as_d609(mut ctx: djogi::DjogiContext
                 id_col,
                 djogi::migrate::ColumnSchema {
                     check: None,
+            comment: None,
                     default_sql: None,
                     foreign_key: Some(djogi::migrate::ForeignKeySchema {
                         deferrable: true,
@@ -1761,6 +1778,9 @@ async fn verify_detects_deferrable_fk_drift_as_d609(mut ctx: djogi::DjogiContext
             renamed_from: None,
             rls_enabled: false,
             table: "t5_fk_child".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         },
     );
@@ -1840,6 +1860,7 @@ async fn verify_detects_index_wrong_columns_as_d612(mut ctx: djogi::DjogiContext
             columns: vec![
                 djogi::migrate::ColumnSchema {
                     check: None,
+            comment: None,
                     default_sql: None,
                     foreign_key: None,
                     generated: None,
@@ -1860,6 +1881,7 @@ async fn verify_detects_index_wrong_columns_as_d612(mut ctx: djogi::DjogiContext
                 },
                 djogi::migrate::ColumnSchema {
                     check: None,
+            comment: None,
                     default_sql: None,
                     foreign_key: None,
                     generated: None,
@@ -1880,6 +1902,7 @@ async fn verify_detects_index_wrong_columns_as_d612(mut ctx: djogi::DjogiContext
                 },
                 djogi::migrate::ColumnSchema {
                     check: None,
+            comment: None,
                     default_sql: None,
                     foreign_key: None,
                     generated: None,
@@ -1912,6 +1935,9 @@ async fn verify_detects_index_wrong_columns_as_d612(mut ctx: djogi::DjogiContext
             renamed_from: None,
             rls_enabled: false,
             table: "t5_b7_idx_cols".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         },
     );

@@ -45,13 +45,31 @@ use std::collections::BTreeMap;
 /// older revision.
 ///
 /// **Bump policy.** Every snapshot struct carries
-/// `#[serde(deny_unknown_fields)]`, so any structural change — adding
-/// a field, removing a field, renaming a field — requires a
-/// `format_version` bump because old loaders no longer accept the
-/// new shape and new loaders no longer accept the old shape. There
-/// is no "additive only" silent path; the loader fails loudly when
-/// the shape drifts. A future version migration would land via a
-/// dedicated phase with a parallel-read compatibility window.
+/// `#[serde(deny_unknown_fields)]`. That guard rejects **unknown**
+/// fields on the loader side — it does **not** error on missing
+/// ones. As a result, two distinct change classes have different
+/// bump requirements:
+///
+/// 1. **Additive fields with `#[serde(default)]`** — do NOT bump.
+///    Older snapshots written without the new field deserialize
+///    against the new shape because the default supplies the value;
+///    nothing the loader doesn't recognise appears on the wire.
+///    Examples in this module: `TableSchema::exclusion_constraints`,
+///    `ColumnSchema::generated`, `ColumnSchema::identity`,
+///    `ForeignKeySchema::deferrable`,
+///    `ForeignKeySchema::initially_deferred`. Phase 8.5 Cluster 4
+///    (djogi#217 / #218 / #219) lands
+///    `TableSchema::table_comment`, `TableSchema::storage_params`,
+///    `TableSchema::tablespace`, and `ColumnSchema::comment` under
+///    this same rule.
+/// 2. **Renames, removals, and variant reshapes** — DO bump. Older
+///    loaders accept different field names / shapes than the new
+///    loader, and there is no defaulting that bridges the gap; the
+///    `format_version` is the explicit incompatibility signal so a
+///    parallel-read compatibility window can be planned.
+///
+/// A future version migration would land via a dedicated phase with
+/// a parallel-read compatibility window.
 pub const SNAPSHOT_FORMAT_VERSION: &str = "1";
 
 /// Top-level snapshot — the committed source of truth for what the
@@ -171,6 +189,33 @@ pub struct TableSchema {
     /// self-contained (e.g. when iterating `applied.models.values()`).
     pub table: String,
 
+    /// `#[model(table_comment = "…")]` value when set — Phase 8.5
+    /// djogi#217. Lowered to `COMMENT ON TABLE <t> IS '<text>'` by
+    /// the migration composer after `CREATE TABLE`; the differ
+    /// surfaces value changes via
+    /// [`crate::migrate::diff::SchemaOperation::SetTableComment`].
+    ///
+    /// `#[serde(default)]` keeps snapshots predating this field
+    /// round-tripping cleanly — older snapshots load as `None` and
+    /// the differ then sees the projected `Some(…)` as a new comment
+    /// to install. `None` is the common case.
+    #[serde(default)]
+    pub table_comment: Option<String>,
+
+    /// `#[model(storage_params = "key=val, ...")]` value when set —
+    /// Phase 8.5 djogi#218. Lowered to `ALTER TABLE <t> SET
+    /// (key=val, ...)` by the migration composer after table creation;
+    /// the differ surfaces value changes via
+    /// [`crate::migrate::diff::SchemaOperation::SetStorageParams`].
+    #[serde(default)]
+    pub storage_params: Option<String>,
+
+    /// `#[model(tablespace = "<name>")]` value when set — Phase 8.5
+    /// djogi#219. Lowered to `ALTER TABLE <t> SET TABLESPACE <name>`.
+    /// `None` means the database default tablespace.
+    #[serde(default)]
+    pub tablespace: Option<String>,
+
     /// `#[model(tenant_key = "col_name")]` value. `Some(col)`
     /// activates RLS policy generation against that column.
     pub tenant_key: Option<String>,
@@ -184,6 +229,19 @@ pub struct ColumnSchema {
     /// emitted verbatim. The differ compares by string equality.
     /// `None` for the common case.
     pub check: Option<String>,
+
+    /// `#[field(comment = "<text>")]` value when set — Phase 8.5
+    /// djogi#217. Lowered to `COMMENT ON COLUMN <t>.<c> IS
+    /// '<text>'` by the migration composer immediately after the
+    /// column appears in either `CREATE TABLE` (initial creation)
+    /// or `ADD COLUMN` (later addition); the differ surfaces value
+    /// changes via
+    /// [`crate::migrate::diff::ColumnChange::SetComment`].
+    ///
+    /// `#[serde(default)]` keeps snapshots predating this field
+    /// round-tripping cleanly. `None` is the common case.
+    #[serde(default)]
+    pub comment: Option<String>,
 
     /// `DEFAULT` expression — raw SQL. Empty `None` denotes no
     /// default. For PK columns with a server-generated default

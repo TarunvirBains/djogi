@@ -837,6 +837,12 @@ fn project_model(
         renamed_from: m.renamed_from.map(|s| s.to_string()),
         rls_enabled: m.tenant_key.is_some(),
         table: m.table_name.to_string(),
+        // Phase 8.5 Cluster 4 (djogi#217) — copy adopter
+        // `#[model(table_comment = "…")]` from descriptor verbatim.
+        // The composer owns single-quote escaping at SQL-emission time.
+        table_comment: m.table_comment.map(|s| s.to_string()),
+        storage_params: m.storage_params.map(|s| s.to_string()),
+        tablespace: m.tablespace.map(|s| s.to_string()),
         tenant_key: m.tenant_key.map(|s| s.to_string()),
     }
 }
@@ -844,6 +850,9 @@ fn project_model(
 fn project_fts_column(fts: &FtsDescriptor) -> ColumnSchema {
     ColumnSchema {
         check: None,
+        // Phase 8.5 Cluster 4 (djogi#217) — FTS tsvector columns are
+        // framework-synthesised; no adopter `#[field(comment)]` flows.
+        comment: None,
         default_sql: None,
         foreign_key: None,
         generated: Some(GeneratedColumnSchema {
@@ -931,6 +940,13 @@ fn project_outbox_table(
         renamed_from: None,
         rls_enabled: false,
         table,
+        // Phase 8.5 Cluster 4 (djogi#217) — framework-synthesised
+        // `<table>_outbox` tables inherit no adopter DDL metadata;
+        // comments / storage params / tablespace are model-specific
+        // and never copy onto the outbox sibling.
+        table_comment: None,
+        storage_params: None,
+        tablespace: None,
         tenant_key: None,
     }
 }
@@ -982,6 +998,10 @@ fn outbox_pending_index_name(table: &str) -> String {
 fn outbox_column(name: &str, sql_type: &str, default_sql: Option<&str>) -> ColumnSchema {
     ColumnSchema {
         check: None,
+        // Phase 8.5 Cluster 4 (djogi#217) — framework-synthesised
+        // outbox columns carry no adopter `#[field(comment)]`; the
+        // attribute applies to user-declared fields only.
+        comment: None,
         default_sql: default_sql.map(str::to_string),
         foreign_key: None,
         generated: None,
@@ -1538,6 +1558,10 @@ fn project_column(
 
     ColumnSchema {
         check,
+        // Phase 8.5 Cluster 4 (djogi#217) — copy adopter
+        // `#[field(comment = "…")]` from descriptor verbatim. The
+        // composer owns single-quote escaping at SQL-emission time.
+        comment: f.comment.map(|s| s.to_string()),
         default_sql,
         foreign_key,
         generated: f.generated.as_ref().map(project_generated_column),
@@ -2299,6 +2323,50 @@ mod tests {
         .expect("ok");
         let id_col = &buckets[&empty_global()].models["widgets"].columns[0];
         assert_eq!(id_col.default_sql.as_deref(), Some("heerid_next_desc()"));
+    }
+
+    #[test]
+    fn ddl_metadata_projects_from_model_and_field_descriptors() {
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                comment: Some("Stable adopter-facing identifier"),
+                ..field_descriptor("name", FieldSqlType::Text, false)
+            },
+            FieldDescriptor {
+                ..field_descriptor("weight_kg", FieldSqlType::DoublePrecision, true)
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            table_comment: Some("Operational metadata table"),
+            storage_params: Some("fillfactor=70, autovacuum_enabled=false"),
+            tablespace: Some("fastspace"),
+            ..synth_model("widgets", "Widget")
+        };
+
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+
+        let table = &buckets[&empty_global()].models["widgets"];
+        assert_eq!(
+            table.table_comment.as_deref(),
+            Some("Operational metadata table")
+        );
+        assert_eq!(
+            table.storage_params.as_deref(),
+            Some("fillfactor=70, autovacuum_enabled=false")
+        );
+        assert_eq!(table.tablespace.as_deref(), Some("fastspace"));
+        assert_eq!(
+            table.columns[0].comment.as_deref(),
+            Some("Stable adopter-facing identifier")
+        );
+        assert_eq!(table.columns[1].comment, None);
     }
 
     #[test]

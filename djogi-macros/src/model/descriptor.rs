@@ -82,6 +82,12 @@ fn framework_field_descriptor(name: &str, sql_type_tokens: TokenStream, pk: bool
             // Framework-injected columns carry no adopter
             // `#[field(check = "...")]`; the slot is always `None`.
             check_sql: ::std::option::Option::None,
+            // Phase 8.5 Cluster 4 (djogi#217) — framework-injected
+            // columns carry no adopter `#[field(comment)]`; the slot
+            // is always `None`. Adopters who want descriptive labels
+            // on the framework columns can read from the descriptor's
+            // `rationale` slot instead.
+            comment: ::std::option::Option::None,
         }
     }
 }
@@ -512,6 +518,22 @@ fn try_expand(
                 None => quote! { ::std::option::Option::None },
             };
 
+            // Phase 8.5 Cluster 4 (djogi#217) — adopter
+            // `#[field(comment = "<text>")]` column-level free-text
+            // comment. Validated as non-empty / non-whitespace-only
+            // by `FieldAttrs::parse`; emit verbatim into the
+            // descriptor so the migration composer can lower it to
+            // `COMMENT ON COLUMN <t>.<c> IS '<text>'`. The composer
+            // owns single-quote escaping at SQL-emission time so the
+            // descriptor carries the adopter's original prose.
+            let comment_tokens: TokenStream = match &fa.comment {
+                Some(text) => {
+                    let text_str = text.as_str();
+                    quote! { ::std::option::Option::Some(#text_str) }
+                }
+                None => quote! { ::std::option::Option::None },
+            };
+
             quote! {
                 ::djogi::FieldDescriptor {
                     name: #name,
@@ -565,6 +587,11 @@ fn try_expand(
                     // `#[field(check = "<sql>")]` raw-SQL CHECK expression.
                     // `None` for fields without an adopter check.
                     check_sql: #check_sql_tokens,
+                    // Phase 8.5 Cluster 4 (djogi#217) — adopter
+                    // `#[field(comment = "<text>")]` column-level
+                    // comment. `None` for fields without an adopter
+                    // comment.
+                    comment: #comment_tokens,
                 }
             }
         })
@@ -624,6 +651,25 @@ fn try_expand(
     // file for the Phase 7 migration differ to consume.
     let tenant_key_tokens = match &model_attrs.tenant_key {
         Some(col) => quote! { ::std::option::Option::Some(#col) },
+        None => quote! { ::std::option::Option::None },
+    };
+
+    // Phase 8.5 Cluster 4 (djogi#217) — `#[model(table_comment = "<text>")]`
+    // free-text table comment. Validated as non-empty / non-whitespace-only
+    // by `ModelAttrs::parse`; emit verbatim into the descriptor so the
+    // migration composer can lower it to `COMMENT ON TABLE <t> IS '<text>'`.
+    // The composer owns single-quote escaping at SQL-emission time so the
+    // descriptor carries the adopter's original prose.
+    let table_comment_tokens = match &model_attrs.table_comment {
+        Some(text) => quote! { ::std::option::Option::Some(#text) },
+        None => quote! { ::std::option::Option::None },
+    };
+    let storage_params_tokens = match &model_attrs.storage_params {
+        Some(text) => quote! { ::std::option::Option::Some(#text) },
+        None => quote! { ::std::option::Option::None },
+    };
+    let tablespace_tokens = match &model_attrs.tablespace {
+        Some(text) => quote! { ::std::option::Option::Some(#text) },
         None => quote! { ::std::option::Option::None },
     };
 
@@ -940,6 +986,15 @@ fn try_expand(
                 // populates this from parsed `#[computed(sql = "...")]`
                 // field attributes; empty slice for non-computed models.
                 computed_fields: #computed_fields_tokens,
+                // Phase 8.5 Cluster 4 (djogi#217) — adopter
+                // `#[model(table_comment = "<text>")]` free-text
+                // table comment. `None` when the attribute is absent.
+                table_comment: #table_comment_tokens,
+                // Phase 8.5 Cluster 4 (djogi#218/#219) — adopter
+                // `#[model(storage_params = "...")]` and
+                // `#[model(tablespace = "...")]` metadata.
+                storage_params: #storage_params_tokens,
+                tablespace: #tablespace_tokens,
             }
         }
         #(#deferrability_submits)*

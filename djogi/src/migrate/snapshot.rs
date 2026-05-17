@@ -470,6 +470,7 @@ mod tests {
         let columns = vec![
             ColumnSchema {
                 check: None,
+                comment: None,
                 default_sql: Some("heerid_next_desc()".to_string()),
                 foreign_key: None,
                 generated: None,
@@ -490,6 +491,7 @@ mod tests {
             },
             ColumnSchema {
                 check: None,
+                comment: None,
                 default_sql: None,
                 foreign_key: Some(ForeignKeySchema {
                     deferrable: false,
@@ -537,6 +539,9 @@ mod tests {
             renamed_from: None,
             rls_enabled: true,
             table: "vehicles".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: Some("org_id".to_string()),
         };
         snap.models.insert("vehicles".to_string(), table);
@@ -582,6 +587,7 @@ mod tests {
         let columns = vec![
             ColumnSchema {
                 check: None,
+                comment: None,
                 default_sql: Some("heerid_next()".to_string()),
                 foreign_key: None,
                 generated: None,
@@ -602,6 +608,7 @@ mod tests {
             },
             ColumnSchema {
                 check: None,
+                comment: None,
                 default_sql: None,
                 foreign_key: None,
                 generated: Some(GeneratedColumnSchema {
@@ -656,6 +663,9 @@ mod tests {
             renamed_from: None,
             rls_enabled: false,
             table: "bookings".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         };
         snap.models.insert("bookings".to_string(), table);

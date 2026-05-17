@@ -307,6 +307,22 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
             variant,
             anchor,
         } => Ok(emit_add_enum_variant(enum_name, variant, anchor.as_ref())),
+        // Phase 8.5 Cluster 4 djogi#217 — `COMMENT ON TABLE` lowering.
+        // The composer owns single-quote escaping inside the comment
+        // text via `escape_comment_literal`.
+        SchemaOperation::SetTableComment { table, from, to } => Ok(emit_set_table_comment(
+            table,
+            from.as_deref(),
+            to.as_deref(),
+        )),
+        SchemaOperation::SetStorageParams { table, from, to } => Ok(emit_set_storage_params(
+            table,
+            from.as_deref(),
+            to.as_deref(),
+        )),
+        SchemaOperation::SetTablespace { table, from, to } => {
+            Ok(emit_set_tablespace(table, from.as_deref(), to.as_deref()))
+        }
         SchemaOperation::PkTypeFlip { table, from, to } => {
             Err(SqlEmitError::PkTypeFlipMustRouteToT9 {
                 table: table.clone(),
@@ -496,6 +512,43 @@ fn emit_add_table(t: &TableSchema) -> OperationSql {
     }
     up.push(';');
 
+    // Phase 8.5 Cluster 4 djogi#217 — append `COMMENT ON TABLE …`
+    // immediately after the `CREATE TABLE` statement when the
+    // adopter declared `#[model(table_comment = "…")]`. The composer
+    // doubles single quotes inside the text via
+    // `escape_comment_literal` so apostrophes round-trip safely.
+    if let Some(comment) = t.table_comment.as_deref() {
+        up.push('\n');
+        let _ = write!(
+            up,
+            "COMMENT ON TABLE {qt} IS '{}';",
+            escape_comment_literal(comment)
+        );
+    }
+    // Phase 8.5 Cluster 4 djogi#217 — append `COMMENT ON COLUMN …`
+    // for every column carrying `#[field(comment = "…")]`. Emission
+    // order matches column declaration order (the same order the
+    // CREATE TABLE column list above uses) so the resulting migration
+    // SQL is byte-stable across runs.
+    for col in &t.columns {
+        if let Some(comment) = col.comment.as_deref() {
+            up.push('\n');
+            up.push_str(&render_comment_on_column(
+                &t.table,
+                &col.name,
+                Some(comment),
+            ));
+        }
+    }
+    if let Some(params) = t.storage_params.as_deref() {
+        up.push('\n');
+        up.push_str(&render_set_storage_params(&t.table, params));
+    }
+    if let Some(tablespace) = t.tablespace.as_deref() {
+        up.push('\n');
+        up.push_str(&render_set_tablespace(&t.table, Some(tablespace)));
+    }
+
     let down = format!("DROP TABLE {qt};");
     OperationSql {
         label: format!("AddTable {}", t.table),
@@ -554,6 +607,16 @@ fn emit_add_column(table: &str, col: &ColumnSchema) -> OperationSql {
     let _ = write!(up, "ALTER TABLE {qt} ADD COLUMN ");
     write_column_definition(&mut up, col, table);
     up.push(';');
+    // Phase 8.5 Cluster 4 djogi#217 — emit `COMMENT ON COLUMN …`
+    // immediately after `ADD COLUMN` when the descriptor carries a
+    // comment. The differ filters back-compat snapshots that
+    // load with `comment: None` so this path only fires when the
+    // adopter actually declared `#[field(comment = "…")]` on the
+    // new column.
+    if let Some(comment) = col.comment.as_deref() {
+        up.push('\n');
+        up.push_str(&render_comment_on_column(table, &col.name, Some(comment)));
+    }
     let down = format!("ALTER TABLE {qt} DROP COLUMN {qc};");
     OperationSql {
         label: format!("AddColumn {table}.{}", col.name),
@@ -884,6 +947,25 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
                     unreachable!("ColumnChange::SetIdentity is only emitted when from != to")
                 }
             }
+        }
+        // Phase 8.5 djogi#217 — `COMMENT ON COLUMN` lowering.
+        //
+        // `COMMENT ON COLUMN` is its own top-level statement, not an
+        // `ALTER TABLE … ALTER COLUMN` shape; routing it through
+        // `emit_alter_column` is convenience (the differ exposes it
+        // as a column-level change), not a SQL-shape claim. The
+        // `label_suffix` reflects this distinction so the migration
+        // log line reads `AlterColumn {table}.{column} (set
+        // COMMENT)` even though no `ALTER TABLE` is emitted.
+        //
+        // The composer doubles single quotes inside the value via
+        // `escape_comment_literal`; the differ filters identical
+        // pairs upstream so `(None, None)` and `(Some(a), Some(a))`
+        // never reach this arm.
+        ColumnChange::SetComment { from, to } => {
+            let up = render_comment_on_column(table, column, to.as_deref());
+            let down = render_comment_on_column(table, column, from.as_deref());
+            (up, down, "set COMMENT", None)
         }
     };
     OperationSql {
@@ -1246,6 +1328,146 @@ fn emit_move_model_between_apps(model: &str, from_app: &str, to_app: &str) -> Op
     }
 }
 
+/// Emit `COMMENT ON TABLE <qt> IS '<escaped-to>'` (or `IS NULL` when
+/// the comment is cleared), plus the symmetric down side restoring
+/// `from`. Phase 8.5 Cluster 4 (djogi#217).
+///
+/// The differ filters identical pairs upstream, so `(None, None)` and
+/// `(Some(a), Some(b))` with `a == b` never reach this fn in practice.
+/// The defensive arm emits no-op SQL comments so a bug in the differ
+/// surfaces as visible no-op output rather than malformed SQL.
+fn emit_set_table_comment(table: &str, from: Option<&str>, to: Option<&str>) -> OperationSql {
+    let qt = quote_ident(table);
+    let render = |value: Option<&str>| -> String {
+        match value {
+            Some(text) => format!(
+                "COMMENT ON TABLE {qt} IS '{}';",
+                escape_comment_literal(text)
+            ),
+            None => format!("COMMENT ON TABLE {qt} IS NULL;"),
+        }
+    };
+    let up = render(to);
+    let down = render(from);
+    OperationSql {
+        label: format!("SetTableComment {table}"),
+        up,
+        down,
+        // `COMMENT ON` is a catalog-only write with no row touch —
+        // both up and down are losslessly recoverable from the carried
+        // `from` / `to`. No lossy marker.
+        lossy: None,
+    }
+}
+
+/// Emit reversible `ALTER TABLE ... SET/RESET (...)` storage-parameter
+/// metadata changes. Phase 8.5 Cluster 4 (djogi#218).
+fn emit_set_storage_params(table: &str, from: Option<&str>, to: Option<&str>) -> OperationSql {
+    let render = |reset: Option<&str>, set: Option<&str>| -> String {
+        let mut out = String::new();
+        if let Some(params) = reset {
+            out.push_str(&render_reset_storage_params(table, params));
+        }
+        if let Some(params) = set {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&render_set_storage_params(table, params));
+        }
+        if out.is_empty() {
+            format!(
+                "-- no-op storage parameter change for {}",
+                quote_ident(table)
+            )
+        } else {
+            out
+        }
+    };
+    OperationSql {
+        label: format!("SetStorageParams {table}"),
+        up: render(from, to),
+        down: render(to, from),
+        lossy: None,
+    }
+}
+
+fn render_set_storage_params(table: &str, params: &str) -> String {
+    let qt = quote_ident(table);
+    format!("ALTER TABLE {qt} SET ({params});")
+}
+
+fn render_reset_storage_params(table: &str, params: &str) -> String {
+    let qt = quote_ident(table);
+    let keys = storage_param_keys(params).join(", ");
+    format!("ALTER TABLE {qt} RESET ({keys});")
+}
+
+fn storage_param_keys(params: &str) -> Vec<&str> {
+    params
+        .split(',')
+        .filter_map(|part| part.split_once('=').map(|(key, _)| key.trim()))
+        .filter(|key| !key.is_empty())
+        .collect()
+}
+
+/// Emit reversible `ALTER TABLE ... SET TABLESPACE ...` metadata
+/// changes. `None` lowers to `pg_default`, Djogi's representation for
+/// "no explicit tablespace". Phase 8.5 Cluster 4 (djogi#219).
+fn emit_set_tablespace(table: &str, from: Option<&str>, to: Option<&str>) -> OperationSql {
+    OperationSql {
+        label: format!("SetTablespace {table}"),
+        up: render_set_tablespace(table, to),
+        down: render_set_tablespace(table, from),
+        lossy: None,
+    }
+}
+
+fn render_set_tablespace(table: &str, tablespace: Option<&str>) -> String {
+    let qt = quote_ident(table);
+    let qs = quote_ident(tablespace.unwrap_or("pg_default"));
+    format!("ALTER TABLE {qt} SET TABLESPACE {qs};")
+}
+
+/// Emit `COMMENT ON COLUMN <qt>.<qc> IS '<escaped>'` (or `IS NULL`).
+/// Shared between [`emit_alter_column`]'s `SetComment` arm and the
+/// inline emission that follows `CREATE TABLE` / `ADD COLUMN` for
+/// fields that ship with `#[field(comment = "…")]` set on initial
+/// creation. Phase 8.5 Cluster 4 (djogi#217).
+fn render_comment_on_column(table: &str, column: &str, value: Option<&str>) -> String {
+    let qt = quote_ident(table);
+    let qc = quote_ident(column);
+    match value {
+        Some(text) => format!(
+            "COMMENT ON COLUMN {qt}.{qc} IS '{}';",
+            escape_comment_literal(text)
+        ),
+        None => format!("COMMENT ON COLUMN {qt}.{qc} IS NULL;"),
+    }
+}
+
+/// Escape a Postgres SQL-literal string for inlining into a `'…'`
+/// literal under `standard_conforming_strings = on`. Doubles each
+/// apostrophe per the Postgres lexer rule
+/// ([§4.1.2.1](https://www.postgresql.org/docs/18/sql-syntax-lexical.html#SQL-SYNTAX-STRINGS)),
+/// which is the PG 18 default and the only mode djogi supports.
+///
+/// **Scope.** Used by the `COMMENT ON` emission path (djogi#217) only.
+/// Every other adopter SQL path treats the value as raw SQL and does
+/// NOT escape — adopters writing `#[field(check = "…")]` are
+/// responsible for the SQL fragment's correctness themselves. The
+/// helper is scope-named so future callers cannot accidentally adopt it
+/// for raw-SQL paths.
+///
+/// **Legacy-mode caveat.** A target cluster set to
+/// `standard_conforming_strings = off` would interpret `\'` as the
+/// escape sequence and `''` as literal-doubled — but djogi targets
+/// PG 18+ only, where the parameter cannot be set off (the legacy
+/// option was removed in PG 14). The escape is correct everywhere
+/// djogi runs.
+fn escape_comment_literal(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 /// Emit `"ident"` — double-quote and escape any embedded `"` per
@@ -1591,6 +1813,7 @@ mod tests {
     fn col(name: &str, ty: &str, nullable: bool) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            comment: None,
             default_sql: None,
             foreign_key: None,
             generated: None,
@@ -1639,6 +1862,9 @@ mod tests {
             renamed_from: None,
             rls_enabled: false,
             table: name.to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         }
     }
@@ -1653,6 +1879,7 @@ mod tests {
             id_column_heerid(),
             ColumnSchema {
                 check: check.map(|s| s.to_string()),
+                comment: None,
                 default_sql: None,
                 foreign_key: None,
                 generated: None,
@@ -3586,6 +3813,71 @@ mod tests {
                 .contains("\"email_lower\" TEXT GENERATED ALWAYS AS (LOWER(email)) STORED"),
             "missing inline GENERATED: {}",
             op.up
+        );
+    }
+
+    #[test]
+    fn add_table_emits_ddl_metadata_after_create_table() {
+        let mut t = synth_table("widgets");
+        t.table_comment = Some("Widget owner's table".to_string());
+        t.storage_params = Some("fillfactor=70, autovacuum_enabled=false".to_string());
+        t.tablespace = Some("fastspace".to_string());
+        t.columns[1].comment = Some("Human-readable widget name".to_string());
+
+        let sql = emit_add_table(&t);
+
+        assert!(sql.up.contains("CREATE TABLE \"widgets\""));
+        assert!(
+            sql.up
+                .contains("COMMENT ON TABLE \"widgets\" IS 'Widget owner''s table';")
+        );
+        assert!(
+            sql.up.contains(
+                "COMMENT ON COLUMN \"widgets\".\"name\" IS 'Human-readable widget name';"
+            )
+        );
+        assert!(
+            sql.up
+                .contains("ALTER TABLE \"widgets\" SET (fillfactor=70, autovacuum_enabled=false);")
+        );
+        assert!(
+            sql.up
+                .contains("ALTER TABLE \"widgets\" SET TABLESPACE \"fastspace\";")
+        );
+    }
+
+    #[test]
+    fn table_metadata_operations_are_reversible_sql() {
+        let storage = lower_operation(&SchemaOperation::SetStorageParams {
+            table: "widgets".to_string(),
+            from: Some("fillfactor=80".to_string()),
+            to: Some("fillfactor=70, autovacuum_enabled=false".to_string()),
+        })
+        .expect("storage params lower");
+        assert_eq!(
+            storage.up,
+            "ALTER TABLE \"widgets\" RESET (fillfactor);\n\
+             ALTER TABLE \"widgets\" SET (fillfactor=70, autovacuum_enabled=false);"
+        );
+        assert_eq!(
+            storage.down,
+            "ALTER TABLE \"widgets\" RESET (fillfactor, autovacuum_enabled);\n\
+             ALTER TABLE \"widgets\" SET (fillfactor=80);"
+        );
+
+        let tablespace = lower_operation(&SchemaOperation::SetTablespace {
+            table: "widgets".to_string(),
+            from: None,
+            to: Some("fastspace".to_string()),
+        })
+        .expect("tablespace lower");
+        assert_eq!(
+            tablespace.up,
+            "ALTER TABLE \"widgets\" SET TABLESPACE \"fastspace\";"
+        );
+        assert_eq!(
+            tablespace.down,
+            "ALTER TABLE \"widgets\" SET TABLESPACE \"pg_default\";"
         );
     }
 }

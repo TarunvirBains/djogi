@@ -346,6 +346,44 @@ pub enum SchemaOperation {
         to_app: String,
     },
 
+    /// Set / change / clear the table-level `COMMENT ON TABLE`
+    /// metadata for `table`. Phase 8.5 Cluster 4 (djogi#217).
+    ///
+    /// Carries both `from` and `to` so the SQL emitter renders a
+    /// fully reversible down side — `from = Some(prev)` restores the
+    /// pre-operation comment, `from = None` rolls back to the
+    /// commentless state with `COMMENT ON TABLE … IS NULL`. The
+    /// differ filters no-op pairs (`(None, None)` and
+    /// `(Some(a), Some(b))` with `a == b`) before emission. The op
+    /// classifies as catalog-only (`OnlineSafe`) — `COMMENT ON` is a
+    /// pure `pg_description` write with no row touch.
+    SetTableComment {
+        /// Table whose comment is being set / changed / cleared.
+        table: String,
+        /// Prior `COMMENT ON TABLE` value. `None` when no comment
+        /// existed before the operation.
+        from: Option<String>,
+        /// Target `COMMENT ON TABLE` value. `None` clears the
+        /// comment (lowered to `COMMENT ON TABLE … IS NULL`).
+        to: Option<String>,
+    },
+
+    /// Set / change / clear table storage parameters. Phase 8.5
+    /// Cluster 4 (djogi#218).
+    SetStorageParams {
+        table: String,
+        from: Option<String>,
+        to: Option<String>,
+    },
+
+    /// Set / change / clear the explicit table tablespace. Phase 8.5
+    /// Cluster 4 (djogi#219).
+    SetTablespace {
+        table: String,
+        from: Option<String>,
+        to: Option<String>,
+    },
+
     /// Catch-all for changes the differ recognised but cannot lower
     /// safely — non-flip PK transitions (e.g. `HeerId → Serial`),
     /// enum variant removals, partition method changes. Carries an
@@ -421,6 +459,24 @@ pub enum ColumnChange {
     SetGenerated {
         from: Option<GeneratedColumnSchema>,
         to: Option<GeneratedColumnSchema>,
+    },
+
+    /// Set / change / clear the column-level `COMMENT ON COLUMN`
+    /// metadata. djogi#217.
+    ///
+    /// Carries both `from` and `to` so the SQL emitter renders a
+    /// fully reversible down side — `from = Some(prev)` restores the
+    /// pre-operation comment, `from = None` rolls back to the
+    /// commentless state with `COMMENT ON COLUMN … IS NULL`. The
+    /// differ filters no-op pairs (`(None, None)` and
+    /// `(Some(a), Some(b))` with `a == b`) before emission.
+    SetComment {
+        /// Prior `COMMENT ON COLUMN` value. `None` when no comment
+        /// existed before the operation.
+        from: Option<String>,
+        /// Target `COMMENT ON COLUMN` value. `None` clears the
+        /// comment (lowered to `COMMENT ON COLUMN … IS NULL`).
+        to: Option<String>,
     },
 
     /// Identity-column declaration changed
@@ -1970,6 +2026,7 @@ fn diff_tables(
         let column_renames = diff_columns_in_table(before_table, after_table, ops);
         diff_pk_in_table(before_table, after_table, &column_renames, ops);
         diff_exclusion_constraints_in_table(before_table, after_table, ops);
+        diff_table_metadata_in_table(before_table, after_table, ops);
     }
 
     // Common tables (same name in both schemas) — column diff.
@@ -1984,6 +2041,48 @@ fn diff_tables(
         diff_pk_in_table(before_table, after_table, &column_renames, ops);
         diff_app_move_in_table(before_table, after_table, ops);
         diff_exclusion_constraints_in_table(before_table, after_table, ops);
+        diff_table_metadata_in_table(before_table, after_table, ops);
+    }
+}
+
+/// Detect changes to table-level DDL metadata between two snapshots of
+/// the same table. Phase 8.5 Cluster 4 (djogi#172 umbrella).
+///
+/// Currently handles:
+/// - `table_comment` → [`SchemaOperation::SetTableComment`] (djogi#217)
+/// - `storage_params` → [`SchemaOperation::SetStorageParams`] (djogi#218)
+/// - `tablespace` → [`SchemaOperation::SetTablespace`] (djogi#219)
+///
+/// Each slot emits one `SchemaOperation` when the before / after
+/// values diverge; identical values produce no operation.
+fn diff_table_metadata_in_table(
+    before: &TableSchema,
+    after: &TableSchema,
+    ops: &mut Vec<SchemaOperation>,
+) {
+    // djogi#217 — table comment. Only emit when the value actually
+    // changes so two consecutive differ runs against the same source
+    // produce byte-identical output.
+    if before.table_comment != after.table_comment {
+        ops.push(SchemaOperation::SetTableComment {
+            table: after.table.clone(),
+            from: before.table_comment.clone(),
+            to: after.table_comment.clone(),
+        });
+    }
+    if before.storage_params != after.storage_params {
+        ops.push(SchemaOperation::SetStorageParams {
+            table: after.table.clone(),
+            from: before.storage_params.clone(),
+            to: after.storage_params.clone(),
+        });
+    }
+    if before.tablespace != after.tablespace {
+        ops.push(SchemaOperation::SetTablespace {
+            table: after.table.clone(),
+            from: before.tablespace.clone(),
+            to: after.tablespace.clone(),
+        });
     }
 }
 
@@ -2256,6 +2355,18 @@ fn emit_alter_column(
             push(ColumnChange::SetIdentity {
                 from: before.identity,
                 to: after.identity,
+            });
+        }
+        // Phase 8.5 djogi#217 — `#[field(comment)]` transitions
+        // surface as a single `SetComment { from, to }` that the
+        // emitter lowers to one `COMMENT ON COLUMN <t>.<c> IS …`
+        // statement (or `IS NULL` when clearing). Only emit when the
+        // value actually changes so two consecutive differ runs
+        // produce byte-identical output.
+        if before.comment != after.comment {
+            push(ColumnChange::SetComment {
+                from: before.comment.clone(),
+                to: after.comment.clone(),
             });
         }
     }
@@ -2680,6 +2791,9 @@ fn severity_of(op: &SchemaOperation) -> Severity {
             }
         }
         SchemaOperation::AddTable(_)
+        | SchemaOperation::SetTableComment { .. }
+        | SchemaOperation::SetStorageParams { .. }
+        | SchemaOperation::SetTablespace { .. }
         | SchemaOperation::AddIndex(_)
         | SchemaOperation::AddEnum(_)
         | SchemaOperation::AddEnumVariant { .. }
@@ -3402,6 +3516,7 @@ mod tests {
 
         let id_col = ColumnSchema {
             check: None,
+            comment: None,
             default_sql: Some("heerid_next()".to_string()),
             foreign_key: None,
             generated: None,
@@ -3422,6 +3537,7 @@ mod tests {
         };
         let amount_col = ColumnSchema {
             check: check.map(|s| s.to_string()),
+            comment: None,
             default_sql: None,
             foreign_key: None,
             generated: None,
@@ -3459,6 +3575,9 @@ mod tests {
                 renamed_from: None,
                 rls_enabled: false,
                 table: "widgets".to_string(),
+                table_comment: None,
+                storage_params: None,
+                tablespace: None,
                 tenant_key: None,
             },
         );
@@ -3536,6 +3655,49 @@ mod tests {
             ),
             "ADD CHECK emits SetCheck {{ from: None, to: Some(new) }}: {changes:?}"
         );
+    }
+
+    #[test]
+    fn table_metadata_changes_emit_dedicated_operations() {
+        let mut before = build_table_with_check(None);
+        let mut after = build_table_with_check(None);
+        let before_table = before.models.get_mut("widgets").expect("before table");
+        before_table.table_comment = Some("old comment".to_string());
+        before_table.storage_params = Some("fillfactor=80".to_string());
+        before_table.tablespace = Some("slowspace".to_string());
+        let after_table = after.models.get_mut("widgets").expect("after table");
+        after_table.table_comment = Some("new comment".to_string());
+        after_table.storage_params = Some("fillfactor=70, autovacuum_enabled=false".to_string());
+        after_table.tablespace = Some("fastspace".to_string());
+
+        let delta = diff_schemas(&before, &after, empty_global());
+
+        assert!(delta.operations.iter().any(|op| matches!(
+            op,
+            SchemaOperation::SetTableComment {
+                table,
+                from: Some(from),
+                to: Some(to),
+            } if table == "widgets" && from == "old comment" && to == "new comment"
+        )));
+        assert!(delta.operations.iter().any(|op| matches!(
+            op,
+            SchemaOperation::SetStorageParams {
+                table,
+                from: Some(from),
+                to: Some(to),
+            } if table == "widgets"
+                && from == "fillfactor=80"
+                && to == "fillfactor=70, autovacuum_enabled=false"
+        )));
+        assert!(delta.operations.iter().any(|op| matches!(
+            op,
+            SchemaOperation::SetTablespace {
+                table,
+                from: Some(from),
+                to: Some(to),
+            } if table == "widgets" && from == "slowspace" && to == "fastspace"
+        )));
     }
 
     #[test]
@@ -3704,6 +3866,7 @@ mod tests {
         fn build_schema(identity: Option<IdentityKindSchema>) -> AppliedSchema {
             let id_col = ColumnSchema {
                 check: None,
+                comment: None,
                 default_sql: None,
                 foreign_key: None,
                 generated: None,
@@ -3738,6 +3901,9 @@ mod tests {
                 renamed_from: None,
                 rls_enabled: false,
                 table: "countries".to_string(),
+                table_comment: None,
+                storage_params: None,
+                tablespace: None,
                 tenant_key: None,
             };
             let mut models = BTreeMap::new();
@@ -4044,6 +4210,7 @@ mod tests {
                 app: None,
                 columns: vec![ColumnSchema {
                     check: None,
+                    comment: None,
                     default_sql: None,
                     foreign_key: None,
                     generated: None,
@@ -4075,6 +4242,9 @@ mod tests {
                 renamed_from: None,
                 rls_enabled: false,
                 table: "widgets".to_string(),
+                table_comment: None,
+                storage_params: None,
+                tablespace: None,
                 tenant_key: None,
             },
         );
@@ -4312,6 +4482,7 @@ mod tests {
         // PK column
         columns.push(ColumnSchema {
             check: None,
+            comment: None,
             default_sql: None,
             foreign_key: None,
             generated: None,
@@ -4333,6 +4504,7 @@ mod tests {
         for (col, ref_table) in fks {
             columns.push(ColumnSchema {
                 check: None,
+                comment: None,
                 default_sql: None,
                 foreign_key: Some(ForeignKeySchema {
                     deferrable: false,
@@ -4374,6 +4546,9 @@ mod tests {
             renamed_from: None,
             rls_enabled: false,
             table: table.to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         }
     }
@@ -4410,6 +4585,7 @@ mod tests {
             columns: vec![
                 ColumnSchema {
                     check: None,
+                    comment: None,
                     default_sql: None,
                     foreign_key: None,
                     generated: None,
@@ -4430,6 +4606,7 @@ mod tests {
                 },
                 ColumnSchema {
                     check: None,
+                    comment: None,
                     default_sql: None,
                     foreign_key: None,
                     generated: None,
@@ -4464,6 +4641,9 @@ mod tests {
             renamed_from: None,
             rls_enabled: false,
             table: "left_events".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         };
         let right = synth_table_with_fks("right_tags", &[], right_pk);
@@ -4472,6 +4652,7 @@ mod tests {
             columns: vec![
                 ColumnSchema {
                     check: None,
+                    comment: None,
                     default_sql: Some("heerid_next()".to_string()),
                     foreign_key: None,
                     generated: None,
@@ -4492,6 +4673,7 @@ mod tests {
                 },
                 ColumnSchema {
                     check: None,
+                    comment: None,
                     default_sql: None,
                     foreign_key: Some(ForeignKeySchema {
                         deferrable: false,
@@ -4518,6 +4700,7 @@ mod tests {
                 },
                 ColumnSchema {
                     check: None,
+                    comment: None,
                     default_sql: None,
                     foreign_key: Some(ForeignKeySchema {
                         deferrable: false,
@@ -4556,6 +4739,9 @@ mod tests {
             renamed_from: None,
             rls_enabled: false,
             table: "event_tags".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         };
         synth_schema_with_tables(vec![left, right, join])

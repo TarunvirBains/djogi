@@ -3016,6 +3016,7 @@ mod tests {
     fn id_col() -> ColumnSchema {
         ColumnSchema {
             check: None,
+            comment: None,
             default_sql: Some("heerid_next()".to_string()),
             foreign_key: None,
             generated: None,
@@ -3046,6 +3047,7 @@ mod tests {
     fn fk_col(name: &str, target: &str, nullable: bool) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            comment: None,
             default_sql: None,
             foreign_key: Some(ForeignKeySchema {
                 deferrable: false,
@@ -3094,6 +3096,9 @@ mod tests {
             renamed_from: None,
             rls_enabled: false,
             table: name.to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         }
     }
@@ -3120,6 +3125,9 @@ mod tests {
             renamed_from: None,
             rls_enabled: false,
             table: name.to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         }
     }
@@ -3278,6 +3286,9 @@ mod tests {
             renamed_from: None,
             rls_enabled: false,
             table: "book_tags".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         };
         let mut before = empty_schema();

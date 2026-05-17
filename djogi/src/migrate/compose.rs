@@ -1622,6 +1622,7 @@ mod tests {
                 },
                 columns: vec![ColumnSchema {
                     check: None,
+                    comment: None,
                     default_sql: Some("heerid_next_desc()".to_string()),
                     foreign_key: None,
                     generated: None,
@@ -1653,6 +1654,9 @@ mod tests {
                 renamed_from: None,
                 rls_enabled: false,
                 table: "widgets".to_string(),
+                table_comment: None,
+                storage_params: None,
+                tablespace: None,
                 tenant_key: None,
             },
         );
@@ -1891,6 +1895,7 @@ mod tests {
         let new_table = new_schema.models.get_mut("widgets").unwrap();
         new_table.columns.push(ColumnSchema {
             check: None,
+            comment: None,
             default_sql: None,
             foreign_key: None,
             generated: None,
@@ -2941,6 +2946,7 @@ mod tests {
                         },
                         columns: vec![ColumnSchema {
                             check: None,
+                            comment: None,
                             default_sql: Some("heerid_next_desc()".to_string()),
                             foreign_key: None,
                             generated: None,
@@ -2972,6 +2978,9 @@ mod tests {
                         renamed_from: None,
                         rls_enabled: false,
                         table: name.to_string(),
+                        table_comment: None,
+                        storage_params: None,
+                        tablespace: None,
                         tenant_key: None,
                     },
                 );
