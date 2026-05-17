@@ -242,6 +242,18 @@ pub(crate) fn sql_cast_for_type(type_name: &str) -> Option<&'static str> {
         // rust_decimal::Decimal — stored as NUMERIC in Postgres.
         // Real `type_name` is `rust_decimal::decimal::Decimal`.
         "rust_decimal::decimal::Decimal" | "rust_decimal::Decimal" | "Decimal" => Some("::numeric"),
+        // Interval (djogi#212) — djogi's own newtype wrapping the Postgres
+        // `INTERVAL` wire format. The struct is defined in `djogi::pg_types`
+        // (not a private sub-module), so `type_name::<djogi::Interval>()`
+        // produces `djogi::pg_types::Interval` at runtime. The public
+        // re-export alias `djogi::types::Interval` and the bare name
+        // `Interval` are kept defensively; re-export aliases are never
+        // returned by `type_name`, but hand-written test strings may use
+        // them. Inside a JSONB column an interval is stored as its ISO 8601
+        // text representation (e.g. `"P1M2DT3.5S"`); the `->>'key'`
+        // text-extraction operator produces that text, which Postgres can
+        // then cast to `interval` for a correct typed comparison.
+        "djogi::pg_types::Interval" | "djogi::types::Interval" | "Interval" => Some("::interval"),
         // alloc::string::String / &str — text extraction already yields TEXT,
         // no cast needed. Both spellings are listed defensively.
         "alloc::string::String" | "String" | "&str" | "str" => None,
@@ -703,6 +715,40 @@ mod tests {
             sql_cast_for_type(name),
             None,
             "type_name<String>() = {name:?} should require no cast"
+        );
+    }
+
+    // Interval cast — hand-written string coverage. All defensive spellings
+    // must map to `::interval` so JSONB path comparisons cast the text-
+    // extracted LHS before comparing against an INTERVAL bind parameter.
+    #[test]
+    fn sql_cast_for_interval() {
+        // Canonical type_name output — the defining module path.
+        assert_eq!(
+            sql_cast_for_type("djogi::pg_types::Interval"),
+            Some("::interval")
+        );
+        // Public re-export spellings (defensive — never produced by
+        // type_name, but exercised by hand-written test strings).
+        assert_eq!(
+            sql_cast_for_type("djogi::types::Interval"),
+            Some("::interval")
+        );
+        assert_eq!(sql_cast_for_type("Interval"), Some("::interval"));
+    }
+
+    // Lock the actual `type_name::<crate::Interval>()` output against the
+    // cast table so any future rustc `type_name` format change surfaces as
+    // a test failure here rather than as silent text-fallback in production
+    // JSONB interval queries (same pattern as the Codex round-1 temporal
+    // fix and the round-2 HeerIdDesc/RanjIdDesc fix).
+    #[test]
+    fn sql_cast_uses_actual_type_name_for_interval() {
+        let name = std::any::type_name::<crate::Interval>();
+        assert_eq!(
+            sql_cast_for_type(name),
+            Some("::interval"),
+            "type_name<Interval>() = {name:?} did not map to ::interval"
         );
     }
 
