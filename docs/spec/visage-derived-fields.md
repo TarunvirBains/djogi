@@ -593,9 +593,11 @@ attribute on a model, the macro emits:
    - All derived entries with `S` in their `scopes`, in attribute
      declaration order.
 2. `impl ::djogi::__private::DjogiVisageSealed for <VisageName> {}` — the
-   closed-world metadata gate that prevents third-party code from
-   implementing `DjogiVisage` directly; only visages emitted by
-   `#[derive(Model)]` can satisfy the bound (see
+   metadata seal required by `DjogiVisage`; macro-emitted visages satisfy
+   it via `::djogi::__private::DjogiVisageSealed`, which is outside the
+   public API surface. Ordinary adopter code cannot satisfy it without
+   naming `__private` paths; deliberate hand-impls through those paths are
+   outside the supported public contract rather than compiler-impossible (see
    [Trait surface](#trait-surface)).
 3. The visage's `DjogiVisage` trait impl, with the trait surface
    defined in [Trait surface](#trait-surface).
