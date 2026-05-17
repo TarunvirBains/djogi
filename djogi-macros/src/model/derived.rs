@@ -720,8 +720,9 @@ fn validate_sql_surface(sql: &str, span: Span) -> syn::Result<()> {
             format!(
                 "derived `sql` references the aggregate or window construct \
                  `{hit}` — derived expressions are per-row scalars; aggregates \
-                 and window functions belong to a future `#[annotation]` \
-                 attribute (E_DJG_VDF_009)"
+                 and window functions must use Shape Q (QuerySet \
+                 `.annotate(...)`) or Shape V (`#[derived(..., aggregate = \
+                 true)]` opt-in marker) (E_DJG_VDF_009)"
             ),
         ));
     }

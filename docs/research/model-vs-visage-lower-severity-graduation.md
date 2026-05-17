@@ -38,7 +38,7 @@ between the umbrella body and this note remain stable.
 
 Every claim in this note that names a current code shape was verified
 against the worktree at `phase85/visage-design-228-229` (branch on top
-of `main` at commit `afebd49`). Verification means: `Grep` /
+of `main` at commit `c8fe48b`, after the PR #234 merge). Verification means: `Grep` /
 `Read` for the named symbol, file, or pattern; record the file:line.
 The umbrella body referenced four research artefacts
 (`model-vs-visage-pattern-definition.md`,
@@ -109,7 +109,7 @@ deviations need per-field overrides)."
 
 **Code reality.** Verified at
 [`djogi-macros/src/model/visage_ctx.rs:70-109`][visage-ctx-classify]
-and [`djogi-macros/src/model/attrs.rs:1460-1500`][attrs-expose-fields].
+and [`djogi-macros/src/model/attrs.rs` — `ExposeSpec` / `FieldAttrs::expose`][attrs-expose-fields].
 There is no struct-level visage default; per-field `expose` is the
 only declaration site. The default for a field without `expose` is
 `Absent` (no visage).

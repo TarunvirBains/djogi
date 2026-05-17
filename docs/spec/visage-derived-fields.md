@@ -346,8 +346,11 @@ Validations performed at parse time:
    aggregates outside this list slip through and surface at query
    time as Postgres errors. The guard exists to catch the foot-gun
    where an adopter accidentally tries to scope an aggregate to a
-   per-row projection; comprehensive aggregate support belongs to a
-   future `#[annotation]` attribute (see [Non-goals](#non-goals)).
+   per-row projection; aggregates and window functions must route
+   through **Shape Q** (QuerySet-side `.annotate(...)`) or **Shape V**
+   (`#[derived(..., aggregate = true)]` with the explicit opt-in marker)
+   — both locked in [`docs/spec/decisions.md`](./decisions.md)
+   (see [Non-goals](#non-goals) item 2).
    Tokens inside single-quoted strings and dollar-quoted bodies are
    skipped so `'COUNT'` does not false-positive.
 
