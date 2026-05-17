@@ -162,9 +162,10 @@ pub enum DerivedParityError {
 /// satisfy it. Adopter crates cannot implement the trait directly
 /// because the seal supertrait `__private::DerivedParitySealed`
 /// lives in a `#[doc(hidden)]` module. The seal exists for the same
-/// reason as `DjogiVisage::private::MetadataSealed`: the trait
-/// promise is "this is a macro-emitted projection-aware parity
-/// check," and a hand-written impl would defeat the contract.
+/// reason as [`DjogiVisage`](crate::DjogiVisage)'s
+/// `DjogiVisageOf<Self::Model>` supertrait: the trait promise is
+/// "this is a macro-emitted projection-aware parity check," and a
+/// hand-written impl would defeat the contract.
 ///
 /// # Sync surface
 ///
@@ -195,13 +196,20 @@ pub trait DerivedParity: private::DerivedParitySealed {
 }
 
 /// Sealed seal-only module for [`DerivedParity`].
+///
+/// Re-exported through [`::djogi::__private::DerivedParitySealed`]
+/// (Phase 8.5 #231 reconciliation) so macro-emitted code can
+/// satisfy the seal without naming `djogi::testing::private`
+/// directly. Adopter code never touches this module; the
+/// `#[doc(hidden)]` keeps it off the published rustdoc surface.
+///
+/// [`::djogi::__private::DerivedParitySealed`]: crate::__private::DerivedParitySealed
 #[doc(hidden)]
 pub mod private {
     /// Empty supertrait satisfied only by macro-emitted visages.
     /// Adopter code reaching in is breaking the framework boundary;
     /// the framework reserves the right to evolve the seal shape
-    /// without notice. Same convention as `__private::VisageSealed`
-    /// and `__private::DjogiVisageSealed`.
+    /// without notice. Same convention as `__private::VisageSealed`.
     pub trait DerivedParitySealed {}
 }
 

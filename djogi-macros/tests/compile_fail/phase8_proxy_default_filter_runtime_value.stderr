@@ -86,6 +86,29 @@ note: required by a bound in `DjogiVisageOf`
    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:31:12
+    |
+ 31 | pub struct ActiveVehicle {
+    |            ^^^^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:31:1
+    |
+ 31 | pub struct ActiveVehicle {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^
+help: the trait `djogi::model::Model` is implemented for `Vehicle`
+   --> $DIR/phase8_proxy_default_filter_runtime_value.rs:18:1
+    |
+ 18 | #[model(table = "phase8_proxy_runtime_vehicles")]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `djogi::DjogiVisage::Model`
+   --> djogi/src/visage.rs:254:17
+    |
+254 |     type Model: crate::model::Model;
+    |                 ^^^^^^^^^^^^^^^^^^^ required by this bound in `DjogiVisage::Model`
+    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
    --> $DIR/phase8_proxy_default_filter_runtime_value.rs:25:1
     |
  25 | / #[model(
@@ -286,6 +309,6 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error: aborting due to 12 previous errors
+error: aborting due to 13 previous errors
 
 For more information about this error, try `rustc --explain E0277`.

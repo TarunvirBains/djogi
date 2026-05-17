@@ -578,10 +578,18 @@ fn emit_djogi_visage_impl(
         }
     }
 
+    let source = ctx.source;
     quote! {
-        impl ::djogi::__private::DjogiVisageSealed for #proj_name {}
-
+        // Phase 8.5 #231 reconciliation — emit `type Model = #source`
+        // so generic `V: DjogiVisage` consumers reach the source model
+        // (and the source table via `<V::Model as
+        // ::djogi::prelude::Model>::table_name()`) without threading
+        // the model in as a separate type parameter. The seal is the
+        // existing `DjogiVisageOf<#source>` impl emitted alongside the
+        // `{Visage}Fields` machinery in `visage_fields::expand` — no
+        // standalone metadata seal is required.
         impl ::djogi::DjogiVisage for #proj_name {
+            type Model = #source;
             const SCOPE: &'static str = #scope;
             const COLUMNS: &'static [&'static str] = &[ #(#columns_lits),* ];
             const PROJECTIONS: &'static [::djogi::__private::ProjectionEntry] = &[
@@ -693,7 +701,15 @@ fn emit_assert_derived_parity(
     // `where` bounds as the inherent so the `<Ty>: PartialEq`
     // diagnostic anchors at one stable site (E_DJG_VDF_016).
     quote! {
-        impl ::djogi::testing::private::DerivedParitySealed for #proj_name {}
+        // Phase 8.5 #231 reconciliation — route the seal through
+        // `::djogi::__private::DerivedParitySealed` per
+        // `feedback_macro_path_routing.md` (macro paths route through
+        // `::djogi::*` only; never through `::djogi::testing::*`
+        // submodules). The `__private` re-export aliases the same
+        // `djogi::testing::private::DerivedParitySealed` trait, so
+        // the seal closure does not change — only the path the
+        // macro emits.
+        impl ::djogi::__private::DerivedParitySealed for #proj_name {}
 
         impl #proj_name #where_clause {
             #[doc = #doc]

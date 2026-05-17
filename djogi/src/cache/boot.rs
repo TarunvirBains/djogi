@@ -54,11 +54,17 @@
 /// ```rust
 /// use djogi::prelude::*;
 ///
+/// // `pub struct` matches the macro-emitted `pub` visages (`PostPublic`,
+/// // `PostSelfView`, `PostAdmin`, `PostExport`) carrying `type Model =
+/// // Post` per the restored Phase 8.5 #231 `DjogiVisage::Model`
+/// // associated-type contract. A `pub` visage referencing a private
+/// // source model would trip rustc's `private_interfaces` / E0446
+/// // check.
 /// #[model(table = "posts")]
 /// #[derive(Debug, Clone)]
-/// struct Post {
-///     title: String,
-///     body: String,
+/// pub struct Post {
+///     pub title: String,
+///     pub body: String,
 /// }
 ///
 /// fn typed_pool(ctx: &DjogiContext) {

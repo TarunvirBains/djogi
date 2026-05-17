@@ -4,11 +4,14 @@
 // `PkStrategy::RanjIdDesc` → `PkType::RanjIdDesc` → injected
 // `id: RanjIdDesc` field. 7-Zero-2 T2 switched the grammar from the string
 // literal (`pk = "ranjid_desc"`) to the bare identifier (`pk = RanjIdDesc`).
+// `pub struct Post` mirrors the macro-emitted `pub` visages — Phase
+// 8.5 #231 reconciliation pins `type Model: Model` on `DjogiVisage`,
+// so the source model must be at least as visible as its visages.
 use djogi::prelude::*;
 
 #[model(table = "posts_desc_u", pk = RanjIdDesc)]
 #[derive(Debug, Clone)]
-struct Post {
+pub struct Post {
     pub title: String,
 }
 

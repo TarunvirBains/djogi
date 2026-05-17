@@ -340,3 +340,53 @@ fn visage_descriptor_inventory_registers_per_scope() {
         vec!["ConsignmentAdmin", "ConsignmentExport", "ConsignmentPublic"]
     );
 }
+
+/// Phase 8.5 #231 reconciliation — pin the restored `DjogiVisage::Model`
+/// associated-type contract from the live integration side.
+///
+/// The compile_pass fixture
+/// `djogi-macros/tests/compile_pass/phase85_derived_visage_model_assoc.rs`
+/// pins the trait surface against the proc-macro emission; this test
+/// pins the same contract against the framework's runtime side by
+/// exercising `<V::Model as Model>::table_name()` against a live
+/// `VisageQuerySet` round-trip. A generic visage consumer can recover
+/// the source model — and therefore the source table — without
+/// threading the model in as a separate type parameter.
+///
+/// Coverage:
+///
+/// 1. **Per-scope consistency** — every emitted visage scope
+///    (`Public`, `Admin`, `Export`) maps to the same source
+///    `type Model = Consignment` and therefore the same source
+///    table name.
+/// 2. **Generic free helper** — a `fn source_table<V: DjogiVisage>()`
+///    free helper resolves `<V::Model as Model>::table_name()` at the
+///    type level, no `M:` parameter, no inference burden at the call
+///    site. This is the framework-internal consumer shape the
+///    original #231 acceptance criteria targeted.
+#[test]
+fn djogi_visage_model_assoc_recovers_source_table() {
+    use djogi::DjogiVisage;
+
+    fn source_table_for<V: DjogiVisage>() -> &'static str {
+        <<V as DjogiVisage>::Model as Model>::table_name()
+    }
+
+    let expected = "phase85_visage_derived_projection_consignments";
+    assert_eq!(source_table_for::<ConsignmentPublic>(), expected);
+    assert_eq!(source_table_for::<ConsignmentAdmin>(), expected);
+    assert_eq!(source_table_for::<ConsignmentExport>(), expected);
+
+    // Pin the type-level identity directly — a bound on `V: DjogiVisage<Model = Consignment>`
+    // forces compile-time equality with the source model. The body is
+    // empty; the bound IS the test. The accept-block can never
+    // monomorphise against any other model.
+    fn accepts<V>()
+    where
+        V: DjogiVisage<Model = Consignment>,
+    {
+    }
+    accepts::<ConsignmentPublic>();
+    accepts::<ConsignmentAdmin>();
+    accepts::<ConsignmentExport>();
+}

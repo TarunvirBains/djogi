@@ -1,0 +1,7 @@
+error: derived `sql` references the aggregate or window construct `COUNT` — derived expressions are per-row scalars; aggregates and window functions belong to a future `#[annotation]` attribute (E_DJG_VDF_009)
+  --> $DIR/phase85_derived_009_sql_aggregate_keyword.rs:19:14
+   |
+19 |     sql    = "COUNT(inbound_site)",
+   |              ^^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

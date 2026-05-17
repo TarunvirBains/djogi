@@ -6,11 +6,14 @@
 // the declaration compiles and injects the right Rust type. 7-Zero-2 T2
 // switched the grammar from the string literal (`pk = "heerid_desc"`) to
 // the bare identifier (`pk = HeerIdDesc`).
+// `pub struct Post` mirrors the macro-emitted `pub` visages — Phase
+// 8.5 #231 reconciliation pins `type Model: Model` on `DjogiVisage`,
+// so the source model must be at least as visible as its visages.
 use djogi::prelude::*;
 
 #[model(table = "posts_desc", pk = HeerIdDesc)]
 #[derive(Debug, Clone)]
-struct Post {
+pub struct Post {
     pub title: String,
 }
 

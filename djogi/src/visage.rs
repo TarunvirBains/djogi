@@ -7,11 +7,12 @@
 //! those emissions depend on:
 //!
 //! - [`DjogiVisage`] — Phase 8.5 issue #231 — projection metadata
-//!   trait. Every emitted visage carries `SCOPE`, `COLUMNS`,
-//!   `PROJECTIONS`, and `PROJECTION_LIST` constants so
+//!   trait. Every emitted visage carries `type Model`, `SCOPE`,
+//!   `COLUMNS`, `PROJECTIONS`, and `PROJECTION_LIST` items so
 //!   framework-internal code (lints, debug formatters, future
-//!   Tier-2 predicate rendering) can read the projection shape
-//!   through a single bound.
+//!   Tier-2 predicate rendering) can read the projection shape —
+//!   and reach the source-model table via
+//!   `<V::Model as Model>::table_name()` — through a single bound.
 //! - [`projection::ProjectionEntry`] — sealed `__private` enum
 //!   discriminating column entries from derived-expression entries
 //!   inside `PROJECTIONS`. The `pub` visibility is mandated by the
@@ -35,13 +36,19 @@ use std::convert::Infallible;
 /// Phase 8.5 issue #231 — every emitted visage struct (`UserPublic`,
 /// `UserSelfView`, `UserAdmin`, `UserExport`, ...) carries a single
 /// impl of this trait so framework-internal code can read the
-/// projection shape without hand-rolling parallel constants per
-/// visage. Adopter code rarely touches the trait directly — the
-/// constants are reached on demand for advanced uses (debug
-/// formatting, schema documentation generation).
+/// projection shape — and the source-model pairing — without
+/// hand-rolling parallel items per visage. Adopter code rarely
+/// touches the trait directly — the items are reached on demand for
+/// advanced uses (debug formatting, schema documentation
+/// generation, traversal helpers that need the source table name).
 ///
-/// # Constants
+/// # Items
 ///
+/// - [`Model`](Self::Model) — the source model `M` the visage is a
+///   projection of. The bound is `M: Model`, so generic consumers
+///   reach the source table at compile time via
+///   `<V::Model as crate::model::Model>::table_name()` — no parallel
+///   `TABLE` constant on this trait.
 /// - [`SCOPE`](Self::SCOPE) — stable scope key matching the visage's
 ///   audience.
 /// - [`COLUMNS`](Self::COLUMNS) — names appearing at each ordinal
@@ -114,6 +121,18 @@ use std::convert::Infallible;
 /// let pl = <ConsignmentPublic as DjogiVisage>::PROJECTION_LIST;
 /// assert!(pl.contains("AS facility_site"));
 ///
+/// // Generic visage consumers reach the source model — and the
+/// // source table — through `V::Model`. The macro pins `type Model
+/// // = Consignment` on every emitted impl, so consumers never have
+/// // to thread the source model in as a separate type parameter.
+/// fn source_table<V: DjogiVisage>() -> &'static str {
+///     <<V as DjogiVisage>::Model as djogi::prelude::Model>::table_name()
+/// }
+/// assert_eq!(
+///     source_table::<ConsignmentPublic>(),
+///     "consignments_djogi_visage_doctest",
+/// );
+///
 /// // The infallible `From<&Model>` builds the visage in-memory.
 /// // The adopter's `rust` expression evaluates verbatim with a
 /// // `let model: &Consignment = src;` rebind so `model.<field>`
@@ -174,34 +193,66 @@ use std::convert::Infallible;
 /// [`crate::testing::assert_derived_parity_fetched`] for the
 /// async convenience helper.
 ///
-/// # Note on the absence of `TABLE` and `Model`
+/// # Note on the absence of `TABLE`
 ///
-/// There is intentionally no `TABLE` constant on this trait. The
-/// macro bakes the source-model table into each generated
-/// `VisageQuerySet` constructor, so the metadata trait does not need
-/// to expose it.
-///
-/// There is also intentionally no associated `Model` type here.
-/// Ordinary adopter models may be private while their generated
-/// visages are public macro surface; naming the private source model
-/// in a public trait associated type would leak a private type. The
-/// source-model pairing remains available through
-/// [`DjogiVisageOf<M>`](crate::visage_boundary::DjogiVisageOf), which
-/// is the type-level boundary that actually needs the `M: Model`
-/// relation.
+/// There is intentionally no `TABLE` constant on this trait. Generic
+/// callers reach the source-model table through
+/// `<V::Model as crate::model::Model>::table_name()`, which is the
+/// canonical entry point that already factors in compile-time table
+/// validation, identifier checks, and the rest of the `Model`
+/// contract. Adding a parallel `TABLE` const would duplicate state
+/// the supertrait already pins.
 ///
 /// # Relation to [`DjogiVisageOf<M>`](crate::visage_boundary::DjogiVisageOf)
 ///
 /// `DjogiVisageOf<M>` is a marker trait sealing the visage ↔ model
-/// pairing; it carries no associated items. Every emitted
-/// `impl DjogiVisage for V` for model-backed flat projections is
-/// accompanied by `impl DjogiVisageOf<M> for V` where `M` is the
-/// source model. The reflexive blanket
+/// pairing without an associated `Model` slot — bound positionally
+/// on `M`. `DjogiVisage` carries the same pairing through its
+/// `type Model` associated type instead, so generic code can pick
+/// the spelling that fits the call site:
+///
+/// - `fn foo<V: DjogiVisageOf<M>, M: Model>(...)` — explicit `M`
+///   parameter, ergonomic when the caller already has an `M` in
+///   scope.
+/// - `fn foo<V: DjogiVisage>(...)` — `V::Model` is reachable
+///   internally, ergonomic when the caller only ever names the
+///   visage. The seal supertrait
+///   ([`DjogiVisageOf<Self::Model>`]) keeps the two spellings
+///   bound to the same closed set: every macro-emitted visage
+///   satisfies both, no downstream code can satisfy either.
+///
+/// The reflexive blanket
 /// `impl<M: Model> DjogiVisageOf<M> for M` lets the marker accept
 /// the model itself as a "degenerate visage"; no equivalent blanket
 /// exists for `DjogiVisage` — models have descriptors, not
 /// projections.
-pub trait DjogiVisage: private::MetadataSealed {
+///
+/// [`DjogiVisageOf<Self::Model>`]: crate::visage_boundary::DjogiVisageOf
+pub trait DjogiVisage: crate::visage_boundary::DjogiVisageOf<<Self as DjogiVisage>::Model> {
+    /// Source model the visage is a projection of. Every macro-emitted
+    /// `impl DjogiVisage for {Visage}` sets `type Model = {Source}`
+    /// where `{Source}` is the host `#[model]` struct. Generic code
+    /// reaches the source table via
+    /// `<V::Model as crate::model::Model>::table_name()`, which is the
+    /// motivating reason the associated type exists at all — without
+    /// it, generic visage consumers would have to thread the source
+    /// model in as a separate type parameter at every call site.
+    ///
+    /// # Visibility note
+    ///
+    /// When a model is declared less-public than its generated
+    /// visage (e.g. a `pub(crate) struct Inner` paired with `pub
+    /// struct InnerPublic`), rustc's `private_interfaces` lint
+    /// fires on the macro-emitted impl. Mirror the visage
+    /// visibility on the model — `pub struct Inner` — or
+    /// `#[allow(private_interfaces)]` on the source if the model
+    /// must stay private. Rust does not provide a way to hide an
+    /// associated type's binding while leaving the trait public,
+    /// and the `<V::Model as Model>::table_name()` access pattern
+    /// that the original spec requires depends on the binding
+    /// being nameable.
+    type Model: crate::model::Model;
+
     /// Stable scope key (`"public"` / `"self_view"` / `"admin"` /
     /// `"export"`). A `&'static str` rather than a typed enum to
     /// match the existing `SCOPES` tuple shape inside
@@ -254,17 +305,14 @@ pub trait DjogiVisage: private::MetadataSealed {
     const PROJECTION_LIST: &'static str;
 }
 
-/// Closed-world seal for [`DjogiVisage`].
-///
-/// Re-exported through `::djogi::__private::DjogiVisageSealed` so
-/// macro-emitted visage code can satisfy the bound without exposing a
-/// source-model associated type on [`DjogiVisage`].
-#[doc(hidden)]
-pub mod private {
-    /// Projection-metadata seal — only `#[model]`-emitted code is
-    /// expected to satisfy this trait.
-    pub trait MetadataSealed {}
-}
+// Note: `DjogiVisage` is sealed via its
+// `DjogiVisageOf<Self::Model>` supertrait — the closed-world seal
+// already lives at `crate::visage_boundary::private::Sealed<M>`
+// (re-exported as `::djogi::__private::VisageSealed`) and is
+// satisfied only by macro-emitted `impl VisageSealed<Source> for
+// Visage` blocks. Carrying a separate metadata-only seal here would
+// duplicate that closure without buying anything — both surfaces
+// would gate on the same macro emission path.
 
 /// Sealed projection metadata enum.
 ///

@@ -615,6 +615,7 @@ pub struct ConsignmentPublic {
 }
 
 impl djogi::DjogiVisage for ConsignmentPublic {
+    type Model = Consignment;
     const SCOPE: &'static str = "public";
     const COLUMNS: &'static [&'static str] = &[
         "id", "created_at", "updated_at",
@@ -918,13 +919,28 @@ by the `#[model]` macro.
 `DjogiVisage` centralises projection metadata so generic
 **framework-internal** code — lints, debug formatters, and the future
 Tier-2 predicate-rendering path — can read it through a single bound.
-It deliberately does **not** carry a public associated `Model` type:
-ordinary adopter models may be private while macro-emitted visages are
-public. Naming the private source model in a public trait associated
-type leaks that private type and triggers Rust's E0446 private-type-
-in-public-interface check. Source-model pairing therefore stays on
-`DjogiVisageOf<M>`, while `DjogiVisage` remains non-generic projection
-metadata.
+It carries the source-model pairing through an associated `type Model:
+Model` so a generic `V: DjogiVisage` consumer reaches the source table
+via `<V::Model as Model>::table_name()` without threading the source
+model in as a separate type parameter at every call site.
+
+The trait is sealed via its `DjogiVisageOf<Self::Model>` supertrait,
+which routes through `crate::visage_boundary::private::Sealed<M>` —
+the same closed-world seal that already gates the marker pairing.
+The macro emits one impl pair per visage (`impl Sealed<Source> for
+Visage` plus `impl DjogiVisageOf<Source> for Visage` plus `impl
+DjogiVisage for Visage { type Model = Source; ... }`); downstream
+code cannot satisfy either side.
+
+When a model is declared less-public than its generated visage (the
+unusual but legal case of `pub(crate) struct Inner` paired with `pub
+struct InnerPublic`), rustc's `private_interfaces` lint fires on the
+macro-emitted impl. Mirror the visage visibility on the model
+(`pub struct Inner`) or `#[allow(private_interfaces)]` on the source
+if the model must stay private — Rust has no way to expose
+`<V::Model as Model>::table_name()` without making the binding
+nameable. This is a conscious accepted tradeoff: the spec's
+`V::Model` ergonomics outweigh the visibility-asymmetry edge case.
 
 Documentation generators (rustdoc reference tables, the `djogi docs`
 CLI) are **not** `DjogiVisage` consumers — they consume the richer
@@ -948,7 +964,16 @@ The `ProjectionEntry` discriminant is sealed off the public surface.
 ### Trait shape
 
 ```rust
-pub trait DjogiVisage: private::MetadataSealed {
+pub trait DjogiVisage:
+    crate::visage_boundary::DjogiVisageOf<<Self as DjogiVisage>::Model>
+{
+    /// Source model the visage is a projection of. Every macro-emitted
+    /// `impl DjogiVisage for {Visage}` sets `type Model = {Source}`.
+    /// Generic code reaches the source table via
+    /// `<V::Model as Model>::table_name()` — the canonical entry
+    /// point already established by `Model`.
+    type Model: crate::model::Model;
+
     /// Stable scope key (`"public"` / `"self_view"` / `"admin"` /
     /// `"export"`). A `&'static str` rather than a typed enum to
     /// match the existing `SCOPES` tuple shape in
@@ -959,14 +984,10 @@ pub trait DjogiVisage: private::MetadataSealed {
     const SCOPE: &'static str;
 
     // Note: there is intentionally no `TABLE` constant on this trait.
-    // The macro bakes the source-model table into each generated
-    // `VisageQuerySet` constructor, so carrying a parallel `TABLE`
-    // const would be redundant metadata.
-    //
-    // There is also intentionally no associated `Model` type on this
-    // trait. The source-model pairing belongs to `DjogiVisageOf<M>`;
-    // keeping it there avoids leaking private adopter model types
-    // through public generated visage impls.
+    // Source-table access goes through
+    // `<V::Model as Model>::table_name()` — the supertrait bound
+    // makes that callable from generic code, and a parallel `TABLE`
+    // const would duplicate state the supertrait already pins.
 
     /// Names that appear at each ordinal position of the visage's
     /// SELECT row, in struct-field order. For column entries this is
@@ -1091,9 +1112,12 @@ protection against adopters who have already decided to reach into
 
 The existing `DjogiVisageOf<M>` (marker trait, no associated items)
 continues to seal the model-to-visage pairing. The new `DjogiVisage`
-trait carries the projection contract only. Every
-`impl DjogiVisage for V` for a model-backed flat projection also has
-an `impl DjogiVisageOf<M> for V` (emitted by the same macro pass),
+trait carries the projection contract and additionally **supertypes
+its source-model pairing through `DjogiVisageOf<Self::Model>`** —
+the single seal closes both the marker pairing and the metadata
+trait. Every `impl DjogiVisage for V` for a model-backed flat
+projection therefore implicitly demands the matching
+`impl DjogiVisageOf<M> for V` (emitted by the same macro pass),
 where `M` is the source model — the two traits compose:
 `DjogiVisageOf<M>` says "V is a visage of M"; `DjogiVisage` says
 "V has this projection shape."
@@ -2041,12 +2065,17 @@ remains unchecked.
     derive macro's rustdoc, since `#[derived]` is a helper attribute
     consumed by `Model` — not an independent attribute-macro entry
     point; see [§Declaration](#derived-is-a-helper-attribute-not-an-attribute-macro)).
-  - `DjogiVisage` trait + its three associated constants (`COLUMNS`,
-    `PROJECTIONS`, `PROJECTION_LIST`) + the `SCOPE` associated
-    constant. There is no `TABLE` const and no associated `Model`
-    type: the macro bakes the source table into generated queryset
-    constructors, and model pairing stays on `DjogiVisageOf<M>` to
-    avoid leaking private source models through public visage impls.
+  - `DjogiVisage` trait + its `type Model` associated type + its
+    three associated constants (`COLUMNS`, `PROJECTIONS`,
+    `PROJECTION_LIST`) + the `SCOPE` associated constant. There is
+    no `TABLE` const: source-table access goes through
+    `<V::Model as Model>::table_name()` — the `type Model: Model`
+    supertrait bound makes that callable from generic code, and a
+    parallel `TABLE` const would duplicate state the supertrait
+    already pins. The seal is the `DjogiVisageOf<Self::Model>`
+    supertrait (re-exported as `__private::VisageSealed`), so the
+    single closed-world seal covers both the marker pairing and the
+    metadata trait.
   - The `__private::ProjectionEntry` sealed type (with the standard
     "do not name this" warning matching the existing
     `__private::VisageSealed` precedent).
@@ -2076,14 +2105,62 @@ debt the framework's docs convention exists to prevent.
 ### Stage 9 — lihaaf fixtures
 
 - `compile_pass`: consignment-shaped fixture, single-derived-field
-  visage, multi-scope shared derived.
+  visage, multi-scope shared derived
+  (`phase85_derived_fields.rs`); fallibility-shape variant
+  exercising the syntactic-tail `?` lift
+  (`phase85_derived_fields_fallible.rs`); restored
+  `DjogiVisage::Model` associated-type contract
+  (`phase85_derived_visage_model_assoc.rs`) — pins the spec's
+  `<V::Model as Model>::table_name()` ergonomics across every
+  emitted visage scope.
 - `compile_fail`: one fixture per `E_DJG_VDF_*` macro-time error,
-  with span-anchored expected diagnostic.
+  with span-anchored expected diagnostic. The shipped inventory:
+  - `phase85_derived_001_missing_required_key.rs` — E_DJG_VDF_001
+    (missing required `name` key, anchored at attribute span).
+  - `phase85_derived_002_column_collision.rs` — E_DJG_VDF_002
+    (collision against an exposed model column in any overlapping
+    scope; anchored at `name = ...` token).
+  - `phase85_derived_003_derived_collision.rs` — E_DJG_VDF_003
+    (collision between two derived `name`s in an overlapping scope;
+    anchored at the second declaration).
+  - `phase85_derived_004_name_shape_too_long.rs` — E_DJG_VDF_004
+    (length cap; complement of the parser-side unit tests covering
+    leading byte / body byte rules).
+  - `phase85_derived_005_djogi_prefix.rs` — E_DJG_VDF_005
+    (framework-reserved `__djogi_` prefix).
+  - `phase85_derived_006_unknown_scope.rs` — E_DJG_VDF_006
+    (unknown scope identifier in `scopes = [...]`).
+  - `phase85_derived_007_sql_statement_separator.rs` —
+    E_DJG_VDF_007 (statement-separator arm; the leading
+    DDL/DML-keyword arm shares the same diagnostic surface and is
+    covered by parser-side unit tests).
+  - `phase85_derived_008_sql_dollar_placeholder.rs` —
+    E_DJG_VDF_008 (`$N` placeholder reservation).
+  - `phase85_derived_009_sql_aggregate_keyword.rs` —
+    E_DJG_VDF_009 (aggregate / window guard).
+  - `phase85_derived_relation_form_overlap.rs` — E_DJG_VDF_010
+    (relation-form / derived overlap in the same scope).
+  - `phase85_derived_012_name_uppercase_byte.rs` —
+    E_DJG_VDF_012 (uppercase byte in `name`).
+  - `phase85_derived_013_duplicate_scope.rs` — E_DJG_VDF_013
+    (per-list duplicate scope identifier).
+  - `phase85_derived_014_reserved_keyword_name.rs` —
+    E_DJG_VDF_014 (Postgres reserved keyword as `name`).
+  - `phase85_derived_015_pk_none_host.rs` — E_DJG_VDF_015
+    (`#[derived(...)]` on a `pk = None` host model).
+  - `phase85_derived_partial_eq_required.rs` — E_DJG_VDF_016
+    (derived `ty` lacks `PartialEq`; diagnostic anchored at the
+    macro-emitted impl block, not the inner `!=` token).
 - `compile_fail`: **Tier-1 accessor exclusion pin.** Visage with a
   derived field; test calls `V::filter(|f| f.<derived>()...)`.
   Expected diagnostic: rustc's "no method named `<derived>`" error
   surfacing from `{Visage}Fields`. Pin the message stem; the rest
-  may drift across rustc versions.
+  may drift across rustc versions
+  (`phase85_derived_tier1_accessor_excluded.rs`).
+- E_DJG_VDF_011 is reserved for Tier 2 (peer-projection cluster);
+  no Tier-1 fixture exists because the diagnostic is not yet
+  emitted by the macro. The fixture lands alongside the
+  predicate-pushdown work that owns the code's emission site.
 
 ### Stage 10 — integration tests
 

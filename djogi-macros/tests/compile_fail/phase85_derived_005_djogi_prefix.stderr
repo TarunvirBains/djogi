@@ -1,0 +1,7 @@
+error: `#[derived]` `name` `__djogi_facility_site` begins with the framework-reserved `__djogi_` prefix — pick another name (E_DJG_VDF_005)
+  --> $DIR/phase85_derived_005_djogi_prefix.rs:16:14
+   |
+16 |     name   = __djogi_facility_site,
+   |              ^^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

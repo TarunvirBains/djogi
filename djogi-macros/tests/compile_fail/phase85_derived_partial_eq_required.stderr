@@ -1,7 +1,7 @@
 error[E0277]: can't compare `Site` with `Site`
-  --> $DIR/phase85_derived_partial_eq_required.rs:29:1
+  --> $DIR/phase85_derived_partial_eq_required.rs:61:1
    |
-29 | #[model(table = "phase85_derived_partial_eq_consignments")]
+61 | #[model(table = "phase85_derived_partial_eq_consignments")]
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no implementation for `Site == Site`
    |
    = help: the trait `PartialEq` is not implemented for `Site`
@@ -9,171 +9,10 @@ error[E0277]: can't compare `Site` with `Site`
    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 help: consider annotating `Site` with `#[derive(PartialEq)]`
    |
-25 + #[derive(PartialEq)]
-26 | pub struct Site {
+42 + #[derive(PartialEq)]
+43 | pub struct Site {
    |
 
-error[E0277]: the trait bound `Site: serde::Serialize` is not satisfied
-    --> $DIR/phase85_derived_partial_eq_required.rs:29:1
-     |
-  29 | #[model(table = "phase85_derived_partial_eq_consignments")]
-     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
-     |
-help: the trait `Serialize` is not implemented for `Site`
-    --> $DIR/phase85_derived_partial_eq_required.rs:25:1
-     |
-  25 | pub struct Site {
-     | ^^^^^^^^^^^^^^^
-     = note: for local types consider adding `#[derive(serde::Serialize)]` to your `Site` type
-     = note: for types from other crates check whether the crate offers a `serde` feature flag
-     = help: the following other types implement trait `Serialize`:
-               &'a T
-               &'a mut T
-               ()
-               (T,)
-               (T0, T1)
-               (T0, T1, T2)
-               (T0, T1, T2, T3)
-               (T0, T1, T2, T3, T4)
-             and 257 others
-note: required by a bound in `serde_core::ser::SerializeStruct::serialize_field`
-    --> $CARGO/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/src/ser/mod.rs:1917:21
-     |
-1915 |     fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<(), Self::Error>
-     |        --------------- required by a bound in this associated function
-1916 |     where
-1917 |         T: ?Sized + Serialize;
-     |                     ^^^^^^^^^ required by this bound in `SerializeStruct::serialize_field`
-     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
-
-error[E0277]: the trait bound `Site: serde::Deserialize<'de>` is not satisfied
-    --> $DIR/phase85_derived_partial_eq_required.rs:33:14
-     |
-  33 |     ty     = Site,
-     |              ^^^^ unsatisfied trait bound
-     |
-help: the trait `djogi::prelude::Deserialize<'_>` is not implemented for `Site`
-    --> $DIR/phase85_derived_partial_eq_required.rs:25:1
-     |
-  25 | pub struct Site {
-     | ^^^^^^^^^^^^^^^
-     = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `Site` type
-     = note: for types from other crates check whether the crate offers a `serde` feature flag
-     = help: the following other types implement trait `djogi::prelude::Deserialize<'de>`:
-               `&'a Path` implements `djogi::prelude::Deserialize<'de>`
-               `&'a [u8]` implements `djogi::prelude::Deserialize<'de>`
-               `&'a str` implements `djogi::prelude::Deserialize<'de>`
-               `()` implements `djogi::prelude::Deserialize<'de>`
-               `(T,)` implements `djogi::prelude::Deserialize<'de>`
-               `(T0, T1)` implements `djogi::prelude::Deserialize<'de>`
-               `(T0, T1, T2)` implements `djogi::prelude::Deserialize<'de>`
-               `(T0, T1, T2, T3)` implements `djogi::prelude::Deserialize<'de>`
-             and 274 others
-note: required by a bound in `serde_core::de::SeqAccess::next_element`
-    --> $CARGO/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/src/de/mod.rs:1771:12
-     |
-1769 |     fn next_element<T>(&mut self) -> Result<Option<T>, Self::Error>
-     |        ------------ required by a bound in this associated function
-1770 |     where
-1771 |         T: Deserialize<'de>,
-     |            ^^^^^^^^^^^^^^^^ required by this bound in `SeqAccess::next_element`
-
-error[E0277]: the trait bound `Site: serde::Deserialize<'de>` is not satisfied
-    --> $DIR/phase85_derived_partial_eq_required.rs:33:14
-     |
-  33 |     ty     = Site,
-     |              ^^^^ unsatisfied trait bound
-     |
-help: the trait `djogi::prelude::Deserialize<'_>` is not implemented for `Site`
-    --> $DIR/phase85_derived_partial_eq_required.rs:25:1
-     |
-  25 | pub struct Site {
-     | ^^^^^^^^^^^^^^^
-     = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `Site` type
-     = note: for types from other crates check whether the crate offers a `serde` feature flag
-     = help: the following other types implement trait `djogi::prelude::Deserialize<'de>`:
-               `&'a Path` implements `djogi::prelude::Deserialize<'de>`
-               `&'a [u8]` implements `djogi::prelude::Deserialize<'de>`
-               `&'a str` implements `djogi::prelude::Deserialize<'de>`
-               `()` implements `djogi::prelude::Deserialize<'de>`
-               `(T,)` implements `djogi::prelude::Deserialize<'de>`
-               `(T0, T1)` implements `djogi::prelude::Deserialize<'de>`
-               `(T0, T1, T2)` implements `djogi::prelude::Deserialize<'de>`
-               `(T0, T1, T2, T3)` implements `djogi::prelude::Deserialize<'de>`
-             and 274 others
-note: required by a bound in `serde_core::de::MapAccess::next_value`
-    --> $CARGO/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/src/de/mod.rs:1916:12
-     |
-1914 |     fn next_value<V>(&mut self) -> Result<V, Self::Error>
-     |        ---------- required by a bound in this associated function
-1915 |     where
-1916 |         V: Deserialize<'de>,
-     |            ^^^^^^^^^^^^^^^^ required by this bound in `MapAccess::next_value`
-
-error[E0277]: the trait bound `Site: serde::Deserialize<'de>` is not satisfied
-  --> $DIR/phase85_derived_partial_eq_required.rs:29:1
-   |
-29 | #[model(table = "phase85_derived_partial_eq_consignments")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
-   |
-help: the trait `djogi::prelude::Deserialize<'_>` is not implemented for `Site`
-  --> $DIR/phase85_derived_partial_eq_required.rs:25:1
-   |
-25 | pub struct Site {
-   | ^^^^^^^^^^^^^^^
-   = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `Site` type
-   = note: for types from other crates check whether the crate offers a `serde` feature flag
-   = help: the following other types implement trait `djogi::prelude::Deserialize<'de>`:
-             `&'a Path` implements `djogi::prelude::Deserialize<'de>`
-             `&'a [u8]` implements `djogi::prelude::Deserialize<'de>`
-             `&'a str` implements `djogi::prelude::Deserialize<'de>`
-             `()` implements `djogi::prelude::Deserialize<'de>`
-             `(T,)` implements `djogi::prelude::Deserialize<'de>`
-             `(T0, T1)` implements `djogi::prelude::Deserialize<'de>`
-             `(T0, T1, T2)` implements `djogi::prelude::Deserialize<'de>`
-             `(T0, T1, T2, T3)` implements `djogi::prelude::Deserialize<'de>`
-           and 274 others
-note: required by a bound in `djogi::__private::serde::private::de::missing_field`
-  --> $CARGO/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:26:8
-   |
-24 | pub fn missing_field<'de, V, E>(field: &'static str) -> Result<V, E>
-   |        ------------- required by a bound in this function
-25 | where
-26 |     V: Deserialize<'de>,
-   |        ^^^^^^^^^^^^^^^^ required by this bound in `missing_field`
-   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
-
-error[E0277]: the trait bound `Site: djogi::__private::postgres_types::FromSql<'_>` is not satisfied
-   --> $DIR/phase85_derived_partial_eq_required.rs:29:1
-    |
- 29 | #[model(table = "phase85_derived_partial_eq_consignments")]
-    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
-    |
-help: the trait `djogi::__private::postgres_types::FromSql<'_>` is not implemented for `Site`
-   --> $DIR/phase85_derived_partial_eq_required.rs:25:1
-    |
- 25 | pub struct Site {
-    | ^^^^^^^^^^^^^^^
-    = help: the following other types implement trait `djogi::__private::postgres_types::FromSql<'a>`:
-              &'a [u8]
-              &'a str
-              Box<T>
-              Box<[T]>
-              Box<str>
-              HashMap<std::string::String, Option<std::string::String>, S>
-              IpAddr
-              MirJzSON
-            and 36 others
-note: required by a bound in `djogi::pg::decode::decode_derived_at`
-   --> djogi/src/pg/decode.rs:195:8
-    |
-188 | pub fn decode_derived_at<'a, T>(
-    |        ----------------- required by a bound in this function
-...
-195 |     T: FromSql<'a>,
-    |        ^^^^^^^^^^^ required by this bound in `decode_derived_at`
-    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
-
-error: aborting due to 6 previous errors
+error: aborting due to 1 previous error
 
 For more information about this error, try `rustc --explain E0277`.

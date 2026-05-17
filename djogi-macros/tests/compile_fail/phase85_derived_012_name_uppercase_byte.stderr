@@ -1,0 +1,7 @@
+error: `#[derived]` `name` `facilitySite` contains an uppercase byte; derived aliases must be ASCII lowercase so Postgres's unquoted-identifier case folding does not silently rename them (E_DJG_VDF_012). Use snake_case (e.g. `facility_site`).
+  --> $DIR/phase85_derived_012_name_uppercase_byte.rs:17:14
+   |
+17 |     name   = facilitySite,
+   |              ^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

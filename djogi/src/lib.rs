@@ -182,14 +182,26 @@ pub mod __private {
     /// can slip in. The re-export through `__private` keeps the macro
     /// output routed through `::djogi::*` paths per
     /// `feedback_macro_path_routing.md`.
+    ///
+    /// Phase 8.5 #231 reconciliation: the [`DjogiVisage`](crate::DjogiVisage)
+    /// metadata trait carries a `type Model` associated item bound on
+    /// `M: Model` and is sealed via
+    /// `DjogiVisageOf<Self::Model>` (its supertrait). The single seal
+    /// covers both `DjogiVisageOf<M>` and `DjogiVisage` — no separate
+    /// metadata-only seal is needed.
     pub use crate::visage_boundary::DjogiVisageOf;
     pub use crate::visage_boundary::private::Sealed as VisageSealed;
 
-    /// Seal for macro-emitted [`DjogiVisage`](crate::DjogiVisage)
-    /// projection metadata impls. Kept separate from
-    /// `VisageSealed<M>` so the metadata trait does not expose the
-    /// source model type in public associated items.
-    pub use crate::visage::private::MetadataSealed as DjogiVisageSealed;
+    /// Seal for macro-emitted [`DerivedParity`](crate::testing::DerivedParity)
+    /// trait impls — Phase 8.5 issue #231 reconciliation. Adopters do
+    /// not impl `DerivedParity` themselves; the bound is satisfied
+    /// only by `#[model]`-emitted visages with at least one in-scope
+    /// derived entry. Re-exported through `__private` so the macro
+    /// emission path can satisfy the supertrait without naming
+    /// `crate::testing::private::DerivedParitySealed` directly (which
+    /// would route adopter `use djogi::testing::private::*` calls
+    /// through a `#[doc(hidden)]` module).
+    pub use crate::testing::private::DerivedParitySealed;
 
     /// Sealed projection-entry discriminant for the
     /// [`DjogiVisage::PROJECTIONS`](crate::DjogiVisage::PROJECTIONS)
