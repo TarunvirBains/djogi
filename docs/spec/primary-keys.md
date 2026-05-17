@@ -96,6 +96,7 @@ HeeRanjID deployment guidance currently lives in
 https://github.com/TarunvirBains/HeeRanjID/blob/main/sql/README.md; this issue tracks
 an explicit multi-node provisioning playbook:
 https://github.com/TarunvirBains/HeeRanjID/issues/49.
+
 Dynamic ephemeral nodes can lease/release IDs from `heer_nodes` using HeerId's session API:
 ```sql
 set_heer_node_id(node_id INTEGER);

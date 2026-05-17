@@ -150,7 +150,7 @@ registered.
 HeeRanjID deployment references are in
 https://github.com/TarunvirBains/HeeRanjID/blob/main/sql/README.md and
 the open sibling issue that tracks an explicit provisioning playbook:
-https://github.com/TarunvirBains/HeeRanjID/issues/49
+https://github.com/TarunvirBains/HeeRanjID/issues/49.
 
 ---
 
