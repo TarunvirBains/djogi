@@ -503,8 +503,10 @@ pub trait DjogiPortableEq:
 // - `time::OffsetDateTime` / `time::Date`: monotone numeric encoding under
 //   Postgres' `timestamptz` / `date`.
 // - `uuid::Uuid`: byte-lexicographic and matches Rust `Ord`.
-// - HeerId / RanjId families: time-ordered identifiers; Rust `Ord` matches
-//   Postgres bigint / uuid byte ordering by construction.
+// - Primary-key types: covered by the sealed `PrimaryKey` blanket below.
+//   Built-in HeerId / RanjId families remain portable because their Rust
+//   equality matches their Postgres bigint / uuid equality; custom
+//   `primary_key!` newtypes inherit their inner scalar equality semantics.
 // - `rust_decimal::Decimal`: numeric ordering under Postgres `numeric`.
 //
 // Deliberately omitted: `bool` (no ordering callers), `String`, `f32`,
@@ -534,7 +536,6 @@ impl<V> DjogiPortableOrd for Tracked<V> where V: DjogiPortableOrd {}
 impl DjogiPortableEq for String {}
 impl DjogiPortableEq for i8 {}
 impl DjogiPortableEq for i16 {}
-impl DjogiPortableEq for i32 {}
 impl DjogiPortableEq for i64 {}
 impl DjogiPortableEq for u32 {}
 impl DjogiPortableEq for f32 {}
@@ -543,11 +544,18 @@ impl DjogiPortableEq for bool {}
 impl DjogiPortableEq for time::OffsetDateTime {}
 impl DjogiPortableEq for time::Date {}
 impl DjogiPortableEq for uuid::Uuid {}
-impl DjogiPortableEq for crate::HeerId {}
-impl DjogiPortableEq for crate::RanjId {}
-impl DjogiPortableEq for crate::HeerIdDesc {}
-impl DjogiPortableEq for crate::RanjIdDesc {}
 impl DjogiPortableEq for rust_decimal::Decimal {}
+impl<V> DjogiPortableEq for V
+where
+    V: crate::primary_key::PrimaryKey
+        + PartialEq
+        + postgres_types::ToSql
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+}
 impl<V> DjogiPortableEq for Option<V>
 where
     V: DjogiPortableEq,

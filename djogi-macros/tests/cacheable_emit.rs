@@ -138,6 +138,8 @@ where
 {
 }
 
+fn assert_portable_eq<T: ::djogi::DjogiPortableEq>() {}
+
 #[test]
 fn cacheable_emitted_for_heerid_pk() {
     assert_id_type::<HeerIdModel, ::djogi::types::HeerId>();
@@ -177,6 +179,12 @@ fn cacheable_emitted_for_custom_pk() {
     // this test fails at the `assert_id_type` call site with a clean
     // bound error, not at a downstream Cacheable use site.
     assert_id_type::<CustomPkModel, MyAppId>();
+    assert_portable_eq::<MyAppId>();
+}
+
+#[test]
+fn custom_pk_id_field_preserves_portable_membership_surface() {
+    let _filtered = CustomPkModel::objects().filter(|f| f.id().in_(vec![MyAppId(0)]));
 }
 
 /// `pk = None` skips Cacheable emission entirely. Asserting absence
