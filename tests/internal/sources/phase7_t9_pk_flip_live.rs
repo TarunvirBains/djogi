@@ -150,6 +150,7 @@ fn synth_single_group(parent: &str, from: PkKindSchema, to: PkKindSchema) -> PkT
 fn basic_column(name: &str, sql_type: &str, nullable: bool) -> ColumnSchema {
     ColumnSchema {
         check: None,
+        comment: None,
         default_sql: None,
         foreign_key: None,
         generated: None,
@@ -216,6 +217,9 @@ fn basic_table_with_pk_kind(
         renamed_from: None,
         rls_enabled: false,
         table: name.to_string(),
+        table_comment: None,
+        storage_params: None,
+        tablespace: None,
         tenant_key: None,
     }
 }
@@ -2337,6 +2341,9 @@ fn cross_flipping_join_schema_with_pk_kind(pk_kind: PkKindSchema) -> AppliedSche
         renamed_from: None,
         rls_enabled: false,
         table: table.to_string(),
+        table_comment: None,
+        storage_params: None,
+        tablespace: None,
         tenant_key: None,
     };
 
@@ -3266,6 +3273,9 @@ fn partitioned_parent_schema(pk_kind: PkKindSchema) -> AppliedSchema {
             renamed_from: None,
             rls_enabled: false,
             table: "p_events".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         },
     );
@@ -3307,6 +3317,9 @@ fn partitioned_cross_flipping_schema_with_pk_kind(
         renamed_from: None,
         rls_enabled: false,
         table: "left_events".to_string(),
+        table_comment: None,
+        storage_params: None,
+        tablespace: None,
         tenant_key: None,
     };
 
@@ -3332,6 +3345,9 @@ fn partitioned_cross_flipping_schema_with_pk_kind(
         renamed_from: None,
         rls_enabled: false,
         table: "event_tags".to_string(),
+        table_comment: None,
+        storage_params: None,
+        tablespace: None,
         tenant_key: None,
     };
 

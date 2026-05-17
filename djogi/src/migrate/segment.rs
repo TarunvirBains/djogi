@@ -552,7 +552,10 @@ fn operation_phase(op: &SchemaOperation) -> usize {
         SchemaOperation::AddColumn { .. }
         | SchemaOperation::RenameColumn { .. }
         | SchemaOperation::AlterColumn { .. }
-        | SchemaOperation::AddForeignKey { .. } => 3,
+        | SchemaOperation::AddForeignKey { .. }
+        | SchemaOperation::SetTableComment { .. }
+        | SchemaOperation::SetStorageParams { .. }
+        | SchemaOperation::SetTablespace { .. } => 3,
         SchemaOperation::AddEnumVariant { .. } => 4,
         SchemaOperation::AddIndex(_) => 5,
         // EXCLUDE constraints sit alongside indexes in the phase
@@ -605,6 +608,7 @@ mod tests {
     fn col(name: &str, ty: &str, nullable: bool) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            comment: None,
             default_sql: None,
             foreign_key: None,
             generated: None,
@@ -649,6 +653,9 @@ mod tests {
             renamed_from: None,
             rls_enabled: false,
             table: name.to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         }
     }
@@ -1126,6 +1133,7 @@ mod tests {
     fn fk_col(name: &str, target: &str) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            comment: None,
             default_sql: None,
             foreign_key: Some(ForeignKeySchema {
                 deferrable: false,
@@ -1173,6 +1181,9 @@ mod tests {
             renamed_from: None,
             rls_enabled: false,
             table: name.to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         }
     }

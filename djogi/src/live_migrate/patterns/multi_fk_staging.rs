@@ -165,6 +165,7 @@ mod tests {
     fn fk_column(name: &str, ref_table: &str) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            comment: None,
             default_sql: None,
             foreign_key: Some(ForeignKeySchema {
                 deferrable: false,
@@ -194,6 +195,7 @@ mod tests {
     fn scalar_column(name: &str) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            comment: None,
             default_sql: None,
             foreign_key: None,
             generated: None,
@@ -235,6 +237,9 @@ mod tests {
             renamed_from: None,
             rls_enabled: false,
             table: "edge".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         }
     }

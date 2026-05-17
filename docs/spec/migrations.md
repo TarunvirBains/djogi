@@ -739,20 +739,22 @@ The model-level declaration grammar (`#[model(indexes(...))]`), the unique-const
 
 ---
 
-### 10.10b DDL metadata coverage gaps
+### 10.10b DDL metadata attributes
 
-The following operational DDL features are not yet surfaced as model or field
-attributes. Adopters who need them must hand-write SQL in a separate migration
-segment appended after `djogi migrations compose`. The table below records
-the gap, the intended attribute name, the current workaround, and the tracking
-issue for implementation.
+The following operational DDL metadata features are surfaced as model or field
+attributes and lowered by `djogi migrations compose`.
+
+| Feature | Attribute | Lowering | Tracking |
+|---|---|---|---|
+| `COMMENT ON TABLE` | `#[model(table_comment = "...")]` | `COMMENT ON TABLE <t> IS '...'`; `IS NULL` when cleared | [#217](https://github.com/TarunvirBains/djogi/issues/217) |
+| `COMMENT ON COLUMN` | `#[field(comment = "...")]` | `COMMENT ON COLUMN <t>.<c> IS '...'`; `IS NULL` when cleared | [#217](https://github.com/TarunvirBains/djogi/issues/217) |
+| Per-table storage parameters (`fillfactor`, `autovacuum_*`, …) | `#[model(storage_params = "key=val, ...")]` | `ALTER TABLE <t> SET (key=val, ...)`; prior keys are reset when changed or cleared | [#218](https://github.com/TarunvirBains/djogi/issues/218) |
+| `CREATE TABLE … TABLESPACE <name>` | `#[model(tablespace = "...")]` | `ALTER TABLE <t> SET TABLESPACE <name>` after table creation; clearing lowers to `pg_default` | [#219](https://github.com/TarunvirBains/djogi/issues/219) |
+
+The remaining DDL metadata gaps are:
 
 | Feature | Planned attribute | Workaround today | Tracking |
 |---|---|---|---|
-| `COMMENT ON TABLE` | `#[model(table_comment = "...")]` | Append `COMMENT ON TABLE <t> IS '...'` to the composed migration SQL | [#217](https://github.com/TarunvirBains/djogi/issues/217) |
-| `COMMENT ON COLUMN` | `#[field(comment = "...")]` | Append `COMMENT ON COLUMN <t>.<c> IS '...'` to the composed migration SQL | [#217](https://github.com/TarunvirBains/djogi/issues/217) |
-| Per-table storage parameters (`fillfactor`, `autovacuum_*`, …) | `#[model(storage_params = "key=val, ...")]` | Append `ALTER TABLE <t> SET (key=val, ...)` after table creation; remove after applying | [#218](https://github.com/TarunvirBains/djogi/issues/218) |
-| `CREATE TABLE … TABLESPACE <name>` | `#[model(tablespace = "...")]` | Append `ALTER TABLE <t> SET TABLESPACE <name>` after table creation — note: `SET TABLESPACE` acquires `ACCESS EXCLUSIVE` and rewrites the physical file | [#219](https://github.com/TarunvirBains/djogi/issues/219) |
 | `ALTER COLUMN … TYPE … USING <expr>` | `#[field(type_change_using = "...")]` | Hand-edit the `ALTER COLUMN TYPE` statement in the composed SQL to add `USING (<expr>)` | [#220](https://github.com/TarunvirBains/djogi/issues/220) |
 | Generated column expression changes (PG 15+) | differ-automatic (verify status) | Confirm the differ emits `DROP EXPRESSION` + `SET EXPRESSION AS` rather than column-recreate; hand-write if not | [#221](https://github.com/TarunvirBains/djogi/issues/221) |
 

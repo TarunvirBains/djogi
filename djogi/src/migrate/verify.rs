@@ -644,6 +644,15 @@ async fn read_tables(
             // means "verify did not assert anything about the table's
             // exclusion constraints," not "the table has none."
             exclusion_constraints: Vec::new(),
+            // Phase 8.5 Cluster 4 (djogi#217) — verify does not yet read
+            // `obj_description(c.oid, 'pg_class')` to round-trip the
+            // table comment from `pg_description`. Advisory mode reports
+            // the live catalog as carrying no comment; a future verify
+            // pass that reads `pg_description.description` populates this
+            // slot.
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
         });
     }
     Ok(out)
@@ -721,6 +730,13 @@ async fn read_all_columns(
 
         out.entry(table_name).or_default().push(ColumnSchema {
             check: None,
+            // Phase 8.5 Cluster 4 (djogi#217) — verify does not yet
+            // read `col_description(c.oid, attnum)` to round-trip the
+            // column comment from `pg_description`. Advisory mode
+            // reports the live catalog as carrying no comment; a future
+            // verify pass that reads `pg_description.description` for
+            // `attnum`-keyed entries populates this slot.
+            comment: None,
             default_sql,
             foreign_key: None,
             // Verify does not yet read `pg_attrdef` to discover stored
@@ -1855,6 +1871,10 @@ mod tests {
     fn col(name: &str, sql_type: &str, nullable: bool) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            // Phase 8.5 Cluster 4 (djogi#217) — column comments default
+            // off in test fixtures; tests asserting comment behaviour
+            // set the slot explicitly.
+            comment: None,
             default_sql: None,
             foreign_key: None,
             generated: None,
@@ -1914,6 +1934,11 @@ mod tests {
             renamed_from: None,
             rls_enabled: false,
             table: name.to_string(),
+            // Phase 8.5 Cluster 4 (djogi#217) — table-level comments
+            // default off in test fixtures.
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         }
     }

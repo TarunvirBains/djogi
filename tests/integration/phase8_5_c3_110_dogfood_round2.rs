@@ -857,15 +857,13 @@ async fn cat5_a_check_constraint_blocked_by_105(mut ctx: djogi::DjogiContext) {
     .expect("create — accepted because CHECK is not enforceable from #[field]");
 }
 
-// Scenario 5.B — COMMENT ON, storage params, tablespace, type-change
-// USING expressions.
+// Scenario 5.B — remaining DDL metadata gaps: type-change USING
+// expressions and generated-column expression-change verification.
 //
-// VERDICT: NEEDS GAP ISSUE — none of `COMMENT ON COLUMN`,
-// `COMMENT ON TABLE`, table storage parameters (`fillfactor`,
-// `autovacuum_*`), `TABLESPACE <name>`, or `ALTER COLUMN ... TYPE ... USING
-// <expr>` are surfaced from the model attribute layer (verified by grep —
-// zero matches outside SQL strings inside live_migrate patterns). All are
-// long-standing Postgres operational features.
+// COMMENT ON COLUMN / TABLE, table storage parameters (`fillfactor`,
+// `autovacuum_*`), and `TABLESPACE <name>` are surfaced by the
+// Phase 8.5 DDL metadata slice (#217/#218/#219). The remaining gap
+// rows stay routed to #220/#221.
 //
 // Routed to djogi#172 (umbrella for Cluster 4; small pieces such as
 // COMMENT ON may move to Cluster 3 by v3 amendment per the v3 plan rule).

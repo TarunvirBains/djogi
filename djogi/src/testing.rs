@@ -1355,6 +1355,9 @@ fn additive_op_label(op: &SchemaOperation) -> &'static str {
         SchemaOperation::DropIndex(_) => "DropIndex",
         SchemaOperation::AddExclusionConstraint { .. } => "AddExclusionConstraint",
         SchemaOperation::DropExclusionConstraint { .. } => "DropExclusionConstraint",
+        SchemaOperation::SetTableComment { .. } => "SetTableComment",
+        SchemaOperation::SetStorageParams { .. } => "SetStorageParams",
+        SchemaOperation::SetTablespace { .. } => "SetTablespace",
         SchemaOperation::AddEnum(_) => "AddEnum",
         SchemaOperation::DropEnum(_) => "DropEnum",
         SchemaOperation::AddEnumVariant { .. } => "AddEnumVariant",
@@ -1524,6 +1527,9 @@ mod tests {
             renamed_from: None,
             rls_enabled: false,
             table: name.to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         }
     }

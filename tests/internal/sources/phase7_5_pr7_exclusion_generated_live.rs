@@ -70,6 +70,7 @@ fn pk_id() -> PrimaryKeySchema {
 fn id_column() -> ColumnSchema {
     ColumnSchema {
         check: None,
+        comment: None,
         default_sql: Some("generate_id()".to_string()),
         foreign_key: None,
         generated: None,
@@ -138,6 +139,9 @@ fn bookings_table_with_exclusion() -> TableSchema {
         renamed_from: None,
         rls_enabled: false,
         table: BOOKINGS_TABLE.to_string(),
+        table_comment: None,
+        storage_params: None,
+        tablespace: None,
         tenant_key: None,
     }
 }
@@ -178,6 +182,9 @@ fn users_table_with_generated_column() -> TableSchema {
         renamed_from: None,
         rls_enabled: false,
         table: USERS_TABLE.to_string(),
+        table_comment: None,
+        storage_params: None,
+        tablespace: None,
         tenant_key: None,
     }
 }

@@ -1,0 +1,7 @@
+error: `storage_params` values must be bare words or decimal numbers; quotes, comments, commas, parentheses, semicolons, and SQL expressions are not supported.
+ --> $DIR/phase85_218_storage_params_injection.rs:3:45
+  |
+3 | #[model(table = "widgets", storage_params = "fillfactor=70); DROP TABLE x; --")]
+  |                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

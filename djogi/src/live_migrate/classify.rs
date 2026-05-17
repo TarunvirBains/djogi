@@ -279,6 +279,22 @@ pub fn classify_operation(
             OnlineSafetyClassification::OnlineSafe
         }
 
+        // Phase 8.5 djogi#217 — `COMMENT ON TABLE <t> IS '<text>'` /
+        // `IS NULL` is a catalog-only write against `pg_description`.
+        // No row touch, no lock window beyond the brief catalog update.
+        // OnlineSafe regardless of from/to direction.
+        SchemaOperation::SetTableComment { .. } => OnlineSafetyClassification::OnlineSafe,
+
+        // Phase 8.5 djogi#218 — table storage-parameter metadata
+        // changes are catalog reloption updates; they do not rewrite
+        // existing rows.
+        SchemaOperation::SetStorageParams { .. } => OnlineSafetyClassification::OnlineSafe,
+
+        // Phase 8.5 djogi#219 — `ALTER TABLE ... SET TABLESPACE`
+        // rewrites the table's physical file and takes an ACCESS
+        // EXCLUSIVE lock, so live planning must treat it as offline.
+        SchemaOperation::SetTablespace { .. } => OnlineSafetyClassification::OfflineOnly,
+
         // PK-flip ops belong to the core-migration `pk_flip` cascade
         // emitter family — they must be filtered out by `classify_delta`
         // before reaching this dispatch per the §6.5 boundary contract.
@@ -538,6 +554,14 @@ fn classify_column_change(
         // SET GENERATED kind change (catalog-only). All three route to
         // OnlineSafe.
         ColumnChange::SetIdentity { .. } => OnlineSafetyClassification::OnlineSafe,
+
+        // Phase 8.5 djogi#217 — `COMMENT ON COLUMN <t>.<c> IS '<text>'`
+        // / `IS NULL` is a catalog-only write against `pg_description`.
+        // No row touch, no lock window beyond the brief catalog update.
+        // OnlineSafe regardless of from/to direction.
+        // Postgres docs: §"COMMENT" (no lock-window guidance because
+        // `pg_description` updates are catalog-only).
+        ColumnChange::SetComment { .. } => OnlineSafetyClassification::OnlineSafe,
     }
 }
 
@@ -939,6 +963,7 @@ mod tests {
     fn nullable_column(name: &str) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            comment: None,
             default_sql: None,
             foreign_key: None,
             generated: None,
@@ -1068,6 +1093,45 @@ mod tests {
         assert_eq!(
             classify_operation(&op, &ctx),
             OnlineSafetyClassification::OnlineSafe
+        );
+    }
+
+    #[test]
+    fn ddl_metadata_catalog_writes_classify_online_safe() {
+        let (_unused, ctx) = ctx_app(Some(10));
+        let table_comment = SchemaOperation::SetTableComment {
+            table: "users".to_string(),
+            from: None,
+            to: Some("Users table".to_string()),
+        };
+        let storage_params = SchemaOperation::SetStorageParams {
+            table: "users".to_string(),
+            from: None,
+            to: Some("fillfactor=70".to_string()),
+        };
+
+        assert_eq!(
+            classify_operation(&table_comment, &ctx),
+            OnlineSafetyClassification::OnlineSafe
+        );
+        assert_eq!(
+            classify_operation(&storage_params, &ctx),
+            OnlineSafetyClassification::OnlineSafe
+        );
+    }
+
+    #[test]
+    fn set_tablespace_classifies_offline_only() {
+        let (_unused, ctx) = ctx_app(Some(10));
+        let op = SchemaOperation::SetTablespace {
+            table: "users".to_string(),
+            from: None,
+            to: Some("fastspace".to_string()),
+        };
+
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly
         );
     }
 

@@ -16,6 +16,8 @@
 //! hand-rolled behaviour without each new key duplicating the same
 //! `Meta::NameValue` match arm.
 
+use std::collections::BTreeSet;
+
 use darling::{FromField, FromMeta};
 use syn::parse::{ParseStream, Parser};
 use syn::punctuated::Punctuated;
@@ -383,6 +385,227 @@ pub struct ModelAttrs {
     /// thereafter, ≤ 63 bytes (the standard Djogi identifier rule per
     /// `feedback_no_regex_in_djogi`).
     pub watermark_field: Option<syn::LitStr>,
+
+    /// `#[model(table_comment = "<text>")]` — Phase 8.5 djogi#217.
+    ///
+    /// Free-text table-level comment lowered by the migration composer
+    /// to `COMMENT ON TABLE <t> IS '<text>'` immediately after the
+    /// `CREATE TABLE` statement. The composer doubles single quotes
+    /// inside the value at SQL-emission time (per the standard Postgres
+    /// lexer rule under `standard_conforming_strings = on`, the PG 18
+    /// default that djogi requires), so adopters can write apostrophes
+    /// verbatim.
+    ///
+    /// Validated as non-empty / non-whitespace-only at parse time in
+    /// `ModelAttrs::parse`; the descriptor stores the adopter's
+    /// original text. `None` for models that declare no table-level
+    /// comment — the common case.
+    pub table_comment: Option<String>,
+
+    /// `#[model(storage_params = "key=val, ...")]` — Phase 8.5 djogi#218.
+    ///
+    /// Comma-separated Postgres storage-parameter fragment lowered to
+    /// `ALTER TABLE <t> SET (key=val, ...)`. Parsed and validated at
+    /// macro time; the descriptor stores a canonical safe fragment
+    /// rendered from structured entries rather than the raw adopter
+    /// string.
+    pub storage_params: Option<String>,
+
+    /// `#[model(tablespace = "<name>")]` — Phase 8.5 djogi#219.
+    ///
+    /// Explicit table tablespace lowered to `ALTER TABLE <t> SET
+    /// TABLESPACE <name>`. Validated with the same plain-identifier
+    /// grammar used for table names so SQL emission can quote it
+    /// safely and deterministically.
+    pub tablespace: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StorageParamEntry {
+    key: String,
+    value: String,
+}
+
+fn parse_storage_params_literal(lit: &syn::LitStr) -> syn::Result<String> {
+    let value = lit.value();
+    let entries =
+        parse_storage_params(&value).map_err(|reason| syn::Error::new_spanned(lit, reason))?;
+    Ok(render_storage_param_entries(&entries))
+}
+
+fn parse_storage_params(params: &str) -> Result<Vec<StorageParamEntry>, String> {
+    if params.trim().is_empty() {
+        return Err(
+            "`storage_params = \"\"` is not allowed — value must be a non-empty \
+             comma-separated storage-parameter fragment such as `fillfactor=70`."
+                .to_string(),
+        );
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut entries = Vec::new();
+    for part in params.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            return Err("`storage_params` entries must not be empty.".to_string());
+        }
+        let Some((key, value)) = part.split_once('=') else {
+            return Err(
+                "`storage_params` entries must use `key=value` form separated by commas, \
+                 for example `fillfactor=70, autovacuum_enabled=false`."
+                    .to_string(),
+            );
+        };
+        if value.contains('=') {
+            return Err(
+                "`storage_params` entries must contain exactly one `=` around key and value."
+                    .to_string(),
+            );
+        }
+
+        let key = key.trim();
+        let value = value.trim();
+        validate_storage_param_key(key)?;
+        validate_storage_param_value(value)?;
+
+        let key = key.to_ascii_lowercase();
+        if !seen.insert(key.clone()) {
+            return Err(format!("duplicate `storage_params` key `{key}`"));
+        }
+        entries.push(StorageParamEntry {
+            key,
+            value: value.to_string(),
+        });
+    }
+
+    Ok(entries)
+}
+
+fn validate_storage_param_key(key: &str) -> Result<(), String> {
+    let bytes = key.as_bytes();
+    if bytes.is_empty() {
+        return Err("`storage_params` entries must have non-empty keys.".to_string());
+    }
+    if bytes.len() > 63 {
+        return Err("`storage_params` keys must be at most 63 bytes.".to_string());
+    }
+    if !(bytes[0].is_ascii_alphabetic() || bytes[0] == b'_') {
+        return Err(
+            "`storage_params` keys must start with an ASCII letter or underscore.".to_string(),
+        );
+    }
+    if !bytes
+        .iter()
+        .skip(1)
+        .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    {
+        return Err(
+            "`storage_params` keys must be plain ASCII reloption names; dotted keys are not \
+             supported."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_storage_param_value(value: &str) -> Result<(), String> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() {
+        return Err("`storage_params` entries must have non-empty values.".to_string());
+    }
+    if is_storage_param_word(bytes) {
+        if is_storage_param_sql_control_word(bytes) {
+            return Err(
+                "`storage_params` values must not be SQL statement/control words.".to_string(),
+            );
+        }
+        return Ok(());
+    }
+    if is_storage_param_number(bytes) {
+        return Ok(());
+    }
+    Err(
+        "`storage_params` values must be bare words or decimal numbers; quotes, comments, \
+         commas, parentheses, semicolons, and SQL expressions are not supported."
+            .to_string(),
+    )
+}
+
+fn is_storage_param_word(bytes: &[u8]) -> bool {
+    (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+        && bytes
+            .iter()
+            .skip(1)
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+}
+
+fn is_storage_param_sql_control_word(bytes: &[u8]) -> bool {
+    let word = bytes
+        .iter()
+        .map(|byte| byte.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    matches!(
+        word.as_slice(),
+        b"alter"
+            | b"begin"
+            | b"call"
+            | b"comment"
+            | b"commit"
+            | b"copy"
+            | b"create"
+            | b"delete"
+            | b"do"
+            | b"drop"
+            | b"execute"
+            | b"from"
+            | b"grant"
+            | b"insert"
+            | b"reset"
+            | b"revoke"
+            | b"rollback"
+            | b"select"
+            | b"set"
+            | b"table"
+            | b"truncate"
+            | b"union"
+            | b"update"
+            | b"where"
+    )
+}
+
+fn is_storage_param_number(bytes: &[u8]) -> bool {
+    let mut seen_dot = false;
+    let mut digits_before_dot = 0usize;
+    let mut digits_after_dot = 0usize;
+
+    for byte in bytes {
+        if byte.is_ascii_digit() {
+            if seen_dot {
+                digits_after_dot += 1;
+            } else {
+                digits_before_dot += 1;
+            }
+        } else if *byte == b'.' && !seen_dot {
+            seen_dot = true;
+        } else {
+            return false;
+        }
+    }
+
+    digits_before_dot > 0 && (!seen_dot || digits_after_dot > 0)
+}
+
+fn render_storage_param_entries(entries: &[StorageParamEntry]) -> String {
+    let mut out = String::new();
+    for (idx, entry) in entries.iter().enumerate() {
+        if idx > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&entry.key);
+        out.push('=');
+        out.push_str(&entry.value);
+    }
+    out
 }
 
 /// Parsed `pk = X` value.
@@ -483,6 +706,12 @@ impl ModelAttrs {
         let mut renamed_from: Option<String> = Option::None;
         let mut tree_edge: Option<syn::LitStr> = Option::None;
         let mut watermark_field: Option<syn::LitStr> = Option::None;
+        // Phase 8.5 Cluster 4 (djogi#217) — `#[model(table_comment = "<text>")]`
+        // free-text table comment accumulator. Filled by the matching arm
+        // inside the meta dispatch loop; duplicate detection happens there.
+        let mut table_comment: Option<String> = Option::None;
+        let mut storage_params: Option<String> = Option::None;
+        let mut tablespace: Option<String> = Option::None;
         let mut proxy_for: Option<syn::Ident> = Option::None;
         let mut proxy_default_order: Vec<(syn::Ident, crate::model::proxy::OrderDir)> = Vec::new();
         let mut seen_proxy_default_order = false;
@@ -789,6 +1018,51 @@ impl ModelAttrs {
                             ));
                         }
                         watermark_field = Some(s.clone());
+                    } else if path.is_ident("table_comment") {
+                        // Phase 8.5 djogi#217 — adopter-supplied free-text
+                        // comment lowered to `COMMENT ON TABLE … IS '…'`.
+                        // The composer owns single-quote escaping at
+                        // SQL-emission time so the macro accepts any
+                        // non-empty / non-whitespace-only string — including
+                        // apostrophes, percent signs, and other glyphs.
+                        // Reject empty / whitespace-only strings so the
+                        // descriptor never carries a meaningless comment
+                        // that would lower to `COMMENT ON TABLE … IS ''`.
+                        if table_comment.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `table_comment` key in #[model(...)]",
+                            ));
+                        }
+                        let value = s.value();
+                        if value.trim().is_empty() {
+                            return Err(syn::Error::new_spanned(
+                                s,
+                                "`table_comment = \"\"` is not allowed — \
+                                 comment must be a non-empty / non-whitespace-only \
+                                 string. The composer lowers the value verbatim into \
+                                 `COMMENT ON TABLE <t> IS '<text>'`; an empty literal \
+                                 produces a meaningless no-op statement.",
+                            ));
+                        }
+                        table_comment = Some(value);
+                    } else if path.is_ident("storage_params") {
+                        if storage_params.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `storage_params` key in #[model(...)]",
+                            ));
+                        }
+                        storage_params = Some(parse_storage_params_literal(s)?);
+                    } else if path.is_ident("tablespace") {
+                        if tablespace.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `tablespace` key in #[model(...)]",
+                            ));
+                        }
+                        crate::ident::check_table_name(&s.value(), s.span())?;
+                        tablespace = Some(s.value());
                     } else if path.is_ident("proxy_for") {
                         // Phase 8β T3.2 — string-literal form rejected
                         // mirroring the `pk = "..."` rejection. Bare-ident
@@ -812,6 +1086,8 @@ impl ModelAttrs {
                                 "unknown #[model] attribute `{}`; expected `table`, `pk`, \
                                  `idempotency_key`, `tenant_key`, `renamed_from`, `tree_edge`, \
                                  `watermark_field`, `fts`, `indexes`, `exclusion`, \
+                                 `table_comment`, \
+                                 `storage_params`, `tablespace`, \
                                  `no_default`, `through`, `events`, `hooks`, `auditable`, \
                                  `soft_deletable`, `proxy_for`, `default_order`, or \
                                  `default_filter`",
@@ -1120,6 +1396,11 @@ impl ModelAttrs {
             proxy_default_order,
             proxy_default_filter,
             watermark_field,
+            // Phase 8.5 Cluster 4 (djogi#217) — adopter
+            // `#[model(table_comment = "<text>")]` free-text comment.
+            table_comment,
+            storage_params,
+            tablespace,
         })
     }
 }
@@ -1583,6 +1864,22 @@ pub struct FieldAttrs {
     /// Set via darling. `FieldAttrs::parse` post-validates non-empty.
     #[darling(default)]
     pub check: Option<String>,
+
+    /// `#[field(comment = "<text>")]` — Phase 8.5 djogi#217.
+    ///
+    /// Adopter-supplied free-text column comment lowered by the
+    /// migration composer to `COMMENT ON COLUMN <t>.<c> IS '<text>'`.
+    /// The composer doubles single quotes inside the value at
+    /// SQL-emission time (per the standard Postgres lexer rule under
+    /// `standard_conforming_strings = on`, the PG 18 default that
+    /// djogi requires), so adopters can write apostrophes verbatim.
+    ///
+    /// Set via darling. `FieldAttrs::parse` post-validates non-empty
+    /// (whitespace-only also rejected) so the descriptor never carries
+    /// a meaningless comment that would lower to `COMMENT ON COLUMN
+    /// … IS ''`.
+    #[darling(default)]
+    pub comment: Option<String>,
 }
 
 /// Per-field visage exposure spec — parsed from `#[field(expose(...))]`.
@@ -2093,6 +2390,12 @@ impl FieldAttrs {
             // `FieldAttrs::parse`; emitted verbatim into descriptors,
             // snapshots, and migration SQL.
             "check",
+            // Phase 8.5 djogi#217 — adopter-supplied `#[field(comment = "<text>")]`
+            // free-text column comment. Validated as non-empty /
+            // non-whitespace-only in `FieldAttrs::parse`; emitted
+            // verbatim into descriptors and snapshots. The composer
+            // doubles single quotes at SQL-emission time.
+            "comment",
         ];
         // Phase 7-Zero v3 T2 Q2/v2 #8 — `nulls_not_distinct` is deliberately
         // out of scope at the field level. The feature lives on the model-
@@ -2453,6 +2756,29 @@ impl FieldAttrs {
                  The string is emitted verbatim into the column's \
                  CHECK constraint; an empty literal produces \
                  invalid SQL.",
+            ));
+        }
+
+        // Phase 8.5 djogi#217 — `#[field(comment = "<text>")]` free-text
+        // column comment. Validated as non-empty / non-whitespace-only at
+        // parse time. The composer accepts arbitrary glyphs (including
+        // apostrophes) inside the value and doubles single quotes at
+        // SQL-emission time per the standard Postgres lexer rule under
+        // `standard_conforming_strings = on`. An empty or whitespace-only
+        // comment is rejected here because it would lower to a no-op
+        // `COMMENT ON COLUMN … IS ''` that adds no information and
+        // signals an adopter mistake.
+        if let Some(text) = &attrs.comment
+            && text.trim().is_empty()
+        {
+            let span = find_named_str_lit_span(field, "comment").unwrap_or_else(|| field.span());
+            return Err(syn::Error::new(
+                span,
+                "`#[field(comment = \"\")]` is not allowed — \
+                 comment must be a non-empty / non-whitespace-only string. \
+                 The composer lowers the value verbatim into \
+                 `COMMENT ON COLUMN <t>.<c> IS '<text>'`; an empty literal \
+                 produces a meaningless no-op statement.",
             ));
         }
 
@@ -3378,6 +3704,88 @@ mod tests {
     fn tree_edge_default_is_none() {
         let attrs = parse_attrs(r#"table = "nodes""#).expect("default is fine");
         assert!(attrs.tree_edge.is_none());
+    }
+
+    #[test]
+    fn ddl_metadata_model_attrs_parse() {
+        let attrs = parse_attrs(
+            r#"table = "widgets",
+               table_comment = "Operational table",
+               storage_params = "fillfactor=70, autovacuum_enabled=false",
+               tablespace = "fastspace""#,
+        )
+        .expect("DDL metadata attrs parse");
+
+        assert_eq!(attrs.table_comment.as_deref(), Some("Operational table"));
+        assert_eq!(
+            attrs.storage_params.as_deref(),
+            Some("fillfactor=70, autovacuum_enabled=false")
+        );
+        assert_eq!(attrs.tablespace.as_deref(), Some("fastspace"));
+    }
+
+    #[test]
+    fn ddl_metadata_model_attrs_reject_empty_storage_params() {
+        let err = parse_attrs(r#"table = "widgets", storage_params = "   ""#)
+            .expect_err("empty storage params rejected");
+        assert!(
+            err.to_string().contains("storage_params"),
+            "diagnostic mentions storage_params: {err}"
+        );
+    }
+
+    #[test]
+    fn ddl_metadata_model_attrs_reject_malformed_storage_params() {
+        let err = parse_attrs(r#"table = "widgets", storage_params = "fillfactor""#)
+            .expect_err("missing key-value delimiter rejected");
+        assert!(
+            err.to_string().contains("key=value"),
+            "diagnostic explains key-value form: {err}"
+        );
+    }
+
+    #[test]
+    fn ddl_metadata_model_attrs_reject_storage_params_injection_fragments() {
+        for params in [
+            "fillfactor=70); DROP TABLE x; --",
+            "fillfactor=70--comment",
+            "fillfactor=70/*comment*/",
+            "fillfactor=(70)",
+            "fillfactor=DROP",
+        ] {
+            let err = parse_attrs(&format!(
+                r#"table = "widgets", storage_params = "{params}""#
+            ))
+            .expect_err("storage params injection fragment rejected");
+            assert!(
+                err.to_string().contains("storage_params"),
+                "diagnostic names storage_params for {params:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn ddl_metadata_model_attrs_reject_duplicate_storage_params_keys() {
+        let err =
+            parse_attrs(r#"table = "widgets", storage_params = "fillfactor=70, FillFactor=80""#)
+                .expect_err("duplicate storage params key rejected");
+
+        assert!(
+            err.to_string().contains("duplicate"),
+            "diagnostic mentions duplicate key: {err}"
+        );
+    }
+
+    #[test]
+    fn ddl_metadata_model_attrs_reject_dotted_storage_params_keys() {
+        let err =
+            parse_attrs(r#"table = "widgets", storage_params = "toast.autovacuum_enabled=true""#)
+                .expect_err("dotted storage params key rejected");
+
+        assert!(
+            err.to_string().contains("storage_params"),
+            "diagnostic names storage_params: {err}"
+        );
     }
 
     #[test]

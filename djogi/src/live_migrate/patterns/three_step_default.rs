@@ -210,6 +210,7 @@ mod tests {
     fn column(default_sql: Option<&str>, nullable: bool) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            comment: None,
             default_sql: default_sql.map(str::to_string),
             foreign_key: None,
             generated: None,

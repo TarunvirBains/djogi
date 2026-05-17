@@ -267,18 +267,22 @@ with a manual `postgres_types::ToSql` / `FromSql` implementation.
 
 Tracked under the [#170](https://github.com/TarunvirBains/djogi/issues/170) umbrella.
 
-### DDL metadata attribute gaps
+### DDL metadata attributes
 
-The following Postgres DDL metadata features have no typed `#[model]` or `#[field]`
-attribute surface yet. Adopters who need them must append hand-written SQL after
-`djogi migrations compose`.
+The following Postgres DDL metadata features have typed `#[model]` or
+`#[field]` attribute surfaces and are emitted by `djogi migrations compose`.
+
+| Feature | Attribute | Lowering | Tracking |
+|---|---|---|---|
+| `COMMENT ON TABLE` | `#[model(table_comment = "...")]` | `COMMENT ON TABLE <t> IS '...'` | [#217](https://github.com/TarunvirBains/djogi/issues/217) |
+| `COMMENT ON COLUMN` | `#[field(comment = "...")]` | `COMMENT ON COLUMN <t>.<c> IS '...'` | [#217](https://github.com/TarunvirBains/djogi/issues/217) |
+| Storage parameters (`fillfactor`, `autovacuum_*`, …) | `#[model(storage_params = "key=val, ...")]` | `ALTER TABLE <t> SET (key=val, ...)`; removed keys are reset on change | [#218](https://github.com/TarunvirBains/djogi/issues/218) |
+| `CREATE TABLE … TABLESPACE <name>` | `#[model(tablespace = "...")]` | `ALTER TABLE <t> SET TABLESPACE <name>`; clearing uses `pg_default` | [#219](https://github.com/TarunvirBains/djogi/issues/219) |
+
+Remaining gaps:
 
 | Feature | Planned attribute | Workaround today | Tracking |
 |---|---|---|---|
-| `COMMENT ON TABLE` | `#[model(table_comment = "...")]` | Append `COMMENT ON TABLE <t> IS '...'` to the composed migration | [#217](https://github.com/TarunvirBains/djogi/issues/217) |
-| `COMMENT ON COLUMN` | `#[field(comment = "...")]` | Append `COMMENT ON COLUMN <t>.<c> IS '...'` to the composed migration | [#217](https://github.com/TarunvirBains/djogi/issues/217) |
-| Storage parameters (`fillfactor`, `autovacuum_*`, …) | `#[model(storage_params = "key=val, ...")]` | Append `ALTER TABLE <t> SET (key=val, ...)` after table creation | [#218](https://github.com/TarunvirBains/djogi/issues/218) |
-| `CREATE TABLE … TABLESPACE <name>` | `#[model(tablespace = "...")]` | Append `ALTER TABLE <t> SET TABLESPACE <name>` after table creation | [#219](https://github.com/TarunvirBains/djogi/issues/219) |
 | `ALTER COLUMN … TYPE … USING <expr>` | `#[field(type_change_using = "...")]` | Hand-edit the `ALTER COLUMN TYPE` statement in the composed SQL | [#220](https://github.com/TarunvirBains/djogi/issues/220) |
 | Generated column expression changes (PG 15+) | differ-automatic | Verify the differ emits `DROP EXPRESSION` + `SET EXPRESSION AS`; hand-write if not | [#221](https://github.com/TarunvirBains/djogi/issues/221) |
 

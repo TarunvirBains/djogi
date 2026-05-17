@@ -71,6 +71,7 @@
 //! There is no `regex` crate dependency anywhere in the migration
 //! engine.
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use super::diff::{
@@ -200,6 +201,16 @@ pub enum SqlEmitError {
         /// Operator-facing detail.
         detail: String,
     },
+    /// A `#[model(storage_params = "...")]` fragment failed the
+    /// structural reloption grammar. These fragments are emitted
+    /// unquoted inside `ALTER TABLE ... SET (...)`, so the emitter
+    /// rejects malformed values instead of splicing them into SQL.
+    InvalidStorageParams {
+        /// Original storage-parameter fragment.
+        params: String,
+        /// Operator-facing validation reason.
+        reason: String,
+    },
     /// The differ or PK-flip lowerer rejected a cluster before SQL
     /// emission could proceed.
     Diff(super::diff::DiffError),
@@ -222,6 +233,9 @@ impl std::fmt::Display for SqlEmitError {
                 "table `{table}`: partition shape change cannot be lowered automatically: \
                  {detail}"
             ),
+            SqlEmitError::InvalidStorageParams { params, reason } => {
+                write!(f, "invalid storage_params `{params}`: {reason}")
+            }
             SqlEmitError::Diff(err) => write!(f, "{err}"),
         }
     }
@@ -271,7 +285,7 @@ pub fn lower_delta(delta: &SchemaDelta) -> Result<Vec<OperationSql>, SqlEmitErro
 #[allow(clippy::result_large_err)]
 pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlEmitError> {
     match op {
-        SchemaOperation::AddTable(t) => Ok(emit_add_table(t)),
+        SchemaOperation::AddTable(t) => try_emit_add_table(t),
         SchemaOperation::DropTable(name) => Ok(emit_drop_table(name)),
         SchemaOperation::RenameTable { from, to } => Ok(emit_rename_table(from, to)),
         SchemaOperation::AddColumn { table, column } => Ok(emit_add_column(table, column)),
@@ -307,6 +321,20 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
             variant,
             anchor,
         } => Ok(emit_add_enum_variant(enum_name, variant, anchor.as_ref())),
+        // Phase 8.5 Cluster 4 djogi#217 — `COMMENT ON TABLE` lowering.
+        // The composer owns setting-independent SQL string rendering
+        // for the comment text.
+        SchemaOperation::SetTableComment { table, from, to } => Ok(emit_set_table_comment(
+            table,
+            from.as_deref(),
+            to.as_deref(),
+        )),
+        SchemaOperation::SetStorageParams { table, from, to } => {
+            emit_set_storage_params(table, from.as_deref(), to.as_deref())
+        }
+        SchemaOperation::SetTablespace { table, from, to } => {
+            Ok(emit_set_tablespace(table, from.as_deref(), to.as_deref()))
+        }
         SchemaOperation::PkTypeFlip { table, from, to } => {
             Err(SqlEmitError::PkTypeFlipMustRouteToT9 {
                 table: table.clone(),
@@ -449,7 +477,13 @@ pub type SqlBucket = BucketKey;
 
 // ── Per-operation emitters ────────────────────────────────────────────────
 
+#[cfg(test)]
 fn emit_add_table(t: &TableSchema) -> OperationSql {
+    try_emit_add_table(t).expect("test fixture storage_params should be valid")
+}
+
+#[allow(clippy::result_large_err)]
+fn try_emit_add_table(t: &TableSchema) -> Result<OperationSql, SqlEmitError> {
     let qt = quote_ident(&t.table);
     let mut up = String::with_capacity(256);
     let _ = writeln!(up, "CREATE TABLE {qt} (");
@@ -496,8 +530,45 @@ fn emit_add_table(t: &TableSchema) -> OperationSql {
     }
     up.push(';');
 
+    // Phase 8.5 Cluster 4 djogi#217 — append `COMMENT ON TABLE …`
+    // immediately after the `CREATE TABLE` statement when the
+    // adopter declared `#[model(table_comment = "…")]`. The composer
+    // renders the text through a setting-independent SQL string
+    // literal helper so apostrophes and backslashes round-trip safely.
+    if let Some(comment) = t.table_comment.as_deref() {
+        up.push('\n');
+        let _ = write!(
+            up,
+            "COMMENT ON TABLE {qt} IS {};",
+            render_comment_literal(comment)
+        );
+    }
+    // Phase 8.5 Cluster 4 djogi#217 — append `COMMENT ON COLUMN …`
+    // for every column carrying `#[field(comment = "…")]`. Emission
+    // order matches column declaration order (the same order the
+    // CREATE TABLE column list above uses) so the resulting migration
+    // SQL is byte-stable across runs.
+    for col in &t.columns {
+        if let Some(comment) = col.comment.as_deref() {
+            up.push('\n');
+            up.push_str(&render_comment_on_column(
+                &t.table,
+                &col.name,
+                Some(comment),
+            ));
+        }
+    }
+    if let Some(params) = t.storage_params.as_deref() {
+        up.push('\n');
+        up.push_str(&render_set_storage_params(&t.table, params)?);
+    }
+    if let Some(tablespace) = t.tablespace.as_deref() {
+        up.push('\n');
+        up.push_str(&render_set_tablespace(&t.table, Some(tablespace)));
+    }
+
     let down = format!("DROP TABLE {qt};");
-    OperationSql {
+    Ok(OperationSql {
         label: format!("AddTable {}", t.table),
         up,
         down,
@@ -511,7 +582,7 @@ fn emit_add_table(t: &TableSchema) -> OperationSql {
         // is clean; AddTable down is "drop a freshly-created table
         // that had no rows". Not lossy.
         lossy: None,
-    }
+    })
 }
 
 fn emit_drop_table(name: &str) -> OperationSql {
@@ -554,6 +625,16 @@ fn emit_add_column(table: &str, col: &ColumnSchema) -> OperationSql {
     let _ = write!(up, "ALTER TABLE {qt} ADD COLUMN ");
     write_column_definition(&mut up, col, table);
     up.push(';');
+    // Phase 8.5 Cluster 4 djogi#217 — emit `COMMENT ON COLUMN …`
+    // immediately after `ADD COLUMN` when the descriptor carries a
+    // comment. The differ filters back-compat snapshots that
+    // load with `comment: None` so this path only fires when the
+    // adopter actually declared `#[field(comment = "…")]` on the
+    // new column.
+    if let Some(comment) = col.comment.as_deref() {
+        up.push('\n');
+        up.push_str(&render_comment_on_column(table, &col.name, Some(comment)));
+    }
     let down = format!("ALTER TABLE {qt} DROP COLUMN {qc};");
     OperationSql {
         label: format!("AddColumn {table}.{}", col.name),
@@ -884,6 +965,24 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
                     unreachable!("ColumnChange::SetIdentity is only emitted when from != to")
                 }
             }
+        }
+        // Phase 8.5 djogi#217 — `COMMENT ON COLUMN` lowering.
+        //
+        // `COMMENT ON COLUMN` is its own top-level statement, not an
+        // `ALTER TABLE … ALTER COLUMN` shape; routing it through
+        // `emit_alter_column` is convenience (the differ exposes it
+        // as a column-level change), not a SQL-shape claim. The
+        // `label_suffix` reflects this distinction so the migration
+        // log line reads `AlterColumn {table}.{column} (set
+        // COMMENT)` even though no `ALTER TABLE` is emitted.
+        //
+        // The composer renders a setting-independent SQL string
+        // literal; the differ filters identical pairs upstream so
+        // `(None, None)` and `(Some(a), Some(a))` never reach this arm.
+        ColumnChange::SetComment { from, to } => {
+            let up = render_comment_on_column(table, column, to.as_deref());
+            let down = render_comment_on_column(table, column, from.as_deref());
+            (up, down, "set COMMENT", None)
         }
     };
     OperationSql {
@@ -1246,6 +1345,337 @@ fn emit_move_model_between_apps(model: &str, from_app: &str, to_app: &str) -> Op
     }
 }
 
+/// Emit `COMMENT ON TABLE <qt> IS E'<escaped-to>'` (or `IS NULL` when
+/// the comment is cleared), plus the symmetric down side restoring
+/// `from`. Phase 8.5 Cluster 4 (djogi#217).
+///
+/// The differ filters identical pairs upstream, so `(None, None)` and
+/// `(Some(a), Some(b))` with `a == b` never reach this fn in practice.
+/// The defensive arm emits no-op SQL comments so a bug in the differ
+/// surfaces as visible no-op output rather than malformed SQL.
+fn emit_set_table_comment(table: &str, from: Option<&str>, to: Option<&str>) -> OperationSql {
+    let qt = quote_ident(table);
+    let render = |value: Option<&str>| -> String {
+        match value {
+            Some(text) => format!("COMMENT ON TABLE {qt} IS {};", render_comment_literal(text)),
+            None => format!("COMMENT ON TABLE {qt} IS NULL;"),
+        }
+    };
+    let up = render(to);
+    let down = render(from);
+    OperationSql {
+        label: format!("SetTableComment {table}"),
+        up,
+        down,
+        // `COMMENT ON` is a catalog-only write with no row touch —
+        // both up and down are losslessly recoverable from the carried
+        // `from` / `to`. No lossy marker.
+        lossy: None,
+    }
+}
+
+/// Emit reversible `ALTER TABLE ... SET/RESET (...)` storage-parameter
+/// metadata changes. Phase 8.5 Cluster 4 (djogi#218).
+#[allow(clippy::result_large_err)]
+fn emit_set_storage_params(
+    table: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Result<OperationSql, SqlEmitError> {
+    #[allow(clippy::result_large_err)]
+    let render = |reset: Option<&str>, set: Option<&str>| -> Result<String, SqlEmitError> {
+        let mut out = String::new();
+        if let Some(params) = reset {
+            out.push_str(&render_reset_storage_params(table, params)?);
+        }
+        if let Some(params) = set {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&render_set_storage_params(table, params)?);
+        }
+        Ok(if out.is_empty() {
+            format!(
+                "-- no-op storage parameter change for {}",
+                quote_ident(table)
+            )
+        } else {
+            out
+        })
+    };
+    Ok(OperationSql {
+        label: format!("SetStorageParams {table}"),
+        up: render(from, to)?,
+        down: render(to, from)?,
+        lossy: None,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StorageParamEntry {
+    key: String,
+    value: String,
+}
+
+#[allow(clippy::result_large_err)]
+fn render_set_storage_params(table: &str, params: &str) -> Result<String, SqlEmitError> {
+    let qt = quote_ident(table);
+    let entries = parse_storage_params_for_sql(params)?;
+    Ok(format!(
+        "ALTER TABLE {qt} SET ({});",
+        render_storage_param_entries(&entries)
+    ))
+}
+
+#[allow(clippy::result_large_err)]
+fn render_reset_storage_params(table: &str, params: &str) -> Result<String, SqlEmitError> {
+    let qt = quote_ident(table);
+    let entries = parse_storage_params_for_sql(params)?;
+    let keys = entries
+        .iter()
+        .map(|entry| entry.key.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok(format!("ALTER TABLE {qt} RESET ({keys});"))
+}
+
+#[allow(clippy::result_large_err)]
+fn parse_storage_params_for_sql(params: &str) -> Result<Vec<StorageParamEntry>, SqlEmitError> {
+    parse_storage_params(params).map_err(|reason| SqlEmitError::InvalidStorageParams {
+        params: params.to_string(),
+        reason,
+    })
+}
+
+fn parse_storage_params(params: &str) -> Result<Vec<StorageParamEntry>, String> {
+    if params.trim().is_empty() {
+        return Err(
+            "storage_params must be a non-empty comma-separated key=value list".to_string(),
+        );
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut entries = Vec::new();
+    for part in params.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            return Err("storage_params entries must not be empty".to_string());
+        }
+        let Some((key, value)) = part.split_once('=') else {
+            return Err(
+                "storage_params entries must use key=value form separated by commas".to_string(),
+            );
+        };
+        if value.contains('=') {
+            return Err("storage_params entries must contain exactly one `=`".to_string());
+        }
+
+        let key = key.trim();
+        let value = value.trim();
+        validate_storage_param_key(key)?;
+        validate_storage_param_value(value)?;
+
+        let key = key.to_ascii_lowercase();
+        if !seen.insert(key.clone()) {
+            return Err(format!("duplicate storage_params key `{key}`"));
+        }
+        entries.push(StorageParamEntry {
+            key,
+            value: value.to_string(),
+        });
+    }
+
+    Ok(entries)
+}
+
+fn validate_storage_param_key(key: &str) -> Result<(), String> {
+    let bytes = key.as_bytes();
+    if bytes.is_empty() {
+        return Err("storage_params keys must not be empty".to_string());
+    }
+    if bytes.len() > 63 {
+        return Err("storage_params keys must be at most 63 bytes".to_string());
+    }
+    if !(bytes[0].is_ascii_alphabetic() || bytes[0] == b'_') {
+        return Err(
+            "storage_params keys must start with an ASCII letter or underscore".to_string(),
+        );
+    }
+    if !bytes
+        .iter()
+        .skip(1)
+        .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    {
+        return Err(
+            "storage_params keys must be plain ASCII reloption names; dotted keys are not supported"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_storage_param_value(value: &str) -> Result<(), String> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() {
+        return Err("storage_params values must not be empty".to_string());
+    }
+    if is_storage_param_word(bytes) {
+        if is_storage_param_sql_control_word(bytes) {
+            return Err(
+                "storage_params values must not be SQL statement/control words".to_string(),
+            );
+        }
+        return Ok(());
+    }
+    if is_storage_param_number(bytes) {
+        return Ok(());
+    }
+    Err(
+        "storage_params values must be bare words or decimal numbers; quotes, comments, commas, \
+         parentheses, semicolons, and SQL expressions are not supported"
+            .to_string(),
+    )
+}
+
+fn is_storage_param_word(bytes: &[u8]) -> bool {
+    (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+        && bytes
+            .iter()
+            .skip(1)
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+}
+
+fn is_storage_param_sql_control_word(bytes: &[u8]) -> bool {
+    let word = bytes
+        .iter()
+        .map(|byte| byte.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    matches!(
+        word.as_slice(),
+        b"alter"
+            | b"begin"
+            | b"call"
+            | b"comment"
+            | b"commit"
+            | b"copy"
+            | b"create"
+            | b"delete"
+            | b"do"
+            | b"drop"
+            | b"execute"
+            | b"from"
+            | b"grant"
+            | b"insert"
+            | b"reset"
+            | b"revoke"
+            | b"rollback"
+            | b"select"
+            | b"set"
+            | b"table"
+            | b"truncate"
+            | b"union"
+            | b"update"
+            | b"where"
+    )
+}
+
+fn is_storage_param_number(bytes: &[u8]) -> bool {
+    let mut seen_dot = false;
+    let mut digits_before_dot = 0usize;
+    let mut digits_after_dot = 0usize;
+
+    for byte in bytes {
+        if byte.is_ascii_digit() {
+            if seen_dot {
+                digits_after_dot += 1;
+            } else {
+                digits_before_dot += 1;
+            }
+        } else if *byte == b'.' && !seen_dot {
+            seen_dot = true;
+        } else {
+            return false;
+        }
+    }
+
+    digits_before_dot > 0 && (!seen_dot || digits_after_dot > 0)
+}
+
+fn render_storage_param_entries(entries: &[StorageParamEntry]) -> String {
+    let mut out = String::new();
+    for (idx, entry) in entries.iter().enumerate() {
+        if idx > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&entry.key);
+        out.push('=');
+        out.push_str(&entry.value);
+    }
+    out
+}
+
+/// Emit reversible `ALTER TABLE ... SET TABLESPACE ...` metadata
+/// changes. `None` lowers to `pg_default`, Djogi's representation for
+/// "no explicit tablespace". Phase 8.5 Cluster 4 (djogi#219).
+fn emit_set_tablespace(table: &str, from: Option<&str>, to: Option<&str>) -> OperationSql {
+    OperationSql {
+        label: format!("SetTablespace {table}"),
+        up: render_set_tablespace(table, to),
+        down: render_set_tablespace(table, from),
+        lossy: None,
+    }
+}
+
+fn render_set_tablespace(table: &str, tablespace: Option<&str>) -> String {
+    let qt = quote_ident(table);
+    let qs = quote_ident(tablespace.unwrap_or("pg_default"));
+    format!("ALTER TABLE {qt} SET TABLESPACE {qs};")
+}
+
+/// Emit `COMMENT ON COLUMN <qt>.<qc> IS E'<escaped>'` (or `IS NULL`).
+/// Shared between [`emit_alter_column`]'s `SetComment` arm and the
+/// inline emission that follows `CREATE TABLE` / `ADD COLUMN` for
+/// fields that ship with `#[field(comment = "…")]` set on initial
+/// creation. Phase 8.5 Cluster 4 (djogi#217).
+fn render_comment_on_column(table: &str, column: &str, value: Option<&str>) -> String {
+    let qt = quote_ident(table);
+    let qc = quote_ident(column);
+    match value {
+        Some(text) => format!(
+            "COMMENT ON COLUMN {qt}.{qc} IS {};",
+            render_comment_literal(text)
+        ),
+        None => format!("COMMENT ON COLUMN {qt}.{qc} IS NULL;"),
+    }
+}
+
+/// Render a Postgres escape string literal (`E'…'`) for comment text.
+///
+/// `E'…'` has explicit backslash-escape semantics regardless of the
+/// session's `standard_conforming_strings` setting, so we double both
+/// apostrophes and backslashes before inlining adopter-provided comment
+/// text.
+///
+/// **Scope.** Used by the `COMMENT ON` emission path (djogi#217) only.
+/// Every other adopter SQL path treats the value as raw SQL and does
+/// NOT escape — adopters writing `#[field(check = "…")]` are
+/// responsible for the SQL fragment's correctness themselves. The
+/// helper is scope-named so future callers cannot accidentally adopt it
+/// for raw-SQL paths.
+fn render_comment_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 3);
+    out.push_str("E'");
+    for ch in s.chars() {
+        match ch {
+            '\'' => out.push_str("''"),
+            '\\' => out.push_str("\\\\"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('\'');
+    out
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 /// Emit `"ident"` — double-quote and escape any embedded `"` per
@@ -1591,6 +2021,7 @@ mod tests {
     fn col(name: &str, ty: &str, nullable: bool) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            comment: None,
             default_sql: None,
             foreign_key: None,
             generated: None,
@@ -1639,6 +2070,9 @@ mod tests {
             renamed_from: None,
             rls_enabled: false,
             table: name.to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
             tenant_key: None,
         }
     }
@@ -1653,6 +2087,7 @@ mod tests {
             id_column_heerid(),
             ColumnSchema {
                 check: check.map(|s| s.to_string()),
+                comment: None,
                 default_sql: None,
                 foreign_key: None,
                 generated: None,
@@ -3586,6 +4021,182 @@ mod tests {
                 .contains("\"email_lower\" TEXT GENERATED ALWAYS AS (LOWER(email)) STORED"),
             "missing inline GENERATED: {}",
             op.up
+        );
+    }
+
+    #[test]
+    fn add_table_emits_ddl_metadata_after_create_table() {
+        let mut t = synth_table("widgets");
+        t.table_comment = Some("Widget owner's table".to_string());
+        t.storage_params = Some("fillfactor=70, autovacuum_enabled=false".to_string());
+        t.tablespace = Some("fastspace".to_string());
+        t.columns[1].comment = Some("Human-readable widget name".to_string());
+
+        let sql = emit_add_table(&t);
+
+        assert!(sql.up.contains("CREATE TABLE \"widgets\""));
+        assert!(
+            sql.up
+                .contains("COMMENT ON TABLE \"widgets\" IS E'Widget owner''s table';")
+        );
+        assert!(
+            sql.up.contains(
+                "COMMENT ON COLUMN \"widgets\".\"name\" IS E'Human-readable widget name';"
+            )
+        );
+        assert!(
+            sql.up
+                .contains("ALTER TABLE \"widgets\" SET (fillfactor=70, autovacuum_enabled=false);")
+        );
+        assert!(
+            sql.up
+                .contains("ALTER TABLE \"widgets\" SET TABLESPACE \"fastspace\";")
+        );
+    }
+
+    #[test]
+    fn table_comment_literal_escapes_backslash_quote_injection_fragments() {
+        let dangerous = r"ok\'; DROP TABLE audit_log; --";
+
+        let op = lower_operation(&SchemaOperation::SetTableComment {
+            table: "widgets".to_string(),
+            from: None,
+            to: Some(dangerous.to_string()),
+        })
+        .expect("table comment lower");
+
+        assert_eq!(
+            op.up,
+            r#"COMMENT ON TABLE "widgets" IS E'ok\\''; DROP TABLE audit_log; --';"#
+        );
+        assert_eq!(op.down, r#"COMMENT ON TABLE "widgets" IS NULL;"#);
+    }
+
+    #[test]
+    fn column_comment_literal_escapes_backslash_quote_injection_fragments() {
+        let dangerous = r"ok\'; DROP TABLE audit_log; -- owner's note";
+
+        let op = emit_alter_column(
+            "widgets",
+            "name",
+            &ColumnChange::SetComment {
+                from: None,
+                to: Some(dangerous.to_string()),
+            },
+        );
+
+        assert_eq!(
+            op.up,
+            r#"COMMENT ON COLUMN "widgets"."name" IS E'ok\\''; DROP TABLE audit_log; -- owner''s note';"#
+        );
+        assert_eq!(op.down, r#"COMMENT ON COLUMN "widgets"."name" IS NULL;"#);
+    }
+
+    #[test]
+    fn table_metadata_operations_are_reversible_sql() {
+        let storage = lower_operation(&SchemaOperation::SetStorageParams {
+            table: "widgets".to_string(),
+            from: Some("fillfactor=80".to_string()),
+            to: Some("fillfactor=70, autovacuum_enabled=false".to_string()),
+        })
+        .expect("storage params lower");
+        assert_eq!(
+            storage.up,
+            "ALTER TABLE \"widgets\" RESET (fillfactor);\n\
+             ALTER TABLE \"widgets\" SET (fillfactor=70, autovacuum_enabled=false);"
+        );
+        assert_eq!(
+            storage.down,
+            "ALTER TABLE \"widgets\" RESET (fillfactor, autovacuum_enabled);\n\
+             ALTER TABLE \"widgets\" SET (fillfactor=80);"
+        );
+
+        let tablespace = lower_operation(&SchemaOperation::SetTablespace {
+            table: "widgets".to_string(),
+            from: None,
+            to: Some("fastspace".to_string()),
+        })
+        .expect("tablespace lower");
+        assert_eq!(
+            tablespace.up,
+            "ALTER TABLE \"widgets\" SET TABLESPACE \"fastspace\";"
+        );
+        assert_eq!(
+            tablespace.down,
+            "ALTER TABLE \"widgets\" SET TABLESPACE \"pg_default\";"
+        );
+    }
+
+    #[test]
+    fn storage_params_sql_emitter_rejects_injection_fragments() {
+        for params in [
+            "fillfactor=70); DROP TABLE x; --",
+            "fillfactor=70--comment",
+            "fillfactor=70/*comment*/",
+            "fillfactor=(70)",
+            "fillfactor=DROP",
+        ] {
+            let err = lower_operation(&SchemaOperation::SetStorageParams {
+                table: "widgets".to_string(),
+                from: None,
+                to: Some(params.to_string()),
+            })
+            .expect_err("storage params injection fragment rejected");
+
+            assert!(
+                err.to_string().contains("storage_params"),
+                "diagnostic names storage_params for {params:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn storage_params_sql_emitter_rejects_duplicate_keys_after_normalization() {
+        let err = lower_operation(&SchemaOperation::SetStorageParams {
+            table: "widgets".to_string(),
+            from: None,
+            to: Some("fillfactor=70, FillFactor=80".to_string()),
+        })
+        .expect_err("duplicate storage params key rejected");
+
+        assert!(
+            err.to_string().contains("duplicate"),
+            "diagnostic mentions duplicate key: {err}"
+        );
+    }
+
+    #[test]
+    fn storage_params_sql_emitter_renders_from_parsed_entries() {
+        let storage = lower_operation(&SchemaOperation::SetStorageParams {
+            table: "widgets".to_string(),
+            from: Some("FillFactor = 80, autovacuum_enabled = true".to_string()),
+            to: Some("fillfactor = 70".to_string()),
+        })
+        .expect("storage params lower");
+
+        assert_eq!(
+            storage.up,
+            "ALTER TABLE \"widgets\" RESET (fillfactor, autovacuum_enabled);\n\
+             ALTER TABLE \"widgets\" SET (fillfactor=70);"
+        );
+        assert_eq!(
+            storage.down,
+            "ALTER TABLE \"widgets\" RESET (fillfactor);\n\
+             ALTER TABLE \"widgets\" SET (fillfactor=80, autovacuum_enabled=true);"
+        );
+    }
+
+    #[test]
+    fn add_table_rejects_invalid_storage_params() {
+        let mut t = synth_table("widgets");
+        t.storage_params = Some("fillfactor=70); DROP TABLE x; --".to_string());
+
+        let err = lower_operation(&SchemaOperation::AddTable(t))
+            .expect_err("add table storage params injection rejected");
+
+        assert!(
+            err.to_string().contains("storage_params"),
+            "diagnostic names storage_params: {err}"
         );
     }
 }
