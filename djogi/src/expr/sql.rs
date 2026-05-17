@@ -653,14 +653,12 @@ pub(crate) fn emit_expr(
                     order_by,
                     ctx,
                 )?,
-                // GROUPING(col) — single-column form. Postgres also
-                // supports a variadic GROUPING(c1, c2, …, cN) that
-                // returns a bitmask; Djogi v0.1.0 exposes only the
-                // single-column form (see the doc comment on
-                // `FieldRef::grouping` for the variadic deferral
-                // rationale). The structural shape (one arg, no
-                // separator) matches every other unary aggregate, so
-                // routes through `emit_unary_agg`.
+                // GROUPING(col) — single-column form. The variadic
+                // GROUPING(c1, c2, …, cN) bitmask form routes through
+                // `ExprNode::GroupingVariadic` instead (added in #94).
+                // The structural shape (one arg, no separator) matches
+                // every other unary aggregate, so routes through
+                // `emit_unary_agg`.
                 AggOp::Grouping => emit_unary_agg(acc, "GROUPING(", *distinct, arg, order_by, ctx)?,
                 // Ordered-set aggregates (Cluster E T7) — emit
                 // `OP(arg) WITHIN GROUP (ORDER BY target)`. The arg

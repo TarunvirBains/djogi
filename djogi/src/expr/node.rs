@@ -121,9 +121,10 @@ pub(crate) enum ExprNode {
     },
 
     /// `GROUPING(c1, c2, …, cN)` — variadic grouping-set bitmask.
-    /// Bit `i` of the result is `1` iff `columns[i]` was rolled up in the
-    /// current row under `GROUP BY ROLLUP` / `CUBE` / `GROUPING SETS`, else
-    /// `0`.
+    /// Postgres assigns bit `0` (LSB) to the rightmost argument, so
+    /// bit `j` is `1` iff `columns[N-1-j]` was rolled up in the
+    /// current row under `GROUP BY ROLLUP` / `CUBE` / `GROUPING SETS`,
+    /// else `0`.
     ///
     /// The single-column form `GROUPING(col)` continues to use
     /// `ExprNode::Aggregate { op: AggOp::Grouping, ... }` — the variadic

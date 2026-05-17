@@ -1122,8 +1122,8 @@ impl<M: Model, V> FieldRef<M, V> {
     ///
     /// Postgres also accepts `GROUPING(c1, c2, …, cN)` returning a
     /// bitmask. Use the free function [`crate::grouping_of`] for that
-    /// shape — bit `i` of the result is `1` when `columns[i]` was
-    /// rolled up. Implemented in #94.
+    /// shape — bit 0 (LSB) maps to the rightmost argument; each bit
+    /// is `1` when that column was rolled up. Implemented in #94.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn grouping(self) -> AggregateExpr<i32> {
         AggregateExpr::unary_agg(AggOp::Grouping, self.column(), None)
@@ -1132,12 +1132,14 @@ impl<M: Model, V> FieldRef<M, V> {
 
 /// `GROUPING(c1, c2, …, cN)` — variadic bitmask form.
 ///
-/// Returns `AggregateExpr<i32>` carrying a bitmask: bit `i` (zero-
-/// indexed, lsb-first) is `1` if `columns[i]` was rolled up in the
-/// current row under `GROUP BY ROLLUP` / `CUBE` / `GROUPING SETS`,
-/// else `0`. With three columns `(a, b, c)`, the row that rolls up
-/// `c` only yields bitmask `0b100 == 4`; the row that rolls up
-/// `a` and `c` yields `0b101 == 5`.
+/// Returns `AggregateExpr<i32>` carrying a bitmask. Postgres assigns
+/// bit `0` (the least-significant bit) to the **rightmost** argument
+/// and bit `N-1` to the leftmost. Each bit is `1` when that column
+/// was rolled up in the current row under `GROUP BY ROLLUP` / `CUBE`
+/// / `GROUPING SETS`, else `0`. With three columns `(a, b, c)`, `c`
+/// maps to bit 0 (LSB): the row that rolls up `c` only yields
+/// bitmask `0b001 == 1`; the row that rolls up `a` and `c` yields
+/// `0b101 == 5`.
 ///
 /// Postgres returns `INTEGER` for this form regardless of input
 /// column types — the bitmask is positional, not value-derived —
