@@ -1648,4 +1648,83 @@ mod tests {
         let s = detect_fallibility_shape(src, Span::call_site()).unwrap();
         assert_eq!(s, FallibilityShape::Shape1TrailingQuestion);
     }
+
+    // ──────────────────────────────────────────────────────────────
+    // E_DJG_VDF_004 — general identifier-shape coverage.
+    //
+    // The validator's three rejection arms (length cap, leading byte,
+    // body byte) all anchor at E_DJG_VDF_004 in their diagnostic. The
+    // length cap is reachable via a normal ASCII identifier longer
+    // than 63 bytes. The leading-byte and body-byte arms are
+    // unreachable via macro-time parser input that originates as a
+    // rustc-validated identifier, BUT the validator must still reject
+    // such names if a future caller hands it a synthesised
+    // `syn::Ident` carrying non-ASCII bytes (Rust 1.53+ accepts
+    // Unicode XID identifiers — `école` and `café` both parse as
+    // valid `syn::Ident`s).
+    //
+    // These tests exercise `validate_name_shape` directly. The
+    // earlier `rejects_uppercase_name_byte`, `rejects_reserved_…`,
+    // and similar tests cover the parser end-to-end via
+    // `parse_derived_attrs`; the byte-level rules below are split
+    // out here because the >63-byte path is awkward to write inline
+    // in a `quote! { ... }` block (and would also force the test
+    // file itself to carry a 64-char ident, which clippy-style
+    // tooling tends to dislike).
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn rejects_name_exceeding_63_bytes() {
+        // Maximum allowed length is 63 bytes. A 64-byte ASCII
+        // lowercase identifier trips the length cap arm.
+        let raw = "a".repeat(MAX_DERIVED_NAME_LEN + 1);
+        let ident = syn::Ident::new(&raw, Span::call_site());
+        let err = super::validate_name_shape(&ident).expect_err("length cap must fire");
+        let msg = err.to_string();
+        assert!(msg.contains("E_DJG_VDF_004"), "got: {msg}");
+        assert!(msg.contains("exceeding"), "got: {msg}");
+    }
+
+    #[test]
+    fn accepts_name_at_63_byte_cap() {
+        // Boundary check — 63 bytes exactly is the maximum the
+        // Postgres unquoted-identifier cap permits. The validator
+        // must accept this length, not reject it.
+        let raw = "a".repeat(MAX_DERIVED_NAME_LEN);
+        let ident = syn::Ident::new(&raw, Span::call_site());
+        super::validate_name_shape(&ident).expect("63-byte cap is inclusive");
+    }
+
+    #[test]
+    fn rejects_non_ascii_leading_byte() {
+        // `é` U+00E9 is a valid Unicode XID_Start character, so syn
+        // accepts it as an identifier; its UTF-8 encoding starts
+        // with 0xC3, which is neither `_` nor ASCII-lowercase, so the
+        // validator's leading-byte arm fires E_DJG_VDF_004.
+        let ident = syn::Ident::new("école", Span::call_site());
+        let err = super::validate_name_shape(&ident).expect_err("leading non-ASCII must fire");
+        let msg = err.to_string();
+        assert!(msg.contains("E_DJG_VDF_004"), "got: {msg}");
+        assert!(
+            msg.contains("first byte must be"),
+            "expected leading-byte diagnostic, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_non_ascii_body_byte() {
+        // `café` starts with the ASCII letter `c` (lower), so the
+        // first-byte check passes; the third character `é` encodes
+        // as UTF-8 bytes 0xC3 0xA9, which trip the body-byte arm of
+        // E_DJG_VDF_004 because neither byte is `_`, ASCII
+        // lowercase, or ASCII digit.
+        let ident = syn::Ident::new("café", Span::call_site());
+        let err = super::validate_name_shape(&ident).expect_err("body non-ASCII must fire");
+        let msg = err.to_string();
+        assert!(msg.contains("E_DJG_VDF_004"), "got: {msg}");
+        assert!(
+            msg.contains("after the first character"),
+            "expected body-byte diagnostic, got: {msg}"
+        );
+    }
 }

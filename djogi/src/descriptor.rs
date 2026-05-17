@@ -2940,3 +2940,166 @@ pub struct EnumDescriptor {
 }
 
 inventory::collect!(EnumDescriptor);
+
+// ───────────────────────────────────────────────────────────────────────────
+// Visage-side derived-projection descriptor inventory — Phase 8.5 #231.
+//
+// Separate from `ModelDescriptor` (the storage-side inventory consumed by
+// the migration differ). `inventory::collect!(VisageDescriptor)` registers
+// its OWN collection, so the migration / snapshot / `build.rs` paths —
+// which iterate `inventory::iter::<ModelDescriptor>()` and
+// `inventory::iter::<EnumDescriptor>()` exclusively — never observe
+// derived projections. The boundary mirrors the storage-vs-projection
+// split the rest of the visage-derived-fields surface establishes.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// One derived projection entry — Phase 8.5 issue #231.
+///
+/// `#[derived(name, ty, scopes, sql, rust, doc)]` parses into this
+/// shape at macro time, and the macro emits a fully-`&'static`-typed
+/// literal inside an `inventory::submit!(VisageDescriptor { ... })`
+/// block for the visages whose `scopes = [...]` list includes the
+/// owning visage's scope.
+///
+/// # Why this exists separately from `ProjectionEntry`
+///
+/// [`crate::__private::ProjectionEntry`] is the **runtime metadata
+/// enum** carried on every emitted visage's
+/// [`crate::DjogiVisage::PROJECTIONS`] constant. It only carries the
+/// alias + SQL fragment the queryset hot path needs.
+///
+/// `DerivedProjection` is the **descriptor record** intended for
+/// out-of-band consumers — documentation generators, framework-side
+/// lints, future Tier-2 predicate renderers. It carries the richer
+/// shape (`ty_path`, `rust`, `doc`, originating `scopes`) those
+/// consumers want without bloating the per-visage trait constant or
+/// the SELECT-emission hot path.
+///
+/// # Const-construction contract
+///
+/// Every field is a type with a `const` constructor usable in static
+/// contexts — `&'static str`, `Option<&'static str>`, and
+/// `&'static [&'static str]`. The macro emits the entire
+/// `&'static [DerivedProjection]` slice as a static-context expression
+/// at the `inventory::submit!` site without runtime allocation. Owned
+/// types (`String`, `Vec<T>`) are forbidden anywhere here because they
+/// would force a runtime allocator and break `inventory::submit!`'s
+/// static-data requirement; the same constraint binds
+/// [`FieldDescriptor`].
+///
+/// # Field-stability contract
+///
+/// Like [`FieldDescriptor`], `EnumDescriptor`, and
+/// [`ModelDescriptor`], every text field is a `&'static str` so the
+/// descriptor literal emitted by the macro is `inventory::submit!`-
+/// submittable. Adding a field is a breaking change for every
+/// existing `DerivedProjection` literal site — only do it when load-
+/// bearing.
+///
+/// # Layout
+///
+/// - `name` — the entry's `name = ...` (also the SELECT alias and
+///   the visage struct's field name).
+/// - `ty_path` — token-string form of the entry's `ty = ...`,
+///   captured as the macro emitted it (token-level whitespace
+///   preserved; e.g. `"Site"`, `"Option < String >"`,
+///   `"crate :: domain :: Site"`). Documentation generators consume
+///   this verbatim rather than re-parsing it.
+/// - `sql` — the adopter's Postgres SQL expression (verbatim).
+/// - `rust` — the adopter's Rust expression source (verbatim).
+/// - `doc` — `Some("...")` when the entry declared `doc = "..."`,
+///   `None` otherwise.
+/// - `scopes` — every scope the entry was declared against, in source
+///   order. The per-`(Model, scope)` [`VisageDescriptor`] already
+///   keys on scope, but carrying the original set lets consumers
+///   walking across visages reconcile multi-scope declarations
+///   without re-walking the source model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DerivedProjection {
+    /// Output field name (the entry's `name = ...`).
+    pub name: &'static str,
+    /// Fully-qualified Rust type path for the output field, captured
+    /// as a token-string (the entry's `ty = ...`). Kept as
+    /// `&'static str` so consumers see the source spelling rather
+    /// than a re-parsed form.
+    pub ty_path: &'static str,
+    /// The adopter's Postgres SQL expression (the entry's
+    /// `sql = "..."`). Verbatim — the same string the macro splices
+    /// into `PROJECTION_LIST` (with outer parentheses added at SELECT
+    /// emission time, not here).
+    pub sql: &'static str,
+    /// The adopter's Rust expression (the entry's `rust = "..."`).
+    /// Surfaced for documentation; not re-parsed by the descriptor
+    /// consumer.
+    pub rust: &'static str,
+    /// Optional rustdoc captured from `doc = "..."`. `None` when the
+    /// entry did not declare `doc`.
+    pub doc: Option<&'static str>,
+    /// Scopes the entry was declared against, in source order
+    /// (`&["public", "admin", "export"]` for a multi-scope shared
+    /// declaration).
+    pub scopes: &'static [&'static str],
+}
+
+/// One descriptor per `(Model, scope)` pair that has at least one
+/// derived projection entry in scope — Phase 8.5 issue #231.
+///
+/// Collected via [`inventory::collect!`] keyed on the
+/// [`VisageDescriptor`] type. The collection is **structurally
+/// separate** from the [`ModelDescriptor`] / [`EnumDescriptor`]
+/// collections that the migration differ walks — migration /
+/// snapshot / `build.rs` paths never observe `VisageDescriptor`
+/// entries, preserving the storage-vs-projection split the visage-
+/// derived-fields surface establishes.
+///
+/// # Why a per-`(Model, scope)` descriptor instead of one per model
+///
+/// Each scope filters the derived entries through its own
+/// `scopes = [...]` membership check at macro time. Two scopes on
+/// the same model may project different derived-entry sets (an
+/// `admin`-only derived alongside a multi-scope shared one). One
+/// descriptor per `(Model, scope)` keeps the entry set keyed on the
+/// scope without forcing consumers to re-filter.
+///
+/// # Why not on `ModelDescriptor`
+///
+/// `ModelDescriptor` is the storage-side source of truth that the
+/// migration differ, the `target/djogi_models.json` snapshot
+/// channel, and `build.rs` all consume. Adding a `derived` field to
+/// it would either (a) bleed projection state into the migration
+/// inventory or (b) introduce a `#[serde(skip)] derived: ...` slot
+/// that leaks a trap for any future descriptor consumer that walks
+/// the struct without the `#[serde]` annotation. A separate
+/// inventory surface keeps the boundary mechanical and the migration
+/// path strictly storage-shaped.
+///
+/// # Emission contract
+///
+/// The `#[model]` macro emits one `inventory::submit!(VisageDescriptor
+/// { ... })` block per `(Model, scope)` pair for which `scope_derived()`
+/// returns at least one entry. `pk = None` source models are skipped
+/// (they have no `Model::table_name()`, hence no SELECT projection,
+/// hence nothing meaningful for a descriptor to describe).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisageDescriptor {
+    /// Source model type name — e.g. `"Consignment"`.
+    pub model_name: &'static str,
+    /// Visage scope key — `"public"` / `"self_view"` / `"admin"` /
+    /// `"export"`. Matches [`crate::DjogiVisage::SCOPE`] for the
+    /// corresponding visage struct.
+    pub scope: &'static str,
+    /// Visage struct type name — e.g. `"ConsignmentPublic"`. Equals
+    /// `"<model_name><PascalCaseScope>"` per the
+    /// `djogi-macros::model::visages::SCOPES` mapping table; carried
+    /// here so descriptor consumers do not have to reconstruct the
+    /// name from the scope key.
+    pub visage_name: &'static str,
+    /// Derived projection entries in struct-field order — the same
+    /// order the macro emits the visage struct fields, the SELECT
+    /// alias positions, and the in-memory init expressions. Empty
+    /// slices are not emitted (the macro skips
+    /// `inventory::submit!` when `scope_derived()` is empty).
+    pub derived: &'static [DerivedProjection],
+}
+
+inventory::collect!(VisageDescriptor);

@@ -185,11 +185,42 @@ pub mod __private {
     pub use crate::visage_boundary::DjogiVisageOf;
     pub use crate::visage_boundary::private::Sealed as VisageSealed;
 
-    /// Seal for macro-emitted [`DjogiVisage`](crate::DjogiVisage)
-    /// projection metadata impls. Kept separate from
-    /// `VisageSealed<M>` so the metadata trait does not expose the
-    /// source model type in public associated items.
-    pub use crate::visage::private::MetadataSealed as DjogiVisageSealed;
+    /// Closed-world metadata seal for [`crate::DjogiVisage`] — Phase 8.5
+    /// issue #231 reconciliation.
+    ///
+    /// Distinct from `VisageSealed`: `VisageSealed<M>` carries a
+    /// reflexive `impl<M: Model> VisageSealed<M> for M` blanket so
+    /// `DjogiVisageOf<M>` accepts the model itself as a "degenerate
+    /// visage". That blanket made `DjogiVisageOf<Self::Model>` alone
+    /// **not** a closed-world gate on `DjogiVisage` — any
+    /// `MyModel: Model` could satisfy `DjogiVisageOf<MyModel>`
+    /// reflexively, allowing a hand-rolled
+    /// `impl DjogiVisage for MyModel { type Model = Self; ... }` to
+    /// fabricate a visage that never went through the `#[model]`
+    /// macro's emission path.
+    ///
+    /// `DjogiVisageSealed` plugs that gap: **no reflexive blanket**.
+    /// The single emitter is the `#[model]` proc macro, which
+    /// emits `impl ::djogi::__private::DjogiVisageSealed for {Visage}`
+    /// alongside the `DjogiVisage` trait impl. Hand-implementing
+    /// `DjogiVisageSealed` from downstream code is outside the
+    /// public contract — the `__private` re-export is the
+    /// convention-only seam (same boundary as `VisageSealed`,
+    /// `apps_seal`, `pk_seal`, and `hooks::__seal::Sealed`); we
+    /// reserve the right to break that code in any future release
+    /// without notice.
+    pub use crate::visage::private::Sealed as DjogiVisageSealed;
+
+    /// Seal for macro-emitted [`DerivedParity`](crate::testing::DerivedParity)
+    /// trait impls — Phase 8.5 issue #231 reconciliation. Adopters do
+    /// not impl `DerivedParity` themselves; the bound is satisfied
+    /// only by `#[model]`-emitted visages with at least one in-scope
+    /// derived entry. Re-exported through `__private` so the macro
+    /// emission path can satisfy the supertrait without naming
+    /// `crate::testing::private::DerivedParitySealed` directly (which
+    /// would route adopter `use djogi::testing::private::*` calls
+    /// through a `#[doc(hidden)]` module).
+    pub use crate::testing::private::DerivedParitySealed;
 
     /// Sealed projection-entry discriminant for the
     /// [`DjogiVisage::PROJECTIONS`](crate::DjogiVisage::PROJECTIONS)
@@ -319,11 +350,11 @@ pub use apps::AppDiagnostic;
 pub use compose::{Auditable, SoftDeletable};
 pub use context::DjogiContext;
 pub use descriptor::{
-    ComputedFieldDescriptor, DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor,
-    FieldSqlType, GeographySubtype, IndexColumnSpec, IndexKind, IndexNameKind, IndexNameTarget,
-    IndexNullsOrder, IndexOrder, IndexSpec, IndexTarget, IndexType, ModelDescriptor, PartitionSpec,
-    PkType, ProtectedFieldMetadata, RedactionPolicy, RetentionLabel, RustSourceType, Sensitivity,
-    index_name,
+    ComputedFieldDescriptor, DefaultVolatility, DeferrabilitySpec, DerivedProjection,
+    EnumDescriptor, FieldDescriptor, FieldSqlType, GeographySubtype, IndexColumnSpec, IndexKind,
+    IndexNameKind, IndexNameTarget, IndexNullsOrder, IndexOrder, IndexSpec, IndexTarget, IndexType,
+    ModelDescriptor, PartitionSpec, PkType, ProtectedFieldMetadata, RedactionPolicy,
+    RetentionLabel, RustSourceType, Sensitivity, VisageDescriptor, index_name,
 };
 // Top-level `djogi::GeoPoint` re-export for spatial models. Feature-gated so
 // the symbol does not appear in default-feature builds or `cargo doc` output

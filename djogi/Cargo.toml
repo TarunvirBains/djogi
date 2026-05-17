@@ -651,6 +651,17 @@ name = "phase8_5_visage_derived_decode_errors"
 path = "../tests/integration/phase8_5_visage_derived_decode_errors.rs"
 harness = true
 
+# Phase 8.5 issue #231 reconciliation — happy-path read-time
+# projection coverage + parity helper exercise (sync + async). Pairs
+# with the merged decode-errors test: this one covers SUCCESS paths
+# end-to-end through `VisageQuerySet`, the sync per-visage
+# `assert_derived_parity` inherent method, and the additive async
+# `assert_derived_parity_fetched` convenience helper.
+[[test]]
+name = "phase8_5_visage_derived_projection"
+path = "../tests/integration/phase8_5_visage_derived_projection.rs"
+harness = true
+
 # Phase 8.5 Cluster 4 (#168) — typed isolation-level surface.
 # Verifies `atomic_with(IsolationLevel::{ReadCommitted, RepeatableRead,
 # Serializable}, ...)` opens a Postgres transaction at the requested

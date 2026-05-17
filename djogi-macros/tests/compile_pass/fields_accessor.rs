@@ -30,9 +30,14 @@ use djogi::query::{DjogiField, PortablePredicate};
 // Phase 7-Zero-2 T2 flipped the default PK to `HeerIdRecencyBiased`; this
 // fixture continues to exercise the ascending-HeerId accessor shape via
 // an explicit `pk = HeerId` annotation.
+//
+// `pub struct` is required so the macro-emitted `pub` visages
+// (`UserPublic`, `UserSelfView`, ...) carrying `type Model = User`
+// satisfy rustc's private-in-public check — Phase 8.5 #231
+// reconciliation pins `type Model: Model` on `DjogiVisage`.
 #[model(table = "users", pk = HeerId)]
 #[derive(Debug, Clone)]
-struct User {
+pub struct User {
     pub name: String,
     pub email: String,
     pub age: i32,
@@ -45,7 +50,7 @@ struct User {
 
 #[model(table = "lookups", pk = Serial)]
 #[derive(Debug, Clone)]
-struct Lookup {
+pub struct Lookup {
     pub label: String,
 }
 

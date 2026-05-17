@@ -11,9 +11,9 @@ error[E0423]: cannot initialize a tuple struct which contains private fields
    |     ^^^^^^^^^^^^^
    |
 note: constructor is not visible here due to private fields
-  --> djogi/src/cache/boot.rs:75:26
+  --> djogi/src/cache/boot.rs:81:26
    |
-75 | pub struct SassiBootHook(pub(crate) fn(&mut sassi::Sassi));
+81 | pub struct SassiBootHook(pub(crate) fn(&mut sassi::Sassi));
    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ private field
 help: you might have meant to use the `__djogi_from_model_macro` associated function
    |

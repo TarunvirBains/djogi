@@ -1,0 +1,7 @@
+error: derived `sql` contains a `$N` placeholder token — `$1`, `$2`, ... tokens are reserved for future cross-model references and cannot appear in derived expressions in v0.1.0 (E_DJG_VDF_008). If a literal `$N` must appear in the output, route it through `chr(36) || '<digit>'` until proper escaping lands.
+  --> $DIR/phase85_derived_008_sql_dollar_placeholder.rs:18:14
+   |
+18 |     sql    = "COALESCE(inbound_site, $1)",
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error
