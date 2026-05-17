@@ -220,75 +220,61 @@ bundles 'I am a proxy of Parent' (model-native) with 'every query
 applies this filter' (queryset-level concern). Similarly for
 `default_order`."
 
-**Code reality.** Verified at
-[`docs/spec/implementation-plan.md:633-638`][impl-plan-8c]. Phase 8c
-"Proxy Models" is **unshipped** — every item is `- [ ]` unchecked:
+**Code reality.** The proxy surface **shipped in Phase 8β (v0.1.0)**.
+`docs/guide/proxy.md` documents the full declaration shape and marks
+the feature `Status: v0.1.0`. The parser lives at
+`djogi-macros/src/model/attrs.rs`: `proxy_for` (bare-identifier form,
+keyed at `path.is_ident("proxy_for")`), `default_order` (ordered tuple
+list), and `default_filter` (closure predicate) all parse into
+`ModelAttrs` and emit through the derive pipeline.
 
-- `#[model(proxy_for = "Vehicle")]` — shares parent table
-- Custom default ordering on proxy
-- Custom default filter on proxy (e.g., `WHERE active = true`)
-- Different `ModelHooks` on proxy vs parent
+The **shipped shape** places identity (`proxy_for = Parent`) and query
+defaults (`default_filter`, `default_order`) inside the same
+`#[model(...)]` attribute — the arrangement the umbrella flagged as the
+Shape A pattern in miniature. This shape was chosen during Phase 8β
+implementation for adopter ergonomics: one attribute namespace to learn,
+one declaration site for all proxy configuration.
 
-No `docs/spec/proxy-models.md` exists yet (the umbrella body's
-reference to it is forward-looking). The current `djogi-macros/`
-tree has no `proxy_for` parser. **This is genuinely
-pre-implementation design lockdown territory** — exactly parallel
-to djogi#228 for the aggregate-annotation surface.
+**Decision — `post-shipment design question`.** The Shape A concern
+(identity bundled with queryset-level semantics) is no longer
+pre-implementation territory. The `#[model(proxy_for, default_filter,
+default_order)]` surface is the accepted shipped v0.1.0 design. Any
+reshape requires a deliberate migration story and a `docs/guide/proxy.md`
+update. The candidate split paths remain:
 
-**Decision — `file-standalone-issue`.** A pre-implementation
-design-lockdown issue should be filed before Phase 8c implementation
-work begins. The window to choose between two declaration shapes is
-*now*, not after parsing and trait emission lock the wrong shape.
-
-**Rationale.** The umbrella's diagnosis is correct under the lens
-that produced djogi#228: bundling identity (`proxy_for = Parent`)
-with query semantics (`default_filter`, `default_order`) in a
-single attribute slot is the Shape A pattern in miniature. The two
-concerns are addressed in two natural surfaces:
-
-1. **Identity** — `#[model(proxy_for = Parent)]` declares that this
-   Rust type proxies a parent model's table. This is model-level
-   metadata. Lives in the existing `#[model(...)]` namespace.
-2. **Query semantics** — default filter and default order are
-   per-queryset defaults that apply every time `Proxy::objects()`
-   is called. The natural surface is either:
+1. **Identity** — `#[model(proxy_for = Parent)]` stays in the
+   `#[model(...)]` namespace (model-level metadata, already the
+   correct surface).
+2. **Query semantics** — extracting `default_filter` and
+   `default_order` into a companion surface:
    - **2a — Separate attribute:** `#[proxy(filter = "...", order = ["..."])]`,
-     keeping the identity declaration uncluttered. This carries
-     the same trade-off as the broader Shape A vs Shape B
-     question.
+     keeping the identity declaration uncluttered. Carries the same
+     Shape A vs Shape B trade-off as the broader umbrella analysis.
    - **2b — Trait impl:** `impl ProxyDefaults for VehicleArchived`
-     with associated functions `default_filter()` and
-     `default_order()` returning typed closures. This matches the
-     existing Phase 8 `ModelHooks` shape and avoids stringly-typed
-     attribute parameters for what are fundamentally typed
-     queryset constructors.
+     with typed `default_filter()` / `default_order()` methods.
+     Matches the `ModelHooks` shape; typed closures compose with the
+     queryset API without stringly-typed attribute parameters.
 
-The pre-implementation issue should specify which (2a vs 2b vs a
-third option) is taken and lock the declaration-site rule for
-proxy query defaults before Phase 8c's parser ships. Option 2b
-appears strongly preferable on the user-lens prioritisation
-(scalability — typed closures compose with the rest of the
-queryset API; idiomatic Rust — trait impl is the established
-pattern for model-bound logic; simple to use — adopters reuse one
-namespace they already know), but the call belongs to the
-pre-implementation issue, not this note.
+A standalone redesign issue may be filed when this reshape is taken up.
+This note authorises the recommendation but does not schedule or promise
+implementation.
 
-**Anchor.** Phase 8c (implementation-plan.md §8c). The lockdown
-must land **before** the first Phase 8c PR that introduces the
-`proxy_for` parser.
+**Anchor.** Proxy Models (shipped Phase 8β; `docs/guide/proxy.md`).
+Any post-shipment declaration-site change must update the parser at
+`djogi-macros/src/model/attrs.rs`, `docs/guide/proxy.md`, and the
+relevant `#[derive(Model)]` emission paths.
 
 **Proposed issue title.**
 
 ```
-[design-lockdown] proxy-model query defaults — split #[model(proxy_for)]
-identity from per-queryset default_filter / default_order declaration
+[design] proxy-model query defaults — post-shipment: split
+#[model(proxy_for)] identity from default_filter / default_order
 ```
 
-The issue body should mirror djogi#228's structure: problem
-(pre-emptive), candidate shapes, what is locked now, touch points
-(deferred to implementation issue), why now (cost is ~zero today,
-multi-round rework if caught during Phase 8c implementation
-review).
+The issue body should document: (a) the shipped v0.1.0 shape, (b) the
+Shape A concern from the original analysis, (c) candidate split shapes
+2a/2b above, (d) that any reshape requires a migration story before
+landing.
 
 ---
 
@@ -480,7 +466,7 @@ producer of `QuerySet<T>`: `filter`, `order_by`,
 them.
 
 **Anchor.** Queryset / visage cluster, post-v0.1.0. Lower priority
-than Surface 4 (which is pre-implementation lockdown) and
+than Surface 4 (which is a post-shipment design question) and
 Surface 5 (which is access-control).
 
 **Proposed issue title.**
@@ -503,7 +489,7 @@ extensions.
 | 1 | `#[field(generated)]` per-scope projection | `phantom` | No — mechanism exists | n/a |
 | 2 | Per-field `expose` vs struct default | `accepted-design` (decisions.md row added) | No — per-field is security-by-default | n/a |
 | 3 | Relation-form embedding declaration site | `accepted-design` (conditional) | No — depends on deferred custom-visage-names feature | `docs/spec/visages.md` Deferred Surface |
-| 4 | `proxy_for + default_filter / default_order` | `file-standalone-issue` | **Yes — pre-implementation lockdown** | Phase 8c |
+| 4 | `proxy_for + default_filter / default_order` | `post-shipment design question` | **Yes — deferable, migration required** | Phase 8β (shipped; `docs/guide/proxy.md`) |
 | 5 | `{Model}_logs` per-audience access | `re-categorise-and-route` | **Yes — but in access-control domain, not visage** | Phase 5.5 / Phase 10 / Maahi |
 | 6 | M2M through-model visage suppression | `file-standalone-issue` (low priority) | **Yes — deferable** | Post-v0.1.0 adopter feedback |
 | 7 | Tree queries + visage projection | `file-standalone-issue` (low priority) | **Yes — deferable, queryset-general** | Post-v0.1.0 queryset cluster |
@@ -517,10 +503,10 @@ These issues are **not filed by this note**. The umbrella owner
 appropriate time, with the body content derived from each surface's
 section above.
 
-1. `[design-lockdown] proxy-model query defaults — split
-   #[model(proxy_for)] identity from per-queryset default_filter /
-   default_order declaration` (Phase 8c, pre-implementation lockdown
-   — file before Phase 8c work starts).
+1. `[design] proxy-model query defaults — post-shipment: split
+   #[model(proxy_for)] identity from default_filter / default_order`
+   (shipped Phase 8β; file when reshape is taken up; requires
+   migration story before landing).
 2. `[access-control] CRUD log mirror table per-audience access —
    #[model(audit_log_read_scopes = [...])] descriptor +
    LogsQuerySet runtime gate` (Phase 5.5 access-control domain,
