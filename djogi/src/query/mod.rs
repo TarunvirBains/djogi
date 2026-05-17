@@ -116,15 +116,15 @@ pub use closure::{ClosureModel, MaterializeClosureOptions, MaterializeClosureRep
 // Phase 8eta PR2a — Djogi root field wrapper surface.
 //
 // `DjogiField`, `DjogiPresentField`, `ExplicitPgPredicateField`, and the
-// `DjogiPortableOrd` trait are introduced additively in PR2a so the
+// portable marker traits are introduced additively in PR2a so the
 // public re-export tree compiles before macros and SQL emitters flip in
 // PR2b/PR2c/PR2d. `FieldRef` / `IntoFilterValue` / `OptionalRelationRef`
 // remain re-exported as before — generated `{Model}Fields` accessors still
 // return `FieldRef` until PR3 flips the macro emission.
 pub use condition::ConditionExt;
 pub use field::{
-    DjogiField, DjogiPortableOrd, DjogiPresentField, ExplicitPgPredicateField, FieldRef,
-    IntoFieldFilterValue, IntoFilterValue, IntoPortableFieldValue, IntoSqlField,
+    DjogiField, DjogiPortableEq, DjogiPortableOrd, DjogiPresentField, ExplicitPgPredicateField,
+    FieldRef, IntoFieldFilterValue, IntoFilterValue, IntoPortableFieldValue, IntoSqlField,
     OptionalRelationRef,
 };
 // Phase 8.5 djogi#195 — MirJzSON JSON predicate builder re-exports.
@@ -247,17 +247,21 @@ mod tests {
     fn phase8eta_pr2a_predicate_substrate_reachable_from_djogi_query() {
         #[allow(unused_imports)]
         use crate::query::{
-            DjogiField, DjogiPortableOrd, DjogiPresentField, ExplicitPgPredicateField,
-            IntoPortablePredicate, PortablePredicate, Predicate,
+            DjogiField, DjogiPortableEq, DjogiPortableOrd, DjogiPresentField,
+            ExplicitPgPredicateField, IntoPortablePredicate, PortablePredicate, Predicate,
         };
 
-        // `DjogiPortableOrd` reachable as a public trait. The bound check
+        // `DjogiPortableOrd` / `DjogiPortableEq` reachable as public traits. The bound check
         // is compile-only — PR2a's listed scalar impls are exercised by
         // this generic helper.
         fn assert_djogi_portable_ord<T: DjogiPortableOrd>() {}
+        fn assert_djogi_portable_eq<T: DjogiPortableEq>() {}
         assert_djogi_portable_ord::<i64>();
         assert_djogi_portable_ord::<crate::HeerId>();
         assert_djogi_portable_ord::<rust_decimal::Decimal>();
+        assert_djogi_portable_eq::<i64>();
+        assert_djogi_portable_eq::<crate::HeerId>();
+        assert_djogi_portable_eq::<rust_decimal::Decimal>();
     }
 
     /// Hidden re-exports for macro-emitted code: `SqlEmitContext` and
