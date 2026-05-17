@@ -122,7 +122,7 @@ HeeRanjID installation, but database ownership is no longer part of the
 GUC contract.
 
 For deployments with multiple writers, register and provision each node in
-`heer_nodes` first, then start each service with its selected `NODE_ID`
+`heer_nodes` first, then start each service with its selected `HEER_NODE_ID`
 so its pool `post_connect` hook applies the matching `heer.node_id` and
 `heer.ranj_node_id` values on every physical connection. Do not copy/paste
 the hard-coded `1` assumption. See
