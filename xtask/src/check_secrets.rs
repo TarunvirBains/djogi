@@ -55,8 +55,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env,
-    fs, io,
+    env, fs, io,
     io::Read as _,
     path::{Path, PathBuf},
     process::{Command, ExitCode, Stdio},
@@ -1186,7 +1185,10 @@ mod tests {
             env::set_var("GIT_COMMON_DIR", "");
         }
 
-        assert!(is_invalid_git_env_value("GIT_DIR"), "expected `(null)` to be sanitized");
+        assert!(
+            is_invalid_git_env_value("GIT_DIR"),
+            "expected `(null)` to be sanitized"
+        );
         assert!(
             !is_invalid_git_env_value("GIT_WORK_TREE"),
             "valid value should not be sanitized",
