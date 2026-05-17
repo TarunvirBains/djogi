@@ -19,19 +19,42 @@ use super::window::WindowSpec;
 /// be applied in an outer scope where the alias is in scope as a column
 /// reference. `QualifyCondition` captures that filter without ever
 /// emitting the literal `QUALIFY` token.
+///
+/// The value payload is typed: `BIGINT`-returning windows (`RowNumber`,
+/// `Rank`, `DenseRank`) produce an `i64` bind; `FLOAT8`-returning windows
+/// (`PercentRankWindow`, `CumeDistWindow`) produce an `f64` bind.
+/// The correct variant is selected by the window type's comparison helpers;
+/// adopters do not construct `QualifyCondition` directly.
 #[derive(Debug, Clone)]
 #[must_use = "qualify conditions are only meaningful once handed to .qualify(...)"]
 pub struct QualifyCondition {
     pub(crate) alias: &'static str,
     pub(crate) op: QualifyOp,
-    pub(crate) value: i64,
+    pub(crate) value: QualifyValue,
+}
+
+/// The typed bind value carried by a [`QualifyCondition`].
+///
+/// `BIGINT` window functions (`ROW_NUMBER`, `RANK`, `DENSE_RANK`) store
+/// [`QualifyValue::Int`]; `FLOAT8` window functions (`PERCENT_RANK`,
+/// `CUME_DIST`) store [`QualifyValue::Float`]. The correct variant is chosen
+/// by the window type's comparison helpers — adopters never construct this
+/// directly.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum QualifyValue {
+    /// Integer threshold for `BIGINT`-returning window functions.
+    Int(i64),
+    /// Float threshold for `FLOAT8`-returning window functions
+    /// (`PERCENT_RANK`, `CUME_DIST`). The value is bound as a Postgres
+    /// `FLOAT8` parameter and compared against the window alias column.
+    Float(f64),
 }
 
 /// Comparison operator family supported on window-output aliases.
 ///
-/// Constrained to the typed `i64` ranking outputs — `RowNumber`, `Rank`,
-/// and `DenseRank` all return `BIGINT`, so a single integer comparator
-/// set covers every v0.1.0 use case.
+/// Covers both `BIGINT`-returning windows (`RowNumber`, `Rank`, `DenseRank`)
+/// and `FLOAT8`-returning windows (`PercentRankWindow`, `CumeDistWindow`).
+/// The correct value type is carried separately in [`QualifyCondition`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QualifyOp {
     Lt,
@@ -59,17 +82,44 @@ impl QualifyCondition {
         acc.push_sql(" ");
         acc.push_sql(self.op.sql());
         acc.push_sql(" ");
-        acc.push_bind(self.value);
+        match self.value {
+            QualifyValue::Int(v) => acc.push_bind(v),
+            QualifyValue::Float(v) => acc.push_bind(v),
+        }
     }
 }
 
+/// Build a `QualifyCondition` for `BIGINT`-returning window functions
+/// (`ROW_NUMBER`, `RANK`, `DENSE_RANK`).
+///
+/// # Panics
+///
+/// Panics when `alias` is `None`, i.e. when `.alias("…")` was not called
+/// before the comparison helper.
 fn build_qualify(alias: Option<&'static str>, op: QualifyOp, value: i64) -> QualifyCondition {
     QualifyCondition {
         alias: alias.expect(
             "qualify can only reference a window annotation that was registered with .alias(\"…\")",
         ),
         op,
-        value,
+        value: QualifyValue::Int(value),
+    }
+}
+
+/// Build a `QualifyCondition` for `FLOAT8`-returning window functions
+/// (`PERCENT_RANK`, `CUME_DIST`).
+///
+/// # Panics
+///
+/// Panics when `alias` is `None`, i.e. when `.alias("…")` was not called
+/// before the comparison helper.
+fn build_qualify_f64(alias: Option<&'static str>, op: QualifyOp, value: f64) -> QualifyCondition {
+    QualifyCondition {
+        alias: alias.expect(
+            "qualify can only reference a window annotation that was registered with .alias(\"…\")",
+        ),
+        op,
+        value: QualifyValue::Float(value),
     }
 }
 
@@ -406,15 +456,35 @@ define_window_rank_fn!(DenseRank, "DENSE_RANK", "dense_rank");
 /// (`PercentRankWindow::new()` annotated on each row) gives every
 /// returned row its actual fraction in the partition.
 ///
-/// # Comparison helpers omitted
+/// # Comparison helpers
 ///
-/// `PERCENT_RANK` returns `f64`. The current `QualifyCondition`
-/// shape is `i64`-only (constrained for the rank/dense_rank/row_number
-/// triplet); extending qualify to f64 thresholds is a follow-up
-/// tracked at <https://github.com/TarunvirBains/djogi/issues/95>. For
-/// v0.1.0, callers needing to filter on the percent-rank output filter
-/// at the application layer or chain a typed `.filter_expr` over the
-/// derived table.
+/// `PERCENT_RANK` returns `f64`. Use `.lt(0.5)`, `.lte(0.9)`,
+/// `.gte(0.9)`, `.gt(0.0)`, or `.eq(1.0)` inside a
+/// [`.qualify(...)`](crate::query::AnnotatedQuerySet::qualify) closure
+/// to filter on the computed fraction:
+///
+/// ```ignore
+/// // Top half of each region by amount (ORDER BY amount DESC ⇒ rank 0 = highest).
+/// let rows = Sale::objects()
+///     .annotate(|f| PercentRankWindow::new()
+///         .partition_by(f.region_id())
+///         .order_by(f.amount().desc())
+///         .alias("amount_pct"))
+///     .qualify(|w| w.lt(0.5))
+///     .fetch_all(&mut ctx).await?;
+/// ```
+///
+/// The SQL shape is a derived table rather than `QUALIFY`:
+///
+/// ```sql
+/// SELECT * FROM (
+///     SELECT t.id, ...,
+///            PERCENT_RANK() OVER (PARTITION BY region_id ORDER BY amount DESC)
+///                AS amount_pct
+///     FROM sales AS t
+/// ) AS __djogi_q
+/// WHERE amount_pct < $1
+/// ```
 ///
 /// # Example
 ///
@@ -424,6 +494,7 @@ define_window_rank_fn!(DenseRank, "DENSE_RANK", "dense_rank");
 ///         .partition_by(f.region_id())
 ///         .order_by(f.amount().desc())
 ///         .alias("amount_pct"))
+///     .qualify(|w| w.gte(0.9))
 ///     .fetch_all(&mut ctx).await?;
 /// ```
 #[must_use = "window functions are lazy annotations - dropping one omits the column"]
@@ -447,9 +518,22 @@ pub struct PercentRankWindow {
 /// This window form gives every row its actual cume-dist position in
 /// the partition.
 ///
-/// # Comparison helpers omitted
+/// # Comparison helpers
 ///
-/// Same `f64` qualify limitation as [`PercentRankWindow`].
+/// Same f64 qualify helpers as [`PercentRankWindow`] — `.lt(0.5)`,
+/// `.lte(0.9)`, `.gte(0.1)`, `.gt(0.0)`, and `.eq(1.0)` inside a
+/// [`.qualify(...)`](crate::query::AnnotatedQuerySet::qualify) closure.
+///
+/// ```ignore
+/// // Rows in the top 10 % by cumulative distribution.
+/// let rows = Sale::objects()
+///     .annotate(|f| CumeDistWindow::new()
+///         .partition_by(f.region_id())
+///         .order_by(f.amount().asc())
+///         .alias("cume_dist"))
+///     .qualify(|w| w.gte(0.9))
+///     .fetch_all(&mut ctx).await?;
+/// ```
 ///
 /// # Example
 ///
@@ -524,6 +608,66 @@ macro_rules! impl_zero_arg_f64_window {
                     self.alias
                         .expect("window function annotations are checked before SQL emission"),
                 );
+            }
+
+            // ── f64 qualify helpers ─────────────────────────────────────────────
+            //
+            // `PERCENT_RANK` and `CUME_DIST` both return `FLOAT8`. These
+            // inherent helpers let callers write `.qualify(|w| w.lt(0.5))`
+            // without importing any additional trait. Each delegates to
+            // `build_qualify_f64` (the f64 twin of the i64 `build_qualify`
+            // used by the rank-family), which stores a `QualifyValue::Float`
+            // bind slot in the resulting `QualifyCondition`.
+
+            /// `<alias> < value` — outer `WHERE` predicate for this
+            /// `FLOAT8`-returning window annotation.
+            ///
+            /// # Example
+            ///
+            /// ```ignore
+            /// Sale::objects()
+            ///     .annotate(|f| PercentRankWindow::new()
+            ///         .order_by(f.amount().desc())
+            ///         .alias("pct"))
+            ///     .qualify(|w| w.lt(0.5))
+            ///     .fetch_all(&mut ctx).await?;
+            /// ```
+            #[must_use = "qualify conditions are only meaningful once handed to .qualify(...)"]
+            pub fn lt(&self, value: f64) -> QualifyCondition {
+                build_qualify_f64(self.alias_name(), QualifyOp::Lt, value)
+            }
+
+            /// `<alias> <= value` — see [`Self::lt`] for the lowering shape.
+            #[must_use = "qualify conditions are only meaningful once handed to .qualify(...)"]
+            pub fn lte(&self, value: f64) -> QualifyCondition {
+                build_qualify_f64(self.alias_name(), QualifyOp::Lte, value)
+            }
+
+            /// `<alias> = value` — exact `FLOAT8` equality against the alias.
+            ///
+            /// # Note on floating-point equality
+            ///
+            /// `FLOAT8 = $1` has standard IEEE 754 precision caveats. This
+            /// helper is reliable for the exact boundary values Postgres
+            /// guarantees (`0.0` for the first `PERCENT_RANK` row, `1.0`
+            /// for the last `CUME_DIST` row), but not for intermediate
+            /// fractions. Prefer [`lt`](Self::lt) / [`lte`](Self::lte) /
+            /// [`gte`](Self::gte) / [`gt`](Self::gt) for thresholds.
+            #[must_use = "qualify conditions are only meaningful once handed to .qualify(...)"]
+            pub fn eq(&self, value: f64) -> QualifyCondition {
+                build_qualify_f64(self.alias_name(), QualifyOp::Eq, value)
+            }
+
+            /// `<alias> >= value` — see [`Self::lt`] for the lowering shape.
+            #[must_use = "qualify conditions are only meaningful once handed to .qualify(...)"]
+            pub fn gte(&self, value: f64) -> QualifyCondition {
+                build_qualify_f64(self.alias_name(), QualifyOp::Gte, value)
+            }
+
+            /// `<alias> > value` — see [`Self::lt`] for the lowering shape.
+            #[must_use = "qualify conditions are only meaningful once handed to .qualify(...)"]
+            pub fn gt(&self, value: f64) -> QualifyCondition {
+                build_qualify_f64(self.alias_name(), QualifyOp::Gt, value)
             }
         }
     };
