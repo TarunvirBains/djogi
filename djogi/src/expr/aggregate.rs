@@ -206,15 +206,26 @@ impl<Out> AggregateExpr<Out> {
     /// `.filter(...)`. The last call wins, matching
     /// [`crate::query::QuerySet::limit`]'s pattern.
     pub fn filter(mut self, cond: Expr<bool>) -> Self {
-        // The Aggregate variant is the only shape `AggregateExpr`
-        // ever wraps — constructed exclusively via `from_node(...)`
-        // with a fresh `Aggregate { .. }` node in the inherent `count`
-        // / `sum` / etc. builders on `FieldRef`. The `if let` is
-        // defensive: a debug_assert would panic on a mismatch, but
-        // since `AggregateExpr::from_node` is crate-private the
-        // match is guaranteed to take the Aggregate arm in practice.
-        if let ExprNode::Aggregate { filter, .. } = &mut self.node {
-            *filter = Some(Box::new(cond.node));
+        // `AggregateExpr` wraps either `ExprNode::Aggregate` (the
+        // normal aggregate family) or `ExprNode::GroupingVariadic`
+        // (the variadic GROUPING constructor). The two legitimate
+        // internal construction paths are `from_node(...Aggregate{..})`
+        // via the typed builders on `FieldRef` / `unary_agg` /
+        // `binary_agg` / `ordered_set`, and `grouping_of` which
+        // passes `GroupingVariadic`. The `_ =>` arm uses
+        // `debug_assert!` to flag any future bypass in debug builds
+        // while remaining a no-op in release.
+        match &mut self.node {
+            ExprNode::Aggregate { filter, .. } => {
+                *filter = Some(Box::new(cond.node));
+            }
+            ExprNode::GroupingVariadic { .. } => panic!(
+                "djogi::AggregateExpr::filter: GROUPING(c1, …, cN) does not accept \
+                 FILTER (WHERE …) — GROUPING is dimension metadata (0/1 per column \
+                 under ROLLUP / CUBE / GROUPING SETS), not a row-filtered aggregate; \
+                 filter at the QuerySet level instead"
+            ),
+            _ => debug_assert!(false, "AggregateExpr wraps an unsupported ExprNode variant"),
         }
         self
     }
@@ -249,8 +260,16 @@ impl<Out> AggregateExpr<Out> {
     /// where the last call wins.
     #[must_use = "AggregateExpr is a value — dropping discards the DISTINCT flag"]
     pub fn distinct(mut self) -> Self {
-        if let ExprNode::Aggregate { distinct, .. } = &mut self.node {
-            *distinct = true;
+        match &mut self.node {
+            ExprNode::Aggregate { distinct, .. } => {
+                *distinct = true;
+            }
+            ExprNode::GroupingVariadic { .. } => panic!(
+                "djogi::AggregateExpr::distinct: GROUPING(c1, …, cN) does not accept \
+                 DISTINCT — GROUPING is dimension metadata (0/1 per column under \
+                 ROLLUP / CUBE / GROUPING SETS), not a value-aggregating aggregate"
+            ),
+            _ => debug_assert!(false, "AggregateExpr wraps an unsupported ExprNode variant"),
         }
         self
     }
@@ -293,8 +312,16 @@ impl<Out> AggregateExpr<Out> {
     where
         F: FnOnce(WindowBuilder) -> WindowBuilder,
     {
-        if let ExprNode::Aggregate { window, .. } = &mut self.node {
-            *window = Some(f(WindowBuilder::new()).build());
+        match &mut self.node {
+            ExprNode::Aggregate { window, .. } => {
+                *window = Some(f(WindowBuilder::new()).build());
+            }
+            ExprNode::GroupingVariadic { .. } => panic!(
+                "djogi::AggregateExpr::over: GROUPING(c1, …, cN) does not accept \
+                 OVER (…) — GROUPING is only valid in SELECT or HAVING under a \
+                 GROUP BY ROLLUP / CUBE / GROUPING SETS clause, not as a window function"
+            ),
+            _ => debug_assert!(false, "AggregateExpr wraps an unsupported ExprNode variant"),
         }
         self
     }
@@ -343,8 +370,16 @@ impl<Out> AggregateExpr<Out> {
     /// ```
     #[must_use = "AggregateExpr is a value — dropping discards the ORDER BY"]
     pub fn order_by(mut self, ord: crate::query::order::OrderExpr) -> Self {
-        if let ExprNode::Aggregate { order_by, .. } = &mut self.node {
-            order_by.push(ord);
+        match &mut self.node {
+            ExprNode::Aggregate { order_by, .. } => {
+                order_by.push(ord);
+            }
+            ExprNode::GroupingVariadic { .. } => panic!(
+                "djogi::AggregateExpr::order_by: GROUPING(c1, …, cN) does not accept \
+                 a per-aggregate ORDER BY clause — GROUPING is dimension metadata, \
+                 not a value-aggregating aggregate; chain ORDER BY at the QuerySet level instead"
+            ),
+            _ => debug_assert!(false, "AggregateExpr wraps an unsupported ExprNode variant"),
         }
         self
     }
@@ -378,12 +413,19 @@ impl<Out> AggregateExpr<Out> {
     /// replaces (not appends) for clarity.
     #[must_use = "AggregateExpr is a value — dropping discards the WITHIN GROUP target"]
     pub fn within_group_order_by(mut self, target: crate::query::order::OrderExpr) -> Self {
-        if let ExprNode::Aggregate {
-            within_group_order_by,
-            ..
-        } = &mut self.node
-        {
-            *within_group_order_by = vec![target];
+        match &mut self.node {
+            ExprNode::Aggregate {
+                within_group_order_by,
+                ..
+            } => {
+                *within_group_order_by = vec![target];
+            }
+            ExprNode::GroupingVariadic { .. } => panic!(
+                "djogi::AggregateExpr::within_group_order_by: GROUPING(c1, …, cN) does \
+                 not accept WITHIN GROUP (ORDER BY …) — GROUPING is dimension metadata, \
+                 not an ordered-set aggregate"
+            ),
+            _ => debug_assert!(false, "AggregateExpr wraps an unsupported ExprNode variant"),
         }
         self
     }
@@ -1078,17 +1120,85 @@ impl<M: Model, V> FieldRef<M, V> {
     ///
     /// # Variadic form
     ///
-    /// Postgres accepts `GROUPING(c1, c2, …, cN)` and returns a bitmask
-    /// in that case. Djogi v0.1.0 ships the single-column form only;
-    /// the variadic form is tracked at
-    /// <https://github.com/TarunvirBains/djogi/issues/94> (needs an
-    /// N-arg slot on the IR and a typed bitmask return type). Callers
-    /// needing the bitmask form today can compose two single-column
-    /// calls (`g1 * 2 + g0`) or use `ctx.raw_scalar`.
+    /// Postgres also accepts `GROUPING(c1, c2, …, cN)` returning a
+    /// bitmask. Use the free function [`crate::grouping_of`] for that
+    /// shape — bit 0 (LSB) maps to the rightmost argument; each bit
+    /// is `1` when that column was rolled up. Implemented in #94.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn grouping(self) -> AggregateExpr<i32> {
         AggregateExpr::unary_agg(AggOp::Grouping, self.column(), None)
     }
+}
+
+/// `GROUPING(c1, c2, …, cN)` — variadic bitmask form.
+///
+/// Returns `AggregateExpr<i32>` carrying a bitmask. Postgres assigns
+/// bit `0` (the least-significant bit) to the **rightmost** argument
+/// and bit `N-1` to the leftmost. Each bit is `1` when that column
+/// was rolled up in the current row under `GROUP BY ROLLUP` / `CUBE`
+/// / `GROUPING SETS`, else `0`. With three columns `(a, b, c)`, `c`
+/// maps to bit 0 (LSB): the row that rolls up `c` only yields
+/// bitmask `0b001 == 1`; the row that rolls up `a` and `c` yields
+/// `0b101 == 5`.
+///
+/// Postgres returns `INTEGER` for this form regardless of input
+/// column types — the bitmask is positional, not value-derived —
+/// so the typed surface pins `Out = i32`.
+///
+/// # Why a free function and not a method on `FieldRef`
+///
+/// The columns flagged by a single `GROUPING(...)` call can have
+/// different value types (`GROUPING(region, dept_id)` where one
+/// is `String` and the other `i64`). A method on `FieldRef<M, V>`
+/// would either need a marker trait + tuple machinery (compile-
+/// time cost without a usability win) or accept `&[&'static str]`
+/// just like this free function — at which point the receiver
+/// becomes uninformative. Keeping the variadic constructor as a
+/// free function avoids paying for tuple-of-fields plumbing that
+/// no other aggregate uses.
+///
+/// # Panics
+///
+/// Panics if `columns` is empty — Postgres rejects `GROUPING()`
+/// with no args. The panic surfaces the framework-bug at the
+/// construction site rather than at fetch time as a Postgres
+/// syntax error. Also panics (via [`crate::ident::assert_plain_ident`])
+/// if any column name is not a plain SQL identifier (ASCII letter
+/// or underscore followed by ASCII alphanumerics or underscores,
+/// up to 63 bytes) — same contract every other framework-baked
+/// `&'static str` column reference upholds.
+///
+/// # Example
+///
+/// ```ignore
+/// // SELECT region, dept, SUM(sales),
+/// //        GROUPING(region, dept) AS subtotal_bitmask
+/// // FROM   sales
+/// // GROUP BY ROLLUP(region, dept);
+/// use djogi::prelude::*;
+/// use djogi::grouping_of;
+/// Sales::objects()
+///     .rollup(|f| (f.region(), f.dept()))
+///     .annotate(|_f| (
+///         /* ... sum ... */,
+///         grouping_of(&["region", "dept"]),
+///     ))
+///     .fetch_all(&mut ctx).await?;
+/// ```
+#[must_use = "aggregates are lazy — dropping one silently omits the column"]
+pub fn grouping_of(columns: &[&'static str]) -> AggregateExpr<i32> {
+    assert!(
+        !columns.is_empty(),
+        "djogi::grouping_of: column list must be non-empty — Postgres rejects GROUPING() with no args"
+    );
+    let args: Vec<crate::expr::node::ExprNode> = columns
+        .iter()
+        .map(|&col| {
+            crate::ident::assert_plain_ident(col, "GROUPING column");
+            crate::expr::node::ExprNode::Field { column: col }
+        })
+        .collect();
+    AggregateExpr::from_node(crate::expr::node::ExprNode::GroupingVariadic { args })
 }
 
 // ── PERCENTILE_CONT / PERCENTILE_DISC / MODE — ordered-set aggregates ────────
@@ -2441,6 +2551,100 @@ mod tests {
         let _: AggregateExpr<i32> = f_str.grouping();
         let _: AggregateExpr<i32> = f_i64.grouping();
         let _: AggregateExpr<i32> = f_bool.grouping();
+    }
+
+    // ── GROUPING variadic (#94) ───────────────────────────────────────────
+
+    #[test]
+    fn grouping_of_two_args_emits_comma_separated() {
+        let agg = crate::grouping_of(&["region", "dept"]);
+        // Inspect the IR shape.
+        match &agg.node {
+            crate::expr::node::ExprNode::GroupingVariadic { args } => {
+                assert_eq!(args.len(), 2);
+                for (a, expected) in args.iter().zip(["region", "dept"]) {
+                    match a {
+                        crate::expr::node::ExprNode::Field { column } => {
+                            assert_eq!(*column, expected)
+                        }
+                        _ => panic!("expected Field, got {a:?}"),
+                    }
+                }
+            }
+            other => panic!("expected GroupingVariadic, got {other:?}"),
+        }
+        // Emit and check SQL shape.
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root()).expect("emit");
+        assert_eq!(acc.sql(), "GROUPING(region, dept)");
+    }
+
+    #[test]
+    fn grouping_of_three_args_emits_comma_separated() {
+        let agg = crate::grouping_of(&["region", "dept", "product"]);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node, SqlEmitContext::root()).expect("emit");
+        assert_eq!(acc.sql(), "GROUPING(region, dept, product)");
+    }
+
+    #[test]
+    #[should_panic(expected = "GROUPING() with no args")]
+    fn grouping_of_empty_panics() {
+        let _ = crate::grouping_of(&[]);
+    }
+
+    #[test]
+    fn grouping_of_legality_accepted() {
+        // No modifiers applied — GroupingVariadic node is trivially legal.
+        let agg = crate::grouping_of(&["region", "dept"]);
+        assert!(crate::expr::sql::check_aggregate_legality(&agg.node).is_ok());
+    }
+
+    // ── GROUPING variadic modifier rejection tests (#94) ─────────────────
+    //
+    // These five tests prove that calling any `AggregateExpr` modifier on
+    // a `grouping_of(...)` result panics with a clear diagnostic rather
+    // than silently dropping the modifier (the pre-fix bug class). Each
+    // test covers one of the five modifier methods: `filter`, `distinct`,
+    // `over`, `order_by`, `within_group_order_by`.
+    //
+    // Regression guard: a `GroupingVariadic` node has no modifier slots,
+    // so the only correct behavior is to fail loud and early rather than
+    // silently produce invalid SQL or mislead the caller.
+
+    #[test]
+    #[should_panic(expected = "GROUPING(c1, \u{2026}, cN) does not accept FILTER")]
+    fn grouping_variadic_rejects_filter() {
+        let g: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let _ = crate::grouping_of(&["region", "dept"]).filter(g.as_expr().gt(Expr::literal(0i64)));
+    }
+
+    #[test]
+    #[should_panic(expected = "GROUPING(c1, \u{2026}, cN) does not accept DISTINCT")]
+    fn grouping_variadic_rejects_distinct() {
+        let _ = crate::grouping_of(&["region", "dept"]).distinct();
+    }
+
+    #[test]
+    #[should_panic(expected = "GROUPING(c1, \u{2026}, cN) does not accept OVER")]
+    fn grouping_variadic_rejects_over() {
+        let _ = crate::grouping_of(&["region", "dept"]).over(|w| w);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "GROUPING(c1, \u{2026}, cN) does not accept a per-aggregate ORDER BY"
+    )]
+    fn grouping_variadic_rejects_order_by() {
+        let f: FieldRef<Txn, String> = FieldRef::new("region");
+        let _ = crate::grouping_of(&["region", "dept"]).order_by(f.asc());
+    }
+
+    #[test]
+    #[should_panic(expected = "GROUPING(c1, \u{2026}, cN) does not accept WITHIN GROUP")]
+    fn grouping_variadic_rejects_within_group_order_by() {
+        let f: FieldRef<Txn, String> = FieldRef::new("region");
+        let _ = crate::grouping_of(&["region", "dept"]).within_group_order_by(f.asc());
     }
 
     // ── JSON object aggregates (T9) ───────────────────────────────────────

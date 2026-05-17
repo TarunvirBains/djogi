@@ -424,7 +424,7 @@ pub type Result<T> = std::result::Result<T, DjogiError>;
 
 pub use expr::{
     AggregateExpr, Case, CaseBuilder, DenseRank, Exists, Expr, OuterRef, QualifyCondition,
-    QualifyOp, Rank, RowNumber, Subquery, WindowRanking,
+    QualifyOp, Rank, RowNumber, Subquery, WindowRanking, grouping_of,
 };
 // Field-level codec public surface. `FieldCodec` is the trait adopters
 // implement for at-rest column transformations.
@@ -560,7 +560,7 @@ pub mod prelude {
     // — the same shape `tokio::io::Result` / `sqlx::Result` use today.
     pub use crate::expr::{
         AggregateExpr, Case, CaseBuilder, DenseRank, Exists, Expr, OuterRef, QualifyCondition,
-        QualifyOp, Rank, RowNumber, Subquery, WindowRanking,
+        QualifyOp, Rank, RowNumber, Subquery, WindowRanking, grouping_of,
     };
     // `FieldCodec` is the trait adopters implement when declaring a
     // codec — belongs in the prelude because protected-field

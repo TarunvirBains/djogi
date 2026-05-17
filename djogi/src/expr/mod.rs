@@ -80,7 +80,7 @@ pub mod subquery;
 pub mod window;
 pub mod window_fn;
 
-pub use aggregate::AggregateExpr;
+pub use aggregate::{AggregateExpr, grouping_of};
 pub use case::{Case, CaseBuilder};
 use node::ExprNode;
 pub use subquery::{Exists, OuterRef, Subquery};
