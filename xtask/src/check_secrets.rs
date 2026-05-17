@@ -55,6 +55,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    env,
     fs, io,
     io::Read as _,
     path::{Path, PathBuf},
@@ -447,8 +448,10 @@ fn read_text_file(path: &Path) -> Option<String> {
 // ===== git plumbing =====
 
 fn run_git(args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .args(args)
+    let mut command = Command::new("git");
+    command.args(args);
+    clear_invalid_git_plumbing_env(&mut command);
+    let output = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -463,6 +466,36 @@ fn run_git(args: &[&str]) -> Result<String, String> {
     }
     String::from_utf8(output.stdout)
         .map_err(|error| format!("git {} produced non-UTF-8 output: {error}", args.join(" ")))
+}
+
+const GIT_PLUMBING_ENV_VARS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_OBJECT_DIRECTORY_RELATIVE",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+];
+
+fn clear_invalid_git_plumbing_env(command: &mut Command) {
+    for name in GIT_PLUMBING_ENV_VARS {
+        if is_invalid_git_env_value(name) {
+            command.env_remove(name);
+        }
+    }
+}
+
+fn is_invalid_git_env_value(name: &str) -> bool {
+    match env::var_os(name) {
+        Some(value) => {
+            let value = value.to_string_lossy();
+            let value = value.trim();
+            value.is_empty() || value == "(null)"
+        }
+        None => false,
+    }
 }
 
 // ===== staged-diff parsing =====
@@ -1130,12 +1163,49 @@ const fn byte_slice_less(left: &[u8], right: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use std::{env, path::Path};
 
     fn scan(line: &str) -> Vec<Finding> {
         let mut findings = Vec::new();
         scan_text(line, Some(Path::new("example.rs")), &mut findings);
         findings
+    }
+
+    #[test]
+    fn clear_invalid_git_plumbing_env_values() {
+        let backups: [(&str, Option<std::ffi::OsString>); 4] = [
+            ("GIT_DIR", env::var_os("GIT_DIR")),
+            ("GIT_WORK_TREE", env::var_os("GIT_WORK_TREE")),
+            ("GIT_INDEX_FILE", env::var_os("GIT_INDEX_FILE")),
+            ("GIT_COMMON_DIR", env::var_os("GIT_COMMON_DIR")),
+        ];
+        unsafe {
+            env::set_var("GIT_DIR", "(null)");
+            env::set_var("GIT_WORK_TREE", "/tmp/check-secrets-work-tree");
+            env::set_var("GIT_INDEX_FILE", "(null)");
+            env::set_var("GIT_COMMON_DIR", "");
+        }
+
+        assert!(is_invalid_git_env_value("GIT_DIR"), "expected `(null)` to be sanitized");
+        assert!(
+            !is_invalid_git_env_value("GIT_WORK_TREE"),
+            "valid value should not be sanitized",
+        );
+        assert!(
+            is_invalid_git_env_value("GIT_INDEX_FILE"),
+            "expected `(null)` to be sanitized",
+        );
+        assert!(
+            is_invalid_git_env_value("GIT_COMMON_DIR"),
+            "expected empty value to be sanitized",
+        );
+
+        for (name, value) in backups {
+            match value {
+                Some(value) => unsafe { env::set_var(name, value) },
+                None => unsafe { env::remove_var(name) },
+            }
+        }
     }
 
     // ---- URL detection ----
