@@ -35,7 +35,7 @@ aggregation expressions. PostGIS constructors are intentionally delayed:
 - `ST_TileEnvelope` (escalate only if Cluster 4C [#92](https://github.com/TarunvirBains/djogi/issues/92) makes it a hard requirement for MVT/Geobuf row-shape work)
 - `ST_HexagonGrid`, `ST_SquareGrid`, `ST_Letters`, `ST_MakePointM`,
   `ST_MakeValid`, `ST_IsValidDetail`, `ST_IsValidReason`
-- Long-tail clustering, coverage, trajectory, and I/O constructors (`ST_ClusterKMeans`, `ST_CoverageUnion`,
+- Long-tail clustering, coverage, trajectory, and I/O constructors (`ST_CoverageUnion`,
   `ST_CoverageSimplify`, `ST_CoverageClean`, `ST_IsValidTrajectory`,
   `ST_ClosestPointOfApproach`, `ST_CPAWithin`, `ST_AsFlatGeobuf`,
   `ST_AsMARC21`, `ST_AsTWKB`, GeoHash variants, encoded polyline, Geobuf)
