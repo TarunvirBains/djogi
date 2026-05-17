@@ -1,4 +1,4 @@
-error: `expr = ".."` indexes do not accept `opclass = ".."` in 0.1.0 — drop to raw SQL via `ctx.raw_execute(...)` if a non-default opclass is required.
+error: `expr = ".."` indexes do not accept `opclass = ".."` in 0.1.0 — to use a non-default opclass on an expression index, issue the CREATE INDEX statement directly via `raw_ddl` under `#[djogi::deliberately_bypass_convention_with_raw_sql]` (see docs/spec/raw-sql-escape-hatches.md §2).
  --> $DIR/phase7_zero_model_indexes_expr_opclass.rs:6:5
   |
 6 |     index(expr = "lower(email)", opclass = "text_pattern_ops"),

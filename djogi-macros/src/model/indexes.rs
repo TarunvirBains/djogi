@@ -774,12 +774,16 @@ fn validate_decl(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> syn::Result<()
     }
 
     // §4 amendment (2026-04-23 pass-2 P1-02) — expression indexes do not
-    // accept opclass in 0.1.0.
+    // accept opclass in 0.1.0. The descriptor carries no path to bind an
+    // operator class to an expression target; see docs/spec/indexing.md §20.2.
     if matches!(body.target, IndexDeclTarget::Expr(_)) && body.opclass.is_some() {
         return Err(syn::Error::new(
             span,
             "`expr = \"..\"` indexes do not accept `opclass = \"..\"` in 0.1.0 — \
-             drop to raw SQL via `ctx.raw_execute(...)` if a non-default opclass is required.",
+             to use a non-default opclass on an expression index, issue the CREATE INDEX \
+             statement directly via `raw_ddl` under \
+             `#[djogi::deliberately_bypass_convention_with_raw_sql]` \
+             (see docs/spec/raw-sql-escape-hatches.md §2).",
         ));
     }
 
