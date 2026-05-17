@@ -141,6 +141,14 @@ where
 fn assert_portable_eq<T: ::djogi::DjogiPortableEq>() {}
 
 #[test]
+fn relation_and_array_wrappers_are_portable_eq() {
+    assert_portable_eq::<::djogi::ForeignKey<DefaultModel>>();
+    assert_portable_eq::<::djogi::OneToOneField<DefaultModel>>();
+    assert_portable_eq::<Vec<i32>>();
+    assert_portable_eq::<Option<Vec<i32>>>();
+}
+
+#[test]
 fn cacheable_emitted_for_heerid_pk() {
     assert_id_type::<HeerIdModel, ::djogi::types::HeerId>();
 }

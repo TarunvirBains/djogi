@@ -117,14 +117,18 @@ pub enum PortableFieldKind {
     OptionString,
     /// `Option<bool>` — null tests plus eq/neq/in/not_in.
     OptionBool,
+    /// `Vec<T>` for Djogi-supported one-dimensional Postgres array columns.
+    /// Equality and membership are portable; array-specific operators remain
+    /// SQL-only through `explicit_pg_predicate()`.
+    Array,
+    /// `Option<Vec<T>>` for Djogi-supported one-dimensional Postgres array
+    /// columns. Null tests, equality, and membership are portable.
+    OptionArray,
     /// `Jsonb<T>` / `Option<Jsonb<T>>` — SQL-only in 8eta. Routes
     /// through `explicit_pg_predicate()` for database-specific
     /// predicates; portable arms emit
     /// `UnsupportedFieldType { field }`.
     Jsonb,
-    /// `Vec<T>` — SQL-only in 8eta. Array operators
-    /// (`@>` / `<@` / `&&`) ride [`crate::query::FieldRef`] directly.
-    Array,
     /// `GeoPoint` / `LineString` / `Polygon` / `MultiPoint` /
     /// `MultiPolygon` — PostGIS spatial types, SQL-only.
     Spatial,
@@ -168,6 +172,8 @@ impl PortableFieldKind {
                 | Self::OptionScalar
                 | Self::OptionString
                 | Self::OptionBool
+                | Self::Array
+                | Self::OptionArray
                 | Self::RelationOrVisage
                 | Self::OptionRelationOrVisage
         )
@@ -183,6 +189,7 @@ impl PortableFieldKind {
             Self::OptionScalar
                 | Self::OptionString
                 | Self::OptionBool
+                | Self::OptionArray
                 | Self::OptionRelationOrVisage
         )
     }
@@ -404,10 +411,10 @@ fn classify(ty: &Type, field_attrs: Option<&FieldAttrs>) -> (PortableFieldKind, 
             PortableFieldKind::Scalar => (PortableFieldKind::OptionScalar, Some(inner)),
             PortableFieldKind::String => (PortableFieldKind::OptionString, Some(inner)),
             PortableFieldKind::Bool => (PortableFieldKind::OptionBool, Some(inner)),
-            // `Option<Jsonb<T>>`, `Option<Vec<U>>`, `Option<GeoPoint>`,
-            // etc. — keep the inner kind; the option_inner_type is
-            // None because the inner kind is itself not portable, so
-            // the macro arm body will not branch on it.
+            PortableFieldKind::Array => (PortableFieldKind::OptionArray, Some(inner)),
+            // `Option<Jsonb<T>>`, `Option<GeoPoint>`, etc. — keep the inner
+            // kind; the option_inner_type is None because the inner kind is
+            // itself not portable, so the macro arm body will not branch on it.
             other => (other, None),
         }
     } else {

@@ -562,6 +562,12 @@ where
 {
 }
 impl<V> DjogiPortableEq for Tracked<V> where V: DjogiPortableEq {}
+impl<V> DjogiPortableEq for Vec<V>
+where
+    V: IntoArrayFilterValue + PartialEq + Clone + Send + Sync + 'static,
+    Vec<V>: postgres_types::ToSql + Clone + Send + Sync + 'static,
+{
+}
 
 /// Djogi root field wrapper.
 ///
@@ -2515,6 +2521,14 @@ impl IntoFilterValue for rust_decimal::Decimal {
 impl IntoFilterValue for crate::Interval {
     fn into_filter_value(self) -> FilterValue {
         FilterValue::Interval(self)
+    }
+}
+impl<V> IntoFilterValue for Vec<V>
+where
+    V: IntoArrayFilterValue,
+{
+    fn into_filter_value(self) -> FilterValue {
+        V::into_array_filter_value(self)
     }
 }
 

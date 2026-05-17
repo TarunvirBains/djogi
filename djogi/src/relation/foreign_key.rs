@@ -273,6 +273,12 @@ where
     }
 }
 
+impl<T: Model + 'static> crate::query::field::DjogiPortableEq for ForeignKey<T>
+where
+    T::Pk: crate::query::field::DjogiPortableEq,
+{
+}
+
 // ---------------------------------------------------------------------------
 // Expression-IR integration — `FieldRef<M, ForeignKey<T>>` ↔ `Expr<T::Pk>`.
 // ---------------------------------------------------------------------------

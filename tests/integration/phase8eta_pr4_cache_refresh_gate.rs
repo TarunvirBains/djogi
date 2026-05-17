@@ -23,16 +23,6 @@ fn assert_cache_invalid_condition(err: PortablePredicateError) {
     );
 }
 
-fn assert_unsupported_field_type(err: PortablePredicateError, expected_field: &'static str) {
-    assert!(
-        matches!(
-            err,
-            PortablePredicateError::UnsupportedFieldType { field } if field == expected_field
-        ),
-        "expected unsupported field type for {expected_field}; got {err:?}",
-    );
-}
-
 #[djogi::djogi_test(sync_models = [CacheRefreshGateRow])]
 async fn cache_rejects_pg_specific_predicate(mut ctx: djogi::DjogiContext) {
     let punnu = ctx
@@ -93,7 +83,47 @@ async fn refresh_rejects_pg_specific_predicate(mut ctx: djogi::DjogiContext) {
 }
 
 #[djogi::djogi_test(sync_models = [CacheRefreshGateRow])]
-async fn cache_and_refresh_reject_unsupported_root_field_predicate(mut ctx: djogi::DjogiContext) {
+async fn array_root_field_equality_and_membership_are_portable(mut ctx: djogi::DjogiContext) {
+    CacheRefreshGateRow::create(
+        &mut ctx,
+        CacheRefreshGateRow {
+            label: "matching-array".into(),
+            active: true,
+            ratings: vec![1, 2, 3],
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create matching array row");
+
+    CacheRefreshGateRow::create(
+        &mut ctx,
+        CacheRefreshGateRow {
+            label: "different-order-array".into(),
+            active: true,
+            ratings: vec![3, 2, 1],
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create different array row");
+
+    let eq_rows = CacheRefreshGateRow::objects()
+        .filter(|f| f.ratings().eq(vec![1, 2, 3]))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("portable array equality must emit SQL");
+    assert_eq!(eq_rows.len(), 1);
+    assert_eq!(eq_rows[0].label, "matching-array");
+
+    let in_rows = CacheRefreshGateRow::objects()
+        .filter(|f| f.ratings().in_([vec![1, 2, 3]]))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("portable array membership must emit SQL");
+    assert_eq!(in_rows.len(), 1);
+    assert_eq!(in_rows[0].label, "matching-array");
+
     let pool = ctx
         .share_pool()
         .expect("djogi_test context must have a pool");
@@ -103,23 +133,15 @@ async fn cache_and_refresh_reject_unsupported_root_field_predicate(mut ctx: djog
     let auth =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
-    let cache_err = match CacheRefreshGateRow::objects()
+    CacheRefreshGateRow::objects()
         .filter(|f| f.ratings().eq(vec![1, 2, 3]))
         .cache(&punnu)
-    {
-        Ok(_) => panic!("cache gate must reject unsupported array root field predicate"),
-        Err((_queryset, err)) => err,
-    };
-    assert_unsupported_field_type(cache_err, "ratings");
+        .expect("cache gate must accept portable array equality");
 
-    let refresh_err = match CacheRefreshGateRow::objects()
+    CacheRefreshGateRow::objects()
         .filter(|f| f.ratings().eq(vec![1, 2, 3]))
         .refresh_into(&punnu, pool, auth)
-    {
-        Ok(_) => panic!("refresh gate must reject unsupported array root field predicate"),
-        Err((_queryset, err)) => err,
-    };
-    assert_unsupported_field_type(refresh_err, "ratings");
+        .expect("refresh gate must accept portable array equality");
 
     let _ = &mut ctx;
 }

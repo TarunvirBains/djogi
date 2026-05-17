@@ -174,6 +174,12 @@ where
     }
 }
 
+impl<T: Model + 'static> crate::query::field::DjogiPortableEq for OneToOneField<T>
+where
+    T::Pk: crate::query::field::DjogiPortableEq,
+{
+}
+
 // ---------------------------------------------------------------------------
 // serde integration — forward through the wrapped `ForeignKey<T>`. (#38)
 // ---------------------------------------------------------------------------
