@@ -1239,8 +1239,15 @@ mod tests {
             !matches!(lookup("GIT_COMMON_DIR"), Some(Some(""))),
             "invalid GIT_COMMON_DIR env should be removed",
         );
-        assert!(envs.iter().any(|(name, value)| name == "GIT_WORK_TREE"
-            && value.as_deref() == Some("/tmp/check-secrets-work-tree")));
+        // Valid env values are inherited from the process; `clear_invalid_git_plumbing_env`
+        // intentionally does nothing for them, so they do NOT appear as explicit
+        // modifications on the `Command` (i.e. `get_envs()` will not return an entry
+        // for them at all). The correct assertion is that the valid value was NOT
+        // explicitly removed (which would appear as `Some(None)` in `get_envs()`).
+        assert!(
+            !matches!(lookup("GIT_WORK_TREE"), Some(None)),
+            "valid GIT_WORK_TREE should not be explicitly removed from the command env",
+        );
     }
 
     // ---- URL detection ----
