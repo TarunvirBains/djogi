@@ -196,9 +196,9 @@ pub mod projection {
         /// framework-internal consumers (lints, debug formatters,
         /// future Tier-2 per-entry SQL renderer) need those two
         /// fields. Documentation generators and the `djogi docs`
-        /// CLI consume the richer [`crate::descriptor::DerivedProjection`]
-        /// entries through the separate `VisageDescriptor` inventory
-        /// channel instead.
+        /// CLI will consume a richer descriptor / inventory surface
+        /// in a later stage; this metadata enum is intentionally not
+        /// that public descriptor surface.
         #[doc(hidden)]
         Derived {
             /// The SELECT alias (= visage struct field name).

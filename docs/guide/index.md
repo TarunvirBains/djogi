@@ -18,6 +18,7 @@ For design history and items still on the horizon, see
 | [Expressions](./expressions.md) | `Expr<T>`: arithmetic, field-vs-field, CASE/WHEN, subqueries, typed `OuterRef`, aggregates, annotations |
 | [Outbox](./outbox.md) | `#[model(events)]`, `#[field(outbox = "ignore")]`, rollback semantics, publisher patterns |
 | [Visages](./visages.md) | `#[field(expose(...))]`, `{Model}Public/SelfView/Admin/Export`, `From`/`TryFrom`, `VisageError` |
+| [Derived Projections](./derived-projections.md) | `#[derived(...)]`, SQL/Rust parity, nullable derived values, fallible projection conversion |
 | [Tracked Fields](./tracked-fields.md) | `Tracked<T>` dirty-tracking wrapper, selective column writes, `mark_clean` |
 | [Optimistic Locking](./optimistic-locking.md) | `#[field(version)]`, version predicate in `save()`, `LockConflict`, retry patterns |
 | [Enums](./enums.md) | `#[derive(DjogiEnum)]`, Postgres codec, `rename_all`, per-variant overrides |

@@ -425,7 +425,8 @@ The expression must be a valid Rust expression that:
    in-memory path is synchronous and infallible-except-for-explicit-
    `Result`.
 4. Does not depend on borrowed data outside `model` — the function
-   body sees only `model: &Self::Model` as input.
+   body sees only `model: &{Model}` as input, where `{Model}` is the
+   source model on which `#[derived(...)]` appears.
 
 ### Fallibility detection (syntactic tail, not type)
 
@@ -599,10 +600,10 @@ attribute on a model, the macro emits:
    defined in [Trait surface](#trait-surface).
 3. A `FromPgRow` impl matching the visage struct's field order
    exactly (one positional decode per field).
-4. Either `impl From<&Self::Model> for V` (all derived entries
-   infallible) or `impl TryFrom<&Self::Model> for V` (any derived
+4. Either `impl From<&Model> for V` (all derived entries
+   infallible) or `impl TryFrom<&Model> for V` (any derived
    entry fallible) — see [In-memory derivation](#in-memory-derivation).
-5. The existing `DjogiVisageOf<Self::Model>` seal impl.
+5. The existing `DjogiVisageOf<Model>` pairing impl.
 
 Example expansion for `ConsignmentPublic`:
 
@@ -618,10 +619,7 @@ pub struct ConsignmentPublic {
 }
 
 impl djogi::DjogiVisage for ConsignmentPublic {
-    type Model = Consignment;
     const SCOPE: &'static str = "public";
-    // Note: source table is reached via `<Consignment as Model>::table_name()`,
-    // not duplicated here. See trait shape.
     const COLUMNS: &'static [&'static str] = &[
         "id", "created_at", "updated_at",
         "inbound_site", "outbound_site", "direction",
@@ -903,7 +901,7 @@ caller that constructs a visage from a `&Model` reference (e.g.,
 test fixtures, mock servers, in-memory caches). Adopters who do both
 should write the parity helper into their test suite as a guard.
 
-### Why `model: &Self::Model`, not owned `Self::Model`
+### Why `model: &{Model}`, not owned `{Model}`
 
 The expression sees `model: &{Model}` rather than an owned `{Model}`
 so the conversion is non-consuming. Visages are derived projections;
@@ -915,22 +913,30 @@ types are not `Copy`.
 
 ## Trait surface
 
-This work **introduces** a new `DjogiVisage` trait (added to
-`djogi/src/visage.rs`, alongside the existing `VisageError` enum).
-The trait does not exist today; the current visage surface is
-limited to the `DjogiVisageOf<M>` marker trait in
-`djogi/src/visage_boundary.rs` (which carries only identity, no
-associated items) and per-visage inherent methods emitted by the
-`#[model]` macro. The new `DjogiVisage` trait centralises the
-projection metadata so generic **framework-internal** code — lints,
-debug formatters, and the future Tier-2 predicate-rendering path —
-can read it through a single bound. Documentation generators
-(rustdoc reference tables, the `djogi docs` CLI) are **not**
-`DjogiVisage` consumers; they read the richer
+This work adds a `DjogiVisage` trait to `djogi/src/visage.rs`,
+alongside the existing `VisageError` enum. Before this surface,
+visages only had the `DjogiVisageOf<M>` marker trait in
+`djogi/src/visage_boundary.rs` (which carries the model-to-visage
+pairing, no associated items) and per-visage inherent methods emitted
+by the `#[model]` macro.
+
+`DjogiVisage` centralises projection metadata so generic
+**framework-internal** code — lints, debug formatters, and the future
+Tier-2 predicate-rendering path — can read it through a single bound.
+It deliberately does **not** carry a public associated `Model` type:
+ordinary adopter models may be private while macro-emitted visages are
+public. Naming the private source model in a public trait associated
+type leaks that private type and triggers Rust's E0446 private-type-
+in-public-interface check. Source-model pairing therefore stays on
+`DjogiVisageOf<M>`, while `DjogiVisage` remains non-generic projection
+metadata.
+
+Documentation generators (rustdoc reference tables, the `djogi docs`
+CLI) are **not** `DjogiVisage` consumers; they read the richer
 [`DerivedProjection`](#stage-2--descriptor-emission) entries through
 the separate `VisageDescriptor` inventory channel because
-`ProjectionEntry::Derived` carries only `alias` + `sql` (no
-`ty_path` / `rust` / `doc`). The parity helper is also **not** a
+`ProjectionEntry::Derived` carries only `alias` + `sql` (no `ty_path`
+/ `rust` / `doc`). The parity helper is also **not** a
 `DjogiVisage` consumer; it is emitted as an inherent method per
 visage with the derived-field set hard-coded at macro time.
 
@@ -939,9 +945,7 @@ The `ProjectionEntry` discriminant is sealed off the public surface.
 ### Trait shape
 
 ```rust
-pub trait DjogiVisage: crate::visage_boundary::private::Sealed<Self::Model> {
-    type Model: crate::model::Model;
-
+pub trait DjogiVisage: private::MetadataSealed {
     /// Stable scope key (`"public"` / `"self_view"` / `"admin"` /
     /// `"export"`). A `&'static str` rather than a typed enum to
     /// match the existing `SCOPES` tuple shape in
@@ -952,13 +956,14 @@ pub trait DjogiVisage: crate::visage_boundary::private::Sealed<Self::Model> {
     const SCOPE: &'static str;
 
     // Note: there is intentionally no `TABLE` constant on this trait.
-    // The source-model table is already reachable through
-    // `<V::Model as Model>::table_name()` (the `type Model: Model`
-    // supertrait bound provides it). Carrying a parallel `TABLE`
-    // const on `DjogiVisage` would be redundant metadata that the
-    // macro would have to keep in sync with `Model::table_name()`
-    // by construction. Generic code over `V: DjogiVisage` reaches
-    // the table via `<V::Model as Model>::table_name()`.
+    // The macro bakes the source-model table into each generated
+    // `VisageQuerySet` constructor, so carrying a parallel `TABLE`
+    // const would be redundant metadata.
+    //
+    // There is also intentionally no associated `Model` type on this
+    // trait. The source-model pairing belongs to `DjogiVisageOf<M>`;
+    // keeping it there avoids leaking private adopter model types
+    // through public generated visage impls.
 
     /// Names that appear at each ordinal position of the visage's
     /// SELECT row, in struct-field order. For column entries this is
@@ -1079,10 +1084,12 @@ protection against adopters who have already decided to reach into
 
 The existing `DjogiVisageOf<M>` (marker trait, no associated items)
 continues to seal the model-to-visage pairing. The new `DjogiVisage`
-trait carries the projection contract. Every `impl DjogiVisage for V`
-also has an `impl DjogiVisageOf<V::Model> for V` (emitted by the same
-macro pass) — the two traits compose: `DjogiVisageOf<M>` says "V is a
-visage of M"; `DjogiVisage` says "V has this projection shape."
+trait carries the projection contract only. Every
+`impl DjogiVisage for V` for a model-backed flat projection also has
+an `impl DjogiVisageOf<M> for V` (emitted by the same macro pass),
+where `M` is the source model — the two traits compose:
+`DjogiVisageOf<M>` says "V is a visage of M"; `DjogiVisage` says
+"V has this projection shape."
 
 The reflexive `impl<M: Model> DjogiVisageOf<M> for M` blanket
 continues to hold for the marker trait; **no blanket
@@ -1947,9 +1954,10 @@ remains unchecked.
     point; see [§Declaration](#derived-is-a-helper-attribute-not-an-attribute-macro)).
   - `DjogiVisage` trait + its three associated constants (`COLUMNS`,
     `PROJECTIONS`, `PROJECTION_LIST`) + the `SCOPE` associated
-    constant + the `Self::Model` assoc-type. (There is no `TABLE`
-    const — the source table is reached via `<V::Model as
-    Model>::table_name()` per the trait shape.)
+    constant. There is no `TABLE` const and no associated `Model`
+    type: the macro bakes the source table into generated queryset
+    constructors, and model pairing stays on `DjogiVisageOf<M>` to
+    avoid leaking private source models through public visage impls.
   - The `__private::ProjectionEntry` sealed type (with the standard
     "do not name this" warning matching the existing
     `__private::VisageSealed` precedent).

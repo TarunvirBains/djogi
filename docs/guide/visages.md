@@ -326,6 +326,18 @@ same boundary enforcement.
 source model. Mutate through the model, project to the visage at
 the boundary.
 
+## Derived projection fields
+
+Visages can also carry fields computed from model state with
+`#[derived(...)]`. Derived fields are declared on the model, scoped to
+one or more generated visages, and backed by paired SQL and Rust
+expressions so queryset fetches and in-memory conversions can produce
+the same value.
+
+See [Derived Projections](./derived-projections.md) for the adopter
+surface, parity rule, nullable-value handling, fallibility detection,
+and current Tier 1 limits.
+
 ## Common compile errors
 
 These compile-fail cases are pinned by djogi-macros's compile-fail
