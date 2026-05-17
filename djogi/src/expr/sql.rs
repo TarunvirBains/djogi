@@ -283,10 +283,13 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             }
             check_aggregate_legality(otherwise)
         }
-        // GROUPING variadic carries no modifier slots — the IR shape
-        // structurally excludes DISTINCT/ORDER BY/FILTER/OVER on this
-        // variant — so the legality of the node itself is trivial. Walk
-        // the args in case a nested aggregate was somehow constructed.
+        // GROUPING variadic carries no modifier slots — DISTINCT /
+        // ORDER BY / FILTER / OVER all panic at the `AggregateExpr`
+        // modifier call site rather than silently no-oping (the five
+        // modifier methods use an explicit `ExprNode::GroupingVariadic`
+        // match arm that panics with a diagnostic message). The legality
+        // of the node itself is trivially ok; walk the args in case a
+        // nested aggregate was somehow constructed inside a column.
         ExprNode::GroupingVariadic { args } => {
             for a in args {
                 check_aggregate_legality(a)?;
