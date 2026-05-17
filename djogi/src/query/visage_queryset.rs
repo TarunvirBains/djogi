@@ -38,15 +38,18 @@
 //!
 //! # SQL narrowing
 //!
-//! `VisageQuerySet<V>` carries an explicit `&'static [&'static str]`
-//! column list — the macro emits exactly the narrowed visage columns,
-//! in the same order the visage struct declares them, so the
-//! `FromPgRow` impl on the visage decodes positionally without
-//! re-walking the source model's `ModelDescriptor::fields`. The
-//! narrowed list is the load-bearing detail: dropped columns
-//! (`password_hash`, `email` on the `public` scope) are absent from
-//! the SELECT projection and from any `RETURNING` shape — they cannot
-//! leak through this surface.
+//! `VisageQuerySet<V>` carries a pre-rendered `projection_list:
+//! &'static str` — the macro renders the visage's SELECT projection
+//! once at compile time (column entries pass through verbatim;
+//! derived entries from Phase 8.5 issue #231 render as
+//! `(<sql>) AS <alias>`) and the queryset splices the rendered
+//! string directly into the SELECT slot. The string is emitted in
+//! lockstep with the visage's positional `FromPgRow` decoder so row
+//! ordinals align with struct field order. The narrowed projection
+//! is the load-bearing detail: dropped columns (`password_hash`,
+//! `email` on the `public` scope) are absent from the SELECT
+//! projection and from any `RETURNING` shape — they cannot leak
+//! through this surface.
 //!
 //! # Why RPITIT (not `async fn`)
 //!
@@ -96,11 +99,13 @@ pub struct VisageQuerySet<V> {
     /// Source-model SQL table name. Captured from the macro at
     /// construction time so the queryset has no `T: Model` bound.
     pub(crate) table: &'static str,
-    /// Narrowed projection column list, in the visage struct's
-    /// declaration order. Used both to emit the `SELECT` projection and
-    /// (implicitly, via `FromPgRow for V`) to drive the positional
-    /// decoder.
-    pub(crate) columns: &'static [&'static str],
+    /// Pre-rendered SELECT projection list. Splices directly into the
+    /// SELECT slot at query time — no runtime walk over a column
+    /// slice. For column-only visages this is just the comma-joined
+    /// column names; for visages with derived entries the macro
+    /// renders the entries as `(<sql>) AS <alias>` and joins the
+    /// list at compile time. Phase 8.5 issue #231.
+    pub(crate) projection_list: &'static str,
     /// Accumulated filter tree. Starts as [`Condition::True`].
     pub(crate) condition: Condition,
     /// Ordering expressions in emission order. `order_by` appends.
@@ -117,7 +122,7 @@ impl<V> Clone for VisageQuerySet<V> {
     fn clone(&self) -> Self {
         VisageQuerySet {
             table: self.table,
-            columns: self.columns,
+            projection_list: self.projection_list,
             condition: self.condition.clone(),
             ordering: self.ordering.clone(),
             limit: self.limit,
@@ -131,7 +136,7 @@ impl<V> std::fmt::Debug for VisageQuerySet<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VisageQuerySet")
             .field("table", &self.table)
-            .field("columns", &self.columns)
+            .field("projection_list", &self.projection_list)
             .field("condition", &self.condition)
             .field("ordering", &self.ordering)
             .field("limit", &self.limit)
@@ -142,23 +147,26 @@ impl<V> std::fmt::Debug for VisageQuerySet<V> {
 
 impl<V> VisageQuerySet<V> {
     /// Construct a `VisageQuerySet` with the given table, narrowed
-    /// column list, and root filter condition.
+    /// projection list, and root filter condition.
     ///
     /// Called by the `#[model]`-emitted `V::filter(...)` / `V::order_by(...)`
     /// / `V::limit(...)` entry points; not part of the user-visible API.
-    /// The `columns` slice must match the visage struct's declared field
-    /// order so the positional `FromPgRow for V` decoder lines up with
-    /// the SELECT projection.
+    /// The `projection_list` is the visage's pre-rendered SELECT
+    /// projection — column entries pass through verbatim; derived
+    /// entries render as `(<sql>) AS <alias>` and the list is joined
+    /// at compile time. The string is emitted by the macro in
+    /// lockstep with the visage's positional `FromPgRow` decoder so
+    /// row ordinals align with struct field order.
     #[doc(hidden)]
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn new_for_visage(
         table: &'static str,
-        columns: &'static [&'static str],
+        projection_list: &'static str,
         condition: Condition,
     ) -> Self {
         VisageQuerySet {
             table,
-            columns,
+            projection_list,
             condition,
             ordering: Vec::new(),
             limit: None,
@@ -259,7 +267,12 @@ pub(crate) fn build_visage_select<V>(
 ) -> Result<SqlAccumulator, crate::query::portable::PortablePredicateError> {
     let mut acc = SqlAccumulator::new("");
     acc.push_sql("SELECT ");
-    acc.push_csv(qs.columns.iter().copied());
+    // Phase 8.5 #231 — splice the pre-rendered projection list. For
+    // column-only visages this matches the prior `push_csv(columns)`
+    // shape byte-for-byte; for visages with derived entries it
+    // additionally emits `(<sql>) AS <alias>` segments wherever the
+    // macro placed a derived projection.
+    acc.push_sql(qs.projection_list);
     acc.push_sql(" FROM ");
     acc.push_sql(qs.table);
     push_visage_tail(&mut acc, qs)?;

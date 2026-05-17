@@ -44,9 +44,9 @@
 //!
 //! [`FromJoinedPgRow`]: crate::pg::decode::FromJoinedPgRow
 
-use crate::DjogiError;
+use crate::{DjogiError, VisageError};
 use tokio_postgres::Row;
-use tokio_postgres::types::FromSql;
+use tokio_postgres::types::{FromSql, Type};
 
 /// Canonical row-decode trait for `#[model]`-annotated structs.
 ///
@@ -172,6 +172,108 @@ where
     );
     row.try_get::<_, T>(idx)
         .map_err(|e| DjogiError::Decode(format!("column `{}`: {}", name, e)))
+}
+
+/// Decode a derived visage projection entry at a positional index.
+///
+/// Direct model columns keep using [`decode_at`] and therefore preserve the
+/// long-standing `DjogiError::Decode` contract. Derived entries are different:
+/// their SQL expression is adopter-declared computed data, and the public
+/// visage contract exposes dedicated error variants for NULL and runtime type
+/// mismatch. This helper carries the same debug-build name guard as
+/// [`decode_at`] but maps `tokio_postgres` decode failures into those variants.
+///
+/// `#[doc(hidden)]` — emitted only by `#[model]` for derived visage fields.
+#[doc(hidden)]
+pub fn decode_derived_at<'a, T>(
+    row: &'a Row,
+    idx: usize,
+    visage: &'static str,
+    field: &'static str,
+) -> Result<T, DjogiError>
+where
+    T: FromSql<'a>,
+{
+    debug_assert_eq!(
+        row.columns()[idx].name(),
+        field,
+        "FromPgRow column-order drift on derived visage field: position {} expected {:?}, got {:?}",
+        idx,
+        field,
+        row.columns()[idx].name(),
+    );
+
+    row.try_get::<_, T>(idx).map_err(|e| {
+        let actual = row
+            .columns()
+            .get(idx)
+            .map(|column| pg_type_name(column.type_()))
+            .unwrap_or("unknown");
+        map_derived_decode_failure::<T>(std::error::Error::source(&e), actual, visage, field)
+    })
+}
+
+fn map_derived_decode_failure<T>(
+    source: Option<&(dyn std::error::Error + 'static)>,
+    actual: &'static str,
+    visage: &'static str,
+    field: &'static str,
+) -> DjogiError {
+    if source
+        .and_then(|source| source.downcast_ref::<postgres_types::WasNull>())
+        .is_some()
+    {
+        return DjogiError::Visage(VisageError::DbComputedNullForNonOptional { visage, field });
+    }
+
+    DjogiError::Visage(VisageError::DbComputedTypeMismatch {
+        visage,
+        field,
+        expected: std::any::type_name::<T>(),
+        actual,
+    })
+}
+
+fn pg_type_name(ty: &Type) -> &'static str {
+    if *ty == Type::BOOL {
+        "BOOL"
+    } else if *ty == Type::CHAR {
+        "CHAR"
+    } else if *ty == Type::INT2 {
+        "INT2"
+    } else if *ty == Type::INT4 {
+        "INT4"
+    } else if *ty == Type::INT8 {
+        "INT8"
+    } else if *ty == Type::FLOAT4 {
+        "FLOAT4"
+    } else if *ty == Type::FLOAT8 {
+        "FLOAT8"
+    } else if *ty == Type::NUMERIC {
+        "NUMERIC"
+    } else if *ty == Type::TEXT {
+        "TEXT"
+    } else if *ty == Type::VARCHAR {
+        "VARCHAR"
+    } else if *ty == Type::BPCHAR {
+        "BPCHAR"
+    } else if *ty == Type::TIMESTAMP {
+        "TIMESTAMP"
+    } else if *ty == Type::TIMESTAMPTZ {
+        "TIMESTAMPTZ"
+    } else if *ty == Type::DATE {
+        "DATE"
+    } else if *ty == Type::TIME {
+        "TIME"
+    } else if *ty == Type::UUID {
+        "UUID"
+    } else if *ty == Type::JSON {
+        "JSON"
+    } else if *ty == Type::JSONB {
+        "JSONB"
+    } else {
+        "unknown"
+    }
 }
 
 /// Decode one scalar value from a row by ordinal position.
@@ -412,9 +514,67 @@ pub fn decode_opt_u64_from_decimal_by_name(
 
 #[cfg(test)]
 mod tests {
-    use super::decimal_to_u64;
+    use super::{decimal_to_u64, map_derived_decode_failure};
+    use crate::{DjogiError, VisageError};
     use rust_decimal::Decimal;
+    use std::fmt;
     use std::str::FromStr as _;
+
+    #[derive(Debug)]
+    struct NotWasNull;
+
+    impl fmt::Display for NotWasNull {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("not a null decode failure")
+        }
+    }
+
+    impl std::error::Error for NotWasNull {}
+
+    #[test]
+    fn derived_decode_failure_maps_was_null_to_visage_null() {
+        let source = postgres_types::WasNull;
+        let err = map_derived_decode_failure::<String>(
+            Some(&source),
+            "TEXT",
+            "DerivedNullRowPublic",
+            "computed_label",
+        );
+
+        match err {
+            DjogiError::Visage(VisageError::DbComputedNullForNonOptional { visage, field }) => {
+                assert_eq!(visage, "DerivedNullRowPublic");
+                assert_eq!(field, "computed_label");
+            }
+            other => panic!("expected derived NULL visage error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn derived_decode_failure_maps_non_null_failure_to_visage_type_mismatch() {
+        let source = NotWasNull;
+        let err = map_derived_decode_failure::<String>(
+            Some(&source),
+            "INT4",
+            "DerivedTypeRowPublic",
+            "computed_label",
+        );
+
+        match err {
+            DjogiError::Visage(VisageError::DbComputedTypeMismatch {
+                visage,
+                field,
+                expected,
+                actual,
+            }) => {
+                assert_eq!(visage, "DerivedTypeRowPublic");
+                assert_eq!(field, "computed_label");
+                assert!(expected.contains("String"), "expected type was {expected}");
+                assert_eq!(actual, "INT4");
+            }
+            other => panic!("expected derived type-mismatch visage error, got {other:?}"),
+        }
+    }
 
     #[test]
     fn decimal_to_u64_rejects_fractional_value() {

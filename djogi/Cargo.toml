@@ -611,6 +611,15 @@ name = "phase8_5_predicate_ergonomics"
 path = "../tests/integration/phase8_5_predicate_ergonomics.rs"
 harness = true
 
+# Phase 8.5 issue #231 — derived visage row-decode errors.
+# Verifies DB-computed NULL and SQL/Rust type mismatch on derived
+# projection entries surface as DjogiError::Visage(...) rather than
+# generic row-decode errors.
+[[test]]
+name = "phase8_5_visage_derived_decode_errors"
+path = "../tests/integration/phase8_5_visage_derived_decode_errors.rs"
+harness = true
+
 # Phase 8.5 Cluster 4 (#168) — typed isolation-level surface.
 # Verifies `atomic_with(IsolationLevel::{ReadCommitted, RepeatableRead,
 # Serializable}, ...)` opens a Postgres transaction at the requested
