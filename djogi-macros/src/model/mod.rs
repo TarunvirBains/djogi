@@ -201,10 +201,9 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
                     "admin" => Some("admin"),
                     "export" => Some("export"),
                     _ => None,
-                } {
-                    if !scopes.contains(&canon) {
-                        scopes.push(canon);
-                    }
+                } && !scopes.contains(&canon)
+                {
+                    scopes.push(canon);
                 }
             }
             for s in fa.expose.relation_scopes.keys() {
@@ -214,10 +213,9 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
                     "admin" => Some("admin"),
                     "export" => Some("export"),
                     _ => None,
-                } {
-                    if !scopes.contains(&canon) {
-                        scopes.push(canon);
-                    }
+                } && !scopes.contains(&canon)
+                {
+                    scopes.push(canon);
                 }
             }
             column_exposures.push((col, scopes));

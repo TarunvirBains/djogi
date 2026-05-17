@@ -834,11 +834,11 @@ fn aggregate_or_over_hit(sql: &str) -> Option<String> {
             i = skip_single_quoted(bytes, i);
             continue;
         }
-        if bytes[i] == b'$' {
-            if let Some((tag_len, body_start)) = parse_dollar_open(bytes, i) {
-                i = skip_dollar_body(bytes, body_start, &bytes[i..i + tag_len]);
-                continue;
-            }
+        if bytes[i] == b'$'
+            && let Some((tag_len, body_start)) = parse_dollar_open(bytes, i)
+        {
+            i = skip_dollar_body(bytes, body_start, &bytes[i..i + tag_len]);
+            continue;
         }
         // Skip line / block comments.
         if i + 1 < bytes.len() && bytes[i] == b'-' && bytes[i + 1] == b'-' {
@@ -910,11 +910,11 @@ fn walk_unquoted_tokens(sql: &str) -> impl Iterator<Item = SqlTok> + '_ {
                 i = skip_single_quoted(bytes, i);
                 continue;
             }
-            if bytes[i] == b'$' {
-                if let Some((tag_len, body_start)) = parse_dollar_open(bytes, i) {
-                    i = skip_dollar_body(bytes, body_start, &bytes[i..i + tag_len]);
-                    continue;
-                }
+            if bytes[i] == b'$'
+                && let Some((tag_len, body_start)) = parse_dollar_open(bytes, i)
+            {
+                i = skip_dollar_body(bytes, body_start, &bytes[i..i + tag_len]);
+                continue;
             }
             if i + 1 < bytes.len() && bytes[i] == b'-' && bytes[i + 1] == b'-' {
                 while i < bytes.len() && bytes[i] != b'\n' {
@@ -1046,10 +1046,7 @@ pub fn cross_check(
             }
             // Find the first overlap between the derived scope set and
             // the column's exposed scope set.
-            let overlap = d
-                .scopes
-                .iter()
-                .find(|s| exposed_scopes.iter().any(|e| *e == s.key));
+            let overlap = d.scopes.iter().find(|s| exposed_scopes.contains(&s.key));
             if let Some(scope) = overlap {
                 return Err(syn::Error::new(
                     d.name.span(),
@@ -1162,12 +1159,12 @@ fn classify_expr(expr: &syn::Expr) -> FallibilityShape {
         syn::Expr::Try(_) => FallibilityShape::Shape1TrailingQuestion,
         // Shape 5 — bare `Ok(...)` / `Err(...)` call.
         syn::Expr::Call(call) => {
-            if let syn::Expr::Path(p) = call.func.as_ref() {
-                if let Some(seg) = p.path.segments.last() {
-                    let id = seg.ident.to_string();
-                    if id == "Ok" || id == "Err" {
-                        return FallibilityShape::Shape2to5Result;
-                    }
+            if let syn::Expr::Path(p) = call.func.as_ref()
+                && let Some(seg) = p.path.segments.last()
+            {
+                let id = seg.ident.to_string();
+                if id == "Ok" || id == "Err" {
+                    return FallibilityShape::Shape2to5Result;
                 }
             }
             FallibilityShape::Infallible

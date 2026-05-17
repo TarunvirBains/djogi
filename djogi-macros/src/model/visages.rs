@@ -636,7 +636,7 @@ fn emit_assert_derived_parity(
     for d in scoped_derived {
         let ty = &d.ty;
         let key = quote! { #ty }.to_string();
-        if seen.iter().any(|s| *s == key) {
+        if seen.contains(&key) {
             continue;
         }
         seen.push(key);
