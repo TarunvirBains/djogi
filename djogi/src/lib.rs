@@ -185,6 +185,12 @@ pub mod __private {
     pub use crate::visage_boundary::DjogiVisageOf;
     pub use crate::visage_boundary::private::Sealed as VisageSealed;
 
+    /// Seal for macro-emitted [`DjogiVisage`](crate::DjogiVisage)
+    /// projection metadata impls. Kept separate from
+    /// `VisageSealed<M>` so the metadata trait does not expose the
+    /// source model type in public associated items.
+    pub use crate::visage::private::MetadataSealed as DjogiVisageSealed;
+
     /// Sealed projection-entry discriminant for the
     /// [`DjogiVisage::PROJECTIONS`](crate::DjogiVisage::PROJECTIONS)
     /// trait constant. Re-exported here so macro-emitted code routes

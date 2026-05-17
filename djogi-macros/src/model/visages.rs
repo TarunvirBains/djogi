@@ -521,7 +521,6 @@ fn emit_djogi_visage_impl(
     if entries.is_empty() {
         return TokenStream::new();
     }
-    let source = ctx.source;
     let proj_name = &ctx.visage_ident;
     let scope = ctx.scope;
 
@@ -575,8 +574,9 @@ fn emit_djogi_visage_impl(
     }
 
     quote! {
+        impl ::djogi::__private::DjogiVisageSealed for #proj_name {}
+
         impl ::djogi::DjogiVisage for #proj_name {
-            type Model = #source;
             const SCOPE: &'static str = #scope;
             const COLUMNS: &'static [&'static str] = &[ #(#columns_lits),* ];
             const PROJECTIONS: &'static [::djogi::__private::ProjectionEntry] = &[
