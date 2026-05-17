@@ -349,7 +349,7 @@ Validations performed at parse time:
    per-row projection; aggregates and window functions must route
    through **Shape Q** (QuerySet-side `.annotate(...)`) or **Shape V**
    (`#[derived(..., aggregate = true)]` with the explicit opt-in marker)
-   — both locked in [`docs/spec/decisions.md`](./decisions.md)
+   — both locked in [`docs/spec/decisions.md`](./decisions.md#aggregate-annotation-declaration-site)
    (see [Non-goals](#non-goals) item 2).
    Tokens inside single-quoted strings and dollar-quoted bodies are
    skipped so `'COUNT'` does not false-positive.
@@ -1786,7 +1786,7 @@ issue or named future phase.
 2. **Aggregates and window functions.** Out of scope for `#[derived]`
    Tier 1. The declaration site for any future aggregate / window-function
    surface is **locked** by [the aggregate-annotation declaration-site
-   decision in `docs/spec/decisions.md`](./decisions.md): per-query
+   decision in `docs/spec/decisions.md`](./decisions.md#aggregate-annotation-declaration-site): per-query
    group-by aggregates land as a typed `.annotate(...)` on
    `QuerySet<T>` / `VisageQuerySet<V>` (**Shape Q**), and per-row
    window expressions / correlated-subquery scalars land on the
@@ -1800,7 +1800,7 @@ issue or named future phase.
    deliberate opt-in that relaxes Tier 1's
    [E_DJG_VDF_009](#error-taxonomy) aggregate rejection — without it,
    aggregates inside `#[derived]` `sql` continue to fail at parse
-   time. Tracking: future phase (post-Phase-10 by current sequencing,
+   time. Tracking: future phase (no earlier scheduling commitment,
    ahead of which a `docs/spec/aggregate-annotations.md` spec ships).
 3. **Filter / order-by on derived fields from `VisageQuerySet`.**
    Tier 2 / Tier 3 work; see [Capability tiers](#capability-tiers).
@@ -2307,7 +2307,7 @@ The following ship as anchored deferrals to named future phases.
   `.annotate(...)`. Anchored to Tier 2's completion.
 - **Aggregate and window-function projections.** Declaration site
   locked pre-implementation per [the aggregate-annotation
-  declaration-site decision in `docs/spec/decisions.md`](./decisions.md):
+  declaration-site decision in `docs/spec/decisions.md`](./decisions.md#aggregate-annotation-declaration-site):
   per-query aggregates land on `QuerySet` / `VisageQuerySet` via
   `.annotate(...)` (Shape Q); per-row aggregates land on the
   `#[derived]` helper attribute with an explicit `aggregate = true`

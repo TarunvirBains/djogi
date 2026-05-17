@@ -1,7 +1,7 @@
-error: derived `sql` references the aggregate or window construct `COUNT` — derived expressions are per-row scalars; aggregates and window functions belong to a future `#[annotation]` attribute (E_DJG_VDF_009)
-  --> $DIR/phase85_derived_009_sql_aggregate_keyword.rs:19:14
+error: derived `sql` references the aggregate or window construct `COUNT` — Tier 1 rejects aggregates and window functions in `#[derived]` `sql` today (derived expressions are per-row scalars). The future aggregate / window surface is locked but not yet implemented: Shape Q (QuerySet `.annotate(...)`) and Shape V (`#[derived(..., aggregate = true)]`); the `aggregate = true` marker is not accepted by the parser yet (E_DJG_VDF_009)
+  --> $DIR/phase85_derived_009_sql_aggregate_keyword.rs:25:14
    |
-19 |     sql    = "COUNT(inbound_site)",
+25 |     sql    = "COUNT(inbound_site)",
    |              ^^^^^^^^^^^^^^^^^^^^^
 
 error: aborting due to 1 previous error
