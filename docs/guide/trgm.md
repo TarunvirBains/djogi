@@ -322,18 +322,22 @@ pub struct Profile {
     extensions = ["pg_trgm"],
 )]
 async fn trgm_similar_to_at_session_threshold(mut ctx: djogi::DjogiContext) {
-    Profile::create(&mut ctx, Profile { name: "Alice".to_string(), ..Default::default() }).await?;
-    Profile::create(&mut ctx, Profile { name: "Bob".to_string(), ..Default::default() }).await?;
+    Profile::create(&mut ctx, Profile { name: "Alice".to_string(), ..Default::default() })
+        .await
+        .expect("create Alice must succeed");
+    Profile::create(&mut ctx, Profile { name: "Bob".to_string(), ..Default::default() })
+        .await
+        .expect("create Bob must succeed");
 
     // The default pg_trgm.similarity_threshold is 0.3 — "Alce" matches "Alice".
     let results = Profile::objects()
         .filter(|f| f.name().explicit_pg_predicate().trgm_similar_to("Alce"))
         .fetch_all(&mut ctx)
-        .await?;
+        .await
+        .expect("trgm_similar_to fetch must succeed");
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].name, "Alice");
-    Ok(())
 }
 ```
 

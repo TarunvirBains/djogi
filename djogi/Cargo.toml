@@ -55,21 +55,31 @@ notify = []
 # today because the EWKB codec is implemented with stdlib byte primitives.
 spatial = []
 
-# trgm — gates the pg_trgm typed surface on `FieldRef<M, String>`:
+# trgm — gates the pg_trgm typed surface on text columns:
 #
-# - `.trgm_similar_to(pattern, threshold)` — `similarity(col, $pattern) >= $threshold`
-#   predicate. Slots into `.filter(|f| f.bio().trgm_similar_to("Alice", 0.3))`.
-# - `.trgm_similarity(pattern)` — `similarity(col, $pattern)` score expression
-#   returning `Expr<f64>`. Use in `.order_by(|f| f.bio().trgm_similarity("Alice").desc())`
-#   for ranked results.
+# - `f.col().explicit_pg_predicate().trgm_similar_to(pattern)` — a WHERE-
+#   clause predicate that compiles to the `%` operator, which gin_trgm_ops /
+#   gist_trgm_ops index opclasses accelerate. Threshold is the session GUC
+#   `pg_trgm.similarity_threshold` (Postgres default 0.3); there is no per-
+#   call numeric-threshold argument. Postgres-specific — not evaluable in
+#   Punnu's in-memory cache. Reached via `.explicit_pg_predicate()`, the same
+#   pattern as `regex` / `iregex`.
+#
+# - `f.col().trgm_similarity(pattern)` — a scored `Expr<f64>` evaluating
+#   `similarity(col, $pattern)` per row. Compose with the `Expr<T>` comparison
+#   API inside `filter_expr` for a per-query numeric threshold (e.g.
+#   `.gte(Expr::literal(0.5_f64))`). NOT index-accelerated by the trgm
+#   opclasses. Using the score in `order_by` or as an `annotate` payload is a
+#   framework gap — generic-Expr integration on OrderExpr / AnnotationSlot
+#   does not yet exist; see docs/guide/trgm.md#limitations-and-future-work.
 #
 # Requires `pg_trgm` installed in the target Postgres database:
 #
 #   CREATE EXTENSION IF NOT EXISTS pg_trgm;
 #
 # No extra Rust dependencies are pulled in — the trigram logic runs entirely
-# server-side via the `similarity()` Postgres function. The only adopter
-# change required is enabling this feature flag.
+# server-side via Postgres. The only adopter change required is enabling this
+# feature flag.
 #
 # For index acceleration, declare a GIN index with `gin_trgm_ops` opclass on
 # the column (see docs/guide/trgm.md for the full IndexSpec shape). Without
@@ -874,12 +884,14 @@ harness = true
 required-features = ["notify"]
 
 # Phase 8.5 issue #147 — pg_trgm typed surface: SQL shape pins.
-# Verifies `trgm_similar_to` emits `similarity(col, $1) >= $2`, that
-# `trgm_similarity` emits `similarity(col, $1)` for ORDER BY, that
-# bind parameter numbering is correct across composed predicates, and
-# that the `IndexSpec` descriptor represents GIN/GiST+trgm_ops indexes
-# with the expected `extension_dependency = "pg_trgm"`.
-# No live database required — assertions run against the SQL builder.
+# Verifies `trgm_similar_to` emits `<col> % $1` (the indexable `%` operator
+# form; threshold is the session GUC `pg_trgm.similarity_threshold`, not a
+# per-call bind), that `trgm_similarity` emits `similarity(<col>, $1)` as a
+# scored `Expr<f64>` for use in `filter_expr` comparisons, that bind parameter
+# numbering is correct across composed predicates, and that the `IndexSpec`
+# descriptor represents GIN/GiST+trgm_ops indexes with the expected
+# `extension_dependency = "pg_trgm"`. No live database required — assertions
+# run against the SQL builder.
 [[test]]
 name = "phase8_5_trgm_sql_shape"
 path = "../tests/internal/phase8_5_trgm_sql_shape.rs"
