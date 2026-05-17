@@ -355,6 +355,7 @@ pub use apps::AppDiagnostic;
 // sibling-derives constraint).
 pub use compose::{Auditable, SoftDeletable};
 pub use context::DjogiContext;
+pub use pg::pool::DjogiPool;
 pub use descriptor::{
     ComputedFieldDescriptor, DefaultVolatility, DeferrabilitySpec, DerivedProjection,
     EnumDescriptor, FieldDescriptor, FieldSqlType, GeographySubtype, IndexColumnSpec, IndexKind,

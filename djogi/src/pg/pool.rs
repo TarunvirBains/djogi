@@ -713,9 +713,10 @@ impl DjogiPoolBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`DjogiError::Db`] with a `Validation`-style message if
-    /// `max_size` is `0` (a zero-permit pool would hang every `get` call
-    /// forever) or if the underlying `deadpool` config fails to build.
+    /// Returns [`DjogiError::Validation`] if `max_size` is `0` (a
+    /// zero-permit pool would hang every `get` call forever). Returns
+    /// [`DjogiError::Db`] if the underlying `deadpool` config fails to
+    /// build.
     pub async fn build(self) -> Result<DjogiPool, DjogiError> {
         if self.max_size == 0 {
             return Err(DjogiError::Validation(
