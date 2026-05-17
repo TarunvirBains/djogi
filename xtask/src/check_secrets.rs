@@ -55,7 +55,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs, io,
+    env, fs, io,
     io::Read as _,
     path::{Path, PathBuf},
     process::{Command, ExitCode, Stdio},
@@ -447,8 +447,10 @@ fn read_text_file(path: &Path) -> Option<String> {
 // ===== git plumbing =====
 
 fn run_git(args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .args(args)
+    let mut command = Command::new("git");
+    command.args(args);
+    clear_invalid_git_plumbing_env(&mut command);
+    let output = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -463,6 +465,36 @@ fn run_git(args: &[&str]) -> Result<String, String> {
     }
     String::from_utf8(output.stdout)
         .map_err(|error| format!("git {} produced non-UTF-8 output: {error}", args.join(" ")))
+}
+
+const GIT_PLUMBING_ENV_VARS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_OBJECT_DIRECTORY_RELATIVE",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+];
+
+fn clear_invalid_git_plumbing_env(command: &mut Command) {
+    for name in GIT_PLUMBING_ENV_VARS {
+        if is_invalid_git_env_value(name) {
+            command.env_remove(name);
+        }
+    }
+}
+
+fn is_invalid_git_env_value(name: &str) -> bool {
+    match env::var_os(name) {
+        Some(value) => {
+            let value = value.to_string_lossy();
+            let value = value.trim();
+            value.is_empty() || value == "(null)"
+        }
+        None => false,
+    }
 }
 
 // ===== staged-diff parsing =====
@@ -1130,12 +1162,92 @@ const fn byte_slice_less(left: &[u8], right: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use std::{env, ffi::OsString, path::Path};
 
     fn scan(line: &str) -> Vec<Finding> {
         let mut findings = Vec::new();
         scan_text(line, Some(Path::new("example.rs")), &mut findings);
         findings
+    }
+
+    struct ProcessEnvRestore {
+        backups: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl ProcessEnvRestore {
+        fn new(names: &[&'static str]) -> Self {
+            let backups = names
+                .iter()
+                .map(|name| (*name, env::var_os(name)))
+                .collect();
+            Self { backups }
+        }
+    }
+
+    impl Drop for ProcessEnvRestore {
+        fn drop(&mut self) {
+            for (name, value) in self.backups.iter().rev() {
+                unsafe {
+                    match value {
+                        Some(value) => env::set_var(name, value),
+                        None => env::remove_var(name),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn clear_invalid_git_plumbing_env_values_removes_from_command() {
+        let _env_restore = ProcessEnvRestore::new(&[
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+        ]);
+        unsafe {
+            env::set_var("GIT_DIR", "(null)");
+            env::set_var("GIT_WORK_TREE", "/tmp/check-secrets-work-tree");
+            env::set_var("GIT_INDEX_FILE", "(null)");
+            env::set_var("GIT_COMMON_DIR", "");
+        }
+
+        let mut command = Command::new("git");
+        clear_invalid_git_plumbing_env(&mut command);
+
+        let envs: Vec<(String, Option<String>)> = command
+            .get_envs()
+            .map(|(name, value)| {
+                let value = value.map(|value| value.to_string_lossy().into_owned());
+                (name.to_string_lossy().into_owned(), value)
+            })
+            .collect();
+        let lookup = |name: &str| {
+            envs.iter()
+                .find(|(env_name, _)| env_name == name)
+                .map(|(_, value)| value.as_deref())
+        };
+        assert!(
+            lookup("GIT_DIR") == Some(None),
+            "invalid GIT_DIR env should be removed",
+        );
+        assert!(
+            lookup("GIT_INDEX_FILE") == Some(None),
+            "invalid GIT_INDEX_FILE env should be removed",
+        );
+        assert!(
+            lookup("GIT_COMMON_DIR") == Some(None),
+            "invalid GIT_COMMON_DIR env should be removed",
+        );
+        // Valid env values are inherited from the process; `clear_invalid_git_plumbing_env`
+        // intentionally does nothing for them, so they do NOT appear as explicit
+        // modifications on the `Command` (i.e. `get_envs()` will not return an entry
+        // for them at all). The correct assertion is that the valid value was NOT
+        // explicitly removed (which would appear as `Some(None)` in `get_envs()`).
+        assert!(
+            !matches!(lookup("GIT_WORK_TREE"), Some(None)),
+            "valid GIT_WORK_TREE should not be explicitly removed from the command env",
+        );
     }
 
     // ---- URL detection ----
