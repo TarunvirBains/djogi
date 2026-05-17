@@ -482,6 +482,7 @@ fn emit_add_table(t: &TableSchema) -> OperationSql {
     try_emit_add_table(t).expect("test fixture storage_params should be valid")
 }
 
+#[allow(clippy::result_large_err)]
 fn try_emit_add_table(t: &TableSchema) -> Result<OperationSql, SqlEmitError> {
     let qt = quote_ident(&t.table);
     let mut up = String::with_capacity(256);
@@ -1375,11 +1376,13 @@ fn emit_set_table_comment(table: &str, from: Option<&str>, to: Option<&str>) -> 
 
 /// Emit reversible `ALTER TABLE ... SET/RESET (...)` storage-parameter
 /// metadata changes. Phase 8.5 Cluster 4 (djogi#218).
+#[allow(clippy::result_large_err)]
 fn emit_set_storage_params(
     table: &str,
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<OperationSql, SqlEmitError> {
+    #[allow(clippy::result_large_err)]
     let render = |reset: Option<&str>, set: Option<&str>| -> Result<String, SqlEmitError> {
         let mut out = String::new();
         if let Some(params) = reset {
@@ -1414,6 +1417,7 @@ struct StorageParamEntry {
     value: String,
 }
 
+#[allow(clippy::result_large_err)]
 fn render_set_storage_params(table: &str, params: &str) -> Result<String, SqlEmitError> {
     let qt = quote_ident(table);
     let entries = parse_storage_params_for_sql(params)?;
@@ -1423,6 +1427,7 @@ fn render_set_storage_params(table: &str, params: &str) -> Result<String, SqlEmi
     ))
 }
 
+#[allow(clippy::result_large_err)]
 fn render_reset_storage_params(table: &str, params: &str) -> Result<String, SqlEmitError> {
     let qt = quote_ident(table);
     let entries = parse_storage_params_for_sql(params)?;
@@ -1434,6 +1439,7 @@ fn render_reset_storage_params(table: &str, params: &str) -> Result<String, SqlE
     Ok(format!("ALTER TABLE {qt} RESET ({keys});"))
 }
 
+#[allow(clippy::result_large_err)]
 fn parse_storage_params_for_sql(params: &str) -> Result<Vec<StorageParamEntry>, SqlEmitError> {
     parse_storage_params(params).map_err(|reason| SqlEmitError::InvalidStorageParams {
         params: params.to_string(),
