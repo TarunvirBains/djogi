@@ -39,9 +39,10 @@
 //! the first two; the raw-driver bypass is reached via
 //! [`RawPoolAccessExt::raw_with_client`](crate::__bypass::RawPoolAccessExt).
 //! `connect(url)` is preserved as sugar for
-//! `DjogiPool::builder(url).build().await`. An ergonomic adopter-public
-//! pool surface that does not pass through `RawPoolAccessExt` is
-//! upcoming Phase 8.5 Cluster 3 work (tracking issue: djogi#66).
+//! `DjogiPool::builder(url).build().await`. COPY, server-side cursors,
+//! and other direct-driver protocol operations intentionally remain behind
+//! the explicit [`RawPoolAccessExt::raw_with_client`](crate::__bypass::RawPoolAccessExt)
+//! bypass rather than a separate typed wrapper.
 //!
 //! # Where the `post_connect` hook fits in deadpool's lifecycle
 //!
@@ -237,6 +238,11 @@ impl DjogiPool {
     ///
     /// For tunable size, timeouts, or per-physical-connection setup use
     /// [`DjogiPool::builder`] instead.
+    ///
+    /// ```ignore
+    /// let pool = djogi::pg::pool::DjogiPool::connect(&database_url).await?;
+    /// let mut ctx = djogi::DjogiContext::from_pool(pool);
+    /// ```
     pub async fn connect(url: &str) -> Result<Self, DjogiError> {
         Self::builder(url).build().await
     }
@@ -246,8 +252,8 @@ impl DjogiPool {
     /// The URL format is the standard Postgres connection string, e.g.
     /// `postgres://user:pass@localhost:5432/dbname`.
     ///
-    /// The returned [`DjogiPoolBuilder`] exposes `.max_size` and
-    /// `.timeout`, finalised by `.build().await`.
+    /// The returned [`DjogiPoolBuilder`] exposes `.max_size`, `.timeout`,
+    /// and `.post_connect`, finalised by `.build().await`.
     ///
     /// ```ignore
     /// let pool = DjogiPool::builder("postgres://localhost/app")
@@ -328,6 +334,17 @@ impl DjogiPool {
     /// `available` (idle connections ready for checkout). The call is a
     /// cheap snapshot read — it does not lock the pool or block on
     /// in-flight checkouts.
+    ///
+    /// ```ignore
+    /// let status = pool.status();
+    /// tracing::info!(
+    ///     max_size = status.max_size,
+    ///     size = status.size,
+    ///     available = status.available,
+    ///     waiting = status.waiting,
+    ///     "pool snapshot",
+    /// );
+    /// ```
     pub fn status(&self) -> DjogiPoolStatus {
         DjogiPoolStatus::from_deadpool(self.inner.status())
     }
@@ -571,6 +588,13 @@ impl DjogiPoolBuilder {
     /// concurrent database-touching tasks, NOT your CPU count. A web
     /// server handling 200 concurrent requests that each issue 2-3
     /// sequential queries needs roughly 30-50 connections, not 8.
+    ///
+    /// ```ignore
+    /// let pool = djogi::pg::pool::DjogiPool::builder(&database_url)
+    ///     .max_size(20)
+    ///     .build()
+    ///     .await?;
+    /// ```
     pub fn max_size(mut self, value: usize) -> Self {
         self.max_size = value;
         self
@@ -589,6 +613,14 @@ impl DjogiPoolBuilder {
     /// `create` and `recycle` timeouts are independent and not exposed
     /// through this builder; they default to "no timeout" and are managed
     /// by deadpool internally.
+    ///
+    /// ```ignore
+    /// let pool = djogi::pg::pool::DjogiPool::builder(&database_url)
+    ///     .max_size(20)
+    ///     .timeout(std::time::Duration::from_secs(5))
+    ///     .build()
+    ///     .await?;
+    /// ```
     pub fn timeout(mut self, value: Duration) -> Self {
         self.wait_timeout = Some(value);
         self
@@ -640,7 +672,9 @@ impl DjogiPoolBuilder {
     /// considered failed: deadpool discards the connection and the
     /// originating `pool.get()` (or terminal query) returns the error
     /// wrapped in [`DjogiError`]. The hook can return `Err` to abort
-    /// startup when a required GUC fails to apply.
+    /// startup when a required GUC fails to apply. The implementation
+    /// prefixes hook failures with `post_connect:` so caller logs can
+    /// distinguish setup failures from ordinary checkout failures.
     ///
     /// # Sharing the closure
     ///
@@ -664,6 +698,18 @@ impl DjogiPoolBuilder {
     /// This constructs the deadpool pool eagerly — the `tokio` runtime
     /// must be available when `build` is awaited. The pool itself opens
     /// connections lazily on first checkout.
+    ///
+    /// ```ignore
+    /// let pool = djogi::pg::pool::DjogiPool::builder(&database_url)
+    ///     .max_size(10)
+    ///     .timeout(std::time::Duration::from_secs(3))
+    ///     .post_connect(|client| Box::pin(async move {
+    ///         client.batch_execute("SET application_name = 'djogi-app'").await?;
+    ///         Ok(())
+    ///     }))
+    ///     .build()
+    ///     .await?;
+    /// ```
     ///
     /// # Errors
     ///

@@ -352,4 +352,22 @@ should go through `RawPoolAccessExt::raw_with_client`. Its `WithClientGuard`
 bounds the protocol exchange to a single checkout and applies the same
 dirty-detach on dirty exit.
 
+## 10. Pool public surface and COPY/streaming boundary
+
+The public pool surface for v0.1 is:
+
+- `DjogiPool::builder(url)` for `max_size`, checkout `timeout`, and
+  per-physical-connection `post_connect` setup.
+- `DjogiPool::status()` for a Djogi-owned snapshot of pool counters.
+- `RawPoolAccessExt::raw_with_client` for the rare driver-level operations
+  that cannot be represented by `DjogiContext`.
+
+`raw_with_client` is the canonical public route for `COPY FROM STDIN`,
+`COPY TO STDOUT`, server-side cursor protocol work, cold-start
+`CREATE EXTENSION`, and third-party helpers that require a
+`&tokio_postgres::Client`. These use cases stay behind the explicit raw
+bypass attribute and `JUSTIFICATION` comment. A typed `Model::copy_from` or
+`QuerySet::stream` wrapper would be new typed API surface and requires a
+separate design amendment; it is not implied by the pool builder surface.
+
 Tracking issue: [djogi#162](https://github.com/TarunvirBains/djogi/issues/162).

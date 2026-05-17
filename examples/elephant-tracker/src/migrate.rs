@@ -8,9 +8,11 @@
 //! HeeRanjID + PostGIS + node-id GUC install path matches what
 //! `db reset` and `migrations apply` use:
 //!
-//! 1. [`djogi::migrate::bootstrap::run_phase_zero`] installs HeeRanjID,
-//!    PostGIS, and the node-id GUC in a single batch — the same code
-//!    path adopters and the test harness hit.
+//! 1. The same HeeRanjID SQL blobs as Djogi's Phase 0 bootstrap install
+//!    the id-generation schema, seed the default node, and install
+//!    PostGIS. The session-level node GUC is handled by the pool
+//!    `post_connect` hook in `main.rs`, so the example does not need
+//!    `ALTER DATABASE` privileges.
 //! 2. Drops + recreates every example table through `ctx.raw_*`. (This
 //!    is the leftover raw-DDL path Track A will replace with descriptor-
 //!    driven `migrations apply`; Track 0 deliberately does NOT touch it.)
@@ -20,19 +22,17 @@
 //!
 //! # Why `pool.raw_with_client` is the bridge
 //!
-//! `bootstrap::run_phase_zero` takes a `&tokio_postgres::GenericClient`
-//! and runs the install batch in one round-trip.
-//! `RawPoolAccessExt::raw_with_client` is the
-//! documented escape hatch for raw-driver operations — it borrows a
-//! `&mut tokio_postgres::Client` for the closure's duration and
-//! returns the connection to the pool on `Ok` (or detaches on
-//! `Err`/panic to prevent session-state leakage). The inherent
-//! `DjogiPool::with_client` method is `pub(crate)`; example/adopter
-//! code reaches the same behaviour through the sealed
-//! `RawPoolAccessExt` bypass trait, injected by the explicit raw-SQL
-//! bypass attribute. The migrate path uses the same pool the rest
-//! of the example uses — no one-shot connections, no manual
-//! driver-task spawn.
+//! The bootstrap batch needs a direct driver client for extension and
+//! schema DDL. `RawPoolAccessExt::raw_with_client` is the documented
+//! escape hatch for raw-driver operations — it borrows a `&mut
+//! tokio_postgres::Client` for the closure's duration and returns the
+//! connection to the pool on `Ok` (or detaches on `Err`/panic to
+//! prevent session-state leakage). The inherent `DjogiPool::with_client`
+//! method is `pub(crate)`; example/adopter code reaches the same
+//! behaviour through the sealed `RawPoolAccessExt` bypass trait,
+//! injected by the explicit raw-SQL bypass attribute. The migrate path
+//! uses the same pool the rest of the example uses — no one-shot
+//! connections, no manual driver-task spawn.
 
 use anyhow::{Context, Result};
 use djogi::{DjogiContext, DjogiError};
@@ -74,29 +74,23 @@ pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
     Ok(())
 }
 
-/// Run Phase 0 bootstrap — HeeRanjID schema + PostGIS extension +
-/// node-id GUC seed — via Djogi's canonical
-/// [`djogi::migrate::bootstrap::run_phase_zero`].
+/// Run Phase 0 bootstrap — HeeRanjID schema/default-node seed plus
+/// PostGIS extension — through the example's pool.
 ///
-/// Track 0 (sub-step 0.4): pre-Track-0 this function was three
-/// separate hand-rolled installs (HeeRanjID schema, desc-support
-/// primitives, PostGIS, node-id GUC). Each step independently
-/// reproduced what the test harness was doing in
-/// `setup_test_db_with_extensions`. Routing through
-/// `bootstrap::run_phase_zero` collapses all of that into one call
-/// against the SAME bootstrap surface the test harness +
-/// `migrations compose` auto-emit + `db reset` replay all use.
+/// The production/test bootstrap surface still owns canonical Phase 0
+/// composition. The example deliberately avoids the database-level
+/// `ALTER DATABASE ... SET heer.node_id` part because runnable examples
+/// should work for roles that can create schema objects and extensions
+/// in a sandbox but do not own the database. The pool's `post_connect`
+/// hook in `main.rs` is the public per-connection setup surface and
+/// sets both HeeRanjID GUCs for every connection.
 ///
 /// `RawPoolAccessExt::raw_with_client` is the bridge:
 /// `bootstrap::run_phase_zero` takes a bare
 /// `&tokio_postgres::GenericClient` (since it predates any pool
 /// concept and operates outside `DjogiContext`'s ergonomics); the
 /// raw bypass borrows the pool's connection and hands it to the
-/// closure for the bootstrap's duration. The pool's `post_connect`
-/// hook (set in `main.rs`) handles the session-level `SET
-/// heer.node_id` for every connection going forward; `bootstrap`
-/// adds the database-level `ALTER DATABASE` so freshly-opened pool
-/// connections inherit the GUC even before `post_connect` fires.
+/// closure for the bootstrap's duration.
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#234): Phase 0 bootstrap requires direct pool/client access for extension and HeeRanjID installation.
 async fn install_phase_zero(ctx: &mut DjogiContext) -> Result<()> {
@@ -105,24 +99,12 @@ async fn install_phase_zero(ctx: &mut DjogiContext) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("migrate must be invoked against a pool-backed context"))?
         .clone();
 
-    let database_url =
-        std::env::var("DATABASE_URL").context("DATABASE_URL must be set for migrate")?;
-    let dbname = parse_database_name(&database_url)
-        .context("could not parse database name from DATABASE_URL")?;
-
-    let mut extensions = std::collections::BTreeSet::new();
-    extensions.insert("postgis".to_string());
-
     pool.raw_with_client(|client| {
         Box::pin(async move {
-            djogi::migrate::bootstrap::run_phase_zero(
-                client,
-                &dbname,
-                &extensions,
-                djogi::migrate::bootstrap::DEFAULT_NODE_ID,
-            )
-            .await
-            .map_err(|e| DjogiError::Validation(format!("phase 0 bootstrap: {e}")))?;
+            client
+                .batch_execute(&phase_zero_sql_without_database_guc())
+                .await
+                .map_err(DjogiError::from)?;
             Ok(())
         })
     })
@@ -131,22 +113,28 @@ async fn install_phase_zero(ctx: &mut DjogiContext) -> Result<()> {
     Ok(())
 }
 
-/// Extract the database name (the first path component) from a
-/// Postgres connection URL.
-///
-/// Done by hand — the no-regex rule applies even at the example layer
-/// — and limited to the slice of URL syntax the example actually
-/// emits. `postgres://<user>:<password>@<host>:<port>/<database>?...` is the only
-/// shape we accept.
-fn parse_database_name(url: &str) -> Option<String> {
-    let after_scheme = url.split_once("://")?.1;
-    let after_host = after_scheme.split_once('/')?.1;
-    let dbname = after_host.split(['?', '#']).next()?;
-    if dbname.is_empty() {
-        None
-    } else {
-        Some(dbname.to_string())
-    }
+fn phase_zero_sql_without_database_guc() -> String {
+    let mut sql = String::with_capacity(
+        heeranjid::postgres_schema::INSTALL_SQL.len()
+            + heeranjid::postgres_schema::DESC_FLIP_SQL.len()
+            + heeranjid::postgres_schema::DESC_GENERATORS_SQL.len()
+            + heeranjid::postgres_schema::BULK_BACKFILL_SQL.len()
+            + heeranjid::postgres_schema::SEED_SQL.len()
+            + 512,
+    );
+    sql.push_str("-- HeeRanjID base schema + functions (idempotent).\n");
+    sql.push_str(heeranjid::postgres_schema::INSTALL_SQL);
+    sql.push_str("\n\n-- HeeRanjID desc-flip primitives.\n");
+    sql.push_str(heeranjid::postgres_schema::DESC_FLIP_SQL);
+    sql.push_str("\n\n-- HeeRanjID single-row generators.\n");
+    sql.push_str(heeranjid::postgres_schema::DESC_GENERATORS_SQL);
+    sql.push_str("\n\n-- HeeRanjID migration-support procedures.\n");
+    sql.push_str(heeranjid::postgres_schema::BULK_BACKFILL_SQL);
+    sql.push_str("\n\n-- HeeRanjID default-node seed.\n");
+    sql.push_str(heeranjid::postgres_schema::SEED_SQL);
+    sql.push_str("\n\n-- PostGIS required by elephant-tracker spatial fields.\n");
+    sql.push_str("CREATE EXTENSION IF NOT EXISTS postgis;\n");
+    sql
 }
 
 /// Issue every `CREATE TABLE` + `CREATE INDEX` statement.
