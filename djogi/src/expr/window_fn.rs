@@ -464,7 +464,7 @@ define_window_rank_fn!(DenseRank, "DENSE_RANK", "dense_rank");
 /// to filter on the computed fraction:
 ///
 /// ```ignore
-/// // Bottom half of each region by amount.
+/// // Top half of each region by amount (ORDER BY amount DESC ⇒ rank 0 = highest).
 /// let rows = Sale::objects()
 ///     .annotate(|f| PercentRankWindow::new()
 ///         .partition_by(f.region_id())
