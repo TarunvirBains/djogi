@@ -2,13 +2,18 @@
 //
 // Pins the exact SQL emitter output for the two pg_trgm expression variants:
 //
-// 1. `explicit_pg_predicate().trgm_similar_to(pattern, threshold)` in a
-//    filter closure emits `WHERE similarity(<col>, $1) >= $2` with two bind
-//    parameters in order (pattern first, threshold second).
+// 1. `explicit_pg_predicate().trgm_similar_to(pattern)` in a filter closure
+//    emits `WHERE <col> % $1` — the indexable `%` operator form. The
+//    threshold for `%` is the session GUC `pg_trgm.similarity_threshold`
+//    (default 0.3), not a per-call bind parameter. This is the form the
+//    `gin_trgm_ops` / `gist_trgm_ops` opclasses actually accelerate.
 //
 // 2. `trgm_similarity(pattern)` as an Expr<f64> in `filter_expr` emits
 //    `similarity(<col>, $1)` as the SQL expression, which can be combined
-//    with comparison operators to produce full WHERE predicates.
+//    with comparison operators to produce full WHERE predicates with a
+//    per-query numeric threshold. The function-form predicate is NOT
+//    accelerated by the trgm opclasses (they target operators, not
+//    arbitrary `similarity(...)` comparisons).
 //
 // 3. Composed predicates number bind slots continuously across all leaves.
 //
@@ -16,7 +21,7 @@
 //    and `extension_dependency = Some("pg_trgm")` round-trips through the
 //    descriptor layer: the opclass and extension fields are preserved
 //    structurally (the migration emitter uses them to emit
-//    `CREATE INDEX ... USING GIN (col gin_trgm_ops)` and
+//    `CREATE INDEX ... USING gin ("col" gin_trgm_ops)` and
 //    `CREATE EXTENSION IF NOT EXISTS "pg_trgm"`).
 //
 // All assertions run against the SQL builder via `__sql_for_test` —
@@ -47,23 +52,32 @@ where
 // ── trgm_similar_to SQL shape ─────────────────────────────────────────────
 //
 // `trgm_similar_to` is a Postgres-extension predicate reached via
-// `f.col().explicit_pg_predicate().trgm_similar_to(pattern, threshold)`.
+// `f.col().explicit_pg_predicate().trgm_similar_to(pattern)`. It compiles to
+// the indexable `%` operator; the threshold is the session GUC
+// `pg_trgm.similarity_threshold` (not a per-call argument).
 
 #[test]
-fn trgm_similar_to_emits_similarity_gte_with_two_binds() {
+fn trgm_similar_to_emits_percent_operator_with_one_bind() {
     let sql = sql_of(|qs| {
         qs.filter(|f| {
             f.bio()
                 .explicit_pg_predicate()
-                .trgm_similar_to("machine learning", 0.3)
+                .trgm_similar_to("machine learning")
         })
     });
-    // Predicate form: similarity(<col>, $1) >= $2
+    // Operator form: <col> % $1 — what gin_trgm_ops / gist_trgm_ops accelerate.
     assert!(
-        sql.contains("similarity(bio, $1) >= $2"),
-        "expected `similarity(bio, $1) >= $2` in:\n{sql}"
+        sql.contains("bio % $1"),
+        "expected `bio % $1` in:\n{sql}"
     );
     assert!(sql.contains("WHERE"), "expected WHERE clause; got:\n{sql}");
+    // The function-form similarity(...) must NOT appear — that is the
+    // non-indexable score-expression path, accessed via trgm_similarity().
+    assert!(
+        !sql.contains("similarity("),
+        "trgm_similar_to must emit the `%` operator, not the function-form \
+         `similarity(...)` predicate; got:\n{sql}"
+    );
 }
 
 #[test]
@@ -72,29 +86,35 @@ fn trgm_similar_to_column_is_raw_identifier_not_quoted() {
         qs.filter(|f| {
             f.name()
                 .explicit_pg_predicate()
-                .trgm_similar_to("Alice", 0.5)
+                .trgm_similar_to("Alice")
         })
     });
     // Column must appear as a bare identifier, not single- or double-quoted.
     assert!(
-        sql.contains("similarity(name, $1)"),
+        sql.contains("name % $1"),
         "column must be a bare identifier; got:\n{sql}"
     );
 }
 
 #[test]
-fn trgm_similar_to_threshold_binds_as_second_param() {
-    // Verify the bind ordering: pattern → $1, threshold → $2.
+fn trgm_similar_to_binds_pattern_as_first_param() {
+    // Verify pattern lands at $1 (the predicate's only bind).
     let sql = sql_of(|qs| {
         qs.filter(|f| {
             f.bio()
                 .explicit_pg_predicate()
-                .trgm_similar_to("rust", 0.1)
+                .trgm_similar_to("rust")
         })
     });
     assert!(
-        sql.contains("$1) >= $2"),
-        "pattern must be $1 and threshold $2; got:\n{sql}"
+        sql.contains("% $1"),
+        "pattern must bind as $1; got:\n{sql}"
+    );
+    // Sanity: only one bind slot for a single trgm_similar_to predicate.
+    assert!(
+        !sql.contains("$2"),
+        "single trgm_similar_to predicate should produce exactly one bind \
+         (threshold is the session GUC, not a bind); got:\n{sql}"
     );
 }
 
@@ -103,6 +123,8 @@ fn trgm_similar_to_threshold_binds_as_second_param() {
 // `trgm_similarity` is a non-predicate SQL expression that returns `Expr<f64>`.
 // It is available directly on `DjogiField<M, String>` and can be composed
 // via the `Expr<T>` comparison API (`.eq`, `.gte`, `.gt`, `.lt`, `.lte`).
+// Used as the typed per-query numeric-threshold fallback — NOT index-
+// accelerated by the trgm opclasses.
 
 #[test]
 fn trgm_similarity_return_type_is_expr_f64() {
@@ -139,20 +161,58 @@ fn trgm_similarity_emits_similarity_in_filter_expr() {
 
 #[test]
 fn trgm_similar_to_plus_eq_filter_continues_bind_sequence() {
-    // filter(&) composes two predicates; the trgm predicate binds $1,$2
-    // and the equality filter binds $3. All three ordinals must appear.
+    // filter(&) composes two predicates; the trgm predicate binds $1
+    // (pattern only — threshold is the session GUC) and the equality
+    // filter binds $2. Both ordinals must appear.
     let sql = sql_of(|qs| {
         qs.filter(|f| {
             f.bio()
                 .explicit_pg_predicate()
-                .trgm_similar_to("rust", 0.3)
+                .trgm_similar_to("rust")
                 & f.name().eq("Alice".to_string())
         })
     });
-    // Three distinct bind slots must be present.
+    // Two distinct bind slots ($1 for trgm pattern, $2 for the eq value).
     assert!(
-        sql.contains("$1") && sql.contains("$2") && sql.contains("$3"),
-        "expected three bind slots ($1, $2, $3) for composed predicates; got:\n{sql}"
+        sql.contains("$1") && sql.contains("$2"),
+        "expected two bind slots ($1, $2) for composed predicates; got:\n{sql}"
+    );
+    // The trgm predicate is the `%` operator form, not the function form.
+    assert!(
+        sql.contains("bio % $1"),
+        "trgm leaf must emit `bio % $1`; got:\n{sql}"
+    );
+}
+
+#[test]
+fn trgm_similar_to_plus_filter_expr_threshold_compose_distinct_binds() {
+    // Pairs the indexable `%` predicate with a tighter numeric threshold
+    // via filter_expr. Both leaves bind the pattern (a deliberate
+    // re-bind — different conjuncts, no caller-side dedup yet), so the
+    // SQL contains three distinct bind slots and both shapes are emitted.
+    let sql = sql_of(|qs| {
+        qs.filter(|f| {
+            f.bio()
+                .explicit_pg_predicate()
+                .trgm_similar_to("rust")
+        })
+        .filter_expr(|f| {
+            f.bio()
+                .trgm_similarity("rust")
+                .gte(Expr::literal(0.5_f64))
+        })
+    });
+    assert!(
+        sql.contains("bio % $1"),
+        "first conjunct must be the `%` operator form; got:\n{sql}"
+    );
+    assert!(
+        sql.contains("similarity(bio, $2)"),
+        "second conjunct must be the function-form `similarity(...)`; got:\n{sql}"
+    );
+    assert!(
+        sql.contains(">= $3"),
+        "threshold must bind as $3; got:\n{sql}"
     );
 }
 

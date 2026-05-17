@@ -438,20 +438,29 @@ pub(crate) enum ExprNode {
     },
 
     // ── pg_trgm (gated on `trgm` feature) ──────────────────────────────────
-    /// `similarity(col, $pattern) >= $threshold` — trigram similarity
-    /// predicate from the `pg_trgm` Postgres extension.
+    /// `<col> % $pattern` — trigram similarity predicate from the
+    /// `pg_trgm` Postgres extension.
     ///
-    /// Evaluates the `similarity()` function (returns a value in
-    /// `[0.0, 1.0]`) and compares the result against a caller-supplied
-    /// threshold. The expression evaluates to `boolean`, so it fits into
+    /// The `%` operator returns `true` when the two operands' trigram
+    /// similarity meets or exceeds the session GUC
+    /// `pg_trgm.similarity_threshold` (Postgres default `0.3`). It is the
+    /// indexable strategy member of the `gin_trgm_ops` and `gist_trgm_ops`
+    /// opclasses — so the predicate is accelerated by any GIN or GiST
+    /// index built with one of those opclasses over the column. The
+    /// expression evaluates to `boolean`, so it fits into
     /// [`Condition::Expr(Expr<bool>)`][crate::query::condition::Condition::Expr].
     ///
-    /// Column name is validated at `FieldRef` construction via
-    /// `assert_plain_ident`. Both `pattern` and `threshold` are always
-    /// bound as positional parameters — no user text is interpolated into
-    /// the SQL fragment.
+    /// Adopters who need a per-query numeric threshold (instead of the
+    /// session GUC) use the score-expression form
+    /// [`TrgmSimilarityScore`][Self::TrgmSimilarityScore] composed inside
+    /// `filter_expr` via the `Expr<T>` comparison API. That form is
+    /// **not** accelerated by `gin_trgm_ops` / `gist_trgm_ops`.
     ///
-    /// Emitter renders: `similarity(<col>, $n) >= $m`
+    /// Column name is validated at `FieldRef` construction via
+    /// `assert_plain_ident`. The pattern is always bound as a positional
+    /// parameter — no user text is interpolated into the SQL fragment.
+    ///
+    /// Emitter renders: `<col> % $n`
     ///
     /// Gate: `#[cfg(feature = "trgm")]` — enable with
     /// `djogi = { features = ["trgm"] }`.
@@ -462,15 +471,23 @@ pub(crate) enum ExprNode {
         column: &'static str,
         /// Pattern string — bound as `$n`, never interpolated into SQL.
         pattern: String,
-        /// Minimum similarity threshold (0.0–1.0) — bound as `$m`.
-        threshold: f64,
     },
 
     /// `similarity(col, $pattern)` — trigram similarity score expression.
     ///
     /// Evaluates the `pg_trgm` `similarity()` function per row, returning
-    /// an `f64` in `[0.0, 1.0]`. Useful in `order_by` for ranked results
-    /// or in `annotate` to surface the score as a named column.
+    /// an `f64` in `[0.0, 1.0]`. Useful as an input to `filter_expr` for
+    /// per-query numeric-threshold comparisons
+    /// (`expr.gte(Expr::literal(0.3_f64))`). Note that this function-form
+    /// comparison is **not** accelerated by `gin_trgm_ops` /
+    /// `gist_trgm_ops` — those opclasses target the operator family
+    /// (`%`, `<->`, …), not arbitrary `similarity(...)` >= comparisons.
+    /// For index-accelerated trgm scans, use
+    /// [`TrgmSimilarTo`][Self::TrgmSimilarTo].
+    ///
+    /// Wider `Expr<f64>` integration (using the score in `order_by` or
+    /// surfacing it via `annotate`) is a documented framework gap; see
+    /// `docs/guide/trgm.md` for the current limitations.
     ///
     /// Column name is validated at `FieldRef` construction; pattern is
     /// always bound as a positional parameter.

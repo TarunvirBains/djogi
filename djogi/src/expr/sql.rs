@@ -1114,25 +1114,33 @@ pub(crate) fn emit_expr(
 
         // ── pg_trgm (gated on `trgm` feature) ─────────────────────────────
         #[cfg(feature = "trgm")]
-        ExprNode::TrgmSimilarTo {
-            column,
-            pattern,
-            threshold,
-        } => {
-            // similarity(<col>, $n) >= $m
+        ExprNode::TrgmSimilarTo { column, pattern } => {
+            // <col> % $n
+            // The `%` operator is the indexable strategy member of
+            // `gin_trgm_ops` / `gist_trgm_ops`; emitting this form rather
+            // than `similarity(...) >= ...` is what makes a GIN/GiST
+            // trgm index actually accelerate the predicate. The
+            // threshold for `%` comes from the session GUC
+            // `pg_trgm.similarity_threshold` (default 0.3); per-query
+            // numeric thresholds go through `TrgmSimilarityScore`
+            // composed inside `filter_expr`.
+            //
             // column: validated identifier pushed as raw SQL.
             // pattern: user-supplied — always a bind parameter.
-            // threshold: f64 bound as positional parameter.
-            emit_trgm_similarity_prefix(acc, column);
+            acc.push_sql(column);
+            acc.push_sql(" % ");
             acc.push_bind(pattern.to_owned());
-            acc.push_sql(") >= ");
-            acc.push_bind(*threshold);
         }
         #[cfg(feature = "trgm")]
         ExprNode::TrgmSimilarityScore { column, pattern } => {
             // similarity(<col>, $n)
-            // Returns f64 per row — used in ORDER BY and annotate.
-            emit_trgm_similarity_prefix(acc, column);
+            // Returns f64 per row. Composed via the typed `Expr<T>`
+            // comparison API inside `filter_expr` for per-query numeric
+            // thresholds. NOT index-accelerated by the trgm opclasses —
+            // those target the operator family, not the function form.
+            acc.push_sql("similarity(");
+            acc.push_sql(column);
+            acc.push_sql(", ");
             acc.push_bind(pattern.to_owned());
             acc.push_sql(")");
         }
@@ -1179,24 +1187,6 @@ fn emit_ts(
     acc.push_sql("', ");
     acc.push_bind(query_text.to_owned());
     acc.push_sql(suffix);
-}
-
-/// Emit the opening fragment shared by both trgm expression variants:
-/// `similarity(<column>, `.
-///
-/// Both [`ExprNode::TrgmSimilarTo`] and [`ExprNode::TrgmSimilarityScore`]
-/// start with the same SQL prefix; the caller binds the pattern and appends
-/// the closing token(s) (`") >= $m"` or `")"`) after calling this helper.
-///
-/// `column` is a `&'static str` validated at `FieldRef` construction via
-/// `assert_plain_ident` — safe to push as a raw SQL token without quoting.
-///
-/// Gate: compiled only when `feature = "trgm"` is enabled.
-#[cfg(feature = "trgm")]
-fn emit_trgm_similarity_prefix(acc: &mut SqlAccumulator, column: &str) {
-    acc.push_sql("similarity(");
-    acc.push_sql(column);
-    acc.push_sql(", ");
 }
 
 /// Emit `<KEYWORD_OPENER>[DISTINCT ]<expr>)`.
