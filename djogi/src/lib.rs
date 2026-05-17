@@ -153,10 +153,10 @@ pub mod __private {
         /// `const COLUMNS`, `const COLUMN_LIST`, and an ordinal
         /// `from_pg_row` body guarded by per-column `debug_assert!`s.
         pub use crate::pg::decode::{
-            FromJoinedPgRow, FromPgRow, decode_at, decode_narrowed, decode_narrowed_by_name,
-            decode_narrowed_opt, decode_narrowed_opt_by_name, decode_opt_u64_from_decimal,
-            decode_opt_u64_from_decimal_by_name, decode_u64_from_decimal,
-            decode_u64_from_decimal_by_name, try_get_scalar,
+            FromJoinedPgRow, FromPgRow, decode_at, decode_derived_at, decode_narrowed,
+            decode_narrowed_by_name, decode_narrowed_opt, decode_narrowed_opt_by_name,
+            decode_opt_u64_from_decimal, decode_opt_u64_from_decimal_by_name,
+            decode_u64_from_decimal, decode_u64_from_decimal_by_name, try_get_scalar,
         };
         pub use ::postgres_types::{FromSql, ToSql, Type as PgType};
         pub use ::tokio_postgres::Row as PgRow;

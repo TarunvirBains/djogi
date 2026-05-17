@@ -455,10 +455,12 @@ pub(crate) fn projection_entries(ctx: &VisageEmitContext<'_>) -> Vec<(String, bo
     let scope = ctx.scope;
 
     let mut out: Vec<(String, bool, String)> = Vec::new();
-    // Framework columns — always present unless `pk = None` skips id.
-    if !matches!(model_attrs.pk, PkStrategy::None) {
-        out.push(("id".to_string(), false, "id".to_string()));
+    if matches!(model_attrs.pk, PkStrategy::None) {
+        return out;
     }
+
+    // Framework columns — present only for model-backed flat projections.
+    out.push(("id".to_string(), false, "id".to_string()));
     out.push(("created_at".to_string(), false, "created_at".to_string()));
     out.push(("updated_at".to_string(), false, "updated_at".to_string()));
 

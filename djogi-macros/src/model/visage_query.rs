@@ -203,8 +203,14 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
             .to_string();
         let alias_lit = &alias;
         let fname = &d.name;
+        let visage_name = visage_ident.to_string();
         decode_assignments.push(quote! {
-            #fname: ::djogi::__private::pg::decode_at::<_>(row, #idx, #alias_lit)?
+            #fname: ::djogi::__private::pg::decode_derived_at::<_>(
+                row,
+                #idx,
+                #visage_name,
+                #alias_lit,
+            )?
         });
         idx += 1;
     }
