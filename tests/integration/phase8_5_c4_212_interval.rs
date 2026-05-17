@@ -25,6 +25,12 @@
 //    emits the correct `SET duration = $1` clause, executing through the
 //    same `push_bind` path — pins the `UpdateAssignment` → `Interval`
 //    bind at SQL-execution level.
+// 7. **SQL `=` linearization.** `QuerySet::filter(|f| f.duration().eq(...))`
+//    forwards to Postgres `=`, which linearizes months as 30 days and
+//    days as 24 hours before comparing. `INTERVAL '1 month'` and
+//    `INTERVAL '30 days'` are equal in Postgres SQL even though Rust
+//    `PartialEq` says they are not. This test pins the deliberate
+//    divergence between Rust structural equality and Postgres SQL `=`.
 //
 // # No raw_execute required
 //
@@ -358,5 +364,134 @@ async fn interval_bulk_update_sets_duration(mut ctx: djogi::DjogiContext) {
     assert_eq!(
         fetched.duration, updated,
         "duration must reflect the bulk-updated value"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
+async fn interval_sql_eq_linearizes_months_and_days(mut ctx: djogi::DjogiContext) {
+    // This test pins the deliberate divergence between Rust structural
+    // `PartialEq` on `Interval` and Postgres SQL `=` on INTERVAL columns.
+    //
+    // Postgres linearizes INTERVAL before comparing: months are treated as
+    // 30 days, days as 24 hours (86,400,000,000 microseconds). As a result,
+    // `INTERVAL '1 month' = INTERVAL '30 days'` is true in Postgres SQL, while
+    // `Interval::months_only(1) == Interval::days_only(30)` is false in Rust.
+    //
+    // `QuerySet::filter(|f| f.duration().eq(...))` forwards to Postgres `=`
+    // and therefore follows Postgres linearization semantics. This test
+    // exercises both directions of that linearization and confirms the
+    // Rust-side structural inequality to make the divergence test-visible.
+
+    // Row A: stored as "1 month" in the months component.
+    Phase85C4212IntervalRow::create(
+        &mut ctx,
+        Phase85C4212IntervalRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            duration: Interval::months_only(1),
+            maybe_duration: None,
+            label: "one-month-row".into(),
+        },
+    )
+    .await
+    .expect("create one-month-row");
+
+    // Row B: stored as "30 days" in the days component.
+    Phase85C4212IntervalRow::create(
+        &mut ctx,
+        Phase85C4212IntervalRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            duration: Interval::days_only(30),
+            maybe_duration: None,
+            label: "thirty-days-row".into(),
+        },
+    )
+    .await
+    .expect("create thirty-days-row");
+
+    // Row C: control row with a clearly distinct duration (500 ms).
+    // Its presence ensures the queries below would fail if they returned
+    // "everything" instead of the linearization-matched rows only.
+    Phase85C4212IntervalRow::create(
+        &mut ctx,
+        Phase85C4212IntervalRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            duration: Interval::microseconds_only(500_000),
+            maybe_duration: None,
+            label: "control-row".into(),
+        },
+    )
+    .await
+    .expect("create control-row");
+
+    // Query 1: filter by Interval::months_only(1).
+    // Postgres SQL `=` linearizes 1 month → 30 days, so both "one-month-row"
+    // and "thirty-days-row" must match.
+    let results_by_month = Phase85C4212IntervalRow::objects()
+        .filter(|f| f.duration().eq(Interval::months_only(1)))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("filter by months_only(1) must execute without error");
+
+    let labels_by_month: std::collections::BTreeSet<String> =
+        results_by_month.into_iter().map(|r| r.label).collect();
+    assert_eq!(
+        labels_by_month,
+        ["one-month-row", "thirty-days-row"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<std::collections::BTreeSet<_>>(),
+        "filter by months_only(1) must match both the months row and the days row \
+         via Postgres SQL = linearization"
+    );
+
+    // Query 2: filter by Interval::days_only(30).
+    // Symmetric: 30 days linearizes identically, so the same two rows match.
+    let results_by_days = Phase85C4212IntervalRow::objects()
+        .filter(|f| f.duration().eq(Interval::days_only(30)))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("filter by days_only(30) must execute without error");
+
+    let labels_by_days: std::collections::BTreeSet<String> =
+        results_by_days.into_iter().map(|r| r.label).collect();
+    assert_eq!(
+        labels_by_days,
+        ["one-month-row", "thirty-days-row"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<std::collections::BTreeSet<_>>(),
+        "filter by days_only(30) must match the same two rows as months_only(1) \
+         via symmetric Postgres SQL = linearization"
+    );
+
+    // Query 3: filter by Interval::days_only(31).
+    // 31 days does not linearize to 30 days, so neither row matches.
+    let results_thirty_one = Phase85C4212IntervalRow::objects()
+        .filter(|f| f.duration().eq(Interval::days_only(31)))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("filter by days_only(31) must execute without error");
+
+    assert_eq!(
+        results_thirty_one.len(),
+        0,
+        "filter by days_only(31) must return zero rows — 31 days does not \
+         linearize to 30 days"
+    );
+
+    // Rust-side sanity: structural PartialEq deliberately diverges from
+    // Postgres SQL =. This assert documents that the divergence is intentional
+    // and catches any future accidental unification.
+    assert_ne!(
+        Interval::months_only(1),
+        Interval::days_only(30),
+        "Rust structural PartialEq must remain false for months_only(1) vs \
+         days_only(30) — the divergence from Postgres SQL = is intentional"
     );
 }

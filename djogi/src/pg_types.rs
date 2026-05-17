@@ -107,11 +107,36 @@ use std::error::Error;
 ///
 /// # Equality and ordering
 ///
-/// `Interval` derives `PartialEq` / `Eq` against the three component
-/// fields. Two intervals are equal iff every field matches — `1 month`
-/// and `30 days` are NOT equal even though they often render the same
-/// way to a human. This matches Postgres's structural-equality
-/// semantics for `INTERVAL` columns.
+/// ## Rust structural equality vs Postgres SQL `=`
+///
+/// **Rust `PartialEq` / `Eq` / `Hash` on `Interval` are structural.**
+/// All three component fields must match byte-for-byte.
+/// `Interval::months_only(1) == Interval::days_only(30)` is `false`
+/// in Rust — the two values differ in the `months` and `days` fields
+/// even if they nominally span "the same time" on most calendars.
+/// `Hash` follows the same structural rule (Rust convention: equal
+/// values must hash equal, and only structurally identical values are
+/// equal here), so Rust-side hashmap keying is structural, never
+/// linearized.
+///
+/// **Postgres SQL `=` on `INTERVAL` columns linearizes.**
+/// Postgres converts each component before comparing: months are
+/// treated as 30 days, and days are treated as 24 hours (86,400
+/// seconds = 86,400,000,000 microseconds). The comparison is then
+/// performed on the resulting total microsecond count. As a result,
+/// `INTERVAL '1 month' = INTERVAL '30 days'` is `true` in Postgres
+/// SQL.
+///
+/// **The practical implication for `QuerySet::filter`.** Calling
+/// `QuerySet::filter(|f| f.duration().eq(Interval::months_only(1)))`
+/// forwards to a Postgres `=` predicate, not to Rust `PartialEq`.
+/// Rows whose stored duration is `Interval::days_only(30)` (or any
+/// other combination that linearizes to 30 days × 86,400 s) will
+/// match — even though `Interval::months_only(1) !=
+/// Interval::days_only(30)` in Rust. Adopters who need only
+/// structurally identical rows to match must add a client-side filter
+/// after the fetch, or store the duration in a form that avoids
+/// cross-component ambiguity (e.g. always use `microseconds_only`).
 ///
 /// `Interval` does NOT implement `Ord` / `PartialOrd`: comparing
 /// `1 month` against `30 days` is intrinsically ambiguous (depends on
