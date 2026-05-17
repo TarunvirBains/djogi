@@ -182,15 +182,34 @@ pub mod __private {
     /// can slip in. The re-export through `__private` keeps the macro
     /// output routed through `::djogi::*` paths per
     /// `feedback_macro_path_routing.md`.
-    ///
-    /// Phase 8.5 #231 reconciliation: the [`DjogiVisage`](crate::DjogiVisage)
-    /// metadata trait carries a `type Model` associated item bound on
-    /// `M: Model` and is sealed via
-    /// `DjogiVisageOf<Self::Model>` (its supertrait). The single seal
-    /// covers both `DjogiVisageOf<M>` and `DjogiVisage` — no separate
-    /// metadata-only seal is needed.
     pub use crate::visage_boundary::DjogiVisageOf;
     pub use crate::visage_boundary::private::Sealed as VisageSealed;
+
+    /// Closed-world metadata seal for [`crate::DjogiVisage`] — Phase 8.5
+    /// issue #231 reconciliation.
+    ///
+    /// Distinct from `VisageSealed`: `VisageSealed<M>` carries a
+    /// reflexive `impl<M: Model> VisageSealed<M> for M` blanket so
+    /// `DjogiVisageOf<M>` accepts the model itself as a "degenerate
+    /// visage". That blanket made `DjogiVisageOf<Self::Model>` alone
+    /// **not** a closed-world gate on `DjogiVisage` — any
+    /// `MyModel: Model` could satisfy `DjogiVisageOf<MyModel>`
+    /// reflexively, allowing a hand-rolled
+    /// `impl DjogiVisage for MyModel { type Model = Self; ... }` to
+    /// fabricate a visage that never went through the `#[model]`
+    /// macro's emission path.
+    ///
+    /// `DjogiVisageSealed` plugs that gap: **no reflexive blanket**.
+    /// The single emitter is the `#[model]` proc macro, which
+    /// emits `impl ::djogi::__private::DjogiVisageSealed for {Visage}`
+    /// alongside the `DjogiVisage` trait impl. Hand-implementing
+    /// `DjogiVisageSealed` from downstream code is outside the
+    /// public contract — the `__private` re-export is the
+    /// convention-only seam (same boundary as `VisageSealed`,
+    /// `apps_seal`, `pk_seal`, and `hooks::__seal::Sealed`); we
+    /// reserve the right to break that code in any future release
+    /// without notice.
+    pub use crate::visage::private::Sealed as DjogiVisageSealed;
 
     /// Seal for macro-emitted [`DerivedParity`](crate::testing::DerivedParity)
     /// trait impls — Phase 8.5 issue #231 reconciliation. Adopters do

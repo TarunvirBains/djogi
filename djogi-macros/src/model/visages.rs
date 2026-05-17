@@ -584,10 +584,23 @@ fn emit_djogi_visage_impl(
         // so generic `V: DjogiVisage` consumers reach the source model
         // (and the source table via `<V::Model as
         // ::djogi::prelude::Model>::table_name()`) without threading
-        // the model in as a separate type parameter. The seal is the
-        // existing `DjogiVisageOf<#source>` impl emitted alongside the
-        // `{Visage}Fields` machinery in `visage_fields::expand` — no
-        // standalone metadata seal is required.
+        // the model in as a separate type parameter.
+        //
+        // GPT seal blocker fix — emit `DjogiVisageSealed` alongside
+        // the trait impl. The `DjogiVisageOf<Self::Model>` supertrait
+        // is satisfied reflexively for any `M: Model` (via the
+        // `impl<M: Model> DjogiVisageOf<M> for M` blanket on the
+        // pairing seal), so it cannot close the world on
+        // `DjogiVisage` by itself — a hand-rolled
+        // `impl DjogiVisage for MyModel { type Model = Self; ... }`
+        // would otherwise pass. The metadata-only `DjogiVisageSealed`
+        // supertrait has no reflexive blanket and is satisfied only
+        // by the impl below, so the closed-world gate now lives at
+        // the language level (modulo the documented `__private`
+        // convention boundary — same precedent as `VisageSealed`,
+        // `apps_seal`, `pk_seal`, and `hooks::__seal::Sealed`).
+        impl ::djogi::__private::DjogiVisageSealed for #proj_name {}
+
         impl ::djogi::DjogiVisage for #proj_name {
             type Model = #source;
             const SCOPE: &'static str = #scope;

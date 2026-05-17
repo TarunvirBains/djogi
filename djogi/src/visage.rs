@@ -13,6 +13,11 @@
 //!   Tier-2 predicate rendering) can read the projection shape —
 //!   and reach the source-model table via
 //!   `<V::Model as Model>::table_name()` — through a single bound.
+//!   Sealed against arbitrary downstream impls via the metadata
+//!   seal `private::Sealed` (re-exported as
+//!   `::djogi::__private::DjogiVisageSealed` for macro emission);
+//!   see the trait's own rustdoc for the convention-boundary
+//!   discussion.
 //! - [`projection::ProjectionEntry`] — sealed `__private` enum
 //!   discriminating column entries from derived-expression entries
 //!   inside `PROJECTIONS`. The `pub` visibility is mandated by the
@@ -216,19 +221,50 @@ use std::convert::Infallible;
 ///   scope.
 /// - `fn foo<V: DjogiVisage>(...)` — `V::Model` is reachable
 ///   internally, ergonomic when the caller only ever names the
-///   visage. The seal supertrait
-///   ([`DjogiVisageOf<Self::Model>`]) keeps the two spellings
-///   bound to the same closed set: every macro-emitted visage
-///   satisfies both, no downstream code can satisfy either.
+///   visage.
 ///
 /// The reflexive blanket
 /// `impl<M: Model> DjogiVisageOf<M> for M` lets the marker accept
-/// the model itself as a "degenerate visage"; no equivalent blanket
-/// exists for `DjogiVisage` — models have descriptors, not
-/// projections.
+/// the model itself as a "degenerate visage". That blanket is the
+/// reason `DjogiVisageOf<Self::Model>` alone is **not** a closed-
+/// world seal on `DjogiVisage` — any `M: Model` already satisfies
+/// `DjogiVisageOf<M>` reflexively, so a hand-rolled
+/// `impl DjogiVisage for MyModel { type Model = Self; ... }` would
+/// otherwise pass the pairing supertrait. The closed-world gate for
+/// `DjogiVisage` therefore lives on a separate metadata-only seal
+/// described in the next section; the `DjogiVisageOf<Self::Model>`
+/// supertrait stays because it carries the visage ↔ source-model
+/// pairing useful for generic code that only names `V`.
+///
+/// # Sealed via `private::Sealed` — metadata-only seal
+///
+/// `DjogiVisage` carries `private::Sealed` (module-private to
+/// [`crate::visage`]) as its second supertrait. Unlike the
+/// `visage_boundary::private::Sealed<M>` companion seal — which has
+/// a reflexive `impl<M: Model> Sealed<M> for M` blanket so models
+/// satisfy `DjogiVisageOf<Self>` "for free" — the metadata seal has
+/// **no reflexive blanket**. The single emitter is the `#[model]`
+/// proc macro, which routes through
+/// `::djogi::__private::DjogiVisageSealed` (the convention-boundary
+/// re-export) per the macro-path-routing convention.
+///
+/// **Seal-by-convention caveat.** Hand-implementing
+/// `djogi::__private::DjogiVisageSealed` from downstream code is
+/// outside the public contract; the framework reserves the right
+/// to break that code in any future release without notice. This
+/// matches the convention already established by `VisageSealed`,
+/// `__private::pk_seal`, and `hooks::__seal::Sealed` — Rust has no
+/// way to mark a trait "implementable only inside this crate"
+/// when its supertrait must be reachable from a separate proc-
+/// macro-emitting crate, and we accept the convention-level seal
+/// as the trade-off. The `__private` module's documented contract
+/// ("downstream code reaching in is breaking the framework
+/// boundary") is the line of conduct that the seal rests on.
 ///
 /// [`DjogiVisageOf<Self::Model>`]: crate::visage_boundary::DjogiVisageOf
-pub trait DjogiVisage: crate::visage_boundary::DjogiVisageOf<<Self as DjogiVisage>::Model> {
+pub trait DjogiVisage:
+    crate::visage_boundary::DjogiVisageOf<<Self as DjogiVisage>::Model> + private::Sealed
+{
     /// Source model the visage is a projection of. Every macro-emitted
     /// `impl DjogiVisage for {Visage}` sets `type Model = {Source}`
     /// where `{Source}` is the host `#[model]` struct. Generic code
@@ -305,14 +341,41 @@ pub trait DjogiVisage: crate::visage_boundary::DjogiVisageOf<<Self as DjogiVisag
     const PROJECTION_LIST: &'static str;
 }
 
-// Note: `DjogiVisage` is sealed via its
-// `DjogiVisageOf<Self::Model>` supertrait — the closed-world seal
-// already lives at `crate::visage_boundary::private::Sealed<M>`
-// (re-exported as `::djogi::__private::VisageSealed`) and is
-// satisfied only by macro-emitted `impl VisageSealed<Source> for
-// Visage` blocks. Carrying a separate metadata-only seal here would
-// duplicate that closure without buying anything — both surfaces
-// would gate on the same macro emission path.
+/// Closed-world metadata seal for [`DjogiVisage`].
+///
+/// Crate-private — adopter code cannot name
+/// `crate::visage::private::Sealed` directly. The single externally
+/// reachable path is `::djogi::__private::DjogiVisageSealed`
+/// (re-exported through the `#[doc(hidden)] __private` convention
+/// boundary), and macro-emitted code routes through that path per
+/// `feedback_macro_path_routing.md`. `pub(crate)` is the
+/// visibility floor `lib.rs` needs to `pub use`-route the trait
+/// through `__private` while keeping the `crate::visage::private`
+/// path itself non-public — `pub mod private` would expose a
+/// second public path; `mod private` would block the
+/// `pub use crate::visage::private::Sealed` re-export at the
+/// crate root.
+///
+/// Distinct from [`crate::visage_boundary::private::Sealed<M>`] (the
+/// pairing seal underneath `DjogiVisageOf<M>`): the pairing seal
+/// carries a reflexive `impl<M: Model> Sealed<M> for M` blanket so
+/// models satisfy "a visage of themselves" trivially. **This seal
+/// has no reflexive blanket** — only `#[model]`-emitted
+/// `impl DjogiVisageSealed for {Visage}` blocks satisfy it, which
+/// closes the convention-level gate against downstream code writing
+/// `impl DjogiVisage for MyModel { type Model = Self; ... }` to
+/// fabricate a visage that never went through the macro's emission
+/// path.
+pub(crate) mod private {
+    /// Closed-world metadata seal — only `#[model]`-emitted code
+    /// (routed through `::djogi::__private::DjogiVisageSealed`)
+    /// satisfies this trait. The module is `pub(crate)` so the
+    /// `__private` re-export can resolve from the crate root, but
+    /// downstream code cannot name `djogi::visage::private` from
+    /// outside the crate — the single externally reachable path
+    /// remains `::djogi::__private::DjogiVisageSealed`.
+    pub trait Sealed {}
+}
 
 /// Sealed projection metadata enum.
 ///
