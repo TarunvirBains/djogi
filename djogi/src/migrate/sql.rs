@@ -322,8 +322,8 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
             anchor,
         } => Ok(emit_add_enum_variant(enum_name, variant, anchor.as_ref())),
         // Phase 8.5 Cluster 4 djogi#217 — `COMMENT ON TABLE` lowering.
-        // The composer owns single-quote escaping inside the comment
-        // text via `escape_comment_literal`.
+        // The composer owns setting-independent SQL string rendering
+        // for the comment text.
         SchemaOperation::SetTableComment { table, from, to } => Ok(emit_set_table_comment(
             table,
             from.as_deref(),
@@ -532,14 +532,14 @@ fn try_emit_add_table(t: &TableSchema) -> Result<OperationSql, SqlEmitError> {
     // Phase 8.5 Cluster 4 djogi#217 — append `COMMENT ON TABLE …`
     // immediately after the `CREATE TABLE` statement when the
     // adopter declared `#[model(table_comment = "…")]`. The composer
-    // doubles single quotes inside the text via
-    // `escape_comment_literal` so apostrophes round-trip safely.
+    // renders the text through a setting-independent SQL string
+    // literal helper so apostrophes and backslashes round-trip safely.
     if let Some(comment) = t.table_comment.as_deref() {
         up.push('\n');
         let _ = write!(
             up,
-            "COMMENT ON TABLE {qt} IS '{}';",
-            escape_comment_literal(comment)
+            "COMMENT ON TABLE {qt} IS {};",
+            render_comment_literal(comment)
         );
     }
     // Phase 8.5 Cluster 4 djogi#217 — append `COMMENT ON COLUMN …`
@@ -975,10 +975,9 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
         // log line reads `AlterColumn {table}.{column} (set
         // COMMENT)` even though no `ALTER TABLE` is emitted.
         //
-        // The composer doubles single quotes inside the value via
-        // `escape_comment_literal`; the differ filters identical
-        // pairs upstream so `(None, None)` and `(Some(a), Some(a))`
-        // never reach this arm.
+        // The composer renders a setting-independent SQL string
+        // literal; the differ filters identical pairs upstream so
+        // `(None, None)` and `(Some(a), Some(a))` never reach this arm.
         ColumnChange::SetComment { from, to } => {
             let up = render_comment_on_column(table, column, to.as_deref());
             let down = render_comment_on_column(table, column, from.as_deref());
@@ -1345,7 +1344,7 @@ fn emit_move_model_between_apps(model: &str, from_app: &str, to_app: &str) -> Op
     }
 }
 
-/// Emit `COMMENT ON TABLE <qt> IS '<escaped-to>'` (or `IS NULL` when
+/// Emit `COMMENT ON TABLE <qt> IS E'<escaped-to>'` (or `IS NULL` when
 /// the comment is cleared), plus the symmetric down side restoring
 /// `from`. Phase 8.5 Cluster 4 (djogi#217).
 ///
@@ -1357,10 +1356,7 @@ fn emit_set_table_comment(table: &str, from: Option<&str>, to: Option<&str>) -> 
     let qt = quote_ident(table);
     let render = |value: Option<&str>| -> String {
         match value {
-            Some(text) => format!(
-                "COMMENT ON TABLE {qt} IS '{}';",
-                escape_comment_literal(text)
-            ),
+            Some(text) => format!("COMMENT ON TABLE {qt} IS {};", render_comment_literal(text)),
             None => format!("COMMENT ON TABLE {qt} IS NULL;"),
         }
     };
@@ -1630,7 +1626,7 @@ fn render_set_tablespace(table: &str, tablespace: Option<&str>) -> String {
     format!("ALTER TABLE {qt} SET TABLESPACE {qs};")
 }
 
-/// Emit `COMMENT ON COLUMN <qt>.<qc> IS '<escaped>'` (or `IS NULL`).
+/// Emit `COMMENT ON COLUMN <qt>.<qc> IS E'<escaped>'` (or `IS NULL`).
 /// Shared between [`emit_alter_column`]'s `SetComment` arm and the
 /// inline emission that follows `CREATE TABLE` / `ADD COLUMN` for
 /// fields that ship with `#[field(comment = "…")]` set on initial
@@ -1640,18 +1636,19 @@ fn render_comment_on_column(table: &str, column: &str, value: Option<&str>) -> S
     let qc = quote_ident(column);
     match value {
         Some(text) => format!(
-            "COMMENT ON COLUMN {qt}.{qc} IS '{}';",
-            escape_comment_literal(text)
+            "COMMENT ON COLUMN {qt}.{qc} IS {};",
+            render_comment_literal(text)
         ),
         None => format!("COMMENT ON COLUMN {qt}.{qc} IS NULL;"),
     }
 }
 
-/// Escape a Postgres SQL-literal string for inlining into a `'…'`
-/// literal under `standard_conforming_strings = on`. Doubles each
-/// apostrophe per the Postgres lexer rule
-/// ([§4.1.2.1](https://www.postgresql.org/docs/18/sql-syntax-lexical.html#SQL-SYNTAX-STRINGS)),
-/// which is the PG 18 default and the only mode djogi supports.
+/// Render a Postgres escape string literal (`E'…'`) for comment text.
+///
+/// `E'…'` has explicit backslash-escape semantics regardless of the
+/// session's `standard_conforming_strings` setting, so we double both
+/// apostrophes and backslashes before inlining adopter-provided comment
+/// text.
 ///
 /// **Scope.** Used by the `COMMENT ON` emission path (djogi#217) only.
 /// Every other adopter SQL path treats the value as raw SQL and does
@@ -1659,15 +1656,18 @@ fn render_comment_on_column(table: &str, column: &str, value: Option<&str>) -> S
 /// responsible for the SQL fragment's correctness themselves. The
 /// helper is scope-named so future callers cannot accidentally adopt it
 /// for raw-SQL paths.
-///
-/// **Legacy-mode caveat.** A target cluster set to
-/// `standard_conforming_strings = off` would interpret `\'` as the
-/// escape sequence and `''` as literal-doubled — but djogi targets
-/// PG 18+ only, where the parameter cannot be set off (the legacy
-/// option was removed in PG 14). The escape is correct everywhere
-/// djogi runs.
-fn escape_comment_literal(s: &str) -> String {
-    s.replace('\'', "''")
+fn render_comment_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 3);
+    out.push_str("E'");
+    for ch in s.chars() {
+        match ch {
+            '\'' => out.push_str("''"),
+            '\\' => out.push_str("\\\\"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('\'');
+    out
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -4031,11 +4031,11 @@ mod tests {
         assert!(sql.up.contains("CREATE TABLE \"widgets\""));
         assert!(
             sql.up
-                .contains("COMMENT ON TABLE \"widgets\" IS 'Widget owner''s table';")
+                .contains("COMMENT ON TABLE \"widgets\" IS E'Widget owner''s table';")
         );
         assert!(
             sql.up.contains(
-                "COMMENT ON COLUMN \"widgets\".\"name\" IS 'Human-readable widget name';"
+                "COMMENT ON COLUMN \"widgets\".\"name\" IS E'Human-readable widget name';"
             )
         );
         assert!(
@@ -4046,6 +4046,44 @@ mod tests {
             sql.up
                 .contains("ALTER TABLE \"widgets\" SET TABLESPACE \"fastspace\";")
         );
+    }
+
+    #[test]
+    fn table_comment_literal_escapes_backslash_quote_injection_fragments() {
+        let dangerous = r"ok\'; DROP TABLE audit_log; --";
+
+        let op = lower_operation(&SchemaOperation::SetTableComment {
+            table: "widgets".to_string(),
+            from: None,
+            to: Some(dangerous.to_string()),
+        })
+        .expect("table comment lower");
+
+        assert_eq!(
+            op.up,
+            r#"COMMENT ON TABLE "widgets" IS E'ok\\''; DROP TABLE audit_log; --';"#
+        );
+        assert_eq!(op.down, r#"COMMENT ON TABLE "widgets" IS NULL;"#);
+    }
+
+    #[test]
+    fn column_comment_literal_escapes_backslash_quote_injection_fragments() {
+        let dangerous = r"ok\'; DROP TABLE audit_log; -- owner's note";
+
+        let op = emit_alter_column(
+            "widgets",
+            "name",
+            &ColumnChange::SetComment {
+                from: None,
+                to: Some(dangerous.to_string()),
+            },
+        );
+
+        assert_eq!(
+            op.up,
+            r#"COMMENT ON COLUMN "widgets"."name" IS E'ok\\''; DROP TABLE audit_log; -- owner''s note';"#
+        );
+        assert_eq!(op.down, r#"COMMENT ON COLUMN "widgets"."name" IS NULL;"#);
     }
 
     #[test]
