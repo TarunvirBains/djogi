@@ -1087,7 +1087,12 @@ impl<M: Model> DjogiField<M, Option<crate::Interval>> {
     where
         I: IntoIterator<Item = crate::Interval>,
     {
-        self.sql.not_in_list(values)
+        let values = values.into_iter().collect::<Vec<_>>();
+        if values.is_empty() {
+            self.sql.is_not_null()
+        } else {
+            self.sql.not_in_list(values)
+        }
     }
 }
 
