@@ -213,6 +213,50 @@ async fn interval_null_round_trips_as_none(mut ctx: djogi::DjogiContext) {
 }
 
 #[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
+async fn interval_present_not_in_empty_excludes_null_rows(mut ctx: djogi::DjogiContext) {
+    Phase85C4212IntervalRow::create(
+        &mut ctx,
+        Phase85C4212IntervalRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            duration: Interval::days_only(1),
+            maybe_duration: Some(Interval::months_only(1)),
+            label: "present-duration".into(),
+        },
+    )
+    .await
+    .expect("create present nullable Interval row");
+
+    Phase85C4212IntervalRow::create(
+        &mut ctx,
+        Phase85C4212IntervalRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            duration: Interval::days_only(2),
+            maybe_duration: None,
+            label: "null-duration".into(),
+        },
+    )
+    .await
+    .expect("create null nullable Interval row");
+
+    let results = Phase85C4212IntervalRow::objects()
+        .filter(|f| f.maybe_duration().some().not_in(Vec::<Interval>::new()))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("empty present-only Interval NOT IN must execute");
+
+    assert_eq!(
+        results.len(),
+        1,
+        "empty present-only Interval NOT IN must preserve the IS NOT NULL guard"
+    );
+    assert_eq!(results[0].label, "present-duration");
+}
+
+#[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
 async fn interval_boundary_components_round_trip(mut ctx: djogi::DjogiContext) {
     let min_row = Phase85C4212IntervalRow::create(
         &mut ctx,
