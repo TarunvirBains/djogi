@@ -84,12 +84,12 @@ The derivation lives on the transport shape, not on the storage shape.
 The model still records both raw sites; each visage projects the
 unified single value.
 
-Today this is not constructible: visage emission projects only fields
-that carry `#[field(expose(...))]` on real model columns, and the
-existing model-side `#[computed(sql = "...")]` is a different concept
-(virtual column on the model, not a projection entry on a visage) that
-does not produce visage struct fields. This spec defines the surface
-that closes that gap.
+Phase 8.5 makes this constructible: visage emission projects both
+fields that carry `#[field(expose(...))]` on real model columns and
+struct-level `#[derived(...)]` entries scoped to generated visages.
+The existing model-side `#[computed(sql = "...")]` remains a
+different concept (virtual column on the model, not a projection
+entry on a visage) and does not produce visage struct fields.
 
 ---
 
@@ -106,27 +106,23 @@ Ownership is split cleanly between the two existing macro entry
 points:
 
 1. **`#[derive(Model)]` REGISTERS `derived` as a helper.** The
-   proc-macro derive declaration at `djogi-macros/src/lib.rs:110`
-   (currently `#[proc_macro_derive(Model, attributes(field))]`) must
-   be widened to
+   proc-macro derive declaration registers
    `#[proc_macro_derive(Model, attributes(field, derived))]`. This
    registration is purely a rustc-syntax-acceptance contract — it
    tells the compiler "this attribute is legal on a struct that
-   `#[derive(Model)]`." Without the registration, rustc rejects
-   `#[derived(...)]` as unknown before any macro expansion runs. The
-   derive itself remains a no-op stub at `djogi-macros/src/lib.rs:111`;
-   it does no parsing.
+   `#[derive(Model)]`." The derive itself remains a no-op stub; it
+   does no parsing.
 2. **`#[model(...)]` OWNS the parsing, validation, and stripping.**
    The `#[model(...)]` attribute macro at the entry point is the
    single site where `#[derived(...)]` attributes are walked,
    parsed, validated, and stripped from `item_struct.attrs` before
-   the struct is re-emitted. The stripping is new work (the existing
-   emitter strips `#[field(...)]` per-field attributes; struct-level
-   `#[derived]` stripping does not yet exist). Without stripping,
-   the surviving `#[derived(...)]` attribute would reach the user
-   crate's compiled output and trigger an "unknown attribute" error
-   downstream — rustc only recognises helper attributes within the
-   macro's expansion scope, not on the post-expansion item.
+   the struct is re-emitted. The emitted struct therefore contains
+   neither per-field `#[field(...)]` helper attributes nor
+   struct-level `#[derived(...)]` helper attributes. Without this
+   stripping, a surviving `#[derived(...)]` attribute would reach the
+   user crate's compiled output and trigger an "unknown attribute"
+   error downstream — rustc only recognises helper attributes within
+   the macro's expansion scope, not on the post-expansion item.
 
 In practice every Djogi model carries both `#[derive(Model)]` and
 `#[model(...)]`, so this split is invisible to adopters: the
@@ -659,7 +655,7 @@ The visage struct's declared field order **is** the projection order
 across both column references and derived entries. `VisageQuerySet`
 emits `PROJECTION_LIST` in struct-field order; `FromPgRow` decodes
 positionally in the same order. No per-entry ordinal field is needed
-because the descriptor's natural collection order is the
+because the macro's projection-entry collection order is the
 struct-field order.
 
 This is a behavior shift from the earlier draft that introduced
@@ -700,10 +696,9 @@ walkers — framework-side lints, debug formatters, and the future
 Tier-2 per-entry SQL renderer. It is **not** the surface
 documentation generators read: `ProjectionEntry::Derived` carries
 only `alias` + `sql`, which is insufficient to render a derived
-field's rustdoc (no `ty_path`, `rust`, or `doc`). Rustdoc reference
-tables and the `djogi docs` CLI consume the richer
-[`DerivedProjection`](#stage-2--descriptor-emission) entries collected
-through the separate `VisageDescriptor` inventory channel instead.
+field's rustdoc (no `ty_path`, `rust`, or `doc`). The richer public
+descriptor/inventory surface for documentation generators is
+deferred beyond Phase 8.5.
 The parity helper does **not** read `PROJECTIONS` either: it is
 emitted as an inherent method per visage with the derived-field set
 hard-coded at macro-expansion time — see [Test helper:
@@ -718,13 +713,8 @@ time — `PROJECTION_LIST` is the textual rendering of
 - `PROJECTIONS`: metadata. Walked by **framework-internal**
   consumers only — framework-side lints, debug formatters, and
   future Tier-2 per-entry SQL renderers; never on the queryset hot
-  path. Documentation generators (rustdoc reference tables, the
-  `djogi docs` CLI) read the richer
-  [`DerivedProjection`](#stage-2--descriptor-emission) entries
-  through the separate `VisageDescriptor` inventory channel — the
-  `ProjectionEntry::Derived { alias, sql }` shape exposed via
-  `PROJECTIONS` lacks the `ty_path` / `rust` / `doc` fields those
-  tools need.
+  path. It is not the public documentation descriptor surface; that
+  richer descriptor/inventory channel is deferred.
 
 A future feature (per-call SQL variation, e.g., a queryset method
 that disables a derived entry per request) would either require a
@@ -932,13 +922,12 @@ in-public-interface check. Source-model pairing therefore stays on
 metadata.
 
 Documentation generators (rustdoc reference tables, the `djogi docs`
-CLI) are **not** `DjogiVisage` consumers; they read the richer
-[`DerivedProjection`](#stage-2--descriptor-emission) entries through
-the separate `VisageDescriptor` inventory channel because
-`ProjectionEntry::Derived` carries only `alias` + `sql` (no `ty_path`
-/ `rust` / `doc`). The parity helper is also **not** a
-`DjogiVisage` consumer; it is emitted as an inherent method per
-visage with the derived-field set hard-coded at macro time.
+CLI) are **not** `DjogiVisage` consumers. Phase 8.5 does not ship the
+richer `VisageDescriptor` / `DerivedProjection` inventory surface;
+`ProjectionEntry::Derived` carries only `alias` + `sql` (no
+`ty_path` / `rust` / `doc`). The parity helper is also **not** a
+`DjogiVisage` consumer; it is emitted as an inherent method per visage
+with the derived-field set hard-coded at macro time.
 
 The `ProjectionEntry` discriminant is sealed off the public surface.
 
@@ -989,9 +978,9 @@ pub trait DjogiVisage: private::MetadataSealed {
     /// renderer. **Not** the surface documentation generators
     /// consume: `ProjectionEntry::Derived` carries only `alias` +
     /// `sql`, lacking the `ty_path` / `rust` / `doc` fields rustdoc
-    /// reference tables and the `djogi docs` CLI need. Those tools
-    /// read the richer [`DerivedProjection`] entries collected
-    /// through the separate `VisageDescriptor` inventory channel.
+    /// reference tables and the `djogi docs` CLI need. The richer
+    /// `VisageDescriptor` / `DerivedProjection` inventory channel is
+    /// deferred beyond Phase 8.5.
     /// The parity helper does not read this — it is emitted as an
     /// inherent method per visage with derived fields hard-coded at
     /// macro time. The queryset hot path uses `PROJECTION_LIST`
@@ -1661,12 +1650,11 @@ issue or named future phase.
 8. **Derived-field migrations.** `#[derived]` entries are
    projection-only and never appear in `target/djogi_models.json` /
    the `ModelDescriptor` inventory channel that feeds `build.rs`.
-   Derived metadata lives on a separate `VisageDescriptor` inventory
-   surface (see [Stage 2](#stage-2--visage-side-descriptor-extension));
-   the migration differ consults only `ModelDescriptor`. The
-   structural separation is the guarantee — the migration differ
-   cannot accidentally observe derived entries because they are not in
-   the inventory it walks.
+   Derived entries are omitted from the migration inventory; the
+   migration differ consults only `ModelDescriptor`. The richer
+   `VisageDescriptor` inventory surface is deferred beyond Phase 8.5,
+   so the current guarantee is simpler: derived projection metadata is
+   never submitted to the storage-side inventory that migrations walk.
 
 ---
 
@@ -1678,22 +1666,18 @@ phase and not visible to adopters.
 
 ### Stage 1 — attribute parser and helper-attribute registration
 
-- **Register `derived` as a `Model`-derive helper attribute.** Update
-  the proc-macro declaration at `djogi-macros/src/lib.rs:110` from
-  `#[proc_macro_derive(Model, attributes(field))]` to
-  `#[proc_macro_derive(Model, attributes(field, derived))]`. Without
-  this widening, rustc rejects `#[derived(...)]` as unknown before
-  the macro expands and the parser never runs. See
+- **Register `derived` as a `Model`-derive helper attribute.** The
+  shipped proc-macro declaration is
+  `#[proc_macro_derive(Model, attributes(field, derived))]`. This
+  keeps `#[derived(...)]` legal during rustc syntax checking before
+  the macro expands. See
   [§Declaration](#derived-is-a-helper-attribute-not-an-attribute-macro).
 - **Strip `#[derived(...)]` from the re-emitted struct attributes.**
-  The macro expansion must filter every outer attribute whose
-  `path()` is `derived` out of `item_struct.attrs` before re-emitting
-  the struct. The existing emitter at `djogi-macros/src/lib.rs:104`
-  already strips `#[field(...)]` per-field attributes; struct-level
-  attribute stripping for `#[derived]` is new work and lives in this
-  stage. Without stripping, the helper attribute survives into the
-  user crate's compiled output and triggers an "unknown attribute"
-  diagnostic downstream.
+  The macro expansion filters every outer attribute whose `path()` is
+  `derived` out of `item_struct.attrs` before re-emitting the struct.
+  This mirrors the existing per-field `#[field(...)]` helper
+  stripping and prevents helper attributes from surviving into the
+  user crate's compiled output.
 - Add `#[derived(...)]` parser to `djogi-macros/src/model/attrs.rs`.
   The parser is invoked from the `#[model(...)]` attribute-macro
   expansion path (walking `item_struct.attrs` for outer attributes
@@ -1717,34 +1701,31 @@ phase and not visible to adopters.
 
 ### Stage 2 — visage-side descriptor extension
 
-Derived metadata must **not** appear on `ModelDescriptor` or in the
-`target/djogi_models.json` channel that feeds `build.rs` migrations
-(see [Non-goals item 8](#non-goals)). The metadata lives on a
-separate visage-side descriptor surface so the storage / projection
-boundary is mechanical, not convention-only.
+The richer visage-side descriptor surface is **deferred beyond Phase
+8.5**. Derived metadata still must **not** appear on
+`ModelDescriptor` or in the `target/djogi_models.json` channel that
+feeds `build.rs` migrations (see [Non-goals item 8](#non-goals)).
+Phase 8.5 keeps the storage / projection boundary by omitting derived
+projection metadata from the storage-side inventory altogether; the
+separate public descriptor/inventory API described here is future
+work, not shipped behavior.
 
-- **New: `VisageDescriptor`.** Add a `VisageDescriptor` struct to the
-  descriptor module — one descriptor per `(Model, scope)` pair the
-  macro emits. Fields:
+- **Deferred: `VisageDescriptor`.** A future phase may add a
+  `VisageDescriptor` struct to the descriptor module — one descriptor
+  per `(Model, scope)` pair the macro emits. Fields:
   - `model_name: &'static str`
   - `scope: &'static str`
   - `derived: &'static [DerivedProjection]`
 
-  The `derived` field is a `&'static` slice — not a `Vec` — because
-  `inventory::submit!` requires fully-static data and existing
-  descriptors in `djogi/src/descriptor.rs` follow this pattern
-  (cf. `ModelDescriptor::fields: &'static [FieldDescriptor]` at
-  `djogi/src/descriptor.rs:2053`, a slice of values not of
-  references). The macro emits the slice literally as
-  `&[DerivedProjection { ... }, ...]` at the submission site; no
-  allocation occurs. The descriptor is emitted via
-  `inventory::submit!` alongside `ModelDescriptor`, but populates a
-  **separate** inventory collection that the migration differ does
-  not consult.
-- **`DerivedProjection`.** Add the struct under the same module,
-  carrying the per-entry metadata for downstream consumers
-  (documentation generation, framework-side lints, debug formatting,
-  future Tier-2 predicate rendering):
+  The `derived` field should remain a `&'static` slice — not a
+  `Vec` — because `inventory::submit!` requires fully-static data and
+  existing descriptors in `djogi/src/descriptor.rs` follow this
+  pattern. If this API is introduced, it must populate a separate
+  inventory collection that the migration differ does not consult.
+- **Deferred: `DerivedProjection`.** A future phase may add the
+  struct under the same module, carrying the per-entry metadata for
+  downstream consumers (documentation generation, framework-side
+  lints, debug formatting, future Tier-2 predicate rendering):
 
   ```rust
   pub struct DerivedProjection {
@@ -1780,9 +1761,9 @@ boundary is mechanical, not convention-only.
   is a type with a `const` constructor usable in static contexts —
   `&'static str`, `Option<&'static str>` (`Some("...")` is `const`
   on every supported toolchain), and `&'static [&'static str]`. The
-  macro can therefore emit the entire `&'static [DerivedProjection]`
-  slice as a static-context expression at the `inventory::submit!`
-  site without runtime allocation:
+  future macro could therefore emit the entire
+  `&'static [DerivedProjection]` slice as a static-context expression
+  at the `inventory::submit!` site without runtime allocation:
 
   ```rust
   inventory::submit! {
@@ -1812,26 +1793,23 @@ boundary is mechanical, not convention-only.
   `Option<RelationKind>` etc., per `djogi/src/descriptor.rs:1491`);
   `DerivedProjection` inherits the convention rather than
   introducing a new pattern.
-- **Per-scope projection ordering.** Extend the per-scope visage
-  emission so each scope's projection list includes both column
-  entries (from `ModelDescriptor`'s field list) and derived entries
-  (from the matching `VisageDescriptor`) in struct-declaration order.
-  The macro merges the two at codegen time; no merged form is
-  serialized into either inventory.
+- **Deferred per-scope descriptor ordering.** When the descriptor
+  surface lands, each per-scope descriptor should preserve projection
+  order across column entries and derived entries without serializing
+  a merged storage/projection form into either inventory.
 - **`ModelDescriptor` stays pure storage.** No `derived` field is
   added to `ModelDescriptor`. Migration / snapshot / `build.rs` code
   paths see only storage-side metadata; derived entries are
   structurally invisible to them.
 
-The reason for option (a) — separate `VisageDescriptor` rather than
-adding `#[serde(skip)] derived: Vec<...>` to `ModelDescriptor` — is
-that the descriptor split mirrors the storage-vs-projection
+The reason to defer a separate `VisageDescriptor` rather than adding
+`#[serde(skip)] derived: Vec<...>` to `ModelDescriptor` remains the
+same: the descriptor split mirrors the storage-vs-projection
 separation the whole reshape establishes. A `#[serde(skip)]` field
-would compile but would leave a trap: any future descriptor consumer
-that walks the struct without `#[serde]` (e.g., a `Debug` printer or
-a hand-rolled walker) would see the derived entries and conflate them
-with storage metadata. The separate surface costs one extra struct
-but makes the boundary mechanical.
+would compile but would leave a trap for any future descriptor
+consumer that walks the struct without `#[serde]` (e.g., a `Debug`
+printer or a hand-rolled walker). A separate future surface keeps the
+boundary mechanical.
 
 ### Stage 3 — codegen: visage struct + trait
 
@@ -2135,7 +2113,7 @@ The prior draft's contributions that do not survive:
 - `#[computed(sql, expose)]` declaration site → replaced by
   `#[derived(scopes, sql, rust)]`.
 - `source_ordinal: u16` on descriptors → no longer needed
-  (struct-field order is the descriptor's natural collection order).
+  (struct-field order is the projection-entry collection order).
 - `pub enum VisageProjection` in the public surface → sealed under
   `__private` as `ProjectionEntry`.
 - "Column-only `COLUMNS` slice with `PROJECTION_LIST` as an additive

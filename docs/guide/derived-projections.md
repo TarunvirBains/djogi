@@ -73,7 +73,13 @@ for keeping them equivalent. Put the generated parity helper in tests
 for models where both paths matter:
 
 ```rust
-ConsignmentPublic::assert_derived_parity(&mut ctx, &consignment).await?;
+let in_memory: ConsignmentPublic = (&consignment).into();
+let from_db: ConsignmentPublic =
+    ConsignmentPublic::filter(|f| f.id().eq(consignment.id))
+        .fetch_one(&mut ctx)
+        .await?;
+
+in_memory.assert_derived_parity(&from_db)?;
 ```
 
 Parity failures surface from the helper as
