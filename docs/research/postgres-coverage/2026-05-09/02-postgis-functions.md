@@ -1,4 +1,4 @@
-> [Back to README](../../../ReadMe.MD)
+> [Back to README](../../../../ReadMe.MD)
 
 # PostGIS function coverage (2026-05-09)
 
@@ -25,7 +25,7 @@ shape escalates them:
 - `ST_Letters`
 - `ST_MakePointM`
 - `ST_MakeValid`, `ST_IsValidDetail`, `ST_IsValidReason`
-- Longer-tail clustering (`ST_ClusterDBSCAN`, `ST_ClusterKMeans`, `ST_ClusterWithin`)
+- Longer-tail clustering (`ST_ClusterKMeans`)
 - Coverage (`ST_CoverageUnion`, `ST_CoverageSimplify`, `ST_CoverageClean`)
 - Trajectory (`ST_IsValidTrajectory`, `ST_ClosestPointOfApproach`, `ST_CPAWithin`)
 - I/O (`ST_AsFlatGeobuf`, `ST_AsMARC21`, `ST_AsTWKB`, GeoHash variants,
