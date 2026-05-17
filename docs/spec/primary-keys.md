@@ -85,7 +85,17 @@ Node identity is environment-driven, not framework-driven:
 ```bash
 NODE_ID=1
 ```
-On startup, Djogi validates that `NODE_ID` exists in `heer_nodes` and fails fast if it does not. Nodes are treated as infrastructure — pinned per service instance, registered in `heer_nodes` as part of deployment.
+In multi-node deployments, provision each writer/service node in `heer_nodes`
+first, then run migration/app startup with the selected service's `NODE_ID`
+configured. Djogi validates that `NODE_ID` exists in `heer_nodes` on startup and
+fails fast if it does not.
+Nodes are treated as infrastructure — pinned per service instance, registered in
+`heer_nodes` as part of deployment.
+
+HeeRanjID deployment guidance currently lives in
+https://github.com/TarunvirBains/HeeRanjID/blob/main/sql/README.md; this issue tracks
+an explicit multi-node provisioning playbook:
+https://github.com/TarunvirBains/HeeRanjID/issues/49.
 Dynamic ephemeral nodes can lease/release IDs from `heer_nodes` using HeerId's session API:
 ```sql
 set_heer_node_id(node_id INTEGER);

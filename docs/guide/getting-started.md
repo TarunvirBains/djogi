@@ -142,6 +142,16 @@ timeout, per-connection setup hook, raw-client escape hatch — see the
 fine for the getting-started flow; production services tune through
 `DjogiPool::builder(url)` or `DjogiPool::from_database_config(&cfg.database)`.
 
+For multi-node deployments, provision and register each node in HeeRanjID
+first, then start the service with its selected `NODE_ID` and run
+`djogi` boot/migrations with that environment value set.
+Djogi checks this on startup and fails fast if the selected node is not
+registered.
+HeeRanjID deployment references are in
+https://github.com/TarunvirBains/HeeRanjID/blob/main/sql/README.md and
+the open sibling issue that tracks an explicit provisioning playbook:
+https://github.com/TarunvirBains/HeeRanjID/issues/49
+
 ---
 
 ## 4. Create the Table
