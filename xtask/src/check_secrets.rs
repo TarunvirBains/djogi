@@ -1228,15 +1228,15 @@ mod tests {
                 .map(|(_, value)| value.as_deref())
         };
         assert!(
-            !matches!(lookup("GIT_DIR"), Some(Some("(null)"))),
+            lookup("GIT_DIR") == Some(None),
             "invalid GIT_DIR env should be removed",
         );
         assert!(
-            !matches!(lookup("GIT_INDEX_FILE"), Some(Some("(null)"))),
+            lookup("GIT_INDEX_FILE") == Some(None),
             "invalid GIT_INDEX_FILE env should be removed",
         );
         assert!(
-            !matches!(lookup("GIT_COMMON_DIR"), Some(Some(""))),
+            lookup("GIT_COMMON_DIR") == Some(None),
             "invalid GIT_COMMON_DIR env should be removed",
         );
         // Valid env values are inherited from the process; `clear_invalid_git_plumbing_env`
