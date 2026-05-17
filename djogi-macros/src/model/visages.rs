@@ -406,10 +406,13 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
     // Phase 8.5 #231 — emit the `DjogiVisage` trait impl + the
     // `assert_derived_parity` inherent method, when applicable.
     let djogi_visage_impl = emit_djogi_visage_impl(ctx, &scoped_derived);
-    let parity_impl = if scoped_derived.is_empty() {
-        TokenStream::new()
+    let (parity_impl, visage_descriptor) = if scoped_derived.is_empty() {
+        (TokenStream::new(), TokenStream::new())
     } else {
-        emit_assert_derived_parity(proj_name, &scoped_derived)
+        (
+            emit_assert_derived_parity(proj_name, &scoped_derived),
+            emit_visage_descriptor(ctx, &scoped_derived),
+        )
     };
 
     quote! {
@@ -429,6 +432,8 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
         #djogi_visage_impl
 
         #parity_impl
+
+        #visage_descriptor
     }
 }
 
@@ -587,8 +592,10 @@ fn emit_djogi_visage_impl(
     }
 }
 
-/// Emit the `assert_derived_parity` inherent method on a visage. Only
-/// emitted when the visage has at least one derived entry in its scope.
+/// Emit the `assert_derived_parity` inherent method AND the parallel
+/// `impl DerivedParity for {Visage}` trait impl on a visage. Both are
+/// only emitted when the visage has at least one derived entry in its
+/// scope.
 ///
 /// Compares ONLY the derived fields between two pre-constructed
 /// visages; framework columns and storage columns are intentionally
@@ -599,6 +606,24 @@ fn emit_djogi_visage_impl(
 /// Emits a `where <Ty>: PartialEq` bound per distinct derived type so
 /// rustc's E0277 diagnostic anchors at the impl block (E_DJG_VDF_016
 /// per the spec) rather than at the inner `!=` token.
+///
+/// # Two surfaces, one body
+///
+/// - **Inherent method** — `visage.assert_derived_parity(&other)`
+///   resolves via Rust's inherent-method-first method resolution. No
+///   trait import required at the call site; this is the ergonomic
+///   shape integration tests use.
+/// - **Trait impl** — `impl ::djogi::testing::DerivedParity for V`
+///   carries the same body. Reachable from generic code that bounds
+///   `where V: DerivedParity` — required by the async
+///   [`::djogi::testing::assert_derived_parity_fetched`] free helper
+///   (Phase 8.5 #231 reconciliation: CTO-required async convenience).
+///
+/// Method resolution in Rust prefers inherent methods over trait
+/// methods for unqualified calls (`v.foo()`); the trait method is
+/// reachable through generic bounds. Both surfaces share the same
+/// comparison body, so adopters never see different behaviour
+/// depending on which surface they reach.
 fn emit_assert_derived_parity(
     proj_name: &syn::Ident,
     scoped_derived: &[&DerivedAttr],
@@ -662,7 +687,14 @@ fn emit_assert_derived_parity(
          absence of an auto-derived `PartialEq` on visages)."
     );
 
+    // The seal-only supertrait impl carries no body; the constraint
+    // ladder it satisfies lives entirely on `DerivedParitySealed`'s
+    // own definition site. The trait impl below carries the same
+    // `where` bounds as the inherent so the `<Ty>: PartialEq`
+    // diagnostic anchors at one stable site (E_DJG_VDF_016).
     quote! {
+        impl ::djogi::testing::private::DerivedParitySealed for #proj_name {}
+
         impl #proj_name #where_clause {
             #[doc = #doc]
             pub fn assert_derived_parity(
@@ -671,6 +703,122 @@ fn emit_assert_derived_parity(
             ) -> ::std::result::Result<(), ::djogi::testing::DerivedParityError> {
                 #(#comparisons)*
                 ::std::result::Result::Ok(())
+            }
+        }
+
+        impl ::djogi::testing::DerivedParity for #proj_name #where_clause {
+            fn assert_derived_parity(
+                &self,
+                other: &Self,
+            ) -> ::std::result::Result<(), ::djogi::testing::DerivedParityError> {
+                #(#comparisons)*
+                ::std::result::Result::Ok(())
+            }
+        }
+    }
+}
+
+/// Emit one `inventory::submit!(VisageDescriptor { ... })` block for the
+/// `(Source, Scope)` pair when at least one derived entry is in scope —
+/// Phase 8.5 issue #231 reconciliation (BLOCK-1).
+///
+/// Structurally separate from the [`ModelDescriptor`] inventory the
+/// migration differ walks: registers against
+/// [`::djogi::descriptor::VisageDescriptor`]'s own
+/// `inventory::collect!` collection, which migration / snapshot /
+/// `build.rs` paths never iterate. The boundary mirrors the storage-
+/// vs-projection split the rest of the visage-derived-fields surface
+/// establishes.
+///
+/// # Per-entry contents
+///
+/// - `name` — derived field name (the `name = ...` key).
+/// - `ty_path` — token-string rendering of the entry's `ty = ...`,
+///   captured via `quote! { #ty }.to_string()`. The exact text
+///   includes token-level whitespace (`"Option < String >"`) — that
+///   is the source spelling documentation generators want.
+/// - `sql` — adopter's SQL expression, verbatim.
+/// - `rust` — adopter's Rust expression source, verbatim.
+/// - `doc` — `Some("...")` when the entry declared `doc = "..."`,
+///   `None` otherwise. The macro emits `None` / `Some("...")`
+///   literally inside the const literal so the slice is fully
+///   `&'static`.
+/// - `scopes` — every scope the entry was declared against, in
+///   source order.
+fn emit_visage_descriptor(
+    ctx: &VisageEmitContext<'_>,
+    scoped_derived: &[&DerivedAttr],
+) -> TokenStream {
+    // Bail early if this scope's visage is not flat-projected. Same
+    // gate the `DjogiVisage` trait impl uses — a relation-embed
+    // visage has no flat SELECT shape, so a per-`(Model, scope)`
+    // descriptor of its derived entries would describe a projection
+    // that does not exist.
+    let entries = projection_entries(ctx);
+    if entries.is_empty() {
+        return TokenStream::new();
+    }
+    if matches!(ctx.model_attrs.pk, PkStrategy::None) {
+        return TokenStream::new();
+    }
+
+    let source_str = ctx.source.to_string();
+    let scope_str = ctx.scope;
+    let visage_str = ctx.visage_ident.to_string();
+
+    let derived_entry_lits: Vec<TokenStream> = scoped_derived
+        .iter()
+        .map(|d| {
+            // The name on the wire / struct field side strips `r#`
+            // raw-prefix; the descriptor consumer expects the same
+            // shape `COLUMNS` / `PROJECTION_LIST` carry.
+            let raw_name = d.name.to_string();
+            let name_stripped = raw_name
+                .strip_prefix("r#")
+                .unwrap_or(raw_name.as_str())
+                .to_string();
+            // Render the `syn::Type` to a token-string. Token-level
+            // whitespace (`Option < String >`) is acceptable — this
+            // is documentation-consumer surface, not a re-parsed
+            // form.
+            let ty_path_str = {
+                let ty = &d.ty;
+                quote! { #ty }.to_string()
+            };
+            let sql_str = &d.sql;
+            let rust_str = &d.rust;
+            let doc_tokens = match &d.doc {
+                Some(s) => quote! { ::std::option::Option::Some(#s) },
+                None => quote! { ::std::option::Option::None },
+            };
+            let scope_lits: Vec<TokenStream> = d
+                .scopes
+                .iter()
+                .map(|s| {
+                    let k = s.key;
+                    quote! { #k }
+                })
+                .collect();
+            quote! {
+                ::djogi::descriptor::DerivedProjection {
+                    name:    #name_stripped,
+                    ty_path: #ty_path_str,
+                    sql:     #sql_str,
+                    rust:    #rust_str,
+                    doc:     #doc_tokens,
+                    scopes:  &[ #(#scope_lits),* ],
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        ::djogi::__private::inventory::submit! {
+            ::djogi::descriptor::VisageDescriptor {
+                model_name:  #source_str,
+                scope:       #scope_str,
+                visage_name: #visage_str,
+                derived:     &[ #(#derived_entry_lits),* ],
             }
         }
     }

@@ -697,8 +697,11 @@ Tier-2 per-entry SQL renderer. It is **not** the surface
 documentation generators read: `ProjectionEntry::Derived` carries
 only `alias` + `sql`, which is insufficient to render a derived
 field's rustdoc (no `ty_path`, `rust`, or `doc`). The richer public
-descriptor/inventory surface for documentation generators is
-deferred beyond Phase 8.5.
+descriptor/inventory surface for documentation generators ships
+alongside this trait in Phase 8.5 — see
+[Stage 2](#stage-2--visage-side-descriptor-inventory) for the
+`VisageDescriptor` / `DerivedProjection` shapes and their
+inventory-collection guarantees.
 The parity helper does **not** read `PROJECTIONS` either: it is
 emitted as an inherent method per visage with the derived-field set
 hard-coded at macro-expansion time — see [Test helper:
@@ -714,7 +717,9 @@ time — `PROJECTION_LIST` is the textual rendering of
   consumers only — framework-side lints, debug formatters, and
   future Tier-2 per-entry SQL renderers; never on the queryset hot
   path. It is not the public documentation descriptor surface; that
-  richer descriptor/inventory channel is deferred.
+  richer descriptor/inventory channel ships via `VisageDescriptor`
+  / `DerivedProjection` in
+  [Stage 2](#stage-2--visage-side-descriptor-inventory).
 
 A future feature (per-call SQL variation, e.g., a queryset method
 that disables a derived entry per request) would either require a
@@ -922,14 +927,23 @@ in-public-interface check. Source-model pairing therefore stays on
 metadata.
 
 Documentation generators (rustdoc reference tables, the `djogi docs`
-CLI) are **not** `DjogiVisage` consumers. Phase 8.5 does not ship the
-richer `VisageDescriptor` / `DerivedProjection` inventory surface;
-`ProjectionEntry::Derived` carries only `alias` + `sql` (no
-`ty_path` / `rust` / `doc`). The parity helper is also **not** a
-`DjogiVisage` consumer; it is emitted as an inherent method per visage
-with the derived-field set hard-coded at macro time.
+CLI) are **not** `DjogiVisage` consumers — they consume the richer
+[`VisageDescriptor`] / [`DerivedProjection`] inventory channel
+described in [Stage 2](#stage-2--visage-side-descriptor-inventory).
+`ProjectionEntry::Derived` carries only `alias` + `sql` on the
+runtime trait constant (the queryset hot path needs just those two
+fields); the richer per-entry metadata (`ty_path`, `rust`, `doc`,
+`scopes`) lives on `DerivedProjection` records collected through
+`inventory::iter::<VisageDescriptor>()`. The parity helper is also
+**not** a `DjogiVisage` consumer; it is emitted as an inherent
+method per visage (plus a parallel `DerivedParity` trait impl for
+generic dispatch) with the derived-field set hard-coded at macro
+time.
 
 The `ProjectionEntry` discriminant is sealed off the public surface.
+
+[`VisageDescriptor`]: ../../djogi/src/descriptor.rs
+[`DerivedProjection`]: ../../djogi/src/descriptor.rs
 
 ### Trait shape
 
@@ -979,16 +993,20 @@ pub trait DjogiVisage: private::MetadataSealed {
     /// consume: `ProjectionEntry::Derived` carries only `alias` +
     /// `sql`, lacking the `ty_path` / `rust` / `doc` fields rustdoc
     /// reference tables and the `djogi docs` CLI need. The richer
-    /// `VisageDescriptor` / `DerivedProjection` inventory channel is
-    /// deferred beyond Phase 8.5.
+    /// `VisageDescriptor` / `DerivedProjection` inventory channel
+    /// (see [Stage 2](#stage-2--visage-side-descriptor-inventory))
+    /// ships in Phase 8.5 alongside this trait — documentation
+    /// generators reach the richer shape through
+    /// `inventory::iter::<VisageDescriptor>()`.
     /// The parity helper does not read this — it is emitted as an
-    /// inherent method per visage with derived fields hard-coded at
-    /// macro time. The queryset hot path uses `PROJECTION_LIST`
-    /// instead. Adopters do not name
-    /// `ProjectionEntry` — the type is `pub` to satisfy the trait
-    /// constant's type, but lives under `__private` and carries the
-    /// "do-not-construct" convention warning matching
-    /// `__private::VisageSealed` and `__private::pk_seal`.
+    /// inherent method per visage (plus a parallel `DerivedParity`
+    /// trait impl) with derived fields hard-coded at macro time.
+    /// The queryset hot path uses `PROJECTION_LIST` instead.
+    /// Adopters do not name `ProjectionEntry` — the type is `pub` to
+    /// satisfy the trait constant's type, but lives under
+    /// `__private` and carries the "do-not-construct" convention
+    /// warning matching `__private::VisageSealed` and
+    /// `__private::pk_seal`.
     const PROJECTIONS: &'static [crate::__private::ProjectionEntry];
 
     /// Rendered SQL projection list rendered once at macro time:
@@ -1392,6 +1410,68 @@ async fn consignment_facility_site_parity(mut ctx: DjogiContext) {
 The helper is sync; the fetch is async. The helper does not
 re-introduce IO.
 
+### Two surfaces: inherent method + sealed trait
+
+The `#[model]` macro emits two parallel parity-comparison surfaces
+for every generated visage that has at least one derived entry in
+its scope:
+
+1. **Inherent `assert_derived_parity` method** — `visage.assert_derived_parity(&other)`
+   resolves via Rust's inherent-method-first method resolution.
+   This is the ergonomic shape integration tests use; no trait
+   import required at the call site.
+2. **`impl djogi::testing::DerivedParity for {Visage}`** — same
+   body, reachable from generic code that bounds
+   `where V: DerivedParity`. The trait is sealed
+   (`djogi::testing::private::DerivedParitySealed` is the empty
+   supertrait); only macro-emitted visages may satisfy it.
+
+Both surfaces share the same body and the same `where <Ty>: PartialEq`
+bound per distinct derived type. Method resolution prefers the
+inherent method for unqualified calls; the trait method is reachable
+through `<V as DerivedParity>::assert_derived_parity(...)` or
+generic bounds.
+
+### Async convenience: `assert_derived_parity_fetched`
+
+`djogi::testing::assert_derived_parity_fetched<V, Fetch, Fut>`
+wraps the **fetch + compare** workflow in one call:
+
+```rust
+use djogi::testing::{DerivedParity, assert_derived_parity_fetched};
+
+#[djogi::djogi_test(sync_models = [Consignment])]
+async fn parity_via_async_helper(mut ctx: DjogiContext) {
+    let inbound = Consignment::create(&mut ctx, /* ... */).await.unwrap();
+    let in_memory: ConsignmentPublic = (&inbound).into();
+    let target_id = inbound.id;
+
+    assert_derived_parity_fetched(&in_memory, || async {
+        ConsignmentPublic::filter(|f| f.id().eq(target_id))
+            .fetch_one(&mut ctx)
+            .await
+    })
+    .await
+    .unwrap();
+}
+```
+
+The helper takes the in-memory visage by reference and a fetch
+closure that returns `Future<Output = djogi::Result<V>>`. It awaits
+the fetch, lifts any `DjogiError` into
+`DerivedParityError::Fetch { source }`, and delegates to the
+`DerivedParity::assert_derived_parity` trait method on success. The
+closure parameter (rather than a fixed PK + queryset shape) keeps
+the helper independent of the per-visage filter entry points
+(which are inherent methods on each visage, not trait methods on
+`DjogiVisage`).
+
+The async helper is **additive** — the sync per-visage inherent
+method shape is unchanged. Tests that prefer the explicit
+two-step shape (`let from_db = …fetch_one…; in_memory.assert_derived_parity(&from_db)`)
+continue to work; the async helper is for adopters who prefer the
+single-call form.
+
 ### Why opt-in
 
 A blanket parity gate at test time would slow CI for adopters who
@@ -1427,24 +1507,35 @@ pub enum DerivedParityError {
         /// `"facility_site"`).
         field: &'static str,
     },
+
+    /// Produced only by the async `assert_derived_parity_fetched`
+    /// convenience helper when the fetch closure's future yields
+    /// `Err`. The sync per-visage inherent method (and the
+    /// `DerivedParity` trait impl) never returns this variant — they
+    /// re-introduce no IO.
+    #[error("derived parity fetch failed: {source}")]
+    Fetch {
+        #[source]
+        source: djogi::DjogiError,
+    },
 }
 ```
 
 The diagnostic carries the visage and field names as `&'static
 str` rather than `Debug`-rendered struct dumps. The macro-emitted
 inherent method short-circuits at the first mismatch, so a single
-`Drift` variant suffices — the adopter doesn't need to see *every*
-mismatched field to act, and the first-mismatch report keeps the
-error surface narrow. Adopters who want the full diff can call the
-method, observe the field name in the error, and `dbg!(&in_memory,
-&from_db)` to inspect.
+`Drift` variant suffices for the sync surface — the adopter doesn't
+need to see *every* mismatched field to act, and the first-mismatch
+report keeps the error surface narrow. Adopters who want the full
+diff can call the method, observe the field name in the error, and
+`dbg!(&in_memory, &from_db)` to inspect.
 
-The helper does no IO, so it surfaces no `DjogiError` or
-`VisageError` variants. Drift is the only failure mode it can
-produce. Future helper variants that *do* fetch (e.g.,
-`assert_derived_parity_fetched` that wraps the caller's "fetch +
-compare" pattern in one call) would add their own error variants
-when introduced.
+The `Fetch` variant is produced exclusively by the additive async
+`assert_derived_parity_fetched` helper described above. It wraps a
+`DjogiError` (typically `DjogiError::Db` from the underlying
+`fetch_one` call or `DjogiError::Visage` from a derived row-decode
+failure) and surfaces it via `#[source]` so test runners that walk
+`Error::source()` get the full cause chain.
 
 ---
 
@@ -1656,11 +1747,14 @@ issue or named future phase.
 8. **Derived-field migrations.** `#[derived]` entries are
    projection-only and never appear in `target/djogi_models.json` /
    the `ModelDescriptor` inventory channel that feeds `build.rs`.
-   Derived entries are omitted from the migration inventory; the
-   migration differ consults only `ModelDescriptor`. The richer
-   `VisageDescriptor` inventory surface is deferred beyond Phase 8.5,
-   so the current guarantee is simpler: derived projection metadata is
-   never submitted to the storage-side inventory that migrations walk.
+   The richer `VisageDescriptor` / `DerivedProjection` inventory
+   surface that documentation generators consume ships in Phase 8.5
+   (see [Stage 2](#stage-2--visage-side-descriptor-inventory)) but
+   registers against its own `inventory::collect!(VisageDescriptor)`
+   collection — structurally separate from the `ModelDescriptor` /
+   `EnumDescriptor` collections the migration differ walks. The
+   storage-vs-projection split is preserved: migration / snapshot /
+   `build.rs` paths never observe `VisageDescriptor` entries.
 
 ---
 
@@ -1705,40 +1799,46 @@ phase and not visible to adopters.
   strings, and bare identifiers. See the no-regex discipline in
   `feedback_no_regex_in_djogi.md`.
 
-### Stage 2 — visage-side descriptor extension
+### Stage 2 — visage-side descriptor inventory
 
-The richer visage-side descriptor surface is **deferred beyond Phase
-8.5**. Derived metadata still must **not** appear on
-`ModelDescriptor` or in the `target/djogi_models.json` channel that
-feeds `build.rs` migrations (see [Non-goals item 8](#non-goals)).
-Phase 8.5 keeps the storage / projection boundary by omitting derived
-projection metadata from the storage-side inventory altogether; the
-separate public descriptor/inventory API described here is future
-work, not shipped behavior.
+A separate visage-side descriptor inventory ships in Phase 8.5
+alongside the runtime trait surface. Derived metadata MUST NOT appear
+on `ModelDescriptor` or in the `target/djogi_models.json` channel
+that feeds `build.rs` migrations (see [Non-goals item 8](#non-goals));
+the storage / projection split is preserved by registering visage
+metadata against a SEPARATE inventory collection that the migration
+differ does not iterate.
 
-- **Deferred: `VisageDescriptor`.** A future phase may add a
-  `VisageDescriptor` struct to the descriptor module — one descriptor
-  per `(Model, scope)` pair the macro emits. Fields:
-  - `model_name: &'static str`
-  - `scope: &'static str`
-  - `derived: &'static [DerivedProjection]`
+- **Shipped: `VisageDescriptor`.** Lives at
+  `djogi::descriptor::VisageDescriptor` — one descriptor per
+  `(Model, scope)` pair the macro emits that has at least one
+  derived entry in scope. Fields:
+  - `model_name: &'static str` — source model type name.
+  - `scope: &'static str` — visage scope key
+    (`"public"` / `"self_view"` / `"admin"` / `"export"`).
+  - `visage_name: &'static str` — visage struct type name
+    (`"ConsignmentPublic"`).
+  - `derived: &'static [DerivedProjection]` — derived entries in
+    struct-field order.
 
-  The `derived` field should remain a `&'static` slice — not a
-  `Vec` — because `inventory::submit!` requires fully-static data and
-  existing descriptors in `djogi/src/descriptor.rs` follow this
-  pattern. If this API is introduced, it must populate a separate
-  inventory collection that the migration differ does not consult.
-- **Deferred: `DerivedProjection`.** A future phase may add the
-  struct under the same module, carrying the per-entry metadata for
-  downstream consumers (documentation generation, framework-side
-  lints, debug formatting, future Tier-2 predicate rendering):
+  The `derived` field is a `&'static` slice — not a `Vec` — because
+  `inventory::submit!` requires fully-static data, matching the
+  existing descriptors in `djogi/src/descriptor.rs`. Registers
+  against its own `inventory::collect!(VisageDescriptor)` collection,
+  structurally separate from `ModelDescriptor` /
+  `EnumDescriptor` / `AppDescriptor`; migration / snapshot /
+  `build.rs` paths walk only their respective collections and never
+  observe `VisageDescriptor` entries.
+- **Shipped: `DerivedProjection`.** Per-entry metadata for downstream
+  consumers (documentation generation, framework-side lints, debug
+  formatting, future Tier-2 predicate rendering):
 
   ```rust
   pub struct DerivedProjection {
       /// Output field name (the entry's `name = ...`).
       pub name: &'static str,
       /// Fully-qualified Rust type path for the output field, captured
-      /// as a string token stream (the entry's `ty = ...`). Kept as a
+      /// as a token-string (the entry's `ty = ...`). Kept as a
       /// `&'static str` rather than a structured representation because
       /// downstream consumers (rustdoc reference tables, the `djogi
       /// docs` CLI) want the source spelling, not a re-parsed form.
@@ -1767,16 +1867,17 @@ work, not shipped behavior.
   is a type with a `const` constructor usable in static contexts —
   `&'static str`, `Option<&'static str>` (`Some("...")` is `const`
   on every supported toolchain), and `&'static [&'static str]`. The
-  future macro could therefore emit the entire
-  `&'static [DerivedProjection]` slice as a static-context expression
-  at the `inventory::submit!` site without runtime allocation:
+  macro emits the entire `&'static [DerivedProjection]` slice as a
+  static-context expression at the `inventory::submit!` site without
+  runtime allocation:
 
   ```rust
   inventory::submit! {
       djogi::descriptor::VisageDescriptor {
-          model_name: "Consignment",
-          scope:      "public",
-          derived:    &[
+          model_name:  "Consignment",
+          scope:       "public",
+          visage_name: "ConsignmentPublic",
+          derived:     &[
               djogi::descriptor::DerivedProjection {
                   name:    "facility_site",
                   ty_path: "Site",
@@ -1799,23 +1900,27 @@ work, not shipped behavior.
   `Option<RelationKind>` etc., per `djogi/src/descriptor.rs:1491`);
   `DerivedProjection` inherits the convention rather than
   introducing a new pattern.
-- **Deferred per-scope descriptor ordering.** When the descriptor
-  surface lands, each per-scope descriptor should preserve projection
-  order across column entries and derived entries without serializing
-  a merged storage/projection form into either inventory.
+- **Per-scope descriptor emission.** The macro emits one
+  `inventory::submit!` block per `(Source, Scope)` pair for which
+  `scope_derived()` (the iterator over derived attributes whose
+  `scopes = [...]` includes `self.scope`) returns at least one
+  entry. Visages with no derived entries in scope do not get a
+  `VisageDescriptor` — there is nothing for the descriptor to
+  describe. `pk = None` source models are skipped (they have no
+  `Model::table_name()`, hence no SELECT projection).
 - **`ModelDescriptor` stays pure storage.** No `derived` field is
   added to `ModelDescriptor`. Migration / snapshot / `build.rs` code
   paths see only storage-side metadata; derived entries are
   structurally invisible to them.
 
-The reason to defer a separate `VisageDescriptor` rather than adding
-`#[serde(skip)] derived: Vec<...>` to `ModelDescriptor` remains the
-same: the descriptor split mirrors the storage-vs-projection
-separation the whole reshape establishes. A `#[serde(skip)]` field
-would compile but would leave a trap for any future descriptor
-consumer that walks the struct without `#[serde]` (e.g., a `Debug`
-printer or a hand-rolled walker). A separate future surface keeps the
-boundary mechanical.
+The reason for a separate `VisageDescriptor` (rather than adding
+`#[serde(skip)] derived: Vec<...>` to `ModelDescriptor`): the
+descriptor split mirrors the storage-vs-projection separation the
+whole reshape establishes. A `#[serde(skip)]` field would compile but
+would leave a trap for any future descriptor consumer that walks the
+struct without `#[serde]` (e.g., a `Debug` printer or a hand-rolled
+walker). The separate inventory channel keeps the boundary
+mechanical.
 
 ### Stage 3 — codegen: visage struct + trait
 

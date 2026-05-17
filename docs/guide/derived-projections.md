@@ -83,10 +83,58 @@ in_memory.assert_derived_parity(&from_db)?;
 ```
 
 Parity failures surface from the helper as
-`djogi::testing::DerivedParityError`. SQL parse and type problems that
-only the database can see surface when the visage queryset is fetched,
-usually as `DjogiError` wrapping the underlying database error or a
-`VisageError` variant.
+`djogi::testing::DerivedParityError::Drift { visage, field }`. SQL
+parse and type problems that only the database can see surface when
+the visage queryset is fetched, usually as `DjogiError` wrapping the
+underlying database error or a `VisageError` variant.
+
+### Async fetch + compare in one call
+
+The `assert_derived_parity` inherent method is sync and takes two
+pre-constructed visages. For the common "create the model, fetch
+the visage, compare to in-memory" pattern, reach for the additive
+async helper:
+
+```rust
+use djogi::testing::assert_derived_parity_fetched;
+
+let in_memory: ConsignmentPublic = (&consignment).into();
+let target_id = consignment.id;
+
+assert_derived_parity_fetched(&in_memory, || async {
+    ConsignmentPublic::filter(|f| f.id().eq(target_id))
+        .fetch_one(&mut ctx)
+        .await
+})
+.await?;
+```
+
+The helper takes the in-memory visage by reference and a closure
+that returns the fetch future. It awaits the fetch, lifts any
+`DjogiError` into `DerivedParityError::Fetch { source }`, and
+delegates to the sync per-visage method on success. Both surfaces
+share the same comparison body; pick whichever shape your test
+prefers.
+
+### Generic dispatch via `DerivedParity`
+
+Generic helpers that need to call `assert_derived_parity` against
+an unknown visage type bound on `djogi::testing::DerivedParity`:
+
+```rust
+use djogi::testing::DerivedParity;
+
+fn compare_pair<V: DerivedParity>(a: &V, b: &V)
+    -> Result<(), djogi::testing::DerivedParityError>
+{
+    a.assert_derived_parity(b)
+}
+```
+
+The trait is sealed (only macro-emitted visages may impl it) and
+its method body is identical to the per-visage inherent method.
+Rust's inherent-method-first resolution means `visage.assert_derived_parity(&other)`
+still resolves via the inherent method at unqualified call sites.
 
 ## Fallible Rust expressions
 
@@ -164,10 +212,22 @@ when the relation is absent.
 Declaring derived fields inside relation-form exposure grammar is not
 part of this tier. A derived field whose `scopes = [...]` overlaps a
 relation-form `#[field(expose(scope -> PeerVisage))]` on the same model
-is rejected with `E_DJG_VDF_010`. The richer public descriptor and
-inventory surface for documenting derived entries is also deferred; the
-current runtime metadata is intentionally limited to projection
-internals.
+is rejected with `E_DJG_VDF_010`.
+
+### Descriptor inventory
+
+Every `(Model, scope)` pair with at least one derived entry in scope
+emits a `djogi::descriptor::VisageDescriptor` into a separate
+inventory collection from `ModelDescriptor`. Documentation
+generators and framework-side lints walk that collection via
+`inventory::iter::<VisageDescriptor>()`. Each `VisageDescriptor`
+carries the `&'static [DerivedProjection]` slice with per-entry
+`ty_path` (token-string form of the `ty = ...` source spelling),
+`sql`, `rust`, optional `doc`, and the originating `scopes` list.
+The collection is structurally separate from `ModelDescriptor` and
+`EnumDescriptor`, so migration / snapshot / `build.rs` paths never
+observe derived projections — the storage-vs-projection split is
+mechanical, not conventional.
 
 ## Error locations
 

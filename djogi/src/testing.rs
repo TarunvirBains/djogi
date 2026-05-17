@@ -69,8 +69,8 @@ pub mod cli;
 /// Error returned by the per-visage `assert_derived_parity` inherent
 /// method emitted by `#[model]` — Phase 8.5 issue #231.
 ///
-/// The helper compares **only** the derived fields between two
-/// pre-constructed visages of the same type and returns
+/// The sync per-visage method compares **only** the derived fields
+/// between two pre-constructed visages of the same type and returns
 /// `DerivedParityError::Drift { visage, field }` on the first
 /// mismatch. Framework columns (`id`, `created_at`, `updated_at`)
 /// and storage columns are not compared — the lossy `DateTime`
@@ -108,6 +108,178 @@ pub enum DerivedParityError {
         /// `"facility_site"`).
         field: &'static str,
     },
+
+    /// The async [`assert_derived_parity_fetched`] convenience helper
+    /// failed during the fetch step.
+    ///
+    /// Wraps the underlying [`DjogiError`] — typically
+    /// [`DjogiError::Db`] (database / IO surface) or
+    /// [`DjogiError::Visage`] (a derived row-decode failure such as
+    /// [`crate::visage::VisageError::DbComputedNullForNonOptional`] or
+    /// [`crate::visage::VisageError::DbComputedTypeMismatch`]). The
+    /// `#[source]` annotation surfaces the inner error in
+    /// `std::error::Error::source()` so test runners that walk
+    /// `Error::source()` get the full cause chain.
+    ///
+    /// Only produced by the async helper; the sync per-visage
+    /// `assert_derived_parity` inherent method (and the
+    /// [`DerivedParity`] trait impl backing it) never returns this
+    /// variant.
+    #[error("derived parity fetch failed: {source}")]
+    Fetch {
+        /// The underlying fetch error.
+        #[source]
+        source: DjogiError,
+    },
+}
+
+/// Generic parity-comparison trait backing the per-visage
+/// `assert_derived_parity` inherent method — Phase 8.5 issue #231.
+///
+/// The `#[model]` macro emits two parallel surfaces for every
+/// generated visage that has at least one derived entry in its scope:
+///
+/// 1. An **inherent** `pub fn assert_derived_parity` method on the
+///    visage struct. This is the ergonomic call-site:
+///    `visage.assert_derived_parity(&other)` resolves to the
+///    inherent method directly, no trait import required.
+/// 2. A **trait impl** `impl DerivedParity for {Visage}` with an
+///    identical body. The trait method is reachable from generic
+///    code — any helper bounded `where V: DerivedParity` can call
+///    `v.assert_derived_parity(&other)` against an unknown visage
+///    type.
+///
+/// Both surfaces share the same body and the same `where Ty:
+/// PartialEq` bound per distinct derived type (so the diagnostic
+/// for [`E_DJG_VDF_016`] surfaces at the impl block, not at the
+/// inner `!=` site).
+///
+/// [E_DJG_VDF_016]: https://github.com/tarunvir/djogi/blob/main/docs/spec/visage-derived-fields.md#error-taxonomy
+///
+/// # Seal
+///
+/// `DerivedParity` is **sealed** — only macro-emitted visages may
+/// satisfy it. Adopter crates cannot implement the trait directly
+/// because the seal supertrait `__private::DerivedParitySealed`
+/// lives in a `#[doc(hidden)]` module. The seal exists for the same
+/// reason as `DjogiVisage::private::MetadataSealed`: the trait
+/// promise is "this is a macro-emitted projection-aware parity
+/// check," and a hand-written impl would defeat the contract.
+///
+/// # Sync surface
+///
+/// `DerivedParity` is intentionally **synchronous** — the
+/// comparison itself is in-memory. The async convenience that
+/// fetches a visage and then delegates to this trait lives at
+/// [`assert_derived_parity_fetched`].
+///
+/// # Visages without derived fields
+///
+/// Visages with **zero** derived entries in their scope do not get
+/// either the inherent method or the trait impl — there is nothing
+/// derived to compare, and a no-op impl would obscure that. The
+/// macro filters per-scope before emitting either surface.
+pub trait DerivedParity: private::DerivedParitySealed {
+    /// Compare the derived fields between `self` and `other`. Returns
+    /// `Err(DerivedParityError::Drift { ... })` on the first
+    /// mismatched derived field; framework columns and storage
+    /// columns are never compared.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(DerivedParityError::Drift)` on first mismatch.
+    /// Never returns `DerivedParityError::Fetch` — that variant is
+    /// reserved for the async fetching helper
+    /// [`assert_derived_parity_fetched`].
+    fn assert_derived_parity(&self, other: &Self) -> Result<(), DerivedParityError>;
+}
+
+/// Sealed seal-only module for [`DerivedParity`].
+#[doc(hidden)]
+pub mod private {
+    /// Empty supertrait satisfied only by macro-emitted visages.
+    /// Adopter code reaching in is breaking the framework boundary;
+    /// the framework reserves the right to evolve the seal shape
+    /// without notice. Same convention as `__private::VisageSealed`
+    /// and `__private::DjogiVisageSealed`.
+    pub trait DerivedParitySealed {}
+}
+
+/// Async convenience helper that fetches a visage via the caller's
+/// closure and then delegates to its [`DerivedParity::assert_derived_parity`]
+/// impl — Phase 8.5 issue #231.
+///
+/// This is the recommended shape for integration tests that want to
+/// assert in-memory ↔ from-DB parity in one call. The fetch step is
+/// async; the comparison is sync (no IO re-introduced); errors from
+/// either side surface as [`DerivedParityError`].
+///
+/// # Why a closure for the fetch
+///
+/// `VisageQuerySet` is the canonical fetch path, but its entry
+/// methods (`V::filter(|f| f.id().eq(pk))`) are emitted as **inherent
+/// methods on each visage type** — they are not part of the
+/// [`crate::DjogiVisage`] trait. A generic free helper cannot name
+/// those entry points directly without lifting them into a trait,
+/// which would couple [`crate::DjogiVisage`] (a pure metadata trait)
+/// to the queryset machinery. The closure parameter lets the caller
+/// build whatever fetch shape it needs — `V::filter(...).fetch_one(ctx)`,
+/// `V::limit(1).fetch_one(ctx)`, or even a hand-rolled fetch — and
+/// the helper handles the await + error-mapping + delegation
+/// uniformly.
+///
+/// # Generic bounds
+///
+/// - `V: DerivedParity` — the visage carries the trait impl
+///   (macro-emitted automatically when the visage has at least one
+///   derived field in scope).
+/// - `Fetch: FnOnce() -> Fut` — the fetch closure produces the
+///   `Future` lazily; the helper drives the await internally.
+/// - `Fut: Future<Output = crate::Result<V>>` — `crate::Result<V>`
+///   is the canonical `Result<V, DjogiError>` alias; the closure
+///   propagates `DjogiError` directly and the helper lifts it into
+///   [`DerivedParityError::Fetch`].
+///
+/// # Errors
+///
+/// - [`DerivedParityError::Fetch`] when the fetch closure's future
+///   yields `Err`.
+/// - [`DerivedParityError::Drift`] when the in-memory and fetched
+///   visages disagree on any derived field.
+///
+/// # Recommended usage
+///
+/// ```no_run
+/// use djogi::prelude::*;
+/// use djogi::testing::{DerivedParity, assert_derived_parity_fetched};
+///
+/// # async fn example<V, M>(
+/// #     ctx: &mut DjogiContext,
+/// #     in_memory: &V,
+/// #     fetch_one: impl FnOnce(&mut DjogiContext)
+/// #         -> std::pin::Pin<Box<dyn std::future::Future<Output = djogi::Result<V>> + Send + '_>>,
+/// # ) -> Result<(), djogi::testing::DerivedParityError>
+/// # where V: DerivedParity {
+/// // `fetch_one` typically wraps a `V::filter(|f| f.id().eq(pk)).fetch_one(ctx)` call.
+/// assert_derived_parity_fetched(in_memory, || fetch_one(ctx)).await
+/// # }
+/// ```
+///
+/// See [`DerivedParity`] for the sync per-visage method this helper
+/// delegates to.
+pub async fn assert_derived_parity_fetched<V, Fetch, Fut>(
+    in_memory: &V,
+    fetch: Fetch,
+) -> Result<(), DerivedParityError>
+where
+    V: DerivedParity,
+    Fetch: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = crate::Result<V>>,
+{
+    let from_db = fetch()
+        .await
+        .map_err(|source| DerivedParityError::Fetch { source })?;
+    in_memory.assert_derived_parity(&from_db)
 }
 
 use std::collections::{BTreeMap, BTreeSet};

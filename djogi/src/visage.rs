@@ -57,6 +57,123 @@ use std::convert::Infallible;
 ///   `VisageQuerySet` splices this directly into the SELECT slot at
 ///   query time.
 ///
+/// # Consignment walkthrough — Phase 8.5 #231
+///
+/// The motivating scenario from the spec: a `Consignment` model
+/// with three storage columns (`inbound_site`, `outbound_site`,
+/// `direction`) and one derived projection (`facility_site`) that
+/// picks between the two sites based on `direction`. The derived
+/// declaration is paired SQL + Rust — the SQL renders into the
+/// SELECT projection at query time; the Rust runs in-memory on
+/// `From<&Model>` construction. The parity helper catches drift
+/// between the two sides.
+///
+/// The example below covers one pass through `From<&Model>`, one
+/// pass through [`VisageQuerySet`](crate::query::VisageQuerySet)
+/// (in `# fn _fetch(...)` framing — the SQL execution is not run
+/// at doctest time; the integration test
+/// `phase8_5_visage_derived_projection.rs` exercises the live
+/// round-trip against Postgres), and one pass through the parity
+/// helper.
+///
+/// ```no_run
+/// use djogi::prelude::*;
+/// use djogi::testing::{DerivedParity, assert_derived_parity_fetched};
+/// use djogi::DjogiVisage;
+///
+/// #[model(table = "consignments_djogi_visage_doctest")]
+/// #[derive(Model, Debug, Clone, PartialEq)]
+/// #[derived(
+///     name   = facility_site,
+///     ty     = String,
+///     scopes = [public, admin, export],
+///     sql    = "CASE WHEN direction = 'inbound' \
+///                   THEN inbound_site \
+///                   ELSE outbound_site END",
+///     rust   = "if model.direction == \"inbound\" { \
+///                   model.inbound_site.clone() \
+///               } else { \
+///                   model.outbound_site.clone() \
+///               }",
+/// )]
+/// pub struct Consignment {
+///     #[field(expose(public, admin, export))]
+///     pub inbound_site: String,
+///     #[field(expose(public, admin, export))]
+///     pub outbound_site: String,
+///     #[field(expose(public, admin, export))]
+///     pub direction: String,
+/// }
+///
+/// // The trait constants are populated by the macro per visage scope.
+/// // `ConsignmentPublic` includes the derived `facility_site` because
+/// // its `scopes = [...]` list contains `public`.
+/// assert_eq!(<ConsignmentPublic as DjogiVisage>::SCOPE, "public");
+/// let columns = <ConsignmentPublic as DjogiVisage>::COLUMNS;
+/// assert_eq!(columns[columns.len() - 1], "facility_site");
+/// let pl = <ConsignmentPublic as DjogiVisage>::PROJECTION_LIST;
+/// assert!(pl.contains("AS facility_site"));
+///
+/// // The infallible `From<&Model>` builds the visage in-memory.
+/// // The adopter's `rust` expression evaluates verbatim with a
+/// // `let model: &Consignment = src;` rebind so `model.<field>`
+/// // resolves without retouching the emitter's `src` parameter.
+/// let row = Consignment {
+///     inbound_site: "FAC-1".to_string(),
+///     outbound_site: "WH-2".to_string(),
+///     direction: "inbound".to_string(),
+///     ..Default::default()
+/// };
+/// let in_memory: ConsignmentPublic = (&row).into();
+/// assert_eq!(in_memory.facility_site, "FAC-1");
+///
+/// // The fetch path — `ConsignmentPublic::filter(...).fetch_one(...)`.
+/// // Each visage emits its own queryset entry; the macro bakes the
+/// // rendered `PROJECTION_LIST` (with derived expressions and
+/// // aliases) into the queryset's SELECT slot. The fetch is async
+/// // and requires a real DB; the doctest carries it in a `no_run`
+/// // framing alongside the parity helper to show the full workflow
+/// // — the live integration test under
+/// // `tests/integration/phase8_5_visage_derived_projection.rs`
+/// // executes the same shape against Postgres.
+/// # async fn _fetch_workflow(
+/// #     ctx: &mut DjogiContext,
+/// #     in_memory: &ConsignmentPublic,
+/// #     row: &Consignment,
+/// # ) -> djogi::Result<()> {
+/// let from_db: ConsignmentPublic = ConsignmentPublic::filter(|f| f.id().eq(row.id))
+///     .fetch_one(ctx)
+///     .await?;
+///
+/// // The sync per-visage parity helper compares ONLY derived
+/// // fields — framework columns and storage columns are never
+/// // compared (lossy `DateTime` round-trips would false-positive
+/// // every high-precision timestamp regardless of any derived
+/// // drift). Equivalently, the trait-backed dispatch under the
+/// // `DerivedParity` trait is reachable from generic code.
+/// in_memory.assert_derived_parity(&from_db).unwrap();
+///
+/// // The async convenience helper drives the fetch + delegates to
+/// // the sync per-visage method in one call, lifting fetch
+/// // failures into `DerivedParityError::Fetch`.
+/// let target_id = row.id;
+/// assert_derived_parity_fetched(in_memory, || async {
+///     ConsignmentPublic::filter(|f| f.id().eq(target_id))
+///         .fetch_one(ctx)
+///         .await
+/// })
+/// .await
+/// .unwrap();
+/// # Ok(())
+/// # }
+/// ```
+///
+/// See also: the integration test
+/// `tests/integration/phase8_5_visage_derived_projection.rs` for
+/// the end-to-end live round-trip, and
+/// [`crate::testing::assert_derived_parity_fetched`] for the
+/// async convenience helper.
+///
 /// # Note on the absence of `TABLE` and `Model`
 ///
 /// There is intentionally no `TABLE` constant on this trait. The
