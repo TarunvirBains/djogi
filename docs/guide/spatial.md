@@ -25,6 +25,27 @@ built on the Phase 4 expression substrate.
 - `#[djogi_test(extensions = [...])]` auto-provisions PostGIS (or any
   other extension name) before each test database runs its setup.
 
+### PostGIS constructor coverage policy (v0.1.0 anchor)
+
+Djogi v0.1.0 spatial alpha intentionally limits typed coverage to a
+canonical surface (`GeoPoint`, `LineString`, `Polygon`, `MultiPoint`,
+`MultiLineString`, `MultiPolygon`) plus the shipped relationship / distance /
+aggregation expressions. PostGIS constructors are intentionally delayed:
+
+- `ST_TileEnvelope` (escalate only if Cluster 4C [#92](https://github.com/TarunvirBains/djogi/issues/92) makes it a hard requirement for MVT/Geobuf row-shape work)
+- `ST_HexagonGrid`, `ST_SquareGrid`, `ST_Letters`, `ST_MakePointM`,
+  `ST_MakeValid`, `ST_IsValidDetail`, `ST_IsValidReason`
+- Long-tail clustering, coverage, trajectory, and I/O constructors (`ST_CoverageUnion`,
+  `ST_CoverageSimplify`, `ST_CoverageClean`, `ST_IsValidTrajectory`,
+  `ST_ClosestPointOfApproach`, `ST_CPAWithin`, `ST_AsFlatGeobuf`,
+  `ST_AsMARC21`, `ST_AsTWKB`, GeoHash variants, encoded polyline, Geobuf)
+- **K-Means clustering** — `ST_ClusterKMeans` remains deferred.
+
+Interim escape hatch remains raw SQL via `ctx.raw_query(...)` and related
+[`#[djogi::deliberately_bypass_convention_with_raw_sql]`](../spec/raw-sql-escape-hatches.md#3-bypass-attribute) annotations. See [#179](https://github.com/TarunvirBains/djogi/issues/179) and
+`docs/research/postgres-coverage/2026-05-09/02-postgis-functions.md` for the
+full constructor inventory.
+
 ---
 
 ## Enabling the feature
@@ -481,7 +502,7 @@ let rows: Vec<(ClusterId, (i64, GeoPoint, Vec<HeerId>))> = Sighting::objects()
 `ST_AsMVT` and `ST_AsGeobuf` are row-shape aggregates (they consume
 the entire annotate tuple, not a single column). They don't fit the
 column-aggregate `AggOp` surface; tracked in
-[#92](https://github.com/TarunvirBains/djogi/issues/92) as Cluster F
+[#92](https://github.com/TarunvirBains/djogi/issues/92) as Cluster 4C
 work — same v0.1.0 timeline, separate execution unit because the IR
 shape differs.
 
