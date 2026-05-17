@@ -55,7 +55,7 @@ let pool = DjogiPool::builder("postgres://localhost/myapp")
 
 Defaults if you skip the builder knobs (or call `DjogiPool::connect(url)`):
 
-- `max_size = 5` (`DjogiPool::DEFAULT_MAX_SIZE`)
+- `max_size = 5` (`djogi::pg::pool::DEFAULT_MAX_SIZE`)
 - no wait timeout (callers block until a slot is available)
 - no `post_connect` hook
 
