@@ -145,8 +145,11 @@ fine for the getting-started flow; production services tune through
 For multi-node deployments, provision and register each node in HeeRanjID
 first, then start the service with its selected `NODE_ID` and run
 `djogi` boot/migrations with that environment value set.
-Djogi checks this on startup and fails fast if the selected node is not
-registered.
+Node registration and startup ordering are the operator's responsibility.
+Djogi does not read `NODE_ID` directly; if the pool's `post_connect` hook
+sets `heer.node_id` to an unregistered value, HeeRanjID's Postgres
+functions surface an error on that connection, which propagates through
+the pool.
 HeeRanjID deployment references are in
 https://github.com/TarunvirBains/heeranjid-sql/blob/main/README.md and
 the open sibling issue that tracks an explicit provisioning playbook:
