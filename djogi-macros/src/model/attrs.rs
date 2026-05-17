@@ -16,6 +16,8 @@
 //! hand-rolled behaviour without each new key duplicating the same
 //! `Meta::NameValue` match arm.
 
+use std::collections::BTreeSet;
+
 use darling::{FromField, FromMeta};
 use syn::parse::{ParseStream, Parser};
 use syn::punctuated::Punctuated;
@@ -403,10 +405,10 @@ pub struct ModelAttrs {
     /// `#[model(storage_params = "key=val, ...")]` — Phase 8.5 djogi#218.
     ///
     /// Comma-separated Postgres storage-parameter fragment lowered to
-    /// `ALTER TABLE <t> SET (key=val, ...)`. Validated as non-empty /
-    /// non-whitespace-only at parse time; the descriptor stores the
-    /// original fragment so adopters can use supported Postgres table
-    /// storage parameters without Djogi inventing a parallel enum.
+    /// `ALTER TABLE <t> SET (key=val, ...)`. Parsed and validated at
+    /// macro time; the descriptor stores a canonical safe fragment
+    /// rendered from structured entries rather than the raw adopter
+    /// string.
     pub storage_params: Option<String>,
 
     /// `#[model(tablespace = "<name>")]` — Phase 8.5 djogi#219.
@@ -416,6 +418,194 @@ pub struct ModelAttrs {
     /// grammar used for table names so SQL emission can quote it
     /// safely and deterministically.
     pub tablespace: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StorageParamEntry {
+    key: String,
+    value: String,
+}
+
+fn parse_storage_params_literal(lit: &syn::LitStr) -> syn::Result<String> {
+    let value = lit.value();
+    let entries =
+        parse_storage_params(&value).map_err(|reason| syn::Error::new_spanned(lit, reason))?;
+    Ok(render_storage_param_entries(&entries))
+}
+
+fn parse_storage_params(params: &str) -> Result<Vec<StorageParamEntry>, String> {
+    if params.trim().is_empty() {
+        return Err(
+            "`storage_params = \"\"` is not allowed — value must be a non-empty \
+             comma-separated storage-parameter fragment such as `fillfactor=70`."
+                .to_string(),
+        );
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut entries = Vec::new();
+    for part in params.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            return Err("`storage_params` entries must not be empty.".to_string());
+        }
+        let Some((key, value)) = part.split_once('=') else {
+            return Err(
+                "`storage_params` entries must use `key=value` form separated by commas, \
+                 for example `fillfactor=70, autovacuum_enabled=false`."
+                    .to_string(),
+            );
+        };
+        if value.contains('=') {
+            return Err(
+                "`storage_params` entries must contain exactly one `=` around key and value."
+                    .to_string(),
+            );
+        }
+
+        let key = key.trim();
+        let value = value.trim();
+        validate_storage_param_key(key)?;
+        validate_storage_param_value(value)?;
+
+        let key = key.to_ascii_lowercase();
+        if !seen.insert(key.clone()) {
+            return Err(format!("duplicate `storage_params` key `{key}`"));
+        }
+        entries.push(StorageParamEntry {
+            key,
+            value: value.to_string(),
+        });
+    }
+
+    Ok(entries)
+}
+
+fn validate_storage_param_key(key: &str) -> Result<(), String> {
+    let bytes = key.as_bytes();
+    if bytes.is_empty() {
+        return Err("`storage_params` entries must have non-empty keys.".to_string());
+    }
+    if bytes.len() > 63 {
+        return Err("`storage_params` keys must be at most 63 bytes.".to_string());
+    }
+    if !(bytes[0].is_ascii_alphabetic() || bytes[0] == b'_') {
+        return Err(
+            "`storage_params` keys must start with an ASCII letter or underscore.".to_string(),
+        );
+    }
+    if !bytes
+        .iter()
+        .skip(1)
+        .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    {
+        return Err(
+            "`storage_params` keys must be plain ASCII reloption names; dotted keys are not \
+             supported."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_storage_param_value(value: &str) -> Result<(), String> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() {
+        return Err("`storage_params` entries must have non-empty values.".to_string());
+    }
+    if is_storage_param_word(bytes) {
+        if is_storage_param_sql_control_word(bytes) {
+            return Err(
+                "`storage_params` values must not be SQL statement/control words.".to_string(),
+            );
+        }
+        return Ok(());
+    }
+    if is_storage_param_number(bytes) {
+        return Ok(());
+    }
+    Err(
+        "`storage_params` values must be bare words or decimal numbers; quotes, comments, \
+         commas, parentheses, semicolons, and SQL expressions are not supported."
+            .to_string(),
+    )
+}
+
+fn is_storage_param_word(bytes: &[u8]) -> bool {
+    (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+        && bytes
+            .iter()
+            .skip(1)
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+}
+
+fn is_storage_param_sql_control_word(bytes: &[u8]) -> bool {
+    let word = bytes
+        .iter()
+        .map(|byte| byte.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    matches!(
+        word.as_slice(),
+        b"alter"
+            | b"begin"
+            | b"call"
+            | b"comment"
+            | b"commit"
+            | b"copy"
+            | b"create"
+            | b"delete"
+            | b"do"
+            | b"drop"
+            | b"execute"
+            | b"from"
+            | b"grant"
+            | b"insert"
+            | b"reset"
+            | b"revoke"
+            | b"rollback"
+            | b"select"
+            | b"set"
+            | b"table"
+            | b"truncate"
+            | b"union"
+            | b"update"
+            | b"where"
+    )
+}
+
+fn is_storage_param_number(bytes: &[u8]) -> bool {
+    let mut seen_dot = false;
+    let mut digits_before_dot = 0usize;
+    let mut digits_after_dot = 0usize;
+
+    for byte in bytes {
+        if byte.is_ascii_digit() {
+            if seen_dot {
+                digits_after_dot += 1;
+            } else {
+                digits_before_dot += 1;
+            }
+        } else if *byte == b'.' && !seen_dot {
+            seen_dot = true;
+        } else {
+            return false;
+        }
+    }
+
+    digits_before_dot > 0 && (!seen_dot || digits_after_dot > 0)
+}
+
+fn render_storage_param_entries(entries: &[StorageParamEntry]) -> String {
+    let mut out = String::new();
+    for (idx, entry) in entries.iter().enumerate() {
+        if idx > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&entry.key);
+        out.push('=');
+        out.push_str(&entry.value);
+    }
+    out
 }
 
 /// Parsed `pk = X` value.
@@ -863,34 +1053,7 @@ impl ModelAttrs {
                                 "duplicate `storage_params` key in #[model(...)]",
                             ));
                         }
-                        let value = s.value();
-                        if value.trim().is_empty() {
-                            return Err(syn::Error::new_spanned(
-                                s,
-                                "`storage_params = \"\"` is not allowed — \
-                                 value must be a non-empty comma-separated \
-                                 storage-parameter fragment such as \
-                                 `fillfactor=70`.",
-                            ));
-                        }
-                        for part in value.split(',') {
-                            let Some((key, val)) = part.split_once('=') else {
-                                return Err(syn::Error::new_spanned(
-                                    s,
-                                    "`storage_params` entries must use `key=value` form \
-                                     separated by commas, for example \
-                                     `fillfactor=70, autovacuum_enabled=false`.",
-                                ));
-                            };
-                            if key.trim().is_empty() || val.trim().is_empty() {
-                                return Err(syn::Error::new_spanned(
-                                    s,
-                                    "`storage_params` entries must have non-empty keys and values \
-                                     around `=`.",
-                                ));
-                            }
-                        }
-                        storage_params = Some(value);
+                        storage_params = Some(parse_storage_params_literal(s)?);
                     } else if path.is_ident("tablespace") {
                         if tablespace.is_some() {
                             return Err(syn::Error::new_spanned(
@@ -3578,6 +3741,50 @@ mod tests {
         assert!(
             err.to_string().contains("key=value"),
             "diagnostic explains key-value form: {err}"
+        );
+    }
+
+    #[test]
+    fn ddl_metadata_model_attrs_reject_storage_params_injection_fragments() {
+        for params in [
+            "fillfactor=70); DROP TABLE x; --",
+            "fillfactor=70--comment",
+            "fillfactor=70/*comment*/",
+            "fillfactor=(70)",
+            "fillfactor=DROP",
+        ] {
+            let err = parse_attrs(&format!(
+                r#"table = "widgets", storage_params = "{params}""#
+            ))
+            .expect_err("storage params injection fragment rejected");
+            assert!(
+                err.to_string().contains("storage_params"),
+                "diagnostic names storage_params for {params:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn ddl_metadata_model_attrs_reject_duplicate_storage_params_keys() {
+        let err =
+            parse_attrs(r#"table = "widgets", storage_params = "fillfactor=70, FillFactor=80""#)
+                .expect_err("duplicate storage params key rejected");
+
+        assert!(
+            err.to_string().contains("duplicate"),
+            "diagnostic mentions duplicate key: {err}"
+        );
+    }
+
+    #[test]
+    fn ddl_metadata_model_attrs_reject_dotted_storage_params_keys() {
+        let err =
+            parse_attrs(r#"table = "widgets", storage_params = "toast.autovacuum_enabled=true""#)
+                .expect_err("dotted storage params key rejected");
+
+        assert!(
+            err.to_string().contains("storage_params"),
+            "diagnostic names storage_params: {err}"
         );
     }
 

@@ -2372,10 +2372,10 @@ pub struct ModelDescriptor {
     /// per-table storage-parameter list. Lowered by the migration
     /// composer to `ALTER TABLE <table> SET (key=val, ...)`.
     ///
-    /// The value is a comma-separated Postgres storage-parameter
-    /// fragment stored verbatim after macro-time non-empty validation;
-    /// the SQL emitter parses only the parameter keys so reversible
-    /// changes can reset keys that disappeared from the new value.
+    /// The macro stores a canonical safe `key=value` fragment after
+    /// parsing and validating structured entries. The SQL emitter
+    /// re-parses the fragment and renders `SET` / `RESET` from those
+    /// entries instead of splicing caller-provided text into SQL.
     ///
     /// Phase 8.5 Cluster 4 (djogi#218).
     pub storage_params: Option<&'static str>,
