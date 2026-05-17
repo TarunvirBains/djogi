@@ -178,6 +178,10 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     //   exposed model columns (E_DJG_VDF_002).
     // - Per-scope collisions between two derived attributes sharing
     //   a `name` in an overlapping scope (E_DJG_VDF_003).
+    // - no derived entry may target a scope that also carries a
+    //   relation-form embed (`expose(scope -> Peer)`) until the
+    //   relation projector can render derived expressions
+    //   (E_DJG_VDF_010).
     //
     // The column-exposure list is materialised from the
     // `FieldAttrs::expose` shape walked alongside the struct's named
@@ -185,6 +189,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // contribute nothing because the column never reaches the visage.
     if !derived_attrs.is_empty() {
         let mut column_exposures: Vec<(String, Vec<&'static str>)> = Vec::new();
+        let mut relation_form_exposures: Vec<(String, Vec<&'static str>)> = Vec::new();
         for (field, fa) in struct_item.fields.iter().zip(field_attrs.iter()) {
             let Some(ident) = field.ident.as_ref() else {
                 continue;
@@ -218,11 +223,29 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
                     scopes.push(canon);
                 }
             }
-            column_exposures.push((col, scopes));
+            column_exposures.push((col.clone(), scopes));
+
+            let mut relation_scopes: Vec<&'static str> = Vec::new();
+            for s in fa.expose.relation_scopes.keys() {
+                if let Some(canon) = match s.as_str() {
+                    "public" => Some("public"),
+                    "self_view" => Some("self_view"),
+                    "admin" => Some("admin"),
+                    "export" => Some("export"),
+                    _ => None,
+                } && !relation_scopes.contains(&canon)
+                {
+                    relation_scopes.push(canon);
+                }
+            }
+            if !relation_scopes.is_empty() {
+                relation_form_exposures.push((col, relation_scopes));
+            }
         }
         derived::cross_check(
             &derived_attrs,
             &column_exposures,
+            &relation_form_exposures,
             matches!(model_attrs.pk, attrs::PkStrategy::None),
         )?;
     }

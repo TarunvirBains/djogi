@@ -162,9 +162,12 @@ visage, and the expression should return `VisageError::UnresolvedRelation`
 when the relation is absent.
 
 Declaring derived fields inside relation-form exposure grammar is not
-part of this tier. The richer public descriptor and inventory surface
-for documenting derived entries is also deferred; the current runtime
-metadata is intentionally limited to projection internals.
+part of this tier. A derived field whose `scopes = [...]` overlaps a
+relation-form `#[field(expose(scope -> PeerVisage))]` on the same model
+is rejected with `E_DJG_VDF_010`. The richer public descriptor and
+inventory surface for documenting derived entries is also deferred; the
+current runtime metadata is intentionally limited to projection
+internals.
 
 ## Error locations
 

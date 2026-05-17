@@ -1011,6 +1011,9 @@ fn skip_dollar_body(bytes: &[u8], body_start: usize, tag_bytes: &[u8]) -> usize 
 ///   already has the parsed `FieldAttrs::expose` shape.
 /// - **Per-scope derived collision (E_DJG_VDF_003)** — two derived
 ///   entries with overlapping `scopes` cannot share a `name`.
+/// - **Relation-form overlap (E_DJG_VDF_010)** — a derived entry
+///   cannot target a scope that also embeds a peer visage via
+///   `expose(scope -> Peer)`.
 /// - **Model-level pk = None incompatibility (E_DJG_VDF_015)** —
 ///   the caller supplies the model's PK strategy; `pk = None` rejects
 ///   the entire attribute.
@@ -1021,6 +1024,7 @@ fn skip_dollar_body(bytes: &[u8], body_start: usize, tag_bytes: &[u8]) -> usize 
 pub fn cross_check(
     derived: &[DerivedAttr],
     column_exposures: &[(String, Vec<&'static str>)],
+    relation_form_exposures: &[(String, Vec<&'static str>)],
     pk_is_none: bool,
 ) -> syn::Result<()> {
     // E_DJG_VDF_015 — `pk = None` host model.
@@ -1033,6 +1037,28 @@ pub fn cross_check(
              associated type, and no visage queryset to filter against \
              (E_DJG_VDF_015)",
         ));
+    }
+
+    // E_DJG_VDF_010 — relation-form visages use a separate projector
+    // path that does not yet render derived SQL expressions.
+    for d in derived {
+        for scope in &d.scopes {
+            if let Some((field_name, _)) = relation_form_exposures
+                .iter()
+                .find(|(_, exposed_scopes)| exposed_scopes.contains(&scope.key))
+            {
+                return Err(syn::Error::new(
+                    scope.span,
+                    format!(
+                        "derived visage scope `{}` overlaps relation-form exposure `{field_name}` \
+                         in the same scope; derived fields and relation-form embedding are not \
+                         combinable until the relation projector emits derived expressions \
+                         (E_DJG_VDF_010)",
+                        scope.key
+                    ),
+                ));
+            }
+        }
     }
 
     // E_DJG_VDF_002 — collision against an exposed model column in any
@@ -1516,7 +1542,7 @@ mod tests {
             struct M { f: i32 }
         });
         let parsed = parse_derived_attrs(&s).expect("ok");
-        let err = cross_check(&parsed, &[], true).expect_err("pk = None must reject");
+        let err = cross_check(&parsed, &[], &[], true).expect_err("pk = None must reject");
         assert!(err.to_string().contains("E_DJG_VDF_015"));
     }
 
@@ -1534,8 +1560,28 @@ mod tests {
         });
         let parsed = parse_derived_attrs(&s).expect("ok");
         let columns = vec![("display_name".to_string(), vec!["public"])];
-        let err = cross_check(&parsed, &columns, false).expect_err("collision must reject");
+        let err = cross_check(&parsed, &columns, &[], false).expect_err("collision must reject");
         assert!(err.to_string().contains("E_DJG_VDF_002"));
+    }
+
+    #[test]
+    fn cross_check_rejects_relation_form_scope_overlap() {
+        let s = parse_struct(quote! {
+            #[derived(
+                name = department,
+                ty = i32,
+                scopes = [public],
+                sql = "1",
+                rust = "1",
+            )]
+            struct M { f: i32 }
+        });
+        let parsed = parse_derived_attrs(&s).expect("ok");
+        let columns = vec![("department".to_string(), vec!["public"])];
+        let relation_forms = vec![("department".to_string(), vec!["public"])];
+        let err = cross_check(&parsed, &columns, &relation_forms, false)
+            .expect_err("relation-form overlap must reject before column collision");
+        assert!(err.to_string().contains("E_DJG_VDF_010"));
     }
 
     #[test]
@@ -1554,7 +1600,7 @@ mod tests {
         });
         let parsed = parse_derived_attrs(&s).expect("ok");
         let columns = vec![("display_name".to_string(), vec!["admin"])];
-        cross_check(&parsed, &columns, false).expect("no collision");
+        cross_check(&parsed, &columns, &[], false).expect("no collision");
     }
 
     #[test]
@@ -1565,7 +1611,7 @@ mod tests {
             struct M { f: i32 }
         });
         let parsed = parse_derived_attrs(&s).expect("ok");
-        let err = cross_check(&parsed, &[], false).expect_err("collision must reject");
+        let err = cross_check(&parsed, &[], &[], false).expect_err("collision must reject");
         assert!(err.to_string().contains("E_DJG_VDF_003"));
     }
 

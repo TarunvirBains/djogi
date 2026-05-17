@@ -1475,12 +1475,18 @@ generated columns) is **a different surface**:
 
 The two surfaces compose naturally:
 
-- A `#[computed]` field may be exposed to scopes via `expose(...)` in
-  its attribute body; it then appears as a *column entry* on those
-  visages (because the database treats the generated column as a real
-  column).
+- `#[computed]` is model-side only. It does not create visage struct
+  fields and cannot project onto visages through
+  `#[computed(... expose(...))]` or `#[computed(expose = ...)]`; both
+  forms are rejected by the macro.
+- A model field cannot combine `#[computed(...)]` with
+  `#[field(expose(...))]` to publish the computed value through a
+  visage. Computed properties remain model-side virtual / stored
+  columns, not Phase 8.5 visage projection entries.
 - A `#[derived]` entry never appears on the model struct or in the
-  table schema; it exists only on visages.
+  table schema; it exists only on visages. `#[derived(...)]` is the
+  shipped Phase 8.5 surface for adding computed projection fields to
+  generated visages.
 
 The current spec deliberately does not unify the two surfaces under
 one attribute name — the storage / projection distinction is real and
