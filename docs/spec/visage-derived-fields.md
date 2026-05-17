@@ -592,14 +592,19 @@ attribute on a model, the macro emits:
      struct-declaration order.
    - All derived entries with `S` in their `scopes`, in attribute
      declaration order.
-2. The visage's `DjogiVisage` trait impl, with the trait surface
+2. `impl ::djogi::__private::DjogiVisageSealed for <VisageName> {}` — the
+   closed-world metadata gate that prevents third-party code from
+   implementing `DjogiVisage` directly; only visages emitted by
+   `#[derive(Model)]` can satisfy the bound (see
+   [Trait surface](#trait-surface)).
+3. The visage's `DjogiVisage` trait impl, with the trait surface
    defined in [Trait surface](#trait-surface).
-3. A `FromPgRow` impl matching the visage struct's field order
+4. A `FromPgRow` impl matching the visage struct's field order
    exactly (one positional decode per field).
-4. Either `impl From<&Model> for V` (all derived entries
+5. Either `impl From<&Model> for V` (all derived entries
    infallible) or `impl TryFrom<&Model> for V` (any derived
    entry fallible) — see [In-memory derivation](#in-memory-derivation).
-5. The existing `DjogiVisageOf<Model>` pairing impl.
+6. The existing `DjogiVisageOf<Model>` pairing impl.
 
 Example expansion for `ConsignmentPublic`:
 
@@ -613,6 +618,8 @@ pub struct ConsignmentPublic {
     pub direction: Direction,
     pub facility_site: Site,   // derived
 }
+
+impl djogi::__private::DjogiVisageSealed for ConsignmentPublic {}
 
 impl djogi::DjogiVisage for ConsignmentPublic {
     type Model = Consignment;
