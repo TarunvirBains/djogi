@@ -197,3 +197,60 @@ async fn interval_null_round_trips_as_none(mut ctx: djogi::DjogiContext) {
         .expect("Model::get on nullable Interval");
     assert_eq!(fetched.maybe_duration, None);
 }
+
+#[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
+async fn interval_boundary_components_round_trip(mut ctx: djogi::DjogiContext) {
+    let min_row = Phase85C4212IntervalRow::create(
+        &mut ctx,
+        Phase85C4212IntervalRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            duration: Interval {
+                months: i32::MIN,
+                days: i32::MIN,
+                microseconds: i64::MIN,
+            },
+            maybe_duration: None,
+            label: "boundary min".into(),
+        },
+    )
+    .await
+    .expect("minimum Interval components must round-trip");
+    assert_eq!(min_row.duration.months, i32::MIN);
+    assert_eq!(min_row.duration.days, i32::MIN);
+    assert_eq!(min_row.duration.microseconds, i64::MIN);
+
+    let max_row = Phase85C4212IntervalRow::create(
+        &mut ctx,
+        Phase85C4212IntervalRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            duration: Interval {
+                months: i32::MAX,
+                days: i32::MAX,
+                microseconds: i64::MAX,
+            },
+            maybe_duration: Some(Interval {
+                months: i32::MIN,
+                days: i32::MAX,
+                microseconds: i64::MIN,
+            }),
+            label: "boundary max".into(),
+        },
+    )
+    .await
+    .expect("maximum Interval components must round-trip");
+    assert_eq!(max_row.duration.months, i32::MAX);
+    assert_eq!(max_row.duration.days, i32::MAX);
+    assert_eq!(max_row.duration.microseconds, i64::MAX);
+    assert_eq!(
+        max_row.maybe_duration,
+        Some(Interval {
+            months: i32::MIN,
+            days: i32::MAX,
+            microseconds: i64::MIN,
+        })
+    );
+}

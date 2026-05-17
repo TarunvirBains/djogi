@@ -2345,6 +2345,11 @@ impl IntoFilterValue for rust_decimal::Decimal {
         FilterValue::Decimal(self)
     }
 }
+impl IntoFilterValue for crate::Interval {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::Interval(self)
+    }
+}
 
 // ── Generic lookup methods (any V: IntoFilterValue) ───────────────────────
 

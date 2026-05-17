@@ -115,6 +115,9 @@ pub(crate) fn push_filter_value(acc: &mut SqlAccumulator, v: FilterValue) {
         FilterValue::Decimal(d) => {
             acc.push_bind(d);
         }
+        FilterValue::Interval(i) => {
+            acc.push_bind(i);
+        }
         FilterValue::Null => {
             acc.push_null_literal();
         }
@@ -232,6 +235,9 @@ pub(crate) fn push_filter_value_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
         }
         FilterValue::Decimal(d) => {
             acc.push_bind(*d);
+        }
+        FilterValue::Interval(i) => {
+            acc.push_bind(*i);
         }
         FilterValue::Null => {
             acc.push_null_literal();

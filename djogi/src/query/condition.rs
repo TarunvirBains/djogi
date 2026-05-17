@@ -574,8 +574,8 @@ impl LookupOp {
 /// Mixed-type lists are representable but the emitter rejects them — the
 /// typed `FieldRef<M, V>` API prevents construction from user code.
 ///
-/// Marked `#[non_exhaustive]` — new SQL-bindable types (e.g. `Decimal`,
-/// `Interval`, JSONB payload variants) are added in later phases. Adding a
+/// Marked `#[non_exhaustive]` — new SQL-bindable types (e.g. JSONB payload
+/// variants) are added in later phases. Adding a
 /// variant must not break downstream code that pattern-matches on this
 /// enum, so external matches must include a `_ => …` arm.
 #[derive(Debug, Clone)]
@@ -618,6 +618,8 @@ pub enum FilterValue {
     Pair(Box<FilterValue>, Box<FilterValue>),
     /// `NUMERIC` / `DECIMAL` column values (Phase 5).
     Decimal(rust_decimal::Decimal),
+    /// Postgres `INTERVAL` column values (djogi#212).
+    Interval(crate::Interval),
 
     // ── Array variants (Phase 5 Task 5) ──────────────────────────────────
     //
