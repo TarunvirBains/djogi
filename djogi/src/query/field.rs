@@ -1449,7 +1449,12 @@ impl<M: Model> DjogiPresentField<M, crate::Interval> {
     where
         I: IntoIterator<Item = crate::Interval>,
     {
-        self.sql.not_in_list(values)
+        let mut values = values.into_iter().peekable();
+        if values.peek().is_none() {
+            self.sql.is_not_null()
+        } else {
+            self.sql.not_in_list(values)
+        }
     }
 }
 
