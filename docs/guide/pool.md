@@ -129,6 +129,7 @@ one-time `SET` statements:
 .post_connect(|client| Box::pin(async move {
     client.batch_execute("SET application_name = 'web'").await?;
     client.batch_execute("SET heer.node_id = '1'").await?;
+    client.batch_execute("SET heer.ranj_node_id = '1'").await?;
     client.batch_execute("SET statement_timeout = '5s'").await?;
     Ok(())
 }))
@@ -396,10 +397,11 @@ Production deployments that previously hard-coded
 `DjogiPool::from_database_config` to size against their actual
 concurrency budget.
 
-That `post_connect` block is a single-node example when `SET heer.node_id = '1'`
-is present. For multi-node deployments, register each node in HeeRanjID first, then
-set the service-specific `NODE_ID` before startup and migrations; the pool should set
-`heer.node_id` only from that deployment-selected value.
+That `post_connect` block is a single-node example when both
+`SET heer.node_id = '1'` and `SET heer.ranj_node_id = '1'` are present. For
+multi-node deployments, register each node in HeeRanjID first, then set the
+service-specific `HEER_NODE_ID` before startup and migrations; the pool should
+set both HeeRanjID session GUCs only from that deployment-selected value.
 See https://github.com/TarunvirBains/heeranjid-sql/blob/main/README.md and
 https://github.com/TarunvirBains/HeeRanjID/issues/49.
 

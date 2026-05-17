@@ -3,16 +3,16 @@
 //! Adopters in production wire schema management through Djogi's
 //! Phase 7 CLI (`djogi migrations compose` / `apply` / `attune`). The
 //! example pre-dates that integration and ships a self-contained
-//! `migrate` subcommand. Track 0 (sub-step 0.4) routed the bootstrap
-//! step through Djogi's canonical bootstrap module so the example's
-//! HeeRanjID + PostGIS + node-id GUC install path matches what
-//! `db reset` and `migrations apply` use:
+//! `migrate` subcommand. Track 0 (sub-step 0.4) aligned the bootstrap
+//! SQL with Djogi's Phase 0 inputs while keeping the example on a local
+//! no-`ALTER DATABASE` bootstrap path:
 //!
-//! 1. The same HeeRanjID SQL blobs as Djogi's Phase 0 bootstrap install
-//!    the id-generation schema, seed the default node, and install
-//!    PostGIS. The session-level node GUC is handled by the pool
-//!    `post_connect` hook in `main.rs`, so the example does not need
-//!    `ALTER DATABASE` privileges.
+//! 1. `phase_zero_sql_without_database_guc()` assembles the same
+//!    HeeRanjID SQL blobs as Djogi's Phase 0 bootstrap, seeds the
+//!    default node, and installs PostGIS, but deliberately omits the
+//!    database-level node GUC. The session-level node GUCs are handled
+//!    by the pool `post_connect` hook in `main.rs`, so the example does
+//!    not need `ALTER DATABASE` privileges.
 //! 2. Drops + recreates every example table through `ctx.raw_*`. (This
 //!    is the leftover raw-DDL path Track A will replace with descriptor-
 //!    driven `migrations apply`; Track 0 deliberately does NOT touch it.)
@@ -22,9 +22,9 @@
 //!
 //! # Why `pool.raw_with_client` is the bridge
 //!
-//! The bootstrap batch needs a direct driver client for extension and
-//! schema DDL. `RawPoolAccessExt::raw_with_client` is the documented
-//! escape hatch for raw-driver operations — it borrows a `&mut
+//! The local no-`ALTER DATABASE` bootstrap batch needs a direct driver
+//! client for extension and schema DDL. `RawPoolAccessExt::raw_with_client`
+//! is the documented escape hatch for raw-driver operations — it borrows a `&mut
 //! tokio_postgres::Client` for the closure's duration and returns the
 //! connection to the pool on `Ok` (or detaches on `Err`/panic to
 //! prevent session-state leakage). The inherent `DjogiPool::with_client`
@@ -78,21 +78,22 @@ pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
 /// PostGIS extension — through the example's pool.
 ///
 /// The production/test bootstrap surface still owns canonical Phase 0
-/// composition. The example deliberately avoids the database-level
-/// `ALTER DATABASE ... SET heer.node_id` part because runnable examples
-/// should work for roles that can create schema objects and extensions
-/// in a sandbox but do not own the database. The pool's `post_connect`
-/// hook in `main.rs` is the public per-connection setup surface and
-/// sets both HeeRanjID GUCs for every connection.
+/// composition. This example deliberately uses
+/// `phase_zero_sql_without_database_guc()` instead of
+/// `bootstrap::run_phase_zero` so it avoids the database-level
+/// `ALTER DATABASE ... SET ...` part; runnable examples should work for
+/// roles that can create schema objects and extensions in a sandbox but
+/// do not own the database. The pool's `post_connect` hook in `main.rs`
+/// is the public per-connection setup surface and sets both HeeRanjID
+/// GUCs for every connection.
 ///
 /// `RawPoolAccessExt::raw_with_client` is the bridge:
-/// `bootstrap::run_phase_zero` takes a bare
-/// `&tokio_postgres::GenericClient` (since it predates any pool
-/// concept and operates outside `DjogiContext`'s ergonomics); the
-/// raw bypass borrows the pool's connection and hands it to the
-/// closure for the bootstrap's duration.
+/// `phase_zero_sql_without_database_guc()` builds a raw SQL batch and
+/// `batch_execute` needs a bare driver client. The raw bypass borrows
+/// the pool's connection and hands it to the closure for the local
+/// bootstrap batch's duration.
 #[djogi::deliberately_bypass_convention_with_raw_sql]
-// JUSTIFICATION (djogi#234): Phase 0 bootstrap requires direct pool/client access for extension and HeeRanjID installation.
+// JUSTIFICATION (djogi#234): local no-ALTER-DATABASE Phase 0 bootstrap requires direct pool/client access for extension and HeeRanjID installation.
 async fn install_phase_zero(ctx: &mut DjogiContext) -> Result<()> {
     let pool = ctx
         .raw_pool()

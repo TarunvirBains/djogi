@@ -151,7 +151,11 @@ let pool = djogi::DjogiPool::builder(&database_url)
         let node_id = node_id.clone();
         Box::pin(async move {
             client
-                .execute("SELECT set_config('heer.node_id', $1, false)", &[&node_id])
+                .execute(
+                    "SELECT set_config('heer.node_id', $1, false), \
+                            set_config('heer.ranj_node_id', $1, false)",
+                    &[&node_id],
+                )
                 .await?;
             Ok(())
         })
@@ -163,14 +167,18 @@ let pool = djogi::DjogiPool::builder(&database_url)
 `ALTER DATABASE ... SET heer.node_id = ...` is a fallback for operators
 who intentionally want a database-level default and have owner privileges.
 Application examples should not require it; `post_connect` makes the setup
-explicit at the pool boundary and works in restricted CI/dev databases.
+explicit at the pool boundary and works in restricted CI/dev databases. Set
+both HeeRanjID session GUCs (`heer.node_id` and `heer.ranj_node_id`) to the
+same registered node id so every connection has the complete id-generation
+session state.
 
 For multi-node deployments, provision and register each node in HeeRanjID
-first, then start the service with its selected `NODE_ID` and run
+first, then start the service with its selected `HEER_NODE_ID` and run
 `djogi` boot/migrations with that environment value set.
 Node registration and startup ordering are the operator's responsibility.
-Djogi does not read `NODE_ID` directly; if the pool's `post_connect` hook
-sets `heer.node_id` to an unregistered value, HeeRanjID's Postgres
+Djogi does not read `HEER_NODE_ID` directly; wire the value into the pool's
+`post_connect` hook. If the hook sets either HeeRanjID GUC to an unregistered
+value, HeeRanjID's Postgres
 functions surface an error on that connection, which propagates through
 the pool.
 HeeRanjID deployment references are in
