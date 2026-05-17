@@ -185,6 +185,15 @@ pub mod __private {
     pub use crate::visage_boundary::DjogiVisageOf;
     pub use crate::visage_boundary::private::Sealed as VisageSealed;
 
+    /// Sealed projection-entry discriminant for the
+    /// [`DjogiVisage::PROJECTIONS`](crate::DjogiVisage::PROJECTIONS)
+    /// trait constant. Re-exported here so macro-emitted code routes
+    /// through `::djogi::__private::ProjectionEntry` per
+    /// `feedback_macro_path_routing.md` — adopter code never names this
+    /// type. Phase 8.5 issue #231. See the module-level docs on
+    /// [`crate::visage::projection`] for the convention seal.
+    pub use crate::visage::projection::ProjectionEntry;
+
     /// Hidden seal-token witnesses for [`crate::primary_key::PrimaryKey`]
     /// and [`crate::apps::App`].
     ///
@@ -314,7 +323,7 @@ pub use descriptor::{
 // the symbol does not appear in default-feature builds or `cargo doc` output
 // when PostGIS support is not requested.
 pub use djogi_macros::{
-    DjogiEnum, JsonbSchema, apps, deliberately_bypass_convention_with_raw_sql, many_to_many,
+    DjogiEnum, JsonbSchema, Model, apps, deliberately_bypass_convention_with_raw_sql, many_to_many,
     primary_key, reverse_one_to_many, reverse_one_to_one, trait_impl,
 };
 #[cfg(feature = "spatial")]
@@ -417,7 +426,7 @@ pub use types::{
     Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, RanjId, RanjIdDesc,
     RanjIdRecencyBiased,
 };
-pub use visage::VisageError;
+pub use visage::{DjogiVisage, VisageError};
 
 /// The canonical adopter import.
 ///
@@ -555,7 +564,8 @@ pub mod prelude {
     pub use crate::transaction::{
         DeferScope, IsolationLevel, atomic, atomic_with, retry_on_conflict,
     };
-    pub use crate::visage::VisageError;
+    pub use crate::visage::{DjogiVisage, VisageError};
+    pub use djogi_macros::Model;
     // Relation wrappers — unresolved (`ForeignKey`, `OneToOneField`) are
     // what user model structs declare; resolved (`ForeignKeyResolved`,
     // `OneToOneFieldResolved`) are what prefetched view structs receive,

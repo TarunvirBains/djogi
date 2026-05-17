@@ -66,6 +66,50 @@
 #[cfg(any(test, feature = "testing"))]
 pub mod cli;
 
+/// Error returned by the per-visage `assert_derived_parity` inherent
+/// method emitted by `#[model]` — Phase 8.5 issue #231.
+///
+/// The helper compares **only** the derived fields between two
+/// pre-constructed visages of the same type and returns
+/// `DerivedParityError::Drift { visage, field }` on the first
+/// mismatch. Framework columns (`id`, `created_at`, `updated_at`)
+/// and storage columns are not compared — the lossy `DateTime`
+/// nanosecond truncation on round-trip would false-positive every
+/// high-precision timestamp regardless of any derived drift, and
+/// the helper exists to test the SQL/Rust expression pair, not
+/// transport.
+///
+/// The error type is named `DerivedParityError` (not
+/// `DbComputedParityError`) because parity is a property of *both*
+/// sides — the SQL-evaluated value and the Rust-evaluated value
+/// together — rather than a Postgres-side action. The
+/// [`crate::visage::VisageError::DbComputedNullForNonOptional`] /
+/// [`crate::visage::VisageError::DbComputedTypeMismatch`] variants
+/// mark errors describing Postgres-side outputs specifically; the
+/// parity-helper error straddles both sides, so it lands under
+/// `Derived*`.
+///
+/// `#[non_exhaustive]` is intentional — future helper variants that
+/// fetch and compare in one call may add their own variants without
+/// breaking existing match arms.
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum DerivedParityError {
+    /// First mismatch detected by `assert_derived_parity`. The
+    /// helper short-circuits at the first mismatched derived field;
+    /// adopters who want the full diff can call the helper, observe
+    /// the field name in the error, and `dbg!(&in_memory, &from_db)`
+    /// to inspect.
+    #[error("derived field parity drift in `{visage}` at field `{field}`")]
+    Drift {
+        /// The visage type name (e.g. `"ConsignmentPublic"`).
+        visage: &'static str,
+        /// The derived field name that mismatched (e.g.
+        /// `"facility_site"`).
+        field: &'static str,
+    },
+}
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::__bypass::RawAccessExt as _;

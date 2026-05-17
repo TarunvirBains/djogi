@@ -102,12 +102,34 @@ pub fn model(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// No-op stub — field injection requires `#[model]` (attribute macro).
-/// Kept as a placeholder for future derive-based extensions.
+/// Kept as a placeholder for future derive-based extensions, and as the
+/// registration site for helper attributes that adopters write on the
+/// derived struct.
 ///
-/// NOTE: Only `field` is listed as a helper attribute here, not `model`.
-/// Listing `model` as a helper would shadow the `#[model]` proc_macro_attribute
-/// and cause ambiguous resolution (Post-Review Fix #4).
-#[proc_macro_derive(Model, attributes(field))]
+/// NOTE: Only `field` and `derived` are listed as helper attributes
+/// here, not `model`. Listing `model` as a helper would shadow the
+/// `#[model]` proc_macro_attribute and cause ambiguous resolution
+/// (Post-Review Fix #4).
+///
+/// # `derived` helper — Phase 8.5 issue #231
+///
+/// Adopters may decorate a model struct with one or more
+/// `#[derived(name, ty, scopes, sql, rust, doc)]` attributes to declare
+/// **visage-derived fields** — projection entries on a visage that
+/// have no model column counterpart. The attribute is registered here
+/// (`attributes(field, derived)`) so rustc accepts the token at parse
+/// time even though every adopter pairs `#[derive(Model)]` with
+/// `#[model(...)]`; the actual parsing, validation, and stripping all
+/// run inside the `#[model]` attribute macro's expansion (see
+/// `djogi-macros::model::derived` and the full spec at
+/// `docs/spec/visage-derived-fields.md`).
+///
+/// The split — derive REGISTERS, attribute PARSES — answers
+/// "which macro file owns the parser?" unambiguously. The two macros
+/// always run together in practice; the derive's no-op body keeps the
+/// helper-attribute registration alive without duplicating parsing
+/// effort across two entry points.
+#[proc_macro_derive(Model, attributes(field, derived))]
 pub fn derive_model(_input: TokenStream) -> TokenStream {
     TokenStream::new()
 }

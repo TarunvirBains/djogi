@@ -41,6 +41,7 @@
 
 use crate::model::attrs::PkStrategy;
 use crate::model::visage_ctx::{ScopeMembership, VisageEmitContext, classify_field_for_scope};
+use crate::model::visages::projection_entries;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
@@ -78,48 +79,73 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
         .zip(field_attrs.iter())
         .collect();
 
-    // Build the narrowed column list. Order matches the visage struct's
-    // field order (framework first, then scope-included user fields in
-    // declaration order). Skip relation-entry visages — the SELECT
-    // projection cannot represent an embedded peer as a flat column,
-    // see module docs.
-    let mut columns: Vec<String> = Vec::new();
-    columns.push("id".to_string());
-    columns.push("created_at".to_string());
-    columns.push("updated_at".to_string());
+    // Phase 8.5 #231 — projection entries are the single source of
+    // truth for the visage's SELECT column shape and FromPgRow ordinal
+    // decode. The helper returns one tuple per ordinal position:
+    // `(name_or_alias, is_derived, sql_fragment_or_column_name)`. The
+    // helper returns an empty vec for relation-embed visages — bail
+    // out so the visage just lacks a `::filter` entry (the visage
+    // struct + From/TryFrom conversion still work elsewhere).
+    let entries = projection_entries(ctx);
+    if entries.is_empty() {
+        // Either a relation-embed visage or nothing in scope. Look at
+        // the user-field pairs to distinguish: relation-embed should
+        // bail; an empty list of in-scope user fields is fine (the
+        // framework columns alone still need a queryset).
+        let any_relation_embed = user_field_pairs.iter().any(|(field, attrs)| {
+            matches!(
+                classify_field_for_scope(field, attrs, scope),
+                ScopeMembership::RelationEmbed { .. }
+            )
+        });
+        if any_relation_embed {
+            return TokenStream::new();
+        }
+        // Otherwise: fall through with no entries; the queryset will
+        // still emit `SELECT  FROM table` which Postgres rejects but
+        // also will never be reached since the empty case is rare and
+        // primarily a `pk = None` shape (already gated above). Defer
+        // for now and keep code simple — emit empty-entries no-op.
+        return TokenStream::new();
+    }
 
-    for (field, attrs) in &user_field_pairs {
-        let Some(fname) = field.ident.as_ref() else {
-            continue;
-        };
+    // Render the column-only slice for FromPgRow positional decode.
+    // For derived entries the position's column NAME on the wire is
+    // the alias (rendered by `(<sql>) AS <alias>`); the decoder's
+    // debug-build name guard compares `COLUMNS[i]` to the wire's
+    // column name at position `i`, so the alias is what to emit.
+    let columns: Vec<&str> = entries.iter().map(|(n, _, _)| n.as_str()).collect();
 
-        match classify_field_for_scope(field, attrs, scope) {
-            ScopeMembership::Absent => continue,
-
-            // Scalar form on scalar field — flatten into the column list.
-            ScopeMembership::Scalar => {
-                columns.push(crate::syn_util::column_name_from_ident(fname));
-            }
-
-            // Relation entry on a visage — this emitter does not yet
-            // handle peer-embedding projections. Bail out for the whole
-            // visage; the struct + conversion impls (emitted elsewhere)
-            // still work, the visage just lacks a `::filter` entry.
-            ScopeMembership::RelationEmbed { .. } => {
-                return TokenStream::new();
-            }
-
-            // Shape-mismatched cases are rejected with a span-precise error
-            // by `visages.rs::emit_projection_for_scope` before we run.
-            // Treat as no-op here so we don't double-emit a diagnostic.
-            ScopeMembership::Reject { .. } => return TokenStream::new(),
+    // PROJECTION_LIST — the full comma-joined SELECT-list string with
+    // derived entries rendered as `(<sql>) AS <alias>`. This becomes
+    // the queryset's `projection_list: &'static str`, spliced into
+    // the SELECT slot at query time without a runtime walk.
+    let mut projection_list = String::new();
+    for (i, (name, is_derived, payload)) in entries.iter().enumerate() {
+        if i > 0 {
+            projection_list.push_str(", ");
+        }
+        if *is_derived {
+            projection_list.push('(');
+            projection_list.push_str(payload);
+            projection_list.push_str(") AS ");
+            projection_list.push_str(name);
+        } else {
+            projection_list.push_str(name);
         }
     }
 
     let columns_lit: Vec<TokenStream> = columns.iter().map(|c| quote! { #c }).collect();
-    let column_list_str: String = columns.join(", ");
+    let projection_list_lit = &projection_list;
     let n_cols = columns.len();
     let fields_ident = format_ident!("{visage_ident}Fields");
+
+    // Phase 8.5 #231 — derived entries decode via the same `decode_at`
+    // helper as columns. The position carries the alias name on the
+    // wire; the decoder's debug-build name guard compares
+    // `COLUMNS[i]` against the wire column name, both of which equal
+    // the alias. The Rust type comes from the derived entry's `ty`.
+    let scoped_derived: Vec<&crate::model::derived::DerivedAttr> = ctx.scope_derived().collect();
 
     // Per-column decode token: positional `try_get(i)`, with the same
     // debug-build name guard the model-side `FromPgRow` emitter uses.
@@ -164,18 +190,42 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
         idx += 1;
     }
 
+    // Phase 8.5 #231 — derived entries follow the scalar user columns
+    // in the ordinal order. Each entry's `name` becomes the wire
+    // column name (the SELECT alias) and the position decoder reads
+    // it positionally as the entry's `ty`. The decode-name guard runs
+    // against the alias, matching `(<sql>) AS <alias>` on the wire.
+    for d in &scoped_derived {
+        let raw_name = d.name.to_string();
+        let alias = raw_name
+            .strip_prefix("r#")
+            .unwrap_or(raw_name.as_str())
+            .to_string();
+        let alias_lit = &alias;
+        let fname = &d.name;
+        decode_assignments.push(quote! {
+            #fname: ::djogi::__private::pg::decode_at::<_>(row, #idx, #alias_lit)?
+        });
+        idx += 1;
+    }
+
     quote! {
         impl #visage_ident {
             // Internal ctor — builds a fresh `VisageQuerySet` with the
-            // visage's baked column list and a vacuous root condition.
+            // visage's baked projection list and a vacuous root condition.
             // All public entry methods delegate here so the construction
             // path is written exactly once.
+            //
+            // Phase 8.5 #231 — the queryset carries a rendered
+            // `projection_list: &'static str` so derived entries'
+            // `(<sql>) AS <alias>` fragments splice into the SELECT
+            // slot without any runtime walk over `PROJECTIONS`. The
+            // text-rendering happens once at macro time.
             #[inline]
             fn __new() -> ::djogi::query::VisageQuerySet<#visage_ident> {
-                const COLS: &[&'static str] = &[ #(#columns_lit),* ];
                 ::djogi::query::VisageQuerySet::<#visage_ident>::new_for_visage(
                     <#source as ::djogi::prelude::Model>::table_name(),
-                    COLS,
+                    #projection_list_lit,
                     ::djogi::query::internal::Condition::True,
                 )
             }
@@ -248,9 +298,18 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
         }
 
         impl ::djogi::__private::pg::FromPgRow for #visage_ident {
+            // Phase 8.5 #231 — `COLUMNS` carries the alias at every
+            // ordinal position (column name for column entries, derived
+            // `name` for derived entries). The visage's
+            // `FromPgRow::COLUMN_LIST` is the rendered `PROJECTION_LIST`,
+            // which differs from `COLUMNS.join(", ")` once any derived
+            // entry is present (the alias position renders as
+            // `(<sql>) AS <alias>` in COLUMN_LIST, just `<alias>` in
+            // COLUMNS). See `docs/spec/visage-derived-fields.md`
+            // §"Column-list constants" for the rationale.
             const COLUMNS: &'static [&'static str] = &[ #(#columns_lit),* ];
 
-            const COLUMN_LIST: &'static str = #column_list_str;
+            const COLUMN_LIST: &'static str = #projection_list_lit;
 
             fn from_pg_row(
                 row: &::djogi::__private::tokio_postgres::Row,

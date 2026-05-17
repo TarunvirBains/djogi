@@ -9,6 +9,7 @@ pub mod attrs;
 pub mod cacheable;
 pub mod computed;
 pub mod crud;
+pub mod derived;
 pub mod descriptor;
 pub mod exclusion;
 pub mod filter;
@@ -60,6 +61,21 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // empty-SQL strings, unknown keys, and `#[field(...)]`-with-
     // `#[computed(...)]` collisions.
     let computed_attrs = computed::parse_computed_attrs(&struct_item)?;
+
+    // Phase 8.5 #231 — parse struct-level `#[derived(...)]` attributes.
+    // Each attribute declares one visage-derived field projection entry
+    // scoped to one or more of the canonical visages (`public` /
+    // `self_view` / `admin` / `export`). The parser runs BEFORE the
+    // attribute-strip pass below so the `#[derived(...)]` payloads are
+    // still on the struct when the walker runs. Span-precise errors
+    // surface for missing required keys, identifier-shape violations,
+    // unknown scopes, SQL surface bugs (statement separators, leading
+    // DDL, `$N` placeholders, aggregate misuse), and parse failures on
+    // the embedded `rust` expression. The cross-attribute checks
+    // (column collisions, derived-derived collisions, `pk = None`
+    // incompatibility) run further below once the model's column set is
+    // in scope.
+    let derived_attrs = derived::parse_derived_attrs(&struct_item)?;
 
     // Phase 8.5 issue #195 — MirJzSON gate. Every `MirJzSON` /
     // `Option<MirJzSON>` field must carry
@@ -149,6 +165,81 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
 
     validate_through_model_shape(&struct_item, &model_attrs)?;
     validate_version_fields(&struct_item, &field_attrs)?;
+
+    // Phase 8.5 #231 — cross-attribute validation for `#[derived(...)]`.
+    //
+    // Runs once the column set is in scope (after the computed-strip
+    // pass and validate_through_model_shape, but before any token
+    // emission). Checks:
+    //
+    // - `pk = None` is incompatible with any derived attribute
+    //   (E_DJG_VDF_015).
+    // - Per-scope column collisions between derived `name` and
+    //   exposed model columns (E_DJG_VDF_002).
+    // - Per-scope collisions between two derived attributes sharing
+    //   a `name` in an overlapping scope (E_DJG_VDF_003).
+    //
+    // The column-exposure list is materialised from the
+    // `FieldAttrs::expose` shape walked alongside the struct's named
+    // fields. Suppressed exposures (`expose(none)` / `expose(internal)`)
+    // contribute nothing because the column never reaches the visage.
+    if !derived_attrs.is_empty() {
+        let mut column_exposures: Vec<(String, Vec<&'static str>)> = Vec::new();
+        for (field, fa) in struct_item.fields.iter().zip(field_attrs.iter()) {
+            let Some(ident) = field.ident.as_ref() else {
+                continue;
+            };
+            if fa.expose.suppressed {
+                continue;
+            }
+            let col = crate::syn_util::column_name_from_ident(ident);
+            let mut scopes: Vec<&'static str> = Vec::new();
+            for s in &fa.expose.scalar_scopes {
+                if let Some(canon) = match s.as_str() {
+                    "public" => Some("public"),
+                    "self_view" => Some("self_view"),
+                    "admin" => Some("admin"),
+                    "export" => Some("export"),
+                    _ => None,
+                } {
+                    if !scopes.contains(&canon) {
+                        scopes.push(canon);
+                    }
+                }
+            }
+            for s in fa.expose.relation_scopes.keys() {
+                if let Some(canon) = match s.as_str() {
+                    "public" => Some("public"),
+                    "self_view" => Some("self_view"),
+                    "admin" => Some("admin"),
+                    "export" => Some("export"),
+                    _ => None,
+                } {
+                    if !scopes.contains(&canon) {
+                        scopes.push(canon);
+                    }
+                }
+            }
+            column_exposures.push((col, scopes));
+        }
+        derived::cross_check(
+            &derived_attrs,
+            &column_exposures,
+            matches!(model_attrs.pk, attrs::PkStrategy::None),
+        )?;
+    }
+
+    // Strip the struct-level `#[derived(...)]` attributes from the
+    // re-emitted struct. rustc does not recognise `derived` as a
+    // helper attribute on the `#[model]` ATTRIBUTE macro (helper
+    // attributes only live on `#[derive(...)]`); leaving the
+    // attribute on the surviving struct triggers an "unknown
+    // attribute" diagnostic downstream. The `#[derive(Model)]`
+    // entry point registers `derived` so rustc accepts it pre-
+    // expansion, but the post-expansion struct must shed the
+    // attribute before being emitted. The captured semantics live
+    // in `derived_attrs`.
+    struct_item.attrs.retain(|a| !a.path().is_ident("derived"));
 
     // Field names become unquoted SQL column names in the emitted
     // `COLUMN_LIST` — reject any that would break `SELECT` /
@@ -319,7 +410,15 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     //    / `Admin` / `Export` plus scalar `From<&Self>` and relation-nesting
     //    `TryFrom<&Self>` impls. Reads `FieldAttrs.expose` for scope
     //    membership; framework columns default into every visage.
-    let projections_ts = visages::expand(&struct_item, &model_attrs, &field_attrs);
+    //
+    //    Phase 8.5 #231 — `derived_attrs` carries one entry per parsed
+    //    `#[derived(...)]` attribute. Each scope's visage projection
+    //    list grows by one entry per derived attribute whose
+    //    `scopes = [...]` includes that scope; entries surface as
+    //    visage struct fields, alias-bearing SELECT projection
+    //    entries, positional FromPgRow decode arms, and From/TryFrom
+    //    init blocks per the spec.
+    let projections_ts = visages::expand(&struct_item, &model_attrs, &field_attrs, &derived_attrs);
 
     // 10. Advisory warnings — emit a `#[deprecated]` const for each field
     //     that carries `outbox = "ignore"` without a matching `rationale`.

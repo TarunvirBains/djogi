@@ -206,11 +206,50 @@ fn parse_computed_args(
                      e.g. `#[computed(sql = \"base_price * 2\")]`",
                 ));
             }
+            // Phase 8.5 issue #225 — `expose = "..."` / `expose(...)` is
+            // not accepted inside `#[computed(...)]`. The Path A draft
+            // entertained an `expose` sub-key on the model-side
+            // computed attribute; Path B (issue #231) reshapes visage
+            // exposure into a struct-level `#[derived(...)]` attribute
+            // that owns its own SQL + Rust + scopes triple. The two
+            // surfaces represent two distinct concepts (model-side
+            // virtual/stored column vs. visage-side projection-only
+            // entry), and conflating them was exactly the conceptual
+            // error the Path B reshape eliminated.
+            //
+            // The diagnostic surfaces a span-anchored hard rejection
+            // (Stage 2 of the deprecation flow — the Path A spec was
+            // never adopted publicly so there is no compatibility
+            // surface to preserve) with a remediation pointer to
+            // `#[derived(...)]` and the visage-derived-fields spec.
+            Meta::NameValue(nv) if nv.path.is_ident("expose") => {
+                return Err(syn::Error::new_spanned(
+                    &nv.path,
+                    "`expose = ...` is not accepted inside `#[computed(...)]` — \
+                     visage exposure is declared as a struct-level \
+                     `#[derived(name, ty, scopes, sql, rust)]` attribute \
+                     instead. See docs/spec/visage-derived-fields.md \
+                     (issue #225 / #231).",
+                ));
+            }
+            Meta::List(list) if list.path.is_ident("expose") => {
+                return Err(syn::Error::new_spanned(
+                    &list.path,
+                    "`expose(...)` is not accepted inside `#[computed(...)]` — \
+                     visage exposure is declared as a struct-level \
+                     `#[derived(name, ty, scopes, sql, rust)]` attribute \
+                     instead. See docs/spec/visage-derived-fields.md \
+                     (issue #225 / #231).",
+                ));
+            }
             other => {
                 return Err(syn::Error::new_spanned(
                     other,
                     "unsupported key in `#[computed(...)]`; only `sql = \"...\"` \
-                     is accepted in v0.1.0 (`stored` is deferred to Phase 8.5)",
+                     is accepted in v0.1.0 (`stored` is deferred to Phase 8.5; \
+                     `expose` was reshaped to the struct-level `#[derived(...)]` \
+                     attribute per issue #225 / #231 — see \
+                     docs/spec/visage-derived-fields.md)",
                 ));
             }
         }
@@ -459,6 +498,44 @@ mod tests {
         });
         let err = parse_computed_attrs(&s).expect_err("unknown key rejected");
         assert!(err.to_string().contains("unsupported key"));
+    }
+
+    /// Phase 8.5 issue #225 — `expose = "..."` inside `#[computed]`
+    /// is rejected with a remediation pointer to `#[derived(...)]`.
+    /// Stage 2 (parse-time hard rejection): the Path A draft was
+    /// never adopted publicly, so this ships without a deprecation
+    /// warning intermediate step.
+    #[test]
+    fn rejects_expose_assignment_inside_computed_attribute() {
+        let s = parse_struct(quote! {
+            struct Vehicle {
+                #[computed(sql = "base_price * 2", expose = "public")]
+                pub double_price: f64,
+            }
+        });
+        let err = parse_computed_attrs(&s).expect_err("expose= rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("expose"), "got: {msg}");
+        assert!(msg.contains("#[derived"), "got: {msg}");
+        assert!(msg.contains("visage-derived-fields"), "got: {msg}");
+    }
+
+    /// Phase 8.5 issue #225 — `expose(...)` (list form) inside
+    /// `#[computed]` is also rejected with the same remediation
+    /// pointer. The list form might appear if an adopter copied the
+    /// Path A `expose(public, admin)` shape from the earlier draft.
+    #[test]
+    fn rejects_expose_list_inside_computed_attribute() {
+        let s = parse_struct(quote! {
+            struct Vehicle {
+                #[computed(sql = "base_price * 2", expose(public, admin))]
+                pub double_price: f64,
+            }
+        });
+        let err = parse_computed_attrs(&s).expect_err("expose(...) rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("expose"), "got: {msg}");
+        assert!(msg.contains("#[derived"), "got: {msg}");
     }
 
     /// Mixing `#[field(...)]` and `#[computed(...)]` on the same field

@@ -6,6 +6,7 @@
 //! `(field, scope)` pair and re-used across all three emit phases.
 
 use crate::model::attrs::{FieldAttrs, ModelAttrs, RelationExposure, detect_relation};
+use crate::model::derived::DerivedAttr;
 use quote::format_ident;
 use syn::{Ident, ItemStruct};
 
@@ -38,6 +39,28 @@ pub(crate) struct VisageEmitContext<'a> {
     /// PK strategies, 2 for `pk = "none"`). Used to skip past the framework
     /// prefix when iterating user fields.
     pub n_framework: usize,
+    /// Phase 8.5 #231 — every parsed struct-level `#[derived(...)]`
+    /// attribute on the source struct, in source order. The visage
+    /// emitter filters these per-scope (an attribute contributes a
+    /// projection entry iff its `scopes = [...]` list includes
+    /// `self.scope`) and surfaces the matching entries as visage
+    /// struct fields, SELECT aliases, decode arms, and From/TryFrom
+    /// init expressions.
+    pub derived_attrs: &'a [DerivedAttr],
+}
+
+impl<'a> VisageEmitContext<'a> {
+    /// Iterate every parsed `#[derived(...)]` attribute whose
+    /// `scopes = [...]` list contains the context's scope. The
+    /// iteration order matches source-attribute order, which is the
+    /// stable codegen ordering the spec mandates for visage struct
+    /// fields and projection-list rendering.
+    pub(crate) fn scope_derived(&self) -> impl Iterator<Item = &'a DerivedAttr> + '_ {
+        let scope = self.scope;
+        self.derived_attrs
+            .iter()
+            .filter(move |d| d.scopes.iter().any(|s| s.key == scope))
+    }
 }
 
 /// Whether and how a field participates in a given visage scope.

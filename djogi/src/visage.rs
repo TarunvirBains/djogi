@@ -1,32 +1,206 @@
-//! Visage runtime — error types for generated visage structs.
+//! Visage runtime — trait surface, error types, and sealed
+//! projection metadata for generated visage structs.
 //!
-//! Emits four visage structs per `#[model]` struct
-//! (`{Model}Public`, `{Model}SelfView`, `{Model}Admin`, `{Model}Export`) plus
-//! conversion impls. This module holds the runtime-side types those
-//! conversions depend on:
+//! `#[model]` emits four visage structs per model
+//! (`{Model}Public`, `{Model}SelfView`, `{Model}Admin`, `{Model}Export`)
+//! plus conversion impls. This module holds the runtime-side types
+//! those emissions depend on:
 //!
-//! - [`VisageError`] — the fallible-conversion error type, returned by
-//!   every `TryFrom<&Model>` impl that nests a relation-form peer visage.
-//!   `#[non_exhaustive]` so later phases (e.g. protected-data governance)
-//!   can add variants without a breaking change.
-//! - `impl From<Infallible> for VisageError` — unreachable glue that lets
-//!   generated code propagate `Infallible` with `?` when a peer visage is
-//!   scalar-only.
+//! - [`DjogiVisage`] — Phase 8.5 issue #231 — projection metadata
+//!   trait. Every emitted visage carries `Self::Model`, `SCOPE`,
+//!   `COLUMNS`, `PROJECTIONS`, and `PROJECTION_LIST` constants so
+//!   framework-internal code (lints, debug formatters, future
+//!   Tier-2 predicate rendering) can read the projection shape
+//!   through a single bound.
+//! - [`projection::ProjectionEntry`] — sealed `__private` enum
+//!   discriminating column entries from derived-expression entries
+//!   inside `PROJECTIONS`. The `pub` visibility is mandated by the
+//!   trait constant's type; the `__private` module path and
+//!   `#[non_exhaustive]` attribute carry the convention seal.
+//! - [`VisageError`] — the fallible-conversion error type, returned
+//!   by every `TryFrom<&Model>` impl that nests a relation-form peer
+//!   visage OR has a fallible derived entry. `#[non_exhaustive]`.
+//! - `impl From<Infallible> for VisageError` — glue that lets
+//!   generated code propagate `Infallible` with `?` when mixed-
+//!   fallibility visages embed an infallible derived entry alongside
+//!   a fallible one.
 //!
-//! No runtime execution happens here — every path is straight-line error
-//! construction or formatting.
+//! No runtime execution happens here — every path is straight-line
+//! error construction or formatting.
 
 use std::convert::Infallible;
 
+/// Visage projection-metadata trait.
+///
+/// Phase 8.5 issue #231 — every emitted visage struct (`UserPublic`,
+/// `UserSelfView`, `UserAdmin`, `UserExport`, ...) carries a single
+/// impl of this trait so framework-internal code can read the
+/// projection shape without hand-rolling parallel constants per
+/// visage. Adopter code rarely touches the trait directly — the
+/// constants are reached on demand for advanced uses (debug
+/// formatting, schema documentation generation).
+///
+/// # Constants
+///
+/// - [`SCOPE`](Self::SCOPE) — stable scope key matching the visage's
+///   audience.
+/// - [`COLUMNS`](Self::COLUMNS) — names appearing at each ordinal
+///   position of the visage's SELECT row, in struct-field order.
+///   Column entries: the raw column name. Derived entries: the
+///   entry's `name` (which equals the SELECT alias).
+/// - [`PROJECTIONS`](Self::PROJECTIONS) — sealed `ProjectionEntry`
+///   list. Walked by framework-internal consumers only — the
+///   queryset hot path uses `PROJECTION_LIST` instead.
+/// - [`PROJECTION_LIST`](Self::PROJECTION_LIST) — pre-rendered
+///   comma-joined SELECT-list string. Column entries render
+///   verbatim; derived entries render as `(<sql>) AS <alias>`.
+///   `VisageQuerySet` splices this directly into the SELECT slot at
+///   query time.
+///
+/// # Note on the absence of `TABLE`
+///
+/// There is intentionally no `TABLE` constant on this trait. The
+/// source-model table is already reachable through
+/// `<V::Model as Model>::table_name()` (the `type Model: Model`
+/// supertrait bound provides it). Carrying a parallel `TABLE`
+/// const here would be redundant metadata the macro would have to
+/// keep in sync with `Model::table_name()` by construction.
+///
+/// # Relation to [`DjogiVisageOf<M>`](crate::visage_boundary::DjogiVisageOf)
+///
+/// `DjogiVisageOf<M>` is a marker trait sealing the visage ↔ model
+/// pairing; it carries no associated items. Every emitted
+/// `impl DjogiVisage for V` is accompanied by
+/// `impl DjogiVisageOf<V::Model> for V`. The reflexive blanket
+/// `impl<M: Model> DjogiVisageOf<M> for M` lets the marker accept
+/// the model itself as a "degenerate visage"; no equivalent blanket
+/// exists for `DjogiVisage` — models have descriptors, not
+/// projections.
+pub trait DjogiVisage: crate::visage_boundary::private::Sealed<Self::Model> {
+    /// The source model this visage projects from.
+    type Model: crate::model::Model;
+
+    /// Stable scope key (`"public"` / `"self_view"` / `"admin"` /
+    /// `"export"`). A `&'static str` rather than a typed enum to
+    /// match the existing `SCOPES` tuple shape inside
+    /// `djogi-macros::model::visages::SCOPES` and to avoid
+    /// introducing a sibling enum to `VisageError`'s string-typed
+    /// `scope` field. A future phase may swap this to a sealed
+    /// `enum djogi::Scope` once the surrounding surface justifies
+    /// the migration.
+    const SCOPE: &'static str;
+
+    /// Names that appear at each ordinal position of the visage's
+    /// SELECT row, in struct-field order. For column entries this
+    /// is the raw column name; for derived entries this is the
+    /// entry's `name` (which equals the SELECT alias emitted into
+    /// the projection).
+    ///
+    /// This **is** the visage's `FromPgRow::COLUMNS` — the visage's
+    /// `FromPgRow` impl re-exports the same slice so the positional
+    /// decoder's debug-build name guard compares against the same
+    /// alias the SELECT emitted.
+    ///
+    /// The historical
+    /// `FromPgRow::COLUMN_LIST == COLUMNS.join(", ")` invariant
+    /// becomes `FromPgRow::COLUMN_LIST == PROJECTION_LIST` for
+    /// visages — the only callers that interpolated `COLUMN_LIST`
+    /// directly were the visage queryset builders, which now route
+    /// through `PROJECTION_LIST` instead.
+    const COLUMNS: &'static [&'static str];
+
+    /// Full projection (columns and derived expressions) in
+    /// struct-field order. **Metadata-only** — walked by
+    /// framework-internal consumers (lints, debug formatters, future
+    /// Tier-2 per-entry SQL renderer). The queryset hot path uses
+    /// [`PROJECTION_LIST`](Self::PROJECTION_LIST) instead.
+    ///
+    /// Adopters do not name `ProjectionEntry` directly — the type
+    /// is `pub` to satisfy the trait constant's type, but lives
+    /// under `__private` and carries a "do-not-construct"
+    /// convention warning matching `__private::VisageSealed` and
+    /// `__private::pk_seal`.
+    const PROJECTIONS: &'static [crate::__private::ProjectionEntry];
+
+    /// Rendered SQL projection list rendered once at macro time
+    /// (e.g. `"id, name, (CASE ... END) AS facility_site"`).
+    /// `VisageQuerySet` splices this single string into the SELECT
+    /// slot at query time — no runtime walk over `PROJECTIONS`.
+    /// Equal to `COLUMNS.join(", ")` when there are no derived
+    /// entries (because the column entry's name and its alias
+    /// coincide).
+    const PROJECTION_LIST: &'static str;
+}
+
+/// Sealed projection metadata enum.
+///
+/// `ProjectionEntry` is `pub` (the [`DjogiVisage::PROJECTIONS`]
+/// trait constant requires the enum to be nameable through
+/// `::djogi::__private::ProjectionEntry`) but lives behind
+/// `crate::__private` and carries a **convention-only seal** — the
+/// same precedent as the existing `__private::VisageSealed` and
+/// `__private::pk_seal` surfaces. The `#[non_exhaustive]`
+/// attribute prevents exhaustive `match` construction across the
+/// crate boundary even when adopters do reach in. The `__private`
+/// module hiding plus the `#[doc(hidden)]` on variants removes the
+/// type from the rustdoc surface.
+///
+/// The "do not construct or match on this type" warning is the
+/// seal at the language-of-conduct level — it does not mechanically
+/// prevent construction, but it matches the precedent the framework
+/// already establishes for its other internal-boundary types.
+pub mod projection {
+    /// Sealed projection-entry discriminant — **do not construct or
+    /// match on this type from downstream code.**
+    ///
+    /// The variants are public only because the
+    /// [`DjogiVisage::PROJECTIONS`](crate::DjogiVisage::PROJECTIONS)
+    /// trait constant requires the enum to be nameable through
+    /// `::djogi::__private::ProjectionEntry`; reaching this type
+    /// from outside the macro-emitted path is breaking the framework
+    /// boundary, and the framework reserves the right to change the
+    /// variants in any future release without notice. Same
+    /// convention as `__private::VisageSealed` and
+    /// `__private::pk_seal` — the warning is the seal.
+    #[non_exhaustive]
+    pub enum ProjectionEntry {
+        /// A direct column reference. The string is the column
+        /// name as it appears in the projection.
+        #[doc(hidden)]
+        Column(&'static str),
+        /// A derived projection entry — Phase 8.5 issue #231. The
+        /// `alias` is the SELECT alias the macro emitted (which
+        /// equals the visage struct's field name and the entry's
+        /// `COLUMNS[i]` slot); `sql` is the adopter's SQL expression
+        /// verbatim, before the macro wraps it in outer parens for
+        /// the SELECT splice.
+        ///
+        /// This shape carries `alias` + `sql` only because the
+        /// framework-internal consumers (lints, debug formatters,
+        /// future Tier-2 per-entry SQL renderer) need those two
+        /// fields. Documentation generators and the `djogi docs`
+        /// CLI consume the richer [`crate::descriptor::DerivedProjection`]
+        /// entries through the separate `VisageDescriptor` inventory
+        /// channel instead.
+        #[doc(hidden)]
+        Derived {
+            /// The SELECT alias (= visage struct field name).
+            alias: &'static str,
+            /// The adopter's SQL expression verbatim. The outer
+            /// parens the SELECT renderer adds happen at projection-
+            /// list assembly time, not here.
+            sql: &'static str,
+        },
+    }
+}
+
 /// Error returned by a fallible visage conversion (`TryFrom<&Model>`).
 ///
-/// Generated by codegen whenever a visage nests at least one peer visage
-/// via a relation field. The only variant today is
-/// [`VisageError::UnresolvedRelation`], raised when the caller forgot to
-/// `prefetch` / `select_related` the relation before projecting.
-///
-/// `#[non_exhaustive]` is intentional: protected-data governance and later
-/// phases may add variants (e.g. redaction failures, codec errors) without
+/// Generated by codegen whenever a visage nests at least one peer
+/// visage via a relation field OR carries at least one fallible
+/// derived entry (Phase 8.5 issue #231). `#[non_exhaustive]` is
+/// intentional: protected-data governance and later phases may add
+/// variants (e.g. redaction failures, codec errors) without
 /// breaking the public API.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
@@ -48,6 +222,60 @@ pub enum VisageError {
         /// Visage scope whose `TryFrom` impl raised this error
         /// (`public` / `self_view` / `admin` / `export`).
         scope: &'static str,
+    },
+
+    /// A derived field declared as NOT NULL (`ty = T`) decoded NULL
+    /// from the database row.
+    ///
+    /// Surfaces from the visage's `FromPgRow` impl when Postgres
+    /// returns a NULL value for the position of a derived entry
+    /// whose Rust type is not `Option<_>`. Wrapped via the existing
+    /// `impl From<VisageError> for DjogiError` blanket — callers
+    /// fetching through `VisageQuerySet` see this as
+    /// `DjogiError::Visage(VisageError::DbComputedNullForNonOptional { .. })`.
+    ///
+    /// Fix: either declare `ty = Option<T>` on the `#[derived(...)]`
+    /// attribute (the spec's null-tolerant shape) or fix the SQL
+    /// expression to coalesce the NULL on the server side
+    /// (`COALESCE(<expr>, <default>)`).
+    #[error(
+        "visage `{visage}` derived field `{field}` returned NULL but is declared \
+         as a non-optional type (use `ty = Option<...>` to permit NULL)"
+    )]
+    DbComputedNullForNonOptional {
+        /// Visage type name (e.g. `"ConsignmentPublic"`).
+        visage: &'static str,
+        /// The derived field name that decoded NULL
+        /// (e.g. `"facility_site"`).
+        field: &'static str,
+    },
+
+    /// A derived field's runtime type did not match the declared
+    /// `ty`.
+    ///
+    /// Surfaces from the visage's `FromPgRow` impl when Postgres
+    /// returns a value the declared Rust type cannot accept. The
+    /// `expected` carries the declared type's name; `actual` carries
+    /// the Postgres-side type description as best as the row-
+    /// decoder can recover.
+    ///
+    /// Fix: align the `ty = ...` on the `#[derived(...)]` attribute
+    /// with the SQL expression's result type, or cast the SQL
+    /// expression on the server side to the expected type.
+    #[error(
+        "visage `{visage}` derived field `{field}` type mismatch: \
+         expected {expected}, got {actual}"
+    )]
+    DbComputedTypeMismatch {
+        /// Visage type name (e.g. `"ConsignmentPublic"`).
+        visage: &'static str,
+        /// The derived field name that failed to decode
+        /// (e.g. `"facility_site"`).
+        field: &'static str,
+        /// Declared Rust type name (e.g. `"Site"`).
+        expected: &'static str,
+        /// Postgres-side type description (e.g. `"INTEGER"`).
+        actual: &'static str,
     },
 }
 
@@ -82,5 +310,32 @@ mod tests {
     fn infallible_converts_to_visage_error() {
         fn accepts_from<T: From<::std::convert::Infallible>>() {}
         accepts_from::<VisageError>();
+    }
+
+    #[test]
+    fn db_computed_null_for_non_optional_display_includes_context() {
+        let err = VisageError::DbComputedNullForNonOptional {
+            visage: "ConsignmentPublic",
+            field: "facility_site",
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("ConsignmentPublic"));
+        assert!(msg.contains("facility_site"));
+        assert!(msg.contains("Option"));
+    }
+
+    #[test]
+    fn db_computed_type_mismatch_display_includes_context() {
+        let err = VisageError::DbComputedTypeMismatch {
+            visage: "ConsignmentPublic",
+            field: "facility_site",
+            expected: "Site",
+            actual: "INTEGER",
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("ConsignmentPublic"));
+        assert!(msg.contains("facility_site"));
+        assert!(msg.contains("Site"));
+        assert!(msg.contains("INTEGER"));
     }
 }

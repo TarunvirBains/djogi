@@ -40,6 +40,7 @@
 //! directly.
 
 use crate::model::attrs::{FieldAttrs, ModelAttrs, PkStrategy, detect_relation};
+use crate::model::derived::{DerivedAttr, FallibilityShape, detect_fallibility_shape};
 use crate::model::visage_ctx::{
     ScopeMembership, VisageEmitContext, classify_field_for_scope, is_full_peer_for,
 };
@@ -48,7 +49,7 @@ use quote::{format_ident, quote};
 use syn::ItemStruct;
 
 /// Every scope emits one generated visage struct, in this fixed order.
-const SCOPES: &[(&str, &str)] = &[
+pub(crate) const SCOPES: &[(&str, &str)] = &[
     ("public", "Public"),
     ("self_view", "SelfView"),
     ("admin", "Admin"),
@@ -59,6 +60,7 @@ pub fn expand(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
     field_attrs: &[FieldAttrs],
+    derived_attrs: &[DerivedAttr],
 ) -> TokenStream {
     let source_name = &struct_item.ident;
 
@@ -75,6 +77,7 @@ pub fn expand(
                 field_attrs,
                 model_attrs,
                 n_framework,
+                derived_attrs,
             };
             emit_projection_for_scope(&ctx)
         })
@@ -97,6 +100,27 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
 
     let fw_fields = framework_field_decls(model_attrs);
     let fw_inits = framework_field_inits(model_attrs);
+
+    // Phase 8.5 #231 — pre-compute fallibility shape per scope-included
+    // derived entry. The matched shape decides per-entry emission shape
+    // (Shape1 propagates inner `?`; Shapes 2–5 add an outer `?`;
+    // Infallible passes through unchanged). On parse failure of the
+    // adopter's `rust` expression, fall through to a compile error
+    // token stream so the diagnostic reaches the user crate.
+    let mut derived_shapes: Vec<(usize, FallibilityShape)> = Vec::new();
+    let scoped_derived: Vec<&DerivedAttr> = ctx.scope_derived().collect();
+    for (i, d) in scoped_derived.iter().enumerate() {
+        match detect_fallibility_shape(&d.rust, d.rust_span) {
+            Ok(s) => derived_shapes.push((i, s)),
+            Err(e) => return e.to_compile_error(),
+        }
+    }
+    let any_fallible = derived_shapes.iter().any(|(_, s)| {
+        matches!(
+            s,
+            FallibilityShape::Shape1TrailingQuestion | FallibilityShape::Shape2to5Result
+        )
+    });
 
     let mut user_fields: Vec<TokenStream> = Vec::new();
     let mut user_inits: Vec<TokenStream> = Vec::new();
@@ -220,6 +244,92 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
         }
     }
 
+    // Phase 8.5 #231 — append derived-field decls and inits AFTER all
+    // user column entries so the visage struct's field order is:
+    //
+    //     framework cols, user cols (in scope), derived entries.
+    //
+    // The same order drives PROJECTION_LIST emission, FromPgRow
+    // positional decode, and the From/TryFrom init body.
+    let mut derived_field_decls: Vec<TokenStream> = Vec::new();
+    let mut derived_field_inits: Vec<TokenStream> = Vec::new();
+    for (i, d) in scoped_derived.iter().enumerate() {
+        let name = &d.name;
+        let ty = &d.ty;
+        let doc = match &d.doc {
+            Some(s) => quote! { #[doc = #s] },
+            None => quote! {},
+        };
+        derived_field_decls.push(quote! {
+            #doc
+            pub #name: #ty,
+        });
+
+        // Splice the adopter's `rust` expression. The `let model: &Source
+        // = src;` rebind makes `model.<field>` syntax work without
+        // retouching the existing emitter's `src` parameter binding.
+        let rust_src = &d.rust;
+        // The captured Rust expression is a single token stream — parse
+        // once, splice once. Errors here surface as compile diagnostics
+        // attached to the rust_span so the adopter sees the right
+        // source-line anchor.
+        let expr_tokens: TokenStream = match syn::parse_str::<syn::Expr>(rust_src) {
+            Ok(e) => quote! { #e },
+            Err(e) => {
+                return syn::Error::new(
+                    d.rust_span,
+                    format!("`#[derived]` `rust` failed to parse as an expression: {e}"),
+                )
+                .to_compile_error();
+            }
+        };
+
+        // Per-entry emission shape — see `DerivedAttr` fallibility
+        // discussion in the spec's "From<&Model> / TryFrom<&Model>
+        // emission" section.
+        let shape = derived_shapes
+            .get(i)
+            .copied()
+            .map(|(_, s)| s)
+            .unwrap_or(FallibilityShape::Infallible);
+        let init = match (any_fallible, shape) {
+            // Whole visage is infallible — block returns T directly.
+            (false, _) => quote! {
+                #name: {
+                    let model: &#source = src;
+                    #expr_tokens
+                },
+            },
+            // Visage is fallible, this entry is also fallible Shape 1
+            // (trailing `?`). The inner `?` propagates from the splice
+            // block to the surrounding try_from body; no outer `?`.
+            (true, FallibilityShape::Shape1TrailingQuestion) => quote! {
+                #name: {
+                    let model: &#source = src;
+                    #expr_tokens
+                },
+            },
+            // Visage is fallible, this entry returns `Result<T, E>` —
+            // unwrap via outer `?`. The `?` desugars to
+            // `Err(From::from(e))`, requiring `VisageError: From<E>`.
+            (true, FallibilityShape::Shape2to5Result) => quote! {
+                #name: {
+                    let model: &#source = src;
+                    #expr_tokens
+                }?,
+            },
+            // Visage is fallible but this entry is infallible — block
+            // returns T; no outer `?` (no Result to unwrap).
+            (true, FallibilityShape::Infallible) => quote! {
+                #name: {
+                    let model: &#source = src;
+                    #expr_tokens
+                },
+            },
+        };
+        derived_field_inits.push(init);
+    }
+
     // Serde's derive macros emit paths into `::serde::*` internally; the
     // `#[serde(crate = "...")]` attribute redirects them so the emitted
     // code routes through `::djogi::__private::serde::*` and no direct
@@ -234,27 +344,26 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
         #[serde(crate = "::djogi::__private::serde")]
     };
 
-    // Dispatch on relation-nesting presence.
+    // Dispatch on relation-nesting + derived-fallibility presence.
     //
-    // - **Scalar-only** visages emit `impl From<&Source>`. The
+    // - **Scalar-only** visages with all-infallible derived entries
+    //   (or no derived entries at all) emit `impl From<&Source>`. The
     //   stdlib provides a blanket `impl<T, U> TryFrom<U> for T where
     //   U: Into<T>` (with `Error = Infallible`), so a scalar-only
-    //   visage automatically satisfies `TryFrom<&Source>` too. The
-    //   relation-nesting emitter above calls
-    //   `<Peer as TryFrom<&_>>::try_from(resolved)?` uniformly; the `?`
-    //   coerces the blanket's `Infallible` error into `VisageError`
-    //   via the `impl From<Infallible> for VisageError` glue in
-    //   `djogi/src/visage.rs`. That is what makes transitive
-    //   nesting (Vehicle → Owner → Department) compose without the
-    //   relation-nesting emitter knowing each peer's shape.
+    //   visage automatically satisfies `TryFrom<&Source>` too.
     //
     //   Emitting an explicit `TryFrom<&Source, Error = VisageError>`
     //   here would conflict with the stdlib blanket (E0119) — don't.
     //
-    // - **Relation-nesting** visages emit only `impl TryFrom<&Source>`
-    //   with `Error = VisageError`. A scalar `From` is unsound for
-    //   this case because the `.resolved()` probe is fallible.
-    let conv_impl = if has_relation_entry {
+    // - **Relation-nesting** visages OR scalar-only visages with at
+    //   least one fallible derived entry emit
+    //   `impl TryFrom<&Source>` with `Error = VisageError`. Phase
+    //   8.5 #231 adds derived fallibility as a second trigger for
+    //   the TryFrom branch; the relation-nesting trigger is
+    //   unchanged. A scalar `From` is unsound when any of the
+    //   per-field init expressions may fail.
+    let needs_try_from = has_relation_entry || any_fallible;
+    let conv_impl = if needs_try_from {
         quote! {
             impl ::std::convert::TryFrom<&#source> for #proj_name {
                 type Error = ::djogi::VisageError;
@@ -262,6 +371,7 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
                     ::std::result::Result::Ok(Self {
                         #(#fw_inits)*
                         #(#user_inits)*
+                        #(#derived_field_inits)*
                     })
                 }
             }
@@ -273,6 +383,7 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
                     Self {
                         #(#fw_inits)*
                         #(#user_inits)*
+                        #(#derived_field_inits)*
                     }
                 }
             }
@@ -292,11 +403,21 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
     // `Model::table_name()` to reach).
     let queryset_entry = crate::model::visage_query::expand(ctx);
 
+    // Phase 8.5 #231 — emit the `DjogiVisage` trait impl + the
+    // `assert_derived_parity` inherent method, when applicable.
+    let djogi_visage_impl = emit_djogi_visage_impl(ctx, &scoped_derived);
+    let parity_impl = if scoped_derived.is_empty() {
+        TokenStream::new()
+    } else {
+        emit_assert_derived_parity(proj_name, &scoped_derived)
+    };
+
     quote! {
         #derive_path
         pub struct #proj_name {
             #(#fw_fields)*
             #(#user_fields)*
+            #(#derived_field_decls)*
         }
 
         #conv_impl
@@ -304,6 +425,252 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
         #fields_filter_seal
 
         #queryset_entry
+
+        #djogi_visage_impl
+
+        #parity_impl
+    }
+}
+
+/// Compute the visage's projection-entry list: `(name, is_derived_alias)` pairs.
+///
+/// The order matches the visage struct's field order — framework
+/// columns first (`id`, `created_at`, `updated_at`), then user columns
+/// in declaration order (filtered to those exposed in the scope), then
+/// derived entries in attribute declaration order. The `is_derived`
+/// flag carries the discriminant the SELECT renderer uses to wrap
+/// derived entries with `(<sql>) AS <alias>`.
+///
+/// Relation-embed entries are intentionally excluded — the visage's
+/// SELECT projection cannot represent an embedded peer as a flat
+/// column. `emit_djogi_visage_impl` and `emit_projection_list_string`
+/// both honour this gate via the `RelationEmbed` skip in the scope
+/// classifier.
+pub(crate) fn projection_entries(ctx: &VisageEmitContext<'_>) -> Vec<(String, bool, String)> {
+    // (name-or-alias, is_derived, sql-fragment-or-column-name)
+    let model_attrs = ctx.model_attrs;
+    let struct_item = ctx.struct_item;
+    let field_attrs = ctx.field_attrs;
+    let n_framework = ctx.n_framework;
+    let scope = ctx.scope;
+
+    let mut out: Vec<(String, bool, String)> = Vec::new();
+    // Framework columns — always present unless `pk = None` skips id.
+    if !matches!(model_attrs.pk, PkStrategy::None) {
+        out.push(("id".to_string(), false, "id".to_string()));
+    }
+    out.push(("created_at".to_string(), false, "created_at".to_string()));
+    out.push(("updated_at".to_string(), false, "updated_at".to_string()));
+
+    let user_field_pairs: Vec<_> = struct_item
+        .fields
+        .iter()
+        .skip(n_framework)
+        .zip(field_attrs.iter())
+        .collect();
+
+    let mut saw_relation_embed = false;
+    for (field, attrs) in &user_field_pairs {
+        let Some(fname) = field.ident.as_ref() else {
+            continue;
+        };
+        match classify_field_for_scope(field, attrs, scope) {
+            ScopeMembership::Absent | ScopeMembership::Reject { .. } => continue,
+            ScopeMembership::Scalar => {
+                let col = crate::syn_util::column_name_from_ident(fname);
+                out.push((col.clone(), false, col));
+            }
+            ScopeMembership::RelationEmbed { .. } => {
+                saw_relation_embed = true;
+                break;
+            }
+        }
+    }
+
+    // Relation-embed visages do not get a flat projection — clear the
+    // list so the consumer (DjogiVisage trait impl, projection-list
+    // emitter) knows to bail. The visage struct + From/TryFrom
+    // conversion still exist; only the SELECT path is unsupported.
+    if saw_relation_embed {
+        return Vec::new();
+    }
+
+    // Append derived entries in attribute declaration order. The third
+    // tuple slot carries the verbatim adopter `sql` so the SELECT
+    // renderer can wrap it with `(<sql>) AS <alias>`.
+    for d in ctx.scope_derived() {
+        let name = d.name.to_string();
+        let name = name.strip_prefix("r#").unwrap_or(name.as_str()).to_string();
+        out.push((name, true, d.sql.clone()));
+    }
+
+    out
+}
+
+/// Emit the per-visage `DjogiVisage` trait impl, when the projection
+/// has a flat (non-relation-embed) shape. Relation-embed visages skip
+/// the impl — their SELECT path is unsupported, so the trait constants
+/// would carry stale data.
+fn emit_djogi_visage_impl(
+    ctx: &VisageEmitContext<'_>,
+    _scoped_derived: &[&DerivedAttr],
+) -> TokenStream {
+    let entries = projection_entries(ctx);
+    if entries.is_empty() {
+        return TokenStream::new();
+    }
+    let source = ctx.source;
+    let proj_name = &ctx.visage_ident;
+    let scope = ctx.scope;
+
+    // `COLUMNS` — every ordinal position's name. Column entries: the
+    // raw column name. Derived entries: the alias.
+    let columns_lits: Vec<TokenStream> = entries
+        .iter()
+        .map(|(name, _, _)| {
+            let n = name.as_str();
+            quote! { #n }
+        })
+        .collect();
+
+    // `PROJECTIONS` — sealed `ProjectionEntry` list. Column entries
+    // lower to `Column("<name>")`; derived entries lower to
+    // `Derived { alias, sql }`.
+    let projection_entry_lits: Vec<TokenStream> = entries
+        .iter()
+        .map(|(name, is_derived, payload)| {
+            let n = name.as_str();
+            let p = payload.as_str();
+            if *is_derived {
+                quote! {
+                    ::djogi::__private::ProjectionEntry::Derived {
+                        alias: #n,
+                        sql: #p,
+                    }
+                }
+            } else {
+                quote! { ::djogi::__private::ProjectionEntry::Column(#n) }
+            }
+        })
+        .collect();
+
+    // `PROJECTION_LIST` — rendered comma-joined SELECT-list string.
+    // Column entries pass through verbatim; derived entries render as
+    // `(<sql>) AS <alias>`.
+    let mut projection_list = String::new();
+    for (i, (name, is_derived, payload)) in entries.iter().enumerate() {
+        if i > 0 {
+            projection_list.push_str(", ");
+        }
+        if *is_derived {
+            projection_list.push('(');
+            projection_list.push_str(payload);
+            projection_list.push_str(") AS ");
+            projection_list.push_str(name);
+        } else {
+            projection_list.push_str(name);
+        }
+    }
+
+    quote! {
+        impl ::djogi::DjogiVisage for #proj_name {
+            type Model = #source;
+            const SCOPE: &'static str = #scope;
+            const COLUMNS: &'static [&'static str] = &[ #(#columns_lits),* ];
+            const PROJECTIONS: &'static [::djogi::__private::ProjectionEntry] = &[
+                #(#projection_entry_lits),*
+            ];
+            const PROJECTION_LIST: &'static str = #projection_list;
+        }
+    }
+}
+
+/// Emit the `assert_derived_parity` inherent method on a visage. Only
+/// emitted when the visage has at least one derived entry in its scope.
+///
+/// Compares ONLY the derived fields between two pre-constructed
+/// visages; framework columns and storage columns are intentionally
+/// not compared (their round-trip lossy `DateTime` truncation would
+/// false-positive on high-precision timestamps regardless of any
+/// derived drift). Short-circuits at the first mismatch.
+///
+/// Emits a `where <Ty>: PartialEq` bound per distinct derived type so
+/// rustc's E0277 diagnostic anchors at the impl block (E_DJG_VDF_016
+/// per the spec) rather than at the inner `!=` token.
+fn emit_assert_derived_parity(
+    proj_name: &syn::Ident,
+    scoped_derived: &[&DerivedAttr],
+) -> TokenStream {
+    let proj_str = proj_name.to_string();
+
+    let comparisons: Vec<TokenStream> = scoped_derived
+        .iter()
+        .map(|d| {
+            let name = &d.name;
+            let name_str = name.to_string();
+            let stripped = name_str
+                .strip_prefix("r#")
+                .unwrap_or(name_str.as_str())
+                .to_string();
+            quote! {
+                if self.#name != other.#name {
+                    return ::std::result::Result::Err(
+                        ::djogi::testing::DerivedParityError::Drift {
+                            visage: #proj_str,
+                            field: #stripped,
+                        }
+                    );
+                }
+            }
+        })
+        .collect();
+
+    // Deduplicate ty tokens for the `where`-bound list. Token-level
+    // equality is sufficient — distinct spellings of the same type
+    // produce distinct bounds; the dedupe keeps the impl block from
+    // listing the same bound twice.
+    let mut seen: Vec<String> = Vec::new();
+    let mut where_bounds: Vec<TokenStream> = Vec::new();
+    for d in scoped_derived {
+        let ty = &d.ty;
+        let key = quote! { #ty }.to_string();
+        if seen.iter().any(|s| *s == key) {
+            continue;
+        }
+        seen.push(key);
+        where_bounds.push(quote! { #ty: ::std::cmp::PartialEq });
+    }
+    let where_clause = if where_bounds.is_empty() {
+        TokenStream::new()
+    } else {
+        quote! { where #(#where_bounds),* }
+    };
+
+    let doc = format!(
+        " Compare derived fields between two `{proj_str}` instances and \
+         return `Err(DerivedParityError::Drift {{ ... }})` on the first \
+         mismatch. Framework columns (`id`, `created_at`, `updated_at`) \
+         and storage columns are NEVER compared — only fields populated \
+         from `#[derived(...)]` declarations whose `scopes = [...]` list \
+         includes this visage's scope.\n\n\
+         Phase 8.5 issue #231 — see \
+         `docs/spec/visage-derived-fields.md` for the parity-helper \
+         design rationale (the per-visage emission is the macro's \
+         answer to round-trip-lossy timestamp false positives + the \
+         absence of an auto-derived `PartialEq` on visages)."
+    );
+
+    quote! {
+        impl #proj_name #where_clause {
+            #[doc = #doc]
+            pub fn assert_derived_parity(
+                &self,
+                other: &Self,
+            ) -> ::std::result::Result<(), ::djogi::testing::DerivedParityError> {
+                #(#comparisons)*
+                ::std::result::Result::Ok(())
+            }
+        }
     }
 }
 
