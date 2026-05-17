@@ -545,15 +545,14 @@ impl DjogiPortableEq for time::OffsetDateTime {}
 impl DjogiPortableEq for time::Date {}
 impl DjogiPortableEq for uuid::Uuid {}
 impl DjogiPortableEq for rust_decimal::Decimal {}
-impl<V> DjogiPortableEq for V
-where
+impl<V> DjogiPortableEq for V where
     V: crate::primary_key::PrimaryKey
         + PartialEq
         + postgres_types::ToSql
         + Clone
         + Send
         + Sync
-        + 'static,
+        + 'static
 {
 }
 impl<V> DjogiPortableEq for Option<V>
