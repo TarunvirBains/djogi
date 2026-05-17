@@ -5,7 +5,12 @@ error[E0277]: the trait bound `Vec<u32>: DjogiSqlType` is not satisfied
     |                      ^^^^^^^^ the trait `DjogiSqlType` is not implemented for `Vec<u32>`
     |
 help: the following other types implement trait `DjogiSqlType`
-   --> djogi/src/fts.rs:97:1
+   --> djogi/src/pg_types.rs:220:1
+    |
+220 | impl crate::descriptor::DjogiSqlType for Interval {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `djogi::Interval`
+    |
+   ::: djogi/src/fts.rs:97:1
     |
  97 | impl crate::descriptor::DjogiSqlType for TsVector {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TsVector`

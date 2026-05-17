@@ -157,6 +157,19 @@ pub enum FieldSqlType {
         subtype: GeographySubtype,
         srid: u32,
     },
+    /// Postgres `INTERVAL` (djogi#212). Rust source type is
+    /// `djogi::Interval` (`pg_types::Interval`) — a three-component
+    /// newtype mirroring the Postgres wire format `(microseconds, days,
+    /// months)`. The `time` crate's `Duration` is intentionally NOT
+    /// supported here: a `Duration` is a fixed-microsecond duration
+    /// with no calendar-component story, and collapsing the three
+    /// Postgres fields into one would silently corrupt DST-straddling
+    /// or month-arithmetic results. See `djogi::Interval` docs for the
+    /// full rationale.
+    ///
+    /// Always-available — no feature flag. The codec lives in
+    /// `pg_types.rs` and pulls in no third-party crate.
+    Interval,
     /// Fallback for SQL types the framework doesn't model explicitly.
     /// Stored verbatim and compared by string equality in the migration differ.
     Custom(&'static str),
@@ -209,6 +222,10 @@ impl std::fmt::Display for FieldSqlType {
             FieldSqlType::Geography { subtype, srid } => {
                 write!(f, "geography({subtype}, {srid})")
             }
+            // djogi#212 — INTERVAL column type. The wire codec carries
+            // the three-component encoding; the SQL type string is the
+            // bare Postgres `INTERVAL` keyword.
+            FieldSqlType::Interval => write!(f, "INTERVAL"),
             FieldSqlType::Custom(s) => write!(f, "{s}"),
         }
     }

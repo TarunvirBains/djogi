@@ -77,6 +77,12 @@ pub mod model;
 pub mod notify;
 pub mod outbox;
 pub mod pg;
+// Phase 8.5 Cluster 4 (djogi#170 umbrella) — typed Postgres newtypes
+// with hand-rolled wire codecs. Currently ships `Interval` (djogi#212);
+// the module is structured so follow-on dispatches in the umbrella can
+// add additional newtypes (`MacAddr`, `CidrAddr`, …) alongside without
+// reshaping the public surface.
+pub mod pg_types;
 pub mod primary_key;
 pub mod query;
 pub mod relation;
@@ -460,7 +466,7 @@ pub use relation::{
 };
 pub use tracked::Tracked;
 pub use types::{
-    Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, RanjId, RanjIdDesc,
+    Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, Interval, RanjId, RanjIdDesc,
     RanjIdRecencyBiased,
 };
 pub use visage::{DjogiVisage, VisageError};
@@ -617,7 +623,7 @@ pub mod prelude {
     };
     pub use crate::tracked::Tracked;
     pub use crate::types::{
-        Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, RanjId, RanjIdDesc,
+        Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, Interval, RanjId, RanjIdDesc,
         RanjIdRecencyBiased,
     };
     // T7 fixup — `DjogiVisageOf<M>` is the seal trait bounding every

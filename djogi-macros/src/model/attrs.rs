@@ -3004,6 +3004,15 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         "Date" | "time::Date" | "djogi::Date" | "djogi::types::Date" => Some("DATE"),
         "Decimal" | "rust_decimal::Decimal" => Some("NUMERIC"),
         "Uuid" | "uuid::Uuid" => Some("UUID"),
+        // djogi#212 — `djogi::Interval` (the canonical adopter spelling)
+        // and `djogi::types::Interval` (the internal path). The bare
+        // `Interval` short form is intentionally NOT accepted here: the
+        // name is short enough that an adopter could legitimately have
+        // their own `Interval` type imported, and silently mapping it to
+        // Postgres `INTERVAL` would be a foot-gun. Adopters who want
+        // bare `Interval` write `use djogi::Interval;` at the top of
+        // their model module.
+        "djogi::Interval" | "djogi::types::Interval" => Some("INTERVAL"),
         // Phase 7-Zero-2 T4 — built-in PK types (HeerId / RanjId family) are
         // usable as ambient fields outside the framework-injected `id` slot.
         // Map each name (bare, `djogi::types::*`, and `djogi::*` forms) to the

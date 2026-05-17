@@ -771,6 +771,16 @@ path = "../tests/integration/phase8_5_c4a_pair_area_overlap_ratio_live.rs"
 harness = true
 required-features = ["spatial"]
 
+# Phase 8.5 Cluster 4 (djogi#212) — INTERVAL typed-surface round-trip.
+# Pins descriptor projection, wire-format round-trip across mixed,
+# independent (months_only / days_only / microseconds_only), and
+# negative-component values, plus nullable `Option<Interval>` columns —
+# all through djogi's typed surface (no `raw_*` calls).
+[[test]]
+name = "phase8_5_c4_212_interval"
+path = "../tests/integration/phase8_5_c4_212_interval.rs"
+harness = true
+
 
 [[test]]
 name = "phase8_trait_impl_registry"

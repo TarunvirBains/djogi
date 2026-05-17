@@ -316,6 +316,7 @@ fn try_expand(
             // best-effort scalar mapping. A future amendment (Phase 6)
             // can extend this to look the target PK type up via a second
             // `ModelDescriptor` pass.
+            //
             let sql_type = if relation.is_some() {
                 sql_str_to_tokens("TEXT")
             } else {
@@ -1238,6 +1239,11 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
                 }
             }
         }
+        // djogi#212 — `INTERVAL` lowers to the typed `FieldSqlType::Interval`
+        // variant so the differ / projection / docs surfaces work without
+        // a string-comparison shortcut. The mapping tracks
+        // `rust_type_to_sql`'s `djogi::Interval` arm.
+        "INTERVAL" => quote! { ::djogi::FieldSqlType::Interval },
         other => {
             let s = other.to_string();
             quote! { ::djogi::FieldSqlType::Custom(#s) }
