@@ -326,7 +326,9 @@ combination.
 
 Cluster E ([#88](https://github.com/TarunvirBains/djogi/issues/88))
 extended Djogi's aggregate surface to match the full Postgres + PostGIS
-catalog. New methods on `FieldRef<M, V>`:
+catalog. These methods are available anywhere a model field closure exposes
+typed fields, including scalar `.aggregate(...)`, grouped `.annotate(...)`,
+and windowed `.annotate(...)` paths.
 
 ### Statistics
 

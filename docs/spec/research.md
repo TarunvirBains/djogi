@@ -25,7 +25,7 @@
 
 ### HeeRanjId Integration
 - Installing HeeRanjId SQL functions and tables via `djogi init` and `db reset`
-- Startup validation: `NODE_ID` env var → `heer_nodes` check → fail fast if missing
+- Startup behavior: `NODE_ID` env var selects a pre-provisioned HeeRanjID node; Djogi does not perform startup NODE_ID validation itself, so `heer_nodes` must be provisioned before startup to avoid DB-side connection errors
 - Rust wrappers: `<HeerId as PrimaryKeyDbGen>::generate(&mut ctx)` / `generate_many(&mut ctx, n)` calling `heerid_next()` / `generate_ids(n)`. The runtime dispatch goes through `DjogiContext` (Phase 4 retrofit) — pool-or-transaction is selected internally.
 - RanjId wrappers: `<RanjId as PrimaryKeyDbGen>::generate(&mut ctx)` calling `ranjid_next()`. Same `DjogiContext` shape as HeerId.
 - `create_with_id()`: explicit ID INSERT with `ON CONFLICT (id) DO NOTHING`

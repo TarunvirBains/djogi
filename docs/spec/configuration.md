@@ -195,8 +195,8 @@ async fn vehicle_detail(
 ```
 Djogi contributes at startup (under the `axum` feature):
 - Merges all registered app `Router`s into the root `axum::Router`
-- Validates NODE_ID exists in heer_nodes (HeerId startup check) — fails fast if invalid
+- NODE_ID is selected via environment and must be provisioned in `heer_nodes` before service startup
 - Configures standard `tower` middleware (tracing, request ID, optional auth)
 - Optionally runs pending migrations on boot (configurable; default on in dev, off in production)
 
-The NODE_ID validation and migration-on-boot behaviours are framework-agnostic — they run whether or not a web-framework flag is enabled. Only the router-merging glue is Axum-specific here; equivalent glue ships under each future framework flag.
+Migration-on-boot behavior is framework-agnostic — they run whether or not a web-framework flag is enabled. Only the router-merging glue is Axum-specific here; equivalent glue ships under each future framework flag.

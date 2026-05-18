@@ -13,7 +13,7 @@
 | HeerId ID pattern — bulk | `HeerId::generate_many(n)` pre-allocates IDs before bulk INSERT |
 | HeerId ID pattern — form | `HeerId::generate()` at form render time; INSERT with `ON CONFLICT DO NOTHING` |
 | Serial PKs | Opt-in via `#[model(pk = Serial)]` |
-| Node identity | NODE_ID environment variable; validated against heer_nodes at startup |
+| Node identity | NODE_ID environment variable; operator provisions `heer_nodes` and starts services with a selected `NODE_ID` before connections attempt HeeRanjID operations |
 | HeerId JSON serialization | Always string — enforced by HeerId serde impl, no annotation needed |
 | Datetime library | `time` crate — cleaner API, no CVE history |
 | Framework fields (`id`, `created_at`, `updated_at`) | Macro-injected — real fields, not written by developer |
