@@ -81,6 +81,9 @@ pub mod window;
 pub mod window_fn;
 
 pub use aggregate::{AggregateExpr, grouping_of};
+pub use aggregate::{
+    HypotheticalSetAgg, MetadataAgg, OrderedSetAgg, ValueAgg,
+};
 pub use case::{Case, CaseBuilder};
 use node::ExprNode;
 pub use subquery::{Exists, OuterRef, Subquery};

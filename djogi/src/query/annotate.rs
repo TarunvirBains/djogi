@@ -34,12 +34,12 @@
 //!
 //! Implemented for:
 //!
-//! - `AggregateExpr<V>` (arity 1) — `Decoded = V`
-//! - `(AggregateExpr<V1>, AggregateExpr<V2>)` — `Decoded = (V1, V2)`
-//! - `(AggregateExpr<V1>, AggregateExpr<V2>, AggregateExpr<V3>)`
+//! - `AggregateExpr<V, K>` (arity 1) — `Decoded = V`
+//! - `(AggregateExpr<V1, K1>, AggregateExpr<V2, K2>)` — `Decoded = (V1, V2)`
+//! - `(AggregateExpr<V1, K1>, AggregateExpr<V2, K2>, AggregateExpr<V3, K3>)`
 //!   — `Decoded = (V1, V2, V3)`
-//! - `(AggregateExpr<V1>, AggregateExpr<V2>, AggregateExpr<V3>,
-//!   AggregateExpr<V4>)` — `Decoded = (V1, V2, V3, V4)`
+//! - `(AggregateExpr<V1, K1>, AggregateExpr<V2, K2>, AggregateExpr<V3, K3>,
+//!   AggregateExpr<V4, K4>)` — `Decoded = (V1, V2, V3, V4)`
 //!
 //! The trait is sealed by a private supertrait so downstream crates
 //! cannot add their own impls — same seal pattern as
@@ -63,6 +63,7 @@
 use crate::DjogiError;
 use crate::context::DjogiContext;
 use crate::expr::{
+    aggregate::KindEvidence,
     AggregateExpr, DenseRank, FirstValueWindow, LagWindow, LastValueWindow, LeadWindow,
     NthValueWindow, Rank, RowNumber,
 };
@@ -454,9 +455,10 @@ pub trait IntoAggregateTuple: sealed::Sealed {
 // window-function form here is deliberately the simplest that works
 // for the Task 4 scope without requiring GROUP BY semantics.
 
-impl<V> annotation_slot_sealed::Sealed for AggregateExpr<V> {}
-impl<V> AnnotationSlot for AggregateExpr<V>
+impl<V, K> annotation_slot_sealed::Sealed for AggregateExpr<V, K> {}
+impl<V, K> AnnotationSlot for AggregateExpr<V, K>
 where
+    K: KindEvidence,
     V: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
 {
     type Decoded = V;

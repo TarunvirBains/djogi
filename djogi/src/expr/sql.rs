@@ -81,7 +81,6 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             filter,
             order_by,
             window,
-            within_group_order_by,
             ..
         } => {
             // ── DISTINCT-shape rejections ─────────────────────────────
@@ -129,130 +128,6 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
                 });
             }
 
-            // ── GROUPING(...) modifier rejection (Codex round-1) ──────
-            // GROUPING is a metadata function (returns 0/1 per dimension
-            // for ROLLUP/CUBE/GROUPING SETS subtotal detection), not a
-            // value-aggregating aggregate. Postgres rejects every
-            // modifier on GROUPING — DISTINCT, ORDER BY, FILTER, OVER all
-            // produce syntax errors. The current emitter path would
-            // silently render them, so we reject here at fetch time.
-            if matches!(op, AggOp::Grouping) {
-                if *distinct {
-                    return Err(crate::DjogiError::UnsupportedAggregate {
-                        op: "GROUPING",
-                        reason: "GROUPING(col) does not accept DISTINCT — it is a metadata \
-                                 function returning 0/1 per dimension under ROLLUP / CUBE / \
-                                 GROUPING SETS, not a value-aggregating aggregate",
-                    });
-                }
-                if !order_by.is_empty() {
-                    return Err(crate::DjogiError::UnsupportedAggregate {
-                        op: "GROUPING",
-                        reason: "GROUPING(col) does not accept a per-aggregate ORDER BY \
-                                 clause — chain ORDER BY at the QuerySet level instead",
-                    });
-                }
-                if filter.is_some() {
-                    return Err(crate::DjogiError::UnsupportedAggregate {
-                        op: "GROUPING",
-                        reason: "GROUPING(col) does not accept FILTER (WHERE ...) — \
-                                 GROUPING is dimension metadata, not a row-filtered count; \
-                                 filter at the QuerySet level instead",
-                    });
-                }
-                if window.is_some() {
-                    return Err(crate::DjogiError::UnsupportedAggregate {
-                        op: "GROUPING",
-                        reason: "GROUPING(col) does not accept OVER (...) — it is only \
-                                 valid in SELECT or HAVING under a GROUP BY ROLLUP / CUBE / \
-                                 GROUPING SETS clause, not as a window function",
-                    });
-                }
-            }
-
-            // ── Ordered-set + hypothetical-set aggregate legality
-            //    (Cluster E T7 + T8) ──────────────────────────────────
-            //
-            // PERCENTILE_CONT / PERCENTILE_DISC / MODE (ordered-set)
-            // and the hypothetical-set RANK / DENSE_RANK / PERCENT_RANK
-            // / CUME_DIST family share the same WITHIN GROUP rules:
-            // mandatory non-empty target, no DISTINCT, no in-paren
-            // ORDER BY. FILTER and OVER are valid and pass through.
-            if matches!(
-                op,
-                AggOp::PercentileCont
-                    | AggOp::PercentileDisc
-                    | AggOp::Mode
-                    | AggOp::HypotheticalRank
-                    | AggOp::HypotheticalDenseRank
-                    | AggOp::HypotheticalPercentRank
-                    | AggOp::HypotheticalCumeDist
-            ) {
-                let op_label = match op {
-                    AggOp::PercentileCont => "PERCENTILE_CONT",
-                    AggOp::PercentileDisc => "PERCENTILE_DISC",
-                    AggOp::Mode => "MODE",
-                    AggOp::HypotheticalRank => "RANK (hypothetical-set)",
-                    AggOp::HypotheticalDenseRank => "DENSE_RANK (hypothetical-set)",
-                    AggOp::HypotheticalPercentRank => "PERCENT_RANK (hypothetical-set)",
-                    AggOp::HypotheticalCumeDist => "CUME_DIST (hypothetical-set)",
-                    _ => unreachable!(),
-                };
-                if within_group_order_by.is_empty() {
-                    return Err(crate::DjogiError::UnsupportedAggregate {
-                        op: op_label,
-                        reason: "ordered-set / hypothetical-set aggregate requires a WITHIN GROUP (ORDER BY ...) \
-                             target — the typed builders on FieldRef populate this slot \
-                             at construction time; if you reached this error you have \
-                             constructed the aggregate node directly without going through \
-                             the typed surface",
-                    });
-                }
-                if *distinct {
-                    return Err(crate::DjogiError::UnsupportedAggregate {
-                        op: op_label,
-                        reason: "ordered-set / hypothetical-set aggregates do not accept DISTINCT — Postgres rejects \
-                             this combination as ambiguous (the aggregate operates over the \
-                             whole ordered set, not deduped values)",
-                    });
-                }
-                if !order_by.is_empty() {
-                    return Err(crate::DjogiError::UnsupportedAggregate {
-                        op: op_label,
-                        reason: "ordered-set / hypothetical-set aggregates do not accept the in-paren ORDER BY \
-                             modifier (the .order_by(...) chain) — use \
-                             .within_group_order_by(...) to override the WITHIN GROUP target \
-                             instead, or chain ORDER BY at the QuerySet level",
-                    });
-                }
-            } else if !within_group_order_by.is_empty() {
-                // Codex T22 BLOCK-2: `.within_group_order_by(...)` is a
-                // public modifier on every `AggregateExpr<Out>`, but
-                // WITHIN GROUP is only valid Postgres syntax for
-                // ordered-set / hypothetical-set aggregates. Calling
-                // it on a regular value aggregate (`sum`, `array_agg`,
-                // `count`, etc.) is silently dropped by the emitter
-                // because no emitter arm renders WITHIN GROUP for
-                // those ops.
-                //
-                // Reject at fetch time so adopters see a typed error
-                // rather than mysteriously-missing modifier behavior.
-                // The type-state migration (#89) will make this a
-                // compile-time error by gating .within_group_order_by
-                // on the OrderedSetAgg / HypotheticalSetAgg Kinds; the
-                // runtime check covers v0.1.0.
-                return Err(crate::DjogiError::UnsupportedAggregate {
-                    op: "<value aggregate>",
-                    reason: "WITHIN GROUP (ORDER BY ...) is only valid for ordered-set \
-                             aggregates (PERCENTILE_CONT / PERCENTILE_DISC / MODE) and \
-                             hypothetical-set aggregates (RANK / DENSE_RANK / PERCENT_RANK \
-                             / CUME_DIST as args). Regular value aggregates (SUM, COUNT, \
-                             ARRAY_AGG, etc.) do not accept WITHIN GROUP — use the \
-                             in-paren ORDER BY modifier (.order_by(...)) for ARRAY_AGG / \
-                             STRING_AGG / JSONB_AGG instead",
-                });
-            }
-
             // Recurse into arg, arg2, and filter sub-trees in case there
             // are nested aggregates (unusual but structurally possible).
             // arg2 was added by T5; threading it through the walker keeps
@@ -283,13 +158,11 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             }
             check_aggregate_legality(otherwise)
         }
-        // GROUPING variadic carries no modifier slots — DISTINCT /
-        // ORDER BY / FILTER / OVER all panic at the `AggregateExpr`
-        // modifier call site rather than silently no-oping (the five
-        // modifier methods use an explicit `ExprNode::GroupingVariadic`
-        // match arm that panics with a diagnostic message). The legality
-        // of the node itself is trivially ok; walk the args in case a
-        // nested aggregate was somehow constructed inside a column.
+        // GROUPING variadic carries no modifier slots under the #89
+        // type-state migration, so `AggregateExpr` methods cannot build
+        // invalid modifiers. The legality of the node itself is
+        // trivially ok; walk the args in case a nested aggregate was
+        // somehow constructed inside a column.
         ExprNode::GroupingVariadic { args } => {
             for a in args {
                 check_aggregate_legality(a)?;
