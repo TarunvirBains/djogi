@@ -32,14 +32,25 @@
 //    Inclusive(date))` value carries `lower(range) = NULL` and the
 //    `<endpoint> IS NULL OR (...)` short-circuit passes the row
 //    through without ever evaluating the inner `isfinite` clause.
+// 7. **DATE[] elements CHECK rejects `+infinity` / `-infinity`.**
+//    A `Vec<time::Date>` column projects
+//    `<col> IS NULL OR djogi.__djogi_date_array_is_finite_v1(<col>)`.
+//    The helper applies `pg_catalog.isfinite` per element via
+//    `bool_and(isfinite(elem) AND elem <= ...)` over `unnest`. The
+//    previous upper-bound-only `ALL(col)` strategy admitted
+//    `-infinity` because `-infinity < upper_bound` (making the `>=`
+//    comparison TRUE), so the helper replaces it entirely.
+// 8. **TIMESTAMPTZ[] elements CHECK rejects `+infinity` / `-infinity`.**
+//    Same via `djogi.__djogi_tstz_array_is_finite_v1`. Empty arrays
+//    and NULL arrays continue to pass.
 //
 // # Why a tests/internal target
 //
-// `time::Date` and `time::OffsetDateTime` cannot construct
-// `+infinity` or `-infinity` (neither type carries a non-finite
-// state), so the only way to land a Postgres DATE / TIMESTAMPTZ
-// special value in any of the four columns is to hand-craft
-// `INSERT … DATE '-infinity'` / `daterange('-infinity', X)` via
+// `time::Date`, `time::OffsetDateTime`, and their `Vec<_>` wrappers
+// cannot construct `+infinity` or `-infinity` (none of these types
+// carry a non-finite state), so the only way to land a Postgres DATE /
+// TIMESTAMPTZ special value is to hand-craft
+// `INSERT … DATE '-infinity'` / `ARRAY['-infinity'::date]` via
 // `raw_execute`. Hand-crafted SQL belongs under `tests/internal/`;
 // integration tests stay raw-free per CLAUDE.md.
 //
@@ -49,11 +60,13 @@
 //   (djogi#187) + "`Range<T>` typed substrate (djogi#148 + djogi#150,
 //   Phase 8.5 G0)".
 // - `djogi/src/migrate/projection.rs::date_range_expr` /
-//   `timestamptz_range_expr` — central representability predicates
-//   with the leading `pg_catalog.isfinite(<expr>)` finite guard.
-// - `djogi/src/migrate/projection.rs::range_endpoint_checks` — the
-//   range adapter that wraps each finite-endpoint check with
-//   `<endpoint> IS NULL OR (...)`.
+//   `timestamptz_range_expr` — scalar representability predicates.
+// - `djogi/src/migrate/projection.rs::date_array_is_finite_check` /
+//   `tstz_array_is_finite_check` — array representability predicates.
+// - `djogi/src/migrate/projection.rs::range_endpoint_checks` — range
+//   adapter for finite-endpoint checks.
+// - `djogi/src/migrate/compose.rs::DATE_ARRAY_HELPER_PRELUDE` /
+//   `TSTZ_ARRAY_HELPER_PRELUDE` — SQL helper function bodies.
 
 use djogi::prelude::*;
 
@@ -429,4 +442,202 @@ async fn tstzrange_check_accepts_unbounded_upper_range(mut ctx: djogi::DjogiCont
     .expect("unbounded-upper TSTZRANGE must round-trip");
 
     assert_eq!(row.label, "range-upper-unbounded");
+}
+
+// ── (5) — DATE[] element special-value rejection ─────────────────────────────
+//
+// The `djogi.__djogi_date_array_is_finite_v1` helper applies
+// `pg_catalog.isfinite` per element, rejecting both `-infinity` and
+// `+infinity`. The previous `upper_bound >= ALL(col)` check admitted
+// `-infinity` because Postgres ordering makes
+// `'9999-12-31'::date >= '-infinity'::date` TRUE.
+
+/// `Vec<Date>` column — exercises `date_array_is_finite_check` which
+/// projects to `<col> IS NULL OR djogi.__djogi_date_array_is_finite_v1(<col>)`.
+/// Uses `Date` (from `djogi::prelude::*`) to match the macro's recognized path forms.
+#[model(table = "phase8_5_g0_temporal_inf_date_array", pk = HeerId, no_default)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct TemporalInfDateArrayRow {
+    pub dates: Vec<Date>,
+    pub label: String,
+}
+
+#[djogi::djogi_test(sync_models = [TemporalInfDateArrayRow])]
+async fn date_array_check_rejects_negative_infinity_element(mut ctx: djogi::DjogiContext) {
+    // `-infinity` is the key gap in the old upper-bound-only strategy:
+    // `'9999-12-31'::date >= '-infinity'::date` is TRUE in Postgres, so the
+    // old `ALL(col)` check admitted it. The `isfinite`-backed helper rejects it.
+    let err = ctx
+        .raw_execute(
+            "INSERT INTO phase8_5_g0_temporal_inf_date_array (dates, label) \
+             VALUES (ARRAY['-infinity'::date], 'date-arr-neg-inf')",
+            &[],
+        )
+        .await
+        .expect_err("DATE[] CHECK must reject -infinity element");
+
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("phase8_5_g0_temporal_inf_date_array_dates_check"),
+        "-infinity DATE element error must reference the structural CHECK: {msg}"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [TemporalInfDateArrayRow])]
+async fn date_array_check_rejects_positive_infinity_element(mut ctx: djogi::DjogiContext) {
+    let err = ctx
+        .raw_execute(
+            "INSERT INTO phase8_5_g0_temporal_inf_date_array (dates, label) \
+             VALUES (ARRAY['infinity'::date], 'date-arr-pos-inf')",
+            &[],
+        )
+        .await
+        .expect_err("DATE[] CHECK must reject +infinity element");
+
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("phase8_5_g0_temporal_inf_date_array_dates_check"),
+        "+infinity DATE element error must reference the structural CHECK: {msg}"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [TemporalInfDateArrayRow])]
+async fn date_array_check_accepts_finite_elements_round_trip(mut ctx: djogi::DjogiContext) {
+    // Accept-path regression guard: a finite `Vec<Date>` still round-trips
+    // end-to-end through `Model::create` + `Model::get` after the helper lands.
+    let d1 = Date::from_calendar_date(2026, ::time::Month::January, 1).unwrap();
+    let d2 = Date::from_calendar_date(2026, ::time::Month::December, 31).unwrap();
+    let row = TemporalInfDateArrayRow::create(
+        &mut ctx,
+        TemporalInfDateArrayRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            dates: vec![d1, d2],
+            label: "date-arr-finite".into(),
+        },
+    )
+    .await
+    .expect("finite DATE[] must round-trip after the finite-element guard lands");
+
+    assert_eq!(row.dates, vec![d1, d2]);
+
+    let fetched = TemporalInfDateArrayRow::get(&mut ctx, row.id)
+        .await
+        .expect("get round-trip on Vec<Date>");
+    assert_eq!(fetched.dates, vec![d1, d2]);
+}
+
+#[djogi::djogi_test(sync_models = [TemporalInfDateArrayRow])]
+async fn date_array_check_accepts_empty_array(mut ctx: djogi::DjogiContext) {
+    // An empty `Vec<Date>` is a valid value. The helper uses
+    // `COALESCE(bool_and(...), true)` so an empty unnest yields true.
+    let row = TemporalInfDateArrayRow::create(
+        &mut ctx,
+        TemporalInfDateArrayRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            dates: vec![],
+            label: "date-arr-empty".into(),
+        },
+    )
+    .await
+    .expect("empty DATE[] must pass the finite-element check");
+
+    assert_eq!(row.dates, Vec::<Date>::new());
+}
+
+// ── (6) — TIMESTAMPTZ[] element special-value rejection ──────────────────────
+//
+// Same representability class as DATE[]; the underlying failure was identical:
+// `'9999-12-31 23:59:59.999999+00'::timestamptz >= '-infinity'::timestamptz`
+// is TRUE in Postgres ordering.
+
+/// `Vec<DateTime>` column — exercises `tstz_array_is_finite_check`.
+/// Uses `DateTime` (from `djogi::prelude::*`) to match the macro's recognized path forms.
+#[model(table = "phase8_5_g0_temporal_inf_tstz_array", pk = HeerId, no_default)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct TemporalInfTstzArrayRow {
+    pub timestamps: Vec<DateTime>,
+    pub label: String,
+}
+
+#[djogi::djogi_test(sync_models = [TemporalInfTstzArrayRow])]
+async fn tstz_array_check_rejects_negative_infinity_element(mut ctx: djogi::DjogiContext) {
+    let err = ctx
+        .raw_execute(
+            "INSERT INTO phase8_5_g0_temporal_inf_tstz_array (timestamps, label) \
+             VALUES (ARRAY['-infinity'::timestamptz], 'tstz-arr-neg-inf')",
+            &[],
+        )
+        .await
+        .expect_err("TIMESTAMPTZ[] CHECK must reject -infinity element");
+
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("phase8_5_g0_temporal_inf_tstz_array_timestamps_check"),
+        "-infinity TIMESTAMPTZ element error must reference the structural CHECK: {msg}"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [TemporalInfTstzArrayRow])]
+async fn tstz_array_check_rejects_positive_infinity_element(mut ctx: djogi::DjogiContext) {
+    let err = ctx
+        .raw_execute(
+            "INSERT INTO phase8_5_g0_temporal_inf_tstz_array (timestamps, label) \
+             VALUES (ARRAY['infinity'::timestamptz], 'tstz-arr-pos-inf')",
+            &[],
+        )
+        .await
+        .expect_err("TIMESTAMPTZ[] CHECK must reject +infinity element");
+
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("phase8_5_g0_temporal_inf_tstz_array_timestamps_check"),
+        "+infinity TIMESTAMPTZ element error must reference the structural CHECK: {msg}"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [TemporalInfTstzArrayRow])]
+async fn tstz_array_check_accepts_finite_elements_round_trip(mut ctx: djogi::DjogiContext) {
+    let t1 = DateTime::from_unix_timestamp(1_704_067_200).unwrap();
+    let t2 = DateTime::from_unix_timestamp(1_747_400_000).unwrap();
+    let row = TemporalInfTstzArrayRow::create(
+        &mut ctx,
+        TemporalInfTstzArrayRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            timestamps: vec![t1, t2],
+            label: "tstz-arr-finite".into(),
+        },
+    )
+    .await
+    .expect("finite TIMESTAMPTZ[] must round-trip after the finite-element guard lands");
+
+    assert_eq!(row.timestamps, vec![t1, t2]);
+
+    let fetched = TemporalInfTstzArrayRow::get(&mut ctx, row.id)
+        .await
+        .expect("get round-trip on Vec<DateTime>");
+    assert_eq!(fetched.timestamps, vec![t1, t2]);
+}
+
+#[djogi::djogi_test(sync_models = [TemporalInfTstzArrayRow])]
+async fn tstz_array_check_accepts_empty_array(mut ctx: djogi::DjogiContext) {
+    let row = TemporalInfTstzArrayRow::create(
+        &mut ctx,
+        TemporalInfTstzArrayRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            timestamps: vec![],
+            label: "tstz-arr-empty".into(),
+        },
+    )
+    .await
+    .expect("empty TIMESTAMPTZ[] must pass the finite-element check");
+
+    assert_eq!(row.timestamps, Vec::<DateTime>::new());
 }

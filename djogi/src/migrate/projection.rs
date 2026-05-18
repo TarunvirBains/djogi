@@ -1360,10 +1360,8 @@ fn field_type_check(
             )),
             _ => None,
         },
-        FieldSqlType::TimestamptzArray => {
-            Some(array_all_bound_checks(&qcol, TIMESTAMPTZ_ARRAY_MAX_BOUND))
-        }
-        FieldSqlType::DateArray => Some(array_all_bound_checks(&qcol, DATE_ARRAY_MAX_BOUND)),
+        FieldSqlType::TimestamptzArray => Some(tstz_array_is_finite_check(&qcol)),
+        FieldSqlType::DateArray => Some(date_array_is_finite_check(&qcol)),
         FieldSqlType::NumericArray => Some(numeric_array_is_rust_decimal_check(&qcol)),
         FieldSqlType::Range { subtype } => match subtype {
             // Int4RANGE / INT4RANGE and INT8RANGE / INT8RANGE are
@@ -1498,12 +1496,38 @@ fn range_endpoint_checks(range_column: &str, bound_check: fn(&str) -> String) ->
     format!("{lower} AND {upper}")
 }
 
-const DATE_ARRAY_MAX_BOUND: &str = "DATE '9999-12-31'";
+/// Per-element finite-value CHECK for `DATE[]` columns.
+///
+/// Emits `<col> IS NULL OR djogi.__djogi_date_array_is_finite_v1(<col>)`. The helper
+/// function (defined in `compose::DATE_ARRAY_HELPER_PRELUDE`) applies
+/// `pg_catalog.bool_and(value IS NULL OR (pg_catalog.isfinite(value) AND value <=
+/// '9999-12-31'::pg_catalog.date))` over all unnested elements:
+///
+/// - Rejects both `+infinity` and `-infinity` date elements — `pg_catalog.isfinite(date)`
+///   returns FALSE for both non-finite DATE special values, not just the upper one.
+///   The previous `upper_bound >= ALL(col)` strategy passed `-infinity` because
+///   `-infinity < upper_bound`, making `upper_bound >= -infinity` TRUE.
+/// - Admits `NULL` elements (consistent with SQL array-element NULL semantics).
+/// - Admits empty arrays (COALESCE inside the helper maps the empty-set `bool_and`
+///   NULL to TRUE).
+///
+/// **Why a helper function and not a direct expression?** Postgres CHECK clauses may not
+/// contain subqueries or `unnest(...)` aggregate forms directly; the helper function
+/// encapsulates the `unnest` + `bool_and` loop in a valid IMMUTABLE SQL function.
+/// This mirrors the `NumericArray` precedent in [`numeric_array_is_rust_decimal_check`].
+fn date_array_is_finite_check(array_column: &str) -> String {
+    format!("{array_column} IS NULL OR djogi.__djogi_date_array_is_finite_v1({array_column})")
+}
 
-const TIMESTAMPTZ_ARRAY_MAX_BOUND: &str = "TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'";
-
-fn array_all_bound_checks(array_column: &str, upper_bound: &str) -> String {
-    format!("({array_column} IS NULL OR ({upper_bound} >= ALL({array_column})))")
+/// Per-element finite-value CHECK for `TIMESTAMPTZ[]` columns.
+///
+/// Same shape as [`date_array_is_finite_check`] but wraps
+/// `djogi.__djogi_tstz_array_is_finite_v1(...)` from `compose::TSTZ_ARRAY_HELPER_PRELUDE`.
+/// The helper applies `pg_catalog.isfinite(value)` to every unnested element, rejecting
+/// both `-infinity` and `+infinity` timestamptz values that `time::OffsetDateTime` cannot
+/// represent, while passing finite values and `NULL` elements.
+fn tstz_array_is_finite_check(array_column: &str) -> String {
+    format!("{array_column} IS NULL OR djogi.__djogi_tstz_array_is_finite_v1({array_column})")
 }
 
 fn numeric_array_is_rust_decimal_check(array_column: &str) -> String {
@@ -4523,16 +4547,20 @@ mod tests {
             "TIMESTAMPTZ[] outer NULL should pass through: {expr}"
         );
         assert!(
-            expr.contains("TIMESTAMPTZ '9999-12-31 23:59:59.999999+00' >= ALL(\"slots\")"),
-            "TIMESTAMPTZ[] check should use CHECK-valid ALL bounds: {expr}"
+            expr.contains("djogi.__djogi_tstz_array_is_finite_v1(\"slots\")"),
+            "TIMESTAMPTZ[] check must use the isfinite helper to reject both ±infinity: {expr}"
         );
         assert!(
             !expr.contains("NOT EXISTS (SELECT 1 FROM unnest(\"slots\")"),
             "TIMESTAMPTZ[] check should not emit a subquery CHECK: {expr}"
         );
+        // The helper strategy supersedes the upper-bound-only ALL() approach.
+        // The upper-bound check now lives inside the helper function body rather
+        // than in the column CHECK expression, so no `>= ALL(` should appear here.
         assert!(
-            expr.contains("TIMESTAMPTZ '9999-12-31 23:59:59.999999+00' >= ALL(\"slots\")"),
-            "TIMESTAMPTZ[] check should reuse scalar temporal upper-bound policy: {expr}"
+            !expr.contains(">= ALL(\"slots\")"),
+            "TIMESTAMPTZ[] check must not fall back to upper-bound-only ALL strategy \
+             (admits -infinity): {expr}"
         );
     }
 
@@ -4545,16 +4573,18 @@ mod tests {
             "DATE[] outer NULL should pass through: {expr}"
         );
         assert!(
-            expr.contains("DATE '9999-12-31' >= ALL(\"validity\")"),
-            "DATE[] check should use CHECK-valid ALL bounds: {expr}"
+            expr.contains("djogi.__djogi_date_array_is_finite_v1(\"validity\")"),
+            "DATE[] check must use the isfinite helper to reject both ±infinity: {expr}"
         );
         assert!(
             !expr.contains("NOT EXISTS (SELECT 1 FROM unnest(\"validity\")"),
             "DATE[] check should not emit a subquery CHECK: {expr}"
         );
+        // The helper strategy supersedes the upper-bound-only ALL() approach.
         assert!(
-            expr.contains("DATE '9999-12-31' >= ALL(\"validity\")"),
-            "DATE[] check should reuse scalar temporal upper-bound policy: {expr}"
+            !expr.contains(">= ALL(\"validity\")"),
+            "DATE[] check must not fall back to upper-bound-only ALL strategy \
+             (admits -infinity): {expr}"
         );
     }
 
@@ -4743,12 +4773,22 @@ mod tests {
             .expect("NUMERIC[] column must carry per-element representability check");
 
         assert!(
-            slot_check.contains("TIMESTAMPTZ '9999-12-31 23:59:59.999999+00' >= ALL(\"slots\")"),
-            "TIMESTAMPTZ[] projection should use CHECK-valid ALL bound: {slot_check}"
+            slot_check.contains("djogi.__djogi_tstz_array_is_finite_v1(\"slots\")"),
+            "TIMESTAMPTZ[] projection must use isfinite helper (rejects ±infinity): {slot_check}"
         );
         assert!(
-            validity_check.contains("DATE '9999-12-31' >= ALL(\"validity\")"),
-            "DATE[] projection should use CHECK-valid ALL bound: {validity_check}"
+            !slot_check.contains(">= ALL(\"slots\")"),
+            "TIMESTAMPTZ[] projection must not use upper-bound-only ALL (admits -infinity): \
+             {slot_check}"
+        );
+        assert!(
+            validity_check.contains("djogi.__djogi_date_array_is_finite_v1(\"validity\")"),
+            "DATE[] projection must use isfinite helper (rejects ±infinity): {validity_check}"
+        );
+        assert!(
+            !validity_check.contains(">= ALL(\"validity\")"),
+            "DATE[] projection must not use upper-bound-only ALL (admits -infinity): \
+             {validity_check}"
         );
         assert!(
             metrics_check.contains("djogi.__djogi_numeric_array_is_rust_decimal_v1(\"metrics\")"),
@@ -4970,8 +5010,8 @@ mod tests {
             "combined CHECK should include adopter predicate verbatim: {check}"
         );
         assert!(
-            check.contains("TIMESTAMPTZ '9999-12-31 23:59:59.999999+00' >= ALL(\"times\")"),
-            "combined CHECK should include per-element typed check: {check}"
+            check.contains("djogi.__djogi_tstz_array_is_finite_v1(\"times\")"),
+            "combined CHECK should include isfinite helper for TIMESTAMPTZ[] type bound: {check}"
         );
         assert!(
             check.contains(") AND (CARDINALITY(\"times\") > 0)"),

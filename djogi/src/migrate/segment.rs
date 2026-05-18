@@ -53,7 +53,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::compose::{numeric_array_helper_operation, requires_numeric_array_helper};
+use super::compose::{
+    date_array_helper_operation, numeric_array_helper_operation, requires_date_array_helper,
+    requires_numeric_array_helper, requires_tstz_array_helper, tstz_array_helper_operation,
+};
 use super::diff::{Classification, SchemaDelta, SchemaOperation};
 use super::projection::BucketKey;
 use super::schema::TableSchema;
@@ -220,6 +223,18 @@ pub fn plan_delta(delta: &SchemaDelta) -> Result<MigrationPlan, SqlEmitError> {
 
     if requires_numeric_array_helper(&lowered_ops) {
         lowered_ops.insert(0, numeric_array_helper_operation());
+        lowered_kinds.insert(0, SegmentKind::Transactional);
+    }
+    // Temporal array helpers: injected in a fixed order (date, then tstz) so
+    // that the leading transactional segment is stable across migrations that
+    // reference both. Each helper prelude starts with `CREATE SCHEMA IF NOT
+    // EXISTS djogi;` (idempotent); the second invocation is a no-op.
+    if requires_date_array_helper(&lowered_ops) {
+        lowered_ops.insert(0, date_array_helper_operation());
+        lowered_kinds.insert(0, SegmentKind::Transactional);
+    }
+    if requires_tstz_array_helper(&lowered_ops) {
+        lowered_ops.insert(0, tstz_array_helper_operation());
         lowered_kinds.insert(0, SegmentKind::Transactional);
     }
 
