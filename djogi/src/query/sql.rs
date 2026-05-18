@@ -295,8 +295,8 @@ pub(crate) fn push_filter_value_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
 
 /// Emit a list element for `IN (...)` / `NOT IN (...)`.
 ///
-/// Same binding behaviour as [`push_filter_value`] for scalar variants;
-/// rejects `Null`, `Array*`, `List`, and `Pair` (the typed `FieldRef::in_list`
+/// Same binding behaviour as [`push_filter_value`] for scalar and array
+/// variants; rejects `Null`, `List`, and `Pair` (the typed `FieldRef::in_list`
 /// API prevents these by construction, so reaching them here is a framework
 /// bug). The reject branch is explicit so the caller cannot accidentally
 /// thread a `Null` through `IN ($1)` — Postgres `col IN (NULL)` is always
@@ -309,27 +309,8 @@ pub(crate) fn push_filter_value_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
 #[allow(dead_code)]
 fn push_list_element(acc: &mut SqlAccumulator, v: FilterValue) {
     match v {
-        FilterValue::Null
-        | FilterValue::List(_)
-        | FilterValue::Pair(_, _)
-        | FilterValue::ArrayString(_)
-        | FilterValue::ArrayI16(_)
-        | FilterValue::ArrayI32(_)
-        | FilterValue::ArrayI64(_)
-        | FilterValue::ArrayF32(_)
-        | FilterValue::ArrayF64(_)
-        | FilterValue::ArrayBool(_)
-        | FilterValue::ArrayDateTime(_)
-        | FilterValue::ArrayDate(_)
-        | FilterValue::ArrayUuid(_)
-        | FilterValue::ArrayDecimal(_)
-        | FilterValue::ArrayHeerId(_)
-        | FilterValue::ArrayRanjId(_)
-        | FilterValue::ArrayHeerIdDesc(_)
-        | FilterValue::ArrayRanjIdDesc(_) => {
-            unreachable!(
-                "nested/null/array FilterValue in IN list — typed FieldRef API prevents this"
-            )
+        FilterValue::Null | FilterValue::List(_) | FilterValue::Pair(_, _) => {
+            unreachable!("nested/null FilterValue in IN list — typed FieldRef API prevents this")
         }
         scalar => push_filter_value(acc, scalar),
     }
@@ -587,13 +568,13 @@ fn emit_leaf_ref(acc: &mut SqlAccumulator, leaf: &Leaf, parent_table: Option<&'s
     }
 }
 
-/// Reference-borrowing counterpart of [`push_list_element`]. Same
-/// restriction surface; clones the underlying scalar into `push_bind`.
+/// Reference-borrowing counterpart of [`push_list_element`]. Same restriction
+/// surface; clones the underlying scalar or array into `push_bind`.
 fn push_list_element_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
     match v {
-        FilterValue::Null | FilterValue::List(_) | FilterValue::Pair(_, _) => unreachable!(
-            "nested/null FilterValue in IN list — typed FieldRef API prevents this"
-        ),
+        FilterValue::Null | FilterValue::List(_) | FilterValue::Pair(_, _) => {
+            unreachable!("nested/null FilterValue in IN list — typed FieldRef API prevents this")
+        }
         scalar => push_filter_value_ref(acc, scalar),
     }
 }

@@ -1086,12 +1086,7 @@ impl<M: Model> DjogiField<M, crate::Interval> {
     where
         I: IntoIterator<Item = crate::Interval>,
     {
-        let values = values.into_iter().collect::<Vec<_>>();
-        if values.is_empty() {
-            self.sql.is_not_null()
-        } else {
-            self.sql.not_in_list(values)
-        }
+        self.sql.not_in_list(values)
     }
 }
 
@@ -1126,12 +1121,7 @@ impl<M: Model> DjogiField<M, Option<crate::Interval>> {
     where
         I: IntoIterator<Item = crate::Interval>,
     {
-        let values = values.into_iter().collect::<Vec<_>>();
-        if values.is_empty() {
-            self.sql.is_not_null()
-        } else {
-            self.sql.not_in_list(values)
-        }
+        self.sql.not_in_list(values)
     }
 }
 
@@ -4622,6 +4612,7 @@ pub mod optional_relation_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::__private::pg::SqlAccumulator;
     use crate::query::condition::{Condition, LookupOp};
 
     // Test-local fake model — satisfies the `Model` trait enough to feed
@@ -4849,6 +4840,24 @@ mod tests {
         } else {
             panic!("expected nullable Interval some().eq to produce a SQL-only Condition leaf");
         }
+
+        let direct_empty_not_in: Condition = f.not_in(Vec::<crate::Interval>::new());
+        let mut acc = SqlAccumulator::new("");
+        crate::query::sql::emit_condition(&mut acc, &direct_empty_not_in, None).unwrap();
+        assert_eq!(
+            acc.sql(),
+            "TRUE",
+            "direct nullable Interval not_in([]) should keep the shared empty-list convention"
+        );
+
+        let present_empty_not_in: Condition = f.some().not_in(Vec::<crate::Interval>::new());
+        let mut acc = SqlAccumulator::new("");
+        crate::query::sql::emit_condition(&mut acc, &present_empty_not_in, None).unwrap();
+        assert_eq!(
+            acc.sql(),
+            "maybe_duration IS NOT NULL",
+            "present Interval not_in([]) must preserve the IS NOT NULL guard"
+        );
     }
 
     #[test]
