@@ -1302,9 +1302,11 @@ fn field_type_check(
             Some(RustSourceType::Decimal) => Some(decimal_repr_expr(&qcol)),
             _ => None,
         },
-        FieldSqlType::TimestamptzArray => Some(array_element_checks(&qcol, timestamptz_range_expr)),
-        FieldSqlType::DateArray => Some(array_element_checks(&qcol, date_range_expr)),
-        FieldSqlType::NumericArray => Some(array_element_checks(&qcol, decimal_repr_expr)),
+        FieldSqlType::TimestamptzArray => {
+            Some(array_all_bound_checks(&qcol, TIMESTAMPTZ_ARRAY_MAX_BOUND))
+        }
+        FieldSqlType::DateArray => Some(array_all_bound_checks(&qcol, DATE_ARRAY_MAX_BOUND)),
+        FieldSqlType::NumericArray => Some(numeric_array_is_rust_decimal_check(&qcol)),
         FieldSqlType::Range { subtype } => match subtype {
             // Int4RANGE / INT4RANGE and INT8RANGE / INT8RANGE are
             // identity-mapped by their Postgres column types in Rust
@@ -1363,11 +1365,17 @@ fn range_endpoint_checks(range_column: &str, bound_check: fn(&str) -> String) ->
     format!("{lower} AND {upper}")
 }
 
-fn array_element_checks(array_column: &str, bound_check: fn(&str) -> String) -> String {
-    let element = "element";
+const DATE_ARRAY_MAX_BOUND: &str = "DATE '9999-12-31'";
+
+const TIMESTAMPTZ_ARRAY_MAX_BOUND: &str = "TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'";
+
+fn array_all_bound_checks(array_column: &str, upper_bound: &str) -> String {
+    format!("({array_column} IS NULL OR ({upper_bound} >= ALL({array_column})))")
+}
+
+fn numeric_array_is_rust_decimal_check(array_column: &str) -> String {
     format!(
-        "({array_column} IS NULL OR NOT EXISTS (SELECT 1 FROM unnest({array_column}) AS checked({element}) WHERE {element} IS NOT NULL AND NOT ({})))",
-        bound_check(element)
+        "{array_column} IS NULL OR djogi.__djogi_numeric_array_is_rust_decimal_v1({array_column})"
     )
 }
 
@@ -4171,15 +4179,15 @@ mod tests {
             "TIMESTAMPTZ[] outer NULL should pass through: {expr}"
         );
         assert!(
-            expr.contains("NOT EXISTS (SELECT 1 FROM unnest(\"slots\")"),
-            "TIMESTAMPTZ[] check should be element-wise via unnest: {expr}"
+            expr.contains("TIMESTAMPTZ '9999-12-31 23:59:59.999999+00' >= ALL(\"slots\")"),
+            "TIMESTAMPTZ[] check should use CHECK-valid ALL bounds: {expr}"
         );
         assert!(
-            expr.contains("element IS NOT NULL"),
-            "TIMESTAMPTZ[] check should ignore NULL elements by default: {expr}"
+            !expr.contains("NOT EXISTS (SELECT 1 FROM unnest(\"slots\")"),
+            "TIMESTAMPTZ[] check should not emit a subquery CHECK: {expr}"
         );
         assert!(
-            expr.contains("element <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"),
+            expr.contains("TIMESTAMPTZ '9999-12-31 23:59:59.999999+00' >= ALL(\"slots\")"),
             "TIMESTAMPTZ[] check should reuse scalar temporal upper-bound policy: {expr}"
         );
     }
@@ -4193,11 +4201,15 @@ mod tests {
             "DATE[] outer NULL should pass through: {expr}"
         );
         assert!(
-            expr.contains("NOT EXISTS (SELECT 1 FROM unnest(\"validity\")"),
-            "DATE[] check should be element-wise via unnest: {expr}"
+            expr.contains("DATE '9999-12-31' >= ALL(\"validity\")"),
+            "DATE[] check should use CHECK-valid ALL bounds: {expr}"
         );
         assert!(
-            expr.contains("element <= DATE '9999-12-31'"),
+            !expr.contains("NOT EXISTS (SELECT 1 FROM unnest(\"validity\")"),
+            "DATE[] check should not emit a subquery CHECK: {expr}"
+        );
+        assert!(
+            expr.contains("DATE '9999-12-31' >= ALL(\"validity\")"),
             "DATE[] check should reuse scalar temporal upper-bound policy: {expr}"
         );
     }
@@ -4211,11 +4223,19 @@ mod tests {
             "NUMERIC[] outer NULL should pass through: {expr}"
         );
         assert!(
-            expr.contains("NOT EXISTS (SELECT 1 FROM unnest(\"metrics\")"),
-            "NUMERIC[] check should be element-wise via unnest: {expr}"
+            expr.contains("djogi.__djogi_numeric_array_is_rust_decimal_v1(\"metrics\")"),
+            "NUMERIC[] check should use helper-backed representability CHECK: {expr}"
         );
         assert!(
-            expr.contains("scale(element) <= 28"),
+            !expr.contains("NOT EXISTS (SELECT 1 FROM unnest(\"metrics\")"),
+            "NUMERIC[] check should not emit a subquery CHECK: {expr}"
+        );
+        assert!(
+            !expr.contains("scale(element)"),
+            "NUMERIC[] check should centralize decimal logic in helper: {expr}"
+        );
+        assert!(
+            expr.contains("djogi.__djogi_numeric_array_is_rust_decimal_v1(\"metrics\")"),
             "NUMERIC[] check should reuse scalar decimal representability policy: {expr}"
         );
     }
@@ -4379,20 +4399,20 @@ mod tests {
             .expect("NUMERIC[] column must carry per-element representability check");
 
         assert!(
-            slot_check.contains("NOT EXISTS (SELECT 1 FROM unnest(\"slots\")"),
-            "TIMESTAMPTZ[] projection should use unnest+NOT EXISTS: {slot_check}"
+            slot_check.contains("TIMESTAMPTZ '9999-12-31 23:59:59.999999+00' >= ALL(\"slots\")"),
+            "TIMESTAMPTZ[] projection should use CHECK-valid ALL bound: {slot_check}"
         );
         assert!(
-            validity_check.contains("NOT EXISTS (SELECT 1 FROM unnest(\"validity\")"),
-            "DATE[] projection should use unnest+NOT EXISTS: {validity_check}"
+            validity_check.contains("DATE '9999-12-31' >= ALL(\"validity\")"),
+            "DATE[] projection should use CHECK-valid ALL bound: {validity_check}"
         );
         assert!(
-            metrics_check.contains("NOT EXISTS (SELECT 1 FROM unnest(\"metrics\")"),
-            "NUMERIC[] projection should use unnest+NOT EXISTS: {metrics_check}"
+            metrics_check.contains("djogi.__djogi_numeric_array_is_rust_decimal_v1(\"metrics\")"),
+            "NUMERIC[] projection should use helper-backed check: {metrics_check}"
         );
         assert!(
-            metrics_check.contains("scale(element) <= 28"),
-            "NUMERIC[] projection should carry scalar decimal bound on each element: {metrics_check}"
+            !metrics_check.contains("element"),
+            "NUMERIC[] projection should not emit per-element aliases: {metrics_check}"
         );
     }
 
@@ -4606,7 +4626,7 @@ mod tests {
             "combined CHECK should include adopter predicate verbatim: {check}"
         );
         assert!(
-            check.contains("NOT EXISTS (SELECT 1 FROM unnest(\"times\")"),
+            check.contains("TIMESTAMPTZ '9999-12-31 23:59:59.999999+00' >= ALL(\"times\")"),
             "combined CHECK should include per-element typed check: {check}"
         );
         assert!(

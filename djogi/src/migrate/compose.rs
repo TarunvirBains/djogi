@@ -1400,6 +1400,10 @@ fn compose_up_text(version: &str, delta: &SchemaDelta, lowered: &[OperationSql])
         classification = delta.classification,
     ));
     out.push_str("-- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\n");
+    if requires_numeric_array_helper(lowered) {
+        out.push_str(NUMERIC_ARRAY_HELPER_PRELUDE);
+        out.push('\n');
+    }
     for op in lowered {
         out.push_str(&format!("-- {label}\n", label = op.label));
         out.push_str(op.up.trim_end_matches('\n'));
@@ -1420,6 +1424,10 @@ fn compose_down_text(version: &str, delta: &SchemaDelta, lowered: &[OperationSql
         app = super::target::app_dirname(&delta.bucket.app),
     ));
     out.push_str("-- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\n");
+    if requires_numeric_array_helper(lowered) {
+        out.push_str(NUMERIC_ARRAY_HELPER_PRELUDE);
+        out.push('\n');
+    }
     // Reverse order — drop operations roll back in reverse order.
     for op in lowered.iter().rev() {
         out.push_str(&format!("-- {label}\n", label = op.label));
@@ -1434,6 +1442,39 @@ fn compose_down_text(version: &str, delta: &SchemaDelta, lowered: &[OperationSql
         out.push_str("\n\n");
     }
     out
+}
+
+const NUMERIC_ARRAY_HELPER_PRELUDE: &str = r#"CREATE SCHEMA IF NOT EXISTS djogi;
+
+CREATE OR REPLACE FUNCTION djogi.__djogi_numeric_array_is_rust_decimal_v1(values pg_catalog.numeric[])
+RETURNS pg_catalog.boolean
+LANGUAGE sql
+IMMUTABLE STRICT PARALLEL SAFE
+AS $$
+    SELECT pg_catalog.coalesce(
+        pg_catalog.bool_and(
+            value IS NULL
+            OR (
+                pg_catalog.scale(value) <= 28
+                AND pg_catalog.abs(value)
+                    * pg_catalog.power(10::pg_catalog.numeric, pg_catalog.scale(value))
+                    <= 79228162514264337593543950335::pg_catalog.numeric
+            )
+        ),
+        true
+    )
+    FROM pg_catalog.unnest(values) AS value(value);
+$$;
+"#;
+
+fn requires_numeric_array_helper(operations: &[OperationSql]) -> bool {
+    operations.iter().any(|op| {
+        op.up
+            .contains("djogi.__djogi_numeric_array_is_rust_decimal_v1(")
+            || op
+                .down
+                .contains("djogi.__djogi_numeric_array_is_rust_decimal_v1(")
+    })
 }
 
 // ── Atomic write helpers ───────────────────────────────────────────────────
@@ -3420,5 +3461,100 @@ mod tests {
         //     and value (including its registered_apps list).
         let after_audit = after.get(&audit_bucket).expect("audit untouched");
         assert_eq!(*after_audit, before_audit);
+    }
+
+    #[test]
+    fn compose_up_down_prepends_numeric_array_helper_once_when_check_is_referenced() {
+        let delta = SchemaDelta {
+            bucket: BucketKey {
+                database: "main".into(),
+                app: "billing".into(),
+            },
+            operations: Vec::new(),
+            classification: Classification::Reversible,
+        };
+        let lowered = vec![OperationSql {
+            label: "add metric check".into(),
+            up: r#"ALTER TABLE "invoices" ADD CONSTRAINT "metrics_check" CHECK (djogi.__djogi_numeric_array_is_rust_decimal_v1("metrics"));"#
+                .into(),
+            down: r#"ALTER TABLE "invoices" DROP CONSTRAINT "metrics_check";"#
+                .into(),
+            lossy: None,
+        }];
+        let version = "V20260518__numeric_array_helper";
+        let up_sql = compose_up_text(version, &delta, &lowered);
+        let down_sql = compose_down_text(version, &delta, &lowered);
+
+        // Prelude is anchored once in each side, before the first
+        // operation comment so a downstream operator can execute the
+        // file without scanning labels for required helper dependencies.
+        assert!(
+            up_sql.contains(NUMERIC_ARRAY_HELPER_PRELUDE),
+            "Up migration must include numeric helper prelude: {up_sql}"
+        );
+        assert!(
+            down_sql.contains(NUMERIC_ARRAY_HELPER_PRELUDE),
+            "Down migration must include numeric helper prelude: {down_sql}"
+        );
+        assert_eq!(
+            up_sql.matches("CREATE SCHEMA IF NOT EXISTS djogi;").count(),
+            1,
+            "Up migration must emit helper prelude once: {up_sql}"
+        );
+        assert_eq!(
+            down_sql
+                .matches("CREATE SCHEMA IF NOT EXISTS djogi;")
+                .count(),
+            1,
+            "Down migration must emit helper prelude once: {down_sql}"
+        );
+        assert!(
+            up_sql.find("CREATE SCHEMA IF NOT EXISTS djogi;").unwrap()
+                < up_sql.find("-- add metric check").unwrap(),
+            "Up migration prelude must appear before operations: {up_sql}"
+        );
+        assert!(
+            down_sql.find("CREATE SCHEMA IF NOT EXISTS djogi;").unwrap()
+                < down_sql.find("-- add metric check").unwrap(),
+            "Down migration prelude must appear before operations: {down_sql}"
+        );
+        assert!(
+            up_sql.contains("djogi.__djogi_numeric_array_is_rust_decimal_v1(\"metrics\")"),
+            "Up migration should reference helper: {up_sql}"
+        );
+        assert!(
+            !up_sql.contains("NOT EXISTS (SELECT 1 FROM unnest(\"metrics\")"),
+            "Numeric helper CHECK should not use subquery style: {up_sql}"
+        );
+    }
+
+    #[test]
+    fn compose_up_text_omits_numeric_array_helper_when_unreferenced() {
+        let delta = SchemaDelta {
+            bucket: BucketKey {
+                database: "main".into(),
+                app: "billing".into(),
+            },
+            operations: Vec::new(),
+            classification: Classification::Reversible,
+        };
+        let lowered = vec![OperationSql {
+            label: "add integer col".into(),
+            up: r#"ALTER TABLE "accounts" ADD COLUMN "score" integer CHECK ("score" >= 0);"#.into(),
+            down: r#"ALTER TABLE "accounts" DROP COLUMN "score";"#.into(),
+            lossy: None,
+        }];
+        let version = "V20260518__no_numeric_array_helper";
+        let up_sql = compose_up_text(version, &delta, &lowered);
+        let down_sql = compose_down_text(version, &delta, &lowered);
+
+        assert!(
+            !up_sql.contains("CREATE SCHEMA IF NOT EXISTS djogi;"),
+            "Up migration without helper references must not include prelude: {up_sql}"
+        );
+        assert!(
+            !down_sql.contains("CREATE SCHEMA IF NOT EXISTS djogi;"),
+            "Down migration without helper references must not include prelude: {down_sql}"
+        );
     }
 }
