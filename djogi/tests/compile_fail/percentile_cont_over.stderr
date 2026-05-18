@@ -1,8 +1,11 @@
-error[E0599]: no method named `percentile_cont` found for struct `DjogiField<M, V>` in the current scope
-  --> $DIR/percentile_cont_over.rs:13:19
+error[E0599]: no method named `over` found for struct `AggregateExpr<f64, OrderedSetAgg>` in the current scope
+  --> $DIR/percentile_cont_over.rs:13:40
    |
 13 |         f.score().percentile_cont(0.5).over(|w| w)
-   |                   ^^^^^^^^^^^^^^^ method not found in `DjogiField<PercentileOverModel, f64>`
+   |                                        ^^^^ method not found in `AggregateExpr<f64, OrderedSetAgg>`
+   |
+   = note: the method was found for
+           - `AggregateExpr<Out>`
 
 error: aborting due to 1 previous error
 

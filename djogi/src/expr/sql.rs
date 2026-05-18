@@ -51,20 +51,24 @@ use crate::expr::node::{AggOp, CmpOp, ExprNode, SubqueryNode};
 use crate::pg::accumulator::SqlAccumulator;
 use crate::query::portable::{PortablePredicateError, SqlEmitContext};
 
-/// Check whether an [`ExprNode`] tree contains any aggregate whose `DISTINCT`
-/// modifier combination Postgres would reject or that Djogi cannot currently
-/// emit correctly.
+/// Check whether an [`ExprNode`] tree contains any aggregate modifier
+/// combination Postgres would reject or that Djogi cannot currently emit
+/// correctly.
 ///
 /// # Rejected combinations
 ///
 /// - `COUNT(*)` with `distinct = true` — `COUNT(DISTINCT *)` is not valid SQL.
 /// - `STRING_AGG(col, sep)` with `distinct = true` — Postgres requires an
 ///   explicit per-aggregate `ORDER BY` clause when DISTINCT is combined with
-///   `STRING_AGG`. The current IR does not track per-aggregate ORDER BY;
-///   this restriction may be lifted in a future release.
+///   `STRING_AGG`; the check rejects only the no-`ORDER BY` shape.
+/// - `COUNT(*)` with a per-aggregate `ORDER BY` — the emitter's `COUNT(*)`
+///   branch has no column slot to attach that ordering to, so the modifier
+///   would be silently dropped.
 ///
-/// All other `(op, distinct = true)` combinations are accepted and emitted as
-/// `AGG(DISTINCT col)`.
+/// The type-state surface prevents non-value aggregate families from exposing
+/// illegal modifiers. Debug builds additionally assert those invariants for
+/// direct-IR construction paths so malformed internal nodes fail early during
+/// tests/development.
 ///
 /// # When to call
 ///
@@ -80,8 +84,12 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             arg2,
             filter,
             order_by,
+            within_group_order_by,
+            // `cast_to` is intentionally ignored — it is a framework-emitted
+            // narrowing cast, never a user-supplied modifier. `window` is
+            // bound for the debug-only type-state invariant checks below.
             window,
-            ..
+            cast_to: _,
         } => {
             // ── DISTINCT-shape rejections ─────────────────────────────
             if *distinct {
@@ -127,6 +135,66 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
                              use COUNT(col ORDER BY ...) via FieldRef::count()",
                 });
             }
+
+            // ── Debug-only direct-IR type-state firewall ───────────────
+            // The typed API prevents these malformed shapes by withholding
+            // the corresponding methods from the aggregate kind. These
+            // assertions protect crate-internal direct-IR construction from
+            // drifting out of sync with that public type-state surface.
+            let ordered_or_hypothetical = matches!(
+                op,
+                AggOp::PercentileCont
+                    | AggOp::PercentileDisc
+                    | AggOp::Mode
+                    | AggOp::HypotheticalRank
+                    | AggOp::HypotheticalDenseRank
+                    | AggOp::HypotheticalPercentRank
+                    | AggOp::HypotheticalCumeDist
+            );
+
+            debug_assert!(
+                !ordered_or_hypothetical || (!*distinct && order_by.is_empty() && window.is_none()),
+                "ordered-set / hypothetical-set aggregate must not carry DISTINCT, \
+                 per-aggregate ORDER BY, or window modifiers — the typed kind-state \
+                 surface does not expose those methods"
+            );
+
+            // The typed `AggregateExpr::ordered_set` constructor always
+            // populates `within_group_order_by` at construction time —
+            // these ops are unreachable through the typed surface with an
+            // empty target list. This defensive guard catches future
+            // direct-IR construction (e.g. crate-internal helpers cloning
+            // the `ExprNode::Aggregate { ... }` literal pattern without
+            // routing through `ordered_set`, or `__bypass`-style callers
+            // building nodes by hand). Behind `debug_assert!` so release
+            // builds pay zero runtime cost while developer / CI builds
+            // surface the malformed node immediately rather than emitting
+            // invalid Postgres at fetch time.
+            //
+            // Kept distinct from the typed kind-state guard at the
+            // `AggregateExpr` level (#89): the kind-state enforces "you
+            // cannot build `f.col().sum().within_group_order_by(...)`";
+            // this assertion enforces "if you somehow built an ordered-set
+            // node, its WITHIN GROUP target must be populated."
+            debug_assert!(
+                !ordered_or_hypothetical || !within_group_order_by.is_empty(),
+                "ordered-set / hypothetical-set aggregate must carry a non-empty \
+                 within_group_order_by — typed constructor `AggregateExpr::ordered_set` \
+                 populates this at build time; reaching this assertion indicates a \
+                 direct-IR construction that bypassed the typed surface"
+            );
+
+            debug_assert!(
+                !matches!(op, AggOp::Grouping)
+                    || (!*distinct
+                        && filter.is_none()
+                        && order_by.is_empty()
+                        && window.is_none()
+                        && within_group_order_by.is_empty()),
+                "GROUPING aggregate must not carry modifiers — the metadata kind-state \
+                 surface does not expose DISTINCT, FILTER, ORDER BY, OVER, or \
+                 WITHIN GROUP modifiers"
+            );
 
             // Recurse into arg, arg2, and filter sub-trees in case there
             // are nested aggregates (unusual but structurally possible).
@@ -293,7 +361,8 @@ pub(crate) fn emit_expr(
             //
             // The `distinct` flag is checked by
             // `check_aggregate_legality` before emission — rejected
-            // combinations (CountStar + DISTINCT, StringAgg + DISTINCT)
+            // combinations (CountStar + DISTINCT, StringAgg + DISTINCT
+            // without ORDER BY, CountStar + ORDER BY)
             // never reach this arm at fetch time; they fail earlier.
             // At the bare-emit level (unit tests, nested contexts) the
             // flag is still emitted verbatim so tests can verify the
@@ -1055,10 +1124,11 @@ pub(crate) fn emit_expr(
             //
             // GROUPING does not accept any aggregate modifier — DISTINCT,
             // ORDER BY, FILTER, OVER all produce Postgres syntax errors —
-            // so this arm renders only the bare function call. The legality
-            // check `check_aggregate_legality` validates the single-arg
-            // form's modifier rejection; the variadic form has no modifier
-            // slots in the IR by design.
+            // so this arm renders only the bare function call. The typed
+            // metadata kind-state omits those modifiers for the single-arg
+            // form, and `check_aggregate_legality` debug-asserts the same
+            // invariant for direct-IR construction. The variadic form has
+            // no modifier slots in the IR by design.
             acc.push_sql("GROUPING(");
             for (i, a) in args.iter().enumerate() {
                 if i > 0 {
@@ -1194,9 +1264,10 @@ fn push_aggregate_order_by(acc: &mut SqlAccumulator, order_by: &[crate::query::o
 /// The caller writes `WITHIN GROUP (ORDER BY ` and the closing `)`
 /// around this helper's output, identical to how
 /// [`push_aggregate_order_by`] is sandwiched inside the aggregate
-/// parens. The legality check in [`check_aggregate_legality`] guarantees
-/// `targets` is non-empty before this is reached for ordered-set
-/// aggregates, so an empty list at this site is unreachable in practice.
+/// parens. The typed `AggregateExpr::ordered_set` constructor populates this
+/// list before emission for ordered-set / hypothetical-set aggregates; debug
+/// builds also assert that direct-IR construction did not bypass that
+/// invariant.
 fn emit_within_group_target(acc: &mut SqlAccumulator, targets: &[crate::query::order::OrderExpr]) {
     for (i, t) in targets.iter().enumerate() {
         if i > 0 {

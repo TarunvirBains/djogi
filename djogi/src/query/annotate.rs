@@ -63,9 +63,8 @@
 use crate::DjogiError;
 use crate::context::DjogiContext;
 use crate::expr::{
-    aggregate::KindEvidence,
     AggregateExpr, DenseRank, FirstValueWindow, LagWindow, LastValueWindow, LeadWindow,
-    NthValueWindow, Rank, RowNumber,
+    NthValueWindow, Rank, RowNumber, aggregate::KindEvidence,
 };
 use crate::model::Model;
 use crate::pg::accumulator::{SqlAccumulator, as_params};

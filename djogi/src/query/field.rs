@@ -926,6 +926,43 @@ impl<M: Model, V> DjogiField<M, V> {
     pub fn array_agg(self) -> crate::expr::AggregateExpr<Vec<V>> {
         self.sql.array_agg()
     }
+
+    /// `JSONB_AGG(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn json_agg(self) -> crate::expr::AggregateExpr<serde_json::Value> {
+        self.sql.json_agg()
+    }
+
+    /// `JSON_OBJECT_AGG(key, value)` — see
+    /// [`FieldRef::json_object_agg`](crate::query::FieldRef::json_object_agg).
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn json_object_agg<V2>(
+        self,
+        value: crate::query::FieldRef<M, V2>,
+    ) -> crate::expr::AggregateExpr<serde_json::Value> {
+        self.sql.json_object_agg(value)
+    }
+
+    /// `JSONB_OBJECT_AGG(key, value)` — see
+    /// [`FieldRef::jsonb_object_agg`](crate::query::FieldRef::jsonb_object_agg).
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn jsonb_object_agg<V2>(
+        self,
+        value: crate::query::FieldRef<M, V2>,
+    ) -> crate::expr::AggregateExpr<serde_json::Value> {
+        self.sql.jsonb_object_agg(value)
+    }
+
+    /// `GROUPING(column)` — see
+    /// [`FieldRef::grouping`](crate::query::FieldRef::grouping).
+    /// Returns a metadata-kind aggregate: chaining modifier methods
+    /// (`.distinct()` / `.filter(...)` / `.order_by(...)` / `.over(...)`)
+    /// is a compile error because `AggregateExpr<i32, MetadataAgg>` does
+    /// not implement those modifiers.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn grouping(self) -> crate::expr::AggregateExpr<i32, crate::expr::aggregate::MetadataAgg> {
+        self.sql.grouping()
+    }
 }
 
 impl<M: Model, V: crate::expr::arithmetic::Numeric> DjogiField<M, V> {
@@ -964,6 +1001,144 @@ impl<M: Model, V: crate::expr::arithmetic::Numeric> DjogiField<M, V> {
     pub fn variance(self) -> crate::expr::AggregateExpr<f64> {
         self.sql.variance()
     }
+
+    /// `VAR_POP(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn var_pop(self) -> crate::expr::AggregateExpr<f64> {
+        self.sql.var_pop()
+    }
+
+    /// `VAR_SAMP(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn var_samp(self) -> crate::expr::AggregateExpr<f64> {
+        self.sql.var_samp()
+    }
+
+    /// `COVAR_POP(y, x)` — see
+    /// [`FieldRef::covar_pop`](crate::query::FieldRef::covar_pop).
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn covar_pop<V2: crate::expr::arithmetic::Numeric>(
+        self,
+        x: crate::query::FieldRef<M, V2>,
+    ) -> crate::expr::AggregateExpr<f64> {
+        self.sql.covar_pop(x)
+    }
+
+    /// `COVAR_SAMP(y, x)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn covar_samp<V2: crate::expr::arithmetic::Numeric>(
+        self,
+        x: crate::query::FieldRef<M, V2>,
+    ) -> crate::expr::AggregateExpr<f64> {
+        self.sql.covar_samp(x)
+    }
+
+    /// `CORR(y, x)` — Pearson correlation coefficient.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn corr<V2: crate::expr::arithmetic::Numeric>(
+        self,
+        x: crate::query::FieldRef<M, V2>,
+    ) -> crate::expr::AggregateExpr<f64> {
+        self.sql.corr(x)
+    }
+
+    /// `REGR_AVGX(y, x)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_avgx<V2: crate::expr::arithmetic::Numeric>(
+        self,
+        x: crate::query::FieldRef<M, V2>,
+    ) -> crate::expr::AggregateExpr<f64> {
+        self.sql.regr_avgx(x)
+    }
+
+    /// `REGR_AVGY(y, x)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_avgy<V2: crate::expr::arithmetic::Numeric>(
+        self,
+        x: crate::query::FieldRef<M, V2>,
+    ) -> crate::expr::AggregateExpr<f64> {
+        self.sql.regr_avgy(x)
+    }
+
+    /// `REGR_COUNT(y, x)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_count<V2: crate::expr::arithmetic::Numeric>(
+        self,
+        x: crate::query::FieldRef<M, V2>,
+    ) -> crate::expr::AggregateExpr<i64> {
+        self.sql.regr_count(x)
+    }
+
+    /// `REGR_INTERCEPT(y, x)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_intercept<V2: crate::expr::arithmetic::Numeric>(
+        self,
+        x: crate::query::FieldRef<M, V2>,
+    ) -> crate::expr::AggregateExpr<f64> {
+        self.sql.regr_intercept(x)
+    }
+
+    /// `REGR_R2(y, x)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_r2<V2: crate::expr::arithmetic::Numeric>(
+        self,
+        x: crate::query::FieldRef<M, V2>,
+    ) -> crate::expr::AggregateExpr<f64> {
+        self.sql.regr_r2(x)
+    }
+
+    /// `REGR_SLOPE(y, x)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_slope<V2: crate::expr::arithmetic::Numeric>(
+        self,
+        x: crate::query::FieldRef<M, V2>,
+    ) -> crate::expr::AggregateExpr<f64> {
+        self.sql.regr_slope(x)
+    }
+
+    /// `REGR_SXX(y, x)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_sxx<V2: crate::expr::arithmetic::Numeric>(
+        self,
+        x: crate::query::FieldRef<M, V2>,
+    ) -> crate::expr::AggregateExpr<f64> {
+        self.sql.regr_sxx(x)
+    }
+
+    /// `REGR_SXY(y, x)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_sxy<V2: crate::expr::arithmetic::Numeric>(
+        self,
+        x: crate::query::FieldRef<M, V2>,
+    ) -> crate::expr::AggregateExpr<f64> {
+        self.sql.regr_sxy(x)
+    }
+
+    /// `REGR_SYY(y, x)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_syy<V2: crate::expr::arithmetic::Numeric>(
+        self,
+        x: crate::query::FieldRef<M, V2>,
+    ) -> crate::expr::AggregateExpr<f64> {
+        self.sql.regr_syy(x)
+    }
+
+    /// `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY column)` — continuous
+    /// percentile. Returns an ordered-set-kind aggregate; chaining
+    /// `.distinct()` / `.over(...)` / `.order_by(...)` is a compile
+    /// error because only [`OrderedSetAgg`](crate::expr::OrderedSetAgg)
+    /// modifiers (`.filter(...)`, `.within_group_order_by(...)`) are
+    /// legal.
+    ///
+    /// See [`FieldRef::percentile_cont`](crate::query::FieldRef::percentile_cont)
+    /// for the full surface.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn percentile_cont(
+        self,
+        p: f64,
+    ) -> crate::expr::AggregateExpr<f64, crate::expr::aggregate::OrderedSetAgg> {
+        self.sql.percentile_cont(p)
+    }
 }
 
 impl<M: Model, V: IntoFilterValue> DjogiField<M, V> {
@@ -977,6 +1152,92 @@ impl<M: Model, V: IntoFilterValue> DjogiField<M, V> {
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn max(self) -> crate::expr::AggregateExpr<V> {
         self.sql.max()
+    }
+
+    /// `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY column)` — discrete
+    /// percentile. Returns an ordered-set-kind aggregate.
+    ///
+    /// See [`FieldRef::percentile_disc`](crate::query::FieldRef::percentile_disc).
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn percentile_disc(
+        self,
+        p: f64,
+    ) -> crate::expr::AggregateExpr<V, crate::expr::aggregate::OrderedSetAgg> {
+        self.sql.percentile_disc(p)
+    }
+
+    /// `MODE() WITHIN GROUP (ORDER BY column)` — most common value.
+    /// Returns an ordered-set-kind aggregate.
+    ///
+    /// See [`FieldRef::mode`](crate::query::FieldRef::mode).
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn mode(self) -> crate::expr::AggregateExpr<V, crate::expr::aggregate::OrderedSetAgg> {
+        self.sql.mode()
+    }
+
+    /// `RANK(value) WITHIN GROUP (ORDER BY column)` — hypothetical-set
+    /// rank. Returns a hypothetical-set-kind aggregate; chaining
+    /// `.distinct()` / `.over(...)` / `.order_by(...)` is a compile
+    /// error because only [`HypotheticalSetAgg`](crate::expr::HypotheticalSetAgg)
+    /// modifiers (`.filter(...)`, `.within_group_order_by(...)`) are
+    /// legal.
+    ///
+    /// See [`FieldRef::rank_of`](crate::query::FieldRef::rank_of).
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn rank_of(
+        self,
+        value: V,
+    ) -> crate::expr::AggregateExpr<i64, crate::expr::aggregate::HypotheticalSetAgg> {
+        self.sql.rank_of(value)
+    }
+
+    /// `DENSE_RANK(value) WITHIN GROUP (ORDER BY column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn dense_rank_of(
+        self,
+        value: V,
+    ) -> crate::expr::AggregateExpr<i64, crate::expr::aggregate::HypotheticalSetAgg> {
+        self.sql.dense_rank_of(value)
+    }
+
+    /// `PERCENT_RANK(value) WITHIN GROUP (ORDER BY column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn percent_rank_of(
+        self,
+        value: V,
+    ) -> crate::expr::AggregateExpr<f64, crate::expr::aggregate::HypotheticalSetAgg> {
+        self.sql.percent_rank_of(value)
+    }
+
+    /// `CUME_DIST(value) WITHIN GROUP (ORDER BY column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn cume_dist_of(
+        self,
+        value: V,
+    ) -> crate::expr::AggregateExpr<f64, crate::expr::aggregate::HypotheticalSetAgg> {
+        self.sql.cume_dist_of(value)
+    }
+}
+
+// Bitwise integer aggregates — same `IntegerColumn` seal as the
+// `FieldRef` side: `i16` / `i32` / `i64`, never floats.
+impl<M: Model, V: crate::expr::aggregate::IntegerColumn> DjogiField<M, V> {
+    /// `BIT_AND(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn bit_and(self) -> crate::expr::AggregateExpr<V> {
+        self.sql.bit_and()
+    }
+
+    /// `BIT_OR(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn bit_or(self) -> crate::expr::AggregateExpr<V> {
+        self.sql.bit_or()
+    }
+
+    /// `BIT_XOR(column)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn bit_xor(self) -> crate::expr::AggregateExpr<V> {
+        self.sql.bit_xor()
     }
 }
 
@@ -1384,6 +1645,12 @@ impl<M: Model> DjogiField<M, bool> {
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn bool_or(self) -> crate::expr::AggregateExpr<bool> {
         self.sql.bool_or()
+    }
+
+    /// `EVERY(column)` — Postgres-standard alias for `BOOL_AND`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn every(self) -> crate::expr::AggregateExpr<bool> {
+        self.sql.every()
     }
 }
 

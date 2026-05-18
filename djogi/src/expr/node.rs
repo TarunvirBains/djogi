@@ -224,10 +224,18 @@ pub(crate) enum ExprNode {
         cast_to: Option<&'static str>,
         /// When `true`, the `DISTINCT` keyword is emitted before the aggregate
         /// argument: `AGG(DISTINCT col)`. Set via
-        /// [`super::aggregate::AggregateExpr::distinct`] (T4). Fetch-time
-        /// validation in [`super::sql::check_aggregate_legality`] rejects
-        /// combinations that Postgres does not accept or that Djogi's current
-        /// IR cannot correctly represent.
+        /// [`super::aggregate::AggregateExpr::distinct`] (T4), which is
+        /// exposed only on the `ValueAgg` kind impl block — non-value
+        /// aggregate families ([`AggOp::Grouping`], [`AggOp::PercentileCont`]
+        /// / [`AggOp::PercentileDisc`] / [`AggOp::Mode`],
+        /// [`AggOp::HypotheticalRank`] / [`AggOp::HypotheticalDenseRank`] /
+        /// [`AggOp::HypotheticalPercentRank`] / [`AggOp::HypotheticalCumeDist`])
+        /// reject `.distinct()` at compile time through the type-state
+        /// (#89). Fetch-time validation in
+        /// [`super::sql::check_aggregate_legality`] still catches
+        /// COUNT(DISTINCT *) and `STRING_AGG(DISTINCT ...)` without
+        /// per-aggregate `ORDER BY` because those share the `ValueAgg`
+        /// kind with their modifier-eligible siblings.
         distinct: bool,
         /// Optional user-specified window clause produced by
         /// [`super::aggregate::AggregateExpr::over`]. `None` means the
@@ -273,16 +281,15 @@ pub(crate) enum ExprNode {
         /// PERCENTILE_CONT($1) WITHIN GROUP (ORDER BY response_ms)
         /// ```
         ///
-        /// For ordered-set aggregates this slot is **mandatory** — the
-        /// fetch-time legality check in
-        /// [`super::sql::check_aggregate_legality`] rejects an empty
-        /// `within_group_order_by` for `PercentileCont` / `PercentileDisc`
-        /// / `Mode`. The typed builder methods on `FieldRef` populate it
-        /// at construction time from the receiver column (default ASC);
+        /// For ordered-set and hypothetical-set aggregates this slot is
+        /// **mandatory**. The typed builder methods on `FieldRef` populate it
+        /// at construction time from the receiver column (default ASC), and
         /// the [`super::aggregate::AggregateExpr::within_group_order_by`]
-        /// modifier overrides it for the rare case where the target
-        /// should differ from the constructing column or the direction
-        /// should be DESC.
+        /// modifier overrides it for the rare case where the target should
+        /// differ from the constructing column or the direction should be
+        /// DESC. Direct-IR construction is the only way to produce an empty
+        /// slot for these ops, and debug builds assert against that bypass in
+        /// [`super::sql::check_aggregate_legality`].
         ///
         /// Cluster E T7 introduced this slot. Future T8 (hypothetical-
         /// set aggregates `RANK(args) WITHIN GROUP (ORDER BY ...)`)
@@ -888,11 +895,11 @@ pub(crate) enum AggOp {
     ///
     /// Ordered-set aggregate — the fraction `p` lives in the `arg` slot
     /// as a literal `f64`; the column being percentiled lives in the
-    /// `within_group_order_by` slot. WITHIN GROUP is mandatory; the
-    /// fetch-time legality check rejects an empty
-    /// `within_group_order_by` for this variant. DISTINCT and the
-    /// per-aggregate `order_by` slot are also rejected (Postgres
-    /// disallows them on ordered-set aggregates).
+    /// `within_group_order_by` slot. WITHIN GROUP is mandatory and is
+    /// populated by the typed ordered-set constructor. DISTINCT and the
+    /// per-aggregate `order_by` slot are not exposed on
+    /// `AggregateExpr<Out, OrderedSetAgg>`; debug builds assert the same
+    /// invariants for direct-IR construction.
     PercentileCont,
     /// `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY col)` — discrete
     /// percentile (returns the actual value at the percentile cut, no

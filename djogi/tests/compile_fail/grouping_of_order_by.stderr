@@ -1,8 +1,8 @@
 error[E0599]: no method named `order_by` found for struct `AggregateExpr<i32, MetadataAgg>` in the current scope
-  --> $DIR/grouping_order_by.rs:13:31
+  --> $DIR/grouping_of_order_by.rs:13:49
    |
-13 |         f.region().grouping().order_by(f.region().asc())
-   |                               ^^^^^^^^ method not found in `AggregateExpr<i32, MetadataAgg>`
+13 |         djogi::grouping_of(&["region", "dept"]).order_by(f.region().asc())
+   |                                                 ^^^^^^^^ method not found in `AggregateExpr<i32, MetadataAgg>`
    |
    = note: the method was found for
            - `AggregateExpr<Out>`

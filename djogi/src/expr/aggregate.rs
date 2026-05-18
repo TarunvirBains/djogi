@@ -75,9 +75,20 @@ pub(crate) mod sealed {
 
 /// Compile-time marker for aggregate-modifier families.
 ///
-/// Only framework-internal kinds implement this trait; external crates cannot
-/// forge aggregate kind values because `IntoAggregateNode` only accepts
-/// [`KindEvidence`] bounds coming from this module.
+/// The four blessed markers — [`ValueAgg`], [`MetadataAgg`],
+/// [`OrderedSetAgg`], [`HypotheticalSetAgg`] — partition the aggregate
+/// universe by which modifier methods are legal. Each
+/// `AggregateExpr<Out, K>` carries the kind in `PhantomData`, and the
+/// per-kind `impl` blocks below project the modifier surface (e.g.
+/// `.distinct()` lives only on `AggregateExpr<Out, ValueAgg>`, never on
+/// `AggregateExpr<Out, OrderedSetAgg>`).
+///
+/// The trait is sealed via [`sealed::Sealed`]: only framework-internal
+/// kind markers implement it. Downstream crates cannot name `Sealed`,
+/// so external `KindEvidence` impls are unreachable — that means the
+/// `AnnotationSlot for AggregateExpr<V, K> where K: KindEvidence` and
+/// `QuerySet::aggregate` widenings cannot be subverted by a fabricated
+/// kind tag.
 pub trait KindEvidence: sealed::Sealed {}
 
 /// Default value-aggregate family — supports `DISTINCT`, `filter`, `over`,
@@ -107,23 +118,53 @@ impl KindEvidence for HypotheticalSetAgg {}
 /// `.sum()`, `.avg()`, `.min()`, `.max()`.
 ///
 /// Carries an [`ExprNode::Aggregate`] payload plus a `PhantomData<fn() ->
-/// Out>` tag pinning the Rust decode type. `#[must_use]` because a
-/// dropped aggregate is usually a mistake — the user likely meant to
-/// feed it into [`crate::query::QuerySet::aggregate`] or
+/// Out>` tag pinning the Rust decode type and a `PhantomData<fn() -> K>`
+/// tag pinning the modifier family. `#[must_use]` because a dropped
+/// aggregate is usually a mistake — the user likely meant to feed it
+/// into [`crate::query::QuerySet::aggregate`] or
 /// [`crate::query::QuerySet::annotate`].
 ///
-/// `Clone + Debug` because the underlying [`ExprNode`] already is —
-/// copies are cheap; deep aggregate trees are rare because aggregates
-/// bottom out at a column reference or a small arithmetic sub-tree.
+/// `Clone + Debug` are implemented manually rather than via
+/// `#[derive(Clone, Debug)]` because the derive macro would add
+/// `K: Clone` / `K: Debug` bounds on every method that takes
+/// `AggregateExpr<Out, K>` by value through a `Clone`-bounded slot
+/// (notably `GroupedAnnotatedQuerySet::having` / `order_by` which
+/// require `IntoAggregateTuple: Clone`). The four kind markers are
+/// ZSTs with no derived traits and live only in `PhantomData`, so
+/// cloning / formatting an `AggregateExpr` never actually touches the
+/// kind value — hand-rolling these impls keeps the typed surface
+/// usable without forcing `Clone` / `Debug` onto the markers.
 #[must_use = "aggregates are lazy — dropping one silently omits the column"]
-#[derive(Clone, Debug)]
 pub struct AggregateExpr<Out, K = ValueAgg> {
     pub(crate) node: ExprNode,
     pub(crate) _out: PhantomData<fn() -> Out>,
     pub(crate) _kind: PhantomData<fn() -> K>,
 }
 
-impl<Out, K> AggregateExpr<Out, K> {
+// Manual `Clone` / `Debug` impls — see the rationale on `AggregateExpr`
+// above. The derive macro's eager `K: Clone` / `K: Debug` bounds were
+// incompatible with the kind-state ZSTs (which have no derives) and
+// cascaded into compile failures on every grouped `having` / `order_by`
+// path through the `A: IntoAggregateTuple + Clone` bound.
+impl<Out, K> Clone for AggregateExpr<Out, K> {
+    fn clone(&self) -> Self {
+        AggregateExpr {
+            node: self.node.clone(),
+            _out: PhantomData,
+            _kind: PhantomData,
+        }
+    }
+}
+
+impl<Out, K> std::fmt::Debug for AggregateExpr<Out, K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AggregateExpr")
+            .field("node", &self.node)
+            .finish()
+    }
+}
+
+impl<Out, K: KindEvidence> AggregateExpr<Out, K> {
     /// Crate-private constructor. The typed aggregate methods on
     /// [`FieldRef`] are the supported entry points; downstream code
     /// cannot fabricate an arbitrarily-typed aggregate by smuggling in
@@ -223,7 +264,6 @@ impl<Out, K> AggregateExpr<Out, K> {
             within_group_order_by: vec![target],
         })
     }
-
 }
 
 impl<Out> AggregateExpr<Out, ValueAgg> {
@@ -238,18 +278,39 @@ impl<Out> AggregateExpr<Out, ValueAgg> {
     /// Apply the `DISTINCT` modifier to this aggregate, emitting
     /// `AGG(DISTINCT col)` rather than `AGG(col)`.
     ///
+    /// # Rejected at compile time
+    ///
+    /// `.distinct()` lives only on this `impl<Out> AggregateExpr<Out, ValueAgg>`
+    /// block — non-value aggregate families ([`MetadataAgg`] for
+    /// `GROUPING`, [`OrderedSetAgg`] for `PERCENTILE_CONT` / `PERCENTILE_DISC`
+    /// / `MODE`, [`HypotheticalSetAgg`] for `RANK` / `DENSE_RANK` /
+    /// `PERCENT_RANK` / `CUME_DIST`) do not expose it, so attempting to
+    /// chain `.distinct()` on those is a method-not-found compile error
+    /// at the type-state guard (#89). No runtime check is needed for
+    /// the typed surface.
+    ///
     /// # Rejected at fetch time
     ///
-    /// Two combinations are detected at fetch time and surface as
-    /// [`crate::DjogiError::UnsupportedAggregate`]:
+    /// Three combinations escape the type-state and surface as
+    /// [`crate::DjogiError::UnsupportedAggregate`] from
+    /// [`crate::expr::sql::check_aggregate_legality`]:
     ///
     /// - `COUNT(*)` with `DISTINCT`: `COUNT(DISTINCT *)` is not valid SQL.
-    ///   Use `COUNT(DISTINCT col)` via [`FieldRef::count`] instead.
-    /// - `STRING_AGG(DISTINCT col, sep)`: Postgres requires an explicit
-    ///   per-aggregate `ORDER BY` clause when DISTINCT is used with
-    ///   `STRING_AGG`, and Djogi's Phase 6.5 IR does not track per-aggregate
-    ///   ORDER BY. This combination will be rejected at fetch time rather
-    ///   than producing invalid SQL.
+    ///   `count_star()` shares the `ValueAgg` type-state with `count()`,
+    ///   `sum()`, etc., so `.distinct()` is callable; the runtime check
+    ///   catches the COUNT-specific shape. Use `COUNT(DISTINCT col)`
+    ///   via [`FieldRef::count`] instead.
+    /// - `STRING_AGG(DISTINCT col, sep)` without a per-aggregate
+    ///   `ORDER BY`: Postgres requires `STRING_AGG(DISTINCT col, sep
+    ///   ORDER BY ...)` to disambiguate the output tail. Chain
+    ///   [`Self::order_by`] with a deterministic key to make the
+    ///   combination well-formed.
+    /// - `COUNT(*)` with a per-aggregate `ORDER BY`: the `COUNT(*)`
+    ///   emitter hard-codes `COUNT(*)` and ignores the `order_by` slot,
+    ///   so chaining `.order_by(...)` on `count_star()` would silently
+    ///   drop the modifier; the legality check rejects this at fetch
+    ///   time. Chain ORDER BY at the `QuerySet` level instead, or use
+    ///   `COUNT(col ORDER BY ...)` via [`FieldRef::count`].
     #[must_use = "AggregateExpr is a value — dropping discards the DISTINCT flag"]
     pub fn distinct(mut self) -> Self {
         if let ExprNode::Aggregate { distinct, .. } = &mut self.node {
@@ -1109,11 +1170,21 @@ pub fn grouping_of(columns: &[&'static str]) -> AggregateExpr<i32, MetadataAgg> 
 // `within_group_order_by` slot stores the column being aggregated. The
 // emitter renders `OP(arg) WITHIN GROUP (ORDER BY target)`.
 //
-// Postgres rules these aggregates honour:
-// - DISTINCT is invalid (rejected by `check_aggregate_legality`)
-// - The in-paren `order_by` modifier (T1) is invalid (rejected)
-// - WITHIN GROUP is mandatory (rejected if empty)
-// - FILTER (WHERE ...) is valid
+// Postgres rules these aggregates honour, all enforced at compile time
+// by the [`OrderedSetAgg`] kind-state (#89):
+// - DISTINCT is invalid — `.distinct()` is not exposed on
+//   `AggregateExpr<Out, OrderedSetAgg>`.
+// - The in-paren `order_by` modifier (T1) is invalid — `.order_by(...)`
+//   is not exposed on `AggregateExpr<Out, OrderedSetAgg>`.
+// - The window modifier (T3) is invalid — `.over(...)` is not exposed
+//   on `AggregateExpr<Out, OrderedSetAgg>`.
+// - WITHIN GROUP is mandatory — the typed `AggregateExpr::ordered_set`
+//   constructor populates the `within_group_order_by` slot at build
+//   time from the receiver column, and `.within_group_order_by(...)`
+//   replaces (never empties) it. The runtime `debug_assert!` in
+//   `check_aggregate_legality` catches future direct-IR construction
+//   that bypasses the typed surface.
+// - FILTER (WHERE ...) is valid and exposed via `.filter(...)`.
 //
 // `percentile_cont` is `Numeric`-gated because Postgres returns
 // `DOUBLE PRECISION` for numeric inputs and `INTERVAL` for interval
@@ -1930,10 +2001,13 @@ mod tests {
         // DjogiError::UnsupportedAggregate before any SQL is emitted.
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let mut agg = f.count_star();
-        // Forcibly set distinct on the CountStar node, since the `.distinct()`
-        // builder correctly prevents setting distinct on CountStar at the API
-        // level. We reach into the node directly (crate-private) to simulate
-        // a malformed aggregate that must be caught at fetch time.
+        // `count_star()` returns `AggregateExpr<i64, ValueAgg>`, the
+        // same kind as `count()` / `sum()` / `avg()` — so the kind-state
+        // does NOT reject `.distinct()` on it (CountStar inherits the
+        // value-aggregate modifier surface). The runtime check at
+        // fetch time is the only guard for the COUNT(*)-specific
+        // shape. We reach into the node directly (crate-private) to
+        // construct the malformed aggregate that the check must catch.
         if let ExprNode::Aggregate {
             ref mut distinct, ..
         } = agg.node
@@ -2400,6 +2474,22 @@ mod tests {
         let _: AggregateExpr<i32, MetadataAgg> = f_str.grouping();
         let _: AggregateExpr<i32, MetadataAgg> = f_i64.grouping();
         let _: AggregateExpr<i32, MetadataAgg> = f_bool.grouping();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "GROUPING aggregate must not carry modifiers")]
+    fn direct_ir_grouping_distinct_debug_asserts() {
+        let f: FieldRef<Txn, String> = FieldRef::new("region");
+        let mut agg = f.grouping();
+        if let ExprNode::Aggregate {
+            ref mut distinct, ..
+        } = agg.node
+        {
+            *distinct = true;
+        }
+
+        let _ = crate::expr::sql::check_aggregate_legality(&agg.node);
     }
 
     // ── GROUPING variadic (#94) ───────────────────────────────────────────
@@ -3097,6 +3187,23 @@ mod tests {
         }
     }
 
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "ordered-set / hypothetical-set aggregate must carry")]
+    fn direct_ir_ordered_set_without_within_group_debug_asserts() {
+        let f: FieldRef<Txn, f64> = FieldRef::new("ms");
+        let mut agg = f.percentile_cont(0.5);
+        if let ExprNode::Aggregate {
+            within_group_order_by,
+            ..
+        } = &mut agg.node
+        {
+            within_group_order_by.clear();
+        }
+
+        let _ = crate::expr::sql::check_aggregate_legality(&agg.node);
+    }
+
     // ── Hypothetical-set aggregates — T8 ─────────────────────────────────────
 
     #[test]
@@ -3199,5 +3306,19 @@ mod tests {
             sql.contains(") WITHIN GROUP (ORDER BY base_salary DESC)"),
             "expected DESC override on different column, got: {sql}"
         );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "ordered-set / hypothetical-set aggregate must not carry")]
+    fn direct_ir_hypothetical_set_order_by_debug_asserts() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("salary");
+        let ordering: FieldRef<Txn, i64> = FieldRef::new("salary");
+        let mut agg = f.rank_of(7_500);
+        if let ExprNode::Aggregate { order_by, .. } = &mut agg.node {
+            order_by.push(ordering.asc());
+        }
+
+        let _ = crate::expr::sql::check_aggregate_legality(&agg.node);
     }
 }
