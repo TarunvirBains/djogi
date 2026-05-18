@@ -3135,6 +3135,7 @@ fn emit_djogi_emit_field_predicate(
             | PortableFieldKind::Spatial
             | PortableFieldKind::FtsComputed
             | PortableFieldKind::Unsupported => {
+                let ty = &info.rust_type;
                 // Non-portable kinds get a single catch-all arm
                 // returning the typed `UnsupportedFieldType` error,
                 // except for runtime-registered DjogiEnum codecs. The
@@ -3146,7 +3147,7 @@ fn emit_djogi_emit_field_predicate(
                 // covers every current and future variant for the
                 // field.
                 arms.push(quote! {
-                    (#column, _) => ::djogi::__private::query::portable_emit::emit_registered_custom::<#model_name>(
+                    (#column, _) => ::djogi::__private::query::portable_emit::emit_registered_custom::<#model_name, #ty>(
                         acc, ctx, #column, field,
                     ),
                 });

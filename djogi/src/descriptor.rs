@@ -2982,6 +2982,10 @@ pub type EnumPredicateOptionBinder =
 pub type EnumPredicateOptionListBinder =
     for<'a> fn(&'a (dyn std::any::Any + Send + Sync)) -> Option<Vec<Option<BoxedSqlBind>>>;
 
+/// Runtime check that a model field's declared Rust type belongs to this enum codec.
+#[doc(hidden)]
+pub type EnumPredicateFieldTypeMatcher = fn(std::any::TypeId) -> bool;
+
 /// Runtime predicate codec registered by `#[derive(DjogiEnum)]`.
 ///
 /// The model macro cannot observe whether a sibling type also derived
@@ -2994,6 +2998,7 @@ pub type EnumPredicateOptionListBinder =
 pub struct EnumPredicateCodec {
     pub type_name: &'static str,
     pub postgres_type: &'static str,
+    pub matches_field_type: EnumPredicateFieldTypeMatcher,
     pub bind_value: EnumPredicateValueBinder,
     pub bind_list: EnumPredicateListBinder,
     pub bind_option_value: EnumPredicateOptionBinder,

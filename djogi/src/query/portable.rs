@@ -1315,7 +1315,7 @@ pub mod emit {
     /// fallback only succeeds when the field descriptor's custom SQL type and
     /// the type-erased Sassi payload both match a registered enum codec.
     #[doc(hidden)]
-    pub fn emit_registered_custom<M>(
+    pub fn emit_registered_custom<M, V>(
         acc: &mut SqlAccumulator,
         ctx: SqlEmitContext,
         column: &'static str,
@@ -1323,6 +1323,7 @@ pub mod emit {
     ) -> Result<(), PortablePredicateError>
     where
         M: Model,
+        V: 'static,
     {
         let Some(field_descriptor) = M::descriptor()
             .fields
@@ -1331,17 +1332,24 @@ pub mod emit {
         else {
             return Err(PortablePredicateError::UnsupportedFieldType { field: column });
         };
+        if field_descriptor.protected.is_some() {
+            return Err(PortablePredicateError::UnsupportedFieldType { field: column });
+        }
         let postgres_type = match &field_descriptor.sql_type {
             FieldSqlType::Custom(postgres_type) => *postgres_type,
             _ => return Err(PortablePredicateError::UnsupportedFieldType { field: column }),
         };
 
-        let mut saw_matching_sql_type = false;
+        let mut saw_matching_field_type = false;
+        let field_type = std::any::TypeId::of::<V>();
         for codec in inventory::iter::<EnumPredicateCodec> {
             if codec.postgres_type != postgres_type {
                 continue;
             }
-            saw_matching_sql_type = true;
+            if !(codec.matches_field_type)(field_type) {
+                continue;
+            }
+            saw_matching_field_type = true;
 
             match field.op() {
                 LookupOp::Eq => {
@@ -1390,13 +1398,23 @@ pub mod emit {
                         return emit_boxed_list(acc, ctx, column, values, true);
                     }
                 }
+                LookupOp::IsNull => {
+                    ctx.push_column(acc, column);
+                    acc.push_sql(" IS NULL");
+                    return Ok(());
+                }
+                LookupOp::IsNotNull => {
+                    ctx.push_column(acc, column);
+                    acc.push_sql(" IS NOT NULL");
+                    return Ok(());
+                }
                 op => {
                     return Err(PortablePredicateError::UnsupportedLookup { field: column, op });
                 }
             }
         }
 
-        if saw_matching_sql_type {
+        if saw_matching_field_type {
             Err(PortablePredicateError::ValueTypeMismatch {
                 field: column,
                 op: field.op(),
