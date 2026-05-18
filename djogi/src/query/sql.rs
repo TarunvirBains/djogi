@@ -591,29 +591,26 @@ fn emit_leaf_ref(acc: &mut SqlAccumulator, leaf: &Leaf, parent_table: Option<&'s
 /// restriction surface; clones the underlying scalar into `push_bind`.
 fn push_list_element_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
     match v {
-        FilterValue::Null
-        | FilterValue::List(_)
-        | FilterValue::Pair(_, _)
-        | FilterValue::ArrayString(_)
-        | FilterValue::ArrayI16(_)
-        | FilterValue::ArrayI32(_)
-        | FilterValue::ArrayI64(_)
-        | FilterValue::ArrayF32(_)
-        | FilterValue::ArrayF64(_)
-        | FilterValue::ArrayBool(_)
-        | FilterValue::ArrayDateTime(_)
-        | FilterValue::ArrayDate(_)
-        | FilterValue::ArrayUuid(_)
-        | FilterValue::ArrayDecimal(_)
-        | FilterValue::ArrayHeerId(_)
-        | FilterValue::ArrayRanjId(_)
-        | FilterValue::ArrayHeerIdDesc(_)
-        | FilterValue::ArrayRanjIdDesc(_) => {
-            unreachable!(
-                "nested/null/array FilterValue in IN list — typed FieldRef API prevents this"
-            )
-        }
+        FilterValue::Null | FilterValue::List(_) | FilterValue::Pair(_, _) => unreachable!(
+            "nested/null FilterValue in IN list — typed FieldRef API prevents this"
+        ),
         scalar => push_filter_value_ref(acc, scalar),
+    }
+}
+
+#[cfg(test)]
+mod phase85_array_in_regression_tests {
+    use super::*;
+
+    #[test]
+    fn array_values_in_in_list_bind_instead_of_panicking() {
+        let mut acc = SqlAccumulator::new("");
+        let value = FilterValue::ArrayI32(vec![1, 2, 3]);
+
+        push_list_element_ref(&mut acc, &value);
+
+        assert_eq!(acc.sql(), "$1");
+        assert_eq!(acc.bind_count(), 1);
     }
 }
 

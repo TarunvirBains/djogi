@@ -32,7 +32,9 @@ use djogi::prelude::*;
 // resolves to the same trait, so importing either is equivalent.
 // We import via `djogi::types` to mirror the macro-emission target
 // path exactly.
-use djogi::types::{Cacheable, DeltaSyncCacheable};
+use djogi::__private::pg::SqlAccumulator;
+use djogi::__private::query::SqlEmitContext;
+use djogi::types::{BasicPredicate, Cacheable, DeltaSyncCacheable, IntoBasicPredicate};
 
 // ---------------------------------------------------------------------------
 // PK-variant fixtures — one model per built-in `pk = X` strategy plus the
@@ -193,6 +195,28 @@ fn cacheable_emitted_for_custom_pk() {
 #[test]
 fn custom_pk_id_field_preserves_portable_membership_surface() {
     let _filtered = CustomPkModel::objects().filter(|f| f.id().in_(vec![MyAppId(0)]));
+}
+
+#[test]
+fn custom_pk_id_field_emits_portable_membership_sql() {
+    let portable = <CustomPkModel as Cacheable>::fields()
+        .id()
+        .in_(vec![MyAppId(0)]);
+    let basic = portable.into_basic_predicate();
+    let BasicPredicate::Field(fp) = basic else {
+        panic!("custom PK membership should lower to a field predicate");
+    };
+
+    let mut acc = SqlAccumulator::new("");
+    let result = <CustomPkModel as Model>::__djogi_emit_field_predicate(
+        &mut acc,
+        &fp,
+        SqlEmitContext::root(),
+    );
+    assert!(
+        result.is_ok(),
+        "custom PK membership SQL emission should be supported: {result:?}"
+    );
 }
 
 /// `pk = None` skips Cacheable emission entirely. Asserting absence

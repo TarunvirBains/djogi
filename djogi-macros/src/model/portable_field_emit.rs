@@ -327,7 +327,16 @@ pub fn build(
             None
         };
 
-        let (field_kind, option_inner_type) = classify(&rust_type, fa_opt);
+        let (mut field_kind, option_inner_type) = classify(&rust_type, fa_opt);
+        if i == 0 && matches!(field_kind, PortableFieldKind::Unsupported) {
+            // Framework `id` fields are generated from the model's primary-key
+            // strategy, not user field attributes. Custom `primary_key!`
+            // wrappers intentionally satisfy the public portable equality
+            // bounds via `PrimaryKey`; keep SQL emission aligned with that
+            // public surface instead of classifying the injected newtype as an
+            // arbitrary unsupported user field.
+            field_kind = PortableFieldKind::Scalar;
+        }
         // Detect `Tracked<…>` at the outer layer of the declared type.
         // Required by `crud::option_arms` so `Tracked<Option<U>>` columns
         // emit a `value_as::<Tracked<Option<U>>>` fallback alongside the
