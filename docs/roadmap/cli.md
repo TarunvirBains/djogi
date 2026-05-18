@@ -17,7 +17,7 @@
 cargo install djogi-cli
 ```
 
-All subcommands run from the project root (the directory containing `Djogi.toml`). The CLI reads `Djogi.toml` and the `DATABASE_URL`, `NODE_ID`, and `DJOGI_ENV` environment variables.
+All subcommands run from the project root (the directory containing `Djogi.toml`). The CLI reads `Djogi.toml` and the `DATABASE_URL`, `DJOGI_ENV` environment variables; `NODE_ID` is also consumed as infrastructure config for HeeRanjID node selection, but Djogi does not perform startup NODE_ID validation here.
 
 ---
 
