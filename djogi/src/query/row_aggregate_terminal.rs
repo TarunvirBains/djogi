@@ -172,7 +172,7 @@ where
     /// emitting SQL.
     ///
     /// For non-`.none()` queries, a SQL filter that matches zero rows
-    /// yields `NULL` for `ST_AsGeobuf` from PostGIS. We map that to
+    /// yields `NULL` for `ST_AsMVT` from PostGIS. We map that to
     /// `Ok(Vec::new())` to keep terminal behavior ergonomic and avoid
     /// a `WasNull` decode error.
     ///
@@ -256,6 +256,11 @@ where
     ///
     /// `QuerySet::none()` short-circuits to `Ok(Vec::new())` without
     /// emitting SQL.
+    ///
+    /// For non-`.none()` queries, a SQL filter that matches zero rows
+    /// yields `NULL` for `ST_AsGeobuf` from PostGIS. We map that to
+    /// `Ok(Vec::new())` to keep terminal behavior ergonomic and avoid
+    /// a `WasNull` decode error.
     pub fn fetch_one<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -292,8 +297,8 @@ where
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
-            let bytes: Vec<u8> = row.try_get(0).map_err(DjogiError::from)?;
-            Ok(bytes)
+            let bytes: Option<Vec<u8>> = row.try_get(0).map_err(DjogiError::from)?;
+            Ok(bytes.unwrap_or_default())
         }
     }
 }

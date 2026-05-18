@@ -79,12 +79,17 @@ async fn annotated_as_mvt_returns_bytea_vec(mut ctx: djogi::DjogiContext) {
 
 #[djogi::djogi_test(extensions = ["postgis"], sync_models = [TileFeature])]
 async fn queryset_as_mvt_zero_rows_is_ok(mut ctx: djogi::DjogiContext) {
-    let _bytes: Vec<u8> = TileFeature::objects()
+    let bytes: Vec<u8> = TileFeature::objects()
         .filter(|f| f.name().eq("nonexistent".to_string()))
         .as_mvt_with_options(MvtOptions::new("airports").with_geom_name("location"))
         .fetch_one(&mut ctx)
         .await
         .expect("zero-row MVT filter must not panic and must return bytea");
+
+    assert!(
+        bytes.is_empty(),
+        "zero-row MVT filter should normalize SQL NULL to an empty Vec"
+    );
 }
 
 #[djogi::djogi_test(extensions = ["postgis"], sync_models = [TileFeature])]
