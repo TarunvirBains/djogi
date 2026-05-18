@@ -74,6 +74,8 @@ pub(crate) mod compare;
 pub(crate) mod literal;
 pub(crate) mod node;
 #[cfg(feature = "spatial")]
+pub mod row_aggregate;
+#[cfg(feature = "spatial")]
 pub(crate) mod spatial;
 pub(crate) mod sql;
 pub mod subquery;
@@ -84,6 +86,8 @@ pub use aggregate::{AggregateExpr, grouping_of};
 pub use aggregate::{HypotheticalSetAgg, KindEvidence, MetadataAgg, OrderedSetAgg, ValueAgg};
 pub use case::{Case, CaseBuilder};
 use node::ExprNode;
+#[cfg(feature = "spatial")]
+pub use row_aggregate::{BinaryRowAgg, MvtOptions, RowAggregate, RowKindEvidence};
 pub use subquery::{Exists, OuterRef, Subquery};
 pub use window::{FrameBound, FrameExclude, FrameKind, WindowBuilder, WindowSpec};
 pub use window_fn::{

@@ -1758,6 +1758,75 @@ where
     Ok(wrapped)
 }
 
+/// Build the annotated SELECT used as the inner rowset for PostGIS
+/// row-shape encoders (`ST_AsMVT` / `ST_AsGeobuf`).
+///
+/// Djogi stores spatial model fields as PostGIS `geography(...)`, while
+/// both row encoders inspect a geometry-typed record column by name. The
+/// ordinary annotated fetch path must keep geography values untouched for
+/// `FromPgRow`; this row-aggregate-only path is free to project
+/// `t.<geography_col>::geometry AS <geography_col>` because the outer
+/// terminal decodes only the single `bytea` aggregate result.
+#[cfg(feature = "spatial")]
+pub(crate) fn build_spatial_row_select_with_annotations_for_fetch<T, F>(
+    qs: &QuerySet<T>,
+    push_columns: F,
+    qualify: Option<&crate::expr::QualifyCondition>,
+) -> Result<SqlAccumulator, PortablePredicateError>
+where
+    T: Model + FromPgRow,
+    F: FnOnce(&mut SqlAccumulator),
+{
+    let inner = build_spatial_row_select_with_annotations(qs, push_columns)?;
+    let Some(qualify) = qualify else {
+        return Ok(inner);
+    };
+
+    let mut wrapped = SqlAccumulator::new("SELECT * FROM (");
+    wrapped.extend_with(inner);
+    wrapped.push_sql(") AS __djogi_q WHERE ");
+    qualify.push_outer_where(&mut wrapped);
+    Ok(wrapped)
+}
+
+#[cfg(feature = "spatial")]
+fn build_spatial_row_select_with_annotations<T, F>(
+    qs: &QuerySet<T>,
+    push_columns: F,
+) -> Result<SqlAccumulator, PortablePredicateError>
+where
+    T: Model + FromPgRow,
+    F: FnOnce(&mut SqlAccumulator),
+{
+    let mut acc = SqlAccumulator::new("SELECT ");
+    let desc = T::descriptor();
+
+    for (i, col) in <T as FromPgRow>::COLUMNS.iter().enumerate() {
+        if i > 0 {
+            acc.push_sql(", ");
+        }
+        acc.push_sql("t.");
+        acc.push_sql(col);
+        if desc.fields.iter().any(|f| {
+            f.name == *col
+                && matches!(
+                    f.sql_type,
+                    crate::descriptor::FieldSqlType::Geography { .. }
+                )
+        }) {
+            acc.push_sql("::geometry AS ");
+            acc.push_sql(col);
+        }
+    }
+
+    push_columns(&mut acc);
+    acc.push_sql(" FROM ");
+    acc.push_sql(T::table_name());
+    acc.push_sql(" AS t");
+    push_tail(&mut acc, qs)?;
+    Ok(acc)
+}
+
 /// Build `SELECT keys, aggregates FROM <table> [WHERE ...] GROUP BY keys
 /// [HAVING ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]` — the terminal for
 /// [`crate::query::grouped::GroupedAnnotatedQuerySet::fetch_all`].

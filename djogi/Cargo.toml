@@ -170,6 +170,11 @@ dev_deps = []
 edition = "2024"
 fixture_dirs = ["tests/compile_fail"]
 
+[[package.metadata.lihaaf.suite]]
+name = "spatial"
+features = ["testing", "spatial"]
+fixture_dirs = ["tests/compile_fail_spatial"]
+
 [[bin]]
 name = "djogi-outbox-relay"
 path = "src/bin/djogi-outbox-relay.rs"
@@ -768,6 +773,16 @@ required-features = ["spatial"]
 [[test]]
 name = "phase8_5_c4a_pair_area_overlap_ratio_live"
 path = "../tests/integration/phase8_5_c4a_pair_area_overlap_ratio_live.rs"
+harness = true
+required-features = ["spatial"]
+
+# Phase 8.5 Cluster F (#92) — row-shape PostGIS aggregate terminals.
+# Exercises `QuerySet::as_mvt`, `AnnotatedQuerySet::as_mvt`, and
+# `QuerySet::as_geobuf` end-to-end against live PostGIS with geography
+# model columns cast to geometry in the row-aggregate inner SELECT.
+[[test]]
+name = "phase8_5_c4f_row_aggregate_mvt_live"
+path = "../tests/integration/phase8_5_c4f_row_aggregate_mvt_live.rs"
 harness = true
 required-features = ["spatial"]
 

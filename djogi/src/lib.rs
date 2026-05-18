@@ -433,6 +433,8 @@ pub use expr::{
     AggregateExpr, Case, CaseBuilder, DenseRank, Exists, Expr, OuterRef, QualifyCondition,
     QualifyOp, Rank, RowNumber, Subquery, WindowRanking, grouping_of,
 };
+#[cfg(feature = "spatial")]
+pub use expr::{BinaryRowAgg, MvtOptions, RowAggregate, RowKindEvidence};
 // Field-level codec public surface. `FieldCodec` is the trait adopters
 // implement for at-rest column transformations.
 pub use field_codec::FieldCodec;
@@ -570,6 +572,8 @@ pub mod prelude {
         AggregateExpr, Case, CaseBuilder, DenseRank, Exists, Expr, OuterRef, QualifyCondition,
         QualifyOp, Rank, RowNumber, Subquery, WindowRanking, grouping_of,
     };
+    #[cfg(feature = "spatial")]
+    pub use crate::expr::{BinaryRowAgg, MvtOptions, RowAggregate, RowKindEvidence};
     // `FieldCodec` is the trait adopters implement when declaring a
     // codec — belongs in the prelude because protected-field
     // declarations live in adopter model files. `is_codec_registered`
@@ -672,4 +676,6 @@ pub mod prelude {
     // per-row polygon columns).
     #[cfg(feature = "spatial")]
     pub use crate::geo::{GeoPoint, Polygon};
+    #[cfg(feature = "spatial")]
+    pub use crate::query::{AsGeobufTerminal, AsMvtTerminal};
 }
