@@ -3582,6 +3582,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::disallowed_methods)]
+    // `tokio_postgres::connect` is used in this substrate integration test to
+    // validate SQL execution against a live database where configured.
     async fn compose_numeric_array_helper_prelude_applies_in_postgres_when_database_url_present() {
         use std::env;
         let database_url = match env::var("DATABASE_URL") {
@@ -3610,7 +3613,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(row.get::<_, bool>(0), true);
+        assert!(row.get::<_, bool>(0));
         tx.rollback().await.unwrap();
 
         connection.await.unwrap();

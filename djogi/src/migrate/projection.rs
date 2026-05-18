@@ -1348,20 +1348,18 @@ fn decimal_repr_expr(column_expr: &str) -> String {
 }
 
 fn range_endpoint_checks(range_column: &str, bound_check: fn(&str) -> String) -> String {
+    let lower_endpoint = format!("lower({range_column})");
+    let upper_endpoint = format!("upper({range_column})");
     let lower = format!(
-        "({})",
-        format!(
-            "lower({range_column}) IS NULL OR ({})",
-            bound_check(&format!("lower({range_column})"))
-        )
+        "{lower_endpoint} IS NULL OR ({})",
+        bound_check(&lower_endpoint)
     );
     let upper = format!(
-        "({})",
-        format!(
-            "upper({range_column}) IS NULL OR ({})",
-            bound_check(&format!("upper({range_column})"))
-        )
+        "{upper_endpoint} IS NULL OR ({})",
+        bound_check(&upper_endpoint)
     );
+    let lower = format!("({lower})");
+    let upper = format!("({upper})");
     format!("{lower} AND {upper}")
 }
 
