@@ -168,9 +168,8 @@ where
     ///
     /// # Empty input rows
     ///
-    /// PostGIS's `ST_AsMVT` returns an empty (but non-`NULL`) `bytea`
-    /// when the input row set is empty — a structurally-empty queryset
-    /// (`QuerySet::none()`) flows through to the same shape.
+    /// `QuerySet::none()` short-circuits to `Ok(Vec::new())` without
+    /// emitting SQL.
     ///
     /// # Errors
     ///
@@ -191,6 +190,9 @@ where
     {
         async move {
             let AsMvtTerminal { qs, agg } = self;
+            if qs.qs.is_empty() {
+                return Ok(Vec::new());
+            }
 
             // Validate the annotation tuple's modifier discipline
             // before SQL emission — same call site the ordinary
@@ -207,14 +209,17 @@ where
                 || qs.aggregates.requires_closure_pair_join()
             {
                 return Err(DjogiError::Validation(
-                    "row-shape aggregate terminals (as_mvt / as_geobuf) cannot host a \
-                     pair-tuple aggregate in the annotation tuple. Use a single-Model \
-                     QuerySet::as_mvt / QuerySet::as_geobuf (or supply only single-Model \
-                     aggregates in the annotation tuple) — pair-tuple scope is reserved \
-                     for the joined query surface."
+                    "row-shape aggregate terminals cannot host pair-tuple aggregates in the \
+                     annotation tuple (for example `PairAreaOverlapRatio` / `PairClosureKinshipSum`). \
+                     These aggregates reference pair-tuple aliases (`l.`, `r.`, `la.`, `ra.`) that are \
+                     only in scope on joined-pair query surfaces. Use a paired-query annotation \
+                     surface (e.g. `QuerySet::self_pairs()` / `cross_join_with(...)` plus \
+                     `.annotate(...)`) and a joined terminal that supports that joined aliasing model."
                         .to_string(),
                 ));
             }
+
+            crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
 
             let acc = build_row_aggregate_select(&qs, &agg).map_err(DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
@@ -241,6 +246,11 @@ where
     /// Same semantics as [`AsMvtTerminal::fetch_one`] — folds every row
     /// in the inner SELECT into one `bytea`, returns the single row's
     /// scalar value.
+    ///
+    /// # Empty input rows
+    ///
+    /// `QuerySet::none()` short-circuits to `Ok(Vec::new())` without
+    /// emitting SQL.
     pub fn fetch_one<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -251,6 +261,9 @@ where
     {
         async move {
             let AsGeobufTerminal { qs, agg } = self;
+            if qs.qs.is_empty() {
+                return Ok(Vec::new());
+            }
 
             qs.aggregates.check_legality()?;
 
@@ -258,14 +271,17 @@ where
                 || qs.aggregates.requires_closure_pair_join()
             {
                 return Err(DjogiError::Validation(
-                    "row-shape aggregate terminals (as_mvt / as_geobuf) cannot host a \
-                     pair-tuple aggregate in the annotation tuple. Use a single-Model \
-                     QuerySet::as_mvt / QuerySet::as_geobuf (or supply only single-Model \
-                     aggregates in the annotation tuple) — pair-tuple scope is reserved \
-                     for the joined query surface."
+                    "row-shape aggregate terminals cannot host pair-tuple aggregates in the \
+                     annotation tuple (for example `PairAreaOverlapRatio` / `PairClosureKinshipSum`). \
+                     These aggregates reference pair-tuple aliases (`l.`, `r.`, `la.`, `ra.`) that are \
+                     only in scope on joined-pair query surfaces. Use a paired-query annotation \
+                     surface (e.g. `QuerySet::self_pairs()` / `cross_join_with(...)` plus \
+                     `.annotate(...)`) and a joined terminal that supports that joined aliasing model."
                         .to_string(),
                 ));
             }
+
+            crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
 
             let acc = build_row_aggregate_select(&qs, &agg).map_err(DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
@@ -538,6 +554,7 @@ mod tests {
     use crate::descriptor::{
         FieldSqlType, GeographySubtype, ModelDescriptor, PkType, field_descriptor, model_descriptor,
     };
+    use crate::testing;
 
     // ── Fake model — bare minimum to exercise the SQL builder ──────────
 
@@ -714,5 +731,55 @@ mod tests {
             qs_sql, aqs_sql,
             "QuerySet::as_mvt and AnnotatedQuerySet::as_mvt over empty annotation must produce identical SQL"
         );
+    }
+
+    #[tokio::test]
+    async fn as_mvt_short_circuits_on_none_queryset() {
+        if std::env::var("DATABASE_URL").is_err() {
+            return;
+        }
+
+        let (_cleanup, mut ctx) = testing::setup_test_db_with_extensions(&["postgis"])
+            .await
+            .expect("DATABASE_URL must be set for row-aggregate none short-circuit tests");
+
+        let bytes = QuerySet::<TileFeature>::new()
+            .none()
+            .as_mvt("layer")
+            .fetch_one(&mut ctx)
+            .await
+            .expect("none queryset should short-circuit before emitting SQL");
+
+        assert!(
+            bytes.is_empty(),
+            "none queryset should return an empty payload without DB round-trip"
+        );
+
+        drop(_cleanup);
+    }
+
+    #[tokio::test]
+    async fn as_geobuf_short_circuits_on_none_queryset() {
+        if std::env::var("DATABASE_URL").is_err() {
+            return;
+        }
+
+        let (_cleanup, mut ctx) = testing::setup_test_db_with_extensions(&["postgis"])
+            .await
+            .expect("DATABASE_URL must be set for row-aggregate none short-circuit tests");
+
+        let bytes = QuerySet::<TileFeature>::new()
+            .none()
+            .as_geobuf("location")
+            .fetch_one(&mut ctx)
+            .await
+            .expect("none queryset should short-circuit before emitting SQL");
+
+        assert!(
+            bytes.is_empty(),
+            "none queryset should return an empty payload without DB round-trip"
+        );
+
+        drop(_cleanup);
     }
 }

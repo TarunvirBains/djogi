@@ -47,6 +47,21 @@ async fn queryset_as_mvt_returns_bytea_vec(mut ctx: djogi::DjogiContext) {
 }
 
 #[djogi::djogi_test(extensions = ["postgis"], sync_models = [TileFeature])]
+async fn queryset_as_mvt_none_short_circuit(mut ctx: djogi::DjogiContext) {
+    let bytes: Vec<u8> = TileFeature::objects()
+        .none()
+        .as_mvt("airports")
+        .fetch_one(&mut ctx)
+        .await
+        .expect("none queryset should short-circuit to an empty result");
+
+    assert!(
+        bytes.is_empty(),
+        "None queryset must return Ok(Vec::new()) without issuing SQL"
+    );
+}
+
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [TileFeature])]
 async fn annotated_as_mvt_returns_bytea_vec(mut ctx: djogi::DjogiContext) {
     TileFeature::create(&mut ctx, tile_feature("sfo", 37.62131, -122.37896))
         .await
@@ -60,6 +75,16 @@ async fn annotated_as_mvt_returns_bytea_vec(mut ctx: djogi::DjogiContext) {
         .expect("annotated ST_AsMVT terminal must execute");
 
     assert!(!bytes.is_empty(), "annotated MVT should be non-empty");
+}
+
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [TileFeature])]
+async fn queryset_as_mvt_zero_rows_is_ok(mut ctx: djogi::DjogiContext) {
+    let _bytes: Vec<u8> = TileFeature::objects()
+        .filter(|f| f.name().eq("nonexistent".to_string()))
+        .as_mvt_with_options(MvtOptions::new("airports").with_geom_name("location"))
+        .fetch_one(&mut ctx)
+        .await
+        .expect("zero-row MVT filter must not panic and must return bytea");
 }
 
 #[djogi::djogi_test(extensions = ["postgis"], sync_models = [TileFeature])]
@@ -78,4 +103,29 @@ async fn queryset_as_geobuf_returns_bytea_vec(mut ctx: djogi::DjogiContext) {
         !bytes.is_empty(),
         "Geobuf bytea should decode as non-empty Vec<u8>"
     );
+}
+
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [TileFeature])]
+async fn queryset_as_geobuf_none_short_circuit(mut ctx: djogi::DjogiContext) {
+    let bytes: Vec<u8> = TileFeature::objects()
+        .none()
+        .as_geobuf("location")
+        .fetch_one(&mut ctx)
+        .await
+        .expect("none queryset should short-circuit to an empty result");
+
+    assert!(
+        bytes.is_empty(),
+        "None queryset must return Ok(Vec::new()) without issuing SQL"
+    );
+}
+
+#[djogi::djogi_test(extensions = ["postgis"], sync_models = [TileFeature])]
+async fn queryset_as_geobuf_zero_rows_is_ok(mut ctx: djogi::DjogiContext) {
+    let _bytes: Vec<u8> = TileFeature::objects()
+        .filter(|f| f.name().eq("nonexistent".to_string()))
+        .as_geobuf("location")
+        .fetch_one(&mut ctx)
+        .await
+        .expect("zero-row Geobuf filter must not panic or decode NULL");
 }
