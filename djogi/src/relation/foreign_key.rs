@@ -273,9 +273,8 @@ where
     }
 }
 
-impl<T: Model + 'static> crate::query::field::DjogiPortableEq for ForeignKey<T>
-where
-    T::Pk: crate::query::field::DjogiPortableEq,
+impl<T: Model + 'static> crate::query::field::DjogiPortableEq for ForeignKey<T> where
+    T::Pk: crate::query::field::DjogiPortableEq
 {
 }
 

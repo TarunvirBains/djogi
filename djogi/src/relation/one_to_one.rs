@@ -174,9 +174,8 @@ where
     }
 }
 
-impl<T: Model + 'static> crate::query::field::DjogiPortableEq for OneToOneField<T>
-where
-    T::Pk: crate::query::field::DjogiPortableEq,
+impl<T: Model + 'static> crate::query::field::DjogiPortableEq for OneToOneField<T> where
+    T::Pk: crate::query::field::DjogiPortableEq
 {
 }
 
