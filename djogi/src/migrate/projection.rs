@@ -1077,23 +1077,30 @@ fn project_generated_column(spec: &GeneratedColumnSpec) -> GeneratedColumnSchema
 /// and a redundant CHECK would inflate every snapshot for no safety
 /// win.
 ///
-/// **Active arms (djogi#187 — temporal year bounds).** Each temporal
-/// `FieldSqlType` variant has exactly one Rust source type that lowers
-/// to it (`time::Date` → `Date`, `time::OffsetDateTime` → `Timestamptz`),
-/// so dispatch on `FieldSqlType` alone is unambiguous and the CHECK
-/// reaches `project_column` directly. The bound shape:
+/// **Active arms (djogi#187 — temporal year bounds + finite guard).** Each
+/// temporal `FieldSqlType` variant has exactly one Rust source type that
+/// lowers to it (`time::Date` → `Date`, `time::OffsetDateTime` →
+/// `Timestamptz`), so dispatch on `FieldSqlType` alone is unambiguous and
+/// the CHECK reaches `project_column` directly. The bound shape:
 ///
-/// | Rust                     | Postgres column | CHECK expression                                      |
-/// |--------------------------|-----------------|-------------------------------------------------------|
-/// | `time::Date`             | `DATE`          | `<col> <= DATE '9999-12-31'`                          |
-/// | `time::OffsetDateTime`   | `TIMESTAMPTZ`   | `<col> <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'`|
+/// | Rust                     | Postgres column | CHECK expression                                                                                |
+/// |--------------------------|-----------------|--------------------------------------------------------------------------------------------------|
+/// | `time::Date`             | `DATE`          | `pg_catalog.isfinite(<col>) AND <col> <= DATE '9999-12-31'`                                      |
+/// | `time::OffsetDateTime`   | `TIMESTAMPTZ`   | `pg_catalog.isfinite(<col>) AND <col> <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'`            |
 ///
-/// **One-sided upper bound by design.** The `time` crate's default
-/// year range is ISO 8601 -9999 to +9999. Postgres's DATE / TIMESTAMP
-/// types accept years far outside the upper bound (DATE up to 5874897
-/// AD; TIMESTAMP up to 294276 AD), so the upper-bound CHECK is the
-/// one that actually does work — it rejects Postgres-valid but
-/// `time::Date`-OOB INSERTs that would otherwise corrupt typed reads.
+/// **Two clauses, both required.** The upper-bound clause rejects
+/// `time::*`-OOB INSERTs (DATE up to 5874897 AD; TIMESTAMPTZ up to
+/// 294276 AD), while the leading `pg_catalog.isfinite(<col>)` clause
+/// rejects Postgres's two non-finite DATE / TIMESTAMPTZ special values
+/// (`'infinity'` and `'-infinity'`) that `time::Date` /
+/// `time::OffsetDateTime` cannot represent at all — without the finite
+/// guard a raw `INSERT … DATE '-infinity'` would land successfully and
+/// poison the next typed decode with `DjogiError::Decode`, matching
+/// the same failure mode the NUMERIC special-value family
+/// (`scale(<col>) IS NOT NULL`) was designed to close for `Decimal`.
+/// `pg_catalog.isfinite(...)` returns NULL for NULL input, so CHECK's
+/// standard NULL-as-satisfied rule still passes SQL NULL through on
+/// nullable columns.
 ///
 /// The lower bound is intentionally omitted because Postgres's own
 /// date input parser already rejects every value `time::Date` cannot
@@ -1136,27 +1143,44 @@ fn field_type_check(
 
     let qcol = quote_ident_for_check(column_name);
     match sql_type {
-        // ── djogi#187 — temporal year upper bound ────────────────────
+        // ── djogi#187 — temporal year upper bound + finite guard ─────
         //
-        // `time::Date` / `time::OffsetDateTime` cap at ISO year 9999
-        // by default. Postgres `DATE` / `TIMESTAMPTZ` accept much
-        // higher years (`DATE` up to 5874897 AD; `TIMESTAMPTZ` up to
-        // 294276 AD). External writers (raw SQL migration, BI tool,
-        // sister application) can land a row whose year exceeds the
-        // time crate's MAX. The next typed `SELECT` decoding via
-        // `row.try_get::<Date>` / `row.try_get::<OffsetDateTime>`
-        // fails with `DjogiError::Decode`, and a single bad row
-        // poisons all subsequent reads through the typed surface.
+        // Two layered defenses against `time::Date` /
+        // `time::OffsetDateTime` decode poisoning:
         //
-        // Project a one-sided upper-bound CHECK so Postgres rejects
-        // OOB-upper writes at the DB layer rather than letting them
-        // land and surface as decode failures on the read side. The
-        // lower bound is omitted because Postgres's own date input
-        // parser rejects every value `time::Date` cannot represent
-        // (Postgres's MIN is 4713 BC; `time::Date`'s MIN is 10000 BC
-        // — values in ISO years -9999 to -4713 are unreachable
-        // through Postgres regardless of CHECK). See the doc comment
-        // above.
+        // 1. **Year upper bound** — `time::Date` /
+        //    `time::OffsetDateTime` cap at ISO year 9999 by default.
+        //    Postgres `DATE` / `TIMESTAMPTZ` accept much higher years
+        //    (`DATE` up to 5874897 AD; `TIMESTAMPTZ` up to 294276 AD).
+        //    External writers (raw SQL migration, BI tool, sister
+        //    application) can land a row whose year exceeds the time
+        //    crate's MAX. The next typed `SELECT` decoding via
+        //    `row.try_get::<Date>` / `row.try_get::<OffsetDateTime>`
+        //    fails with `DjogiError::Decode`, and a single bad row
+        //    poisons subsequent reads through the typed surface.
+        //
+        // 2. **Finite guard** — Postgres `DATE` / `TIMESTAMPTZ` admit
+        //    two non-finite special values, `'infinity'` and
+        //    `'-infinity'`, that `time::Date` / `time::OffsetDateTime`
+        //    cannot represent at all. The `pg_catalog.isfinite(<col>)`
+        //    predicate evaluates to FALSE on those two literals and
+        //    NULL on SQL NULL — combined with the year bound under
+        //    AND, it rejects both infinities while leaving CHECK's
+        //    standard NULL-as-satisfied semantics intact on nullable
+        //    columns. Without this guard a raw
+        //    `INSERT … DATE '-infinity'` lands successfully (because
+        //    `'-infinity'::date <= DATE '9999-12-31'` is TRUE) and
+        //    later poisons a typed decode — the same failure mode the
+        //    NUMERIC special-value guard
+        //    (`scale(<col>) IS NOT NULL` for `Decimal`) was designed
+        //    to close.
+        //
+        // The lower bound is omitted because Postgres's own date input
+        // parser rejects every value `time::Date` cannot represent on
+        // the finite end (Postgres's MIN is 4713 BC; `time::Date`'s
+        // MIN is 10000 BC — values in ISO years -9999 to -4713 are
+        // unreachable through Postgres regardless of CHECK). See the
+        // doc comment above.
         //
         // The upper-bound `TIMESTAMP` literal includes microsecond
         // resolution so `OffsetDateTime::new(..., 23, 59, 59, 999_999)`
@@ -1366,12 +1390,67 @@ fn field_type_check(
     }
 }
 
+/// Inner representability predicate for a DATE expression that resolves
+/// to a `time::Date`-storable value.
+///
+/// Two clauses, both required:
+///
+/// 1. `pg_catalog.isfinite(<expr>)` — rejects Postgres's two non-finite
+///    DATE special values (`'infinity'::date` and `'-infinity'::date`)
+///    that `time::Date` cannot represent at all. Without this guard a
+///    raw `INSERT … DATE '-infinity'` lands successfully and poisons
+///    the next typed `time::Date::from_sql` decode with
+///    `DjogiError::Decode`. `pg_catalog.isfinite(date)` is documented
+///    to return FALSE for both `+/-infinity` and NULL for NULL input,
+///    so the standard CHECK NULL-as-satisfied rule still passes SQL
+///    NULL through.
+/// 2. `<expr> <= DATE '9999-12-31'` — caps the year at `time::Date`'s
+///    default MAX (`Date::MAX_YEAR = 9999`). Postgres DATE accepts
+///    much higher years (up to 5874897 AD); the upper-bound clause
+///    rejects writes that exceed the Rust type's representable range.
+///
+/// **Callers are responsible for the NULL pass-through.** The helper
+/// returns a bare conjunction with no `<expr> IS NULL OR` outer wrap.
+/// At the scalar `FieldSqlType::Date` arm Postgres CHECK's
+/// NULL-treated-as-satisfied semantics handles SQL NULL (both clauses
+/// evaluate to NULL, the conjunction is NULL, CHECK is satisfied).
+/// At the range-endpoint arm `range_endpoint_checks` wraps the helper
+/// with `<endpoint> IS NULL OR (...)` so empty / unbounded / NULL
+/// ranges short-circuit before the helper runs.
 fn date_range_expr(column_expr: &str) -> String {
-    format!("{column_expr} <= DATE '9999-12-31'")
+    format!("pg_catalog.isfinite({column_expr}) AND {column_expr} <= DATE '9999-12-31'")
 }
 
+/// Inner representability predicate for a TIMESTAMPTZ expression that
+/// resolves to a `time::OffsetDateTime`-storable value.
+///
+/// Two clauses, both required:
+///
+/// 1. `pg_catalog.isfinite(<expr>)` — rejects Postgres's two non-finite
+///    TIMESTAMPTZ special values (`'infinity'::timestamptz` and
+///    `'-infinity'::timestamptz`) that `time::OffsetDateTime` cannot
+///    represent. `pg_catalog.isfinite(timestamptz)` returns FALSE for
+///    both infinities and NULL for NULL input, so the standard CHECK
+///    NULL-as-satisfied rule still passes SQL NULL through.
+/// 2. `<expr> <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'` — caps
+///    the value at `time::OffsetDateTime`'s default upper bound.
+///    Postgres TIMESTAMPTZ accepts much higher years (up to 294276 AD);
+///    the upper-bound clause rejects writes that exceed the Rust type's
+///    representable range. The literal uses the `TIMESTAMPTZ` keyword
+///    with explicit `+00` UTC offset so the comparison is
+///    timezone-invariant — using plain `TIMESTAMP '...'` (without TZ)
+///    would make Postgres interpret the literal in the session
+///    timezone, shifting the effective upper bound.
+///
+/// **Callers are responsible for the NULL pass-through.** Same shape
+/// as `date_range_expr`: the scalar `FieldSqlType::Timestamptz` arm
+/// relies on CHECK's NULL semantics, and `range_endpoint_checks` adds
+/// the `<endpoint> IS NULL OR (...)` wrap for the range case.
 fn timestamptz_range_expr(column_expr: &str) -> String {
-    format!("{column_expr} <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'")
+    format!(
+        "pg_catalog.isfinite({column_expr}) AND \
+         {column_expr} <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
+    )
 }
 
 /// Inner representability predicate for a NUMERIC expression that
@@ -3427,6 +3506,14 @@ mod tests {
             !expr.contains(">= DATE"),
             "DATE CHECK is one-sided upper bound (no lower-bound clause): {expr}"
         );
+        // Finite guard rejects `'infinity'::date` / `'-infinity'::date`.
+        // Without this, raw INSERTs of either special value pass the upper-bound
+        // clause (since `-infinity::date <= DATE '9999-12-31'` is TRUE) and
+        // poison subsequent `time::Date::from_sql` decodes.
+        assert!(
+            expr.contains("pg_catalog.isfinite(\"birthday\")"),
+            "DATE CHECK must reject ±infinity via pg_catalog.isfinite(<col>): {expr}"
+        );
     }
 
     #[test]
@@ -3449,6 +3536,58 @@ mod tests {
         assert!(
             !expr.contains("<= TIMESTAMP '"),
             "TIMESTAMPTZ CHECK must not use plain TIMESTAMP literal (timezone-sensitive): {expr}"
+        );
+        // Finite guard rejects `'infinity'::timestamptz` / `'-infinity'::timestamptz`.
+        assert!(
+            expr.contains("pg_catalog.isfinite(\"occurred_at\")"),
+            "TIMESTAMPTZ CHECK must reject ±infinity via pg_catalog.isfinite(<col>): {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_date_rejects_infinity_special_values() {
+        // Dedicated pin for the finite-value guard on the scalar Date
+        // arm. Two clauses, joined by AND, with the finite guard
+        // leading so it short-circuits before the year-bound clause.
+        // The conjunction shape preserves CHECK's NULL-as-satisfied
+        // semantics on nullable columns: `pg_catalog.isfinite(NULL)`
+        // returns NULL, the AND is NULL, the CHECK is satisfied.
+        let expr = field_type_check(&FieldSqlType::Date, None, "birthday")
+            .expect("DATE field must carry the time::Date representability CHECK");
+        assert!(
+            expr.contains("pg_catalog.isfinite(\"birthday\") AND"),
+            "DATE CHECK must place the finite guard before the year bound under AND: {expr}"
+        );
+        // Confirm the two clauses are syntactically joined under AND
+        // — without that, Postgres would short-circuit on the upper
+        // bound alone and admit `-infinity`.
+        assert_eq!(
+            expr, "pg_catalog.isfinite(\"birthday\") AND \"birthday\" <= DATE '9999-12-31'",
+            "DATE CHECK expression shape (full): {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_timestamptz_rejects_infinity_special_values() {
+        // Dedicated pin for the finite-value guard on the scalar
+        // Timestamptz arm. Same two-clause shape as the DATE arm,
+        // with explicit `+00` UTC offset on the upper-bound literal.
+        let expr = field_type_check(&FieldSqlType::Timestamptz, None, "occurred_at")
+            .expect("TIMESTAMPTZ field must carry the OffsetDateTime representability CHECK");
+        assert!(
+            expr.contains("pg_catalog.isfinite(\"occurred_at\") AND"),
+            "TIMESTAMPTZ CHECK must place the finite guard before the year bound under AND: \
+             {expr}"
+        );
+        // The whole expression also asserts the formatter's whitespace
+        // shape (single space around AND, line continuation in the
+        // helper is collapsed by `format!`).
+        let normalized = expr.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(
+            normalized,
+            "pg_catalog.isfinite(\"occurred_at\") AND \
+             \"occurred_at\" <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'",
+            "TIMESTAMPTZ CHECK expression shape (full, whitespace-normalized): {expr}"
         );
     }
 
@@ -3868,11 +4007,12 @@ mod tests {
     fn project_column_emits_year_check_for_non_fk_date_column() {
         // Adopter `#[model] struct Product { launch_date: time::Date }`.
         // Lowers to `FieldSqlType::Date`. The projection must produce
-        // a `<col> <= DATE '9999-12-31'` CHECK so external writers
-        // that land OOB-upper Date values get rejected at the DB
-        // layer rather than poisoning typed reads with
-        // `DjogiError::Decode`. One-sided upper bound by design — see
-        // `field_type_check` doc comment.
+        // a `pg_catalog.isfinite(<col>) AND <col> <= DATE '9999-12-31'`
+        // CHECK so external writers that land OOB-upper Date values OR
+        // `±infinity` special values get rejected at the DB layer
+        // rather than poisoning typed reads with `DjogiError::Decode`.
+        // One-sided upper bound by design — see `field_type_check` doc
+        // comment.
         static FIELDS: &[FieldDescriptor] = &[
             FieldDescriptor {
                 ..field_descriptor("id", FieldSqlType::BigInt, false)
@@ -3897,10 +4037,14 @@ mod tests {
         let check = date_col
             .check
             .as_ref()
-            .expect("DATE column must carry the time::Date year-bound CHECK (djogi#187)");
+            .expect("DATE column must carry the time::Date representability CHECK (djogi#187)");
         assert!(
             check.contains("\"launch_date\" <= DATE '9999-12-31'"),
             "DATE column CHECK upper bound: {check}"
+        );
+        assert!(
+            check.contains("pg_catalog.isfinite(\"launch_date\")"),
+            "DATE column CHECK must reject ±infinity via the finite guard: {check}"
         );
     }
 
@@ -3908,9 +4052,10 @@ mod tests {
     fn project_column_emits_year_check_for_non_fk_timestamptz_column() {
         // Adopter `#[model] struct Event { occurred_at: OffsetDateTime }`.
         // Lowers to `FieldSqlType::Timestamptz`. The projection must
-        // produce a year-bound CHECK matching `time::OffsetDateTime`'s
-        // representable upper bound so external writers cannot land
-        // OOB-upper rows.
+        // produce a finite-guarded year-bound CHECK matching
+        // `time::OffsetDateTime`'s representable upper bound AND
+        // rejecting `±infinity` so external writers cannot land
+        // unrepresentable rows.
         static FIELDS: &[FieldDescriptor] = &[
             FieldDescriptor {
                 ..field_descriptor("id", FieldSqlType::BigInt, false)
@@ -3933,11 +4078,15 @@ mod tests {
         let ts_col = &buckets[&empty_global()].models["events"].columns[1];
         assert_eq!(ts_col.name, "occurred_at");
         let check = ts_col.check.as_ref().expect(
-            "TIMESTAMPTZ column must carry the OffsetDateTime year-bound CHECK (djogi#187)",
+            "TIMESTAMPTZ column must carry the OffsetDateTime representability CHECK (djogi#187)",
         );
         assert!(
             check.contains("\"occurred_at\" <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"),
             "TIMESTAMPTZ column CHECK upper bound: {check}"
+        );
+        assert!(
+            check.contains("pg_catalog.isfinite(\"occurred_at\")"),
+            "TIMESTAMPTZ column CHECK must reject ±infinity via the finite guard: {check}"
         );
     }
 
@@ -4224,6 +4373,18 @@ mod tests {
             expr.contains("upper(\"booking_window\") IS NULL OR"),
             "TSTZRANGE upper endpoint check must keep NULL/unbounded pass-through: {expr}"
         );
+        // Finite guard on both endpoints: `±infinity` is a valid
+        // TIMESTAMPTZ literal that `time::OffsetDateTime` cannot decode,
+        // so the helper must reject endpoints carrying those special
+        // values. Pre-existing scalar gap + newly-propagated range gap.
+        assert!(
+            expr.contains("pg_catalog.isfinite(lower(\"booking_window\"))"),
+            "TSTZRANGE lower endpoint must reject ±infinity via the finite guard: {expr}"
+        );
+        assert!(
+            expr.contains("pg_catalog.isfinite(upper(\"booking_window\"))"),
+            "TSTZRANGE upper endpoint must reject ±infinity via the finite guard: {expr}"
+        );
     }
 
     #[test]
@@ -4251,6 +4412,75 @@ mod tests {
         assert!(
             expr.contains("upper(\"validity\") IS NULL OR"),
             "DATERANGE upper endpoint check must keep NULL/unbounded pass-through: {expr}"
+        );
+        // Finite guard on both endpoints: `±infinity` is a valid DATE
+        // literal that `time::Date` cannot decode, so the helper must
+        // reject endpoints carrying those special values.
+        assert!(
+            expr.contains("pg_catalog.isfinite(lower(\"validity\"))"),
+            "DATERANGE lower endpoint must reject ±infinity via the finite guard: {expr}"
+        );
+        assert!(
+            expr.contains("pg_catalog.isfinite(upper(\"validity\"))"),
+            "DATERANGE upper endpoint must reject ±infinity via the finite guard: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_range_tstz_endpoint_rejects_infinity_special_values() {
+        // Dedicated pin for the finite-value guard on the TSTZRANGE
+        // endpoint arm. The full expression carries the two endpoint
+        // clauses joined by AND, each wrapped with its own
+        // `<endpoint> IS NULL OR (...)` pass-through. The finite guard
+        // leads each endpoint conjunction so it short-circuits before
+        // the year-bound clause.
+        let expr = field_type_check(
+            &FieldSqlType::Range {
+                subtype: RangeSubtypeKind::Tstz,
+            },
+            None,
+            "booking_window",
+        )
+        .expect("TSTZRANGE must carry Timestamptz representability checks on both endpoints");
+        // Lower endpoint conjunction.
+        assert!(
+            expr.contains(
+                "lower(\"booking_window\") IS NULL OR (pg_catalog.isfinite(lower(\"booking_window\")) AND lower(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00')"
+            ),
+            "TSTZRANGE lower endpoint conjunction shape: {expr}"
+        );
+        // Upper endpoint conjunction.
+        assert!(
+            expr.contains(
+                "upper(\"booking_window\") IS NULL OR (pg_catalog.isfinite(upper(\"booking_window\")) AND upper(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00')"
+            ),
+            "TSTZRANGE upper endpoint conjunction shape: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_range_date_endpoint_rejects_infinity_special_values() {
+        // Dedicated pin for the finite-value guard on the DATERANGE
+        // endpoint arm — same shape as the TSTZRANGE test above.
+        let expr = field_type_check(
+            &FieldSqlType::Range {
+                subtype: RangeSubtypeKind::Date,
+            },
+            None,
+            "validity",
+        )
+        .expect("DATERANGE must carry Date representability checks on both endpoints");
+        assert!(
+            expr.contains(
+                "lower(\"validity\") IS NULL OR (pg_catalog.isfinite(lower(\"validity\")) AND lower(\"validity\") <= DATE '9999-12-31')"
+            ),
+            "DATERANGE lower endpoint conjunction shape: {expr}"
+        );
+        assert!(
+            expr.contains(
+                "upper(\"validity\") IS NULL OR (pg_catalog.isfinite(upper(\"validity\")) AND upper(\"validity\") <= DATE '9999-12-31')"
+            ),
+            "DATERANGE upper endpoint conjunction shape: {expr}"
         );
     }
 
@@ -4433,17 +4663,17 @@ mod tests {
         );
         assert!(
             window.check.as_deref().expect("TSTZRANGE must carry endpoint checks").contains(
-                "lower(\"window\") IS NULL OR (lower(\"window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
+                "lower(\"window\") IS NULL OR (pg_catalog.isfinite(lower(\"window\")) AND lower(\"window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
             ),
-            "TSTZRANGE lower endpoint must use TIMESTAMPTZ upper bound"
+            "TSTZRANGE lower endpoint must use finite-guarded TIMESTAMPTZ upper bound"
         );
         assert!(
             window
                 .check
                 .as_deref()
                 .expect("TSTZRANGE must carry endpoint checks")
-                .contains("upper(\"window\") IS NULL OR (upper(\"window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"),
-            "TSTZRANGE upper endpoint must use TIMESTAMPTZ upper bound"
+                .contains("upper(\"window\") IS NULL OR (pg_catalog.isfinite(upper(\"window\")) AND upper(\"window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"),
+            "TSTZRANGE upper endpoint must use finite-guarded TIMESTAMPTZ upper bound"
         );
         assert!(
             validity
@@ -4451,9 +4681,9 @@ mod tests {
                 .as_deref()
                 .expect("DATERANGE must carry endpoint checks")
                 .contains(
-                    "lower(\"validity\") IS NULL OR (lower(\"validity\") <= DATE '9999-12-31'"
+                    "lower(\"validity\") IS NULL OR (pg_catalog.isfinite(lower(\"validity\")) AND lower(\"validity\") <= DATE '9999-12-31'"
                 ),
-            "DATERANGE lower endpoint must use DATE upper bound"
+            "DATERANGE lower endpoint must use finite-guarded DATE upper bound"
         );
         assert!(
             validity
@@ -4461,9 +4691,9 @@ mod tests {
                 .as_deref()
                 .expect("DATERANGE must carry endpoint checks")
                 .contains(
-                    "upper(\"validity\") IS NULL OR (upper(\"validity\") <= DATE '9999-12-31'"
+                    "upper(\"validity\") IS NULL OR (pg_catalog.isfinite(upper(\"validity\")) AND upper(\"validity\") <= DATE '9999-12-31'"
                 ),
-            "DATERANGE upper endpoint must use DATE upper bound"
+            "DATERANGE upper endpoint must use finite-guarded DATE upper bound"
         );
     }
 
@@ -4860,13 +5090,26 @@ mod tests {
             let check = col.check.as_ref().unwrap_or_else(|| {
                 panic!(
                     "framework Timestamptz column {} must carry the \
-                     OffsetDateTime year-bound CHECK (djogi#187)",
+                     OffsetDateTime representability CHECK (djogi#187)",
                     col.name
                 )
             });
             assert!(
                 check.contains("TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"),
                 "{} CHECK upper bound must use UTC-explicit TIMESTAMPTZ form: {check}",
+                col.name
+            );
+            // Framework timestamps also receive the finite guard. The
+            // `DEFAULT now()` value Postgres writes is always finite,
+            // so the guard never trips on framework-managed writes;
+            // but an external writer that overwrites `created_at` with
+            // `'-infinity'::timestamptz` would otherwise poison typed
+            // reads. The guard is the universal scalar-Timestamptz
+            // shape — it doesn't take a code path that distinguishes
+            // framework vs adopter columns.
+            assert!(
+                check.contains(&format!("pg_catalog.isfinite(\"{}\")", col.name)),
+                "{} framework column CHECK must reject ±infinity via the finite guard: {check}",
                 col.name
             );
         }

@@ -646,6 +646,19 @@ name = "phase8_5_g0_decimal_special_values"
 path = "../tests/internal/phase8_5_g0_decimal_special_values.rs"
 harness = true
 
+# Phase 8.5 G0 — Temporal representability CHECK rejects PostgreSQL
+# DATE / TIMESTAMPTZ special values (`+infinity`, `-infinity`) on
+# scalar `time::Date` / `time::OffsetDateTime` columns and on the
+# DATERANGE / TSTZRANGE endpoint checks. The rejection path is
+# exercised through `raw_execute` because the typed Rust surface
+# (`time::Date`, `time::OffsetDateTime`, `djogi::Range<...>`) carries
+# no non-finite states. The finite-value accept-path checks inside
+# the same fixture run through the typed surface only.
+[[test]]
+name = "phase8_5_g0_temporal_infinity"
+path = "../tests/internal/phase8_5_g0_temporal_infinity.rs"
+harness = true
+
 # Phase 8.5 Cluster 3 issue #110 — round-2 dogfood discovery across six
 # typed-surface categories. Each scenario uses `#[djogi_test]` and the
 # typed surface only; gaps surface as compile-fail callsites that are
