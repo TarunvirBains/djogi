@@ -359,8 +359,8 @@ pub use descriptor::{
     ComputedFieldDescriptor, DefaultVolatility, DeferrabilitySpec, DerivedProjection,
     EnumDescriptor, FieldDescriptor, FieldSqlType, GeographySubtype, IndexColumnSpec, IndexKind,
     IndexNameKind, IndexNameTarget, IndexNullsOrder, IndexOrder, IndexSpec, IndexTarget, IndexType,
-    ModelDescriptor, PartitionSpec, PkType, ProtectedFieldMetadata, RedactionPolicy,
-    RetentionLabel, RustSourceType, Sensitivity, VisageDescriptor, index_name,
+    ModelDescriptor, PartitionSpec, PkType, ProtectedFieldMetadata, RangeSubtypeKind,
+    RedactionPolicy, RetentionLabel, RustSourceType, Sensitivity, VisageDescriptor, index_name,
 };
 pub use pg::pool::DjogiPool;
 // Top-level `djogi::GeoPoint` re-export for spatial models. Feature-gated so
@@ -470,8 +470,8 @@ pub use relation::{
 };
 pub use tracked::Tracked;
 pub use types::{
-    Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, Interval, RanjId, RanjIdDesc,
-    RanjIdRecencyBiased,
+    Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, Interval, Range, RangeBound, RanjId,
+    RanjIdDesc, RanjIdRecencyBiased,
 };
 pub use visage::{DjogiVisage, VisageError};
 
@@ -559,7 +559,7 @@ pub mod prelude {
         DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType,
         GeographySubtype, IndexColumnSpec, IndexKind, IndexNullsOrder, IndexOrder, IndexSpec,
         IndexTarget, IndexType, ModelDescriptor, PartitionSpec, PkType, ProtectedFieldMetadata,
-        RedactionPolicy, RetentionLabel, RustSourceType, Sensitivity,
+        RangeSubtypeKind, RedactionPolicy, RetentionLabel, RustSourceType, Sensitivity,
     };
     pub use crate::error::{DbError, DjogiError};
     // The `djogi::Result<T>` alias is intentionally NOT re-exported through
@@ -629,8 +629,8 @@ pub mod prelude {
     };
     pub use crate::tracked::Tracked;
     pub use crate::types::{
-        Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, Interval, RanjId, RanjIdDesc,
-        RanjIdRecencyBiased,
+        Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, Interval, Range, RangeBound,
+        RanjId, RanjIdDesc, RanjIdRecencyBiased,
     };
     // T7 fixup — `DjogiVisageOf<M>` is the seal trait bounding every
     // `{Visage}` type to its source model `M`. Adopter code that writes

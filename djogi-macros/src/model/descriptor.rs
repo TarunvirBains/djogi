@@ -1244,6 +1244,36 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         // a string-comparison shortcut. The mapping tracks
         // `rust_type_to_sql`'s `djogi::Interval` arm.
         "INTERVAL" => quote! { ::djogi::FieldSqlType::Interval },
+        // Phase 8.5 G0 (djogi#148 + #150 substrate) — range SQL types
+        // lower to the typed `FieldSqlType::Range { subtype }` variant.
+        // The mapping tracks `rust_type_to_sql`'s structural `Range<T>`
+        // detection; one arm per Postgres built-in range type the G0
+        // substrate ships.
+        "INT4RANGE" => quote! {
+            ::djogi::FieldSqlType::Range {
+                subtype: ::djogi::descriptor::RangeSubtypeKind::Int4,
+            }
+        },
+        "INT8RANGE" => quote! {
+            ::djogi::FieldSqlType::Range {
+                subtype: ::djogi::descriptor::RangeSubtypeKind::Int8,
+            }
+        },
+        "NUMRANGE" => quote! {
+            ::djogi::FieldSqlType::Range {
+                subtype: ::djogi::descriptor::RangeSubtypeKind::Num,
+            }
+        },
+        "TSTZRANGE" => quote! {
+            ::djogi::FieldSqlType::Range {
+                subtype: ::djogi::descriptor::RangeSubtypeKind::Tstz,
+            }
+        },
+        "DATERANGE" => quote! {
+            ::djogi::FieldSqlType::Range {
+                subtype: ::djogi::descriptor::RangeSubtypeKind::Date,
+            }
+        },
         other => {
             let s = other.to_string();
             quote! { ::djogi::FieldSqlType::Custom(#s) }

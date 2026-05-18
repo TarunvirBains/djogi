@@ -21,6 +21,21 @@ pub use heeranjid::{HeerId, HeerIdDesc, RanjId, RanjIdDesc, RanjPrecision};
 // djogi#170 umbrella add additional newtypes alongside.
 pub use crate::pg_types::Interval;
 
+// Phase 8.5 G0 — Range<T> + RangeBound<T> substrate (djogi#148 + #150).
+//
+// `Range<T>` is the typed Postgres range value carried by columns
+// typed `int4range` / `int8range` / `numrange` / `tstzrange` /
+// `daterange`. The substrate lives at `crate::pg_types::Range` /
+// `crate::pg_types::RangeBound`; the re-export here surfaces them at
+// the canonical adopter-facing path (`djogi::types::Range`, and
+// `djogi::Range` via the crate root).
+//
+// The `RangeSubtype` trait is intentionally **not** re-exported.
+// Adopters should not need it for ordinary use; the wire codec
+// reaches it via trait-bound dispatch and adopter code interacts
+// only with the `Range<T>` value itself.
+pub use crate::pg_types::{Range, RangeBound};
+
 // Public naming — spec §3.5a. Internals keep `HeerIdDesc` / `RanjIdDesc`
 // to match heeranjid; user-facing surfaces (guides, `#[model(pk = X)]`)
 // use the `RecencyBiased` aliases so the name describes intent rather

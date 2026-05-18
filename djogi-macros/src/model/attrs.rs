@@ -2947,6 +2947,54 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         return Some("JSONB");
     }
 
+    // Phase 8.5 G0 (djogi#148 + #150 substrate) — `Range<T>` wrappers
+    // lower to the matching Postgres range type based on the element
+    // type. Mirrors the `Jsonb<T>` matcher shape: last-segment ident
+    // match plus angle-bracket generic arguments. Covers bare `Range<T>`,
+    // `djogi::Range<T>`, `djogi::types::Range<T>`, `crate::Range<T>`,
+    // `super::Range<T>`, and `::djogi::*::Range<T>` path forms uniformly.
+    //
+    // Element-type mapping recurses through `rust_type_to_sql` on the
+    // angle-bracketed argument, so each path form of the element
+    // (`DateTime` / `time::OffsetDateTime` / `djogi::DateTime` / …)
+    // resolves to the same range subtype regardless of spelling. The
+    // five subtypes G0 ships are the Postgres built-ins; `tsrange`
+    // (timestamp-without-timezone) is intentionally absent because
+    // Djogi pins to `TIMESTAMPTZ` exclusively.
+    //
+    // Element types outside the supported set (e.g. `Range<String>`,
+    // `Range<bool>`) fall through to the `None` return below, where the
+    // caller's `field_sql_type_tokens` fallback then attempts
+    // `<#ty as ::djogi::descriptor::DjogiSqlType>::SQL_TYPE`. There is
+    // no `DjogiSqlType` impl for `Range<String>` etc., so adopters who
+    // write an unsupported range type get a compile-time "trait bound
+    // not satisfied" error pointing at the descriptor emission site.
+    //
+    // Future siblings: djogi#148 (`btree_gist` EXCLUDE grammar) and
+    // djogi#150 (PG18 temporal DDL) build on top of this lowering. G0
+    // ships only the substrate.
+    if let syn::Type::Path(syn::TypePath { qself: None, path }) = ty
+        && let Some(last) = path.segments.last()
+        && last.ident == "Range"
+        && let syn::PathArguments::AngleBracketed(args) = &last.arguments
+        && args.args.len() == 1
+        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+    {
+        let element_sql = rust_type_to_sql(inner)?;
+        return match element_sql {
+            "INTEGER" => Some("INT4RANGE"),
+            "BIGINT" => Some("INT8RANGE"),
+            "NUMERIC" => Some("NUMRANGE"),
+            "TIMESTAMPTZ" => Some("TSTZRANGE"),
+            "DATE" => Some("DATERANGE"),
+            // Other element types (TEXT, BOOLEAN, UUID, JSONB, arrays,
+            // geography, …) are not Postgres range-supported subtypes.
+            // Fall through to `None` so the caller emits a compile
+            // error rather than fabricating a bogus range type.
+            _ => None,
+        };
+    }
+
     // Normalise whitespace and strip an optional leading `::` so absolute
     // paths (`::djogi::types::HeerId`) match the same arms as their
     // relative counterparts (`djogi::types::HeerId`).
