@@ -833,15 +833,17 @@ pub trait RawPoolAccessExtBase: sealed::Sealed {
     /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
     ///
     /// `raw_with_client` is the framework's only path to the underlying
-    /// `tokio_postgres::Client` and the only way to reach binary-protocol
-    /// helpers like `client.copy_in(...)`, `client.simple_query(...)`,
-    /// `CREATE EXTENSION` (which requires `simple_query` outside a
-    /// transaction), and the prepared-statement cache directly. The closure
-    /// receives `&mut Client` for the duration of the borrow; the returned
-    /// connection is **dirty by default** — adopters that issue `SET` /
-    /// `LISTEN` / role changes inside the closure are responsible for
-    /// resetting the connection (or the surrounding pool's `Manager` impl
-    /// must declare a `reset` step).
+    /// `tokio_postgres::Client` and the canonical public route for
+    /// driver-level operations that the typed surface cannot express:
+    /// `client.copy_in(...)`, `client.copy_out(...)`, server-side cursor
+    /// protocol work, `client.simple_query(...)`, `CREATE EXTENSION`, and
+    /// third-party helpers that require a `&tokio_postgres::Client`. The
+    /// closure receives `&mut Client` for the duration of the borrow; keep
+    /// the full COPY/cursor exchange inside that closure so the pool guard
+    /// can return the connection on `Ok` or detach it on `Err`, panic, or
+    /// cancellation. Typed-surface COPY and streaming wrappers do not exist
+    /// today; this explicit bypass is the supported public route for those
+    /// driver-level operations.
     ///
     /// Returns [`DjogiError::Db`] wrapping the underlying transport / pool
     /// error when the context has no pool to draw from (pure transaction-

@@ -444,6 +444,78 @@ async fn pool_with_client_detaches_on_panic() {
     teardown_test_db(cleanup).await;
 }
 
+/// `raw_with_client` is the public pool route for direct-driver COPY.
+/// This pins a small binary `bytea` payload through Postgres' binary COPY
+/// protocol and reads it back through the same borrowed client.
+#[tokio::test]
+async fn pool_raw_with_client_copy_from_stdin_round_trips_binary_payload() {
+    let (cleanup, url) = provision_test_db().await;
+    let pool = DjogiPool::builder(&url)
+        .max_size(1)
+        .build()
+        .await
+        .expect("pool builds");
+
+    let returned = pool
+        .raw_with_client(|client| {
+            Box::pin(async move {
+                client
+                    .batch_execute(
+                        "CREATE TEMP TABLE djogi_pool_copy_payloads (
+                            id INTEGER PRIMARY KEY,
+                            payload BYTEA NOT NULL
+                        )",
+                    )
+                    .await
+                    .map_err(djogi::DjogiError::from)?;
+
+                let sink = client
+                    .copy_in(
+                        "COPY djogi_pool_copy_payloads (id, payload) \
+                         FROM STDIN BINARY",
+                    )
+                    .await
+                    .map_err(djogi::DjogiError::from)?;
+                let writer = tokio_postgres::binary_copy::BinaryCopyInWriter::new(
+                    sink,
+                    &[
+                        tokio_postgres::types::Type::INT4,
+                        tokio_postgres::types::Type::BYTEA,
+                    ],
+                );
+                tokio::pin!(writer);
+
+                let payload: &[u8] = b"\x00djogi-pool-copy\xffpayload";
+                writer
+                    .as_mut()
+                    .write(&[&7_i32, &payload])
+                    .await
+                    .map_err(djogi::DjogiError::from)?;
+                writer
+                    .as_mut()
+                    .finish()
+                    .await
+                    .map_err(djogi::DjogiError::from)?;
+
+                let row = client
+                    .query_one(
+                        "SELECT payload FROM djogi_pool_copy_payloads WHERE id = $1",
+                        &[&7_i32],
+                    )
+                    .await
+                    .map_err(djogi::DjogiError::from)?;
+                row.try_get::<_, Vec<u8>>("payload")
+                    .map_err(djogi::DjogiError::from)
+            })
+        })
+        .await
+        .expect("COPY round-trip succeeds");
+
+    assert_eq!(returned, b"\x00djogi-pool-copy\xffpayload");
+
+    teardown_test_db(cleanup).await;
+}
+
 // ---------------------------------------------------------------------------
 // from_database_config — wiring through the resolution chain
 // ---------------------------------------------------------------------------

@@ -362,6 +362,7 @@ pub use descriptor::{
     ModelDescriptor, PartitionSpec, PkType, ProtectedFieldMetadata, RedactionPolicy,
     RetentionLabel, RustSourceType, Sensitivity, VisageDescriptor, index_name,
 };
+pub use pg::pool::DjogiPool;
 // Top-level `djogi::GeoPoint` re-export for spatial models. Feature-gated so
 // the symbol does not appear in default-feature builds or `cargo doc` output
 // when PostGIS support is not requested.

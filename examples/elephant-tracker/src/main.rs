@@ -137,30 +137,42 @@ async fn main() -> Result<()> {
          postgres://djogi:djogi@localhost:5432/djogi_test",
     )?;
 
+    let heer_node_id = std::env::var("HEER_NODE_ID")
+        .unwrap_or_else(|_| djogi::migrate::bootstrap::DEFAULT_NODE_ID.to_string());
+    let _: i32 = heer_node_id
+        .parse()
+        .context("HEER_NODE_ID must be an integer when set")?;
+
     // Build the pool through the `DjogiPool` builder. The
-    // `post_connect` hook runs once per physical connection and pins
-    // `heer.node_id = '1'` for the session — node 1 is the default
-    // seeded by `heeranjid::postgres_schema::seed_default_node` in the
-    // migrate path. Setting it here at the session level means the
-    // example also runs against a database the connecting role does
-    // not own (where ALTER DATABASE would fail) — useful for CI
-    // sandboxes.
+    // `post_connect` hook runs once per physical connection and sets
+    // the HeeRanjID node GUCs for that session. This is the recommended
+    // adopter shape: the service selects a node id through its
+    // environment, while the pool guarantees every new connection sees
+    // the same session setup without requiring `ALTER DATABASE`
+    // privileges.
     //
-    // The example pins to `"1"` deliberately — supporting an
-    // arbitrary `HEER_NODE_ID` would require also seeding the
-    // requested node row before persisting the GUC, otherwise
-    // `current_heer_node_id()` would later refuse to mint IDs for an
-    // unregistered node. Production deployments register their nodes
-    // through HeeRanjID's own provisioning path, not through this
-    // example.
+    // The migration path seeds HeeRanjID's default node. Multi-node
+    // deployments must provision/register their chosen node before
+    // startup; if `HEER_NODE_ID` names an unregistered node,
+    // HeeRanjID's Postgres functions surface the error when ids are
+    // minted.
     let pool = djogi::pg::pool::DjogiPool::builder(&database_url)
-        .post_connect(|client| {
-            Box::pin(async move {
-                client
-                    .batch_execute("SET heer.node_id = '1'")
-                    .await
-                    .map_err(djogi::DjogiError::from)
-            })
+        .post_connect({
+            let heer_node_id = heer_node_id.clone();
+            move |client| {
+                let heer_node_id = heer_node_id.clone();
+                Box::pin(async move {
+                    client
+                        .execute(
+                            "SELECT set_config('heer.node_id', $1, false), \
+                                    set_config('heer.ranj_node_id', $1, false)",
+                            &[&heer_node_id],
+                        )
+                        .await
+                        .map_err(djogi::DjogiError::from)?;
+                    Ok(())
+                })
+            }
         })
         .build()
         .await

@@ -26,12 +26,13 @@ the `post_connect` hook for per-physical-connection setup, and the
 [Transactions guide](./transactions.md) and the
 [Getting Started guide](./getting-started.md).
 
-> **Status — ergonomic public pool surface.** Today, reaching a
-> raw client off `DjogiPool` requires the explicit bypass trait.
-> An ergonomic, adopter-friendly pool surface that does not pass
-> through `RawPoolAccessExt` is upcoming Cluster 3 work and may
-> change the recommended path. Until then, the bypass route shown
-> below is the supported entry. Tracking issue: djogi#66.
+> **Status — public pool surface.** `DjogiPool::builder`,
+> `DjogiPool::status`, and the explicit
+> `RawPoolAccessExt::raw_with_client` bypass are the supported public
+> surface for Phase 8.5. COPY, server-side cursors, cold-start DDL, and
+> third-party direct-driver integrations intentionally stay behind the
+> raw bypass; no separate typed COPY/streaming wrapper is part of this
+> surface.
 
 ---
 
@@ -54,7 +55,7 @@ let pool = DjogiPool::builder("postgres://localhost/myapp")
 
 Defaults if you skip the builder knobs (or call `DjogiPool::connect(url)`):
 
-- `max_size = 5` (`DjogiPool::DEFAULT_MAX_SIZE`)
+- `max_size = 5` (`djogi::pg::pool::DEFAULT_MAX_SIZE`)
 - no wait timeout (callers block until a slot is available)
 - no `post_connect` hook
 
@@ -128,6 +129,7 @@ one-time `SET` statements:
 .post_connect(|client| Box::pin(async move {
     client.batch_execute("SET application_name = 'web'").await?;
     client.batch_execute("SET heer.node_id = '1'").await?;
+    client.batch_execute("SET heer.ranj_node_id = '1'").await?;
     client.batch_execute("SET statement_timeout = '5s'").await?;
     Ok(())
 }))
@@ -193,13 +195,41 @@ through `DjogiContext`:
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#234): one-time extension bootstrap requires direct driver DDL.
 async fn install_postgis(pool: &DjogiPool) -> djogi::Result<()> {
-pool.raw_with_client(|client| Box::pin(async move {
-    client
-        .batch_execute("CREATE EXTENSION IF NOT EXISTS postgis")
-        .await?;
+    pool.raw_with_client(|client| Box::pin(async move {
+        client
+            .batch_execute("CREATE EXTENSION IF NOT EXISTS postgis")
+            .await?;
+        Ok(())
+    })).await?;
     Ok(())
-})).await?;
-Ok(())
+}
+```
+
+COPY uses the same public bypass. Keep the full protocol exchange inside
+the closure so the pool guard can return the connection on success or
+detach it on error/cancellation:
+
+```rust
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#66): COPY IN needs tokio-postgres' binary protocol.
+async fn copy_payloads(pool: &DjogiPool) -> djogi::Result<()> {
+    pool.raw_with_client(|client| Box::pin(async move {
+        let sink = client
+            .copy_in("COPY payloads (id, body) FROM STDIN BINARY")
+            .await?;
+        let writer = tokio_postgres::binary_copy::BinaryCopyInWriter::new(
+            sink,
+            &[
+                tokio_postgres::types::Type::INT4,
+                tokio_postgres::types::Type::BYTEA,
+            ],
+        );
+        tokio::pin!(writer);
+        let body: &[u8] = b"example payload";
+        writer.as_mut().write(&[&1_i32, &body]).await?;
+        writer.as_mut().finish().await?;
+        Ok(())
+    })).await
 }
 ```
 
@@ -332,7 +362,7 @@ let pool = b
 
 ## Diagnostics — `pool.status()`
 
-`pool.status()` returns `deadpool_postgres::Status`, a snapshot of
+`pool.status()` returns `DjogiPoolStatus`, a Djogi-owned snapshot of
 `max_size`, current `size` (physical connections opened), and
 `available` (idle connections ready for checkout).
 
@@ -350,7 +380,7 @@ Useful for `/metrics` endpoints, for diagnosing slow checkouts
 (`available == 0` and `size == max_size` means you're saturated),
 and for integration tests that need to assert pool-state invariants.
 
-`Status` is `Copy`, so the call is a cheap snapshot read — it does
+`DjogiPoolStatus` is `Copy`, so the call is a cheap snapshot read — it does
 not lock the pool or block on in-flight checkouts.
 
 ---
@@ -367,10 +397,11 @@ Production deployments that previously hard-coded
 `DjogiPool::from_database_config` to size against their actual
 concurrency budget.
 
-That `post_connect` block is a single-node example when `SET heer.node_id = '1'`
-is present. For multi-node deployments, register each node in HeeRanjID first, then
-set the service-specific `NODE_ID` before startup and migrations; the pool should set
-`heer.node_id` only from that deployment-selected value.
+That `post_connect` block is a single-node example when both
+`SET heer.node_id = '1'` and `SET heer.ranj_node_id = '1'` are present. For
+multi-node deployments, register each node in HeeRanjID first, then set the
+service-specific `HEER_NODE_ID` before startup and migrations; the pool should
+set both HeeRanjID session GUCs only from that deployment-selected value.
 See https://github.com/TarunvirBains/heeranjid-sql/blob/main/README.md and
 https://github.com/TarunvirBains/HeeRanjID/issues/49.
 

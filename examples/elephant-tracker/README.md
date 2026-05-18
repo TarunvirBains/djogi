@@ -104,15 +104,28 @@ Specifically:
 ## Running it
 
 You need a running Postgres 18 with the PostGIS 3.x extension installed
-(Djogi targets PG 18+ exclusively). The connecting role must own the
-target database — the migrate step issues `ALTER DATABASE ... SET
-heer.node_id = '1'` so every pool connection inherits the
-HeeRanjID node id for this single-node example.
+(Djogi targets PG 18+ exclusively). The connecting role does not need
+to own the target database just to configure HeeRanjID node GUCs: the
+migrate step uses HeeRanjID's no-`ALTER DATABASE` phase-zero bootstrap
+SQL (`phase_zero_sql_without_database_guc()`) through `batch_execute`.
+Each physical pool connection then sets the single-node example GUCs in
+`post_connect`:
+
+```sql
+SET heer.node_id = '1';
+SET heer.ranj_node_id = '1';
+```
+
+The role still needs whatever DDL/extension privileges your Postgres
+installation requires for this example's schema bootstrap and PostGIS /
+HeeRanjID installation, but database ownership is no longer part of the
+GUC contract.
 
 For deployments with multiple writers, register and provision each node in
-`heer_nodes` first, then start each service with its selected `NODE_ID`
-and existing migration/startup flow. Do not copy/paste the hard-coded `1`
-assumption. See
+`heer_nodes` first, then start each service with its selected `HEER_NODE_ID`
+so its pool `post_connect` hook applies the matching `heer.node_id` and
+`heer.ranj_node_id` values on every physical connection. Do not copy/paste
+the hard-coded `1` assumption. See
 https://github.com/TarunvirBains/heeranjid-sql/blob/main/README.md and
 https://github.com/TarunvirBains/HeeRanjID/issues/49.
 
