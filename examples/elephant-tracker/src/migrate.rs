@@ -35,7 +35,7 @@
 //! connections, no manual driver-task spawn.
 
 use anyhow::{Context, Result};
-use djogi::{DjogiContext, DjogiError};
+use djogi::DjogiContext;
 
 /// All DDL the example needs, in dependency order.
 ///
@@ -95,22 +95,9 @@ pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#234): local no-ALTER-DATABASE Phase 0 bootstrap requires direct pool/client access for extension and HeeRanjID installation.
 async fn install_phase_zero(ctx: &mut DjogiContext) -> Result<()> {
-    let pool = ctx
-        .raw_pool()
-        .ok_or_else(|| anyhow::anyhow!("migrate must be invoked against a pool-backed context"))?
-        .clone();
-
-    pool.raw_with_client(|client| {
-        Box::pin(async move {
-            client
-                .batch_execute(&phase_zero_sql_without_database_guc())
-                .await
-                .map_err(DjogiError::from)?;
-            Ok(())
-        })
-    })
-    .await
-    .context("phase 0 bootstrap via pool.raw_with_client")?;
+    ctx.raw_ddl(&phase_zero_sql_without_database_guc())
+        .await
+        .context("phase 0 bootstrap via ctx.raw_ddl")?;
     Ok(())
 }
 
