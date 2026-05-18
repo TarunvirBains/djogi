@@ -9,12 +9,12 @@ error[E0277]: the trait bound `u32: RangeSubtype` is not satisfied
     | |__^ the trait `RangeSubtype` is not implemented for `u32`
     |
 help: the following other types implement trait `RangeSubtype`
-   --> djogi/src/pg_types.rs:540:1
+   --> djogi/src/pg_types.rs:577:1
     |
-540 | impl RangeSubtype for i32 {
+577 | impl RangeSubtype for i32 {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^ `i32`
 ...
-550 | impl RangeSubtype for i64 {
+587 | impl RangeSubtype for i64 {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^ `i64`
     = note: required for `djogi::Range<u32>` to implement `djogi::__private::postgres_types::ToSql`
     = note: required for the cast from `&djogi::Range<u32>` to `&dyn djogi::__private::postgres_types::ToSql + Sync`
@@ -31,12 +31,12 @@ error[E0277]: the trait bound `u32: RangeSubtype` is not satisfied
     | |__^ the trait `RangeSubtype` is not implemented for `u32`
     |
 help: the following other types implement trait `RangeSubtype`
-   --> djogi/src/pg_types.rs:540:1
+   --> djogi/src/pg_types.rs:577:1
     |
-540 | impl RangeSubtype for i32 {
+577 | impl RangeSubtype for i32 {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^ `i32`
 ...
-550 | impl RangeSubtype for i64 {
+587 | impl RangeSubtype for i64 {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^ `i64`
     = note: required for `djogi::Range<u32>` to implement `djogi::__private::postgres_types::ToSql`
 note: required by a bound in `djogi::pg::accumulator::SqlAccumulator::push_bind`
@@ -60,12 +60,12 @@ error[E0277]: the trait bound `u32: RangeSubtype` is not satisfied
     | |__^ the trait `RangeSubtype` is not implemented for `u32`
     |
 help: the following other types implement trait `RangeSubtype`
-   --> djogi/src/pg_types.rs:540:1
+   --> djogi/src/pg_types.rs:577:1
     |
-540 | impl RangeSubtype for i32 {
+577 | impl RangeSubtype for i32 {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^ `i32`
 ...
-550 | impl RangeSubtype for i64 {
+587 | impl RangeSubtype for i64 {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^ `i64`
     = note: required for `djogi::Range<u32>` to implement `djogi::__private::postgres_types::FromSql<'_>`
 note: required by a bound in `djogi::pg::decode::decode_at`
@@ -89,12 +89,12 @@ error[E0277]: the trait bound `u32: RangeSubtype` is not satisfied
     | |__^ the trait `RangeSubtype` is not implemented for `u32`
     |
 help: the following other types implement trait `RangeSubtype`
-   --> djogi/src/pg_types.rs:540:1
+   --> djogi/src/pg_types.rs:577:1
     |
-540 | impl RangeSubtype for i32 {
+577 | impl RangeSubtype for i32 {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^ `i32`
 ...
-550 | impl RangeSubtype for i64 {
+587 | impl RangeSubtype for i64 {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^ `i64`
     = note: required for `djogi::Range<u32>` to implement `djogi::__private::postgres_types::FromSql<'_>`
 note: required by a bound in `djogi::__private::tokio_postgres::row::Row::try_get`
@@ -114,12 +114,12 @@ error[E0277]: the trait bound `u32: RangeSubtype` is not satisfied
     |              ^^^^^^^^^^ the trait `RangeSubtype` is not implemented for `u32`
     |
 help: the following other types implement trait `RangeSubtype`
-   --> djogi/src/pg_types.rs:540:1
+   --> djogi/src/pg_types.rs:577:1
     |
-540 | impl RangeSubtype for i32 {
+577 | impl RangeSubtype for i32 {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^ `i32`
 ...
-550 | impl RangeSubtype for i64 {
+587 | impl RangeSubtype for i64 {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^ `i64`
     = note: required for `djogi::Range<u32>` to implement `DjogiSqlType`
 
