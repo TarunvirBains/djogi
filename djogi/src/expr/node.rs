@@ -583,6 +583,67 @@ pub(crate) enum ExprNode {
     /// enum's own `#[derive(Debug, Clone)]`.
     #[cfg(feature = "spatial")]
     Spatial(crate::expr::spatial::SpatialExpr),
+
+    // ── Row-shape aggregate (Phase 8.5 Cluster F #92) ───────────────────────
+    /// Row-shape aggregate function — folds a **set of rows** into a single
+    /// scalar value (binary `bytea` for v0.1.0 — `ST_AsMVT` / `ST_AsGeobuf`).
+    ///
+    /// # Why a sibling variant, not an extension of [`Self::Aggregate`]
+    ///
+    /// Column aggregates take a single column expression (`AGG(col)`) and
+    /// honour a modifier set (`.distinct()`, `.filter(...)`, `.over(...)`,
+    /// `.order_by(...)`, `.within_group_order_by(...)`). Row aggregates take
+    /// **the entire row** (`AGG(record, ...)`) and reject every modifier in
+    /// that set — Postgres would error if you tried `ST_AsMVT(DISTINCT t)` or
+    /// `ST_AsGeobuf(t ORDER BY ...)`. Sharing the [`Self::Aggregate`] variant
+    /// would silently expose those slots through the [`super::aggregate::AggregateExpr`]
+    /// modifier impl blocks; a dedicated variant keeps the kind discipline
+    /// crisp.
+    ///
+    /// # SQL shape
+    ///
+    /// The emitter renders `<KEYWORD>(<row_alias>, <bind>, <bind>, …)`
+    /// against a caller-supplied row alias (`__djogi_row` by convention).
+    /// The outer terminal wraps the inner SELECT in a derived table whose
+    /// alias matches this convention so the aggregate's record argument
+    /// resolves to the full row record:
+    ///
+    /// ```sql
+    /// SELECT ST_AsMVT(__djogi_row, $1, $2, $3, $4)
+    /// FROM (
+    ///     SELECT t.col1, t.col2, …, <annotations…>
+    ///     FROM <table> AS t [WHERE …] [ORDER BY …] [LIMIT …]
+    /// ) AS __djogi_row
+    /// ```
+    ///
+    /// # Construction
+    ///
+    /// Construction is sealed behind the typed
+    /// [`super::row_aggregate::RowAggregate`] wrapper; the `columns` slot is
+    /// informational and reserved for future row-shape variants that need
+    /// per-column projection metadata. v0.1.0 always emits the entire row
+    /// alias, so the emitter does not currently inspect `columns`.
+    #[cfg(feature = "spatial")]
+    RowAggregate {
+        /// Which row-shape aggregate function to emit (and its bindable
+        /// argument payload — layer name, extent, geom column name, etc.).
+        op: RowAggOp,
+        /// Columns from the inner SELECT this row aggregate inspects.
+        /// Reserved for future per-column-projection variants — `ST_AsMVT`
+        /// / `ST_AsGeobuf` resolve column references from the record type
+        /// at Postgres-runtime, so v0.1.0's emitter does not consume this
+        /// slot. Kept on the variant so that adding a column-projecting
+        /// row aggregate does not force an IR rev.
+        ///
+        /// `#[allow(dead_code)]` because the field is deliberately
+        /// reserved — it is populated by every typed constructor (e.g.
+        /// `crate::query::row_aggregate_terminal` pulls `T::COLUMNS`
+        /// through `inner_columns_for`) so debug diagnostics can inspect
+        /// the projection shape even though the emitter currently does
+        /// not.
+        #[allow(dead_code)]
+        columns: Vec<&'static str>,
+    },
 }
 
 /// Internal subquery payload — the untyped counterpart to the typed
@@ -1116,6 +1177,69 @@ pub(crate) enum AggOp {
     /// impl-block level.
     #[cfg(feature = "spatial")]
     SpatialPolygonize,
+}
+
+/// Row-shape aggregate operator — the sub-discriminant inside
+/// [`ExprNode::RowAggregate`]. Each variant pins the SQL keyword the emitter
+/// renders plus the bindable argument payload that variant's PostGIS function
+/// accepts.
+///
+/// Both variants are PostGIS-only and therefore gated on `feature = "spatial"`.
+/// The enum itself is `pub(crate)` — construction is sealed behind the typed
+/// [`super::row_aggregate::RowAggregate`] wrapper, which the
+/// [`crate::query::annotate::AnnotatedQuerySet`] /
+/// [`crate::query::queryset::QuerySet`] terminal builders use to keep adopter
+/// code from fabricating row aggregates with hostile bind payloads.
+///
+/// # Why `PartialEq` only (no `Eq`)
+///
+/// Parallel rationale to [`AggOp`]: variants carry `String` payloads (cheap
+/// to compare for equality) but the enum has no requirement to key into a
+/// `HashMap` / `HashSet`. Mirroring [`AggOp`]'s `PartialEq`-only stance keeps
+/// the two enums shape-compatible for shared emitter helpers.
+#[cfg(feature = "spatial")]
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RowAggOp {
+    /// `ST_AsMVT(row, layer_name, extent, geom_name, feature_id_name)` —
+    /// Mapbox Vector Tile encoder. Returns `bytea`; the typed surface
+    /// decodes into `Vec<u8>`.
+    ///
+    /// All four trailing arguments are bound through the SQL accumulator so
+    /// a runtime-computed layer name cannot SQL-inject into the emission
+    /// stream. PostGIS defaults are `'default'` / `4096` / `'geom'` /
+    /// `NULL`; the typed surface always emits the layer name + extent +
+    /// geom_name explicitly (no SQL-side default reliance) and emits the
+    /// feature_id argument only when set so the call falls through to the
+    /// Postgres-side `NULL` default when omitted.
+    AsMvt {
+        /// MVT layer name — appears in the encoded protobuf as the layer
+        /// identifier. Always bound as `text`, never spliced as SQL.
+        layer_name: String,
+        /// Tile extent in MVT coordinate units. PostGIS default is `4096`;
+        /// the typed surface caps the value at `i32` because PostGIS's
+        /// `ST_AsMVT` signature takes `integer`.
+        extent: i32,
+        /// Name of the geometry column in the inner row that PostGIS
+        /// should treat as the feature geometry. The column must exist in
+        /// the inner SELECT and decode as PostGIS `geometry` / `geography`.
+        geom_name: String,
+        /// Optional name of the column to encode as the MVT feature id.
+        /// `None` falls through to PostGIS's `NULL` default (no feature id
+        /// — features are rendered anonymously).
+        feature_id_name: Option<String>,
+    },
+    /// `ST_AsGeobuf(row, geom_name)` — Geobuf encoder. Returns `bytea`; the
+    /// typed surface decodes into `Vec<u8>`.
+    ///
+    /// PostGIS's Geobuf surface accepts a single trailing geometry-column
+    /// argument; v0.1.0's typed surface always emits it explicitly so the
+    /// emission shape stays stable across PostGIS releases that might
+    /// rev the default.
+    AsGeobuf {
+        /// Name of the geometry column in the inner row. Same role as
+        /// [`Self::AsMvt::geom_name`].
+        geom_name: String,
+    },
 }
 
 /// Comparison operator — the sub-discriminant inside [`ExprNode::Cmp`].

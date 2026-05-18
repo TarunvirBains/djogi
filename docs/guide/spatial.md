@@ -500,11 +500,56 @@ let rows: Vec<(ClusterId, (i64, GeoPoint, Vec<HeerId>))> = Sighting::objects()
 #### Vector-tile / Geobuf output
 
 `ST_AsMVT` and `ST_AsGeobuf` are row-shape aggregates (they consume
-the entire annotate tuple, not a single column). They don't fit the
-column-aggregate `AggOp` surface; tracked in
-[#92](https://github.com/TarunvirBains/djogi/issues/92) as Cluster 4C
-work — same v0.1.0 timeline, separate execution unit because the IR
-shape differs.
+the entire projected row, not a single column). They therefore live on
+the terminal surface instead of the column-aggregate `AggregateExpr`
+surface:
+
+```rust
+use djogi::prelude::*;
+
+let tile: Vec<u8> = Store::objects()
+    .filter(|s| s.name().icontains("airport".to_string()))
+    .as_mvt_with_options(
+        MvtOptions::new("stores")
+            .with_geom_name("location")
+            .with_feature_id_name("id"),
+    )
+    .fetch_one(&mut ctx)
+    .await?;
+
+let geobuf: Vec<u8> = Store::objects()
+    .as_geobuf("location")
+    .fetch_one(&mut ctx)
+    .await?;
+```
+
+The annotated form uses the same terminal after `.annotate(...)`, so
+aggregate annotations become row properties before PostGIS encodes the
+result:
+
+```rust
+let tile: Vec<u8> = Store::objects()
+    .annotate(|s| s.id().count_star())
+    .as_mvt("stores")
+    .fetch_one(&mut ctx)
+    .await?;
+```
+
+Both terminals return Postgres `bytea` as `Vec<u8>`. `QuerySet::none()`
+short-circuits and returns `Ok(Vec::new())` without SQL. For normal
+zero-row filters, `ST_AsGeobuf` currently returns SQL `NULL`; Djogi now
+maps that to `Ok(Vec::new())` so consumers can treat that as an empty
+payload.
+
+Djogi stores spatial
+fields as `geography(...)`; the row-aggregate terminal casts those inner
+row columns to `geometry` while preserving their column names because
+PostGIS's encoders look up the geometry column by name.
+
+Row aggregates are deliberately not `AggregateExpr`s. They do not expose
+`.distinct()`, `.filter(...)`, `.over(...)`, `.order_by(...)`, or
+`.within_group_order_by(...)`; those modifiers are valid only for
+column-shape aggregates.
 
 ---
 

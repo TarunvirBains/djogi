@@ -84,6 +84,11 @@ pub mod q;
 pub mod queryset;
 pub mod recursive;
 pub(crate) mod refresh;
+// Phase 8.5 Cluster F (#92) — row-shape aggregate terminals
+// (`as_mvt(...)` / `as_geobuf(...)`). Gated on `feature = "spatial"`
+// because both shipped row aggregates are PostGIS surfaces.
+#[cfg(feature = "spatial")]
+pub mod row_aggregate_terminal;
 // Phase 8.5 Cluster 4B (#101) — typed set operations between same-model
 // `QuerySet<T>` instances. The module is `pub` so adopters can name
 // `SetOpQuerySet` / `SetOpKind` as parameter and return types; the
@@ -178,6 +183,13 @@ pub use queryset::{
     CachedPortableQuerySet, DistinctMode, IntoDistinctColumns, PortableQuerySet, QuerySet,
 };
 pub use recursive::{RecursiveDirection, RecursiveQuerySet};
+// Phase 8.5 Cluster F (#92) — row-shape aggregate terminals
+// (`as_mvt(...)` / `as_geobuf(...)`). The terminals own their typed
+// `Vec<u8>` decode and consume an annotation tuple; the `EmptyAnnotation`
+// sentinel covers the no-annotation case so plain `QuerySet::as_mvt`
+// produces an `AsMvtTerminal<T, EmptyAnnotation>`.
+#[cfg(feature = "spatial")]
+pub use row_aggregate_terminal::{AsGeobufTerminal, AsMvtTerminal, EmptyAnnotation};
 // Phase 8.5 Cluster 4B (#101) — typed set operations. `IntoSetOpArm` is
 // the sealed trait the builder methods take; adopters never name it,
 // but it must be re-exported so trait-method dispatch resolves in

@@ -1,0 +1,17 @@
+error[E0599]: no method named `distinct` found for struct `AsMvtTerminal<T, A>` in the current scope
+  --> $DIR/row_aggregate_terminal_no_distinct.rs:16:10
+   |
+14 |       let _ = TileFeature::objects()
+   |               ----------------------
+   |               |
+   |  _____________method `distinct` is available on `QuerySet<TileFeature>`
+   | |
+15 | |         .as_mvt_with_options(MvtOptions::new("tiles").with_geom_name("location"))
+16 | |         .distinct();
+   | |         -^^^^^^^^ method not found in `AsMvtTerminal<TileFeature, djogi::query::EmptyAnnotation>`
+   | |_________|
+   |
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

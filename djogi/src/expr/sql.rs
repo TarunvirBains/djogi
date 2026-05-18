@@ -237,6 +237,14 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             }
             Ok(())
         }
+        // Row aggregates (#92) carry no modifier slots at all — the typed
+        // `RowAggregate<Out, K>` wrapper exposes no `.distinct()` /
+        // `.filter()` / `.over()` / `.order_by()` /
+        // `.within_group_order_by()` methods, so there is nothing for
+        // this checker to reject. The arm exists for completeness and to
+        // make the variant explicit on this walker's match.
+        #[cfg(feature = "spatial")]
+        ExprNode::RowAggregate { .. } => Ok(()),
         // Leaf nodes and variants with no sub-expressions are trivially valid.
         _ => Ok(()),
     }
@@ -1138,8 +1146,80 @@ pub(crate) fn emit_expr(
             }
             acc.push_sql(")");
         }
+
+        // ── Row-shape aggregate (Phase 8.5 Cluster F #92) ──────────────────
+        //
+        // `ST_AsMVT(<row_alias>, $1, $2, $3, $4)` / `ST_AsGeobuf(<row_alias>, $1)`.
+        // The row-alias reference is the special `__djogi_row` identifier
+        // that the terminal builders splice into the surrounding FROM
+        // clause as the alias of a derived-table wrapper. Every other
+        // argument is pushed through `push_bind` so layer names, extents,
+        // and geometry-column names cannot be SQL-injected even if a
+        // future builder mistakenly accepted dynamic input.
+        //
+        // The `columns` slot on the IR variant is informational at
+        // v0.1.0 (PostGIS resolves column references from the runtime
+        // record type, not from the SQL emitted here). Future row
+        // aggregates that need column projection slot in here without
+        // an IR rev.
+        #[cfg(feature = "spatial")]
+        ExprNode::RowAggregate { op, columns: _ } => {
+            emit_row_aggregate(acc, op);
+        }
     }
     Ok(())
+}
+
+/// Emit a row-shape aggregate function call. The function reads the
+/// row argument from the framework-fixed `__djogi_row` alias the
+/// terminal builder splices into the wrapping `FROM (...) AS __djogi_row`
+/// clause; every other argument is bound through the accumulator.
+///
+/// Spatial-only — the row-aggregate IR variant itself is gated on
+/// `feature = "spatial"`, so reaching this helper without the feature
+/// is structurally impossible.
+#[cfg(feature = "spatial")]
+fn emit_row_aggregate(acc: &mut SqlAccumulator, op: &crate::expr::node::RowAggOp) {
+    use crate::expr::node::RowAggOp;
+    match op {
+        RowAggOp::AsMvt {
+            layer_name,
+            extent,
+            geom_name,
+            feature_id_name,
+        } => {
+            // ST_AsMVT(row record, layer_name text, extent integer,
+            //          geom_name text, feature_id_name text)
+            //
+            // The PostGIS signature is variadic at the SQL level; the
+            // typed emitter always passes layer_name + extent + geom_name
+            // (so the emission stays explicit across PostGIS versions
+            // that might rev defaults) and skips the trailing feature_id
+            // argument when the typed surface left it `None` so PostGIS
+            // falls through to its `NULL` default.
+            acc.push_sql("ST_AsMVT(__djogi_row, ");
+            acc.push_bind(layer_name.clone());
+            acc.push_sql(", ");
+            acc.push_bind(*extent);
+            acc.push_sql(", ");
+            acc.push_bind(geom_name.clone());
+            if let Some(fid) = feature_id_name {
+                acc.push_sql(", ");
+                acc.push_bind(fid.clone());
+            }
+            acc.push_sql(")");
+        }
+        RowAggOp::AsGeobuf { geom_name } => {
+            // ST_AsGeobuf(row anyelement, geom_name text)
+            //
+            // PostGIS's Geobuf surface takes just the geometry column
+            // name — no extent / no feature id slot. Both arguments are
+            // emitted explicitly so the call shape stays stable.
+            acc.push_sql("ST_AsGeobuf(__djogi_row, ");
+            acc.push_bind(geom_name.clone());
+            acc.push_sql(")");
+        }
+    }
 }
 
 /// Emit a Postgres FTS expression — `<prefix><col><sep>to_tsquery('<dictionary>', $n)<suffix>`.
