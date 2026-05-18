@@ -59,7 +59,9 @@
 //! - [`super::sql::emit_expr`] — renders the SQL tokens.
 //! - [`crate::query::aggregate::AggregateQuery`] — scalar terminal.
 //! - [`crate::query::annotate::AnnotatedQuerySet`] — typed-tuple
-//!   terminal that embeds aggregates in the SELECT list alongside `T::*`.
+//!   terminal that embeds value aggregates in the plain ungrouped SELECT list
+//!   alongside `T::*`. Grouped annotate and scalar aggregate remain generic
+//!   over all aggregate kinds because they do not synthesize `OVER ()`.
 
 use crate::expr::Expr;
 use crate::expr::arithmetic::Numeric;
@@ -88,7 +90,10 @@ pub(crate) mod sealed {
 /// so external `KindEvidence` impls are unreachable — that means the
 /// `AnnotationSlot for AggregateExpr<V, K> where K: KindEvidence` and
 /// `QuerySet::aggregate` widenings cannot be subverted by a fabricated
-/// kind tag.
+/// kind tag. Plain ungrouped `QuerySet::annotate` adds one more
+/// windowability gate: only `ValueAgg` can flow to the synthesized `OVER ()`
+/// emitter, while metadata, ordered-set, and hypothetical-set kinds stay
+/// legal through scalar aggregate and grouped annotate paths.
 pub trait KindEvidence: sealed::Sealed {}
 
 /// Default value-aggregate family — supports `DISTINCT`, `filter`, `over`,
@@ -1178,6 +1183,11 @@ pub fn grouping_of(columns: &[&'static str]) -> AggregateExpr<i32, MetadataAgg> 
 //   is not exposed on `AggregateExpr<Out, OrderedSetAgg>`.
 // - The window modifier (T3) is invalid — `.over(...)` is not exposed
 //   on `AggregateExpr<Out, OrderedSetAgg>`.
+// - Plain ungrouped `QuerySet::annotate(...)` is also invalid for this
+//   family because that terminal would synthesize `OVER ()` even when the
+//   user cannot call `.over(...)`. The `PlainAnnotationTuple` bound rejects
+//   ordered-set aggregates there while scalar `QuerySet::aggregate(...)` and
+//   grouped annotate remain generic over `K`.
 // - WITHIN GROUP is mandatory — the typed `AggregateExpr::ordered_set`
 //   constructor populates the `within_group_order_by` slot at build
 //   time from the receiver column, and `.within_group_order_by(...)`

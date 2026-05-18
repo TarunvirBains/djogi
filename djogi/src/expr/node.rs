@@ -176,9 +176,11 @@ pub(crate) enum ExprNode {
     /// this aggregate to a window function via `OVER (...)`. Supplied by
     /// the `.over(|w| ...)` method on
     /// [`super::aggregate::AggregateExpr`] (T3). `None` leaves the
-    /// aggregate bare; the terminal-layer helpers in
-    /// `query::sql` add `OVER ()` for the ungrouped annotate path when
-    /// `window` is `None`.
+    /// aggregate bare; the terminal-layer helpers in `query::sql` add
+    /// `OVER ()` for the plain ungrouped annotate path only after the
+    /// plain-annotation type-state has proven the aggregate kind is
+    /// windowable. Ordered-set, hypothetical-set, and metadata aggregates
+    /// are rejected before that synthesized-window path.
     Aggregate {
         /// Which aggregate function to call.
         op: AggOp,
@@ -240,9 +242,11 @@ pub(crate) enum ExprNode {
         /// Optional user-specified window clause produced by
         /// [`super::aggregate::AggregateExpr::over`]. `None` means the
         /// aggregate has no `OVER` clause of its own; the ungrouped
-        /// annotate path in `query::sql` wraps `None`-window aggregates in
-        /// `OVER ()` for backwards compatibility. `Some(spec)` emits the
-        /// full `OVER (PARTITION BY ... ORDER BY ... frame)` from the spec.
+        /// annotate path in `query::sql` wraps `None`-window value aggregates
+        /// in `OVER ()` for backwards compatibility. Non-windowable aggregate
+        /// kinds are rejected by the plain-annotation type-state before SQL
+        /// emission. `Some(spec)` emits the full
+        /// `OVER (PARTITION BY ... ORDER BY ... frame)` from the spec.
         window: Option<crate::expr::window::WindowSpec>,
         /// Per-aggregate `ORDER BY` clause(s). Set via
         /// [`super::aggregate::AggregateExpr::order_by`]. Empty `Vec`

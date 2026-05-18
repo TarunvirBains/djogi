@@ -1785,9 +1785,9 @@ impl<C: ClosureModel> PairClosureKinshipSum<C> {
 // pair-tuple emitter today; instead, the kinship sum is composed at
 // SELECT-list time as a window-function-shaped aggregate by emitting
 // `OVER (PARTITION BY l.<pk>, r.<pk>)` so Postgres aggregates per pair
-// without requiring a `GROUP BY` rewrite. This matches the existing
-// `OVER ()` shape that single-Model annotate uses for ungrouped
-// aggregates (see annotate.rs lines 226–229).
+// without requiring a `GROUP BY` rewrite. That mirrors the synthesized-window
+// idea plain single-Model annotate uses for value aggregates; non-windowable
+// aggregate kinds are rejected from that plain path before SQL emission.
 //
 // The kinship value is the same for every row of the pair's
 // `(la, ra)` cross product (the `path_count × path_count × 0.5^(...)`
@@ -1967,6 +1967,8 @@ impl<C: ClosureModel> crate::query::annotate::AnnotationSlot for PairClosureKins
         Ok(())
     }
 }
+
+impl<C: ClosureModel> crate::query::annotate::PlainAnnotationSlot for PairClosureKinshipSum<C> {}
 
 /// Local mirror of `query::annotate::aggregate_alias` — the slot →
 /// `__djogi_agg_N` mapping. Re-implemented here so this module does not
@@ -2308,6 +2310,12 @@ impl<L: Model, R: Model> crate::query::annotate::AnnotationSlot for PairAreaOver
     fn requires_pair_tuple_scope(&self) -> bool {
         true
     }
+}
+
+#[cfg(feature = "spatial")]
+impl<L: Model, R: Model> crate::query::annotate::PlainAnnotationSlot
+    for PairAreaOverlapRatio<L, R>
+{
 }
 
 #[cfg(feature = "spatial")]
