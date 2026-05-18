@@ -246,24 +246,55 @@ Phase 1 maps these Rust types to SQL column types:
 | `HeerId` | `BIGINT` | via heeranjid `postgres-types` `ToSql`/`FromSql` |
 | `RanjId` | `UUID` | via heeranjid `postgres-types` `ToSql`/`FromSql` |
 | `GeoPoint` | `GEOGRAPHY(Point, 4326)` | feature `spatial`; see [spatial guide](./spatial.md) |
+| `djogi::Interval` | `INTERVAL` | 3-component (months/days/microseconds); 16-byte hand-rolled wire codec; see [Postgres typed surface](#postgres-typed-surface) below |
 | `Option<T>` | nullable | wraps any of the above |
 
 For relation field types like `ForeignKey<T>` and `OneToOneField<T>`, see the [relations guide](./relations.md).
 
+### Postgres typed surface
+
+The following Postgres column types ship as first-class Rust shapes (Phase 8.5
+Cluster 4 — djogi#170 umbrella). The Rust-side codecs are hand-rolled against
+the Postgres binary wire format; djogi pulls in no additional crate dependency
+for any of them.
+
+| Postgres type | Rust shape | Feature flag | Tracking |
+|---|---|---|---|
+| `INTERVAL` | `djogi::Interval { months, days, microseconds }` | — (always on) | [#212](https://github.com/TarunvirBains/djogi/issues/212) |
+
+#### `djogi::Interval` — `INTERVAL`
+
+Postgres `INTERVAL` is a tagged three-component duration: calendar months
+(28-31 days depending on anchor date), calendar days (NOT 86 400 seconds
+— DST shifts move them by an hour), and a sub-day microsecond component.
+The `time` crate's `Duration` is a fixed-microsecond duration with no
+calendar story, so `djogi::Interval` exposes the three components
+directly rather than collapsing them. Construction:
+
+```rust
+use djogi::Interval;
+let mixed = Interval { months: 1, days: 2, microseconds: 3_500_000 };
+let ninety_days = Interval::days_only(90);
+let half_second = Interval::microseconds_only(500_000);
+```
+
+The Rust struct field order is `(months, days, microseconds)`; the
+Postgres binary wire format is `(microseconds, days, months)` (16
+bytes, big-endian). The wire codec lives at `djogi::pg_types::Interval`
+and pulls in no third-party crate.
+
 ### Postgres type coverage gaps
 
-Some Postgres column types have no first-class Rust-side mapping today. Adopters can
-reach them via `FieldSqlType::Custom` (or a `DjogiSqlType`-implementing newtype) paired
-with a manual `postgres_types::ToSql` / `FromSql` implementation.
+Some Postgres column types remain unmapped. Adopters can reach them
+via `FieldSqlType::Custom` (or a `DjogiSqlType`-implementing newtype)
+paired with a manual `postgres_types::ToSql` / `FromSql` implementation.
 
 | Postgres type | Status | Workaround today | Tracking |
 |---|---|---|---|
-| `INTERVAL` | gap — no Rust newtype or wire codec | `Custom("INTERVAL")` + adopter newtype; note: `with-chrono-0_4` is not enabled (chrono is banned from the workspace) | [#212](https://github.com/TarunvirBains/djogi/issues/212) |
-| `INET` / `CIDR` | gap — no macro mapping | `Custom("INET")` / `Custom("CIDR")` + adopter newtype | [#213](https://github.com/TarunvirBains/djogi/issues/213) |
-| `MACADDR` | gap — no newtype or codec | `Custom("MACADDR")` + adopter newtype | [#213](https://github.com/TarunvirBains/djogi/issues/213) |
+| `INET` / `CIDR` / `MACADDR` | gap — typed Rust newtypes deferred to a follow-on dispatch in the umbrella | `Custom("INET")` / `Custom("CIDR")` / `Custom("MACADDR")` + adopter newtype, OR for `INET` columns specifically use `std::net::IpAddr` (the native `postgres-types::IpAddr` ToSql/FromSql impl handles the wire format — declared via `Custom("INET")` today) | [#213](https://github.com/TarunvirBains/djogi/issues/213) |
 | `MONEY` | decision pending — `NUMERIC` recommended for new tables | Use `rust_decimal::Decimal` with a `NUMERIC` column; `Custom("MONEY")` for legacy columns | [#214](https://github.com/TarunvirBains/djogi/issues/214) |
-| `int4range` / `int8range` / `numrange` / `tsrange` / `tstzrange` / `daterange` | gap — requires design spike; largest type-coverage piece | `Custom("int4range")` etc. + adopter newtype | [#215](https://github.com/TarunvirBains/djogi/issues/215) |
-| `DOMAIN <name> AS <base>` | gap — `#[field(domain = "...")]` planned; Piece A (reference only) for v0.1.0 | `Custom("<domain_name>")` + adopter newtype matching the base-type encoding | [#216](https://github.com/TarunvirBains/djogi/issues/216) |
+| `int4range` / `int8range` / `numrange` / `tsrange` / `tstzrange` / `daterange` | gap — requires design spike (largest type-coverage piece); deferred to a follow-on dispatch | `Custom("int4range")` etc. + adopter newtype | [#215](https://github.com/TarunvirBains/djogi/issues/215) |
+| `DOMAIN` declarations (`#[field(domain = "<name>")]` Piece A; `CREATE DOMAIN` emission Piece B) | gap — both Piece A and Piece B deferred to a follow-on dispatch | `Custom("<domain_name>")` + adopter newtype matching the base-type encoding; declare the domain in raw SQL outside djogi's migration flow | [#216](https://github.com/TarunvirBains/djogi/issues/216) |
 
 Tracked under the [#170](https://github.com/TarunvirBains/djogi/issues/170) umbrella.
 

@@ -474,6 +474,21 @@ pub trait DjogiPortableOrd:
 {
 }
 
+/// Marker trait for value types whose direct portable equality methods
+/// (`eq`/`neq`/`in_`/`not_in`) are exposed on
+/// [`DjogiField<M, V>`](DjogiField).
+///
+/// Equality is only portable when Rust `PartialEq` agrees with the SQL
+/// equality operator Djogi emits. `Interval` is deliberately excluded:
+/// PostgreSQL `INTERVAL =` linearizes months/days/microseconds before
+/// comparing, while [`crate::Interval`] equality is structural. `f32`/`f64`
+/// are also excluded because PostgreSQL treats `NaN` equality differently
+/// from Rust/Punnu.
+pub trait DjogiPortableEq:
+    PartialEq + postgres_types::ToSql + Clone + Send + Sync + 'static
+{
+}
+
 // Explicit impls for built-in scalar types whose Rust ordering matches the
 // SQL ordering Djogi emits. PR2a opts these in; PR3 populates the
 // generated `DjogiField` ordering callsites once macros flip.
@@ -490,8 +505,10 @@ pub trait DjogiPortableOrd:
 // - `time::OffsetDateTime` / `time::Date`: monotone numeric encoding under
 //   Postgres' `timestamptz` / `date`.
 // - `uuid::Uuid`: byte-lexicographic and matches Rust `Ord`.
-// - HeerId / RanjId families: time-ordered identifiers; Rust `Ord` matches
-//   Postgres bigint / uuid byte ordering by construction.
+// - Primary-key types: covered by the sealed `PrimaryKey` blanket below.
+//   Built-in HeerId / RanjId families remain portable because their Rust
+//   equality matches their Postgres bigint / uuid equality; custom
+//   `primary_key!` newtypes inherit their inner scalar equality semantics.
 // - `rust_decimal::Decimal`: numeric ordering under Postgres `numeric`.
 //
 // Deliberately omitted: `bool` (no ordering callers), `String`, `f32`,
@@ -518,6 +535,66 @@ impl DjogiPortableOrd for crate::RanjIdDesc {}
 impl DjogiPortableOrd for rust_decimal::Decimal {}
 impl<V> DjogiPortableOrd for Tracked<V> where V: DjogiPortableOrd {}
 
+impl DjogiPortableEq for String {}
+impl DjogiPortableEq for i8 {}
+impl DjogiPortableEq for i16 {}
+impl DjogiPortableEq for i64 {}
+impl DjogiPortableEq for u32 {}
+impl DjogiPortableEq for bool {}
+impl DjogiPortableEq for time::OffsetDateTime {}
+impl DjogiPortableEq for time::Date {}
+impl DjogiPortableEq for uuid::Uuid {}
+impl DjogiPortableEq for rust_decimal::Decimal {}
+impl<V> DjogiPortableEq for V where
+    V: crate::primary_key::PrimaryKey
+        + PartialEq
+        + postgres_types::ToSql
+        + Clone
+        + Send
+        + Sync
+        + 'static
+{
+}
+impl<V> DjogiPortableEq for Option<V>
+where
+    V: DjogiPortableEq,
+    Option<V>: postgres_types::ToSql,
+{
+}
+impl<V> DjogiPortableEq for Tracked<V> where V: DjogiPortableEq {}
+
+/// Marker for array element types whose `Vec<T>` equality has been
+/// parity-checked between Rust/Punnu and PostgreSQL.
+///
+/// `IntoArrayFilterValue` is intentionally wider: it also contains
+/// SQL-bindable array element types whose scalar equality is not portable
+/// enough for Punnu-backed predicates, notably floats. Keep this marker
+/// curated so SQL-only array operators can remain broad while direct
+/// portable equality/membership on `Vec<T>` stays parity-safe.
+#[doc(hidden)]
+pub trait DjogiPortableArrayEqElement: IntoArrayFilterValue + DjogiPortableEq {}
+
+impl DjogiPortableArrayEqElement for String {}
+impl DjogiPortableArrayEqElement for i16 {}
+impl DjogiPortableArrayEqElement for i32 {}
+impl DjogiPortableArrayEqElement for i64 {}
+impl DjogiPortableArrayEqElement for bool {}
+impl DjogiPortableArrayEqElement for time::OffsetDateTime {}
+impl DjogiPortableArrayEqElement for time::Date {}
+impl DjogiPortableArrayEqElement for uuid::Uuid {}
+impl DjogiPortableArrayEqElement for rust_decimal::Decimal {}
+impl DjogiPortableArrayEqElement for crate::types::HeerId {}
+impl DjogiPortableArrayEqElement for crate::types::RanjId {}
+impl DjogiPortableArrayEqElement for crate::types::HeerIdDesc {}
+impl DjogiPortableArrayEqElement for crate::types::RanjIdDesc {}
+
+impl<V> DjogiPortableEq for Vec<V>
+where
+    V: DjogiPortableArrayEqElement,
+    Vec<V>: postgres_types::ToSql + Clone + Send + Sync + 'static,
+{
+}
+
 /// Djogi root field wrapper.
 ///
 /// Carries the Sassi `Field<M, V>` (used by Punnu in-memory evaluation) and
@@ -535,10 +612,10 @@ impl<V> DjogiPortableOrd for Tracked<V> where V: DjogiPortableOrd {}
 ///
 /// | Method family            | Receiver                       | Returns                      |
 /// |--------------------------|--------------------------------|------------------------------|
-/// | `eq`, `neq`              | `DjogiField<M, V>`             | `PortablePredicate<M>`       |
+/// | `eq`, `neq`              | `DjogiField<M, V>` where `V: DjogiPortableEq` | `PortablePredicate<M>` |
 /// | `gt`/`gte`/`lt`/`lte`    | `DjogiField<M, V>` where `V: DjogiPortableOrd` | `PortablePredicate<M>` |
 /// | `between`                | `DjogiField<M, V>` where `V: DjogiPortableOrd` | `PortablePredicate<M>` |
-/// | `in_`/`not_in`           | `DjogiField<M, V>`             | `PortablePredicate<M>`       |
+/// | `in_`/`not_in`           | `DjogiField<M, V>` where `V: DjogiPortableEq` | `PortablePredicate<M>` |
 /// | `is_null`/`is_not_null`  | `DjogiField<M, Option<U>>`     | `PortablePredicate<M>`       |
 /// | `some()`                 | `DjogiField<M, Option<U>>`     | `DjogiPresentField<M, U>`    |
 /// | `contains`/`icontains`   | `DjogiField<M, String>`        | `PortablePredicate<M>` (ASCII-stable case-insensitive) |
@@ -906,13 +983,14 @@ impl<M: Model, V: IntoFilterValue> DjogiField<M, V> {
 // ── DjogiField — equality and membership predicates ────────────────────────
 //
 // Bounds match the Sassi `Field<T, V>::eq/neq/in_/not_in` impls plus the
-// Djogi SQL bind requirement. PR2a returns `PortablePredicate<M>`
-// directly so user code reads as `f.col().eq(v)` without an
-// `into_portable_predicate()` step.
+// Djogi SQL bind requirement, but only for types explicitly opted into
+// `DjogiPortableEq`. SQL equality for some Postgres-native values can differ
+// from Rust structural equality; `Interval` is the current typed-surface
+// example and gets SQL-only methods below.
 
 impl<M: Model, V> DjogiField<M, V>
 where
-    V: PartialEq + postgres_types::ToSql + Clone + Send + Sync + 'static,
+    V: DjogiPortableEq,
 {
     /// `column = value`. Portable: evaluates in Punnu and emits SQL.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
@@ -970,6 +1048,80 @@ where
                 .collect(),
         );
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+}
+
+// ── DjogiField — SQL-only Interval equality/membership ────────────────────
+//
+// PostgreSQL `INTERVAL =` linearizes months as 30 days and days as 24 hours
+// before comparing. `crate::Interval` deliberately keeps structural
+// `PartialEq`, so these methods must remain valid SQL predicates without being
+// advertised as Punnu-evaluable portable predicates.
+
+impl<M: Model> DjogiField<M, crate::Interval> {
+    /// `interval_column = value` using PostgreSQL `INTERVAL` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: crate::Interval) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// `interval_column <> value` using PostgreSQL `INTERVAL` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: crate::Interval) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// `interval_column IN (v1, ...)` using PostgreSQL `INTERVAL` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::Interval>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// `interval_column NOT IN (v1, ...)` using PostgreSQL `INTERVAL` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::Interval>,
+    {
+        self.sql.not_in_list(values)
+    }
+}
+
+impl<M: Model> DjogiField<M, Option<crate::Interval>> {
+    /// Nullable `INTERVAL` equality using PostgreSQL `INTERVAL` equality.
+    ///
+    /// `NULL` rows follow SQL three-valued logic. Use `is_null()` for an
+    /// explicit NULL predicate.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: crate::Interval) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// Nullable `INTERVAL` inequality using PostgreSQL `INTERVAL` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: crate::Interval) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// Nullable `INTERVAL IN (...)` using PostgreSQL `INTERVAL` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::Interval>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// Nullable `INTERVAL NOT IN (...)` using PostgreSQL `INTERVAL` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::Interval>,
+    {
+        self.sql.not_in_list(values)
     }
 }
 
@@ -1243,7 +1395,7 @@ impl<M: Model> DjogiField<M, bool> {
 
 impl<M: Model, U> DjogiPresentField<M, U>
 where
-    U: PartialEq + postgres_types::ToSql + Clone + Send + Sync + 'static,
+    U: DjogiPortableEq,
 {
     /// `column IS NOT NULL AND column = value`. Portable.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
@@ -1295,6 +1447,43 @@ where
                 .collect(),
         );
         PortablePredicate::from_djogi_field(inner, DjogiFieldProvenance::mint_provenance())
+    }
+}
+
+impl<M: Model> DjogiPresentField<M, crate::Interval> {
+    /// Present-only nullable `INTERVAL = value` using PostgreSQL equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: crate::Interval) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// Present-only nullable `INTERVAL <> value` using PostgreSQL equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: crate::Interval) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// Present-only nullable `INTERVAL IN (...)` using PostgreSQL equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::Interval>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// Present-only nullable `INTERVAL NOT IN (...)` using PostgreSQL equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::Interval>,
+    {
+        let mut values = values.into_iter().peekable();
+        if values.peek().is_none() {
+            self.sql.is_not_null()
+        } else {
+            self.sql.not_in_list(values)
+        }
     }
 }
 
@@ -2343,6 +2532,19 @@ impl IntoFilterValue for crate::RanjIdDesc {
 impl IntoFilterValue for rust_decimal::Decimal {
     fn into_filter_value(self) -> FilterValue {
         FilterValue::Decimal(self)
+    }
+}
+impl IntoFilterValue for crate::Interval {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::Interval(self)
+    }
+}
+impl<V> IntoFilterValue for Vec<V>
+where
+    V: IntoArrayFilterValue,
+{
+    fn into_filter_value(self) -> FilterValue {
+        V::into_array_filter_value(self)
     }
 }
 
@@ -4410,6 +4612,7 @@ pub mod optional_relation_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::__private::pg::SqlAccumulator;
     use crate::query::condition::{Condition, LookupOp};
 
     // Test-local fake model — satisfies the `Model` trait enough to feed
@@ -4477,6 +4680,8 @@ mod tests {
         age: i64,
         title: String,
         maybe_age: Option<i64>,
+        duration: crate::Interval,
+        maybe_duration: Option<crate::Interval>,
     }
 
     impl crate::model::__sealed::Sealed for FakeRow {}
@@ -4567,6 +4772,92 @@ mod tests {
             }
             other => panic!("expected present Eq field predicate, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn djogi_field_interval_equality_and_membership_are_sql_only_conditions() {
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, crate::Interval>(
+            "duration",
+            |row| &row.duration,
+        );
+        let one_month = crate::Interval::months_only(1);
+
+        let eq: Condition = f.eq(one_month);
+        let neq: Condition = f.neq(one_month);
+        let in_list: Condition = f.in_([one_month]);
+        let not_in_list: Condition = f.not_in([one_month]);
+
+        if let Condition::Leaf(leaf) = eq {
+            assert_eq!(leaf.column, "duration");
+            assert_eq!(leaf.op, LookupOp::Eq);
+            assert!(matches!(leaf.value, FilterValue::Interval(v) if v == one_month));
+        } else {
+            panic!("expected Interval Eq to produce a SQL-only Condition leaf");
+        }
+
+        if let Condition::Leaf(leaf) = neq {
+            assert_eq!(leaf.op, LookupOp::Neq);
+        } else {
+            panic!("expected Interval Neq to produce a SQL-only Condition leaf");
+        }
+
+        if let Condition::Leaf(leaf) = in_list {
+            assert_eq!(leaf.op, LookupOp::In);
+        } else {
+            panic!("expected Interval IN to produce a SQL-only Condition leaf");
+        }
+
+        if let Condition::Leaf(leaf) = not_in_list {
+            assert_eq!(leaf.op, LookupOp::NotIn);
+        } else {
+            panic!("expected Interval NOT IN to produce a SQL-only Condition leaf");
+        }
+    }
+
+    #[test]
+    fn djogi_field_nullable_interval_eq_and_some_eq_are_sql_only_conditions() {
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<crate::Interval>>(
+            "maybe_duration",
+            |row| &row.maybe_duration,
+        );
+        let thirty_days = crate::Interval::days_only(30);
+
+        let nullable_eq: Condition = f.eq(thirty_days);
+        let present_eq: Condition = f.some().eq(thirty_days);
+
+        if let Condition::Leaf(leaf) = nullable_eq {
+            assert_eq!(leaf.column, "maybe_duration");
+            assert_eq!(leaf.op, LookupOp::Eq);
+            assert!(matches!(leaf.value, FilterValue::Interval(v) if v == thirty_days));
+        } else {
+            panic!("expected nullable Interval Eq to produce a SQL-only Condition leaf");
+        }
+
+        if let Condition::Leaf(leaf) = present_eq {
+            assert_eq!(leaf.column, "maybe_duration");
+            assert_eq!(leaf.op, LookupOp::Eq);
+            assert!(matches!(leaf.value, FilterValue::Interval(v) if v == thirty_days));
+        } else {
+            panic!("expected nullable Interval some().eq to produce a SQL-only Condition leaf");
+        }
+
+        let direct_empty_not_in: Condition = f.not_in(Vec::<crate::Interval>::new());
+        let mut acc = SqlAccumulator::new("");
+        crate::query::sql::emit_condition(&mut acc, &direct_empty_not_in, None).unwrap();
+        assert_eq!(
+            acc.sql(),
+            "TRUE",
+            "direct nullable Interval not_in([]) should keep the shared empty-list convention"
+        );
+
+        let present_empty_not_in: Condition = f.some().not_in(Vec::<crate::Interval>::new());
+        let mut acc = SqlAccumulator::new("");
+        crate::query::sql::emit_condition(&mut acc, &present_empty_not_in, None).unwrap();
+        assert_eq!(
+            acc.sql(),
+            "maybe_duration IS NOT NULL",
+            "present Interval not_in([]) must preserve the IS NOT NULL guard"
+        );
     }
 
     #[test]

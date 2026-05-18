@@ -16,6 +16,11 @@
 
 pub use heeranjid::{HeerId, HeerIdDesc, RanjId, RanjIdDesc, RanjPrecision};
 
+// Postgres typed-surface newtypes (Phase 8.5 Cluster 4 — typed PG types).
+// `Interval` ships now (djogi#212); follow-on dispatches in the
+// djogi#170 umbrella add additional newtypes alongside.
+pub use crate::pg_types::Interval;
+
 // Public naming — spec §3.5a. Internals keep `HeerIdDesc` / `RanjIdDesc`
 // to match heeranjid; user-facing surfaces (guides, `#[model(pk = X)]`)
 // use the `RecencyBiased` aliases so the name describes intent rather

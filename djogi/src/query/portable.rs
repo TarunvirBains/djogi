@@ -1171,6 +1171,7 @@ fn emit_scalar_between(
 #[doc(hidden)]
 pub mod emit {
     use super::{PortablePredicateError, SqlEmitContext};
+    use crate::descriptor::{BoxedSqlBind, EnumPredicateCodec, FieldSqlType};
     use crate::model::Model;
     use crate::pg::accumulator::SqlAccumulator;
     use crate::types::{FieldPredicate, LookupOp};
@@ -1303,6 +1304,307 @@ pub mod emit {
             acc.push_bind(v.clone());
         }
         acc.push_sql(")");
+        Ok(())
+    }
+
+    /// Attempt runtime-registered custom scalar lowering for fields the
+    /// model macro could not classify statically.
+    ///
+    /// Today this is intentionally limited to `#[derive(DjogiEnum)]` codecs.
+    /// Unknown adopter newtypes still return `UnsupportedFieldType`; the
+    /// fallback only succeeds when the field descriptor's custom SQL type and
+    /// the type-erased Sassi payload both match a registered enum codec.
+    #[doc(hidden)]
+    pub fn emit_registered_custom<M, V>(
+        acc: &mut SqlAccumulator,
+        ctx: SqlEmitContext,
+        column: &'static str,
+        field: &FieldPredicate<M>,
+    ) -> Result<(), PortablePredicateError>
+    where
+        M: Model,
+        V: 'static,
+    {
+        let Some(field_descriptor) = M::descriptor()
+            .fields
+            .iter()
+            .find(|field_descriptor| field_descriptor.name == column)
+        else {
+            return Err(PortablePredicateError::UnsupportedFieldType { field: column });
+        };
+        if field_descriptor.protected.is_some() {
+            return Err(PortablePredicateError::UnsupportedFieldType { field: column });
+        }
+        let postgres_type = match &field_descriptor.sql_type {
+            FieldSqlType::Custom(postgres_type) => *postgres_type,
+            _ => return Err(PortablePredicateError::UnsupportedFieldType { field: column }),
+        };
+
+        let mut saw_matching_field_type = false;
+        let field_type = std::any::TypeId::of::<V>();
+        for codec in inventory::iter::<EnumPredicateCodec> {
+            if codec.postgres_type != postgres_type {
+                continue;
+            }
+            if !(codec.matches_field_type)(field_type) {
+                continue;
+            }
+            saw_matching_field_type = true;
+
+            match field.op() {
+                LookupOp::Eq => {
+                    if field_descriptor.nullable
+                        && let Some(value) = (codec.bind_option_value)(field.value())
+                    {
+                        return emit_boxed_option_eq(acc, ctx, column, value);
+                    }
+                    if let Some(value) = (codec.bind_value)(field.value()) {
+                        return emit_boxed_value(acc, ctx, column, " = ", value);
+                    }
+                }
+                LookupOp::Neq => {
+                    if field_descriptor.nullable
+                        && let Some(value) = (codec.bind_option_value)(field.value())
+                    {
+                        return emit_boxed_option_neq(acc, ctx, column, value);
+                    }
+                    if let Some(value) = (codec.bind_value)(field.value()) {
+                        return emit_boxed_value(acc, ctx, column, " <> ", value);
+                    }
+                }
+                LookupOp::In => {
+                    if field_descriptor.nullable
+                        && let Some(values) = (codec.bind_option_list)(field.value())
+                    {
+                        return emit_boxed_option_list(acc, ctx, column, values, false);
+                    }
+                    if let Some(values) = (codec.bind_list)(field.value()) {
+                        if field_descriptor.nullable {
+                            return emit_boxed_present_list(acc, ctx, column, values, false);
+                        }
+                        return emit_boxed_list(acc, ctx, column, values, false);
+                    }
+                }
+                LookupOp::NotIn => {
+                    if field_descriptor.nullable
+                        && let Some(values) = (codec.bind_option_list)(field.value())
+                    {
+                        return emit_boxed_option_list(acc, ctx, column, values, true);
+                    }
+                    if let Some(values) = (codec.bind_list)(field.value()) {
+                        if field_descriptor.nullable {
+                            return emit_boxed_present_list(acc, ctx, column, values, true);
+                        }
+                        return emit_boxed_list(acc, ctx, column, values, true);
+                    }
+                }
+                LookupOp::IsNull => {
+                    ctx.push_column(acc, column);
+                    acc.push_sql(" IS NULL");
+                    return Ok(());
+                }
+                LookupOp::IsNotNull => {
+                    ctx.push_column(acc, column);
+                    acc.push_sql(" IS NOT NULL");
+                    return Ok(());
+                }
+                op => {
+                    return Err(PortablePredicateError::UnsupportedLookup { field: column, op });
+                }
+            }
+        }
+
+        if saw_matching_field_type {
+            Err(PortablePredicateError::ValueTypeMismatch {
+                field: column,
+                op: field.op(),
+            })
+        } else {
+            Err(PortablePredicateError::UnsupportedFieldType { field: column })
+        }
+    }
+
+    fn emit_boxed_value(
+        acc: &mut SqlAccumulator,
+        ctx: SqlEmitContext,
+        column: &'static str,
+        op_sql: &'static str,
+        value: BoxedSqlBind,
+    ) -> Result<(), PortablePredicateError> {
+        ctx.push_column(acc, column);
+        acc.push_sql(op_sql);
+        acc.push_boxed_bind(value);
+        Ok(())
+    }
+
+    fn emit_boxed_list(
+        acc: &mut SqlAccumulator,
+        ctx: SqlEmitContext,
+        column: &'static str,
+        values: Vec<BoxedSqlBind>,
+        negated: bool,
+    ) -> Result<(), PortablePredicateError> {
+        if values.is_empty() {
+            acc.push_sql(if negated { "TRUE" } else { "FALSE" });
+            return Ok(());
+        }
+        ctx.push_column(acc, column);
+        acc.push_sql(if negated { " NOT IN (" } else { " IN (" });
+        for (i, value) in values.into_iter().enumerate() {
+            if i > 0 {
+                acc.push_sql(", ");
+            }
+            acc.push_boxed_bind(value);
+        }
+        acc.push_sql(")");
+        Ok(())
+    }
+
+    fn emit_boxed_present_list(
+        acc: &mut SqlAccumulator,
+        ctx: SqlEmitContext,
+        column: &'static str,
+        values: Vec<BoxedSqlBind>,
+        negated: bool,
+    ) -> Result<(), PortablePredicateError> {
+        if values.is_empty() {
+            if negated {
+                ctx.push_column(acc, column);
+                acc.push_sql(" IS NOT NULL");
+            } else {
+                acc.push_sql("FALSE");
+            }
+            return Ok(());
+        }
+
+        if negated {
+            acc.push_sql("(");
+            ctx.push_column(acc, column);
+            acc.push_sql(" IS NOT NULL AND ");
+            ctx.push_column(acc, column);
+            acc.push_sql(" NOT IN (");
+        } else {
+            ctx.push_column(acc, column);
+            acc.push_sql(" IN (");
+        }
+
+        for (i, value) in values.into_iter().enumerate() {
+            if i > 0 {
+                acc.push_sql(", ");
+            }
+            acc.push_boxed_bind(value);
+        }
+
+        if negated {
+            acc.push_sql("))");
+        } else {
+            acc.push_sql(")");
+        }
+        Ok(())
+    }
+
+    fn emit_boxed_option_eq(
+        acc: &mut SqlAccumulator,
+        ctx: SqlEmitContext,
+        column: &'static str,
+        value: Option<BoxedSqlBind>,
+    ) -> Result<(), PortablePredicateError> {
+        match value {
+            Some(value) => emit_boxed_value(acc, ctx, column, " = ", value),
+            None => {
+                ctx.push_column(acc, column);
+                acc.push_sql(" IS NULL");
+                Ok(())
+            }
+        }
+    }
+
+    fn emit_boxed_option_neq(
+        acc: &mut SqlAccumulator,
+        ctx: SqlEmitContext,
+        column: &'static str,
+        value: Option<BoxedSqlBind>,
+    ) -> Result<(), PortablePredicateError> {
+        match value {
+            Some(value) => {
+                acc.push_sql("(");
+                ctx.push_column(acc, column);
+                acc.push_sql(" IS NULL OR ");
+                ctx.push_column(acc, column);
+                acc.push_sql(" <> ");
+                acc.push_boxed_bind(value);
+                acc.push_sql(")");
+                Ok(())
+            }
+            None => {
+                ctx.push_column(acc, column);
+                acc.push_sql(" IS NOT NULL");
+                Ok(())
+            }
+        }
+    }
+
+    fn emit_boxed_option_list(
+        acc: &mut SqlAccumulator,
+        ctx: SqlEmitContext,
+        column: &'static str,
+        values: Vec<Option<BoxedSqlBind>>,
+        negated: bool,
+    ) -> Result<(), PortablePredicateError> {
+        if values.is_empty() {
+            acc.push_sql(if negated { "TRUE" } else { "FALSE" });
+            return Ok(());
+        }
+
+        let has_none = values.iter().any(Option::is_none);
+        let some_values: Vec<BoxedSqlBind> = values.into_iter().flatten().collect();
+
+        if !negated {
+            match (has_none, some_values.is_empty()) {
+                (true, true) => {
+                    ctx.push_column(acc, column);
+                    acc.push_sql(" IS NULL");
+                }
+                (false, false) => emit_boxed_list(acc, ctx, column, some_values, false)?,
+                (true, false) => {
+                    acc.push_sql("(");
+                    ctx.push_column(acc, column);
+                    acc.push_sql(" IS NULL OR ");
+                    emit_boxed_list(acc, ctx, column, some_values, false)?;
+                    acc.push_sql(")");
+                }
+                (false, true) => unreachable!("non-empty values with no None and no Some"),
+            }
+        } else {
+            match (has_none, some_values.is_empty()) {
+                (true, true) => {
+                    ctx.push_column(acc, column);
+                    acc.push_sql(" IS NOT NULL");
+                }
+                (false, false) => {
+                    acc.push_sql("(");
+                    ctx.push_column(acc, column);
+                    acc.push_sql(" IS NULL OR ");
+                    emit_boxed_list(acc, ctx, column, some_values, true)?;
+                    acc.push_sql(")");
+                }
+                (true, false) => {
+                    acc.push_sql("(");
+                    ctx.push_column(acc, column);
+                    acc.push_sql(" IS NOT NULL AND ");
+                    ctx.push_column(acc, column);
+                    acc.push_sql(" NOT IN (");
+                    for (i, value) in some_values.into_iter().enumerate() {
+                        if i > 0 {
+                            acc.push_sql(", ");
+                        }
+                        acc.push_boxed_bind(value);
+                    }
+                    acc.push_sql("))");
+                }
+                (false, true) => unreachable!("non-empty values with no None and no Some"),
+            }
+        }
         Ok(())
     }
 

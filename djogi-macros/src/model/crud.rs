@@ -3065,6 +3065,7 @@ fn emit_djogi_emit_field_predicate(
             PortableFieldKind::OptionScalar
             | PortableFieldKind::OptionBool
             | PortableFieldKind::OptionString
+            | PortableFieldKind::OptionArray
             | PortableFieldKind::OptionRelationOrVisage => {
                 // `option_inner_type` MUST be Some for portable Option*
                 // kinds — `classify` populates it for OptionScalar /
@@ -3112,21 +3113,42 @@ fn emit_djogi_emit_field_predicate(
                     ),
                 });
             }
+            PortableFieldKind::Array => {
+                let ty = &info.rust_type;
+                // One-dimensional Postgres arrays support equality and list
+                // membership with the same length/order/element semantics as
+                // Rust `Vec<T>` equality. Array-specific operators remain
+                // SQL-only on the explicit-PG surface.
+                arms.extend(scalar_arms(
+                    model_name, ty, column, /*ordering=*/ false,
+                ));
+                arms.push(quote! {
+                    (#column, op) => ::std::result::Result::Err(
+                        ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
+                            field: #column,
+                            op,
+                        },
+                    ),
+                });
+            }
             PortableFieldKind::Jsonb
-            | PortableFieldKind::Array
             | PortableFieldKind::Spatial
             | PortableFieldKind::FtsComputed
             | PortableFieldKind::Unsupported => {
+                let ty = &info.rust_type;
                 // Non-portable kinds get a single catch-all arm
-                // returning the typed `UnsupportedFieldType` error.
+                // returning the typed `UnsupportedFieldType` error,
+                // except for runtime-registered DjogiEnum codecs. The
+                // model macro cannot observe sibling derives, so
+                // DjogiEnum fields still classify as `Unsupported`
+                // here and opt into SQL lowering through the registry
+                // emitted by `#[derive(DjogiEnum)]`.
                 // `LookupOp` is `#[non_exhaustive]`; this single arm
                 // covers every current and future variant for the
                 // field.
                 arms.push(quote! {
-                    (#column, _) => ::std::result::Result::Err(
-                        ::djogi::__private::query::PortablePredicateError::UnsupportedFieldType {
-                            field: #column,
-                        },
+                    (#column, _) => ::djogi::__private::query::portable_emit::emit_registered_custom::<#model_name, #ty>(
+                        acc, ctx, #column, field,
                     ),
                 });
             }

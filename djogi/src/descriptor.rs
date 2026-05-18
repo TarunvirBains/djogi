@@ -157,6 +157,19 @@ pub enum FieldSqlType {
         subtype: GeographySubtype,
         srid: u32,
     },
+    /// Postgres `INTERVAL` (djogi#212). Rust source type is
+    /// `djogi::Interval` (`pg_types::Interval`) — a three-component
+    /// newtype mirroring the Postgres wire format `(microseconds, days,
+    /// months)`. The `time` crate's `Duration` is intentionally NOT
+    /// supported here: a `Duration` is a fixed-microsecond duration
+    /// with no calendar-component story, and collapsing the three
+    /// Postgres fields into one would silently corrupt DST-straddling
+    /// or month-arithmetic results. See `djogi::Interval` docs for the
+    /// full rationale.
+    ///
+    /// Always-available — no feature flag. The codec lives in
+    /// `pg_types.rs` and pulls in no third-party crate.
+    Interval,
     /// Fallback for SQL types the framework doesn't model explicitly.
     /// Stored verbatim and compared by string equality in the migration differ.
     Custom(&'static str),
@@ -209,6 +222,10 @@ impl std::fmt::Display for FieldSqlType {
             FieldSqlType::Geography { subtype, srid } => {
                 write!(f, "geography({subtype}, {srid})")
             }
+            // djogi#212 — INTERVAL column type. The wire codec carries
+            // the three-component encoding; the SQL type string is the
+            // bare Postgres `INTERVAL` keyword.
+            FieldSqlType::Interval => write!(f, "INTERVAL"),
             FieldSqlType::Custom(s) => write!(f, "{s}"),
         }
     }
@@ -2940,6 +2957,55 @@ pub struct EnumDescriptor {
 }
 
 inventory::collect!(EnumDescriptor);
+
+/// Type-erased SQL bind value produced by a framework-owned runtime codec.
+#[doc(hidden)]
+pub type BoxedSqlBind = Box<dyn postgres_types::ToSql + Sync + Send>;
+
+/// Binder for a single enum operand stored in Sassi's type-erased predicate payload.
+#[doc(hidden)]
+pub type EnumPredicateValueBinder =
+    for<'a> fn(&'a (dyn std::any::Any + Send + Sync)) -> Option<BoxedSqlBind>;
+
+/// Binder for a `Vec<Enum>` operand stored in Sassi's type-erased predicate payload.
+#[doc(hidden)]
+pub type EnumPredicateListBinder =
+    for<'a> fn(&'a (dyn std::any::Any + Send + Sync)) -> Option<Vec<BoxedSqlBind>>;
+
+/// Binder for an `Option<Enum>` operand stored in Sassi's type-erased predicate payload.
+#[doc(hidden)]
+pub type EnumPredicateOptionBinder =
+    for<'a> fn(&'a (dyn std::any::Any + Send + Sync)) -> Option<Option<BoxedSqlBind>>;
+
+/// Binder for a `Vec<Option<Enum>>` operand stored in Sassi's type-erased predicate payload.
+#[doc(hidden)]
+pub type EnumPredicateOptionListBinder =
+    for<'a> fn(&'a (dyn std::any::Any + Send + Sync)) -> Option<Vec<Option<BoxedSqlBind>>>;
+
+/// Runtime check that a model field's declared Rust type belongs to this enum codec.
+#[doc(hidden)]
+pub type EnumPredicateFieldTypeMatcher = fn(std::any::TypeId) -> bool;
+
+/// Runtime predicate codec registered by `#[derive(DjogiEnum)]`.
+///
+/// The model macro cannot observe whether a sibling type also derived
+/// `DjogiEnum` when it classifies a field. Instead, unknown/custom fields stay
+/// conservative at macro expansion time and the portable SQL fallback consults
+/// this registry at runtime. Only DjogiEnum-derived types submit entries, so
+/// arbitrary adopter newtypes remain unsupported unless a future framework
+/// macro registers an explicit codec for them.
+#[doc(hidden)]
+pub struct EnumPredicateCodec {
+    pub type_name: &'static str,
+    pub postgres_type: &'static str,
+    pub matches_field_type: EnumPredicateFieldTypeMatcher,
+    pub bind_value: EnumPredicateValueBinder,
+    pub bind_list: EnumPredicateListBinder,
+    pub bind_option_value: EnumPredicateOptionBinder,
+    pub bind_option_list: EnumPredicateOptionListBinder,
+}
+
+inventory::collect!(EnumPredicateCodec);
 
 // ───────────────────────────────────────────────────────────────────────────
 // Visage-side derived-projection descriptor inventory — Phase 8.5 #231.

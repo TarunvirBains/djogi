@@ -77,6 +77,12 @@ pub mod model;
 pub mod notify;
 pub mod outbox;
 pub mod pg;
+// Phase 8.5 Cluster 4 (djogi#170 umbrella) — typed Postgres newtypes
+// with hand-rolled wire codecs. Currently ships `Interval` (djogi#212);
+// the module is structured so follow-on dispatches in the umbrella can
+// add additional newtypes (`MacAddr`, `CidrAddr`, …) alongside without
+// reshaping the public surface.
+pub mod pg_types;
 pub mod primary_key;
 pub mod query;
 pub mod relation;
@@ -446,13 +452,14 @@ pub use fts_query::FtsFieldRef;
 // never reaches for `Condition` directly.
 pub use query::{
     AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
-    ClosureModel, ConditionExt, FieldRef, FilterClause, InsertSelectColumn, InsertSelectSource,
-    InsertSelectStmt, IntoAggregateTuple, IntoFieldFilterValue, IntoFilterValue, IntoInsertColumns,
-    IntoPortableFieldValue, IntoSetOpArm, JoinedAnnotatedQuerySet, JoinedAnnotatedRow,
-    JoinedQuerySet, Lookup, MaterializeClosureOptions, MaterializeClosureReport, ModelCursorStream,
-    ModelFilter, OrderExpr, PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt,
-    PortableQuerySet, Q, QuerySet, RawCursorStream, RecursiveDirection, RecursiveQuerySet,
-    SetOpKind, SetOpQuerySet, UpdateAssignment, UpdateStmt, VisageQuerySet,
+    ClosureModel, ConditionExt, DjogiPortableEq, FieldRef, FilterClause, InsertSelectColumn,
+    InsertSelectSource, InsertSelectStmt, IntoAggregateTuple, IntoFieldFilterValue,
+    IntoFilterValue, IntoInsertColumns, IntoPortableFieldValue, IntoSetOpArm,
+    JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, Lookup, MaterializeClosureOptions,
+    MaterializeClosureReport, ModelCursorStream, ModelFilter, OrderExpr, PairClosureKinshipSum,
+    PairOrderExpr, PairSide, PairWindowExt, PortableQuerySet, Q, QuerySet, RawCursorStream,
+    RecursiveDirection, RecursiveQuerySet, SetOpKind, SetOpQuerySet, UpdateAssignment, UpdateStmt,
+    VisageQuerySet,
 };
 pub use relation::{
     ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
@@ -460,7 +467,7 @@ pub use relation::{
 };
 pub use tracked::Tracked;
 pub use types::{
-    Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, RanjId, RanjIdDesc,
+    Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, Interval, RanjId, RanjIdDesc,
     RanjIdRecencyBiased,
 };
 pub use visage::{DjogiVisage, VisageError};
@@ -586,13 +593,13 @@ pub mod prelude {
     // legacy `Condition` callers reach `djogi::query::internal::Condition`.
     pub use crate::query::{
         AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
-        ClosureModel, ConditionExt, FieldRef, FilterClause, InsertSelectColumn, InsertSelectSource,
-        InsertSelectStmt, IntoAggregateTuple, IntoFieldFilterValue, IntoFilterValue,
-        IntoInsertColumns, IntoPortableFieldValue, IntoSetOpArm, JoinedAnnotatedQuerySet,
-        JoinedAnnotatedRow, JoinedQuerySet, Lookup, MaterializeClosureOptions,
-        MaterializeClosureReport, ModelFilter, OrderExpr, PairClosureKinshipSum, PairOrderExpr,
-        PairSide, PairWindowExt, PortableQuerySet, Q, QuerySet, RecursiveDirection,
-        RecursiveQuerySet, SetOpKind, SetOpQuerySet, VisageQuerySet,
+        ClosureModel, ConditionExt, DjogiPortableEq, FieldRef, FilterClause, InsertSelectColumn,
+        InsertSelectSource, InsertSelectStmt, IntoAggregateTuple, IntoFieldFilterValue,
+        IntoFilterValue, IntoInsertColumns, IntoPortableFieldValue, IntoSetOpArm,
+        JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, Lookup,
+        MaterializeClosureOptions, MaterializeClosureReport, ModelFilter, OrderExpr,
+        PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt, PortableQuerySet, Q,
+        QuerySet, RecursiveDirection, RecursiveQuerySet, SetOpKind, SetOpQuerySet, VisageQuerySet,
     };
     // `atomic` / `atomic_with` / `retry_on_conflict` — Phase 4 Task 1
     // canonical transaction scope + retry helper, plus the Phase 8.5
@@ -617,7 +624,7 @@ pub mod prelude {
     };
     pub use crate::tracked::Tracked;
     pub use crate::types::{
-        Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, RanjId, RanjIdDesc,
+        Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, Interval, RanjId, RanjIdDesc,
         RanjIdRecencyBiased,
     };
     // T7 fixup — `DjogiVisageOf<M>` is the seal trait bounding every

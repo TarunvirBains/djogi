@@ -1,0 +1,20 @@
+error[E0599]: the method `eq` exists for struct `DjogiField<Widget, f64>`, but its trait bounds were not satisfied
+   --> $DIR/phase8eta_float_scalar_equality_not_portable.rs:21:55
+    |
+ 21 |     let _bad = Widget::objects().filter(|f| f.score().eq(f64::NAN));
+    |                                                       ^^ method cannot be called on `DjogiField<Widget, f64>` due to unsatisfied trait bounds
+    |
+   ::: djogi/src/query/field.rs:634:1
+    |
+634 | pub struct DjogiField<M: Model, V> {
+    | ---------------------------------- doesn't satisfy `DjogiField<Widget, f64>: Iterator`
+    |
+    = note: the following trait bounds were not satisfied:
+            `f64: PrimaryKey`
+            which is required by `f64: DjogiPortableEq`
+            `DjogiField<Widget, f64>: Iterator`
+            which is required by `&mut DjogiField<Widget, f64>: Iterator`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

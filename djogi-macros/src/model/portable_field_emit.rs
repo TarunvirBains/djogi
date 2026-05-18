@@ -28,13 +28,18 @@
 //! validated get a portable kind. Root-column relation wrappers
 //! (`ForeignKey<T>` / `OneToOneField<T>`) are portable for equality and
 //! membership because their cached representation is the same key wrapper
-//! SQL binds through. Everything else (`Jsonb<T>`, `Vec<T>`,
-//! `GeoPoint`/`Polygon`/etc., `TsVector`, `#[field(protected(...))]`
-//! wrappers, user enums, and unrecognised newtypes) lands in
+//! SQL binds through. `Vec<T>` arrays are portable only when `T` is in
+//! Djogi's curated safe array-equality subset. Everything else (`Jsonb<T>`,
+//! `Vec<f32>` / `Vec<f64>`, `Vec<Interval>`, `GeoPoint`/`Polygon`/etc.,
+//! `TsVector`, `#[field(protected(...))]` wrappers, and unrecognised
+//! newtypes) lands in
 //! [`PortableFieldKind::Unsupported`] or one of its more specific
 //! neighbours so the macro emits a typed
-//! `PortablePredicateError::UnsupportedFieldType` arm rather than
-//! pretending to support a payload shape that has not been parity-tested.
+//! `PortablePredicateError::UnsupportedFieldType` arm rather than pretending
+//! to support a payload shape that has not been parity-tested. `DjogiEnum`
+//! fields also classify as [`Unsupported`] at macro time because the model
+//! macro cannot observe sibling derives; their SQL lowering is admitted later
+//! through the explicit runtime codec registered by `#[derive(DjogiEnum)]`.
 //!
 //! # Why this is not a Sassi-side concern
 //!
@@ -47,7 +52,7 @@
 //! Sassi free of Djogi-specific bind concerns and keeps the dependency
 //! direction `djogi -> sassi`.
 
-use syn::{ItemStruct, Type, TypePath};
+use syn::{GenericArgument, ItemStruct, PathArguments, PathSegment, Type, TypePath};
 
 use crate::model::attrs::{
     FieldAttrs, ModelAttrs, PkStrategy, detect_relation, unwrap_option, unwrap_tracked,
@@ -117,14 +122,21 @@ pub enum PortableFieldKind {
     OptionString,
     /// `Option<bool>` — null tests plus eq/neq/in/not_in.
     OptionBool,
+    /// `Vec<T>` for Djogi-supported one-dimensional Postgres array columns
+    /// whose element type has Rust/Punnu/PostgreSQL equality parity.
+    /// Equality and membership are portable; array-specific operators remain
+    /// SQL-only through `explicit_pg_predicate()`. Float and `Interval`
+    /// arrays do not classify here.
+    Array,
+    /// `Option<Vec<T>>` for Djogi-supported one-dimensional Postgres array
+    /// columns whose element type has safe portable equality parity. Null
+    /// tests, equality, and membership are portable.
+    OptionArray,
     /// `Jsonb<T>` / `Option<Jsonb<T>>` — SQL-only in 8eta. Routes
     /// through `explicit_pg_predicate()` for database-specific
     /// predicates; portable arms emit
     /// `UnsupportedFieldType { field }`.
     Jsonb,
-    /// `Vec<T>` — SQL-only in 8eta. Array operators
-    /// (`@>` / `<@` / `&&`) ride [`crate::query::FieldRef`] directly.
-    Array,
     /// `GeoPoint` / `LineString` / `Polygon` / `MultiPoint` /
     /// `MultiPolygon` — PostGIS spatial types, SQL-only.
     Spatial,
@@ -139,9 +151,10 @@ pub enum PortableFieldKind {
     /// physical columns. Null tests, equality, and membership are
     /// portable; ordering and relation traversal are not.
     OptionRelationOrVisage,
-    /// Anything else — user enums that don't satisfy the bind bounds,
-    /// unrecognised newtypes, `#[field(protected(...))]` wrappers
-    /// whose codec semantics are not yet portable.
+    /// Anything else — unregistered user types, `#[field(protected(...))]`
+    /// wrappers whose codec semantics are not yet portable, and
+    /// `DjogiEnum` fields before the runtime enum-codec fallback has a
+    /// chance to inspect the predicate payload.
     Unsupported,
 }
 
@@ -168,6 +181,8 @@ impl PortableFieldKind {
                 | Self::OptionScalar
                 | Self::OptionString
                 | Self::OptionBool
+                | Self::Array
+                | Self::OptionArray
                 | Self::RelationOrVisage
                 | Self::OptionRelationOrVisage
         )
@@ -183,6 +198,7 @@ impl PortableFieldKind {
             Self::OptionScalar
                 | Self::OptionString
                 | Self::OptionBool
+                | Self::OptionArray
                 | Self::OptionRelationOrVisage
         )
     }
@@ -315,7 +331,16 @@ pub fn build(
             None
         };
 
-        let (field_kind, option_inner_type) = classify(&rust_type, fa_opt);
+        let (mut field_kind, option_inner_type) = classify(&rust_type, fa_opt);
+        if i == 0 && matches!(field_kind, PortableFieldKind::Unsupported) {
+            // Framework `id` fields are generated from the model's primary-key
+            // strategy, not user field attributes. Custom `primary_key!`
+            // wrappers intentionally satisfy the public portable equality
+            // bounds via `PrimaryKey`; keep SQL emission aligned with that
+            // public surface instead of classifying the injected newtype as an
+            // arbitrary unsupported user field.
+            field_kind = PortableFieldKind::Scalar;
+        }
         // Detect `Tracked<…>` at the outer layer of the declared type.
         // Required by `crud::option_arms` so `Tracked<Option<U>>` columns
         // emit a `value_as::<Tracked<Option<U>>>` fallback alongside the
@@ -404,10 +429,10 @@ fn classify(ty: &Type, field_attrs: Option<&FieldAttrs>) -> (PortableFieldKind, 
             PortableFieldKind::Scalar => (PortableFieldKind::OptionScalar, Some(inner)),
             PortableFieldKind::String => (PortableFieldKind::OptionString, Some(inner)),
             PortableFieldKind::Bool => (PortableFieldKind::OptionBool, Some(inner)),
-            // `Option<Jsonb<T>>`, `Option<Vec<U>>`, `Option<GeoPoint>`,
-            // etc. — keep the inner kind; the option_inner_type is
-            // None because the inner kind is itself not portable, so
-            // the macro arm body will not branch on it.
+            PortableFieldKind::Array => (PortableFieldKind::OptionArray, Some(inner)),
+            // `Option<Jsonb<T>>`, `Option<GeoPoint>`, etc. — keep the inner
+            // kind; the option_inner_type is None because the inner kind is
+            // itself not portable, so the macro arm body will not branch on it.
             other => (other, None),
         }
     } else {
@@ -440,7 +465,11 @@ fn classify_inner(ty: &Type) -> PortableFieldKind {
         return PortableFieldKind::Jsonb;
     }
     if ident == "Vec" {
-        return PortableFieldKind::Array;
+        return if vec_element_has_portable_eq(last) {
+            PortableFieldKind::Array
+        } else {
+            PortableFieldKind::Unsupported
+        };
     }
     if ident == "TsVector" {
         return PortableFieldKind::FtsComputed;
@@ -490,12 +519,52 @@ fn classify_inner(ty: &Type) -> PortableFieldKind {
         return PortableFieldKind::Scalar;
     }
 
-    // Everything else — user enums (DjogiEnum-derived), custom
-    // newtypes, two-segment paths whose last ident is not in the
-    // curated list — falls through. The `(field, _) =>
-    // UnsupportedFieldType` arm in crud.rs surfaces this as a typed
-    // error rather than a silent SQL miscompilation.
+    // Everything else — custom newtypes, two-segment paths whose last
+    // ident is not in the curated list, and DjogiEnum-derived user
+    // enums whose sibling derive cannot be observed here — falls
+    // through. The `(field, _)` arm in crud.rs either routes
+    // DjogiEnum payloads through their runtime codec or surfaces
+    // `UnsupportedFieldType` for unregistered types rather than a
+    // silent SQL miscompilation.
     PortableFieldKind::Unsupported
+}
+
+fn vec_element_has_portable_eq(vec_segment: &PathSegment) -> bool {
+    let PathArguments::AngleBracketed(args) = &vec_segment.arguments else {
+        return false;
+    };
+    let Some(GenericArgument::Type(element_ty)) = args.args.first() else {
+        return false;
+    };
+    let Type::Path(TypePath {
+        path, qself: None, ..
+    }) = element_ty
+    else {
+        return false;
+    };
+    let Some(element_segment) = path.segments.last() else {
+        return false;
+    };
+
+    matches!(
+        element_segment.ident.to_string().as_str(),
+        "String"
+            | "bool"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "DateTime"
+            | "OffsetDateTime"
+            | "Date"
+            | "Uuid"
+            | "Decimal"
+            | "HeerId"
+            | "RanjId"
+            | "HeerIdDesc"
+            | "RanjIdDesc"
+            | "HeerIdRecencyBiased"
+            | "RanjIdRecencyBiased"
+    )
 }
 
 #[cfg(test)]
@@ -565,10 +634,26 @@ mod tests {
     }
 
     #[test]
-    fn classify_vec_is_array() {
+    fn classify_vec_i32_is_array() {
         let ty: Type = parse_quote!(Vec<i32>);
         let (kind, _) = classify(&ty, None);
         assert_eq!(kind, PortableFieldKind::Array);
+    }
+
+    #[test]
+    fn classify_vec_f64_is_unsupported_until_nan_parity_is_specified() {
+        let ty: Type = parse_quote!(Vec<f64>);
+        let (kind, inner) = classify(&ty, None);
+        assert_eq!(kind, PortableFieldKind::Unsupported);
+        assert!(inner.is_none());
+    }
+
+    #[test]
+    fn classify_vec_interval_is_unsupported() {
+        let ty: Type = parse_quote!(Vec<Interval>);
+        let (kind, inner) = classify(&ty, None);
+        assert_eq!(kind, PortableFieldKind::Unsupported);
+        assert!(inner.is_none());
     }
 
     #[test]
@@ -652,10 +737,11 @@ mod tests {
         assert!(PortableFieldKind::OptionScalar.is_portable_leaf());
         assert!(PortableFieldKind::OptionString.is_portable_leaf());
         assert!(PortableFieldKind::OptionBool.is_portable_leaf());
+        assert!(PortableFieldKind::Array.is_portable_leaf());
+        assert!(PortableFieldKind::OptionArray.is_portable_leaf());
         assert!(PortableFieldKind::RelationOrVisage.is_portable_leaf());
         assert!(PortableFieldKind::OptionRelationOrVisage.is_portable_leaf());
         assert!(!PortableFieldKind::Jsonb.is_portable_leaf());
-        assert!(!PortableFieldKind::Array.is_portable_leaf());
         assert!(!PortableFieldKind::Spatial.is_portable_leaf());
         assert!(!PortableFieldKind::FtsComputed.is_portable_leaf());
         assert!(!PortableFieldKind::Unsupported.is_portable_leaf());
@@ -669,6 +755,8 @@ mod tests {
         assert!(PortableFieldKind::OptionScalar.is_optional());
         assert!(PortableFieldKind::OptionString.is_optional());
         assert!(PortableFieldKind::OptionBool.is_optional());
+        assert!(!PortableFieldKind::Array.is_optional());
+        assert!(PortableFieldKind::OptionArray.is_optional());
         assert!(!PortableFieldKind::RelationOrVisage.is_optional());
         assert!(PortableFieldKind::OptionRelationOrVisage.is_optional());
     }

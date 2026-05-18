@@ -3004,6 +3004,10 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         "Date" | "time::Date" | "djogi::Date" | "djogi::types::Date" => Some("DATE"),
         "Decimal" | "rust_decimal::Decimal" => Some("NUMERIC"),
         "Uuid" | "uuid::Uuid" => Some("UUID"),
+        // djogi#212 — `Interval` from `djogi::prelude::*`, `djogi::Interval`
+        // (the canonical explicit spelling), and `djogi::types::Interval`
+        // (the internal path) all lower to the typed descriptor variant.
+        "Interval" | "djogi::Interval" | "djogi::types::Interval" => Some("INTERVAL"),
         // Phase 7-Zero-2 T4 — built-in PK types (HeerId / RanjId family) are
         // usable as ambient fields outside the framework-injected `id` slot.
         // Map each name (bare, `djogi::types::*`, and `djogi::*` forms) to the
@@ -3667,6 +3671,18 @@ mod tests {
         assert_eq!(rust_type_to_sql(&djogi), Some("DATE"));
         assert_eq!(rust_type_to_sql(&djogi_types), Some("DATE"));
         assert_eq!(rust_type_to_sql(&absolute), Some("DATE"));
+    }
+
+    #[test]
+    fn djogi_interval_alias_lowers_to_interval() {
+        let bare: syn::Type = parse_quote!(Interval);
+        let djogi: syn::Type = parse_quote!(djogi::Interval);
+        let djogi_types: syn::Type = parse_quote!(djogi::types::Interval);
+        let absolute: syn::Type = parse_quote!(::djogi::types::Interval);
+        assert_eq!(rust_type_to_sql(&bare), Some("INTERVAL"));
+        assert_eq!(rust_type_to_sql(&djogi), Some("INTERVAL"));
+        assert_eq!(rust_type_to_sql(&djogi_types), Some("INTERVAL"));
+        assert_eq!(rust_type_to_sql(&absolute), Some("INTERVAL"));
     }
 
     // ── Phase 8-Zero Cluster B1 (T12) — `#[model(tree_edge = "...")]` ──

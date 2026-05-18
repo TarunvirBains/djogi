@@ -32,7 +32,9 @@ use djogi::prelude::*;
 // resolves to the same trait, so importing either is equivalent.
 // We import via `djogi::types` to mirror the macro-emission target
 // path exactly.
-use djogi::types::{Cacheable, DeltaSyncCacheable};
+use djogi::__private::pg::SqlAccumulator;
+use djogi::__private::query::{PortablePredicateError, SqlEmitContext};
+use djogi::types::{BasicPredicate, Cacheable, DeltaSyncCacheable, IntoBasicPredicate};
 
 // ---------------------------------------------------------------------------
 // PK-variant fixtures — one model per built-in `pk = X` strategy plus the
@@ -110,6 +112,94 @@ pub struct CustomPkModel {
     pub label: String,
 }
 
+#[derive(DjogiEnum, Debug, Clone, Copy, PartialEq, Eq)]
+#[djogi_enum(name = "phase8_t7_cacheable_emit_status", rename_all = "snake_case")]
+pub enum CacheableEmitStatus {
+    Active,
+    Retired,
+}
+
+/// User-defined Postgres enum field. The model macro sees only the declared
+/// Rust type path, so portable SQL emission depends on the runtime codec
+/// registered by `#[derive(DjogiEnum)]`.
+#[model(table = "phase8_t7_cacheable_emit_enum", no_default)]
+#[derive(Debug, Clone)]
+pub struct EnumFieldModel {
+    pub status: CacheableEmitStatus,
+}
+
+/// Nullable user-defined Postgres enum field. Covers the `Option<Enum>` and
+/// `.some()` payload shapes separately from the non-null enum field above.
+#[model(table = "phase8_t7_cacheable_emit_optional_enum", no_default)]
+#[derive(Debug, Clone)]
+pub struct OptionalEnumFieldModel {
+    pub status: Option<CacheableEmitStatus>,
+}
+
+/// Tracked enum fields exercise the direct `Tracked<T>` declaration shape; the
+/// predicate payload is `Tracked<Enum>` rather than the bare enum value.
+#[model(table = "phase8_t7_cacheable_emit_tracked_enum", no_default)]
+#[derive(Debug, Clone)]
+pub struct TrackedEnumFieldModel {
+    pub status: ::djogi::Tracked<CacheableEmitStatus>,
+    pub optional_status: ::djogi::Tracked<Option<CacheableEmitStatus>>,
+}
+
+/// Protected enum fields must stay outside the portable runtime fallback:
+/// protected codecs can change storage semantics in ways Punnu cannot mirror.
+#[model(table = "phase8_t7_cacheable_emit_protected_enum", no_default)]
+#[derive(Debug, Clone)]
+pub struct ProtectedEnumFieldModel {
+    #[field(protected(sensitivity = "none"))]
+    pub status: CacheableEmitStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SameSqlCustomStatus(CacheableEmitStatus);
+
+impl djogi::descriptor::DjogiSqlType for SameSqlCustomStatus {
+    const SQL_TYPE: &'static str = "phase8_t7_cacheable_emit_status";
+}
+
+impl djogi::query::DjogiPortableEq for SameSqlCustomStatus {}
+
+impl djogi::__private::postgres_types::ToSql for SameSqlCustomStatus {
+    fn to_sql(
+        &self,
+        ty: &djogi::__private::postgres_types::Type,
+        out: &mut djogi::__private::bytes::BytesMut,
+    ) -> Result<djogi::__private::postgres_types::IsNull, Box<dyn std::error::Error + Sync + Send>>
+    {
+        <CacheableEmitStatus as djogi::__private::postgres_types::ToSql>::to_sql(&self.0, ty, out)
+    }
+
+    fn accepts(ty: &djogi::__private::postgres_types::Type) -> bool {
+        <CacheableEmitStatus as djogi::__private::postgres_types::ToSql>::accepts(ty)
+    }
+
+    djogi::__private::postgres_types::to_sql_checked!();
+}
+
+impl<'a> djogi::__private::postgres_types::FromSql<'a> for SameSqlCustomStatus {
+    fn from_sql(
+        ty: &djogi::__private::postgres_types::Type,
+        raw: &'a [u8],
+    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        <CacheableEmitStatus as djogi::__private::postgres_types::FromSql>::from_sql(ty, raw)
+            .map(Self)
+    }
+
+    fn accepts(ty: &djogi::__private::postgres_types::Type) -> bool {
+        <CacheableEmitStatus as djogi::__private::postgres_types::FromSql>::accepts(ty)
+    }
+}
+
+#[model(table = "phase8_t7_cacheable_emit_same_sql_custom", no_default)]
+#[derive(Debug, Clone)]
+pub struct SameSqlCustomFieldModel {
+    pub status: SameSqlCustomStatus,
+}
+
 /// Watermark-override fixture — `expires_at` (a user field) replaces
 /// the default `updated_at`. `time::OffsetDateTime` does not implement
 /// `Default`, so the model carries `no_default` to skip the
@@ -136,6 +226,30 @@ fn assert_id_type<T: Cacheable<Id = ExpectedId>, ExpectedId>()
 where
     ExpectedId: ::std::hash::Hash + Eq + Clone + Ord + Send + Sync + 'static,
 {
+}
+
+fn assert_portable_eq<T: ::djogi::DjogiPortableEq>() {}
+
+fn emit_predicate_sql<M, P>(portable: P) -> Result<(String, u32), PortablePredicateError>
+where
+    M: Model,
+    P: IntoBasicPredicate<M>,
+{
+    let BasicPredicate::Field(fp) = portable.into_basic_predicate() else {
+        panic!("predicate should lower to a field predicate");
+    };
+
+    let mut acc = SqlAccumulator::new("");
+    <M as Model>::__djogi_emit_field_predicate(&mut acc, &fp, SqlEmitContext::root())?;
+    Ok((acc.sql().to_owned(), acc.bind_count()))
+}
+
+#[test]
+fn relation_and_array_wrappers_are_portable_eq() {
+    assert_portable_eq::<::djogi::ForeignKey<DefaultModel>>();
+    assert_portable_eq::<::djogi::OneToOneField<DefaultModel>>();
+    assert_portable_eq::<Vec<i32>>();
+    assert_portable_eq::<Option<Vec<i32>>>();
 }
 
 #[test]
@@ -177,6 +291,186 @@ fn cacheable_emitted_for_custom_pk() {
     // this test fails at the `assert_id_type` call site with a clean
     // bound error, not at a downstream Cacheable use site.
     assert_id_type::<CustomPkModel, MyAppId>();
+    assert_portable_eq::<MyAppId>();
+}
+
+#[test]
+fn custom_pk_id_field_preserves_portable_membership_surface() {
+    let _filtered = CustomPkModel::objects().filter(|f| f.id().in_(vec![MyAppId(0)]));
+}
+
+#[test]
+fn custom_pk_id_field_emits_portable_membership_sql() {
+    let portable = <CustomPkModel as Cacheable>::fields()
+        .id()
+        .in_(vec![MyAppId(0)]);
+    let basic = portable.into_basic_predicate();
+    let BasicPredicate::Field(fp) = basic else {
+        panic!("custom PK membership should lower to a field predicate");
+    };
+
+    let mut acc = SqlAccumulator::new("");
+    let result = <CustomPkModel as Model>::__djogi_emit_field_predicate(
+        &mut acc,
+        &fp,
+        SqlEmitContext::root(),
+    );
+    assert!(
+        result.is_ok(),
+        "custom PK membership SQL emission should be supported: {result:?}"
+    );
+}
+
+#[test]
+fn djogi_enum_field_is_portable_eq() {
+    assert_portable_eq::<CacheableEmitStatus>();
+    let _filtered = EnumFieldModel::objects().filter(|f| {
+        f.status().eq(CacheableEmitStatus::Active)
+            & f.status().in_(vec![
+                CacheableEmitStatus::Active,
+                CacheableEmitStatus::Retired,
+            ])
+    });
+}
+
+#[test]
+fn djogi_enum_field_emits_portable_sql() {
+    let (sql, bind_count) = emit_predicate_sql::<EnumFieldModel, _>(
+        <EnumFieldModel as Cacheable>::fields()
+            .status()
+            .eq(CacheableEmitStatus::Active),
+    )
+    .expect("DjogiEnum equality SQL emission should be supported");
+    assert_eq!(sql, "status = $1");
+    assert_eq!(bind_count, 1);
+
+    let (sql, bind_count) = emit_predicate_sql::<EnumFieldModel, _>(
+        <EnumFieldModel as Cacheable>::fields().status().in_(vec![
+            CacheableEmitStatus::Active,
+            CacheableEmitStatus::Retired,
+        ]),
+    )
+    .expect("DjogiEnum membership SQL emission should be supported");
+    assert_eq!(sql, "status IN ($1, $2)");
+    assert_eq!(bind_count, 2);
+}
+
+#[test]
+fn optional_djogi_enum_field_emits_portable_sql() {
+    let (sql, bind_count) = emit_predicate_sql::<OptionalEnumFieldModel, _>(
+        <OptionalEnumFieldModel as Cacheable>::fields()
+            .status()
+            .eq(Some(CacheableEmitStatus::Active)),
+    )
+    .expect("Option<DjogiEnum> equality SQL emission should be supported");
+    assert_eq!(sql, "status = $1");
+    assert_eq!(bind_count, 1);
+
+    let (sql, bind_count) = emit_predicate_sql::<OptionalEnumFieldModel, _>(
+        <OptionalEnumFieldModel as Cacheable>::fields()
+            .status()
+            .in_(vec![Some(CacheableEmitStatus::Active), None]),
+    )
+    .expect("Option<DjogiEnum> membership SQL emission should be supported");
+    assert_eq!(sql, "(status IS NULL OR status IN ($1))");
+    assert_eq!(bind_count, 1);
+
+    let (sql, bind_count) = emit_predicate_sql::<OptionalEnumFieldModel, _>(
+        <OptionalEnumFieldModel as Cacheable>::fields()
+            .status()
+            .is_null(),
+    )
+    .expect("Option<DjogiEnum> null test SQL emission should be supported");
+    assert_eq!(sql, "status IS NULL");
+    assert_eq!(bind_count, 0);
+
+    let (sql, bind_count) = emit_predicate_sql::<OptionalEnumFieldModel, _>(
+        <OptionalEnumFieldModel as Cacheable>::fields()
+            .status()
+            .is_not_null(),
+    )
+    .expect("Option<DjogiEnum> non-null test SQL emission should be supported");
+    assert_eq!(sql, "status IS NOT NULL");
+    assert_eq!(bind_count, 0);
+
+    let (sql, bind_count) = emit_predicate_sql::<OptionalEnumFieldModel, _>(
+        <OptionalEnumFieldModel as Cacheable>::fields()
+            .status()
+            .some()
+            .not_in(vec![CacheableEmitStatus::Retired]),
+    )
+    .expect("PresentField<DjogiEnum> membership SQL emission should be supported");
+    assert_eq!(sql, "(status IS NOT NULL AND status NOT IN ($1))");
+    assert_eq!(bind_count, 1);
+}
+
+#[test]
+fn tracked_djogi_enum_field_emits_portable_sql() {
+    let (sql, bind_count) = emit_predicate_sql::<TrackedEnumFieldModel, _>(
+        <TrackedEnumFieldModel as Cacheable>::fields()
+            .status()
+            .eq(CacheableEmitStatus::Active),
+    )
+    .expect("Tracked<DjogiEnum> equality SQL emission should be supported");
+    assert_eq!(sql, "status = $1");
+    assert_eq!(bind_count, 1);
+
+    let (sql, bind_count) = emit_predicate_sql::<TrackedEnumFieldModel, _>(
+        <TrackedEnumFieldModel as Cacheable>::fields()
+            .status()
+            .in_(vec![
+                CacheableEmitStatus::Active,
+                CacheableEmitStatus::Retired,
+            ]),
+    )
+    .expect("Tracked<DjogiEnum> membership SQL emission should be supported");
+    assert_eq!(sql, "status IN ($1, $2)");
+    assert_eq!(bind_count, 2);
+
+    let (sql, bind_count) = emit_predicate_sql::<TrackedEnumFieldModel, _>(
+        <TrackedEnumFieldModel as Cacheable>::fields()
+            .optional_status()
+            .eq(Some(CacheableEmitStatus::Retired)),
+    )
+    .expect("Tracked<Option<DjogiEnum>> equality SQL emission should be supported");
+    assert_eq!(sql, "optional_status = $1");
+    assert_eq!(bind_count, 1);
+
+    let (sql, bind_count) = emit_predicate_sql::<TrackedEnumFieldModel, _>(
+        <TrackedEnumFieldModel as Cacheable>::fields()
+            .optional_status()
+            .in_(vec![Some(CacheableEmitStatus::Active), None]),
+    )
+    .expect("Tracked<Option<DjogiEnum>> membership SQL emission should be supported");
+    assert_eq!(sql, "(optional_status IS NULL OR optional_status IN ($1))");
+    assert_eq!(bind_count, 1);
+}
+
+#[test]
+fn djogi_enum_field_fallback_rejects_protected_and_same_sql_non_enum_fields() {
+    let protected = emit_predicate_sql::<ProtectedEnumFieldModel, _>(
+        <ProtectedEnumFieldModel as Cacheable>::fields()
+            .status()
+            .eq(CacheableEmitStatus::Active),
+    );
+    match protected {
+        Err(PortablePredicateError::UnsupportedFieldType { field }) => {
+            assert_eq!(field, "status");
+        }
+        other => panic!("protected DjogiEnum field should stay unsupported, got {other:?}"),
+    }
+
+    let same_sql_custom = emit_predicate_sql::<SameSqlCustomFieldModel, _>(
+        <SameSqlCustomFieldModel as Cacheable>::fields()
+            .status()
+            .eq(SameSqlCustomStatus(CacheableEmitStatus::Active)),
+    );
+    match same_sql_custom {
+        Err(PortablePredicateError::UnsupportedFieldType { field }) => {
+            assert_eq!(field, "status");
+        }
+        other => panic!("same-SQL non-DjogiEnum field should stay unsupported, got {other:?}"),
+    }
 }
 
 /// `pk = None` skips Cacheable emission entirely. Asserting absence
