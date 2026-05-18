@@ -1451,7 +1451,7 @@ RETURNS pg_catalog.boolean
 LANGUAGE sql
 IMMUTABLE STRICT PARALLEL SAFE
 AS $$
-    SELECT pg_catalog.coalesce(
+    SELECT COALESCE(
         pg_catalog.bool_and(
             value IS NULL
             OR (
@@ -3556,5 +3556,91 @@ mod tests {
             !down_sql.contains("CREATE SCHEMA IF NOT EXISTS djogi;"),
             "Down migration without helper references must not include prelude: {down_sql}"
         );
+    }
+
+    #[test]
+    fn compose_numeric_array_helper_prelude_uses_only_valid_schema_qualified_identifiers() {
+        let expected_identifiers = [
+            "numeric", "boolean", "bool_and", "scale", "abs", "power", "numeric", "unnest",
+        ];
+
+        let found_identifiers = pg_catalog_identifiers(NUMERIC_ARRAY_HELPER_PRELUDE);
+        for id in &found_identifiers {
+            assert!(
+                expected_identifiers.contains(&id.as_str()),
+                "Unexpected schema qualification in helper prelude: pg_catalog.{id}"
+            );
+        }
+        assert!(
+            !found_identifiers.iter().any(|id| *id == "coalesce"),
+            "COALESCE is conditional-expression syntax and must not be schema-qualified: {NUMERIC_ARRAY_HELPER_PRELUDE}"
+        );
+        assert!(
+            NUMERIC_ARRAY_HELPER_PRELUDE.contains("SELECT COALESCE("),
+            "Helper body should use PostgreSQL conditional-expression syntax: COALESCE"
+        );
+    }
+
+    #[tokio::test]
+    async fn compose_numeric_array_helper_prelude_applies_in_postgres_when_database_url_present() {
+        use std::env;
+        let database_url = match env::var("DATABASE_URL") {
+            Ok(database_url) if !database_url.is_empty() => database_url,
+            _ => return,
+        };
+
+        let (mut client, connection) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls)
+                .await
+                .unwrap();
+        let connection = tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                panic!("Postgres connection task failed: {e}");
+            }
+        });
+
+        let tx = client.transaction().await.unwrap();
+        tx.batch_execute(NUMERIC_ARRAY_HELPER_PRELUDE)
+            .await
+            .unwrap();
+        let row = tx
+            .query_one(
+                "SELECT djogi.__djogi_numeric_array_is_rust_decimal_v1(ARRAY[1::numeric, 2::numeric]::numeric[])",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, bool>(0), true);
+        tx.rollback().await.unwrap();
+
+        connection.await.unwrap();
+    }
+
+    fn pg_catalog_identifiers(sql: &str) -> Vec<String> {
+        const PREFIX: &str = "pg_catalog.";
+        let mut ids = Vec::new();
+        let mut cursor = 0usize;
+
+        while let Some(offset) = sql[cursor..].find(PREFIX) {
+            let ident_start = cursor + offset + PREFIX.len();
+            let rest = &sql[ident_start..];
+            let mut len = 0usize;
+            for b in rest.bytes() {
+                if len == 0 {
+                    if !(b.is_ascii_alphabetic() || b == b'_') {
+                        break;
+                    }
+                } else if !(b.is_ascii_alphanumeric() || b == b'_') {
+                    break;
+                }
+                len += 1;
+            }
+            if len > 0 {
+                ids.push(rest[..len].to_string());
+            }
+            cursor = ident_start + len.max(1);
+        }
+
+        ids
     }
 }
