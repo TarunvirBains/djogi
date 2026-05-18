@@ -1132,7 +1132,7 @@ fn field_type_check(
     rust_source_type: Option<RustSourceType>,
     column_name: &str,
 ) -> Option<String> {
-    use crate::descriptor::FieldSqlType;
+    use crate::descriptor::{FieldSqlType, RangeSubtypeKind};
 
     let qcol = quote_ident_for_check(column_name);
     match sql_type {
@@ -1161,7 +1161,7 @@ fn field_type_check(
         // The upper-bound `TIMESTAMP` literal includes microsecond
         // resolution so `OffsetDateTime::new(..., 23, 59, 59, 999_999)`
         // round-trips identically and CHECK-equals against the literal.
-        FieldSqlType::Date => Some(format!("{qcol} <= DATE '9999-12-31'")),
+        FieldSqlType::Date => Some(date_range_expr(&qcol)),
         FieldSqlType::Timestamptz => {
             // Emit an explicit UTC timestamptz literal so the CHECK is
             // timezone-invariant. Using `TIMESTAMP '...'` (without TZ) against
@@ -1170,9 +1170,7 @@ fn field_type_check(
             // session UTC offset. `TIMESTAMPTZ '...+00'` is always interpreted
             // as UTC regardless of session timezone, matching the
             // `time::OffsetDateTime` MAX of `9999-12-31 23:59:59.999999 UTC`.
-            Some(format!(
-                "{qcol} <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
-            ))
+            Some(timestamptz_range_expr(&qcol))
         }
         // ── djogi#190 — integer widening (live, gated on rust_source_type) ──
         //
@@ -1301,11 +1299,23 @@ fn field_type_check(
             Some(RustSourceType::U64) => Some(format!(
                 "{qcol} >= 0 AND {qcol} <= 18446744073709551615 AND {qcol} = trunc({qcol})"
             )),
-            Some(RustSourceType::Decimal) => Some(format!(
-                "scale({qcol}) <= 28 AND \
-                 abs({qcol}) * power(10::numeric, scale({qcol})) <= 79228162514264337593543950335"
-            )),
+            Some(RustSourceType::Decimal) => Some(decimal_repr_expr(&qcol)),
             _ => None,
+        },
+        FieldSqlType::TimestamptzArray => Some(array_element_checks(&qcol, timestamptz_range_expr)),
+        FieldSqlType::DateArray => Some(array_element_checks(&qcol, date_range_expr)),
+        FieldSqlType::NumericArray => Some(array_element_checks(&qcol, decimal_repr_expr)),
+        FieldSqlType::Range { subtype } => match subtype {
+            // Int4RANGE / INT4RANGE and INT8RANGE / INT8RANGE are
+            // identity-mapped by their Postgres column types in Rust
+            // (`i32` / `i64`) so they intentionally return None.
+            RangeSubtypeKind::Int4 | RangeSubtypeKind::Int8 => None,
+            // Apply the scalar bound logic to both finite bounds; unbounded,
+            // empty, and NULL ranges remain exempted by the endpoint
+            // `IS NULL` guard.
+            RangeSubtypeKind::Num => Some(range_endpoint_checks(&qcol, decimal_repr_expr)),
+            RangeSubtypeKind::Tstz => Some(range_endpoint_checks(&qcol, timestamptz_range_expr)),
+            RangeSubtypeKind::Date => Some(range_endpoint_checks(&qcol, date_range_expr)),
         },
         // All other `FieldSqlType` variants (`Text`, `Real`,
         // `DoublePrecision`, `Boolean`, `Uuid`, `Jsonb`,
@@ -1318,6 +1328,47 @@ fn field_type_check(
         // helper signature.
         _ => None,
     }
+}
+
+fn date_range_expr(column_expr: &str) -> String {
+    format!("{column_expr} <= DATE '9999-12-31'")
+}
+
+fn timestamptz_range_expr(column_expr: &str) -> String {
+    format!("{column_expr} <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'")
+}
+
+fn decimal_repr_expr(column_expr: &str) -> String {
+    format!(
+        "scale({column_expr}) <= 28 AND \
+                 abs({column_expr}) * power(10::numeric, scale({column_expr})) <= 79228162514264337593543950335"
+    )
+}
+
+fn range_endpoint_checks(range_column: &str, bound_check: fn(&str) -> String) -> String {
+    let lower = format!(
+        "({})",
+        format!(
+            "lower({range_column}) IS NULL OR ({})",
+            bound_check(&format!("lower({range_column})"))
+        )
+    );
+    let upper = format!(
+        "({})",
+        format!(
+            "upper({range_column}) IS NULL OR ({})",
+            bound_check(&format!("upper({range_column})"))
+        )
+    );
+    format!("{lower} AND {upper}")
+}
+
+fn array_element_checks(array_column: &str, bound_check: fn(&str) -> String) -> String {
+    let element = "element";
+    format!(
+        "({array_column} IS NULL OR NOT EXISTS (SELECT 1 FROM unnest({array_column}) AS checked({element}) WHERE {element} IS NOT NULL AND NOT ({})))",
+        bound_check(element)
+    )
 }
 
 /// Combine a type-derived CHECK with an adopter `#[field(check = "...")]`
@@ -1819,7 +1870,8 @@ mod tests {
     use crate::apps::AppDescriptor;
     use crate::descriptor::{
         EnumDescriptor, FieldDescriptor, FieldSqlType, IndexColumnSpec, IndexKind, IndexSpec,
-        IndexTarget, IndexType, ModelDescriptor, PkType, field_descriptor, model_descriptor,
+        IndexTarget, IndexType, ModelDescriptor, PkType, RangeSubtypeKind, field_descriptor,
+        model_descriptor,
     };
     use crate::relation::registry::{
         RelationKind as RegistryRelationKind, RelationRegistryError, ReverseRelationMarker,
@@ -3391,10 +3443,7 @@ mod tests {
             FieldSqlType::RealArray,
             FieldSqlType::DoublePrecisionArray,
             FieldSqlType::BoolArray,
-            FieldSqlType::TimestamptzArray,
-            FieldSqlType::DateArray,
             FieldSqlType::UuidArray,
-            FieldSqlType::NumericArray,
             FieldSqlType::Citext,
         ] {
             assert!(
@@ -3985,6 +4034,368 @@ mod tests {
         );
     }
 
+    #[test]
+    fn field_type_check_for_range_num_emits_endpoint_decimal_bounds() {
+        let expr = field_type_check(
+            &FieldSqlType::Range {
+                subtype: RangeSubtypeKind::Num,
+            },
+            None,
+            "price_range",
+        )
+        .expect("NUMRANGE must carry Decimal bound checks on finite lower and upper endpoints");
+        assert!(
+            expr.contains("scale(lower(\"price_range\")) <= 28"),
+            "NUMRANGE lower endpoint must get Decimal scale bound: {expr}"
+        );
+        assert!(
+            expr.contains("scale(upper(\"price_range\")) <= 28"),
+            "NUMRANGE upper endpoint must get Decimal scale bound: {expr}"
+        );
+        assert!(
+            expr.contains("scale(lower(\"price_range\")) <= 28 AND abs(lower(\"price_range\")) * power(10::numeric, scale(lower(\"price_range\"))) <= 79228162514264337593543950335"),
+            "NUMRANGE lower endpoint should reuse Decimal element checks: {expr}"
+        );
+        assert!(
+            expr.contains("scale(upper(\"price_range\")) <= 28 AND abs(upper(\"price_range\")) * power(10::numeric, scale(upper(\"price_range\"))) <= 79228162514264337593543950335"),
+            "NUMRANGE upper endpoint should reuse Decimal element checks: {expr}"
+        );
+        assert!(
+            expr.contains("lower(\"price_range\") IS NULL OR"),
+            "NUMRANGE lower endpoint check must keep NULL/unbounded pass-through: {expr}"
+        );
+        assert!(
+            expr.contains("upper(\"price_range\") IS NULL OR"),
+            "NUMRANGE upper endpoint check must keep NULL/unbounded pass-through: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_range_tstz_emits_endpoint_timestamptz_bounds() {
+        let expr = field_type_check(
+            &FieldSqlType::Range {
+                subtype: RangeSubtypeKind::Tstz,
+            },
+            None,
+            "booking_window",
+        )
+        .expect(
+            "TSTZRANGE must carry Timestamptz upper checks on finite lower and upper endpoints",
+        );
+        assert!(
+            expr.contains(
+                "lower(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
+            ),
+            "TSTZRANGE lower endpoint bound must be UTC-explicit TIMESTAMPTZ: {expr}"
+        );
+        assert!(
+            expr.contains(
+                "upper(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
+            ),
+            "TSTZRANGE upper endpoint bound must be UTC-explicit TIMESTAMPTZ: {expr}"
+        );
+        assert!(
+            expr.contains("lower(\"booking_window\") IS NULL OR"),
+            "TSTZRANGE lower endpoint check must keep NULL/unbounded pass-through: {expr}"
+        );
+        assert!(
+            expr.contains("upper(\"booking_window\") IS NULL OR"),
+            "TSTZRANGE upper endpoint check must keep NULL/unbounded pass-through: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_range_date_emits_endpoint_date_bounds() {
+        let expr = field_type_check(
+            &FieldSqlType::Range {
+                subtype: RangeSubtypeKind::Date,
+            },
+            None,
+            "validity",
+        )
+        .expect("DATERANGE must carry Date upper checks on finite lower and upper endpoints");
+        assert!(
+            expr.contains("lower(\"validity\") <= DATE '9999-12-31'"),
+            "DATERANGE lower endpoint bound must be finite upper check: {expr}"
+        );
+        assert!(
+            expr.contains("upper(\"validity\") <= DATE '9999-12-31'"),
+            "DATERANGE upper endpoint bound must be finite upper check: {expr}"
+        );
+        assert!(
+            expr.contains("lower(\"validity\") IS NULL OR"),
+            "DATERANGE lower endpoint check must keep NULL/unbounded pass-through: {expr}"
+        );
+        assert!(
+            expr.contains("upper(\"validity\") IS NULL OR"),
+            "DATERANGE upper endpoint check must keep NULL/unbounded pass-through: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_range_int4_is_noop() {
+        assert!(
+            field_type_check(
+                &FieldSqlType::Range {
+                    subtype: RangeSubtypeKind::Int4,
+                },
+                None,
+                "slot",
+            )
+            .is_none(),
+            "INT4RANGE has no projection CHECK (identity-mapped i32 bounds)"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_range_int8_is_noop() {
+        assert!(
+            field_type_check(
+                &FieldSqlType::Range {
+                    subtype: RangeSubtypeKind::Int8,
+                },
+                None,
+                "slot",
+            )
+            .is_none(),
+            "INT8RANGE has no projection CHECK (identity-mapped i64 bounds)"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_timestamptz_array_elements_enforces_representability() {
+        let expr = field_type_check(&FieldSqlType::TimestamptzArray, None, "slots")
+            .expect("TIMESTAMPTZ[] must carry per-element representability checks");
+        assert!(
+            expr.contains("\"slots\" IS NULL OR"),
+            "TIMESTAMPTZ[] outer NULL should pass through: {expr}"
+        );
+        assert!(
+            expr.contains("NOT EXISTS (SELECT 1 FROM unnest(\"slots\")"),
+            "TIMESTAMPTZ[] check should be element-wise via unnest: {expr}"
+        );
+        assert!(
+            expr.contains("element IS NOT NULL"),
+            "TIMESTAMPTZ[] check should ignore NULL elements by default: {expr}"
+        );
+        assert!(
+            expr.contains("element <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"),
+            "TIMESTAMPTZ[] check should reuse scalar temporal upper-bound policy: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_date_array_elements_enforces_representability() {
+        let expr = field_type_check(&FieldSqlType::DateArray, None, "validity")
+            .expect("DATE[] must carry per-element representability checks");
+        assert!(
+            expr.contains("\"validity\" IS NULL OR"),
+            "DATE[] outer NULL should pass through: {expr}"
+        );
+        assert!(
+            expr.contains("NOT EXISTS (SELECT 1 FROM unnest(\"validity\")"),
+            "DATE[] check should be element-wise via unnest: {expr}"
+        );
+        assert!(
+            expr.contains("element <= DATE '9999-12-31'"),
+            "DATE[] check should reuse scalar temporal upper-bound policy: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_decimal_array_elements_enforces_representability() {
+        let expr = field_type_check(&FieldSqlType::NumericArray, None, "metrics")
+            .expect("NUMERIC[] must carry per-element representability checks");
+        assert!(
+            expr.contains("\"metrics\" IS NULL OR"),
+            "NUMERIC[] outer NULL should pass through: {expr}"
+        );
+        assert!(
+            expr.contains("NOT EXISTS (SELECT 1 FROM unnest(\"metrics\")"),
+            "NUMERIC[] check should be element-wise via unnest: {expr}"
+        );
+        assert!(
+            expr.contains("scale(element) <= 28"),
+            "NUMERIC[] check should reuse scalar decimal representability policy: {expr}"
+        );
+    }
+
+    #[test]
+    fn project_column_emits_range_endpoint_checks_and_noops_for_int_ranged() {
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                ..field_descriptor(
+                    "slots",
+                    FieldSqlType::Range {
+                        subtype: RangeSubtypeKind::Int4,
+                    },
+                    false,
+                )
+            },
+            FieldDescriptor {
+                ..field_descriptor(
+                    "money",
+                    FieldSqlType::Range {
+                        subtype: RangeSubtypeKind::Num,
+                    },
+                    false,
+                )
+            },
+            FieldDescriptor {
+                ..field_descriptor(
+                    "window",
+                    FieldSqlType::Range {
+                        subtype: RangeSubtypeKind::Tstz,
+                    },
+                    false,
+                )
+            },
+            FieldDescriptor {
+                ..field_descriptor(
+                    "validity",
+                    FieldSqlType::Range {
+                        subtype: RangeSubtypeKind::Date,
+                    },
+                    false,
+                )
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("offers", "Offer")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-17T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let rows = &buckets[&empty_global()].models["offers"].columns;
+        let slots = &rows[1];
+        let money = &rows[2];
+        let window = &rows[3];
+        let validity = &rows[4];
+
+        assert!(slots.check.is_none(), "INT4RANGE should stay no-op");
+        assert!(
+            money
+                .check
+                .as_deref()
+                .expect("NUMRANGE must carry endpoint checks")
+                .contains("lower(\"money\") IS NULL OR (scale(lower(\"money\")) <= 28"),
+            "NUMRANGE lower endpoint must use DECIMAL element check"
+        );
+        assert!(
+            money
+                .check
+                .as_deref()
+                .expect("NUMRANGE must carry endpoint checks")
+                .contains("upper(\"money\") IS NULL OR (scale(upper(\"money\")) <= 28"),
+            "NUMRANGE upper endpoint must use DECIMAL element check"
+        );
+        assert!(
+            window.check.as_deref().expect("TSTZRANGE must carry endpoint checks").contains(
+                "lower(\"window\") IS NULL OR (lower(\"window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
+            ),
+            "TSTZRANGE lower endpoint must use TIMESTAMPTZ upper bound"
+        );
+        assert!(
+            window
+                .check
+                .as_deref()
+                .expect("TSTZRANGE must carry endpoint checks")
+                .contains("upper(\"window\") IS NULL OR (upper(\"window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"),
+            "TSTZRANGE upper endpoint must use TIMESTAMPTZ upper bound"
+        );
+        assert!(
+            validity
+                .check
+                .as_deref()
+                .expect("DATERANGE must carry endpoint checks")
+                .contains(
+                    "lower(\"validity\") IS NULL OR (lower(\"validity\") <= DATE '9999-12-31'"
+                ),
+            "DATERANGE lower endpoint must use DATE upper bound"
+        );
+        assert!(
+            validity
+                .check
+                .as_deref()
+                .expect("DATERANGE must carry endpoint checks")
+                .contains(
+                    "upper(\"validity\") IS NULL OR (upper(\"validity\") <= DATE '9999-12-31'"
+                ),
+            "DATERANGE upper endpoint must use DATE upper bound"
+        );
+    }
+
+    #[test]
+    fn project_column_emits_array_element_representability_checks() {
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                ..field_descriptor("slots", FieldSqlType::TimestamptzArray, false)
+            },
+            FieldDescriptor {
+                ..field_descriptor("validity", FieldSqlType::DateArray, false)
+            },
+            FieldDescriptor {
+                ..field_descriptor("metrics", FieldSqlType::NumericArray, false)
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("offers", "Offer")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-17T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let rows = &buckets[&empty_global()].models["offers"].columns;
+        let slots = &rows[1];
+        let validity = &rows[2];
+        let metrics = &rows[3];
+
+        let slot_check = slots
+            .check
+            .as_deref()
+            .expect("TIMESTAMPTZ[] column must carry per-element representability check");
+        let validity_check = validity
+            .check
+            .as_deref()
+            .expect("DATE[] column must carry per-element representability check");
+        let metrics_check = metrics
+            .check
+            .as_deref()
+            .expect("NUMERIC[] column must carry per-element representability check");
+
+        assert!(
+            slot_check.contains("NOT EXISTS (SELECT 1 FROM unnest(\"slots\")"),
+            "TIMESTAMPTZ[] projection should use unnest+NOT EXISTS: {slot_check}"
+        );
+        assert!(
+            validity_check.contains("NOT EXISTS (SELECT 1 FROM unnest(\"validity\")"),
+            "DATE[] projection should use unnest+NOT EXISTS: {validity_check}"
+        );
+        assert!(
+            metrics_check.contains("NOT EXISTS (SELECT 1 FROM unnest(\"metrics\")"),
+            "NUMERIC[] projection should use unnest+NOT EXISTS: {metrics_check}"
+        );
+        assert!(
+            metrics_check.contains("scale(element) <= 28"),
+            "NUMERIC[] projection should carry scalar decimal bound on each element: {metrics_check}"
+        );
+    }
+
     // ── djogi#105 — adopter `#[field(check = "...")]` projection ───────────
     //
     // The macro emits `FieldDescriptor::check_sql` from the parsed
@@ -4113,6 +4524,94 @@ mod tests {
         assert!(
             check.contains(") AND ("),
             "combined CHECK must AND the two clauses: {check}"
+        );
+    }
+
+    #[test]
+    fn project_column_combines_range_type_check_and_adopter_check() {
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                check_sql: Some("window IS NOT NULL"),
+                ..field_descriptor(
+                    "window",
+                    FieldSqlType::Range {
+                        subtype: RangeSubtypeKind::Date,
+                    },
+                    false,
+                )
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("offers", "Offer")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-17T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let col = &buckets[&empty_global()].models["offers"].columns[1];
+        let check = col
+            .check
+            .as_deref()
+            .expect("range column with adopter check must carry the combined constraint");
+        assert!(
+            check.contains("window IS NOT NULL"),
+            "combined CHECK must include adopter predicate verbatim: {check}"
+        );
+        assert!(
+            check.contains("lower(\"window\") <= DATE '9999-12-31'"),
+            "combined CHECK must include DATE endpoint bound predicate: {check}"
+        );
+        assert!(
+            check.contains(") AND (window IS NOT NULL)"),
+            "combined CHECK must merge with logical AND inside one constraint slot: {check}"
+        );
+    }
+
+    #[test]
+    fn project_column_combines_array_type_check_and_adopter_check() {
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                check_sql: Some("CARDINALITY(\"times\") > 0"),
+                ..field_descriptor("times", FieldSqlType::TimestamptzArray, false)
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("offers", "Offer")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-17T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let col = &buckets[&empty_global()].models["offers"].columns[1];
+        let check = col
+            .check
+            .as_deref()
+            .expect("array column with adopter check must carry the combined constraint");
+        assert!(
+            check.contains("CARDINALITY(\"times\") > 0"),
+            "combined CHECK should include adopter predicate verbatim: {check}"
+        );
+        assert!(
+            check.contains("NOT EXISTS (SELECT 1 FROM unnest(\"times\")"),
+            "combined CHECK should include per-element typed check: {check}"
+        );
+        assert!(
+            check.contains(") AND (CARDINALITY(\"times\") > 0)"),
+            "combined CHECK should include logical AND between clauses: {check}"
         );
     }
 
