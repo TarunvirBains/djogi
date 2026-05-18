@@ -1019,108 +1019,108 @@ impl<M: Model, V: crate::expr::arithmetic::Numeric> DjogiField<M, V> {
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn covar_pop<V2: crate::expr::arithmetic::Numeric>(
         self,
-        x: crate::query::FieldRef<M, V2>,
+        x: DjogiField<M, V2>,
     ) -> crate::expr::AggregateExpr<f64> {
-        self.sql.covar_pop(x)
+        self.sql.covar_pop(x.sql)
     }
 
     /// `COVAR_SAMP(y, x)`.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn covar_samp<V2: crate::expr::arithmetic::Numeric>(
         self,
-        x: crate::query::FieldRef<M, V2>,
+        x: DjogiField<M, V2>,
     ) -> crate::expr::AggregateExpr<f64> {
-        self.sql.covar_samp(x)
+        self.sql.covar_samp(x.sql)
     }
 
     /// `CORR(y, x)` — Pearson correlation coefficient.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn corr<V2: crate::expr::arithmetic::Numeric>(
         self,
-        x: crate::query::FieldRef<M, V2>,
+        x: DjogiField<M, V2>,
     ) -> crate::expr::AggregateExpr<f64> {
-        self.sql.corr(x)
+        self.sql.corr(x.sql)
     }
 
     /// `REGR_AVGX(y, x)`.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_avgx<V2: crate::expr::arithmetic::Numeric>(
         self,
-        x: crate::query::FieldRef<M, V2>,
+        x: DjogiField<M, V2>,
     ) -> crate::expr::AggregateExpr<f64> {
-        self.sql.regr_avgx(x)
+        self.sql.regr_avgx(x.sql)
     }
 
     /// `REGR_AVGY(y, x)`.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_avgy<V2: crate::expr::arithmetic::Numeric>(
         self,
-        x: crate::query::FieldRef<M, V2>,
+        x: DjogiField<M, V2>,
     ) -> crate::expr::AggregateExpr<f64> {
-        self.sql.regr_avgy(x)
+        self.sql.regr_avgy(x.sql)
     }
 
     /// `REGR_COUNT(y, x)`.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_count<V2: crate::expr::arithmetic::Numeric>(
         self,
-        x: crate::query::FieldRef<M, V2>,
+        x: DjogiField<M, V2>,
     ) -> crate::expr::AggregateExpr<i64> {
-        self.sql.regr_count(x)
+        self.sql.regr_count(x.sql)
     }
 
     /// `REGR_INTERCEPT(y, x)`.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_intercept<V2: crate::expr::arithmetic::Numeric>(
         self,
-        x: crate::query::FieldRef<M, V2>,
+        x: DjogiField<M, V2>,
     ) -> crate::expr::AggregateExpr<f64> {
-        self.sql.regr_intercept(x)
+        self.sql.regr_intercept(x.sql)
     }
 
     /// `REGR_R2(y, x)`.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_r2<V2: crate::expr::arithmetic::Numeric>(
         self,
-        x: crate::query::FieldRef<M, V2>,
+        x: DjogiField<M, V2>,
     ) -> crate::expr::AggregateExpr<f64> {
-        self.sql.regr_r2(x)
+        self.sql.regr_r2(x.sql)
     }
 
     /// `REGR_SLOPE(y, x)`.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_slope<V2: crate::expr::arithmetic::Numeric>(
         self,
-        x: crate::query::FieldRef<M, V2>,
+        x: DjogiField<M, V2>,
     ) -> crate::expr::AggregateExpr<f64> {
-        self.sql.regr_slope(x)
+        self.sql.regr_slope(x.sql)
     }
 
     /// `REGR_SXX(y, x)`.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_sxx<V2: crate::expr::arithmetic::Numeric>(
         self,
-        x: crate::query::FieldRef<M, V2>,
+        x: DjogiField<M, V2>,
     ) -> crate::expr::AggregateExpr<f64> {
-        self.sql.regr_sxx(x)
+        self.sql.regr_sxx(x.sql)
     }
 
     /// `REGR_SXY(y, x)`.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_sxy<V2: crate::expr::arithmetic::Numeric>(
         self,
-        x: crate::query::FieldRef<M, V2>,
+        x: DjogiField<M, V2>,
     ) -> crate::expr::AggregateExpr<f64> {
-        self.sql.regr_sxy(x)
+        self.sql.regr_sxy(x.sql)
     }
 
     /// `REGR_SYY(y, x)`.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_syy<V2: crate::expr::arithmetic::Numeric>(
         self,
-        x: crate::query::FieldRef<M, V2>,
+        x: DjogiField<M, V2>,
     ) -> crate::expr::AggregateExpr<f64> {
-        self.sql.regr_syy(x)
+        self.sql.regr_syy(x.sql)
     }
 
     /// `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY column)` — continuous
