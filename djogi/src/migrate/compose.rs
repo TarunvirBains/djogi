@@ -68,7 +68,7 @@ use super::ledger::compute_checksum;
 use super::naming::{down_filename, sanitize_slug, up_filename, version_id, version_prefix};
 use super::projection::BucketKey;
 use super::schema::AppliedSchema;
-use super::segment::{MigrationPlan, plan_delta};
+use super::segment::plan_delta;
 use super::snapshot::SnapshotError;
 use super::sql::{OperationSql, lower_delta};
 use super::target::{bucket_dir, pending_database_dir, pending_json_path};
@@ -908,7 +908,12 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
         for delta in &effective {
             // Shouldn't fail — we validated classifications above.
             let mut lowered = lower_delta(delta).map_err(ComposeError::SqlEmit)?;
-            let _plan: MigrationPlan = plan_delta(delta).map_err(ComposeError::SqlEmit)?;
+            let mut executable_ops: Vec<OperationSql> = plan_delta(delta)
+                .map_err(ComposeError::SqlEmit)?
+                .segments
+                .iter()
+                .flat_map(|segment| segment.statements.iter().cloned())
+                .collect();
 
             // Codex B-5: For each RenameApp op, append an OperationSql
             // that updates `djogi_schema_migrations.app_label` so the
@@ -920,11 +925,10 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
             let mut folder_renames_for_delta: Vec<(String, String)> = Vec::new();
             for op in &delta.operations {
                 if let SchemaOperation::RenameApp { from, to } = op {
-                    lowered.push(emit_rename_app_ledger_update(
-                        &delta.bucket.database,
-                        from,
-                        to,
-                    ));
+                    let rename_stmt =
+                        emit_rename_app_ledger_update(&delta.bucket.database, from, to);
+                    lowered.push(rename_stmt.clone());
+                    executable_ops.push(rename_stmt);
                     folder_renames_for_delta.push((from.clone(), to.clone()));
                 }
             }
@@ -935,7 +939,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
                 .cloned()
                 .unwrap_or_else(|| empty_schema_for(&delta.bucket));
 
-            let (checksum_up, checksum_down) = compute_checksums(&lowered);
+            let (checksum_up, checksum_down) = compute_checksums(&executable_ops);
 
             let pending = PendingPlan {
                 format_version: PENDING_FORMAT_VERSION.to_string(),
@@ -1718,11 +1722,134 @@ mod tests {
         s
     }
 
+    fn id_column_heerid_desc() -> ColumnSchema {
+        ColumnSchema {
+            default_sql: Some("heerid_next_desc()".to_string()),
+            ..col("id", "BIGINT", false)
+        }
+    }
+
+    fn col(name: &str, ty: &str, nullable: bool) -> ColumnSchema {
+        ColumnSchema {
+            check: None,
+            comment: None,
+            default_sql: None,
+            foreign_key: None,
+            generated: None,
+            identity: None,
+            index_type: None,
+            indexed: false,
+            max_length: None,
+            name: name.to_string(),
+            nullable,
+            on_delete: None,
+            outbox_exclude: false,
+            rationale: None,
+            relation_kind: None,
+            renamed_from: None,
+            sequence_within: None,
+            sql_type: ty.to_string(),
+            unique: false,
+        }
+    }
+
+    fn col_numeric_array_metric_check() -> ColumnSchema {
+        ColumnSchema {
+            check: Some("djogi.__djogi_numeric_array_is_rust_decimal_v1(\"amounts\")".to_string()),
+            ..col("amounts", "NUMERIC[]", true)
+        }
+    }
+
+    fn table_with_numeric_array_metric_check(bucket: &BucketKey) -> TableSchema {
+        TableSchema {
+            app: if bucket.app.is_empty() {
+                None
+            } else {
+                Some(bucket.app.clone())
+            },
+            columns: vec![id_column_heerid_desc(), col_numeric_array_metric_check()],
+            exclusion_constraints: Vec::new(),
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: PrimaryKeySchema {
+                columns: vec!["id".to_string()],
+                kind: PkKindSchema::HeerIdRecencyBiased,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: "metrics_events".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
+            tenant_key: None,
+        }
+    }
+
     fn global_bucket() -> BucketKey {
         BucketKey {
             database: "main".into(),
             app: "".into(),
         }
+    }
+
+    #[test]
+    fn compose_pending_checksum_matches_runner_plan_checksum_for_numeric_array_helper_migrations() {
+        let work = temp_workspace("numeric-array-helper-checksum");
+        let guard = lock_for(&work);
+        let bucket = global_bucket();
+
+        let mut models = BTreeMap::new();
+        let mut model_snapshot = snapshot_with_widgets(&bucket);
+        model_snapshot.models.insert(
+            "metrics_events".to_string(),
+            table_with_numeric_array_metric_check(&bucket),
+        );
+        models.insert(bucket.clone(), model_snapshot);
+
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(bucket.clone(), empty_snapshot(&bucket));
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &[],
+            name: "numeric-array-checksum-parity",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 4, 25, 1, 2, 3),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        let report = compose(req).expect("compose should succeed");
+        assert_eq!(report.composed_buckets.len(), 1);
+
+        let pending_bytes = fs::read(&report.composed_buckets[0].pending_json_path).unwrap();
+        let pending: PendingPlan = serde_json::from_slice(&pending_bytes).expect("parse pending");
+
+        let deltas = diff_bucket_maps(&snapshots, &models).expect("diff for expected checksum");
+        let delta = deltas
+            .into_iter()
+            .find(|delta| delta.bucket == bucket)
+            .expect("numeric-array bucket delta");
+        let plan = plan_delta(&delta).expect("canonical plan for runner-style checksum");
+        let runner_style_checksum = compute_checksum(
+            plan.segments
+                .iter()
+                .flat_map(|segment| segment.statements.iter())
+                .map(|statement| statement.up.as_str()),
+        );
+
+        assert_eq!(
+            pending.checksum_up, runner_style_checksum,
+            "compose pending checksum must match runner-plan checksum when NumericArray helper is injected"
+        );
+        let _ = fs::remove_dir_all(&work);
     }
 
     #[test]
