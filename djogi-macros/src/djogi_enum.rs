@@ -353,6 +353,8 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
             const SQL_TYPE: &'static str = #postgres_type_str;
         }
 
+        impl ::djogi::query::DjogiPortableEq for #enum_name {}
+
         ::djogi::__private::inventory::submit! {
             ::djogi::descriptor::EnumDescriptor {
                 type_name: #type_name_str,
