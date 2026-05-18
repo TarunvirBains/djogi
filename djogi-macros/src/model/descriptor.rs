@@ -1246,9 +1246,9 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         "INTERVAL" => quote! { ::djogi::FieldSqlType::Interval },
         // Phase 8.5 G0 (djogi#148 + #150 substrate) — range SQL types
         // lower to the typed `FieldSqlType::Range { subtype }` variant.
-        // The mapping tracks `rust_type_to_sql`'s structural `Range<T>`
-        // detection; one arm per Postgres built-in range type the G0
-        // substrate ships.
+        // The mapping tracks `rust_type_to_sql`'s explicit outer-wrapper
+        // namespace policy for runtime-backed `djogi::Range<T>`; one arm
+        // per Postgres built-in range type the G0 substrate ships.
         "INT4RANGE" => quote! {
             ::djogi::FieldSqlType::Range {
                 subtype: ::djogi::descriptor::RangeSubtypeKind::Int4,

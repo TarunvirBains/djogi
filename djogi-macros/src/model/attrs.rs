@@ -2947,12 +2947,20 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         return Some("JSONB");
     }
 
-    // Phase 8.5 G0 (djogi#148 + #150 substrate) — `Range<T>` wrappers
-    // lower to the matching Postgres range type based on the element
-    // type. Mirrors the `Jsonb<T>` matcher shape: last-segment ident
-    // match plus angle-bracket generic arguments. Covers bare `Range<T>`,
-    // `djogi::Range<T>`, `djogi::types::Range<T>`, `crate::Range<T>`,
-    // `super::Range<T>`, and `::djogi::*::Range<T>` path forms uniformly.
+    // Phase 8.5 G0 (djogi#148 + #150 substrate) — runtime-backed
+    // `djogi::Range<T>` wrappers lower to the matching Postgres range
+    // type based on the element type. The outer wrapper intentionally
+    // uses an explicit namespace policy instead of last-segment matching:
+    // accept only bare `Range<T>` (for `djogi::prelude::*` / direct
+    // `djogi::Range` imports), `djogi::Range<T>`,
+    // `djogi::types::Range<T>`, `::djogi::Range<T>`, and
+    // `::djogi::types::Range<T>`.
+    //
+    // Do not accept `std::ops::Range<T>`, `core::ops::Range<T>`,
+    // `crate::Range<T>`, `self::Range<T>`, `super::Range<T>`, or
+    // adopter-module `foo::Range<T>` lookalikes: those are not the
+    // runtime codec type and must fall through to the caller's
+    // `DjogiSqlType` field-site check.
     //
     // Element-type mapping is deliberately narrower than
     // `rust_type_to_sql(inner)`: only the five element Rust types with a
@@ -2968,8 +2976,8 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
     // djogi#150 (PG18 temporal DDL) build on top of this lowering. G0
     // ships only the substrate.
     if let syn::Type::Path(syn::TypePath { qself: None, path }) = ty
+        && is_djogi_range_outer_path(path)
         && let Some(last) = path.segments.last()
-        && last.ident == "Range"
         && let syn::PathArguments::AngleBracketed(args) = &last.arguments
         && args.args.len() == 1
         && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
@@ -3151,6 +3159,26 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         // crate:: / super:: / ::djogi:: forms uniformly.)
         _ => None,
     }
+}
+
+fn is_djogi_range_outer_path(path: &syn::Path) -> bool {
+    if path.leading_colon.is_some() {
+        return path_segments_eq(path, &["djogi", "Range"])
+            || path_segments_eq(path, &["djogi", "types", "Range"]);
+    }
+
+    path_segments_eq(path, &["Range"])
+        || path_segments_eq(path, &["djogi", "Range"])
+        || path_segments_eq(path, &["djogi", "types", "Range"])
+}
+
+fn path_segments_eq(path: &syn::Path, expected: &[&str]) -> bool {
+    path.segments.len() == expected.len()
+        && path
+            .segments
+            .iter()
+            .zip(expected)
+            .all(|(segment, expected)| segment.ident == *expected)
 }
 
 /// Convert a pre-validated `on_delete` string into the matching
@@ -3726,6 +3754,38 @@ mod tests {
         assert_eq!(rust_type_to_sql(&djogi), Some("INTERVAL"));
         assert_eq!(rust_type_to_sql(&djogi_types), Some("INTERVAL"));
         assert_eq!(rust_type_to_sql(&absolute), Some("INTERVAL"));
+    }
+
+    #[test]
+    fn djogi_range_outer_namespace_policy_accepts_runtime_surface() {
+        let bare: syn::Type = parse_quote!(Range<i32>);
+        let djogi: syn::Type = parse_quote!(djogi::Range<i32>);
+        let djogi_types: syn::Type = parse_quote!(djogi::types::Range<i32>);
+        let absolute_djogi: syn::Type = parse_quote!(::djogi::Range<i32>);
+        let absolute_types: syn::Type = parse_quote!(::djogi::types::Range<i32>);
+        assert_eq!(rust_type_to_sql(&bare), Some("INT4RANGE"));
+        assert_eq!(rust_type_to_sql(&djogi), Some("INT4RANGE"));
+        assert_eq!(rust_type_to_sql(&djogi_types), Some("INT4RANGE"));
+        assert_eq!(rust_type_to_sql(&absolute_djogi), Some("INT4RANGE"));
+        assert_eq!(rust_type_to_sql(&absolute_types), Some("INT4RANGE"));
+    }
+
+    #[test]
+    fn djogi_range_outer_namespace_policy_rejects_lookalikes() {
+        let std_ops: syn::Type = parse_quote!(std::ops::Range<i32>);
+        let core_ops: syn::Type = parse_quote!(core::ops::Range<i32>);
+        let crate_relative: syn::Type = parse_quote!(crate::Range<i32>);
+        let self_relative: syn::Type = parse_quote!(self::Range<i32>);
+        let super_relative: syn::Type = parse_quote!(super::Range<i32>);
+        let adopter_module: syn::Type = parse_quote!(adopter::Range<i32>);
+        let nested_adopter_module: syn::Type = parse_quote!(adopter::types::Range<i32>);
+        assert_eq!(rust_type_to_sql(&std_ops), None);
+        assert_eq!(rust_type_to_sql(&core_ops), None);
+        assert_eq!(rust_type_to_sql(&crate_relative), None);
+        assert_eq!(rust_type_to_sql(&self_relative), None);
+        assert_eq!(rust_type_to_sql(&super_relative), None);
+        assert_eq!(rust_type_to_sql(&adopter_module), None);
+        assert_eq!(rust_type_to_sql(&nested_adopter_module), None);
     }
 
     // ── Phase 8-Zero Cluster B1 (T12) — `#[model(tree_edge = "...")]` ──

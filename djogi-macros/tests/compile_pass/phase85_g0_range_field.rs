@@ -10,9 +10,10 @@
 //    / `Range<Date>` from `djogi::prelude::*` lower to
 //    `FieldSqlType::Range { subtype: … }` with the matching
 //    `RangeSubtypeKind` discriminant.
-// 2. Path-form generality: `djogi::Range<…>` and `djogi::types::Range<…>`
-//    forms route through the structural last-segment detection without
-//    string explosion of every element-type spelling.
+// 2. Path-form policy: `djogi::Range<…>`, `djogi::types::Range<…>`,
+//    `::djogi::Range<…>`, and `::djogi::types::Range<…>` route through
+//    the runtime-backed Range lowering. Non-djogi outer wrappers named
+//    `Range` are compile-fail fixtures, not accepted structural matches.
 // 3. Nullable `Option<Range<…>>` composes cleanly with the standard
 //    `Option<T>` wrapper.
 // 4. The `{Model}Fields` accessor compiles for `Range<T>` columns and
@@ -59,22 +60,20 @@ pub struct RangeAllSubtypes {
     pub label: String,
 }
 
-// ── (2) Path-form generality through structural last-segment detection ──────
+// ── (2) Runtime-backed Range path policy ────────────────────────────────────
 
 #[model(table = "phase85_g0_range_paths", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct RangePathForms {
-    /// Bare `Range<…>` from the prelude — handled by structural
-    /// last-segment match.
+    /// Bare `Range<…>` from the prelude.
     pub bare: Range<i32>,
-    /// `djogi::Range<…>` form — same structural detection.
+    /// `djogi::Range<…>` form.
     pub via_djogi: djogi::Range<i32>,
-    /// `djogi::types::Range<…>` form — also routed through
-    /// structural detection. Mirrors the path-form generality already
-    /// established for `Jsonb<T>`.
+    /// `djogi::types::Range<…>` form.
     pub via_types: djogi::types::Range<i32>,
-    /// Leading-`::` absolute path form — normalized to the same
-    /// structural last-segment match.
+    /// Leading-`::` absolute crate-root form.
+    pub via_absolute_djogi: ::djogi::Range<i32>,
+    /// Leading-`::` absolute `types` form.
     pub via_absolute_types: ::djogi::types::Range<i32>,
 }
 
@@ -99,6 +98,7 @@ fn _check_field_types(all: &RangeAllSubtypes, paths: &RangePathForms, nullable: 
     let _: &Range<Date> = &all.d;
     let _: &djogi::Range<i32> = &paths.via_djogi;
     let _: &djogi::types::Range<i32> = &paths.via_types;
+    let _: &::djogi::Range<i32> = &paths.via_absolute_djogi;
     let _: &::djogi::types::Range<i32> = &paths.via_absolute_types;
     let _: &Range<i32> = &nullable.required;
     let _: &Option<Range<DateTime>> = &nullable.maybe;
