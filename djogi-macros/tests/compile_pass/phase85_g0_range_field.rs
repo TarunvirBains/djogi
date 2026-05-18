@@ -73,6 +73,9 @@ pub struct RangePathForms {
     /// structural detection. Mirrors the path-form generality already
     /// established for `Jsonb<T>`.
     pub via_types: djogi::types::Range<i32>,
+    /// Leading-`::` absolute path form — normalized to the same
+    /// structural last-segment match.
+    pub via_absolute_types: ::djogi::types::Range<i32>,
 }
 
 // ── (3) Nullable Range columns ──────────────────────────────────────────────
@@ -96,6 +99,7 @@ fn _check_field_types(all: &RangeAllSubtypes, paths: &RangePathForms, nullable: 
     let _: &Range<Date> = &all.d;
     let _: &djogi::Range<i32> = &paths.via_djogi;
     let _: &djogi::types::Range<i32> = &paths.via_types;
+    let _: &::djogi::types::Range<i32> = &paths.via_absolute_types;
     let _: &Range<i32> = &nullable.required;
     let _: &Option<Range<DateTime>> = &nullable.maybe;
 }

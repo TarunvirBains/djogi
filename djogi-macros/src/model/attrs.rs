@@ -2954,21 +2954,15 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
     // `djogi::Range<T>`, `djogi::types::Range<T>`, `crate::Range<T>`,
     // `super::Range<T>`, and `::djogi::*::Range<T>` path forms uniformly.
     //
-    // Element-type mapping recurses through `rust_type_to_sql` on the
-    // angle-bracketed argument, so each path form of the element
-    // (`DateTime` / `time::OffsetDateTime` / `djogi::DateTime` / …)
-    // resolves to the same range subtype regardless of spelling. The
-    // five subtypes G0 ships are the Postgres built-ins; `tsrange`
-    // (timestamp-without-timezone) is intentionally absent because
-    // Djogi pins to `TIMESTAMPTZ` exclusively.
-    //
-    // Element types outside the supported set (e.g. `Range<String>`,
-    // `Range<bool>`) fall through to the `None` return below, where the
-    // caller's `field_sql_type_tokens` fallback then attempts
-    // `<#ty as ::djogi::descriptor::DjogiSqlType>::SQL_TYPE`. There is
-    // no `DjogiSqlType` impl for `Range<String>` etc., so adopters who
-    // write an unsupported range type get a compile-time "trait bound
-    // not satisfied" error pointing at the descriptor emission site.
+    // Element-type mapping is deliberately narrower than
+    // `rust_type_to_sql(inner)`: only the five element Rust types with a
+    // matching `RangeSubtype` impl are accepted here. This avoids
+    // silently widening `Range<u32>` to `int8range` or `Range<HeerId>`
+    // to `int8range` when no runtime range codec exists for those
+    // element types. Unsupported elements fall through to `None`, where
+    // the caller's `field_sql_type_tokens` fallback attempts
+    // `<#ty as ::djogi::descriptor::DjogiSqlType>::SQL_TYPE` and rustc
+    // reports the missing `DjogiSqlType` bound at the field site.
     //
     // Future siblings: djogi#148 (`btree_gist` EXCLUDE grammar) and
     // djogi#150 (PG18 temporal DDL) build on top of this lowering. G0
@@ -2980,17 +2974,18 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         && args.args.len() == 1
         && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
     {
-        let element_sql = rust_type_to_sql(inner)?;
-        return match element_sql {
-            "INTEGER" => Some("INT4RANGE"),
-            "BIGINT" => Some("INT8RANGE"),
-            "NUMERIC" => Some("NUMRANGE"),
-            "TIMESTAMPTZ" => Some("TSTZRANGE"),
-            "DATE" => Some("DATERANGE"),
-            // Other element types (TEXT, BOOLEAN, UUID, JSONB, arrays,
-            // geography, …) are not Postgres range-supported subtypes.
-            // Fall through to `None` so the caller emits a compile
-            // error rather than fabricating a bogus range type.
+        let inner_path = quote::quote!(#inner).to_string().replace(' ', "");
+        let inner_path = inner_path.strip_prefix("::").unwrap_or(&inner_path);
+        return match inner_path {
+            "i32" => Some("INT4RANGE"),
+            "i64" => Some("INT8RANGE"),
+            "Decimal" | "rust_decimal::Decimal" => Some("NUMRANGE"),
+            "DateTime"
+            | "OffsetDateTime"
+            | "time::OffsetDateTime"
+            | "djogi::DateTime"
+            | "djogi::types::DateTime" => Some("TSTZRANGE"),
+            "Date" | "time::Date" | "djogi::Date" | "djogi::types::Date" => Some("DATERANGE"),
             _ => None,
         };
     }

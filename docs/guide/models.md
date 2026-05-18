@@ -261,6 +261,7 @@ for any of them.
 | Postgres type | Rust shape | Feature flag | Tracking |
 |---|---|---|---|
 | `INTERVAL` | `djogi::Interval { months, days, microseconds }` | — (always on) | [#212](https://github.com/TarunvirBains/djogi/issues/212) |
+| `int4range` / `int8range` / `numrange` / `tstzrange` / `daterange` | `djogi::Range<i32>` / `djogi::Range<i64>` / `djogi::Range<rust_decimal::Decimal>` / `djogi::Range<djogi::DateTime>` / `djogi::Range<djogi::Date>` | — (always on) | [#215](https://github.com/TarunvirBains/djogi/issues/215) |
 
 #### `djogi::Interval` — `INTERVAL`
 
@@ -283,6 +284,20 @@ Postgres binary wire format is `(microseconds, days, months)` (16
 bytes, big-endian). The wire codec lives at `djogi::pg_types::Interval`
 and pulls in no third-party crate.
 
+#### `djogi::Range<T>` — Postgres typed range columns
+
+Djogi ships typed substrate support for five Postgres range columns:
+`Range<i32>` (`int4range`), `Range<i64>` (`int8range`),
+`Range<rust_decimal::Decimal>` (`numrange`), `Range<DateTime>`
+(`tstzrange`), and `Range<Date>` (`daterange`). The Rust range value
+preserves inclusive, exclusive, unbounded, and empty-bound shapes.
+
+`tsrange` remains deliberately deferred. Djogi's temporal model uses
+`TIMESTAMPTZ` for timestamp fields, so the supported timestamp range is
+`Range<DateTime>` / `tstzrange`; adding timestamp-without-timezone range
+semantics needs a separate design decision rather than an accidental
+parallel temporal surface.
+
 ### Postgres type coverage gaps
 
 Some Postgres column types remain unmapped. Adopters can reach them
@@ -293,7 +308,7 @@ paired with a manual `postgres_types::ToSql` / `FromSql` implementation.
 |---|---|---|---|
 | `INET` / `CIDR` / `MACADDR` | gap — typed Rust newtypes deferred to a follow-on dispatch in the umbrella | `Custom("INET")` / `Custom("CIDR")` / `Custom("MACADDR")` + adopter newtype, OR for `INET` columns specifically use `std::net::IpAddr` (the native `postgres-types::IpAddr` ToSql/FromSql impl handles the wire format — declared via `Custom("INET")` today) | [#213](https://github.com/TarunvirBains/djogi/issues/213) |
 | `MONEY` | decision pending — `NUMERIC` recommended for new tables | Use `rust_decimal::Decimal` with a `NUMERIC` column; `Custom("MONEY")` for legacy columns | [#214](https://github.com/TarunvirBains/djogi/issues/214) |
-| `int4range` / `int8range` / `numrange` / `tsrange` / `tstzrange` / `daterange` | gap — requires design spike (largest type-coverage piece); deferred to a follow-on dispatch | `Custom("int4range")` etc. + adopter newtype | [#215](https://github.com/TarunvirBains/djogi/issues/215) |
+| `tsrange` | deferred — timestamp-without-timezone ranges conflict with Djogi's TIMESTAMPTZ-first temporal discipline; `tstzrange` is supported via `Range<DateTime>` | `Custom("tsrange")` + adopter newtype if legacy schemas require it | [#215](https://github.com/TarunvirBains/djogi/issues/215) |
 | `DOMAIN` declarations (`#[field(domain = "<name>")]` Piece A; `CREATE DOMAIN` emission Piece B) | gap — both Piece A and Piece B deferred to a follow-on dispatch | `Custom("<domain_name>")` + adopter newtype matching the base-type encoding; declare the domain in raw SQL outside djogi's migration flow | [#216](https://github.com/TarunvirBains/djogi/issues/216) |
 
 Tracked under the [#170](https://github.com/TarunvirBains/djogi/issues/170) umbrella.

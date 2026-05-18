@@ -516,11 +516,11 @@ impl<T> Default for Range<T> {
 /// rather than juggling the timezone-stripped variant.
 ///
 /// The trait is open for future extensions but the only implementors
-/// shipping in G0 are the five rows above. Adopters who need a custom
-/// range subtype can impl this for their own element type, but they
-/// also need a matching `DjogiSqlType` for the `Range<T>` instantiation
-/// — `Range<T>` only impls `DjogiSqlType` for the canonical subtypes
-/// G0 ships.
+/// shipping in G0 are the five rows above. Because `Range<T>` has a
+/// blanket `DjogiSqlType` impl for every `T: RangeSubtype`, adopters
+/// who add a custom range subtype only need to implement this trait
+/// for the element type; the `Range<T>` descriptor SQL type then
+/// follows from `T::PG_RANGE_NAME`.
 pub trait RangeSubtype: Sized {
     /// The Postgres range type the wire codec accepts via
     /// `ToSql::accepts` / `FromSql::accepts`.
@@ -1083,6 +1083,18 @@ mod tests {
         let mut buf = BytesMut::new();
         original.to_sql(&Type::INT8_RANGE, &mut buf).unwrap();
         let decoded = <Range<i64> as FromSql>::from_sql(&Type::INT8_RANGE, &buf).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn range_round_trip_through_wire_codec_preserves_numrange_bounds() {
+        let lo = rust_decimal::Decimal::new(-99_999_999, 4);
+        let hi = rust_decimal::Decimal::new(12_345, 2);
+        let original: Range<rust_decimal::Decimal> = Range::inclusive_exclusive(lo, hi);
+        let mut buf = BytesMut::new();
+        original.to_sql(&Type::NUM_RANGE, &mut buf).unwrap();
+        let decoded =
+            <Range<rust_decimal::Decimal> as FromSql>::from_sql(&Type::NUM_RANGE, &buf).unwrap();
         assert_eq!(decoded, original);
     }
 
