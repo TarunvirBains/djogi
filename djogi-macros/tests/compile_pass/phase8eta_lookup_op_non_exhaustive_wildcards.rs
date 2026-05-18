@@ -13,12 +13,12 @@
 // adopter-side impl block at fixture compile time citing the
 // non-exhaustive enum. That a wide range of `PortableFieldKind`s —
 // Scalar, String, Bool, OptionScalar, OptionString, OptionBool,
-// Array (Vec) — coexist on one model and the single emitted
+// Array (Vec<i32>) — coexist on one model and the single emitted
 // `impl Model for Widget` block compiles is the lock.
 //
-// Non-portable kinds (`Vec<T>` arrays in this fixture) get a single
-// catch-all `(field, _) => UnsupportedFieldType` arm; the wildcard
-// shape there is also exercised by the compile success.
+// Safe array-equality kinds (`Vec<i32>` in this fixture) get portable
+// equality/list arms plus a catch-all unsupported-lookup wildcard.
+// Non-portable array element types are covered by compile-fail fixtures.
 //
 // Per the lihaaf compile-fixture contract, every lihaaf fixture has
 // `fn main` so the binary still has to link.
@@ -42,8 +42,8 @@ pub struct Widget {
     pub maybe_label: Option<String>,
     // OptionBool — null tests + scalar list/eq arms.
     pub maybe_flag: Option<bool>,
-    // Array — non-portable kind. Catch-all
-    // `(field, _) => UnsupportedFieldType` arm.
+    // Array with safe portable element equality. Emits Eq/Neq/In/NotIn
+    // arms plus a catch-all unsupported-lookup wildcard.
     pub tags: Vec<i32>,
 }
 

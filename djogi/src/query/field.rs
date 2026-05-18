@@ -562,9 +562,35 @@ where
 {
 }
 impl<V> DjogiPortableEq for Tracked<V> where V: DjogiPortableEq {}
+
+/// Marker for array element types whose `Vec<T>` equality has been
+/// parity-checked between Rust/Punnu and PostgreSQL.
+///
+/// `IntoArrayFilterValue` is intentionally wider: it also contains
+/// SQL-bindable array element types whose scalar equality is not portable
+/// enough for Punnu-backed predicates, notably floats. Keep this marker
+/// curated so SQL-only array operators can remain broad while direct
+/// portable equality/membership on `Vec<T>` stays parity-safe.
+#[doc(hidden)]
+pub trait DjogiPortableArrayEqElement: IntoArrayFilterValue + DjogiPortableEq {}
+
+impl DjogiPortableArrayEqElement for String {}
+impl DjogiPortableArrayEqElement for i16 {}
+impl DjogiPortableArrayEqElement for i32 {}
+impl DjogiPortableArrayEqElement for i64 {}
+impl DjogiPortableArrayEqElement for bool {}
+impl DjogiPortableArrayEqElement for time::OffsetDateTime {}
+impl DjogiPortableArrayEqElement for time::Date {}
+impl DjogiPortableArrayEqElement for uuid::Uuid {}
+impl DjogiPortableArrayEqElement for rust_decimal::Decimal {}
+impl DjogiPortableArrayEqElement for crate::types::HeerId {}
+impl DjogiPortableArrayEqElement for crate::types::RanjId {}
+impl DjogiPortableArrayEqElement for crate::types::HeerIdDesc {}
+impl DjogiPortableArrayEqElement for crate::types::RanjIdDesc {}
+
 impl<V> DjogiPortableEq for Vec<V>
 where
-    V: IntoArrayFilterValue + PartialEq + Clone + Send + Sync + 'static,
+    V: DjogiPortableArrayEqElement,
     Vec<V>: postgres_types::ToSql + Clone + Send + Sync + 'static,
 {
 }
