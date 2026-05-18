@@ -53,6 +53,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::compose::{numeric_array_helper_operation, requires_numeric_array_helper};
 use super::diff::{Classification, SchemaDelta, SchemaOperation};
 use super::projection::BucketKey;
 use super::schema::TableSchema;
@@ -207,14 +208,27 @@ pub fn plan_delta(delta: &SchemaDelta) -> Result<MigrationPlan, SqlEmitError> {
     // it into the segment whose kind matches. Adjacent operations
     // of the same kind coalesce into one segment.
     let mut segments: Vec<Segment> = Vec::new();
-    let mut current_kind: Option<SegmentKind> = None;
-    let mut current_stmts: Vec<OperationSql> = Vec::new();
+    let mut lowered_ops: Vec<OperationSql> = Vec::with_capacity(ordered.len());
+    let mut lowered_kinds: Vec<SegmentKind> = Vec::with_capacity(ordered.len());
 
     for op in &ordered {
         let kind = classify_operation(op);
         let lowered = lower_operation(op)?;
+        lowered_ops.push(lowered);
+        lowered_kinds.push(kind);
+    }
+
+    if requires_numeric_array_helper(&lowered_ops) {
+        lowered_ops.insert(0, numeric_array_helper_operation());
+        lowered_kinds.insert(0, SegmentKind::Transactional);
+    }
+
+    let mut current_kind: Option<SegmentKind> = None;
+    let mut current_stmts: Vec<OperationSql> = Vec::new();
+
+    for (kind, op) in lowered_kinds.into_iter().zip(lowered_ops) {
         match current_kind {
-            Some(k) if k == kind => current_stmts.push(lowered),
+            Some(k) if k == kind => current_stmts.push(op),
             _ => {
                 if let Some(seg) = Segment::new_if_non_empty(
                     current_kind.unwrap_or(SegmentKind::Transactional),
@@ -223,7 +237,7 @@ pub fn plan_delta(delta: &SchemaDelta) -> Result<MigrationPlan, SqlEmitError> {
                     segments.push(seg);
                 }
                 current_kind = Some(kind);
-                current_stmts.push(lowered);
+                current_stmts.push(op);
             }
         }
     }
@@ -636,6 +650,13 @@ mod tests {
         }
     }
 
+    fn numeric_array_column(name: &str) -> ColumnSchema {
+        ColumnSchema {
+            check: Some("djogi.__djogi_numeric_array_is_rust_decimal_v1(\"amounts\")".to_string()),
+            ..col(name, "NUMERIC[]", true)
+        }
+    }
+
     fn synth_table(name: &str) -> TableSchema {
         TableSchema {
             app: None,
@@ -712,6 +733,44 @@ mod tests {
         assert_eq!(plan.segments.len(), 1);
         assert_eq!(plan.segments[0].kind, SegmentKind::Transactional);
         assert_eq!(plan.segments[0].statements.len(), 1);
+    }
+
+    #[test]
+    fn numeric_array_check_triggers_helper_preload_in_plan() {
+        let mut table = synth_table("widgets");
+        table.columns.push(numeric_array_column("amounts"));
+        let delta = SchemaDelta {
+            bucket: bucket(),
+            operations: vec![SchemaOperation::AddTable(table)],
+            classification: Classification::Additive,
+        };
+
+        let plan = plan_delta(&delta).expect("ok");
+        assert_eq!(plan.segments.len(), 1);
+        assert_eq!(plan.segments[0].kind, SegmentKind::Transactional);
+        let labels: Vec<&str> = plan
+            .segments
+            .iter()
+            .flat_map(|s| s.statements.iter())
+            .map(|s| s.label.as_str())
+            .collect();
+        assert!(
+            labels.len() >= 2,
+            "expected helper + table statements; labels: {labels:?}"
+        );
+        assert_eq!(labels[0], "Ensure djogi numeric-array helper");
+        assert!(
+            plan.segments[0].statements[0]
+                .up
+                .contains("CREATE SCHEMA IF NOT EXISTS djogi;"),
+            "helper SQL must be prepended so execution creates djogi function",
+        );
+        assert!(
+            plan.segments[0].statements[1]
+                .up
+                .contains("CONSTRAINT \"widgets_amounts_check\""),
+            "table DDL should keep the generated NUMERIC[] constraint"
+        );
     }
 
     // ── Non-transactional segments ───────────────────────────────────

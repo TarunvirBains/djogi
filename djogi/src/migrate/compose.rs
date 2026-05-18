@@ -1444,7 +1444,15 @@ fn compose_down_text(version: &str, delta: &SchemaDelta, lowered: &[OperationSql
     out
 }
 
-const NUMERIC_ARRAY_HELPER_PRELUDE: &str = r#"CREATE SCHEMA IF NOT EXISTS djogi;
+/// Name fragment used by both the numeric-array CHECK projection and the
+/// helper function body.
+const NUMERIC_ARRAY_HELPER_MARKER: &str = "djogi.__djogi_numeric_array_is_rust_decimal_v1(";
+
+/// Canonical helper prelude for `FieldSqlType::NumericArray` checks.
+///
+/// Kept `pub(crate)` so segment planning can reuse the exact same body
+/// when injecting helper DDL into executable plans.
+pub(crate) const NUMERIC_ARRAY_HELPER_PRELUDE: &str = r#"CREATE SCHEMA IF NOT EXISTS djogi;
 
 CREATE OR REPLACE FUNCTION djogi.__djogi_numeric_array_is_rust_decimal_v1(values pg_catalog.numeric[])
 RETURNS pg_catalog.boolean
@@ -1467,14 +1475,20 @@ AS $$
 $$;
 "#;
 
-fn requires_numeric_array_helper(operations: &[OperationSql]) -> bool {
+pub(crate) fn requires_numeric_array_helper(operations: &[OperationSql]) -> bool {
     operations.iter().any(|op| {
-        op.up
-            .contains("djogi.__djogi_numeric_array_is_rust_decimal_v1(")
-            || op
-                .down
-                .contains("djogi.__djogi_numeric_array_is_rust_decimal_v1(")
+        op.up.contains(NUMERIC_ARRAY_HELPER_MARKER) || op.down.contains(NUMERIC_ARRAY_HELPER_MARKER)
     })
+}
+
+pub(crate) fn numeric_array_helper_operation() -> OperationSql {
+    OperationSql {
+        label: "Ensure djogi numeric-array helper".to_string(),
+        up: NUMERIC_ARRAY_HELPER_PRELUDE.to_string(),
+        down: "-- no-op rollback placeholder: helper is shared by framework CHECK constraints"
+            .to_string(),
+        lossy: None,
+    }
 }
 
 // ── Atomic write helpers ───────────────────────────────────────────────────
