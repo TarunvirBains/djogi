@@ -1915,6 +1915,55 @@ mod tests {
         }
     }
 
+    fn col_date_array_with_finite_check() -> ColumnSchema {
+        ColumnSchema {
+            check: Some("djogi.__djogi_date_array_is_finite_v1(\"blackout_dates\")".to_string()),
+            ..col("blackout_dates", "DATE[]", true)
+        }
+    }
+
+    fn col_tstz_array_with_finite_check() -> ColumnSchema {
+        ColumnSchema {
+            check: Some("djogi.__djogi_tstz_array_is_finite_v1(\"scheduled_slots\")".to_string()),
+            ..col("scheduled_slots", "TIMESTAMPTZ[]", true)
+        }
+    }
+
+    /// A table with all three array-helper column types: numeric, date, and
+    /// timestamptz.  Used by the mixed-helper checksum parity test.
+    fn table_with_all_three_array_helpers(bucket: &BucketKey) -> TableSchema {
+        TableSchema {
+            app: if bucket.app.is_empty() {
+                None
+            } else {
+                Some(bucket.app.clone())
+            },
+            columns: vec![
+                id_column_heerid_desc(),
+                col_numeric_array_metric_check(),
+                col_date_array_with_finite_check(),
+                col_tstz_array_with_finite_check(),
+            ],
+            exclusion_constraints: Vec::new(),
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: PrimaryKeySchema {
+                columns: vec!["id".to_string()],
+                kind: PkKindSchema::HeerIdRecencyBiased,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: "mixed_array_events".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
+            tenant_key: None,
+        }
+    }
+
     fn table_with_numeric_array_metric_check(bucket: &BucketKey) -> TableSchema {
         TableSchema {
             app: if bucket.app.is_empty() {
@@ -2004,6 +2053,99 @@ mod tests {
             pending.checksum_up, runner_style_checksum,
             "compose pending checksum must match runner-plan checksum when NumericArray helper is injected"
         );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn compose_pending_checksum_matches_runner_plan_checksum_for_mixed_helper_delta() {
+        // Regression guard: when a delta requires all three array helpers
+        // (numeric, date, tstz), the checksum stored in the pending JSON by
+        // `compose` must equal the checksum the runner derives from
+        // `plan_delta` independently.  Both paths must agree on which ops
+        // are included and in which order — a divergence would cause the
+        // runner to reject the migration with a checksum mismatch.
+        //
+        // Note: both `compose` and `runner` derive their checksum from the
+        // same `plan_delta` output, so this test also guards against a
+        // regression where `compose` accidentally computes the checksum from
+        // the un-augmented `lowered` ops (i.e. without helper preludes).
+        let work = temp_workspace("mixed-array-helper-checksum");
+        let guard = lock_for(&work);
+        let bucket = global_bucket();
+
+        let mut models = BTreeMap::new();
+        let mut model_snapshot = snapshot_with_widgets(&bucket);
+        model_snapshot.models.insert(
+            "mixed_array_events".to_string(),
+            table_with_all_three_array_helpers(&bucket),
+        );
+        models.insert(bucket.clone(), model_snapshot);
+
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(bucket.clone(), empty_snapshot(&bucket));
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &[],
+            name: "mixed-array-checksum-parity",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 4, 25, 1, 2, 3),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        let report = compose(req).expect("compose should succeed");
+        assert_eq!(report.composed_buckets.len(), 1);
+
+        let pending_bytes = fs::read(&report.composed_buckets[0].pending_json_path).unwrap();
+        let pending: PendingPlan = serde_json::from_slice(&pending_bytes).expect("parse pending");
+
+        let deltas = diff_bucket_maps(&snapshots, &models).expect("diff for expected checksum");
+        let delta = deltas
+            .into_iter()
+            .find(|d| d.bucket == bucket)
+            .expect("mixed-array bucket delta");
+        let plan = plan_delta(&delta).expect("canonical plan for runner-style checksum");
+        let runner_style_checksum = compute_checksum(
+            plan.segments
+                .iter()
+                .flat_map(|segment| segment.statements.iter())
+                .map(|statement| statement.up.as_str()),
+        );
+
+        assert_eq!(
+            pending.checksum_up, runner_style_checksum,
+            "compose pending checksum must match runner-plan checksum when all three \
+             array helpers (numeric, date, tstz) are injected"
+        );
+
+        // Additionally verify that the three helpers appear in the on-disk SQL
+        // file in compose order (numeric → date → tstz).  The SQL file is the
+        // operator-visible artifact and must reflect actual execution order.
+        let up_sql =
+            fs::read_to_string(&report.composed_buckets[0].up_sql_path).expect("read up SQL");
+        let numeric_sql_pos = up_sql
+            .find("__djogi_numeric_array_is_rust_decimal_v1")
+            .expect("numeric helper in SQL file");
+        let date_sql_pos = up_sql
+            .find("__djogi_date_array_is_finite_v1")
+            .expect("date helper in SQL file");
+        let tstz_sql_pos = up_sql
+            .find("__djogi_tstz_array_is_finite_v1")
+            .expect("tstz helper in SQL file");
+        assert!(
+            numeric_sql_pos < date_sql_pos,
+            "numeric helper prelude must precede date helper prelude in SQL file"
+        );
+        assert!(
+            date_sql_pos < tstz_sql_pos,
+            "date helper prelude must precede tstz helper prelude in SQL file"
+        );
+
         let _ = fs::remove_dir_all(&work);
     }
 

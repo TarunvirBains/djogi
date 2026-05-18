@@ -221,21 +221,33 @@ pub fn plan_delta(delta: &SchemaDelta) -> Result<MigrationPlan, SqlEmitError> {
         lowered_kinds.push(kind);
     }
 
+    // Inject helper preludes in the same order that compose_up_text /
+    // compose_down_text emits them: numeric → date → tstz.  Building a
+    // prefix vector and prepending it in one step is critical; using
+    // repeated `insert(0, …)` reverses the sequence — each new insert
+    // pushes all prior entries down by one, so the last-inserted op ends
+    // at index 0 and the first-inserted op ends at the back of the
+    // prefix.  The compose_up_text order is the canonical reference
+    // because it determines the on-disk SQL file that operators review.
+    let mut helper_ops: Vec<OperationSql> = Vec::new();
+    let mut helper_kinds: Vec<SegmentKind> = Vec::new();
     if requires_numeric_array_helper(&lowered_ops) {
-        lowered_ops.insert(0, numeric_array_helper_operation());
-        lowered_kinds.insert(0, SegmentKind::Transactional);
+        helper_ops.push(numeric_array_helper_operation());
+        helper_kinds.push(SegmentKind::Transactional);
     }
-    // Temporal array helpers: injected in a fixed order (date, then tstz) so
-    // that the leading transactional segment is stable across migrations that
-    // reference both. Each helper prelude starts with `CREATE SCHEMA IF NOT
-    // EXISTS djogi;` (idempotent); the second invocation is a no-op.
     if requires_date_array_helper(&lowered_ops) {
-        lowered_ops.insert(0, date_array_helper_operation());
-        lowered_kinds.insert(0, SegmentKind::Transactional);
+        helper_ops.push(date_array_helper_operation());
+        helper_kinds.push(SegmentKind::Transactional);
     }
     if requires_tstz_array_helper(&lowered_ops) {
-        lowered_ops.insert(0, tstz_array_helper_operation());
-        lowered_kinds.insert(0, SegmentKind::Transactional);
+        helper_ops.push(tstz_array_helper_operation());
+        helper_kinds.push(SegmentKind::Transactional);
+    }
+    if !helper_ops.is_empty() {
+        helper_ops.extend(lowered_ops);
+        helper_kinds.extend(lowered_kinds);
+        lowered_ops = helper_ops;
+        lowered_kinds = helper_kinds;
     }
 
     let mut current_kind: Option<SegmentKind> = None;
@@ -672,6 +684,20 @@ mod tests {
         }
     }
 
+    fn date_array_column(name: &str) -> ColumnSchema {
+        ColumnSchema {
+            check: Some(format!("djogi.__djogi_date_array_is_finite_v1(\"{name}\")")),
+            ..col(name, "DATE[]", true)
+        }
+    }
+
+    fn tstz_array_column(name: &str) -> ColumnSchema {
+        ColumnSchema {
+            check: Some(format!("djogi.__djogi_tstz_array_is_finite_v1(\"{name}\")")),
+            ..col(name, "TIMESTAMPTZ[]", true)
+        }
+    }
+
     fn synth_table(name: &str) -> TableSchema {
         TableSchema {
             app: None,
@@ -785,6 +811,70 @@ mod tests {
                 .up
                 .contains("CONSTRAINT \"widgets_amounts_check\""),
             "table DDL should keep the generated NUMERIC[] constraint"
+        );
+    }
+
+    #[test]
+    fn date_and_tstz_array_helpers_inject_before_table_in_compose_order() {
+        // A table carrying both a DATE[] column and a TIMESTAMPTZ[] column
+        // triggers both `requires_date_array_helper` and
+        // `requires_tstz_array_helper`.  `plan_delta` must inject the two
+        // helper operations BEFORE the table DDL and in the same order that
+        // `compose_up_text` / `compose_down_text` emit them (date first,
+        // then tstz).
+        //
+        // The prior `insert(0, …)` implementation reversed the order:
+        // each insert pushes all previous entries down by one, so the
+        // last-inserted helper (tstz) ended at index 0 and date ended at
+        // index 1 — the opposite of the compose file order.
+        let mut table = synth_table("events");
+        table.columns.push(date_array_column("blackout_dates"));
+        table.columns.push(tstz_array_column("scheduled_slots"));
+        let delta = SchemaDelta {
+            bucket: bucket(),
+            operations: vec![SchemaOperation::AddTable(table)],
+            classification: Classification::Additive,
+        };
+
+        let plan = plan_delta(&delta).expect("ok");
+        assert_eq!(plan.segments.len(), 1);
+        assert_eq!(plan.segments[0].kind, SegmentKind::Transactional);
+        let labels: Vec<&str> = plan.segments[0]
+            .statements
+            .iter()
+            .map(|s| s.label.as_str())
+            .collect();
+
+        assert!(
+            labels.len() >= 3,
+            "expected date helper + tstz helper + table DDL; labels: {labels:?}"
+        );
+
+        let date_pos = labels
+            .iter()
+            .position(|l| *l == "Ensure djogi date-array finite-element helper")
+            .expect("date-array helper not found in plan labels");
+        let tstz_pos = labels
+            .iter()
+            .position(|l| *l == "Ensure djogi timestamptz-array finite-element helper")
+            .expect("tstz-array helper not found in plan labels");
+        let table_pos = labels
+            .iter()
+            .position(|l| l.starts_with("AddTable"))
+            .expect("AddTable statement not found in plan labels");
+
+        assert!(
+            date_pos < table_pos,
+            "date-array helper must precede table DDL (compose order); labels: {labels:?}"
+        );
+        assert!(
+            tstz_pos < table_pos,
+            "tstz-array helper must precede table DDL (compose order); labels: {labels:?}"
+        );
+        assert!(
+            date_pos < tstz_pos,
+            "date-array helper must precede tstz-array helper \
+             (matches compose_up_text prelude order); labels: {labels:?}"
         );
     }
 
