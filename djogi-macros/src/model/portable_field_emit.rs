@@ -659,10 +659,11 @@ mod tests {
         assert!(PortableFieldKind::OptionScalar.is_portable_leaf());
         assert!(PortableFieldKind::OptionString.is_portable_leaf());
         assert!(PortableFieldKind::OptionBool.is_portable_leaf());
+        assert!(PortableFieldKind::Array.is_portable_leaf());
+        assert!(PortableFieldKind::OptionArray.is_portable_leaf());
         assert!(PortableFieldKind::RelationOrVisage.is_portable_leaf());
         assert!(PortableFieldKind::OptionRelationOrVisage.is_portable_leaf());
         assert!(!PortableFieldKind::Jsonb.is_portable_leaf());
-        assert!(!PortableFieldKind::Array.is_portable_leaf());
         assert!(!PortableFieldKind::Spatial.is_portable_leaf());
         assert!(!PortableFieldKind::FtsComputed.is_portable_leaf());
         assert!(!PortableFieldKind::Unsupported.is_portable_leaf());
