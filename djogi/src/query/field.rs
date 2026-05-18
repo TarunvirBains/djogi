@@ -481,7 +481,9 @@ pub trait DjogiPortableOrd:
 /// Equality is only portable when Rust `PartialEq` agrees with the SQL
 /// equality operator Djogi emits. `Interval` is deliberately excluded:
 /// PostgreSQL `INTERVAL =` linearizes months/days/microseconds before
-/// comparing, while [`crate::Interval`] equality is structural.
+/// comparing, while [`crate::Interval`] equality is structural. `f32`/`f64`
+/// are also excluded because PostgreSQL treats `NaN` equality differently
+/// from Rust/Punnu.
 pub trait DjogiPortableEq:
     PartialEq + postgres_types::ToSql + Clone + Send + Sync + 'static
 {
@@ -538,8 +540,6 @@ impl DjogiPortableEq for i8 {}
 impl DjogiPortableEq for i16 {}
 impl DjogiPortableEq for i64 {}
 impl DjogiPortableEq for u32 {}
-impl DjogiPortableEq for f32 {}
-impl DjogiPortableEq for f64 {}
 impl DjogiPortableEq for bool {}
 impl DjogiPortableEq for time::OffsetDateTime {}
 impl DjogiPortableEq for time::Date {}
