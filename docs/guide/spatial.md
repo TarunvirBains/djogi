@@ -535,7 +535,13 @@ let tile: Vec<u8> = Store::objects()
     .await?;
 ```
 
-Both terminals return Postgres `bytea` as `Vec<u8>`. Djogi stores spatial
+Both terminals return Postgres `bytea` as `Vec<u8>`. `QuerySet::none()`
+short-circuits and returns `Ok(Vec::new())` without SQL. For normal
+zero-row filters, `ST_AsGeobuf` currently returns SQL `NULL`; Djogi now
+maps that to `Ok(Vec::new())` so consumers can treat that as an empty
+payload.
+
+Djogi stores spatial
 fields as `geography(...)`; the row-aggregate terminal casts those inner
 row columns to `geometry` while preserving their column names because
 PostGIS's encoders look up the geometry column by name.

@@ -171,6 +171,11 @@ where
     /// `QuerySet::none()` short-circuits to `Ok(Vec::new())` without
     /// emitting SQL.
     ///
+    /// For non-`.none()` queries, a SQL filter that matches zero rows
+    /// yields `NULL` for `ST_AsGeobuf` from PostGIS. We map that to
+    /// `Ok(Vec::new())` to keep terminal behavior ergonomic and avoid
+    /// a `WasNull` decode error.
+    ///
     /// # Errors
     ///
     /// - The annotation tuple fails its `check_legality()` (e.g. an
@@ -227,8 +232,8 @@ where
             let row = ctx.query_one(&sql, &params).await?;
             // Position 0 — the row aggregate is the sole SELECT-list
             // entry of the outer query.
-            let bytes: Vec<u8> = row.try_get(0).map_err(DjogiError::from)?;
-            Ok(bytes)
+            let bytes: Option<Vec<u8>> = row.try_get(0).map_err(DjogiError::from)?;
+            Ok(bytes.unwrap_or_default())
         }
     }
 }

@@ -122,10 +122,15 @@ async fn queryset_as_geobuf_none_short_circuit(mut ctx: djogi::DjogiContext) {
 
 #[djogi::djogi_test(extensions = ["postgis"], sync_models = [TileFeature])]
 async fn queryset_as_geobuf_zero_rows_is_ok(mut ctx: djogi::DjogiContext) {
-    let _bytes: Vec<u8> = TileFeature::objects()
+    let bytes: Vec<u8> = TileFeature::objects()
         .filter(|f| f.name().eq("nonexistent".to_string()))
         .as_geobuf("location")
         .fetch_one(&mut ctx)
         .await
         .expect("zero-row Geobuf filter must not panic or decode NULL");
+
+    assert!(
+        bytes.is_empty(),
+        "zero-row Geobuf filter should normalize SQL NULL to an empty Vec"
+    );
 }
