@@ -40,7 +40,7 @@
 //! - Missing `#[djogi_enum(name = "...")]` → error at the enum.
 
 use proc_macro2::{Span, TokenStream};
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Expr, ExprLit, Fields, Lit, Meta, MetaNameValue};
 
 use crate::case::RenameAll;
@@ -264,6 +264,25 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 
     let postgres_type_str = postgres_type.as_str();
     let type_name_str = enum_name_str.as_str();
+    let enum_name_snake =
+        enum_name_str
+            .chars()
+            .enumerate()
+            .fold(String::new(), |mut out, (idx, ch)| {
+                if ch.is_ascii_uppercase() {
+                    if idx > 0 {
+                        out.push('_');
+                    }
+                    out.extend(ch.to_lowercase());
+                } else {
+                    out.push(ch);
+                }
+                out
+            });
+    let bind_value_fn = format_ident!("__djogi_enum_bind_value_{}", enum_name_snake);
+    let bind_list_fn = format_ident!("__djogi_enum_bind_list_{}", enum_name_snake);
+    let bind_option_value_fn = format_ident!("__djogi_enum_bind_option_value_{}", enum_name_snake);
+    let bind_option_list_fn = format_ident!("__djogi_enum_bind_option_list_{}", enum_name_snake);
 
     // ── Emit IntoFilterValue match arms (Phase 7-Zero-2 T7, Step 8) ─────────
     //
@@ -355,11 +374,84 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 
         impl ::djogi::query::DjogiPortableEq for #enum_name {}
 
+        #[doc(hidden)]
+        fn #bind_value_fn(
+            value: &(dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync),
+        ) -> ::std::option::Option<::djogi::descriptor::BoxedSqlBind> {
+            value.downcast_ref::<#enum_name>().map(|value| {
+                ::std::boxed::Box::new(<#enum_name as ::std::clone::Clone>::clone(value))
+                    as ::djogi::descriptor::BoxedSqlBind
+            })
+        }
+
+        #[doc(hidden)]
+        fn #bind_list_fn(
+            value: &(dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync),
+        ) -> ::std::option::Option<::std::vec::Vec<::djogi::descriptor::BoxedSqlBind>> {
+            value.downcast_ref::<::std::vec::Vec<#enum_name>>().map(|values| {
+                values
+                    .iter()
+                    .map(|value| {
+                        ::std::boxed::Box::new(<#enum_name as ::std::clone::Clone>::clone(value))
+                            as ::djogi::descriptor::BoxedSqlBind
+                    })
+                    .collect()
+            })
+        }
+
+        #[doc(hidden)]
+        fn #bind_option_value_fn(
+            value: &(dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync),
+        ) -> ::std::option::Option<::std::option::Option<::djogi::descriptor::BoxedSqlBind>> {
+            value
+                .downcast_ref::<::std::option::Option<#enum_name>>()
+                .map(|value| {
+                    value.as_ref().map(|value| {
+                        ::std::boxed::Box::new(<#enum_name as ::std::clone::Clone>::clone(value))
+                            as ::djogi::descriptor::BoxedSqlBind
+                    })
+                })
+        }
+
+        #[doc(hidden)]
+        fn #bind_option_list_fn(
+            value: &(dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync),
+        ) -> ::std::option::Option<
+            ::std::vec::Vec<::std::option::Option<::djogi::descriptor::BoxedSqlBind>>,
+        > {
+            value
+                .downcast_ref::<::std::vec::Vec<::std::option::Option<#enum_name>>>()
+                .map(|values| {
+                    values
+                        .iter()
+                        .map(|value| {
+                            value.as_ref().map(|value| {
+                                ::std::boxed::Box::new(
+                                    <#enum_name as ::std::clone::Clone>::clone(value),
+                                )
+                                    as ::djogi::descriptor::BoxedSqlBind
+                            })
+                        })
+                        .collect()
+                })
+        }
+
         ::djogi::__private::inventory::submit! {
             ::djogi::descriptor::EnumDescriptor {
                 type_name: #type_name_str,
                 postgres_type: #postgres_type_str,
                 variants: #variants_array,
+            }
+        }
+
+        ::djogi::__private::inventory::submit! {
+            ::djogi::descriptor::EnumPredicateCodec {
+                type_name: #type_name_str,
+                postgres_type: #postgres_type_str,
+                bind_value: #bind_value_fn,
+                bind_list: #bind_list_fn,
+                bind_option_value: #bind_option_value_fn,
+                bind_option_list: #bind_option_list_fn,
             }
         }
 

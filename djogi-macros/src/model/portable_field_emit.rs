@@ -31,12 +31,15 @@
 //! SQL binds through. `Vec<T>` arrays are portable only when `T` is in
 //! Djogi's curated safe array-equality subset. Everything else (`Jsonb<T>`,
 //! `Vec<f32>` / `Vec<f64>`, `Vec<Interval>`, `GeoPoint`/`Polygon`/etc.,
-//! `TsVector`, `#[field(protected(...))]` wrappers, user enums, and
-//! unrecognised newtypes) lands in
+//! `TsVector`, `#[field(protected(...))]` wrappers, and unrecognised
+//! newtypes) lands in
 //! [`PortableFieldKind::Unsupported`] or one of its more specific
 //! neighbours so the macro emits a typed
-//! `PortablePredicateError::UnsupportedFieldType` arm rather than
-//! pretending to support a payload shape that has not been parity-tested.
+//! `PortablePredicateError::UnsupportedFieldType` arm rather than pretending
+//! to support a payload shape that has not been parity-tested. `DjogiEnum`
+//! fields also classify as [`Unsupported`] at macro time because the model
+//! macro cannot observe sibling derives; their SQL lowering is admitted later
+//! through the explicit runtime codec registered by `#[derive(DjogiEnum)]`.
 //!
 //! # Why this is not a Sassi-side concern
 //!
@@ -148,9 +151,10 @@ pub enum PortableFieldKind {
     /// physical columns. Null tests, equality, and membership are
     /// portable; ordering and relation traversal are not.
     OptionRelationOrVisage,
-    /// Anything else — user enums that don't satisfy the bind bounds,
-    /// unrecognised newtypes, `#[field(protected(...))]` wrappers
-    /// whose codec semantics are not yet portable.
+    /// Anything else — unregistered user types, `#[field(protected(...))]`
+    /// wrappers whose codec semantics are not yet portable, and
+    /// `DjogiEnum` fields before the runtime enum-codec fallback has a
+    /// chance to inspect the predicate payload.
     Unsupported,
 }
 
@@ -515,11 +519,13 @@ fn classify_inner(ty: &Type) -> PortableFieldKind {
         return PortableFieldKind::Scalar;
     }
 
-    // Everything else — user enums (DjogiEnum-derived), custom
-    // newtypes, two-segment paths whose last ident is not in the
-    // curated list — falls through. The `(field, _) =>
-    // UnsupportedFieldType` arm in crud.rs surfaces this as a typed
-    // error rather than a silent SQL miscompilation.
+    // Everything else — custom newtypes, two-segment paths whose last
+    // ident is not in the curated list, and DjogiEnum-derived user
+    // enums whose sibling derive cannot be observed here — falls
+    // through. The `(field, _)` arm in crud.rs either routes
+    // DjogiEnum payloads through their runtime codec or surfaces
+    // `UnsupportedFieldType` for unregistered types rather than a
+    // silent SQL miscompilation.
     PortableFieldKind::Unsupported
 }
 

@@ -3136,15 +3136,18 @@ fn emit_djogi_emit_field_predicate(
             | PortableFieldKind::FtsComputed
             | PortableFieldKind::Unsupported => {
                 // Non-portable kinds get a single catch-all arm
-                // returning the typed `UnsupportedFieldType` error.
+                // returning the typed `UnsupportedFieldType` error,
+                // except for runtime-registered DjogiEnum codecs. The
+                // model macro cannot observe sibling derives, so
+                // DjogiEnum fields still classify as `Unsupported`
+                // here and opt into SQL lowering through the registry
+                // emitted by `#[derive(DjogiEnum)]`.
                 // `LookupOp` is `#[non_exhaustive]`; this single arm
                 // covers every current and future variant for the
                 // field.
                 arms.push(quote! {
-                    (#column, _) => ::std::result::Result::Err(
-                        ::djogi::__private::query::PortablePredicateError::UnsupportedFieldType {
-                            field: #column,
-                        },
+                    (#column, _) => ::djogi::__private::query::portable_emit::emit_registered_custom::<#model_name>(
+                        acc, ctx, #column, field,
                     ),
                 });
             }

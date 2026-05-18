@@ -123,6 +123,22 @@ impl SqlAccumulator {
             .expect(ACCUMULATOR_OVERFLOW_MSG);
     }
 
+    /// Push one already type-erased bind value.
+    ///
+    /// This is reserved for framework-owned dynamic emit paths where the
+    /// value type is recovered from a runtime registry rather than named in a
+    /// macro-generated generic call. It emits the same `$n` placeholder shape
+    /// as [`Self::push_bind`] and stores the supplied boxed value directly.
+    #[doc(hidden)]
+    pub fn push_boxed_bind(&mut self, v: Box<dyn ToSql + Sync + Send>) {
+        let _ = write!(self.sql, "${}", self.next_param);
+        self.binds.push(v);
+        self.next_param = self
+            .next_param
+            .checked_add(1)
+            .expect(ACCUMULATOR_OVERFLOW_MSG);
+    }
+
     /// Push a list of bind values separated by commas, for `IN (...)` / `NOT IN (...)` lists.
     ///
     /// Each element gets its own `$n` slot. The caller is responsible for emitting

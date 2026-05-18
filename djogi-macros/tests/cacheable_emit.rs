@@ -112,6 +112,30 @@ pub struct CustomPkModel {
     pub label: String,
 }
 
+#[derive(DjogiEnum, Debug, Clone, Copy, PartialEq, Eq)]
+#[djogi_enum(name = "phase8_t7_cacheable_emit_status", rename_all = "snake_case")]
+pub enum CacheableEmitStatus {
+    Active,
+    Retired,
+}
+
+/// User-defined Postgres enum field. The model macro sees only the declared
+/// Rust type path, so portable SQL emission depends on the runtime codec
+/// registered by `#[derive(DjogiEnum)]`.
+#[model(table = "phase8_t7_cacheable_emit_enum", no_default)]
+#[derive(Debug, Clone)]
+pub struct EnumFieldModel {
+    pub status: CacheableEmitStatus,
+}
+
+/// Nullable user-defined Postgres enum field. Covers the `Option<Enum>` and
+/// `.some()` payload shapes separately from the non-null enum field above.
+#[model(table = "phase8_t7_cacheable_emit_optional_enum", no_default)]
+#[derive(Debug, Clone)]
+pub struct OptionalEnumFieldModel {
+    pub status: Option<CacheableEmitStatus>,
+}
+
 /// Watermark-override fixture — `expires_at` (a user field) replaces
 /// the default `updated_at`. `time::OffsetDateTime` does not implement
 /// `Default`, so the model carries `no_default` to skip the
@@ -216,6 +240,121 @@ fn custom_pk_id_field_emits_portable_membership_sql() {
     assert!(
         result.is_ok(),
         "custom PK membership SQL emission should be supported: {result:?}"
+    );
+}
+
+#[test]
+fn djogi_enum_field_is_portable_eq() {
+    assert_portable_eq::<CacheableEmitStatus>();
+    let _filtered = EnumFieldModel::objects().filter(|f| {
+        f.status().eq(CacheableEmitStatus::Active)
+            & f.status().in_(vec![
+                CacheableEmitStatus::Active,
+                CacheableEmitStatus::Retired,
+            ])
+    });
+}
+
+#[test]
+fn djogi_enum_field_emits_portable_sql() {
+    let portable = <EnumFieldModel as Cacheable>::fields()
+        .status()
+        .eq(CacheableEmitStatus::Active);
+    let basic = portable.into_basic_predicate();
+    let BasicPredicate::Field(fp) = basic else {
+        panic!("enum equality should lower to a field predicate");
+    };
+
+    let mut acc = SqlAccumulator::new("");
+    let result = <EnumFieldModel as Model>::__djogi_emit_field_predicate(
+        &mut acc,
+        &fp,
+        SqlEmitContext::root(),
+    );
+    assert!(
+        result.is_ok(),
+        "DjogiEnum equality SQL emission should be supported: {result:?}"
+    );
+
+    let portable = <EnumFieldModel as Cacheable>::fields().status().in_(vec![
+        CacheableEmitStatus::Active,
+        CacheableEmitStatus::Retired,
+    ]);
+    let basic = portable.into_basic_predicate();
+    let BasicPredicate::Field(fp) = basic else {
+        panic!("enum membership should lower to a field predicate");
+    };
+
+    let mut acc = SqlAccumulator::new("");
+    let result = <EnumFieldModel as Model>::__djogi_emit_field_predicate(
+        &mut acc,
+        &fp,
+        SqlEmitContext::root(),
+    );
+    assert!(
+        result.is_ok(),
+        "DjogiEnum membership SQL emission should be supported: {result:?}"
+    );
+}
+
+#[test]
+fn optional_djogi_enum_field_emits_portable_sql() {
+    let portable = <OptionalEnumFieldModel as Cacheable>::fields()
+        .status()
+        .eq(Some(CacheableEmitStatus::Active));
+    let basic = portable.into_basic_predicate();
+    let BasicPredicate::Field(fp) = basic else {
+        panic!("optional enum equality should lower to a field predicate");
+    };
+
+    let mut acc = SqlAccumulator::new("");
+    let result = <OptionalEnumFieldModel as Model>::__djogi_emit_field_predicate(
+        &mut acc,
+        &fp,
+        SqlEmitContext::root(),
+    );
+    assert!(
+        result.is_ok(),
+        "Option<DjogiEnum> equality SQL emission should be supported: {result:?}"
+    );
+
+    let portable = <OptionalEnumFieldModel as Cacheable>::fields()
+        .status()
+        .in_(vec![Some(CacheableEmitStatus::Active), None]);
+    let basic = portable.into_basic_predicate();
+    let BasicPredicate::Field(fp) = basic else {
+        panic!("optional enum membership should lower to a field predicate");
+    };
+
+    let mut acc = SqlAccumulator::new("");
+    let result = <OptionalEnumFieldModel as Model>::__djogi_emit_field_predicate(
+        &mut acc,
+        &fp,
+        SqlEmitContext::root(),
+    );
+    assert!(
+        result.is_ok(),
+        "Option<DjogiEnum> membership SQL emission should be supported: {result:?}"
+    );
+
+    let portable = <OptionalEnumFieldModel as Cacheable>::fields()
+        .status()
+        .some()
+        .not_in(vec![CacheableEmitStatus::Retired]);
+    let basic = portable.into_basic_predicate();
+    let BasicPredicate::Field(fp) = basic else {
+        panic!("present optional enum membership should lower to a field predicate");
+    };
+
+    let mut acc = SqlAccumulator::new("");
+    let result = <OptionalEnumFieldModel as Model>::__djogi_emit_field_predicate(
+        &mut acc,
+        &fp,
+        SqlEmitContext::root(),
+    );
+    assert!(
+        result.is_ok(),
+        "PresentField<DjogiEnum> membership SQL emission should be supported: {result:?}"
     );
 }
 

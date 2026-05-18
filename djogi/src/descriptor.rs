@@ -2958,6 +2958,50 @@ pub struct EnumDescriptor {
 
 inventory::collect!(EnumDescriptor);
 
+/// Type-erased SQL bind value produced by a framework-owned runtime codec.
+#[doc(hidden)]
+pub type BoxedSqlBind = Box<dyn postgres_types::ToSql + Sync + Send>;
+
+/// Binder for a single enum operand stored in Sassi's type-erased predicate payload.
+#[doc(hidden)]
+pub type EnumPredicateValueBinder =
+    for<'a> fn(&'a (dyn std::any::Any + Send + Sync)) -> Option<BoxedSqlBind>;
+
+/// Binder for a `Vec<Enum>` operand stored in Sassi's type-erased predicate payload.
+#[doc(hidden)]
+pub type EnumPredicateListBinder =
+    for<'a> fn(&'a (dyn std::any::Any + Send + Sync)) -> Option<Vec<BoxedSqlBind>>;
+
+/// Binder for an `Option<Enum>` operand stored in Sassi's type-erased predicate payload.
+#[doc(hidden)]
+pub type EnumPredicateOptionBinder =
+    for<'a> fn(&'a (dyn std::any::Any + Send + Sync)) -> Option<Option<BoxedSqlBind>>;
+
+/// Binder for a `Vec<Option<Enum>>` operand stored in Sassi's type-erased predicate payload.
+#[doc(hidden)]
+pub type EnumPredicateOptionListBinder =
+    for<'a> fn(&'a (dyn std::any::Any + Send + Sync)) -> Option<Vec<Option<BoxedSqlBind>>>;
+
+/// Runtime predicate codec registered by `#[derive(DjogiEnum)]`.
+///
+/// The model macro cannot observe whether a sibling type also derived
+/// `DjogiEnum` when it classifies a field. Instead, unknown/custom fields stay
+/// conservative at macro expansion time and the portable SQL fallback consults
+/// this registry at runtime. Only DjogiEnum-derived types submit entries, so
+/// arbitrary adopter newtypes remain unsupported unless a future framework
+/// macro registers an explicit codec for them.
+#[doc(hidden)]
+pub struct EnumPredicateCodec {
+    pub type_name: &'static str,
+    pub postgres_type: &'static str,
+    pub bind_value: EnumPredicateValueBinder,
+    pub bind_list: EnumPredicateListBinder,
+    pub bind_option_value: EnumPredicateOptionBinder,
+    pub bind_option_list: EnumPredicateOptionListBinder,
+}
+
+inventory::collect!(EnumPredicateCodec);
+
 // ───────────────────────────────────────────────────────────────────────────
 // Visage-side derived-projection descriptor inventory — Phase 8.5 #231.
 //
