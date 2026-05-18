@@ -20,19 +20,13 @@
 //! The function is idempotent — running `migrate` twice is safe and
 //! leaves the database in the same state.
 //!
-//! # Why `pool.raw_with_client` is the bridge
+//! # Why `ctx.raw_ddl` is the bridge
 //!
-//! The local no-`ALTER DATABASE` bootstrap batch needs a direct driver
-//! client for extension and schema DDL. `RawPoolAccessExt::raw_with_client`
-//! is the documented escape hatch for raw-driver operations — it borrows a `&mut
-//! tokio_postgres::Client` for the closure's duration and returns the
-//! connection to the pool on `Ok` (or detaches on `Err`/panic to
-//! prevent session-state leakage). The inherent `DjogiPool::with_client`
-//! method is `pub(crate)`; example/adopter code reaches the same
-//! behaviour through the sealed `RawPoolAccessExt` bypass trait,
-//! injected by the explicit raw-SQL bypass attribute. The migrate path
-//! uses the same pool the rest of the example uses — no one-shot
-//! connections, no manual driver-task spawn.
+//! The local no-`ALTER DATABASE` bootstrap batch needs a governed raw-DDL
+//! route for extension and schema DDL. `DjogiContext::raw_ddl` is the helper
+//! escape hatch exposed to example/adopter code for that path — it executes a
+//! raw SQL batch through the same pooled connection lifecycle used by the rest of
+//! the example and returns control to pool-managed reuse on success.
 
 use anyhow::{Context, Result};
 use djogi::DjogiContext;
@@ -87,11 +81,9 @@ pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
 /// is the public per-connection setup surface and sets both HeeRanjID
 /// GUCs for every connection.
 ///
-/// `RawPoolAccessExt::raw_with_client` is the bridge:
+/// `DjogiContext::raw_ddl` is the bridge:
 /// `phase_zero_sql_without_database_guc()` builds a raw SQL batch and
-/// `batch_execute` needs a bare driver client. The raw bypass borrows
-/// the pool's connection and hands it to the closure for the local
-/// bootstrap batch's duration.
+/// `ctx.raw_ddl` executes it through the example's allowed raw-DDL helper path.
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#234): local no-ALTER-DATABASE Phase 0 bootstrap requires direct pool/client access for extension and HeeRanjID installation.
 async fn install_phase_zero(ctx: &mut DjogiContext) -> Result<()> {
