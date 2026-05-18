@@ -938,9 +938,9 @@ impl<M: Model, V> DjogiField<M, V> {
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn json_object_agg<V2>(
         self,
-        value: crate::query::FieldRef<M, V2>,
+        value: DjogiField<M, V2>,
     ) -> crate::expr::AggregateExpr<serde_json::Value> {
-        self.sql.json_object_agg(value)
+        self.sql.json_object_agg(value.sql)
     }
 
     /// `JSONB_OBJECT_AGG(key, value)` — see
@@ -948,9 +948,9 @@ impl<M: Model, V> DjogiField<M, V> {
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn jsonb_object_agg<V2>(
         self,
-        value: crate::query::FieldRef<M, V2>,
+        value: DjogiField<M, V2>,
     ) -> crate::expr::AggregateExpr<serde_json::Value> {
-        self.sql.jsonb_object_agg(value)
+        self.sql.jsonb_object_agg(value.sql)
     }
 
     /// `GROUPING(column)` — see
@@ -5406,6 +5406,29 @@ mod tests {
         } else {
             panic!("expected Or, got {combined:?}");
         }
+    }
+
+    #[test]
+    fn djogi_field_json_object_agg_accepts_djogi_field_argument() {
+        let f_id: DjogiField<FakeRow, i64> =
+            djogi_field_macro_support::__make_djogi_field::<FakeRow, i64>("id", |row| &row.id);
+        let f_name: DjogiField<FakeRow, String> = djogi_field_macro_support::__make_djogi_field::<
+            FakeRow,
+            String,
+        >("title", |row| &row.title);
+        let _: crate::expr::AggregateExpr<serde_json::Value> = f_id.json_object_agg(f_name);
+    }
+
+    #[test]
+    fn djogi_field_jsonb_object_agg_accepts_djogi_field_argument() {
+        let f_id: DjogiField<FakeRow, i64> =
+            djogi_field_macro_support::__make_djogi_field::<FakeRow, i64>("id", |row| &row.id);
+        let f_name: DjogiField<FakeRow, Option<i64>> =
+            djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<i64>>(
+                "maybe_age",
+                |row| &row.maybe_age,
+            );
+        let _: crate::expr::AggregateExpr<serde_json::Value> = f_id.jsonb_object_agg(f_name);
     }
 }
 
