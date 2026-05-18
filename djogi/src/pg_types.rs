@@ -462,6 +462,33 @@ impl<T> Range<T> {
     /// at storage time, so a stored `int4range '[1,9]'` is equal to
     /// `int4range '[1,10)'` at the SQL level. The Rust type preserves
     /// what you passed in; the canonicalisation happens server-side.
+    ///
+    /// # Caveat — discrete upper-MAX bounds
+    ///
+    /// For **discrete** subtypes (`int4range`, `int8range`, `daterange`)
+    /// Postgres canonicalises `[lo, hi]` to `[lo, hi + 1)` at write
+    /// time. When `hi` is at the element type's representable maximum
+    /// (`i32::MAX`, `i64::MAX`, or `time::Date::MAX = 9999-12-31`), the
+    /// canonical exclusive upper bound is `hi + 1`, which is one step
+    /// past what the type can represent — `i32::MAX + 1` overflows i32
+    /// (Postgres returns `integer out of range`), and
+    /// `daterange '[..., 9999-12-31]'` canonicalises to an upper bound
+    /// of `10000-01-01` that exceeds Djogi's `time::Date` upper-bound
+    /// CHECK and is rejected at write time.
+    ///
+    /// Prefer the [`Range::inclusive_exclusive`] form when reaching for
+    /// the element type's maximum on a discrete range column:
+    ///
+    /// ```rust,ignore
+    /// // Avoid on discrete subtypes — Postgres rejects on canonicalisation:
+    /// // let r = Range::inclusive(0_i32, i32::MAX);
+    ///
+    /// // Prefer — already in canonical form, no overflow on storage:
+    /// let r = Range::inclusive_exclusive(0_i32, i32::MAX);
+    /// ```
+    ///
+    /// Continuous subtypes (`numrange`, `tstzrange`) are NOT
+    /// canonicalised and accept `[..., MAX]` unchanged.
     pub fn inclusive(lo: T, hi: T) -> Self {
         Self::new(RangeBound::Inclusive(lo), RangeBound::Inclusive(hi))
     }
@@ -477,11 +504,21 @@ impl<T> Range<T> {
     /// every discrete range to this form at storage time, so adopters
     /// who want their in-memory `Range` shape to match what comes back
     /// out of a `SELECT` reach for this constructor.
+    ///
+    /// This is also the safe form when reaching for the element type's
+    /// maximum on a discrete range column — see the caveat on
+    /// [`Range::inclusive`].
     pub fn inclusive_exclusive(lo: T, hi: T) -> Self {
         Self::new(RangeBound::Inclusive(lo), RangeBound::Exclusive(hi))
     }
 
     /// `(lo, hi]` — lower exclusive, upper inclusive.
+    ///
+    /// On discrete subtypes (`int4range`, `int8range`, `daterange`) the
+    /// upper-MAX caveat from [`Range::inclusive`] applies — Postgres
+    /// canonicalises the upper inclusive bound to `hi + 1` exclusive,
+    /// which overflows / exceeds the element type's representable
+    /// maximum.
     pub fn exclusive_inclusive(lo: T, hi: T) -> Self {
         Self::new(RangeBound::Exclusive(lo), RangeBound::Inclusive(hi))
     }

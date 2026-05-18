@@ -298,6 +298,21 @@ preserves inclusive, exclusive, unbounded, and empty-bound shapes.
 semantics needs a separate design decision rather than an accidental
 parallel temporal surface.
 
+**Caveat — discrete-subtype upper-MAX bounds.** For the three discrete
+subtypes (`int4range`, `int8range`, `daterange`) Postgres canonicalises
+every range to the lower-inclusive / upper-exclusive form at write
+time: `[lo, hi]` becomes `[lo, hi + 1)`. When `hi` is at the element
+type's representable maximum, the canonical exclusive upper bound is
+one step past what the type can represent. `Range::inclusive(0_i32,
+i32::MAX)` triggers a Postgres `integer out of range` on write because
+`i32::MAX + 1` overflows i32; on `daterange`, `Range::inclusive(d,
+Date::MAX)` canonicalises the upper bound to `10000-01-01`, which
+exceeds Djogi's `time::Date` upper-bound CHECK. Prefer
+`Range::inclusive_exclusive(...)` when reaching for the element type's
+maximum on a discrete range column. The continuous subtypes
+(`numrange`, `tstzrange`) are NOT canonicalised by Postgres and accept
+`[..., MAX]` unchanged.
+
 ### Postgres type coverage gaps
 
 Some Postgres column types remain unmapped. Adopters can reach them

@@ -1237,6 +1237,25 @@ fn field_type_check(
         // semantics: Postgres rejects any write that the typed Rust
         // path would otherwise rescale, round, or fail to fit.
         //
+        //   * `scale(col) IS NOT NULL` — Postgres NUMERIC admits three
+        //     non-finite special values (`NaN`, `Infinity`, `-Infinity`)
+        //     that `rust_decimal::Decimal` cannot represent at all. The
+        //     `pg_catalog.scale()` function returns NULL for every
+        //     non-finite NUMERIC (NaN since PG 12, ±Infinity since
+        //     PG 14, both covered by Djogi's PG 18+ baseline), and
+        //     `IS NOT NULL` collapses that to a concrete FALSE so the
+        //     CHECK fails on those inputs rather than NULL-propagating
+        //     to PASS. Without this guard the later `scale <= 28` and
+        //     coefficient clauses would NULL-propagate (`NULL <= 28`
+        //     is NULL) and CHECK semantics (`NULL` treated as
+        //     satisfied) would silently admit `'NaN'::numeric` and
+        //     friends — a typed `Decimal::from_sql` decode would then
+        //     fail with `DjogiError::Decode` on the read side. The
+        //     scalar `FieldSqlType::Numeric` arm wraps the whole
+        //     conjunction with `({qcol}) IS NULL OR (...)` so this
+        //     guard does not also reject SQL NULL on nullable Decimal
+        //     columns; for `NUMRANGE` endpoints the equivalent NULL
+        //     pass-through is provided by `range_endpoint_checks`.
         //   * `scale(col) <= 28` — `rust_decimal::Decimal` carries
         //     5 scale bits inside an i32 word, capping representable
         //     scale at `Decimal::MAX_SCALE = 28`. The pinned
@@ -1259,12 +1278,15 @@ fn field_type_check(
         //     rejects them at the DB layer before they can poison a
         //     typed read.
         //
-        // The two-clause shape rejects both kinds of out-of-range value:
+        // The three-clause shape rejects every kind of unrepresentable value:
         //   - A 100-digit integer at scale 0 → coefficient > 2^96-1 → rejected.
         //   - A value with scale 50 → scale check fails → rejected
         //     (preventing the silent rescale-and-round path).
+        //   - A `NaN` / `Infinity` / `-Infinity` literal → `scale()` returns
+        //     NULL → `scale(col) IS NOT NULL` evaluates to FALSE → rejected
+        //     (preventing the special-value-poisons-decode path).
         // For valid rust_decimal values (e.g. `49.99` with scale 2,
-        // coefficient `4999`), both clauses pass.
+        // coefficient `4999`), all three clauses pass.
         //
         // Postgres semantics: CHECK constraints treat NULL as satisfied,
         // so nullable Decimal columns work without modification. The
@@ -1299,7 +1321,19 @@ fn field_type_check(
             Some(RustSourceType::U64) => Some(format!(
                 "{qcol} >= 0 AND {qcol} <= 18446744073709551615 AND {qcol} = trunc({qcol})"
             )),
-            Some(RustSourceType::Decimal) => Some(decimal_repr_expr(&qcol)),
+            // Wrap the scalar Decimal representability check with an explicit
+            // NULL pass-through. The inner `decimal_repr_expr` carries a
+            // `scale(<col>) IS NOT NULL` guard that rejects PostgreSQL NUMERIC
+            // special values (`NaN`, `Infinity`, `-Infinity`) — `scale()` is
+            // defined to return NULL for those, and `IS NOT NULL` evaluates to
+            // FALSE for a NULL input (never NULL itself), so a bare guard would
+            // also reject SQL NULL on nullable columns. The `(<col>) IS NULL OR`
+            // outer wrap restores Postgres CHECK's standard "NULL satisfies
+            // the constraint" behaviour for nullable Decimal columns.
+            Some(RustSourceType::Decimal) => Some(format!(
+                "({qcol}) IS NULL OR ({})",
+                decimal_repr_expr(&qcol)
+            )),
             _ => None,
         },
         FieldSqlType::TimestamptzArray => {
@@ -1340,10 +1374,32 @@ fn timestamptz_range_expr(column_expr: &str) -> String {
     format!("{column_expr} <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'")
 }
 
+/// Inner representability predicate for a NUMERIC expression that
+/// resolves to a `rust_decimal::Decimal`-storable value.
+///
+/// The leading `scale({column_expr}) IS NOT NULL` clause rejects the
+/// PostgreSQL NUMERIC special values `NaN`, `Infinity`, and
+/// `-Infinity` — `pg_catalog.scale()` is defined to return NULL for
+/// non-finite NUMERICs (NaN since PG 12, ±Infinity since PG 14, both
+/// covered by Djogi's PG 18+ baseline), and `IS NOT NULL` collapses
+/// that to a concrete FALSE so the CHECK fails on those inputs rather
+/// than NULL-propagating to PASS. Regular finite NUMERICs continue
+/// through the existing scale / coefficient bounds.
+///
+/// **Callers are responsible for the NULL pass-through.** This helper
+/// returns a bare conjunction with no `<col> IS NULL OR` outer wrap:
+/// the scalar `FieldSqlType::Numeric` arm wraps the result with
+/// `({qcol}) IS NULL OR (...)`, and `range_endpoint_checks` already
+/// wraps `lower(...)` / `upper(...)` bound checks with their own
+/// `IS NULL OR` so unbounded / empty / NULL ranges short-circuit.
+/// Calling this helper directly on a column expression without one of
+/// those wraps would reject SQL NULL alongside the special values,
+/// because `scale(NULL) IS NOT NULL` evaluates to FALSE.
 fn decimal_repr_expr(column_expr: &str) -> String {
     format!(
-        "scale({column_expr}) <= 28 AND \
-                 abs({column_expr}) * power(10::numeric, scale({column_expr})) <= 79228162514264337593543950335"
+        "scale({column_expr}) IS NOT NULL AND \
+         scale({column_expr}) <= 28 AND \
+         abs({column_expr}) * power(10::numeric, scale({column_expr})) <= 79228162514264337593543950335"
     )
 }
 
@@ -3979,10 +4035,16 @@ mod tests {
 
     #[test]
     fn field_type_check_decimal_arm_quotes_reserved_word_column() {
-        // The Decimal CHECK references the column three times (scale,
-        // scale, abs+power); all three must round-trip the column name
-        // through `quote_ident_for_check` so a reserved-word column name
-        // parses cleanly.
+        // The Decimal CHECK references the column five times:
+        //   1. outer `({qcol}) IS NULL` pass-through wrap;
+        //   2. `scale({qcol}) IS NOT NULL` (special-value guard);
+        //   3. `scale({qcol}) <= 28` (scale bound);
+        //   4. `abs({qcol})` (coefficient base);
+        //   5. `scale({qcol})` inside `power(10::numeric, ...)` (coefficient
+        //      exponent).
+        // All five must round-trip the column name through
+        // `quote_ident_for_check` so a reserved-word column name parses
+        // cleanly.
         let expr = field_type_check(
             &FieldSqlType::Numeric,
             Some(RustSourceType::Decimal),
@@ -3991,8 +4053,62 @@ mod tests {
         .expect("Decimal CHECK must fire regardless of column name");
         assert_eq!(
             expr.matches("\"order\"").count(),
-            3,
-            "Decimal CHECK references the column three times; all must be quoted: {expr}"
+            5,
+            "Decimal CHECK references the column five times; all must be quoted: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_decimal_arm_rejects_numeric_special_values_via_scale_guard() {
+        // PostgreSQL NUMERIC admits `NaN`, `Infinity`, and `-Infinity` as
+        // distinct special values. `rust_decimal::Decimal` cannot represent
+        // any of them, so the structural CHECK must reject them at the DB
+        // layer. The leading `scale(<col>) IS NOT NULL` clause is the only
+        // guard that fires on those inputs — `pg_catalog.scale()` returns
+        // NULL for every non-finite NUMERIC, and the bare scale / coefficient
+        // clauses NULL-propagate (which CHECK treats as PASS).
+        let expr = field_type_check(
+            &FieldSqlType::Numeric,
+            Some(RustSourceType::Decimal),
+            "price",
+        )
+        .expect("Decimal CHECK must carry the scale IS NOT NULL guard");
+        assert!(
+            expr.contains("scale(\"price\") IS NOT NULL"),
+            "Decimal CHECK must carry the `scale(...) IS NOT NULL` guard to reject NaN / \
+             Infinity / -Infinity: {expr}"
+        );
+        // The pass-through wrap keeps SQL NULL satisfied (the `scale IS NOT
+        // NULL` guard alone would also reject NULL on nullable Decimal columns).
+        assert!(
+            expr.contains("(\"price\") IS NULL OR ("),
+            "Decimal CHECK must wrap with `(<col>) IS NULL OR (...)` so nullable Decimal \
+             columns are unaffected by the special-value guard: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_range_num_carries_scale_guard_on_both_endpoints() {
+        // The same `scale(...) IS NOT NULL` special-value guard fires on
+        // NUMRANGE endpoints. `range_endpoint_checks` wraps each finite
+        // endpoint with its own `IS NULL OR (...)` short-circuit, so
+        // `decimal_repr_expr` itself returns the bare conjunction and the
+        // wrap delivers the NULL pass-through.
+        let expr = field_type_check(
+            &FieldSqlType::Range {
+                subtype: RangeSubtypeKind::Num,
+            },
+            None,
+            "price_range",
+        )
+        .expect("NUMRANGE must carry endpoint Decimal CHECKs");
+        assert!(
+            expr.contains("scale(lower(\"price_range\")) IS NOT NULL"),
+            "NUMRANGE lower endpoint must carry the special-value guard: {expr}"
+        );
+        assert!(
+            expr.contains("scale(upper(\"price_range\")) IS NOT NULL"),
+            "NUMRANGE upper endpoint must carry the special-value guard: {expr}"
         );
     }
 
@@ -4304,16 +4420,16 @@ mod tests {
                 .check
                 .as_deref()
                 .expect("NUMRANGE must carry endpoint checks")
-                .contains("lower(\"money\") IS NULL OR (scale(lower(\"money\")) <= 28"),
-            "NUMRANGE lower endpoint must use DECIMAL element check"
+                .contains("lower(\"money\") IS NULL OR (scale(lower(\"money\")) IS NOT NULL AND scale(lower(\"money\")) <= 28"),
+            "NUMRANGE lower endpoint must use DECIMAL element check with special-value guard"
         );
         assert!(
             money
                 .check
                 .as_deref()
                 .expect("NUMRANGE must carry endpoint checks")
-                .contains("upper(\"money\") IS NULL OR (scale(upper(\"money\")) <= 28"),
-            "NUMRANGE upper endpoint must use DECIMAL element check"
+                .contains("upper(\"money\") IS NULL OR (scale(upper(\"money\")) IS NOT NULL AND scale(upper(\"money\")) <= 28"),
+            "NUMRANGE upper endpoint must use DECIMAL element check with special-value guard"
         );
         assert!(
             window.check.as_deref().expect("TSTZRANGE must carry endpoint checks").contains(

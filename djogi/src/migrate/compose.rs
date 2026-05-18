@@ -1456,6 +1456,19 @@ const NUMERIC_ARRAY_HELPER_MARKER: &str = "djogi.__djogi_numeric_array_is_rust_d
 ///
 /// Kept `pub(crate)` so segment planning can reuse the exact same body
 /// when injecting helper DDL into executable plans.
+///
+/// The body mirrors the scalar `decimal_repr_expr` projection in
+/// `migrate::projection`: each non-NULL element must be a finite
+/// NUMERIC representable by `rust_decimal::Decimal`. The leading
+/// `pg_catalog.scale(value) IS NOT NULL` clause rejects the three
+/// PostgreSQL NUMERIC special values (`NaN`, `Infinity`, `-Infinity`)
+/// that `pg_catalog.scale()` is defined to map to NULL — without that
+/// guard the later `scale <= 28` / coefficient clauses would
+/// NULL-propagate and `bool_and` would treat the special-value
+/// element as satisfied, silently admitting an array element that
+/// would later fail `Decimal::from_sql` on read with
+/// `DjogiError::Decode`. The `value IS NULL OR (...)` outer guard
+/// continues to admit `NULL` elements per array semantics.
 pub(crate) const NUMERIC_ARRAY_HELPER_PRELUDE: &str = r#"CREATE SCHEMA IF NOT EXISTS djogi;
 
 CREATE OR REPLACE FUNCTION djogi.__djogi_numeric_array_is_rust_decimal_v1(values pg_catalog.numeric[])
@@ -1467,7 +1480,8 @@ AS $$
         pg_catalog.bool_and(
             value IS NULL
             OR (
-                pg_catalog.scale(value) <= 28
+                pg_catalog.scale(value) IS NOT NULL
+                AND pg_catalog.scale(value) <= 28
                 AND pg_catalog.abs(value)
                     * pg_catalog.power(10::pg_catalog.numeric, pg_catalog.scale(value))
                     <= 79228162514264337593543950335::pg_catalog.numeric
