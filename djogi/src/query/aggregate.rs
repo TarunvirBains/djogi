@@ -1,10 +1,10 @@
 //! Scalar-aggregate terminal — `QuerySet::aggregate(...)` + its
-//! [`AggregateQuery<T, Out>`] pending handle.
+//! [`AggregateQuery<T, Out, K>`] pending handle.
 //!
 //! # What
 //!
 //! `QuerySet<T>::aggregate(|f| f.col().sum())` returns an
-//! [`AggregateQuery<T, Out>`] whose terminal
+//! [`AggregateQuery<T, Out, K>`] whose terminal
 //! [`AggregateQuery::fetch_one`] issues
 //!
 //! ```sql
@@ -12,9 +12,13 @@
 //! ```
 //!
 //! and decodes the single scalar result into `Out`. `Out` is the Rust
-//! return type carried by [`crate::expr::AggregateExpr<Out>`] — `i64`
+//! return type carried by [`crate::expr::AggregateExpr<Out, K>`] — `i64`
 //! for `COUNT`, `f64` for `AVG`, `V` for `SUM`/`MIN`/`MAX` where `V` is
-//! the underlying column's scalar type.
+//! the underlying column's scalar type. `K` is the modifier-family
+//! marker; it defaults to [`crate::expr::ValueAgg`] and is inferred
+//! from the aggregate the closure returns so non-value families
+//! (`PERCENTILE_CONT`, `RANK_OF`, `GROUPING`, etc.) flow through this
+//! terminal without explicit annotation.
 //!
 //! # Why a dedicated pending handle
 //!
@@ -51,6 +55,7 @@
 use crate::DjogiError;
 use crate::context::DjogiContext;
 use crate::expr::AggregateExpr;
+use crate::expr::aggregate::{KindEvidence, ValueAgg};
 use crate::model::Model;
 use crate::pg::accumulator::as_params;
 use crate::query::queryset::QuerySet;
@@ -63,20 +68,30 @@ use std::marker::PhantomData;
 ///
 /// Holds the upstream queryset (for the `FROM` + `WHERE` clauses) plus
 /// the aggregate expression itself. `Out` is the Rust type the driver
-/// decodes the scalar result into — it is threaded from the wrapped
-/// [`AggregateExpr<Out>`].
+/// decodes the scalar result into; `K` is the aggregate's modifier
+/// family ([`crate::expr::ValueAgg`] / [`crate::expr::MetadataAgg`] /
+/// [`crate::expr::OrderedSetAgg`] / [`crate::expr::HypotheticalSetAgg`]),
+/// threaded from the wrapped [`AggregateExpr<Out, K>`].
+///
+/// `K` defaults to [`crate::expr::ValueAgg`] so pre-#89 call sites that
+/// passed a value aggregate (`f.col().sum()`, `f.col().count()`, etc.)
+/// keep working without explicit annotation. Non-value families
+/// (`f.col().percentile_cont(0.5)`, `f.col().rank_of(7_500)`,
+/// `f.col().grouping()`) infer `K` from the returned aggregate's kind
+/// marker.
 ///
 /// `#[must_use]` because an unawaited pending query is always a
 /// mistake; the `.fetch_one(ctx)` call is what actually runs the SQL.
 #[must_use = "aggregate queries are lazy — dropping one silently omits the query"]
-pub struct AggregateQuery<T: Model, Out> {
+pub struct AggregateQuery<T: Model, Out, K = ValueAgg> {
     pub(crate) qs: QuerySet<T>,
-    pub(crate) agg: AggregateExpr<Out>,
+    pub(crate) agg: AggregateExpr<Out, K>,
     pub(crate) _out: PhantomData<fn() -> Out>,
 }
 
-impl<T: Model, Out> AggregateQuery<T, Out>
+impl<T: Model, Out, K> AggregateQuery<T, Out, K>
 where
+    K: KindEvidence,
     Out: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
 {
     /// Execute the aggregate query and decode the single scalar result.
@@ -103,6 +118,7 @@ where
     where
         T: 'ctx,
         Out: 'ctx,
+        K: 'ctx,
     {
         async move {
             // Validate DISTINCT modifier combinations before building SQL —
@@ -125,17 +141,25 @@ where
 // and returns the pending aggregate.
 
 impl<T: Model> QuerySet<T> {
-    /// Apply a scalar aggregate (`COUNT` / `SUM` / `AVG` / `MIN` /
-    /// `MAX`) to this queryset.
+    /// Apply a scalar aggregate to this queryset.
     ///
     /// The closure receives a default-constructed `T::Fields` handle
-    /// and must return an [`AggregateExpr<Out>`] — built by calling
-    /// `.count()` / `.sum()` / `.avg()` / `.min()` / `.max()` on a
-    /// [`crate::query::FieldRef`] produced by the fields struct.
-    /// Chain `.filter(Expr<bool>)` on the aggregate for
-    /// `FILTER (WHERE ...)` post-filtering.
+    /// and must return an [`AggregateExpr<Out, K>`]. The returned
+    /// aggregate can be any kind: value aggregates (`COUNT` / `SUM` /
+    /// `AVG` / `MIN` / `MAX`, etc., returning `AggregateExpr<Out>`),
+    /// metadata aggregates (`GROUPING`, returning
+    /// `AggregateExpr<i32, MetadataAgg>`), ordered-set aggregates
+    /// (`PERCENTILE_CONT` / `PERCENTILE_DISC` / `MODE`, returning
+    /// `AggregateExpr<Out, OrderedSetAgg>`), or hypothetical-set
+    /// aggregates (`RANK_OF` / `DENSE_RANK_OF` / `PERCENT_RANK_OF` /
+    /// `CUME_DIST_OF`, returning `AggregateExpr<Out, HypotheticalSetAgg>`).
     ///
-    /// The pending [`AggregateQuery<T, Out>`] is terminated with
+    /// `K` is inferred from the aggregate the closure returns. Chain
+    /// `.filter(Expr<bool>)` on value aggregates for
+    /// `FILTER (WHERE ...)` post-filtering; the per-kind impl blocks
+    /// on `AggregateExpr` enforce which modifiers are legal per family.
+    ///
+    /// The pending [`AggregateQuery<T, Out, K>`] is terminated with
     /// [`AggregateQuery::fetch_one`], which issues
     /// `SELECT <agg> FROM <table> [WHERE ...]` and decodes the single
     /// scalar result.
@@ -143,15 +167,22 @@ impl<T: Model> QuerySet<T> {
     /// ```ignore
     /// use djogi::prelude::*;
     ///
+    /// // Value aggregate — `K = ValueAgg` (default).
     /// let total: i64 = Account::objects()
     ///     .filter(|f| f.published().eq(true))
     ///     .aggregate(|f| f.balance().sum())
     ///     .fetch_one(&mut ctx).await?;
+    ///
+    /// // Ordered-set aggregate — `K = OrderedSetAgg` inferred.
+    /// let p95: f64 = Request::objects()
+    ///     .aggregate(|r| r.latency_ms().percentile_cont(0.95))
+    ///     .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregate queries are lazy — dropping one silently omits the query"]
-    pub fn aggregate<F, Out>(self, f: F) -> AggregateQuery<T, Out>
+    pub fn aggregate<F, Out, K>(self, f: F) -> AggregateQuery<T, Out, K>
     where
-        F: FnOnce(T::Fields) -> AggregateExpr<Out>,
+        F: FnOnce(T::Fields) -> AggregateExpr<Out, K>,
+        K: KindEvidence,
     {
         let agg = f(T::Fields::default());
         AggregateQuery {

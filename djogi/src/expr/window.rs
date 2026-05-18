@@ -5,7 +5,10 @@
 //! [`WindowSpec`] describes a SQL window clause. [`WindowBuilder`] is the fluent
 //! builder handed to the user's `.over(|w| ...)` closure on
 //! [`super::aggregate::AggregateExpr`]. An empty builder (`.over(|w| w)`) emits
-//! `OVER ()` — identical to the default wrapping used by ungrouped `.annotate`.
+//! `OVER ()` — identical to the default wrapping used by ungrouped `.annotate`
+//! for value-aggregate annotations. Non-windowable aggregate kinds do not
+//! expose `.over(...)` and are also rejected from the plain ungrouped annotate
+//! path that would otherwise synthesize `OVER ()`.
 //! Partition, order, and frame clauses are opt-in.
 //!
 //! # Full surface

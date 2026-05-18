@@ -1,0 +1,18 @@
+error[E0599]: `AggregateExpr<i32, MetadataAgg>` is not an iterator
+   --> $DIR/grouping_filter.rs:13:31
+    |
+ 13 |         f.region().grouping().filter(Expr::literal(true))
+    |                               ^^^^^^ `AggregateExpr<i32, MetadataAgg>` is not an iterator
+    |
+   ::: djogi/src/expr/aggregate.rs:143:1
+    |
+143 | pub struct AggregateExpr<Out, K = ValueAgg> {
+    | ------------------------------------------- doesn't satisfy `AggregateExpr<i32, MetadataAgg>: Iterator`
+    |
+    = note: the following trait bounds were not satisfied:
+            `AggregateExpr<i32, MetadataAgg>: Iterator`
+            which is required by `&mut AggregateExpr<i32, MetadataAgg>: Iterator`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

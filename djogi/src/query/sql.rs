@@ -1385,9 +1385,9 @@ pub(crate) fn build_select_joined<T: Model>(
 /// - `None` — emit no window clause at all (scalar terminal + grouped
 ///   annotate SELECT, neither of which should silently grow `OVER ()`).
 /// - `Some(s)` — emit `s` as the default (the ungrouped annotate path
-///   uses `Some(" OVER ()")` so SELECT-list-form aggregates are valid
-///   without a `GROUP BY` — see [`emit_aggregate_with_window_and_cast`]
-///   for the rationale).
+///   uses `Some(" OVER ()")` only after the plain-annotation type-state has
+///   proven the aggregate kind is windowable; non-windowable aggregate kinds
+///   are rejected before reaching this helper).
 fn emit_aggregate_inner(
     acc: &mut SqlAccumulator,
     agg: &crate::expr::node::ExprNode,
@@ -1613,10 +1613,10 @@ pub(crate) fn emit_aggregate_with_cast(
     emit_aggregate_inner(acc, agg, None)
 }
 
-/// Emit `(AGG(..) OVER ())::CAST` for the annotate-SELECT-list path —
-/// wraps the aggregate in a window function so the SELECT list is
-/// valid without a `GROUP BY` clause, then applies the optional
-/// narrowing cast.
+/// Emit `(AGG(..) OVER ())::CAST` for the plain ungrouped
+/// annotate-SELECT-list path — wraps a windowable aggregate in a window
+/// function so the SELECT list is valid without a `GROUP BY` clause, then
+/// applies the optional narrowing cast.
 ///
 /// # Why `OVER ()` rather than explicit `GROUP BY`
 ///
@@ -1626,6 +1626,12 @@ pub(crate) fn emit_aggregate_with_cast(
 /// An unbounded window function (`OVER ()`) produces the table-wide
 /// aggregate value on every returned row, which is the useful
 /// per-row-with-table-aggregate semantics annotate users expect.
+///
+/// This synthesized-window path is only legal for value aggregates. The
+/// public `QuerySet::annotate` builder requires `PlainAnnotationTuple`, so
+/// ordered-set, hypothetical-set, and metadata aggregate kinds cannot reach
+/// this helper through plain annotate; scalar `QuerySet::aggregate` and
+/// grouped annotate use the non-default-window emitter instead.
 ///
 /// Reverse-relation aggregates (`f.orders.count()`) may need `OVER
 /// (PARTITION BY parent.id)` after a LATERAL join; that is a deliberate
@@ -1764,13 +1770,15 @@ where
 /// order in the SELECT list ever changes, key decoding will silently read the
 /// wrong columns.
 ///
-/// # Why `push_columns_bare` not `push_columns`
+/// # Why `push_columns_bare` not plain-annotate column emission
 ///
-/// `IntoAggregateTuple::push_columns` wraps each aggregate in `OVER ()` for
-/// the `annotate`-on-ungrouped path. A `GROUP BY` query must not use window
-/// functions in the SELECT list for its aggregate columns — Postgres would
-/// reject the combination. `push_columns_bare` emits the aggregate with only
-/// the narrowing cast but no window frame.
+/// Plain ungrouped annotate emits value aggregate slots with a synthesized
+/// `OVER ()` through the `PlainAnnotationTuple` path. A `GROUP BY` query must
+/// not use those synthesized windows in the SELECT list for its aggregate
+/// columns — Postgres would reject the combination. `push_columns_bare` emits
+/// the aggregate with only the narrowing cast and no default window, which is
+/// why grouped annotate remains legal for metadata, ordered-set, and
+/// hypothetical-set aggregates.
 ///
 /// # Spatial JOIN delegation
 ///

@@ -466,15 +466,19 @@ pub enum DjogiError {
     /// # When this surfaces
     ///
     /// Raised by the fetch-time legality check in
-    /// [`crate::expr::sql::check_aggregate_legality`] for two cases:
+    /// [`crate::expr::sql::check_aggregate_legality`] for three value-aggregate
+    /// cases that cannot be represented by the kind-state split alone:
     ///
     /// - `COUNT(DISTINCT *)` — `COUNT(DISTINCT *)` is not valid SQL.
     ///   Use `COUNT(DISTINCT col)` via [`crate::query::field::FieldRef::count`]
     ///   instead.
-    /// - `STRING_AGG(DISTINCT col, sep)` — Postgres requires an explicit
-    ///   per-aggregate `ORDER BY` when DISTINCT is combined with
-    ///   `STRING_AGG`. Djogi's Phase 6.5 IR does not track per-aggregate
-    ///   ORDER BY; a future phase will lift this restriction.
+    /// - `STRING_AGG(DISTINCT col, sep)` without per-aggregate `ORDER BY` —
+    ///   Postgres requires an explicit ordering when DISTINCT is combined
+    ///   with `STRING_AGG`. Chain `.order_by(...)` on the aggregate to make
+    ///   the shape well-formed.
+    /// - `COUNT(*) ORDER BY ...` — the `COUNT(*)` emitter has no argument
+    ///   slot to attach per-aggregate ordering to, so accepting the modifier
+    ///   would silently drop it.
     ///
     /// `op` is the aggregate function keyword (e.g. `"COUNT(*)"`,
     /// `"STRING_AGG"`). `reason` is a human-readable description of why

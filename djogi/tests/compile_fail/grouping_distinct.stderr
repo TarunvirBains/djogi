@@ -1,0 +1,12 @@
+error[E0599]: no method named `distinct` found for struct `AggregateExpr<i32, MetadataAgg>` in the current scope
+  --> $DIR/grouping_distinct.rs:12:81
+   |
+12 |     let _ = GroupingDistinctModel::objects().annotate(|f| f.region().grouping().distinct());
+   |                                                                                 ^^^^^^^^ method not found in `AggregateExpr<i32, MetadataAgg>`
+   |
+   = note: the method was found for
+           - `AggregateExpr<Out>`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

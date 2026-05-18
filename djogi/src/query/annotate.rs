@@ -34,12 +34,19 @@
 //!
 //! Implemented for:
 //!
-//! - `AggregateExpr<V>` (arity 1) — `Decoded = V`
-//! - `(AggregateExpr<V1>, AggregateExpr<V2>)` — `Decoded = (V1, V2)`
-//! - `(AggregateExpr<V1>, AggregateExpr<V2>, AggregateExpr<V3>)`
+//! - `AggregateExpr<V, K>` (arity 1) — `Decoded = V`
+//! - `(AggregateExpr<V1, K1>, AggregateExpr<V2, K2>)` — `Decoded = (V1, V2)`
+//! - `(AggregateExpr<V1, K1>, AggregateExpr<V2, K2>, AggregateExpr<V3, K3>)`
 //!   — `Decoded = (V1, V2, V3)`
-//! - `(AggregateExpr<V1>, AggregateExpr<V2>, AggregateExpr<V3>,
-//!   AggregateExpr<V4>)` — `Decoded = (V1, V2, V3, V4)`
+//! - `(AggregateExpr<V1, K1>, AggregateExpr<V2, K2>, AggregateExpr<V3, K3>,
+//!   AggregateExpr<V4, K4>)` — `Decoded = (V1, V2, V3, V4)`
+//!
+//! Plain ungrouped [`QuerySet::annotate`] applies the narrower
+//! [`PlainAnnotationTuple`] bound because that terminal synthesizes
+//! `OVER ()` for aggregate slots. Only value aggregates can use that
+//! synthesized window. Ordered-set, hypothetical-set, and metadata
+//! aggregate kinds remain legal through scalar [`QuerySet::aggregate`]
+//! and grouped annotate, but do not compile on the plain annotate path.
 //!
 //! The trait is sealed by a private supertrait so downstream crates
 //! cannot add their own impls — same seal pattern as
@@ -65,6 +72,7 @@ use crate::context::DjogiContext;
 use crate::expr::{
     AggregateExpr, DenseRank, FirstValueWindow, LagWindow, LastValueWindow, LeadWindow,
     NthValueWindow, Rank, RowNumber,
+    aggregate::{KindEvidence, ValueAgg},
 };
 use crate::model::Model;
 use crate::pg::accumulator::{SqlAccumulator, as_params};
@@ -296,6 +304,29 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
     }
 }
 
+/// A single annotation slot that is allowed to flow through the plain
+/// ungrouped `QuerySet::annotate` SELECT-list emitter.
+///
+/// This is intentionally narrower than [`AnnotationSlot`]. `AnnotationSlot`
+/// remains the shared grouped/scalar annotation bridge; `PlainAnnotationSlot`
+/// protects the ungrouped path that calls `push_column` and therefore may add
+/// a synthesized `OVER ()`.
+#[doc(hidden)]
+pub trait PlainAnnotationSlot: AnnotationSlot {}
+
+/// Tuple-level counterpart to [`PlainAnnotationSlot`].
+///
+/// `QuerySet::annotate` is the only public terminal builder that requires this
+/// bound. Grouped annotate continues to require only [`IntoAggregateTuple`] so
+/// metadata, ordered-set, and hypothetical-set aggregates remain available in
+/// grouped contexts where no synthesized `OVER ()` is added.
+#[doc(hidden)]
+pub trait PlainAnnotationTuple: IntoAggregateTuple {
+    /// Push plain-annotate SELECT-list columns. Implemented only for tuple
+    /// shapes whose slots are legal on the synthesized-window path.
+    fn push_plain_columns(&self, acc: &mut SqlAccumulator);
+}
+
 /// Type-level bridge from the closure return type of
 /// [`QuerySet::annotate`] to the SELECT-list + row-decode logic.
 ///
@@ -444,19 +475,18 @@ pub trait IntoAggregateTuple: sealed::Sealed {
 
 // ── Single annotation slots ──────────────────────────────────────────
 
-// Each aggregate is emitted with `OVER ()` so the annotate SELECT-list
-// stays valid without a `GROUP BY` clause. For self-column aggregates
-// (the Task 4 shape) `OVER ()` produces the table-wide aggregate value
-// on every row — matches the typical Django intuition of `annotate`
-// producing "one scalar per returned row". Reverse-relation aggregates
-// (`f.orders.count()`) will ship in Task 5 and may need a different
-// emission strategy (LATERAL joins + per-parent partitions); the
-// window-function form here is deliberately the simplest that works
-// for the Task 4 scope without requiring GROUP BY semantics.
+// Plain ungrouped aggregate annotations are emitted with `OVER ()` so the
+// annotate SELECT-list stays valid without a `GROUP BY` clause. That default
+// window is valid only for value aggregates; `PlainAnnotationSlot` is
+// implemented for `AggregateExpr<_, ValueAgg>` but not for metadata,
+// ordered-set, or hypothetical-set kinds. The broader `AnnotationSlot` impl
+// remains generic so scalar aggregate and grouped annotate can still use every
+// aggregate kind without a synthesized window.
 
-impl<V> annotation_slot_sealed::Sealed for AggregateExpr<V> {}
-impl<V> AnnotationSlot for AggregateExpr<V>
+impl<V, K> annotation_slot_sealed::Sealed for AggregateExpr<V, K> {}
+impl<V, K> AnnotationSlot for AggregateExpr<V, K>
 where
+    K: KindEvidence,
     V: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
 {
     type Decoded = V;
@@ -509,6 +539,11 @@ where
     fn check_legality(&self) -> Result<(), crate::DjogiError> {
         crate::expr::sql::check_aggregate_legality(&self.node)
     }
+}
+
+impl<V> PlainAnnotationSlot for AggregateExpr<V, ValueAgg> where
+    V: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static
+{
 }
 
 macro_rules! impl_window_annotation_slot {
@@ -585,6 +620,8 @@ macro_rules! impl_window_annotation_slot {
                 self.window.is_pair_qualified()
             }
         }
+
+        impl PlainAnnotationSlot for $type_name {}
     };
 }
 
@@ -667,6 +704,11 @@ macro_rules! impl_window_annotation_slot_generic_v {
                 false
             }
         }
+
+        impl<V> PlainAnnotationSlot for $type_name<V> where
+            V: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static
+        {
+        }
     };
 }
 
@@ -744,6 +786,15 @@ where
     }
 }
 
+impl<S> PlainAnnotationTuple for S
+where
+    S: PlainAnnotationSlot,
+{
+    fn push_plain_columns(&self, acc: &mut SqlAccumulator) {
+        self.push_column(acc, 0);
+    }
+}
+
 impl sealed::Sealed for () {}
 
 impl IntoAggregateTuple for () {
@@ -765,6 +816,10 @@ impl IntoAggregateTuple for () {
     fn annotation_count(&self) -> usize {
         0
     }
+}
+
+impl PlainAnnotationTuple for () {
+    fn push_plain_columns(&self, _acc: &mut SqlAccumulator) {}
 }
 
 // ── Arity 2..=4: tuples of annotation slots ──────────────────────────
@@ -858,6 +913,17 @@ macro_rules! impl_into_aggregate_tuple {
                 Ok(())
             }
         }
+
+        impl<$($ty),+> PlainAnnotationTuple for ( $($ty,)+ )
+        where
+            $($ty: PlainAnnotationSlot,)+
+        {
+            fn push_plain_columns(&self, acc: &mut SqlAccumulator) {
+                $(
+                    self.$slot.push_column(acc, $slot);
+                )+
+            }
+        }
     };
 }
 
@@ -925,7 +991,7 @@ impl<T: Model, A: IntoAggregateTuple> AnnotatedQuerySet<T, A> {
     }
 }
 
-impl<T: Model, A: IntoAggregateTuple + Send> AnnotatedQuerySet<T, A>
+impl<T: Model, A: PlainAnnotationTuple + Send> AnnotatedQuerySet<T, A>
 where
     T: FromPgRow + Send + Unpin,
 {
@@ -995,7 +1061,7 @@ where
             let acc = build_annotated_select_for_fetch(
                 &qs,
                 |acc| {
-                    aggregates.push_columns(acc);
+                    aggregates.push_plain_columns(acc);
                 },
                 qualify.as_ref(),
             )
@@ -1025,8 +1091,12 @@ impl<T: Model> QuerySet<T> {
     /// Augment this queryset with one or more aggregate columns.
     ///
     /// The closure receives a default-constructed `T::Fields` handle
-    /// and returns either a single [`AggregateExpr<V>`] (arity 1) or
-    /// a tuple of aggregates (arity 2..=4). The pending
+    /// and returns either a single plain-annotation slot (arity 1) or
+    /// a tuple of slots (arity 2..=4). For aggregate expressions, the
+    /// plain ungrouped path accepts value aggregates only because it
+    /// synthesizes `OVER ()`; ordered-set, hypothetical-set, and metadata
+    /// aggregate kinds remain available through `QuerySet::aggregate` and
+    /// grouped annotate where no synthesized window is added. The pending
     /// [`AnnotatedQuerySet`] is terminated with
     /// [`AnnotatedQuerySet::fetch_all`], which returns
     /// `Vec<(T, Decoded)>` where `Decoded` is the scalar (arity 1)
@@ -1054,7 +1124,7 @@ impl<T: Model> QuerySet<T> {
     pub fn annotate<F, A>(self, f: F) -> AnnotatedQuerySet<T, A>
     where
         F: FnOnce(T::Fields) -> A,
-        A: IntoAggregateTuple,
+        A: PlainAnnotationTuple,
     {
         let aggregates = f(T::Fields::default());
         AnnotatedQuerySet {

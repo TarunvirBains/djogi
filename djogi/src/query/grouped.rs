@@ -639,6 +639,64 @@ mod tests {
             qs.group_by(|_| keys).annotate(|_| vals.sum());
     }
 
+    #[test]
+    fn grouped_annotate_accepts_ordered_set_kind_without_synthesized_over() {
+        use crate::query::sql::build_grouped_annotated_select;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let keys: FieldRef<Fake, i64> = FieldRef::new("org_id");
+        let vals: FieldRef<Fake, f64> = FieldRef::new("score");
+        let gaq = qs
+            .group_by(|_| keys)
+            .annotate(|_| vals.percentile_cont(0.5));
+        let acc = build_grouped_annotated_select(&gaq).expect("grouped select");
+        let sql = acc.sql();
+        assert!(
+            sql.contains("PERCENTILE_CONT") && sql.contains("WITHIN GROUP"),
+            "expected ordered-set aggregate in grouped annotate, got: {sql}"
+        );
+        assert!(
+            !sql.contains("OVER ()"),
+            "grouped annotate must not synthesize OVER () for ordered-set aggregates, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn grouped_annotate_accepts_hypothetical_set_kind_without_synthesized_over() {
+        use crate::query::sql::build_grouped_annotated_select;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let keys: FieldRef<Fake, i64> = FieldRef::new("org_id");
+        let vals: FieldRef<Fake, i64> = FieldRef::new("salary");
+        let gaq = qs.group_by(|_| keys).annotate(|_| vals.rank_of(7_500));
+        let acc = build_grouped_annotated_select(&gaq).expect("grouped select");
+        let sql = acc.sql();
+        assert!(
+            sql.contains("RANK(") && sql.contains("WITHIN GROUP"),
+            "expected hypothetical-set aggregate in grouped annotate, got: {sql}"
+        );
+        assert!(
+            !sql.contains("OVER ()"),
+            "grouped annotate must not synthesize OVER () for hypothetical-set aggregates, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn grouped_annotate_accepts_metadata_kind_without_synthesized_over() {
+        use crate::query::sql::build_grouped_annotated_select;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let region: FieldRef<Fake, i64> = FieldRef::new("region");
+        let gaq = qs.rollup(|_| region).annotate(|_| region.grouping());
+        let acc = build_grouped_annotated_select(&gaq).expect("grouped select");
+        let sql = acc.sql();
+        assert!(
+            sql.contains("GROUPING(region)"),
+            "expected metadata aggregate in grouped annotate, got: {sql}"
+        );
+        assert!(
+            !sql.contains("OVER ()"),
+            "grouped annotate must not synthesize OVER () for metadata aggregates, got: {sql}"
+        );
+    }
+
     // Step 1.9 — HAVING, ORDER BY, LIMIT, OFFSET SQL emission
     #[test]
     fn having_clause_emits_after_group_by() {
