@@ -2056,6 +2056,70 @@ pub struct FieldDescriptor {
     ///
     /// Phase 8.5 Cluster 4 (djogi#217).
     pub comment: Option<&'static str>,
+
+    /// `#[field(strict_id_check)]` or model-wide `#[model(strict_ids)]` —
+    /// opt-in structural CHECK constraint on HeerId / RanjId columns.
+    ///
+    /// **Default off.** When `false` (the common case), no extra CHECK is
+    /// projected for HeerId / RanjId columns; the BIGINT / UUID column
+    /// type itself accepts any value (including, e.g., a UUIDv4 written
+    /// into a UUID column intended to hold UUIDv8 / RanjId payloads).
+    /// External writers can land structurally malformed IDs that survive
+    /// the INSERT and only surface as decode failures when later read
+    /// back through the typed Rust path (`HeerId::from_i64` rejects
+    /// negative values; `RanjId::from_uuid` rejects non-v8 / non-RFC4122
+    /// variants).
+    ///
+    /// **When `true`,** the projection layer emits a structural CHECK
+    /// on the column at migration time based on the resolved SQL column
+    /// type:
+    ///
+    /// * `BIGINT` (HeerId / HeerIdDesc) → `<col> >= 0`. The single
+    ///   invariant `HeerId::from_i64` enforces is `bit 63 = 0` (i.e.
+    ///   the value is non-negative when interpreted as `i64`). All
+    ///   other 63 bits (41 timestamp + 9 node + 13 sequence) are
+    ///   structurally valid.
+    /// * `UUID` (RanjId / RanjIdDesc) → version=8 and variant=RFC4122.
+    ///   `RanjId::from_uuid` rejects every UUID whose version nibble is
+    ///   not 8 or whose variant high bits are not `10`. The flip-mask
+    ///   for `RanjIdDesc` preserves the version + variant nibbles, so
+    ///   both ascending and descending RanjId variants share this CHECK.
+    /// * Any other resolved SQL type → no CHECK is emitted. This is the
+    ///   FK-to-Serial case (e.g. an `FK<Vehicle>` where `Vehicle` has
+    ///   `pk = Serial`): the macro propagates the opt-in flag to every
+    ///   FK column when `#[model(strict_ids)]` is set, and the
+    ///   projection silently skips columns whose resolved type is not
+    ///   `BIGINT` / `UUID`.
+    ///
+    /// **Performance.** The HeerId structural CHECK is a single
+    /// comparison (`<1 µs` per row). The RanjId CHECK extracts two hex
+    /// digits from the canonical UUID text (`uuid::text` cast + two
+    /// `substring` calls) and runs in ~1–3 µs per row. Both are opt-in
+    /// because the **default-on** semantics would break every existing
+    /// model that holds an ID generated outside HeeRanjID (raw SQL
+    /// migrations, BI-tool writes, sister apps).
+    ///
+    /// **Combination with adopter `#[field(check = "...")]`.** When the
+    /// adopter also declares a CHECK on a strict-ID-checked column, the
+    /// projection combines all three (strict-ID + type-derived +
+    /// adopter) into the single constraint slot via logical `AND`,
+    /// mirroring the existing djogi#105 AND-merge contract.
+    ///
+    /// **Migration to Route B (centralized HeeRanjID validator).** The
+    /// CHECK projected here lives inside djogi and tracks HeeRanjID's
+    /// bit layout (verified against `~/projects/HeeRanjID/heeranjid/src`
+    /// at the time this attribute landed). A future HeeRanjID release
+    /// will ship `IMMUTABLE PARALLEL SAFE` Postgres validator functions
+    /// (`heeranjid.is_valid_heerid(BIGINT)` /
+    /// `heeranjid.is_valid_ranjid(UUID)`); when those land, djogi will
+    /// migrate to projecting `CHECK (heeranjid.is_valid_heerid(<col>))`
+    /// against them so the validator becomes a single source of truth.
+    /// The opt-in attribute surface stays unchanged across that
+    /// migration. See `docs/spec/decisions.md` "HeerId / RanjId
+    /// structural CHECK (djogi#189)" for the route-A / route-B trade.
+    ///
+    /// djogi#189.
+    pub strict_id_check: bool,
 }
 
 /// Adopter-supplied override for the Postgres volatility class of a
@@ -2146,6 +2210,15 @@ pub const fn field_descriptor(
         // to `None` (no comment); the macro fills `Some(<text>)` from
         // the attribute.
         comment: None,
+        // Phase 8.5 Cluster 2 (djogi#189) — opt-in structural CHECK
+        // for HeerId / RanjId columns. Defaults to `false` (no extra
+        // CHECK; matches pre-189 behaviour). The macro sets `true`
+        // for fields opted in via `#[field(strict_id_check)]` or
+        // `#[model(strict_ids)]`; the projection layer reads this
+        // flag plus the resolved SQL column type to decide which
+        // structural CHECK to emit (`BIGINT` → HeerId; `UUID` →
+        // RanjId; otherwise no CHECK).
+        strict_id_check: false,
     }
 }
 

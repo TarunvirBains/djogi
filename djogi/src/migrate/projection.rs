@@ -1577,6 +1577,117 @@ fn combine_check_expressions(
     }
 }
 
+/// Project the opt-in structural CHECK for HeerId / RanjId columns
+/// (djogi#189).
+///
+/// Returns `Some(<sql expression>)` when the resolved SQL column type
+/// is `BIGINT` (HeerId / HeerIdDesc) or `UUID` (RanjId / RanjIdDesc),
+/// and `None` for any other type. The opt-in flag (`strict_id_check`)
+/// is owned by the descriptor and is read by the caller before this
+/// helper runs — this function is a pure type → CHECK mapper.
+///
+/// # CHECK shape
+///
+/// * `BIGINT` → `<col> >= 0`. The Rust `HeerId::from_i64` rejects every
+///   negative `i64` (bit 63 = 1), and the constructor for `HeerId::new`
+///   masks the remaining 63 bits (41 timestamp + 9 node + 13 sequence)
+///   into a valid layout without any reserved-bit slot to enforce. The
+///   only structural invariant is therefore `bit 63 = 0`, which lowers
+///   to `col >= 0` on the Postgres signed `BIGINT` carrier.
+/// * `UUID` → `version=8 AND variant=RFC4122`. `RanjId::from_uuid`
+///   rejects every UUID whose version nibble (bits 76-79) is not `0b1000`
+///   or whose variant high bits (bits 62-63) are not `0b10`. The flip
+///   mask for `RanjIdDesc` (`0xFFFF_FFFF_FFFF_0FFF_0FFF_FFFF_8000_FFFF`)
+///   preserves both fields, so the ascending and descending variants
+///   share the same structural CHECK.
+///
+/// The UUID CHECK extracts the two relevant nibbles from the canonical
+/// 8-4-4-4-12 lowercase text form Postgres emits via the `::text` cast:
+/// position 15 is the version hex digit (`'8'` for UUIDv8), position 20
+/// is the variant high nibble (`'8'`, `'9'`, `'a'`, `'b'` for RFC4122
+/// `10xx`). Postgres `uuid_out` canonicalises every UUID to lowercase
+/// hex, so case folding on the literal set is unnecessary. The
+/// substring path adds ~1–3 µs per row vs `<1 µs` for the BIGINT
+/// comparison — both are opt-in because automatic emission would break
+/// existing models that carry externally-generated IDs.
+///
+/// # NULL pass-through
+///
+/// Both CHECK shapes evaluate to NULL on a NULL column value (`col >=
+/// 0` returns NULL on `col IS NULL`; `substring(NULL::text, ...)`
+/// returns NULL; the equality / `IN` comparisons against NULL also
+/// produce NULL). Postgres CHECK constraints treat NULL as satisfied,
+/// so nullable HeerId / RanjId columns work unchanged. No explicit
+/// `<col> IS NULL OR (...)` wrap is required.
+///
+/// # Why string-match against the resolved SQL type
+///
+/// FK columns inherit their SQL type from the parent's PK via
+/// `pk_sql_type_text(parent.pk_type)`, which returns the bare keyword
+/// `"BIGINT"` for HeerId / HeerIdDesc and `"UUID"` for RanjId /
+/// RanjIdDesc. Non-FK HeerId / RanjId fields lower to the matching
+/// `FieldSqlType` variant whose `Display` impl produces the same
+/// keywords. Custom PKs whose `PrimaryKey::SQL_TYPE` resolves to a
+/// non-identity string (`"INTEGER"` for Serial-shaped customs, etc.)
+/// fall through to the `_ => None` arm — the macro can propagate the
+/// `strict_id_check` flag to every FK at parse time without knowing
+/// the target's PK type, and the projection layer silently drops the
+/// CHECK on non-applicable columns.
+///
+/// djogi#189.
+fn strict_id_check_expr(resolved_sql_type: &str, column_name: &str) -> Option<String> {
+    let qcol = quote_ident_for_check(column_name);
+    match resolved_sql_type {
+        // ── HeerId / HeerIdDesc (BIGINT carrier) ─────────────────────
+        // `bit 63 = 0` is the only structural invariant — the 41 + 9 +
+        // 13 bit layout uses every other bit, and `HeerId::from_i64`
+        // rejects negatives via `if raw < 0 { return Err(NegativeHeerId) }`.
+        // Verified against `~/projects/HeeRanjID/heeranjid/src/heer.rs`
+        // at the time djogi#189 landed.
+        "BIGINT" => Some(format!("{qcol} >= 0")),
+
+        // ── RanjId / RanjIdDesc (UUID carrier) ───────────────────────
+        // UUIDv8 version + RFC4122 variant. Position 15 of the canonical
+        // 8-4-4-4-12 text form is the version hex digit; position 20 is
+        // the variant high nibble (must be one of `'8'..='b'` for the
+        // `10xx` variant pattern).
+        //
+        // The CHECK uses `pg_catalog.substring(...)` rather than the
+        // unqualified `substring` so the catalog reference cannot be
+        // hijacked by a per-schema function override that an adopter
+        // (or a sister application) might install on the same database.
+        // The `pg_catalog` schema is hard-pinned to the system catalog
+        // by Postgres itself — it is part of the immutable session
+        // namespace and resolves unambiguously regardless of
+        // `search_path`. Verified against
+        // `~/projects/HeeRanjID/heeranjid/src/ranj.rs` (`from_uuid`
+        // rejects non-`0b1000` version and non-`0b10` variant) and
+        // `ranj_desc.rs` (the `RANJ_FLIP_MASK` preserves bits 76-79 and
+        // 62-63).
+        //
+        // Function-call form `substring(text, start, len)` is used
+        // intentionally — the SQL-standard syntax `substring(X FROM N
+        // FOR M)` is only recognised on the unqualified `substring`,
+        // not on the schema-qualified `pg_catalog.substring`. The
+        // function-call form takes the same three arguments and routes
+        // through the same builtin, so the schema qualification stays
+        // intact without losing semantic parity.
+        "UUID" => Some(format!(
+            "pg_catalog.substring({qcol}::text, 15, 1) = '8' AND \
+             pg_catalog.substring({qcol}::text, 20, 1) IN ('8','9','a','b')"
+        )),
+
+        // Every other SQL type — INTEGER (Serial), Custom (adopter PK),
+        // unrelated scalars — receives no strict-ID CHECK. The macro
+        // does not know the FK target's PK type at parse time, so it
+        // sets `strict_id_check: true` on every FK when
+        // `#[model(strict_ids)]` is on; this arm catches the
+        // FK-to-Serial / FK-to-Custom cases and the explicit
+        // `#[field(strict_id_check)]` on a non-applicable scalar.
+        _ => None,
+    }
+}
+
 /// Local quoter for CHECK expressions — duplicates `quote_ident` from
 /// `migrate/sql.rs` because the projection layer cannot depend back
 /// on the SQL emitter. The two implementations stay byte-identical;
@@ -1775,7 +1886,46 @@ fn project_column(
     } else {
         field_type_check(&f.sql_type, f.rust_source_type, f.name)
     };
-    let check: Option<String> = combine_check_expressions(type_derived_check, f.check_sql);
+
+    // djogi#189 — opt-in HeerId / RanjId structural CHECK.
+    //
+    // Distinct from `type_derived_check` because the strict-ID CHECK:
+    //   1. Reads the RESOLVED SQL type (after FK substitution), not the
+    //      descriptor's `f.sql_type` placeholder. FK columns inherit
+    //      their type from the parent PK, which is the type the
+    //      structural CHECK must apply against.
+    //   2. Is opt-in via `f.strict_id_check`, not on every HeerId /
+    //      RanjId column (default-off semantics — see the field's
+    //      doc comment for the perf rationale).
+    //   3. Applies to FK columns too — the adopter may opt-in on a
+    //      whole model via `#[model(strict_ids)]`, and every FK whose
+    //      target uses a HeerId or RanjId PK should reject externally
+    //      generated structurally-invalid IDs.
+    //
+    // The helper silently skips columns whose resolved SQL type is not
+    // `BIGINT` / `UUID` (e.g. an FK to a Serial-PK table). The macro
+    // propagates the flag broadly when `#[model(strict_ids)]` fires,
+    // so this skip is the natural place to filter applicability.
+    let strict_id_check_clause: Option<String> = if f.strict_id_check {
+        strict_id_check_expr(&sql_type, f.name)
+    } else {
+        None
+    };
+
+    // Combine the auto-projected halves (type-derived + strict-ID) into
+    // a single SQL fragment before AND-merging with any adopter
+    // `#[field(check = "...")]`. The two auto-projections are
+    // mutually exclusive in practice (HeerId / RanjId fields carry
+    // `rust_source_type: None`, so `type_derived_check` is always None
+    // when `strict_id_check_clause` is Some), but the explicit
+    // combination keeps the slot extensible without changing the
+    // adopter-CHECK contract.
+    let auto_check: Option<String> = match (type_derived_check, strict_id_check_clause) {
+        (None, None) => None,
+        (Some(c), None) | (None, Some(c)) => Some(c),
+        (Some(t), Some(s)) => Some(format!("({}) AND ({})", t.trim(), s.trim())),
+    };
+    let check: Option<String> = combine_check_expressions(auto_check, f.check_sql);
 
     ColumnSchema {
         check,
@@ -5158,5 +5308,295 @@ mod tests {
                 col.name
             );
         }
+    }
+
+    // ── djogi#189 — opt-in HeerId / RanjId structural CHECK ─────────────
+    //
+    // The helper `strict_id_check_expr` maps a resolved SQL column type
+    // to the structural CHECK that enforces the HeeRanjID bit-layout
+    // invariants. Default-off behaviour is preserved by gating in
+    // `project_column`: `f.strict_id_check == false` skips the helper
+    // entirely. These tests pin the type → CHECK mapping itself and the
+    // end-to-end projection wiring (default-off, model-wide opt-in,
+    // field-level opt-in, AND-merge with adopter check, FK propagation,
+    // skip on Serial / non-applicable types).
+
+    #[test]
+    fn strict_id_check_expr_for_bigint_emits_heerid_nonneg_bound() {
+        let check = strict_id_check_expr("BIGINT", "owner_id")
+            .expect("BIGINT must receive the HeerId structural CHECK");
+        // The HeerId structural invariant is `bit 63 = 0`, i.e. the
+        // i64 carrier is non-negative. Verified against
+        // ~/projects/HeeRanjID/heeranjid/src/heer.rs::HeerId::from_i64.
+        assert_eq!(check, "\"owner_id\" >= 0");
+    }
+
+    #[test]
+    fn strict_id_check_expr_for_uuid_emits_ranjid_version_variant() {
+        let check = strict_id_check_expr("UUID", "plate_id")
+            .expect("UUID must receive the RanjId structural CHECK");
+        // RanjId is UUIDv8 with RFC 4122 variant. The CHECK extracts the
+        // version nibble (position 15 of the canonical 8-4-4-4-12 text
+        // form) and the variant high nibble (position 20). Lowercase
+        // 'a'/'b' are valid because Postgres canonicalises UUID text
+        // output to lowercase hex.
+        assert!(
+            check.contains("pg_catalog.substring(\"plate_id\"::text, 15, 1) = '8'"),
+            "RanjId CHECK must constrain version nibble to UUIDv8 (`8`): {check}"
+        );
+        assert!(
+            check.contains("pg_catalog.substring(\"plate_id\"::text, 20, 1) IN ('8','9','a','b')"),
+            "RanjId CHECK must constrain variant nibble to RFC 4122 (`10xx`): {check}"
+        );
+    }
+
+    #[test]
+    fn strict_id_check_expr_for_integer_returns_none() {
+        // Serial / INTEGER columns are not HeerId or RanjId — the macro
+        // can propagate `strict_id_check: true` to every FK column when
+        // `#[model(strict_ids)]` fires, but the projection layer must
+        // silently skip non-applicable columns rather than emit a
+        // structural CHECK against an unrelated integer carrier.
+        assert!(strict_id_check_expr("INTEGER", "any_id").is_none());
+    }
+
+    #[test]
+    fn strict_id_check_expr_for_text_returns_none() {
+        // Defensive — a hand-written custom-PK type with `SQL_TYPE = "TEXT"`
+        // (e.g. an externally-administered string ID) reaches this arm
+        // through the FK substitution path. The strict-ID CHECK must not
+        // fire on string columns.
+        assert!(strict_id_check_expr("TEXT", "id").is_none());
+    }
+
+    #[test]
+    fn project_column_default_off_no_strict_check_on_heerid_id() {
+        // Default model (no `#[model(strict_ids)]`, no
+        // `#[field(strict_id_check)]`) — the framework-injected `id`
+        // column on a HeerId-PK model carries no CHECK. This pins the
+        // backward-compat invariant: pre-#189 schemas remain CHECK-free.
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
+        }];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("widgets", "Widget")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-19T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let id_col = &buckets[&empty_global()].models["widgets"].columns[0];
+        assert_eq!(id_col.name, "id");
+        assert!(
+            id_col.check.is_none(),
+            "default-off HeerId id column must carry no CHECK; found: {:?}",
+            id_col.check
+        );
+    }
+
+    #[test]
+    fn project_column_strict_id_check_on_heerid_id() {
+        // With `strict_id_check: true` on a HeerId-shaped BigInt column,
+        // the projection emits `<col> >= 0`. Drives the `#[model(strict_ids)]`
+        // path on a HeerId-PK model (the macro sets the flag on the `id`
+        // framework column).
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            strict_id_check: true,
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
+        }];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("widgets", "Widget")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-19T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let id_col = &buckets[&empty_global()].models["widgets"].columns[0];
+        assert_eq!(id_col.name, "id");
+        let check = id_col
+            .check
+            .as_deref()
+            .expect("strict_id_check on a BigInt column must project a CHECK");
+        assert_eq!(check, "\"id\" >= 0");
+    }
+
+    #[test]
+    fn project_column_strict_id_check_on_ranjid_id() {
+        // RanjId-PK model with `strict_id_check: true` — the structural
+        // CHECK enforces UUIDv8 + RFC 4122 variant on the `id` column.
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            strict_id_check: true,
+            ..field_descriptor("id", FieldSqlType::Uuid, false)
+        }];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            pk_type: PkType::RanjId,
+            ..synth_model("plates", "Plate")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-19T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let id_col = &buckets[&empty_global()].models["plates"].columns[0];
+        let check = id_col
+            .check
+            .as_deref()
+            .expect("strict_id_check on a Uuid column must project a CHECK");
+        assert!(
+            check.contains("version") || check.contains("substring"),
+            "RanjId CHECK should use substring/version-extraction shape: {check}"
+        );
+        assert!(
+            check.contains("= '8'"),
+            "RanjId CHECK must constrain version to UUIDv8: {check}"
+        );
+        assert!(
+            check.contains("IN ('8','9','a','b')"),
+            "RanjId CHECK must constrain variant to RFC 4122: {check}"
+        );
+    }
+
+    #[test]
+    fn project_column_strict_id_check_propagates_to_fk_on_heerid_target() {
+        // `#[model(strict_ids)]` on the FK-bearing model — the macro
+        // sets `strict_id_check: true` on every FK because it cannot
+        // know the FK target's PK type at parse time. The projection
+        // resolves the FK column's SQL type to BIGINT (target uses
+        // HeerId PK) and emits the structural CHECK against the
+        // resolved type, alongside the FK reference.
+        static OWNER_FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
+        }];
+        static VEHICLE_FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                relation_kind: Some(crate::descriptor::RelationKind::ForeignKey),
+                target_type_name: Some("Owner"),
+                strict_id_check: true,
+                ..field_descriptor("owner_id", FieldSqlType::BigInt, false)
+            },
+        ];
+        let owner = ModelDescriptor {
+            fields: OWNER_FIELDS,
+            ..synth_model("owners", "Owner")
+        };
+        let vehicle = ModelDescriptor {
+            fields: VEHICLE_FIELDS,
+            ..synth_model("vehicles", "Vehicle")
+        };
+        let buckets = project_from_iters(
+            [&owner, &vehicle],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-19T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let fk_col = &buckets[&empty_global()].models["vehicles"].columns[1];
+        assert!(fk_col.foreign_key.is_some(), "owner_id must project as FK");
+        assert_eq!(
+            fk_col.check.as_deref(),
+            Some("\"owner_id\" >= 0"),
+            "strict_id_check on an FK to a HeerId-PK target must emit the BIGINT CHECK"
+        );
+    }
+
+    #[test]
+    fn project_column_strict_id_check_skipped_on_fk_to_serial_target() {
+        // `#[model(strict_ids)]` on a model whose FK targets a Serial-PK
+        // table — the resolved FK type is INTEGER, which is not HeerId
+        // or RanjId. The projection silently skips the CHECK rather
+        // than emitting a meaningless `col >= 0` (Serial PKs already
+        // enforce positivity via the IDENTITY sequence) or a structural
+        // UUID CHECK against an integer carrier.
+        static OWNER_FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("id", FieldSqlType::Integer, false)
+        }];
+        static VEHICLE_FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                relation_kind: Some(crate::descriptor::RelationKind::ForeignKey),
+                target_type_name: Some("Owner"),
+                strict_id_check: true,
+                ..field_descriptor("owner_id", FieldSqlType::BigInt, false)
+            },
+        ];
+        let owner = ModelDescriptor {
+            fields: OWNER_FIELDS,
+            pk_type: PkType::Serial,
+            ..synth_model("owners", "Owner")
+        };
+        let vehicle = ModelDescriptor {
+            fields: VEHICLE_FIELDS,
+            ..synth_model("vehicles", "Vehicle")
+        };
+        let buckets = project_from_iters(
+            [&owner, &vehicle],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-19T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let fk_col = &buckets[&empty_global()].models["vehicles"].columns[1];
+        assert!(fk_col.foreign_key.is_some(), "owner_id must project as FK");
+        assert!(
+            fk_col.check.is_none(),
+            "strict_id_check on an FK to a Serial-PK target must skip the CHECK; found: {:?}",
+            fk_col.check
+        );
+    }
+
+    #[test]
+    fn project_column_combines_strict_id_check_with_adopter_check() {
+        // The strict-ID CHECK and the adopter `#[field(check)]` both
+        // route through the column's single CHECK slot via logical AND.
+        // Both clauses must pass for an INSERT to land.
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            strict_id_check: true,
+            check_sql: Some("\"id\" <> 0"),
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
+        }];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("widgets", "Widget")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-19T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let id_col = &buckets[&empty_global()].models["widgets"].columns[0];
+        let check = id_col
+            .check
+            .as_deref()
+            .expect("combined strict_id_check + adopter check must reach ColumnSchema.check");
+        assert!(
+            check.contains("\"id\" >= 0"),
+            "combined CHECK must include the HeerId structural bound: {check}"
+        );
+        assert!(
+            check.contains("\"id\" <> 0"),
+            "combined CHECK must include the adopter predicate verbatim: {check}"
+        );
+        assert!(
+            check.contains(") AND ("),
+            "combined CHECK must AND-merge the two clauses: {check}"
+        );
     }
 }
