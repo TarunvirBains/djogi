@@ -36,7 +36,7 @@ crud_log_url = "postgres://localhost/myapp_crud_logs"
 event_log_url = "postgres://localhost/myapp_event_logs"
 max_connections = 10
 dev_mode = false
-# NODE_ID is set as an environment variable, not in Djogi.toml — it is infrastructure config
+# HEER_NODE_ID and HEER_RANJ_NODE_ID are set as environment variables, not in Djogi.toml — they are infrastructure config
 
 [logging]
 profile = "balanced"      # one of: light, balanced, strict_audit
@@ -195,7 +195,7 @@ async fn vehicle_detail(
 ```
 Djogi contributes at startup (under the `axum` feature):
 - Merges all registered app `Router`s into the root `axum::Router`
-- NODE_ID is selected via environment and must be provisioned in `heer_nodes` before service startup
+- `HEER_NODE_ID` and `HEER_RANJ_NODE_ID` are selected via environment and must be provisioned in `heer_nodes` before service startup; wire them into the pool's `post_connect` hook
 - Configures standard `tower` middleware (tracing, request ID, optional auth)
 - Optionally runs pending migrations on boot (configurable; default on in dev, off in production)
 
