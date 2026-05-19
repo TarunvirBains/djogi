@@ -633,6 +633,32 @@ name = "phase8_5_c2_105_188_check_decimal"
 path = "../tests/internal/phase8_5_c2_105_188_check_decimal.rs"
 harness = true
 
+# Phase 8.5 G0 — Decimal representability CHECK rejects PostgreSQL
+# NUMERIC special values (`NaN`, `Infinity`, `-Infinity`) on the scalar
+# Decimal column, the NUMRANGE endpoint checks, and the
+# `__djogi_numeric_array_is_rust_decimal_v1` helper. The rejection path
+# is exercised through `raw_execute` because the typed Rust surface
+# (`rust_decimal::Decimal`, `djogi::Range<Decimal>`, `Vec<Decimal>`)
+# carries no non-finite states. The finite-value accept-path checks
+# inside the same fixture run through the typed surface only.
+[[test]]
+name = "phase8_5_g0_decimal_special_values"
+path = "../tests/internal/phase8_5_g0_decimal_special_values.rs"
+harness = true
+
+# Phase 8.5 G0 — Temporal representability CHECK rejects PostgreSQL
+# DATE / TIMESTAMPTZ special values (`+infinity`, `-infinity`) on
+# scalar `time::Date` / `time::OffsetDateTime` columns and on the
+# DATERANGE / TSTZRANGE endpoint checks. The rejection path is
+# exercised through `raw_execute` because the typed Rust surface
+# (`time::Date`, `time::OffsetDateTime`, `djogi::Range<...>`) carries
+# no non-finite states. The finite-value accept-path checks inside
+# the same fixture run through the typed surface only.
+[[test]]
+name = "phase8_5_g0_temporal_infinity"
+path = "../tests/internal/phase8_5_g0_temporal_infinity.rs"
+harness = true
+
 # Phase 8.5 Cluster 3 issue #110 — round-2 dogfood discovery across six
 # typed-surface categories. Each scenario uses `#[djogi_test]` and the
 # typed surface only; gaps surface as compile-fail callsites that are
@@ -801,6 +827,23 @@ required-features = ["spatial"]
 [[test]]
 name = "phase8_5_c4_212_interval"
 path = "../tests/integration/phase8_5_c4_212_interval.rs"
+harness = true
+
+# Phase 8.5 G0 (djogi#148 + djogi#150 substrate) — live Range<T> codec
+# coverage. Pins round-trip of `Range<i32>` / `Range<DateTime>` /
+# `Range<Decimal>` columns through `Model::create` → `RETURNING *` →
+# `FromPgRow` against a live Postgres database, including discrete
+# canonicalisation (int4range `[1,9]` → `[1,10)`), empty ranges,
+# unbounded-on-one-side shapes, high-precision Decimal endpoints, and a
+# typed-filter SELECT that decodes the Range<T> projection on the
+# returned row. The compile-pass fixture
+# (`djogi-macros/tests/compile_pass/phase85_g0_range_field.rs`) covers
+# descriptor lowering; the in-crate unit tests in `pg_types.rs` cover
+# the wire codec against hand-crafted bytes; this file closes the loop
+# end-to-end through Postgres.
+[[test]]
+name = "phase8_5_g0_range"
+path = "../tests/integration/phase8_5_g0_range.rs"
 harness = true
 
 

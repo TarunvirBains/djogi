@@ -170,9 +170,91 @@ pub enum FieldSqlType {
     /// Always-available — no feature flag. The codec lives in
     /// `pg_types.rs` and pulls in no third-party crate.
     Interval,
+    /// Postgres range type. Phase 8.5 G0 substrate (djogi#148 + #150).
+    ///
+    /// Rust source type is `djogi::Range<T>` (`pg_types::Range<T>`).
+    /// The `subtype` discriminant names the Postgres range type the
+    /// column resolves to:
+    ///
+    /// * [`RangeSubtypeKind::Int4`] — `int4range` (Rust: `Range<i32>`)
+    /// * [`RangeSubtypeKind::Int8`] — `int8range` (Rust: `Range<i64>`)
+    /// * [`RangeSubtypeKind::Num`] — `numrange`
+    ///   (Rust: `Range<rust_decimal::Decimal>`)
+    /// * [`RangeSubtypeKind::Tstz`] — `tstzrange`
+    ///   (Rust: `Range<djogi::DateTime>`)
+    /// * [`RangeSubtypeKind::Date`] — `daterange`
+    ///   (Rust: `Range<djogi::Date>`)
+    ///
+    /// `tsrange` (timestamp-without-timezone) is intentionally omitted
+    /// — Djogi pins to `TIMESTAMPTZ` exclusively for temporal columns
+    /// (see this file's "PG timezone discipline" decision row), so
+    /// `Range<DateTime>` lowers to `tstzrange` and a separate
+    /// non-timezone variant would invite the silent-timezone-loss
+    /// failure mode the temporal CHECK family was designed to close.
+    ///
+    /// # Future siblings
+    ///
+    /// This variant is the shared substrate for two future DB-level
+    /// no-overlap lanes; neither is shipped by G0:
+    ///
+    /// * **djogi#148** — `btree_gist` EXCLUDE constraint grammar
+    ///   (`#[model(exclude(...))]`), the `&&` overlap operator surface,
+    ///   `CREATE EXTENSION btree_gist`.
+    /// * **djogi#150** — PostgreSQL 18 temporal-constraint DDL
+    ///   (`WITHOUT OVERLAPS`, `PERIOD` foreign keys, `NOT ENFORCED`,
+    ///   named `NOT NULL`).
+    ///
+    /// Both lanes consume range columns as input but neither alters
+    /// the [`FieldSqlType::Range`] variant itself.
+    Range {
+        /// The Postgres range subtype this column resolves to.
+        subtype: RangeSubtypeKind,
+    },
     /// Fallback for SQL types the framework doesn't model explicitly.
     /// Stored verbatim and compared by string equality in the migration differ.
     Custom(&'static str),
+}
+
+/// Postgres range-subtype discriminant for [`FieldSqlType::Range`].
+///
+/// Mirrors `pg_types::RangeSubtype` (the Rust-element-to-Postgres-range
+/// mapping carried by the wire codec): there is one variant per
+/// supported Postgres built-in range type. The two surfaces are
+/// intentionally separate — `RangeSubtype` lives on the Rust element
+/// type (open trait, adopter-extensible if a custom element type ever
+/// needs it); `RangeSubtypeKind` lives on the descriptor (closed enum,
+/// reachable by the migration differ and `Display`).
+///
+/// # Wire-format SQL identifier (`Display`)
+///
+/// `Display` renders the lowercase Postgres range type name
+/// (`int4range`, `int8range`, `numrange`, `tstzrange`, `daterange`).
+/// The schema snapshot stores the rendered form because the differ
+/// compares column types by rendered string, not by enum identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RangeSubtypeKind {
+    /// `int4range` — `Range<i32>` columns.
+    Int4,
+    /// `int8range` — `Range<i64>` columns.
+    Int8,
+    /// `numrange` — `Range<rust_decimal::Decimal>` columns.
+    Num,
+    /// `tstzrange` — `Range<DateTime>` columns (timezone-aware).
+    Tstz,
+    /// `daterange` — `Range<Date>` columns.
+    Date,
+}
+
+impl std::fmt::Display for RangeSubtypeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RangeSubtypeKind::Int4 => write!(f, "int4range"),
+            RangeSubtypeKind::Int8 => write!(f, "int8range"),
+            RangeSubtypeKind::Num => write!(f, "numrange"),
+            RangeSubtypeKind::Tstz => write!(f, "tstzrange"),
+            RangeSubtypeKind::Date => write!(f, "daterange"),
+        }
+    }
 }
 
 /// Schema-type bridge for user-defined scalar wrappers.
@@ -226,6 +308,11 @@ impl std::fmt::Display for FieldSqlType {
             // the three-component encoding; the SQL type string is the
             // bare Postgres `INTERVAL` keyword.
             FieldSqlType::Interval => write!(f, "INTERVAL"),
+            // Phase 8.5 G0 (djogi#148 + #150 substrate) — Postgres
+            // range type. `Display` renders the lowercase subtype name
+            // (`int4range`, `tstzrange`, …); the schema snapshot stores
+            // the rendered form so the differ compares by string.
+            FieldSqlType::Range { subtype } => write!(f, "{subtype}"),
             FieldSqlType::Custom(s) => write!(f, "{s}"),
         }
     }

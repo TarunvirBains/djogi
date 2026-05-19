@@ -57,9 +57,9 @@ pub struct DogfoodWidget {
 //
 // Post-#171 the typed-array element repertoire is wide enough that this
 // model can declare arrays directly for the small-int / wide-float / ID
-// families. The remaining Postgres-type gaps (INTERVAL, INET/CIDR/MACADDR,
-// MONEY, RANGE, DOMAIN) are still absent from the field repertoire — that
-// absence is the scenario-4.B probe.
+// families. The remaining Postgres-type gaps (INET/CIDR/MACADDR, MONEY,
+// DOMAIN, and timestamp-without-timezone `tsrange`) are still absent from
+// the field repertoire — that absence is the scenario-4.B probe.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct CoverageMeta {
     pub note: String,
@@ -789,7 +789,7 @@ async fn cat4_a_typed_arrays_sealed_set_regression(mut ctx: djogi::DjogiContext)
     let _ = row.id;
 }
 
-// Scenario 4.B — INTERVAL, ENUM, CITEXT, INET, MACADDR, MONEY, RANGES.
+// Scenario 4.B — ENUM, CITEXT, INET, MACADDR, MONEY, DOMAIN gaps.
 //
 // VERDICT (per type):
 //   - ENUM (CREATE TYPE ... AS ENUM via `#[derive(DjogiEnum)]`): COMPILES
@@ -799,24 +799,22 @@ async fn cat4_a_typed_arrays_sealed_set_regression(mut ctx: djogi::DjogiContext)
 //     but no typed Rust newtype on the field side and no ASCII-stable
 //     ILIKE surface beyond what `String` already exposes — open question
 //     whether this needs a separate gap or stays under #105 / #110.
-//   - INTERVAL, INET / CIDR / MACADDR, MONEY, RANGE TYPES (int4range,
-//     tsrange, daterange, numrange), DOMAIN TYPES: NEEDS GAP ISSUE — none
-//     have a `FieldSqlType` variant or descriptor projection (verified by
-//     grep over `djogi/src/descriptor.rs` and the surrounding modules).
+//   - INET / CIDR / MACADDR, MONEY, DOMAIN TYPES, and `tsrange`: NEEDS
+//     GAP ISSUE. `INTERVAL` and the supported typed range substrate
+//     (`int4range`, `int8range`, `numrange`, `tstzrange`, `daterange`)
+//     now have descriptor projection and field-side Rust types.
 //
 // Stand-in: this test only compiles the supported subset (ENUM was already
 // covered in the existing tests; we avoid duplication). The gap issue
-// filed under #110 enumerates the unsupported types and routes the
-// large-shape ones (range types) to Cluster 4 per the v3 plan rule.
+// filed under #110 enumerates the remaining unsupported types.
 #[djogi::djogi_test(sync_models = [DogfoodCoverage])]
 async fn cat4_b_pg_type_coverage_gap(mut ctx: djogi::DjogiContext) {
     // GAP(djogi#170 — umbrella): the natural model field declarations that
     // do not have a typed surface today —
-    //   pub session_window: std::time::Duration,        // INTERVAL
     //   pub remote_addr: std::net::IpAddr,              // INET
     //   pub price_usd: rust_decimal::Decimal,           // (works as NUMERIC,
     //                                                   //  no MONEY surface)
-    //   pub valid_for: SomeRangeNewtype<i32>,           // int4range
+    //   pub naive_window: SomeTsRangeNewtype,           // tsrange
     //
     // Plus DOMAIN TYPES (`CREATE DOMAIN`), which are not surfaced at all.
     // Stand-in compiles by NOT declaring any of these — the test asserts

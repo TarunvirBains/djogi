@@ -1,27 +1,15 @@
 error[E0277]: the trait bound `Vec<u32>: DjogiSqlType` is not satisfied
-   --> $DIR/unsupported_array_element.rs:13:22
-    |
- 13 |     pub unsupported: Vec<u32>,
-    |                      ^^^^^^^^ the trait `DjogiSqlType` is not implemented for `Vec<u32>`
-    |
-help: the following other types implement trait `DjogiSqlType`
-   --> djogi/src/pg_types.rs:245:1
-    |
-245 | impl crate::descriptor::DjogiSqlType for Interval {
-    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `djogi::Interval`
-    |
-   ::: djogi/src/fts.rs:97:1
-    |
- 97 | impl crate::descriptor::DjogiSqlType for TsVector {
-    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TsVector`
-...
-200 | impl crate::descriptor::DjogiSqlType for TsQuery {
-    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TsQuery`
-    |
-   ::: djogi/src/auth/password.rs:55:1
-    |
- 55 | impl crate::descriptor::DjogiSqlType for PasswordHash {
-    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `PasswordHash`
+  --> $DIR/unsupported_array_element.rs:13:22
+   |
+13 |     pub unsupported: Vec<u32>,
+   |                      ^^^^^^^^ the trait `DjogiSqlType` is not implemented for `Vec<u32>`
+   |
+   = help: the following other types implement trait `DjogiSqlType`:
+             PasswordHash
+             TsQuery
+             TsVector
+             djogi::Interval
+             djogi::Range<T>
 
 error[E0599]: the method `contains` exists for struct `ExplicitPgPredicateField<T, Vec<u32>>`, but its trait bounds were not satisfied
   --> $DIR/unsupported_array_element.rs:19:61

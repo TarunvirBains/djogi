@@ -1725,9 +1725,24 @@ mod tests {
     // differ and the SQL emitter, so we exercise it by walking
     // synthetic operations through the pure helper functions.
 
-    use super::{additive_op_label, is_additive_op};
+    use super::teardown_test_db;
+    use super::{additive_op_label, build_sync_plans, is_additive_op, setup_test_db, sync_models};
+    use crate::descriptor::{
+        FieldDescriptor, FieldSqlType, PkType, field_descriptor, model_descriptor,
+    };
     use crate::migrate::diff::SchemaOperation;
     use crate::migrate::schema::{OnDeleteSchema, PkKindSchema, PrimaryKeySchema, TableSchema};
+
+    const NUMERIC_ARRAY_MODEL_FIELDS: &[FieldDescriptor] = &[
+        field_descriptor("id", FieldSqlType::BigInt, false),
+        field_descriptor("values", FieldSqlType::NumericArray, true),
+    ];
+    const NUMERIC_ARRAY_MODEL_DESCRIPTOR: crate::descriptor::ModelDescriptor = model_descriptor(
+        "NumericArrayFixture",
+        "numeric_arrays",
+        PkType::HeerId,
+        NUMERIC_ARRAY_MODEL_FIELDS,
+    );
 
     /// Build a minimal `TableSchema` so we can construct synthetic
     /// `AddTable` / `DropTable` operations without spinning up the
@@ -1839,6 +1854,71 @@ mod tests {
                 to: "b".to_string(),
             }),
             "RenameTable",
+        );
+    }
+
+    #[test]
+    fn build_sync_plans_includes_numeric_array_helper_operation() {
+        let plans =
+            build_sync_plans(&[&NUMERIC_ARRAY_MODEL_DESCRIPTOR]).expect("plan should build");
+        let plan = plans
+            .into_iter()
+            .next()
+            .expect("sync_models for one descriptor should yield one plan");
+        let labels: Vec<&str> = plan
+            .segments
+            .iter()
+            .flat_map(|s| s.statements.iter())
+            .map(|s| s.label.as_str())
+            .collect();
+        assert!(
+            labels.contains(&"Ensure djogi numeric-array helper"),
+            "plan should preload helper prelude for NUMERIC[] checks; labels: {labels:?}"
+        );
+        assert!(
+            plan.segments
+                .iter()
+                .flat_map(|s| s.statements.iter())
+                .any(|op| op
+                    .up
+                    .contains("djogi.__djogi_numeric_array_is_rust_decimal_v1(")),
+            "table DDL from NUMERIC[] descriptor should reference helper in CHECK",
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_models_creates_numeric_array_helper_in_postgres_when_database_url_present() {
+        use std::env;
+        let database_url = env::var("DATABASE_URL").ok();
+        if !matches!(&database_url, Some(url) if !url.is_empty()) {
+            return;
+        }
+
+        let (cleanup, mut ctx) = setup_test_db()
+            .await
+            .expect("setup_test_db should provision test database");
+        sync_models(&mut ctx, &[&NUMERIC_ARRAY_MODEL_DESCRIPTOR])
+            .await
+            .expect("sync_models should apply helper-backed NUMERIC[] table");
+
+        let helper_exists = ctx
+            .query_one(
+                "SELECT EXISTS(\
+                    SELECT 1 \
+                    FROM pg_catalog.pg_proc p \
+                    INNER JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace \
+                    WHERE n.nspname = 'djogi' \
+                    AND p.proname = '__djogi_numeric_array_is_rust_decimal_v1'\
+                )",
+                &[],
+            )
+            .await
+            .expect("helper function existence check should execute")
+            .get::<_, bool>(0);
+        teardown_test_db(cleanup).await;
+        assert!(
+            helper_exists,
+            "sync_models must create `djogi.__djogi_numeric_array_is_rust_decimal_v1`"
         );
     }
 

@@ -68,7 +68,7 @@ use super::ledger::compute_checksum;
 use super::naming::{down_filename, sanitize_slug, up_filename, version_id, version_prefix};
 use super::projection::BucketKey;
 use super::schema::AppliedSchema;
-use super::segment::{MigrationPlan, plan_delta};
+use super::segment::plan_delta;
 use super::snapshot::SnapshotError;
 use super::sql::{OperationSql, lower_delta};
 use super::target::{bucket_dir, pending_database_dir, pending_json_path};
@@ -908,7 +908,12 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
         for delta in &effective {
             // Shouldn't fail — we validated classifications above.
             let mut lowered = lower_delta(delta).map_err(ComposeError::SqlEmit)?;
-            let _plan: MigrationPlan = plan_delta(delta).map_err(ComposeError::SqlEmit)?;
+            let mut executable_ops: Vec<OperationSql> = plan_delta(delta)
+                .map_err(ComposeError::SqlEmit)?
+                .segments
+                .iter()
+                .flat_map(|segment| segment.statements.iter().cloned())
+                .collect();
 
             // Codex B-5: For each RenameApp op, append an OperationSql
             // that updates `djogi_schema_migrations.app_label` so the
@@ -920,11 +925,10 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
             let mut folder_renames_for_delta: Vec<(String, String)> = Vec::new();
             for op in &delta.operations {
                 if let SchemaOperation::RenameApp { from, to } = op {
-                    lowered.push(emit_rename_app_ledger_update(
-                        &delta.bucket.database,
-                        from,
-                        to,
-                    ));
+                    let rename_stmt =
+                        emit_rename_app_ledger_update(&delta.bucket.database, from, to);
+                    lowered.push(rename_stmt.clone());
+                    executable_ops.push(rename_stmt);
                     folder_renames_for_delta.push((from.clone(), to.clone()));
                 }
             }
@@ -935,7 +939,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
                 .cloned()
                 .unwrap_or_else(|| empty_schema_for(&delta.bucket));
 
-            let (checksum_up, checksum_down) = compute_checksums(&lowered);
+            let (checksum_up, checksum_down) = compute_checksums(&executable_ops);
 
             let pending = PendingPlan {
                 format_version: PENDING_FORMAT_VERSION.to_string(),
@@ -1400,6 +1404,18 @@ fn compose_up_text(version: &str, delta: &SchemaDelta, lowered: &[OperationSql])
         classification = delta.classification,
     ));
     out.push_str("-- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\n");
+    if requires_numeric_array_helper(lowered) {
+        out.push_str(NUMERIC_ARRAY_HELPER_PRELUDE);
+        out.push('\n');
+    }
+    if requires_date_array_helper(lowered) {
+        out.push_str(DATE_ARRAY_HELPER_PRELUDE);
+        out.push('\n');
+    }
+    if requires_tstz_array_helper(lowered) {
+        out.push_str(TSTZ_ARRAY_HELPER_PRELUDE);
+        out.push('\n');
+    }
     for op in lowered {
         out.push_str(&format!("-- {label}\n", label = op.label));
         out.push_str(op.up.trim_end_matches('\n'));
@@ -1420,6 +1436,18 @@ fn compose_down_text(version: &str, delta: &SchemaDelta, lowered: &[OperationSql
         app = super::target::app_dirname(&delta.bucket.app),
     ));
     out.push_str("-- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\n");
+    if requires_numeric_array_helper(lowered) {
+        out.push_str(NUMERIC_ARRAY_HELPER_PRELUDE);
+        out.push('\n');
+    }
+    if requires_date_array_helper(lowered) {
+        out.push_str(DATE_ARRAY_HELPER_PRELUDE);
+        out.push('\n');
+    }
+    if requires_tstz_array_helper(lowered) {
+        out.push_str(TSTZ_ARRAY_HELPER_PRELUDE);
+        out.push('\n');
+    }
     // Reverse order — drop operations roll back in reverse order.
     for op in lowered.iter().rev() {
         out.push_str(&format!("-- {label}\n", label = op.label));
@@ -1434,6 +1462,192 @@ fn compose_down_text(version: &str, delta: &SchemaDelta, lowered: &[OperationSql
         out.push_str("\n\n");
     }
     out
+}
+
+/// Name fragment used by both the numeric-array CHECK projection and the
+/// helper function body.
+const NUMERIC_ARRAY_HELPER_MARKER: &str = "djogi.__djogi_numeric_array_is_rust_decimal_v1(";
+
+/// Canonical helper prelude for `FieldSqlType::NumericArray` checks.
+///
+/// Kept `pub(crate)` so segment planning can reuse the exact same body
+/// when injecting helper DDL into executable plans.
+///
+/// The body mirrors the scalar `decimal_repr_expr` projection in
+/// `migrate::projection`: each non-NULL element must be a finite
+/// NUMERIC representable by `rust_decimal::Decimal`. The leading
+/// `pg_catalog.scale(value) IS NOT NULL` clause rejects the three
+/// PostgreSQL NUMERIC special values (`NaN`, `Infinity`, `-Infinity`)
+/// that `pg_catalog.scale()` is defined to map to NULL — without that
+/// guard the later `scale <= 28` / coefficient clauses would
+/// NULL-propagate and `bool_and` would treat the special-value
+/// element as satisfied, silently admitting an array element that
+/// would later fail `Decimal::from_sql` on read with
+/// `DjogiError::Decode`. The `value IS NULL OR (...)` outer guard
+/// continues to admit `NULL` elements per array semantics.
+pub(crate) const NUMERIC_ARRAY_HELPER_PRELUDE: &str = r#"CREATE SCHEMA IF NOT EXISTS djogi;
+
+CREATE OR REPLACE FUNCTION djogi.__djogi_numeric_array_is_rust_decimal_v1(input_array pg_catalog.numeric[])
+RETURNS pg_catalog.bool
+LANGUAGE sql
+IMMUTABLE STRICT PARALLEL SAFE
+AS $$
+    SELECT COALESCE(
+        pg_catalog.bool_and(
+            value IS NULL
+            OR (
+                pg_catalog.scale(value) IS NOT NULL
+                AND pg_catalog.scale(value) <= 28
+                AND pg_catalog.abs(value)
+                    * pg_catalog.power(10::pg_catalog.numeric, pg_catalog.scale(value))
+                    <= 79228162514264337593543950335::pg_catalog.numeric
+            )
+        ),
+        true
+    )
+    FROM pg_catalog.unnest(input_array) AS value(value);
+$$;
+"#;
+
+pub(crate) fn requires_numeric_array_helper(operations: &[OperationSql]) -> bool {
+    operations.iter().any(|op| {
+        op.up.contains(NUMERIC_ARRAY_HELPER_MARKER) || op.down.contains(NUMERIC_ARRAY_HELPER_MARKER)
+    })
+}
+
+pub(crate) fn numeric_array_helper_operation() -> OperationSql {
+    OperationSql {
+        label: "Ensure djogi numeric-array helper".to_string(),
+        up: NUMERIC_ARRAY_HELPER_PRELUDE.to_string(),
+        down: "-- no-op rollback placeholder: helper is shared by framework CHECK constraints"
+            .to_string(),
+        lossy: None,
+    }
+}
+
+/// Name fragment used by both the `FieldSqlType::DateArray` CHECK projection and the
+/// helper function body.
+///
+/// The helper is the only CHECK-valid way to apply `pg_catalog.isfinite` per element
+/// in a `date[]` column: Postgres CHECK clauses may not contain subqueries or `unnest`
+/// aggregate forms directly.
+const DATE_ARRAY_HELPER_MARKER: &str = "djogi.__djogi_date_array_is_finite_v1(";
+
+/// Name fragment used by both the `FieldSqlType::TimestamptzArray` CHECK projection and
+/// the helper function body.
+const TSTZ_ARRAY_HELPER_MARKER: &str = "djogi.__djogi_tstz_array_is_finite_v1(";
+
+/// Canonical helper prelude for `FieldSqlType::DateArray` checks.
+///
+/// Kept `pub(crate)` so segment planning can reuse the exact same body when injecting
+/// helper DDL into executable plans.
+///
+/// The function mirrors the scalar `date_range_expr` predicate in
+/// `migrate::projection`: each non-NULL element must be finite (both `+infinity` and
+/// `-infinity` are rejected by `pg_catalog.isfinite`) AND not exceed `time::Date`'s
+/// representable maximum (`9999-12-31`). The leading `pg_catalog.isfinite(value)` guard
+/// is the key addition over the old `upper_bound >= ALL(col)` strategy — without it
+/// `-infinity::date` passes because `upper_bound >= -infinity` is TRUE in Postgres
+/// ordering, silently landing an element that would poison the next typed
+/// `time::Date::from_sql` decode with `DjogiError::Decode`.
+///
+/// The `value IS NULL OR (...)` inner guard admits NULL elements per array semantics.
+/// `COALESCE(..., true)` maps the empty-set `pg_catalog.bool_and` NULL to TRUE so
+/// empty arrays pass the CHECK.
+pub(crate) const DATE_ARRAY_HELPER_PRELUDE: &str = r#"CREATE SCHEMA IF NOT EXISTS djogi;
+
+CREATE OR REPLACE FUNCTION djogi.__djogi_date_array_is_finite_v1(input_array pg_catalog.date[])
+RETURNS pg_catalog.bool
+LANGUAGE sql
+IMMUTABLE STRICT PARALLEL SAFE
+AS $$
+    SELECT COALESCE(
+        pg_catalog.bool_and(
+            value IS NULL
+            OR (
+                pg_catalog.isfinite(value)
+                AND value <= '9999-12-31'::pg_catalog.date
+            )
+        ),
+        true
+    )
+    FROM pg_catalog.unnest(input_array) AS value(value);
+$$;
+"#;
+
+/// Canonical helper prelude for `FieldSqlType::TimestamptzArray` checks.
+///
+/// Kept `pub(crate)` so segment planning can reuse the exact same body when injecting
+/// helper DDL into executable plans.
+///
+/// Same shape as [`DATE_ARRAY_HELPER_PRELUDE`] for `timestamptz` elements. The inner
+/// `pg_catalog.isfinite(value)` clause rejects both non-finite `timestamptz` special
+/// values (`+infinity`, `-infinity`). The upper-bound literal uses the explicit `+00`
+/// UTC offset so the comparison is timezone-invariant — using plain `TIMESTAMP '...'`
+/// (without TZ) would make Postgres interpret the literal in the session timezone,
+/// shifting the effective upper bound.
+pub(crate) const TSTZ_ARRAY_HELPER_PRELUDE: &str = r#"CREATE SCHEMA IF NOT EXISTS djogi;
+
+CREATE OR REPLACE FUNCTION djogi.__djogi_tstz_array_is_finite_v1(input_array pg_catalog.timestamptz[])
+RETURNS pg_catalog.bool
+LANGUAGE sql
+IMMUTABLE STRICT PARALLEL SAFE
+AS $$
+    SELECT COALESCE(
+        pg_catalog.bool_and(
+            value IS NULL
+            OR (
+                pg_catalog.isfinite(value)
+                AND value <= '9999-12-31 23:59:59.999999+00'::pg_catalog.timestamptz
+            )
+        ),
+        true
+    )
+    FROM pg_catalog.unnest(input_array) AS value(value);
+$$;
+"#;
+
+/// Returns `true` if any operation in `operations` references the date-array finite
+/// helper — signalling that [`DATE_ARRAY_HELPER_PRELUDE`] must be prepended.
+pub(crate) fn requires_date_array_helper(operations: &[OperationSql]) -> bool {
+    operations.iter().any(|op| {
+        op.up.contains(DATE_ARRAY_HELPER_MARKER) || op.down.contains(DATE_ARRAY_HELPER_MARKER)
+    })
+}
+
+/// Returns `true` if any operation in `operations` references the tstz-array finite
+/// helper — signalling that [`TSTZ_ARRAY_HELPER_PRELUDE`] must be prepended.
+pub(crate) fn requires_tstz_array_helper(operations: &[OperationSql]) -> bool {
+    operations.iter().any(|op| {
+        op.up.contains(TSTZ_ARRAY_HELPER_MARKER) || op.down.contains(TSTZ_ARRAY_HELPER_MARKER)
+    })
+}
+
+/// `OperationSql` wrapper for [`DATE_ARRAY_HELPER_PRELUDE`].
+///
+/// Segment planning inserts this at position 0 (before any column/table DDL) so the
+/// function exists before the first CHECK that references it.
+pub(crate) fn date_array_helper_operation() -> OperationSql {
+    OperationSql {
+        label: "Ensure djogi date-array finite-element helper".to_string(),
+        up: DATE_ARRAY_HELPER_PRELUDE.to_string(),
+        down: "-- no-op rollback placeholder: helper is shared by framework CHECK constraints"
+            .to_string(),
+        lossy: None,
+    }
+}
+
+/// `OperationSql` wrapper for [`TSTZ_ARRAY_HELPER_PRELUDE`].
+///
+/// Same insertion discipline as [`date_array_helper_operation`].
+pub(crate) fn tstz_array_helper_operation() -> OperationSql {
+    OperationSql {
+        label: "Ensure djogi timestamptz-array finite-element helper".to_string(),
+        up: TSTZ_ARRAY_HELPER_PRELUDE.to_string(),
+        down: "-- no-op rollback placeholder: helper is shared by framework CHECK constraints"
+            .to_string(),
+        lossy: None,
+    }
 }
 
 // ── Atomic write helpers ───────────────────────────────────────────────────
@@ -1663,11 +1877,276 @@ mod tests {
         s
     }
 
+    fn id_column_heerid_desc() -> ColumnSchema {
+        ColumnSchema {
+            default_sql: Some("heerid_next_desc()".to_string()),
+            ..col("id", "BIGINT", false)
+        }
+    }
+
+    fn col(name: &str, ty: &str, nullable: bool) -> ColumnSchema {
+        ColumnSchema {
+            check: None,
+            comment: None,
+            default_sql: None,
+            foreign_key: None,
+            generated: None,
+            identity: None,
+            index_type: None,
+            indexed: false,
+            max_length: None,
+            name: name.to_string(),
+            nullable,
+            on_delete: None,
+            outbox_exclude: false,
+            rationale: None,
+            relation_kind: None,
+            renamed_from: None,
+            sequence_within: None,
+            sql_type: ty.to_string(),
+            unique: false,
+        }
+    }
+
+    fn col_numeric_array_metric_check() -> ColumnSchema {
+        ColumnSchema {
+            check: Some("djogi.__djogi_numeric_array_is_rust_decimal_v1(\"amounts\")".to_string()),
+            ..col("amounts", "NUMERIC[]", true)
+        }
+    }
+
+    fn col_date_array_with_finite_check() -> ColumnSchema {
+        ColumnSchema {
+            check: Some("djogi.__djogi_date_array_is_finite_v1(\"blackout_dates\")".to_string()),
+            ..col("blackout_dates", "DATE[]", true)
+        }
+    }
+
+    fn col_tstz_array_with_finite_check() -> ColumnSchema {
+        ColumnSchema {
+            check: Some("djogi.__djogi_tstz_array_is_finite_v1(\"scheduled_slots\")".to_string()),
+            ..col("scheduled_slots", "TIMESTAMPTZ[]", true)
+        }
+    }
+
+    /// A table with all three array-helper column types: numeric, date, and
+    /// timestamptz.  Used by the mixed-helper checksum parity test.
+    fn table_with_all_three_array_helpers(bucket: &BucketKey) -> TableSchema {
+        TableSchema {
+            app: if bucket.app.is_empty() {
+                None
+            } else {
+                Some(bucket.app.clone())
+            },
+            columns: vec![
+                id_column_heerid_desc(),
+                col_numeric_array_metric_check(),
+                col_date_array_with_finite_check(),
+                col_tstz_array_with_finite_check(),
+            ],
+            exclusion_constraints: Vec::new(),
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: PrimaryKeySchema {
+                columns: vec!["id".to_string()],
+                kind: PkKindSchema::HeerIdRecencyBiased,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: "mixed_array_events".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
+            tenant_key: None,
+        }
+    }
+
+    fn table_with_numeric_array_metric_check(bucket: &BucketKey) -> TableSchema {
+        TableSchema {
+            app: if bucket.app.is_empty() {
+                None
+            } else {
+                Some(bucket.app.clone())
+            },
+            columns: vec![id_column_heerid_desc(), col_numeric_array_metric_check()],
+            exclusion_constraints: Vec::new(),
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: PrimaryKeySchema {
+                columns: vec!["id".to_string()],
+                kind: PkKindSchema::HeerIdRecencyBiased,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: "metrics_events".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
+            tenant_key: None,
+        }
+    }
+
     fn global_bucket() -> BucketKey {
         BucketKey {
             database: "main".into(),
             app: "".into(),
         }
+    }
+
+    #[test]
+    fn compose_pending_checksum_matches_runner_plan_checksum_for_numeric_array_helper_migrations() {
+        let work = temp_workspace("numeric-array-helper-checksum");
+        let guard = lock_for(&work);
+        let bucket = global_bucket();
+
+        let mut models = BTreeMap::new();
+        let mut model_snapshot = snapshot_with_widgets(&bucket);
+        model_snapshot.models.insert(
+            "metrics_events".to_string(),
+            table_with_numeric_array_metric_check(&bucket),
+        );
+        models.insert(bucket.clone(), model_snapshot);
+
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(bucket.clone(), empty_snapshot(&bucket));
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &[],
+            name: "numeric-array-checksum-parity",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 4, 25, 1, 2, 3),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        let report = compose(req).expect("compose should succeed");
+        assert_eq!(report.composed_buckets.len(), 1);
+
+        let pending_bytes = fs::read(&report.composed_buckets[0].pending_json_path).unwrap();
+        let pending: PendingPlan = serde_json::from_slice(&pending_bytes).expect("parse pending");
+
+        let deltas = diff_bucket_maps(&snapshots, &models).expect("diff for expected checksum");
+        let delta = deltas
+            .into_iter()
+            .find(|delta| delta.bucket == bucket)
+            .expect("numeric-array bucket delta");
+        let plan = plan_delta(&delta).expect("canonical plan for runner-style checksum");
+        let runner_style_checksum = compute_checksum(
+            plan.segments
+                .iter()
+                .flat_map(|segment| segment.statements.iter())
+                .map(|statement| statement.up.as_str()),
+        );
+
+        assert_eq!(
+            pending.checksum_up, runner_style_checksum,
+            "compose pending checksum must match runner-plan checksum when NumericArray helper is injected"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn compose_pending_checksum_matches_runner_plan_checksum_for_mixed_helper_delta() {
+        // Regression guard: when a delta requires all three array helpers
+        // (numeric, date, tstz), the checksum stored in the pending JSON by
+        // `compose` must equal the checksum the runner derives from
+        // `plan_delta` independently.  Both paths must agree on which ops
+        // are included and in which order — a divergence would cause the
+        // runner to reject the migration with a checksum mismatch.
+        //
+        // Note: both `compose` and `runner` derive their checksum from the
+        // same `plan_delta` output, so this test also guards against a
+        // regression where `compose` accidentally computes the checksum from
+        // the un-augmented `lowered` ops (i.e. without helper preludes).
+        let work = temp_workspace("mixed-array-helper-checksum");
+        let guard = lock_for(&work);
+        let bucket = global_bucket();
+
+        let mut models = BTreeMap::new();
+        let mut model_snapshot = snapshot_with_widgets(&bucket);
+        model_snapshot.models.insert(
+            "mixed_array_events".to_string(),
+            table_with_all_three_array_helpers(&bucket),
+        );
+        models.insert(bucket.clone(), model_snapshot);
+
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(bucket.clone(), empty_snapshot(&bucket));
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &[],
+            name: "mixed-array-checksum-parity",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 4, 25, 1, 2, 3),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        let report = compose(req).expect("compose should succeed");
+        assert_eq!(report.composed_buckets.len(), 1);
+
+        let pending_bytes = fs::read(&report.composed_buckets[0].pending_json_path).unwrap();
+        let pending: PendingPlan = serde_json::from_slice(&pending_bytes).expect("parse pending");
+
+        let deltas = diff_bucket_maps(&snapshots, &models).expect("diff for expected checksum");
+        let delta = deltas
+            .into_iter()
+            .find(|d| d.bucket == bucket)
+            .expect("mixed-array bucket delta");
+        let plan = plan_delta(&delta).expect("canonical plan for runner-style checksum");
+        let runner_style_checksum = compute_checksum(
+            plan.segments
+                .iter()
+                .flat_map(|segment| segment.statements.iter())
+                .map(|statement| statement.up.as_str()),
+        );
+
+        assert_eq!(
+            pending.checksum_up, runner_style_checksum,
+            "compose pending checksum must match runner-plan checksum when all three \
+             array helpers (numeric, date, tstz) are injected"
+        );
+
+        // Additionally verify that the three helpers appear in the on-disk SQL
+        // file in compose order (numeric → date → tstz).  The SQL file is the
+        // operator-visible artifact and must reflect actual execution order.
+        let up_sql =
+            fs::read_to_string(&report.composed_buckets[0].up_sql_path).expect("read up SQL");
+        let numeric_sql_pos = up_sql
+            .find("__djogi_numeric_array_is_rust_decimal_v1")
+            .expect("numeric helper in SQL file");
+        let date_sql_pos = up_sql
+            .find("__djogi_date_array_is_finite_v1")
+            .expect("date helper in SQL file");
+        let tstz_sql_pos = up_sql
+            .find("__djogi_tstz_array_is_finite_v1")
+            .expect("tstz helper in SQL file");
+        assert!(
+            numeric_sql_pos < date_sql_pos,
+            "numeric helper prelude must precede date helper prelude in SQL file"
+        );
+        assert!(
+            date_sql_pos < tstz_sql_pos,
+            "date helper prelude must precede tstz helper prelude in SQL file"
+        );
+
+        let _ = fs::remove_dir_all(&work);
     }
 
     #[test]
@@ -3420,5 +3899,564 @@ mod tests {
         //     and value (including its registered_apps list).
         let after_audit = after.get(&audit_bucket).expect("audit untouched");
         assert_eq!(*after_audit, before_audit);
+    }
+
+    #[test]
+    fn compose_up_down_prepends_numeric_array_helper_once_when_check_is_referenced() {
+        let delta = SchemaDelta {
+            bucket: BucketKey {
+                database: "main".into(),
+                app: "billing".into(),
+            },
+            operations: Vec::new(),
+            classification: Classification::Reversible,
+        };
+        let lowered = vec![OperationSql {
+            label: "add metric check".into(),
+            up: r#"ALTER TABLE "invoices" ADD CONSTRAINT "metrics_check" CHECK (djogi.__djogi_numeric_array_is_rust_decimal_v1("metrics"));"#
+                .into(),
+            down: r#"ALTER TABLE "invoices" DROP CONSTRAINT "metrics_check";"#
+                .into(),
+            lossy: None,
+        }];
+        let version = "V20260518__numeric_array_helper";
+        let up_sql = compose_up_text(version, &delta, &lowered);
+        let down_sql = compose_down_text(version, &delta, &lowered);
+
+        // Prelude is anchored once in each side, before the first
+        // operation comment so a downstream operator can execute the
+        // file without scanning labels for required helper dependencies.
+        assert!(
+            up_sql.contains(NUMERIC_ARRAY_HELPER_PRELUDE),
+            "Up migration must include numeric helper prelude: {up_sql}"
+        );
+        assert!(
+            down_sql.contains(NUMERIC_ARRAY_HELPER_PRELUDE),
+            "Down migration must include numeric helper prelude: {down_sql}"
+        );
+        assert_eq!(
+            up_sql.matches("CREATE SCHEMA IF NOT EXISTS djogi;").count(),
+            1,
+            "Up migration must emit helper prelude once: {up_sql}"
+        );
+        assert_eq!(
+            down_sql
+                .matches("CREATE SCHEMA IF NOT EXISTS djogi;")
+                .count(),
+            1,
+            "Down migration must emit helper prelude once: {down_sql}"
+        );
+        assert!(
+            up_sql.find("CREATE SCHEMA IF NOT EXISTS djogi;").unwrap()
+                < up_sql.find("-- add metric check").unwrap(),
+            "Up migration prelude must appear before operations: {up_sql}"
+        );
+        assert!(
+            down_sql.find("CREATE SCHEMA IF NOT EXISTS djogi;").unwrap()
+                < down_sql.find("-- add metric check").unwrap(),
+            "Down migration prelude must appear before operations: {down_sql}"
+        );
+        assert!(
+            up_sql.contains("djogi.__djogi_numeric_array_is_rust_decimal_v1(\"metrics\")"),
+            "Up migration should reference helper: {up_sql}"
+        );
+        assert!(
+            !up_sql.contains("NOT EXISTS (SELECT 1 FROM unnest(\"metrics\")"),
+            "Numeric helper CHECK should not use subquery style: {up_sql}"
+        );
+    }
+
+    #[test]
+    fn compose_up_text_omits_numeric_array_helper_when_unreferenced() {
+        let delta = SchemaDelta {
+            bucket: BucketKey {
+                database: "main".into(),
+                app: "billing".into(),
+            },
+            operations: Vec::new(),
+            classification: Classification::Reversible,
+        };
+        let lowered = vec![OperationSql {
+            label: "add integer col".into(),
+            up: r#"ALTER TABLE "accounts" ADD COLUMN "score" integer CHECK ("score" >= 0);"#.into(),
+            down: r#"ALTER TABLE "accounts" DROP COLUMN "score";"#.into(),
+            lossy: None,
+        }];
+        let version = "V20260518__no_numeric_array_helper";
+        let up_sql = compose_up_text(version, &delta, &lowered);
+        let down_sql = compose_down_text(version, &delta, &lowered);
+
+        assert!(
+            !up_sql.contains("CREATE SCHEMA IF NOT EXISTS djogi;"),
+            "Up migration without helper references must not include prelude: {up_sql}"
+        );
+        assert!(
+            !down_sql.contains("CREATE SCHEMA IF NOT EXISTS djogi;"),
+            "Down migration without helper references must not include prelude: {down_sql}"
+        );
+    }
+
+    #[test]
+    fn compose_numeric_array_helper_prelude_uses_only_valid_schema_qualified_identifiers() {
+        let expected_identifiers = [
+            "numeric", "bool", "bool_and", "scale", "abs", "power", "numeric", "unnest",
+        ];
+
+        assert_helper_prelude_uses_input_array_argument(
+            NUMERIC_ARRAY_HELPER_PRELUDE,
+            "__djogi_numeric_array_is_rust_decimal_v1",
+            "numeric",
+        );
+        assert_helper_prelude_uses_pg_catalog_bool_return_type(NUMERIC_ARRAY_HELPER_PRELUDE);
+        let found_identifiers = pg_catalog_identifiers(NUMERIC_ARRAY_HELPER_PRELUDE);
+        for id in &found_identifiers {
+            assert!(
+                expected_identifiers.contains(&id.as_str()),
+                "Unexpected schema qualification in helper prelude: pg_catalog.{id}"
+            );
+        }
+        assert!(
+            !found_identifiers.iter().any(|id| *id == "coalesce"),
+            "COALESCE is conditional-expression syntax and must not be schema-qualified: {NUMERIC_ARRAY_HELPER_PRELUDE}"
+        );
+        assert!(
+            NUMERIC_ARRAY_HELPER_PRELUDE.contains("SELECT COALESCE("),
+            "Helper body should use PostgreSQL conditional-expression syntax: COALESCE"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::disallowed_methods)]
+    // `tokio_postgres::connect` is used in this substrate integration test to
+    // validate SQL execution against a live database where configured.
+    async fn compose_numeric_array_helper_prelude_applies_in_postgres_when_database_url_present() {
+        use std::env;
+        let database_url = match env::var("DATABASE_URL") {
+            Ok(database_url) if !database_url.is_empty() => database_url,
+            _ => return,
+        };
+
+        let (mut client, connection) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls)
+                .await
+                .unwrap();
+        let connection = tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                panic!("Postgres connection task failed: {e}");
+            }
+        });
+
+        let tx = client.transaction().await.unwrap();
+        tx.batch_execute(NUMERIC_ARRAY_HELPER_PRELUDE)
+            .await
+            .unwrap();
+        let row = tx
+            .query_one(
+                "SELECT djogi.__djogi_numeric_array_is_rust_decimal_v1(ARRAY[1::numeric, 2::numeric]::numeric[])",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(row.get::<_, bool>(0));
+        tx.rollback().await.unwrap();
+        // Drop the client before awaiting the connection task; while the
+        // client is alive the connection task keeps waiting for more
+        // requests, causing `connection.await` to deadlock.
+        drop(client);
+
+        connection.await.unwrap();
+    }
+
+    // ── Temporal array helper tests ──────────────────────────────────────────
+
+    #[test]
+    fn compose_up_down_prepends_date_array_helper_when_check_is_referenced() {
+        let delta = SchemaDelta {
+            bucket: BucketKey {
+                database: "main".into(),
+                app: "scheduling".into(),
+            },
+            operations: Vec::new(),
+            classification: Classification::Reversible,
+        };
+        let lowered = vec![OperationSql {
+            label: "add blackout dates check".into(),
+            up: r#"ALTER TABLE "calendars" ADD CONSTRAINT "blackout_dates_check" CHECK (djogi.__djogi_date_array_is_finite_v1("blackout_dates"));"#
+                .into(),
+            down: r#"ALTER TABLE "calendars" DROP CONSTRAINT "blackout_dates_check";"#
+                .into(),
+            lossy: None,
+        }];
+        let version = "V20260518__date_array_helper";
+        let up_sql = compose_up_text(version, &delta, &lowered);
+        let down_sql = compose_down_text(version, &delta, &lowered);
+
+        assert!(
+            up_sql.contains(DATE_ARRAY_HELPER_PRELUDE),
+            "Up migration must include date-array helper prelude: {up_sql}"
+        );
+        assert!(
+            down_sql.contains(DATE_ARRAY_HELPER_PRELUDE),
+            "Down migration must include date-array helper prelude: {down_sql}"
+        );
+        assert!(
+            up_sql.find("CREATE SCHEMA IF NOT EXISTS djogi;").unwrap()
+                < up_sql.find("-- add blackout dates check").unwrap(),
+            "Date-array prelude must appear before operations in up migration: {up_sql}"
+        );
+        assert!(
+            !up_sql.contains("djogi.__djogi_numeric_array_is_rust_decimal_v1("),
+            "Date-array migration must not inject unneeded numeric helper: {up_sql}"
+        );
+        assert!(
+            !up_sql.contains("djogi.__djogi_tstz_array_is_finite_v1("),
+            "Date-array migration must not inject unneeded tstz helper: {up_sql}"
+        );
+    }
+
+    #[test]
+    fn compose_up_down_prepends_tstz_array_helper_when_check_is_referenced() {
+        let delta = SchemaDelta {
+            bucket: BucketKey {
+                database: "main".into(),
+                app: "events".into(),
+            },
+            operations: Vec::new(),
+            classification: Classification::Reversible,
+        };
+        let lowered = vec![OperationSql {
+            label: "add scheduled slots check".into(),
+            up: r#"ALTER TABLE "sessions" ADD CONSTRAINT "slots_check" CHECK (djogi.__djogi_tstz_array_is_finite_v1("slots"));"#
+                .into(),
+            down: r#"ALTER TABLE "sessions" DROP CONSTRAINT "slots_check";"#.into(),
+            lossy: None,
+        }];
+        let version = "V20260518__tstz_array_helper";
+        let up_sql = compose_up_text(version, &delta, &lowered);
+        let down_sql = compose_down_text(version, &delta, &lowered);
+
+        assert!(
+            up_sql.contains(TSTZ_ARRAY_HELPER_PRELUDE),
+            "Up migration must include tstz-array helper prelude: {up_sql}"
+        );
+        assert!(
+            down_sql.contains(TSTZ_ARRAY_HELPER_PRELUDE),
+            "Down migration must include tstz-array helper prelude: {down_sql}"
+        );
+        assert!(
+            up_sql.find("CREATE SCHEMA IF NOT EXISTS djogi;").unwrap()
+                < up_sql.find("-- add scheduled slots check").unwrap(),
+            "Tstz-array prelude must appear before operations in up migration: {up_sql}"
+        );
+        assert!(
+            !up_sql.contains("djogi.__djogi_numeric_array_is_rust_decimal_v1("),
+            "Tstz-array migration must not inject unneeded numeric helper: {up_sql}"
+        );
+        assert!(
+            !up_sql.contains("djogi.__djogi_date_array_is_finite_v1("),
+            "Tstz-array migration must not inject unneeded date-array helper: {up_sql}"
+        );
+    }
+
+    #[test]
+    fn compose_date_array_helper_prelude_uses_only_valid_schema_qualified_identifiers() {
+        // date[], bool, isfinite, bool_and, date, unnest — all legitimate
+        // pg_catalog-qualified identifiers. COALESCE is a conditional-expression
+        // keyword and must NOT be schema-qualified.
+        let expected_identifiers = ["date", "bool", "isfinite", "bool_and", "unnest"];
+
+        assert_helper_prelude_uses_input_array_argument(
+            DATE_ARRAY_HELPER_PRELUDE,
+            "__djogi_date_array_is_finite_v1",
+            "date",
+        );
+        assert_helper_prelude_uses_pg_catalog_bool_return_type(DATE_ARRAY_HELPER_PRELUDE);
+        let found_identifiers = pg_catalog_identifiers(DATE_ARRAY_HELPER_PRELUDE);
+        for id in &found_identifiers {
+            assert!(
+                expected_identifiers.contains(&id.as_str()),
+                "Unexpected schema qualification in date-array helper: pg_catalog.{id}"
+            );
+        }
+        assert!(
+            !found_identifiers.iter().any(|id| *id == "coalesce"),
+            "COALESCE must not be schema-qualified: {DATE_ARRAY_HELPER_PRELUDE}"
+        );
+        assert!(
+            DATE_ARRAY_HELPER_PRELUDE.contains("SELECT COALESCE("),
+            "Date-array helper body should use unqualified COALESCE: {DATE_ARRAY_HELPER_PRELUDE}"
+        );
+        assert!(
+            DATE_ARRAY_HELPER_PRELUDE.contains("pg_catalog.isfinite(value)"),
+            "Date-array helper must guard against both ±infinity via isfinite: \
+             {DATE_ARRAY_HELPER_PRELUDE}"
+        );
+        assert!(
+            DATE_ARRAY_HELPER_PRELUDE.contains("'9999-12-31'::pg_catalog.date"),
+            "Date-array helper must cap at time::Date MAX (9999-12-31): {DATE_ARRAY_HELPER_PRELUDE}"
+        );
+    }
+
+    #[test]
+    fn compose_tstz_array_helper_prelude_uses_only_valid_schema_qualified_identifiers() {
+        let expected_identifiers = ["timestamptz", "bool", "isfinite", "bool_and", "unnest"];
+
+        assert_helper_prelude_uses_input_array_argument(
+            TSTZ_ARRAY_HELPER_PRELUDE,
+            "__djogi_tstz_array_is_finite_v1",
+            "timestamptz",
+        );
+        assert_helper_prelude_uses_pg_catalog_bool_return_type(TSTZ_ARRAY_HELPER_PRELUDE);
+        let found_identifiers = pg_catalog_identifiers(TSTZ_ARRAY_HELPER_PRELUDE);
+        for id in &found_identifiers {
+            assert!(
+                expected_identifiers.contains(&id.as_str()),
+                "Unexpected schema qualification in tstz-array helper: pg_catalog.{id}"
+            );
+        }
+        assert!(
+            !found_identifiers.iter().any(|id| *id == "coalesce"),
+            "COALESCE must not be schema-qualified: {TSTZ_ARRAY_HELPER_PRELUDE}"
+        );
+        assert!(
+            TSTZ_ARRAY_HELPER_PRELUDE.contains("SELECT COALESCE("),
+            "Tstz-array helper body should use unqualified COALESCE: {TSTZ_ARRAY_HELPER_PRELUDE}"
+        );
+        assert!(
+            TSTZ_ARRAY_HELPER_PRELUDE.contains("pg_catalog.isfinite(value)"),
+            "Tstz-array helper must guard against both ±infinity via isfinite: \
+             {TSTZ_ARRAY_HELPER_PRELUDE}"
+        );
+        assert!(
+            TSTZ_ARRAY_HELPER_PRELUDE
+                .contains("'9999-12-31 23:59:59.999999+00'::pg_catalog.timestamptz"),
+            "Tstz-array helper must cap at time::OffsetDateTime MAX (UTC): {TSTZ_ARRAY_HELPER_PRELUDE}"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::disallowed_methods)]
+    // `tokio_postgres::connect` is used in this substrate integration test to
+    // validate SQL execution against a live database where configured.
+    async fn compose_date_array_helper_prelude_applies_in_postgres_when_database_url_present() {
+        use std::env;
+        let database_url = match env::var("DATABASE_URL") {
+            Ok(database_url) if !database_url.is_empty() => database_url,
+            _ => return,
+        };
+
+        let (mut client, connection) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls)
+                .await
+                .unwrap();
+        let connection = tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                panic!("Postgres connection task failed: {e}");
+            }
+        });
+
+        let tx = client.transaction().await.unwrap();
+        tx.batch_execute(DATE_ARRAY_HELPER_PRELUDE).await.unwrap();
+        // Finite dates: helper returns true.
+        let row = tx
+            .query_one(
+                "SELECT djogi.__djogi_date_array_is_finite_v1(ARRAY['2026-05-18'::date, '2000-01-01'::date]::date[])",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(
+            row.get::<_, bool>(0),
+            "finite date array must pass the helper check"
+        );
+        // Positive infinity: helper returns false (isfinite fails).
+        let row = tx
+            .query_one(
+                "SELECT djogi.__djogi_date_array_is_finite_v1(ARRAY['infinity'::date]::date[])",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(
+            !row.get::<_, bool>(0),
+            "date array containing +infinity must fail the helper check"
+        );
+        // Negative infinity: helper returns false (isfinite fails).
+        let row = tx
+            .query_one(
+                "SELECT djogi.__djogi_date_array_is_finite_v1(ARRAY['-infinity'::date]::date[])",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(
+            !row.get::<_, bool>(0),
+            "date array containing -infinity must fail the helper check"
+        );
+        // Empty array: helper returns true (COALESCE(NULL, true)).
+        let row = tx
+            .query_one(
+                "SELECT djogi.__djogi_date_array_is_finite_v1(ARRAY[]::date[])",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(
+            row.get::<_, bool>(0),
+            "empty date array must pass the helper check"
+        );
+        tx.rollback().await.unwrap();
+        // Drop the client before awaiting the connection task; while the
+        // client is alive the connection task keeps waiting for more
+        // requests, causing `connection.await` to deadlock.
+        drop(client);
+
+        connection.await.unwrap();
+    }
+
+    #[tokio::test]
+    #[allow(clippy::disallowed_methods)]
+    // `tokio_postgres::connect` is used in this substrate integration test to
+    // validate SQL execution against a live database where configured.
+    async fn compose_tstz_array_helper_prelude_applies_in_postgres_when_database_url_present() {
+        use std::env;
+        let database_url = match env::var("DATABASE_URL") {
+            Ok(database_url) if !database_url.is_empty() => database_url,
+            _ => return,
+        };
+
+        let (mut client, connection) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls)
+                .await
+                .unwrap();
+        let connection = tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                panic!("Postgres connection task failed: {e}");
+            }
+        });
+
+        let tx = client.transaction().await.unwrap();
+        tx.batch_execute(TSTZ_ARRAY_HELPER_PRELUDE).await.unwrap();
+        // Finite timestamptz values: helper returns true.
+        let row = tx
+            .query_one(
+                "SELECT djogi.__djogi_tstz_array_is_finite_v1(ARRAY['2026-05-18 00:00:00+00'::timestamptz, '2000-01-01 12:00:00+00'::timestamptz]::timestamptz[])",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(
+            row.get::<_, bool>(0),
+            "finite timestamptz array must pass the helper check"
+        );
+        // Positive infinity: helper returns false (isfinite fails).
+        let row = tx
+            .query_one(
+                "SELECT djogi.__djogi_tstz_array_is_finite_v1(ARRAY['infinity'::timestamptz]::timestamptz[])",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(
+            !row.get::<_, bool>(0),
+            "timestamptz array containing +infinity must fail the helper check"
+        );
+        // Negative infinity: helper returns false (isfinite fails).
+        let row = tx
+            .query_one(
+                "SELECT djogi.__djogi_tstz_array_is_finite_v1(ARRAY['-infinity'::timestamptz]::timestamptz[])",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(
+            !row.get::<_, bool>(0),
+            "timestamptz array containing -infinity must fail the helper check"
+        );
+        // Empty array: helper returns true (COALESCE(NULL, true)).
+        let row = tx
+            .query_one(
+                "SELECT djogi.__djogi_tstz_array_is_finite_v1(ARRAY[]::timestamptz[])",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(
+            row.get::<_, bool>(0),
+            "empty timestamptz array must pass the helper check"
+        );
+        tx.rollback().await.unwrap();
+        // Drop the client before awaiting the connection task; while the
+        // client is alive the connection task keeps waiting for more
+        // requests, causing `connection.await` to deadlock.
+        drop(client);
+
+        connection.await.unwrap();
+    }
+
+    fn assert_helper_prelude_uses_input_array_argument(
+        prelude: &str,
+        function_name: &str,
+        pg_type: &str,
+    ) {
+        let expected_signature = format!(
+            "CREATE OR REPLACE FUNCTION djogi.{function_name}(input_array pg_catalog.{pg_type}[])"
+        );
+        assert!(
+            prelude.contains(&expected_signature),
+            "Helper prelude must use a non-keyword input_array argument in its signature: {prelude}"
+        );
+        assert!(
+            prelude.contains("FROM pg_catalog.unnest(input_array) AS value(value);"),
+            "Helper body must reference the renamed input_array argument: {prelude}"
+        );
+        let rejected_signature = format!("{function_name}(values pg_catalog.{pg_type}[])");
+        assert!(
+            !prelude.contains(&rejected_signature),
+            "Helper prelude must not use PostgreSQL keyword `values` as an argument: {prelude}"
+        );
+        assert!(
+            !prelude.contains("pg_catalog.unnest(values)"),
+            "Helper body must not reference the rejected `values` argument: {prelude}"
+        );
+    }
+
+    fn assert_helper_prelude_uses_pg_catalog_bool_return_type(prelude: &str) {
+        assert!(
+            prelude.contains("\nRETURNS pg_catalog.bool\n"),
+            "Helper prelude must use PostgreSQL's schema-qualified bool type: {prelude}"
+        );
+        assert!(
+            !prelude.contains("RETURNS pg_catalog.boolean"),
+            "Helper prelude must not use PostgreSQL's unqualified-only boolean alias with a schema: {prelude}"
+        );
+    }
+
+    fn pg_catalog_identifiers(sql: &str) -> Vec<String> {
+        const PREFIX: &str = "pg_catalog.";
+        let mut ids = Vec::new();
+        let mut cursor = 0usize;
+
+        while let Some(offset) = sql[cursor..].find(PREFIX) {
+            let ident_start = cursor + offset + PREFIX.len();
+            let rest = &sql[ident_start..];
+            let mut len = 0usize;
+            for b in rest.bytes() {
+                if len == 0 {
+                    if !(b.is_ascii_alphabetic() || b == b'_') {
+                        break;
+                    }
+                } else if !(b.is_ascii_alphanumeric() || b == b'_') {
+                    break;
+                }
+                len += 1;
+            }
+            if len > 0 {
+                ids.push(rest[..len].to_string());
+            }
+            cursor = ident_start + len.max(1);
+        }
+
+        ids
     }
 }

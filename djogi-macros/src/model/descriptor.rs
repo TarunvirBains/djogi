@@ -1244,6 +1244,36 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         // a string-comparison shortcut. The mapping tracks
         // `rust_type_to_sql`'s `djogi::Interval` arm.
         "INTERVAL" => quote! { ::djogi::FieldSqlType::Interval },
+        // Phase 8.5 G0 (djogi#148 + #150 substrate) — range SQL types
+        // lower to the typed `FieldSqlType::Range { subtype }` variant.
+        // The mapping tracks `rust_type_to_sql`'s explicit outer-wrapper
+        // namespace policy for runtime-backed `djogi::Range<T>`; one arm
+        // per Postgres built-in range type the G0 substrate ships.
+        "INT4RANGE" | "int4range" => quote! {
+            ::djogi::FieldSqlType::Range {
+                subtype: ::djogi::descriptor::RangeSubtypeKind::Int4,
+            }
+        },
+        "INT8RANGE" | "int8range" => quote! {
+            ::djogi::FieldSqlType::Range {
+                subtype: ::djogi::descriptor::RangeSubtypeKind::Int8,
+            }
+        },
+        "NUMRANGE" | "numrange" => quote! {
+            ::djogi::FieldSqlType::Range {
+                subtype: ::djogi::descriptor::RangeSubtypeKind::Num,
+            }
+        },
+        "TSTZRANGE" | "tstzrange" => quote! {
+            ::djogi::FieldSqlType::Range {
+                subtype: ::djogi::descriptor::RangeSubtypeKind::Tstz,
+            }
+        },
+        "DATERANGE" | "daterange" => quote! {
+            ::djogi::FieldSqlType::Range {
+                subtype: ::djogi::descriptor::RangeSubtypeKind::Date,
+            }
+        },
         other => {
             let s = other.to_string();
             quote! { ::djogi::FieldSqlType::Custom(#s) }
@@ -1554,5 +1584,35 @@ mod tests {
         // `Geography<Point>` is a different type from `GeoPoint`.
         let ty = syn::parse_str::<syn::Type>("Geography<Point>").unwrap();
         assert!(!is_geopoint_type(&ty));
+    }
+
+    #[test]
+    fn test_sql_str_to_tokens_range_subtypes_accept_lowercase_variants() {
+        let normalize = |s: String| s.replace(' ', "");
+        let int4 = normalize(sql_str_to_tokens("int4range").to_string());
+        let int8 = normalize(sql_str_to_tokens("int8range").to_string());
+        let num = normalize(sql_str_to_tokens("numrange").to_string());
+        let tstz = normalize(sql_str_to_tokens("tstzrange").to_string());
+        let date = normalize(sql_str_to_tokens("daterange").to_string());
+        assert!(
+            int4.contains("RangeSubtypeKind::Int4"),
+            "lowercase int4range should map to FieldSqlType::Range subtype Int4"
+        );
+        assert!(
+            int8.contains("RangeSubtypeKind::Int8"),
+            "lowercase int8range should map to FieldSqlType::Range subtype Int8"
+        );
+        assert!(
+            num.contains("RangeSubtypeKind::Num"),
+            "lowercase numrange should map to FieldSqlType::Range subtype Num"
+        );
+        assert!(
+            tstz.contains("RangeSubtypeKind::Tstz"),
+            "lowercase tstzrange should map to FieldSqlType::Range subtype Tstz"
+        );
+        assert!(
+            date.contains("RangeSubtypeKind::Date"),
+            "lowercase daterange should map to FieldSqlType::Range subtype Date"
+        );
     }
 }

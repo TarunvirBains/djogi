@@ -1077,23 +1077,30 @@ fn project_generated_column(spec: &GeneratedColumnSpec) -> GeneratedColumnSchema
 /// and a redundant CHECK would inflate every snapshot for no safety
 /// win.
 ///
-/// **Active arms (djogi#187 — temporal year bounds).** Each temporal
-/// `FieldSqlType` variant has exactly one Rust source type that lowers
-/// to it (`time::Date` → `Date`, `time::OffsetDateTime` → `Timestamptz`),
-/// so dispatch on `FieldSqlType` alone is unambiguous and the CHECK
-/// reaches `project_column` directly. The bound shape:
+/// **Active arms (djogi#187 — temporal year bounds + finite guard).** Each
+/// temporal `FieldSqlType` variant has exactly one Rust source type that
+/// lowers to it (`time::Date` → `Date`, `time::OffsetDateTime` →
+/// `Timestamptz`), so dispatch on `FieldSqlType` alone is unambiguous and
+/// the CHECK reaches `project_column` directly. The bound shape:
 ///
-/// | Rust                     | Postgres column | CHECK expression                                      |
-/// |--------------------------|-----------------|-------------------------------------------------------|
-/// | `time::Date`             | `DATE`          | `<col> <= DATE '9999-12-31'`                          |
-/// | `time::OffsetDateTime`   | `TIMESTAMPTZ`   | `<col> <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'`|
+/// | Rust                     | Postgres column | CHECK expression                                                                                |
+/// |--------------------------|-----------------|--------------------------------------------------------------------------------------------------|
+/// | `time::Date`             | `DATE`          | `pg_catalog.isfinite(<col>) AND <col> <= DATE '9999-12-31'`                                      |
+/// | `time::OffsetDateTime`   | `TIMESTAMPTZ`   | `pg_catalog.isfinite(<col>) AND <col> <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'`            |
 ///
-/// **One-sided upper bound by design.** The `time` crate's default
-/// year range is ISO 8601 -9999 to +9999. Postgres's DATE / TIMESTAMP
-/// types accept years far outside the upper bound (DATE up to 5874897
-/// AD; TIMESTAMP up to 294276 AD), so the upper-bound CHECK is the
-/// one that actually does work — it rejects Postgres-valid but
-/// `time::Date`-OOB INSERTs that would otherwise corrupt typed reads.
+/// **Two clauses, both required.** The upper-bound clause rejects
+/// `time::*`-OOB INSERTs (DATE up to 5874897 AD; TIMESTAMPTZ up to
+/// 294276 AD), while the leading `pg_catalog.isfinite(<col>)` clause
+/// rejects Postgres's two non-finite DATE / TIMESTAMPTZ special values
+/// (`'infinity'` and `'-infinity'`) that `time::Date` /
+/// `time::OffsetDateTime` cannot represent at all — without the finite
+/// guard a raw `INSERT … DATE '-infinity'` would land successfully and
+/// poison the next typed decode with `DjogiError::Decode`, matching
+/// the same failure mode the NUMERIC special-value family
+/// (`scale(<col>) IS NOT NULL`) was designed to close for `Decimal`.
+/// `pg_catalog.isfinite(...)` returns NULL for NULL input, so CHECK's
+/// standard NULL-as-satisfied rule still passes SQL NULL through on
+/// nullable columns.
 ///
 /// The lower bound is intentionally omitted because Postgres's own
 /// date input parser already rejects every value `time::Date` cannot
@@ -1132,36 +1139,53 @@ fn field_type_check(
     rust_source_type: Option<RustSourceType>,
     column_name: &str,
 ) -> Option<String> {
-    use crate::descriptor::FieldSqlType;
+    use crate::descriptor::{FieldSqlType, RangeSubtypeKind};
 
     let qcol = quote_ident_for_check(column_name);
     match sql_type {
-        // ── djogi#187 — temporal year upper bound ────────────────────
+        // ── djogi#187 — temporal year upper bound + finite guard ─────
         //
-        // `time::Date` / `time::OffsetDateTime` cap at ISO year 9999
-        // by default. Postgres `DATE` / `TIMESTAMPTZ` accept much
-        // higher years (`DATE` up to 5874897 AD; `TIMESTAMPTZ` up to
-        // 294276 AD). External writers (raw SQL migration, BI tool,
-        // sister application) can land a row whose year exceeds the
-        // time crate's MAX. The next typed `SELECT` decoding via
-        // `row.try_get::<Date>` / `row.try_get::<OffsetDateTime>`
-        // fails with `DjogiError::Decode`, and a single bad row
-        // poisons all subsequent reads through the typed surface.
+        // Two layered defenses against `time::Date` /
+        // `time::OffsetDateTime` decode poisoning:
         //
-        // Project a one-sided upper-bound CHECK so Postgres rejects
-        // OOB-upper writes at the DB layer rather than letting them
-        // land and surface as decode failures on the read side. The
-        // lower bound is omitted because Postgres's own date input
-        // parser rejects every value `time::Date` cannot represent
-        // (Postgres's MIN is 4713 BC; `time::Date`'s MIN is 10000 BC
-        // — values in ISO years -9999 to -4713 are unreachable
-        // through Postgres regardless of CHECK). See the doc comment
-        // above.
+        // 1. **Year upper bound** — `time::Date` /
+        //    `time::OffsetDateTime` cap at ISO year 9999 by default.
+        //    Postgres `DATE` / `TIMESTAMPTZ` accept much higher years
+        //    (`DATE` up to 5874897 AD; `TIMESTAMPTZ` up to 294276 AD).
+        //    External writers (raw SQL migration, BI tool, sister
+        //    application) can land a row whose year exceeds the time
+        //    crate's MAX. The next typed `SELECT` decoding via
+        //    `row.try_get::<Date>` / `row.try_get::<OffsetDateTime>`
+        //    fails with `DjogiError::Decode`, and a single bad row
+        //    poisons subsequent reads through the typed surface.
+        //
+        // 2. **Finite guard** — Postgres `DATE` / `TIMESTAMPTZ` admit
+        //    two non-finite special values, `'infinity'` and
+        //    `'-infinity'`, that `time::Date` / `time::OffsetDateTime`
+        //    cannot represent at all. The `pg_catalog.isfinite(<col>)`
+        //    predicate evaluates to FALSE on those two literals and
+        //    NULL on SQL NULL — combined with the year bound under
+        //    AND, it rejects both infinities while leaving CHECK's
+        //    standard NULL-as-satisfied semantics intact on nullable
+        //    columns. Without this guard a raw
+        //    `INSERT … DATE '-infinity'` lands successfully (because
+        //    `'-infinity'::date <= DATE '9999-12-31'` is TRUE) and
+        //    later poisons a typed decode — the same failure mode the
+        //    NUMERIC special-value guard
+        //    (`scale(<col>) IS NOT NULL` for `Decimal`) was designed
+        //    to close.
+        //
+        // The lower bound is omitted because Postgres's own date input
+        // parser rejects every value `time::Date` cannot represent on
+        // the finite end (Postgres's MIN is 4713 BC; `time::Date`'s
+        // MIN is 10000 BC — values in ISO years -9999 to -4713 are
+        // unreachable through Postgres regardless of CHECK). See the
+        // doc comment above.
         //
         // The upper-bound `TIMESTAMP` literal includes microsecond
         // resolution so `OffsetDateTime::new(..., 23, 59, 59, 999_999)`
         // round-trips identically and CHECK-equals against the literal.
-        FieldSqlType::Date => Some(format!("{qcol} <= DATE '9999-12-31'")),
+        FieldSqlType::Date => Some(date_range_expr(&qcol)),
         FieldSqlType::Timestamptz => {
             // Emit an explicit UTC timestamptz literal so the CHECK is
             // timezone-invariant. Using `TIMESTAMP '...'` (without TZ) against
@@ -1170,9 +1194,7 @@ fn field_type_check(
             // session UTC offset. `TIMESTAMPTZ '...+00'` is always interpreted
             // as UTC regardless of session timezone, matching the
             // `time::OffsetDateTime` MAX of `9999-12-31 23:59:59.999999 UTC`.
-            Some(format!(
-                "{qcol} <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
-            ))
+            Some(timestamptz_range_expr(&qcol))
         }
         // ── djogi#190 — integer widening (live, gated on rust_source_type) ──
         //
@@ -1239,6 +1261,25 @@ fn field_type_check(
         // semantics: Postgres rejects any write that the typed Rust
         // path would otherwise rescale, round, or fail to fit.
         //
+        //   * `scale(col) IS NOT NULL` — Postgres NUMERIC admits three
+        //     non-finite special values (`NaN`, `Infinity`, `-Infinity`)
+        //     that `rust_decimal::Decimal` cannot represent at all. The
+        //     `pg_catalog.scale()` function returns NULL for every
+        //     non-finite NUMERIC (NaN since PG 12, ±Infinity since
+        //     PG 14, both covered by Djogi's PG 18+ baseline), and
+        //     `IS NOT NULL` collapses that to a concrete FALSE so the
+        //     CHECK fails on those inputs rather than NULL-propagating
+        //     to PASS. Without this guard the later `scale <= 28` and
+        //     coefficient clauses would NULL-propagate (`NULL <= 28`
+        //     is NULL) and CHECK semantics (`NULL` treated as
+        //     satisfied) would silently admit `'NaN'::numeric` and
+        //     friends — a typed `Decimal::from_sql` decode would then
+        //     fail with `DjogiError::Decode` on the read side. The
+        //     scalar `FieldSqlType::Numeric` arm wraps the whole
+        //     conjunction with `({qcol}) IS NULL OR (...)` so this
+        //     guard does not also reject SQL NULL on nullable Decimal
+        //     columns; for `NUMRANGE` endpoints the equivalent NULL
+        //     pass-through is provided by `range_endpoint_checks`.
         //   * `scale(col) <= 28` — `rust_decimal::Decimal` carries
         //     5 scale bits inside an i32 word, capping representable
         //     scale at `Decimal::MAX_SCALE = 28`. The pinned
@@ -1261,12 +1302,15 @@ fn field_type_check(
         //     rejects them at the DB layer before they can poison a
         //     typed read.
         //
-        // The two-clause shape rejects both kinds of out-of-range value:
+        // The three-clause shape rejects every kind of unrepresentable value:
         //   - A 100-digit integer at scale 0 → coefficient > 2^96-1 → rejected.
         //   - A value with scale 50 → scale check fails → rejected
         //     (preventing the silent rescale-and-round path).
+        //   - A `NaN` / `Infinity` / `-Infinity` literal → `scale()` returns
+        //     NULL → `scale(col) IS NOT NULL` evaluates to FALSE → rejected
+        //     (preventing the special-value-poisons-decode path).
         // For valid rust_decimal values (e.g. `49.99` with scale 2,
-        // coefficient `4999`), both clauses pass.
+        // coefficient `4999`), all three clauses pass.
         //
         // Postgres semantics: CHECK constraints treat NULL as satisfied,
         // so nullable Decimal columns work without modification. The
@@ -1301,11 +1345,35 @@ fn field_type_check(
             Some(RustSourceType::U64) => Some(format!(
                 "{qcol} >= 0 AND {qcol} <= 18446744073709551615 AND {qcol} = trunc({qcol})"
             )),
+            // Wrap the scalar Decimal representability check with an explicit
+            // NULL pass-through. The inner `decimal_repr_expr` carries a
+            // `scale(<col>) IS NOT NULL` guard that rejects PostgreSQL NUMERIC
+            // special values (`NaN`, `Infinity`, `-Infinity`) — `scale()` is
+            // defined to return NULL for those, and `IS NOT NULL` evaluates to
+            // FALSE for a NULL input (never NULL itself), so a bare guard would
+            // also reject SQL NULL on nullable columns. The `(<col>) IS NULL OR`
+            // outer wrap restores Postgres CHECK's standard "NULL satisfies
+            // the constraint" behaviour for nullable Decimal columns.
             Some(RustSourceType::Decimal) => Some(format!(
-                "scale({qcol}) <= 28 AND \
-                 abs({qcol}) * power(10::numeric, scale({qcol})) <= 79228162514264337593543950335"
+                "({qcol}) IS NULL OR ({})",
+                decimal_repr_expr(&qcol)
             )),
             _ => None,
+        },
+        FieldSqlType::TimestamptzArray => Some(tstz_array_is_finite_check(&qcol)),
+        FieldSqlType::DateArray => Some(date_array_is_finite_check(&qcol)),
+        FieldSqlType::NumericArray => Some(numeric_array_is_rust_decimal_check(&qcol)),
+        FieldSqlType::Range { subtype } => match subtype {
+            // Int4RANGE / INT4RANGE and INT8RANGE / INT8RANGE are
+            // identity-mapped by their Postgres column types in Rust
+            // (`i32` / `i64`) so they intentionally return None.
+            RangeSubtypeKind::Int4 | RangeSubtypeKind::Int8 => None,
+            // Apply the scalar bound logic to both finite bounds; unbounded,
+            // empty, and NULL ranges remain exempted by the endpoint
+            // `IS NULL` guard.
+            RangeSubtypeKind::Num => Some(range_endpoint_checks(&qcol, decimal_repr_expr)),
+            RangeSubtypeKind::Tstz => Some(range_endpoint_checks(&qcol, timestamptz_range_expr)),
+            RangeSubtypeKind::Date => Some(range_endpoint_checks(&qcol, date_range_expr)),
         },
         // All other `FieldSqlType` variants (`Text`, `Real`,
         // `DoublePrecision`, `Boolean`, `Uuid`, `Jsonb`,
@@ -1318,6 +1386,154 @@ fn field_type_check(
         // helper signature.
         _ => None,
     }
+}
+
+/// Inner representability predicate for a DATE expression that resolves
+/// to a `time::Date`-storable value.
+///
+/// Two clauses, both required:
+///
+/// 1. `pg_catalog.isfinite(<expr>)` — rejects Postgres's two non-finite
+///    DATE special values (`'infinity'::date` and `'-infinity'::date`)
+///    that `time::Date` cannot represent at all. Without this guard a
+///    raw `INSERT … DATE '-infinity'` lands successfully and poisons
+///    the next typed `time::Date::from_sql` decode with
+///    `DjogiError::Decode`. `pg_catalog.isfinite(date)` is documented
+///    to return FALSE for both `+/-infinity` and NULL for NULL input,
+///    so the standard CHECK NULL-as-satisfied rule still passes SQL
+///    NULL through.
+/// 2. `<expr> <= DATE '9999-12-31'` — caps the year at `time::Date`'s
+///    default MAX (`Date::MAX_YEAR = 9999`). Postgres DATE accepts
+///    much higher years (up to 5874897 AD); the upper-bound clause
+///    rejects writes that exceed the Rust type's representable range.
+///
+/// **Callers are responsible for the NULL pass-through.** The helper
+/// returns a bare conjunction with no `<expr> IS NULL OR` outer wrap.
+/// At the scalar `FieldSqlType::Date` arm Postgres CHECK's
+/// NULL-treated-as-satisfied semantics handles SQL NULL (both clauses
+/// evaluate to NULL, the conjunction is NULL, CHECK is satisfied).
+/// At the range-endpoint arm `range_endpoint_checks` wraps the helper
+/// with `<endpoint> IS NULL OR (...)` so empty / unbounded / NULL
+/// ranges short-circuit before the helper runs.
+fn date_range_expr(column_expr: &str) -> String {
+    format!("pg_catalog.isfinite({column_expr}) AND {column_expr} <= DATE '9999-12-31'")
+}
+
+/// Inner representability predicate for a TIMESTAMPTZ expression that
+/// resolves to a `time::OffsetDateTime`-storable value.
+///
+/// Two clauses, both required:
+///
+/// 1. `pg_catalog.isfinite(<expr>)` — rejects Postgres's two non-finite
+///    TIMESTAMPTZ special values (`'infinity'::timestamptz` and
+///    `'-infinity'::timestamptz`) that `time::OffsetDateTime` cannot
+///    represent. `pg_catalog.isfinite(timestamptz)` returns FALSE for
+///    both infinities and NULL for NULL input, so the standard CHECK
+///    NULL-as-satisfied rule still passes SQL NULL through.
+/// 2. `<expr> <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'` — caps
+///    the value at `time::OffsetDateTime`'s default upper bound.
+///    Postgres TIMESTAMPTZ accepts much higher years (up to 294276 AD);
+///    the upper-bound clause rejects writes that exceed the Rust type's
+///    representable range. The literal uses the `TIMESTAMPTZ` keyword
+///    with explicit `+00` UTC offset so the comparison is
+///    timezone-invariant — using plain `TIMESTAMP '...'` (without TZ)
+///    would make Postgres interpret the literal in the session
+///    timezone, shifting the effective upper bound.
+///
+/// **Callers are responsible for the NULL pass-through.** Same shape
+/// as `date_range_expr`: the scalar `FieldSqlType::Timestamptz` arm
+/// relies on CHECK's NULL semantics, and `range_endpoint_checks` adds
+/// the `<endpoint> IS NULL OR (...)` wrap for the range case.
+fn timestamptz_range_expr(column_expr: &str) -> String {
+    format!(
+        "pg_catalog.isfinite({column_expr}) AND \
+         {column_expr} <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
+    )
+}
+
+/// Inner representability predicate for a NUMERIC expression that
+/// resolves to a `rust_decimal::Decimal`-storable value.
+///
+/// The leading `scale({column_expr}) IS NOT NULL` clause rejects the
+/// PostgreSQL NUMERIC special values `NaN`, `Infinity`, and
+/// `-Infinity` — `pg_catalog.scale()` is defined to return NULL for
+/// non-finite NUMERICs (NaN since PG 12, ±Infinity since PG 14, both
+/// covered by Djogi's PG 18+ baseline), and `IS NOT NULL` collapses
+/// that to a concrete FALSE so the CHECK fails on those inputs rather
+/// than NULL-propagating to PASS. Regular finite NUMERICs continue
+/// through the existing scale / coefficient bounds.
+///
+/// **Callers are responsible for the NULL pass-through.** This helper
+/// returns a bare conjunction with no `<col> IS NULL OR` outer wrap:
+/// the scalar `FieldSqlType::Numeric` arm wraps the result with
+/// `({qcol}) IS NULL OR (...)`, and `range_endpoint_checks` already
+/// wraps `lower(...)` / `upper(...)` bound checks with their own
+/// `IS NULL OR` so unbounded / empty / NULL ranges short-circuit.
+/// Calling this helper directly on a column expression without one of
+/// those wraps would reject SQL NULL alongside the special values,
+/// because `scale(NULL) IS NOT NULL` evaluates to FALSE.
+fn decimal_repr_expr(column_expr: &str) -> String {
+    format!(
+        "scale({column_expr}) IS NOT NULL AND \
+         scale({column_expr}) <= 28 AND \
+         abs({column_expr}) * power(10::numeric, scale({column_expr})) <= 79228162514264337593543950335"
+    )
+}
+
+fn range_endpoint_checks(range_column: &str, bound_check: fn(&str) -> String) -> String {
+    let lower_endpoint = format!("lower({range_column})");
+    let upper_endpoint = format!("upper({range_column})");
+    let lower = format!(
+        "{lower_endpoint} IS NULL OR ({})",
+        bound_check(&lower_endpoint)
+    );
+    let upper = format!(
+        "{upper_endpoint} IS NULL OR ({})",
+        bound_check(&upper_endpoint)
+    );
+    let lower = format!("({lower})");
+    let upper = format!("({upper})");
+    format!("{lower} AND {upper}")
+}
+
+/// Per-element finite-value CHECK for `DATE[]` columns.
+///
+/// Emits `<col> IS NULL OR djogi.__djogi_date_array_is_finite_v1(<col>)`. The helper
+/// function (defined in `compose::DATE_ARRAY_HELPER_PRELUDE`) applies
+/// `pg_catalog.bool_and(value IS NULL OR (pg_catalog.isfinite(value) AND value <=
+/// '9999-12-31'::pg_catalog.date))` over all unnested elements:
+///
+/// - Rejects both `+infinity` and `-infinity` date elements — `pg_catalog.isfinite(date)`
+///   returns FALSE for both non-finite DATE special values, not just the upper one.
+///   The previous `upper_bound >= ALL(col)` strategy passed `-infinity` because
+///   `-infinity < upper_bound`, making `upper_bound >= -infinity` TRUE.
+/// - Admits `NULL` elements (consistent with SQL array-element NULL semantics).
+/// - Admits empty arrays (COALESCE inside the helper maps the empty-set `bool_and`
+///   NULL to TRUE).
+///
+/// **Why a helper function and not a direct expression?** Postgres CHECK clauses may not
+/// contain subqueries or `unnest(...)` aggregate forms directly; the helper function
+/// encapsulates the `unnest` + `bool_and` loop in a valid IMMUTABLE SQL function.
+/// This mirrors the `NumericArray` precedent in [`numeric_array_is_rust_decimal_check`].
+fn date_array_is_finite_check(array_column: &str) -> String {
+    format!("{array_column} IS NULL OR djogi.__djogi_date_array_is_finite_v1({array_column})")
+}
+
+/// Per-element finite-value CHECK for `TIMESTAMPTZ[]` columns.
+///
+/// Same shape as [`date_array_is_finite_check`] but wraps
+/// `djogi.__djogi_tstz_array_is_finite_v1(...)` from `compose::TSTZ_ARRAY_HELPER_PRELUDE`.
+/// The helper applies `pg_catalog.isfinite(value)` to every unnested element, rejecting
+/// both `-infinity` and `+infinity` timestamptz values that `time::OffsetDateTime` cannot
+/// represent, while passing finite values and `NULL` elements.
+fn tstz_array_is_finite_check(array_column: &str) -> String {
+    format!("{array_column} IS NULL OR djogi.__djogi_tstz_array_is_finite_v1({array_column})")
+}
+
+fn numeric_array_is_rust_decimal_check(array_column: &str) -> String {
+    format!(
+        "{array_column} IS NULL OR djogi.__djogi_numeric_array_is_rust_decimal_v1({array_column})"
+    )
 }
 
 /// Combine a type-derived CHECK with an adopter `#[field(check = "...")]`
@@ -1819,7 +2035,8 @@ mod tests {
     use crate::apps::AppDescriptor;
     use crate::descriptor::{
         EnumDescriptor, FieldDescriptor, FieldSqlType, IndexColumnSpec, IndexKind, IndexSpec,
-        IndexTarget, IndexType, ModelDescriptor, PkType, field_descriptor, model_descriptor,
+        IndexTarget, IndexType, ModelDescriptor, PkType, RangeSubtypeKind, field_descriptor,
+        model_descriptor,
     };
     use crate::relation::registry::{
         RelationKind as RegistryRelationKind, RelationRegistryError, ReverseRelationMarker,
@@ -3313,6 +3530,14 @@ mod tests {
             !expr.contains(">= DATE"),
             "DATE CHECK is one-sided upper bound (no lower-bound clause): {expr}"
         );
+        // Finite guard rejects `'infinity'::date` / `'-infinity'::date`.
+        // Without this, raw INSERTs of either special value pass the upper-bound
+        // clause (since `-infinity::date <= DATE '9999-12-31'` is TRUE) and
+        // poison subsequent `time::Date::from_sql` decodes.
+        assert!(
+            expr.contains("pg_catalog.isfinite(\"birthday\")"),
+            "DATE CHECK must reject ±infinity via pg_catalog.isfinite(<col>): {expr}"
+        );
     }
 
     #[test]
@@ -3335,6 +3560,58 @@ mod tests {
         assert!(
             !expr.contains("<= TIMESTAMP '"),
             "TIMESTAMPTZ CHECK must not use plain TIMESTAMP literal (timezone-sensitive): {expr}"
+        );
+        // Finite guard rejects `'infinity'::timestamptz` / `'-infinity'::timestamptz`.
+        assert!(
+            expr.contains("pg_catalog.isfinite(\"occurred_at\")"),
+            "TIMESTAMPTZ CHECK must reject ±infinity via pg_catalog.isfinite(<col>): {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_date_rejects_infinity_special_values() {
+        // Dedicated pin for the finite-value guard on the scalar Date
+        // arm. Two clauses, joined by AND, with the finite guard
+        // leading so it short-circuits before the year-bound clause.
+        // The conjunction shape preserves CHECK's NULL-as-satisfied
+        // semantics on nullable columns: `pg_catalog.isfinite(NULL)`
+        // returns NULL, the AND is NULL, the CHECK is satisfied.
+        let expr = field_type_check(&FieldSqlType::Date, None, "birthday")
+            .expect("DATE field must carry the time::Date representability CHECK");
+        assert!(
+            expr.contains("pg_catalog.isfinite(\"birthday\") AND"),
+            "DATE CHECK must place the finite guard before the year bound under AND: {expr}"
+        );
+        // Confirm the two clauses are syntactically joined under AND
+        // — without that, Postgres would short-circuit on the upper
+        // bound alone and admit `-infinity`.
+        assert_eq!(
+            expr, "pg_catalog.isfinite(\"birthday\") AND \"birthday\" <= DATE '9999-12-31'",
+            "DATE CHECK expression shape (full): {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_timestamptz_rejects_infinity_special_values() {
+        // Dedicated pin for the finite-value guard on the scalar
+        // Timestamptz arm. Same two-clause shape as the DATE arm,
+        // with explicit `+00` UTC offset on the upper-bound literal.
+        let expr = field_type_check(&FieldSqlType::Timestamptz, None, "occurred_at")
+            .expect("TIMESTAMPTZ field must carry the OffsetDateTime representability CHECK");
+        assert!(
+            expr.contains("pg_catalog.isfinite(\"occurred_at\") AND"),
+            "TIMESTAMPTZ CHECK must place the finite guard before the year bound under AND: \
+             {expr}"
+        );
+        // The whole expression also asserts the formatter's whitespace
+        // shape (single space around AND, line continuation in the
+        // helper is collapsed by `format!`).
+        let normalized = expr.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(
+            normalized,
+            "pg_catalog.isfinite(\"occurred_at\") AND \
+             \"occurred_at\" <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'",
+            "TIMESTAMPTZ CHECK expression shape (full, whitespace-normalized): {expr}"
         );
     }
 
@@ -3391,10 +3668,7 @@ mod tests {
             FieldSqlType::RealArray,
             FieldSqlType::DoublePrecisionArray,
             FieldSqlType::BoolArray,
-            FieldSqlType::TimestamptzArray,
-            FieldSqlType::DateArray,
             FieldSqlType::UuidArray,
-            FieldSqlType::NumericArray,
             FieldSqlType::Citext,
         ] {
             assert!(
@@ -3757,11 +4031,12 @@ mod tests {
     fn project_column_emits_year_check_for_non_fk_date_column() {
         // Adopter `#[model] struct Product { launch_date: time::Date }`.
         // Lowers to `FieldSqlType::Date`. The projection must produce
-        // a `<col> <= DATE '9999-12-31'` CHECK so external writers
-        // that land OOB-upper Date values get rejected at the DB
-        // layer rather than poisoning typed reads with
-        // `DjogiError::Decode`. One-sided upper bound by design — see
-        // `field_type_check` doc comment.
+        // a `pg_catalog.isfinite(<col>) AND <col> <= DATE '9999-12-31'`
+        // CHECK so external writers that land OOB-upper Date values OR
+        // `±infinity` special values get rejected at the DB layer
+        // rather than poisoning typed reads with `DjogiError::Decode`.
+        // One-sided upper bound by design — see `field_type_check` doc
+        // comment.
         static FIELDS: &[FieldDescriptor] = &[
             FieldDescriptor {
                 ..field_descriptor("id", FieldSqlType::BigInt, false)
@@ -3786,10 +4061,14 @@ mod tests {
         let check = date_col
             .check
             .as_ref()
-            .expect("DATE column must carry the time::Date year-bound CHECK (djogi#187)");
+            .expect("DATE column must carry the time::Date representability CHECK (djogi#187)");
         assert!(
             check.contains("\"launch_date\" <= DATE '9999-12-31'"),
             "DATE column CHECK upper bound: {check}"
+        );
+        assert!(
+            check.contains("pg_catalog.isfinite(\"launch_date\")"),
+            "DATE column CHECK must reject ±infinity via the finite guard: {check}"
         );
     }
 
@@ -3797,9 +4076,10 @@ mod tests {
     fn project_column_emits_year_check_for_non_fk_timestamptz_column() {
         // Adopter `#[model] struct Event { occurred_at: OffsetDateTime }`.
         // Lowers to `FieldSqlType::Timestamptz`. The projection must
-        // produce a year-bound CHECK matching `time::OffsetDateTime`'s
-        // representable upper bound so external writers cannot land
-        // OOB-upper rows.
+        // produce a finite-guarded year-bound CHECK matching
+        // `time::OffsetDateTime`'s representable upper bound AND
+        // rejecting `±infinity` so external writers cannot land
+        // unrepresentable rows.
         static FIELDS: &[FieldDescriptor] = &[
             FieldDescriptor {
                 ..field_descriptor("id", FieldSqlType::BigInt, false)
@@ -3822,11 +4102,15 @@ mod tests {
         let ts_col = &buckets[&empty_global()].models["events"].columns[1];
         assert_eq!(ts_col.name, "occurred_at");
         let check = ts_col.check.as_ref().expect(
-            "TIMESTAMPTZ column must carry the OffsetDateTime year-bound CHECK (djogi#187)",
+            "TIMESTAMPTZ column must carry the OffsetDateTime representability CHECK (djogi#187)",
         );
         assert!(
             check.contains("\"occurred_at\" <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"),
             "TIMESTAMPTZ column CHECK upper bound: {check}"
+        );
+        assert!(
+            check.contains("pg_catalog.isfinite(\"occurred_at\")"),
+            "TIMESTAMPTZ column CHECK must reject ±infinity via the finite guard: {check}"
         );
     }
 
@@ -3924,10 +4208,16 @@ mod tests {
 
     #[test]
     fn field_type_check_decimal_arm_quotes_reserved_word_column() {
-        // The Decimal CHECK references the column three times (scale,
-        // scale, abs+power); all three must round-trip the column name
-        // through `quote_ident_for_check` so a reserved-word column name
-        // parses cleanly.
+        // The Decimal CHECK references the column five times:
+        //   1. outer `({qcol}) IS NULL` pass-through wrap;
+        //   2. `scale({qcol}) IS NOT NULL` (special-value guard);
+        //   3. `scale({qcol}) <= 28` (scale bound);
+        //   4. `abs({qcol})` (coefficient base);
+        //   5. `scale({qcol})` inside `power(10::numeric, ...)` (coefficient
+        //      exponent).
+        // All five must round-trip the column name through
+        // `quote_ident_for_check` so a reserved-word column name parses
+        // cleanly.
         let expr = field_type_check(
             &FieldSqlType::Numeric,
             Some(RustSourceType::Decimal),
@@ -3936,8 +4226,62 @@ mod tests {
         .expect("Decimal CHECK must fire regardless of column name");
         assert_eq!(
             expr.matches("\"order\"").count(),
-            3,
-            "Decimal CHECK references the column three times; all must be quoted: {expr}"
+            5,
+            "Decimal CHECK references the column five times; all must be quoted: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_decimal_arm_rejects_numeric_special_values_via_scale_guard() {
+        // PostgreSQL NUMERIC admits `NaN`, `Infinity`, and `-Infinity` as
+        // distinct special values. `rust_decimal::Decimal` cannot represent
+        // any of them, so the structural CHECK must reject them at the DB
+        // layer. The leading `scale(<col>) IS NOT NULL` clause is the only
+        // guard that fires on those inputs — `pg_catalog.scale()` returns
+        // NULL for every non-finite NUMERIC, and the bare scale / coefficient
+        // clauses NULL-propagate (which CHECK treats as PASS).
+        let expr = field_type_check(
+            &FieldSqlType::Numeric,
+            Some(RustSourceType::Decimal),
+            "price",
+        )
+        .expect("Decimal CHECK must carry the scale IS NOT NULL guard");
+        assert!(
+            expr.contains("scale(\"price\") IS NOT NULL"),
+            "Decimal CHECK must carry the `scale(...) IS NOT NULL` guard to reject NaN / \
+             Infinity / -Infinity: {expr}"
+        );
+        // The pass-through wrap keeps SQL NULL satisfied (the `scale IS NOT
+        // NULL` guard alone would also reject NULL on nullable Decimal columns).
+        assert!(
+            expr.contains("(\"price\") IS NULL OR ("),
+            "Decimal CHECK must wrap with `(<col>) IS NULL OR (...)` so nullable Decimal \
+             columns are unaffected by the special-value guard: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_range_num_carries_scale_guard_on_both_endpoints() {
+        // The same `scale(...) IS NOT NULL` special-value guard fires on
+        // NUMRANGE endpoints. `range_endpoint_checks` wraps each finite
+        // endpoint with its own `IS NULL OR (...)` short-circuit, so
+        // `decimal_repr_expr` itself returns the bare conjunction and the
+        // wrap delivers the NULL pass-through.
+        let expr = field_type_check(
+            &FieldSqlType::Range {
+                subtype: RangeSubtypeKind::Num,
+            },
+            None,
+            "price_range",
+        )
+        .expect("NUMRANGE must carry endpoint Decimal CHECKs");
+        assert!(
+            expr.contains("scale(lower(\"price_range\")) IS NOT NULL"),
+            "NUMRANGE lower endpoint must carry the special-value guard: {expr}"
+        );
+        assert!(
+            expr.contains("scale(upper(\"price_range\")) IS NOT NULL"),
+            "NUMRANGE upper endpoint must carry the special-value guard: {expr}"
         );
     }
 
@@ -3982,6 +4326,477 @@ mod tests {
         assert!(
             check.contains("79228162514264337593543950335"),
             "Decimal CHECK must reference 2^96 - 1 as upper coefficient bound: {check}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_range_num_emits_endpoint_decimal_bounds() {
+        let expr = field_type_check(
+            &FieldSqlType::Range {
+                subtype: RangeSubtypeKind::Num,
+            },
+            None,
+            "price_range",
+        )
+        .expect("NUMRANGE must carry Decimal bound checks on finite lower and upper endpoints");
+        assert!(
+            expr.contains("scale(lower(\"price_range\")) <= 28"),
+            "NUMRANGE lower endpoint must get Decimal scale bound: {expr}"
+        );
+        assert!(
+            expr.contains("scale(upper(\"price_range\")) <= 28"),
+            "NUMRANGE upper endpoint must get Decimal scale bound: {expr}"
+        );
+        assert!(
+            expr.contains("scale(lower(\"price_range\")) <= 28 AND abs(lower(\"price_range\")) * power(10::numeric, scale(lower(\"price_range\"))) <= 79228162514264337593543950335"),
+            "NUMRANGE lower endpoint should reuse Decimal element checks: {expr}"
+        );
+        assert!(
+            expr.contains("scale(upper(\"price_range\")) <= 28 AND abs(upper(\"price_range\")) * power(10::numeric, scale(upper(\"price_range\"))) <= 79228162514264337593543950335"),
+            "NUMRANGE upper endpoint should reuse Decimal element checks: {expr}"
+        );
+        assert!(
+            expr.contains("lower(\"price_range\") IS NULL OR"),
+            "NUMRANGE lower endpoint check must keep NULL/unbounded pass-through: {expr}"
+        );
+        assert!(
+            expr.contains("upper(\"price_range\") IS NULL OR"),
+            "NUMRANGE upper endpoint check must keep NULL/unbounded pass-through: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_range_tstz_emits_endpoint_timestamptz_bounds() {
+        let expr = field_type_check(
+            &FieldSqlType::Range {
+                subtype: RangeSubtypeKind::Tstz,
+            },
+            None,
+            "booking_window",
+        )
+        .expect(
+            "TSTZRANGE must carry Timestamptz upper checks on finite lower and upper endpoints",
+        );
+        assert!(
+            expr.contains(
+                "lower(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
+            ),
+            "TSTZRANGE lower endpoint bound must be UTC-explicit TIMESTAMPTZ: {expr}"
+        );
+        assert!(
+            expr.contains(
+                "upper(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
+            ),
+            "TSTZRANGE upper endpoint bound must be UTC-explicit TIMESTAMPTZ: {expr}"
+        );
+        assert!(
+            expr.contains("lower(\"booking_window\") IS NULL OR"),
+            "TSTZRANGE lower endpoint check must keep NULL/unbounded pass-through: {expr}"
+        );
+        assert!(
+            expr.contains("upper(\"booking_window\") IS NULL OR"),
+            "TSTZRANGE upper endpoint check must keep NULL/unbounded pass-through: {expr}"
+        );
+        // Finite guard on both endpoints: `±infinity` is a valid
+        // TIMESTAMPTZ literal that `time::OffsetDateTime` cannot decode,
+        // so the helper must reject endpoints carrying those special
+        // values. Pre-existing scalar gap + newly-propagated range gap.
+        assert!(
+            expr.contains("pg_catalog.isfinite(lower(\"booking_window\"))"),
+            "TSTZRANGE lower endpoint must reject ±infinity via the finite guard: {expr}"
+        );
+        assert!(
+            expr.contains("pg_catalog.isfinite(upper(\"booking_window\"))"),
+            "TSTZRANGE upper endpoint must reject ±infinity via the finite guard: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_range_date_emits_endpoint_date_bounds() {
+        let expr = field_type_check(
+            &FieldSqlType::Range {
+                subtype: RangeSubtypeKind::Date,
+            },
+            None,
+            "validity",
+        )
+        .expect("DATERANGE must carry Date upper checks on finite lower and upper endpoints");
+        assert!(
+            expr.contains("lower(\"validity\") <= DATE '9999-12-31'"),
+            "DATERANGE lower endpoint bound must be finite upper check: {expr}"
+        );
+        assert!(
+            expr.contains("upper(\"validity\") <= DATE '9999-12-31'"),
+            "DATERANGE upper endpoint bound must be finite upper check: {expr}"
+        );
+        assert!(
+            expr.contains("lower(\"validity\") IS NULL OR"),
+            "DATERANGE lower endpoint check must keep NULL/unbounded pass-through: {expr}"
+        );
+        assert!(
+            expr.contains("upper(\"validity\") IS NULL OR"),
+            "DATERANGE upper endpoint check must keep NULL/unbounded pass-through: {expr}"
+        );
+        // Finite guard on both endpoints: `±infinity` is a valid DATE
+        // literal that `time::Date` cannot decode, so the helper must
+        // reject endpoints carrying those special values.
+        assert!(
+            expr.contains("pg_catalog.isfinite(lower(\"validity\"))"),
+            "DATERANGE lower endpoint must reject ±infinity via the finite guard: {expr}"
+        );
+        assert!(
+            expr.contains("pg_catalog.isfinite(upper(\"validity\"))"),
+            "DATERANGE upper endpoint must reject ±infinity via the finite guard: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_range_tstz_endpoint_rejects_infinity_special_values() {
+        // Dedicated pin for the finite-value guard on the TSTZRANGE
+        // endpoint arm. The full expression carries the two endpoint
+        // clauses joined by AND, each wrapped with its own
+        // `<endpoint> IS NULL OR (...)` pass-through. The finite guard
+        // leads each endpoint conjunction so it short-circuits before
+        // the year-bound clause.
+        let expr = field_type_check(
+            &FieldSqlType::Range {
+                subtype: RangeSubtypeKind::Tstz,
+            },
+            None,
+            "booking_window",
+        )
+        .expect("TSTZRANGE must carry Timestamptz representability checks on both endpoints");
+        // Lower endpoint conjunction.
+        assert!(
+            expr.contains(
+                "lower(\"booking_window\") IS NULL OR (pg_catalog.isfinite(lower(\"booking_window\")) AND lower(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00')"
+            ),
+            "TSTZRANGE lower endpoint conjunction shape: {expr}"
+        );
+        // Upper endpoint conjunction.
+        assert!(
+            expr.contains(
+                "upper(\"booking_window\") IS NULL OR (pg_catalog.isfinite(upper(\"booking_window\")) AND upper(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00')"
+            ),
+            "TSTZRANGE upper endpoint conjunction shape: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_range_date_endpoint_rejects_infinity_special_values() {
+        // Dedicated pin for the finite-value guard on the DATERANGE
+        // endpoint arm — same shape as the TSTZRANGE test above.
+        let expr = field_type_check(
+            &FieldSqlType::Range {
+                subtype: RangeSubtypeKind::Date,
+            },
+            None,
+            "validity",
+        )
+        .expect("DATERANGE must carry Date representability checks on both endpoints");
+        assert!(
+            expr.contains(
+                "lower(\"validity\") IS NULL OR (pg_catalog.isfinite(lower(\"validity\")) AND lower(\"validity\") <= DATE '9999-12-31')"
+            ),
+            "DATERANGE lower endpoint conjunction shape: {expr}"
+        );
+        assert!(
+            expr.contains(
+                "upper(\"validity\") IS NULL OR (pg_catalog.isfinite(upper(\"validity\")) AND upper(\"validity\") <= DATE '9999-12-31')"
+            ),
+            "DATERANGE upper endpoint conjunction shape: {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_range_int4_is_noop() {
+        assert!(
+            field_type_check(
+                &FieldSqlType::Range {
+                    subtype: RangeSubtypeKind::Int4,
+                },
+                None,
+                "slot",
+            )
+            .is_none(),
+            "INT4RANGE has no projection CHECK (identity-mapped i32 bounds)"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_range_int8_is_noop() {
+        assert!(
+            field_type_check(
+                &FieldSqlType::Range {
+                    subtype: RangeSubtypeKind::Int8,
+                },
+                None,
+                "slot",
+            )
+            .is_none(),
+            "INT8RANGE has no projection CHECK (identity-mapped i64 bounds)"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_timestamptz_array_elements_enforces_representability() {
+        let expr = field_type_check(&FieldSqlType::TimestamptzArray, None, "slots")
+            .expect("TIMESTAMPTZ[] must carry per-element representability checks");
+        assert!(
+            expr.contains("\"slots\" IS NULL OR"),
+            "TIMESTAMPTZ[] outer NULL should pass through: {expr}"
+        );
+        assert!(
+            expr.contains("djogi.__djogi_tstz_array_is_finite_v1(\"slots\")"),
+            "TIMESTAMPTZ[] check must use the isfinite helper to reject both ±infinity: {expr}"
+        );
+        assert!(
+            !expr.contains("NOT EXISTS (SELECT 1 FROM unnest(\"slots\")"),
+            "TIMESTAMPTZ[] check should not emit a subquery CHECK: {expr}"
+        );
+        // The helper strategy supersedes the upper-bound-only ALL() approach.
+        // The upper-bound check now lives inside the helper function body rather
+        // than in the column CHECK expression, so no `>= ALL(` should appear here.
+        assert!(
+            !expr.contains(">= ALL(\"slots\")"),
+            "TIMESTAMPTZ[] check must not fall back to upper-bound-only ALL strategy \
+             (admits -infinity): {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_date_array_elements_enforces_representability() {
+        let expr = field_type_check(&FieldSqlType::DateArray, None, "validity")
+            .expect("DATE[] must carry per-element representability checks");
+        assert!(
+            expr.contains("\"validity\" IS NULL OR"),
+            "DATE[] outer NULL should pass through: {expr}"
+        );
+        assert!(
+            expr.contains("djogi.__djogi_date_array_is_finite_v1(\"validity\")"),
+            "DATE[] check must use the isfinite helper to reject both ±infinity: {expr}"
+        );
+        assert!(
+            !expr.contains("NOT EXISTS (SELECT 1 FROM unnest(\"validity\")"),
+            "DATE[] check should not emit a subquery CHECK: {expr}"
+        );
+        // The helper strategy supersedes the upper-bound-only ALL() approach.
+        assert!(
+            !expr.contains(">= ALL(\"validity\")"),
+            "DATE[] check must not fall back to upper-bound-only ALL strategy \
+             (admits -infinity): {expr}"
+        );
+    }
+
+    #[test]
+    fn field_type_check_for_decimal_array_elements_enforces_representability() {
+        let expr = field_type_check(&FieldSqlType::NumericArray, None, "metrics")
+            .expect("NUMERIC[] must carry per-element representability checks");
+        assert!(
+            expr.contains("\"metrics\" IS NULL OR"),
+            "NUMERIC[] outer NULL should pass through: {expr}"
+        );
+        assert!(
+            expr.contains("djogi.__djogi_numeric_array_is_rust_decimal_v1(\"metrics\")"),
+            "NUMERIC[] check should use helper-backed representability CHECK: {expr}"
+        );
+        assert!(
+            !expr.contains("NOT EXISTS (SELECT 1 FROM unnest(\"metrics\")"),
+            "NUMERIC[] check should not emit a subquery CHECK: {expr}"
+        );
+        assert!(
+            !expr.contains("scale(element)"),
+            "NUMERIC[] check should centralize decimal logic in helper: {expr}"
+        );
+        assert!(
+            expr.contains("djogi.__djogi_numeric_array_is_rust_decimal_v1(\"metrics\")"),
+            "NUMERIC[] check should reuse scalar decimal representability policy: {expr}"
+        );
+    }
+
+    #[test]
+    fn project_column_emits_range_endpoint_checks_and_noops_for_int_ranged() {
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                ..field_descriptor(
+                    "slots",
+                    FieldSqlType::Range {
+                        subtype: RangeSubtypeKind::Int4,
+                    },
+                    false,
+                )
+            },
+            FieldDescriptor {
+                ..field_descriptor(
+                    "money",
+                    FieldSqlType::Range {
+                        subtype: RangeSubtypeKind::Num,
+                    },
+                    false,
+                )
+            },
+            FieldDescriptor {
+                ..field_descriptor(
+                    "window",
+                    FieldSqlType::Range {
+                        subtype: RangeSubtypeKind::Tstz,
+                    },
+                    false,
+                )
+            },
+            FieldDescriptor {
+                ..field_descriptor(
+                    "validity",
+                    FieldSqlType::Range {
+                        subtype: RangeSubtypeKind::Date,
+                    },
+                    false,
+                )
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("offers", "Offer")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-17T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let rows = &buckets[&empty_global()].models["offers"].columns;
+        let slots = &rows[1];
+        let money = &rows[2];
+        let window = &rows[3];
+        let validity = &rows[4];
+
+        assert!(slots.check.is_none(), "INT4RANGE should stay no-op");
+        assert!(
+            money
+                .check
+                .as_deref()
+                .expect("NUMRANGE must carry endpoint checks")
+                .contains("lower(\"money\") IS NULL OR (scale(lower(\"money\")) IS NOT NULL AND scale(lower(\"money\")) <= 28"),
+            "NUMRANGE lower endpoint must use DECIMAL element check with special-value guard"
+        );
+        assert!(
+            money
+                .check
+                .as_deref()
+                .expect("NUMRANGE must carry endpoint checks")
+                .contains("upper(\"money\") IS NULL OR (scale(upper(\"money\")) IS NOT NULL AND scale(upper(\"money\")) <= 28"),
+            "NUMRANGE upper endpoint must use DECIMAL element check with special-value guard"
+        );
+        assert!(
+            window.check.as_deref().expect("TSTZRANGE must carry endpoint checks").contains(
+                "lower(\"window\") IS NULL OR (pg_catalog.isfinite(lower(\"window\")) AND lower(\"window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
+            ),
+            "TSTZRANGE lower endpoint must use finite-guarded TIMESTAMPTZ upper bound"
+        );
+        assert!(
+            window
+                .check
+                .as_deref()
+                .expect("TSTZRANGE must carry endpoint checks")
+                .contains("upper(\"window\") IS NULL OR (pg_catalog.isfinite(upper(\"window\")) AND upper(\"window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"),
+            "TSTZRANGE upper endpoint must use finite-guarded TIMESTAMPTZ upper bound"
+        );
+        assert!(
+            validity
+                .check
+                .as_deref()
+                .expect("DATERANGE must carry endpoint checks")
+                .contains(
+                    "lower(\"validity\") IS NULL OR (pg_catalog.isfinite(lower(\"validity\")) AND lower(\"validity\") <= DATE '9999-12-31'"
+                ),
+            "DATERANGE lower endpoint must use finite-guarded DATE upper bound"
+        );
+        assert!(
+            validity
+                .check
+                .as_deref()
+                .expect("DATERANGE must carry endpoint checks")
+                .contains(
+                    "upper(\"validity\") IS NULL OR (pg_catalog.isfinite(upper(\"validity\")) AND upper(\"validity\") <= DATE '9999-12-31'"
+                ),
+            "DATERANGE upper endpoint must use finite-guarded DATE upper bound"
+        );
+    }
+
+    #[test]
+    fn project_column_emits_array_element_representability_checks() {
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                ..field_descriptor("slots", FieldSqlType::TimestamptzArray, false)
+            },
+            FieldDescriptor {
+                ..field_descriptor("validity", FieldSqlType::DateArray, false)
+            },
+            FieldDescriptor {
+                ..field_descriptor("metrics", FieldSqlType::NumericArray, false)
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("offers", "Offer")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-17T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let rows = &buckets[&empty_global()].models["offers"].columns;
+        let slots = &rows[1];
+        let validity = &rows[2];
+        let metrics = &rows[3];
+
+        let slot_check = slots
+            .check
+            .as_deref()
+            .expect("TIMESTAMPTZ[] column must carry per-element representability check");
+        let validity_check = validity
+            .check
+            .as_deref()
+            .expect("DATE[] column must carry per-element representability check");
+        let metrics_check = metrics
+            .check
+            .as_deref()
+            .expect("NUMERIC[] column must carry per-element representability check");
+
+        assert!(
+            slot_check.contains("djogi.__djogi_tstz_array_is_finite_v1(\"slots\")"),
+            "TIMESTAMPTZ[] projection must use isfinite helper (rejects ±infinity): {slot_check}"
+        );
+        assert!(
+            !slot_check.contains(">= ALL(\"slots\")"),
+            "TIMESTAMPTZ[] projection must not use upper-bound-only ALL (admits -infinity): \
+             {slot_check}"
+        );
+        assert!(
+            validity_check.contains("djogi.__djogi_date_array_is_finite_v1(\"validity\")"),
+            "DATE[] projection must use isfinite helper (rejects ±infinity): {validity_check}"
+        );
+        assert!(
+            !validity_check.contains(">= ALL(\"validity\")"),
+            "DATE[] projection must not use upper-bound-only ALL (admits -infinity): \
+             {validity_check}"
+        );
+        assert!(
+            metrics_check.contains("djogi.__djogi_numeric_array_is_rust_decimal_v1(\"metrics\")"),
+            "NUMERIC[] projection should use helper-backed check: {metrics_check}"
+        );
+        assert!(
+            !metrics_check.contains("element"),
+            "NUMERIC[] projection should not emit per-element aliases: {metrics_check}"
         );
     }
 
@@ -4117,6 +4932,94 @@ mod tests {
     }
 
     #[test]
+    fn project_column_combines_range_type_check_and_adopter_check() {
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                check_sql: Some("window IS NOT NULL"),
+                ..field_descriptor(
+                    "window",
+                    FieldSqlType::Range {
+                        subtype: RangeSubtypeKind::Date,
+                    },
+                    false,
+                )
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("offers", "Offer")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-17T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let col = &buckets[&empty_global()].models["offers"].columns[1];
+        let check = col
+            .check
+            .as_deref()
+            .expect("range column with adopter check must carry the combined constraint");
+        assert!(
+            check.contains("window IS NOT NULL"),
+            "combined CHECK must include adopter predicate verbatim: {check}"
+        );
+        assert!(
+            check.contains("lower(\"window\") <= DATE '9999-12-31'"),
+            "combined CHECK must include DATE endpoint bound predicate: {check}"
+        );
+        assert!(
+            check.contains(") AND (window IS NOT NULL)"),
+            "combined CHECK must merge with logical AND inside one constraint slot: {check}"
+        );
+    }
+
+    #[test]
+    fn project_column_combines_array_type_check_and_adopter_check() {
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            },
+            FieldDescriptor {
+                check_sql: Some("CARDINALITY(\"times\") > 0"),
+                ..field_descriptor("times", FieldSqlType::TimestamptzArray, false)
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("offers", "Offer")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-05-17T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let col = &buckets[&empty_global()].models["offers"].columns[1];
+        let check = col
+            .check
+            .as_deref()
+            .expect("array column with adopter check must carry the combined constraint");
+        assert!(
+            check.contains("CARDINALITY(\"times\") > 0"),
+            "combined CHECK should include adopter predicate verbatim: {check}"
+        );
+        assert!(
+            check.contains("djogi.__djogi_tstz_array_is_finite_v1(\"times\")"),
+            "combined CHECK should include isfinite helper for TIMESTAMPTZ[] type bound: {check}"
+        );
+        assert!(
+            check.contains(") AND (CARDINALITY(\"times\") > 0)"),
+            "combined CHECK should include logical AND between clauses: {check}"
+        );
+    }
+
+    #[test]
     fn project_column_emits_adopter_check_on_fk_column() {
         // FK columns inherit the parent PK's identity-width type so
         // the type-derived CHECK is suppressed. The adopter's
@@ -4227,13 +5130,26 @@ mod tests {
             let check = col.check.as_ref().unwrap_or_else(|| {
                 panic!(
                     "framework Timestamptz column {} must carry the \
-                     OffsetDateTime year-bound CHECK (djogi#187)",
+                     OffsetDateTime representability CHECK (djogi#187)",
                     col.name
                 )
             });
             assert!(
                 check.contains("TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"),
                 "{} CHECK upper bound must use UTC-explicit TIMESTAMPTZ form: {check}",
+                col.name
+            );
+            // Framework timestamps also receive the finite guard. The
+            // `DEFAULT now()` value Postgres writes is always finite,
+            // so the guard never trips on framework-managed writes;
+            // but an external writer that overwrites `created_at` with
+            // `'-infinity'::timestamptz` would otherwise poison typed
+            // reads. The guard is the universal scalar-Timestamptz
+            // shape — it doesn't take a code path that distinguishes
+            // framework vs adopter columns.
+            assert!(
+                check.contains(&format!("pg_catalog.isfinite(\"{}\")", col.name)),
+                "{} framework column CHECK must reject ±infinity via the finite guard: {check}",
                 col.name
             );
         }
