@@ -380,12 +380,40 @@ ordered-set aggregates with mandatory `WITHIN GROUP (ORDER BY col)`.
 The receiver column populates the WITHIN GROUP target at default ASC;
 override via `.within_group_order_by(other.desc())`.
 
+```rust
+let p95_latency: f64 = Request::objects()
+    .aggregate(|f| f.latency_ms().percentile_cont(0.95))
+    .fetch_one(&mut ctx)
+    .await?;
+
+let median_amount: i64 = Order::objects()
+    .aggregate(|f| {
+        f.amount()
+            .percentile_disc(0.5)
+            .within_group_order_by(f.created_at().desc())
+    })
+    .fetch_one(&mut ctx)
+    .await?;
+```
+
 ### Hypothetical-set aggregates (T8)
 
 `rank_of(value)` / `dense_rank_of(value)` / `percent_rank_of(value)`
 / `cume_dist_of(value)` — answer "what rank / fraction would this
 hypothetical value have in the sorted column?". Disambiguates from
 the window-form rank/dense_rank via the `_of` suffix.
+
+```rust
+let inserted_rank: i64 = Order::objects()
+    .aggregate(|f| f.amount().rank_of(50_000_i64))
+    .fetch_one(&mut ctx)
+    .await?;
+
+let inserted_percentile: f64 = Order::objects()
+    .aggregate(|f| f.amount().percent_rank_of(50_000_i64))
+    .fetch_one(&mut ctx)
+    .await?;
+```
 
 ### GROUPING — subtotal detection
 
@@ -402,12 +430,20 @@ case.
 
 ### Modifier composition
 
-Every aggregate composes uniformly with the four modifiers:
-`.distinct()` / `.filter(cond)` / `.order_by(other)` /
-`.over(WindowBuilder)`. Postgres-incompatible combinations
-(e.g. `DISTINCT` on `GROUPING`, in-paren ORDER BY on ordered-set
-aggregates) are rejected at fetch time with typed
-`DjogiError::UnsupportedAggregate` errors.
+Aggregate modifiers are type-state gated by aggregate family:
+
+- Value aggregates (`sum`, `array_agg`, `string_agg`, statistics,
+  JSON-object aggregates, and similar scalar-returning aggregates) expose
+  `.distinct()`, `.filter(cond)`, `.order_by(other.asc())`, and
+  `.over(|w| ...)`.
+- Ordered-set and hypothetical-set aggregates expose `.filter(cond)` and
+  `.within_group_order_by(other.asc())`. They deliberately do not expose
+  `.distinct()`, `.order_by(...)`, or `.over(...)`.
+- Metadata aggregates such as `grouping(...)` expose no aggregate modifiers.
+
+Shape-specific SQL errors that the family type-state cannot express, such as
+`COUNT(DISTINCT *)`, remain fetch-time `DjogiError::UnsupportedAggregate`
+diagnostics.
 
 ### Spatial aggregates
 

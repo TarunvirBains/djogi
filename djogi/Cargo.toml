@@ -312,6 +312,11 @@ path = "../tests/integration/phase8_5_aggregate_simple_statistics_88.rs"
 harness = true
 
 [[test]]
+name = "phase8_5_aggregate_ordered_hypothetical_88"
+path = "../tests/integration/phase8_5_aggregate_ordered_hypothetical_88.rs"
+harness = true
+
+[[test]]
 name = "phase6_5_spatial_polish"
 path = "../tests/integration/phase6_5_spatial_polish.rs"
 harness = true
