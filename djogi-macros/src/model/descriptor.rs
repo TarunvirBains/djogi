@@ -254,13 +254,17 @@ fn try_expand(
     // stores it verbatim so the migration differ can compare by string
     // equality.
     // djogi#189 — propagate `#[model(strict_ids)]` to the framework `id`
-    // column when the PK strategy uses a HeerId / RanjId carrier. The
-    // projection layer reads the descriptor's `strict_id_check` flag
-    // alongside the resolved SQL column type; for Serial / None /
-    // Custom PKs the propagation is a no-op (the projection layer's
-    // type-based dispatch silently skips non-applicable types), but
-    // setting the flag only on HeerId / RanjId PKs keeps the
-    // descriptor honest about which strategies receive the CHECK.
+    // column ONLY when the PK strategy uses a built-in HeerId / RanjId
+    // family carrier. The projection layer reads the descriptor's
+    // `strict_id_check` flag alongside the parent PK's semantic family
+    // (`strict_id_family_of_pk`); Serial / None / Custom PKs all map to
+    // `StrictIdFamily::None` there, but setting the descriptor flag on
+    // those carriers would be a misleading signal at the descriptor
+    // surface (downstream consumers walking `descriptor.fields[0].strict_id_check`
+    // would read `true` for a `PkType::Custom { sql_type: "BIGINT" }`
+    // model whose ID semantics carry no HeerRanjID invariant). The
+    // descriptor stays honest: the flag is `true` only when the
+    // structural CHECK applies.
     let id_strict_id_check = model_attrs.strict_ids
         && matches!(
             &model_attrs.pk,
@@ -300,18 +304,25 @@ fn try_expand(
                 )
             },
             true,
-            // Custom PK types fall through to the projection layer's
-            // resolved-type dispatch. The macro cannot inspect the
-            // `<#path>::SQL_TYPE` associated const at parse time, so
-            // we set the flag to true when `strict_ids` is on and let
-            // the projection silently skip Custom PKs whose SQL_TYPE
-            // is not `BIGINT` / `UUID`. The trade-off: adopters with
-            // a `BIGINT`-shaped custom PK that is not HeerId would get
-            // an inappropriate `col >= 0` CHECK. That is an explicit
-            // opt-in mistake — the adopter chose `strict_ids` on a
-            // model whose PK is not HeerId / RanjId, and the
-            // documentation calls out the resolved-SQL-type behaviour.
-            model_attrs.strict_ids,
+            // djogi#189 (post-review hardening) — Custom PK types are
+            // NEVER candidates for the HeerId / RanjId structural CHECK,
+            // regardless of `#[model(strict_ids)]`. The Custom carrier
+            // may share its SQL type with HeerId / RanjId (`"BIGINT"` /
+            // `"UUID"`), but the column is not a HeerRanjID identifier:
+            // its bit layout is defined by the adopter's `PrimaryKey`
+            // impl, not by HeeRanjID. Emitting `col >= 0` against a
+            // Custom BIGINT PK would constrain the adopter's value
+            // domain at the DB layer without their consent; emitting
+            // the UUIDv8 + RFC 4122 CHECK against a Custom UUID PK
+            // would reject every valid UUIDv4 the adopter inserts.
+            //
+            // Adopters whose Custom PK happens to share HeerRanjID's
+            // bit layout (e.g., a thin newtype around `HeerId`) and
+            // who genuinely want the structural CHECK should declare
+            // it explicitly via `#[field(check = "<predicate>")]` —
+            // the typed-and-explicit path is preferred over inferring
+            // the family from a coincidental SQL-carrier match.
+            false,
         )),
     };
 
@@ -594,12 +605,20 @@ fn try_expand(
             //
             // For (2), the macro relies on the field's declared Rust type;
             // it does not (and cannot) inspect FK target PK types here.
-            // The projection layer resolves the FK column's effective SQL
-            // type at descriptor → snapshot lowering and silently skips
-            // the CHECK when the resolved type is not BIGINT / UUID
-            // (e.g., FK to a Serial-PK target). The macro's job is the
-            // descriptor-time propagation; the projection's job is the
-            // type-based dispatch.
+            // Relation-field propagation is deliberately broad — every FK
+            // carries the flag — because the macro cannot reach across
+            // crates to discover the target's PK semantic family. The
+            // projection layer is the single place that has every
+            // descriptor in scope; it resolves each FK target's HeerRanjID
+            // family via `type_to_pk_family` and silently skips the CHECK
+            // for FK-to-Serial, FK-to-Custom, FK-to-None, and FK-to-Composite
+            // targets. The macro propagates; the projection filters.
+            //
+            // djogi#189 (post-review hardening): the projection filter
+            // is family-based, not SQL-type-based, so an FK to a
+            // `PkType::Custom { sql_type: "BIGINT" / "UUID", .. }` no
+            // longer accidentally inherits the HeerId / RanjId CHECK
+            // from a coincidental SQL-carrier match.
             let strict_id_check_lit: bool = fa.strict_id_check
                 || (model_attrs.strict_ids
                     && (relation.is_some()

@@ -422,22 +422,34 @@ pub struct ModelAttrs {
     /// `#[model(strict_ids)]` — Phase 8.5 djogi#189.
     ///
     /// When `true`, the macro propagates the opt-in strict structural
-    /// CHECK to every column on this model whose **SQL carrier** could
-    /// hold a HeerId / RanjId: the framework-injected `id` field (if
-    /// `pk` is one of `HeerId` / `HeerIdRecencyBiased` / `RanjId` /
-    /// `RanjIdRecencyBiased`); every bare HeerId / RanjId user field;
-    /// and every `ForeignKey<T>` / `OneToOneField<T>` user field. The
-    /// projection layer reads the resulting descriptor flag plus the
-    /// resolved SQL column type — `BIGINT` projects the HeerId structural
-    /// CHECK (`<col> >= 0`); `UUID` projects the RanjId UUIDv8 + RFC 4122
-    /// variant CHECK; every other resolved type (Serial INTEGER, custom
-    /// PK shapes, etc.) silently skips the CHECK.
+    /// CHECK to every column on this model whose declared shape *could*
+    /// be a HeerId / RanjId carrier: the framework-injected `id` field
+    /// (only when `pk` is one of `HeerId` / `HeerIdRecencyBiased` /
+    /// `RanjId` / `RanjIdRecencyBiased` — Serial / Custom / None PKs
+    /// receive no propagation here, because the framework `id` column
+    /// is not a HeerRanjID identifier in those cases); every bare HeerId
+    /// / RanjId user field; and every `ForeignKey<T>` / `OneToOneField<T>`
+    /// user field. The projection layer reads the resulting descriptor
+    /// flag plus the column's **HeerRanjID semantic family** — `HeerId`
+    /// family projects `<col> >= 0`, `RanjId` family projects the
+    /// UUIDv8 + RFC 4122 variant CHECK, and any other family (Serial,
+    /// Custom, Composite, None) silently skips the CHECK.
+    ///
+    /// **Family vs SQL-type dispatch.** The projection layer dispatches
+    /// on the descriptor's [`PkType`] semantic family
+    /// ([`StrictIdFamily`] in `djogi/src/migrate/projection.rs`), not on
+    /// the resolved SQL type string. A `PkType::Custom { sql_type: "BIGINT"
+    /// / "UUID", .. }` PK / FK carrier shares the SQL type with HeerId /
+    /// RanjId but carries no HeerRanjID bit-layout invariant; the
+    /// family-based dispatch correctly maps it to `StrictIdFamily::None`
+    /// (no CHECK) rather than coercing a custom adopter ID into the
+    /// HeerId / RanjId structural CHECK.
     ///
     /// Models whose `pk` is not a HeerId / RanjId variant still receive
     /// the propagation on their FK columns — those FKs may target HeerId
     /// or RanjId tables, and the strict CHECK applies there. The macro
-    /// cannot inspect FK target PK types at parse time, so it relies on
-    /// the projection layer's per-resolved-type dispatch to filter.
+    /// cannot inspect FK target PK families at parse time, so it relies on
+    /// the projection layer's per-family dispatch to filter.
     ///
     /// Standalone keyword only — `strict_ids = true` / `strict_ids = false`
     /// are rejected, mirroring the convention `hooks`, `auditable`,
@@ -844,8 +856,10 @@ impl ModelAttrs {
                 // column (id field on HeerId / RanjId PKs, bare HeerId /
                 // RanjId user fields, every FK / O2O user field). The
                 // projection layer reads the per-field flag plus the
-                // resolved SQL type to decide whether to emit the
-                // structural CHECK.
+                // column's HeerRanjID semantic family (derived from the
+                // parent `PkType` for the framework `id` column and from
+                // the FK target's `PkType` for relation columns) to
+                // decide whether to emit the structural CHECK.
                 Meta::Path(path) if path.is_ident("strict_ids") => {
                     if seen_strict_ids {
                         return Err(syn::Error::new_spanned(
@@ -1136,8 +1150,8 @@ impl ModelAttrs {
                                  `table_comment`, \
                                  `storage_params`, `tablespace`, \
                                  `no_default`, `through`, `events`, `hooks`, `auditable`, \
-                                 `soft_deletable`, `proxy_for`, `default_order`, or \
-                                 `default_filter`",
+                                 `soft_deletable`, `strict_ids`, `proxy_for`, `default_order`, \
+                                 or `default_filter`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -1940,18 +1954,23 @@ pub struct FieldAttrs {
     /// writer-exposed FK without enforcing strict checks across the
     /// rest of the model.
     ///
-    /// Standalone keyword only — `strict_id_check = true` /
-    /// `strict_id_check = false` are rejected, mirroring the
-    /// convention `version`, `unique`, `index`, and the rest of the
-    /// flag-style field attributes follow.
+    /// **Idiomatic form is the bare flag** — `#[field(strict_id_check)]` —
+    /// matching the convention every flag-style field attribute
+    /// (`unique`, `lazy`, `version`, etc.) follows. Darling's
+    /// `#[darling(default)]` lowering also accepts the explicit
+    /// `strict_id_check = true` / `strict_id_check = false` spellings
+    /// (consistent with every other `bool` field attribute the
+    /// `FieldAttrs` struct exposes); they are unidiomatic and lint
+    /// against the rest of the codebase's spellings but neither
+    /// darling nor the post-validation pass rejects them.
     ///
     /// **Type validation.** `FieldAttrs::parse` rejects this attribute
     /// on a non-applicable field type (anything that is not HeerId,
     /// HeerIdDesc, HeerIdRecencyBiased, RanjId, RanjIdDesc,
     /// RanjIdRecencyBiased, ForeignKey<T>, OneToOneField<T>, or one of
-    /// their `Option<…>` wraps). The validation runs on the field's
-    /// declared Rust type rather than waiting for projection to
-    /// silently drop the CHECK — a non-applicable type is an
+    /// their `Option<…>` / `Tracked<…>` wraps). The validation runs on
+    /// the field's declared Rust type rather than waiting for projection
+    /// to silently drop the CHECK — a non-applicable type is an
     /// unambiguous user error and surfacing it at parse time gives
     /// span-precise feedback.
     #[darling(default)]
@@ -2918,7 +2937,10 @@ fn parse_index_method(s: &str, span: proc_macro2::Span) -> syn::Result<()> {
 /// `true` when `ty` is a bare HeerId / RanjId family scalar (any of the
 /// six type names from `HeerId` / `HeerIdDesc` / `HeerIdRecencyBiased` /
 /// `RanjId` / `RanjIdDesc` / `RanjIdRecencyBiased`, in bare / `djogi::*`
-/// / `djogi::types::*` form). Unwraps one layer of `Option<…>`.
+/// / `djogi::types::*` form). Routes through [`unwrap_schema_type`], so
+/// `Option<…>`, `Tracked<…>`, and combined `Tracked<Option<…>>` /
+/// `Option<Tracked<…>>` wrappers are all stripped to the underlying
+/// scalar before the family match runs.
 ///
 /// Returns `false` for relation fields (`ForeignKey<T>` etc.) and for
 /// every non-HeerId / non-RanjId scalar. Used at descriptor-emit time
@@ -2958,18 +2980,32 @@ pub fn is_bare_heeranjid_family_type(ty: &syn::Type) -> bool {
 /// `true` when `ty` is an accepted target for `#[field(strict_id_check)]` —
 /// i.e. a bare HeerId / HeerIdDesc / HeerIdRecencyBiased / RanjId /
 /// RanjIdDesc / RanjIdRecencyBiased field, OR a relation field
-/// (`ForeignKey<T>` / `OneToOneField<T>`). `Option<…>` is unwrapped
-/// once so nullable columns are accepted.
+/// (`ForeignKey<T>` / `OneToOneField<T>`). `Option<…>` and `Tracked<…>`
+/// are unwrapped via [`unwrap_schema_type`] so nullable / dirty-tracked
+/// columns are accepted.
 ///
 /// **Why FK / O2O are accepted without checking the target's PK type.**
 /// The macro cannot inspect the FK target's `pk` strategy at parse time
 /// — the target type may live in another crate or below the current
-/// model in source order. The projection layer resolves the FK's
-/// effective SQL type at descriptor → snapshot lowering time and
-/// silently drops the CHECK when the resolved type is not BIGINT / UUID
-/// (e.g., an FK to a Serial-PK table). Accepting all FK / O2O fields
-/// here preserves the explicit opt-in surface without forcing the
-/// adopter to coordinate parse-order between target and source models.
+/// model in source order. The projection layer resolves the FK target's
+/// HeerRanjID semantic family at descriptor → snapshot lowering time
+/// (via `type_to_pk_family`) and silently drops the CHECK when the
+/// target's PK family is not HeerId / RanjId — for example, an FK to a
+/// `PkType::Serial`, `PkType::Custom`, `PkType::Composite`, or
+/// `PkType::None` target. Accepting all FK / O2O fields here preserves
+/// the explicit opt-in surface without forcing the adopter to coordinate
+/// parse-order between target and source models. The applicability
+/// filter is the projection's responsibility; the macro's job is the
+/// per-field opt-in surface.
+///
+/// **Family-based filter, not SQL-type-based filter (djogi#189
+/// post-review hardening).** The projection layer dispatches the strict
+/// CHECK on the target's HeerRanjID semantic family ([`StrictIdFamily`]
+/// in `djogi/src/migrate/projection.rs`), not on the resolved SQL type
+/// string. An FK to a `PkType::Custom { sql_type: "BIGINT" / "UUID", .. }`
+/// would have inherited the HeerId / RanjId CHECK under the earlier
+/// SQL-type-only dispatch by SQL-carrier collision; the family-based
+/// dispatch correctly maps it to `StrictIdFamily::None`.
 ///
 /// Path forms accepted: bare identifier (after `use djogi::prelude::*;`),
 /// `djogi::HeerId`, `djogi::types::HeerId`, and equivalent shapes for
@@ -2978,7 +3014,8 @@ pub fn is_bare_heeranjid_family_type(ty: &syn::Type) -> bool {
 /// `OneToOneField` paths the same way the relation-detection pipeline
 /// does elsewhere.
 fn is_strict_id_check_compatible(ty: &syn::Type) -> bool {
-    // Relation fields (FK / O2O) — accept; projection resolves the SQL type.
+    // Relation fields (FK / O2O) — accept; projection resolves the
+    // target's HeerRanjID semantic family and gates the CHECK.
     if detect_relation(ty).is_some() {
         return true;
     }

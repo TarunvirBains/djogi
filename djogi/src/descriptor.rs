@@ -2071,25 +2071,33 @@ pub struct FieldDescriptor {
     /// variants).
     ///
     /// **When `true`,** the projection layer emits a structural CHECK
-    /// on the column at migration time based on the resolved SQL column
-    /// type:
+    /// on the column at migration time based on the column's HeerRanjID
+    /// **semantic family** — resolved from the descriptor's [`PkType`]
+    /// (for the framework `id` column or for the FK target via
+    /// `type_to_pk_family`), not from the resolved SQL type string:
     ///
-    /// * `BIGINT` (HeerId / HeerIdDesc) → `<col> >= 0`. The single
-    ///   invariant `HeerId::from_i64` enforces is `bit 63 = 0` (i.e.
-    ///   the value is non-negative when interpreted as `i64`). All
-    ///   other 63 bits (41 timestamp + 9 node + 13 sequence) are
+    /// * `HeerId` / `HeerIdDesc` family (BIGINT carrier) → `<col> >= 0`.
+    ///   The single invariant `HeerId::from_i64` enforces is `bit 63 = 0`
+    ///   (i.e. the value is non-negative when interpreted as `i64`).
+    ///   All other 63 bits (41 timestamp + 9 node + 13 sequence) are
     ///   structurally valid.
-    /// * `UUID` (RanjId / RanjIdDesc) → version=8 and variant=RFC4122.
-    ///   `RanjId::from_uuid` rejects every UUID whose version nibble is
-    ///   not 8 or whose variant high bits are not `10`. The flip-mask
-    ///   for `RanjIdDesc` preserves the version + variant nibbles, so
-    ///   both ascending and descending RanjId variants share this CHECK.
-    /// * Any other resolved SQL type → no CHECK is emitted. This is the
-    ///   FK-to-Serial case (e.g. an `FK<Vehicle>` where `Vehicle` has
-    ///   `pk = Serial`): the macro propagates the opt-in flag to every
-    ///   FK column when `#[model(strict_ids)]` is set, and the
-    ///   projection silently skips columns whose resolved type is not
-    ///   `BIGINT` / `UUID`.
+    /// * `RanjId` / `RanjIdDesc` family (UUID carrier) → version=8 and
+    ///   variant=RFC4122. `RanjId::from_uuid` rejects every UUID whose
+    ///   version nibble is not 8 or whose variant high bits are not
+    ///   `10`. The flip-mask for `RanjIdDesc` preserves the version +
+    ///   variant nibbles, so both ascending and descending RanjId
+    ///   variants share this CHECK.
+    /// * Any other semantic family — `Serial`, `Custom`, `Composite`,
+    ///   `None` — no CHECK is emitted. This is the FK-to-Serial,
+    ///   FK-to-Custom, and FK-to-Composite case (e.g. an `FK<Vehicle>`
+    ///   where `Vehicle` has `pk = Serial`, or `pk = AppSnowflakeId`
+    ///   custom): the macro propagates the opt-in flag to every FK
+    ///   column when `#[model(strict_ids)]` is set, and the projection
+    ///   silently skips columns whose target PK family is not HeerId /
+    ///   RanjId. Custom PKs with a `BIGINT` or `UUID` inner SQL_TYPE
+    ///   are NOT coerced into the HeerRanjID family — the family
+    ///   dispatch correctly maps them to `None` despite the SQL-carrier
+    ///   collision.
     ///
     /// **Performance.** The HeerId structural CHECK is a single
     /// comparison (`<1 µs` per row). The RanjId CHECK extracts two hex
@@ -2215,9 +2223,15 @@ pub const fn field_descriptor(
         // CHECK; matches pre-189 behaviour). The macro sets `true`
         // for fields opted in via `#[field(strict_id_check)]` or
         // `#[model(strict_ids)]`; the projection layer reads this
-        // flag plus the resolved SQL column type to decide which
-        // structural CHECK to emit (`BIGINT` → HeerId; `UUID` →
-        // RanjId; otherwise no CHECK).
+        // flag plus the column's HeerRanjID semantic family
+        // (`StrictIdFamily` — derived from the parent `PkType` for the
+        // framework `id` column and from the FK target's `PkType` for
+        // relation columns) to decide which structural CHECK to emit
+        // (HeerId family → `col >= 0`; RanjId family → UUIDv8 + RFC 4122;
+        // any other family — Serial, Custom, Composite, None — no
+        // CHECK). Custom PKs whose inner SQL_TYPE coincidentally matches
+        // BIGINT / UUID never inherit a HeerRanjID CHECK; the family
+        // dispatch correctly maps them to `None`.
         strict_id_check: false,
     }
 }

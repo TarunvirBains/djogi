@@ -122,11 +122,61 @@ pub struct Phase85C2189FkTarget {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Phase85C2189FkSource {
     /// FK to a HeerId-PK target. `#[model(strict_ids)]` propagates the
-    /// opt-in to every FK column; the projection resolves the FK type
-    /// to BIGINT and emits the HeerId structural CHECK. Column name
-    /// is `owner_id` per the djogi convention (`{target}_id` for FK
-    /// columns; `Related::owner()` method strips the suffix).
+    /// opt-in to every FK column; the projection resolves the FK
+    /// target's semantic family to HeerId and emits the structural
+    /// CHECK. Column name is `owner_id` per the djogi convention
+    /// (`{target}_id` for FK columns; `Related::owner()` method strips
+    /// the suffix).
     pub owner_id: ForeignKey<Phase85C2189FkTarget>,
+    pub label: String,
+}
+
+// ── (6) Custom-PK target — FK propagation must skip the CHECK ────────────────
+//
+// djogi#189 (post-review hardening): a `PkType::Custom { sql_type: "BIGINT", .. }`
+// PK shares the SQL carrier with HeerId but is NOT a HeerRanjID identifier.
+// `#[model(strict_ids)]` on a model whose FK targets such a Custom PK must
+// NOT emit `col >= 0` against the FK column — that would constrain the
+// adopter's custom ID value domain at the DB layer without their consent.
+// The projection layer's family-based dispatch (`type_to_pk_family`)
+// catches this case and silently skips the CHECK.
+
+// `Phase85C2189CustomBigintId` — custom BIGINT-shaped PK simulating an
+// adopter Snowflake-style or app-scoped ID. `default_sql` is the Postgres
+// builtin `txid_current()` (returns `BIGINT`, exists in every Postgres
+// install Djogi targets) so `sync_models` can CREATE TABLE without
+// depending on an adopter-installed generator function — this test only
+// inspects the catalog, never INSERTs, so duplicate `txid_current()`
+// values across rows are irrelevant. The production adopter would
+// supply a real bulk-allocator here.
+djogi::primary_key! {
+    pub struct Phase85C2189CustomBigintId(i64);
+    sql_type = "BIGINT";
+    default_sql = "txid_current()";
+}
+
+#[model(table = "phase8_5_c2_189_custom_bigint_target", pk = Phase85C2189CustomBigintId, no_default)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Phase85C2189CustomBigintTarget {
+    pub label: String,
+}
+
+#[model(
+    table = "phase8_5_c2_189_custom_bigint_fk_source",
+    pk = HeerId,
+    strict_ids,
+    no_default,
+)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Phase85C2189CustomBigintFkSource {
+    /// FK to a Custom-BIGINT PK target. `#[model(strict_ids)]`
+    /// propagates the opt-in flag to this FK at the macro layer, but
+    /// the projection layer's family-based dispatch resolves the
+    /// target's PK family to `StrictIdFamily::None` (Custom — not
+    /// HeerRanjID) and silently skips the CHECK. The FK reference
+    /// itself still works (the column SQL type is BIGINT, matching the
+    /// target's PK).
+    pub owner_id: ForeignKey<Phase85C2189CustomBigintTarget>,
     pub label: String,
 }
 
@@ -448,6 +498,67 @@ async fn strict_ranj_check_rejects_non_rfc4122_variant(mut ctx: djogi::DjogiCont
 }
 
 // ── OOB rejection (raw bypass) — FK column propagation ────────────────────────
+
+// ── Catalog assertion — Custom-PK target FK skip ─────────────────────────────
+
+#[djogi::djogi_test(
+    sync_models = [Phase85C2189CustomBigintTarget, Phase85C2189CustomBigintFkSource]
+)]
+async fn fk_to_custom_bigint_target_skips_strict_check(mut ctx: djogi::DjogiContext) {
+    // djogi#189 (post-review hardening). The source model has
+    // `#[model(strict_ids)]` and an FK to a Custom-BIGINT PK target.
+    // The macro propagates the opt-in flag to the FK descriptor (it
+    // cannot inspect the target's PK family at parse time), but the
+    // projection layer resolves the family to `StrictIdFamily::None`
+    // (Custom) and emits NO CHECK on the FK column. The catalog walk
+    // confirms the constraint does not exist.
+    //
+    // The `sync_models` macro stubs the `phase8_5_c2_189_custom_bigint_id_next`
+    // function via the typed surface; we only assert the constraint
+    // catalog state here, not the function existence.
+    let id_checks: Vec<String> = ctx
+        .raw_rows(
+            "SELECT conname::text FROM pg_constraint \
+             WHERE conrelid = 'phase8_5_c2_189_custom_bigint_fk_source'::regclass \
+             AND contype = 'c' \
+             AND conname LIKE 'phase8_5_c2_189_custom_bigint_fk_source_owner_id%' \
+             ORDER BY conname",
+            &[],
+        )
+        .await
+        .expect("catalog query must succeed")
+        .into_iter()
+        .map(|row| row.try_get::<_, String>(0).unwrap())
+        .collect();
+    assert!(
+        id_checks.is_empty(),
+        "FK to a Custom-BIGINT PK target must NOT carry the strict-ID CHECK \
+         (Custom is not a HeerRanjID family); found: {id_checks:?}"
+    );
+
+    // The FK column itself must still exist and target the correct table
+    // with the correct SQL type (BIGINT, inherited from Custom.sql_type).
+    let col_type: String = ctx
+        .raw_rows(
+            "SELECT format_type(atttypid, atttypmod)::text \
+             FROM pg_attribute \
+             WHERE attrelid = 'phase8_5_c2_189_custom_bigint_fk_source'::regclass \
+             AND attname = 'owner_id'",
+            &[],
+        )
+        .await
+        .expect("attribute query must succeed")
+        .into_iter()
+        .next()
+        .expect("owner_id column must exist")
+        .try_get::<_, String>(0)
+        .unwrap();
+    assert_eq!(
+        col_type, "bigint",
+        "FK column SQL type must still inherit from Custom.sql_type; \
+         the family-based skip applies only to the strict-ID CHECK"
+    );
+}
 
 #[djogi::djogi_test(sync_models = [Phase85C2189FkTarget, Phase85C2189FkSource])]
 async fn strict_fk_rejects_negative_owner_id(mut ctx: djogi::DjogiContext) {
