@@ -1,6 +1,6 @@
 # Djogi.toml — adopter config.
 #
-# Secrets (DATABASE_URL, NODE_ID) come from environment variables.
+# Secrets (DATABASE_URL, HEER_NODE_ID) come from environment variables.
 # Non-secret app config lives here.
 
 [app]

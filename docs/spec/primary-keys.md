@@ -83,15 +83,16 @@ CREATE TABLE heer_node_state (
 
 Node identity is environment-driven, not framework-driven:
 ```bash
-NODE_ID=1
+HEER_NODE_ID=1
 ```
 In multi-node deployments, provision and register each writer/service node in
-`heer_nodes` first, then start the service with its selected `NODE_ID` set.
+`heer_nodes` first, then start the service with its selected `HEER_NODE_ID` set.
 Node registration and startup ordering are the operator's responsibility.
-Djogi does not read `NODE_ID` directly and performs no startup fail-fast
-`NODE_ID` validation. If the pool's `post_connect` hook sets `heer.node_id`
-to an unregistered value, HeeRanjID's Postgres functions surface an error on
-that connection, which propagates through the pool.
+Djogi does not read `HEER_NODE_ID` directly; wire the value into the pool's
+`post_connect` hook. Djogi performs no startup fail-fast node-id validation.
+If the pool's `post_connect` hook sets `heer.node_id` to an unregistered
+value, HeeRanjID's Postgres functions surface an error on that connection,
+which propagates through the pool.
 Nodes are infrastructure — pinned per service instance and registered during
 deployment.
 

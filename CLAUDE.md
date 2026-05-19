@@ -264,7 +264,7 @@ The shell holds a dedicated single-threaded Tokio runtime. Every terminal method
 - Field renames: annotate with `#[field(renamed_from = "old_name")]` or the differ treats it as drop+add
 - Admin panel is opt-in via `djogi = { features = ["admin"] }` — not bundled by default
 - **Specialized features (spatial, outbox publisher backends, vector, etc.) ship as feature flags within `djogi`, never as separate `djogi-*` crates.** The workspace includes crates for hard Rust boundaries (library, macros, CLI, shell runtime) and keeps admin as a planned carve-out: **djogi-maahi** is not in shipped components in this branch and remains a Phase 10 dependency target. The "one `cargo add djogi`" experience is preserved conceptually, but `features = ["admin"]` is not yet available until Maahi ships. The phrase "companion crate" in `docs/spec/` refers to user-side / app-side crates, not Djogi-maintained ones.
-- `Djogi.toml` holds app config; secrets (DATABASE_URL, NODE_ID) live in env vars only
+- `Djogi.toml` holds app config; secrets (DATABASE_URL, HEER_NODE_ID) live in env vars only
 
 ## Tests must use djogi structs, not raw escape hatches
 
