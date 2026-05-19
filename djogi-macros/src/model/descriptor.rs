@@ -100,6 +100,12 @@ fn framework_field_descriptor(
             // resolved SQL column type is not consulted for this decision.
             // Always `false` for `created_at` / `updated_at`.
             strict_id_check: #strict_id_check,
+            // Phase 8.5 Cluster 4 djogi#220 — framework-injected columns
+            // (`id`, `created_at`, `updated_at`) carry no adopter
+            // `#[field(type_change_using)]`. Their SQL types are fixed
+            // by the framework and never participate in adopter-driven
+            // type-change migrations.
+            type_change_using: ::std::option::Option::None,
         }
     }
 }
@@ -595,6 +601,22 @@ fn try_expand(
                 None => quote! { ::std::option::Option::None },
             };
 
+            // Phase 8.5 Cluster 4 (djogi#220) — adopter
+            // `#[field(type_change_using = "<sql expr>")]` USING clause
+            // for non-default-cast column type changes. Validated as
+            // non-empty / non-whitespace-only by `FieldAttrs::parse`;
+            // emit verbatim into the descriptor so the SQL emitter can
+            // append `USING (<expr>)` to `ALTER COLUMN … TYPE` whenever
+            // the differ records a `ColumnChange::ChangeType` for this
+            // column.
+            let type_change_using_tokens: TokenStream = match &fa.type_change_using {
+                Some(expr) => {
+                    let expr_str = expr.as_str();
+                    quote! { ::std::option::Option::Some(#expr_str) }
+                }
+                None => quote! { ::std::option::Option::None },
+            };
+
             // Phase 8.5 djogi#189 — opt-in HeerId / RanjId structural CHECK.
             //
             // Set `strict_id_check: true` on the descriptor when:
@@ -695,6 +717,14 @@ fn try_expand(
                     // the field's sql_type only after macro parse-time
                     // HeerRanjID family validation confirms membership.
                     strict_id_check: #strict_id_check_lit,
+                    // Phase 8.5 Cluster 4 djogi#220 — adopter
+                    // `#[field(type_change_using = "<sql expr>")]` USING
+                    // clause for non-default-cast column type changes.
+                    // The SQL emitter appends `USING (<expr>)` only when
+                    // the differ emits `ColumnChange::ChangeType` for
+                    // this column; leaving the attribute on a field whose
+                    // type does not change is a dormant no-op.
+                    type_change_using: #type_change_using_tokens,
                 }
             }
         })

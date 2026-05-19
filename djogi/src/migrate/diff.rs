@@ -407,8 +407,30 @@ pub enum ColumnChange {
 
     /// `ALTER COLUMN ... TYPE <new>`. Carries both old and new
     /// rendered SQL types so the emitter can decide whether a `USING`
-    /// clause is needed.
-    ChangeType { from: String, to: String },
+    /// clause is needed, plus the optional adopter-supplied `using`
+    /// expression for non-default cast paths (djogi#220).
+    ///
+    /// **`using` semantics.** `Some(expr)` is sourced from the AFTER
+    /// column's `#[field(type_change_using = "<expr>")]`; the SQL
+    /// emitter inlines the expression verbatim into the emitted
+    /// `ALTER COLUMN … TYPE … USING (<expr>)` statement so adopters
+    /// can perform non-default casts (e.g. `TEXT → UUID`) that
+    /// Postgres refuses to convert automatically. `None` falls back to
+    /// the framework's default `USING <col>::<new_type>` cast, which
+    /// works for every pair Postgres accepts implicitly (e.g. widenings
+    /// like `INTEGER → BIGINT`). The down-side rollback always uses
+    /// the default cast — symmetric down-side USING expressions are
+    /// not modelled because the rollback path is operator-owned in
+    /// practice (the adopter hand-edits the emitted down SQL when
+    /// the inverse cast also needs special handling).
+    ChangeType {
+        from: String,
+        to: String,
+        /// Adopter-supplied `USING` expression for the forward
+        /// (apply) direction. `None` when the field carried no
+        /// `#[field(type_change_using = "...")]` attribute.
+        using: Option<String>,
+    },
 
     /// `SET / DROP CHECK` constraint at the column level.
     ///
@@ -2256,9 +2278,17 @@ fn emit_alter_column(
             });
         }
         if type_changed {
+            // djogi#220 — pull the adopter-supplied USING expression
+            // from the AFTER column. The `type_change_using` slot is
+            // `#[serde(skip)]` on `ColumnSchema`, so the BEFORE
+            // (loaded-from-disk) side always carries `None`; only the
+            // freshly-projected AFTER side ever carries `Some(...)`.
+            // The expression is emitted verbatim into the migration's
+            // `USING (<expr>)` clause; adopters own correctness.
             push(ColumnChange::ChangeType {
                 from: before.sql_type.clone(),
                 to: after.sql_type.clone(),
+                using: after.type_change_using.clone(),
             });
         }
         if before.nullable != after.nullable {
@@ -3534,6 +3564,7 @@ mod tests {
             sequence_within: None,
             sql_type: "BIGINT".to_string(),
             unique: false,
+            type_change_using: None,
         };
         let amount_col = ColumnSchema {
             check: check.map(|s| s.to_string()),
@@ -3555,6 +3586,7 @@ mod tests {
             sequence_within: None,
             sql_type: sql_type.to_string(),
             unique: false,
+            type_change_using: None,
         };
         let mut models = BTreeMap::new();
         models.insert(
@@ -3792,7 +3824,7 @@ mod tests {
              (carrying `from` for rollback): {changes:?}"
         );
         assert!(
-            matches!(changes.get(1), Some(ColumnChange::ChangeType { from, to }) if from == "INTEGER" && to == "BIGINT"),
+            matches!(changes.get(1), Some(ColumnChange::ChangeType { from, to, .. }) if from == "INTEGER" && to == "BIGINT"),
             "ALTER TYPE should be between drop and re-add: {changes:?}"
         );
         assert!(
@@ -3833,7 +3865,7 @@ mod tests {
              with `from` carrying the OLD expression for rollback: {changes:?}"
         );
         assert!(
-            matches!(changes.get(1), Some(ColumnChange::ChangeType { from, to }) if from == "INTEGER" && to == "BIGINT"),
+            matches!(changes.get(1), Some(ColumnChange::ChangeType { from, to, .. }) if from == "INTEGER" && to == "BIGINT"),
             "ALTER TYPE should be between drop and re-add: {changes:?}"
         );
         assert!(
@@ -3884,6 +3916,7 @@ mod tests {
                 sequence_within: None,
                 sql_type: "INTEGER".to_string(),
                 unique: false,
+                type_change_using: None,
             };
             let table = TableSchema {
                 app: None,
@@ -4228,6 +4261,7 @@ mod tests {
                     sequence_within: None,
                     sql_type: "BIGINT".to_string(),
                     unique: false,
+                    type_change_using: None,
                 }],
                 exclusion_constraints: Vec::new(),
                 fts: None,
@@ -4500,6 +4534,7 @@ mod tests {
             sequence_within: None,
             sql_type: "BIGINT".to_string(),
             unique: false,
+            type_change_using: None,
         });
         for (col, ref_table) in fks {
             columns.push(ColumnSchema {
@@ -4528,6 +4563,7 @@ mod tests {
                 sequence_within: None,
                 sql_type: "BIGINT".to_string(),
                 unique: false,
+                type_change_using: None,
             });
         }
         TableSchema {
@@ -4603,6 +4639,7 @@ mod tests {
                     sequence_within: None,
                     sql_type: "BIGINT".to_string(),
                     unique: false,
+                    type_change_using: None,
                 },
                 ColumnSchema {
                     check: None,
@@ -4624,6 +4661,7 @@ mod tests {
                     sequence_within: None,
                     sql_type: "TIMESTAMPTZ".to_string(),
                     unique: false,
+                    type_change_using: None,
                 },
             ],
             exclusion_constraints: Vec::new(),
@@ -4670,6 +4708,7 @@ mod tests {
                     sequence_within: None,
                     sql_type: "BIGINT".to_string(),
                     unique: false,
+                    type_change_using: None,
                 },
                 ColumnSchema {
                     check: None,
@@ -4697,6 +4736,7 @@ mod tests {
                     sequence_within: None,
                     sql_type: "BIGINT".to_string(),
                     unique: false,
+                    type_change_using: None,
                 },
                 ColumnSchema {
                     check: None,
@@ -4724,6 +4764,7 @@ mod tests {
                     sequence_within: None,
                     sql_type: "BIGINT".to_string(),
                     unique: false,
+                    type_change_using: None,
                 },
             ],
             exclusion_constraints: Vec::new(),

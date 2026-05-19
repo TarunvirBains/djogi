@@ -222,7 +222,13 @@ pub struct TableSchema {
 }
 
 /// Per-column snapshot.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// **PartialEq exclusion.** `PartialEq` / `Eq` are implemented manually
+/// below to exclude the transient [`ColumnSchema::type_change_using`]
+/// slot — see that field's doc for the full rationale. Every other
+/// field participates in equality, so the manual impl must be updated
+/// in lockstep whenever a new persistent field lands on `ColumnSchema`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ColumnSchema {
     /// Optional `CHECK (...)` constraint expression — raw SQL,
@@ -351,7 +357,156 @@ pub struct ColumnSchema {
     /// `UNIQUE` constraint at the column level. Composite uniqueness
     /// lives in the top-level `indexes` slice.
     pub unique: bool,
+
+    /// Adopter-supplied `#[field(type_change_using = "<sql expr>")]`
+    /// USING clause for non-default-cast column type changes — Phase 8.5
+    /// Cluster 4 djogi#220.
+    ///
+    /// **Transit only.** This slot is populated by the projection from
+    /// the descriptor, **read by the differ's column-walk in
+    /// [`crate::migrate::diff`] (`emit_alter_column`) to populate
+    /// `ColumnChange::ChangeType::using`** on the
+    /// emitted operation, and never persisted to the on-disk snapshot
+    /// — `#[serde(skip)]` excludes the field from both serialize and
+    /// deserialize. The transient design makes the attribute behave
+    /// as a one-time directive: an adopter who leaves
+    /// `#[field(type_change_using = "...")]` on a field after the
+    /// migration applies produces no phantom diff, because the loaded
+    /// snapshot always carries `None` here while the freshly-projected
+    /// schema carries the live attribute value.
+    ///
+    /// **Excluded from `PartialEq`.** See the manual
+    /// `impl PartialEq for ColumnSchema` below for the rationale and
+    /// the maintenance contract. The slot is exempt from structural
+    /// equality so a load-vs-projection mismatch on
+    /// `type_change_using` does not synthesise a phantom
+    /// `AlterColumn`; only a real `sql_type` change carries the
+    /// expression into a `ChangeType` operation.
+    #[serde(default, skip)]
+    pub type_change_using: Option<String>,
 }
+
+/// Manual equality for [`ColumnSchema`] that excludes the transient
+/// [`ColumnSchema::type_change_using`] slot.
+///
+/// **Why manual.** Adopters declare `#[field(type_change_using = "...")]`
+/// as a one-time migration directive — it tells the SQL emitter which
+/// `USING (<expr>)` clause to append to an `ALTER COLUMN … TYPE`
+/// statement and is never persisted to the snapshot. A derived
+/// `PartialEq` would compare it against the loaded snapshot's `None`
+/// and report inequality whenever the descriptor carries the
+/// attribute. That false-positive ripples into every comparison
+/// pathway that reaches `ColumnSchema::eq`:
+///
+/// 1. `diff_schemas`'s top-level `if before == after` short-circuit
+///    would skip the NoOp return; the differ would walk every column
+///    even when nothing structural changed.
+/// 2. `diff_columns_in_table`'s `if bc == ac { continue; }` per-column
+///    skip would not fire, dragging every column through
+///    `emit_alter_column` for no structural reason.
+/// 3. `build_match::schema_equiv`'s `a.models == b.models` recursion
+///    compares `ColumnSchema` directly; a `models == pending` mismatch
+///    here would route the three-way drift classifier to
+///    `Outcome4PendingInvalid` (a spurious "pending JSON is stale"
+///    warning) whenever an adopter had a `type_change_using`
+///    attribute live in source after composing.
+///
+/// All three pathways are user-visible. Excluding the field from
+/// equality at the type level keeps every downstream consumer correct
+/// without each one having to remember to mask the slot.
+///
+/// **Maintenance.** Every other field must remain in the impl. Adding
+/// a new persistent field to `ColumnSchema` requires extending this
+/// impl in the same change so equality stays in sync with the struct.
+/// The impl destructures both sides exhaustively so adding a field to
+/// `ColumnSchema` without threading it here is a compile error rather
+/// than a silent regression in differ behaviour.
+impl PartialEq for ColumnSchema {
+    fn eq(&self, other: &Self) -> bool {
+        // Exhaustive destructure forces a compile error whenever a new
+        // persistent field lands on `ColumnSchema` without being added
+        // to the equality comparison below. The `..` rest pattern is
+        // deliberately NOT used — the whole point of this impl is to
+        // catch future maintainers who forget to thread a new field
+        // through. Field order mirrors the struct definition so the
+        // diff between this impl and the struct definition stays
+        // legible.
+        //
+        // `type_change_using` is bound on both sides with the `_`
+        // pattern to acknowledge the field exists while documenting
+        // that it is deliberately excluded from equality (see this
+        // impl's doc above for the rationale, and the field's own
+        // doc on `ColumnSchema::type_change_using` for the transient-
+        // slot design).
+        let ColumnSchema {
+            check: self_check,
+            comment: self_comment,
+            default_sql: self_default_sql,
+            foreign_key: self_foreign_key,
+            generated: self_generated,
+            identity: self_identity,
+            index_type: self_index_type,
+            indexed: self_indexed,
+            max_length: self_max_length,
+            name: self_name,
+            nullable: self_nullable,
+            on_delete: self_on_delete,
+            outbox_exclude: self_outbox_exclude,
+            rationale: self_rationale,
+            relation_kind: self_relation_kind,
+            renamed_from: self_renamed_from,
+            sequence_within: self_sequence_within,
+            sql_type: self_sql_type,
+            unique: self_unique,
+            // Deliberately excluded from PartialEq — see impl doc.
+            type_change_using: _,
+        } = self;
+        let ColumnSchema {
+            check: other_check,
+            comment: other_comment,
+            default_sql: other_default_sql,
+            foreign_key: other_foreign_key,
+            generated: other_generated,
+            identity: other_identity,
+            index_type: other_index_type,
+            indexed: other_indexed,
+            max_length: other_max_length,
+            name: other_name,
+            nullable: other_nullable,
+            on_delete: other_on_delete,
+            outbox_exclude: other_outbox_exclude,
+            rationale: other_rationale,
+            relation_kind: other_relation_kind,
+            renamed_from: other_renamed_from,
+            sequence_within: other_sequence_within,
+            sql_type: other_sql_type,
+            unique: other_unique,
+            // Deliberately excluded from PartialEq — see impl doc.
+            type_change_using: _,
+        } = other;
+        self_check == other_check
+            && self_comment == other_comment
+            && self_default_sql == other_default_sql
+            && self_foreign_key == other_foreign_key
+            && self_generated == other_generated
+            && self_identity == other_identity
+            && self_index_type == other_index_type
+            && self_indexed == other_indexed
+            && self_max_length == other_max_length
+            && self_name == other_name
+            && self_nullable == other_nullable
+            && self_on_delete == other_on_delete
+            && self_outbox_exclude == other_outbox_exclude
+            && self_rationale == other_rationale
+            && self_relation_kind == other_relation_kind
+            && self_renamed_from == other_renamed_from
+            && self_sequence_within == other_sequence_within
+            && self_sql_type == other_sql_type
+            && self_unique == other_unique
+    }
+}
+
+impl Eq for ColumnSchema {}
 
 /// Foreign-key declaration on a column.
 ///
@@ -848,6 +1003,122 @@ pub enum OnlineSafetyClassification {
     /// acknowledge downtime or perform the change by hand — there is
     /// no online path for this delta.
     OfflineOnly,
+}
+
+#[cfg(test)]
+mod column_schema_type_change_using_tests {
+    //! djogi#220 — `ColumnSchema::type_change_using` is a transient
+    //! projection-only slot. These tests pin the three properties that
+    //! make the design correct end-to-end:
+    //!
+    //! 1. Serde drops the slot on serialize (`#[serde(skip)]`).
+    //! 2. Serde supplies the default `None` on deserialize.
+    //! 3. The manual `PartialEq` impl excludes the slot from equality
+    //!    so a freshly-projected `Some(...)` compares equal to a
+    //!    loaded snapshot's `None` (zero phantom-diff cost when an
+    //!    adopter leaves the attribute on the field after applying).
+
+    use super::ColumnSchema;
+
+    fn base_column(name: &str) -> ColumnSchema {
+        ColumnSchema {
+            check: None,
+            comment: None,
+            default_sql: None,
+            foreign_key: None,
+            generated: None,
+            identity: None,
+            index_type: None,
+            indexed: false,
+            max_length: None,
+            name: name.to_string(),
+            nullable: false,
+            on_delete: None,
+            outbox_exclude: false,
+            rationale: None,
+            relation_kind: None,
+            renamed_from: None,
+            sequence_within: None,
+            sql_type: "TEXT".to_string(),
+            unique: false,
+            type_change_using: None,
+        }
+    }
+
+    #[test]
+    fn type_change_using_is_excluded_from_partial_eq() {
+        // Two columns identical except for `type_change_using` must
+        // compare equal. This is the load-vs-projection scenario the
+        // differ relies on: the snapshot loaded from disk always
+        // has `None` here (due to serde-skip), while the live
+        // descriptor projection carries the adopter's `Some(...)`.
+        // The manual `PartialEq` impl on `ColumnSchema` must treat
+        // them as equal so the per-column diff short-circuit
+        // (`if bc == ac { continue; }`) fires correctly.
+        let snapshot_loaded = base_column("kind");
+        let projected_from_descriptor = ColumnSchema {
+            type_change_using: Some("kind::uuid".to_string()),
+            ..base_column("kind")
+        };
+        assert_eq!(snapshot_loaded, projected_from_descriptor);
+        // Sanity: the slot itself differs.
+        assert_ne!(
+            snapshot_loaded.type_change_using,
+            projected_from_descriptor.type_change_using
+        );
+    }
+
+    #[test]
+    fn structural_difference_still_triggers_partial_eq_inequality() {
+        // The manual impl is precise — it only masks
+        // `type_change_using`. A real structural change (sql_type
+        // here) must still surface inequality.
+        let before = base_column("kind");
+        let after = ColumnSchema {
+            sql_type: "UUID".to_string(),
+            type_change_using: Some("kind::uuid".to_string()),
+            ..base_column("kind")
+        };
+        assert_ne!(
+            before, after,
+            "sql_type difference must trip PartialEq even when type_change_using is set"
+        );
+    }
+
+    #[test]
+    fn type_change_using_is_dropped_on_serialize() {
+        // The persisted snapshot must never carry `type_change_using`.
+        // Round-tripping through serde_json:
+        //   1. serialize a column with `Some(expr)` → JSON
+        //   2. inspect the JSON — must NOT contain the key
+        //   3. deserialize the JSON back → `None`
+        let with_using = ColumnSchema {
+            type_change_using: Some("kind::uuid".to_string()),
+            ..base_column("kind")
+        };
+        let json = serde_json::to_string(&with_using).expect("serialize");
+        assert!(
+            !json.contains("type_change_using"),
+            "serialized JSON must not contain the transient slot: {json}"
+        );
+        let round_tripped: ColumnSchema = serde_json::from_str(&json).expect("deserialize");
+        assert!(
+            round_tripped.type_change_using.is_none(),
+            "deserialize must yield None for the skipped slot: {round_tripped:?}"
+        );
+    }
+
+    #[test]
+    fn type_change_using_deserialize_defaults_when_absent() {
+        // Snapshots predating this field (or written after it landed)
+        // never carry the key. Loading them must yield `None`
+        // structurally — confirms the `#[serde(default)]` slot has a
+        // working Default::default() and the loader does not reject
+        // the absence under `deny_unknown_fields`.
+        let json = serde_json::to_string(&base_column("kind")).expect("serialize");
+        let loaded: ColumnSchema = serde_json::from_str(&json).expect("deserialize");
+        assert!(loaded.type_change_using.is_none());
+    }
 }
 
 #[cfg(test)]

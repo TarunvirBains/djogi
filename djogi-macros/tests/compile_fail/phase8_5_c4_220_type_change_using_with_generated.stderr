@@ -1,0 +1,7 @@
+error: `#[field(type_change_using = "...")]` is not allowed on a `#[field(generated = "...")]` column — the generated expression derives the column's stored type, and an adopter USING cannot meaningfully drive the resulting type. Postgres' semantics for `ALTER COLUMN ... TYPE ... USING (<expr>)` on a stored generated column are surprising at best; hand-edit the migration if a generated column needs to flip storage type.
+  --> $DIR/phase8_5_c4_220_type_change_using_with_generated.rs:16:61
+   |
+16 |     #[field(generated = "LOWER(email)", type_change_using = "LOWER(email)::TEXT")]
+   |                                                             ^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

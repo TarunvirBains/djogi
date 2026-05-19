@@ -493,7 +493,27 @@ fn classify_column_change(
         ColumnChange::SetDefault(_) => OnlineSafetyClassification::OnlineSafe,
 
         // §7: "Change column type" — multiple sub-cases.
-        ColumnChange::ChangeType { from, to } => classify_type_change(from, to),
+        //
+        // djogi#220 — `using.is_some()` signals "this is a non-default
+        // cast"; the live-plan shadow-column pattern can only emit a
+        // plain SQL cast (`<col>::<to>`) and cannot replicate an
+        // adopter-supplied expression in the backfill UPDATE. Route
+        // such changes to `OfflineOnly` so the dispatcher never
+        // receives an op whose adopter expression it would silently
+        // drop. The dispatcher / pattern emitters retain a
+        // belt-and-braces refusal as a defense-in-depth check (see
+        // `dispatch_pattern` and the `replacement_column` /
+        // `codec_transition` emitters).
+        //
+        // When `using.is_none()` the lock window is governed by the
+        // cast pair alone and the existing pair-based dispatch
+        // applies.
+        ColumnChange::ChangeType { using: Some(_), .. } => OnlineSafetyClassification::OfflineOnly,
+        ColumnChange::ChangeType {
+            from,
+            to,
+            using: None,
+        } => classify_type_change(from, to),
 
         // §7: "Add CHECK constraint to populated table" → ExpandContract
         // when above `validation_threshold_rows`; below threshold the
@@ -981,6 +1001,7 @@ mod tests {
             sequence_within: None,
             sql_type: "TEXT".to_string(),
             unique: false,
+            type_change_using: None,
         }
     }
 
@@ -1336,6 +1357,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "integer".to_string(),
                 to: "bigint".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1353,6 +1375,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "varchar(64)".to_string(),
                 to: "varchar(128)".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1370,6 +1393,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "varchar(255)".to_string(),
                 to: "text".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1391,6 +1415,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "text".to_string(),
                 to: "varchar(255)".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1412,6 +1437,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "bigint".to_string(),
                 to: "integer".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1429,11 +1455,40 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "integer".to_string(),
                 to: "smallint".to_string(),
+                using: None,
             },
         };
         assert_eq!(
             classify_operation(&op, &ctx),
             OnlineSafetyClassification::OfflineOnly
+        );
+    }
+
+    #[test]
+    fn type_change_with_adopter_using_is_offline_only() {
+        // djogi#220 — adopter-supplied `using` signals "this is a
+        // non-default cast"; the live-plan shadow-column pattern can
+        // only emit a plain SQL cast in its backfill and cannot
+        // replicate an adopter expression. Route to OfflineOnly
+        // regardless of the cast pair.
+        //
+        // INTEGER → BIGINT without `using` would classify OnlineSafe
+        // (benign widening), so the `using.is_some()` arm is the only
+        // thing producing OfflineOnly here.
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AlterColumn {
+            table: "metrics".to_string(),
+            column: "count".to_string(),
+            change: ColumnChange::ChangeType {
+                from: "integer".to_string(),
+                to: "bigint".to_string(),
+                using: Some("count::BIGINT".to_string()),
+            },
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly,
+            "adopter `using` must force OfflineOnly regardless of cast pair",
         );
     }
 
@@ -1448,6 +1503,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "varchar(20)".to_string(),
                 to: "varchar(10)".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1465,6 +1521,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "numeric(20, 4)".to_string(),
                 to: "numeric(10, 4)".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1482,6 +1539,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "numeric(20, 4)".to_string(),
                 to: "numeric(20, 2)".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1503,6 +1561,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "numeric(10)".to_string(),
                 to: "numeric(12, 2)".to_string(),
+                using: None,
             },
         };
         // The unknown-type-change fallback returns ExpandContract; what
@@ -1526,6 +1585,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "numeric(10)".to_string(),
                 to: "numeric(10, 2)".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1555,6 +1615,7 @@ mod tests {
                 change: ColumnChange::ChangeType {
                     from: from.to_string(),
                     to: to.to_string(),
+                    using: None,
                 },
             };
             assert_eq!(
@@ -1577,6 +1638,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "numeric".to_string(),
                 to: "numeric(10, 2)".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1597,6 +1659,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "user_status_v1".to_string(),
                 to: "user_status_v2".to_string(),
+                using: None,
             },
         };
         assert_eq!(

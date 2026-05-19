@@ -162,6 +162,21 @@ pub enum LossyRollbackKind {
     /// Surfaces in `migrations status` as the "POINT OF NO RETURN"
     /// marker.
     PkTypeFlipPostCutover,
+    /// Forward `ALTER COLUMN ... TYPE ...` carried an
+    /// adopter-supplied `USING (<expr>)` clause via
+    /// `#[field(type_change_using = "...")]` (djogi#220). The
+    /// emitter's down side falls back to the default
+    /// `USING <col>::<old_type>` cast — Postgres has no way to
+    /// reconstruct an arbitrary inverse from the forward expression,
+    /// and djogi deliberately does not model a symmetric down-side
+    /// USING. If the forward expression is structurally lossy
+    /// (`TRIM`, `CASE WHEN ... THEN NULL`, regex extraction, codec
+    /// decode, ...), the original row values cannot be recovered on
+    /// rollback. `LossyRollbackPolicy::Refuse` engages on this kind
+    /// so the operator decides whether to proceed; the down SQL
+    /// always remains hand-editable for adopters who need a non-
+    /// default inverse.
+    CustomCast,
 }
 
 /// Errors the SQL emitter surfaces.
@@ -728,14 +743,117 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
             "drop DEFAULT",
             None,
         ),
-        ColumnChange::ChangeType { from, to } => {
-            // `USING <col>::<new_type>` is a sensible default cast.
-            // Operators with bespoke conversions can hand-edit the
-            // emitted file before apply.
-            let up = format!("ALTER TABLE {qt} ALTER COLUMN {qc} TYPE {to} USING {qc}::{to};");
+        ColumnChange::ChangeType { from, to, using } => {
+            // The default `USING <col>::<new_type>` cast works for every
+            // Postgres pair with an implicit cast (widenings like
+            // `INTEGER → BIGINT`, `varchar(N) → text`, etc.). Non-default
+            // cast paths (`TEXT → UUID`, `TEXT → INTEGER`, custom-domain
+            // flips) require an adopter-supplied `USING` expression —
+            // djogi#220 surfaces this through `#[field(type_change_using =
+            // "<sql expr>")]`. The expression is emitted verbatim with
+            // no parsing or sanitisation; the adopter owns correctness
+            // exactly as for `#[field(check)]` and the
+            // `raw_*` escape-hatch family.
+            //
+            // **Down-side cast.** The rollback always emits the default
+            // `USING <col>::<old_type>` form. We deliberately do not
+            // model a symmetric down-side USING expression because:
+            //   1. The rollback path is operator-owned — adopters who
+            //      reach for `type_change_using` are doing a one-time
+            //      forward migration and rarely care about the
+            //      reverse cast.
+            //   2. Forcing the adopter to also specify a down-side
+            //      USING would double the maintenance burden for an
+            //      attribute that the spec already documents as
+            //      "remove after applying".
+            //   3. When the inverse cast also needs special handling
+            //      the operator hand-edits the emitted down SQL —
+            //      same posture as every other lossy / non-trivial
+            //      rollback in the migration engine.
+            //
+            // **Known-incompatible-pair heuristic.** When `using` is
+            // `None` AND the (from, to) pair is on the known-incompatible
+            // list — TEXT↔UUID, TEXT↔INTEGER/BIGINT/SMALLINT, plus
+            // their lowercased / `varchar`-prefixed shapes — prepend a
+            // `-- WARNING:` SQL comment to the UP statement that
+            // names the issue and points the adopter at the
+            // `type_change_using` attribute. The comment is a
+            // soft signal: the actual gate is Postgres's apply-time
+            // error. We do not refuse to emit the SQL because the
+            // adopter may know better than the heuristic (e.g.
+            // every TEXT row is a syntactically valid UUID; the
+            // implicit cast would still fail but the apply would
+            // succeed with USING). False positives are acceptable;
+            // false negatives are tolerable too — the heuristic is a
+            // hint, not a contract.
+            let mut up = String::new();
+            if using.is_none() && type_change_likely_requires_using(from, to) {
+                // Heuristic warning. The framework always emits an
+                // explicit `USING <col>::<new>` cast — Postgres does
+                // NOT raise `column "..." cannot be cast automatically`
+                // here (that error fires only when an `ALTER COLUMN
+                // TYPE` is written without any USING clause, falling
+                // back to the assignment cast). The actual failure mode
+                // for these pairs is per-row: the explicit cast
+                // `<from>::<to>` is *defined* (text::uuid, text::integer
+                // are defined as explicit casts in Postgres) but
+                // rejects any row whose value does not parse as the
+                // target type, surfacing as
+                // `invalid input syntax for type <to>` (or a similar
+                // per-pair shape such as `invalid input syntax for
+                // integer`). Name that mode in the warning so adopters
+                // who grep CI logs for the literal error find the
+                // right diagnostic.
+                let _ = writeln!(
+                    up,
+                    "-- WARNING: `{table}.{column}` `{from}` -> `{to}` is a known incompatible cast pair.\n\
+                     -- The framework emits `USING <col>::<new_type>` (the explicit cast) — every row's\n\
+                     -- value must parse as a syntactically valid `{to}` literal under `{from}::{to}` or\n\
+                     -- the apply will fail with `invalid input syntax for type {to}` (or similar). Add\n\
+                     -- `#[field(type_change_using = \"<sql expr>\")]` to the field on the model struct\n\
+                     -- and re-compose to inline a custom `USING` clause that handles edge cases (TRIM,\n\
+                     -- CASE WHEN, validation). The adopter owns the expression's correctness against\n\
+                     -- the column's old and new types. See `docs/guide/models.md` `#[field(...)]`\n\
+                     -- reference and djogi#220 for details."
+                );
+            }
+            match using {
+                Some(expr) => {
+                    let _ = write!(
+                        up,
+                        "ALTER TABLE {qt} ALTER COLUMN {qc} TYPE {to} USING ({expr});"
+                    );
+                }
+                None => {
+                    let _ = write!(
+                        up,
+                        "ALTER TABLE {qt} ALTER COLUMN {qc} TYPE {to} USING {qc}::{to};"
+                    );
+                }
+            }
             let down =
                 format!("ALTER TABLE {qt} ALTER COLUMN {qc} TYPE {from} USING {qc}::{from};");
-            (up, down, "change TYPE", None)
+            // Lossy-rollback safety net (djogi#220 follow-up). When the
+            // forward step carries an adopter `USING (<expr>)`, the
+            // down side falls back to the default `<col>::<old_type>`
+            // cast — Postgres cannot derive an inverse of an arbitrary
+            // expression. If the forward expression discards
+            // information (TRIM, CASE → NULL, regex extraction,
+            // codec decode, ...) the down SQL silently emits as a
+            // structurally lossy rollback that returns equal-but-not-
+            // identical row values. Mark the warning so
+            // `LossyRollbackPolicy::Refuse` (the default) engages and
+            // requires explicit operator opt-in to apply.
+            let lossy = using.as_ref().map(|expr| LossyRollbackWarning {
+                kind: LossyRollbackKind::CustomCast,
+                detail: format!(
+                    "column `{table}.{column}`: forward `USING ({expr})` is \
+                     adopter-supplied; rollback emits the default `<col>::{from}` \
+                     cast and may not reconstruct original row data. Hand-edit the \
+                     emitted down SQL if a non-default inverse is required."
+                ),
+            });
+            (up, down, "change TYPE", lossy)
         }
         ColumnChange::SetCheck { from, to } => {
             // Postgres has no `ALTER COLUMN ... SET CHECK`; check
@@ -849,33 +967,159 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
             let down = format!("CREATE INDEX {qname} ON {qt} ({qc});");
             (up, down, "drop indexed", None)
         }
-        // Stored generated column transitions classify as
-        // OfflineOnly per the v3 plan — Postgres has no
-        // `ALTER COLUMN ADD GENERATED` for stored expressions, so the
-        // operator must hand-edit a DROP COLUMN + ADD COLUMN sequence.
-        // We emit a comment placeholder so the migration file
-        // documents the intent without producing executable SQL the
-        // runner would refuse anyway. The classifier (PR 7 task 3)
-        // ensures the live runner never reaches this path.
-        ColumnChange::SetGenerated { from: _, to } => {
-            let kind = if to.is_some() {
-                "set GENERATED"
-            } else {
-                "drop GENERATED"
-            };
-            let up = format!(
-                "-- OfflineOnly: stored generated column change for `{table}.{column}`\n\
-                 -- has no online ALTER form. Hand-edit the migration to DROP COLUMN +\n\
-                 -- ADD COLUMN with the new generation expression. See\n\
-                 -- `docs/spec/decisions.md` and the `generated_column_refusal` pattern."
-            );
-            let down = format!(
-                "-- OfflineOnly: revert requires reconstructing the original\n\
-                 -- generation state on `{table}.{column}` (DROP + ADD COLUMN).\n\
-                 -- Hand-edit before applying."
-            );
-            (up, down, kind, None)
-        }
+        // Stored generated column transitions — djogi#221.
+        //
+        // Three transition shapes the differ can emit:
+        //
+        // 1. `(None, Some(spec))` — ADD generation expression to an
+        //    existing regular column. Postgres has no `ALTER COLUMN
+        //    ADD GENERATED` for stored expressions; the only way to
+        //    install one is `DROP COLUMN + ADD COLUMN <name> <type>
+        //    GENERATED ALWAYS AS (<expr>) STORED`. We emit a SQL-
+        //    comment placeholder so the migration file documents the
+        //    intent without producing executable SQL the runner would
+        //    refuse anyway. The classifier
+        //    ([`crate::live_migrate::patterns::generated_column_refusal`])
+        //    ensures the live runner never reaches this path.
+        //
+        // 2. `(Some(_), None)` — DROP generation expression. Postgres
+        //    13+ supports `ALTER COLUMN <c> DROP EXPRESSION` which
+        //    converts the generated column to a regular column,
+        //    preserving the previously-computed values frozen as
+        //    data. The down side cannot re-add an expression to an
+        //    existing column in place — restoring the generation
+        //    requires `DROP COLUMN + ADD COLUMN`, which destroys row
+        //    data — so we emit a comment-only down with a `lossy`
+        //    marker. djogi targets Postgres 18+
+        //    (see `docs/spec/decisions.md`), so the in-place
+        //    `DROP EXPRESSION` form is always available.
+        //
+        // 3. `(Some(prev), Some(next))` with different expressions —
+        //    CHANGE the expression in place. Postgres 17+ ships
+        //    `ALTER COLUMN <c> SET EXPRESSION AS (<new_expr>)` which
+        //    replaces the expression and rewrites the table under
+        //    `AccessExclusiveLock`. djogi targets PG 18+ so the
+        //    statement is always available; the classifier still
+        //    routes this to `OfflineOnly` because the row-rewrite
+        //    lock window matches the standard offline pattern. The
+        //    down side is symmetric — rewriting back to `prev`
+        //    fully restores the prior shape (modulo timing of any
+        //    rows inserted between the two cutovers, which is the
+        //    standard rollback caveat for offline migrations).
+        //
+        //    **Why `SET EXPRESSION AS (...)` and not
+        //    `DROP EXPRESSION + SET EXPRESSION AS`?** The two-step
+        //    form looks like a clean swap, but `SET EXPRESSION AS`
+        //    requires the column to STILL be a generated column —
+        //    a prior `DROP EXPRESSION` strips that property, so the
+        //    follow-up `SET EXPRESSION AS` fails with
+        //    `column "<c>" is not a generated column`. Postgres'
+        //    intended in-place change form is a single statement.
+        //
+        // 4. `(None, None)` — never emitted (no transition).
+        //
+        // 5. `(Some(a), Some(b))` with `a == b` — never emitted; the
+        //    differ filters identical pairs before reaching this
+        //    arm (per-column equality short-circuits in
+        //    [`crate::migrate::diff::diff_columns_in_table`]).
+        //
+        // The classifier
+        // ([`crate::live_migrate::classify::classify_operation`])
+        // keeps `SetGenerated { .. }` at `OfflineOnly` regardless of
+        // shape — the row-rewrite lock window is structurally the
+        // same for all three transitions.
+        ColumnChange::SetGenerated { from, to } => match (from, to) {
+            // ── (None, Some) — ADD generation ────────────────────────
+            (None, Some(spec)) => {
+                let up = format!(
+                    "-- OfflineOnly: adding a stored generated expression to existing column\n\
+                     -- `{table}.{column}` has no online ALTER form in Postgres 18. Hand-edit\n\
+                     -- the migration to `DROP COLUMN {column}` + `ADD COLUMN {column} \
+                     <type> GENERATED ALWAYS AS ({expr}) STORED`.\n\
+                     -- See `docs/spec/decisions.md` and the `generated_column_refusal`\n\
+                     -- pattern in `djogi/src/live_migrate/patterns/`.",
+                    expr = spec.expression
+                );
+                let down = format!(
+                    "-- OfflineOnly: revert of adding generation requires dropping the\n\
+                     -- generated column entirely (`DROP COLUMN {column}`); hand-edit\n\
+                     -- the migration before applying."
+                );
+                (up, down, "add GENERATED expression", None)
+            }
+            // ── (Some, None) — DROP generation ───────────────────────
+            (Some(prev), None) => {
+                // PG 13+: `ALTER COLUMN c DROP EXPRESSION` converts
+                // the generated column to a regular column. The down
+                // side cannot re-add the expression in place; restoring
+                // requires a `DROP COLUMN + ADD COLUMN` pair, which
+                // would destroy the post-DROP-EXPRESSION row data.
+                // Surface this as `lossy` so the runner / operator
+                // sees the marker at apply / status time.
+                let up = format!("ALTER TABLE {qt} ALTER COLUMN {qc} DROP EXPRESSION;");
+                let down = format!(
+                    "-- LOSSY ROLLBACK: cannot re-add the generation expression in place\n\
+                     -- on `{table}.{column}` — `ALTER COLUMN ... SET EXPRESSION AS` requires\n\
+                     -- the column to already be a generated column. Restoring requires a\n\
+                     -- `DROP COLUMN {column}` + `ADD COLUMN {column} <type> GENERATED ALWAYS\n\
+                     -- AS ({expr}) STORED` pair, which destroys the post-DROP-EXPRESSION\n\
+                     -- row data. Hand-edit before applying.",
+                    expr = prev.expression
+                );
+                (
+                    up,
+                    down,
+                    "drop GENERATED expression",
+                    Some(LossyRollbackWarning {
+                        kind: LossyRollbackKind::DropColumn,
+                        detail: format!(
+                            "column `{table}.{column}`: rollback of `DROP EXPRESSION` \
+                             cannot re-install the generated expression in place; \
+                             restoring requires DROP COLUMN + ADD COLUMN"
+                        ),
+                    }),
+                )
+            }
+            // ── (Some, Some) — CHANGE generation expression ──────────
+            (Some(prev), Some(next)) => {
+                // Defensive equality check — the differ filters
+                // identical column pairs before emitting `AlterColumn`,
+                // so `prev == next` here would be a contract drift.
+                // Fall through to the change path either way; the
+                // emitted SQL is a structural no-op (`SET EXPRESSION
+                // AS (<same>)`) which Postgres accepts.
+                debug_assert_ne!(
+                    prev.expression, next.expression,
+                    "ColumnChange::SetGenerated should not be emitted for identical \
+                     expressions (differ contract drift)"
+                );
+                // PG 17+: `ALTER COLUMN c SET EXPRESSION AS (<expr>)`
+                // replaces the expression and rewrites the table.
+                // djogi targets PG 18+ so this is always available.
+                // The trailing `STORED` keyword is NOT part of the
+                // syntax — Postgres infers stored-ness from the
+                // column's existing declaration (which is always
+                // STORED in djogi; the macro rejects `stored = false`).
+                let up = format!(
+                    "-- djogi#221: in-place stored generated expression change on PG 17+\n\
+                     -- (djogi targets PG 18+). The runner rewrites every row under\n\
+                     -- AccessExclusiveLock — classified OfflineOnly even though the\n\
+                     -- statement is structurally a single ALTER COLUMN.\n\
+                     ALTER TABLE {qt} ALTER COLUMN {qc} SET EXPRESSION AS ({next_expr});",
+                    next_expr = next.expression
+                );
+                let down = format!(
+                    "ALTER TABLE {qt} ALTER COLUMN {qc} SET EXPRESSION AS ({prev_expr});",
+                    prev_expr = prev.expression
+                );
+                (up, down, "change GENERATED expression", None)
+            }
+            // ── (None, None) — unreachable per differ contract ────────
+            (None, None) => unreachable!(
+                "ColumnChange::SetGenerated should never carry (None, None) — \
+                 the differ filters no-op transitions"
+            ),
+        },
         // Codex T22 BLOCK-3: identity-column transitions emit the
         // proper `ALTER COLUMN ADD/DROP/SET GENERATED` syntax.
         //
@@ -1715,6 +1959,102 @@ pub(crate) fn quote_string_literal(value: &str) -> String {
     out
 }
 
+/// Heuristic for whether the explicit Postgres cast between `from` and
+/// `to` SQL types is likely to fail at apply time on real row data,
+/// requiring an adopter-supplied `USING` clause via
+/// `#[field(type_change_using = "<sql expr>")]` (djogi#220).
+///
+/// Returns `true` for type-pair shapes where the explicit cast
+/// `<from>::<to>` is *defined* by Postgres (so the SQL is accepted)
+/// but rejects any row whose value does not parse as a syntactically
+/// valid `<to>` literal — surfacing per-row as
+/// `invalid input syntax for type <to>` (or a similar per-pair shape
+/// such as `invalid input syntax for integer`). The framework always
+/// emits `ALTER COLUMN ... TYPE <to> USING <col>::<to>` (the explicit
+/// cast form), so the bare-USING / assignment-cast Postgres error
+/// `column "..." cannot be cast automatically` does not fire here —
+/// the failure surfaces against the column data instead.
+///
+/// The list is intentionally narrow — false positives over-warn the
+/// operator (acceptable; the warning is a SQL comment in the
+/// migration, not a refusal), and false negatives surface as the
+/// regular Postgres apply-time error. We err on the side of NOT
+/// warning when the cast direction is genuinely ambiguous (e.g.
+/// `numeric → integer` truncates but is implicitly accepted).
+///
+/// **Recognised pairs.**
+///
+/// - text family (`TEXT`, `VARCHAR(...)`, `CHARACTER VARYING(...)`,
+///   `CHAR(...)`, `CITEXT`) ↔ UUID
+/// - text family ↔ integer family (`SMALLINT`, `INT2`, `INTEGER`,
+///   `INT4`, `BIGINT`, `INT8`)
+/// - UUID ↔ integer family
+///
+/// The comparison is byte-case-insensitive (Postgres treats type
+/// names case-insensitively) but does not normalise type modifiers
+/// like `(N)` length suffixes — `VARCHAR(64) → UUID` and
+/// `VARCHAR → UUID` both match because the text-family check tests
+/// for the `varchar` / `character` / `text` / `citext` / `char` prefix.
+///
+/// No regex per djogi project rule
+/// (`feedback_no_regex_in_djogi.md`) — all checks use ASCII byte
+/// matching against lowercased type strings.
+fn type_change_likely_requires_using(from: &str, to: &str) -> bool {
+    fn lower_ascii(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for b in s.as_bytes() {
+            if b.is_ascii_uppercase() {
+                out.push((*b + 32) as char);
+            } else {
+                out.push(*b as char);
+            }
+        }
+        out
+    }
+    let f = lower_ascii(from);
+    let t = lower_ascii(to);
+    // Strip a trailing `(N)` / `(N, M)` modifier so `varchar(64)`
+    // normalises to `varchar`. The text family already matches by
+    // prefix below, so this is mostly a defensive normalisation for
+    // future type classes that compare exact base names.
+    fn base_name(s: &str) -> &str {
+        match s.find('(') {
+            Some(idx) => s[..idx].trim_end(),
+            None => s.trim_end(),
+        }
+    }
+    let f_base = base_name(&f);
+    let t_base = base_name(&t);
+    let is_text = |b: &str| {
+        b == "text"
+            || b == "citext"
+            || b.starts_with("varchar")
+            || b.starts_with("character varying")
+            || b.starts_with("character")
+            || b.starts_with("char")
+    };
+    let is_integer = |b: &str| {
+        matches!(
+            b,
+            "smallint" | "int2" | "integer" | "int4" | "int" | "bigint" | "int8"
+        )
+    };
+    let is_uuid = |b: &str| b == "uuid";
+    // text ↔ uuid
+    if (is_text(f_base) && is_uuid(t_base)) || (is_uuid(f_base) && is_text(t_base)) {
+        return true;
+    }
+    // text ↔ integer
+    if (is_text(f_base) && is_integer(t_base)) || (is_integer(f_base) && is_text(t_base)) {
+        return true;
+    }
+    // uuid ↔ integer
+    if (is_uuid(f_base) && is_integer(t_base)) || (is_integer(f_base) && is_uuid(t_base)) {
+        return true;
+    }
+    false
+}
+
 /// Constraint name for a column-level CHECK constraint, e.g.
 /// `users_email_check`. Deterministic from `(table, column)`.
 fn check_constraint_name(table: &str, column: &str) -> String {
@@ -2039,6 +2379,7 @@ mod tests {
             sequence_within: None,
             sql_type: ty.to_string(),
             unique: false,
+            type_change_using: None,
         }
     }
 
@@ -2105,6 +2446,7 @@ mod tests {
                 sequence_within: None,
                 sql_type: sql_type.to_string(),
                 unique: false,
+                type_change_using: None,
             },
         ];
         t
@@ -2650,10 +2992,248 @@ mod tests {
             &ColumnChange::ChangeType {
                 from: "TEXT".to_string(),
                 to: "BIGINT".to_string(),
+                using: None,
             },
         );
         assert!(sql.up.contains("TYPE BIGINT USING \"amount\"::BIGINT"));
         assert!(sql.down.contains("TYPE TEXT USING \"amount\"::TEXT"));
+    }
+
+    // ── djogi#220 — `#[field(type_change_using = "<expr>")]` ───────────────
+
+    #[test]
+    fn alter_column_change_type_with_using_inlines_adopter_expression() {
+        // The adopter declared `#[field(type_change_using = "kind::uuid")]`
+        // on a TEXT→UUID flip. The emitter must inline `USING (kind::uuid)`
+        // verbatim — no `::<new_type>` default suffix, no parenthesisation
+        // rewrite, no escaping of the adopter's SQL fragment.
+        let sql = emit_alter_column(
+            "items",
+            "kind",
+            &ColumnChange::ChangeType {
+                from: "TEXT".to_string(),
+                to: "UUID".to_string(),
+                using: Some("kind::uuid".to_string()),
+            },
+        );
+        assert!(
+            sql.up.contains(
+                "ALTER TABLE \"items\" ALTER COLUMN \"kind\" TYPE UUID USING (kind::uuid);"
+            ),
+            "UP must inline the adopter USING expression verbatim: {}",
+            sql.up
+        );
+        // No `USING \"kind\"::UUID` default-cast fallback — the adopter's
+        // expression has fully replaced the default.
+        assert!(
+            !sql.up.contains("USING \"kind\"::UUID"),
+            "UP must not also emit the default cast when adopter `using` is set: {}",
+            sql.up
+        );
+        // Down side falls back to the default cast — symmetric down-side
+        // USING expressions are not modelled (see `ColumnChange::ChangeType`
+        // doc on `using` rationale).
+        assert!(
+            sql.down.contains(
+                "ALTER TABLE \"items\" ALTER COLUMN \"kind\" TYPE TEXT USING \"kind\"::TEXT;"
+            ),
+            "DOWN must use default cast: {}",
+            sql.down
+        );
+        // djogi#220 follow-up — forward `using.is_some()` must attach a
+        // CustomCast LossyRollbackWarning so `LossyRollbackPolicy::Refuse`
+        // (the default) engages on rollback. The down side cannot derive
+        // an inverse of an arbitrary adopter expression, so the operator
+        // must opt in explicitly before rolling back.
+        let lossy = sql
+            .lossy
+            .as_ref()
+            .expect("forward `using.is_some()` must surface LossyRollbackWarning");
+        assert!(matches!(lossy.kind, LossyRollbackKind::CustomCast));
+        assert!(
+            lossy.detail.contains("items") && lossy.detail.contains("kind"),
+            "lossy detail must identify the column: {}",
+            lossy.detail
+        );
+    }
+
+    #[test]
+    fn alter_column_change_type_without_using_emits_no_lossy_marker() {
+        // Counter-pin to the previous test: a forward step WITHOUT an
+        // adopter `using` carries no lossy marker — the default cast is
+        // symmetric (Postgres' explicit `<col>::<old>` cast reverses
+        // `<col>::<new>` exactly), so `LossyRollbackPolicy::Refuse`
+        // does NOT engage on the rollback.
+        let sql = emit_alter_column(
+            "events",
+            "amount",
+            &ColumnChange::ChangeType {
+                from: "INTEGER".to_string(),
+                to: "BIGINT".to_string(),
+                using: None,
+            },
+        );
+        assert!(
+            sql.lossy.is_none(),
+            "default-cast ChangeType must not surface a lossy marker: {:?}",
+            sql.lossy
+        );
+    }
+
+    #[test]
+    fn alter_column_change_type_warns_for_known_incompatible_pair_without_using() {
+        // TEXT → UUID is a known incompatible cast pair. The framework
+        // emits `USING <col>::UUID` (the explicit cast), which Postgres
+        // accepts at parse time — but the per-row evaluation fails with
+        // `invalid input syntax for type uuid` on any row whose TEXT
+        // value isn't a syntactically valid UUID literal. Without an
+        // adopter `type_change_using`, the emitter must prepend a
+        // `-- WARNING:` SQL comment that points at the
+        // `#[field(type_change_using = "...")]` attribute. The
+        // statement itself still emits (it's a hint, not a refusal —
+        // the operator may know the table is empty or every row is a
+        // syntactically valid UUID).
+        let sql = emit_alter_column(
+            "items",
+            "kind",
+            &ColumnChange::ChangeType {
+                from: "TEXT".to_string(),
+                to: "UUID".to_string(),
+                using: None,
+            },
+        );
+        assert!(
+            sql.up.contains("-- WARNING:"),
+            "known-incompatible cast without `using` must prepend a WARNING comment: {}",
+            sql.up
+        );
+        assert!(
+            sql.up.contains("type_change_using"),
+            "WARNING comment must name the corrective attribute: {}",
+            sql.up
+        );
+        assert!(
+            sql.up.contains(
+                "ALTER TABLE \"items\" ALTER COLUMN \"kind\" TYPE UUID USING \"kind\"::UUID;"
+            ),
+            "default cast is still emitted (warning is a hint, not a refusal): {}",
+            sql.up
+        );
+    }
+
+    #[test]
+    fn alter_column_change_type_no_warning_for_widening_pair() {
+        // INTEGER → BIGINT has a built-in Postgres cast — no warning
+        // comment should appear, default `USING <col>::BIGINT` is
+        // sufficient.
+        let sql = emit_alter_column(
+            "events",
+            "counter",
+            &ColumnChange::ChangeType {
+                from: "INTEGER".to_string(),
+                to: "BIGINT".to_string(),
+                using: None,
+            },
+        );
+        assert!(
+            !sql.up.contains("-- WARNING:"),
+            "widening cast pair must not emit a WARNING comment: {}",
+            sql.up
+        );
+        assert!(
+            sql.up.contains("TYPE BIGINT USING \"counter\"::BIGINT"),
+            "default cast still emitted: {}",
+            sql.up
+        );
+    }
+
+    #[test]
+    fn alter_column_change_type_warning_heuristic_is_case_insensitive() {
+        // Type names arrive from the descriptor in their canonical
+        // (often upper-case) form; verify and snapshot loaders can
+        // surface lowercase variants. The heuristic must match both.
+        for (from, to) in [
+            ("text", "uuid"),
+            ("TEXT", "uuid"),
+            ("varchar(64)", "INTEGER"),
+            ("UUID", "bigint"),
+        ] {
+            let sql = emit_alter_column(
+                "t",
+                "c",
+                &ColumnChange::ChangeType {
+                    from: from.to_string(),
+                    to: to.to_string(),
+                    using: None,
+                },
+            );
+            assert!(
+                sql.up.contains("-- WARNING:"),
+                "expected WARNING for {from} -> {to}: {}",
+                sql.up
+            );
+        }
+    }
+
+    #[test]
+    fn alter_column_change_type_warning_suppressed_when_using_provided() {
+        // The heuristic only fires when no `using` is set. An adopter
+        // who supplies `#[field(type_change_using = "<expr>")]` has
+        // owned the cast; no WARNING comment.
+        let sql = emit_alter_column(
+            "items",
+            "kind",
+            &ColumnChange::ChangeType {
+                from: "TEXT".to_string(),
+                to: "UUID".to_string(),
+                using: Some("kind::uuid".to_string()),
+            },
+        );
+        assert!(
+            !sql.up.contains("-- WARNING:"),
+            "explicit `using` suppresses the heuristic warning: {}",
+            sql.up
+        );
+    }
+
+    #[test]
+    fn type_change_likely_requires_using_recognises_known_pairs() {
+        // Direct unit test of the heuristic so future additions /
+        // regressions stay pinned. Mirrors the pairs covered by the
+        // end-to-end test above but exercises the helper directly so
+        // diagnostic-only regressions still surface.
+        assert!(type_change_likely_requires_using("TEXT", "UUID"));
+        assert!(type_change_likely_requires_using("UUID", "TEXT"));
+        assert!(type_change_likely_requires_using("VARCHAR(64)", "UUID"));
+        assert!(type_change_likely_requires_using("TEXT", "INTEGER"));
+        assert!(type_change_likely_requires_using("BIGINT", "TEXT"));
+        assert!(type_change_likely_requires_using("UUID", "BIGINT"));
+        assert!(type_change_likely_requires_using("citext", "uuid"));
+        assert!(type_change_likely_requires_using("text", "smallint"));
+        assert!(type_change_likely_requires_using(
+            "CHARACTER VARYING(255)",
+            "uuid"
+        ));
+    }
+
+    #[test]
+    fn type_change_likely_requires_using_passes_implicit_casts() {
+        // Pairs Postgres handles via the default cast must NOT match —
+        // false positives spam the migration file with confusing
+        // comments. The list is intentionally narrow; the heuristic is
+        // a hint, not a contract.
+        assert!(!type_change_likely_requires_using("INTEGER", "BIGINT"));
+        assert!(!type_change_likely_requires_using("SMALLINT", "INTEGER"));
+        assert!(!type_change_likely_requires_using("VARCHAR(64)", "TEXT"));
+        assert!(!type_change_likely_requires_using("TEXT", "CITEXT"));
+        assert!(!type_change_likely_requires_using(
+            "NUMERIC(10, 2)",
+            "NUMERIC(12, 2)"
+        ));
+        assert!(!type_change_likely_requires_using(
+            "TIMESTAMPTZ",
+            "TIMESTAMPTZ"
+        ));
     }
 
     #[test]
@@ -4025,6 +4605,223 @@ mod tests {
             op.up
                 .contains("\"email_lower\" TEXT GENERATED ALWAYS AS (LOWER(email)) STORED"),
             "missing inline GENERATED: {}",
+            op.up
+        );
+    }
+
+    // ── djogi#221 — `SetGenerated` lowering ────────────────────────────────
+
+    #[test]
+    fn alter_column_change_generated_expression_uses_in_place_form() {
+        // The differ surfaces an in-place expression change as
+        // `SetGenerated { from: Some(prev), to: Some(next) }`. The
+        // emitter must lower this to a single
+        // `ALTER COLUMN c SET EXPRESSION AS (<new_expr>)` statement —
+        // the Postgres 17+ in-place form djogi targets exclusively
+        // (PG 18+ per `docs/spec/decisions.md`). The destructive
+        // `DROP COLUMN + ADD COLUMN` shape must NOT appear.
+        let sql = emit_alter_column(
+            "users",
+            "email_lower",
+            &ColumnChange::SetGenerated {
+                from: Some(GeneratedColumnSchema {
+                    expression: "LOWER(email)".to_string(),
+                    stored: true,
+                }),
+                to: Some(GeneratedColumnSchema {
+                    expression: "LOWER(TRIM(email))".to_string(),
+                    stored: true,
+                }),
+            },
+        );
+        assert!(
+            sql.up
+                .contains("ALTER TABLE \"users\" ALTER COLUMN \"email_lower\" SET EXPRESSION AS (LOWER(TRIM(email)));"),
+            "expression change must emit SET EXPRESSION AS for PG 17+: {}",
+            sql.up
+        );
+        assert!(
+            !sql.up.contains("DROP COLUMN"),
+            "must not emit destructive DROP COLUMN for in-place expression change: {}",
+            sql.up
+        );
+        assert!(
+            !sql.up.contains("ADD COLUMN"),
+            "must not emit destructive ADD COLUMN for in-place expression change: {}",
+            sql.up
+        );
+        assert!(
+            sql.down
+                .contains("ALTER TABLE \"users\" ALTER COLUMN \"email_lower\" SET EXPRESSION AS (LOWER(email));"),
+            "down side must restore the prior expression in place: {}",
+            sql.down
+        );
+        // The change rewrites every row under AccessExclusiveLock —
+        // structurally offline — but the down side cleanly restores
+        // the prior expression. No lossy marker.
+        assert!(
+            sql.lossy.is_none(),
+            "expression change rolls back fully via inverse SET EXPRESSION AS — not lossy"
+        );
+    }
+
+    #[test]
+    fn alter_column_drop_generated_emits_drop_expression_lossy() {
+        // PG 13+: `ALTER COLUMN c DROP EXPRESSION` converts a stored
+        // generated column to a regular column, preserving the
+        // last-computed values. Postgres has no in-place inverse
+        // (`SET EXPRESSION AS` requires the column to already be
+        // generated), so the rollback is structurally lossy — it
+        // would need DROP COLUMN + ADD COLUMN, destroying the
+        // post-DROP-EXPRESSION row data.
+        let sql = emit_alter_column(
+            "users",
+            "email_lower",
+            &ColumnChange::SetGenerated {
+                from: Some(GeneratedColumnSchema {
+                    expression: "LOWER(email)".to_string(),
+                    stored: true,
+                }),
+                to: None,
+            },
+        );
+        assert_eq!(
+            sql.up, "ALTER TABLE \"users\" ALTER COLUMN \"email_lower\" DROP EXPRESSION;",
+            "DROP EXPRESSION should be the single UP statement",
+        );
+        assert!(
+            sql.down.contains("LOSSY ROLLBACK"),
+            "down side must surface the rollback gap: {}",
+            sql.down
+        );
+        assert!(
+            sql.lossy
+                .as_ref()
+                .is_some_and(|w| matches!(w.kind, LossyRollbackKind::DropColumn)),
+            "drop generation must mark the rollback as DropColumn-flavoured lossy: {:?}",
+            sql.lossy
+        );
+    }
+
+    #[test]
+    fn alter_column_add_generated_keeps_offline_placeholder() {
+        // (None, Some) — adding a generation expression to an
+        // existing regular column has no online ALTER form even on
+        // PG 18+. The emitter keeps a SQL-comment placeholder that
+        // documents the required DROP COLUMN + ADD COLUMN sequence;
+        // the classifier routes the operation to OfflineOnly so the
+        // live-migration runner refuses the path entirely.
+        let sql = emit_alter_column(
+            "users",
+            "email_lower",
+            &ColumnChange::SetGenerated {
+                from: None,
+                to: Some(GeneratedColumnSchema {
+                    expression: "LOWER(email)".to_string(),
+                    stored: true,
+                }),
+            },
+        );
+        assert!(
+            sql.up.contains("OfflineOnly"),
+            "UP must document the offline-only nature: {}",
+            sql.up
+        );
+        assert!(
+            sql.up.contains("LOWER(email)"),
+            "UP placeholder must surface the target expression for review: {}",
+            sql.up
+        );
+        // No executable SQL — only a comment.
+        assert!(
+            !sql.up.contains("ALTER TABLE"),
+            "UP must not emit executable SQL for the add path: {}",
+            sql.up
+        );
+    }
+
+    #[test]
+    fn alter_column_change_generated_expression_lowers_through_diff() {
+        // End-to-end through the differ: build two `AppliedSchema`s
+        // differing only on the generated expression, run
+        // `diff_schemas`, lower to `OperationSql`, and pin the
+        // emitted SQL shape. Mirrors the integration-level test in
+        // `tests/internal/sources/phase7_5_pr7_exclusion_generated_live.rs`
+        // but DB-free.
+        use crate::migrate::schema::{
+            AppliedSchema, GeneratedColumnSchema, PkKindSchema, PrimaryKeySchema, TableSchema,
+        };
+        use std::collections::BTreeMap;
+
+        fn build_schema(expr: &str) -> AppliedSchema {
+            let mut models = BTreeMap::new();
+            let table = TableSchema {
+                app: None,
+                columns: vec![ColumnSchema {
+                    generated: Some(GeneratedColumnSchema {
+                        expression: expr.to_string(),
+                        stored: true,
+                    }),
+                    nullable: true,
+                    ..col("email_lower", "TEXT", true)
+                }],
+                exclusion_constraints: Vec::new(),
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: Vec::new(),
+                    kind: PkKindSchema::None,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                storage_params: None,
+                table: "users".to_string(),
+                table_comment: None,
+                tablespace: None,
+                tenant_key: None,
+            };
+            models.insert("users".to_string(), table);
+            AppliedSchema {
+                djogi_version: String::new(),
+                enums: BTreeMap::new(),
+                format_version: super::super::schema::SNAPSHOT_FORMAT_VERSION.to_string(),
+                generated_at: String::new(),
+                indexes: Vec::new(),
+                models,
+                registered_apps: vec![String::new()],
+            }
+        }
+        let before = build_schema("LOWER(email)");
+        let after = build_schema("LOWER(TRIM(email))");
+        let delta = crate::migrate::diff::diff_schemas(
+            &before,
+            &after,
+            crate::migrate::BucketKey {
+                database: "main".to_string(),
+                app: String::new(),
+            },
+        );
+        let ops = lower_delta(&delta).expect("lower delta");
+        assert_eq!(ops.len(), 1, "expected a single AlterColumn statement");
+        let op = &ops[0];
+        assert!(
+            op.up.contains(
+                "ALTER TABLE \"users\" ALTER COLUMN \"email_lower\" SET EXPRESSION AS (LOWER(TRIM(email)));"
+            ),
+            "end-to-end emit must use the in-place PG 17+ form: {}",
+            op.up
+        );
+        assert!(
+            !op.up.contains("DROP COLUMN"),
+            "no destructive DROP COLUMN: {}",
+            op.up
+        );
+        assert!(
+            !op.up.contains("ADD COLUMN"),
+            "no destructive ADD COLUMN: {}",
             op.up
         );
     }

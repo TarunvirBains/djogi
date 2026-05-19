@@ -189,6 +189,7 @@ mod tests {
             sequence_within: None,
             sql_type: "BIGINT".to_string(),
             unique: false,
+            type_change_using: None,
         }
     }
 
@@ -213,6 +214,7 @@ mod tests {
             sequence_within: None,
             sql_type: "TEXT".to_string(),
             unique: false,
+            type_change_using: None,
         }
     }
 

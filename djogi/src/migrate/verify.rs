@@ -759,6 +759,13 @@ async fn read_all_columns(
             sequence_within: None,
             sql_type: render_type_for_compare(&sql_type),
             unique: false,
+            // Phase 8.5 Cluster 4 (djogi#220) — `type_change_using` is
+            // a transient projection-only slot (`#[serde(skip)]` on
+            // `ColumnSchema`); verify reads from the live Postgres
+            // catalog, which has no concept of an adopter's
+            // `#[field(type_change_using = "...")]` directive. The
+            // slot is always `None` for catalog-derived columns.
+            type_change_using: None,
         });
     }
     Ok(out)
@@ -1892,6 +1899,7 @@ mod tests {
             sequence_within: None,
             sql_type: sql_type.to_string(),
             unique: false,
+            type_change_using: None,
         }
     }
 

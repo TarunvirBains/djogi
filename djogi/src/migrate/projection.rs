@@ -897,6 +897,11 @@ fn project_fts_column(fts: &FtsDescriptor) -> ColumnSchema {
         sequence_within: None,
         sql_type: "TSVECTOR".to_string(),
         unique: false,
+        // Phase 8.5 Cluster 4 (djogi#220) — framework-synthesised FTS
+        // tsvector columns carry no adopter
+        // `#[field(type_change_using)]`; the attribute applies to
+        // adopter-declared fields only.
+        type_change_using: None,
     }
 }
 
@@ -1043,6 +1048,11 @@ fn outbox_column(name: &str, sql_type: &str, default_sql: Option<&str>) -> Colum
         sequence_within: None,
         sql_type: sql_type.to_string(),
         unique: false,
+        // Phase 8.5 Cluster 4 (djogi#220) — framework-synthesised
+        // outbox columns carry no adopter
+        // `#[field(type_change_using)]`; the attribute applies to
+        // user-declared fields only.
+        type_change_using: None,
     }
 }
 
@@ -2081,6 +2091,16 @@ fn project_column(
         sequence_within: f.sequence_within.map(|s| s.to_string()),
         sql_type,
         unique: f.unique,
+        // Phase 8.5 Cluster 4 djogi#220 — adopter
+        // `#[field(type_change_using = "<sql expr>")]` USING clause.
+        // Transient: `#[serde(skip)]` on `ColumnSchema::type_change_using`
+        // keeps the slot out of the on-disk snapshot, and `ColumnSchema`'s
+        // manual `PartialEq` excludes it from comparisons so leaving the
+        // attribute live in source after applying produces no phantom
+        // diff. The differ reads `after.type_change_using` when it
+        // emits `ColumnChange::ChangeType` and threads the value into
+        // the `using` slot the SQL emitter consumes.
+        type_change_using: f.type_change_using.map(|s| s.to_string()),
     }
 }
 
