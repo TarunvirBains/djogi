@@ -1487,7 +1487,7 @@ const NUMERIC_ARRAY_HELPER_MARKER: &str = "djogi.__djogi_numeric_array_is_rust_d
 /// continues to admit `NULL` elements per array semantics.
 pub(crate) const NUMERIC_ARRAY_HELPER_PRELUDE: &str = r#"CREATE SCHEMA IF NOT EXISTS djogi;
 
-CREATE OR REPLACE FUNCTION djogi.__djogi_numeric_array_is_rust_decimal_v1(values pg_catalog.numeric[])
+CREATE OR REPLACE FUNCTION djogi.__djogi_numeric_array_is_rust_decimal_v1(input_array pg_catalog.numeric[])
 RETURNS pg_catalog.boolean
 LANGUAGE sql
 IMMUTABLE STRICT PARALLEL SAFE
@@ -1505,7 +1505,7 @@ AS $$
         ),
         true
     )
-    FROM pg_catalog.unnest(values) AS value(value);
+    FROM pg_catalog.unnest(input_array) AS value(value);
 $$;
 "#;
 
@@ -1556,7 +1556,7 @@ const TSTZ_ARRAY_HELPER_MARKER: &str = "djogi.__djogi_tstz_array_is_finite_v1(";
 /// empty arrays pass the CHECK.
 pub(crate) const DATE_ARRAY_HELPER_PRELUDE: &str = r#"CREATE SCHEMA IF NOT EXISTS djogi;
 
-CREATE OR REPLACE FUNCTION djogi.__djogi_date_array_is_finite_v1(values pg_catalog.date[])
+CREATE OR REPLACE FUNCTION djogi.__djogi_date_array_is_finite_v1(input_array pg_catalog.date[])
 RETURNS pg_catalog.boolean
 LANGUAGE sql
 IMMUTABLE STRICT PARALLEL SAFE
@@ -1571,7 +1571,7 @@ AS $$
         ),
         true
     )
-    FROM pg_catalog.unnest(values) AS value(value);
+    FROM pg_catalog.unnest(input_array) AS value(value);
 $$;
 "#;
 
@@ -1588,7 +1588,7 @@ $$;
 /// shifting the effective upper bound.
 pub(crate) const TSTZ_ARRAY_HELPER_PRELUDE: &str = r#"CREATE SCHEMA IF NOT EXISTS djogi;
 
-CREATE OR REPLACE FUNCTION djogi.__djogi_tstz_array_is_finite_v1(values pg_catalog.timestamptz[])
+CREATE OR REPLACE FUNCTION djogi.__djogi_tstz_array_is_finite_v1(input_array pg_catalog.timestamptz[])
 RETURNS pg_catalog.boolean
 LANGUAGE sql
 IMMUTABLE STRICT PARALLEL SAFE
@@ -1603,7 +1603,7 @@ AS $$
         ),
         true
     )
-    FROM pg_catalog.unnest(values) AS value(value);
+    FROM pg_catalog.unnest(input_array) AS value(value);
 $$;
 "#;
 
@@ -4002,6 +4002,11 @@ mod tests {
             "numeric", "boolean", "bool_and", "scale", "abs", "power", "numeric", "unnest",
         ];
 
+        assert_helper_prelude_uses_input_array_argument(
+            NUMERIC_ARRAY_HELPER_PRELUDE,
+            "__djogi_numeric_array_is_rust_decimal_v1",
+            "numeric",
+        );
         let found_identifiers = pg_catalog_identifiers(NUMERIC_ARRAY_HELPER_PRELUDE);
         for id in &found_identifiers {
             assert!(
@@ -4155,6 +4160,11 @@ mod tests {
         // keyword and must NOT be schema-qualified.
         let expected_identifiers = ["date", "boolean", "isfinite", "bool_and", "unnest"];
 
+        assert_helper_prelude_uses_input_array_argument(
+            DATE_ARRAY_HELPER_PRELUDE,
+            "__djogi_date_array_is_finite_v1",
+            "date",
+        );
         let found_identifiers = pg_catalog_identifiers(DATE_ARRAY_HELPER_PRELUDE);
         for id in &found_identifiers {
             assert!(
@@ -4185,6 +4195,11 @@ mod tests {
     fn compose_tstz_array_helper_prelude_uses_only_valid_schema_qualified_identifiers() {
         let expected_identifiers = ["timestamptz", "boolean", "isfinite", "bool_and", "unnest"];
 
+        assert_helper_prelude_uses_input_array_argument(
+            TSTZ_ARRAY_HELPER_PRELUDE,
+            "__djogi_tstz_array_is_finite_v1",
+            "timestamptz",
+        );
         let found_identifiers = pg_catalog_identifiers(TSTZ_ARRAY_HELPER_PRELUDE);
         for id in &found_identifiers {
             assert!(
@@ -4362,6 +4377,33 @@ mod tests {
         tx.rollback().await.unwrap();
 
         connection.await.unwrap();
+    }
+
+    fn assert_helper_prelude_uses_input_array_argument(
+        prelude: &str,
+        function_name: &str,
+        pg_type: &str,
+    ) {
+        let expected_signature = format!(
+            "CREATE OR REPLACE FUNCTION djogi.{function_name}(input_array pg_catalog.{pg_type}[])"
+        );
+        assert!(
+            prelude.contains(&expected_signature),
+            "Helper prelude must use a non-keyword input_array argument in its signature: {prelude}"
+        );
+        assert!(
+            prelude.contains("FROM pg_catalog.unnest(input_array) AS value(value);"),
+            "Helper body must reference the renamed input_array argument: {prelude}"
+        );
+        let rejected_signature = format!("{function_name}(values pg_catalog.{pg_type}[])");
+        assert!(
+            !prelude.contains(&rejected_signature),
+            "Helper prelude must not use PostgreSQL keyword `values` as an argument: {prelude}"
+        );
+        assert!(
+            !prelude.contains("pg_catalog.unnest(values)"),
+            "Helper body must not reference the rejected `values` argument: {prelude}"
+        );
     }
 
     fn pg_catalog_identifiers(sql: &str) -> Vec<String> {
