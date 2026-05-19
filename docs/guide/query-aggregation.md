@@ -379,9 +379,8 @@ that combination).
 ordered-set aggregates with mandatory `WITHIN GROUP (ORDER BY col)`.
 The receiver column populates the WITHIN GROUP target at default ASC;
 override via `.within_group_order_by(other.desc())` when a different
-single order key is needed. The replacement target must be the same
-type as (or Postgres-comparable to) the receiver column so the
-aggregate's return-type contract is preserved.
+single order key is needed. The replacement target must be the same SQL/Rust decode type as the
+receiver column so the aggregate's return-type contract is preserved.
 
 ```rust
 let p95_latency: f64 = Request::objects()
@@ -450,9 +449,9 @@ Aggregate modifiers are type-state gated by aggregate family:
   `.over(|w| ...)`.
 - Ordered-set and hypothetical-set aggregates expose `.filter(cond)` and
   `.within_group_order_by(other.asc())` — where `other` must be the
-  same type as (or Postgres-comparable to) the receiver column for
-  ordered-set aggregates, and comparable to the supplied argument value
-  for hypothetical-set aggregates. They deliberately do not expose
+  same SQL/Rust decode type as the receiver column for ordered-set
+  aggregates, and comparable to the supplied argument value for
+  hypothetical-set aggregates. They deliberately do not expose
   `.distinct()`, `.order_by(...)`, or `.over(...)`.
 - Metadata aggregates such as `grouping(...)` expose no aggregate modifiers.
 

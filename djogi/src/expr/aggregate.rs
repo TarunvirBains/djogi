@@ -3133,8 +3133,8 @@ mod tests {
     fn within_group_order_by_overrides_default_target() {
         // .within_group_order_by(other.desc()) replaces the default ASC target
         // the typed builder set on construction.  The replacement column must
-        // be the same type as the receiver (both f64 here) so the
-        // aggregate's return-type contract is preserved — crossing types
+        // be the same SQL/Rust decode type as the receiver (both f64 here) so
+        // the aggregate's return-type contract is preserved — crossing types
         // (e.g. f64 receiver ordered by i64) would produce a runtime decode
         // failure and is explicitly disallowed by the public contract.
         let f: FieldRef<Txn, f64> = FieldRef::new("score");
