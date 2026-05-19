@@ -422,6 +422,27 @@ pub fn validate_unique_names(decls: &[ExclusionDecl]) -> syn::Result<()> {
 /// Lower one [`ExclusionDecl`] into an `ExclusionConstraintSpec`
 /// struct-literal token stream. The descriptor emitter wraps the per-decl
 /// streams in a `&[ ... ]` slice literal.
+///
+/// # Extension dependency auto-derivation (djogi#148)
+///
+/// The emitter sets the spec's `extension_dependency` slot via
+/// [`derive_extension_dependency`]:
+///
+/// * `using = "gist"` exclusions whose element list contains at least
+///   one btree comparison operator (`=`, `<>`, `<`, `<=`, `>`, `>=`)
+///   resolve to `Some("btree_gist")`. The canonical scheduling shape
+///   `EXCLUDE USING gist (room_id WITH =, period WITH &&)` matches —
+///   the `=` element needs the btree_gist operator class for `=` on
+///   btree-only types inside a GiST index.
+/// * Every other shape resolves to `None`. Pure-range exclusions
+///   (`elements = ["period WITH &&"]`) keep `None` because stock GiST
+///   handles range overlap natively. `using = "btree"` exclusions also
+///   resolve to `None` — btree EXCLUDEs are uncommon but never need
+///   btree_gist (the extension only matters for GiST indexes).
+///
+/// Adopters never see this slot in the macro grammar; it is purely
+/// machinery for the Phase 0 bootstrap composer to aggregate the
+/// per-database extension install list.
 pub fn emit_exclusion_spec_tokens(decl: &ExclusionDecl) -> TokenStream {
     let name = decl.name.as_str();
     let using = decl.using.as_str();
@@ -449,6 +470,11 @@ pub fn emit_exclusion_spec_tokens(decl: &ExclusionDecl) -> TokenStream {
     let deferrable = decl.deferrable;
     let initially_deferred = decl.initially_deferred;
 
+    let extension_tokens = match derive_extension_dependency(decl) {
+        Some(ext) => quote! { ::std::option::Option::Some(#ext) },
+        None => quote! { ::std::option::Option::None },
+    };
+
     quote! {
         ::djogi::descriptor::ExclusionConstraintSpec {
             name: #name,
@@ -457,8 +483,64 @@ pub fn emit_exclusion_spec_tokens(decl: &ExclusionDecl) -> TokenStream {
             where_clause: #where_tokens,
             deferrable: #deferrable,
             initially_deferred: #initially_deferred,
+            extension_dependency: #extension_tokens,
         }
     }
+}
+
+/// Map an [`ExclusionDecl`] to the Postgres extension name that must be
+/// installed before the constraint can be created.
+///
+/// Returns `Some("btree_gist")` when `using = "gist"` AND the element
+/// list contains at least one btree comparison operator
+/// (`=`, `<>`, `<`, `<=`, `>`, `>=`). Returns `None` otherwise.
+///
+/// # Why the heuristic
+///
+/// `btree_gist` provides GiST operator class support for btree-only
+/// types (`int2`, `int4`, `int8`, `text`, `date`, ...) — without it, a
+/// GiST index cannot accept `=` / `<>` / `<` / `<=` / `>` / `>=` on
+/// those types. Every real-world scheduling / booking / reservation
+/// exclusion combines `WITH =` on a category column (e.g. `room_id`,
+/// `tenant_id`) with `WITH &&` on a range column (e.g. `period`,
+/// `daterange`) — that is the canonical pattern this rule targets.
+///
+/// Pure-range exclusions (`elements = ["period WITH &&"]`) and
+/// geometric exclusions on PostGIS columns work with stock GiST and
+/// keep `None`. `using = "btree"` exclusions also keep `None` —
+/// btree_gist only adds GiST operator classes; a btree-method EXCLUDE
+/// works without any extension.
+///
+/// # No regex
+///
+/// Per the Djogi-wide no-regex policy, the match is a direct slice
+/// comparison against a sorted-const operator allowlist.
+fn derive_extension_dependency(decl: &ExclusionDecl) -> Option<&'static str> {
+    if decl.using.as_str() != "gist" {
+        return None;
+    }
+    if decl
+        .elements
+        .iter()
+        .any(|elem| is_btree_comparison_operator(elem.with_operator.as_str()))
+    {
+        return Some("btree_gist");
+    }
+    None
+}
+
+/// `true` for the btree-comparison operators that require `btree_gist`
+/// when used as the `WITH` operator inside a GiST EXCLUDE. Sorted const
+/// slice consulted via `binary_search` per the no-regex policy.
+///
+/// The list matches Postgres's `btree_gist` operator class coverage:
+/// the six standard btree comparison operators. Other GiST operators
+/// (range `&&`, geometric `~`, `<<`, `>>`, `-|-`, etc.) ship with stock
+/// GiST and do not require the extension.
+fn is_btree_comparison_operator(op: &str) -> bool {
+    /// Lexically sorted so `binary_search` is correct.
+    const BTREE_COMPARISON_OPERATORS: &[&str] = &["<", "<=", "<>", "=", ">", ">="];
+    BTREE_COMPARISON_OPERATORS.binary_search(&op).is_ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -639,5 +721,118 @@ mod tests {
         })
         .unwrap_err();
         assert!(err.to_string().contains("non-empty"));
+    }
+
+    // ── djogi#148 — btree_gist extension-dependency derivation ──────────
+
+    #[test]
+    fn derive_btree_gist_for_gist_with_equality_operator() {
+        let decl = parse_one(quote! {
+            name = "no_overlap",
+            using = "gist",
+            elements = ["room_id WITH =", "period WITH &&"],
+        })
+        .unwrap();
+        assert_eq!(derive_extension_dependency(&decl), Some("btree_gist"));
+    }
+
+    #[test]
+    fn derive_btree_gist_for_gist_with_comparison_operator() {
+        for op in ["<", "<=", "<>", "=", ">", ">="] {
+            let element = format!("score WITH {op}");
+            let decl = parse_one(quote! {
+                name = "score_excl",
+                using = "gist",
+                elements = [#element],
+            })
+            .unwrap();
+            assert_eq!(
+                derive_extension_dependency(&decl),
+                Some("btree_gist"),
+                "operator `{op}` must trigger btree_gist auto-install",
+            );
+        }
+    }
+
+    #[test]
+    fn derive_no_extension_for_pure_range_overlap() {
+        let decl = parse_one(quote! {
+            name = "period_overlap",
+            using = "gist",
+            elements = ["period WITH &&"],
+        })
+        .unwrap();
+        assert_eq!(
+            derive_extension_dependency(&decl),
+            None,
+            "pure-range `&&` exclusion works with stock GiST",
+        );
+    }
+
+    #[test]
+    fn derive_no_extension_for_btree_method() {
+        // `using = "btree"` exclusions never need btree_gist — btree_gist
+        // only adds GiST operator classes, and a btree-method EXCLUDE
+        // works against stock btree.
+        let decl = parse_one(quote! {
+            name = "btree_eq",
+            using = "btree",
+            elements = ["tenant_id WITH =", "external_id WITH ="],
+        })
+        .unwrap();
+        assert_eq!(derive_extension_dependency(&decl), None);
+    }
+
+    #[test]
+    fn derive_no_extension_for_non_btree_gist_operator() {
+        // PostGIS / range operators that are not btree comparisons.
+        for op in ["&&", "<<", ">>", "&<", "&>", "-|-", "@>", "<@", "~"] {
+            let element = format!("col WITH {op}");
+            let decl = parse_one(quote! {
+                name = "x",
+                using = "gist",
+                elements = [#element],
+            })
+            .unwrap();
+            assert_eq!(
+                derive_extension_dependency(&decl),
+                None,
+                "operator `{op}` is not a btree comparison and must not trigger btree_gist",
+            );
+        }
+    }
+
+    #[test]
+    fn derive_btree_gist_when_at_least_one_btree_operator_present() {
+        // Mixed list — even one `=` element is enough to require btree_gist.
+        let decl = parse_one(quote! {
+            name = "no_overlap_three",
+            using = "gist",
+            elements = [
+                "room_id WITH =",
+                "period WITH &&",
+                "extras WITH @>",
+            ],
+        })
+        .unwrap();
+        assert_eq!(derive_extension_dependency(&decl), Some("btree_gist"));
+    }
+
+    #[test]
+    fn is_btree_comparison_operator_known_set() {
+        for op in ["<", "<=", "<>", "=", ">", ">="] {
+            assert!(
+                is_btree_comparison_operator(op),
+                "{op} must classify as btree comparison",
+            );
+        }
+        for op in [
+            "&&", "<<", ">>", "&<", "&>", "-|-", "@>", "<@", "~", "!=", "==",
+        ] {
+            assert!(
+                !is_btree_comparison_operator(op),
+                "{op} must NOT classify as btree comparison",
+            );
+        }
     }
 }

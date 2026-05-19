@@ -3909,6 +3909,11 @@ mod tests {
                     with_operator: "&&".to_string(),
                 },
             ],
+            // SQL-emission tests stay focused on DDL text — the
+            // bootstrap-side btree_gist install lives in `bootstrap.rs`
+            // tests. Leave `None` here so the SQL emitter never reads
+            // this slot (it does not).
+            extension_dependency: None,
             initially_deferred: false,
             name: "no_overlap".to_string(),
             using: "gist".to_string(),

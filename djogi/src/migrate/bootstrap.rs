@@ -15,10 +15,22 @@
 //!    migration runs.
 //!
 //! 2. **Postgres extensions declared by descriptors** — `postgis`,
-//!    `pgvector`, `pg_trgm`, etc. The differ tracks
-//!    `IndexSchema::extension_dependency: Option<String>`; before a
-//!    spatial / vector / trigram index can be created the matching
-//!    extension must be installed.
+//!    `pgvector`, `pg_trgm`, `btree_gist`, etc. The differ tracks two
+//!    descriptor slots:
+//!      - `IndexSchema::extension_dependency: Option<String>` — set by
+//!        the macro / live-migrate patterns for indexes that require a
+//!        specific extension (typically `postgis` / `pg_trgm`).
+//!      - `ExclusionConstraintSchema::extension_dependency: Option<String>`
+//!        (djogi#148) — auto-derived for `using = "gist"` EXCLUDEs that
+//!        mix btree comparison operators (`=`, `<>`, ...) with range or
+//!        geometric operators (`&&`, `<<`, ...). Resolves to
+//!        `Some("btree_gist")` so the canonical scheduling-style EXCLUDE
+//!        `(room_id WITH =, period WITH &&)` auto-installs `btree_gist`
+//!        without adopters having to write the `CREATE EXTENSION` SQL.
+//!
+//!    Before any of these surfaces (spatial / vector / trigram index,
+//!    btree_gist-backed EXCLUDE) can be created the matching extension
+//!    must be installed.
 //!
 //! Pre-Track-0, only the test harness `setup_test_db_with_extensions`
 //! installed these — the CLI / production / example paths hit a virgin
@@ -475,12 +487,23 @@ where
 // ── Descriptor inspection helper ──────────────────────────────────────────
 
 /// Collect the distinct, sorted set of `extension_dependency` values
-/// across every index in every model in the per-bucket `AppliedSchema`
-/// map (all databases combined).
+/// across every index AND every exclusion constraint in every model in
+/// the per-bucket `AppliedSchema` map (all databases combined).
 ///
 /// Production compose uses [`extensions_for_database`] to aggregate
 /// per-database.  This cross-database variant exists for unit tests
 /// that verify deduplication semantics across multiple buckets.
+///
+/// **Source slots walked.** Two slots feed the result:
+///
+/// 1. `AppliedSchema::indexes[i].extension_dependency` — set by the
+///    macro / live-migrate patterns when an index requires a specific
+///    extension (`postgis` for GiST-on-geography, `pg_trgm` for trigram
+///    indexes, etc.).
+/// 2. `AppliedSchema::models[*].exclusion_constraints[i].extension_dependency`
+///    — set by the macro auto-derivation under djogi#148 when a
+///    `using = "gist"` EXCLUDE mixes btree comparison operators with
+///    range / geometric operators. Resolves to `Some("btree_gist")`.
 #[cfg(test)]
 fn extension_dependencies_from_models(
     models: &BTreeMap<BucketKey, AppliedSchema>,
@@ -490,6 +513,13 @@ fn extension_dependencies_from_models(
         for index in &schema.indexes {
             if let Some(dep) = &index.extension_dependency {
                 deps.insert(dep.clone());
+            }
+        }
+        for table in schema.models.values() {
+            for excl in &table.exclusion_constraints {
+                if let Some(dep) = &excl.extension_dependency {
+                    deps.insert(dep.clone());
+                }
             }
         }
     }
@@ -766,6 +796,16 @@ fn compose_phase_zero_down_text() -> String {
 /// one install in `main`'s Phase 0.  PostGIS declared in
 /// `crud_log.audit` lives in a separate Phase 0 for the `crud_log`
 /// database.
+///
+/// **Source slots walked.** Two slots feed the result:
+///
+/// 1. `AppliedSchema::indexes[i].extension_dependency` — set when an
+///    index requires a specific extension (`postgis` for GiST-on-
+///    geography, `pg_trgm` for trigram indexes, etc.).
+/// 2. `AppliedSchema::models[*].exclusion_constraints[i].extension_dependency`
+///    — set by the macro auto-derivation under djogi#148 when a
+///    `using = "gist"` EXCLUDE mixes btree comparison operators with
+///    range / geometric operators. Resolves to `Some("btree_gist")`.
 fn extensions_for_database(
     models: &BTreeMap<BucketKey, AppliedSchema>,
     database: &str,
@@ -778,6 +818,18 @@ fn extensions_for_database(
         for index in &schema.indexes {
             if let Some(dep) = &index.extension_dependency {
                 deps.insert(dep.clone());
+            }
+        }
+        // djogi#148 — exclusion constraints can carry their own
+        // extension dependency (typically `btree_gist`) auto-derived by
+        // the macro. Aggregate alongside index dependencies so the
+        // Phase 0 bootstrap migration installs every required extension
+        // in one place.
+        for table in schema.models.values() {
+            for excl in &table.exclusion_constraints {
+                if let Some(dep) = &excl.extension_dependency {
+                    deps.insert(dep.clone());
+                }
             }
         }
     }
@@ -1053,6 +1105,195 @@ mod tests {
         assert_eq!(deps, expected);
     }
 
+    /// Build an `AppliedSchema` carrying one table with one
+    /// `ExclusionConstraintSchema` whose `extension_dependency` is the
+    /// supplied value. Used by the djogi#148 aggregation tests below.
+    #[cfg(test)]
+    fn schema_with_exclusion(
+        table: &str,
+        constraint_name: &str,
+        ext: Option<&str>,
+    ) -> AppliedSchema {
+        use crate::migrate::schema::{
+            ExclusionConstraintSchema, ExclusionElementSchema, PkKindSchema, PrimaryKeySchema,
+            TableSchema,
+        };
+
+        let mut models = BTreeMap::new();
+        models.insert(
+            table.to_string(),
+            TableSchema {
+                app: None,
+                columns: Vec::new(),
+                exclusion_constraints: vec![ExclusionConstraintSchema {
+                    deferrable: false,
+                    elements: vec![ExclusionElementSchema {
+                        expr: "x".to_string(),
+                        with_operator: "=".to_string(),
+                    }],
+                    extension_dependency: ext.map(|s| s.to_string()),
+                    initially_deferred: false,
+                    name: constraint_name.to_string(),
+                    using: "gist".to_string(),
+                    where_clause: None,
+                }],
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["id".to_string()],
+                    kind: PkKindSchema::HeerId,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                storage_params: None,
+                table: table.to_string(),
+                table_comment: None,
+                tablespace: None,
+                tenant_key: None,
+            },
+        );
+
+        AppliedSchema {
+            djogi_version: "0.1.0".to_string(),
+            enums: BTreeMap::new(),
+            format_version: super::super::schema::SNAPSHOT_FORMAT_VERSION.to_string(),
+            generated_at: "2026-05-18T00:00:00Z".to_string(),
+            indexes: Vec::new(),
+            models,
+            registered_apps: vec!["".to_string()],
+        }
+    }
+
+    /// djogi#148 — exclusion-constraint `extension_dependency` slots feed
+    /// the cross-bucket aggregator alongside `IndexSchema` slots. Both
+    /// `btree_gist` (from EXCLUDE) and `postgis` (from an index) survive
+    /// the merge in deduplicated form.
+    #[test]
+    fn extension_dependencies_from_models_includes_exclusion_constraints() {
+        use crate::migrate::schema::{
+            IndexKindSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema,
+        };
+
+        let mut models = BTreeMap::new();
+        models.insert(
+            BucketKey {
+                database: "main".to_string(),
+                app: "billing".to_string(),
+            },
+            schema_with_exclusion("invoices", "no_overlap_inv", Some("btree_gist")),
+        );
+
+        // Different bucket, same database — adds an INDEX-derived
+        // PostGIS dependency. Verify both sources merge into one set.
+        let mut shipping_schema = AppliedSchema {
+            djogi_version: "0.1.0".to_string(),
+            enums: BTreeMap::new(),
+            format_version: super::super::schema::SNAPSHOT_FORMAT_VERSION.to_string(),
+            generated_at: "2026-05-18T00:00:00Z".to_string(),
+            indexes: vec![IndexSchema {
+                extension_dependency: Some("postgis".to_string()),
+                include: Vec::new(),
+                index_type: IndexTypeSchema::Gist,
+                kind: IndexKindSchema::NonUnique,
+                name: "ship_geom_idx".to_string(),
+                nulls_not_distinct: false,
+                predicate: None,
+                requires_out_of_transaction: false,
+                table: "shipments".to_string(),
+                target: IndexTargetSchema::Columns(Vec::new()),
+            }],
+            models: BTreeMap::new(),
+            registered_apps: vec!["shipping".to_string()],
+        };
+        // Add a duplicate btree_gist EXCLUDE in a different bucket to
+        // exercise dedup across buckets.
+        shipping_schema.models.extend(
+            schema_with_exclusion("appointments", "no_overlap_appt", Some("btree_gist")).models,
+        );
+        models.insert(
+            BucketKey {
+                database: "main".to_string(),
+                app: "shipping".to_string(),
+            },
+            shipping_schema,
+        );
+
+        let deps = extension_dependencies_from_models(&models);
+        let expected: BTreeSet<String> = ["btree_gist", "postgis"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            deps, expected,
+            "btree_gist (from EXCLUDE) and postgis (from index) must merge",
+        );
+    }
+
+    /// djogi#148 — `None` extension dependency on an EXCLUDE is treated
+    /// as a no-op signal (matching the IndexSchema behaviour). Pure-
+    /// range exclusions skip the install entirely.
+    #[test]
+    fn extension_dependencies_from_models_skips_none_exclusion_deps() {
+        let mut models = BTreeMap::new();
+        models.insert(
+            BucketKey {
+                database: "main".to_string(),
+                app: "billing".to_string(),
+            },
+            schema_with_exclusion("period_only", "no_overlap_period", None),
+        );
+
+        let deps = extension_dependencies_from_models(&models);
+        assert!(
+            deps.is_empty(),
+            "EXCLUDE with extension_dependency=None must not request any install: {deps:?}",
+        );
+    }
+
+    /// djogi#148 — `extensions_for_database` (production helper) walks
+    /// exclusion constraints in the named database AND skips buckets in
+    /// other databases. Mirrors the per-database isolation tested for
+    /// index-driven dependencies above.
+    #[test]
+    fn extensions_for_database_includes_exclusion_constraints_per_database() {
+        let mut models = BTreeMap::new();
+        models.insert(
+            BucketKey {
+                database: "main".to_string(),
+                app: "billing".to_string(),
+            },
+            schema_with_exclusion("bookings", "no_overlap", Some("btree_gist")),
+        );
+        // crud_log carries an EXCLUDE that needs btree_gist for its
+        // OWN database — it must NOT bleed into `main`.
+        models.insert(
+            BucketKey {
+                database: "crud_log".to_string(),
+                app: "audit".to_string(),
+            },
+            schema_with_exclusion("audit_periods", "no_audit_overlap", Some("btree_gist")),
+        );
+
+        let main_deps = extensions_for_database(&models, "main");
+        assert_eq!(
+            main_deps,
+            ["btree_gist"].iter().map(|s| s.to_string()).collect(),
+        );
+        let crud_deps = extensions_for_database(&models, "crud_log");
+        assert_eq!(
+            crud_deps,
+            ["btree_gist"].iter().map(|s| s.to_string()).collect(),
+        );
+        let event_deps = extensions_for_database(&models, "event_log");
+        assert!(
+            event_deps.is_empty(),
+            "unreferenced database must have no extension installs: {event_deps:?}",
+        );
+    }
+
     // ── ensure_phase_zero_emitted (auto-emit, sub-step 0.3) tests ─────────
 
     use crate::migrate::guard::WorkspaceGuard;
@@ -1249,6 +1490,48 @@ mod tests {
         assert!(
             !crud_up.contains("\"postgis\""),
             "cross-database extension bled into crud_log"
+        );
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// djogi#148 — End-to-end: a model that declares
+    /// `#[model(exclusion(using = "gist", elements = ["room_id WITH =",
+    /// "period WITH &&"]))]` projects into a schema whose
+    /// `ExclusionConstraintSchema::extension_dependency` is
+    /// `Some("btree_gist")`. The Phase 0 emission must include
+    /// `CREATE EXTENSION IF NOT EXISTS "btree_gist"`. Without this
+    /// wiring adopters need to hand-write the install in a separate
+    /// migration before their booking-table create can apply.
+    #[test]
+    fn ensure_phase_zero_aggregates_btree_gist_from_exclusion_constraints() {
+        let (work, guard) = temp_workspace_with_guard("auto_extensions_excl");
+        let mut models = BTreeMap::new();
+        models.insert(
+            BucketKey {
+                database: "main".to_string(),
+                app: "scheduling".to_string(),
+            },
+            schema_with_exclusion("bookings", "bookings_no_overlap", Some("btree_gist")),
+        );
+        let apps = vec![AppLifecycle {
+            label: "scheduling".to_string(),
+            database: "main".to_string(),
+            renamed_from: None,
+            tombstone: false,
+        }];
+        let emitted =
+            ensure_phase_zero_emitted(&work, &models, &apps, fixed_now(), &guard).expect("emit");
+        assert_eq!(emitted.len(), 1, "exactly one Phase 0 (main)");
+        let main_emit = emitted.iter().find(|e| e.database == "main").unwrap();
+        assert_eq!(
+            main_emit.extensions,
+            ["btree_gist"].iter().map(|s| s.to_string()).collect(),
+            "EXCLUDE-derived btree_gist must surface in Phase 0 extensions",
+        );
+        let up = fs::read_to_string(&main_emit.up_sql_path).unwrap();
+        assert!(
+            up.contains("CREATE EXTENSION IF NOT EXISTS \"btree_gist\""),
+            "Phase 0 up SQL must auto-install btree_gist: {up}",
         );
         let _ = std::fs::remove_dir_all(&work);
     }

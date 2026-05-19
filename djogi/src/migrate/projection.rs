@@ -1051,6 +1051,11 @@ fn project_exclusion_constraint(spec: &ExclusionConstraintSpec) -> ExclusionCons
         where_clause: spec.where_clause.map(|s| s.to_string()),
         deferrable: spec.deferrable,
         initially_deferred: spec.initially_deferred,
+        // djogi#148 — carry the macro-derived `Some("btree_gist")` /
+        // adopter-declared extension name into the owned schema so the
+        // Phase 0 bootstrap composer can aggregate the install list
+        // without re-walking descriptors.
+        extension_dependency: spec.extension_dependency.map(|s| s.to_string()),
     }
 }
 

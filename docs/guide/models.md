@@ -328,6 +328,81 @@ paired with a manual `postgres_types::ToSql` / `FromSql` implementation.
 
 Tracked under the [#170](https://github.com/TarunvirBains/djogi/issues/170) umbrella.
 
+### Exclusion constraints (`#[model(exclusion(...))]`)
+
+Postgres `EXCLUDE` constraints prevent multiple rows from satisfying the
+same comparison relationship — the structural lock behind no-overlap /
+no-conflict invariants in scheduling, booking, and reservation systems.
+Declare them on the model:
+
+```rust
+use djogi::prelude::*;
+
+#[model(
+    table = "bookings",
+    exclusion(
+        name = "bookings_no_overlap",
+        using = "gist",
+        elements = ["room_id WITH =", "period WITH &&"],
+    ),
+)]
+#[derive(Debug, Default, Clone)]
+pub struct Booking {
+    pub room_id: i64,
+    pub period: Range<DateTime>,
+}
+```
+
+`period WITH &&` reads as "rows whose `period` ranges overlap". Combined
+with `room_id WITH =`, the constraint rejects any two rows that share a
+room AND have overlapping time ranges — DB-enforced, race-free, no
+application-layer lock required.
+
+**Knobs available inside `exclusion(...)`:**
+
+| Knob | Required | Meaning |
+|---|---|---|
+| `name` | yes | Constraint name. Drives diff identity and shows up in `pg_constraint`. ASCII identifier, ≤ 63 bytes. |
+| `using` | yes | Index method — typically `"gist"`. `"btree"` works for `=`-only EXCLUDEs. |
+| `elements` | yes | One or more `"<expr> WITH <op>"` strings. Each element splits on the literal `" WITH "` separator. |
+| `where` | no | Partial-constraint predicate (raw SQL, emitted verbatim). |
+| `deferrable` | no | `true` emits `DEFERRABLE`. |
+| `initially_deferred` | no | `true` emits `INITIALLY DEFERRED`. Requires `deferrable = true`. |
+
+Multiple `exclusion(...)` entries are allowed on one model; each
+declares a separate constraint:
+
+```rust
+#[model(
+    table = "rooms",
+    exclusion(name = "rooms_no_double_booking", using = "gist", elements = [...]),
+    exclusion(name = "rooms_unique_per_tenant", using = "btree",
+              elements = ["tenant_id WITH =", "external_id WITH ="]),
+)]
+```
+
+**`btree_gist` auto-install (djogi#148).** A `using = "gist"` exclusion
+with at least one `=` / `<>` / `<` / `<=` / `>` / `>=` operator needs
+the `btree_gist` Postgres extension — those operators are not part of
+stock GiST's operator class set. Djogi auto-derives the dependency at
+macro-expansion time and emits `CREATE EXTENSION IF NOT EXISTS
+"btree_gist"` in the per-database Phase 0 bootstrap migration. Adopters
+do not write the `CREATE EXTENSION` SQL by hand. Pure-range exclusions
+(`elements = ["period WITH &&"]` only) work with stock GiST and skip
+the install.
+
+**Live-migration classification.** Adding an EXCLUDE to a populated
+table classifies as `OfflineOnly` — Postgres 18 has no `NOT VALID` for
+EXCLUDE constraints, so two-phase online staging is structurally
+impossible. The empty-table case (CREATE TABLE inline, or an existing
+table with zero rows) flows through the regular `OnlineSafe` path.
+
+**Range columns.** `Range<T>` typed range fields land via the G0
+substrate (`Range<i32>` → `int4range`, `Range<i64>` → `int8range`,
+`Range<rust_decimal::Decimal>` → `numrange`, `Range<DateTime>` →
+`tstzrange`, `Range<Date>` → `daterange`). See `decisions.md` for the
+substrate rationale.
+
 ### DDL metadata attributes
 
 The following Postgres DDL metadata features have typed `#[model]` or
