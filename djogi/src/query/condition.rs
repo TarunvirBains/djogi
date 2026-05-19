@@ -620,6 +620,21 @@ pub enum FilterValue {
     Decimal(rust_decimal::Decimal),
     /// Postgres `INTERVAL` column values (djogi#212).
     Interval(crate::Interval),
+    /// Postgres `INET` column values (djogi#213, `network` feature).
+    /// Carries `std::net::IpAddr`; the wire codec is the always-on
+    /// `postgres-types` native impl which writes /32 or /128 netmasks
+    /// for the host-address case.
+    #[cfg(feature = "network")]
+    Inet(std::net::IpAddr),
+    /// Postgres `CIDR` column values (djogi#213, `network` feature).
+    /// Carries `djogi::CidrAddr { addr, prefix }` with construction-time
+    /// host-bit-zero validation.
+    #[cfg(feature = "network")]
+    Cidr(crate::CidrAddr),
+    /// Postgres `MACADDR` column values (djogi#213, `network` feature).
+    /// Carries `djogi::MacAddr([u8; 6])`.
+    #[cfg(feature = "network")]
+    Macaddr(crate::MacAddr),
 
     // ── Array variants (Phase 5 Task 5) ──────────────────────────────────
     //

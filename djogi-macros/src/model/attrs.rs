@@ -3059,6 +3059,30 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         // (the canonical explicit spelling), and `djogi::types::Interval`
         // (the internal path) all lower to the typed descriptor variant.
         "Interval" | "djogi::Interval" | "djogi::types::Interval" => Some("INTERVAL"),
+        // djogi#213 — Postgres network family (`network` feature on the
+        // runtime crate). The macro recognises type names unconditionally
+        // (matching the spatial family pattern); if the user has the
+        // feature off, the compile error surfaces at the model struct as
+        // "unresolved type `MacAddr`" rather than from the macro.
+        //
+        // INET routes through `std::net::IpAddr` — the postgres-types
+        // crate ships the native ToSql/FromSql for INET already.
+        // The path forms accepted here mirror the bare / std-qualified /
+        // absolute spellings adopters might reach for.
+        "IpAddr"
+        | "std::net::IpAddr"
+        | "::std::net::IpAddr"
+        | "core::net::IpAddr"
+        | "::core::net::IpAddr" => Some("INET"),
+        // CIDR routes through `djogi::CidrAddr` (typed newtype with a
+        // hand-rolled codec — no third-party crate dependency). Two
+        // distinct Rust types drive INET vs CIDR; the macro does not
+        // need a `#[field(ip_type = "...")]` attribute.
+        "CidrAddr" | "djogi::CidrAddr" | "djogi::types::CidrAddr" => Some("CIDR"),
+        // MACADDR routes through `djogi::MacAddr` (typed newtype over
+        // `[u8; 6]` with a hand-rolled codec — no `eui48` / `mac_address`
+        // dependency).
+        "MacAddr" | "djogi::MacAddr" | "djogi::types::MacAddr" => Some("MACADDR"),
         // Phase 7-Zero-2 T4 — built-in PK types (HeerId / RanjId family) are
         // usable as ambient fields outside the framework-injected `id` slot.
         // Map each name (bare, `djogi::types::*`, and `djogi::*` forms) to the
@@ -3754,6 +3778,46 @@ mod tests {
         assert_eq!(rust_type_to_sql(&djogi), Some("INTERVAL"));
         assert_eq!(rust_type_to_sql(&djogi_types), Some("INTERVAL"));
         assert_eq!(rust_type_to_sql(&absolute), Some("INTERVAL"));
+    }
+
+    // ── Phase 8.5 Cluster 4 (djogi#213) — network family ─────────────────
+
+    #[test]
+    fn ipaddr_alias_lowers_to_inet() {
+        let bare: syn::Type = parse_quote!(IpAddr);
+        let std_net: syn::Type = parse_quote!(std::net::IpAddr);
+        let absolute_std: syn::Type = parse_quote!(::std::net::IpAddr);
+        let core_net: syn::Type = parse_quote!(core::net::IpAddr);
+        let absolute_core: syn::Type = parse_quote!(::core::net::IpAddr);
+        assert_eq!(rust_type_to_sql(&bare), Some("INET"));
+        assert_eq!(rust_type_to_sql(&std_net), Some("INET"));
+        assert_eq!(rust_type_to_sql(&absolute_std), Some("INET"));
+        assert_eq!(rust_type_to_sql(&core_net), Some("INET"));
+        assert_eq!(rust_type_to_sql(&absolute_core), Some("INET"));
+    }
+
+    #[test]
+    fn djogi_cidr_addr_alias_lowers_to_cidr() {
+        let bare: syn::Type = parse_quote!(CidrAddr);
+        let djogi: syn::Type = parse_quote!(djogi::CidrAddr);
+        let djogi_types: syn::Type = parse_quote!(djogi::types::CidrAddr);
+        let absolute: syn::Type = parse_quote!(::djogi::types::CidrAddr);
+        assert_eq!(rust_type_to_sql(&bare), Some("CIDR"));
+        assert_eq!(rust_type_to_sql(&djogi), Some("CIDR"));
+        assert_eq!(rust_type_to_sql(&djogi_types), Some("CIDR"));
+        assert_eq!(rust_type_to_sql(&absolute), Some("CIDR"));
+    }
+
+    #[test]
+    fn djogi_mac_addr_alias_lowers_to_macaddr() {
+        let bare: syn::Type = parse_quote!(MacAddr);
+        let djogi: syn::Type = parse_quote!(djogi::MacAddr);
+        let djogi_types: syn::Type = parse_quote!(djogi::types::MacAddr);
+        let absolute: syn::Type = parse_quote!(::djogi::types::MacAddr);
+        assert_eq!(rust_type_to_sql(&bare), Some("MACADDR"));
+        assert_eq!(rust_type_to_sql(&djogi), Some("MACADDR"));
+        assert_eq!(rust_type_to_sql(&djogi_types), Some("MACADDR"));
+        assert_eq!(rust_type_to_sql(&absolute), Some("MACADDR"));
     }
 
     #[test]

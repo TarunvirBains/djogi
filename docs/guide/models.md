@@ -247,6 +247,9 @@ Phase 1 maps these Rust types to SQL column types:
 | `RanjId` | `UUID` | via heeranjid `postgres-types` `ToSql`/`FromSql` |
 | `GeoPoint` | `GEOGRAPHY(Point, 4326)` | feature `spatial`; see [spatial guide](./spatial.md) |
 | `djogi::Interval` | `INTERVAL` | 3-component (months/days/microseconds); 16-byte hand-rolled wire codec; see [Postgres typed surface](#postgres-typed-surface) below |
+| `std::net::IpAddr` | `INET` | feature `network`; host-address case (postgres-types native `ToSql`/`FromSql`); see [Postgres typed surface](#postgres-typed-surface) below |
+| `djogi::CidrAddr` | `CIDR` | feature `network`; `(IpAddr, u8 prefix)` with host-bit validation; see [Postgres typed surface](#postgres-typed-surface) below |
+| `djogi::MacAddr` | `MACADDR` | feature `network`; 6-byte EUI-48 newtype; see [Postgres typed surface](#postgres-typed-surface) below |
 | `Option<T>` | nullable | wraps any of the above |
 
 For relation field types like `ForeignKey<T>` and `OneToOneField<T>`, see the [relations guide](./relations.md).
@@ -262,6 +265,9 @@ for any of them.
 |---|---|---|---|
 | `INTERVAL` | `djogi::Interval { months, days, microseconds }` | — (always on) | [#212](https://github.com/TarunvirBains/djogi/issues/212) |
 | `int4range` / `int8range` / `numrange` / `tstzrange` / `daterange` | `djogi::Range<i32>` / `djogi::Range<i64>` / `djogi::Range<rust_decimal::Decimal>` / `djogi::Range<djogi::DateTime>` / `djogi::Range<djogi::Date>` | — (always on) | [#215](https://github.com/TarunvirBains/djogi/issues/215) |
+| `INET` | `std::net::IpAddr` | `network` | [#213](https://github.com/TarunvirBains/djogi/issues/213) |
+| `CIDR` | `djogi::CidrAddr { addr, prefix }` | `network` | [#213](https://github.com/TarunvirBains/djogi/issues/213) |
+| `MACADDR` | `djogi::MacAddr([u8; 6])` | `network` | [#213](https://github.com/TarunvirBains/djogi/issues/213) |
 
 #### `djogi::Interval` — `INTERVAL`
 
@@ -313,6 +319,77 @@ maximum on a discrete range column. The continuous subtypes
 (`numrange`, `tstzrange`) are NOT canonicalised by Postgres and accept
 `[..., MAX]` unchanged.
 
+#### `std::net::IpAddr` — `INET` (feature `network`)
+
+Behind `djogi = { features = ["network"] }`, plain `std::net::IpAddr`
+(both `Ipv4Addr` and `Ipv6Addr` via the enum) maps to Postgres `INET`
+columns. Djogi reuses the always-on `postgres-types` `ToSql` / `FromSql`
+impl for `IpAddr`, which writes the netmask as `/32` (IPv4) or `/128`
+(IPv6) — the host-address case adopters most commonly reach for.
+
+```rust,ignore
+use djogi::prelude::*;
+use std::net::IpAddr;
+
+#[model(table = "sessions")]
+pub struct Session {
+    pub remote_host: IpAddr,
+    pub last_known_ip: Option<IpAddr>,
+    // ...
+}
+```
+
+INET columns carrying explicit network prefixes (e.g. `192.168.1.0/24`
+stored as `INET` rather than `CIDR`) are out of scope for the v0.1 slice
+— adopters reach for `djogi::CidrAddr` and a `CIDR` column today, or
+declare the column as `Custom("INET")` + an adopter newtype that
+preserves the prefix. A future-work follow-up under the
+[#170](https://github.com/TarunvirBains/djogi/issues/170) umbrella may
+add `djogi::InetAddr { addr, prefix }` symmetric with `CidrAddr` if
+adopter demand surfaces.
+
+#### `djogi::CidrAddr` — `CIDR` (feature `network`)
+
+`CidrAddr` carries an IP address plus a network prefix length, and
+validates at construction time that all bits past the prefix are zero
+(Postgres's CIDR admission rule):
+
+```rust,ignore
+use djogi::{CidrAddr, MacAddr};
+use std::net::{IpAddr, Ipv4Addr};
+
+// 192.168.1.0/24 — a /24 network.
+let net = CidrAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), 24).unwrap();
+
+// 192.168.1.5/24 — rejected client-side: the trailing `.5` falls in
+// the host portion of a /24 network.
+assert!(CidrAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 24).is_err());
+```
+
+The wire format matches Postgres's binary CIDR layout (1 byte family +
+1 byte prefix + 1 byte is_cidr + 1 byte length + the address bytes).
+Adopter Rust types and the wire codec live at `djogi::pg_types::CidrAddr`;
+djogi pulls in no `cidr` / `ipnet` crate dependency.
+
+#### `djogi::MacAddr` — `MACADDR` (feature `network`)
+
+`MacAddr` is a typed newtype over a 6-byte EUI-48 MAC address with a
+hand-rolled wire codec (the codec is just `put_slice(&self.0)` on
+encode and a 6-byte check on decode). Construction from the canonical
+colon- or hyphen-separated text form is supported:
+
+```rust,ignore
+use djogi::MacAddr;
+
+let from_octets = MacAddr::new([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
+let from_text: MacAddr = "aa:bb:cc:dd:ee:ff".parse().unwrap();
+assert_eq!(from_octets, from_text);
+```
+
+`MACADDR8` (the 8-byte EUI-64 variant) is intentionally out of scope
+for the v0.1 slice — adopters with `MACADDR8` columns today use
+`Custom("MACADDR8")` + a hand-rolled newtype.
+
 ### Postgres type coverage gaps
 
 Some Postgres column types remain unmapped. Adopters can reach them
@@ -321,7 +398,6 @@ paired with a manual `postgres_types::ToSql` / `FromSql` implementation.
 
 | Postgres type | Status | Workaround today | Tracking |
 |---|---|---|---|
-| `INET` / `CIDR` / `MACADDR` | gap — typed Rust newtypes deferred to a follow-on dispatch in the umbrella | `Custom("INET")` / `Custom("CIDR")` / `Custom("MACADDR")` + adopter newtype, OR for `INET` columns specifically use `std::net::IpAddr` (the native `postgres-types::IpAddr` ToSql/FromSql impl handles the wire format — declared via `Custom("INET")` today) | [#213](https://github.com/TarunvirBains/djogi/issues/213) |
 | `MONEY` | decision pending — `NUMERIC` recommended for new tables | Use `rust_decimal::Decimal` with a `NUMERIC` column; `Custom("MONEY")` for legacy columns | [#214](https://github.com/TarunvirBains/djogi/issues/214) |
 | `tsrange` | deferred — timestamp-without-timezone ranges conflict with Djogi's TIMESTAMPTZ-first temporal discipline; `tstzrange` is supported via `Range<DateTime>` | `Custom("tsrange")` + adopter newtype if legacy schemas require it | [#215](https://github.com/TarunvirBains/djogi/issues/215) |
 | `DOMAIN` declarations (`#[field(domain = "<name>")]` Piece A; `CREATE DOMAIN` emission Piece B) | gap — both Piece A and Piece B deferred to a follow-on dispatch | `Custom("<domain_name>")` + adopter newtype matching the base-type encoding; declare the domain in raw SQL outside djogi's migration flow | [#216](https://github.com/TarunvirBains/djogi/issues/216) |

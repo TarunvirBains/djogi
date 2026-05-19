@@ -78,10 +78,11 @@ pub mod notify;
 pub mod outbox;
 pub mod pg;
 // Phase 8.5 Cluster 4 (djogi#170 umbrella) — typed Postgres newtypes
-// with hand-rolled wire codecs. Currently ships `Interval` (djogi#212);
-// the module is structured so follow-on dispatches in the umbrella can
-// add additional newtypes (`MacAddr`, `CidrAddr`, …) alongside without
-// reshaping the public surface.
+// with hand-rolled wire codecs. Ships `Interval` (djogi#212), `Range<T>`
+// (djogi#148 + #150 substrate), and the network family (`MacAddr` /
+// `CidrAddr`, djogi#213, behind the `network` feature flag). Future
+// umbrella dispatches add more newtypes alongside without reshaping
+// the public surface.
 pub mod pg_types;
 pub mod primary_key;
 pub mod query;
@@ -474,6 +475,9 @@ pub use types::{
     Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, Interval, Range, RangeBound, RanjId,
     RanjIdDesc, RanjIdRecencyBiased,
 };
+// djogi#213 — typed Postgres network types (`network` feature).
+#[cfg(feature = "network")]
+pub use types::{CidrAddr, CidrAddrError, MacAddr, MacAddrParseError};
 pub use visage::{DjogiVisage, VisageError};
 
 /// The canonical adopter import.
@@ -634,6 +638,12 @@ pub mod prelude {
         Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, Interval, Range, RangeBound,
         RanjId, RanjIdDesc, RanjIdRecencyBiased,
     };
+    // djogi#213 — typed Postgres network types (`network` feature).
+    // `IpAddr` lives in `std::net` and is not re-exported through the
+    // prelude (it is stdlib, not djogi); adopters spell it
+    // `std::net::IpAddr` at the field declaration site.
+    #[cfg(feature = "network")]
+    pub use crate::types::{CidrAddr, MacAddr};
     // T7 fixup — `DjogiVisageOf<M>` is the seal trait bounding every
     // `{Visage}` type to its source model `M`. Adopter code that writes
     // generic bounds over "any projection of M" names this trait, so it

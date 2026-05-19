@@ -55,6 +55,29 @@ notify = []
 # today because the EWKB codec is implemented with stdlib byte primitives.
 spatial = []
 
+# network — gates the typed Postgres network-type surface
+# (djogi#213, part of the djogi#170 typed-Postgres-coverage umbrella):
+#
+# - `std::net::IpAddr` → `INET` (via the always-on `postgres-types`
+#   `IpAddr` `ToSql` / `FromSql` impls; netmask defaults to /32 or /128 —
+#   the host-address case).
+# - `djogi::CidrAddr { addr, prefix }` → `CIDR` (typed newtype with a
+#   hand-rolled wire codec — no third-party crate dependency for the
+#   `cidr` family).
+# - `djogi::MacAddr([u8; 6])` → `MACADDR` (typed newtype with a
+#   hand-rolled wire codec — no `eui48` / `mac_address` dep).
+#
+# All three column types ship behind this single feature flag. The
+# descriptor variants (`FieldSqlType::Inet` / `Cidr` / `Macaddr`) are
+# always present so the migration differ / docs / `Display` surface
+# stays stable across feature states; only the Rust newtypes, ToSql /
+# FromSql impls, `FilterValue` carrier variants, `IntoFilterValue` impls
+# and `DjogiField` helper methods are feature-gated. Adopters with the
+# feature off who declare `pub addr: IpAddr` / `pub net: CidrAddr` /
+# `pub mac: MacAddr` get an "unresolved type" compile error at the model
+# struct, not a macro-level error — matching the spatial flag pattern.
+network = []
+
 # trgm — gates the pg_trgm typed surface on text columns:
 #
 # - `f.col().explicit_pg_predicate().trgm_similar_to(pattern)` — a WHERE-
@@ -850,6 +873,18 @@ harness = true
 name = "phase8_5_g0_range"
 path = "../tests/integration/phase8_5_g0_range.rs"
 harness = true
+
+# Phase 8.5 Cluster 4 (djogi#213) — typed network surface (INET / CIDR /
+# MACADDR) round-trip. Pins descriptor projection, IPv4/IPv6 wire-format
+# round-trip, nullable composition, construction-time CIDR validation,
+# and runtime filter + bulk-update execution through the typed query
+# surface — all through djogi's typed surface (no `raw_*` calls).
+# Requires the `network` feature flag.
+[[test]]
+name = "phase8_5_c4_213_network"
+path = "../tests/integration/phase8_5_c4_213_network.rs"
+harness = true
+required-features = ["network"]
 
 
 [[test]]

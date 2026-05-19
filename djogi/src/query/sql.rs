@@ -118,6 +118,18 @@ pub(crate) fn push_filter_value(acc: &mut SqlAccumulator, v: FilterValue) {
         FilterValue::Interval(i) => {
             acc.push_bind(i);
         }
+        #[cfg(feature = "network")]
+        FilterValue::Inet(addr) => {
+            acc.push_bind(addr);
+        }
+        #[cfg(feature = "network")]
+        FilterValue::Cidr(cidr) => {
+            acc.push_bind(cidr);
+        }
+        #[cfg(feature = "network")]
+        FilterValue::Macaddr(mac) => {
+            acc.push_bind(mac);
+        }
         FilterValue::Null => {
             acc.push_null_literal();
         }
@@ -238,6 +250,18 @@ pub(crate) fn push_filter_value_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
         }
         FilterValue::Interval(i) => {
             acc.push_bind(*i);
+        }
+        #[cfg(feature = "network")]
+        FilterValue::Inet(addr) => {
+            acc.push_bind(*addr);
+        }
+        #[cfg(feature = "network")]
+        FilterValue::Cidr(cidr) => {
+            acc.push_bind(*cidr);
+        }
+        #[cfg(feature = "network")]
+        FilterValue::Macaddr(mac) => {
+            acc.push_bind(*mac);
         }
         FilterValue::Null => {
             acc.push_null_literal();

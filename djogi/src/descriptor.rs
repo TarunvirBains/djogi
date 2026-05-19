@@ -170,6 +170,41 @@ pub enum FieldSqlType {
     /// Always-available — no feature flag. The codec lives in
     /// `pg_types.rs` and pulls in no third-party crate.
     Interval,
+    /// Postgres `INET` — IP address column type (djogi#213, `network`
+    /// feature). Rust source type is [`std::net::IpAddr`]; the wire
+    /// codec is `postgres-types`' always-on native impl, which writes
+    /// the netmask as /32 (IPv4) or /128 (IPv6) — host-address case.
+    ///
+    /// The descriptor variant is unconditional so the migration
+    /// differ / docs / `Display` surface stays stable across feature
+    /// states; only the Rust-side type recognition is gated behind the
+    /// `network` feature. Adopters with the feature off who write
+    /// `pub host: std::net::IpAddr` get an "unresolved type" compile
+    /// error at the model struct via the missing `IntoFilterValue` /
+    /// `DjogiPortableEq` impls, not a macro-time error — matching the
+    /// spatial flag pattern.
+    Inet,
+    /// Postgres `CIDR` — network address column type (djogi#213,
+    /// `network` feature). Rust source type is `djogi::CidrAddr`
+    /// (`pg_types::CidrAddr`) — a typed newtype carrying both
+    /// address and prefix length, with construction-time validation
+    /// that host bits past the prefix are zero (Postgres's CIDR
+    /// admission rule).
+    ///
+    /// Distinct from [`Inet`](FieldSqlType::Inet) by Rust type rather
+    /// than by attribute: `IpAddr` → INET, `CidrAddr` → CIDR. The
+    /// macro routes between them without needing a `#[field(ip_type
+    /// = "...")]` attribute.
+    Cidr,
+    /// Postgres `MACADDR` — EUI-48 MAC address column type
+    /// (djogi#213, `network` feature). Rust source type is
+    /// `djogi::MacAddr` (`pg_types::MacAddr`) — a typed newtype over
+    /// `[u8; 6]` with a hand-rolled 6-byte wire codec.
+    ///
+    /// `MACADDR8` (the 8-byte EUI-64 variant) is intentionally out of
+    /// scope for the djogi#213 surface; the umbrella tracks future-work
+    /// for EUI-64 if adopter demand surfaces.
+    Macaddr,
     /// Postgres range type. Phase 8.5 G0 substrate (djogi#148 + #150).
     ///
     /// Rust source type is `djogi::Range<T>` (`pg_types::Range<T>`).
@@ -308,6 +343,13 @@ impl std::fmt::Display for FieldSqlType {
             // the three-component encoding; the SQL type string is the
             // bare Postgres `INTERVAL` keyword.
             FieldSqlType::Interval => write!(f, "INTERVAL"),
+            // djogi#213 — Postgres network family (`network` feature).
+            // `Display` always renders the bare SQL keyword regardless
+            // of feature state so migration snapshots and docs stay
+            // stable when the feature is toggled.
+            FieldSqlType::Inet => write!(f, "INET"),
+            FieldSqlType::Cidr => write!(f, "CIDR"),
+            FieldSqlType::Macaddr => write!(f, "MACADDR"),
             // Phase 8.5 G0 (djogi#148 + #150 substrate) — Postgres
             // range type. `Display` renders the lowercase subtype name
             // (`int4range`, `tstzrange`, …); the schema snapshot stores
@@ -820,6 +862,29 @@ mod tests {
             srid: 4326,
         };
         assert_eq!(format!("{ft}"), "geography(MultiPolygon, 4326)");
+    }
+
+    // ── djogi#213 — network family Display projection ─────────────────────
+    //
+    // The migration composer projects column types by calling
+    // `FieldSqlType::to_string()` (see `migrate/projection.rs` and
+    // `migrate/sql.rs`). These tests pin the Display surface so a future
+    // refactor that drops or renames a variant fails at descriptor-level
+    // before reaching the live-DB integration gate.
+
+    #[test]
+    fn inet_field_sql_type_displays_as_upper_inet() {
+        assert_eq!(format!("{}", FieldSqlType::Inet), "INET");
+    }
+
+    #[test]
+    fn cidr_field_sql_type_displays_as_upper_cidr() {
+        assert_eq!(format!("{}", FieldSqlType::Cidr), "CIDR");
+    }
+
+    #[test]
+    fn macaddr_field_sql_type_displays_as_upper_macaddr() {
+        assert_eq!(format!("{}", FieldSqlType::Macaddr), "MACADDR");
     }
 
     #[test]

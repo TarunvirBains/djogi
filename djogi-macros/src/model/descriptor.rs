@@ -1244,6 +1244,16 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         // a string-comparison shortcut. The mapping tracks
         // `rust_type_to_sql`'s `djogi::Interval` arm.
         "INTERVAL" => quote! { ::djogi::FieldSqlType::Interval },
+        // djogi#213 — Postgres network family. The descriptor variants
+        // are unconditional (declared in `descriptor.rs` regardless of
+        // feature state) so migration snapshots / docs stay stable when
+        // the `network` feature toggles. The matching Rust types
+        // (`std::net::IpAddr` for INET, `djogi::CidrAddr` for CIDR,
+        // `djogi::MacAddr` for MACADDR) are gated on the runtime crate's
+        // `network` feature.
+        "INET" => quote! { ::djogi::FieldSqlType::Inet },
+        "CIDR" => quote! { ::djogi::FieldSqlType::Cidr },
+        "MACADDR" => quote! { ::djogi::FieldSqlType::Macaddr },
         // Phase 8.5 G0 (djogi#148 + #150 substrate) — range SQL types
         // lower to the typed `FieldSqlType::Range { subtype }` variant.
         // The mapping tracks `rust_type_to_sql`'s explicit outer-wrapper
