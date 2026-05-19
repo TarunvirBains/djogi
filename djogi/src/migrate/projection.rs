@@ -2051,20 +2051,12 @@ fn project_column(
         None
     };
 
-    // Combine the auto-projected halves (type-derived + strict-ID) into
-    // a single SQL fragment before AND-merging with any adopter
-    // `#[field(check = "...")]`. The two auto-projections are
-    // mutually exclusive in practice (HeerId / RanjId fields carry
-    // `rust_source_type: None`, so `type_derived_check` is always None
-    // when `strict_id_check_clause` is Some), but the explicit
-    // combination keeps the slot extensible without changing the
-    // adopter-CHECK contract.
-    let auto_check: Option<String> = match (type_derived_check, strict_id_check_clause) {
-        (None, None) => None,
-        (Some(c), None) | (None, Some(c)) => Some(c),
-        (Some(t), Some(s)) => Some(format!("({}) AND ({})", t.trim(), s.trim())),
-    };
-    let check: Option<String> = combine_check_expressions(auto_check, f.check_sql);
+    // Combine type-derived + strict-ID auto-projections first, then AND-merge any adopter
+    // `#[field(check)]` — both stages route through `combine_check_expressions` so the slot stays single.
+    let check: Option<String> = combine_check_expressions(
+        combine_check_expressions(type_derived_check, strict_id_check_clause.as_deref()),
+        f.check_sql,
+    );
 
     ColumnSchema {
         check,

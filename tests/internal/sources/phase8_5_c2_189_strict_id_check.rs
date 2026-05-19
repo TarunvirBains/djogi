@@ -588,6 +588,36 @@ async fn strict_ranj_check_rejects_non_rfc4122_variant(mut ctx: djogi::DjogiCont
 
 // ── OOB rejection (raw bypass) — FK column propagation ────────────────────────
 
+#[djogi::djogi_test(sync_models = [Phase85C2189FkTarget, Phase85C2189FkSource])]
+async fn strict_fk_rejects_negative_owner_id(mut ctx: djogi::DjogiContext) {
+    // Negative BIGINT into the FK column. The FK reference is satisfied
+    // by inserting a parent row first, but the FK column carries the
+    // strict HeerId CHECK from `#[model(strict_ids)]`. Postgres
+    // evaluates CHECK constraints before FK constraints, so the
+    // structural CHECK fires first — exactly the protection we want
+    // against externally-injected malformed IDs that happen to also
+    // collide with a real parent ID.
+    //
+    // Note: we use a value that is structurally invalid AND has no
+    // matching parent row. The CHECK fires first; if it didn't, the FK
+    // would. Either way the bad row is rejected, but the assertion
+    // verifies the CHECK is the proximate cause.
+    let err = ctx
+        .raw_execute(
+            "INSERT INTO phase8_5_c2_189_fk_source (id, created_at, updated_at, owner_id, label) \
+             VALUES (1, now(), now(), -1, 'evil')",
+            &[],
+        )
+        .await
+        .expect_err("negative FK BIGINT must be rejected by the strict HeerId CHECK");
+
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("phase8_5_c2_189_fk_source_owner_id_check"),
+        "rejection must cite the FK column's strict_id_check constraint: {msg}"
+    );
+}
+
 // ── Catalog assertion — Custom-PK target FK skip ─────────────────────────────
 
 #[djogi::djogi_test(
@@ -646,36 +676,6 @@ async fn fk_to_custom_bigint_target_skips_strict_check(mut ctx: djogi::DjogiCont
         col_type, "bigint",
         "FK column SQL type must still inherit from Custom.sql_type; \
          the family-based skip applies only to the strict-ID CHECK"
-    );
-}
-
-#[djogi::djogi_test(sync_models = [Phase85C2189FkTarget, Phase85C2189FkSource])]
-async fn strict_fk_rejects_negative_owner_id(mut ctx: djogi::DjogiContext) {
-    // Negative BIGINT into the FK column. The FK reference is satisfied
-    // by inserting a parent row first, but the FK column carries the
-    // strict HeerId CHECK from `#[model(strict_ids)]`. Postgres
-    // evaluates CHECK constraints before FK constraints, so the
-    // structural CHECK fires first — exactly the protection we want
-    // against externally-injected malformed IDs that happen to also
-    // collide with a real parent ID.
-    //
-    // Note: we use a value that is structurally invalid AND has no
-    // matching parent row. The CHECK fires first; if it didn't, the FK
-    // would. Either way the bad row is rejected, but the assertion
-    // verifies the CHECK is the proximate cause.
-    let err = ctx
-        .raw_execute(
-            "INSERT INTO phase8_5_c2_189_fk_source (id, created_at, updated_at, owner_id, label) \
-             VALUES (1, now(), now(), -1, 'evil')",
-            &[],
-        )
-        .await
-        .expect_err("negative FK BIGINT must be rejected by the strict HeerId CHECK");
-
-    let msg = format!("{err:?}");
-    assert!(
-        msg.contains("phase8_5_c2_189_fk_source_owner_id_check"),
-        "rejection must cite the FK column's strict_id_check constraint: {msg}"
     );
 }
 
