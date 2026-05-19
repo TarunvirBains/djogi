@@ -999,7 +999,10 @@ where
     /// a `Vec<(T, A::Decoded)>`.
     ///
     /// Dispatches through the context's execution helpers — annotated
-    /// queries work inside an `atomic()` scope.
+    /// queries work inside an `atomic()` scope. For tenant-keyed models,
+    /// the terminal propagates the caller's auth tenant into the RLS GUC
+    /// after local validation and before SQL emission, matching the
+    /// ordinary `QuerySet` terminal contract.
     pub fn fetch_all<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -1057,6 +1060,8 @@ where
                         .to_string(),
                 ));
             }
+
+            crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
 
             let acc = build_annotated_select_for_fetch(
                 &qs,
