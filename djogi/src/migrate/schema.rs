@@ -529,6 +529,24 @@ pub struct ExclusionConstraintSchema {
     /// in the emitted DDL because `EXCLUDE` operator class semantics
     /// depend on element order.
     pub elements: Vec<ExclusionElementSchema>,
+    /// Postgres extension name (e.g. `"btree_gist"`) that must be
+    /// installed before the migration runs. `None` for stock GiST
+    /// exclusions that only use range / geometric operators.
+    ///
+    /// The macro auto-derives `Some("btree_gist")` for `using = "gist"`
+    /// exclusions whose element list contains at least one btree
+    /// comparison operator (`=`, `<>`, `<`, `<=`, `>`, `>=`) — see
+    /// [`crate::descriptor::ExclusionConstraintSpec::extension_dependency`].
+    /// The bootstrap composer reads this slot to aggregate the per-
+    /// database extension install list (djogi#148).
+    ///
+    /// `#[serde(default)]` so snapshots predating this field round-
+    /// trip cleanly — older snapshots load as `None`; the differ then
+    /// sees the projected `Some("btree_gist")` as a drop+add of the
+    /// constraint, which is the deliberate "extension dependency
+    /// changed" signal.
+    #[serde(default)]
+    pub extension_dependency: Option<String>,
     /// `true` emits `INITIALLY DEFERRED`. Only meaningful when
     /// `deferrable = true`.
     #[serde(default)]

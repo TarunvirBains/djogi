@@ -2240,6 +2240,7 @@ mod tests {
                 expr: "room_id".to_string(),
                 with_operator: "=".to_string(),
             }],
+            extension_dependency: None,
             initially_deferred: false,
             name: name.to_string(),
             using: "gist".to_string(),

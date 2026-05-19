@@ -646,6 +646,11 @@ mod tests {
                         with_operator: "&&".to_string(),
                     },
                 ],
+                // djogi#148 — `using = "gist"` with `=` operator
+                // auto-derives `btree_gist`. Pinning the value in this
+                // round-trip fixture proves the snapshot serializes,
+                // re-parses, and survives byte-for-byte.
+                extension_dependency: Some("btree_gist".to_string()),
                 initially_deferred: true,
                 name: "no_overlap".to_string(),
                 using: "gist".to_string(),

@@ -125,6 +125,14 @@ fn bookings_table_with_exclusion() -> TableSchema {
                     with_operator: "&&".to_string(),
                 },
             ],
+            // djogi#148 — the descriptor-driven Phase 0 composer would
+            // emit `CREATE EXTENSION IF NOT EXISTS btree_gist` from this
+            // slot. This test bypasses the bootstrap composer (it calls
+            // `lower_delta` directly) and still installs btree_gist via
+            // `raw_execute` below so the constraint can be applied; the
+            // bootstrap-driven install path is exercised by the unit
+            // tests in `djogi/src/migrate/bootstrap.rs`.
+            extension_dependency: Some("btree_gist".to_string()),
             initially_deferred: false,
             name: "phase7_5_pr7_bookings_no_overlap".to_string(),
             using: "gist".to_string(),
@@ -363,6 +371,10 @@ async fn classifier_routes_exclusion_and_generated_to_offline_only(_ctx: DjogiCo
             expr: "room_id".to_string(),
             with_operator: "=".to_string(),
         }],
+        // Classification test — checks that AddExclusionConstraint
+        // routes to OfflineOnly. The extension-dependency slot is
+        // orthogonal here; leave None so the test surface stays narrow.
+        extension_dependency: None,
         initially_deferred: false,
         name: "no_overlap".to_string(),
         using: "gist".to_string(),

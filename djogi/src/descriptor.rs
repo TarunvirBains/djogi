@@ -589,6 +589,28 @@ pub struct ExclusionConstraintSpec {
     /// [`Self::deferrable`] is also `true`; the macro enforces that
     /// pairing at parse time.
     pub initially_deferred: bool,
+    /// Postgres extension name (e.g. `"btree_gist"`) that must be
+    /// installed before this constraint can be created. `None` for
+    /// stock GiST exclusions that only use range / geometric operators.
+    ///
+    /// # Auto-derivation (djogi#148)
+    ///
+    /// The `#[model(exclusion(...))]` macro derives `Some("btree_gist")`
+    /// for any `using = "gist"` exclusion whose element list contains at
+    /// least one btree comparison operator (`=`, `<>`, `<`, `<=`, `>`,
+    /// `>=`). The canonical scheduling shape
+    /// `EXCLUDE USING gist (room_id WITH =, period WITH &&)` matches —
+    /// the `room_id WITH =` element needs the btree_gist operator class
+    /// for `=` on `BIGINT` inside a GiST index. Pure-range exclusions
+    /// (`elements = ["period WITH &&"]`) do not match and keep `None`
+    /// because stock GiST handles range overlap natively.
+    ///
+    /// The migration system collects these dependencies and emits a
+    /// `CREATE EXTENSION IF NOT EXISTS "btree_gist"` statement in the
+    /// per-database Phase 0 bootstrap migration — adopters never write
+    /// the `CREATE EXTENSION` SQL by hand, mirroring how PostGIS is
+    /// auto-installed for `Geography` columns.
+    pub extension_dependency: Option<&'static str>,
 }
 
 /// Which flavour of index is being named — drives the stem selection in
@@ -745,9 +767,9 @@ impl IndexSpec {
 #[cfg(test)]
 mod tests {
     use super::{
-        ComputedFieldDescriptor, FieldDescriptor, FieldSqlType, GeographySubtype, IndexSpec,
-        IndexType, ModelDescriptor, PkType, field_descriptor, migration_shape::MigrationShape,
-        model_descriptor,
+        ComputedFieldDescriptor, ExclusionConstraintSpec, ExclusionElement, FieldDescriptor,
+        FieldSqlType, GeographySubtype, IndexSpec, IndexType, ModelDescriptor, PkType,
+        field_descriptor, migration_shape::MigrationShape, model_descriptor,
     };
 
     // ── T6: GeographySubtype Display ─────────────────────────────────────────
@@ -1348,6 +1370,89 @@ mod tests {
         assert!(
             !desc.has_gist_on_geography(),
             "expected false: GiST on a text column is not spatial acceleration"
+        );
+    }
+
+    // ── djogi#148 — MigrationShape collects extension deps from exclusions ──
+
+    static EXCL_BTREE_GIST_ELEMENTS: &[ExclusionElement] = &[
+        ExclusionElement {
+            expr: "room_id",
+            with_operator: "=",
+        },
+        ExclusionElement {
+            expr: "period",
+            with_operator: "&&",
+        },
+    ];
+
+    static EXCL_BTREE_GIST: ExclusionConstraintSpec = ExclusionConstraintSpec {
+        name: "bookings_no_overlap",
+        using: "gist",
+        elements: EXCL_BTREE_GIST_ELEMENTS,
+        where_clause: None,
+        deferrable: false,
+        initially_deferred: false,
+        extension_dependency: Some("btree_gist"),
+    };
+
+    /// djogi#148 — `MigrationShape::from_descriptor` must include the
+    /// `ExclusionConstraintSpec::extension_dependency` value in
+    /// `required_extensions`. This is the contract proof that the macro
+    /// auto-derived `Some("btree_gist")` reaches the migration-emission
+    /// layer.
+    #[test]
+    fn migration_shape_collects_btree_gist_from_exclusion_constraint() {
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
+        }];
+        let desc = ModelDescriptor {
+            exclusion_constraints: std::slice::from_ref(&EXCL_BTREE_GIST),
+            ..model_descriptor("Booking", "bookings", PkType::HeerId, FIELDS)
+        };
+        let shape = MigrationShape::from_descriptor(&desc);
+        assert!(
+            shape.required_extensions.contains("btree_gist"),
+            "btree_gist must surface in required_extensions from exclusion spec; got {:?}",
+            shape.required_extensions,
+        );
+        assert_eq!(
+            shape.exclusion_constraints.len(),
+            1,
+            "shape.exclusion_constraints must carry the exclusion verbatim",
+        );
+    }
+
+    /// djogi#148 — `None` extension dependency leaves
+    /// `required_extensions` untouched. Mirrors the index path.
+    #[test]
+    fn migration_shape_skips_none_exclusion_extension() {
+        static ELEMENTS: &[ExclusionElement] = &[ExclusionElement {
+            expr: "period",
+            with_operator: "&&",
+        }];
+        static EXCL: ExclusionConstraintSpec = ExclusionConstraintSpec {
+            name: "period_overlap",
+            using: "gist",
+            elements: ELEMENTS,
+            where_clause: None,
+            deferrable: false,
+            initially_deferred: false,
+            extension_dependency: None,
+        };
+
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
+        }];
+        let desc = ModelDescriptor {
+            exclusion_constraints: std::slice::from_ref(&EXCL),
+            ..model_descriptor("Reservation", "reservations", PkType::HeerId, FIELDS)
+        };
+        let shape = MigrationShape::from_descriptor(&desc);
+        assert!(
+            shape.required_extensions.is_empty(),
+            "extension_dependency=None must not register any extension; got {:?}",
+            shape.required_extensions,
         );
     }
 
@@ -2782,9 +2887,11 @@ inventory::collect!(DeferrabilitySpec);
 /// Phase 7 will emit actual `.sql` migration files.  Before Phase 7 lands,
 /// this module proves the descriptor already encodes *all* information the
 /// emitter will need: column SQL types (including PostGIS `GEOGRAPHY`),
-/// per-index CONCURRENTLY placement, and required Postgres extensions.
-/// Contract tests assert against [`MigrationShape`] values constructed from
-/// macro-emitted `ModelDescriptor`s.
+/// per-index CONCURRENTLY placement, required Postgres extensions
+/// (including `btree_gist` for exclusion constraints under djogi#148), and
+/// exclusion-constraint shape. Contract tests assert against
+/// [`MigrationShape`] values constructed from macro-emitted
+/// `ModelDescriptor`s.
 ///
 /// # Placement decision
 ///
@@ -2824,6 +2931,9 @@ pub mod migration_shape {
         /// - every `IndexSpec::extension_dependency` that is `Some`
         /// - every field whose `sql_type` is `FieldSqlType::Geography`
         ///   (even if no index exists — the column itself requires PostGIS)
+        /// - every `ExclusionConstraintSpec::extension_dependency` that
+        ///   is `Some` (djogi#148 — typically `btree_gist` for gist
+        ///   EXCLUDEs that mix `=` with `&&` overlap operators)
         pub required_extensions: BTreeSet<&'static str>,
         /// One entry per [`ExclusionConstraintSpec`] in
         /// `ModelDescriptor::exclusion_constraints` (Phase 7.5 PR 7).
@@ -2924,6 +3034,16 @@ pub mod migration_shape {
             for f in desc.fields {
                 if matches!(f.sql_type, FieldSqlType::Geography { .. }) {
                     required_extensions.insert("postgis");
+                }
+            }
+            // Phase 8.5 (djogi#148) — exclusion constraints carry their
+            // own extension dependency (typically `btree_gist` for gist
+            // EXCLUDEs that mix `=` with `&&` overlap operators). The
+            // macro auto-derives the dependency so adopters do not have
+            // to remember which extension a given EXCLUDE shape needs.
+            for spec in desc.exclusion_constraints {
+                if let Some(ext) = spec.extension_dependency {
+                    required_extensions.insert(ext);
                 }
             }
 
