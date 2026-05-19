@@ -2921,12 +2921,32 @@ impl FieldAttrs {
         // sql_type changes. djogi performs no parsing or sanitisation of
         // the expression — it is emitted verbatim into the migration's
         // `USING (<expr>)` clause; the adopter owns correctness. The
-        // only parse-time guard is non-empty / non-whitespace-only: an
-        // empty literal would lower to `USING ()` which is invalid SQL
-        // and surfaces only at apply time. The span is recovered from
-        // the field's raw attribute tokens so the diagnostic points at
-        // the offending literal rather than the whole field — mirrors
-        // the `check` / `comment` validation pattern above.
+        // only parse-time guards are:
+        //
+        // 1. Non-empty / non-whitespace-only literal — an empty
+        //    literal would lower to `USING ()` which is invalid SQL
+        //    and surfaces only at apply time.
+        // 2. Not paired with `#[field(generated = "...")]` — a stored
+        //    generated column derives its storage type from the
+        //    expression; an adopter USING cannot meaningfully drive
+        //    the resulting type, and Postgres semantics for
+        //    `ALTER COLUMN ... TYPE ... USING (<expr>)` on a stored
+        //    generated column are surprising at best.
+        // 3. Not applied to a `ForeignKey<T>` / `OneToOneField<T>`
+        //    field — FK type changes flow through the Phase 7 PK-flip
+        //    orchestration on the parent model, not as direct column
+        //    type changes on the child. An adopter USING here cannot
+        //    drive the typed flip apparatus.
+        //
+        // Field-level `#[field(identity)]` is not a user-facing
+        // attribute (identity flows through the projection from
+        // `pk = Serial`), so a `type_change_using` × identity
+        // combination cannot arise here.
+        //
+        // The span is recovered from the field's raw attribute tokens
+        // so each diagnostic points at the offending literal /
+        // attribute rather than the whole field — mirrors the
+        // `check` / `comment` validation pattern above.
         if let Some(expr) = &attrs.type_change_using
             && expr.trim().is_empty()
         {
@@ -2939,6 +2959,43 @@ impl FieldAttrs {
                  is emitted verbatim into the migration's `USING (<expr>)` \
                  clause; an empty literal produces invalid SQL that fails \
                  only at apply time.",
+            ));
+        }
+
+        if attrs.type_change_using.is_some() && attrs.generated.is_some() {
+            // The diagnostic points at the `type_change_using` literal
+            // because that is the attribute the operator should remove
+            // — the `generated` expression is the column's defining
+            // contract, and an adopter who wants to flip a generated
+            // column's storage type hand-writes the migration.
+            let span =
+                find_named_str_lit_span(field, "type_change_using").unwrap_or_else(|| field.span());
+            return Err(syn::Error::new(
+                span,
+                "`#[field(type_change_using = \"...\")]` is not allowed on a \
+                 `#[field(generated = \"...\")]` column — the generated \
+                 expression derives the column's stored type, and an adopter \
+                 USING cannot meaningfully drive the resulting type. Postgres' \
+                 semantics for `ALTER COLUMN ... TYPE ... USING (<expr>)` on a \
+                 stored generated column are surprising at best; hand-edit \
+                 the migration if a generated column needs to flip storage type.",
+            ));
+        }
+
+        if attrs.type_change_using.is_some() && detect_relation(&attrs.ty).is_some() {
+            let span =
+                find_named_str_lit_span(field, "type_change_using").unwrap_or_else(|| field.span());
+            return Err(syn::Error::new(
+                span,
+                "`#[field(type_change_using = \"...\")]` is not allowed on a \
+                 relation field (`ForeignKey<T>` / `OneToOneField<T>`, optionally \
+                 wrapped in `Option<...>`). FK type changes flow through the \
+                 Phase 7 PK-flip orchestration on the parent model — the child \
+                 column's storage type follows the parent's PK, and an adopter \
+                 USING on the child cannot drive the typed flip apparatus. Drop \
+                 the attribute; if the parent's PK shape is changing, the \
+                 migration emitter routes it through the PK-flip path \
+                 automatically.",
             ));
         }
 

@@ -63,13 +63,17 @@
 // - `djogi/src/migrate/sql.rs::emit_alter_column` — the lowering site
 //   where both behaviours converge.
 
+use djogi::live_migrate::{
+    ClassifyContext, PatternContext, PatternError, classify_operation, dispatch_pattern,
+};
+use djogi::migrate::OnlineSafetyClassification;
 use djogi::migrate::diff::{Classification, ColumnChange, SchemaDelta, SchemaOperation};
 use djogi::migrate::projection::BucketKey;
 use djogi::migrate::schema::{
     AppliedSchema, ColumnSchema, GeneratedColumnSchema, PkKindSchema, PrimaryKeySchema,
     SNAPSHOT_FORMAT_VERSION, TableSchema,
 };
-use djogi::migrate::sql::lower_delta;
+use djogi::migrate::sql::{LossyRollbackKind, lower_delta};
 use std::collections::BTreeMap;
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -449,6 +453,150 @@ fn generated_expression_change_uses_in_place_set_expression_as() {
         alter_sql.lossy.is_none(),
         "expression change rolls back cleanly — not lossy: {:?}",
         alter_sql.lossy
+    );
+}
+
+// ── djogi#220 follow-up — live-plan / classifier / rollback safety pins ─────
+
+#[test]
+fn classifier_routes_change_type_with_using_to_offline_only() {
+    // The classifier must route any `ColumnChange::ChangeType` whose
+    // `using.is_some()` to OfflineOnly regardless of the cast pair —
+    // the live-plan shadow-column pattern cannot replicate an
+    // adopter-supplied USING expression in its backfill UPDATE, and
+    // emitting the default cast anyway would silently corrupt or
+    // fail-per-row on exactly the rows the adopter wrote the
+    // expression to handle. The dispatcher and pattern emitters carry
+    // a defense-in-depth refusal for the same case (pinned below).
+    //
+    // The cast pair we choose here (INTEGER → BIGINT) is a benign
+    // widening that without `using` would classify OnlineSafe — so the
+    // `using.is_some()` arm is the only thing that can produce
+    // OfflineOnly. Choosing a pair that already routes OfflineOnly
+    // (e.g. TEXT → varchar(255) narrowing) would not isolate the new
+    // behaviour.
+    let inbound: BTreeMap<String, u32> = BTreeMap::new();
+    let overrides: BTreeMap<(String, String), djogi::DefaultVolatility> = BTreeMap::new();
+    let ctx = ClassifyContext::application_default(&inbound, &overrides);
+
+    let op_no_using = SchemaOperation::AlterColumn {
+        table: "ledger_entry".to_string(),
+        column: "amount".to_string(),
+        change: ColumnChange::ChangeType {
+            from: "INTEGER".to_string(),
+            to: "BIGINT".to_string(),
+            using: None,
+        },
+    };
+    assert_eq!(
+        classify_operation(&op_no_using, &ctx),
+        OnlineSafetyClassification::OnlineSafe,
+        "INTEGER → BIGINT without `using` is a benign widening — should classify OnlineSafe",
+    );
+
+    let op_with_using = SchemaOperation::AlterColumn {
+        table: "ledger_entry".to_string(),
+        column: "amount".to_string(),
+        change: ColumnChange::ChangeType {
+            from: "INTEGER".to_string(),
+            to: "BIGINT".to_string(),
+            using: Some("amount::BIGINT".to_string()),
+        },
+    };
+    assert_eq!(
+        classify_operation(&op_with_using, &ctx),
+        OnlineSafetyClassification::OfflineOnly,
+        "`using.is_some()` must force OfflineOnly regardless of the cast pair — \
+         live-plan path cannot replicate an adopter USING in its backfill",
+    );
+}
+
+#[test]
+fn dispatch_pattern_refuses_change_type_with_using() {
+    // Belt-and-braces refusal in the dispatcher. The classifier already
+    // routes `using.is_some()` to OfflineOnly, so the dispatcher should
+    // never receive a non-default-cast change. This pin guards against
+    // a future composer that calls `dispatch_pattern` without consulting
+    // the classifier first: emitting a backfill UPDATE whose
+    // `SET <shadow> = <col>::<to>` silently drops the adopter expression
+    // would silently corrupt data, so the dispatcher / pattern emitters
+    // refuse the operation explicitly with `PatternError::CannotEmit`.
+    let ctx = PatternContext::with_defaults();
+    let op = SchemaOperation::AlterColumn {
+        table: "items".to_string(),
+        column: "kind".to_string(),
+        change: ColumnChange::ChangeType {
+            from: "TEXT".to_string(),
+            to: "UUID".to_string(),
+            using: Some("(\"kind\"::text)::uuid".to_string()),
+        },
+    };
+    let err = dispatch_pattern(&op, &ctx)
+        .expect_err("dispatch_pattern must refuse `using.is_some()` ChangeType");
+    match err {
+        PatternError::CannotEmit { reason, .. } => {
+            assert!(
+                reason.contains("type_change_using")
+                    || reason.contains("using")
+                    || reason.contains("OfflineOnly")
+                    || reason.contains("offline-only"),
+                "refusal reason should name the adopter USING / offline-only route: {reason}",
+            );
+        }
+        other => panic!("expected PatternError::CannotEmit, got: {other:?}"),
+    }
+}
+
+#[test]
+fn lossy_marker_emitted_for_forward_using_rollback() {
+    // When the forward step carries an adopter `USING (<expr>)`, the
+    // emitter must attach a `LossyRollbackWarning` of kind
+    // `CustomCast` so `LossyRollbackPolicy::Refuse` (the default)
+    // engages on rollback. The down side falls back to the default
+    // `<col>::<old_type>` cast, which cannot reconstruct an arbitrary
+    // adopter transform — adopters who run the rollback path get a
+    // surfaced warning rather than silent data loss.
+    let before = build_schema_with_kind_type("TEXT", None);
+    let after = build_schema_with_kind_type("UUID", Some("(\"kind\"::text)::uuid"));
+
+    let delta = diff_single_bucket(&before, &after);
+    let ops = lower_delta(&delta).expect("lower delta");
+    let alter_sql = ops
+        .iter()
+        .find(|op| op.label.starts_with("AlterColumn items.kind"))
+        .expect("expected AlterColumn SQL");
+
+    let lossy = alter_sql
+        .lossy
+        .as_ref()
+        .expect("forward `using=Some` must surface a LossyRollbackWarning");
+    assert_eq!(
+        lossy.kind,
+        LossyRollbackKind::CustomCast,
+        "lossy kind must be CustomCast for adopter-supplied forward USING",
+    );
+    assert!(
+        lossy.detail.contains("items")
+            && lossy.detail.contains("kind")
+            && lossy.detail.contains("TEXT"),
+        "detail should identify the column and the rollback target type: {}",
+        lossy.detail
+    );
+    // Sanity-check: the same emission WITHOUT adopter `using` carries no
+    // lossy marker — the marker is keyed off the adopter expression,
+    // not off the cast pair.
+    let before_no = build_schema_with_kind_type("INTEGER", None);
+    let after_no = build_schema_with_kind_type("BIGINT", None);
+    let delta_no = diff_single_bucket(&before_no, &after_no);
+    let ops_no = lower_delta(&delta_no).expect("lower delta");
+    let alter_no = ops_no
+        .iter()
+        .find(|op| op.label.starts_with("AlterColumn items.kind"))
+        .expect("expected AlterColumn SQL");
+    assert!(
+        alter_no.lossy.is_none(),
+        "widening cast with no `using` must not surface a lossy marker: {:?}",
+        alter_no.lossy
     );
 }
 

@@ -63,14 +63,43 @@ impl Pattern for CodecTransition {
     const IDEMPOTENT_PREDICATE: bool = true;
 
     fn emit(op: &SchemaOperation, ctx: &PatternContext) -> Result<Vec<Step>, PatternError> {
+        // djogi#220 — belt-and-braces refusal when the adopter supplied
+        // a `#[field(type_change_using = "<expr>")]` clause. The
+        // classifier
+        // ([`crate::live_migrate::classify::classify_column_change`])
+        // routes `using.is_some()` to `OfflineOnly`, so this pattern
+        // should never be dispatched in that case. Like
+        // [`super::replacement_column`], the codec_transition backfill
+        // cannot replicate a custom USING body — the conversion is
+        // `djogi_codec_recode(...)` and there is no slot for an
+        // adopter SQL fragment. Refuse loudly so a future codec route
+        // cannot silently mis-emit.
+        if let SchemaOperation::AlterColumn {
+            change: ColumnChange::ChangeType { using: Some(_), .. },
+            ..
+        } = op
+        {
+            return Err(PatternError::CannotEmit {
+                pattern: Self::ID,
+                reason: "ColumnChange::ChangeType carries adopter-supplied `using` \
+                         (#[field(type_change_using = \"...\")]); codec rotation \
+                         emits `djogi_codec_recode(...)` in its backfill and has \
+                         no slot for an adopter SQL fragment. The classifier \
+                         routes this case to OfflineOnly — apply the migration \
+                         via the offline path"
+                    .to_string(),
+            });
+        }
         let (table, column, from_codec, to_codec) = match op {
             SchemaOperation::AlterColumn {
                 table,
                 column,
-                // djogi#220 added `using` to the variant — codec
-                // transitions key off (from, to) only; the adopter
-                // USING expression does not influence shadow-column
-                // staging. Bind with `..`.
+                // djogi#220 — codec transitions key off (from, to)
+                // only; the adopter USING expression does not
+                // influence shadow-column staging. The
+                // `using.is_some()` arm is refused above, so binding
+                // with `..` here is correct for the `using.is_none()`
+                // remainder.
                 change: ColumnChange::ChangeType { from, to, .. },
             } => (table, column, from, to),
             _ => {
@@ -349,5 +378,41 @@ mod tests {
         };
         let err = CodecTransition::emit(&op, &ctx()).unwrap_err();
         assert!(matches!(err, PatternError::WrongOperation { .. }));
+    }
+
+    #[test]
+    fn rejects_change_type_with_adopter_using() {
+        // djogi#220 — adopter-supplied `using` forces the offline path
+        // for codec transitions too. While the codec_transition
+        // dispatcher route is currently unreachable (the
+        // ChangeType→pattern dispatcher routes every non-using
+        // ChangeType to replacement_column), the refusal here is the
+        // defense-in-depth guard for the future codec route: codec
+        // rotation emits `djogi_codec_recode(...)` in its backfill
+        // and has no slot for an adopter SQL fragment, so silently
+        // dropping the USING would silently corrupt data.
+        let op = SchemaOperation::AlterColumn {
+            table: "secret".to_string(),
+            column: "ciphertext".to_string(),
+            change: ColumnChange::ChangeType {
+                from: "aes_gcm_v1".to_string(),
+                to: "aes_gcm_v2".to_string(),
+                using: Some("djogi_codec_recode(ciphertext, 'a', 'b')".to_string()),
+            },
+        };
+        let err = CodecTransition::emit(&op, &ctx()).unwrap_err();
+        match err {
+            PatternError::CannotEmit { reason, .. } => {
+                assert!(
+                    reason.contains("type_change_using") || reason.contains("USING"),
+                    "refusal reason must name the corrective attribute: {reason}",
+                );
+                assert!(
+                    reason.contains("offline") || reason.contains("OfflineOnly"),
+                    "refusal reason must point at the offline path: {reason}",
+                );
+            }
+            other => panic!("expected CannotEmit, got: {other:?}"),
+        }
     }
 }

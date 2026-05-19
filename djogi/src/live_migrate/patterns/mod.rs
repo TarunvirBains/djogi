@@ -219,12 +219,33 @@ pub fn dispatch_pattern(
 
     match op {
         SchemaOperation::AlterColumn { change, .. } => match change {
+            // djogi#220 — belt-and-braces refusal for adopter-supplied
+            // `USING` expressions. The classifier
+            // ([`crate::live_migrate::classify::classify_column_change`])
+            // already routes `ColumnChange::ChangeType { using: Some(_), .. }`
+            // to `OnlineSafetyClassification::OfflineOnly` so the
+            // dispatcher should never receive one. This explicit
+            // refusal is a defense-in-depth guard against future
+            // callsites that compose a live plan without consulting
+            // the classifier first: emitting a backfill UPDATE whose
+            // `SET <shadow> = <col>::<to>` silently drops the
+            // adopter expression would silently corrupt data.
+            ColumnChange::ChangeType { using: Some(_), .. } => Err(PatternError::CannotEmit {
+                pattern: "dispatch_pattern",
+                reason: "ColumnChange::ChangeType with adopter-supplied `using` (\
+                         #[field(type_change_using = \"...\")]) is offline-only — \
+                         the live-plan shadow-column pattern can only emit a default \
+                         SQL cast in its backfill and cannot replicate a custom \
+                         USING expression. Route through the offline-apply path \
+                         (see `live_migrate::classify` OfflineOnly verdict)"
+                    .to_string(),
+            }),
             // Per the codec_transition module docstring, codec rotations
             // currently surface as `ChangeType { from, to }` whose
             // `from`/`to` are codec IDs rather than SQL types. The
             // distinction is not yet expressed on the SchemaOperation
-            // enum; this dispatch routes every `ChangeType` to the
-            // [`replacement_column`] pattern. When a dedicated
+            // enum; this dispatch routes every (non-`using`) `ChangeType`
+            // to the [`replacement_column`] pattern. When a dedicated
             // `CodecChange` variant lands on `ColumnChange` (tracked
             // for a later phase), this arm grows the codec route.
             ColumnChange::ChangeType { .. } => replacement_column::ReplacementColumn::emit(op, ctx),
@@ -591,6 +612,39 @@ mod tests {
         match err {
             PatternError::CannotEmit { reason, .. } => {
                 assert!(reason.contains("DropTable") || reason.contains("deferred"));
+            }
+            other => panic!("expected CannotEmit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_pattern_refuses_change_type_with_adopter_using() {
+        // djogi#220 — `ChangeType { using: Some(_), .. }` is routed to
+        // OfflineOnly by the classifier, so the dispatcher should
+        // never receive one. This refusal is a defense-in-depth guard
+        // against future composers that bypass the classifier —
+        // emitting the shadow-column backfill default cast in that
+        // case would silently corrupt or fail-per-row on exactly the
+        // rows the adopter USING was written to handle.
+        let ctx = PatternContext::with_defaults();
+        let op = SchemaOperation::AlterColumn {
+            table: "items".to_string(),
+            column: "kind".to_string(),
+            change: ColumnChange::ChangeType {
+                from: "TEXT".to_string(),
+                to: "UUID".to_string(),
+                using: Some("(\"kind\"::text)::uuid".to_string()),
+            },
+        };
+        let err = dispatch_pattern(&op, &ctx).expect_err("dispatch must refuse using.is_some()");
+        match err {
+            PatternError::CannotEmit { reason, .. } => {
+                assert!(
+                    reason.contains("type_change_using")
+                        || reason.contains("USING")
+                        || reason.contains("offline-only"),
+                    "refusal reason should name the adopter USING / offline path: {reason}",
+                );
             }
             other => panic!("expected CannotEmit, got {other:?}"),
         }

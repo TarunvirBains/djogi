@@ -547,17 +547,51 @@ from the manual `PartialEq` impl on `ColumnSchema`, so:
 rollback also requires a special cast, hand-edit the emitted down SQL
 before applying — symmetric down-side USING expressions are not
 modelled because the rollback path is operator-owned in practice.
+When the forward step carries an adopter `USING (<expr>)`, the
+emitter additionally attaches a `LossyRollbackWarning` of kind
+`CustomCast` so `LossyRollbackPolicy::Refuse` (the default) engages
+on rollback — the operator must opt in explicitly, which catches the
+common case where the forward expression discarded information
+(`TRIM`, `CASE WHEN ... THEN NULL`, regex extraction, codec decode,
+...) and the default `<col>::<old>` cast cannot reconstruct it.
 
 **Heuristic warning.** When the differ detects a known-incompatible
 cast pair (`TEXT ↔ UUID`, `TEXT ↔ INTEGER/SMALLINT/BIGINT`,
 `UUID ↔ integer family`) and no `type_change_using` is set, the
 emitter prepends a `-- WARNING:` comment to the UP statement naming
-the corrective attribute. The migration still emits — the warning is
-a soft hint that surfaces before Postgres' apply-time error.
+the corrective attribute. The framework always emits an explicit
+`USING <col>::<new>` cast, so Postgres accepts the statement at parse
+time; the failure mode is per-row at apply time —
+`invalid input syntax for type <new>` (or a similar per-pair shape
+such as `invalid input syntax for integer`) on any row whose value
+does not parse as the target type. The bare-USING error
+`column "<c>" cannot be cast automatically` does NOT fire here
+because the framework never emits the bare-USING form. The migration
+still emits — the warning is a soft hint that surfaces before
+Postgres' apply-time error.
+
+**Live-plan path.** Setting `#[field(type_change_using = "...")]`
+forces the migration to the offline-apply path. The live-plan
+shadow-column / codec-rotation patterns can only emit a default SQL
+cast in their chunked backfill and cannot replicate an
+adopter-supplied USING expression — so the classifier routes any
+`ChangeType` with `using = Some(...)` to `OfflineOnly`. Apply via
+`djogi migrations apply` (offline path); the live-plan compose engine
+will refuse the operation with a `CannotEmit` if it ever sees one
+(defense-in-depth — the classifier should have routed it first).
 
 The attribute is rejected at macro-parse time when empty or
 whitespace-only (`#[field(type_change_using = "")]` or
 `#[field(type_change_using = "   ")]`) with a span-precise diagnostic.
+It is also rejected when paired with `#[field(generated = "...")]`
+(generated columns derive their stored type from the expression — a
+USING cannot meaningfully drive the resulting type), and rejected
+when applied to a `ForeignKey<T>` / `OneToOneField<T>` field (FK
+type changes are owned by the PK-flip path on the parent model). The
+auto-injected `id` column on `pk = Serial` models receives identity
+semantics from projection, not from a field attribute — it is not
+user-modifiable, so a `type_change_using` × identity combination
+cannot arise at macro parse time.
 
 ### Generated column expression changes (djogi#221)
 

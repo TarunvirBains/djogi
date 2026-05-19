@@ -363,29 +363,25 @@ pub struct ColumnSchema {
     /// Cluster 4 djogi#220.
     ///
     /// **Transit only.** This slot is populated by the projection from
-    /// the descriptor, consumed by the differ when it emits a
-    /// `ColumnChange::ChangeType` for this column, and never persisted
-    /// to the on-disk snapshot — `#[serde(skip)]` excludes the field
-    /// from both serialize and deserialize. The transient design makes
-    /// the attribute behave as a one-time directive: an adopter who
-    /// leaves `#[field(type_change_using = "...")]` on a field after
-    /// the migration applies produces no phantom diff, because the
-    /// loaded snapshot always carries `None` here while the freshly-
-    /// projected schema carries the live attribute value.
+    /// the descriptor, **read by the differ's column-walk in
+    /// [`crate::migrate::diff`] (`emit_alter_column`) to populate
+    /// `ColumnChange::ChangeType::using`** on the
+    /// emitted operation, and never persisted to the on-disk snapshot
+    /// — `#[serde(skip)]` excludes the field from both serialize and
+    /// deserialize. The transient design makes the attribute behave
+    /// as a one-time directive: an adopter who leaves
+    /// `#[field(type_change_using = "...")]` on a field after the
+    /// migration applies produces no phantom diff, because the loaded
+    /// snapshot always carries `None` here while the freshly-projected
+    /// schema carries the live attribute value.
     ///
-    /// **Why not in PartialEq.** The serde-skip mechanism is sufficient
-    /// only because the diff path that consumes the slot ignores it for
-    /// structural equality: `ColumnSchema` derives `PartialEq` over all
-    /// fields, so a load-vs-projection mismatch on `type_change_using`
-    /// flags the pair as unequal — but the per-column `emit_alter_column`
-    /// in [`crate::migrate::diff`] dispatches on individual structural
-    /// fields (`sql_type`, `nullable`, `default_sql`, ...) and never
-    /// reads `type_change_using` for emission decisions. A mismatch on
-    /// `type_change_using` alone produces an empty operations list and
-    /// the delta is filtered out at compose time. The choice keeps the
-    /// derived `PartialEq` machinery intact without a manual implementation
-    /// that future maintainers would need to extend on every field
-    /// addition.
+    /// **Excluded from `PartialEq`.** See the manual
+    /// `impl PartialEq for ColumnSchema` below for the rationale and
+    /// the maintenance contract. The slot is exempt from structural
+    /// equality so a load-vs-projection mismatch on
+    /// `type_change_using` does not synthesise a phantom
+    /// `AlterColumn`; only a real `sql_type` change carries the
+    /// expression into a `ChangeType` operation.
     #[serde(default, skip)]
     pub type_change_using: Option<String>,
 }
@@ -422,30 +418,91 @@ pub struct ColumnSchema {
 /// **Maintenance.** Every other field must remain in the impl. Adding
 /// a new persistent field to `ColumnSchema` requires extending this
 /// impl in the same change so equality stays in sync with the struct.
+/// The impl destructures both sides exhaustively so adding a field to
+/// `ColumnSchema` without threading it here is a compile error rather
+/// than a silent regression in differ behaviour.
 impl PartialEq for ColumnSchema {
     fn eq(&self, other: &Self) -> bool {
-        // Field order mirrors the struct definition so future field
-        // additions can be inserted in the obvious slot.
-        self.check == other.check
-            && self.comment == other.comment
-            && self.default_sql == other.default_sql
-            && self.foreign_key == other.foreign_key
-            && self.generated == other.generated
-            && self.identity == other.identity
-            && self.index_type == other.index_type
-            && self.indexed == other.indexed
-            && self.max_length == other.max_length
-            && self.name == other.name
-            && self.nullable == other.nullable
-            && self.on_delete == other.on_delete
-            && self.outbox_exclude == other.outbox_exclude
-            && self.rationale == other.rationale
-            && self.relation_kind == other.relation_kind
-            && self.renamed_from == other.renamed_from
-            && self.sequence_within == other.sequence_within
-            && self.sql_type == other.sql_type
-            && self.unique == other.unique
-        // type_change_using deliberately omitted — see impl doc.
+        // Exhaustive destructure forces a compile error whenever a new
+        // persistent field lands on `ColumnSchema` without being added
+        // to the equality comparison below. The `..` rest pattern is
+        // deliberately NOT used — the whole point of this impl is to
+        // catch future maintainers who forget to thread a new field
+        // through. Field order mirrors the struct definition so the
+        // diff between this impl and the struct definition stays
+        // legible.
+        //
+        // `type_change_using` is bound on both sides with the `_`
+        // pattern to acknowledge the field exists while documenting
+        // that it is deliberately excluded from equality (see this
+        // impl's doc above for the rationale, and the field's own
+        // doc on `ColumnSchema::type_change_using` for the transient-
+        // slot design).
+        let ColumnSchema {
+            check: self_check,
+            comment: self_comment,
+            default_sql: self_default_sql,
+            foreign_key: self_foreign_key,
+            generated: self_generated,
+            identity: self_identity,
+            index_type: self_index_type,
+            indexed: self_indexed,
+            max_length: self_max_length,
+            name: self_name,
+            nullable: self_nullable,
+            on_delete: self_on_delete,
+            outbox_exclude: self_outbox_exclude,
+            rationale: self_rationale,
+            relation_kind: self_relation_kind,
+            renamed_from: self_renamed_from,
+            sequence_within: self_sequence_within,
+            sql_type: self_sql_type,
+            unique: self_unique,
+            // Deliberately excluded from PartialEq — see impl doc.
+            type_change_using: _,
+        } = self;
+        let ColumnSchema {
+            check: other_check,
+            comment: other_comment,
+            default_sql: other_default_sql,
+            foreign_key: other_foreign_key,
+            generated: other_generated,
+            identity: other_identity,
+            index_type: other_index_type,
+            indexed: other_indexed,
+            max_length: other_max_length,
+            name: other_name,
+            nullable: other_nullable,
+            on_delete: other_on_delete,
+            outbox_exclude: other_outbox_exclude,
+            rationale: other_rationale,
+            relation_kind: other_relation_kind,
+            renamed_from: other_renamed_from,
+            sequence_within: other_sequence_within,
+            sql_type: other_sql_type,
+            unique: other_unique,
+            // Deliberately excluded from PartialEq — see impl doc.
+            type_change_using: _,
+        } = other;
+        self_check == other_check
+            && self_comment == other_comment
+            && self_default_sql == other_default_sql
+            && self_foreign_key == other_foreign_key
+            && self_generated == other_generated
+            && self_identity == other_identity
+            && self_index_type == other_index_type
+            && self_indexed == other_indexed
+            && self_max_length == other_max_length
+            && self_name == other_name
+            && self_nullable == other_nullable
+            && self_on_delete == other_on_delete
+            && self_outbox_exclude == other_outbox_exclude
+            && self_rationale == other_rationale
+            && self_relation_kind == other_relation_kind
+            && self_renamed_from == other_renamed_from
+            && self_sequence_within == other_sequence_within
+            && self_sql_type == other_sql_type
+            && self_unique == other_unique
     }
 }
 

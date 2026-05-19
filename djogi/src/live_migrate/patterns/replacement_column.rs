@@ -58,6 +58,32 @@ impl Pattern for ReplacementColumn {
     const IDEMPOTENT_PREDICATE: bool = true;
 
     fn emit(op: &SchemaOperation, ctx: &PatternContext) -> Result<Vec<Step>, PatternError> {
+        // djogi#220 — belt-and-braces refusal when the adopter supplied
+        // a `#[field(type_change_using = "<expr>")]` clause. The
+        // classifier
+        // ([`crate::live_migrate::classify::classify_column_change`])
+        // routes `using.is_some()` to `OfflineOnly` so this pattern
+        // should never be dispatched in that case; the explicit refusal
+        // below is a defense-in-depth guard. The shadow-column backfill
+        // can only emit a plain SQL cast (`SET <shadow> = <col>::<to>`)
+        // and cannot replicate the adopter's USING body — emitting the
+        // default cast anyway would silently corrupt or fail-per-row on
+        // exactly the rows the adopter wrote the expression to handle.
+        if let SchemaOperation::AlterColumn {
+            change: ColumnChange::ChangeType { using: Some(_), .. },
+            ..
+        } = op
+        {
+            return Err(PatternError::CannotEmit {
+                pattern: Self::ID,
+                reason: "ColumnChange::ChangeType carries adopter-supplied `using` \
+                         (#[field(type_change_using = \"...\")]); the shadow-column \
+                         backfill cannot replicate a custom USING expression. The \
+                         classifier routes this case to OfflineOnly — apply the \
+                         migration via the offline path"
+                    .to_string(),
+            });
+        }
         let (table, column, to_type) = match op {
             SchemaOperation::AlterColumn {
                 table,
@@ -357,5 +383,41 @@ mod tests {
         };
         let err = ReplacementColumn::emit(&op, &ctx()).unwrap_err();
         assert!(matches!(err, PatternError::WrongOperation { .. }));
+    }
+
+    #[test]
+    fn rejects_change_type_with_adopter_using() {
+        // djogi#220 — adopter-supplied `using` forces the offline path.
+        // The classifier
+        // ([`crate::live_migrate::classify::classify_column_change`])
+        // routes this case to `OfflineOnly` so the dispatcher never
+        // reaches the pattern. The explicit refusal here is the
+        // defense-in-depth guard against future composers that bypass
+        // the classifier — emitting the default cast in the backfill
+        // would silently corrupt or fail-per-row on exactly the rows
+        // the adopter wrote the expression to handle.
+        let op = SchemaOperation::AlterColumn {
+            table: "items".to_string(),
+            column: "kind".to_string(),
+            change: ColumnChange::ChangeType {
+                from: "TEXT".to_string(),
+                to: "UUID".to_string(),
+                using: Some("(\"kind\"::text)::uuid".to_string()),
+            },
+        };
+        let err = ReplacementColumn::emit(&op, &ctx()).unwrap_err();
+        match err {
+            PatternError::CannotEmit { reason, .. } => {
+                assert!(
+                    reason.contains("type_change_using") || reason.contains("USING"),
+                    "refusal reason must name the corrective attribute: {reason}",
+                );
+                assert!(
+                    reason.contains("offline") || reason.contains("OfflineOnly"),
+                    "refusal reason must point at the offline path: {reason}",
+                );
+            }
+            other => panic!("expected CannotEmit, got: {other:?}"),
+        }
     }
 }

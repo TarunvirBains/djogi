@@ -162,6 +162,21 @@ pub enum LossyRollbackKind {
     /// Surfaces in `migrations status` as the "POINT OF NO RETURN"
     /// marker.
     PkTypeFlipPostCutover,
+    /// Forward `ALTER COLUMN ... TYPE ...` carried an
+    /// adopter-supplied `USING (<expr>)` clause via
+    /// `#[field(type_change_using = "...")]` (djogi#220). The
+    /// emitter's down side falls back to the default
+    /// `USING <col>::<old_type>` cast — Postgres has no way to
+    /// reconstruct an arbitrary inverse from the forward expression,
+    /// and djogi deliberately does not model a symmetric down-side
+    /// USING. If the forward expression is structurally lossy
+    /// (`TRIM`, `CASE WHEN ... THEN NULL`, regex extraction, codec
+    /// decode, ...), the original row values cannot be recovered on
+    /// rollback. `LossyRollbackPolicy::Refuse` engages on this kind
+    /// so the operator decides whether to proceed; the down SQL
+    /// always remains hand-editable for adopters who need a non-
+    /// default inverse.
+    CustomCast,
 }
 
 /// Errors the SQL emitter surfaces.
@@ -773,15 +788,33 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
             // hint, not a contract.
             let mut up = String::new();
             if using.is_none() && type_change_likely_requires_using(from, to) {
+                // Heuristic warning. The framework always emits an
+                // explicit `USING <col>::<new>` cast — Postgres does
+                // NOT raise `column "..." cannot be cast automatically`
+                // here (that error fires only when an `ALTER COLUMN
+                // TYPE` is written without any USING clause, falling
+                // back to the assignment cast). The actual failure mode
+                // for these pairs is per-row: the explicit cast
+                // `<from>::<to>` is *defined* (text::uuid, text::integer
+                // are defined as explicit casts in Postgres) but
+                // rejects any row whose value does not parse as the
+                // target type, surfacing as
+                // `invalid input syntax for type <to>` (or a similar
+                // per-pair shape such as `invalid input syntax for
+                // integer`). Name that mode in the warning so adopters
+                // who grep CI logs for the literal error find the
+                // right diagnostic.
                 let _ = writeln!(
                     up,
                     "-- WARNING: `{table}.{column}` `{from}` -> `{to}` is a known incompatible cast pair.\n\
-                     -- Postgres typically refuses the default `USING <col>::<new_type>` cast for this\n\
-                     -- transition and the apply will fail with `column cannot be cast automatically`.\n\
-                     -- Add `#[field(type_change_using = \"<sql expr>\")]` to the field on the model\n\
-                     -- struct and re-compose to inline a custom `USING` clause; the adopter owns the\n\
-                     -- expression's correctness against the column's old and new types. See\n\
-                     -- `docs/guide/models.md` `#[field(...)]` reference and djogi#220 for details."
+                     -- The framework emits `USING <col>::<new_type>` (the explicit cast) — every row's\n\
+                     -- value must parse as a syntactically valid `{to}` literal under `{from}::{to}` or\n\
+                     -- the apply will fail with `invalid input syntax for type {to}` (or similar). Add\n\
+                     -- `#[field(type_change_using = \"<sql expr>\")]` to the field on the model struct\n\
+                     -- and re-compose to inline a custom `USING` clause that handles edge cases (TRIM,\n\
+                     -- CASE WHEN, validation). The adopter owns the expression's correctness against\n\
+                     -- the column's old and new types. See `docs/guide/models.md` `#[field(...)]`\n\
+                     -- reference and djogi#220 for details."
                 );
             }
             match using {
@@ -800,7 +833,27 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
             }
             let down =
                 format!("ALTER TABLE {qt} ALTER COLUMN {qc} TYPE {from} USING {qc}::{from};");
-            (up, down, "change TYPE", None)
+            // Lossy-rollback safety net (djogi#220 follow-up). When the
+            // forward step carries an adopter `USING (<expr>)`, the
+            // down side falls back to the default `<col>::<old_type>`
+            // cast — Postgres cannot derive an inverse of an arbitrary
+            // expression. If the forward expression discards
+            // information (TRIM, CASE → NULL, regex extraction,
+            // codec decode, ...) the down SQL silently emits as a
+            // structurally lossy rollback that returns equal-but-not-
+            // identical row values. Mark the warning so
+            // `LossyRollbackPolicy::Refuse` (the default) engages and
+            // requires explicit operator opt-in to apply.
+            let lossy = using.as_ref().map(|expr| LossyRollbackWarning {
+                kind: LossyRollbackKind::CustomCast,
+                detail: format!(
+                    "column `{table}.{column}`: forward `USING ({expr})` is \
+                     adopter-supplied; rollback emits the default `<col>::{from}` \
+                     cast and may not reconstruct original row data. Hand-edit the \
+                     emitted down SQL if a non-default inverse is required."
+                ),
+            });
+            (up, down, "change TYPE", lossy)
         }
         ColumnChange::SetCheck { from, to } => {
             // Postgres has no `ALTER COLUMN ... SET CHECK`; check
@@ -1906,18 +1959,28 @@ pub(crate) fn quote_string_literal(value: &str) -> String {
     out
 }
 
-/// Heuristic for whether the implicit Postgres cast between `from` and
-/// `to` SQL types is likely to fail at apply time, requiring an
-/// adopter-supplied `USING` clause via
+/// Heuristic for whether the explicit Postgres cast between `from` and
+/// `to` SQL types is likely to fail at apply time on real row data,
+/// requiring an adopter-supplied `USING` clause via
 /// `#[field(type_change_using = "<sql expr>")]` (djogi#220).
 ///
-/// Returns `true` for type-pair shapes Postgres consistently refuses
-/// to convert automatically. The list is intentionally narrow — false
-/// positives over-warn the operator (acceptable; the warning is a
-/// SQL comment in the migration, not a refusal), and false negatives
-/// surface as the regular Postgres apply-time error. We err on the
-/// side of NOT warning when the cast direction is genuinely ambiguous
-/// (e.g. `numeric → integer` truncates but is implicitly accepted).
+/// Returns `true` for type-pair shapes where the explicit cast
+/// `<from>::<to>` is *defined* by Postgres (so the SQL is accepted)
+/// but rejects any row whose value does not parse as a syntactically
+/// valid `<to>` literal — surfacing per-row as
+/// `invalid input syntax for type <to>` (or a similar per-pair shape
+/// such as `invalid input syntax for integer`). The framework always
+/// emits `ALTER COLUMN ... TYPE <to> USING <col>::<to>` (the explicit
+/// cast form), so the bare-USING / assignment-cast Postgres error
+/// `column "..." cannot be cast automatically` does not fire here —
+/// the failure surfaces against the column data instead.
+///
+/// The list is intentionally narrow — false positives over-warn the
+/// operator (acceptable; the warning is a SQL comment in the
+/// migration, not a refusal), and false negatives surface as the
+/// regular Postgres apply-time error. We err on the side of NOT
+/// warning when the cast direction is genuinely ambiguous (e.g.
+/// `numeric → integer` truncates but is implicitly accepted).
 ///
 /// **Recognised pairs.**
 ///
@@ -2977,12 +3040,53 @@ mod tests {
             "DOWN must use default cast: {}",
             sql.down
         );
+        // djogi#220 follow-up — forward `using.is_some()` must attach a
+        // CustomCast LossyRollbackWarning so `LossyRollbackPolicy::Refuse`
+        // (the default) engages on rollback. The down side cannot derive
+        // an inverse of an arbitrary adopter expression, so the operator
+        // must opt in explicitly before rolling back.
+        let lossy = sql
+            .lossy
+            .as_ref()
+            .expect("forward `using.is_some()` must surface LossyRollbackWarning");
+        assert!(matches!(lossy.kind, LossyRollbackKind::CustomCast));
+        assert!(
+            lossy.detail.contains("items") && lossy.detail.contains("kind"),
+            "lossy detail must identify the column: {}",
+            lossy.detail
+        );
+    }
+
+    #[test]
+    fn alter_column_change_type_without_using_emits_no_lossy_marker() {
+        // Counter-pin to the previous test: a forward step WITHOUT an
+        // adopter `using` carries no lossy marker — the default cast is
+        // symmetric (Postgres' explicit `<col>::<old>` cast reverses
+        // `<col>::<new>` exactly), so `LossyRollbackPolicy::Refuse`
+        // does NOT engage on the rollback.
+        let sql = emit_alter_column(
+            "events",
+            "amount",
+            &ColumnChange::ChangeType {
+                from: "INTEGER".to_string(),
+                to: "BIGINT".to_string(),
+                using: None,
+            },
+        );
+        assert!(
+            sql.lossy.is_none(),
+            "default-cast ChangeType must not surface a lossy marker: {:?}",
+            sql.lossy
+        );
     }
 
     #[test]
     fn alter_column_change_type_warns_for_known_incompatible_pair_without_using() {
-        // TEXT → UUID is a known incompatible cast pair — Postgres
-        // refuses the default `USING <col>::UUID` cast. Without an
+        // TEXT → UUID is a known incompatible cast pair. The framework
+        // emits `USING <col>::UUID` (the explicit cast), which Postgres
+        // accepts at parse time — but the per-row evaluation fails with
+        // `invalid input syntax for type uuid` on any row whose TEXT
+        // value isn't a syntactically valid UUID literal. Without an
         // adopter `type_change_using`, the emitter must prepend a
         // `-- WARNING:` SQL comment that points at the
         // `#[field(type_change_using = "...")]` attribute. The

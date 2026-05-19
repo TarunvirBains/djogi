@@ -991,16 +991,27 @@ emitter lowers the transition to:
 ALTER TABLE <t> ALTER COLUMN <c> TYPE <new> USING <c>::<new>;
 ```
 
-Postgres performs the implicit cast for every pair that has one defined
+Postgres performs the explicit cast for every pair that has one defined
 (widenings like `INTEGER → BIGINT`, `varchar(N) → text`, ...). For
 **non-default cast paths** — `TEXT → UUID`, `TEXT → INTEGER`, custom
-domain changes, citext flips — the default `USING <col>::<new_type>`
-fails at apply time with:
+domain changes, citext flips — the explicit cast `<from>::<to>` is
+still defined by Postgres (text→uuid, text→integer, ... are valid
+explicit casts), so the framework's emitted statement is accepted at
+parse time. The failure mode is per-row: the cast rejects any row whose
+value does not parse as a syntactically valid `<to>` literal, surfacing
+at apply time as:
 
 ```
-ERROR: column "<c>" cannot be cast automatically to type <new>
-HINT: You might need to specify "USING <c>::<new>".
+ERROR: invalid input syntax for type <to>: "<row value>"
 ```
+
+(or a similar per-pair shape such as `invalid input syntax for
+integer`). The framework's emission always carries an explicit
+`USING <col>::<new>` clause, so the *bare-USING* error
+`column "<c>" cannot be cast automatically to type <new>` (which fires
+only when no `USING` is supplied and Postgres falls back to the
+assignment cast) does not surface here — it is the row-data shape, not
+the cast direction, that causes the apply to fail.
 
 The framework's lowering rule:
 
@@ -1016,15 +1027,20 @@ The framework's lowering rule:
    symmetric down-side `USING` expressions are not modelled. The
    rollback path is operator-owned in practice; an adopter whose
    rollback also requires a special cast hand-edits the emitted down
-   SQL.
+   SQL. **When the forward step uses an adopter `USING (<expr>)`,
+   the emitter additionally attaches a `LossyRollbackWarning` of kind
+   `CustomCast`** so `LossyRollbackPolicy::Refuse` (the default)
+   engages and requires explicit operator opt-in before rolling
+   back — see [`crate::migrate::sql::LossyRollbackKind::CustomCast`].
 4. When `#[field(type_change_using = "...")]` is absent and the differ
    detects a known-incompatible cast pair (`TEXT ↔ UUID`,
    `TEXT ↔ INTEGER/SMALLINT/BIGINT`, `UUID ↔ integer family`), the
    emitter prepends a `-- WARNING:` SQL comment to the migration that
    names the corrective attribute. The comment is a soft signal — the
    default cast still emits and Postgres still rejects the migration at
-   apply time. The warning helps adopters discover the corrective
-   attribute before the apply-time error surfaces in CI.
+   apply time (per-row `invalid input syntax for type ...`). The
+   warning helps adopters discover the corrective attribute before the
+   apply-time error surfaces in CI.
 
 **Raw SQL escape.** The expression is treated identically to a raw SQL
 fragment — djogi performs no parsing, sanitisation, or validation
@@ -1050,11 +1066,53 @@ from the manual `PartialEq` impl, so:
   from source after the migration applies. The framework does not
   enforce removal.
 
+**Live-plan limitation.** `#[field(type_change_using = "...")]` forces
+the migration to the **offline-apply path**. The live-plan
+shadow-column pattern at
+[`crate::live_migrate::patterns::replacement_column`] can only emit a
+default SQL cast (`SET <shadow> = <col>::<to>`) in its chunked
+backfill — it cannot replicate an adopter-supplied USING expression
+in a per-row `SET`. The classifier
+([`crate::live_migrate::classify::classify_column_change`]) therefore
+routes `ColumnChange::ChangeType { using: Some(_), .. }` to
+`OnlineSafetyClassification::OfflineOnly` so the dispatcher never
+sees a non-default-cast change. The dispatcher and both relevant
+pattern emitters
+([`crate::live_migrate::patterns::dispatch_pattern`],
+[`crate::live_migrate::patterns::replacement_column`], and
+[`crate::live_migrate::patterns::codec_transition`]) carry a
+defense-in-depth `CannotEmit` refusal for the same case. Adopters who
+need a non-default cast supply `type_change_using` and apply the
+migration via the offline `migrations apply` path; the live-plan path
+is reserved for cast pairs Postgres handles with its built-in
+explicit cast and no row-data hazards.
+
 Macro-level parse-time validation rejects `#[field(type_change_using = "")]`
 and whitespace-only literals with a span-precise diagnostic pointing
-at the offending string. See
-`djogi-macros/tests/compile_fail/phase8_5_c4_220_type_change_using_*`
-for the pinned diagnostic shape.
+at the offending string. The validator also rejects the following
+attribute combinations:
+
+- `type_change_using` paired with `#[field(generated = "...")]` — a
+  stored generated column derives its storage type from the
+  expression. `ALTER COLUMN TYPE` on a generated column re-evaluates
+  the generation expression with the new storage type, and Postgres'
+  semantics for USING on a stored generated column are surprising at
+  best. Hand-edit the migration if a stored generated column needs
+  to flip storage type.
+- `type_change_using` on a `ForeignKey<T>` or `OneToOneField<T>`
+  field — FK type changes happen via PK flips on the parent model
+  (Phase 7 PK-flip orchestration), not as direct column type changes
+  on the child side. An adopter USING here cannot drive the typed
+  PK-flip apparatus.
+
+Field-level `#[field(identity)]` does not exist as a user-facing
+attribute — the projection assigns
+`identity: Some(IdentityKindSchema::ByDefault)` to the auto-injected
+`id` column on `pk = Serial` models, and that field is not
+user-modifiable, so the combination cannot arise at macro parse time.
+
+See `djogi-macros/tests/compile_fail/phase8_5_c4_220_type_change_using_*`
+for the pinned diagnostic shapes.
 
 #### 10.10b.2 Generated column expression changes (djogi#221)
 
