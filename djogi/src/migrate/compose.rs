@@ -4059,6 +4059,10 @@ mod tests {
             .unwrap();
         assert!(row.get::<_, bool>(0));
         tx.rollback().await.unwrap();
+        // Drop the client before awaiting the connection task; while the
+        // client is alive the connection task keeps waiting for more
+        // requests, causing `connection.await` to deadlock.
+        drop(client);
 
         connection.await.unwrap();
     }
@@ -4302,6 +4306,10 @@ mod tests {
             "empty date array must pass the helper check"
         );
         tx.rollback().await.unwrap();
+        // Drop the client before awaiting the connection task; while the
+        // client is alive the connection task keeps waiting for more
+        // requests, causing `connection.await` to deadlock.
+        drop(client);
 
         connection.await.unwrap();
     }
@@ -4378,6 +4386,10 @@ mod tests {
             "empty timestamptz array must pass the helper check"
         );
         tx.rollback().await.unwrap();
+        // Drop the client before awaiting the connection task; while the
+        // client is alive the connection task keeps waiting for more
+        // requests, causing `connection.await` to deadlock.
+        drop(client);
 
         connection.await.unwrap();
     }
