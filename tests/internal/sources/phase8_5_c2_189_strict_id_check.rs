@@ -36,6 +36,19 @@
 //    enabled — the CHECK does not change typed-surface behaviour for
 //    well-formed IDs.
 //
+// 7. **Custom-PK FK skip (catalog assertion).** When `#[model(strict_ids)]`
+//    is on and an FK column targets a `PkType::Custom` model, the projection
+//    emits NO CHECK — regardless of whether the Custom PK's inner `SQL_TYPE`
+//    coincidentally matches BIGINT (HeerId carrier) or UUID (RanjId carrier).
+//    Covered for both carriers: Custom-BIGINT (post-review hardening) and
+//    Custom-UUID (djogi#189 coverage extension).
+//
+// 8. **Field-level FK opt-in to Custom-PK targets (catalog assertion).**
+//    `#[field(strict_id_check)]` on an FK column (without model-wide
+//    `#[model(strict_ids)]`) pointing at a Custom BIGINT or Custom UUID PK
+//    target must also emit NO CHECK — the field-level opt-in and the
+//    model-wide propagation share the same family-dispatch path.
+//
 // # Why a tests/internal target
 //
 // Point (5) requires constructing Postgres values outside the type's
@@ -177,6 +190,82 @@ pub struct Phase85C2189CustomBigintFkSource {
     /// itself still works (the column SQL type is BIGINT, matching the
     /// target's PK).
     pub owner_id: ForeignKey<Phase85C2189CustomBigintTarget>,
+    pub label: String,
+}
+
+// ── (7) Custom-UUID target — FK propagation must skip the CHECK ──────────────
+//
+// djogi#189 (coverage extension): same invariant as (6) but for a UUID-carrier
+// Custom PK. A `PkType::Custom { sql_type: "UUID", .. }` shares the UUID
+// carrier with RanjId but is NOT a HeerRanjID identifier. Neither model-wide
+// `#[model(strict_ids)]` nor field-level `#[field(strict_id_check)]` must emit
+// the UUIDv8 + RFC 4122 CHECK — the projection's family dispatch resolves the
+// target to `StrictIdFamily::None` unconditionally for Custom PKs.
+//
+// `gen_random_uuid()` is a standard Postgres UUIDv4 generator present in every
+// Postgres ≥ 13 (well within Djogi's supported range). The test only asserts
+// catalog state (CHECK absence + FK column SQL type); no INSERT is needed, so
+// the UUIDv4-producing default does not conflict with the RanjId structural
+// semantics pinned elsewhere in this file.
+djogi::primary_key! {
+    pub struct Phase85C2189CustomUuidId(::uuid::Uuid);
+    sql_type = "UUID";
+    default_sql = "gen_random_uuid()";
+}
+
+#[model(table = "phase8_5_c2_189_custom_uuid_target", pk = Phase85C2189CustomUuidId, no_default)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Phase85C2189CustomUuidTarget {
+    pub label: String,
+}
+
+#[model(
+    table = "phase8_5_c2_189_custom_uuid_fk_source",
+    pk = HeerId,
+    strict_ids,
+    no_default,
+)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Phase85C2189CustomUuidFkSource {
+    /// FK to a Custom-UUID PK target under model-wide `#[model(strict_ids)]`.
+    /// The projection resolves the target's PK family to `StrictIdFamily::None`
+    /// (Custom — not HeerRanjID) and emits no UUIDv8 + RFC 4122 CHECK on this
+    /// FK column, even though the carrier SQL type is UUID.
+    pub owner_id: ForeignKey<Phase85C2189CustomUuidTarget>,
+    pub label: String,
+}
+
+// ── (8) Field-level FK opt-in to Custom-PK targets — no CHECK expected ───────
+//
+// When `#[field(strict_id_check)]` is placed on an FK column explicitly
+// (without model-wide `#[model(strict_ids)]`), the projection applies the same
+// family-based dispatch. If the FK target's PK family is `StrictIdFamily::None`
+// (Custom), no CHECK is emitted. The field-level opt-in is accepted at parse
+// time (FK is a relation field, whitelisted by the macro) but the projection
+// silently skips the CHECK — same behaviour as the model-wide propagation.
+
+#[model(table = "phase8_5_c2_189_field_fk_custom_bigint_src", pk = HeerId, no_default)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Phase85C2189FieldFkCustomBigintSource {
+    /// Field-level `#[field(strict_id_check)]` on FK to a Custom-BIGINT PK
+    /// target; no model-wide `#[model(strict_ids)]`. The macro accepts the
+    /// attribute (FK is a relation field); at projection time the target's
+    /// family resolves to `StrictIdFamily::None` and no `>= 0` CHECK is
+    /// emitted.
+    #[field(strict_id_check)]
+    pub owner_id: ForeignKey<Phase85C2189CustomBigintTarget>,
+    pub label: String,
+}
+
+#[model(table = "phase8_5_c2_189_field_fk_custom_uuid_src", pk = HeerId, no_default)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Phase85C2189FieldFkCustomUuidSource {
+    /// Field-level `#[field(strict_id_check)]` on FK to a Custom-UUID PK
+    /// target; no model-wide `#[model(strict_ids)]`. Same dispatch path as the
+    /// BIGINT case — family resolves to `StrictIdFamily::None` and no UUIDv8 +
+    /// RFC 4122 CHECK is emitted.
+    #[field(strict_id_check)]
+    pub owner_id: ForeignKey<Phase85C2189CustomUuidTarget>,
     pub label: String,
 }
 
@@ -587,5 +676,121 @@ async fn strict_fk_rejects_negative_owner_id(mut ctx: djogi::DjogiContext) {
     assert!(
         msg.contains("phase8_5_c2_189_fk_source_owner_id_check"),
         "rejection must cite the FK column's strict_id_check constraint: {msg}"
+    );
+}
+
+// ── Catalog assertion — Custom-UUID FK skip (model-wide strict_ids) ───────────
+
+#[djogi::djogi_test(
+    sync_models = [Phase85C2189CustomUuidTarget, Phase85C2189CustomUuidFkSource]
+)]
+async fn fk_to_custom_uuid_target_skips_strict_check(mut ctx: djogi::DjogiContext) {
+    // djogi#189 (coverage extension). Model-wide `#[model(strict_ids)]` on
+    // the source model; FK target has a Custom-UUID PK. The UUID carrier
+    // coincidentally matches RanjId's carrier type, but `PkType::Custom`
+    // maps to `StrictIdFamily::None` unconditionally — the projection emits
+    // NO CHECK on the FK column. Parallel to `fk_to_custom_bigint_target_skips_strict_check`.
+    let id_checks: Vec<String> = ctx
+        .raw_rows(
+            "SELECT conname::text FROM pg_constraint \
+             WHERE conrelid = 'phase8_5_c2_189_custom_uuid_fk_source'::regclass \
+             AND contype = 'c' \
+             AND conname LIKE 'phase8_5_c2_189_custom_uuid_fk_source_owner_id%' \
+             ORDER BY conname",
+            &[],
+        )
+        .await
+        .expect("catalog query must succeed")
+        .into_iter()
+        .map(|row| row.try_get::<_, String>(0).unwrap())
+        .collect();
+    assert!(
+        id_checks.is_empty(),
+        "FK to a Custom-UUID PK target must NOT carry the strict-ID CHECK \
+         (Custom is not a HeerRanjID family); found: {id_checks:?}"
+    );
+
+    // The FK column must still carry the correct SQL type (UUID, inherited
+    // from Custom.sql_type) — the family-based skip applies only to the
+    // CHECK projection, not to the SQL carrier substitution.
+    let col_type: String = ctx
+        .raw_rows(
+            "SELECT format_type(atttypid, atttypmod)::text \
+             FROM pg_attribute \
+             WHERE attrelid = 'phase8_5_c2_189_custom_uuid_fk_source'::regclass \
+             AND attname = 'owner_id'",
+            &[],
+        )
+        .await
+        .expect("attribute query must succeed")
+        .into_iter()
+        .next()
+        .expect("owner_id column must exist")
+        .try_get::<_, String>(0)
+        .unwrap();
+    assert_eq!(
+        col_type, "uuid",
+        "FK column SQL type must still inherit from Custom.sql_type (UUID); \
+         the family-based skip applies only to the strict-ID CHECK"
+    );
+}
+
+// ── Catalog assertions — field-level FK opt-in to Custom-PK targets ──────────
+
+#[djogi::djogi_test(
+    sync_models = [Phase85C2189CustomBigintTarget, Phase85C2189FieldFkCustomBigintSource]
+)]
+async fn field_level_fk_to_custom_bigint_skips_strict_check(mut ctx: djogi::DjogiContext) {
+    // djogi#189 coverage gap (item 8). Field-level `#[field(strict_id_check)]`
+    // on an FK column (no model-wide `#[model(strict_ids)]`); FK target has a
+    // Custom-BIGINT PK. Same family-dispatch path as the model-wide case:
+    // target family = `StrictIdFamily::None` → no `>= 0` CHECK emitted.
+    let id_checks: Vec<String> = ctx
+        .raw_rows(
+            "SELECT conname::text FROM pg_constraint \
+             WHERE conrelid = 'phase8_5_c2_189_field_fk_custom_bigint_src'::regclass \
+             AND contype = 'c' \
+             AND conname LIKE 'phase8_5_c2_189_field_fk_custom_bigint_src_owner_id%' \
+             ORDER BY conname",
+            &[],
+        )
+        .await
+        .expect("catalog query must succeed")
+        .into_iter()
+        .map(|row| row.try_get::<_, String>(0).unwrap())
+        .collect();
+    assert!(
+        id_checks.is_empty(),
+        "field-level strict_id_check on FK to Custom-BIGINT must NOT emit a CHECK; \
+         found: {id_checks:?}"
+    );
+}
+
+#[djogi::djogi_test(
+    sync_models = [Phase85C2189CustomUuidTarget, Phase85C2189FieldFkCustomUuidSource]
+)]
+async fn field_level_fk_to_custom_uuid_skips_strict_check(mut ctx: djogi::DjogiContext) {
+    // djogi#189 coverage gap (item 8). Field-level `#[field(strict_id_check)]`
+    // on an FK column (no model-wide `#[model(strict_ids)]`); FK target has a
+    // Custom-UUID PK. The UUID carrier does not imply `StrictIdFamily::RanjId`
+    // for Custom PK types — the projection emits no UUIDv8 + RFC 4122 CHECK.
+    let id_checks: Vec<String> = ctx
+        .raw_rows(
+            "SELECT conname::text FROM pg_constraint \
+             WHERE conrelid = 'phase8_5_c2_189_field_fk_custom_uuid_src'::regclass \
+             AND contype = 'c' \
+             AND conname LIKE 'phase8_5_c2_189_field_fk_custom_uuid_src_owner_id%' \
+             ORDER BY conname",
+            &[],
+        )
+        .await
+        .expect("catalog query must succeed")
+        .into_iter()
+        .map(|row| row.try_get::<_, String>(0).unwrap())
+        .collect();
+    assert!(
+        id_checks.is_empty(),
+        "field-level strict_id_check on FK to Custom-UUID must NOT emit a CHECK; \
+         found: {id_checks:?}"
     );
 }
