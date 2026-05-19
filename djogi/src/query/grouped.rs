@@ -455,7 +455,10 @@ where
     /// `Vec<(K::Decoded, A::Decoded)>`.
     ///
     /// Keys are decoded positionally (ordinals 0..N_keys). Aggregates are
-    /// decoded by alias (`__djogi_agg_N`). Live round-trip coverage is in T14.
+    /// decoded by alias (`__djogi_agg_N`). For tenant-keyed models, the
+    /// terminal propagates the caller's auth tenant into the RLS GUC after
+    /// local validation and before SQL emission. Live round-trip coverage is
+    /// in T14.
     #[allow(clippy::type_complexity)]
     pub fn fetch_all<'ctx>(
         self,
@@ -500,6 +503,8 @@ where
                         .to_string(),
                 ));
             }
+
+            crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
 
             let acc = crate::query::sql::build_grouped_annotated_select(&self)
                 .map_err(crate::DjogiError::from)?;

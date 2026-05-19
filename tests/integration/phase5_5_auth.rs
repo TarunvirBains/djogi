@@ -66,6 +66,41 @@ async fn auto_set_tenant_from_auth_on_fetch(mut ctx: djogi::DjogiContext) {
 }
 
 #[djogi::djogi_test(sync_models = [TenantPost])]
+async fn annotated_fetch_auto_sets_tenant_from_auth(mut ctx: djogi::DjogiContext) {
+    let mut tx = ctx.begin().await.expect("begin transaction");
+    tx.set_auth(AuthContext::new(HeerId::from_i64(1).unwrap()).with_tenant("org_a"));
+
+    let rows = TenantPost::objects()
+        .annotate(|f| f.title().count())
+        .fetch_all(&mut tx)
+        .await
+        .expect("tenant-keyed annotated fetch");
+
+    assert!(rows.is_empty());
+    assert_eq!(tx.applied_tenant_id(), Some("org_a"));
+    assert!(tx.tenant_set);
+    tx.commit().await.expect("commit transaction");
+}
+
+#[djogi::djogi_test(sync_models = [TenantPost])]
+async fn grouped_annotated_fetch_auto_sets_tenant_from_auth(mut ctx: djogi::DjogiContext) {
+    let mut tx = ctx.begin().await.expect("begin transaction");
+    tx.set_auth(AuthContext::new(HeerId::from_i64(1).unwrap()).with_tenant("org_a"));
+
+    let rows = TenantPost::objects()
+        .group_by(|f| f.org_id())
+        .annotate(|f| f.title().count())
+        .fetch_all(&mut tx)
+        .await
+        .expect("tenant-keyed grouped annotated fetch");
+
+    assert!(rows.is_empty());
+    assert_eq!(tx.applied_tenant_id(), Some("org_a"));
+    assert!(tx.tenant_set);
+    tx.commit().await.expect("commit transaction");
+}
+
+#[djogi::djogi_test(sync_models = [TenantPost])]
 async fn auto_set_tenant_no_op_when_tenant_id_none(mut ctx: djogi::DjogiContext) {
     let mut tx = ctx.begin().await.expect("begin transaction");
     tx.set_auth(AuthContext::new(HeerId::from_i64(1).unwrap()));
