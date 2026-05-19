@@ -17,7 +17,7 @@
 cargo install djogi-cli
 ```
 
-All subcommands run from the project root (the directory containing `Djogi.toml`). The CLI reads `Djogi.toml` and the `DATABASE_URL`, `DJOGI_ENV` environment variables; `NODE_ID` is also consumed as infrastructure config for HeeRanjID node selection, but Djogi does not perform startup NODE_ID validation here.
+All subcommands run from the project root (the directory containing `Djogi.toml`). The CLI reads `Djogi.toml` and the `DATABASE_URL`, `DJOGI_ENV` environment variables; `HEER_NODE_ID` and `HEER_RANJ_NODE_ID` are infrastructure config for HeeRanjID node selection — wire them into the pool's `post_connect` hook; Djogi does not read them at the CLI layer.
 
 ---
 
@@ -560,7 +560,7 @@ Project created. Next steps:
   cd my-project
   docker compose up -d
   export DATABASE_URL="postgres://djogi:djogi@localhost/my_project"
-  export NODE_ID=1
+  export HEER_NODE_ID=1
   djogi db reset --seed
 ```
 
