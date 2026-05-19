@@ -179,10 +179,19 @@ async fn numrange_check_rejects_nan_in_lower_endpoint(mut ctx: djogi::DjogiConte
     // bounds)) IS NOT NULL AND ...)`) must reject a NUMRANGE whose
     // lower endpoint is `NaN`. Constructed via raw SQL because the
     // typed `Range<Decimal>` surface cannot hold a non-finite value.
+    //
+    // Upper bound is NULL (unbounded) rather than a finite value so that
+    // PostgreSQL's range constructor does not validate lower <= upper —
+    // NaN is ordered GREATER THAN all finite numerics in PostgreSQL, so
+    // `numrange('NaN', <finite>, '[)')` fails at construction time with
+    // SQLSTATE 22000 before reaching the table CHECK constraint. With an
+    // unbounded upper bound the constructor succeeds, `lower(bounds)`
+    // returns NaN, `scale(NaN)` returns NULL, and the Djogi structural
+    // CHECK fires as intended.
     let err = ctx
         .raw_execute(
             "INSERT INTO phase8_5_g0_decimal_special_range (bounds, label) \
-             VALUES (numrange('NaN'::numeric, 10::numeric, '[)'), 'range-lower-nan')",
+             VALUES (numrange('NaN'::numeric, NULL, '[)'), 'range-lower-nan')",
             &[],
         )
         .await
