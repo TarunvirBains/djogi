@@ -94,9 +94,10 @@ fn framework_field_descriptor(
             // `rationale` slot instead.
             comment: ::std::option::Option::None,
             // Phase 8.5 djogi#189 — propagated from `#[model(strict_ids)]`
-            // for the `id` column when the PK is HeerId / HeerIdDesc /
-            // RanjId / RanjIdDesc (the projection layer matches on the
-            // resolved SQL column type, not the PK enum directly).
+            // for the `id` column. Strict ID dispatch matches on the
+            // HeerRanjID semantic family (HeerId / HeerIdDesc / RanjId /
+            // RanjIdDesc) derived from the parent model's PkType; the
+            // resolved SQL column type is not consulted for this decision.
             // Always `false` for `created_at` / `updated_at`.
             strict_id_check: #strict_id_check,
         }
@@ -682,14 +683,17 @@ fn try_expand(
                     // comment. `None` for fields without an adopter
                     // comment.
                     comment: #comment_tokens,
-                    // Phase 8.5 djogi#189 — opt-in HeerId / RanjId
-                    // structural CHECK propagation. `true` when
-                    // either the field carries `#[field(strict_id_check)]`
-                    // or the model carries `#[model(strict_ids)]` AND
-                    // the field is HeerId / RanjId / FK / O2O-shaped.
-                    // The projection layer reads this alongside the
-                    // resolved SQL column type to decide the CHECK
-                    // shape (BIGINT → HeerId; UUID → RanjId; else skip).
+                    // Phase 8.5 djogi#189 — opt-in strict HeerRanjID CHECK
+                    // propagation. `true` when the field carries
+                    // `#[field(strict_id_check)]` or the model carries
+                    // `#[model(strict_ids)]` and the field qualifies.
+                    // The projection layer dispatches CHECK shape via
+                    // three branches: (1) the framework `id` field uses
+                    // the parent model's PkType semantic family; (2) FK /
+                    // O2O relation columns use the FK target's PkType
+                    // semantic family; (3) bare user scalar fields use
+                    // the field's sql_type only after macro parse-time
+                    // HeerRanjID family validation confirms membership.
                     strict_id_check: #strict_id_check_lit,
                 }
             }
