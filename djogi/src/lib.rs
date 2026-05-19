@@ -430,8 +430,9 @@ pub use error::{DbError, DjogiError};
 pub type Result<T> = std::result::Result<T, DjogiError>;
 
 pub use expr::{
-    AggregateExpr, Case, CaseBuilder, DenseRank, Exists, Expr, OuterRef, QualifyCondition,
-    QualifyOp, Rank, RowNumber, Subquery, WindowRanking, grouping_of,
+    AggregateExpr, Case, CaseBuilder, DenseRank, Exists, Expr, HypotheticalSetAgg, KindEvidence,
+    MetadataAgg, OrderedSetAgg, OuterRef, QualifyCondition, QualifyOp, Rank, RowNumber, Subquery,
+    ValueAgg, WindowRanking, grouping_of,
 };
 #[cfg(feature = "spatial")]
 pub use expr::{BinaryRowAgg, MvtOptions, RowAggregate, RowKindEvidence};
@@ -569,8 +570,9 @@ pub mod prelude {
     // who want the alias spell it `djogi::Result<T>` at function signatures
     // — the same shape `tokio::io::Result` / `sqlx::Result` use today.
     pub use crate::expr::{
-        AggregateExpr, Case, CaseBuilder, DenseRank, Exists, Expr, OuterRef, QualifyCondition,
-        QualifyOp, Rank, RowNumber, Subquery, WindowRanking, grouping_of,
+        AggregateExpr, Case, CaseBuilder, DenseRank, Exists, Expr, HypotheticalSetAgg,
+        KindEvidence, MetadataAgg, OrderedSetAgg, OuterRef, QualifyCondition, QualifyOp, Rank,
+        RowNumber, Subquery, ValueAgg, WindowRanking, grouping_of,
     };
     #[cfg(feature = "spatial")]
     pub use crate::expr::{BinaryRowAgg, MvtOptions, RowAggregate, RowKindEvidence};
