@@ -254,6 +254,25 @@ pub(crate) fn sql_cast_for_type(type_name: &str) -> Option<&'static str> {
         // text-extraction operator produces that text, which Postgres can
         // then cast to `interval` for a correct typed comparison.
         "djogi::pg_types::Interval" | "djogi::types::Interval" | "Interval" => Some("::interval"),
+        // Network family (djogi#213) — INET / CIDR / MACADDR text
+        // extraction inside JSONB columns produces the canonical
+        // Postgres text form (`192.168.1.0`, `10.0.0.0/8`,
+        // `aa:bb:cc:dd:ee:ff`). Casting to the typed column type lets
+        // Postgres normalise the value (e.g., trim leading zeros in
+        // IPv4 octets) before comparison.
+        //
+        // `IpAddr` is `std::net::IpAddr`; `type_name` returns
+        // `core::net::ip_addr::IpAddr` at runtime under stable Rust.
+        // `MacAddr` / `CidrAddr` live in `djogi::pg_types` (not a
+        // private submodule), so `type_name` produces
+        // `djogi::pg_types::MacAddr` / `djogi::pg_types::CidrAddr`.
+        // Defensive aliases (`djogi::types::*`, bare names) included
+        // for hand-written test strings as elsewhere in this match.
+        "core::net::ip_addr::IpAddr" | "std::net::IpAddr" | "core::net::IpAddr" | "IpAddr" => {
+            Some("::inet")
+        }
+        "djogi::pg_types::CidrAddr" | "djogi::types::CidrAddr" | "CidrAddr" => Some("::cidr"),
+        "djogi::pg_types::MacAddr" | "djogi::types::MacAddr" | "MacAddr" => Some("::macaddr"),
         // alloc::string::String / &str — text extraction already yields TEXT,
         // no cast needed. Both spellings are listed defensively.
         "alloc::string::String" | "String" | "&str" | "str" => None,
@@ -749,6 +768,82 @@ mod tests {
             sql_cast_for_type(name),
             Some("::interval"),
             "type_name<Interval>() = {name:?} did not map to ::interval"
+        );
+    }
+
+    // djogi#213 — network family JSONB path casts. Same pattern as the
+    // Interval casts above: defensive spellings + the `type_name`
+    // output anchor so a future rustc format change surfaces here
+    // rather than as silent text-fallback in JSONB INET/CIDR/MACADDR
+    // path comparisons.
+    #[test]
+    fn sql_cast_for_inet_aliases() {
+        // type_name produces `core::net::ip_addr::IpAddr` on stable Rust.
+        assert_eq!(
+            sql_cast_for_type("core::net::ip_addr::IpAddr"),
+            Some("::inet")
+        );
+        // Hand-written aliases — never produced by type_name but
+        // exercised by test strings.
+        assert_eq!(sql_cast_for_type("std::net::IpAddr"), Some("::inet"));
+        assert_eq!(sql_cast_for_type("core::net::IpAddr"), Some("::inet"));
+        assert_eq!(sql_cast_for_type("IpAddr"), Some("::inet"));
+    }
+
+    #[test]
+    fn sql_cast_uses_actual_type_name_for_ip_addr() {
+        let name = std::any::type_name::<std::net::IpAddr>();
+        assert_eq!(
+            sql_cast_for_type(name),
+            Some("::inet"),
+            "type_name<IpAddr>() = {name:?} did not map to ::inet"
+        );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn sql_cast_for_cidr_addr_aliases() {
+        assert_eq!(
+            sql_cast_for_type("djogi::pg_types::CidrAddr"),
+            Some("::cidr")
+        );
+        assert_eq!(sql_cast_for_type("djogi::types::CidrAddr"), Some("::cidr"));
+        assert_eq!(sql_cast_for_type("CidrAddr"), Some("::cidr"));
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn sql_cast_uses_actual_type_name_for_cidr_addr() {
+        let name = std::any::type_name::<crate::CidrAddr>();
+        assert_eq!(
+            sql_cast_for_type(name),
+            Some("::cidr"),
+            "type_name<CidrAddr>() = {name:?} did not map to ::cidr"
+        );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn sql_cast_for_mac_addr_aliases() {
+        assert_eq!(
+            sql_cast_for_type("djogi::pg_types::MacAddr"),
+            Some("::macaddr")
+        );
+        assert_eq!(
+            sql_cast_for_type("djogi::types::MacAddr"),
+            Some("::macaddr")
+        );
+        assert_eq!(sql_cast_for_type("MacAddr"), Some("::macaddr"));
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn sql_cast_uses_actual_type_name_for_mac_addr() {
+        let name = std::any::type_name::<crate::MacAddr>();
+        assert_eq!(
+            sql_cast_for_type(name),
+            Some("::macaddr"),
+            "type_name<MacAddr>() = {name:?} did not map to ::macaddr"
         );
     }
 

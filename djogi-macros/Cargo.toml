@@ -22,6 +22,15 @@ proc-macro = true
 # locally. The macro crate itself has no spatial-specific code paths.
 spatial = ["djogi/spatial"]
 
+# Mirror of `djogi`'s `network` feature (djogi#213) — INET / CIDR /
+# MACADDR typed surface. The macro crate itself has no
+# network-specific code paths (the `rust_type_to_sql` arms recognise
+# the type names unconditionally, matching the spatial pattern); this
+# feature exists only so the lihaaf `network` suite can mirror it
+# through to the runtime crate when compiling the
+# `tests/compile_pass_network/` fixtures.
+network = ["djogi/network"]
+
 [dependencies]
 syn.workspace = true
 quote.workspace = true
@@ -126,3 +135,13 @@ fixture_dirs = ["tests/compile_fail", "tests/compile_pass"]
 name = "spatial"
 features = ["spatial"]
 fixture_dirs = ["tests/compile_pass_spatial"]
+
+# Network (djogi#213) compile-pass fixtures live in their own named
+# suite. Same pattern as `spatial`: per-fixture rustc invocations get
+# `--features network`, so `std::net::IpAddr` / `djogi::CidrAddr` /
+# `djogi::MacAddr` fields lower and the typed `eq` / `set` surfaces
+# resolve. The default fixture corpus stays feature-clean.
+[[package.metadata.lihaaf.suite]]
+name = "network"
+features = ["network"]
+fixture_dirs = ["tests/compile_pass_network"]

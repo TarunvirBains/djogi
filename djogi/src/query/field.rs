@@ -545,6 +545,26 @@ impl DjogiPortableEq for time::OffsetDateTime {}
 impl DjogiPortableEq for time::Date {}
 impl DjogiPortableEq for uuid::Uuid {}
 impl DjogiPortableEq for rust_decimal::Decimal {}
+// djogi#213 — network family. Rust structural `PartialEq` on these
+// types DOES agree byte-for-byte with Postgres `=` (unlike `Interval`,
+// whose Postgres `=` linearizes months/days). However, the network
+// types are deliberately NOT routed through `DjogiPortableEq` /
+// the generic portable predicate path. Reason: enabling the portable
+// path requires the macro classifier in `portable_field_emit.rs` to
+// recognise the type names as `Scalar`, which would cascade into
+// macro-emitted `where V: DjogiPortableEq` bounds for every model
+// field of those types. The macro crate cannot conditionally classify
+// based on the runtime crate's feature flags, so unconditionally
+// classifying network types as Scalar would fail to compile with
+// `network` off (the trait bound would fail at model expansion).
+// Routing through SQL-only DjogiField impls (below) instead keeps
+// the model expansion working regardless of feature state — the
+// network typed surface is reachable only when the feature is on
+// because that's when the field types themselves exist; the macro
+// classifier sees them as Unsupported and emits the catch-all
+// portable arm, while the explicit SQL-only impls below provide
+// `.eq` / `.neq` / `.in_` / `.not_in` directly. This is the same
+// pattern `Interval` uses.
 impl<V> DjogiPortableEq for V where
     V: crate::primary_key::PrimaryKey
         + PartialEq
@@ -1383,6 +1403,335 @@ impl<M: Model> DjogiField<M, Option<crate::Interval>> {
         I: IntoIterator<Item = crate::Interval>,
     {
         self.sql.not_in_list(values)
+    }
+}
+
+// ── DjogiField — SQL-only network family (djogi#213) ──────────────────────
+//
+// `INET`, `CIDR`, and `MACADDR` columns route through SQL-only DjogiField
+// methods for the same reason `Interval` does (see the bound-trait comment
+// above): the proc macro classifier in `djogi-macros` is feature-blind, so
+// classifying network types as portable scalars would cascade into
+// `where V: DjogiPortableEq` bounds at the model expansion site that fail
+// when the `network` feature is off. SQL-only impls keep the expansion
+// working regardless of feature state and reach the typed network surface
+// only when the feature is enabled (because that's when `IntoFilterValue`
+// is also available).
+
+#[cfg(feature = "network")]
+impl<M: Model> DjogiField<M, std::net::IpAddr> {
+    /// `inet_column = value` using PostgreSQL `INET` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: std::net::IpAddr) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// `inet_column <> value` using PostgreSQL `INET` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: std::net::IpAddr) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// `inet_column IN (v1, ...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = std::net::IpAddr>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// `inet_column NOT IN (v1, ...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = std::net::IpAddr>,
+    {
+        self.sql.not_in_list(values)
+    }
+}
+
+#[cfg(feature = "network")]
+impl<M: Model> DjogiField<M, Option<std::net::IpAddr>> {
+    /// Nullable `INET` equality. NULL rows follow SQL three-valued
+    /// logic; use [`DjogiField::is_null`] for an explicit NULL test.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: std::net::IpAddr) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// Nullable `INET` inequality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: std::net::IpAddr) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// Nullable `INET IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = std::net::IpAddr>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// Nullable `INET NOT IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = std::net::IpAddr>,
+    {
+        self.sql.not_in_list(values)
+    }
+}
+
+#[cfg(feature = "network")]
+impl<M: Model> DjogiField<M, crate::CidrAddr> {
+    /// `cidr_column = value` using PostgreSQL `CIDR` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: crate::CidrAddr) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// `cidr_column <> value` using PostgreSQL `CIDR` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: crate::CidrAddr) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// `cidr_column IN (v1, ...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::CidrAddr>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// `cidr_column NOT IN (v1, ...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::CidrAddr>,
+    {
+        self.sql.not_in_list(values)
+    }
+}
+
+#[cfg(feature = "network")]
+impl<M: Model> DjogiField<M, Option<crate::CidrAddr>> {
+    /// Nullable `CIDR` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: crate::CidrAddr) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// Nullable `CIDR` inequality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: crate::CidrAddr) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// Nullable `CIDR IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::CidrAddr>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// Nullable `CIDR NOT IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::CidrAddr>,
+    {
+        self.sql.not_in_list(values)
+    }
+}
+
+#[cfg(feature = "network")]
+impl<M: Model> DjogiField<M, crate::MacAddr> {
+    /// `macaddr_column = value` using PostgreSQL `MACADDR` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: crate::MacAddr) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// `macaddr_column <> value` using PostgreSQL `MACADDR` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: crate::MacAddr) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// `macaddr_column IN (v1, ...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::MacAddr>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// `macaddr_column NOT IN (v1, ...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::MacAddr>,
+    {
+        self.sql.not_in_list(values)
+    }
+}
+
+#[cfg(feature = "network")]
+impl<M: Model> DjogiField<M, Option<crate::MacAddr>> {
+    /// Nullable `MACADDR` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: crate::MacAddr) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// Nullable `MACADDR` inequality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: crate::MacAddr) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// Nullable `MACADDR IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::MacAddr>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// Nullable `MACADDR NOT IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::MacAddr>,
+    {
+        self.sql.not_in_list(values)
+    }
+}
+
+// ── DjogiPresentField — present-only nullable network family ─────────────
+
+#[cfg(feature = "network")]
+impl<M: Model> DjogiPresentField<M, std::net::IpAddr> {
+    /// Present-only nullable `INET = value`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: std::net::IpAddr) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// Present-only nullable `INET <> value`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: std::net::IpAddr) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// Present-only nullable `INET IN (...)`. An empty values list with
+    /// a non-empty IS NOT NULL guard renders as `IS NOT NULL`, matching
+    /// the present-only `Interval` semantics.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = std::net::IpAddr>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// Present-only nullable `INET NOT IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = std::net::IpAddr>,
+    {
+        let mut values = values.into_iter().peekable();
+        if values.peek().is_none() {
+            self.sql.is_not_null()
+        } else {
+            self.sql.not_in_list(values)
+        }
+    }
+}
+
+#[cfg(feature = "network")]
+impl<M: Model> DjogiPresentField<M, crate::CidrAddr> {
+    /// Present-only nullable `CIDR = value`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: crate::CidrAddr) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// Present-only nullable `CIDR <> value`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: crate::CidrAddr) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// Present-only nullable `CIDR IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::CidrAddr>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// Present-only nullable `CIDR NOT IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::CidrAddr>,
+    {
+        let mut values = values.into_iter().peekable();
+        if values.peek().is_none() {
+            self.sql.is_not_null()
+        } else {
+            self.sql.not_in_list(values)
+        }
+    }
+}
+
+#[cfg(feature = "network")]
+impl<M: Model> DjogiPresentField<M, crate::MacAddr> {
+    /// Present-only nullable `MACADDR = value`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: crate::MacAddr) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// Present-only nullable `MACADDR <> value`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: crate::MacAddr) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// Present-only nullable `MACADDR IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::MacAddr>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// Present-only nullable `MACADDR NOT IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::MacAddr>,
+    {
+        let mut values = values.into_iter().peekable();
+        if values.peek().is_none() {
+            self.sql.is_not_null()
+        } else {
+            self.sql.not_in_list(values)
+        }
     }
 }
 
@@ -2804,6 +3153,29 @@ impl IntoFilterValue for rust_decimal::Decimal {
 impl IntoFilterValue for crate::Interval {
     fn into_filter_value(self) -> FilterValue {
         FilterValue::Interval(self)
+    }
+}
+// djogi#213 — network family. `IntoFilterValue` is feature-gated to
+// match the FilterValue carrier variants. Equality on these types is
+// structural in Rust AND in Postgres (INET / CIDR / MACADDR `=` compare
+// bytes), so they ride the `DjogiPortableEq` path without an SQL-only
+// escape hatch the way `Interval` requires.
+#[cfg(feature = "network")]
+impl IntoFilterValue for std::net::IpAddr {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::Inet(self)
+    }
+}
+#[cfg(feature = "network")]
+impl IntoFilterValue for crate::CidrAddr {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::Cidr(self)
+    }
+}
+#[cfg(feature = "network")]
+impl IntoFilterValue for crate::MacAddr {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::Macaddr(self)
     }
 }
 impl<V> IntoFilterValue for Vec<V>

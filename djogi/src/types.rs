@@ -36,6 +36,25 @@ pub use crate::pg_types::Interval;
 // only with the `Range<T>` value itself.
 pub use crate::pg_types::{Range, RangeBound};
 
+// Phase 8.5 Cluster 4 — network types (djogi#213, `network` feature).
+//
+// `MacAddr` carries a 6-byte EUI-48 MAC address (Postgres `MACADDR`
+// columns); `CidrAddr` carries an `(IpAddr, u8)` network address +
+// prefix (Postgres `CIDR` columns). The `INET` column type is reached
+// through `std::net::IpAddr` directly (no djogi-side newtype) — the
+// `postgres-types` crate carries the native ToSql/FromSql impl, and
+// the host-address case is what adopters reaching for `INET` today
+// want. A future-work follow-up under the djogi#170 umbrella can add
+// `InetAddr { addr, prefix }` symmetric with `CidrAddr` if adopter
+// demand for non-host INET surfaces.
+//
+// The `CidrAddrError` / `MacAddrParseError` types are re-exported so
+// adopters who handle construction errors from `CidrAddr::new` /
+// `str::parse::<MacAddr>` can name the error type at the canonical
+// `djogi::types::*` path.
+#[cfg(feature = "network")]
+pub use crate::pg_types::{CidrAddr, CidrAddrError, MacAddr, MacAddrParseError};
+
 // Public naming — spec §3.5a. Internals keep `HeerIdDesc` / `RanjIdDesc`
 // to match heeranjid; user-facing surfaces (guides, `#[model(pk = X)]`)
 // use the `RecencyBiased` aliases so the name describes intent rather
