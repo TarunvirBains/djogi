@@ -1488,7 +1488,7 @@ const NUMERIC_ARRAY_HELPER_MARKER: &str = "djogi.__djogi_numeric_array_is_rust_d
 pub(crate) const NUMERIC_ARRAY_HELPER_PRELUDE: &str = r#"CREATE SCHEMA IF NOT EXISTS djogi;
 
 CREATE OR REPLACE FUNCTION djogi.__djogi_numeric_array_is_rust_decimal_v1(input_array pg_catalog.numeric[])
-RETURNS pg_catalog.boolean
+RETURNS pg_catalog.bool
 LANGUAGE sql
 IMMUTABLE STRICT PARALLEL SAFE
 AS $$
@@ -1557,7 +1557,7 @@ const TSTZ_ARRAY_HELPER_MARKER: &str = "djogi.__djogi_tstz_array_is_finite_v1(";
 pub(crate) const DATE_ARRAY_HELPER_PRELUDE: &str = r#"CREATE SCHEMA IF NOT EXISTS djogi;
 
 CREATE OR REPLACE FUNCTION djogi.__djogi_date_array_is_finite_v1(input_array pg_catalog.date[])
-RETURNS pg_catalog.boolean
+RETURNS pg_catalog.bool
 LANGUAGE sql
 IMMUTABLE STRICT PARALLEL SAFE
 AS $$
@@ -1589,7 +1589,7 @@ $$;
 pub(crate) const TSTZ_ARRAY_HELPER_PRELUDE: &str = r#"CREATE SCHEMA IF NOT EXISTS djogi;
 
 CREATE OR REPLACE FUNCTION djogi.__djogi_tstz_array_is_finite_v1(input_array pg_catalog.timestamptz[])
-RETURNS pg_catalog.boolean
+RETURNS pg_catalog.bool
 LANGUAGE sql
 IMMUTABLE STRICT PARALLEL SAFE
 AS $$
@@ -3999,7 +3999,7 @@ mod tests {
     #[test]
     fn compose_numeric_array_helper_prelude_uses_only_valid_schema_qualified_identifiers() {
         let expected_identifiers = [
-            "numeric", "boolean", "bool_and", "scale", "abs", "power", "numeric", "unnest",
+            "numeric", "bool", "bool_and", "scale", "abs", "power", "numeric", "unnest",
         ];
 
         assert_helper_prelude_uses_input_array_argument(
@@ -4007,6 +4007,7 @@ mod tests {
             "__djogi_numeric_array_is_rust_decimal_v1",
             "numeric",
         );
+        assert_helper_prelude_uses_pg_catalog_bool_return_type(NUMERIC_ARRAY_HELPER_PRELUDE);
         let found_identifiers = pg_catalog_identifiers(NUMERIC_ARRAY_HELPER_PRELUDE);
         for id in &found_identifiers {
             assert!(
@@ -4155,16 +4156,17 @@ mod tests {
 
     #[test]
     fn compose_date_array_helper_prelude_uses_only_valid_schema_qualified_identifiers() {
-        // date[], boolean, isfinite, bool_and, date, unnest — all legitimate
+        // date[], bool, isfinite, bool_and, date, unnest — all legitimate
         // pg_catalog-qualified identifiers. COALESCE is a conditional-expression
         // keyword and must NOT be schema-qualified.
-        let expected_identifiers = ["date", "boolean", "isfinite", "bool_and", "unnest"];
+        let expected_identifiers = ["date", "bool", "isfinite", "bool_and", "unnest"];
 
         assert_helper_prelude_uses_input_array_argument(
             DATE_ARRAY_HELPER_PRELUDE,
             "__djogi_date_array_is_finite_v1",
             "date",
         );
+        assert_helper_prelude_uses_pg_catalog_bool_return_type(DATE_ARRAY_HELPER_PRELUDE);
         let found_identifiers = pg_catalog_identifiers(DATE_ARRAY_HELPER_PRELUDE);
         for id in &found_identifiers {
             assert!(
@@ -4193,13 +4195,14 @@ mod tests {
 
     #[test]
     fn compose_tstz_array_helper_prelude_uses_only_valid_schema_qualified_identifiers() {
-        let expected_identifiers = ["timestamptz", "boolean", "isfinite", "bool_and", "unnest"];
+        let expected_identifiers = ["timestamptz", "bool", "isfinite", "bool_and", "unnest"];
 
         assert_helper_prelude_uses_input_array_argument(
             TSTZ_ARRAY_HELPER_PRELUDE,
             "__djogi_tstz_array_is_finite_v1",
             "timestamptz",
         );
+        assert_helper_prelude_uses_pg_catalog_bool_return_type(TSTZ_ARRAY_HELPER_PRELUDE);
         let found_identifiers = pg_catalog_identifiers(TSTZ_ARRAY_HELPER_PRELUDE);
         for id in &found_identifiers {
             assert!(
@@ -4403,6 +4406,17 @@ mod tests {
         assert!(
             !prelude.contains("pg_catalog.unnest(values)"),
             "Helper body must not reference the rejected `values` argument: {prelude}"
+        );
+    }
+
+    fn assert_helper_prelude_uses_pg_catalog_bool_return_type(prelude: &str) {
+        assert!(
+            prelude.contains("\nRETURNS pg_catalog.bool\n"),
+            "Helper prelude must use PostgreSQL's schema-qualified bool type: {prelude}"
+        );
+        assert!(
+            !prelude.contains("RETURNS pg_catalog.boolean"),
+            "Helper prelude must not use PostgreSQL's unqualified-only boolean alias with a schema: {prelude}"
         );
     }
 
