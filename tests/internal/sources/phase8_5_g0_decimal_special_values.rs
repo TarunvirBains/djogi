@@ -205,6 +205,29 @@ async fn numrange_check_rejects_nan_in_lower_endpoint(mut ctx: djogi::DjogiConte
 }
 
 #[djogi::djogi_test(sync_models = [DecimalSpecialRangeRow])]
+async fn numrange_check_rejects_nan_in_upper_endpoint(mut ctx: djogi::DjogiContext) {
+    // PostgreSQL's NUMERIC ordering places NaN GREATER THAN all finite
+    // values, so `numrange(0, NaN, '[)')` satisfies the constructor's
+    // lower <= upper check without any NULL workaround. The Djogi
+    // structural CHECK fires: `upper(bounds)` returns NaN,
+    // `scale(NaN)` returns NULL, and `IS NOT NULL` evaluates to FALSE.
+    let err = ctx
+        .raw_execute(
+            "INSERT INTO phase8_5_g0_decimal_special_range (bounds, label) \
+             VALUES (numrange(0::numeric, 'NaN'::numeric, '[)'), 'range-upper-nan')",
+            &[],
+        )
+        .await
+        .expect_err("NUMRANGE CHECK must reject 'NaN' on the upper endpoint");
+
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("phase8_5_g0_decimal_special_range_bounds_check"),
+        "NaN upper-endpoint error must reference the structural CHECK constraint name: {msg}"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [DecimalSpecialRangeRow])]
 async fn numrange_check_rejects_infinity_in_upper_endpoint(mut ctx: djogi::DjogiContext) {
     let err = ctx
         .raw_execute(
@@ -224,6 +247,32 @@ async fn numrange_check_rejects_infinity_in_upper_endpoint(mut ctx: djogi::Djogi
 }
 
 #[djogi::djogi_test(sync_models = [DecimalSpecialRangeRow])]
+async fn numrange_check_rejects_infinity_in_lower_endpoint(mut ctx: djogi::DjogiContext) {
+    // Upper bound is NULL (unbounded) rather than a finite value so that
+    // PostgreSQL's range constructor does not validate lower <= upper —
+    // Infinity is ordered GREATER THAN all finite numerics, so
+    // `numrange('Infinity', <finite>, '[)')` fails at construction time
+    // before reaching the table CHECK. With an unbounded upper the
+    // constructor succeeds and the Djogi structural CHECK fires on the
+    // lower endpoint.
+    let err = ctx
+        .raw_execute(
+            "INSERT INTO phase8_5_g0_decimal_special_range (bounds, label) \
+             VALUES (numrange('Infinity'::numeric, NULL, '[)'), 'range-lower-inf')",
+            &[],
+        )
+        .await
+        .expect_err("NUMRANGE CHECK must reject 'Infinity' on the lower endpoint");
+
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("phase8_5_g0_decimal_special_range_bounds_check"),
+        "+Infinity lower-endpoint error must reference the structural CHECK constraint name: \
+         {msg}"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [DecimalSpecialRangeRow])]
 async fn numrange_check_rejects_negative_infinity_in_lower_endpoint(mut ctx: djogi::DjogiContext) {
     let err = ctx
         .raw_execute(
@@ -238,6 +287,32 @@ async fn numrange_check_rejects_negative_infinity_in_lower_endpoint(mut ctx: djo
     assert!(
         msg.contains("phase8_5_g0_decimal_special_range_bounds_check"),
         "-Infinity lower-endpoint error must reference the structural CHECK constraint name: \
+         {msg}"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [DecimalSpecialRangeRow])]
+async fn numrange_check_rejects_negative_infinity_in_upper_endpoint(mut ctx: djogi::DjogiContext) {
+    // Lower bound is NULL (unbounded) rather than a finite value so that
+    // PostgreSQL's range constructor does not validate lower <= upper —
+    // -Infinity is ordered LESS THAN all finite numerics, so
+    // `numrange(<finite>, '-Infinity', '(]')` fails at construction time
+    // before reaching the table CHECK. With an unbounded lower the
+    // constructor succeeds and the Djogi structural CHECK fires on the
+    // upper endpoint.
+    let err = ctx
+        .raw_execute(
+            "INSERT INTO phase8_5_g0_decimal_special_range (bounds, label) \
+             VALUES (numrange(NULL, '-Infinity'::numeric, '(]'), 'range-upper-neg-inf')",
+            &[],
+        )
+        .await
+        .expect_err("NUMRANGE CHECK must reject '-Infinity' on the upper endpoint");
+
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("phase8_5_g0_decimal_special_range_bounds_check"),
+        "-Infinity upper-endpoint error must reference the structural CHECK constraint name: \
          {msg}"
     );
 }
