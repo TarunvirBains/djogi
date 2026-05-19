@@ -378,7 +378,10 @@ that combination).
 `percentile_cont(p)` / `percentile_disc(p)` / `mode()` — Postgres
 ordered-set aggregates with mandatory `WITHIN GROUP (ORDER BY col)`.
 The receiver column populates the WITHIN GROUP target at default ASC;
-override via `.within_group_order_by(other.desc())`.
+override via `.within_group_order_by(other.desc())` when a different
+single order key is needed. The replacement target must be the same
+type as (or Postgres-comparable to) the receiver column so the
+aggregate's return-type contract is preserved.
 
 ```rust
 let p95_latency: f64 = Request::objects()
@@ -387,10 +390,19 @@ let p95_latency: f64 = Request::objects()
     .await?;
 
 let median_amount: i64 = Order::objects()
+    .aggregate(|f| f.amount().percentile_disc(0.5))
+    .fetch_one(&mut ctx)
+    .await?;
+
+// Override WITHIN GROUP with a same-type column (both are i64) so the
+// aggregate's i64 return contract is preserved.  Crossing types here —
+// e.g. ordering by a DateTime column while decoding as i64 — would
+// produce a runtime decode failure.
+let high_first_median: i64 = Order::objects()
     .aggregate(|f| {
         f.amount()
             .percentile_disc(0.5)
-            .within_group_order_by(f.created_at().desc())
+            .within_group_order_by(f.amount().desc())
     })
     .fetch_one(&mut ctx)
     .await?;
@@ -437,7 +449,10 @@ Aggregate modifiers are type-state gated by aggregate family:
   `.distinct()`, `.filter(cond)`, `.order_by(other.asc())`, and
   `.over(|w| ...)`.
 - Ordered-set and hypothetical-set aggregates expose `.filter(cond)` and
-  `.within_group_order_by(other.asc())`. They deliberately do not expose
+  `.within_group_order_by(other.asc())` — where `other` must be the
+  same type as (or Postgres-comparable to) the receiver column for
+  ordered-set aggregates, and comparable to the supplied argument value
+  for hypothetical-set aggregates. They deliberately do not expose
   `.distinct()`, `.order_by(...)`, or `.over(...)`.
 - Metadata aggregates such as `grouping(...)` expose no aggregate modifiers.
 

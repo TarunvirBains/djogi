@@ -26,6 +26,9 @@ fn ordered_set_aggregate_methods_compile_on_public_surface() {
 
 #[test]
 fn ordered_set_within_group_override_and_filter_compile() {
+    // Safe same-type override: amount (i64) ordered by score (i64).
+    // The replacement target must match the receiver's type so the
+    // aggregate's return-type contract (i64 here) is preserved.
     let _ = OrderedHypotheticalProbe::objects().aggregate(|f| {
         f.amount()
             .percentile_disc(0.5)
@@ -51,6 +54,9 @@ fn hypothetical_set_aggregate_methods_compile_on_public_surface() {
 
 #[test]
 fn hypothetical_set_within_group_override_and_filter_compile() {
+    // Safe comparable-arg override: amount receiver (i64), argument 500_i64,
+    // replacement score column (i64) — all the same type, keeping the
+    // hypothetical-set comparability contract intact.
     let _ = OrderedHypotheticalProbe::objects().aggregate(|f| {
         f.amount()
             .rank_of(500_i64)

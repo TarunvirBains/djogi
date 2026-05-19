@@ -3131,18 +3131,22 @@ mod tests {
 
     #[test]
     fn within_group_order_by_overrides_default_target() {
-        // .within_group_order_by(other.desc()) replaces the default
-        // ASC target the typed builder set on construction.
+        // .within_group_order_by(other.desc()) replaces the default ASC target
+        // the typed builder set on construction.  The replacement column must
+        // be the same type as the receiver (both f64 here) so the
+        // aggregate's return-type contract is preserved — crossing types
+        // (e.g. f64 receiver ordered by i64) would produce a runtime decode
+        // failure and is explicitly disallowed by the public contract.
         let f: FieldRef<Txn, f64> = FieldRef::new("score");
-        let other: FieldRef<Txn, i64> = FieldRef::new("rank");
+        let other: FieldRef<Txn, f64> = FieldRef::new("response_time_ms");
         let agg = f.percentile_cont(0.95).within_group_order_by(other.desc());
         let mut acc = SqlAccumulator::new("");
         emit_expr(&mut acc, &agg.node, SqlEmitContext::root())
             .expect("aggregate expression should lower to SQL");
         let sql = acc.sql().to_string();
         assert!(
-            sql.contains(") WITHIN GROUP (ORDER BY rank DESC)"),
-            "expected DESC override on different column, got: {sql}"
+            sql.contains(") WITHIN GROUP (ORDER BY response_time_ms DESC)"),
+            "expected DESC override on same-type compatible column, got: {sql}"
         );
     }
 
@@ -3305,6 +3309,11 @@ mod tests {
     fn hypothetical_rank_within_group_override_works() {
         // The .within_group_order_by(...) modifier (T7) works for
         // hypothetical-set aggregates too — same IR slot.
+        // Both the receiver (salary: i64), the supplied argument (7_500: i64),
+        // and the replacement column (base_salary: i64) are the same type,
+        // preserving the hypothetical-set comparability contract.  Using a
+        // replacement column of an incompatible type would violate the
+        // contract and is explicitly disallowed by the public docs.
         let f: FieldRef<Txn, i64> = FieldRef::new("salary");
         let other: FieldRef<Txn, i64> = FieldRef::new("base_salary");
         let agg = f.rank_of(7_500).within_group_order_by(other.desc());
