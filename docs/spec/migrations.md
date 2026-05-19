@@ -974,14 +974,131 @@ attributes and lowered by `djogi migrations compose`.
 | `COMMENT ON COLUMN` | `#[field(comment = "...")]` | `COMMENT ON COLUMN <t>.<c> IS '...'`; `IS NULL` when cleared | [#217](https://github.com/TarunvirBains/djogi/issues/217) |
 | Per-table storage parameters (`fillfactor`, `autovacuum_*`, …) | `#[model(storage_params = "key=val, ...")]` | `ALTER TABLE <t> SET (key=val, ...)`; prior keys are reset when changed or cleared | [#218](https://github.com/TarunvirBains/djogi/issues/218) |
 | `CREATE TABLE … TABLESPACE <name>` | `#[model(tablespace = "...")]` | `ALTER TABLE <t> SET TABLESPACE <name>` after table creation; clearing lowers to `pg_default` | [#219](https://github.com/TarunvirBains/djogi/issues/219) |
-
-The remaining DDL metadata gaps are:
-
-| Feature | Planned attribute | Workaround today | Tracking |
-|---|---|---|---|
-| `ALTER COLUMN … TYPE … USING <expr>` | `#[field(type_change_using = "...")]` | Hand-edit the `ALTER COLUMN TYPE` statement in the composed SQL to add `USING (<expr>)` | [#220](https://github.com/TarunvirBains/djogi/issues/220) |
-| Generated column expression changes (PG 15+) | differ-automatic (verify status) | Confirm the differ emits `DROP EXPRESSION` + `SET EXPRESSION AS` rather than column-recreate; hand-write if not | [#221](https://github.com/TarunvirBains/djogi/issues/221) |
+| `ALTER COLUMN … TYPE … USING <expr>` | `#[field(type_change_using = "...")]` | one-time directive, see §10.10b.1 below | [#220](https://github.com/TarunvirBains/djogi/issues/220) |
+| Generated column expression changes (PG 17+) | differ-automatic | in-place `ALTER COLUMN … SET EXPRESSION AS (<new_expr>)`, see §10.10b.2 below | [#221](https://github.com/TarunvirBains/djogi/issues/221) |
 
 All six pieces are tracked under the [#172](https://github.com/TarunvirBains/djogi/issues/172)
 umbrella. The closing condition for the umbrella is all six pieces across five sub-issues (#217–#221) landed and
 `docs/spec/migrations.md` + `docs/guide/models.md` reflecting the final attribute contracts.
+
+#### 10.10b.1 `#[field(type_change_using = "<sql expr>")]` (djogi#220)
+
+When the migration differ detects that a column's `sql_type` changed
+between the prior snapshot and the freshly-projected schema, the SQL
+emitter lowers the transition to:
+
+```sql
+ALTER TABLE <t> ALTER COLUMN <c> TYPE <new> USING <c>::<new>;
+```
+
+Postgres performs the implicit cast for every pair that has one defined
+(widenings like `INTEGER → BIGINT`, `varchar(N) → text`, ...). For
+**non-default cast paths** — `TEXT → UUID`, `TEXT → INTEGER`, custom
+domain changes, citext flips — the default `USING <col>::<new_type>`
+fails at apply time with:
+
+```
+ERROR: column "<c>" cannot be cast automatically to type <new>
+HINT: You might need to specify "USING <c>::<new>".
+```
+
+The framework's lowering rule:
+
+1. The adopter annotates the field with
+   `#[field(type_change_using = "<sql expr>")]`. The expression is the
+   `USING` body — the framework wraps it in `USING (<expr>)` verbatim,
+   with no parsing, sanitisation, or escaping.
+2. The migration composer emits the typed column-type change as
+   `ALTER COLUMN <c> TYPE <new> USING (<expr>);`. The
+   adopter-supplied expression fully replaces the default
+   `<col>::<new_type>` fallback.
+3. The down (rollback) side ALWAYS falls back to the default cast —
+   symmetric down-side `USING` expressions are not modelled. The
+   rollback path is operator-owned in practice; an adopter whose
+   rollback also requires a special cast hand-edits the emitted down
+   SQL.
+4. When `#[field(type_change_using = "...")]` is absent and the differ
+   detects a known-incompatible cast pair (`TEXT ↔ UUID`,
+   `TEXT ↔ INTEGER/SMALLINT/BIGINT`, `UUID ↔ integer family`), the
+   emitter prepends a `-- WARNING:` SQL comment to the migration that
+   names the corrective attribute. The comment is a soft signal — the
+   default cast still emits and Postgres still rejects the migration at
+   apply time. The warning helps adopters discover the corrective
+   attribute before the apply-time error surfaces in CI.
+
+**Raw SQL escape.** The expression is treated identically to a raw SQL
+fragment — djogi performs no parsing, sanitisation, or validation
+beyond rejecting empty / whitespace-only strings at macro-parse time.
+**A wrong USING expression can silently corrupt or truncate column
+data** (see the §custom-PK-shape-flips note above on truncation risk).
+The same "raw SQL is djogi's `unsafe`" cultural posture from
+[`raw-sql-escape-hatches.md`](./raw-sql-escape-hatches.md) applies —
+every `#[field(type_change_using = "...")]` callsite should be
+reviewable as raw SQL. Test the migration in a non-production
+environment before applying it to data.
+
+**Lifetime — one-time directive.** The attribute is consulted only at
+the moment the differ emits a `ChangeType` for this column. The
+`ColumnSchema.type_change_using` slot is `#[serde(skip)]` and excluded
+from the manual `PartialEq` impl, so:
+
+- Leaving the attribute on the field after the migration applies
+  produces no phantom diff — the next compose run sees the same
+  `sql_type` on both sides and emits nothing.
+- The snapshot on disk never carries the value.
+- Adopters are encouraged (but not required) to remove the attribute
+  from source after the migration applies. The framework does not
+  enforce removal.
+
+Macro-level parse-time validation rejects `#[field(type_change_using = "")]`
+and whitespace-only literals with a span-precise diagnostic pointing
+at the offending string. See
+`djogi-macros/tests/compile_fail/phase8_5_c4_220_type_change_using_*`
+for the pinned diagnostic shape.
+
+#### 10.10b.2 Generated column expression changes (djogi#221)
+
+When a `#[field(generated = "<sql expr>")]` column changes its
+expression between two compose runs, the migration differ surfaces the
+transition as `ColumnChange::SetGenerated { from: Some(prev), to: Some(next) }`.
+The SQL emitter lowers this to the Postgres 17+ in-place form:
+
+```sql
+ALTER TABLE <t> ALTER COLUMN <c> SET EXPRESSION AS (<new_expr>);
+```
+
+Postgres rewrites every row under `AccessExclusiveLock` to materialise
+the new expression. djogi targets Postgres 18 and later exclusively
+(see [`decisions.md`](./decisions.md)), so this form is always
+available. The classifier
+([`live_migrate::classify`]) routes the operation to `OfflineOnly`
+because the row-rewrite lock window matches the offline pattern's
+contract — even though the statement is structurally a single
+`ALTER COLUMN`, the lock duration scales with row count.
+
+**Rollback shape.** The down side emits the symmetric form
+`SET EXPRESSION AS (<prev_expr>);` — the prior expression is restored
+in place, no row data is destroyed. Rollback is non-lossy.
+
+**Why a single `SET EXPRESSION AS` and not `DROP EXPRESSION + SET EXPRESSION AS`?**
+The two-step form looks like a clean swap, but `SET EXPRESSION AS`
+requires the column to still be a generated column — a prior
+`DROP EXPRESSION` strips that property and the follow-up
+`SET EXPRESSION AS` fails with `column "<c>" is not a generated column`.
+Postgres' intended in-place change form is the single statement.
+
+**Other generated-column transitions.**
+
+- `(None, Some(_))` — ADD generation to an existing regular column:
+  Postgres has no `ALTER COLUMN ADD GENERATED` for stored expressions.
+  The emitter keeps a SQL-comment placeholder documenting the required
+  `DROP COLUMN + ADD COLUMN` sequence; the classifier routes the
+  operation to `OfflineOnly` and the live-migration runner refuses the
+  path entirely.
+- `(Some(_), None)` — DROP generation: `ALTER COLUMN <c> DROP EXPRESSION;`
+  (PG 13+). The column becomes a regular column with the
+  previously-computed values frozen as data. Rollback is structurally
+  lossy — restoring the expression in place is impossible
+  (`SET EXPRESSION AS` requires a generated column), so the inverse
+  requires `DROP COLUMN + ADD COLUMN`, destroying the post-DROP-EXPRESSION
+  row data. The emitter marks the rollback `lossy`.

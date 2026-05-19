@@ -421,6 +421,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "INTEGER".to_string(),
                 to: "BIGINT".to_string(),
+                using: None,
             },
         };
         let steps = replacement_column::ReplacementColumn::emit(&op, &ctx).unwrap();
@@ -515,6 +516,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "INTEGER".to_string(),
                 to: "BIGINT".to_string(),
+                using: None,
             },
         };
         let steps = dispatch_pattern(&op, &ctx).unwrap();

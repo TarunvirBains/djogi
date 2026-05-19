@@ -1854,6 +1854,7 @@ mod tests {
                     sequence_within: None,
                     sql_type: "BIGINT".to_string(),
                     unique: false,
+                    type_change_using: None,
                 }],
                 exclusion_constraints: Vec::new(),
                 fts: None,
@@ -1905,6 +1906,7 @@ mod tests {
             sequence_within: None,
             sql_type: ty.to_string(),
             unique: false,
+            type_change_using: None,
         }
     }
 
@@ -2392,6 +2394,7 @@ mod tests {
             sequence_within: None,
             sql_type: "TEXT".to_string(),
             unique: false,
+            type_change_using: None,
         });
         models.insert(new_bucket.clone(), new_schema);
         let app = AppLifecycle {
@@ -3443,6 +3446,7 @@ mod tests {
                             sequence_within: None,
                             sql_type: "BIGINT".to_string(),
                             unique: false,
+                            type_change_using: None,
                         }],
                         exclusion_constraints: Vec::new(),
                         fts: None,

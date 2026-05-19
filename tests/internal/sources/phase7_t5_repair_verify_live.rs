@@ -531,6 +531,7 @@ async fn verify_detects_missing_table_as_d601(mut ctx: djogi::DjogiContext) {
                 sequence_within: None,
                 sql_type: "BIGINT".to_string(),
                 unique: false,
+                type_change_using: None,
             }],
             exclusion_constraints: Vec::new(),
             fts: None,
@@ -1554,6 +1555,7 @@ async fn verify_detects_default_drift_as_d607(mut ctx: djogi::DjogiContext) {
         sequence_within: None,
         sql_type: "BIGINT".to_string(),
         unique: false,
+        type_change_using: None,
     };
     id_col.default_sql = None;
     let mut created_col = id_col.clone();
@@ -1627,6 +1629,7 @@ async fn verify_detects_pk_mismatch_as_d608(mut ctx: djogi::DjogiContext) {
         sequence_within: None,
         sql_type: "BIGINT".to_string(),
         unique: false,
+        type_change_using: None,
     };
     let mut email_col = id_col.clone();
     email_col.name = "email".to_string();
@@ -1705,6 +1708,7 @@ async fn verify_detects_deferrable_fk_drift_as_d609(mut ctx: djogi::DjogiContext
         sequence_within: None,
         sql_type: "BIGINT".to_string(),
         unique: false,
+        type_change_using: None,
     };
     let mut snap = empty_snapshot();
     snap.models.insert(
@@ -1763,6 +1767,7 @@ async fn verify_detects_deferrable_fk_drift_as_d609(mut ctx: djogi::DjogiContext
                     sequence_within: None,
                     sql_type: "BIGINT".to_string(),
                     unique: false,
+                    type_change_using: None,
                 },
             ],
             exclusion_constraints: Vec::new(),
@@ -1878,6 +1883,7 @@ async fn verify_detects_index_wrong_columns_as_d612(mut ctx: djogi::DjogiContext
                     sequence_within: None,
                     sql_type: "BIGINT".to_string(),
                     unique: false,
+                    type_change_using: None,
                 },
                 djogi::migrate::ColumnSchema {
                     check: None,
@@ -1899,6 +1905,7 @@ async fn verify_detects_index_wrong_columns_as_d612(mut ctx: djogi::DjogiContext
                     sequence_within: None,
                     sql_type: "TEXT".to_string(),
                     unique: false,
+                    type_change_using: None,
                 },
                 djogi::migrate::ColumnSchema {
                     check: None,
@@ -1920,6 +1927,7 @@ async fn verify_detects_index_wrong_columns_as_d612(mut ctx: djogi::DjogiContext
                     sequence_within: None,
                     sql_type: "TEXT".to_string(),
                     unique: false,
+                    type_change_using: None,
                 },
             ],
             exclusion_constraints: Vec::new(),

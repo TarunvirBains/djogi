@@ -210,6 +210,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "INTEGER".to_string(),
                 to: "BIGINT".to_string(),
+                using: None,
             },
         }
     }

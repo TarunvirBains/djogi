@@ -67,7 +67,11 @@ impl Pattern for CodecTransition {
             SchemaOperation::AlterColumn {
                 table,
                 column,
-                change: ColumnChange::ChangeType { from, to },
+                // djogi#220 added `using` to the variant — codec
+                // transitions key off (from, to) only; the adopter
+                // USING expression does not influence shadow-column
+                // staging. Bind with `..`.
+                change: ColumnChange::ChangeType { from, to, .. },
             } => (table, column, from, to),
             _ => {
                 return Err(PatternError::WrongOperation {
@@ -212,6 +216,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "aes_gcm_v1".to_string(),
                 to: "aes_gcm_v2".to_string(),
+                using: None,
             },
         }
     }

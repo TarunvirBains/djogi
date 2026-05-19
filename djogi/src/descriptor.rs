@@ -1680,6 +1680,30 @@ mod protected_field_metadata_tests {
         assert!(Sensitivity::Sensitive < Sensitivity::Secret);
     }
 
+    /// djogi#220 — `FieldDescriptor::type_change_using` defaults to `None`
+    /// in the [`field_descriptor`] constructor and accepts a `'static`
+    /// adopter expression when set. A literal-level smoke test prevents
+    /// accidental shape regressions; this slot has no projection arm that
+    /// would surface a missing default at runtime, so an unset default
+    /// would otherwise only break the macro's generated code.
+    #[test]
+    fn field_descriptor_accepts_type_change_using_none_and_some() {
+        let no_using = FieldDescriptor {
+            ..field_descriptor("ordinary", FieldSqlType::Text, false)
+        };
+        assert!(
+            no_using.type_change_using.is_none(),
+            "constructor must default `type_change_using` to None for every \
+             new descriptor — adding the attribute is opt-in",
+        );
+
+        let with_using = FieldDescriptor {
+            type_change_using: Some("kind::uuid"),
+            ..field_descriptor("kind", FieldSqlType::Uuid, false)
+        };
+        assert_eq!(with_using.type_change_using, Some("kind::uuid"));
+    }
+
     /// `FieldDescriptor` accepts both `protected: None` (the default that
     /// the macro emits today) and `protected: Some(_)` (the shape T3 will
     /// emit once `#[field(protected(...))]` is wired). A literal-level
@@ -2128,6 +2152,46 @@ pub struct FieldDescriptor {
     ///
     /// djogi#189.
     pub strict_id_check: bool,
+
+    /// Adopter-supplied `#[field(type_change_using = "<sql expr>")]` — Phase
+    /// 8.5 Cluster 4 djogi#220.
+    ///
+    /// **One-time migration directive.** When the migration differ detects
+    /// that this column's `sql_type` changed between the prior snapshot and
+    /// the current descriptor, the SQL emitter appends the adopter's
+    /// `USING (<expr>)` clause to the emitted
+    /// `ALTER TABLE … ALTER COLUMN … TYPE …` statement. The clause unlocks
+    /// non-default casts (e.g. `TEXT → UUID`, `TEXT → INTEGER`, domain
+    /// changes) that Postgres refuses to apply automatically.
+    ///
+    /// **Raw SQL escape.** The expression is treated identically to a raw
+    /// SQL fragment — djogi performs no parsing, no sanitisation, and no
+    /// semantic validation beyond rejecting empty / whitespace-only strings
+    /// at macro-parse time. Adopters are responsible for the expression's
+    /// correctness against the column's old and new types; a wrong
+    /// expression can silently corrupt or truncate column data. The same
+    /// `unsafe`-style cultural posture from
+    /// `docs/spec/raw-sql-escape-hatches.md` applies — every callsite should
+    /// be reviewable as raw SQL.
+    ///
+    /// **Lifetime.** The attribute is a *one-time directive* attached to the
+    /// migration that performs the type change. The slot is intentionally
+    /// excluded from the persisted snapshot (`#[serde(skip)]` on the
+    /// corresponding `ColumnSchema::type_change_using` field), so leaving
+    /// the attribute in source after the migration applies does not produce
+    /// a phantom diff — the next compose run sees the same `sql_type` on
+    /// both sides, the differ emits no `ChangeType`, and the attribute
+    /// stays dormant. Adopters are encouraged (but not required) to remove
+    /// the attribute after the migration is applied; see
+    /// `docs/guide/models.md` for the recommended workflow.
+    ///
+    /// **No down-side USING expression.** The emitter renders the default
+    /// `USING <col>::<old_type>` cast on the down (rollback) side. Adopters
+    /// whose rollback requires its own non-default cast hand-edit the
+    /// emitted down SQL — symmetric down-side `using` expressions are not
+    /// modelled here because the rollback path is operator-owned in
+    /// practice.
+    pub type_change_using: Option<&'static str>,
 }
 
 /// Adopter-supplied override for the Postgres volatility class of a
@@ -2233,6 +2297,18 @@ pub const fn field_descriptor(
         // BIGINT / UUID never inherit a HeerRanjID CHECK; the family
         // dispatch correctly maps them to `None`.
         strict_id_check: false,
+        // Phase 8.5 Cluster 4 (djogi#220) — adopter
+        // `#[field(type_change_using = "<expr>")]` USING clause for
+        // non-default-cast column type changes. `None` for every field
+        // that does not opt in. The macro stores the verbatim
+        // adopter-supplied SQL fragment; the projection threads it
+        // into `ColumnSchema::type_change_using` (transient slot,
+        // `#[serde(skip)]`); the differ pulls it into
+        // `ColumnChange::ChangeType::using` only when the column's
+        // `sql_type` actually changed. Leaving the attribute on a
+        // field after applying produces no diff because the type
+        // comparison itself is what gates emission.
+        type_change_using: None,
     }
 }
 

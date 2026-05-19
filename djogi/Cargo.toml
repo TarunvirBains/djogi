@@ -794,6 +794,28 @@ path = "../tests/internal/phase8_5_c4b_set_op_sql_shape.rs"
 harness = true
 required-features = ["testing"]
 
+# Phase 8.5 Cluster 4 (djogi#220 + djogi#221) — DDL metadata SQL shape pins.
+#
+# Internal test pinning the two DDL gaps closed by Cluster 4:
+#
+# - djogi#220: `#[field(type_change_using = "<sql expr>")]` USING clause for
+#   non-default-cast column type changes, plus the known-incompatible-pair
+#   heuristic that emits a `-- WARNING:` SQL comment naming the corrective
+#   attribute when the cast pair is on the incompatible list and no
+#   adopter USING is supplied.
+# - djogi#221: in-place `ALTER COLUMN … SET EXPRESSION AS …` lowering for
+#   generated-column expression changes (PG 17+ form; djogi targets PG 18+).
+#
+# The fixture builds `AppliedSchema` literals directly via the public
+# `djogi::migrate::*` re-exports so it never needs a live database; the
+# macro-side parse-time rejection for `#[field(type_change_using = "")]`
+# and the whitespace variant is covered by lihaaf compile_fail fixtures
+# (`djogi-macros/tests/compile_fail/phase8_5_c4_220_*`).
+[[test]]
+name = "phase8_5_c4_220_221_ddl_sql_shape"
+path = "../tests/internal/phase8_5_c4_220_221_ddl_sql_shape.rs"
+harness = true
+
 # Phase 8.5 Cluster 4B (#101) — typed set operations: live Postgres
 # behavior. Pairs with the SQL-shape test by proving each operator
 # (UNION / UNION ALL / INTERSECT / EXCEPT) produces the row sets

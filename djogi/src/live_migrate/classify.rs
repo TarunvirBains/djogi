@@ -493,7 +493,10 @@ fn classify_column_change(
         ColumnChange::SetDefault(_) => OnlineSafetyClassification::OnlineSafe,
 
         // §7: "Change column type" — multiple sub-cases.
-        ColumnChange::ChangeType { from, to } => classify_type_change(from, to),
+        // djogi#220 added `using` to the variant — it does not affect
+        // online-safety classification (the lock window is governed by
+        // the cast pair, not the adopter expression). Bind with `..`.
+        ColumnChange::ChangeType { from, to, .. } => classify_type_change(from, to),
 
         // §7: "Add CHECK constraint to populated table" → ExpandContract
         // when above `validation_threshold_rows`; below threshold the
@@ -981,6 +984,7 @@ mod tests {
             sequence_within: None,
             sql_type: "TEXT".to_string(),
             unique: false,
+            type_change_using: None,
         }
     }
 
@@ -1336,6 +1340,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "integer".to_string(),
                 to: "bigint".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1353,6 +1358,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "varchar(64)".to_string(),
                 to: "varchar(128)".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1370,6 +1376,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "varchar(255)".to_string(),
                 to: "text".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1391,6 +1398,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "text".to_string(),
                 to: "varchar(255)".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1412,6 +1420,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "bigint".to_string(),
                 to: "integer".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1429,6 +1438,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "integer".to_string(),
                 to: "smallint".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1448,6 +1458,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "varchar(20)".to_string(),
                 to: "varchar(10)".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1465,6 +1476,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "numeric(20, 4)".to_string(),
                 to: "numeric(10, 4)".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1482,6 +1494,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "numeric(20, 4)".to_string(),
                 to: "numeric(20, 2)".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1503,6 +1516,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "numeric(10)".to_string(),
                 to: "numeric(12, 2)".to_string(),
+                using: None,
             },
         };
         // The unknown-type-change fallback returns ExpandContract; what
@@ -1526,6 +1540,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "numeric(10)".to_string(),
                 to: "numeric(10, 2)".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1555,6 +1570,7 @@ mod tests {
                 change: ColumnChange::ChangeType {
                     from: from.to_string(),
                     to: to.to_string(),
+                    using: None,
                 },
             };
             assert_eq!(
@@ -1577,6 +1593,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "numeric".to_string(),
                 to: "numeric(10, 2)".to_string(),
+                using: None,
             },
         };
         assert_eq!(
@@ -1597,6 +1614,7 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "user_status_v1".to_string(),
                 to: "user_status_v2".to_string(),
+                using: None,
             },
         };
         assert_eq!(

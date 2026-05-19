@@ -228,6 +228,7 @@ mod tests {
             sequence_within: None,
             sql_type: "UUID".to_string(),
             unique: false,
+            type_change_using: None,
         }
     }
 

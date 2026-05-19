@@ -168,6 +168,7 @@ fn basic_column(name: &str, sql_type: &str, nullable: bool) -> ColumnSchema {
         sequence_within: None,
         sql_type: sql_type.to_string(),
         unique: false,
+        type_change_using: None,
     }
 }
 

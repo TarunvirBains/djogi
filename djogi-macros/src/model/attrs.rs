@@ -1975,6 +1975,31 @@ pub struct FieldAttrs {
     /// span-precise feedback.
     #[darling(default)]
     pub strict_id_check: bool,
+
+    /// `#[field(type_change_using = "<sql expr>")]` — Phase 8.5 Cluster 4
+    /// djogi#220.
+    ///
+    /// Adopter-supplied `USING` expression appended to the
+    /// `ALTER TABLE … ALTER COLUMN … TYPE …` statement when the migration
+    /// differ detects this column's SQL type changed. Unblocks non-default
+    /// cast paths (e.g. `TEXT → UUID`, `TEXT → INTEGER`, custom-domain
+    /// flips) that Postgres refuses to convert automatically.
+    ///
+    /// Set via darling; `FieldAttrs::parse` post-validates non-empty /
+    /// non-whitespace-only — an empty literal would emit
+    /// `USING ()` which is invalid SQL and would surface only at apply
+    /// time. The expression is otherwise emitted verbatim with no
+    /// parsing or sanitisation — the same raw-SQL escape posture the
+    /// adjacent `check` attribute uses.
+    ///
+    /// **One-time directive.** The attribute is consulted only at the
+    /// moment the differ emits a `ChangeType` for this column. The
+    /// `ColumnSchema::type_change_using` slot is `#[serde(skip)]`, so
+    /// leaving the attribute on the field after applying produces no
+    /// phantom diff. Adopters are encouraged (but not required) to
+    /// remove it after the migration applies.
+    #[darling(default)]
+    pub type_change_using: Option<String>,
 }
 
 /// Per-field visage exposure spec — parsed from `#[field(expose(...))]`.
@@ -2498,6 +2523,13 @@ impl FieldAttrs {
             // family, ForeignKey<T>, OneToOneField<T>, or their
             // Option<…> wraps).
             "strict_id_check",
+            // Phase 8.5 djogi#220 — adopter-supplied
+            // `#[field(type_change_using = "<sql expr>")]` USING clause
+            // for non-default-cast column type changes. Validated as
+            // non-empty / non-whitespace-only in `FieldAttrs::parse`;
+            // emitted verbatim into the descriptor so the SQL emitter
+            // can append `USING (<expr>)` to `ALTER COLUMN … TYPE`.
+            "type_change_using",
         ];
         // Phase 7-Zero v3 T2 Q2/v2 #8 — `nulls_not_distinct` is deliberately
         // out of scope at the field level. The feature lives on the model-
@@ -2881,6 +2913,32 @@ impl FieldAttrs {
                  The composer lowers the value verbatim into \
                  `COMMENT ON COLUMN <t>.<c> IS '<text>'`; an empty literal \
                  produces a meaningless no-op statement.",
+            ));
+        }
+
+        // Phase 8.5 Cluster 4 djogi#220 — `#[field(type_change_using = "<expr>")]`
+        // is a raw-SQL escape consumed by the SQL emitter when the column's
+        // sql_type changes. djogi performs no parsing or sanitisation of
+        // the expression — it is emitted verbatim into the migration's
+        // `USING (<expr>)` clause; the adopter owns correctness. The
+        // only parse-time guard is non-empty / non-whitespace-only: an
+        // empty literal would lower to `USING ()` which is invalid SQL
+        // and surfaces only at apply time. The span is recovered from
+        // the field's raw attribute tokens so the diagnostic points at
+        // the offending literal rather than the whole field — mirrors
+        // the `check` / `comment` validation pattern above.
+        if let Some(expr) = &attrs.type_change_using
+            && expr.trim().is_empty()
+        {
+            let span =
+                find_named_str_lit_span(field, "type_change_using").unwrap_or_else(|| field.span());
+            return Err(syn::Error::new(
+                span,
+                "`#[field(type_change_using = \"\")]` is not allowed — \
+                 expression must be a non-empty SQL fragment. The string \
+                 is emitted verbatim into the migration's `USING (<expr>)` \
+                 clause; an empty literal produces invalid SQL that fails \
+                 only at apply time.",
             ));
         }
 
