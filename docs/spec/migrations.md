@@ -411,10 +411,19 @@ and the differ's drop / amend lifecycle works against both.
 
 **Family extensibility.** The same `field_type_check` projection helper is
 designed to grow with future type families. djogi#188 (Decimal precision) is
-now live alongside djogi#187 (temporal) and djogi#190 (integer); HeerId /
-RanjId structural validation (djogi#189) plugs into the same match without
-reshaping the helper signature when that work lands. See `decisions.md`
-"Type-derived CHECK projection (Phase 8.5 v3 Cluster 2)" for the contract.
+now live alongside djogi#187 (temporal) and djogi#190 (integer). HeerId /
+RanjId structural validation (djogi#189) ships as a parallel
+**opt-in** projection (`strict_id_check_expr`) rather than a new arm
+inside `field_type_check` because the CHECK depends on the column's
+HeerRanjID **semantic family** — the parent `PkType` for the framework
+`id` column and the FK target's `PkType` (via `type_to_pk_family`) for
+relation columns — not on `FieldSqlType` or the resolved SQL type
+string. The semantic-family dispatch keeps Custom PKs whose inner
+SQL_TYPE coincidentally matches BIGINT / UUID from being coerced into
+the HeerRanjID family by SQL-carrier collision. See §10.6.3 for that
+surface. See `decisions.md` "Type-derived CHECK projection (Phase 8.5
+v3 Cluster 2)" for the type-derived contract and "HeerId / RanjId
+structural CHECK (djogi#189)" for the opt-in surface.
 
 **Currently shipped.** The full projection contract is now live:
 
@@ -525,6 +534,199 @@ string is accepted at parse time; SQL-level rejection happens at
 migration apply (Postgres returns a `42601` syntax error or `42703`
 column-not-found error on bad expressions, with the full constraint
 name in the error message so operators can locate the offending field).
+
+### 10.6.3 Opt-in HeerId / RanjId Structural CHECK (djogi#189)
+
+`HeerId` (BIGINT) and `RanjId` (UUID) columns carry **no** automatic
+structural CHECK by default. The column type alone admits any value
+inside its representable range — a negative BIGINT (bit 63 = 1) or a
+UUIDv4 / UUIDv7 / nil-UUID written into a UUID column survives the
+INSERT and only surfaces as a typed-decode failure when later read back
+through `HeerId::from_i64` / `RanjId::from_uuid`. The single bad row
+poisons subsequent typed reads, matching the same external-writer hole
+the temporal and integer families address (§10.6.1).
+
+The fix is an **opt-in** structural CHECK that runs at the DB layer to
+reject structurally-malformed IDs at INSERT time. The opt-in is exposed
+at two granularities:
+
+```rust
+// Model-wide — every applicable column on the model gets the CHECK.
+#[derive(djogi::Model)]
+#[model(table = "vehicles", strict_ids)]
+pub struct Vehicle {
+    pub owner_id: ForeignKey<Owner>,    // structural CHECK applied
+    pub plate_id: ::djogi::RanjId,      // structural CHECK applied
+    pub name: String,                   // no CHECK — not HeerId/RanjId
+}
+
+// Field-level — single column scope.
+#[derive(djogi::Model)]
+#[model(table = "vehicles")]
+pub struct Vehicle {
+    #[field(strict_id_check)]
+    pub external_owner: ::djogi::HeerId,  // structural CHECK applied
+    pub other_id: ::djogi::HeerId,         // no CHECK — opt-in is per field
+}
+```
+
+**Default-off is the contract.** Pre-#189 schemas continue to round-trip
+identically after #189 lands. The opt-in is documented as a perf vs
+safety trade — adopters who never accept externally-generated IDs into
+HeerId / RanjId columns can keep the framework's existing zero-overhead
+default; adopters who do (BI tools, sister applications, raw SQL
+migrations, third-party imports) opt in to harden the surface.
+
+**CHECK shapes.** The projection layer reads the field descriptor's
+`strict_id_check: bool` flag plus the column's HeerRanjID **semantic
+family** — derived from the parent `PkType` for the framework `id`
+column, from the FK target's `PkType` (via `type_to_pk_family`) for
+relation columns, and from `f.sql_type` for explicit `#[field(strict_id_check)]`
+on bare HeerId / RanjId user scalars — and dispatches:
+
+| HeerRanjID semantic family                                                              | Projected CHECK                                                                                                            |
+|-----------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------|
+| `HeerId` (`PkType::HeerId` / `PkType::HeerIdDesc`, BIGINT carrier)                      | `<col> >= 0`                                                                                                               |
+| `RanjId` (`PkType::RanjId` / `PkType::RanjIdDesc`, UUID carrier)                        | `pg_catalog.substring(<col>::text, 15, 1) = '8' AND pg_catalog.substring(<col>::text, 20, 1) IN ('8','9','a','b')`         |
+| None — `PkType::Serial`, `PkType::Custom`, `PkType::Composite`, `PkType::None`          | no CHECK (silently skipped — see "FK propagation" and "Custom PK semantics" below)                                         |
+
+The HeerId family CHECK enforces `HeerId::from_i64`'s only structural
+invariant (`bit 63 = 0`, i.e. non-negative i64). The 41 timestamp + 9
+node + 13 sequence bits saturate the remaining 63 bits without a
+reserved-bit slot to enforce. Verified against
+`~/projects/HeeRanjID/heeranjid/src/heer.rs` at the time this attribute
+shipped.
+
+The RanjId family CHECK enforces UUIDv8 + RFC 4122 variant — the two
+structural invariants `RanjId::from_uuid` rejects. The check extracts
+position 15 of the canonical 8-4-4-4-12 text form (version hex digit,
+must be `'8'`) and position 20 (variant high nibble, must be one of
+`'8'`, `'9'`, `'a'`, `'b'`, covering the `10xx` RFC 4122 variant
+pattern). The substring calls use `pg_catalog.substring` to prevent
+search-path hijacking; Postgres's `pg_get_constraintdef` renders this
+back as the unqualified `"substring"(...)` form. Postgres canonicalises
+UUID text output to lowercase hex, so the variant set covers every
+encoding the column will ever hold. Verified against
+`~/projects/HeeRanjID/heeranjid/src/ranj.rs` (`from_uuid`'s version /
+variant guards) and `ranj_desc.rs` (the `RANJ_FLIP_MASK` preserves bits
+76-79 and 62-63, so ascending and descending RanjId variants share the
+same structural CHECK shape).
+
+**Custom PK semantics.** A `PkType::Custom { sql_type: "BIGINT" / "UUID",
+.. }` PK (e.g. an adopter Snowflake-style or UUIDv4 application ID)
+shares the SQL carrier with HeerId / RanjId but is NOT a HeerRanjID
+identifier — its bit layout is defined by the adopter's `PrimaryKey`
+impl, not by HeeRanjID. The family-based dispatch correctly maps Custom
+PKs to "no CHECK" regardless of the inner SQL_TYPE — both the framework
+`id` column on a Custom-PK model AND every FK column targeting a
+Custom-PK model are skipped under `#[model(strict_ids)]`. The earlier
+SQL-type-only dispatch that this design supersedes would have emitted
+`col >= 0` against Custom BIGINT PKs (constraining the adopter's value
+domain without consent) and the UUIDv8 + RFC 4122 CHECK against Custom
+UUID PKs (rejecting every valid UUIDv4 the adopter inserts). Adopters
+whose Custom PK genuinely shares HeerRanjID's bit layout and who want
+the structural CHECK should declare it explicitly via
+`#[field(check = "<predicate>")]` — the typed-and-explicit path is
+preferred over inferring the family from a coincidental SQL-carrier
+match.
+
+**Per-row cost.** The BIGINT CHECK is a single comparison (`<1 µs`).
+The UUID CHECK casts the column to text and runs two `substring` calls
+(~1–3 µs). Both are opt-in because automatic emission would re-shape
+the default model surface and break adopters who legitimately accept
+externally-generated IDs into these columns.
+
+**FK propagation.** When `#[model(strict_ids)]` fires, every FK / O2O
+column on the model gets the descriptor flag set, because the macro
+cannot inspect the FK target's PK family at parse time. The projection
+resolves the FK target's HeerRanjID semantic family via the
+`type_to_pk_family` lookup (the parallel of `pk_sql_type_text` /
+`type_to_pk_sql` for SQL carrier substitution) and dispatches per the
+table above — FKs to HeerId / RanjId targets get the matching CHECK,
+FKs to Serial-PK / Composite-PK / None-PK targets silently skip, and
+FKs to **Custom-PK** targets ALSO silently skip regardless of whether
+the Custom PK's inner SQL_TYPE is `"BIGINT"` or `"UUID"`. The
+family-based dispatch is the correct filter: a Custom PK is not a
+HeerRanjID carrier, even when its SQL type collides with one. Adopters
+who declare `#[model(strict_ids)]` on a model with heterogeneous FK
+targets get strict checks on the HeerId / RanjId references and the
+existing default-off behaviour on Serial / Custom / Composite references
+— no special handling required at the adopter site.
+
+**Validation at the attribute surface.** `#[field(strict_id_check)]` is
+parse-time-validated against the field's declared Rust type. Acceptable
+types are: bare HeerId / HeerIdDesc / HeerIdRecencyBiased / RanjId /
+RanjIdDesc / RanjIdRecencyBiased (in any path form — bare, `djogi::*`,
+`djogi::types::*`), `ForeignKey<T>`, `OneToOneField<T>`, and the
+schema-transparent `Option<…>` / `Tracked<…>` wraps around any of
+the above (the validation routes through `unwrap_schema_type`, which
+strips both wrappers). Other types (`String`, `i64`, `i32`, etc.) are
+rejected with a span-precise diagnostic pointing at the offending
+attribute — silent dropping of an explicit opt-in is a poor UX.
+Model-wide `#[model(strict_ids)]` does **not** trip this check; it is
+a bulk opt-in where silently skipping non-applicable fields is the
+intended behaviour.
+
+**Combination with other CHECKs.** The strict-ID CHECK rides the same
+single-constraint-slot infrastructure as the type-derived and adopter
+CHECKs (§10.6.1, §10.6.2). When a column accumulates more than one
+CHECK source (e.g. `#[field(strict_id_check, check = "owner_id <> 0")]`
+on an FK), the projection layer ANDs the strict-ID expression with the
+adopter expression into a single `<table>_<column>_check` constraint.
+Both clauses must pass for an INSERT to land. Mutually exclusive in
+practice with the type-derived CHECKs from §10.6.1 — HeerId / RanjId
+fields carry `rust_source_type: None`, so the integer / Decimal /
+temporal arms of `field_type_check` are inert on them.
+
+**Lifecycle.** ADD / DROP / AMEND all ride the existing `SetCheck { from,
+to }` lifecycle from §10.6.1. Toggling `#[model(strict_ids)]` (or
+`#[field(strict_id_check)]`) on or off triggers the same `DROP
+CONSTRAINT ... ADD CONSTRAINT ...` shape Postgres handles for every
+other CHECK transition. Rollback through `compose_down_text` reinstates
+the prior expression losslessly because the IR carries both the old and
+new sides of the transition.
+
+**Migration to Route B (centralized HeeRanjID validator).** The CHECK
+expressions projected here live inside djogi and track HeeRanjID's bit
+layout. A future HeeRanjID release will ship `IMMUTABLE PARALLEL SAFE`
+Postgres validator functions:
+
+```sql
+CREATE FUNCTION heeranjid.is_valid_heerid(BIGINT) RETURNS BOOLEAN ...;
+CREATE FUNCTION heeranjid.is_valid_ranjid(UUID)   RETURNS BOOLEAN ...;
+```
+
+When those land, djogi will migrate to projecting:
+
+```sql
+CHECK (heeranjid.is_valid_heerid(<col>))
+CHECK (heeranjid.is_valid_ranjid(<col>))
+```
+
+so the validator becomes a single source of truth tracked in the
+HeeRanjID repository rather than embedded twice (once in HeerId /
+RanjId Rust code, once in djogi's projection layer). The opt-in
+attribute surface stays unchanged across the migration — `#[model(strict_ids)]`
+and `#[field(strict_id_check)]` keep their semantics and adopter
+code does not move. See "HeerId / RanjId structural CHECK (djogi#189)"
+in `docs/spec/decisions.md` for the route A / route B comparison.
+
+**Test coverage.** The family → CHECK projection mapping is pinned by
+the `strict_id_check_expr_*` and `strict_id_family_of_pk_*` unit tests
+in `migrate/projection.rs`; the end-to-end projection wiring
+(default-off, model-wide opt-in, FK propagation, AND-merge with adopter
+check, skip on Serial-PK targets, skip on Custom-BIGINT and Custom-UUID
+PK targets at both the framework `id` column and at FK columns) is
+covered by the `project_column_strict_id_check_*` tests in the same
+module. Catalog assertions, round-trip behaviour, OOB rejection of
+structurally-malformed IDs (negative BIGINT for HeerId; UUIDv4 / UUIDv7
+/ non-RFC4122-variant UUIDs for RanjId), and Custom-PK skip behaviour
+for FK targets live in
+`tests/internal/phase8_5_c2_189_strict_id_check.rs`. Macro-time type
+validation is exercised by
+`djogi-macros/tests/compile_fail/phase8_5_c2_189_strict_id_check_wrong_type.rs`
+and
+`djogi-macros/tests/compile_pass/phase8_5_c2_189_strict_id_check.rs`.
 
 ### 10.7 Ledger and Locking
 

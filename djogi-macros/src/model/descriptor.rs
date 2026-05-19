@@ -42,7 +42,12 @@ use syn::ItemStruct;
 /// Centralising the emission means future descriptor field additions
 /// land in one place rather than rippling through every PK-strategy
 /// arm.
-fn framework_field_descriptor(name: &str, sql_type_tokens: TokenStream, pk: bool) -> TokenStream {
+fn framework_field_descriptor(
+    name: &str,
+    sql_type_tokens: TokenStream,
+    pk: bool,
+    strict_id_check: bool,
+) -> TokenStream {
     quote! {
         ::djogi::FieldDescriptor {
             name: #name,
@@ -88,6 +93,13 @@ fn framework_field_descriptor(name: &str, sql_type_tokens: TokenStream, pk: bool
             // on the framework columns can read from the descriptor's
             // `rationale` slot instead.
             comment: ::std::option::Option::None,
+            // Phase 8.5 djogi#189 — propagated from `#[model(strict_ids)]`
+            // for the `id` column. Strict ID dispatch matches on the
+            // HeerRanjID semantic family (HeerId / HeerIdDesc / RanjId /
+            // RanjIdDesc) derived from the parent model's PkType; the
+            // resolved SQL column type is not consulted for this decision.
+            // Always `false` for `created_at` / `updated_at`.
+            strict_id_check: #strict_id_check,
         }
     }
 }
@@ -242,21 +254,47 @@ fn try_expand(
     // `PrimaryKey::SQL_TYPE` associated const; `FieldSqlType::Custom`
     // stores it verbatim so the migration differ can compare by string
     // equality.
+    // djogi#189 — propagate `#[model(strict_ids)]` to the framework `id`
+    // column ONLY when the PK strategy uses a built-in HeerId / RanjId
+    // family carrier. The projection layer reads the descriptor's
+    // `strict_id_check` flag alongside the parent PK's semantic family
+    // (`strict_id_family_of_pk`); Serial / None / Custom PKs all map to
+    // `StrictIdFamily::None` there, but setting the descriptor flag on
+    // those carriers would be a misleading signal at the descriptor
+    // surface (downstream consumers walking `descriptor.fields[0].strict_id_check`
+    // would read `true` for a `PkType::Custom { sql_type: "BIGINT" }`
+    // model whose ID semantics carry no HeerRanjID invariant). The
+    // descriptor stays honest: the flag is `true` only when the
+    // structural CHECK applies.
+    let id_strict_id_check = model_attrs.strict_ids
+        && matches!(
+            &model_attrs.pk,
+            PkStrategy::HeerId
+                | PkStrategy::HeerIdDesc
+                | PkStrategy::RanjId
+                | PkStrategy::RanjIdDesc
+        );
     let id_framework_desc: Option<TokenStream> = match &model_attrs.pk {
         PkStrategy::HeerId | PkStrategy::HeerIdDesc => Some(framework_field_descriptor(
             "id",
             quote! { ::djogi::FieldSqlType::BigInt },
             true,
+            id_strict_id_check,
         )),
         PkStrategy::RanjId | PkStrategy::RanjIdDesc => Some(framework_field_descriptor(
             "id",
             quote! { ::djogi::FieldSqlType::Uuid },
             true,
+            id_strict_id_check,
         )),
         PkStrategy::Serial => Some(framework_field_descriptor(
             "id",
             quote! { ::djogi::FieldSqlType::Integer },
             true,
+            // Serial PKs receive no strict-ID CHECK regardless of
+            // `#[model(strict_ids)]` — INTEGER columns have no
+            // HeerRanjID bit-layout invariant to enforce.
+            false,
         )),
         PkStrategy::None => None,
         PkStrategy::Custom(path) => Some(framework_field_descriptor(
@@ -267,6 +305,25 @@ fn try_expand(
                 )
             },
             true,
+            // djogi#189 (post-review hardening) — Custom PK types are
+            // NEVER candidates for the HeerId / RanjId structural CHECK,
+            // regardless of `#[model(strict_ids)]`. The Custom carrier
+            // may share its SQL type with HeerId / RanjId (`"BIGINT"` /
+            // `"UUID"`), but the column is not a HeerRanjID identifier:
+            // its bit layout is defined by the adopter's `PrimaryKey`
+            // impl, not by HeeRanjID. Emitting `col >= 0` against a
+            // Custom BIGINT PK would constrain the adopter's value
+            // domain at the DB layer without their consent; emitting
+            // the UUIDv8 + RFC 4122 CHECK against a Custom UUID PK
+            // would reject every valid UUIDv4 the adopter inserts.
+            //
+            // Adopters whose Custom PK happens to share HeerRanjID's
+            // bit layout (e.g., a thin newtype around `HeerId`) and
+            // who genuinely want the structural CHECK should declare
+            // it explicitly via `#[field(check = "<predicate>")]` —
+            // the typed-and-explicit path is preferred over inferring
+            // the family from a coincidental SQL-carrier match.
+            false,
         )),
     };
 
@@ -274,10 +331,13 @@ fn try_expand(
         "created_at",
         quote! { ::djogi::FieldSqlType::Timestamptz },
         false,
+        // Timestamp columns are never HeerId / RanjId carriers.
+        false,
     );
     let updated_at_desc = framework_field_descriptor(
         "updated_at",
         quote! { ::djogi::FieldSqlType::Timestamptz },
+        false,
         false,
     );
 
@@ -535,6 +595,36 @@ fn try_expand(
                 None => quote! { ::std::option::Option::None },
             };
 
+            // Phase 8.5 djogi#189 — opt-in HeerId / RanjId structural CHECK.
+            //
+            // Set `strict_id_check: true` on the descriptor when:
+            //   1. `#[field(strict_id_check)]` was declared on this field
+            //      (already validated as type-compatible by `FieldAttrs::parse`).
+            //   2. `#[model(strict_ids)]` is on AND the field is a
+            //      bare HeerId / RanjId family scalar OR a relation
+            //      field (`ForeignKey<T>` / `OneToOneField<T>`).
+            //
+            // For (2), the macro relies on the field's declared Rust type;
+            // it does not (and cannot) inspect FK target PK types here.
+            // Relation-field propagation is deliberately broad — every FK
+            // carries the flag — because the macro cannot reach across
+            // crates to discover the target's PK semantic family. The
+            // projection layer is the single place that has every
+            // descriptor in scope; it resolves each FK target's HeerRanjID
+            // family via `type_to_pk_family` and silently skips the CHECK
+            // for FK-to-Serial, FK-to-Custom, FK-to-None, and FK-to-Composite
+            // targets. The macro propagates; the projection filters.
+            //
+            // djogi#189 (post-review hardening): the projection filter
+            // is family-based, not SQL-type-based, so an FK to a
+            // `PkType::Custom { sql_type: "BIGINT" / "UUID", .. }` no
+            // longer accidentally inherits the HeerId / RanjId CHECK
+            // from a coincidental SQL-carrier match.
+            let strict_id_check_lit: bool = fa.strict_id_check
+                || (model_attrs.strict_ids
+                    && (relation.is_some()
+                        || crate::model::attrs::is_bare_heeranjid_family_type(&field.ty)));
+
             quote! {
                 ::djogi::FieldDescriptor {
                     name: #name,
@@ -593,6 +683,18 @@ fn try_expand(
                     // comment. `None` for fields without an adopter
                     // comment.
                     comment: #comment_tokens,
+                    // Phase 8.5 djogi#189 — opt-in strict HeerRanjID CHECK
+                    // propagation. `true` when the field carries
+                    // `#[field(strict_id_check)]` or the model carries
+                    // `#[model(strict_ids)]` and the field qualifies.
+                    // The projection layer dispatches CHECK shape via
+                    // three branches: (1) the framework `id` field uses
+                    // the parent model's PkType semantic family; (2) FK /
+                    // O2O relation columns use the FK target's PkType
+                    // semantic family; (3) bare user scalar fields use
+                    // the field's sql_type only after macro parse-time
+                    // HeerRanjID family validation confirms membership.
+                    strict_id_check: #strict_id_check_lit,
                 }
             }
         })

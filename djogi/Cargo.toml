@@ -661,6 +661,23 @@ name = "phase8_5_c2_105_188_check_decimal"
 path = "../tests/internal/phase8_5_c2_105_188_check_decimal.rs"
 harness = true
 
+# Phase 8.5 Cluster 2 — opt-in HeerId / RanjId structural CHECK (#189).
+# Verifies the default-off baseline (no CHECK on a HeerId / RanjId model
+# without opt-in), catalog assertions for the model-wide `#[model(strict_ids)]`
+# opt-in on both HeerId and RanjId PKs, the field-level
+# `#[field(strict_id_check)]` opt-in on a bare HeerId user column, FK
+# propagation under `#[model(strict_ids)]`, and OOB rejection of structurally
+# malformed IDs (negative BIGINT for HeerId; UUIDv4 / UUIDv7 /
+# non-RFC4122-variant UUIDs for RanjId) via raw INSERT SQL. The OOB-rejection
+# tests need raw_execute because `HeerId::from_i64` and `RanjId::from_uuid`
+# reject these values at the type boundary; the typed Rust surface cannot
+# construct them. Round-trip tests exercise the valid path through the
+# typed surface only.
+[[test]]
+name = "phase8_5_c2_189_strict_id_check"
+path = "../tests/internal/phase8_5_c2_189_strict_id_check.rs"
+harness = true
+
 # Phase 8.5 G0 — Decimal representability CHECK rejects PostgreSQL
 # NUMERIC special values (`NaN`, `Infinity`, `-Infinity`) on the scalar
 # Decimal column, the NUMRANGE endpoint checks, and the
