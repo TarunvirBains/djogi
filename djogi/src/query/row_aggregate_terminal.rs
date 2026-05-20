@@ -188,8 +188,10 @@ where
     ///
     /// - The annotation tuple fails its `check_legality()` (e.g. an
     ///   illegal aggregate modifier survived earlier validation).
-    /// - A window annotation alias collides with a `T` model column name —
-    ///   returns [`crate::DjogiError::Validation`] with a remediation hint.
+    /// - A window annotation alias collides with a `T` model column name
+    ///   (collision checked case-insensitively, matching PostgreSQL's
+    ///   unquoted-identifier fold) — returns
+    ///   [`crate::DjogiError::Validation`] with a remediation hint.
     ///   This terminal routes qualify through
     ///   `build_spatial_row_select_with_annotations_for_fetch`
     ///   (`djogi/src/query/sql.rs:1804-1813`) which emits the same
@@ -221,12 +223,14 @@ where
             // carries no modifiers so its own legality is trivially Ok.
             qs.aggregates.check_legality()?;
             // Reject window annotation aliases that collide with model
-            // column names. This terminal consumes qualify via the wrapped
-            // AnnotatedQuerySet; the spatial SQL builder
-            // (djogi/src/query/sql.rs:1804-1813) emits the same
-            // `SELECT * FROM (…) AS __djogi_q WHERE <alias> …` outer
-            // qualify wrap as AnnotatedQuerySet::fetch_all, so a colliding
-            // alias produces an ambiguous outer-WHERE at execute time.
+            // column names (checked case-insensitively, matching
+            // PostgreSQL's unquoted-identifier fold). This terminal
+            // consumes qualify via the wrapped AnnotatedQuerySet; the
+            // spatial SQL builder (djogi/src/query/sql.rs:1804-1813)
+            // emits the same `SELECT * FROM (…) AS __djogi_q WHERE
+            // <alias> …` outer qualify wrap as
+            // AnnotatedQuerySet::fetch_all, so a colliding alias produces
+            // an ambiguous outer-WHERE at execute time.
             qs.aggregates.check_no_column_collision(T::COLUMNS)?;
 
             // Pair-tuple aggregates are not legal on the single-Model
@@ -290,8 +294,10 @@ where
     ///
     /// - The annotation tuple fails its `check_legality()` (e.g. an
     ///   illegal aggregate modifier survived earlier validation).
-    /// - A window annotation alias collides with a `T` model column name —
-    ///   returns [`crate::DjogiError::Validation`] with a remediation hint.
+    /// - A window annotation alias collides with a `T` model column name
+    ///   (collision checked case-insensitively, matching PostgreSQL's
+    ///   unquoted-identifier fold) — returns
+    ///   [`crate::DjogiError::Validation`] with a remediation hint.
     ///   This terminal routes qualify through
     ///   `build_spatial_row_select_with_annotations_for_fetch`
     ///   (`djogi/src/query/sql.rs:1804-1813`) which emits the same
@@ -319,10 +325,11 @@ where
             }
 
             qs.aggregates.check_legality()?;
-            // Same alias-collision guard as AsMvtTerminal::fetch_one —
-            // this terminal routes qualify through the same spatial SQL
-            // builder that emits the __djogi_q outer-WHERE wrap
-            // (djogi/src/query/sql.rs:1804-1813).
+            // Same alias-collision guard as AsMvtTerminal::fetch_one:
+            // collision is checked case-insensitively to match PostgreSQL's
+            // unquoted-identifier fold. This terminal routes qualify through
+            // the same spatial SQL builder that emits the __djogi_q
+            // outer-WHERE wrap (djogi/src/query/sql.rs:1804-1813).
             qs.aggregates.check_no_column_collision(T::COLUMNS)?;
 
             if qs.aggregates.requires_pair_tuple_scope()

@@ -190,7 +190,9 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
     /// # How
     ///
     /// Overrides compare `self.alias_name()` (if `Some`) against every entry in
-    /// `model_columns` using byte equality and return a typed
+    /// `model_columns` using ASCII case-insensitive comparison
+    /// (`alias.eq_ignore_ascii_case(col)`) to match PostgreSQL's
+    /// unquoted-identifier fold, and return a typed
     /// [`crate::DjogiError::Validation`] on a match.
     fn check_no_column_collision(
         &self,
@@ -1194,14 +1196,17 @@ where
             aggregates.check_legality()?;
 
             // Reject window annotation aliases that collide with model column
-            // names. A collision causes the derived-table outer query (the
-            // qualify lowering shape, `SELECT * FROM (<inner>) AS __djogi_q
-            // WHERE <alias> <op> $N`) to expose two identically-named columns
-            // from the inner SELECT — the model column (`t.<col>`) and the
-            // window output (`<expr> AS <alias>`) — making the outer WHERE
-            // predicate ambiguous at Postgres. This check turns that
-            // runtime Postgres error into a typed DjogiError::Validation
-            // with a remediation hint before any SQL is emitted.
+            // names. Collision is checked case-insensitively to match
+            // PostgreSQL's unquoted-identifier fold (alias "ID" and column
+            // "id" name the same identifier at the Postgres layer). A
+            // collision causes the derived-table outer query (the qualify
+            // lowering shape, `SELECT * FROM (<inner>) AS __djogi_q WHERE
+            // <alias> <op> $N`) to expose two identically-named columns from
+            // the inner SELECT — the model column (`t.<col>`) and the window
+            // output (`<expr> AS <alias>`) — making the outer WHERE predicate
+            // ambiguous at Postgres. This check turns that runtime Postgres
+            // error into a typed DjogiError::Validation with a remediation
+            // hint before any SQL is emitted.
             aggregates.check_no_column_collision(T::COLUMNS)?;
 
             // Reject pair-only aggregates on the single-Model annotate
