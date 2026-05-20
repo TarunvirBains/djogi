@@ -31,9 +31,22 @@ use syn::ItemStruct;
 /// column (`id`, `created_at`, `updated_at`).
 ///
 /// Framework fields share every descriptor knob except `name`,
-/// `sql_type`, and the unique/indexed bits: PKs are unique+indexed,
+/// `sql_type`, and the `unique` bit: PK columns are unique,
 /// timestamp columns are neither. The visage map always projects the
 /// column under its own name across the four built-in scopes.
+///
+/// ## Why `indexed: false` for the PK column
+///
+/// Postgres creates an implicit unique BTree index for every `PRIMARY
+/// KEY` constraint — a second explicit BTree index on the same `id`
+/// column would be structurally redundant. Setting `indexed: true`
+/// here causes the projection's field-level index fanout loop to
+/// synthesise `<table>_id_idx` for every model, emitting a
+/// `CREATE INDEX` that Postgres silently accepts but never uses for
+/// query planning (the PRIMARY KEY index is always preferred). The
+/// slot stays `false` on all four non-`None` PK strategies;
+/// `unique: #pk` carries the correct uniqueness signal that the
+/// snapshot comparer reads.
 ///
 /// Relation metadata is unconditionally `None` — `id` is a primary
 /// key, not a foreign key, and `created_at` / `updated_at` are
@@ -54,7 +67,12 @@ fn framework_field_descriptor(
             sql_type: #sql_type_tokens,
             nullable: false,
             unique: #pk,
-            indexed: #pk,
+            // The PRIMARY KEY constraint's implicit BTree index already covers
+            // the `id` column — `indexed: true` would cause the projection's
+            // field-level index fanout to synthesise a redundant
+            // `<table>_id_idx` on every model. Always `false` here;
+            // `unique: #pk` is the correct uniqueness signal for the snapshot.
+            indexed: false,
             max_length: None,
             renamed_from: None,
             rationale: None,
