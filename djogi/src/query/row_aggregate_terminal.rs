@@ -285,6 +285,25 @@ where
     /// yields `NULL` for `ST_AsGeobuf` from PostGIS. We map that to
     /// `Ok(Vec::new())` to keep terminal behavior ergonomic and avoid
     /// a `WasNull` decode error.
+    ///
+    /// # Errors
+    ///
+    /// - The annotation tuple fails its `check_legality()` (e.g. an
+    ///   illegal aggregate modifier survived earlier validation).
+    /// - A window annotation alias collides with a `T` model column name —
+    ///   returns [`crate::DjogiError::Validation`] with a remediation hint.
+    ///   This terminal routes qualify through
+    ///   `build_spatial_row_select_with_annotations_for_fetch`
+    ///   (`djogi/src/query/sql.rs:1804-1813`) which emits the same
+    ///   `SELECT * FROM (…) AS __djogi_q WHERE <alias> …` outer qualify wrap
+    ///   as [`AnnotatedQuerySet::fetch_all`]; the collision check fires here
+    ///   for the same reason.
+    /// - The geometry column named in the `geom_name` argument passed to
+    ///   [`AnnotatedQuerySet::as_geobuf`] does not exist in the model's
+    ///   projection — PostGIS raises this at execute time as a
+    ///   `42703 column does not exist` error.
+    /// - The inner queryset emits any portable-predicate validation
+    ///   error (matching ordinary `fetch_all` semantics).
     pub fn fetch_one<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -833,10 +852,20 @@ mod tests {
     // must be rejected before SQL emission, not surface as a cryptic Postgres
     // "column reference is ambiguous" error at execute time.
     //
-    // The tests below call `IntoAggregateTuple::check_no_column_collision`
-    // directly (same framing as the analogous annotate.rs tests) to pin the
-    // validator logic against `TileFeature::COLUMNS` — the column set these
-    // terminals would pass to the check in `fetch_one`.
+    // Two layers of regression pin:
+    //
+    // 1. Unit-level (database-free): the `*_alias_colliding_*` tests below call
+    //    `IntoAggregateTuple::check_no_column_collision` directly — same framing
+    //    as the analogous annotate.rs tests — to pin the validator logic against
+    //    `TileFeature::COLUMNS`. Fast, runnable without DATABASE_URL.
+    //
+    // 2. Terminal-level (DATABASE_URL-gated): `*_fetch_one_rejects_colliding_alias`
+    //    tests call the actual `fetch_one` methods with a non-empty (non-`.none()`)
+    //    queryset and a colliding alias. The collision check fires before any DB
+    //    access so the DB is never queried, but the test verifies that removing
+    //    `check_no_column_collision` from `fetch_one` would cause the assertion to
+    //    fail (the query would fall through to SQL emission / DB execution instead
+    //    of returning `DjogiError::Validation`).
 
     #[test]
     fn as_mvt_terminal_alias_colliding_with_tile_feature_column_returns_validation_error() {
@@ -890,5 +919,82 @@ mod tests {
             IntoAggregateTuple::check_no_column_collision(&rn, TileFeature::COLUMNS).is_ok(),
             "MVT terminal: alias not matching any TileFeature column must pass the collision check"
         );
+    }
+
+    // ── Terminal-level regression pins (DATABASE_URL-gated) ──────────────────
+
+    #[tokio::test]
+    async fn as_mvt_terminal_fetch_one_rejects_colliding_alias() {
+        if std::env::var("DATABASE_URL").is_err() {
+            return;
+        }
+
+        // A real context satisfies `fetch_one`'s lifetime bound; the alias-
+        // collision check fires before any DB access, so no SQL is emitted and
+        // no DB query is executed. Removing `check_no_column_collision` from
+        // `AsMvtTerminal::fetch_one` would let this query fall through to SQL
+        // emission and a Postgres error, breaking the assertion below.
+        let (_cleanup, mut ctx) = testing::setup_test_db()
+            .await
+            .expect("DATABASE_URL must be set for row-aggregate terminal collision tests");
+
+        // `QuerySet::new()` is non-empty (no `.none()`), so `fetch_one`
+        // reaches the `check_no_column_collision` guard. Alias "id" collides
+        // with `TileFeature::COLUMNS = &["id", "geom", "name"]`.
+        let result = QuerySet::<TileFeature>::new()
+            .annotate(|_| RowNumber::new().alias("id"))
+            .as_mvt("layer")
+            .fetch_one(&mut ctx)
+            .await;
+
+        assert!(
+            matches!(result, Err(crate::DjogiError::Validation(_))),
+            "AsMvtTerminal::fetch_one must reject alias colliding with TileFeature column, \
+             got: {result:?}"
+        );
+        if let Err(crate::DjogiError::Validation(msg)) = result {
+            assert!(
+                msg.contains("id"),
+                "error message must name the conflicting alias, got: {msg}"
+            );
+        }
+
+        drop(_cleanup);
+    }
+
+    #[tokio::test]
+    async fn as_geobuf_terminal_fetch_one_rejects_colliding_alias() {
+        if std::env::var("DATABASE_URL").is_err() {
+            return;
+        }
+
+        // Same terminal-level pin as the MVT variant above, exercising
+        // `AsGeobufTerminal::fetch_one`. Removing `check_no_column_collision`
+        // from that method would let this query fall through to SQL emission
+        // instead of returning `DjogiError::Validation`, failing the assertion.
+        let (_cleanup, mut ctx) = testing::setup_test_db()
+            .await
+            .expect("DATABASE_URL must be set for row-aggregate terminal collision tests");
+
+        // Alias "geom" collides with `TileFeature::COLUMNS = &["id", "geom", "name"]`.
+        let result = QuerySet::<TileFeature>::new()
+            .annotate(|_| RowNumber::new().alias("geom"))
+            .as_geobuf("geom")
+            .fetch_one(&mut ctx)
+            .await;
+
+        assert!(
+            matches!(result, Err(crate::DjogiError::Validation(_))),
+            "AsGeobufTerminal::fetch_one must reject alias colliding with TileFeature column, \
+             got: {result:?}"
+        );
+        if let Err(crate::DjogiError::Validation(msg)) = result {
+            assert!(
+                msg.contains("geom"),
+                "error message must name the conflicting alias, got: {msg}"
+            );
+        }
+
+        drop(_cleanup);
     }
 }

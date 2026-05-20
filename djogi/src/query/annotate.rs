@@ -432,11 +432,19 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     /// # What
     ///
     /// Forwards each slot's
-    /// [`AnnotationSlot::check_no_column_collision`] check. Called by
-    /// [`AnnotatedQuerySet::fetch_all`] with `T::COLUMNS` before SQL
-    /// build so that a window alias shadowing a model column surfaces as
-    /// a typed [`crate::DjogiError::Validation`] instead of a Postgres
-    /// "column reference is ambiguous" error at execute time.
+    /// [`AnnotationSlot::check_no_column_collision`] check. Called with
+    /// `T::COLUMNS` before SQL build by:
+    ///
+    /// - [`AnnotatedQuerySet::fetch_all`]
+    /// - [`crate::query::row_aggregate_terminal::AsMvtTerminal::fetch_one`]
+    /// - [`crate::query::row_aggregate_terminal::AsGeobufTerminal::fetch_one`]
+    ///
+    /// All three callers emit the same `SELECT * FROM (…) AS __djogi_q
+    /// WHERE <alias> …` outer qualify wrap, so a window alias shadowing a
+    /// model column makes the outer WHERE predicate ambiguous at Postgres.
+    /// This check turns that runtime Postgres error into a typed
+    /// [`crate::DjogiError::Validation`] with a remediation hint before
+    /// any SQL is emitted.
     ///
     /// # Default
     ///
@@ -1557,10 +1565,20 @@ mod tests {
     // <alias>`) under the same name.
     //
     // The unit tests below call `check_no_column_collision` directly (not
-    // through `fetch_all`) to stay fast and database-free. The live-DB path
-    // is exercised by the integration test
-    // `tests/integration/phase8_zero_cluster_c_window_live.rs` which can only
-    // be run with `DATABASE_URL` configured.
+    // through `fetch_all`) to stay fast and database-free.
+    //
+    // Live qualify coverage (non-colliding aliases exercising the derived-table
+    // outer-WHERE shape through `fetch_all`) is provided by the integration
+    // test `tests/integration/phase8_zero_cluster_c_window_live.rs` — that
+    // file uses `"rank"` / `"dense_rank"` aliases that do not collide with
+    // model columns, so it exercises the qualify-lowering path, not the
+    // collision-detection path.
+    //
+    // Live terminal-level collision coverage (calling `check_no_column_collision`
+    // through the actual terminal `fetch_one` methods on non-empty querysets) is
+    // in `query::row_aggregate_terminal::tests` — see
+    // `as_mvt_terminal_fetch_one_rejects_colliding_alias` and
+    // `as_geobuf_terminal_fetch_one_rejects_colliding_alias`.
 
     #[test]
     fn row_number_alias_colliding_with_model_column_returns_validation_error() {
