@@ -929,12 +929,14 @@ required-features = ["network"]
 # `#[field(domain = "<name>")]` reference to an adopter-managed Postgres
 # domain. Pins the descriptor projection of `FieldSqlType::Domain { name,
 # base }`, the bare-name Display contract emitted by the migration composer,
-# round-trip through `Model::create` against a domain-typed column, the
-# domain-CHECK rejection path, and the differ surfacing a domain rename
-# as `ColumnChange::ChangeType`. Lives under `tests/internal/` because
-# Piece A only references adopter-managed domains — installing the domain
-# via `raw_ddl` in the setup is the legitimate adopter-side gap djogi#216
-# documents (Piece B / `CREATE DOMAIN` emission is deferred).
+# domain-CHECK rejection via raw_execute (Model::create is not exercised in
+# Piece A — the wire-codec limitation documented in the test source means
+# tokio-postgres cannot bind a domain-typed value without the domain's OID
+# registered in the connection's type cache), and the differ surfacing a
+# domain rename as `ColumnChange::ChangeType`. Lives under `tests/internal/`
+# because Piece A only references adopter-managed domains — installing the
+# domain via `raw_ddl` in the setup is the legitimate adopter-side gap
+# djogi#216 documents (Piece B / `CREATE DOMAIN` emission is deferred).
 [[test]]
 name = "phase8_5_c4_216_domain_live"
 path = "../tests/internal/phase8_5_c4_216_domain_live.rs"
