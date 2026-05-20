@@ -576,12 +576,57 @@ across nested `Jsonb<...>`, or per-element container narrowing.
    verbatim at the matched path and it does not compose with the
    recursive narrowing contract.
 2. **Container element narrowing.** Array containers (`Vec<Inner>`)
-   require `jsonb_agg(jsonb_build_object(...))` over
-   `jsonb_array_elements(metadata->'items')` inside a scalar
-   subquery; map containers (`IndexMap<String, Inner>`) require
-   `jsonb_object_agg(key, jsonb_build_object(...))` over
-   `jsonb_each(metadata->'map')` inside a scalar subquery. Each
-   per-element shape must itself be a `jsonb_build_object(...)`
+   require `jsonb_agg(jsonb_build_object(...) ORDER BY ord)` over
+   `jsonb_array_elements(metadata->'items') WITH ORDINALITY AS e(t, ord)`
+   inside a scalar subquery, with the whole subquery wrapped in
+   `COALESCE(..., '[]'::jsonb)`; map containers (`IndexMap<String, Inner>`)
+   require `jsonb_object_agg(key, jsonb_build_object(...))` over
+   `jsonb_each(metadata->'map')` inside a scalar subquery, with the
+   whole subquery wrapped in `COALESCE(..., '{}'::jsonb)`. The
+   canonical shapes are:
+   ```sql
+   -- Vec<Inner>
+   jsonb_build_object(
+     'items',
+     COALESCE(
+       (SELECT jsonb_agg(jsonb_build_object('name', t->>'name') ORDER BY ord)
+        FROM jsonb_array_elements(metadata->'items') WITH ORDINALITY AS e(t, ord)),
+       '[]'::jsonb
+     )
+   )
+   -- IndexMap<String, Inner>
+   jsonb_build_object(
+     'map',
+     COALESCE(
+       (SELECT jsonb_object_agg(k, jsonb_build_object('enabled', v->'enabled'))
+        FROM jsonb_each(metadata->'map') AS e(k, v)),
+       '{}'::jsonb
+     )
+   )
+   ```
+   Each of the three sub-clauses is mandatory for correct container
+   reconstruction:
+   - **`WITH ORDINALITY` + `ORDER BY ord` on the array shape** preserves
+     `Vec` semantics. `jsonb_agg` without an `ORDER BY` aggregates rows in
+     undefined order; without `WITH ORDINALITY` the source insertion order
+     is unrecoverable. `Vec<Inner>` decode treats array position as
+     semantically meaningful, so the projected order must match storage
+     order. The map shape carries no ordering obligation because
+     `IndexMap<String, Inner>` is keyed and JSONB object ordering is not
+     part of the wire contract.
+   - **`COALESCE(..., '[]'::jsonb)` and `COALESCE(..., '{}'::jsonb)`**
+     preserve empty containers. `jsonb_agg` / `jsonb_object_agg` return
+     SQL `NULL` over zero rows (not an empty array / empty object). A
+     required `Vec<Inner>` / `IndexMap<String, Inner>` field on the narrow
+     schema cannot decode SQL `NULL` — `serde_json::from_value` would surface
+     the missing key as `DjogiError::Decode` (or, for `Option<Vec<_>>`,
+     silently coerce to `None`, which loses the
+     "container-was-present-but-empty" signal). Wrapping the subquery in
+     `COALESCE` returns the canonical empty container so empty-list / empty-map
+     source rows project to empty-list / empty-map narrow rows without
+     decode failure or signal loss.
+
+   Each per-element shape must itself be a `jsonb_build_object(...)`
    recursive narrowing if the inner type is a `Jsonb<...>` or carries
    nested objects; **when the inner type is a plain serde struct**
    (`Vec<TagPublic>` where `TagPublic` is `#[derive(Serialize,
@@ -597,8 +642,14 @@ across nested `Jsonb<...>`, or per-element container narrowing.
    Shape V `aggregate = true` to bypass E_DJG_VDF_009 — see
    [§Aggregate token discipline for container subqueries](#aggregate-token-discipline-for-container-subqueries).
    The fixture corpus exercises the array and map shapes (compile-pass
-   007 / 008, both with `aggregate = true`); the integration test
-   corpus pins runtime parity for both.
+   007 / 008, both with `aggregate = true`, both wrapped in
+   `COALESCE(..., '[]'::jsonb)` / `COALESCE(..., '{}'::jsonb)`, and the
+   array fixture using `WITH ORDINALITY` + `ORDER BY ord`); the
+   integration test corpus pins runtime parity for both (test #8
+   phases 8a/8b/8c and test #9 phases 9a/9b in
+   [§Integration tests](#integration-tests)), including empty-container
+   preservation (test #8 phase 8c, test #9 phase 9b) and array-order
+   preservation (test #8 phase 8a assertion (e)).
 3. **Wire-key contract.** The SQL builder's key strings (the literal
    tokens passed to `jsonb_build_object(...)`) must be byte-identical
    to the wire keys the narrow schema's `serde::Serialize` and
@@ -606,10 +657,31 @@ across nested `Jsonb<...>`, or per-element container narrowing.
    on the narrow schema's `display_name` field requires the SQL to
    build `'displayName', metadata->'display_name'`, NOT `'display_name',
    metadata->'display_name'`. Mismatches are not a parse-time error —
-   the mismatched key lands in the projected `extra` on decode and
-   the narrow field is missing (handled per its declared `Option` /
-   fallible contract). Wire-key drift is caught at runtime by the
-   integration-test parity check (item 5 below).
+   the mismatched key lands in the projected `extra` on decode. The
+   downstream failure mode then depends on the narrow field's declared
+   shape:
+   - **Required** narrow field (`display_name: String`,
+     `count: u32`, etc.): `Jsonb<NarrowSchema>::FromSql` calls the
+     inner `serde_json::from_value::<NarrowSchema>(...)` after stripping
+     the projected JSONB into `data` + `extra`; the missing required
+     key surfaces as a missing-field decode error, propagated as
+     `DjogiError::Decode`. The queryset fetch fails outright before
+     parity can run. This is the failure mode test #10 pins.
+   - **Optional or defaulted** narrow field (`Option<String>`,
+     `#[serde(default)]`, etc.): the typed `data` deserializes with
+     the field absent / defaulted while the mismatched key sits in
+     `extra`. `Jsonb<T>::Serialize` then merges `data` + `extra` on
+     the wire under the original mismatched key, producing wire output
+     that differs from the in-memory `Jsonb::new(NarrowSchema { ... })`
+     construction. The integration parity check then catches the drift
+     via the populated `extra` on the fetched value vs the empty
+     `extra` on the in-memory construction.
+
+   Wire-key drift is therefore caught at runtime by **decode failure**
+   on required-field shapes and by **parity drift** on optional /
+   defaulted shapes; both are documented and the required-field
+   decode-failure shape is the binding test (test #10, item 5 below
+   covers the parity-drift path for the optional shape).
 4. **Construct `Jsonb::new(NarrowSchema { ... })` in the `rust`
    block.** The Rust-side construction must build a fresh narrow
    value, not clone the storage `Jsonb<AdminSchema>`. This pattern
@@ -623,12 +695,13 @@ across nested `Jsonb<...>`, or per-element container narrowing.
    against `(&profile).into()`. A regression that re-introduces a
    leaked key (e.g. through a future `sql` edit that drops the
    `jsonb_build_object` wrapper, fails recursive narrowing on a
-   nested schema, or mismatches the wire-key contract) fails this
-   test because the in-memory `rust` path yields `Jsonb::new(...)`
-   with empty `extra` at every nesting level, while the leaky
-   DB-fetch path yields a value whose `extra` carries the leaked
-   admin / nested-admin / mis-mapped keys — the `PartialEq` derive
-   on `Jsonb<T>` (transitively required by the parity helper's
+   nested schema, or mismatches the wire-key contract on an
+   optional / defaulted narrow field) fails this test because the
+   in-memory `rust` path yields `Jsonb::new(...)` with empty `extra`
+   at every nesting level, while the leaky DB-fetch path yields a
+   value whose `extra` carries the leaked admin / nested-admin /
+   mis-mapped keys — the `PartialEq` derive on `Jsonb<T>`
+   (transitively required by the parity helper's
    `where <Ty>: PartialEq` bound,
    [E_DJG_VDF_016](./visage-derived-fields.md#error-taxonomy))
    compares both `data` AND `extra` at every nesting level, so the
@@ -639,15 +712,24 @@ across nested `Jsonb<...>`, or per-element container narrowing.
    round-trip happens at compile time); the integration test is the
    binding runtime guarantee.
 
+   The parity gate **does not** catch wire-key mismatches against
+   **required** narrow fields: the queryset fetch surfaces
+   `DjogiError::Decode` from the inner `serde_json::from_value`
+   before any parity check runs, so the binding runtime gate for
+   that shape is the decode-failure assertion (test #10), not
+   parity.
+
 The user-guide section MUST surface the canonical recursive
 `jsonb_build_object` pattern as the only documented-safe form,
 explicitly include the unsafe counterexamples (bare passthrough
 caught by E_DJG_VDF_017 regardless of derived `name` alias —
 covering both same-name and cross-name passthrough shapes; shallow
 nested `metadata->'theme'` non-recursive form caught only at runtime
-by parity; wire-key mismatch caught only at runtime by parity), and
-direct adopters to the integration test corpus for the runtime
-parity gate. The fixture corpus MUST include the compile-pass parity
+by parity; wire-key mismatch caught at runtime either by decode
+failure on required-narrow-field shapes or by parity drift on
+optional / defaulted shapes — see [§Documented patterns](#documented-patterns-not-mechanically-enforced--verified-in-fixtures--integration-tests)
+item 3 for the failure-mode breakdown), and direct adopters to the
+integration test corpus for the runtime decode / parity gate. The fixture corpus MUST include the compile-pass parity
 assertion (in-memory construction of both paths plus synthetic
 `extra`-populated drift) AND the two E_DJG_VDF_017 compile-fail
 fixtures (`phase85_jsonb_per_audience_fail_006_same_name_bare_passthrough.rs`
@@ -683,7 +765,14 @@ across the basic, nested, and container shapes.
 - **Wire-key matches across `#[serde(rename)]` adjustments.** The
   narrow schema's serde keys may differ from its Rust field names;
   the SQL builder must follow the serde keys. No parse-time check;
-  caught at runtime by integration parity.
+  caught at runtime by **decode failure** on required narrow-field
+  shapes (`DjogiError::Decode` from the queryset fetch before parity
+  can run) and by **parity drift** on optional / defaulted narrow-field
+  shapes (the mismatched key lands in `extra` on decode and the parity
+  helper catches the drift between the leaky fetched value and the
+  in-memory `(&model).into()` construction). The required-field
+  decode-failure path is the binding test (test #10 in
+  [§Integration tests](#integration-tests)).
 - **Adopter writes a compound `sql` that hides bare passthrough**
   (`sql = "coalesce(metadata, '{}'::jsonb)"`, `sql = "metadata || '{}'::jsonb"`).
   E_DJG_VDF_017's conservative pattern match does not fire on these.
@@ -795,8 +884,8 @@ directories. Snapshot blessing follows the existing
 | `phase85_jsonb_per_audience_004_parity_helper_catches_synthetic_drift.rs` | In-memory only (no DB): constructs both the in-memory `ProfilePublic` (via `(&profile).into()`) and a deliberately leaky synthetic `ProfilePublic` with `extra` populated, then asserts `assert_derived_parity` returns `Err(DerivedParityError::Drift)`. Pins the parity-helper regression behavior at compile-pass scope only. **Runtime DB-fetch parity is exercised by the integration tests** in [§Integration tests](#integration-tests); a compile-pass fixture cannot connect to a DB so cannot assert DB-fetch parity. |
 | `phase85_jsonb_per_audience_005_typed_path_filter_on_storage_field.rs` | The storage `Jsonb<ProfileMetaAdmin>` field still supports typed-path filters via the existing `JsonbSchema` typed-accessor surface. The narrower visage projections are read-only and do not participate in `{Model}Fields` typed-path filters (consistent with the Tier-1 derived-field rule excluding derived names from `{Visage}Fields`). |
 | `phase85_jsonb_per_audience_006_nested_recursive_narrow_schema.rs` | The narrow schema itself contains nested `Jsonb<Sub>` — e.g. `ProfileMetaPublic` has `theme: Jsonb<ThemePublic>`. The fixture uses the canonical **recursive** narrowing: `sql = "jsonb_build_object('theme', jsonb_build_object('color', metadata->'theme'->'color'))"`. Asserts the macro accepts nested Jsonb in the derived `ty` and that the recursive `jsonb_build_object` shape composes through the SQL grammar guard. The non-recursive shallow `jsonb_build_object('theme', metadata->'theme')` form is exercised as the unsafe counterexample by the integration test `profile_public_non_recursive_nested_projection_leaks_caught_by_parity` (see [§Integration tests](#integration-tests)). |
-| `phase85_jsonb_per_audience_007_array_container_recursive_narrowing.rs` | The narrow schema declares an array container `tags: Vec<TagPublic>` whose source storage shape is `tags: Vec<TagAdmin>` (each `TagAdmin` carries an admin-only `internal_owner_id` field). The fixture uses the canonical per-element narrowing inside a scalar subquery: `aggregate = true`, `sql = "jsonb_build_object('tags', (SELECT jsonb_agg(jsonb_build_object('name', t->>'name')) FROM jsonb_array_elements(metadata->'tags') t))"`. The `aggregate = true` Shape V opt-in is required by [§Aggregate token discipline for container subqueries](#aggregate-token-discipline-for-container-subqueries) — E_DJG_VDF_009's token scan would otherwise fire on `jsonb_agg`. Asserts the macro accepts the array shape with the Shape V opt-in and the compile-time visage struct carries `tags: Vec<TagPublic>`. Runtime DB-fetch parity for the array shape is covered in [§Integration tests](#integration-tests). |
-| `phase85_jsonb_per_audience_008_map_container_recursive_narrowing.rs` | The narrow schema declares a map container `flags: IndexMap<String, FlagPublic>` whose source storage shape is `flags: IndexMap<String, FlagAdmin>` (each `FlagAdmin` carries an admin-only `set_by_internal_user` field). The fixture uses the canonical per-value narrowing inside a scalar subquery: `aggregate = true`, `sql = "jsonb_build_object('flags', (SELECT jsonb_object_agg(k, jsonb_build_object('enabled', v->'enabled')) FROM jsonb_each(metadata->'flags') AS e(k, v)))"`. The `aggregate = true` Shape V opt-in is required by [§Aggregate token discipline for container subqueries](#aggregate-token-discipline-for-container-subqueries) — E_DJG_VDF_009's token scan would otherwise fire on `jsonb_object_agg`. Asserts the macro accepts the map shape with the Shape V opt-in and the compile-time visage struct carries `flags: IndexMap<String, FlagPublic>`. Runtime DB-fetch parity for the map shape is covered in [§Integration tests](#integration-tests). |
+| `phase85_jsonb_per_audience_007_array_container_recursive_narrowing.rs` | The narrow schema declares an array container `tags: Vec<TagPublic>` whose source storage shape is `tags: Vec<TagAdmin>` (each `TagAdmin` carries an admin-only `internal_owner_id` field). The fixture uses the canonical per-element narrowing inside a scalar subquery with order preservation and empty-array preservation: `aggregate = true`, `sql = "jsonb_build_object('tags', COALESCE((SELECT jsonb_agg(jsonb_build_object('name', t->>'name') ORDER BY ord) FROM jsonb_array_elements(metadata->'tags') WITH ORDINALITY AS e(t, ord)), '[]'::jsonb))"`. The `WITH ORDINALITY` + `ORDER BY ord` combination preserves source array order across the aggregate fold (mandatory for `Vec<Inner>` semantics — see [§Documented patterns](#documented-patterns-not-mechanically-enforced--verified-in-fixtures--integration-tests) item 2); the `COALESCE(..., '[]'::jsonb)` wrap preserves empty arrays (the inner `jsonb_agg` returns SQL `NULL` over zero rows, which would surface as `DjogiError::Decode` on a required `Vec<TagPublic>` field). The `aggregate = true` Shape V opt-in is required by [§Aggregate token discipline for container subqueries](#aggregate-token-discipline-for-container-subqueries) — E_DJG_VDF_009's token scan would otherwise fire on `jsonb_agg`. Asserts the macro accepts the array shape with the Shape V opt-in and the compile-time visage struct carries `tags: Vec<TagPublic>`. Runtime DB-fetch parity for the array shape (including empty-array and array-order preservation) is covered in [§Integration tests](#integration-tests). |
+| `phase85_jsonb_per_audience_008_map_container_recursive_narrowing.rs` | The narrow schema declares a map container `flags: IndexMap<String, FlagPublic>` whose source storage shape is `flags: IndexMap<String, FlagAdmin>` (each `FlagAdmin` carries an admin-only `set_by_internal_user` field). The fixture uses the canonical per-value narrowing inside a scalar subquery with empty-map preservation: `aggregate = true`, `sql = "jsonb_build_object('flags', COALESCE((SELECT jsonb_object_agg(k, jsonb_build_object('enabled', v->'enabled')) FROM jsonb_each(metadata->'flags') AS e(k, v)), '{}'::jsonb))"`. The `COALESCE(..., '{}'::jsonb)` wrap preserves empty maps (the inner `jsonb_object_agg` returns SQL `NULL` over zero rows, which would surface as `DjogiError::Decode` on a required `IndexMap<String, FlagPublic>` field). The `aggregate = true` Shape V opt-in is required by [§Aggregate token discipline for container subqueries](#aggregate-token-discipline-for-container-subqueries) — E_DJG_VDF_009's token scan would otherwise fire on `jsonb_object_agg`. Asserts the macro accepts the map shape with the Shape V opt-in and the compile-time visage struct carries `flags: IndexMap<String, FlagPublic>`. Runtime DB-fetch parity for the map shape (including empty-map preservation) is covered in [§Integration tests](#integration-tests). |
 
 ### Compile-fail fixtures
 
@@ -894,47 +983,133 @@ below).
    carry an `extra` map — the per-element safety assertion runs
    against typed fields and serialized output rather than against
    `extra`. Derived uses the canonical array per-element narrowing
-   inside a scalar subquery with the Shape V `aggregate = true`
-   opt-in (`jsonb_agg(jsonb_build_object(...)) FROM
-   jsonb_array_elements(...)` — see [§Aggregate token discipline for
-   container subqueries](#aggregate-token-discipline-for-container-subqueries)).
-   Insert a row with multiple tags; fetch `ProfilePublic`; assert:
-   (a) `metadata.data.tags.len() == n` matches the inserted count;
-   (b) for every `tag` in `metadata.data.tags`, `tag.name` carries
-   the expected public value (typed-field check); (c)
-   `serde_json::to_string(&visage).unwrap()` does NOT contain the
-   substring `internal_owner_id`; (d) the outer wrapper's
-   `metadata.extra().is_empty()` is true (the outer `Jsonb` wrapper
-   IS a `Jsonb<ProfileMetaPublic>` and DOES carry an `extra` map —
-   assert it is empty to pin the outer-level narrowing). Pins
-   container-element narrowing at runtime for the plain-serde
-   element case.
+   inside a scalar subquery with order preservation and empty-array
+   preservation under the Shape V `aggregate = true` opt-in
+   (`COALESCE((SELECT jsonb_agg(jsonb_build_object(...) ORDER BY ord)
+   FROM jsonb_array_elements(...) WITH ORDINALITY AS e(t, ord)),
+   '[]'::jsonb)` — see [§Aggregate token discipline for container
+   subqueries](#aggregate-token-discipline-for-container-subqueries)
+   and [§Documented patterns](#documented-patterns-not-mechanically-enforced--verified-in-fixtures--integration-tests) item 2).
+
+   The test runs in three phases that share one `Profile` model and
+   the same derived projection:
+   - **Phase 8a (non-empty).** Insert a row with three tags whose
+     `name` values are deliberately ordered to make a sorted-order
+     bug observable: `["zeta", "alpha", "mike"]` (alphabetic order
+     `["alpha", "mike", "zeta"]` differs from insertion order). Fetch
+     `ProfilePublic`; assert:
+     (a) `metadata.data.tags.len() == 3` matches the inserted count;
+     (b) for every `tag` in `metadata.data.tags`, `tag.name` carries
+     the expected public value (typed-field check);
+     (c) `serde_json::to_string(&visage).unwrap()` does NOT contain
+     the substring `internal_owner_id`;
+     (d) the outer wrapper's `metadata.extra().is_empty()` is true
+     (the outer `Jsonb` wrapper IS a `Jsonb<ProfileMetaPublic>` and
+     DOES carry an `extra` map — assert it is empty to pin the
+     outer-level narrowing);
+     (e) **array-order preservation.** Assert
+     `metadata.data.tags.iter().map(|t| t.name.as_str()).collect::<Vec<_>>() == vec!["zeta", "alpha", "mike"]`
+     — the projected order must match the stored insertion order, not
+     any other order. Without `WITH ORDINALITY` + `ORDER BY ord` on
+     the derived `sql`, `jsonb_agg` aggregates in undefined order and
+     this assertion fails non-deterministically.
+   - **Phase 8b (single-element).** Insert a row with exactly one tag.
+     Fetch `ProfilePublic`; assert `metadata.data.tags.len() == 1`
+     and the typed `name` matches the inserted value. Pins the
+     boundary between empty-array and multi-element shape.
+   - **Phase 8c (empty-array preservation).** Insert a row with an
+     empty `tags: Vec<TagAdmin>` in storage. Fetch `ProfilePublic`;
+     assert `metadata.data.tags.is_empty()` and that the queryset
+     fetch succeeded — without the `COALESCE(..., '[]'::jsonb)` wrap
+     on the derived `sql`, the inner `jsonb_agg` would return SQL
+     `NULL` over the zero rows yielded by `jsonb_array_elements(...)`
+     and the required `tags: Vec<TagPublic>` decode would surface as
+     `DjogiError::Decode`. This phase pins the COALESCE wrap.
+
+   Pins container-element narrowing at runtime for the plain-serde
+   element case across the non-empty, single-element, and empty-array
+   shapes, plus array-order preservation.
 9. **`profile_public_map_container_omits_admin_only_keys`.** Same
    shape as #8 with a map container (`flags: IndexMap<String,
    FlagPublic>` projected from `flags: IndexMap<String, FlagAdmin>`).
    `FlagPublic` is also a plain `#[derive(Serialize, Deserialize)]`
    struct (no `Jsonb<...>` wrapping), so map values do **not** carry
    an `extra` map. Derived uses the canonical map per-value
-   narrowing inside a scalar subquery with the Shape V `aggregate =
-   true` opt-in (`jsonb_object_agg(k, jsonb_build_object(...)) FROM
-   jsonb_each(...)`). Insert a row with several flags; fetch
-   `ProfilePublic`; assert: (a) `metadata.data.flags.len() == n`
-   matches the inserted count; (b) for every `(key, flag)` in
-   `metadata.data.flags`, `flag.enabled` carries the expected public
-   value (typed-field check); (c)
-   `serde_json::to_string(&visage).unwrap()` does NOT contain the
-   substring `set_by_internal_user`; (d) the outer wrapper's
-   `metadata.extra().is_empty()` is true.
-10. **`profile_public_wire_key_mismatch_caught_by_parity`.** Narrow
-    schema declares `#[serde(rename = "displayName")]` on its
-    `display_name` field. Derived `sql` mistakenly uses the
-    pre-rename key `'display_name'`. Fetch `ProfilePublic` via the
-    queryset; the wire-key `display_name` lands in `extra` on
-    decode and the narrow `displayName` field is missing. Call
-    `assert_derived_parity` against `(&profile).into()`; assert
-    `Err(DerivedParityError::Drift { field: "metadata", .. })`.
-    Pins the wire-key contract at runtime — proc macros cannot
-    detect the rename / key mismatch at parse time.
+   narrowing inside a scalar subquery with empty-map preservation
+   under the Shape V `aggregate = true` opt-in
+   (`COALESCE((SELECT jsonb_object_agg(k, jsonb_build_object(...))
+   FROM jsonb_each(...) AS e(k, v)), '{}'::jsonb)`).
+
+   The test runs in two phases that share one `Profile` model and
+   the same derived projection:
+   - **Phase 9a (non-empty).** Insert a row with several flags. Fetch
+     `ProfilePublic`; assert:
+     (a) `metadata.data.flags.len() == n` matches the inserted count;
+     (b) for every `(key, flag)` in `metadata.data.flags`,
+     `flag.enabled` carries the expected public value (typed-field
+     check);
+     (c) `serde_json::to_string(&visage).unwrap()` does NOT contain
+     the substring `set_by_internal_user`;
+     (d) the outer wrapper's `metadata.extra().is_empty()` is true.
+     Maps have no semantic ordering obligation — `IndexMap<String, _>`
+     preserves insertion order in-memory but JSONB object key order is
+     not part of the wire contract; the typed-field check above
+     compares per-key, not in order.
+   - **Phase 9b (empty-map preservation).** Insert a row with an
+     empty `flags: IndexMap<String, FlagAdmin>` in storage. Fetch
+     `ProfilePublic`; assert `metadata.data.flags.is_empty()` and
+     that the queryset fetch succeeded — without the
+     `COALESCE(..., '{}'::jsonb)` wrap on the derived `sql`, the
+     inner `jsonb_object_agg` would return SQL `NULL` over the zero
+     rows yielded by `jsonb_each(...)` and the required
+     `flags: IndexMap<String, FlagPublic>` decode would surface as
+     `DjogiError::Decode`. This phase pins the COALESCE wrap.
+10. **`profile_public_wire_key_mismatch_required_field_fails_decode`.**
+    Narrow schema declares `#[serde(rename = "displayName")]` on its
+    **required** `display_name: String` field (the field is plain
+    `String`, not `Option<String>`, and carries no
+    `#[serde(default)]`). Derived `sql` mistakenly uses the
+    pre-rename key `'display_name'` —
+    `sql = "jsonb_build_object('display_name', metadata->'display_name', ...)"`
+    instead of the correct
+    `sql = "jsonb_build_object('displayName', metadata->'display_name', ...)"`.
+
+    Insert a profile with a populated `display_name`. Attempt to fetch
+    `ProfilePublic` via the queryset; assert the fetch returns
+    `Err(DjogiError::Decode { .. })`. The decode-failure mechanism:
+    Postgres returns the projected JSONB object `{"display_name":
+    "<value>", ...}`; `Jsonb<ProfileMetaPublic>::FromSql` splits the
+    object into `data` and `extra` by consulting `ProfileMetaPublic`'s
+    serde keys; because `display_name` does not match the renamed
+    serde key `displayName`, it lands in `extra`; the required
+    `displayName` field is missing from the `data`-shaped subset and
+    `serde_json::from_value::<ProfileMetaPublic>(...)` returns a
+    `missing field "displayName"` error, surfaced as
+    `DjogiError::Decode`. The queryset fetch fails before
+    `assert_derived_parity` can run.
+
+    Pins the wire-key contract at runtime via the harder
+    decode-failure path. For required renamed fields, wire-key
+    mismatch fails outright before parity can run, which better
+    matches Djogi's "fail loudly" safety model than silently
+    defaulting the missing field. Proc macros cannot detect the
+    rename / key mismatch at parse time (the narrow schema's serde
+    attributes are not visible from the `#[derived]` attribute's
+    declaration site); the queryset fetch is the runtime gate.
+
+    The companion optional / defaulted shape (where the renamed field
+    is declared `Option<String>` or `#[serde(default)]`) is the
+    parity-drift path documented in
+    [§Documented patterns](#documented-patterns-not-mechanically-enforced--verified-in-fixtures--integration-tests)
+    item 3 and item 5 — that shape's drift is caught by
+    `assert_derived_parity` because the mismatched key sits in `extra`
+    on the fetched value but is absent on the in-memory `(&profile).into()`
+    construction. The required-field decode-failure path (test #10) is
+    the binding test; the optional-field parity-drift path is not
+    pinned by an additional integration test because the parity helper
+    is already exercised by tests #3, #4, and #7 and the optional-field
+    shape is structurally identical from the parity helper's
+    perspective.
 
 ### Rustdoc
 
@@ -962,9 +1137,17 @@ section contains:
    "metadata"` and `name = metadata_public_view, sql = "metadata"`
    fail at parse time); what `Jsonb::extra` does on the projected
    path; the wire-key contract between SQL builder keys and the
-   narrow schema's serde-renamed keys; how the integration-test
-   parity helper pins the absence of leaks at runtime (compile-pass
-   parity is in-memory only and does not catch DB-fetch leaks).
+   narrow schema's serde-renamed keys (covering both failure modes —
+   required-field decode failure surfacing as `DjogiError::Decode`
+   at queryset fetch time, and optional-field parity drift caught
+   by the integration parity helper); the container reconstruction
+   contract (`WITH ORDINALITY` + `ORDER BY ord` for `Vec<Inner>`
+   order preservation, `COALESCE(..., '[]'::jsonb)` /
+   `COALESCE(..., '{}'::jsonb)` for empty-container preservation);
+   how the integration-test runtime gates pin the absence of leaks
+   (parity helper for shape-drift, decode failure for required-field
+   wire-key mismatch — compile-pass parity is in-memory only and does
+   not catch DB-fetch leaks).
 4. **The unsafe counterexamples (mandatory).** The section MUST show
    the four documented unsafe shapes with the failure mode each
    produces:
@@ -985,10 +1168,16 @@ section contains:
      caught only at runtime by integration parity (test #7 in
      [§Integration tests](#integration-tests)).
    - Wire-key mismatch (SQL builder uses pre-rename key while the
-     narrow schema declares `#[serde(rename)]`) — compiles cleanly,
-     leaks the renamed key into `extra` and surfaces as a missing
-     narrow-schema field, caught at runtime by integration parity
-     (test #10).
+     narrow schema declares `#[serde(rename)]`) — compiles cleanly;
+     downstream failure mode splits on field shape: **required**
+     renamed fields surface `DjogiError::Decode` at queryset fetch
+     time (the missing required field cannot be filled from `extra`
+     and the queryset fetch fails outright — test #10); **optional or
+     `#[serde(default)]`** renamed fields silently default the field
+     and let the mismatched key sit in `extra`, caught at runtime by
+     integration parity drift (covered structurally by the parity
+     helper exercised in tests #3, #4, #7). The required-field path is
+     the binding integration assertion.
 5. **The recursive narrowing rule.** Every nesting level of a
    per-audience JSONB projection (nested `Jsonb<...>` sub-schemas,
    each element of an array container, each value of a map container)
@@ -1106,11 +1295,29 @@ narrow schema. Examples:
 A mismatch is **not** a parse-time error — proc macros cannot read the
 narrow schema's serde attributes from the derived attribute's
 declaration site. A mismatched key lands in the projected `extra` on
-decode and the narrow field is missing (handled per its declared
-nullability / fallible contract); the wire JSON re-emits the
-mis-mapped key from `extra` and the parity helper's runtime
-integration assertion catches the drift (test #10 in
-[§Integration tests](#integration-tests)).
+decode; the downstream failure mode depends on the narrow field's
+declared shape:
+
+- **Required** narrow field (`display_name: String`): the
+  required-field decode failure surfaces as `DjogiError::Decode` at
+  queryset fetch time, before any parity check can run. The inner
+  `serde_json::from_value::<NarrowSchema>(...)` cannot fill the
+  missing required field from `extra` and propagates the error up
+  through `Jsonb<NarrowSchema>::FromSql` and through the visage
+  fetch. This is the failure mode test #10 pins (see
+  [§Integration tests](#integration-tests)).
+- **Optional / defaulted** narrow field (`Option<String>`,
+  `#[serde(default)]`): the typed `data` deserializes with the field
+  absent / defaulted; the mismatched key sits in `extra` and re-emits
+  on serialize, producing wire output that differs from the in-memory
+  `Jsonb::new(NarrowSchema { ... })`. The parity helper catches the
+  drift via the populated `extra` map at the runtime integration
+  boundary.
+
+Both shapes are runtime gates; the required-field decode-failure path
+is the binding integration test, and the optional-field parity-drift
+path is covered structurally by the parity helper already exercised
+by tests #3, #4, and #7.
 
 ### with query / projection surfaces
 
@@ -1251,9 +1458,10 @@ the work breakdown is:
 4. **Integration tests.** Add the ten tests listed in
    [§Integration tests](#integration-tests). They run against a real
    Postgres instance via `#[djogi::djogi_test(sync_models = [Profile])]`
-   per the workspace pattern; tests #6 through #10 carry the runtime
-   parity / leak / wire-key drift coverage that proc macros cannot
-   detect at parse time.
+   per the workspace pattern; tests #6 through #9 carry the runtime
+   parity / leak / container-shape (empty + order) coverage and test
+   #10 carries the wire-key required-field decode-failure coverage —
+   all of which proc macros cannot detect at parse time.
 5. **User-guide section.** Edit `docs/guide/jsonb.md`,
    `docs/guide/derived-projections.md`, and `docs/guide/visages.md`
    per [§User-guide page](#user-guide-page), including the mandatory
