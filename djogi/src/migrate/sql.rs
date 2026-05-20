@@ -1305,10 +1305,37 @@ fn render_deferrable_clause(deferrable: bool, initially_deferred: bool) -> &'sta
 }
 
 fn emit_add_index(idx: &IndexSchema) -> OperationSql {
+    // `UniqueConstraint` uses the DDL constraint form, not `CREATE [UNIQUE] INDEX`.
+    //
+    // The macro's `forces_unique_index` predicate ensures every `UniqueConstraint`
+    // has no predicate, no `NULLS NOT DISTINCT`, no expression target, no `INCLUDE`
+    // columns, and no `CONCURRENTLY` flag — those shapes are escalated to
+    // `UniqueIndex` before they reach the descriptor. The constraint form
+    // `ALTER TABLE … ADD CONSTRAINT … UNIQUE (cols)` produces a named entry in
+    // `pg_constraint` (matching the handwritten DDL semantics for plain composite
+    // uniqueness) whereas `CREATE UNIQUE INDEX` produces only a `pg_index` row.
+    if idx.kind == IndexKindSchema::UniqueConstraint {
+        let qt = quote_ident(&idx.table);
+        let qname = quote_ident(&idx.name);
+        let mut cols = String::new();
+        write_index_target(&mut cols, &idx.target);
+        let up = format!("ALTER TABLE {qt} ADD CONSTRAINT {qname} UNIQUE {cols};");
+        let down = format!("ALTER TABLE {qt} DROP CONSTRAINT {qname};");
+        return OperationSql {
+            label: format!("AddConstraintUnique {}", idx.name),
+            up,
+            down,
+            lossy: None,
+        };
+    }
+
     let mut up = String::with_capacity(128);
     let create = match idx.kind {
         IndexKindSchema::NonUnique => "CREATE INDEX",
-        IndexKindSchema::UniqueConstraint | IndexKindSchema::UniqueIndex => "CREATE UNIQUE INDEX",
+        IndexKindSchema::UniqueIndex => "CREATE UNIQUE INDEX",
+        // Handled above; this arm is unreachable but retained so the match is
+        // exhaustive without a wildcard that would hide future variant additions.
+        IndexKindSchema::UniqueConstraint => unreachable!("UniqueConstraint handled above"),
     };
     let _ = write!(up, "{create}");
     if idx.requires_out_of_transaction {
@@ -1359,6 +1386,32 @@ fn emit_add_index(idx: &IndexSchema) -> OperationSql {
 }
 
 fn emit_drop_index(idx: &IndexSchema) -> OperationSql {
+    // `UniqueConstraint` is dropped via `ALTER TABLE … DROP CONSTRAINT`, not
+    // `DROP INDEX`. The down side delegates to `recreate_index_sql` which routes
+    // through `emit_add_index`; after the `UniqueConstraint` fix above, that
+    // produces `ALTER TABLE … ADD CONSTRAINT … UNIQUE (cols)`.
+    if idx.kind == IndexKindSchema::UniqueConstraint {
+        let qt = quote_ident(&idx.table);
+        let qname = quote_ident(&idx.name);
+        let up = format!("ALTER TABLE {qt} DROP CONSTRAINT {qname};");
+        let down = recreate_index_sql(idx);
+        return OperationSql {
+            label: format!("DropConstraintUnique {}", idx.name),
+            up,
+            down,
+            // Rollback revalidates the UNIQUE predicate across the full table —
+            // structurally recoverable but potentially expensive on large tables.
+            lossy: Some(LossyRollbackWarning {
+                kind: LossyRollbackKind::DropIndex,
+                detail: format!(
+                    "UNIQUE constraint `{}` dropped — rollback recreates the constraint, \
+                     which requires a full table scan to validate uniqueness",
+                    idx.name
+                ),
+            }),
+        };
+    }
+
     let qname = quote_ident(&idx.name);
     let mut up = String::with_capacity(64);
     up.push_str("DROP INDEX");
@@ -4256,6 +4309,109 @@ mod tests {
             sql.lossy.as_ref().map(|w| w.kind),
             Some(LossyRollbackKind::DropIndex)
         ));
+    }
+
+    // ── UniqueConstraint (ALTER TABLE form) ────────────────────────────
+
+    /// Plain `UniqueConstraint` — simple composite columns. Must emit
+    /// `ALTER TABLE … ADD CONSTRAINT … UNIQUE (…)` rather than
+    /// `CREATE UNIQUE INDEX`. The constraint form creates a named row
+    /// in `pg_constraint` matching handwritten `ADD CONSTRAINT` DDL
+    /// semantics; `CREATE UNIQUE INDEX` would only add a `pg_index` row.
+    #[test]
+    fn add_unique_constraint_emits_alter_table_add_constraint() {
+        let mut i = idx(
+            "herd_ranges_herd_id_country_id_season_key",
+            "herd_ranges",
+            &["herd_id", "country_id", "season"],
+        );
+        i.kind = IndexKindSchema::UniqueConstraint;
+        let sql = emit_add_index(&i);
+        assert_eq!(
+            sql.up,
+            "ALTER TABLE \"herd_ranges\" ADD CONSTRAINT \
+             \"herd_ranges_herd_id_country_id_season_key\" UNIQUE \
+             (\"herd_id\", \"country_id\", \"season\");",
+            "UniqueConstraint must use ALTER TABLE ADD CONSTRAINT form"
+        );
+        assert_eq!(
+            sql.down,
+            "ALTER TABLE \"herd_ranges\" DROP CONSTRAINT \
+             \"herd_ranges_herd_id_country_id_season_key\";",
+            "UniqueConstraint down must use ALTER TABLE DROP CONSTRAINT form"
+        );
+        assert!(
+            sql.lossy.is_none(),
+            "AddConstraintUnique forward side is non-lossy"
+        );
+    }
+
+    /// Single-column `UniqueConstraint` round-trips through the
+    /// constraint form too (not just composites).
+    #[test]
+    fn add_unique_constraint_single_column_uses_constraint_form() {
+        let mut i = idx("t6_simple_unique_email_key", "t6_simple_unique", &["email"]);
+        i.kind = IndexKindSchema::UniqueConstraint;
+        let sql = emit_add_index(&i);
+        assert!(
+            sql.up.starts_with("ALTER TABLE"),
+            "single-column UniqueConstraint must use ALTER TABLE form, not CREATE INDEX: {}",
+            sql.up
+        );
+        assert!(
+            sql.up.contains("ADD CONSTRAINT"),
+            "single-column UniqueConstraint up must contain ADD CONSTRAINT: {}",
+            sql.up
+        );
+        assert!(
+            !sql.up.contains("CREATE"),
+            "single-column UniqueConstraint up must not contain CREATE: {}",
+            sql.up
+        );
+    }
+
+    /// Dropping a `UniqueConstraint` uses `ALTER TABLE … DROP CONSTRAINT`,
+    /// not `DROP INDEX`. Down side recreates via `ADD CONSTRAINT`.
+    #[test]
+    fn drop_unique_constraint_uses_alter_table_drop_constraint() {
+        let mut i = idx(
+            "elephant_ancestries_elephant_id_ancestor_id_depth_key",
+            "elephant_ancestries",
+            &["elephant_id", "ancestor_id", "depth"],
+        );
+        i.kind = IndexKindSchema::UniqueConstraint;
+        let sql = emit_drop_index(&i);
+        assert_eq!(
+            sql.up,
+            "ALTER TABLE \"elephant_ancestries\" DROP CONSTRAINT \
+             \"elephant_ancestries_elephant_id_ancestor_id_depth_key\";",
+            "DropConstraintUnique up must use ALTER TABLE DROP CONSTRAINT"
+        );
+        // Down side must recreate via ADD CONSTRAINT (not CREATE UNIQUE INDEX).
+        assert!(
+            sql.down.starts_with("ALTER TABLE"),
+            "DropConstraintUnique down must use ALTER TABLE ADD CONSTRAINT, got: {}",
+            sql.down
+        );
+        assert!(
+            sql.down.contains("ADD CONSTRAINT"),
+            "DropConstraintUnique down must contain ADD CONSTRAINT: {}",
+            sql.down
+        );
+        assert!(
+            !sql.down.contains("CREATE UNIQUE INDEX"),
+            "DropConstraintUnique down must not use CREATE UNIQUE INDEX: {}",
+            sql.down
+        );
+        // Lossy marker surfaces — revalidating the UNIQUE predicate
+        // across the full table can be expensive on large tables.
+        assert!(
+            matches!(
+                sql.lossy.as_ref().map(|w| w.kind),
+                Some(LossyRollbackKind::DropIndex)
+            ),
+            "DropConstraintUnique must carry a lossy marker"
+        );
     }
 
     // ── Enums ──────────────────────────────────────────────────────────
