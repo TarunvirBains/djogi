@@ -718,6 +718,90 @@ pub struct ExclusionConstraintSchema {
     pub where_clause: Option<String>,
 }
 
+/// Standalone named `NOT NULL` table constraint payload for the PG18
+/// DDL-only temporal-constraints lane (djogi#150).
+///
+/// This shape is intentionally separate from [`ColumnSchema`] so the
+/// migration core can lower explicit `ALTER TABLE ... ADD CONSTRAINT
+/// ... NOT NULL <col>` statements without widening the descriptor /
+/// projection contract in this lane. Descriptor-driven adoption can
+/// project into this shape later.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NamedNotNullConstraintSchema {
+    /// Constraint identifier. Required so rollback can target the same
+    /// catalogue slot deterministically.
+    pub name: String,
+    /// Column the table constraint applies to.
+    pub column: String,
+    /// `false` emits `NOT ENFORCED`. `true` uses the Postgres default
+    /// enforced behaviour and therefore emits no explicit keyword.
+    #[serde(default = "default_true")]
+    pub enforced: bool,
+}
+
+/// Standalone PostgreSQL 18 temporal primary-key payload
+/// (`... WITHOUT OVERLAPS`) for djogi#150.
+///
+/// Stored separately from [`PrimaryKeySchema`] so this DDL-only lane
+/// can add the explicit migration lowering without widening the
+/// snapshot / descriptor contract in the same patch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemporalPrimaryKeyConstraintSchema {
+    /// Constraint identifier. Required so drop / rollback can name the
+    /// same constraint deterministically.
+    pub name: String,
+    /// Equality-part columns in declaration order.
+    pub columns: Vec<String>,
+    /// Final range / multirange column rendered as
+    /// `<column> WITHOUT OVERLAPS`.
+    pub without_overlaps_column: String,
+    /// Optional payload columns for the backing constraint index.
+    #[serde(default)]
+    pub include: Vec<String>,
+}
+
+/// Standalone PostgreSQL 18 temporal foreign-key payload
+/// (`FOREIGN KEY (..., PERIOD ...) REFERENCES ... (..., PERIOD ...)`)
+/// for djogi#150.
+///
+/// The shape models the explicit migration DDL directly: one or more
+/// equality columns plus one PERIOD column on each side.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeriodForeignKeyConstraintSchema {
+    /// Constraint identifier. Required for deterministic rollback.
+    pub name: String,
+    /// Equality-part source columns in declaration order.
+    pub columns: Vec<String>,
+    /// Source period column rendered as `PERIOD <column>`.
+    pub period_column: String,
+    /// Referenced table name.
+    pub ref_table: String,
+    /// Equality-part referenced columns. Must align 1:1 with
+    /// [`Self::columns`].
+    pub ref_columns: Vec<String>,
+    /// Referenced period column rendered as `PERIOD <column>`.
+    pub ref_period_column: String,
+    /// Delete action. Temporal FKs still share the standard FK
+    /// `ON DELETE` surface.
+    pub on_delete: OnDeleteSchema,
+    /// Standard FK deferrability flag.
+    #[serde(default)]
+    pub deferrable: bool,
+    /// Standard FK initial deferral flag.
+    #[serde(default)]
+    pub initially_deferred: bool,
+    /// `false` emits `NOT ENFORCED`. `true` uses the Postgres default.
+    #[serde(default = "default_true")]
+    pub enforced: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// Postgres index method. Mirrors
 /// [`crate::descriptor::IndexType`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

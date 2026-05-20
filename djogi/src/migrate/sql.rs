@@ -82,7 +82,9 @@ use super::projection::BucketKey;
 use super::schema::{
     ColumnSchema, EnumSchema, ExclusionConstraintSchema, ForeignKeySchema, IndexColumnSchema,
     IndexKindSchema, IndexNullsOrderSchema, IndexOrderSchema, IndexSchema, IndexTargetSchema,
-    IndexTypeSchema, OnDeleteSchema, PartitionSchema, PkKindSchema, TableSchema,
+    IndexTypeSchema, NamedNotNullConstraintSchema, OnDeleteSchema, PartitionSchema,
+    PeriodForeignKeyConstraintSchema, PkKindSchema, TableSchema,
+    TemporalPrimaryKeyConstraintSchema,
 };
 
 // ── Public output shapes ──────────────────────────────────────────────────
@@ -1543,6 +1545,120 @@ fn emit_drop_exclusion_constraint(
     }
 }
 
+fn emit_add_named_not_null_constraint(
+    table: &str,
+    constraint: &NamedNotNullConstraintSchema,
+) -> OperationSql {
+    let qt = quote_ident(table);
+    let qname = quote_ident(&constraint.name);
+    let qcol = quote_ident(&constraint.column);
+    let up = format!(
+        "ALTER TABLE {qt} ADD CONSTRAINT {qname} NOT NULL {qcol}{};",
+        enforced_suffix(constraint.enforced),
+    );
+    let down = format!("ALTER TABLE {qt} DROP CONSTRAINT {qname};");
+    OperationSql {
+        label: format!("AddNamedNotNullConstraint {table}.{}", constraint.name),
+        up,
+        down,
+        lossy: None,
+    }
+}
+
+fn emit_drop_named_not_null_constraint(
+    table: &str,
+    constraint: &NamedNotNullConstraintSchema,
+) -> OperationSql {
+    let qt = quote_ident(table);
+    let qname = quote_ident(&constraint.name);
+    let qcol = quote_ident(&constraint.column);
+    let up = format!("ALTER TABLE {qt} DROP CONSTRAINT {qname};");
+    let down = format!(
+        "ALTER TABLE {qt} ADD CONSTRAINT {qname} NOT NULL {qcol}{};",
+        enforced_suffix(constraint.enforced),
+    );
+    OperationSql {
+        label: format!("DropNamedNotNullConstraint {table}.{}", constraint.name),
+        up,
+        down,
+        lossy: None,
+    }
+}
+
+fn emit_add_temporal_primary_key_constraint(
+    table: &str,
+    constraint: &TemporalPrimaryKeyConstraintSchema,
+) -> OperationSql {
+    let qt = quote_ident(table);
+    let qname = quote_ident(&constraint.name);
+    let body = render_temporal_primary_key_body(constraint);
+    let up = format!("ALTER TABLE {qt} ADD CONSTRAINT {qname} {body};");
+    let down = format!("ALTER TABLE {qt} DROP CONSTRAINT {qname};");
+    OperationSql {
+        label: format!(
+            "AddTemporalPrimaryKeyConstraint {table}.{}",
+            constraint.name
+        ),
+        up,
+        down,
+        lossy: None,
+    }
+}
+
+fn emit_drop_temporal_primary_key_constraint(
+    table: &str,
+    constraint: &TemporalPrimaryKeyConstraintSchema,
+) -> OperationSql {
+    let qt = quote_ident(table);
+    let qname = quote_ident(&constraint.name);
+    let body = render_temporal_primary_key_body(constraint);
+    let up = format!("ALTER TABLE {qt} DROP CONSTRAINT {qname};");
+    let down = format!("ALTER TABLE {qt} ADD CONSTRAINT {qname} {body};");
+    OperationSql {
+        label: format!(
+            "DropTemporalPrimaryKeyConstraint {table}.{}",
+            constraint.name
+        ),
+        up,
+        down,
+        lossy: None,
+    }
+}
+
+fn emit_add_period_foreign_key_constraint(
+    table: &str,
+    constraint: &PeriodForeignKeyConstraintSchema,
+) -> OperationSql {
+    let qt = quote_ident(table);
+    let qname = quote_ident(&constraint.name);
+    let body = render_period_foreign_key_body(constraint);
+    let up = format!("ALTER TABLE {qt} ADD CONSTRAINT {qname} {body};");
+    let down = format!("ALTER TABLE {qt} DROP CONSTRAINT {qname};");
+    OperationSql {
+        label: format!("AddPeriodForeignKeyConstraint {table}.{}", constraint.name),
+        up,
+        down,
+        lossy: None,
+    }
+}
+
+fn emit_drop_period_foreign_key_constraint(
+    table: &str,
+    constraint: &PeriodForeignKeyConstraintSchema,
+) -> OperationSql {
+    let qt = quote_ident(table);
+    let qname = quote_ident(&constraint.name);
+    let body = render_period_foreign_key_body(constraint);
+    let up = format!("ALTER TABLE {qt} DROP CONSTRAINT {qname};");
+    let down = format!("ALTER TABLE {qt} ADD CONSTRAINT {qname} {body};");
+    OperationSql {
+        label: format!("DropPeriodForeignKeyConstraint {table}.{}", constraint.name),
+        up,
+        down,
+        lossy: None,
+    }
+}
+
 fn emit_add_enum(e: &EnumSchema) -> OperationSql {
     let qname = quote_ident(&e.name);
     let mut up = String::with_capacity(64);
@@ -2166,6 +2282,56 @@ pub(crate) fn fk_constraint_name(table: &str, column: &str) -> String {
     truncate_constraint(format!("{table}_{column}_fkey"))
 }
 
+fn enforced_suffix(enforced: bool) -> &'static str {
+    if enforced { "" } else { " NOT ENFORCED" }
+}
+
+fn render_temporal_primary_key_body(constraint: &TemporalPrimaryKeyConstraintSchema) -> String {
+    let mut parts: Vec<String> = constraint.columns.iter().map(|c| quote_ident(c)).collect();
+    parts.push(format!(
+        "{} WITHOUT OVERLAPS",
+        quote_ident(&constraint.without_overlaps_column)
+    ));
+    let mut out = format!("PRIMARY KEY ({})", parts.join(", "));
+    if !constraint.include.is_empty() {
+        let include = constraint
+            .include
+            .iter()
+            .map(|c| quote_ident(c))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = write!(out, " INCLUDE ({include})");
+    }
+    out
+}
+
+fn render_period_foreign_key_body(constraint: &PeriodForeignKeyConstraintSchema) -> String {
+    let source_cols = render_period_column_list(&constraint.columns, &constraint.period_column);
+    let ref_cols =
+        render_period_column_list(&constraint.ref_columns, &constraint.ref_period_column);
+    let mut out = format!(
+        "FOREIGN KEY ({source_cols}) REFERENCES {} ({ref_cols})",
+        quote_ident(&constraint.ref_table),
+    );
+    let _ = write!(out, " ON DELETE {}", on_delete_sql(constraint.on_delete));
+    if constraint.deferrable {
+        out.push_str(" DEFERRABLE");
+        if constraint.initially_deferred {
+            out.push_str(" INITIALLY DEFERRED");
+        } else {
+            out.push_str(" INITIALLY IMMEDIATE");
+        }
+    }
+    out.push_str(enforced_suffix(constraint.enforced));
+    out
+}
+
+fn render_period_column_list(columns: &[String], period_column: &str) -> String {
+    let mut parts: Vec<String> = columns.iter().map(|c| quote_ident(c)).collect();
+    parts.push(format!("PERIOD {}", quote_ident(period_column)));
+    parts.join(", ")
+}
+
 /// Truncate a constraint identifier to the Postgres 63-byte limit.
 ///
 /// Layout for long names: 54-byte stem + `_` + 8-char hex digest =
@@ -2488,7 +2654,9 @@ mod tests {
     use crate::migrate::schema::{
         AppliedSchema, ColumnSchema, ForeignKeySchema, IndexColumnSchema, IndexKindSchema,
         IndexNullsOrderSchema, IndexOrderSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema,
-        OnDeleteSchema, PkKindSchema, PrimaryKeySchema, RelationKindSchema, TableSchema,
+        NamedNotNullConstraintSchema, OnDeleteSchema, PeriodForeignKeyConstraintSchema,
+        PkKindSchema, PrimaryKeySchema, RelationKindSchema, TableSchema,
+        TemporalPrimaryKeyConstraintSchema,
     };
 
     fn col(name: &str, ty: &str, nullable: bool) -> ColumnSchema {
@@ -5469,6 +5637,77 @@ mod tests {
         assert!(
             err.to_string().contains("storage_params"),
             "diagnostic names storage_params: {err}"
+        );
+    }
+
+    #[test]
+    fn add_named_not_null_constraint_emits_pg18_shape() {
+        let sql = emit_add_named_not_null_constraint(
+            "bookings",
+            &NamedNotNullConstraintSchema {
+                name: "bookings_validity_required".to_string(),
+                column: "validity".to_string(),
+                enforced: false,
+            },
+        );
+
+        assert_eq!(
+            sql.up,
+            "ALTER TABLE \"bookings\" ADD CONSTRAINT \"bookings_validity_required\" NOT NULL \"validity\" NOT ENFORCED;"
+        );
+        assert_eq!(
+            sql.down,
+            "ALTER TABLE \"bookings\" DROP CONSTRAINT \"bookings_validity_required\";"
+        );
+    }
+
+    #[test]
+    fn add_temporal_primary_key_constraint_emits_without_overlaps() {
+        let sql = emit_add_temporal_primary_key_constraint(
+            "employee_assignments",
+            &TemporalPrimaryKeyConstraintSchema {
+                name: "employee_assignments_pk".to_string(),
+                columns: vec!["employee_id".to_string()],
+                without_overlaps_column: "validity".to_string(),
+                include: vec!["role".to_string()],
+            },
+        );
+
+        assert_eq!(
+            sql.up,
+            "ALTER TABLE \"employee_assignments\" ADD CONSTRAINT \"employee_assignments_pk\" PRIMARY KEY (\"employee_id\", \"validity\" WITHOUT OVERLAPS) INCLUDE (\"role\");"
+        );
+        assert_eq!(
+            sql.down,
+            "ALTER TABLE \"employee_assignments\" DROP CONSTRAINT \"employee_assignments_pk\";"
+        );
+    }
+
+    #[test]
+    fn add_period_foreign_key_constraint_emits_period_and_not_enforced() {
+        let sql = emit_add_period_foreign_key_constraint(
+            "bookings",
+            &PeriodForeignKeyConstraintSchema {
+                name: "bookings_room_validity_fkey".to_string(),
+                columns: vec!["room_id".to_string()],
+                period_column: "booking_period".to_string(),
+                ref_table: "room_availability".to_string(),
+                ref_columns: vec!["room_id".to_string()],
+                ref_period_column: "availability_period".to_string(),
+                on_delete: OnDeleteSchema::Restrict,
+                deferrable: true,
+                initially_deferred: true,
+                enforced: false,
+            },
+        );
+
+        assert_eq!(
+            sql.up,
+            "ALTER TABLE \"bookings\" ADD CONSTRAINT \"bookings_room_validity_fkey\" FOREIGN KEY (\"room_id\", PERIOD \"booking_period\") REFERENCES \"room_availability\" (\"room_id\", PERIOD \"availability_period\") ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED NOT ENFORCED;"
+        );
+        assert_eq!(
+            sql.down,
+            "ALTER TABLE \"bookings\" DROP CONSTRAINT \"bookings_room_validity_fkey\";"
         );
     }
 }
