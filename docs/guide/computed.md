@@ -291,12 +291,13 @@ declare the `#[computed(sql = "...")]` field separately:
     sql = "base_price * (1.0 + tax_rate)",
     rust = "model.base_price * (1.0 + model.tax_rate)",
 )]
+#[derive(Model, Debug, Clone)]
 #[model(table = "vehicles")]
 pub struct Vehicle {
     pub base_price: f64,
     pub tax_rate: f64,
 
-    // Model-side: used in .filter_expr() / .order_by() via
+    // Model-side: used in .filter_expr() via
     // Vehicle::computed().total_price() returning Expr<f64>.
     #[computed(sql = "base_price * (1.0 + tax_rate)")]
     pub total_price: f64,
