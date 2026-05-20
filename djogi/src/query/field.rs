@@ -5696,7 +5696,7 @@ mod tests {
             panic!("expected contains(element) to produce a range predicate condition");
         }
 
-        let overlaps = field.overlaps(probe.clone());
+        let overlaps = field.overlaps(probe);
         if let Condition::RangePredicate(leaf) = overlaps {
             assert_eq!(leaf.column(), "span");
             assert_eq!(leaf.op(), crate::range::RangePredicateOp::Overlaps);
@@ -5714,7 +5714,7 @@ mod tests {
         );
         let probe = crate::Range::inclusive_exclusive(2_i32, 4_i32);
 
-        let adjacent = f.explicit_pg_predicate().adjacent_to(probe.clone());
+        let adjacent = f.explicit_pg_predicate().adjacent_to(probe);
         if let Condition::RangePredicate(leaf) = adjacent {
             assert_eq!(leaf.column(), "span");
             assert_eq!(leaf.op(), crate::range::RangePredicateOp::AdjacentTo);

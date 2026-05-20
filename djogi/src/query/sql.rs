@@ -288,22 +288,22 @@ pub(crate) fn push_filter_value_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
             acc.push_bind(*mac);
         }
         FilterValue::RangeI32(v) => {
-            acc.push_bind(v.clone());
+            acc.push_bind(*v);
         }
         FilterValue::RangeI64(v) => {
-            acc.push_bind(v.clone());
+            acc.push_bind(*v);
         }
         FilterValue::RangeDecimal(v) => {
-            acc.push_bind(v.clone());
+            acc.push_bind(*v);
         }
         FilterValue::RangeTimestamp(v) => {
-            acc.push_bind(v.clone());
+            acc.push_bind(*v);
         }
         FilterValue::RangeDateTime(v) => {
-            acc.push_bind(v.clone());
+            acc.push_bind(*v);
         }
         FilterValue::RangeDate(v) => {
-            acc.push_bind(v.clone());
+            acc.push_bind(*v);
         }
         FilterValue::Null => {
             acc.push_null_literal();
