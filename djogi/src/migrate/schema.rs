@@ -763,7 +763,10 @@ pub struct TemporalPrimaryKeyConstraintSchema {
 /// for djogi#150.
 ///
 /// The shape models the explicit migration DDL directly: one or more
-/// equality columns plus one PERIOD column on each side.
+/// equality columns plus one PERIOD column on each side. PostgreSQL 18
+/// temporal PERIOD FKs do not use the ordinary FK `ON DELETE` action
+/// surface, so this helper intentionally models only the clauses this
+/// lane can emit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PeriodForeignKeyConstraintSchema {
@@ -780,9 +783,6 @@ pub struct PeriodForeignKeyConstraintSchema {
     pub ref_columns: Vec<String>,
     /// Referenced period column rendered as `PERIOD <column>`.
     pub ref_period_column: String,
-    /// Delete action. Temporal FKs still share the standard FK
-    /// `ON DELETE` surface.
-    pub on_delete: OnDeleteSchema,
     /// Standard FK deferrability flag.
     #[serde(default)]
     pub deferrable: bool,

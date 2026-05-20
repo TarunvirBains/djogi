@@ -2307,7 +2307,6 @@ fn render_period_foreign_key_body(constraint: &PeriodForeignKeyConstraintSchema)
         "FOREIGN KEY ({source_cols}) REFERENCES {} ({ref_cols})",
         quote_ident(&constraint.ref_table),
     );
-    let _ = write!(out, " ON DELETE {}", on_delete_sql(constraint.on_delete));
     if constraint.deferrable {
         out.push_str(" DEFERRABLE");
         if constraint.initially_deferred {
@@ -5697,7 +5696,7 @@ mod tests {
     }
 
     #[test]
-    fn add_period_foreign_key_constraint_emits_period_and_not_enforced() {
+    fn add_period_foreign_key_constraint_emits_pg18_valid_temporal_fk_clauses() {
         let sql = emit_add_period_foreign_key_constraint(
             "bookings",
             &PeriodForeignKeyConstraintSchema {
@@ -5707,7 +5706,6 @@ mod tests {
                 ref_table: "room_availability".to_string(),
                 ref_columns: vec!["room_id".to_string()],
                 ref_period_column: "availability_period".to_string(),
-                on_delete: OnDeleteSchema::Restrict,
                 deferrable: true,
                 initially_deferred: true,
                 enforced: false,
@@ -5716,7 +5714,7 @@ mod tests {
 
         assert_eq!(
             sql.up,
-            "ALTER TABLE \"bookings\" ADD CONSTRAINT \"bookings_room_validity_fkey\" FOREIGN KEY (\"room_id\", PERIOD \"booking_period\") REFERENCES \"room_availability\" (\"room_id\", PERIOD \"availability_period\") ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED NOT ENFORCED;"
+            "ALTER TABLE \"bookings\" ADD CONSTRAINT \"bookings_room_validity_fkey\" FOREIGN KEY (\"room_id\", PERIOD \"booking_period\") REFERENCES \"room_availability\" (\"room_id\", PERIOD \"availability_period\") DEFERRABLE INITIALLY DEFERRED NOT ENFORCED;"
         );
         assert_eq!(
             sql.down,
