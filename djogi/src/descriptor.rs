@@ -73,10 +73,13 @@ impl std::fmt::Display for GeographySubtype {
 /// `i64 -> BigInt`, `bool -> Boolean`, etc. User code rarely constructs
 /// these directly — they appear in emitted `FieldDescriptor` literals.
 ///
-/// `Custom` exists for types the framework doesn't know about (e.g.
-/// `BYTEA`, `CITEXT`-derived domains, `geography(Polygon, 4326)`). The
-/// migration differ treats `Custom("FOO")` and `Custom("FOO")` as equal
-/// (string compare), so adding support for a new type is non-breaking.
+/// `Custom` exists for scalar types the framework doesn't model natively
+/// (e.g. `BYTEA`, schema-qualified domain names like
+/// `"public.positive_amount"`). For simple unqualified Postgres domains,
+/// `#[field(domain = "...")]` emits the dedicated [`Domain`] variant
+/// instead. The migration differ treats `Custom("FOO")` and `Custom("FOO")`
+/// as equal (string compare), so adding support for a new type is
+/// non-breaking.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldSqlType {
     Text,
@@ -245,6 +248,90 @@ pub enum FieldSqlType {
         /// The Postgres range subtype this column resolves to.
         subtype: RangeSubtypeKind,
     },
+    /// Postgres domain reference — `#[field(domain = "<name>")]` (djogi#216
+    /// Piece A). Names an adopter-managed Postgres `CREATE DOMAIN <name>`
+    /// type that already exists in the target database. Emitting the
+    /// `CREATE DOMAIN` DDL from djogi (Piece B, `#[model(domains = [...])]`)
+    /// is deferred to a follow-on lane; Piece A only references the
+    /// adopter-supplied domain.
+    ///
+    /// # Fields
+    ///
+    /// * `name` — the domain identifier. Validated at macro-parse time
+    ///   against the standard Postgres unquoted-identifier rules
+    ///   (`check_domain_name` in `djogi-macros::ident`): non-empty,
+    ///   ≤63 bytes, ASCII letter or underscore first, ASCII alphanumeric
+    ///   or underscore after. Reserved-keyword and `__djogi_` prefix
+    ///   checks are intentionally NOT applied — domain identifiers are
+    ///   SQL type names, not column / table identifiers, and
+    ///   `domain = "text"` is a legitimate (if confusing) declaration.
+    ///   Schema-qualified domain names (`"public.positive_amount"`) fail
+    ///   the dotless-identifier rule and are out of Piece A scope —
+    ///   adopters needing them fall back to `Custom("public.positive_amount")`
+    ///   until Piece B.
+    /// * `base` — the inferred underlying [`FieldSqlType`] for the Rust
+    ///   field's source type, captured for documentation and future
+    ///   Piece B consumption. **Piece A treats `base` as purely
+    ///   informational**: the migration differ, projection, composer, and
+    ///   snapshot all key off the rendered `Display` output (the domain
+    ///   name) rather than the inner base. A future Piece B that emits
+    ///   `CREATE DOMAIN <name> AS <base>` will read this slot directly.
+    ///
+    /// # Display contract
+    ///
+    /// [`Display`](#impl-Display-for-FieldSqlType) renders the bare
+    /// domain name (e.g. `"positive_amount"`), not the inner base type.
+    /// The migration differ compares column types by rendered string,
+    /// so a domain-name change surfaces as
+    /// [`ColumnChange::ChangeType`](crate::migrate::ColumnChange::ChangeType)
+    /// with `from = "old_name"`, `to = "new_name"` — the same shape as
+    /// any other type evolution.
+    ///
+    /// # Why `&'static FieldSqlType`, not `Box<FieldSqlType>`
+    ///
+    /// The recursive shape (`Domain` carrying a nested `FieldSqlType`)
+    /// must coexist with the existing `pub const fn field_descriptor`
+    /// constructor and every static / const `FieldDescriptor` literal
+    /// the test suite and downstream consumers rely on. `Box<...>` has
+    /// a non-trivial destructor that const evaluation cannot run, so
+    /// even when the variant in question is `Text` or `BigInt` the
+    /// enum's auto-generated `Drop` would propagate and reject every
+    /// `const fn field_descriptor(...)` call site.
+    ///
+    /// `&'static FieldSqlType` resolves this cleanly:
+    ///
+    /// * **No Drop.** The enum stays trivially droppable; `const fn`
+    ///   construction continues to work.
+    /// * **Idiomatic.** Every other nested descriptor structure on the
+    ///   surface already uses `&'static [...]` —
+    ///   [`FieldDescriptor::visage_map`], [`ModelDescriptor::fields`],
+    ///   [`IndexTarget::Columns`]. `Box` would be the outlier here.
+    /// * **Zero heap allocation.** Descriptors live for the entire
+    ///   process lifetime (registered via `inventory::submit!`); a
+    ///   `Box<FieldSqlType>` would allocate once per domain field and
+    ///   never be reclaimed. A `&'static` reference into static storage
+    ///   has identical lifetime semantics without the allocation.
+    /// * **Macro can emit it.** The proc macro places a `static`
+    ///   declaration for the base type inside the `inventory::submit!`
+    ///   block before the `FieldDescriptor` literal, then references
+    ///   it as `&<STATIC>`.
+    ///
+    /// Test fixtures construct `Domain` values via a one-line `static`
+    /// binding: `static BASE: FieldSqlType = FieldSqlType::Numeric;`
+    /// then `FieldSqlType::Domain { name: "x", base: &BASE }`.
+    Domain {
+        /// Domain identifier as it appears in `CREATE DOMAIN <name> ...`
+        /// — validated by the macro to satisfy the Postgres unquoted-
+        /// identifier rules.
+        name: &'static str,
+        /// Inferred underlying [`FieldSqlType`] for the Rust field's
+        /// source type. Informational in Piece A; consumed by Piece B
+        /// once `CREATE DOMAIN` emission lands. Stored as `&'static`
+        /// rather than `Box` so the enclosing enum stays trivially
+        /// droppable and `const fn field_descriptor(...)` calls continue
+        /// to compile in const contexts.
+        base: &'static FieldSqlType,
+    },
     /// Fallback for SQL types the framework doesn't model explicitly.
     /// Stored verbatim and compared by string equality in the migration differ.
     Custom(&'static str),
@@ -355,6 +442,13 @@ impl std::fmt::Display for FieldSqlType {
             // (`int4range`, `tstzrange`, …); the schema snapshot stores
             // the rendered form so the differ compares by string.
             FieldSqlType::Range { subtype } => write!(f, "{subtype}"),
+            // Phase 8.5 djogi#216 Piece A — Postgres domain reference.
+            // `Display` renders the bare domain name; the inner `base`
+            // is informational and never emitted into the column-type
+            // slot. The migration differ keys off the rendered string,
+            // so a domain rename surfaces as `ColumnChange::ChangeType`
+            // with `from = "old_name"`, `to = "new_name"`.
+            FieldSqlType::Domain { name, .. } => write!(f, "{name}"),
             FieldSqlType::Custom(s) => write!(f, "{s}"),
         }
     }
@@ -915,6 +1009,127 @@ mod tests {
     #[test]
     fn macaddr_field_sql_type_displays_as_upper_macaddr() {
         assert_eq!(format!("{}", FieldSqlType::Macaddr), "MACADDR");
+    }
+
+    // ── djogi#216 Piece A — `FieldSqlType::Domain` ─────────────────────────
+    //
+    // Pin the Display contract, the Clone / PartialEq round-trip on the
+    // recursive variant, and a regression that the existing const
+    // `field_descriptor` constructor still compiles for non-domain
+    // fields. The Display surface is the load-bearing path: the
+    // migration composer / differ / docs / snapshot all consume
+    // `to_string()` output and never destructure the variant — keeping
+    // the rendered form pinned closes the silent-rename failure mode
+    // before reaching the live-DB integration gate.
+    //
+    // The variant carries `name: &'static str` + `base: &'static FieldSqlType`.
+    // `&'static FieldSqlType` (not `Box<FieldSqlType>`) keeps the enclosing
+    // enum trivially droppable so `const fn field_descriptor(...)` continues
+    // to compile in const contexts — see the variant doc comment for the
+    // full rationale and the macro emits the `static BASE` binding inside
+    // its `inventory::submit!` block.
+
+    #[test]
+    fn domain_sql_type_displays_as_domain_name() {
+        // The rendered string is what the differ / composer / snapshot
+        // see. Pin the bare domain name — not "DOMAIN positive_amount",
+        // not the inner base type — so an accidental change to the
+        // emitted column-type slot is caught at descriptor-level.
+        //
+        // `Domain.base` is `&'static FieldSqlType` (not `Box`) so the
+        // enum stays trivially droppable and `const fn field_descriptor`
+        // call sites keep working. A `static` binding for the base type
+        // gives the `'static` reference at zero cost.
+        static BASE: FieldSqlType = FieldSqlType::Numeric;
+        let ft = FieldSqlType::Domain {
+            name: "positive_amount",
+            base: &BASE,
+        };
+        assert_eq!(format!("{ft}"), "positive_amount");
+    }
+
+    #[test]
+    fn domain_variant_clone_and_eq_round_trip() {
+        // The `Domain` variant must Clone (shallow on `&'static`) and
+        // PartialEq (recursive by-value on the dereferenced base)
+        // consistently — the differ's `ColumnSchema::sql_type_text`
+        // comparison happens at the rendered-string level, but
+        // in-memory `ModelDescriptor` clones and the Phase 7-Zero
+        // `IndexSpec`-style descriptor-equality fixtures rely on the
+        // structural impls.
+        static BASE_NUMERIC: FieldSqlType = FieldSqlType::Numeric;
+        static BASE_TEXT: FieldSqlType = FieldSqlType::Text;
+
+        let a = FieldSqlType::Domain {
+            name: "positive_amount",
+            base: &BASE_NUMERIC,
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+
+        // Domains with the same name but different base types compare
+        // unequal — mathematically correct (different inner structures
+        // ARE different) and architecturally fine because the differ
+        // compares only the rendered string, so two same-name Domains
+        // with different bases never produce a phantom migration.
+        let with_text_base = FieldSqlType::Domain {
+            name: "positive_amount",
+            base: &BASE_TEXT,
+        };
+        assert_ne!(a, with_text_base);
+        assert_eq!(format!("{a}"), format!("{with_text_base}"));
+    }
+
+    #[test]
+    fn field_descriptor_const_fn_unchanged_for_non_domain() {
+        // Regression guard: adding the recursive `Domain` variant must
+        // not break the existing `const fn field_descriptor(...)`
+        // constructor for non-domain fields. The const constructor
+        // is the workhorse of every fixture in `tests::` and downstream
+        // crates; a stealth change to its const-ness — e.g. choosing
+        // `Box<FieldSqlType>` for the recursive payload (which would
+        // give the enum a non-trivial destructor that const eval
+        // cannot run) — would surface here.
+        //
+        // The boolean / string-literal field reads run inside a
+        // `const { ... }` block so the regression check is enforced at
+        // compile time. A future change that turns `field_descriptor`
+        // non-const, or changes its const default behaviour, fails to
+        // const-evaluate here rather than producing a tautological
+        // runtime assertion (clippy::assertions_on_constants).
+        const PLAIN: FieldDescriptor = field_descriptor("amt", FieldSqlType::Numeric, false);
+        const _: () = {
+            // String / sql_type equality and the three default-false
+            // booleans together pin the full const constructor contract.
+            assert!(matches!(PLAIN.sql_type, FieldSqlType::Numeric));
+            assert!(!PLAIN.nullable);
+            assert!(!PLAIN.unique);
+            assert!(!PLAIN.indexed);
+        };
+        // Runtime check on the `name: &'static str` slot — string
+        // equality is not const-evaluable on stable, so the assert
+        // stays at runtime. `PLAIN.name` is const-evaluated; the
+        // comparison runs once at test time.
+        assert_eq!(PLAIN.name, "amt");
+    }
+
+    #[test]
+    fn field_descriptor_const_fn_compiles_with_domain_sql_type() {
+        // Companion to the regression test above — the const
+        // constructor also accepts a `Domain` sql_type when called in a
+        // `const` context. The static-binding pattern below is what
+        // the macro emits inside `inventory::submit!` blocks.
+        static BASE: FieldSqlType = FieldSqlType::Numeric;
+        const DOM: FieldDescriptor = field_descriptor(
+            "amount",
+            FieldSqlType::Domain {
+                name: "positive_amount",
+                base: &BASE,
+            },
+            false,
+        );
+        assert_eq!(DOM.name, "amount");
+        assert_eq!(format!("{}", DOM.sql_type), "positive_amount");
     }
 
     #[test]

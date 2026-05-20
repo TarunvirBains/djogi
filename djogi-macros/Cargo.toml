@@ -101,7 +101,7 @@ rust_decimal.workspace = true
 #
 # CI installs lihaaf via `cargo install lihaaf --version 0.1.0-beta.10
 # --locked` and runs `cargo lihaaf --manifest-path djogi-macros/Cargo.toml
-# -j 2`. The currently 193 compile_fail `.stderr` snapshots under
+# -j 2`. The currently 202 compile_fail `.stderr` snapshots under
 # `tests/compile_fail/` ARE committed so CI succeeds without `--bless`.
 # Re-bless locally whenever macro diagnostics change:
 #   `cargo lihaaf --manifest-path djogi-macros/Cargo.toml \

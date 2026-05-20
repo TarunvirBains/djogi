@@ -2000,6 +2000,53 @@ pub struct FieldAttrs {
     /// remove it after the migration applies.
     #[darling(default)]
     pub type_change_using: Option<String>,
+
+    /// `#[field(domain = "<name>")]` — Phase 8.5 djogi#216 Piece A.
+    ///
+    /// References an adopter-managed Postgres `CREATE DOMAIN <name> AS
+    /// <base>` type that already exists in the target database. The
+    /// macro lowers this to [`FieldSqlType::Domain`](djogi::FieldSqlType::Domain)
+    /// in the descriptor; the migration composer emits the bare domain
+    /// name as the column type in `CREATE TABLE` / `ALTER TABLE` DDL.
+    ///
+    /// **Adopter manages the domain.** Piece A does NOT emit
+    /// `CREATE DOMAIN` DDL. The domain must already exist on the
+    /// target database — typically via a hand-written `raw_ddl`
+    /// invocation under `tests/` or an adopter-owned bootstrap
+    /// migration. `#[model(domains = [...])]` and `CREATE DOMAIN`
+    /// auto-emission are Piece B and deferred.
+    ///
+    /// **Schema-qualified names are out of Piece A scope.** The macro
+    /// validates the name via [`check_domain_name`](crate::ident::check_domain_name),
+    /// which enforces the Postgres unquoted-identifier byte-shape rule
+    /// (no dots, no quotes). Adopters needing `"public.positive_amount"`
+    /// fall back to [`FieldSqlType::Custom`](djogi::FieldSqlType::Custom)
+    /// until Piece B.
+    ///
+    /// **Conflict guards** (rejected at parse time):
+    /// - `domain + max_length` — the domain provides its own type
+    ///   constraints; layering `VARCHAR(N)` on top would emit
+    ///   contradictory DDL.
+    /// - `domain` on a `ForeignKey<T>` / `OneToOneField<T>` field — FK
+    ///   column type is the target PK type; the adopter cannot override
+    ///   it with a domain.
+    /// - `domain + generated` — generated columns derive their stored
+    ///   type from the expression; combining with a domain type is
+    ///   technically valid SQL but out of Piece A scope. Adopters
+    ///   needing this hand-write the migration.
+    /// - `domain + strict_id_check` — domain columns are not HeerRanjID
+    ///   strict-id columns; the structural CHECK does not apply.
+    ///
+    /// **Compatible** with `#[field(check = "...")]` (the adopter
+    /// CHECK adds to whatever constraints the domain already provides)
+    /// and with `#[field(type_change_using = "...")]` (the USING
+    /// expression drives a one-time migration from another type to
+    /// the domain).
+    ///
+    /// Set via darling; `FieldAttrs::parse` post-validates non-empty
+    /// via `check_domain_name` and the conflict guards above.
+    #[darling(default)]
+    pub domain: Option<String>,
 }
 
 /// Per-field visage exposure spec — parsed from `#[field(expose(...))]`.
@@ -2530,6 +2577,16 @@ impl FieldAttrs {
             // emitted verbatim into the descriptor so the SQL emitter
             // can append `USING (<expr>)` to `ALTER COLUMN … TYPE`.
             "type_change_using",
+            // Phase 8.5 djogi#216 Piece A — adopter-supplied
+            // `#[field(domain = "<name>")]` reference to a
+            // pre-existing Postgres domain. The macro lowers to
+            // `FieldSqlType::Domain { name, base }`; the migration
+            // composer emits the domain name in the column-type slot.
+            // Validated via `check_domain_name` (Postgres
+            // unquoted-identifier byte shape, no reserved-keyword /
+            // `__djogi_` checks). Conflict-guarded against
+            // `max_length` / FK / O2O / `generated` / `strict_id_check`.
+            "domain",
         ];
         // Phase 7-Zero v3 T2 Q2/v2 #8 — `nulls_not_distinct` is deliberately
         // out of scope at the field level. The feature lives on the model-
@@ -3055,6 +3112,107 @@ impl FieldAttrs {
                  Drop the attribute or use the model-wide `#[model(strict_ids)]` \
                  (which silently skips non-applicable fields).",
             ));
+        }
+
+        // Phase 8.5 djogi#216 Piece A — `#[field(domain = "<name>")]`
+        // post-validation. The attribute names a pre-existing Postgres
+        // domain that the macro lowers to `FieldSqlType::Domain { name,
+        // base: <inferred> }` for descriptor consumers. Validation:
+        //
+        // 1. The name string must satisfy the Postgres unquoted-
+        //    identifier byte shape (`check_domain_name`). Reserved-
+        //    keyword and `__djogi_`-prefix checks are intentionally
+        //    skipped — domain names are SQL type names, not
+        //    column / table identifiers.
+        // 2. The attribute is rejected on relation fields (FK / O2O)
+        //    — the column's SQL type is the target model's PK type,
+        //    which the adopter cannot override with a domain
+        //    reference.
+        // 3. The attribute is rejected when paired with `max_length`
+        //    — the domain provides its own column constraints; layering
+        //    `VARCHAR(N)` on top would emit contradictory DDL.
+        // 4. The attribute is rejected when paired with `generated`
+        //    — generated columns derive their stored type from the
+        //    expression. Combining with a domain type is technically
+        //    valid SQL but out of Piece A scope; adopters needing
+        //    this hand-write the migration.
+        // 5. The attribute is rejected when paired with
+        //    `strict_id_check` — domain columns are not HeerRanjID
+        //    strict-id columns; the structural CHECK does not apply.
+        //
+        // Allowed pairings (deliberately not rejected):
+        // - `domain + check` — the adopter CHECK adds to whatever
+        //   constraints the domain already provides; the projection
+        //   layer ANDs them into the single per-column constraint
+        //   slot.
+        // - `domain + type_change_using` — the USING expression drives
+        //   a one-time migration from another type to the domain.
+        //
+        // The span is recovered from the field's raw attribute tokens
+        // so each diagnostic points at the offending literal /
+        // attribute rather than the whole field — mirrors the
+        // `check` / `comment` / `type_change_using` validation pattern
+        // above.
+        if let Some(name) = &attrs.domain {
+            let domain_span =
+                find_named_str_lit_span(field, "domain").unwrap_or_else(|| field.span());
+            crate::ident::check_domain_name(name, domain_span)?;
+
+            if detect_relation(&attrs.ty).is_some() {
+                return Err(syn::Error::new(
+                    domain_span,
+                    "`#[field(domain = \"...\")]` is not allowed on a relation field \
+                     (`ForeignKey<T>` / `OneToOneField<T>`, optionally wrapped in \
+                     `Option<...>`). The FK column's SQL type is determined by the \
+                     target model's PK type — the adopter cannot override it with a \
+                     domain reference. Drop the attribute; if the target's PK needs \
+                     to flow through a domain, declare the domain on the target's \
+                     PK column instead.",
+                ));
+            }
+
+            if attrs.max_length.is_some() {
+                return Err(syn::Error::new(
+                    domain_span,
+                    "`#[field(domain = \"...\")]` cannot be combined with \
+                     `#[field(max_length = N)]`. The domain provides its own \
+                     column constraints (Postgres `CREATE DOMAIN <name> AS <base> \
+                     [CHECK (...)]` carries length / range / regex checks baked \
+                     into the type definition); layering `VARCHAR(N)` on top \
+                     would emit contradictory column DDL. Drop the `max_length` \
+                     attribute — the domain definition is the single source of \
+                     truth for the column's length / range constraints.",
+                ));
+            }
+
+            if attrs.generated.is_some() {
+                return Err(syn::Error::new(
+                    domain_span,
+                    "`#[field(domain = \"...\")]` cannot be combined with \
+                     `#[field(generated = \"...\")]` in Piece A. Postgres stored \
+                     generated columns derive their column type from the generation \
+                     expression; combining with a domain type is technically valid \
+                     SQL but out of Piece A scope (the macro does not validate \
+                     domain-vs-expression type agreement). Adopters needing a \
+                     generated column whose stored type is a domain should hand-\
+                     write the migration via raw DDL until djogi#216 Piece B lands.",
+                ));
+            }
+
+            if attrs.strict_id_check {
+                return Err(syn::Error::new(
+                    domain_span,
+                    "`#[field(domain = \"...\")]` cannot be combined with \
+                     `#[field(strict_id_check)]`. The strict-id structural CHECK \
+                     applies only to HeerId / RanjId family columns (BIGINT / UUID \
+                     with bit-layout invariants); domain columns reference an \
+                     adopter-managed Postgres type with its own constraints baked \
+                     into the `CREATE DOMAIN` definition. Drop one of the two \
+                     attributes — the domain's own CHECK constraints (declared \
+                     when the adopter created the domain) are the appropriate \
+                     enforcement point for domain-column invariants.",
+                ));
+            }
         }
 
         Ok(attrs)

@@ -401,8 +401,42 @@ fn try_expand(
             // can extend this to look the target PK type up via a second
             // `ModelDescriptor` pass.
             //
+            // Phase 8.5 djogi#216 Piece A — `#[field(domain = "<name>")]`
+            // intercepts the sql_type selection BEFORE the type-driven
+            // mapping runs. The descriptor's `FieldSqlType::Domain {
+            // name, base }` variant carries the bare domain name (the
+            // Display contract — rendered into column DDL by the
+            // migration composer) and the inferred Rust-side base type
+            // for documentation / future Piece B use. The relation
+            // arm above wins over the domain arm because `attrs.parse`
+            // already rejects `domain` on relation fields, so the
+            // ordering here is defense-in-depth: an FK field with
+            // `domain` set could not reach this point, but the
+            // explicit `relation.is_some()` branch keeps the FK SQL
+            // type stable even if the parse-time guard ever regresses.
+            //
+            // `base: &<base_tokens>` relies on Rust's constant-promotion
+            // rule: a `&EXPR` where EXPR is const-evaluable promotes to
+            // `&'static T`. Every `FieldSqlType` variant the macro
+            // emits — `Text`, `Numeric`, `BigInt`, `Custom(<T as
+            // DjogiSqlType>::SQL_TYPE)`, etc. — is const-evaluable, so
+            // the reference promotes cleanly into the descriptor's
+            // static-lifetime slot. `&` (not `Box::new(...)`) keeps the
+            // enclosing enum trivially droppable, which the existing
+            // `pub const fn field_descriptor` constructor and every
+            // static / const `FieldDescriptor` literal in the test
+            // suite depend on.
             let sql_type = if relation.is_some() {
                 sql_str_to_tokens("TEXT")
+            } else if let Some(domain_name) = &fa.domain {
+                let domain_name = domain_name.as_str();
+                let base = field_sql_type_tokens(&inner_ty);
+                quote! {
+                    ::djogi::FieldSqlType::Domain {
+                        name: #domain_name,
+                        base: &#base,
+                    }
+                }
             } else {
                 field_sql_type_tokens(&inner_ty)
             };

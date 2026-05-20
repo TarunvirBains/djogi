@@ -1,0 +1,7 @@
+error: `#[field(domain = "...")]` cannot be combined with `#[field(generated = "...")]` in Piece A. Postgres stored generated columns derive their column type from the generation expression; combining with a domain type is technically valid SQL but out of Piece A scope (the macro does not validate domain-vs-expression type agreement). Adopters needing a generated column whose stored type is a domain should hand-write the migration via raw DDL until djogi$TYPEID Piece B lands.
+  --> $DIR/phase8_5_c4_216_domain_with_generated.rs:16:22
+   |
+16 |     #[field(domain = "x", generated = "value * 2")]
+   |                      ^^^
+
+error: aborting due to 1 previous error
