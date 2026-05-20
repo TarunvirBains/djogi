@@ -2649,7 +2649,7 @@ impl FieldAttrs {
                      (b) drop `unique` if a non-unique `{method}` lookup index is what you \
                      want, or (c) keep `#[field(unique)]` and declare the secondary \
                      `{method}` index at the model level via \
-                     `#[model(indexes(index(fields = [{field_name}], using = \"{method}\"))]`."
+                     `#[model(indexes(index(fields = [{field_name}], using = \"{method}\")))]`."
                 ),
             ));
         }
@@ -4487,5 +4487,30 @@ mod tests {
         assert!(msg.contains("proxy_for"));
         assert!(msg.contains("default_order"));
         assert!(msg.contains("default_filter"));
+    }
+
+    /// Class-A regression guard: the resolution-(c) snippet emitted by the
+    /// `#[field(unique, index = "<non-btree>")]` diagnostic (attrs.rs ~2652)
+    /// must be parseable as a valid Rust attribute. If parentheses become
+    /// unbalanced again (three opens, two closes), `syn::parse_str` will
+    /// return `Err` and this test fails — catching the regression without
+    /// needing a full `lihaaf` run or a compiler invocation.
+    ///
+    /// Fixed substitutions used here: `field_name = "slug"`, `method = "gin"`.
+    #[test]
+    fn field_unique_non_btree_recommendation_snippet_parses() {
+        let snippet = r##"#[model(indexes(index(fields = [slug], using = "gin")))]"##;
+        syn::parse_str::<syn::Attribute>(snippet)
+            .expect("resolution-(c) snippet must parse as a valid attribute (paren balance)");
+    }
+
+    /// Class-A regression guard for the adjacent gin-on-unsupported-type
+    /// recommendation (attrs.rs ~2675). The `)))]` form was already correct
+    /// at the time of Phase 8.5 #83; this guard locks it in.
+    #[test]
+    fn field_gin_unsupported_type_recommendation_snippet_parses() {
+        let snippet = r##"#[model(indexes(index(fields = [slug], using = "gin", opclass = "...")))]"##;
+        syn::parse_str::<syn::Attribute>(snippet)
+            .expect("gin-unsupported-type snippet must parse as a valid attribute (paren balance)");
     }
 }

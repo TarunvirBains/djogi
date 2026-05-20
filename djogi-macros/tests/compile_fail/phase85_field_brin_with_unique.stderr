@@ -1,4 +1,4 @@
-error: `#[field(index = "brin", unique)]` on `happened_at`: PostgreSQL unique indexes are btree-only, so a non-btree `index = "brin"` combined with `unique` is ambiguous. Either: (a) use `#[field(index = "btree", unique)]` (or just `#[field(unique)]`), (b) drop `unique` if a non-unique `brin` lookup index is what you want, or (c) keep `#[field(unique)]` and declare the secondary `brin` index at the model level via `#[model(indexes(index(fields = [happened_at], using = "brin"))]`.
+error: `#[field(index = "brin", unique)]` on `happened_at`: PostgreSQL unique indexes are btree-only, so a non-btree `index = "brin"` combined with `unique` is ambiguous. Either: (a) use `#[field(index = "btree", unique)]` (or just `#[field(unique)]`), (b) drop `unique` if a non-unique `brin` lookup index is what you want, or (c) keep `#[field(unique)]` and declare the secondary `brin` index at the model level via `#[model(indexes(index(fields = [happened_at], using = "brin")))]`.
   --> $DIR/phase85_field_brin_with_unique.rs:10:21
    |
 10 |     #[field(index = "brin", unique)]
