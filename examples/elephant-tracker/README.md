@@ -22,9 +22,9 @@ reading isolated snippets.
 | Multi-edge self-FKs (pedigree)   | `Elephant::mother_id` + `father_id` — single-edge typed `tree_descendants` for matrilineal lineage; materialized `ElephantAncestry` closure (via `Model::materialize_closure`) for indexed Wright kinship lookup in the `mating-pairs` demo |
 | Visages with side-query trait    | `HerdSummary` reports `herd_size` via aggregate, not row|
 | Transactional outbox             | `Sighting::create` enqueues an event in `sightings_outbox` |
-| RLS via `tenant_key`             | Researchers scoped per organisation                    |
+| RLS via `tenant_key`             | Researchers scoped per organisation (declared at macro layer; `ALTER TABLE … ENABLE ROW LEVEL SECURITY` + `CREATE POLICY` DDL emission pending Phase 7) |
 | Optimistic locking (`version`)   | `Elephant::tags` updates                               |
-| Tracked field changes            | `Elephant::name`, `Researcher::name` audit             |
+| Tracked field changes            | `Elephant::name`, `Researcher::name` (declared at macro layer; audit `_logs` mirror-table wiring and `audit_pool` are out of scope for this example) |
 
 ## The domain
 
@@ -139,7 +139,9 @@ docker run --rm -d --name elephant-pg \
   -e POSTGRES_DB=djogi_test -p 127.0.0.1:5432:5432 \
   postgis/postgis:18-3.6
 
-# 2. Apply schema (drop + recreate; idempotent).
+# 2. Apply schema (destructive drop + recreate; writes a new ledger row each
+#    run — prior row data is lost). Creates .djogi-migrations-lock in cwd
+#    while running; the file is gitignored.
 export DATABASE_URL=postgres://djogi:djogi@localhost:5432/djogi_test
 cargo run -p elephant-tracker -- migrate
 
@@ -192,13 +194,18 @@ schema through the same descriptor-driven pipeline that `djogi
 migrations compose` + `djogi migrations apply` uses in production:
 `project_from_inventory()` → `diff_bucket_maps()` → `plan_delta()` →
 `apply_plan()`. No `CREATE TABLE` or `CREATE INDEX` DDL is
-hand-written in the example codebase — the framework emits all of it
-from the `#[model(...)]` annotations.
+hand-written in the example codebase — the framework emits these from
+the `#[model(...)]` annotations.
 
-The only remaining raw-DDL path is the Phase 0 bootstrap
-(`install_phase_zero`), which installs HeeRanjID SQL functions and the
-PostGIS extension. This is legitimately raw DDL — no typed migration
-surface exists for database-level extension installation.
+Two raw-DDL paths remain in this example:
+
+- **Phase 0 bootstrap** (`install_phase_zero`) — installs HeeRanjID SQL
+  functions and the PostGIS extension. Legitimately raw: no typed
+  migration surface exists for database-level extension installation.
+- **`drop_all`** — issues a single `batch_execute` of `DROP TABLE IF
+  EXISTS … CASCADE` statements (names derived from the descriptor
+  projection) plus the migration ledger. This is a dev-mode wipe; no
+  typed drop surface exists yet.
 
 ## Layout
 
@@ -211,8 +218,8 @@ elephant-tracker/
 │   └── countries.sql           # five countries, hand-written
 └── src/
     ├── main.rs                 # CLI dispatch — migrate / seed / demo
-    ├── migrate.rs              # drop+recreate tables, install HeeRanjID + PostGIS
-    ├── seed.rs                 # programmatic seed wrapped in a single atomic()
+    ├── migrate.rs              # descriptor-driven schema apply + Phase 0 bootstrap; drop_all is raw DDL
+    ├── seed.rs                 # countries.sql raw-DDL load + programmatic batch wrapped in atomic()
     ├── output.rs               # Format enum + JSON / Mermaid / Markdown writers
     ├── models/
     │   ├── mod.rs              # re-exports + the `many_to_many!` invocation

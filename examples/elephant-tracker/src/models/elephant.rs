@@ -24,8 +24,10 @@
 //!   A `save()` whose pre-image version no longer matches the row's
 //!   current version returns [`DjogiError::GoneAggregate`] rather than
 //!   silently overwriting a concurrent edit.
-//! - `Tracked<String>` on `name` — name changes write to the structural
-//!   CRUD audit log without explicit calls.
+//! - `Tracked<String>` on `name` — declares field-change tracking. Audit
+//!   `_logs` mirror-table wiring and `audit_pool` configuration are out of
+//!   scope for this example; the `Tracked` annotation is present to show
+//!   the macro surface.
 //! - `no_default` — `ForeignKey<Herd>` does not implement `Default`, so
 //!   the macro's `Default` impl is suppressed; callers populate every
 //!   field explicitly.
