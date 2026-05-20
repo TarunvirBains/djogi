@@ -4518,7 +4518,8 @@ mod tests {
     /// above — `syn::Attribute` is not `Parse` in syn 2.x.
     #[test]
     fn field_gin_unsupported_type_recommendation_snippet_parses() {
-        let snippet = r##"#[model(indexes(index(fields = [slug], using = "gin", opclass = "...")))]"##;
+        let snippet =
+            r##"#[model(indexes(index(fields = [slug], using = "gin", opclass = "...")))]"##;
         let input = format!("{snippet} struct _DjogiSnippet;");
         syn::parse_str::<syn::ItemStruct>(&input)
             .expect("gin-unsupported-type snippet must parse as a valid attribute (paren balance)");
