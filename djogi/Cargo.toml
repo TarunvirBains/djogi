@@ -1062,3 +1062,20 @@ name = "phase8_5_trgm_sql_shape"
 path = "../tests/internal/phase8_5_trgm_sql_shape.rs"
 harness = true
 required-features = ["trgm"]
+
+# Phase 8.5 issue #83 — macro-path integration coverage for PK
+# no-id-index and field-level index synthesis.
+#
+# Closes the gap identified in the strict-swe BLOCK-1 sweep: the
+# projection-layer unit test constructs `FieldDescriptor` manually and
+# cannot detect drift in `framework_field_descriptor` itself.  These
+# two fixtures exercise the full pipeline:
+#
+#   proc-macro → inventory → `project_from_inventory()` → assertion
+#
+# Assertions are via `project_from_inventory()` (typed projection
+# surface) per the CLAUDE.md no-raw-escape-hatches rule.
+[[test]]
+name = "phase85_pk_index_coverage"
+path = "../tests/integration/phase85_pk_index_coverage.rs"
+harness = true

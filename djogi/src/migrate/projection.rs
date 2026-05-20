@@ -6106,8 +6106,8 @@ mod tests {
         );
     }
 
-    /// Class A regression guard (djogi#83 / strict-swe BLOCK-1) — the
-    /// framework PK column must carry `indexed: false` after the
+    /// Class A projection-layer pin (djogi#83 / strict-swe BLOCK-1) —
+    /// the framework PK column must carry `indexed: false` after the
     /// descriptor fix, so the field-level index fanout in
     /// `project_from_iters` must NOT synthesise a `<table>_id_idx`
     /// NonUnique BTree index.
@@ -6117,13 +6117,18 @@ mod tests {
     /// column would be redundant and would appear in every adopter's
     /// emitted migrations.
     ///
-    /// The fixture mirrors the shape that `framework_field_descriptor`
-    /// emits for the `id` column after the fix: `indexed: false`,
-    /// `unique: true`. Using the real post-fix shape (rather than the
-    /// `field_descriptor` helper which always defaults `indexed: false`
-    /// regardless of the macro) means this test will catch any future
-    /// regression that re-introduces `indexed: true` at the descriptor
-    /// layer.
+    /// **Coverage scope — projection layer only.** The fixture builds a
+    /// [`FieldDescriptor`] manually with `indexed: false, unique: true`,
+    /// mirroring the post-fix `framework_field_descriptor` emission.
+    /// Because the descriptor is constructed directly (not via the
+    /// `#[derive(Model)]` proc-macro), this test proves that
+    /// `project_from_iters` does not synthesise an `_id_idx` entry when
+    /// the descriptor carries `indexed: false` — it does NOT detect drift
+    /// in `framework_field_descriptor` itself (e.g., a future regression
+    /// that re-introduces `indexed: true` in any of the five PK strategy
+    /// arms). Macro-layer regression detection requires the
+    /// `#[djogi_test(sync_models = [...])]` integration test in
+    /// `tests/integration/phase85_pk_index_coverage.rs`.
     #[test]
     fn framework_pk_does_not_synthesize_id_idx_on_fresh_addtable() {
         // Shape mirrors the post-fix `framework_field_descriptor`
@@ -6220,6 +6225,64 @@ mod tests {
             idx.predicate.as_deref(),
             Some("status != 'closed'"),
             "explicit partial-index predicate must survive when field-level synthetic has the same canonical name"
+        );
+    }
+
+    /// Positive field-level synthesis pin (djogi#83 sweep CLASS B —
+    /// adjacent) — when a non-FK model field carries `indexed: true`
+    /// and there is no explicit `#[model(indexes(...))]` declaration
+    /// that occupies the same canonical name, the projection must
+    /// synthesise exactly one [`IndexSchema`] named
+    /// `<table>_<col>_idx` in `global.indexes`.
+    ///
+    /// This pin targets the field-level synthesis loop added in commit
+    /// 853c42e6. The FK-indexed tests at lines 3662 and 3732 only assert
+    /// SQL-type substitution — they do not verify that `global.indexes`
+    /// gains an entry. The explicit-wins test above uses `indexed: true`
+    /// but exercises the *skip* branch (explicit already present). This
+    /// test covers the happy-path *creation* branch.
+    ///
+    /// For macro-layer coverage (full descriptor → `sync_models` →
+    /// live DDL pipeline), see the integration test
+    /// `phase85_field_index_emitted` in
+    /// `tests/integration/phase85_pk_index_coverage.rs`.
+    #[test]
+    fn field_indexed_true_synthesises_one_canonical_index_in_global() {
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            indexed: true,
+            ..field_descriptor("label", FieldSqlType::Text, false)
+        }];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("tags", "Tag")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let global = &buckets[&empty_global()];
+        // Exactly one synthetic index must exist: the canonical name is
+        // `<table>_<col>_idx` — i.e. `tags_label_idx`.
+        assert_eq!(
+            global.indexes.len(),
+            1,
+            "expected exactly one synthetic index but got: {:?}",
+            global
+                .indexes
+                .iter()
+                .map(|i| i.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            global.indexes[0].name, "tags_label_idx",
+            "synthetic field-level index must follow the <table>_<col>_idx naming convention"
+        );
+        assert_eq!(
+            global.indexes[0].table, "tags",
+            "synthetic index must be owned by the `tags` table"
         );
     }
 }

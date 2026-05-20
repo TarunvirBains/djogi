@@ -97,7 +97,9 @@ async fn single_model_sync_catalog_has_table_and_declared_index(mut ctx: DjogiCo
         .expect("pg_indexes lookup");
     assert!(
         idx_count >= 2,
-        "expected at least PK + declared name index; got {idx_count}",
+        "expected at least 2 pg_indexes entries: the PRIMARY KEY constraint's \
+         implicit unique BTree index (Postgres-managed, NOT a djogi-emitted \
+         CREATE INDEX) plus the user-declared name index; got {idx_count}",
     );
 }
 

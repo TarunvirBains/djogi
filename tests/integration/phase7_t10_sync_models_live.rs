@@ -52,8 +52,10 @@ fn sentinel_dt() -> DateTime {
 
 /// Standalone model with the framework columns plus a few user
 /// fields and one declared composite index. `sync_models` must
-/// emit `CREATE TABLE`, the BTree PK index that comes from the PK
-/// shape, AND the `(name)` index declared on the model.
+/// emit `CREATE TABLE` and the `(name)` index declared on the model.
+/// Postgres creates an implicit unique BTree index for the `PRIMARY
+/// KEY` constraint automatically — Djogi's projection does not emit
+/// a redundant `CREATE INDEX` for the PK column.
 #[model(table = "t10_widgets_solo", pk = HeerId, indexes(
     index(fields = [name]),
 ))]
