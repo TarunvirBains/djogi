@@ -4497,20 +4497,30 @@ mod tests {
     /// needing a full `lihaaf` run or a compiler invocation.
     ///
     /// Fixed substitutions used here: `field_name = "slug"`, `method = "gin"`.
+    ///
+    /// `syn::Attribute` does not implement `Parse` in syn 2.x, so we append
+    /// `" struct _DjogiSnippet;"` and parse the whole thing as
+    /// `syn::ItemStruct`. The attribute's delimiter balance is fully validated
+    /// by the item parser — an unbalanced snippet causes an `Err`.
     #[test]
     fn field_unique_non_btree_recommendation_snippet_parses() {
         let snippet = r##"#[model(indexes(index(fields = [slug], using = "gin")))]"##;
-        syn::parse_str::<syn::Attribute>(snippet)
+        let input = format!("{snippet} struct _DjogiSnippet;");
+        syn::parse_str::<syn::ItemStruct>(&input)
             .expect("resolution-(c) snippet must parse as a valid attribute (paren balance)");
     }
 
     /// Class-A regression guard for the adjacent gin-on-unsupported-type
     /// recommendation (attrs.rs ~2675). The `)))]` form was already correct
     /// at the time of Phase 8.5 #83; this guard locks it in.
+    ///
+    /// Uses the same `struct _DjogiSnippet;` wrapping as the sibling test
+    /// above — `syn::Attribute` is not `Parse` in syn 2.x.
     #[test]
     fn field_gin_unsupported_type_recommendation_snippet_parses() {
         let snippet = r##"#[model(indexes(index(fields = [slug], using = "gin", opclass = "...")))]"##;
-        syn::parse_str::<syn::Attribute>(snippet)
+        let input = format!("{snippet} struct _DjogiSnippet;");
+        syn::parse_str::<syn::ItemStruct>(&input)
             .expect("gin-unsupported-type snippet must parse as a valid attribute (paren balance)");
     }
 }
