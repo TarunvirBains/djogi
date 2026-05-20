@@ -348,7 +348,8 @@ Validations performed at parse time:
    where an adopter accidentally tries to scope an aggregate to a
    per-row projection; aggregates and window functions must route
    through **Shape Q** (QuerySet-side `.annotate(...)`) or **Shape V**
-   (`#[derived(..., aggregate = true)]` with the explicit opt-in marker)
+   (`#[derived(..., aggregate = true)]` with the explicit opt-in marker
+   — **Shape V is not yet accepted by the parser; see djogi#226-container**)
    — both locked in [`docs/spec/decisions.md`](./decisions.md#aggregate-annotation-declaration-site)
    (see [Non-goals](#non-goals) item 2).
    Tokens inside single-quoted strings and dollar-quoted bodies are
