@@ -110,6 +110,12 @@ and an async closure that receives `&mut DjogiContext`. It retries the entire
 closure on any transient lock error (`LockConflict`); the fresh row is re-read
 on each attempt naturally because the closure re-executes from the top.
 
+For production paths where the same closure may also hit pool saturation, use
+`retry_on_conflict_with_backoff` plus `TransactionRetryBackoff` from the
+[transactions guide](./transactions.md). It retries the same transient errors
+but sleeps between attempts so `PoolTimeout` does not immediately re-enter a
+saturated checkout queue.
+
 ### Coupling with `Tracked<T>` for dirty-aware concurrent writes
 
 `Tracked<T>` and `#[field(version)]` compose cleanly. The version predicate

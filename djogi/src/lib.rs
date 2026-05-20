@@ -523,11 +523,13 @@ pub use visage::{DjogiVisage, VisageError};
 ///   the impls).
 /// - **Transaction helpers** — `atomic` (the canonical scope helper),
 ///   `atomic_with` (sibling that opens at an explicit Postgres
-///   isolation level), `retry_on_conflict` (the lock-conflict /
-///   serialization-failure retry loop), `IsolationLevel`
-///   (`READ COMMITTED` / `REPEATABLE READ` / `SERIALIZABLE` typed
-///   surface for `atomic_with`), and `DeferScope` (the typed scope
-///   for `DjogiContext::defer_constraints` / `set_constraints_immediate`).
+///   isolation level), `retry_on_conflict` (the immediate lock-conflict /
+///   serialization-failure retry loop), `retry_on_conflict_with_backoff`
+///   and `TransactionRetryBackoff` (production retry policy for
+///   contention / `PoolTimeout`), `IsolationLevel` (`READ COMMITTED` /
+///   `REPEATABLE READ` / `SERIALIZABLE` typed surface for `atomic_with`),
+///   and `DeferScope` (the typed scope for
+///   `DjogiContext::defer_constraints` / `set_constraints_immediate`).
 /// - **Spatial primitive** — `GeoPoint` is included when the `spatial`
 ///   feature is enabled; otherwise it is absent from the prelude.
 ///
@@ -612,12 +614,14 @@ pub mod prelude {
         PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt, PortableQuerySet, Q,
         QuerySet, RecursiveDirection, RecursiveQuerySet, SetOpKind, SetOpQuerySet, VisageQuerySet,
     };
-    // `atomic` / `atomic_with` / `retry_on_conflict` — Phase 4 Task 1
-    // canonical transaction scope + retry helper, plus the Phase 8.5
-    // typed isolation-level surface (#168) and the typed deferred-
-    // constraints scope (#169).
+    // `atomic` / `atomic_with` / `retry_on_conflict` /
+    // `retry_on_conflict_with_backoff` — Phase 4 Task 1 canonical transaction
+    // scope + retry helper, plus the Phase 8.5 typed isolation-level surface
+    // (#168), production backoff policy (#164), and typed deferred-constraints
+    // scope (#169).
     pub use crate::transaction::{
-        DeferScope, IsolationLevel, atomic, atomic_with, retry_on_conflict,
+        DeferScope, IsolationLevel, TransactionRetryBackoff, atomic, atomic_with,
+        retry_on_conflict, retry_on_conflict_with_backoff,
     };
     pub use crate::visage::{DjogiVisage, VisageError};
     pub use djogi_macros::Model;

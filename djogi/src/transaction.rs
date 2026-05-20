@@ -48,7 +48,9 @@
 //! SQLSTATE `40001` (serialization failure) on commit-time conflict;
 //! [`crate::DjogiError::is_transient`] classifies that as retryable, so the
 //! retry loop drives the typed isolation surface without extra wiring. Pure
-//! retry — no backoff — per the Phase 4 Task 1 scope.
+//! retry — no backoff — remains available via [`retry_on_conflict`]. Use
+//! [`retry_on_conflict_with_backoff`] when the closure can fail during pool
+//! saturation and immediate retries would amplify checkout pressure.
 
 use crate::context::{ContextInner, DjogiContext};
 use crate::pg::pool::DjogiPool;
@@ -57,6 +59,10 @@ use futures::FutureExt;
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, resume_unwind};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+static JITTER_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Boxed future tied to the caller's context-reborrow lifetime.
 ///
@@ -169,6 +175,167 @@ impl std::fmt::Display for IsolationLevel {
 /// input flows into the SQL.
 fn begin_with_isolation_sql(level: IsolationLevel) -> String {
     format!("BEGIN ISOLATION LEVEL {}", level.as_sql_keyword())
+}
+
+// ---------------------------------------------------------------------------
+// Retry backoff policy — dependency-free helper for saturated-pool retries.
+// ---------------------------------------------------------------------------
+
+/// Backoff policy for [`retry_on_conflict_with_backoff`].
+///
+/// The policy is deliberately dependency-free. Known-primitive audit:
+///
+/// - Sleeping uses [`tokio::time::sleep`], already part of Djogi's async
+///   runtime substrate.
+/// - Delay arithmetic uses [`std::time::Duration`] and saturating operations.
+/// - Optional jitter uses [`std::time::SystemTime`] as a lightweight entropy
+///   source rather than adding a `rand` dependency.
+///
+/// The default policy treats [`DjogiError::PoolTimeout`] as a stronger pressure
+/// signal than lock conflicts: pool checkout exhaustion waits longer before
+/// retrying so callers do not immediately re-enter the saturated queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransactionRetryBackoff {
+    lock_conflict_initial_delay: Duration,
+    pool_timeout_initial_delay: Duration,
+    max_delay: Duration,
+    jitter: Duration,
+}
+
+impl Default for TransactionRetryBackoff {
+    fn default() -> Self {
+        Self {
+            lock_conflict_initial_delay: Duration::from_millis(5),
+            pool_timeout_initial_delay: Duration::from_millis(50),
+            max_delay: Duration::from_secs(1),
+            jitter: Duration::from_millis(10),
+        }
+    }
+}
+
+impl TransactionRetryBackoff {
+    /// Construct the default policy.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Disable all sleeping. Useful for tests or callers that only want the
+    /// sibling helper's error-classification surface.
+    pub fn none() -> Self {
+        Self {
+            lock_conflict_initial_delay: Duration::ZERO,
+            pool_timeout_initial_delay: Duration::ZERO,
+            max_delay: Duration::ZERO,
+            jitter: Duration::ZERO,
+        }
+    }
+
+    /// Set the initial delay for lock / serialization conflicts.
+    pub fn with_lock_conflict_initial_delay(mut self, delay: Duration) -> Self {
+        self.lock_conflict_initial_delay = delay;
+        self
+    }
+
+    /// Set the initial delay for pool checkout timeouts.
+    pub fn with_pool_timeout_initial_delay(mut self, delay: Duration) -> Self {
+        self.pool_timeout_initial_delay = delay;
+        self
+    }
+
+    /// Set the maximum exponential-backoff delay before jitter is applied.
+    pub fn with_max_delay(mut self, delay: Duration) -> Self {
+        self.max_delay = delay;
+        self
+    }
+
+    /// Set the maximum additive jitter applied by the retrying helper.
+    ///
+    /// Jitter is applied after the exponential delay is capped by
+    /// [`Self::with_max_delay`]. Set this to [`Duration::ZERO`] for fully
+    /// deterministic sleeps. Non-zero jitter is sampled across the full
+    /// configured duration; values above one second are not truncated to the
+    /// subsecond portion of the system clock.
+    pub fn with_jitter(mut self, jitter: Duration) -> Self {
+        self.jitter = jitter;
+        self
+    }
+
+    /// Return the capped exponential delay before jitter for a failed attempt.
+    ///
+    /// `completed_attempt` is the one-based attempt number that just failed:
+    /// the first failure gets the initial delay, the second failure doubles it,
+    /// and so on until [`Self::with_max_delay`] caps it.
+    pub fn base_delay_for_retry(
+        self,
+        error: &DjogiError,
+        completed_attempt: u32,
+    ) -> Option<Duration> {
+        if !error.is_transient() {
+            return None;
+        }
+
+        let base = match error {
+            DjogiError::PoolTimeout { .. } => self.pool_timeout_initial_delay,
+            _ => self.lock_conflict_initial_delay,
+        };
+        let exponent = completed_attempt.saturating_sub(1).min(31);
+        let factor = 1_u32.checked_shl(exponent).unwrap_or(u32::MAX);
+        Some(base.saturating_mul(factor).min(self.max_delay))
+    }
+
+    fn delay_for_retry(self, error: &DjogiError, completed_attempt: u32) -> Option<Duration> {
+        let base = self.base_delay_for_retry(error, completed_attempt)?;
+        if self.jitter.is_zero() {
+            return Some(base);
+        }
+
+        let jitter = jitter_duration(self.jitter);
+        Some(base.saturating_add(jitter))
+    }
+}
+
+fn jitter_duration(max_jitter: Duration) -> Duration {
+    let max_nanos = max_jitter.as_nanos();
+    if max_nanos == 0 {
+        return Duration::ZERO;
+    }
+
+    nanos_to_duration(mixed_jitter_nanos(jitter_seed(), max_nanos))
+}
+
+fn jitter_seed() -> u128 {
+    let now_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let counter = JITTER_COUNTER.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+    now_nanos ^ ((counter as u128) << 64) ^ counter as u128
+}
+
+fn mixed_jitter_nanos(seed: u128, max_nanos: u128) -> u128 {
+    if max_nanos == 0 {
+        return 0;
+    }
+
+    let lo = splitmix64(seed as u64);
+    let hi = splitmix64((seed >> 64) as u64 ^ 0xD1B5_4A32_D192_ED03);
+    let mixed = ((hi as u128) << 64) | lo as u128;
+    mixed % (max_nanos + 1)
+}
+
+fn splitmix64(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^ (value >> 31)
+}
+
+fn nanos_to_duration(nanos: u128) -> Duration {
+    const NANOS_PER_SEC: u128 = 1_000_000_000;
+    Duration::new(
+        (nanos / NANOS_PER_SEC) as u64,
+        (nanos % NANOS_PER_SEC) as u32,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -752,9 +919,10 @@ where
 ///
 /// Classifies errors via [`crate::DjogiError::is_transient`] — SQLSTATEs
 /// `40001`, `40P01`, `55P03` are considered retryable. Every other
-/// error (constraint violations, not-found, etc.) surfaces on the
-/// first call. Pure retry with no backoff today — exponential / jittered
-/// backoff is intentionally deferred until the need is measured.
+/// error (constraint violations, not-found, etc.) surfaces on the first
+/// call. This helper retries immediately; use
+/// [`retry_on_conflict_with_backoff`] when production contention or
+/// [`crate::DjogiError::PoolTimeout`] should sleep before retrying.
 pub async fn retry_on_conflict<F, R>(
     ctx: &mut DjogiContext,
     attempts: u32,
@@ -782,6 +950,79 @@ where
                 return Err(e);
             }
         }
+    }
+}
+
+/// Re-run `closure` on transient transaction errors, sleeping between retries.
+///
+/// This is the production-oriented sibling of [`retry_on_conflict`]. The
+/// original helper intentionally performs immediate retries; this helper uses a
+/// configurable [`TransactionRetryBackoff`] so `PoolTimeout` retries do not
+/// tight-loop against a saturated pool.
+///
+/// ```ignore
+/// use djogi::transaction::{
+///     atomic_with, retry_on_conflict_with_backoff, IsolationLevel,
+///     TransactionRetryBackoff,
+/// };
+///
+/// retry_on_conflict_with_backoff(
+///     &mut ctx,
+///     5,
+///     TransactionRetryBackoff::default(),
+///     async |ctx| {
+///         atomic_with(IsolationLevel::Serializable, ctx, |tx| Box::pin(async move {
+///             // ... reads + writes ...
+///             Ok::<_, DjogiError>(())
+///         })).await
+///     },
+/// ).await?;
+/// ```
+pub async fn retry_on_conflict_with_backoff<F, R>(
+    ctx: &mut DjogiContext,
+    attempts: u32,
+    policy: TransactionRetryBackoff,
+    mut closure: F,
+) -> Result<R, DjogiError>
+where
+    F: AsyncFnMut(&mut DjogiContext) -> Result<R, DjogiError>,
+{
+    debug_assert!(attempts >= 1, "attempts must be >= 1");
+    let mut attempt: u32 = 0;
+    loop {
+        attempt = attempt.saturating_add(1);
+        match closure(ctx).await {
+            Ok(value) => return Ok(value),
+            Err(e) => {
+                let retryable = e.is_transient();
+                if retryable && attempt < attempts {
+                    let delay = policy
+                        .delay_for_retry(&e, attempt)
+                        .unwrap_or(Duration::ZERO);
+                    tracing::debug!(
+                        attempt,
+                        attempts,
+                        delay_ms = delay.as_millis(),
+                        error_kind = retry_error_kind(&e),
+                        "retry_on_conflict_with_backoff: retryable transaction error; sleeping before retry",
+                    );
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+}
+
+fn retry_error_kind(error: &DjogiError) -> &'static str {
+    match error {
+        DjogiError::PoolTimeout { .. } => "pool_timeout",
+        DjogiError::LockConflict(_) => "lock_conflict",
+        DjogiError::Db(_) => "database_transient",
+        _ => "transient",
     }
 }
 
@@ -825,6 +1066,8 @@ impl DjogiContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 
     // ── IsolationLevel — SQL keyword + composition tests ─────────────────
     //
@@ -874,6 +1117,149 @@ mod tests {
             begin_with_isolation_sql(IsolationLevel::Serializable),
             "BEGIN ISOLATION LEVEL SERIALIZABLE",
         );
+    }
+
+    #[test]
+    fn default_retry_backoff_treats_pool_timeout_as_stronger_pressure_signal() {
+        let policy = TransactionRetryBackoff::default().with_jitter(Duration::ZERO);
+        let lock_error = DjogiError::LockConflict(DbError::other("synthetic lock conflict"));
+        let pool_error = DjogiError::PoolTimeout { phase: "wait" };
+
+        let lock_delay = policy.base_delay_for_retry(&lock_error, 1).unwrap();
+        let pool_delay = policy.base_delay_for_retry(&pool_error, 1).unwrap();
+
+        assert!(
+            pool_delay > lock_delay,
+            "PoolTimeout retry delay must exceed lock-conflict delay by default"
+        );
+    }
+
+    #[test]
+    fn retry_backoff_is_exponential_and_capped() {
+        let policy = TransactionRetryBackoff::none()
+            .with_lock_conflict_initial_delay(Duration::from_millis(10))
+            .with_max_delay(Duration::from_millis(25));
+        let error = DjogiError::LockConflict(DbError::other("synthetic lock conflict"));
+
+        assert_eq!(
+            policy.base_delay_for_retry(&error, 1),
+            Some(Duration::from_millis(10)),
+        );
+        assert_eq!(
+            policy.base_delay_for_retry(&error, 2),
+            Some(Duration::from_millis(20)),
+        );
+        assert_eq!(
+            policy.base_delay_for_retry(&error, 3),
+            Some(Duration::from_millis(25)),
+        );
+    }
+
+    #[test]
+    fn retry_backoff_ignores_terminal_errors() {
+        let policy = TransactionRetryBackoff::default();
+        let error = DjogiError::Validation("not retryable".to_string());
+
+        assert_eq!(policy.base_delay_for_retry(&error, 1), None);
+    }
+
+    #[test]
+    fn retry_backoff_jitter_can_span_multiple_seconds() {
+        let max_nanos = Duration::from_secs(2).as_nanos();
+        let mut saw_above_one_second = false;
+
+        for seed in 0_u128..128 {
+            let jitter = mixed_jitter_nanos(seed, max_nanos);
+            assert!(
+                jitter <= max_nanos,
+                "jitter must not exceed configured max, got {jitter} > {max_nanos}",
+            );
+            saw_above_one_second |= jitter > Duration::from_secs(1).as_nanos();
+        }
+
+        assert!(
+            saw_above_one_second,
+            "jitter mixing must not be capped to the subsecond range",
+        );
+    }
+
+    async fn retry_helper_test_context() -> DjogiContext {
+        let pool = DjogiPool::builder("postgres://localhost/_djogi_unreachable")
+            .max_size(1)
+            .build()
+            .await
+            .expect("pool construction should not connect until checkout");
+        DjogiContext::from_pool(pool)
+    }
+
+    #[tokio::test]
+    async fn retry_on_conflict_with_backoff_returns_first_try_success_without_retry() {
+        let mut ctx = retry_helper_test_context().await;
+        let calls = Arc::new(AtomicU32::new(0));
+        let observed_calls = calls.clone();
+
+        let value = retry_on_conflict_with_backoff(
+            &mut ctx,
+            3,
+            TransactionRetryBackoff::none(),
+            async move |_| {
+                calls.fetch_add(1, AtomicOrdering::SeqCst);
+                Ok::<_, DjogiError>(42)
+            },
+        )
+        .await
+        .expect("first attempt should succeed");
+
+        assert_eq!(value, 42);
+        assert_eq!(observed_calls.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn retry_on_conflict_with_backoff_short_circuits_terminal_error() {
+        let mut ctx = retry_helper_test_context().await;
+        let calls = Arc::new(AtomicU32::new(0));
+        let observed_calls = calls.clone();
+
+        let err = retry_on_conflict_with_backoff(
+            &mut ctx,
+            5,
+            TransactionRetryBackoff::none(),
+            async move |_| {
+                calls.fetch_add(1, AtomicOrdering::SeqCst);
+                Err::<(), _>(DjogiError::Validation("terminal".to_string()))
+            },
+        )
+        .await
+        .expect_err("terminal error must surface immediately");
+
+        assert!(matches!(err, DjogiError::Validation(ref msg) if msg == "terminal"));
+        assert_eq!(observed_calls.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn retry_on_conflict_with_backoff_recovers_after_retryable_error() {
+        let mut ctx = retry_helper_test_context().await;
+        let calls = Arc::new(AtomicU32::new(0));
+        let observed_calls = calls.clone();
+
+        let value = retry_on_conflict_with_backoff(
+            &mut ctx,
+            3,
+            TransactionRetryBackoff::none(),
+            async move |_| {
+                let completed = calls.fetch_add(1, AtomicOrdering::SeqCst);
+                if completed == 0 {
+                    Err(DjogiError::PoolTimeout { phase: "wait" })
+                } else {
+                    Ok(completed + 1)
+                }
+            },
+        )
+        .await
+        .expect("second attempt should recover");
+
+        assert_eq!(value, 2);
+        assert_eq!(observed_calls.load(AtomicOrdering::SeqCst), 2);
     }
 
     // ── ConstraintMode — SQL keyword tests ──────────────────────────────

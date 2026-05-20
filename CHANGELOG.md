@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Transaction retry backoff policy** (djogi#164). Added
+  `TransactionRetryBackoff` and `retry_on_conflict_with_backoff` as the
+  production sibling to immediate `retry_on_conflict`, with separate defaults
+  for lock conflicts vs. `PoolTimeout`, capped exponential delay, configurable
+  jitter, and `TransactionRetryBackoff::none()` for sleep-free tests.
 - **Typed `INSERT INTO ... SELECT ...` bulk-copy surface** (closes
   djogi#106). `QuerySet<S>::insert_into::<T, _, _>(|target_fields,
   source_fields| vec![...])` returns an inert
