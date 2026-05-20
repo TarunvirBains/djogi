@@ -195,10 +195,30 @@ are deferred to later tiers.
 
 `#[computed(sql = "...")]` is a model-side computed-property surface.
 It does not emit fields on `FooPublic`, `FooAdmin`, or the other
-generated visage structs. Do not combine a computed property with
-`#[field(expose(...))]` to try to publish it through a visage; computed
-exposure is rejected by the public surface. Use `#[derived(...)]`
-when the value belongs in a visage projection.
+generated visage structs.
+
+Two rejected forms that adopters from the early Path A draft may
+encounter:
+
+```rust
+// REJECTED — `expose = ...` inside `#[computed(...)]`
+#[computed(sql = "base_price * 2", expose = "public")]
+pub double_price: f64,
+
+// REJECTED — `expose(...)` list form inside `#[computed(...)]`
+#[computed(sql = "base_price * 2", expose(public, admin))]
+pub double_price: f64,
+```
+
+Both produce a compile error pointing at the `expose` key and
+redirecting to `#[derived(...)]`. The `expose` key was entertained in
+an early draft that conflated model-side virtual columns with
+visage-side projection entries; the two surfaces represent distinct
+concepts and the key was removed before any public adoption.
+
+Use `#[derived(...)]` when the value belongs in a visage projection.
+For the model-side computed-property surface and its limitations, see
+[Computed Properties](./computed.md).
 
 ## Relations and descriptor surface
 
