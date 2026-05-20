@@ -187,12 +187,18 @@ Available format matrix:
 ## Status
 
 This example is part of pre-v0.1.0 publish prep. The model definitions
-target Djogi `0.1.0`. The example pre-dates the Phase 7 migration
-runner integration that adopters will eventually use; the `migrate`
-subcommand applies hand-written DDL via `ctx.raw_ddl` and
-`ctx.raw_execute` rather than the descriptor-driven differ. This is
-documented as current-state raw-SQL bypass debt and not a claim that
-the typed escape surface is complete.
+target Djogi `0.1.0`. The `migrate` subcommand applies the example's
+schema through the same descriptor-driven pipeline that `djogi
+migrations compose` + `djogi migrations apply` uses in production:
+`project_from_inventory()` → `diff_bucket_maps()` → `plan_delta()` →
+`apply_plan()`. No `CREATE TABLE` or `CREATE INDEX` DDL is
+hand-written in the example codebase — the framework emits all of it
+from the `#[model(...)]` annotations.
+
+The only remaining raw-DDL path is the Phase 0 bootstrap
+(`install_phase_zero`), which installs HeeRanjID SQL functions and the
+PostGIS extension. This is legitimately raw DDL — no typed migration
+surface exists for database-level extension installation.
 
 ## Layout
 

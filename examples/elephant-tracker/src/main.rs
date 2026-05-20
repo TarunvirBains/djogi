@@ -3,10 +3,10 @@
 //! See `README.md` for an overview. This binary exposes three
 //! subcommand groups:
 //!
-//! - `migrate` — drop and recreate the example tables. The example
-//!   pre-dates the full Phase 7 migration runner integration that
-//!   adopters will eventually use; the CLI here applies hand-written
-//!   DDL via `ctx.raw_ddl` and `ctx.raw_execute`.
+//! - `migrate` — apply the example schema through the framework's
+//!   descriptor-driven pipeline: `project_from_inventory()` →
+//!   `diff_bucket_maps()` → `plan_delta()` → `apply_plan()`. Drops
+//!   all tables first for dev-mode idempotency, then applies fresh.
 //! - `seed` — load `seeds/countries.sql`, then insert herds,
 //!   herd ranges, elephants, and sightings programmatically.
 //! - `demo <which>` — run one of five feature walkthroughs:
@@ -40,7 +40,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Drop + recreate the example tables. Idempotent.
+    /// Apply the example schema from descriptor inventory. Idempotent.
     Migrate,
 
     /// Load `seeds/countries.sql` then seed herds + sightings programmatically.
