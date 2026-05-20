@@ -126,8 +126,16 @@ where
     A: IntoAggregateTuple + crate::query::annotate::PlainAnnotationTuple,
 {
     // Inner SELECT — row-aggregate-specific variant of the annotated
-    // select. `aggregates.check_legality()` is intentionally NOT called
-    // here because the terminal calls it in `fetch_one` before SQL build.
+    // select. `aggregates.check_legality()` and
+    // `aggregates.check_no_column_collision(T::COLUMNS)` are intentionally
+    // NOT called here — each terminal's `fetch_one` runs both checks before
+    // calling this builder so that validation errors surface before SQL
+    // emission. These terminals consume qualify via the wrapped
+    // AnnotatedQuerySet; `build_spatial_row_select_with_annotations_for_fetch`
+    // (djogi/src/query/sql.rs:1804-1813) emits the same
+    // `SELECT * FROM (…) AS __djogi_q WHERE <alias> …` outer qualify wrap
+    // as `AnnotatedQuerySet::fetch_all`, so a window alias shadowing a
+    // model column must be rejected at the terminal level.
     let inner = build_spatial_row_select_with_annotations_for_fetch(
         &aqs.qs,
         |acc| {
@@ -180,6 +188,14 @@ where
     ///
     /// - The annotation tuple fails its `check_legality()` (e.g. an
     ///   illegal aggregate modifier survived earlier validation).
+    /// - A window annotation alias collides with a `T` model column name —
+    ///   returns [`crate::DjogiError::Validation`] with a remediation hint.
+    ///   This terminal routes qualify through
+    ///   `build_spatial_row_select_with_annotations_for_fetch`
+    ///   (`djogi/src/query/sql.rs:1804-1813`) which emits the same
+    ///   `SELECT * FROM (…) AS __djogi_q WHERE <alias> …` outer qualify wrap
+    ///   as [`AnnotatedQuerySet::fetch_all`]; the collision check fires here
+    ///   for the same reason.
     /// - The geometry column named in [`MvtOptions::with_geom_name`] does
     ///   not exist in the model's projection — PostGIS raises this at
     ///   execute time as a `42703 column does not exist` error.
@@ -204,6 +220,14 @@ where
             // annotated `fetch_all` makes. The row aggregate itself
             // carries no modifiers so its own legality is trivially Ok.
             qs.aggregates.check_legality()?;
+            // Reject window annotation aliases that collide with model
+            // column names. This terminal consumes qualify via the wrapped
+            // AnnotatedQuerySet; the spatial SQL builder
+            // (djogi/src/query/sql.rs:1804-1813) emits the same
+            // `SELECT * FROM (…) AS __djogi_q WHERE <alias> …` outer
+            // qualify wrap as AnnotatedQuerySet::fetch_all, so a colliding
+            // alias produces an ambiguous outer-WHERE at execute time.
+            qs.aggregates.check_no_column_collision(T::COLUMNS)?;
 
             // Pair-tuple aggregates are not legal on the single-Model
             // annotated path (would require pair-tuple `l.` / `r.`
@@ -276,6 +300,11 @@ where
             }
 
             qs.aggregates.check_legality()?;
+            // Same alias-collision guard as AsMvtTerminal::fetch_one —
+            // this terminal routes qualify through the same spatial SQL
+            // builder that emits the __djogi_q outer-WHERE wrap
+            // (djogi/src/query/sql.rs:1804-1813).
+            qs.aggregates.check_no_column_collision(T::COLUMNS)?;
 
             if qs.aggregates.requires_pair_tuple_scope()
                 || qs.aggregates.requires_closure_pair_join()
@@ -564,6 +593,7 @@ mod tests {
     use crate::descriptor::{
         FieldSqlType, GeographySubtype, ModelDescriptor, PkType, field_descriptor, model_descriptor,
     };
+    use crate::expr::RowNumber;
     use crate::testing;
 
     // ── Fake model — bare minimum to exercise the SQL builder ──────────
@@ -791,5 +821,74 @@ mod tests {
         );
 
         drop(_cleanup);
+    }
+
+    // ── Issue #71 — alias-collision guard on row-aggregate terminals ─────────
+    //
+    // `AsMvtTerminal::fetch_one` and `AsGeobufTerminal::fetch_one` consume
+    // qualify via the wrapped `AnnotatedQuerySet`; the spatial SQL builder
+    // (`djogi/src/query/sql.rs:1804-1813`) emits the same
+    // `SELECT * FROM (…) AS __djogi_q WHERE <alias> …` outer qualify wrap as
+    // `AnnotatedQuerySet::fetch_all`. A window alias that shadows a model column
+    // must be rejected before SQL emission, not surface as a cryptic Postgres
+    // "column reference is ambiguous" error at execute time.
+    //
+    // The tests below call `IntoAggregateTuple::check_no_column_collision`
+    // directly (same framing as the analogous annotate.rs tests) to pin the
+    // validator logic against `TileFeature::COLUMNS` — the column set these
+    // terminals would pass to the check in `fetch_one`.
+
+    #[test]
+    fn as_mvt_terminal_alias_colliding_with_tile_feature_column_returns_validation_error() {
+        // `TileFeature::COLUMNS = &["id", "geom", "name"]`. A RowNumber aliased
+        // to "id" must be rejected before SQL emission so the MVT terminal
+        // surfaces a typed DjogiError::Validation instead of a Postgres
+        // ambiguous-column error when the qualify outer-WHERE wraps the inner
+        // SELECT.
+        let rn = RowNumber::new().alias("id");
+        let result = IntoAggregateTuple::check_no_column_collision(&rn, TileFeature::COLUMNS);
+        assert!(
+            matches!(result, Err(crate::DjogiError::Validation(_))),
+            "MVT terminal: alias colliding with TileFeature::COLUMNS must yield \
+             DjogiError::Validation, got: {result:?}"
+        );
+        if let Err(crate::DjogiError::Validation(msg)) = result {
+            assert!(
+                msg.contains("id"),
+                "error message must name the conflicting alias, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn as_geobuf_terminal_alias_colliding_with_tile_feature_column_returns_validation_error() {
+        // Same guard as the MVT terminal — AsGeobufTerminal::fetch_one routes
+        // qualify through the same spatial SQL builder that emits the
+        // __djogi_q outer-WHERE wrap. A RowNumber aliased to "geom" (another
+        // TileFeature column) must be rejected.
+        let rn = RowNumber::new().alias("geom");
+        let result = IntoAggregateTuple::check_no_column_collision(&rn, TileFeature::COLUMNS);
+        assert!(
+            matches!(result, Err(crate::DjogiError::Validation(_))),
+            "Geobuf terminal: alias colliding with TileFeature::COLUMNS must yield \
+             DjogiError::Validation, got: {result:?}"
+        );
+        if let Err(crate::DjogiError::Validation(msg)) = result {
+            assert!(
+                msg.contains("geom"),
+                "error message must name the conflicting alias, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn as_mvt_terminal_non_colliding_alias_passes_collision_check() {
+        // A RowNumber aliased to a name that is not in TileFeature::COLUMNS
+        // must pass — only collisions are rejected.
+        let rn = RowNumber::new().alias("rank");
+        assert!(
+            IntoAggregateTuple::check_no_column_collision(&rn, TileFeature::COLUMNS).is_ok(),
+            "MVT terminal: alias not matching any TileFeature column must pass the collision check"
+        );
     }
 }
