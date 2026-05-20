@@ -3968,82 +3968,71 @@ where
     /// [`DjogiField::explicit_pg_predicate`].
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn contains(self, value: T) -> Condition {
-        self.range_predicate(
-            crate::range::RangePredicateOp::Contains,
-            value.into_filter_value(),
+        Condition::RangePredicate(
+            crate::range::RangePredicateLeaf::new(
+                self.column,
+                crate::range::RangePredicateOp::Contains,
+                value.into_filter_value(),
+            )
+            .with_rhs_element_cast(T::sql_element_cast()),
         )
+    }
+
+    /// `column OP rhs` — shared range/range operator payload path.
+    fn range_rhs_predicate(
+        self,
+        op: crate::range::RangePredicateOp,
+        range: crate::Range<T>,
+    ) -> Condition {
+        self.range_predicate(op, T::into_range_filter_value(range))
     }
 
     /// `column @> range` — range contains another range.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn contains_range(self, range: crate::Range<T>) -> Condition {
-        self.range_predicate(
-            crate::range::RangePredicateOp::Contains,
-            T::into_range_filter_value(range),
-        )
+        self.range_rhs_predicate(crate::range::RangePredicateOp::Contains, range)
     }
 
     /// `column <@ range` — range is contained by another range.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn contained_by(self, range: crate::Range<T>) -> Condition {
-        self.range_predicate(
-            crate::range::RangePredicateOp::ContainedBy,
-            T::into_range_filter_value(range),
-        )
+        self.range_rhs_predicate(crate::range::RangePredicateOp::ContainedBy, range)
     }
 
     /// `column && range` — ranges overlap.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn overlaps(self, range: crate::Range<T>) -> Condition {
-        self.range_predicate(
-            crate::range::RangePredicateOp::Overlaps,
-            T::into_range_filter_value(range),
-        )
+        self.range_rhs_predicate(crate::range::RangePredicateOp::Overlaps, range)
     }
 
     /// `column << range` — range is strictly left of another range.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn strictly_left_of(self, range: crate::Range<T>) -> Condition {
-        self.range_predicate(
-            crate::range::RangePredicateOp::StrictlyLeftOf,
-            T::into_range_filter_value(range),
-        )
+        self.range_rhs_predicate(crate::range::RangePredicateOp::StrictlyLeftOf, range)
     }
 
     /// `column >> range` — range is strictly right of another range.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn strictly_right_of(self, range: crate::Range<T>) -> Condition {
-        self.range_predicate(
-            crate::range::RangePredicateOp::StrictlyRightOf,
-            T::into_range_filter_value(range),
-        )
+        self.range_rhs_predicate(crate::range::RangePredicateOp::StrictlyRightOf, range)
     }
 
     /// `column &< range` — range does not extend right of another range.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn not_extends_right_of(self, range: crate::Range<T>) -> Condition {
-        self.range_predicate(
-            crate::range::RangePredicateOp::NotExtendsRightOf,
-            T::into_range_filter_value(range),
-        )
+        self.range_rhs_predicate(crate::range::RangePredicateOp::NotExtendsRightOf, range)
     }
 
     /// `column &> range` — range does not extend left of another range.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn not_extends_left_of(self, range: crate::Range<T>) -> Condition {
-        self.range_predicate(
-            crate::range::RangePredicateOp::NotExtendsLeftOf,
-            T::into_range_filter_value(range),
-        )
+        self.range_rhs_predicate(crate::range::RangePredicateOp::NotExtendsLeftOf, range)
     }
 
     /// `column -|- range` — ranges are adjacent.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn adjacent_to(self, range: crate::Range<T>) -> Condition {
-        self.range_predicate(
-            crate::range::RangePredicateOp::AdjacentTo,
-            T::into_range_filter_value(range),
-        )
+        self.range_rhs_predicate(crate::range::RangePredicateOp::AdjacentTo, range)
     }
 }
 
@@ -5692,6 +5681,7 @@ mod tests {
             assert_eq!(leaf.column(), "span");
             assert_eq!(leaf.op(), crate::range::RangePredicateOp::Contains);
             assert!(matches!(leaf.value(), FilterValue::I32(3)));
+            assert_eq!(leaf.rhs_element_cast(), Some("int4"));
         } else {
             panic!("expected contains(element) to produce a range predicate condition");
         }
@@ -5701,6 +5691,7 @@ mod tests {
             assert_eq!(leaf.column(), "span");
             assert_eq!(leaf.op(), crate::range::RangePredicateOp::Overlaps);
             assert!(matches!(leaf.value(), FilterValue::RangeI32(range) if range == &probe));
+            assert_eq!(leaf.rhs_element_cast(), None);
         } else {
             panic!("expected overlaps(range) to produce a range predicate condition");
         }

@@ -65,11 +65,24 @@ pub struct RangePredicateLeaf {
     /// an element value (`T`) or a range value (`Range<T>`); every other
     /// operator carries a range RHS.
     pub(crate) value: FilterValue,
+    /// Explicit scalar cast for `contains(element)` binds. Range-vs-range
+    /// predicates leave this `None` and keep the existing typed range bind.
+    pub(crate) rhs_element_cast: Option<&'static str>,
 }
 
 impl RangePredicateLeaf {
     pub(crate) fn new(column: &'static str, op: RangePredicateOp, value: FilterValue) -> Self {
-        Self { column, op, value }
+        Self {
+            column,
+            op,
+            value,
+            rhs_element_cast: None,
+        }
+    }
+
+    pub(crate) fn with_rhs_element_cast(mut self, cast: &'static str) -> Self {
+        self.rhs_element_cast = Some(cast);
+        self
     }
 
     /// Column name from the trusted field reference that built this predicate.
@@ -85,6 +98,11 @@ impl RangePredicateLeaf {
     /// Bound right-hand-side value for this predicate.
     pub fn value(&self) -> &FilterValue {
         &self.value
+    }
+
+    /// Explicit scalar cast for `contains(element)` binds, if present.
+    pub fn rhs_element_cast(&self) -> Option<&'static str> {
+        self.rhs_element_cast
     }
 }
 
@@ -108,11 +126,21 @@ pub trait RangeElement: sealed::Sealed + Clone + 'static {
     fn into_range_filter_value(range: crate::Range<Self>) -> FilterValue
     where
         Self: Sized;
+
+    /// Postgres scalar subtype used when `range @> element` needs an explicit
+    /// RHS cast to select the element overload.
+    fn sql_element_cast() -> &'static str
+    where
+        Self: Sized;
 }
 
 impl RangeElement for i32 {
     fn into_range_filter_value(range: crate::Range<Self>) -> FilterValue {
         FilterValue::RangeI32(range)
+    }
+
+    fn sql_element_cast() -> &'static str {
+        "int4"
     }
 }
 
@@ -120,11 +148,19 @@ impl RangeElement for i64 {
     fn into_range_filter_value(range: crate::Range<Self>) -> FilterValue {
         FilterValue::RangeI64(range)
     }
+
+    fn sql_element_cast() -> &'static str {
+        "int8"
+    }
 }
 
 impl RangeElement for rust_decimal::Decimal {
     fn into_range_filter_value(range: crate::Range<Self>) -> FilterValue {
         FilterValue::RangeDecimal(range)
+    }
+
+    fn sql_element_cast() -> &'static str {
+        "numeric"
     }
 }
 
@@ -132,16 +168,28 @@ impl RangeElement for time::PrimitiveDateTime {
     fn into_range_filter_value(range: crate::Range<Self>) -> FilterValue {
         FilterValue::RangeTimestamp(range)
     }
+
+    fn sql_element_cast() -> &'static str {
+        "timestamp"
+    }
 }
 
 impl RangeElement for time::OffsetDateTime {
     fn into_range_filter_value(range: crate::Range<Self>) -> FilterValue {
         FilterValue::RangeDateTime(range)
     }
+
+    fn sql_element_cast() -> &'static str {
+        "timestamptz"
+    }
 }
 
 impl RangeElement for time::Date {
     fn into_range_filter_value(range: crate::Range<Self>) -> FilterValue {
         FilterValue::RangeDate(range)
+    }
+
+    fn sql_element_cast() -> &'static str {
+        "date"
     }
 }

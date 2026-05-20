@@ -785,6 +785,10 @@ pub(crate) fn emit_condition(
             push_qualified_col(acc, leaf.column(), parent_table);
             acc.push_sql(leaf.op().sql_token());
             push_filter_value_ref(acc, leaf.value());
+            if let Some(cast) = leaf.rhs_element_cast() {
+                acc.push_sql("::");
+                acc.push_sql(cast);
+            }
             Ok(())
         }
         // ── JSONB flat-path condition (Phase 5 Task 5) ───────────────────
@@ -2814,6 +2818,16 @@ mod tests {
         let acc = build_select(&qs);
         let sql = acc.sql();
         assert!(sql.contains("WHERE span -|- $1"), "got: {sql}");
+    }
+
+    #[test]
+    fn select_with_range_contains_element_emits_scalar_cast() {
+        let qs: QuerySet<Fake> = QuerySet::new().filter(|_| {
+            crate::query::field::FieldRef::<Fake, crate::Range<i32>>::new("span").contains(3_i32)
+        });
+        let acc = build_select(&qs);
+        let sql = acc.sql();
+        assert!(sql.contains("WHERE span @> $1::int4"), "got: {sql}");
     }
 
     #[test]
