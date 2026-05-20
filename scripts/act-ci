@@ -46,4 +46,8 @@ DATABASE_URL="${database_url}" \
 printf 'Using act Postgres host port %s\n' "${host_port}" >&2
 printf 'Using act DATABASE_URL %s\n' "${database_url}" >&2
 
-exec act --env "DATABASE_URL=${database_url}" -W "${workflow_tmp}" "$@"
+# Do NOT use exec here: exec replaces the bash process before the EXIT trap
+# fires, leaking the tmpdir on every run.  Without exec, set -e propagates
+# any nonzero act exit code as this script's exit code, and the EXIT trap
+# still runs on both success and failure paths.
+act --env "DATABASE_URL=${database_url}" -W "${workflow_tmp}" "$@"
