@@ -921,6 +921,42 @@ mod tests {
         );
     }
 
+    // ── Issue #71 case-fold unit pins ────────────────────────────────────────
+    //
+    // PostgreSQL folds unquoted identifiers to lowercase, so alias `"ID"` and
+    // column `"id"` name the same identifier from Postgres's point of view.
+    // The validator now uses `alias_collides_with_column` (ASCII
+    // case-insensitive) so uppercase aliases are caught before SQL emission.
+
+    #[test]
+    fn as_mvt_terminal_uppercase_alias_collides_with_tile_feature_column() {
+        // `TileFeature::COLUMNS = &["id", "geom", "name"]`. Alias `"ID"` must
+        // be rejected: Postgres folds `ID` → `id`, so this is equivalent to a
+        // lowercase collision. Exercises the unit-level `check_no_column_collision`
+        // path for the MVT terminal.
+        let rn = RowNumber::new().alias("ID");
+        let result = IntoAggregateTuple::check_no_column_collision(&rn, TileFeature::COLUMNS);
+        assert!(
+            matches!(result, Err(crate::DjogiError::Validation(_))),
+            "MVT terminal: uppercase alias 'ID' must collide with column 'id' via case-fold \
+             comparator, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn as_geobuf_terminal_uppercase_alias_collides_with_tile_feature_column() {
+        // Alias `"GEOM"` must be rejected: case-fold equivalence to `"geom"`.
+        // Exercises the unit-level `check_no_column_collision` path for the
+        // Geobuf terminal.
+        let rn = RowNumber::new().alias("GEOM");
+        let result = IntoAggregateTuple::check_no_column_collision(&rn, TileFeature::COLUMNS);
+        assert!(
+            matches!(result, Err(crate::DjogiError::Validation(_))),
+            "Geobuf terminal: uppercase alias 'GEOM' must collide with column 'geom' via \
+             case-fold comparator, got: {result:?}"
+        );
+    }
+
     // ── Terminal-level regression pins (DATABASE_URL-gated) ──────────────────
 
     #[tokio::test]
@@ -996,5 +1032,63 @@ mod tests {
         }
 
         drop(_cleanup);
+    }
+
+    // ── Issue #71 case-fold terminal-level mutation pins (DATABASE_URL-gated) ──
+    //
+    // These pins verify that removing `check_no_column_collision` from
+    // `AsMvtTerminal::fetch_one` / `AsGeobufTerminal::fetch_one` would let an
+    // uppercase-alias query fall through to SQL emission rather than returning
+    // `DjogiError::Validation`. The collision check fires before any DB access
+    // so the DB is never queried — `setup_test_db` (no PostGIS) is sufficient.
+
+    #[tokio::test]
+    async fn as_mvt_terminal_fetch_one_rejects_uppercase_case_fold_alias() {
+        if std::env::var("DATABASE_URL").is_err() {
+            return;
+        }
+
+        let (_cleanup, mut ctx) = testing::setup_test_db().await.expect(
+            "DATABASE_URL must be set for row-aggregate terminal case-fold collision tests",
+        );
+
+        // Alias "ID" case-folds to "id" under Postgres unquoted identifier
+        // rules — must be rejected before any SQL is emitted.
+        let result = QuerySet::<TileFeature>::new()
+            .annotate(|_| RowNumber::new().alias("ID"))
+            .as_mvt("layer")
+            .fetch_one(&mut ctx)
+            .await;
+
+        assert!(
+            matches!(result, Err(crate::DjogiError::Validation(_))),
+            "AsMvtTerminal::fetch_one must reject uppercase alias 'ID' that case-folds to \
+             column 'id', got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn as_geobuf_terminal_fetch_one_rejects_uppercase_case_fold_alias() {
+        if std::env::var("DATABASE_URL").is_err() {
+            return;
+        }
+
+        let (_cleanup, mut ctx) = testing::setup_test_db().await.expect(
+            "DATABASE_URL must be set for row-aggregate terminal case-fold collision tests",
+        );
+
+        // Alias "GEOM" case-folds to "geom" under Postgres unquoted identifier
+        // rules — must be rejected before any SQL is emitted.
+        let result = QuerySet::<TileFeature>::new()
+            .annotate(|_| RowNumber::new().alias("GEOM"))
+            .as_geobuf("geom")
+            .fetch_one(&mut ctx)
+            .await;
+
+        assert!(
+            matches!(result, Err(crate::DjogiError::Validation(_))),
+            "AsGeobufTerminal::fetch_one must reject uppercase alias 'GEOM' that case-folds to \
+             column 'geom', got: {result:?}"
+        );
     }
 }
