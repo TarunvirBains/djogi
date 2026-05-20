@@ -409,9 +409,93 @@ paired with a manual `postgres_types::ToSql` / `FromSql` implementation.
 |---|---|---|---|
 | `MONEY` | decision pending — `NUMERIC` recommended for new tables | Use `rust_decimal::Decimal` with a `NUMERIC` column; `Custom("MONEY")` for legacy columns | [#214](https://github.com/TarunvirBains/djogi/issues/214) |
 | `tsrange` | deferred — timestamp-without-timezone ranges conflict with Djogi's TIMESTAMPTZ-first temporal discipline; `tstzrange` is supported via `Range<DateTime>` | `Custom("tsrange")` + adopter newtype if legacy schemas require it | [#215](https://github.com/TarunvirBains/djogi/issues/215) |
-| `DOMAIN` declarations (`#[field(domain = "<name>")]` Piece A; `CREATE DOMAIN` emission Piece B) | gap — both Piece A and Piece B deferred to a follow-on dispatch | `Custom("<domain_name>")` + adopter newtype matching the base-type encoding; declare the domain in raw SQL outside djogi's migration flow | [#216](https://github.com/TarunvirBains/djogi/issues/216) |
+| `DOMAIN` declarations — Piece B (`CREATE DOMAIN` emission via `#[model(domains = [...])]`) | gap — deferred to a follow-on dispatch | Declare the domain in raw SQL (adopter-owned bootstrap migration) and reference it via `#[field(domain = "<name>")]` (Piece A, shipped — see below) | [#216](https://github.com/TarunvirBains/djogi/issues/216) |
 
 Tracked under the [#170](https://github.com/TarunvirBains/djogi/issues/170) umbrella.
+
+### `#[field(domain = "<name>")]` (djogi#216 Piece A)
+
+Reference an adopter-managed Postgres `CREATE DOMAIN <name> AS <base>`
+type that already exists in the target database. The macro lowers the
+attribute to `FieldSqlType::Domain { name, base }` in the descriptor;
+the migration composer emits the bare domain name in the column-type
+slot of `CREATE TABLE` / `ALTER TABLE` DDL. The differ compares
+column types by rendered string, so a domain rename surfaces as a
+single `ALTER COLUMN ... TYPE <new_domain>` operation — the same
+shape as any other type evolution.
+
+```rust
+use djogi::prelude::*;
+
+#[model(table = "orders", pk = HeerId)]
+#[derive(Debug, Clone)]
+pub struct Order {
+    /// Adopter-declared via `CREATE DOMAIN positive_amount AS NUMERIC
+    /// CHECK (VALUE > 0)` in a bootstrap migration. The column DDL
+    /// emitted by `djogi migrations compose` is
+    /// `amount positive_amount NOT NULL`.
+    #[field(domain = "positive_amount")]
+    pub amount: rust_decimal::Decimal,
+}
+```
+
+**Scope — Piece A only.** djogi does NOT emit `CREATE DOMAIN` DDL
+in Piece A; the domain must already exist on the target database.
+Piece B (`#[model(domains = [...])]` + `CREATE DOMAIN` auto-emission)
+is deferred to a follow-on dispatch under the same issue.
+
+**Schema-qualified names are out of scope.** The macro validates the
+name via a byte-shape rule (Postgres unquoted identifier: ASCII
+letter or underscore first, ASCII alphanumeric or underscore after,
+at most 63 bytes). The dot in `"public.positive_amount"` is rejected
+by the byte-shape rule. Adopters needing a schema-qualified domain
+fall back to `FieldSqlType::Custom("public.positive_amount")` until
+Piece B.
+
+**Reserved-keyword names are accepted.** Unlike column / table
+identifiers, domain names live in the SQL type namespace, not the
+identifier namespace. `domain = "text"` is legal (if confusing); the
+byte-shape validator skips the reserved-keyword check for domains.
+
+**Wire-codec limitation.** The typed `Model::create` / `Model::save`
+round-trip through a domain-wrapped column does NOT work in Piece A
+for stock Rust types — postgres-types' `ToSql` impl for
+`rust_decimal::Decimal`, `String`, etc. strictly matches the base
+Postgres type and rejects domain wrappers with a `WrongType` error.
+Adopters wanting `Model::create` against a domain-typed column
+today have two options:
+
+1. Declare a custom Rust newtype implementing `DjogiSqlType` with
+   `SQL_TYPE = "<domain>"`, plus a `ToSql` / `FromSql` impl with a
+   relaxed `accepts()` that returns `true` for the domain
+   (`pg_type.typtype = 'd'`). Same pattern recommended for
+   `FieldSqlType::Custom` types.
+2. Reach for raw SQL via the bypass attribute under
+   `#[djogi::deliberately_bypass_convention_with_raw_sql]`
+   for INSERTs / UPDATEs against the column, until a future
+   wire-codec relaxation or Piece B ships.
+
+The domain CHECK still fires server-side under both options — the
+integrity guarantee is independent of the bind path.
+
+**Compatible attributes.** `#[field(check = "...")]` ANDs into the
+domain's own constraints at the database level (per-column adopter
+checks layer on top of the shared domain constraints).
+`#[field(type_change_using = "<expr>")]` is permitted as a one-time
+migration directive when adopting a domain on an existing column.
+
+**Rejected combinations** (parse-time errors):
+
+- `domain` on a `ForeignKey<T>` / `OneToOneField<T>` field — the FK
+  column's type follows the target model's PK type; the adopter
+  cannot override it with a domain reference.
+- `domain + max_length` — the domain provides its own column
+  constraints; layering `VARCHAR(N)` would emit contradictory DDL.
+- `domain + generated` — generated columns derive their storage
+  type from the expression; combining with a domain type is out of
+  Piece A scope. Hand-write the migration if needed.
+- `domain + strict_id_check` — domain columns are not HeerRanjID
+  strict-id columns; the structural CHECK does not apply.
 
 ### Exclusion constraints (`#[model(exclusion(...))]`)
 

@@ -229,6 +229,76 @@ pub fn check_table_name(table: &str, span: proc_macro2::Span) -> syn::Result<()>
     check_ident("table name", table, span)
 }
 
+/// Run the byte-shape validator on a `#[field(domain = "...")]` value
+/// — Phase 8.5 djogi#216 Piece A.
+///
+/// Domain names are Postgres SQL type identifiers (`CREATE DOMAIN
+/// <name> AS <base>`); the macro emits them verbatim into the column-
+/// type slot of generated DDL. The validation is the byte-shape subset
+/// of [`check_table_name`] / [`check_one`]:
+///
+/// 1. Non-empty.
+/// 2. Length ≤ 63 bytes (`NAMEDATALEN - 1`).
+/// 3. First byte is an ASCII letter or underscore; every remaining byte
+///    is ASCII alphanumeric or underscore.
+///
+/// The reserved-keyword check and the framework-reserved `__djogi_`
+/// prefix check are intentionally NOT applied: domain identifiers are
+/// SQL type names, not column / table identifiers, and `domain = "text"`
+/// is a legitimate (if confusing) Postgres declaration. The
+/// `__djogi_` prefix likewise has no SQL-namespace collision risk on a
+/// domain name because djogi never emits its own domain identifiers
+/// — Piece A only references adopter-managed domains.
+///
+/// Schema-qualified names (`"public.positive_amount"`) are rejected by
+/// the byte-shape rule (the `.` is not an ASCII alnum / underscore
+/// byte) and are out of Piece A scope. Adopters needing them fall back
+/// to `FieldSqlType::Custom("public.positive_amount")` until Piece B.
+pub fn check_domain_name(name: &str, span: proc_macro2::Span) -> syn::Result<()> {
+    let bytes = name.as_bytes();
+
+    if bytes.is_empty() {
+        return Err(syn::Error::new(
+            span,
+            "domain name must be a valid unquoted Postgres identifier: \
+             ASCII letter or underscore as first character, ASCII \
+             alphanumerics or underscores only after, at most 63 bytes",
+        ));
+    }
+
+    if bytes.len() > MAX_IDENT_LEN {
+        return Err(syn::Error::new(
+            span,
+            "domain name must be a valid unquoted Postgres identifier: \
+             ASCII letter or underscore as first character, ASCII \
+             alphanumerics or underscores only after, at most 63 bytes",
+        ));
+    }
+
+    let first = bytes[0];
+    if !(first.is_ascii_alphabetic() || first == b'_') {
+        return Err(syn::Error::new(
+            span,
+            "domain name must be a valid unquoted Postgres identifier: \
+             ASCII letter or underscore as first character, ASCII \
+             alphanumerics or underscores only after, at most 63 bytes",
+        ));
+    }
+
+    for &byte in &bytes[1..] {
+        if !(byte.is_ascii_alphanumeric() || byte == b'_') {
+            return Err(syn::Error::new(
+                span,
+                "domain name must be a valid unquoted Postgres identifier: \
+                 ASCII letter or underscore as first character, ASCII \
+                 alphanumerics or underscores only after, at most 63 bytes",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn check_ident(kind: &str, value: &str, span: proc_macro2::Span) -> syn::Result<()> {
     let bytes = value.as_bytes();
 
@@ -522,5 +592,111 @@ mod tests {
         // but blow up at runtime (or vice versa).
         assert_eq!(RESERVED_DJOGI_PREFIX, b"__djogi_");
         assert_eq!(RESERVED_DJOGI_PREFIX.len(), 8);
+    }
+
+    // ── djogi#216 Piece A — `check_domain_name` validator ──────────────────
+    //
+    // Domain names follow the byte-shape subset of the column-name
+    // validator: non-empty, ≤63 bytes, ASCII-letter-or-underscore
+    // first, ASCII-alphanumeric-or-underscore after. The
+    // reserved-keyword and `__djogi_`-prefix checks are deliberately
+    // NOT applied — domain identifiers are SQL type names, not
+    // column / table identifiers, and `domain = "text"` (a domain
+    // that happens to shadow the built-in `text` type) is
+    // legitimately legal SQL.
+
+    fn classify_domain(name: &str) -> Result<(), String> {
+        check_domain_name(name, proc_macro2::Span::call_site()).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn domain_name_accepts_plain_identifier() {
+        assert!(classify_domain("positive_amount").is_ok());
+        assert!(classify_domain("Email_Address").is_ok());
+        assert!(classify_domain("_private").is_ok());
+        assert!(classify_domain("v1").is_ok());
+        // Single-character names are valid Postgres identifiers.
+        assert!(classify_domain("a").is_ok());
+        assert!(classify_domain("_").is_ok());
+    }
+
+    #[test]
+    fn domain_name_rejects_empty() {
+        assert!(classify_domain("").is_err());
+    }
+
+    #[test]
+    fn domain_name_rejects_leading_digit() {
+        assert!(classify_domain("9domain").is_err());
+        assert!(classify_domain("123bad").is_err());
+    }
+
+    #[test]
+    fn domain_name_rejects_non_ascii_alnum_byte() {
+        // Hyphen, space, dot — none are ASCII alnum / underscore.
+        // The dot rejection is what blocks schema-qualified names like
+        // `"public.positive_amount"` at Piece A; adopters needing those
+        // fall back to `Custom("public.positive_amount")` per the
+        // route's Risk #5.
+        assert!(classify_domain("foo-bar").is_err());
+        assert!(classify_domain("foo bar").is_err());
+        assert!(classify_domain("public.positive_amount").is_err());
+        assert!(classify_domain("café").is_err());
+    }
+
+    #[test]
+    fn domain_name_rejects_identifier_exceeding_limit() {
+        let s = "a".repeat(64);
+        assert!(classify_domain(&s).is_err());
+    }
+
+    #[test]
+    fn domain_name_accepts_exactly_max_length() {
+        let s = "a".repeat(63);
+        assert!(classify_domain(&s).is_ok());
+    }
+
+    #[test]
+    fn domain_name_accepts_postgres_reserved_keywords() {
+        // Domain identifiers shadow built-in SQL type names without
+        // collision (every reference appears in `CREATE DOMAIN <name>
+        // AS <base>` or column-type position, not in identifier
+        // position). `domain = "text"`, `domain = "integer"`, etc.
+        // are confusing but legal — accept them.
+        assert!(classify_domain("text").is_ok());
+        assert!(classify_domain("integer").is_ok());
+        assert!(classify_domain("select").is_ok());
+        assert!(classify_domain("user").is_ok());
+        assert!(classify_domain("order").is_ok());
+    }
+
+    #[test]
+    fn domain_name_accepts_djogi_reserved_prefix() {
+        // The `__djogi_` namespace reservation applies to column /
+        // table identifiers (where djogi emits its own synthetic
+        // names that would shadow adopter-declared ones). Domain
+        // identifiers do not collide with that namespace — djogi
+        // never emits its own domains in Piece A — so the prefix
+        // check does not run on `check_domain_name`.
+        assert!(classify_domain("__djogi_positive_amount").is_ok());
+        assert!(classify_domain("__djogi_").is_ok());
+    }
+
+    #[test]
+    fn domain_name_diagnostic_carries_byte_shape_rule() {
+        // The error message must spell out the byte-shape rule so
+        // adopters can fix the declaration without consulting the
+        // Postgres docs. Per CLAUDE.md `feedback_no_regex_in_djogi`,
+        // the rule is stated in plain English, not as regex notation.
+        let err = classify_domain("").expect_err("empty must be rejected");
+        assert!(
+            err.contains("ASCII letter or underscore"),
+            "diagnostic should describe the byte-shape rule, got: {err}"
+        );
+        let err = classify_domain("123bad").expect_err("digit-first must be rejected");
+        assert!(
+            err.contains("ASCII letter or underscore"),
+            "diagnostic should describe the byte-shape rule, got: {err}"
+        );
     }
 }

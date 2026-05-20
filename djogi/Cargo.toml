@@ -925,6 +925,21 @@ path = "../tests/integration/phase8_5_c4_213_network.rs"
 harness = true
 required-features = ["network"]
 
+# Phase 8.5 Cluster 4 (djogi#216) Piece A — live test for the
+# `#[field(domain = "<name>")]` reference to an adopter-managed Postgres
+# domain. Pins the descriptor projection of `FieldSqlType::Domain { name,
+# base }`, the bare-name Display contract emitted by the migration composer,
+# round-trip through `Model::create` against a domain-typed column, the
+# domain-CHECK rejection path, and the differ surfacing a domain rename
+# as `ColumnChange::ChangeType`. Lives under `tests/internal/` because
+# Piece A only references adopter-managed domains — installing the domain
+# via `raw_ddl` in the setup is the legitimate adopter-side gap djogi#216
+# documents (Piece B / `CREATE DOMAIN` emission is deferred).
+[[test]]
+name = "phase8_5_c4_216_domain_live"
+path = "../tests/internal/phase8_5_c4_216_domain_live.rs"
+harness = true
+
 
 [[test]]
 name = "phase8_trait_impl_registry"

@@ -1,0 +1,7 @@
+error: `#[field(domain = "...")]` cannot be combined with `#[field(max_length = N)]`. The domain provides its own column constraints (Postgres `CREATE DOMAIN <name> AS <base> [CHECK (...)]` carries length / range / regex checks baked into the type definition); layering `VARCHAR(N)` on top would emit contradictory column DDL. Drop the `max_length` attribute — the domain definition is the single source of truth for the column's length / range constraints.
+  --> $DIR/phase8_5_c4_216_domain_with_max_length.rs:17:22
+   |
+17 |     #[field(domain = "email_address", max_length = 64)]
+   |                      ^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error
