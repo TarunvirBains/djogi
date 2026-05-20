@@ -365,7 +365,7 @@ Notes on this pattern:
   column-name collision check passes for the `public` scope.
 - The `sql` uses `jsonb_build_object(...)` — the canonical Postgres
   builder for constructing a narrow JSONB value. The alternative
-  `metadata` (bare column reference) over any same-host storage
+  `metadata` (simple-column passthrough) over any same-host storage
   `Jsonb<...>` column is **mechanically rejected at parse time by
   [E_DJG_VDF_017](#error-taxonomy-extension)** — regardless of whether
   the derived `name` matches the source column name. It would ship the
@@ -380,10 +380,16 @@ Notes on this pattern:
   schema's `serde::Serialize` / `Deserialize` impls emit and accept —
   i.e., the field names after any `#[serde(rename = "...")]` or
   `#[serde(rename_all = "...")]` adjustments. A mismatch causes the
-  emitted key to land in `extra` on decode and the narrow field to be
-  missing (handled per the field's declared `Option` / fallible
-  contract); the parity helper's runtime DB-fetch assertion catches
-  the drift. See [§Interactions with serde](#with-serde) for the
+  emitted key to land in `extra` on decode. The downstream failure mode
+  depends on the narrow field's declared shape: for **required** narrow
+  fields the queryset fetch surfaces
+  `DjogiError::Visage(VisageError::DbComputedTypeMismatch { visage, field, expected, actual })`
+  via `decode_derived_at`'s `map_derived_decode_failure` before parity
+  can run (the missing required field cannot be filled from `extra`);
+  for **optional or defaulted** narrow fields the key sits in `extra`
+  and the parity helper catches the drift between the fetched value
+  (populated `extra`) and the in-memory `(&model).into()` construction
+  (empty `extra`). See [§Interactions with serde](#with-serde) for the
   full wire-key contract.
 - The `rust` constructs a fresh `Jsonb::new(...)` with a typed
   `ProfileMetaPublic` value pulled from `model.metadata.data`. No
@@ -557,27 +563,31 @@ catch.
 
 **Allowed — canonical narrowing shapes.** The documented-safe forms
 are closed over these patterns: top-level `jsonb_build_object(...)`,
-recursive nested `jsonb_build_object(...)` for every nested
-`Jsonb<...>` sub-schema, scalar `jsonb_agg(jsonb_build_object(...)
-ORDER BY ord)` subqueries wrapped in `COALESCE(..., '[]'::jsonb)` for
-array containers, and scalar `jsonb_object_agg(k,
-jsonb_build_object(...))` subqueries wrapped in `COALESCE(...,
-'{}'::jsonb)` for map containers. The user guide MUST present these
-canonical forms as the only documented-safe shapes. A derived-side type
-alias such as `type PublicMeta = Jsonb<ProfileMetaPublic>; ty =
-PublicMeta` is accepted when the `sql` is one of these real narrowing
-forms; the acceptance fixture pins that aliases are a Rust spelling
-choice, not a SQL passthrough exception.
+and recursive nested `jsonb_build_object(...)` for every nested
+`Jsonb<...>` sub-schema. The user guide presents these two forms as the
+only currently documented-safe shapes. A derived-side type alias such
+as `type PublicMeta = Jsonb<ProfileMetaPublic>; ty = PublicMeta` is
+accepted when the `sql` is one of these real narrowing forms; the
+acceptance fixture pins that aliases are a Rust spelling choice, not a
+SQL passthrough exception.
+
+Array and map container subquery shapes (`scalar jsonb_agg(jsonb_build_object(...)
+ORDER BY ord)` wrapped in `COALESCE(..., '[]'::jsonb)`, and
+`jsonb_object_agg(k, jsonb_build_object(...))` wrapped in
+`COALESCE(..., '{}'::jsonb)`) are documented patterns that require the
+Shape V `aggregate = true` parser key not yet implemented; their
+user-guide content is deferred to **djogi#226-container** and is not
+part of the current documented-safe set.
 
 **Mechanically rejected — simple-column passthrough spellings.** The
 fixture corpus pins four E_DJG_VDF_017 shapes:
 
 | `name` / `ty` shape | `sql` value (Rust literal) | Fixture |
 |---|---|---|
-| `name = metadata`, `ty = Jsonb<ProfileMetaPublic>` | `sql = "metadata"` | `phase85_jsonb_per_audience_fail_006_same_name_bare_passthrough.rs` |
-| `name = metadata_public_view`, `ty = Jsonb<ProfileMetaPublic>` | `sql = "metadata"` | `phase85_jsonb_per_audience_fail_007_cross_name_bare_passthrough.rs` |
-| `name = metadata`, `ty = Jsonb<ProfileMetaPublic>` | `sql = "\"metadata\""` | `phase85_jsonb_per_audience_fail_008_quoted_bare_passthrough.rs` |
-| `name = metadata`, `ty = PublicMeta` where `type PublicMeta = Jsonb<ProfileMetaPublic>` | `sql = "metadata"` | `phase85_jsonb_per_audience_fail_009_type_alias_bare_passthrough.rs` |
+| `name = metadata`, `ty = Jsonb<ProfileMetaPublic>` | `sql = "metadata"` | `phase85_jsonb_per_audience_fail_006_same_name_simple_column_passthrough.rs` |
+| `name = metadata_public_view`, `ty = Jsonb<ProfileMetaPublic>` | `sql = "metadata"` | `phase85_jsonb_per_audience_fail_007_cross_name_simple_column_passthrough.rs` |
+| `name = metadata`, `ty = Jsonb<ProfileMetaPublic>` | `sql = "\"metadata\""` | `phase85_jsonb_per_audience_fail_008_quoted_simple_column_passthrough.rs` |
+| `name = metadata`, `ty = PublicMeta` where `type PublicMeta = Jsonb<ProfileMetaPublic>` | `sql = "metadata"` | `phase85_jsonb_per_audience_fail_009_type_alias_simple_column_passthrough.rs` |
 
 **Adopter-owned compound — not mechanically rejected; runtime parity
 gate is the binding catch.** Worked examples of compound shapes that
@@ -627,89 +637,41 @@ across nested `Jsonb<...>`, or per-element container narrowing.
    )
    ```
    The user guide explicitly recommends the recursive form for every
-   per-audience JSONB projection that involves nested `Jsonb<...>` or
-   container element shapes; the fixture corpus exercises the
-   recursive form on a nested narrow schema; the integration test
-   corpus pins runtime parity against a synthetic non-recursive leak.
+   per-audience JSONB projection that involves nested `Jsonb<...>`
+   sub-schemas (container element shapes are deferred to
+   djogi#226-container); the fixture corpus exercises the recursive
+   form on a nested narrow schema; the integration test corpus pins
+   runtime parity against a synthetic non-recursive leak.
    The unsafe `jsonb_path_query(...)` shortcut is **not** documented
    as safe for narrowing — its semantics return the source shape
    verbatim at the matched path and it does not compose with the
    recursive narrowing contract.
-2. **Container element narrowing.** Array containers (`Vec<Inner>`)
-   require `jsonb_agg(jsonb_build_object(...) ORDER BY ord)` over
-   `jsonb_array_elements(metadata->'items') WITH ORDINALITY AS e(t, ord)`
-   inside a scalar subquery, with the whole subquery wrapped in
-   `COALESCE(..., '[]'::jsonb)`; map containers (`IndexMap<String, Inner>`)
-   require `jsonb_object_agg(key, jsonb_build_object(...))` over
-   `jsonb_each(metadata->'map')` inside a scalar subquery, with the
-   whole subquery wrapped in `COALESCE(..., '{}'::jsonb)`. The
-   canonical shapes are:
-   ```sql
-   -- Vec<Inner>
-   jsonb_build_object(
-     'items',
-     COALESCE(
-       (SELECT jsonb_agg(jsonb_build_object('name', t->>'name') ORDER BY ord)
-        FROM jsonb_array_elements(metadata->'items') WITH ORDINALITY AS e(t, ord)),
-       '[]'::jsonb
-     )
-   )
-   -- IndexMap<String, Inner>
-   jsonb_build_object(
-     'map',
-     COALESCE(
-       (SELECT jsonb_object_agg(k, jsonb_build_object('enabled', v->'enabled'))
-        FROM jsonb_each(metadata->'map') AS e(k, v)),
-       '{}'::jsonb
-     )
-   )
-   ```
-   Each of the three sub-clauses is mandatory for correct container
-   reconstruction:
-   - **`WITH ORDINALITY` + `ORDER BY ord` on the array shape** preserves
-     `Vec` semantics. `jsonb_agg` without an `ORDER BY` aggregates rows in
-     undefined order; without `WITH ORDINALITY` the source insertion order
-     is unrecoverable. `Vec<Inner>` decode treats array position as
-     semantically meaningful, so the projected order must match storage
-     order. The map shape carries no ordering obligation because
-     `IndexMap<String, Inner>` is keyed and JSONB object ordering is not
-     part of the wire contract.
-   - **`COALESCE(..., '[]'::jsonb)` and `COALESCE(..., '{}'::jsonb)`**
-     preserve empty containers. `jsonb_agg` / `jsonb_object_agg` return
-     SQL `NULL` over zero rows (not an empty array / empty object). A
-     required `Vec<Inner>` / `IndexMap<String, Inner>` field on the narrow
-     schema cannot decode SQL `NULL` — `serde_json::from_value` would
-     surface the missing key as an inner decode error, propagated through
-     [`decode_derived_at`](../../djogi/src/pg/decode.rs) as
-     `DjogiError::Visage(VisageError::DbComputedTypeMismatch { visage, field, expected, actual })`
-     (or, for `Option<Vec<_>>`, silently coerce to `None`, which loses the
-     "container-was-present-but-empty" signal). Wrapping the subquery in
-     `COALESCE` returns the canonical empty container so empty-list / empty-map
-     source rows project to empty-list / empty-map narrow rows without
-     decode failure or signal loss.
-
-   Each per-element shape must itself be a `jsonb_build_object(...)`
-   recursive narrowing if the inner type is a `Jsonb<...>` or carries
-   nested objects; **when the inner type is a plain serde struct**
-   (`Vec<TagPublic>` where `TagPublic` is `#[derive(Serialize,
-   Deserialize)]` without a `Jsonb<...>` wrapping), `serde`'s default
-   "ignore unknown fields" decode behavior provides part of the
-   safety story even when the per-element SQL is non-narrow — the
-   admin-only keys are dropped at the serde deserialize boundary
-   rather than captured in an `extra` map. The canonical
-   per-element `jsonb_build_object(...)` form is still recommended
-   for plain-serde elements to keep the wire bytes narrow and to
-   future-proof the shape against an inner-type change to
-   `Jsonb<...>`. Container-narrowing shapes that use `jsonb_agg(...)`
-   or `jsonb_object_agg(...)` inside a scalar subquery require the
-   Shape V `aggregate = true` parser key to bypass
+2. **Container element narrowing — DEFERRED to djogi#226-container.**
+   Container-narrowing compile-pass fixtures and integration tests
+   require the Shape V `aggregate = true` parser key to bypass
    [E_DJG_VDF_009](./visage-derived-fields.md#error-taxonomy); that
-   key is not yet accepted by the parser — see
+   key is not yet accepted by the parser. All container content below
+   is forward-looking for when Shape V support ships — see
    [§Aggregate token discipline for container subqueries](#aggregate-token-discipline-for-container-subqueries)
-   for the technical rationale and the deferred follow-up scope.
-   Container-narrowing compile-pass fixtures and integration tests are
-   therefore deferred to a follow-up issue (djogi#226-container) that
-   lands once Shape V parser support ships.
+   for the technical rationale.
+
+   When Shape V parser support ships, the canonical shapes for
+   container element narrowing are:
+   - Array containers (`Vec<Inner>`): `jsonb_agg(jsonb_build_object(...)
+     ORDER BY ord)` over `jsonb_array_elements(metadata->'items') WITH
+     ORDINALITY AS e(t, ord)` inside a scalar subquery, with the whole
+     subquery wrapped in `COALESCE(..., '[]'::jsonb)`.
+   - Map containers (`IndexMap<String, Inner>`): `jsonb_object_agg(key,
+     jsonb_build_object(...))` over `jsonb_each(metadata->'map')` inside
+     a scalar subquery, with the whole subquery wrapped in
+     `COALESCE(..., '{}'::jsonb)`.
+
+   The full SQL forms, mandatory sub-clause rationale (`WITH ORDINALITY`
+   + `ORDER BY ord` for `Vec` order preservation; `COALESCE` for
+   empty-container preservation), and plain-serde element safety
+   discussion are preserved in
+   [§Aggregate token discipline for container subqueries](#aggregate-token-discipline-for-container-subqueries)
+   for reference until djogi#226-container lands.
 3. **Wire-key contract.** The SQL builder's key strings (the literal
    tokens passed to `jsonb_build_object(...)`) must be byte-identical
    to the wire keys the narrow schema's `serde::Serialize` and
@@ -838,12 +800,12 @@ integration test corpus for the runtime decode / parity gate. The fixture corpus
 assertion (in-memory construction of both paths plus synthetic
 `extra`-populated drift), the type-alias canonical-builder compile-pass
 fixture, AND the four E_DJG_VDF_017 compile-fail
-fixtures (`phase85_jsonb_per_audience_fail_006_same_name_bare_passthrough.rs`,
-`phase85_jsonb_per_audience_fail_007_cross_name_bare_passthrough.rs`,
-`phase85_jsonb_per_audience_fail_008_quoted_bare_passthrough.rs`, and
-`phase85_jsonb_per_audience_fail_009_type_alias_bare_passthrough.rs`);
+fixtures (`phase85_jsonb_per_audience_fail_006_same_name_simple_column_passthrough.rs`,
+`phase85_jsonb_per_audience_fail_007_cross_name_simple_column_passthrough.rs`,
+`phase85_jsonb_per_audience_fail_008_quoted_simple_column_passthrough.rs`, and
+`phase85_jsonb_per_audience_fail_009_type_alias_simple_column_passthrough.rs`);
 the integration test corpus carries the DB-fetch parity assertions
-across the basic, nested, container, and compound-passthrough shapes.
+across the basic, nested, and compound-passthrough shapes.
 
 ### What we don't try to enforce mechanically
 
@@ -869,9 +831,10 @@ across the basic, nested, container, and compound-passthrough shapes.
   responsibility; the integration test corpus enforces it at
   runtime; the user-guide surfaces the unsafe shallow counterexample.
 - **Per-element narrowing inside array / map containers.** Same
-  recursive obligation; same proc-macro limitation. Documented and
-  fixture-covered (compile-pass for the canonical recursive
-  per-element form; integration-test parity for the runtime check).
+  recursive obligation; same proc-macro limitation. Container
+  compile-pass fixtures and integration tests are deferred to
+  **djogi#226-container** pending Shape V `aggregate = true` parser
+  support; no present-tense fixture coverage exists for this shape.
 - **Wire-key matches across `#[serde(rename)]` adjustments.** The
   narrow schema's serde keys may differ from its Rust field names;
   the SQL builder must follow the serde keys. No parse-time check;
@@ -1011,15 +974,15 @@ of the derived `name`), the derived `ty`, and a "replace with
 [§Canonical pattern](#canonical-pattern). Four lihaaf
 compile-fail fixtures pin the `.stderr` snapshots — one for the
 same-name bare-ident alias shape
-(`phase85_jsonb_per_audience_fail_006_same_name_bare_passthrough.rs`),
+(`phase85_jsonb_per_audience_fail_006_same_name_simple_column_passthrough.rs`),
 one for the cross-name bare-ident alias shape
-(`phase85_jsonb_per_audience_fail_007_cross_name_bare_passthrough.rs`),
+(`phase85_jsonb_per_audience_fail_007_cross_name_simple_column_passthrough.rs`),
 one for the lowercase-quoted-ident shape covering both
 same-name and cross-name aliases through the single normalised
 match
-(`phase85_jsonb_per_audience_fail_008_quoted_bare_passthrough.rs`),
+(`phase85_jsonb_per_audience_fail_008_quoted_simple_column_passthrough.rs`),
 and one for the derived-side type-alias passthrough shape
-(`phase85_jsonb_per_audience_fail_009_type_alias_bare_passthrough.rs`).
+(`phase85_jsonb_per_audience_fail_009_type_alias_simple_column_passthrough.rs`).
 
 ---
 
@@ -1042,7 +1005,7 @@ directories. Snapshot blessing follows the existing
 | `phase85_jsonb_per_audience_001_basic_narrowing.rs` | Storage `Jsonb<ProfileMetaAdmin>` exposed to `[self_view, admin, export]`; `#[derived(name = metadata, ty = Jsonb<ProfileMetaPublic>, scopes = [public], sql = "jsonb_build_object(...)", rust = "Jsonb::new(ProfileMetaPublic { ... })")]`. Assert: `ProfilePublic` has `metadata: Jsonb<ProfileMetaPublic>`; `ProfileAdmin` has `metadata: Jsonb<ProfileMetaAdmin>`; `<ProfilePublic as DjogiVisage>::PROJECTION_LIST` contains `jsonb_build_object` and `AS metadata`; `<ProfileAdmin as DjogiVisage>::COLUMNS` ends in `metadata`. |
 | `phase85_jsonb_per_audience_002_two_narrow_audiences.rs` | Two `#[derived]` entries on the same source column with different `ty` and different `scopes` — e.g. `Jsonb<ProfileMetaPublic>` for `[public]` and `Jsonb<ProfileMetaExport>` for `[export]`. Assert both visages compile with the narrower types and that the two derived entries register independently in `VisageDescriptor`. |
 | `phase85_jsonb_per_audience_003_storage_hidden_from_every_scope.rs` | Model field carries `#[field(expose(none))]`; three `#[derived]` entries supply the three audience-shaped projections (`Jsonb<X>` for `public`, `Jsonb<Y>` for `self_view`, `Jsonb<Z>` for `admin`). Assert no visage carries the storage schema; every projected visage carries the narrow type. |
-| `phase85_jsonb_per_audience_004_parity_helper_catches_synthetic_drift.rs` | In-memory only (no DB): constructs both the in-memory `ProfilePublic` (via `(&profile).into()`) and a deliberately leaky synthetic `ProfilePublic` with `extra` populated, then asserts `assert_derived_parity` returns `Err(DerivedParityError::Drift)`. Pins the parity-helper regression behavior at compile-pass scope only. **Runtime DB-fetch parity is exercised by the integration tests** in [§Integration tests](#integration-tests); a compile-pass fixture cannot connect to a DB so cannot assert DB-fetch parity. |
+| `phase85_jsonb_per_audience_004_parity_helper_catches_synthetic_drift.rs` | In-memory only (no DB): constructs both the in-memory `ProfilePublic` (via `(&profile).into()`) and a deliberately leaky synthetic `ProfilePublic` with `extra` populated, then asserts `assert_derived_parity` returns `Err(DerivedParityError::Drift)`. The leaky synthetic value MUST be constructed via `serde_json::from_value::<Jsonb<NarrowSchema>>(serde_json::json!({...with-leak-keys...}))` so that `Jsonb<T>::Deserialize` populates `extra` from the raw JSON — `Jsonb<T>::extra` is `pub(crate)` with no public mutator, so struct-literal construction from external code is not available. Pins the parity-helper regression behavior at compile-pass scope only. **Runtime DB-fetch parity is exercised by the integration tests** in [§Integration tests](#integration-tests); a compile-pass fixture cannot connect to a DB so cannot assert DB-fetch parity. |
 | `phase85_jsonb_per_audience_005_typed_path_filter_on_storage_field.rs` | The storage `Jsonb<ProfileMetaAdmin>` field still supports typed-path filters via the existing `JsonbSchema` typed-accessor surface. The narrower visage projections are read-only and do not participate in `{Model}Fields` typed-path filters (consistent with the Tier-1 derived-field rule excluding derived names from `{Visage}Fields`). |
 | `phase85_jsonb_per_audience_006_nested_recursive_narrow_schema.rs` | The narrow schema itself contains nested `Jsonb<Sub>` — e.g. `ProfileMetaPublic` has `theme: Jsonb<ThemePublic>`. The fixture uses the canonical **recursive** narrowing: `sql = "jsonb_build_object('theme', jsonb_build_object('color', metadata->'theme'->'color'))"`. Asserts the macro accepts nested Jsonb in the derived `ty` and that the recursive `jsonb_build_object` shape composes through the SQL grammar guard. The non-recursive shallow `jsonb_build_object('theme', metadata->'theme')` form is exercised as the unsafe counterexample by the integration test `profile_public_non_recursive_nested_projection_leaks_caught_by_parity` (see [§Integration tests](#integration-tests)). |
 | `phase85_jsonb_per_audience_007_type_alias_canonical_narrowing.rs` | `type PublicMeta = Jsonb<ProfileMetaPublic>; #[derived(name = metadata, ty = PublicMeta, scopes = [public], sql = "jsonb_build_object('display_name', metadata->'display_name')", rust = "Jsonb::new(ProfileMetaPublic { ... })")]` on a model whose storage column is declared directly as `Jsonb<ProfileMetaAdmin>`. Asserts a derived-side alias is accepted when paired with a real narrowing expression, and that E_DJG_VDF_017's alias coverage is limited to simple same-host JSONB passthrough rather than rejecting Rust type aliases by themselves. |
@@ -1058,7 +1021,7 @@ JSONB-shaped declarations; four new fixtures pin the new
 [E_DJG_VDF_017](#error-taxonomy-extension) JSONB simple-column
 passthrough guard across the bare-ident same-name alias, the
 bare-ident cross-name alias, and the lowercase-quoted-ident
-spellings condition 2 normalises to the same matchable form, plus the
+spellings condition 1 normalises to the same matchable form, plus the
 derived-side type-alias passthrough shape.
 
 | Fixture | Rejects with | Error code |
@@ -1068,10 +1031,10 @@ derived-side type-alias passthrough shape.
 | `phase85_jsonb_per_audience_fail_003_uppercase_name.rs` | `#[derived(name = Metadata, ...)]` with uppercase byte. | [E_DJG_VDF_012](./visage-derived-fields.md#error-taxonomy) (uppercase byte in name) |
 | `phase85_jsonb_per_audience_fail_004_aggregate_token_rejected.rs` | `sql = "jsonb_agg(metadata)"` — recognised aggregate token (`jsonb_agg`) present in the derived `sql`. E_DJG_VDF_009's token-scan is context-blind (see [§Aggregate token discipline for container subqueries](#aggregate-token-discipline-for-container-subqueries)) and fires unconditionally on any `#[derived]` `sql` that contains a recognised aggregate token; this fixture exercises the simplest top-level aggregate shape. | [E_DJG_VDF_009](./visage-derived-fields.md#error-taxonomy) (aggregate / window-function token detection) |
 | `phase85_jsonb_per_audience_fail_005_statement_separator.rs` | `sql = "metadata; DROP TABLE profiles"` — semicolon outside string literal. | [E_DJG_VDF_007](./visage-derived-fields.md#error-taxonomy) |
-| `phase85_jsonb_per_audience_fail_006_same_name_bare_passthrough.rs` | `#[derived(name = metadata, ty = Jsonb<ProfileMetaPublic>, scopes = [public], sql = "metadata", rust = "...")]` on a model with `pub metadata: Jsonb<ProfileMetaAdmin>`. E_DJG_VDF_017 rejects the unquoted same-name simple passthrough from a same-host `Jsonb<_>` storage column. | [E_DJG_VDF_017](#error-taxonomy-extension) (JSONB simple-column passthrough — new in this spec) |
-| `phase85_jsonb_per_audience_fail_007_cross_name_bare_passthrough.rs` | `#[derived(name = metadata_public_view, ty = Jsonb<ProfileMetaPublic>, scopes = [admin], sql = "metadata", rust = "...")]` on a model with `pub metadata: Jsonb<ProfileMetaAdmin>`. The derived `name` differs from the source column ident, but E_DJG_VDF_017 still fires because the storage-column passthrough and source `Jsonb<_>` type are what matter. | [E_DJG_VDF_017](#error-taxonomy-extension) (JSONB simple-column passthrough — new in this spec) |
-| `phase85_jsonb_per_audience_fail_008_quoted_bare_passthrough.rs` | `#[derived(name = metadata, ty = Jsonb<ProfileMetaPublic>, scopes = [public], sql = "\"metadata\"", rust = "...")]` on a model with `pub metadata: Jsonb<ProfileMetaAdmin>`. The trimmed `sql` literal is a simple quoted identifier whose unquoted body is byte-identical to the storage column ident, so E_DJG_VDF_017 rejects it the same way it rejects `sql = "metadata"`. | [E_DJG_VDF_017](#error-taxonomy-extension) (JSONB simple-column passthrough — new in this spec) |
-| `phase85_jsonb_per_audience_fail_009_type_alias_bare_passthrough.rs` | `type PublicMeta = Jsonb<ProfileMetaPublic>; #[derived(name = metadata, ty = PublicMeta, scopes = [public], sql = "metadata", rust = "...")]` on a model with `pub metadata: Jsonb<ProfileMetaAdmin>`. E_DJG_VDF_017 rejects the same-host JSONB passthrough even though the projected `ty` token string is `PublicMeta`; derived-side aliases are not escape hatches from the storage-column passthrough guard. The paired compile-pass fixture `phase85_jsonb_per_audience_007_type_alias_canonical_narrowing.rs` confirms the same alias is accepted with canonical `jsonb_build_object(...)` narrowing. | [E_DJG_VDF_017](#error-taxonomy-extension) (JSONB simple-column passthrough / unresolved alias — new in this spec) |
+| `phase85_jsonb_per_audience_fail_006_same_name_simple_column_passthrough.rs` | `#[derived(name = metadata, ty = Jsonb<ProfileMetaPublic>, scopes = [public], sql = "metadata", rust = "...")]` on a model with `pub metadata: Jsonb<ProfileMetaAdmin>`. E_DJG_VDF_017 rejects the unquoted same-name simple passthrough from a same-host `Jsonb<_>` storage column. | [E_DJG_VDF_017](#error-taxonomy-extension) (JSONB simple-column passthrough — new in this spec) |
+| `phase85_jsonb_per_audience_fail_007_cross_name_simple_column_passthrough.rs` | `#[derived(name = metadata_public_view, ty = Jsonb<ProfileMetaPublic>, scopes = [admin], sql = "metadata", rust = "...")]` on a model with `pub metadata: Jsonb<ProfileMetaAdmin>`. The derived `name` differs from the source column ident, but E_DJG_VDF_017 still fires because the storage-column passthrough and source `Jsonb<_>` type are what matter. | [E_DJG_VDF_017](#error-taxonomy-extension) (JSONB simple-column passthrough — new in this spec) |
+| `phase85_jsonb_per_audience_fail_008_quoted_simple_column_passthrough.rs` | `#[derived(name = metadata, ty = Jsonb<ProfileMetaPublic>, scopes = [public], sql = "\"metadata\"", rust = "...")]` on a model with `pub metadata: Jsonb<ProfileMetaAdmin>`. The trimmed `sql` literal is a simple quoted identifier whose unquoted body is byte-identical to the storage column ident, so E_DJG_VDF_017 rejects it the same way it rejects `sql = "metadata"`. | [E_DJG_VDF_017](#error-taxonomy-extension) (JSONB simple-column passthrough — new in this spec) |
+| `phase85_jsonb_per_audience_fail_009_type_alias_simple_column_passthrough.rs` | `type PublicMeta = Jsonb<ProfileMetaPublic>; #[derived(name = metadata, ty = PublicMeta, scopes = [public], sql = "metadata", rust = "...")]` on a model with `pub metadata: Jsonb<ProfileMetaAdmin>`. E_DJG_VDF_017 rejects the same-host JSONB passthrough even though the projected `ty` token string is `PublicMeta`; derived-side aliases are not escape hatches from the storage-column passthrough guard. The paired compile-pass fixture `phase85_jsonb_per_audience_007_type_alias_canonical_narrowing.rs` confirms the same alias is accepted with canonical `jsonb_build_object(...)` narrowing. | [E_DJG_VDF_017](#error-taxonomy-extension) (JSONB simple-column passthrough / unresolved alias — new in this spec) |
 
 The lihaaf fixture corpus is the SOLE compile-time gate; trybuild was
 removed in Phase 8.5 per the [`Spatial cfg flag in djogi-macros (Phase 7.5)`](./decisions.md)
@@ -1092,7 +1055,7 @@ below).
 
 ### Integration tests
 
-`djogi/tests/integration/phase85_jsonb_per_audience.rs` — at least:
+`tests/integration/phase85_jsonb_per_audience.rs` — at least:
 
 1. **`profile_public_omits_admin_only_keys`.** Insert a profile with a
    `metadata: Jsonb<ProfileMetaAdmin>` carrying every admin-only key.
@@ -1110,9 +1073,12 @@ below).
    call `assert_derived_parity` and assert `Ok(())`. This is the
    binding runtime parity assertion the spec promises (compile-pass
    parity fixture `004` cannot connect to a DB).
-4. **`parity_helper_catches_storage_drift`.** Hand-construct a
-   `ProfilePublic` with the same `data` but a populated `extra` map;
-   call `assert_derived_parity`; assert
+4. **`parity_helper_catches_storage_drift`.** Construct a leaky
+   `ProfilePublic` with the same `data` but a populated `extra` map via
+   `serde_json::from_value::<Jsonb<ProfileMetaPublic>>(serde_json::json!({...with-extra-keys...}))`;
+   `Jsonb<T>::extra` is `pub(crate)` with no public mutator, so
+   construction MUST route through `Jsonb<T>::Deserialize`. Call
+   `assert_derived_parity`; assert
    `Err(DerivedParityError::Drift { field: "metadata", .. })`.
 5. **`storage_field_still_supports_typed_path_filter`.** Build a
    `QuerySet<Profile>` that filters by
@@ -1141,12 +1107,16 @@ below).
    `Err(DerivedParityError::Drift { field: "metadata", .. })`. Pins
    the runtime parity gate that catches the shallow non-recursive
    leak shape the macro cannot mechanically detect.
-   > **Tests #8 and #9 (array and map container narrowing) are deferred to
-   > djogi#226-container.** They require the Shape V `aggregate = true`
-   > parser key (not yet implemented) to use `jsonb_agg(...)` /
-   > `jsonb_object_agg(...)` inside a `#[derived]` `sql` without
-   > triggering E_DJG_VDF_009. The full specifications for both tests are
-   > preserved in [§Aggregate token discipline for container subqueries](#aggregate-token-discipline-for-container-subqueries)
+   > **Tests #8 and #9 in the original numbering (array and map container
+   > narrowing) are deferred to djogi#226-container.** In the current
+   > list, tests #8 and #9 are wire-key mismatch and compound passthrough
+   > respectively — the deferred container tests would be numbered beyond
+   > the current last test if they were present. They require the Shape V
+   > `aggregate = true` parser key (not yet implemented) to use
+   > `jsonb_agg(...)` / `jsonb_object_agg(...)` inside a `#[derived]`
+   > `sql` without triggering E_DJG_VDF_009. The full specifications for
+   > both tests are preserved in
+   > [§Aggregate token discipline for container subqueries](#aggregate-token-discipline-for-container-subqueries)
    > for reference.
 
 8. **`profile_public_wire_key_mismatch_required_field_fails_decode`.**
@@ -1166,14 +1136,14 @@ below).
     `std::any::type_name` and `actual` is `"JSONB"`. The
     decode-failure mechanism: Postgres returns the projected JSONB
     object `{"display_name": "<value>", ...}`;
-    `Jsonb<ProfileMetaPublic>::FromSql` splits the object into `data`
-    and `extra` by consulting `ProfileMetaPublic`'s serde keys;
-    because `display_name` does not match the renamed serde key
-    `displayName`, it lands in `extra`; the required `displayName`
-    field is missing from the `data`-shaped subset and
-    `serde_json::from_value::<ProfileMetaPublic>(...)` returns a
-    `missing field "displayName"` error. The error propagates back
-    through `Jsonb<ProfileMetaPublic>::FromSql` to `tokio_postgres`'s
+    `Jsonb<ProfileMetaPublic>::FromSql` calls the inner
+    `serde_json::from_value::<ProfileMetaPublic>(raw.clone())` on the
+    FULL raw value at step 2 — BEFORE any data/extra split at steps 3-4.
+    Because the raw value contains `"display_name"` but the narrow
+    schema's required field is `"displayName"` (after `#[serde(rename)]`),
+    `serde` returns `missing field "displayName"` immediately; the
+    data/extra split never runs. The error propagates back through
+    `Jsonb<ProfileMetaPublic>::FromSql` to `tokio_postgres`'s
     `Row::try_get`; the derived projection routes decoding through
     [`decode_derived_at`](../../djogi/src/pg/decode.rs), whose
     `map_derived_decode_failure` helper maps every non-`WasNull`
@@ -1294,7 +1264,7 @@ section contains:
    `#[derived(ty = Jsonb<PublicSchema>, sql = "jsonb_build_object(...)",
    rust = "Jsonb::new(...)")]`).
 3. **The safety note.** Why `jsonb_build_object` is required (not
-   merely preferred) over bare column reference, including the new
+   merely preferred) over simple-column passthrough, including the new
    [E_DJG_VDF_017](#error-taxonomy-extension) parse-time guard that
    rejects simple-column passthrough from any same-host `Jsonb` storage column
    regardless of the derived `name` (so both `name = metadata, sql =
@@ -1306,15 +1276,16 @@ section contains:
    path; the wire-key contract between SQL builder keys and the
    narrow schema's serde-renamed keys (covering both failure modes —
    required-field decode failure surfacing as `DjogiError::Visage(VisageError::DbComputedTypeMismatch { visage, field, .. })`
-   at queryset fetch time, and optional-field parity drift caught
-   by the integration parity helper); the container reconstruction
-   contract (`WITH ORDINALITY` + `ORDER BY ord` for `Vec<Inner>`
-   order preservation, `COALESCE(..., '[]'::jsonb)` /
-   `COALESCE(..., '{}'::jsonb)` for empty-container preservation);
-   how the integration-test runtime gates pin the absence of leaks
-   (parity helper for shape-drift, decode failure for required-field
-   wire-key mismatch — compile-pass parity is in-memory only and does
-   not catch DB-fetch leaks).
+   via `decode_derived_at`'s `map_derived_decode_failure` at queryset
+   fetch time before parity runs, and optional-field parity drift caught
+   by the integration parity helper); how the integration-test runtime
+   gates pin the absence of leaks (parity helper for shape-drift,
+   decode failure for required-field wire-key mismatch — compile-pass
+   parity is in-memory only and does not catch DB-fetch leaks).
+   Container reconstruction contract (`WITH ORDINALITY` + `ORDER BY
+   ord` for `Vec<Inner>` order preservation, `COALESCE` for
+   empty-container preservation) is deferred to
+   djogi#226-container's user-guide content.
 4. **The unsafe counterexamples (mandatory).** The section MUST show
    the eight documented unsafe shapes with the failure mode each
    produces:
@@ -1379,13 +1350,13 @@ section contains:
      structurally by the parity helper exercised in tests #3, #4, #7).
      The required-field path is the binding integration assertion.
 5. **The recursive narrowing rule.** Every nesting level of a
-   per-audience JSONB projection (nested `Jsonb<...>` sub-schemas,
-   each element of an array container, each value of a map container)
-   must itself be shaped by `jsonb_build_object(...)` (or a
-   comparable shape-narrowing builder). The user guide includes
-   one worked example each for nested `Jsonb`, `Vec<Inner>` array,
-   and `IndexMap<String, Inner>` map shapes — the same shapes the
-   fixture and integration corpora exercise.
+   per-audience JSONB projection that involves nested `Jsonb<...>`
+   sub-schemas must itself be shaped by `jsonb_build_object(...)` (or
+   a comparable shape-narrowing builder). The user guide includes one
+   worked example for the nested `Jsonb<...>` shape — the shape the
+   current fixture and integration corpora exercise. Container worked
+   examples (`Vec<Inner>` array, `IndexMap<String, Inner>` map) are
+   deferred to djogi#226-container's user-guide content.
 6. Pointer to `docs/guide/derived-projections.md` for the derived-field
    surface; pointer to `docs/guide/visages.md` for the visage / scope
    semantics; pointer to `docs/guide/protected-data.md` (when it lands
@@ -1560,7 +1531,9 @@ column. The two compose orthogonally:
   nesting level reachable from the projected `Jsonb<NarrowSchema>` —
   the integration test parity helper (test #7 in
   [§Integration tests](#integration-tests)) is the binding runtime
-  check.
+  check for the nested `Jsonb<...>` sub-schema shape; per-element
+  omission for `Vec<Inner>` / `IndexMap<String, Inner>` container
+  shapes is deferred to **djogi#226-container**.
 - A `#[derived]`-projected `Jsonb<NarrowSchema>` is itself a typed
   projection; the narrow schema's individual keys can carry their own
   `#[validate]` / `#[serde(rename = "...")]` / `#[serde(rename_all =
@@ -1609,7 +1582,7 @@ an escape hatch from the guard, because the projected
 `Jsonb<ProfileMetaPublic>::Deserialize` / `Serialize` leak path runs
 regardless of the visage field alias (see the [§E_DJG_VDF_017](#new-mechanical-guard-e_djg_vdf_017-jsonb-simple-column-passthrough)
 discussion for the full rationale and the
-`phase85_jsonb_per_audience_fail_007_cross_name_bare_passthrough.rs`
+`phase85_jsonb_per_audience_fail_007_cross_name_simple_column_passthrough.rs`
 compile-fail fixture).
 
 ---
@@ -1627,14 +1600,23 @@ parity helper, capability tiers — is reused unchanged.
 When the orchestrator dispatches the implementer task for djogi#226,
 the work breakdown is:
 
-1. **`Jsonb<T>` PartialEq prerequisite.** Add
-   `impl<T: PartialEq> PartialEq for Jsonb<T>` before relying on the
-   parity fixtures. The implementation compares both `data` and
-   `extra`; `extra` comparison is mandatory because the #226 runtime
-   parity gate detects leaks by observing preserved unknown fields on
-   fetched projected values. If `extra`'s contained unknown value type
-   does not yet implement `PartialEq`, add the matching structural
-   `PartialEq` there as part of this prerequisite.
+1. **`Jsonb<T>` prerequisite impls.** Add two impls before relying on
+   the parity fixtures and the storage-side type-alias test:
+   - **`impl<T: PartialEq> PartialEq for Jsonb<T>`:** The implementation
+     compares both `data` and `extra`; `extra` comparison is mandatory
+     because the #226 runtime parity gate detects leaks by observing
+     preserved unknown fields on fetched projected values. If `extra`'s
+     contained unknown value type does not yet implement `PartialEq`,
+     add the matching structural `PartialEq` there as part of this
+     prerequisite.
+   - **`impl<T> DjogiSqlType for Jsonb<T> { const SQL_TYPE: &'static str = "JSONB"; }`:**
+     Required for integration test #10's storage-side type-alias model
+     (`pub type AdminMeta = Jsonb<ProfileMetaAdmin>; pub metadata:
+     AdminMeta`). Without this impl, the `field_sql_type_tokens` call
+     in `djogi-macros/src/model/descriptor.rs` emits
+     `<AdminMeta as DjogiSqlType>::SQL_TYPE` which fails to compile
+     because `Jsonb<T>` has no `DjogiSqlType` impl. This is the
+     prerequisite that makes test #10 compilable.
 2. **Macro guard.** Add the E_DJG_VDF_017 check to the
    `#[derived(...)]` parser entry point (the same module that hosts
    the existing E_DJG_VDF_001 through E_DJG_VDF_016 checks). The
@@ -1721,7 +1703,7 @@ collapses, computed values). If sustained adopter friction surfaces
 post-v0.1.0 publish, a `jsonb_only = true` opt-in could narrow the
 common case without re-opening Candidate C's safety problem (because
 the macro would emit the safe `jsonb_build_object` form, not the
-unsafe bare column reference). Tracking: post-publish adopter
+unsafe simple-column passthrough). Tracking: post-publish adopter
 feedback.
 
 ### OQ-3 — Tier-2 filter / order-by on derived JSONB projections
