@@ -82,8 +82,11 @@ use super::projection::BucketKey;
 use super::schema::{
     ColumnSchema, EnumSchema, ExclusionConstraintSchema, ForeignKeySchema, IndexColumnSchema,
     IndexKindSchema, IndexNullsOrderSchema, IndexOrderSchema, IndexSchema, IndexTargetSchema,
-    IndexTypeSchema, NamedNotNullConstraintSchema, OnDeleteSchema, PartitionSchema,
-    PeriodForeignKeyConstraintSchema, PkKindSchema, TableSchema,
+    IndexTypeSchema, OnDeleteSchema, PartitionSchema, PkKindSchema, TableSchema,
+};
+#[cfg(test)]
+use super::schema::{
+    NamedNotNullConstraintSchema, PeriodForeignKeyConstraintSchema,
     TemporalPrimaryKeyConstraintSchema,
 };
 
@@ -1545,6 +1548,7 @@ fn emit_drop_exclusion_constraint(
     }
 }
 
+#[cfg(test)]
 fn emit_add_named_not_null_constraint(
     table: &str,
     constraint: &NamedNotNullConstraintSchema,
@@ -1562,6 +1566,7 @@ fn emit_add_named_not_null_constraint(
     }
 }
 
+#[cfg(test)]
 fn emit_drop_named_not_null_constraint(
     table: &str,
     constraint: &NamedNotNullConstraintSchema,
@@ -1579,6 +1584,7 @@ fn emit_drop_named_not_null_constraint(
     }
 }
 
+#[cfg(test)]
 fn emit_add_temporal_primary_key_constraint(
     table: &str,
     constraint: &TemporalPrimaryKeyConstraintSchema,
@@ -1599,6 +1605,7 @@ fn emit_add_temporal_primary_key_constraint(
     }
 }
 
+#[cfg(test)]
 fn emit_drop_temporal_primary_key_constraint(
     table: &str,
     constraint: &TemporalPrimaryKeyConstraintSchema,
@@ -1619,6 +1626,7 @@ fn emit_drop_temporal_primary_key_constraint(
     }
 }
 
+#[cfg(test)]
 fn emit_add_period_foreign_key_constraint(
     table: &str,
     constraint: &PeriodForeignKeyConstraintSchema,
@@ -1636,6 +1644,7 @@ fn emit_add_period_foreign_key_constraint(
     }
 }
 
+#[cfg(test)]
 fn emit_drop_period_foreign_key_constraint(
     table: &str,
     constraint: &PeriodForeignKeyConstraintSchema,
@@ -2276,10 +2285,12 @@ pub(crate) fn fk_constraint_name(table: &str, column: &str) -> String {
     truncate_constraint(format!("{table}_{column}_fkey"))
 }
 
+#[cfg(test)]
 fn enforced_suffix(enforced: bool) -> &'static str {
     if enforced { "" } else { " NOT ENFORCED" }
 }
 
+#[cfg(test)]
 fn render_temporal_primary_key_body(constraint: &TemporalPrimaryKeyConstraintSchema) -> String {
     let mut parts: Vec<String> = constraint.columns.iter().map(|c| quote_ident(c)).collect();
     parts.push(format!(
@@ -2299,6 +2310,7 @@ fn render_temporal_primary_key_body(constraint: &TemporalPrimaryKeyConstraintSch
     out
 }
 
+#[cfg(test)]
 fn render_period_foreign_key_body(constraint: &PeriodForeignKeyConstraintSchema) -> String {
     let source_cols = render_period_column_list(&constraint.columns, &constraint.period_column);
     let ref_cols =
@@ -2319,6 +2331,7 @@ fn render_period_foreign_key_body(constraint: &PeriodForeignKeyConstraintSchema)
     out
 }
 
+#[cfg(test)]
 fn render_period_column_list(columns: &[String], period_column: &str) -> String {
     let mut parts: Vec<String> = columns.iter().map(|c| quote_ident(c)).collect();
     parts.push(format!("PERIOD {}", quote_ident(period_column)));
@@ -5696,6 +5709,28 @@ mod tests {
     }
 
     #[test]
+    fn drop_temporal_primary_key_constraint_readds_without_overlaps() {
+        let sql = emit_drop_temporal_primary_key_constraint(
+            "employee_assignments",
+            &TemporalPrimaryKeyConstraintSchema {
+                name: "employee_assignments_pk".to_string(),
+                columns: vec!["employee_id".to_string()],
+                without_overlaps_column: "validity".to_string(),
+                include: vec!["role".to_string()],
+            },
+        );
+
+        assert_eq!(
+            sql.up,
+            "ALTER TABLE \"employee_assignments\" DROP CONSTRAINT \"employee_assignments_pk\";"
+        );
+        assert_eq!(
+            sql.down,
+            "ALTER TABLE \"employee_assignments\" ADD CONSTRAINT \"employee_assignments_pk\" PRIMARY KEY (\"employee_id\", \"validity\" WITHOUT OVERLAPS) INCLUDE (\"role\");"
+        );
+    }
+
+    #[test]
     fn add_period_foreign_key_constraint_emits_pg18_valid_temporal_fk_clauses() {
         let sql = emit_add_period_foreign_key_constraint(
             "bookings",
@@ -5719,6 +5754,33 @@ mod tests {
         assert_eq!(
             sql.down,
             "ALTER TABLE \"bookings\" DROP CONSTRAINT \"bookings_room_validity_fkey\";"
+        );
+    }
+
+    #[test]
+    fn drop_period_foreign_key_constraint_readds_pg18_valid_temporal_fk_clauses() {
+        let sql = emit_drop_period_foreign_key_constraint(
+            "bookings",
+            &PeriodForeignKeyConstraintSchema {
+                name: "bookings_room_validity_fkey".to_string(),
+                columns: vec!["room_id".to_string()],
+                period_column: "booking_period".to_string(),
+                ref_table: "room_availability".to_string(),
+                ref_columns: vec!["room_id".to_string()],
+                ref_period_column: "availability_period".to_string(),
+                deferrable: true,
+                initially_deferred: true,
+                enforced: false,
+            },
+        );
+
+        assert_eq!(
+            sql.up,
+            "ALTER TABLE \"bookings\" DROP CONSTRAINT \"bookings_room_validity_fkey\";"
+        );
+        assert_eq!(
+            sql.down,
+            "ALTER TABLE \"bookings\" ADD CONSTRAINT \"bookings_room_validity_fkey\" FOREIGN KEY (\"room_id\", PERIOD \"booking_period\") REFERENCES \"room_availability\" (\"room_id\", PERIOD \"availability_period\") DEFERRABLE INITIALLY DEFERRED NOT ENFORCED;"
         );
     }
 }
