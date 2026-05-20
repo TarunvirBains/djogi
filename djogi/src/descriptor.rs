@@ -73,10 +73,13 @@ impl std::fmt::Display for GeographySubtype {
 /// `i64 -> BigInt`, `bool -> Boolean`, etc. User code rarely constructs
 /// these directly — they appear in emitted `FieldDescriptor` literals.
 ///
-/// `Custom` exists for types the framework doesn't know about (e.g.
-/// `BYTEA`, `CITEXT`-derived domains, `geography(Polygon, 4326)`). The
-/// migration differ treats `Custom("FOO")` and `Custom("FOO")` as equal
-/// (string compare), so adding support for a new type is non-breaking.
+/// `Custom` exists for scalar types the framework doesn't model natively
+/// (e.g. `BYTEA`, schema-qualified domain names like
+/// `"public.positive_amount"`). For simple unqualified Postgres domains,
+/// `#[field(domain = "...")]` emits the dedicated [`Domain`] variant
+/// instead. The migration differ treats `Custom("FOO")` and `Custom("FOO")`
+/// as equal (string compare), so adding support for a new type is
+/// non-breaking.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldSqlType {
     Text,
