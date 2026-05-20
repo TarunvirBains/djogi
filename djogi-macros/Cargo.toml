@@ -101,7 +101,7 @@ rust_decimal.workspace = true
 #
 # CI installs lihaaf via `cargo install lihaaf --version 0.1.0-beta.10
 # --locked` and runs `cargo lihaaf --manifest-path djogi-macros/Cargo.toml
-# -j 4`. The 138 compile_fail `.stderr` snapshots under
+# -j 2`. The currently 183 compile_fail `.stderr` snapshots under
 # `tests/compile_fail/` ARE committed so CI succeeds without `--bless`.
 # Re-bless locally whenever macro diagnostics change:
 #   `cargo lihaaf --manifest-path djogi-macros/Cargo.toml \
@@ -109,9 +109,10 @@ rust_decimal.workspace = true
 # then commit the updated `.stderr` files alongside the diagnostic change.
 #
 # Fixture layout: lihaaf walks `tests/compile_fail/` and `tests/compile_pass/`
-# in the default suite, plus `tests/compile_pass_spatial/` in the named
-# `spatial` suite with `features = ["spatial"]`. The `.rs` fixtures live in those directories alongside the
-# blessed `.stderr` snapshots — no symlink farm, no shadow corpus.
+# in the default suite, plus `tests/compile_pass_spatial/` and
+# `tests/compile_pass_network/` in the named `spatial` and `network` suites.
+# The `.rs` fixtures live in those directories alongside the blessed
+# `.stderr` snapshots — no symlink farm, no shadow corpus.
 #
 # `dev_deps` mirrors djogi-macros' `[dev-dependencies]` so per-fixture
 # rustc invocations resolve `use serde`, `use serde_json`, and the

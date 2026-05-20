@@ -170,9 +170,10 @@ jobs:
       - name: Build
         run: cargo build --workspace
 
-      # Macro-fixture gate — 237 proc-macro fixtures (99 compile_pass +
-      # 138 compile_fail) using lihaaf's build-once-dylib + per-fixture-
-      # rustc model:
+      # Macro-fixture gate — currently 302 proc-macro fixtures using
+      # lihaaf's build-once-dylib + per-fixture-rustc model:
+      #   • default suite: 297 fixtures (114 compile_pass + 183 compile_fail)
+      #   • named suites:    4 compile_pass_spatial, 1 compile_pass_network
       #   • djogi is built once as a dylib per session
       #   • per-fixture rustc invocations are parallel (-j 2 on 2-vCPU GHA)
       #
@@ -184,11 +185,13 @@ jobs:
       - name: Macro fixture gate (lihaaf, djogi-macros)
         run: cargo lihaaf --manifest-path djogi-macros/Cargo.toml -j 2
 
-      # Raw-SQL bypass compile-fail gate — 6 fixtures pinning the
-      # `pool()` / `conn()` / `with_client` / `raw_*` private/extension-
-      # trait-gated APIs on `DjogiContext` and `DjogiPool`. Same dylib +
-      # per-fixture rustc shape as the macro gate; lihaaf reuses the
-      # djogi dylib it just built.
+      # Raw-SQL bypass compile-fail gate — currently 42 fixtures pinning
+      # the `pool()` / `conn()` / `with_client` / `raw_*` private/extension-
+      # trait-gated APIs on `DjogiContext` and `DjogiPool`:
+      #   • default suite: 39 compile_fail fixtures
+      #   • named suite:    3 compile_fail_spatial fixtures
+      # Same dylib + per-fixture rustc shape as the macro gate; lihaaf
+      # reuses the djogi dylib it just built.
       - name: Raw-SQL bypass gate (lihaaf, djogi)
         run: cargo lihaaf --manifest-path djogi/Cargo.toml -j 2
 
