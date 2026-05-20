@@ -309,11 +309,12 @@ surrounding `atomic()`, or fetch sequentially within the transaction.
 ## Error classification
 
 `DjogiError::is_transient()` / `is_terminal()` classify whether a
-retry of the same closure may succeed. `LockConflict` and raw
-`Db(DbError)` with SQLSTATE `40001` / `40P01` / `55P03` are transient;
-everything else (including all the Phase 8.5 transaction-control
-typed errors above) is terminal. `retry_on_conflict(ctx, attempts,
-closure)` drives retry using the same predicate.
+retry of the same closure may succeed. `LockConflict`, `PoolTimeout`,
+and raw `Db(DbError)` with SQLSTATE `40001` / `40P01` / `55P03` are
+transient; everything else (including the Phase 8.5 transaction-control
+misuse errors above) is terminal. `retry_on_conflict(ctx, attempts,
+closure)` and `retry_on_conflict_with_backoff(ctx, attempts, policy,
+closure)` drive retry using the same predicate.
 
 ```rust
 djogi::transaction::retry_on_conflict(ctx, 3, async |ctx| {
@@ -326,8 +327,10 @@ djogi::transaction::retry_on_conflict(ctx, 3, async |ctx| {
 }).await?;
 ```
 
-No backoff in Phase 4 — pure retry. Exponential / jittered backoff is
-deferred until measured necessity.
+`retry_on_conflict` is pure immediate retry. For production paths that
+can contend on database connections or hit `PoolTimeout`, prefer
+`retry_on_conflict_with_backoff` with `TransactionRetryBackoff` so
+retries sleep instead of amplifying pool pressure.
 
 ## Convenience
 
