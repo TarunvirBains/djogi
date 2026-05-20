@@ -5689,18 +5689,18 @@ mod tests {
 
         let contains_element = field.contains(3_i32);
         if let Condition::RangePredicate(leaf) = contains_element {
-            assert_eq!(leaf.column, "span");
-            assert_eq!(leaf.op, crate::range::RangePredicateOp::Contains);
-            assert!(matches!(leaf.value, FilterValue::I32(3)));
+            assert_eq!(leaf.column(), "span");
+            assert_eq!(leaf.op(), crate::range::RangePredicateOp::Contains);
+            assert!(matches!(leaf.value(), FilterValue::I32(3)));
         } else {
             panic!("expected contains(element) to produce a range predicate condition");
         }
 
         let overlaps = field.overlaps(probe.clone());
         if let Condition::RangePredicate(leaf) = overlaps {
-            assert_eq!(leaf.column, "span");
-            assert_eq!(leaf.op, crate::range::RangePredicateOp::Overlaps);
-            assert!(matches!(leaf.value, FilterValue::RangeI32(ref range) if range == &probe));
+            assert_eq!(leaf.column(), "span");
+            assert_eq!(leaf.op(), crate::range::RangePredicateOp::Overlaps);
+            assert!(matches!(leaf.value(), FilterValue::RangeI32(range) if range == &probe));
         } else {
             panic!("expected overlaps(range) to produce a range predicate condition");
         }
@@ -5716,9 +5716,9 @@ mod tests {
 
         let adjacent = f.explicit_pg_predicate().adjacent_to(probe.clone());
         if let Condition::RangePredicate(leaf) = adjacent {
-            assert_eq!(leaf.column, "span");
-            assert_eq!(leaf.op, crate::range::RangePredicateOp::AdjacentTo);
-            assert!(matches!(leaf.value, FilterValue::RangeI32(ref range) if range == &probe));
+            assert_eq!(leaf.column(), "span");
+            assert_eq!(leaf.op(), crate::range::RangePredicateOp::AdjacentTo);
+            assert!(matches!(leaf.value(), FilterValue::RangeI32(range) if range == &probe));
         } else {
             panic!("expected explicit range predicate to produce a range predicate condition");
         }

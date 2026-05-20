@@ -50,21 +50,41 @@ impl RangePredicateOp {
 }
 
 /// Payload for `range_column OP $1`.
+///
+/// Fields are `pub(crate)` so the only construction path is through the
+/// typed range predicate methods on `FieldRef`. Downstream code can inspect
+/// range predicates via the read-only accessors but cannot forge a raw column
+/// string into a public [`crate::query::condition::Condition`] variant.
 #[derive(Debug, Clone)]
 pub struct RangePredicateLeaf {
     /// Column name from a trusted [`crate::query::field::FieldRef`].
-    pub column: &'static str,
+    pub(crate) column: &'static str,
     /// PostgreSQL range operator.
-    pub op: RangePredicateOp,
+    pub(crate) op: RangePredicateOp,
     /// Bound RHS value. For [`RangePredicateOp::Contains`] this may be either
     /// an element value (`T`) or a range value (`Range<T>`); every other
     /// operator carries a range RHS.
-    pub value: FilterValue,
+    pub(crate) value: FilterValue,
 }
 
 impl RangePredicateLeaf {
     pub(crate) fn new(column: &'static str, op: RangePredicateOp, value: FilterValue) -> Self {
         Self { column, op, value }
+    }
+
+    /// Column name from the trusted field reference that built this predicate.
+    pub fn column(&self) -> &'static str {
+        self.column
+    }
+
+    /// PostgreSQL range operator for this predicate.
+    pub fn op(&self) -> RangePredicateOp {
+        self.op
+    }
+
+    /// Bound right-hand-side value for this predicate.
+    pub fn value(&self) -> &FilterValue {
+        &self.value
     }
 }
 

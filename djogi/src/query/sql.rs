@@ -782,9 +782,9 @@ pub(crate) fn emit_condition(
         // All range predicates emit `col OP $n`; the RHS bind is either a
         // range value or, for `contains(element)`, the range element type.
         Condition::RangePredicate(leaf) => {
-            push_qualified_col(acc, leaf.column, parent_table);
-            acc.push_sql(leaf.op.sql_token());
-            push_filter_value_ref(acc, &leaf.value);
+            push_qualified_col(acc, leaf.column(), parent_table);
+            acc.push_sql(leaf.op().sql_token());
+            push_filter_value_ref(acc, leaf.value());
             Ok(())
         }
         // ── JSONB flat-path condition (Phase 5 Task 5) ───────────────────
