@@ -734,10 +734,6 @@ pub struct NamedNotNullConstraintSchema {
     pub name: String,
     /// Column the table constraint applies to.
     pub column: String,
-    /// `false` emits `NOT ENFORCED`. `true` uses the Postgres default
-    /// enforced behaviour and therefore emits no explicit keyword.
-    #[serde(default = "default_true")]
-    pub enforced: bool,
 }
 
 /// Standalone PostgreSQL 18 temporal primary-key payload

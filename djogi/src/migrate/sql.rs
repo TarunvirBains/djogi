@@ -1552,10 +1552,7 @@ fn emit_add_named_not_null_constraint(
     let qt = quote_ident(table);
     let qname = quote_ident(&constraint.name);
     let qcol = quote_ident(&constraint.column);
-    let up = format!(
-        "ALTER TABLE {qt} ADD CONSTRAINT {qname} NOT NULL {qcol}{};",
-        enforced_suffix(constraint.enforced),
-    );
+    let up = format!("ALTER TABLE {qt} ADD CONSTRAINT {qname} NOT NULL {qcol};");
     let down = format!("ALTER TABLE {qt} DROP CONSTRAINT {qname};");
     OperationSql {
         label: format!("AddNamedNotNullConstraint {table}.{}", constraint.name),
@@ -1573,10 +1570,7 @@ fn emit_drop_named_not_null_constraint(
     let qname = quote_ident(&constraint.name);
     let qcol = quote_ident(&constraint.column);
     let up = format!("ALTER TABLE {qt} DROP CONSTRAINT {qname};");
-    let down = format!(
-        "ALTER TABLE {qt} ADD CONSTRAINT {qname} NOT NULL {qcol}{};",
-        enforced_suffix(constraint.enforced),
-    );
+    let down = format!("ALTER TABLE {qt} ADD CONSTRAINT {qname} NOT NULL {qcol};");
     OperationSql {
         label: format!("DropNamedNotNullConstraint {table}.{}", constraint.name),
         up,
@@ -5647,17 +5641,36 @@ mod tests {
             &NamedNotNullConstraintSchema {
                 name: "bookings_validity_required".to_string(),
                 column: "validity".to_string(),
-                enforced: false,
             },
         );
 
         assert_eq!(
             sql.up,
-            "ALTER TABLE \"bookings\" ADD CONSTRAINT \"bookings_validity_required\" NOT NULL \"validity\" NOT ENFORCED;"
+            "ALTER TABLE \"bookings\" ADD CONSTRAINT \"bookings_validity_required\" NOT NULL \"validity\";"
         );
         assert_eq!(
             sql.down,
             "ALTER TABLE \"bookings\" DROP CONSTRAINT \"bookings_validity_required\";"
+        );
+    }
+
+    #[test]
+    fn drop_named_not_null_constraint_readds_valid_pg18_shape() {
+        let sql = emit_drop_named_not_null_constraint(
+            "bookings",
+            &NamedNotNullConstraintSchema {
+                name: "bookings_validity_required".to_string(),
+                column: "validity".to_string(),
+            },
+        );
+
+        assert_eq!(
+            sql.up,
+            "ALTER TABLE \"bookings\" DROP CONSTRAINT \"bookings_validity_required\";"
+        );
+        assert_eq!(
+            sql.down,
+            "ALTER TABLE \"bookings\" ADD CONSTRAINT \"bookings_validity_required\" NOT NULL \"validity\";"
         );
     }
 
