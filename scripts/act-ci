@@ -18,15 +18,19 @@ if (( host_port < 1 || host_port > 65535 )); then
   exit 2
 fi
 
-default_database_url="postgres://djogi:${DJOGI_POSTGRES_PASSWORD:-djogi}@localhost:${host_port}/djogi_test"
+default_database_url="postgres://djogi:djogi@localhost:${host_port}/djogi_test"
 database_url="${DATABASE_URL:-${default_database_url}}"
 
-if [[ -n "${DJOGI_POSTGRES_HOST_PORT+x}" && -n "${DATABASE_URL+x}" ]]; then
+# Validate consistency whenever the caller supplies DATABASE_URL — regardless
+# of whether DJOGI_POSTGRES_HOST_PORT is also set.  Omitting this check when
+# only DATABASE_URL is provided would silently pass a stale URL whose port
+# diverges from the service container's mapped host port.
+if [[ -n "${DATABASE_URL+x}" ]]; then
   case "${database_url}" in
     *"@localhost:${host_port}/"*|*"@127.0.0.1:${host_port}/"*) ;;
     *)
-      printf 'DATABASE_URL must target localhost:%s when DJOGI_POSTGRES_HOST_PORT is set.\n' "${host_port}" >&2
-      printf 'Current DATABASE_URL: %s\n' "${database_url}" >&2
+      printf 'DATABASE_URL port does not match act host port %s.\n' "${host_port}" >&2
+      printf 'Set DJOGI_POSTGRES_HOST_PORT to the port used in DATABASE_URL, or unset DATABASE_URL.\n' >&2
       exit 2
       ;;
   esac
@@ -44,7 +48,8 @@ DATABASE_URL="${database_url}" \
   ' "${workflow_src}" > "${workflow_tmp}"
 
 printf 'Using act Postgres host port %s\n' "${host_port}" >&2
-printf 'Using act DATABASE_URL %s\n' "${database_url}" >&2
+# Print only the credentials-free host:port/dbname portion of the URL.
+printf 'Using act Postgres target %s\n' "${database_url#*@}" >&2
 
 # Do NOT use exec here: exec replaces the bash process before the EXIT trap
 # fires, leaking the tmpdir on every run.  Without exec, set -e propagates
