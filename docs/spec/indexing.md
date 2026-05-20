@@ -88,8 +88,15 @@ Pass whatever the Postgres predicate grammar accepts. If the migration fails, re
 | `nulls_not_distinct = true` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
 | `expr = "..."` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
 | `concurrently = true` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
+| `opclass = "..."` (top-level) | `CREATE UNIQUE INDEX ...` | `..._uidx` |
+| per-column `opclass = "..."` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
+| per-column `order = desc` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
+| per-column `nulls = first\|last` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
+| `using = "<non-btree>"` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
 
 Unique constraints are the default for ordinary uniqueness because they integrate with `REFERENCES`, `ON CONFLICT`, and the constraint catalogue. Unique indexes exist for the cases where Postgres requires one — partial uniqueness, `INCLUDE`, `NULLS NOT DISTINCT`, expression targets, and concurrent builds.
+
+The opclass and per-column-modifier rows deserve a note. The Postgres table-constraint `UNIQUE` syntax (`UNIQUE ( column_name [, ...] )`) accepts only bare column identifiers in the column list; opclasses, `ASC`/`DESC`, and `NULLS FIRST`/`NULLS LAST` are part of the *index-element* grammar used by `CREATE INDEX` and `EXCLUDE` — not by table-level `UNIQUE` constraints. Djogi escalates any `unique(...)` declaration that carries these features to `CREATE UNIQUE INDEX` form so the resulting DDL is valid Postgres.
 
 The concurrent-build row deserves a callout. `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE` has no `CONCURRENTLY` form, so Djogi's contract is unambiguous: **`concurrently = true` on a `unique(...)` declaration escalates the kind to `UniqueIndex`** (plan §6.2). The emitter produces `CREATE UNIQUE INDEX CONCURRENTLY` with a `..._uidx` name; no `ALTER TABLE ... ADD CONSTRAINT ... USING INDEX` adoption follows. The user gets a unique index, not a unique constraint. If the constraint form is required (for `ON CONFLICT ON CONSTRAINT <name>` or cross-referencing FKs that must name the constraint), drop `concurrently = true` and accept the `ACCESS EXCLUSIVE` window that `ADD CONSTRAINT` takes.
 

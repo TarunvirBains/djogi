@@ -468,6 +468,13 @@ pub enum ColumnChange {
     SetUnique(bool),
 
     /// `#[field(index)]` flag flipped (column-level implicit index).
+    ///
+    /// **Deprecated path (backward-compat only).** The differ no longer
+    /// emits this variant — field-level indexed columns are now projected
+    /// into `AppliedSchema::indexes` as full `IndexSchema` entries, and
+    /// `diff_indexes` handles the `AddIndex` / `DropIndex` pair for every
+    /// transition shape including fresh-create. This variant is retained so
+    /// pending migrations serialised before that change can still be applied.
     SetIndexed(bool),
 
     /// `GENERATED ALWAYS AS (<expr>) STORED` declaration changed.
@@ -2365,9 +2372,17 @@ fn emit_alter_column(
         if before.unique != after.unique {
             push(ColumnChange::SetUnique(after.unique));
         }
-        if before.indexed != after.indexed {
-            push(ColumnChange::SetIndexed(after.indexed));
-        }
+        // Field-level `#[field(index)]` transitions are handled entirely
+        // by `diff_indexes`: the projection layer synthesises an `IndexSchema`
+        // entry for every `ColumnSchema::indexed = true` field, so
+        // `diff_indexes` emits `AddIndex` / `DropIndex` for all three
+        // shapes — fresh create, `false → true`, and `true → false`.
+        // `ColumnChange::SetIndexed` is preserved in the enum for backward
+        // compatibility with pending migrations that were serialised before
+        // this projection path existed, but the differ no longer emits it.
+        // `index_type`-only changes (method flip with `indexed` staying
+        // `true`) are also caught by `diff_indexes` because `IndexSchema`
+        // carries `index_type` and the differ compares it in `logical_eq`.
         if before.generated != after.generated {
             push(ColumnChange::SetGenerated {
                 from: before.generated.clone(),

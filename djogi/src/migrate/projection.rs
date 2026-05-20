@@ -770,6 +770,29 @@ where
             if let Some(fts) = &m.fts {
                 indexes.push(project_fts_index(m.table_name, fts));
             }
+            // Synthesise an `IndexSchema` for every `#[field(index)]` /
+            // `#[field(index = "method")]` annotation so that `diff_indexes`
+            // emits `AddIndex` on a fresh `AddTable` (empty baseline) **and**
+            // on method-change transitions where `indexed` stays `true` but
+            // `index_type` flips. Without this pass, `ColumnSchema::indexed`
+            // was a snapshot-only annotation with no SQL consequence on fresh
+            // creates — only the `ColumnChange::SetIndexed` path (common-table
+            // column diff) emitted DDL, and that path is silent for new tables.
+            //
+            // Proxy models skip index ownership: the parent already projects
+            // its own field indexes; projecting them again from the proxy
+            // would produce duplicate `IndexSchema` names and spurious
+            // `AddIndex` ops. The `proxy_for.is_some()` guard above already
+            // `continue`s before reaching this block.
+            for f in m.fields {
+                if f.indexed {
+                    indexes.push(project_field_level_index(
+                        f.name,
+                        f.index_type,
+                        m.table_name,
+                    ));
+                }
+            }
         }
         indexes.sort_by(|a, b| {
             (a.table.as_str(), a.name.as_str()).cmp(&(b.table.as_str(), b.name.as_str()))
@@ -2223,6 +2246,55 @@ fn project_fts_index(table: &str, fts: &FtsDescriptor) -> IndexSchema {
         table: table.to_string(),
         target: IndexTargetSchema::Columns(vec![IndexColumnSchema {
             name: fts.column.to_string(),
+            nulls: IndexNullsOrderSchema::Default,
+            opclass: None,
+            order: IndexOrderSchema::Asc,
+        }]),
+    }
+}
+
+/// Synthesise a plain `IndexSchema` from a `#[field(index)]` /
+/// `#[field(index = "method")]` annotation.
+///
+/// `col_name` is the Postgres column name, `index_type` is the method
+/// from the field descriptor (`None` falls back to BTree), and `table`
+/// is the owning table name.
+///
+/// The resulting `IndexSchema` has `kind = NonUnique` and a single-column
+/// `target` with all modifiers at their defaults (ASC, NULLS DEFAULT, no
+/// opclass). Field-level `#[field(index)]` does not support per-column
+/// knobs; composite or custom-opclass indexes must use
+/// `#[model(indexes(index(...)))]` instead.
+///
+/// The name follows the deterministic `<table>_<col>_idx` convention from
+/// [`crate::descriptor::index_name`], matching the name used by
+/// `ColumnChange::SetIndexed` in the SQL emitter so that any outstanding
+/// pending migration serialised before this projection path landed still
+/// round-trips to the same index name.
+fn project_field_level_index(
+    col_name: &str,
+    index_type: Option<IndexType>,
+    table: &str,
+) -> IndexSchema {
+    let name = crate::descriptor::index_name(
+        table,
+        crate::descriptor::IndexNameKind::NonUnique,
+        crate::descriptor::IndexNameTarget::Columns(&[col_name]),
+    );
+    IndexSchema {
+        extension_dependency: None,
+        include: Vec::new(),
+        index_type: index_type
+            .map(project_index_type)
+            .unwrap_or(IndexTypeSchema::BTree),
+        kind: IndexKindSchema::NonUnique,
+        name,
+        nulls_not_distinct: false,
+        predicate: None,
+        requires_out_of_transaction: false,
+        table: table.to_string(),
+        target: IndexTargetSchema::Columns(vec![IndexColumnSchema {
+            name: col_name.to_string(),
             nulls: IndexNullsOrderSchema::Default,
             opclass: None,
             order: IndexOrderSchema::Asc,

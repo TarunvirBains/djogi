@@ -565,12 +565,61 @@ pub struct LoweringCtx<'a> {
 /// selects the name stem); they **must** agree or the emitted
 /// `IndexSpec` would carry a constraint-shaped name against an
 /// index-shaped kind (or vice versa).
+///
+/// # Escalation triggers
+///
+/// | Feature | Reason |
+/// |---------|--------|
+/// | `where = "..."` | Postgres constraints have no partial-predicate form. |
+/// | `include = [...]` | `ADD CONSTRAINT … UNIQUE` has no `INCLUDE` form. |
+/// | `nulls_not_distinct = true` | `ADD CONSTRAINT` cannot express nulls-distinct semantics. |
+/// | `expr = "..."` | Expression targets require `CREATE INDEX`; constraint syntax requires a column-name list. |
+/// | `concurrently = true` | `ADD CONSTRAINT` has no concurrent form. |
+/// | `opclass = "..."` (top-level) | Opclass is index-element syntax; it is not valid in the table-constraint column list. |
+/// | Per-column `opclass`, `order = desc`, or `nulls = first\|last` | Same reason — these modifiers are only valid inside `CREATE INDEX … USING … (col modifier…)`, not in `UNIQUE (col, …)`. |
+/// | `using = "<non-btree>"` | `ALTER TABLE … ADD CONSTRAINT … UNIQUE` always uses btree internally and has no `USING` clause. A non-btree method requires `CREATE UNIQUE INDEX … USING <method>`. (`hash` is already rejected at validation time; all other non-btree methods escalate here.) |
 fn forces_unique_index(body: &IndexDeclBody) -> bool {
     body.predicate.is_some()
         || body.nulls_not_distinct
         || matches!(body.target, IndexDeclTarget::Expr(_))
         || !body.include.is_empty()
         || body.concurrently
+        // Top-level opclass is index-element syntax — not valid in the
+        // table-constraint UNIQUE column list.
+        || body.opclass.is_some()
+        // Any per-column modifier (opclass / DESC / NULLS FIRST|LAST) is also
+        // index-element syntax and must escalate to CREATE UNIQUE INDEX.
+        || unique_columns_have_index_only_modifiers(&body.target)
+        // A non-btree `using = "…"` declaration requires `CREATE INDEX …
+        // USING <method>`. The `ADD CONSTRAINT UNIQUE` form has no `USING`
+        // clause; silently dropping the method produces wrong SQL. Hash is
+        // already rejected by `validate_decl` before reaching here; all
+        // other non-btree methods escalate so the USING clause is preserved.
+        || matches!(body.using.as_deref(), Some(m) if m != "btree")
+}
+
+/// Returns `true` when at least one column in a `Fields` target carries a
+/// modifier that is index-element syntax only (opclass, non-default sort
+/// order, or non-default nulls placement). The table-constraint UNIQUE form
+/// accepts only bare column identifiers; these modifiers require
+/// `CREATE UNIQUE INDEX … USING … (col modifier)` instead.
+fn unique_columns_have_index_only_modifiers(target: &IndexDeclTarget) -> bool {
+    let IndexDeclTarget::Fields(cols) = target else {
+        return false;
+    };
+    cols.iter().any(|c| match c {
+        FieldColSpec::Simple(_) => false,
+        FieldColSpec::Record {
+            opclass,
+            order,
+            nulls,
+            ..
+        } => {
+            opclass.is_some()
+                || matches!(order, Some(IndexOrder::Desc))
+                || matches!(nulls, Some(IndexNullsOrder::First | IndexNullsOrder::Last))
+        }
+    })
 }
 
 /// Lower a parsed decl into an `IndexSpec` struct-literal token stream +
@@ -1288,6 +1337,191 @@ mod tests {
         assert!(
             rendered.contains("IndexKind :: UniqueConstraint"),
             "expected UniqueConstraint for plain unique; got: {rendered}"
+        );
+    }
+
+    // ── Class B: unique(…) with index-only modifiers → UniqueIndex ──────
+
+    /// Top-level `opclass` on `unique(...)` must escalate to `UniqueIndex`
+    /// because opclass is index-element syntax — Postgres rejects it inside
+    /// the table-constraint `UNIQUE (col_list)` column list.
+    #[test]
+    fn unique_with_top_level_opclass_escalates_to_unique_index() {
+        let decls = parse_indexes_from_attr(quote! {
+            unique(fields = [email], opclass = "text_pattern_ops")
+        })
+        .unwrap();
+        let ctx = LoweringCtx {
+            table_name: "users",
+            declared_columns: &["email".to_string()],
+            reserved_generated_names: &[],
+        };
+        let (name, tokens) = emit_index_spec_tokens(&decls[0], &ctx).unwrap();
+        let rendered = tokens.to_string();
+        assert!(
+            rendered.contains("IndexKind :: UniqueIndex"),
+            "top-level opclass must escalate unique to UniqueIndex; got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("IndexKind :: UniqueConstraint"),
+            "must not remain UniqueConstraint; got: {rendered}"
+        );
+        assert_eq!(
+            name, "users_email_uidx",
+            "name stem must use _uidx when escalated"
+        );
+    }
+
+    /// Per-column `opclass` on `unique(...)` must escalate to `UniqueIndex`.
+    #[test]
+    fn unique_with_per_column_opclass_escalates_to_unique_index() {
+        let decls = parse_indexes_from_attr(quote! {
+            unique(fields = [(col = email, opclass = "text_pattern_ops")])
+        })
+        .unwrap();
+        let ctx = LoweringCtx {
+            table_name: "accounts",
+            declared_columns: &["email".to_string()],
+            reserved_generated_names: &[],
+        };
+        let (name, tokens) = emit_index_spec_tokens(&decls[0], &ctx).unwrap();
+        let rendered = tokens.to_string();
+        assert!(
+            rendered.contains("IndexKind :: UniqueIndex"),
+            "per-column opclass must escalate unique to UniqueIndex; got: {rendered}"
+        );
+        assert_eq!(name, "accounts_email_uidx");
+    }
+
+    /// Per-column `order = desc` on `unique(...)` must escalate to `UniqueIndex`.
+    /// `DESC` is index-element syntax and Postgres rejects it in `UNIQUE (col_list)`.
+    #[test]
+    fn unique_with_per_column_desc_order_escalates_to_unique_index() {
+        let decls = parse_indexes_from_attr(quote! {
+            unique(fields = [(col = created_at, order = desc)])
+        })
+        .unwrap();
+        let ctx = LoweringCtx {
+            table_name: "events",
+            declared_columns: &["created_at".to_string()],
+            reserved_generated_names: &[],
+        };
+        let (name, tokens) = emit_index_spec_tokens(&decls[0], &ctx).unwrap();
+        let rendered = tokens.to_string();
+        assert!(
+            rendered.contains("IndexKind :: UniqueIndex"),
+            "per-column order=desc must escalate unique to UniqueIndex; got: {rendered}"
+        );
+        assert_eq!(name, "events_created_at_uidx");
+    }
+
+    /// Per-column `nulls = first` on `unique(...)` must escalate to `UniqueIndex`.
+    /// `NULLS FIRST` is index-element syntax; Postgres only accepts it in
+    /// `CREATE INDEX … (col NULLS FIRST)`, not in a table-constraint column list.
+    #[test]
+    fn unique_with_per_column_nulls_first_escalates_to_unique_index() {
+        let decls = parse_indexes_from_attr(quote! {
+            unique(fields = [(col = slug, nulls = first)])
+        })
+        .unwrap();
+        let ctx = LoweringCtx {
+            table_name: "posts",
+            declared_columns: &["slug".to_string()],
+            reserved_generated_names: &[],
+        };
+        let (name, tokens) = emit_index_spec_tokens(&decls[0], &ctx).unwrap();
+        let rendered = tokens.to_string();
+        assert!(
+            rendered.contains("IndexKind :: UniqueIndex"),
+            "per-column nulls=first must escalate unique to UniqueIndex; got: {rendered}"
+        );
+        assert_eq!(name, "posts_slug_uidx");
+    }
+
+    /// Per-column `nulls = last` also escalates (explicit non-default).
+    #[test]
+    fn unique_with_per_column_nulls_last_escalates_to_unique_index() {
+        let decls = parse_indexes_from_attr(quote! {
+            unique(fields = [(col = slug, nulls = last)])
+        })
+        .unwrap();
+        let ctx = LoweringCtx {
+            table_name: "posts",
+            declared_columns: &["slug".to_string()],
+            reserved_generated_names: &[],
+        };
+        let (_name, tokens) = emit_index_spec_tokens(&decls[0], &ctx).unwrap();
+        let rendered = tokens.to_string();
+        assert!(
+            rendered.contains("IndexKind :: UniqueIndex"),
+            "per-column nulls=last must escalate unique to UniqueIndex; got: {rendered}"
+        );
+    }
+
+    /// `asc` order and default nulls do NOT trigger escalation — these are
+    /// already the Postgres defaults and are omitted from the emitted SQL,
+    /// so carrying them in the record form is harmless.
+    #[test]
+    fn unique_with_per_column_asc_and_default_nulls_stays_as_unique_constraint() {
+        let decls = parse_indexes_from_attr(quote! {
+            unique(fields = [(col = email, order = asc, nulls = default)])
+        })
+        .unwrap();
+        let ctx = LoweringCtx {
+            table_name: "users",
+            declared_columns: &["email".to_string()],
+            reserved_generated_names: &[],
+        };
+        let (_name, tokens) = emit_index_spec_tokens(&decls[0], &ctx).unwrap();
+        let rendered = tokens.to_string();
+        assert!(
+            rendered.contains("IndexKind :: UniqueConstraint"),
+            "asc + default-nulls must not escalate; got: {rendered}"
+        );
+    }
+
+    /// `unique(using = "gist")` must escalate to `UniqueIndex` because the
+    /// `ALTER TABLE … ADD CONSTRAINT … UNIQUE` form has no `USING` clause.
+    /// Silently dropping the method would produce a btree constraint where the
+    /// user declared a gist unique index.
+    #[test]
+    fn unique_with_non_btree_using_escalates_to_unique_index() {
+        let decls = parse_indexes_from_attr(quote! {
+            unique(fields = [location], using = "gist")
+        })
+        .unwrap();
+        let ctx = LoweringCtx {
+            table_name: "places",
+            declared_columns: &["location".to_string()],
+            reserved_generated_names: &[],
+        };
+        let (name, tokens) = emit_index_spec_tokens(&decls[0], &ctx).unwrap();
+        let rendered = tokens.to_string();
+        assert!(
+            rendered.contains("IndexKind :: UniqueIndex"),
+            "non-btree using must escalate unique to UniqueIndex; got: {rendered}"
+        );
+        assert_eq!(name, "places_location_uidx");
+    }
+
+    /// Explicit `using = "btree"` on `unique(...)` does NOT escalate — btree
+    /// is the constraint form's implicit method.
+    #[test]
+    fn unique_with_explicit_btree_using_stays_as_unique_constraint() {
+        let decls = parse_indexes_from_attr(quote! {
+            unique(fields = [email], using = "btree")
+        })
+        .unwrap();
+        let ctx = LoweringCtx {
+            table_name: "users",
+            declared_columns: &["email".to_string()],
+            reserved_generated_names: &[],
+        };
+        let (_name, tokens) = emit_index_spec_tokens(&decls[0], &ctx).unwrap();
+        let rendered = tokens.to_string();
+        assert!(
+            rendered.contains("IndexKind :: UniqueConstraint"),
+            "explicit btree using must not escalate; got: {rendered}"
         );
     }
 }

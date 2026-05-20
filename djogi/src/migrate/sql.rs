@@ -1309,16 +1309,25 @@ fn emit_add_index(idx: &IndexSchema) -> OperationSql {
     //
     // The macro's `forces_unique_index` predicate ensures every `UniqueConstraint`
     // has no predicate, no `NULLS NOT DISTINCT`, no expression target, no `INCLUDE`
-    // columns, and no `CONCURRENTLY` flag — those shapes are escalated to
+    // columns, no `CONCURRENTLY` flag, no top-level `opclass`, and no per-column
+    // modifiers (opclass / DESC / NULLS FIRST|LAST) — those shapes are escalated to
     // `UniqueIndex` before they reach the descriptor. The constraint form
     // `ALTER TABLE … ADD CONSTRAINT … UNIQUE (cols)` produces a named entry in
     // `pg_constraint` (matching the handwritten DDL semantics for plain composite
     // uniqueness) whereas `CREATE UNIQUE INDEX` produces only a `pg_index` row.
+    //
+    // Defense-in-depth: use `write_constraint_column_list` instead of
+    // `write_index_target` for the `UniqueConstraint` branch. The constraint form
+    // only accepts bare column identifiers — opclass / ASC|DESC / NULLS FIRST|LAST
+    // are index-element syntax and Postgres rejects them inside `UNIQUE (col_list)`
+    // on a table constraint. Even if an old snapshot somehow carries a
+    // `UniqueConstraint` with modifiers, this path emits valid SQL (identifiers
+    // only) rather than silently producing a syntax error that would fail at apply.
     if idx.kind == IndexKindSchema::UniqueConstraint {
         let qt = quote_ident(&idx.table);
         let qname = quote_ident(&idx.name);
         let mut cols = String::new();
-        write_index_target(&mut cols, &idx.target);
+        write_constraint_column_list(&mut cols, &idx.target);
         let up = format!("ALTER TABLE {qt} ADD CONSTRAINT {qname} UNIQUE {cols};");
         let down = format!("ALTER TABLE {qt} DROP CONSTRAINT {qname};");
         return OperationSql {
@@ -2350,6 +2359,53 @@ fn write_index_target(out: &mut String, target: &IndexTargetSchema) {
             // Expression-form indexes always need the doubled parens
             // — `CREATE INDEX ... ON t ((expr))` per Postgres docs.
             let _ = write!(out, "(({expr}))");
+        }
+    }
+}
+
+/// Render a column list for use inside `ALTER TABLE … ADD CONSTRAINT … UNIQUE`.
+///
+/// The Postgres table-constraint `UNIQUE` form accepts only bare column
+/// identifiers — no opclass, no `ASC` / `DESC`, no `NULLS FIRST` / `NULLS LAST`.
+/// Those are index-element syntax features (`CREATE INDEX`, `EXCLUDE`) and Postgres
+/// rejects them with a syntax error inside the table-constraint column list.
+///
+/// This is the safe renderer for `UniqueConstraint` kind; `write_index_target`
+/// is used for `NonUnique` and `UniqueIndex` kinds where the full element syntax
+/// is valid.
+///
+/// Reference: <https://www.postgresql.org/docs/18/sql-createtable.html>
+/// (`UNIQUE [ NULLS [NOT] DISTINCT ] ( column_name [, ...] ) …`)
+fn write_constraint_column_list(out: &mut String, target: &IndexTargetSchema) {
+    match target {
+        IndexTargetSchema::Columns(cols) => {
+            out.push('(');
+            let mut first = true;
+            for c in cols {
+                if !first {
+                    out.push_str(", ");
+                }
+                first = false;
+                // Constraint column list: quoted identifier only.
+                // Modifiers (opclass / order / nulls) are intentionally
+                // dropped — they are not valid here and the macro's
+                // `forces_unique_index` predicate should have escalated any
+                // declaration that carries them to `UniqueIndex` before the
+                // descriptor reached this emitter.
+                out.push_str(&quote_ident(&c.name));
+            }
+            out.push(')');
+        }
+        // Expression targets cannot reach `UniqueConstraint` kind — the macro
+        // escalates them to `UniqueIndex`. If one arrives here via an old
+        // snapshot, emit a SQL comment that produces a clear failure at apply
+        // time rather than silently generating wrong SQL.
+        IndexTargetSchema::Expression(expr) => {
+            let _ = write!(
+                out,
+                "(/* expression cannot appear in UNIQUE table constraint; \
+                 use `CREATE UNIQUE INDEX` form instead (got: {expr}) */)"
+            );
         }
     }
 }
@@ -4411,6 +4467,160 @@ mod tests {
                 Some(LossyRollbackKind::DropIndex)
             ),
             "DropConstraintUnique must carry a lossy marker"
+        );
+    }
+
+    // ── Field-level index SQL (Class A regression coverage) ────────────
+    //
+    // These tests assert that `emit_add_index` produces correct SQL for
+    // the `IndexSchema` entries synthesised by `project_field_level_index`
+    // in the projection layer. The projection now materialises every
+    // `#[field(index)]` / `#[field(index = "method")]` annotation as a
+    // full `IndexSchema` so that `diff_indexes` emits `AddIndex` on a
+    // fresh `AddTable` (empty baseline). Without this path, field-level
+    // indexes were never emitted for new tables.
+
+    /// BTree field-level index — the default when `#[field(index)]` carries
+    /// no explicit method. Must emit `USING btree` because `diff_indexes`
+    /// routes through `emit_add_index`, which always emits the method name.
+    #[test]
+    fn field_level_btree_index_emits_create_index_using_btree() {
+        let i = idx("elephants_herd_id_idx", "elephants", &["herd_id"]);
+        // kind = NonUnique, index_type = BTree (both are idx() defaults)
+        let sql = emit_add_index(&i);
+        assert_eq!(
+            sql.up,
+            r#"CREATE INDEX "elephants_herd_id_idx" ON "elephants" USING btree ("herd_id");"#,
+            "field-level BTree index must produce CREATE INDEX … USING btree"
+        );
+        assert_eq!(
+            sql.down, r#"DROP INDEX "elephants_herd_id_idx";"#,
+            "field-level BTree index down must be a plain DROP INDEX"
+        );
+        assert!(sql.lossy.is_none(), "AddIndex is non-lossy forward");
+    }
+
+    /// GIN field-level index — set via `#[field(index = "gin")]`.
+    /// Non-BTree method must survive the round-trip through `IndexSchema`
+    /// and appear in the emitted SQL.
+    #[test]
+    fn field_level_gin_index_emits_create_index_using_gin() {
+        let mut i = idx("posts_tags_idx", "posts", &["tags"]);
+        i.index_type = IndexTypeSchema::Gin;
+        let sql = emit_add_index(&i);
+        assert!(
+            sql.up.contains("USING gin"),
+            "field-level GIN index must emit USING gin; got: {}",
+            sql.up
+        );
+        assert!(
+            sql.up.starts_with("CREATE INDEX"),
+            "field-level GIN index must be a plain CREATE INDEX (non-unique); got: {}",
+            sql.up
+        );
+    }
+
+    // ── UniqueConstraint constraint-safe column list (Class B regression) ─
+    //
+    // `ALTER TABLE … ADD CONSTRAINT … UNIQUE (col_list)` only accepts bare
+    // column identifiers. Per-column modifiers (opclass / order / nulls) are
+    // index-element syntax and Postgres rejects them in a table-constraint
+    // column list with a syntax error. These tests assert that
+    // `emit_add_index` for `UniqueConstraint` kind never emits modifiers.
+
+    /// `UniqueConstraint` with a per-column opclass must NOT emit the opclass
+    /// in the `ADD CONSTRAINT` column list. The macro's `forces_unique_index`
+    /// escalates declarations with opclass to `UniqueIndex` before they reach
+    /// the descriptor, so a `UniqueConstraint` with an opclass in production
+    /// is only reachable from an old snapshot. The emitter must produce valid
+    /// SQL by dropping the modifier rather than silently emitting invalid DDL.
+    #[test]
+    fn unique_constraint_with_opclass_emits_plain_column_names_not_opclass() {
+        let mut i = idx("users_email_key", "users", &["email"]);
+        i.kind = IndexKindSchema::UniqueConstraint;
+        // Inject an opclass as if coming from an old snapshot that predates
+        // the `forces_unique_index` escalation for per-column modifiers.
+        if let IndexTargetSchema::Columns(ref mut cols) = i.target {
+            cols[0].opclass = Some("text_pattern_ops".to_string());
+        }
+        let sql = emit_add_index(&i);
+        assert!(
+            !sql.up.contains("text_pattern_ops"),
+            "UniqueConstraint must not emit opclass in ADD CONSTRAINT column list; got: {}",
+            sql.up
+        );
+        assert!(
+            sql.up.contains("ADD CONSTRAINT"),
+            "UniqueConstraint must still emit ADD CONSTRAINT form; got: {}",
+            sql.up
+        );
+        assert_eq!(
+            sql.up, r#"ALTER TABLE "users" ADD CONSTRAINT "users_email_key" UNIQUE ("email");"#,
+            "UniqueConstraint with opclass must produce plain-identifier ADD CONSTRAINT"
+        );
+    }
+
+    /// `UniqueConstraint` with `DESC` order must NOT emit `DESC` in the
+    /// column list — same rationale as the opclass test above.
+    #[test]
+    fn unique_constraint_with_desc_order_emits_plain_column_names_not_order() {
+        let mut i = idx("orgs_name_key", "orgs", &["name"]);
+        i.kind = IndexKindSchema::UniqueConstraint;
+        if let IndexTargetSchema::Columns(ref mut cols) = i.target {
+            cols[0].order = IndexOrderSchema::Desc;
+        }
+        let sql = emit_add_index(&i);
+        assert!(
+            !sql.up.contains("DESC"),
+            "UniqueConstraint must not emit DESC in ADD CONSTRAINT column list; got: {}",
+            sql.up
+        );
+        assert!(
+            sql.up.contains("ADD CONSTRAINT"),
+            "UniqueConstraint must still emit ADD CONSTRAINT form; got: {}",
+            sql.up
+        );
+    }
+
+    /// `UniqueConstraint` down-side recreate must also use the constraint-safe
+    /// column list — `recreate_index_sql` routes through `emit_add_index`,
+    /// so the constraint form on recreate is identical to the forward path.
+    #[test]
+    fn drop_unique_constraint_recreate_does_not_emit_index_only_modifiers() {
+        let mut i = idx("widgets_code_key", "widgets", &["code"]);
+        i.kind = IndexKindSchema::UniqueConstraint;
+        if let IndexTargetSchema::Columns(ref mut cols) = i.target {
+            cols[0].opclass = Some("text_pattern_ops".to_string());
+            cols[0].order = IndexOrderSchema::Desc;
+            cols[0].nulls = IndexNullsOrderSchema::First;
+        }
+        let sql = emit_drop_index(&i);
+        // Up side: DROP CONSTRAINT
+        assert!(
+            sql.up.contains("DROP CONSTRAINT"),
+            "DropConstraintUnique up must use DROP CONSTRAINT; got: {}",
+            sql.up
+        );
+        // Down (recreate) must be constraint-safe
+        assert!(
+            !sql.down.contains("text_pattern_ops"),
+            "DropConstraintUnique recreate must not emit opclass; got: {}",
+            sql.down
+        );
+        assert!(
+            !sql.down.contains("DESC"),
+            "DropConstraintUnique recreate must not emit DESC; got: {}",
+            sql.down
+        );
+        assert!(
+            !sql.down.contains("NULLS FIRST"),
+            "DropConstraintUnique recreate must not emit NULLS FIRST; got: {}",
+            sql.down
+        );
+        assert!(
+            sql.down.contains("ADD CONSTRAINT"),
+            "DropConstraintUnique recreate must use ADD CONSTRAINT form; got: {}",
+            sql.down
         );
     }
 

@@ -79,8 +79,14 @@ use proc_macro::TokenStream;
 /// `unique(...)` differs from `index(...)` only in kind — by default it lowers
 /// to a `UNIQUE` constraint (`..._key` name), but the emitter escalates to a
 /// `UNIQUE INDEX` (`..._uidx` name) when the declaration uses `where`,
-/// `include`, `nulls_not_distinct`, or an `expr` target (Postgres constraints
-/// do not support those features).
+/// `include`, `nulls_not_distinct`, `concurrently`, an `expr` target, a
+/// top-level `opclass`, any per-column modifier (`opclass`, `order = desc`,
+/// `nulls = first|last`) in the `fields` list, or a non-btree `using` method.
+/// The opclass/modifier/method categories are index-element syntax that Postgres
+/// only permits inside `CREATE INDEX … USING … (col modifier)`; they are not
+/// valid in the `UNIQUE (col, …)` table-constraint column list, and the
+/// `ADD CONSTRAINT UNIQUE` form has no `USING` clause. (`hash` is separately
+/// rejected at compile time as incompatible with uniqueness.)
 ///
 /// Example:
 ///
