@@ -44,7 +44,7 @@ DJOGI_POSTGRES_HOST_PORT="${host_port}" \
 DATABASE_URL="${database_url}" \
   perl -pe '
     s{5432:5432}{$ENV{DJOGI_POSTGRES_HOST_PORT}:5432}g;
-    s{postgres://djogi:djogi\@localhost:5432/djogi_test}{$ENV{DATABASE_URL}}g;
+    s{postgres://djogi:djogi@localhost:5432/djogi_test}{$ENV{DATABASE_URL}}g;
   ' "${workflow_src}" > "${workflow_tmp}"
 
 printf 'Using act Postgres host port %s\n' "${host_port}" >&2
