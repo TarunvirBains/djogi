@@ -68,7 +68,7 @@ use proc_macro::TokenStream;
 /// |-----|-------|---------|
 /// | `fields` | `= [ident, ...]` or `= [(col = ident, opclass = "...", order = asc\|desc, nulls = first\|last\|default), ...]` | Column list. Order is semantic — `[last, first]` and `[first, last]` are different indexes with different names. |
 /// | `expr` | `= "lower(email)"` | Expression-target index (mutually exclusive with `fields`). |
-/// | `using` | `= "btree" \| "gin" \| "gist" \| "brin" \| "hash"` | Access method. Default: `btree`. |
+/// | `using` | `= "btree" \| "gin" \| "gist" \| "brin" \| "hash" \| "spgist"` | Access method. Default: `btree`. On `unique(...)`, only `btree` (or omitting `using`) is accepted — PostgreSQL unique indexes are btree-only. |
 /// | `opclass` | `= "text_pattern_ops"` | Single-column opclass (declaration shortcut; the per-column record form is preferred for multi-column indexes). |
 /// | `include` | `= [ident, ...]` | `INCLUDE(...)` payload columns for covering indexes. |
 /// | `where` | `= "deleted_at IS NULL"` | Partial-index predicate. Raw SQL — Djogi does not parse it; Postgres validates at migration time. |
@@ -80,13 +80,19 @@ use proc_macro::TokenStream;
 /// to a `UNIQUE` constraint (`..._key` name), but the emitter escalates to a
 /// `UNIQUE INDEX` (`..._uidx` name) when the declaration uses `where`,
 /// `include`, `nulls_not_distinct`, `concurrently`, an `expr` target, a
-/// top-level `opclass`, any per-column modifier (`opclass`, `order = desc`,
-/// `nulls = first|last`) in the `fields` list, or a non-btree `using` method.
-/// The opclass/modifier/method categories are index-element syntax that Postgres
-/// only permits inside `CREATE INDEX … USING … (col modifier)`; they are not
-/// valid in the `UNIQUE (col, …)` table-constraint column list, and the
-/// `ADD CONSTRAINT UNIQUE` form has no `USING` clause. (`hash` is separately
-/// rejected at compile time as incompatible with uniqueness.)
+/// top-level `opclass`, or any per-column modifier (`opclass`, `order = desc`,
+/// `nulls = first|last`) in the `fields` list. The opclass/modifier categories
+/// are index-element syntax that Postgres only permits inside
+/// `CREATE INDEX … USING … (col modifier)`; they are not valid in the
+/// `UNIQUE (col, …)` table-constraint column list.
+///
+/// `using = "<non-btree>"` (`gin`, `gist`, `brin`, `spgist`, `hash`) on
+/// `unique(...)` is **rejected** at compile time — PostgreSQL unique
+/// indexes are btree-only, so `CREATE UNIQUE INDEX … USING <non-btree>`
+/// would fail at apply. Use `using = "btree"` (or omit `using`), drop
+/// `unique` if a non-unique non-btree lookup index is what you want, or
+/// reach for an `EXCLUDE USING gist (… WITH &&)` row-exclusion constraint
+/// instead when row-overlap exclusion on a non-btree column is the goal.
 ///
 /// Example:
 ///

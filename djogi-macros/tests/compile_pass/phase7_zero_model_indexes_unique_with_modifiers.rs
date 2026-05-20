@@ -10,6 +10,17 @@
 // is produced. The resulting descriptor carries `IndexKind::UniqueIndex`
 // and a `..._uidx` name — verified by the unit tests in
 // `djogi-macros/src/model/indexes.rs`.
+//
+// Non-btree `using = "<method>"` on `unique(...)` is NOT covered here —
+// PostgreSQL unique indexes are btree-only, so the macro rejects every
+// non-btree unique declaration at validation time. The five non-btree
+// rejection cases (`gin` / `gist` / `brin` / `spgist` / `hash`) live in
+// `compile_fail/phase85_model_indexes_<method>_unique.rs` (Phase 8.5 #83
+// fix). Btree-compatible escalations — predicate, include,
+// `nulls_not_distinct`, expression target, `concurrently`,
+// opclass / DESC / NULLS modifiers — stay covered here and in the
+// sibling `unique_concurrent` / `unique_partial` / `unique_with_modifiers`
+// fixtures.
 use djogi::prelude::*;
 
 /// Top-level `opclass = "text_pattern_ops"` on `unique(...)`.
@@ -66,16 +77,6 @@ pub struct ColNullsLast {
 pub struct CompositeOpclass {
     pub tenant_id: HeerId,
     pub external_id: String,
-}
-
-/// Non-btree `using` on `unique(...)` — escalates because `ADD CONSTRAINT UNIQUE`
-/// has no `USING` clause; preserving the method requires `CREATE UNIQUE INDEX`.
-#[model(table = "uc_gist_using", no_default, indexes(
-    unique(fields = [location], using = "gist"),
-))]
-#[derive(Debug, Clone)]
-pub struct GistUsing {
-    pub location: String,
 }
 
 fn main() {}

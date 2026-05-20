@@ -780,15 +780,32 @@ pub enum IndexTargetSchema {
 
 /// Index uniqueness discipline. Mirrors
 /// [`crate::descriptor::IndexKind`].
+///
+/// # Invariant — unique-bearing variants are btree-only
+///
+/// Both [`IndexKindSchema::UniqueConstraint`] and [`IndexKindSchema::UniqueIndex`]
+/// require [`IndexSchema::index_type`] to be [`IndexTypeSchema::BTree`].
+/// PostgreSQL rejects `CREATE UNIQUE INDEX … USING <non-btree>` and
+/// `ALTER TABLE … ADD CONSTRAINT … UNIQUE` has no `USING` clause — both
+/// paths are implicitly btree-backed. The macro layer enforces this by
+/// rejecting `unique(..., using = "<non-btree>")` at compile time
+/// (Phase 8.5 #83); the snapshot serialiser and migration SQL emitter
+/// rely on it as a precondition, since violating it produces invalid
+/// generated DDL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IndexKindSchema {
-    /// Plain index — `CREATE INDEX`.
+    /// Plain index — `CREATE INDEX`. May carry any
+    /// [`IndexTypeSchema`] value.
     NonUnique,
     /// `UNIQUE` constraint on the table — `ALTER TABLE ... ADD
-    /// CONSTRAINT ... UNIQUE (...)`.
+    /// CONSTRAINT ... UNIQUE (...)`. The `index_type` MUST be
+    /// [`IndexTypeSchema::BTree`]; the constraint form has no `USING`
+    /// clause and is implicitly btree-backed.
     UniqueConstraint,
     /// `CREATE UNIQUE INDEX` without a constraint row — required
-    /// for partial uniqueness and `NULLS NOT DISTINCT`.
+    /// for partial uniqueness and `NULLS NOT DISTINCT`. The
+    /// `index_type` MUST be [`IndexTypeSchema::BTree`]: PostgreSQL
+    /// rejects `CREATE UNIQUE INDEX … USING <non-btree>` server-side.
     UniqueIndex,
 }
 

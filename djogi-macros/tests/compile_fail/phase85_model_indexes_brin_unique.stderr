@@ -1,0 +1,7 @@
+error: `unique(..., using = "brin")` is rejected: PostgreSQL unique indexes are btree-only. Either use `using = "btree"` (or omit `using`), or drop `unique` if a non-unique `brin` lookup index is what you want.
+  --> $DIR/phase85_model_indexes_brin_unique.rs:10:5
+   |
+10 |     unique(fields = [happened_at], using = "brin"),
+   |     ^^^^^^
+
+error: aborting due to 1 previous error

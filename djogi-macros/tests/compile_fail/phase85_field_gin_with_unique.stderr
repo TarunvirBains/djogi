@@ -1,0 +1,7 @@
+error: `#[field(index = "gin", unique)]` on `payload`: PostgreSQL unique indexes are btree-only, so a non-btree `index = "gin"` combined with `unique` is ambiguous. Either: (a) use `#[field(index = "btree", unique)]` (or just `#[field(unique)]`), (b) drop `unique` if a non-unique `gin` lookup index is what you want, or (c) keep `#[field(unique)]` and declare the secondary `gin` index at the model level via `#[model(indexes(index(fields = [payload], using = "gin"))]`.
+  --> $DIR/phase85_field_gin_with_unique.rs:19:21
+   |
+19 |     #[field(index = "gin", unique)]
+   |                     ^^^^^
+
+error: aborting due to 1 previous error

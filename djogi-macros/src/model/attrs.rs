@@ -2601,13 +2601,38 @@ impl FieldAttrs {
             }
         }
 
-        // Phase 7-Zero v3 T2 Q3 — hash indexes cannot enforce uniqueness.
-        // Postgres hash indexes store only the hash of the key, so they
-        // physically cannot support `UNIQUE`; Postgres itself errors out
-        // on `CREATE UNIQUE INDEX ... USING HASH(...)`. Catching it at the
-        // declaration gives the user a span-precise error pointing at the
-        // field rather than at a migration failure much later.
-        if attrs.unique && attrs.index_method.as_deref() == Some("hash") {
+        // Phase 7-Zero v3 T2 Q3 + Phase 8.5 #83 —
+        // `#[field(unique, index = "<non-btree>")]` is rejected.
+        //
+        // Field-level `unique` is lowered to an inline `UNIQUE` column
+        // constraint (btree-backed by PostgreSQL); field-level
+        // `index = "<method>"` is lowered to a separate secondary index
+        // of that method. Combining them in one `#[field(...)]` mixes two
+        // distinct schema objects under one declaration and is ambiguous:
+        //
+        // - Read as "a unique index using <method>" — impossible: PG
+        //   unique indexes are btree-only.
+        // - Read as "a unique column constraint plus a secondary <method>
+        //   index on the same column" — valid two-object intent, but
+        //   that intent is better expressed at the model level so the
+        //   two objects are spelled out explicitly:
+        //   `#[field(unique)]` + `#[model(indexes(index(fields = [col],
+        //   using = "<method>")))]`.
+        //
+        // The rejection is broader than the original Phase 7-Zero
+        // hash-only rule. Hash was originally rejected on the theory
+        // "hash indexes cannot enforce uniqueness" (true for
+        // `CREATE UNIQUE INDEX … USING hash`, but field-level `unique`
+        // does not lower to that — it lowers to an inline UNIQUE column
+        // constraint Postgres backs with btree). The rejection here
+        // re-grounds on the broader principle: PostgreSQL unique indexes
+        // are btree-only, and mixing field-level `unique` with a
+        // non-btree `index = "<method>"` is ambiguous shorthand that
+        // should be spelled out at the model level.
+        if attrs.unique
+            && let Some(method) = attrs.index_method.as_deref()
+            && method != "btree"
+        {
             let field_name = field
                 .ident
                 .as_ref()
@@ -2617,9 +2642,14 @@ impl FieldAttrs {
             return Err(syn::Error::new(
                 span,
                 format!(
-                    "`#[field(index = \"hash\", unique)]` on `{field_name}`: hash indexes \
-                     cannot enforce uniqueness. Use `index = \"btree\"` with `unique`, or \
-                     drop `unique` if a non-unique hash lookup index is what you want."
+                    "`#[field(index = \"{method}\", unique)]` on `{field_name}`: PostgreSQL \
+                     unique indexes are btree-only, so a non-btree `index = \"{method}\"` \
+                     combined with `unique` is ambiguous. Either: (a) use \
+                     `#[field(index = \"btree\", unique)]` (or just `#[field(unique)]`), \
+                     (b) drop `unique` if a non-unique `{method}` lookup index is what you \
+                     want, or (c) keep `#[field(unique)]` and declare the secondary \
+                     `{method}` index at the model level via \
+                     `#[model(indexes(index(fields = [{field_name}], using = \"{method}\"))]`."
                 ),
             ));
         }

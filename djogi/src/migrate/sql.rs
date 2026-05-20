@@ -1338,6 +1338,30 @@ fn emit_add_index(idx: &IndexSchema) -> OperationSql {
         };
     }
 
+    // Defense-in-depth: PostgreSQL rejects `CREATE UNIQUE INDEX … USING
+    // <non-btree>` server-side, so the macro's `validate_decl` rejects
+    // `unique(..., using = "<non-btree>")` at compile time (Phase 8.5 #83).
+    // The check below catches any path that constructs a `UniqueIndex`
+    // with a non-btree `index_type` outside the macro layer — directly
+    // building an `IndexSchema`, an old on-disk snapshot from before the
+    // rule was enforced, or future descriptor APIs that bypass
+    // `forces_unique_index`. Surfacing this here keeps the framework's
+    // invariant honest: the emitter never produces invalid generated
+    // DDL.
+    if idx.kind == IndexKindSchema::UniqueIndex && idx.index_type != IndexTypeSchema::BTree {
+        panic!(
+            "emit_add_index: PostgreSQL unique indexes are btree-only, but \
+             UniqueIndex {name:?} on {table:?} carries index_type {ty:?}. \
+             The macro layer rejects this combination at compile time; an \
+             IndexSchema reaching this emitter with a non-btree UniqueIndex \
+             indicates either a stale snapshot or a direct IndexSchema \
+             construction bypassing the rule (Phase 8.5 #83).",
+            name = idx.name,
+            table = idx.table,
+            ty = idx.index_type,
+        );
+    }
+
     let mut up = String::with_capacity(128);
     let create = match idx.kind {
         IndexKindSchema::NonUnique => "CREATE INDEX",
@@ -4621,6 +4645,86 @@ mod tests {
             sql.down.contains("ADD CONSTRAINT"),
             "DropConstraintUnique recreate must use ADD CONSTRAINT form; got: {}",
             sql.down
+        );
+    }
+
+    // ── UniqueIndex btree-only invariant (Phase 8.5 #83) ──────────────
+    //
+    // PostgreSQL rejects `CREATE UNIQUE INDEX … USING <non-btree>` server-side.
+    // The macro layer rejects `unique(..., using = "<non-btree>")` at compile
+    // time, and `IndexSpec::simple` panics on the same combination. The SQL
+    // emitter holds the production backstop: an `IndexSchema` reaching
+    // `emit_add_index` with `kind = UniqueIndex` and non-btree `index_type`
+    // (e.g. from a stale on-disk snapshot that predates the rule, or a
+    // direct `IndexSchema` literal in test/escape-hatch code) panics with
+    // a span-precise message instead of silently emitting invalid DDL.
+
+    #[test]
+    #[should_panic(expected = "PostgreSQL unique indexes are btree-only")]
+    fn emit_add_index_panics_on_unique_index_with_gist_index_type() {
+        let mut i = idx("places_loc_uidx", "places", &["loc"]);
+        i.kind = IndexKindSchema::UniqueIndex;
+        i.index_type = IndexTypeSchema::Gist;
+        let _ = emit_add_index(&i);
+    }
+
+    #[test]
+    #[should_panic(expected = "PostgreSQL unique indexes are btree-only")]
+    fn emit_add_index_panics_on_unique_index_with_gin_index_type() {
+        let mut i = idx("profiles_payload_uidx", "profiles", &["payload"]);
+        i.kind = IndexKindSchema::UniqueIndex;
+        i.index_type = IndexTypeSchema::Gin;
+        let _ = emit_add_index(&i);
+    }
+
+    #[test]
+    #[should_panic(expected = "PostgreSQL unique indexes are btree-only")]
+    fn emit_add_index_panics_on_unique_index_with_brin_index_type() {
+        let mut i = idx("events_at_uidx", "events", &["happened_at"]);
+        i.kind = IndexKindSchema::UniqueIndex;
+        i.index_type = IndexTypeSchema::Brin;
+        let _ = emit_add_index(&i);
+    }
+
+    #[test]
+    #[should_panic(expected = "PostgreSQL unique indexes are btree-only")]
+    fn emit_add_index_panics_on_unique_index_with_spgist_index_type() {
+        let mut i = idx("tags_path_uidx", "tags", &["path"]);
+        i.kind = IndexKindSchema::UniqueIndex;
+        i.index_type = IndexTypeSchema::Spgist;
+        let _ = emit_add_index(&i);
+    }
+
+    #[test]
+    #[should_panic(expected = "PostgreSQL unique indexes are btree-only")]
+    fn emit_add_index_panics_on_unique_index_with_hash_index_type() {
+        let mut i = idx("users_slug_uidx", "users", &["slug"]);
+        i.kind = IndexKindSchema::UniqueIndex;
+        i.index_type = IndexTypeSchema::Hash;
+        let _ = emit_add_index(&i);
+    }
+
+    /// Negative case — `UniqueIndex` with btree `index_type` is the valid
+    /// shape and must NOT panic. This protects against accidentally
+    /// over-tightening the guard so escalated unique-index cases
+    /// (`unique(..., where = "..."`, `unique(..., concurrently = true)`,
+    /// etc.) keep working.
+    #[test]
+    fn emit_add_index_accepts_unique_index_with_btree_index_type() {
+        let mut i = idx("accounts_email_uidx", "accounts", &["email"]);
+        i.kind = IndexKindSchema::UniqueIndex;
+        i.index_type = IndexTypeSchema::BTree;
+        i.predicate = Some("deleted_at IS NULL".to_string());
+        let sql = emit_add_index(&i);
+        assert!(
+            sql.up.contains("CREATE UNIQUE INDEX"),
+            "btree UniqueIndex must emit CREATE UNIQUE INDEX; got: {}",
+            sql.up
+        );
+        assert!(
+            sql.up.contains("USING btree"),
+            "btree UniqueIndex must emit USING btree; got: {}",
+            sql.up
         );
     }
 

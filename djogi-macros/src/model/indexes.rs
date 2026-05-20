@@ -577,7 +577,16 @@ pub struct LoweringCtx<'a> {
 /// | `concurrently = true` | `ADD CONSTRAINT` has no concurrent form. |
 /// | `opclass = "..."` (top-level) | Opclass is index-element syntax; it is not valid in the table-constraint column list. |
 /// | Per-column `opclass`, `order = desc`, or `nulls = first\|last` | Same reason — these modifiers are only valid inside `CREATE INDEX … USING … (col modifier…)`, not in `UNIQUE (col, …)`. |
-/// | `using = "<non-btree>"` | `ALTER TABLE … ADD CONSTRAINT … UNIQUE` always uses btree internally and has no `USING` clause. A non-btree method requires `CREATE UNIQUE INDEX … USING <method>`. (`hash` is already rejected at validation time; all other non-btree methods escalate here.) |
+///
+/// # Out of scope here — rejected at validation
+///
+/// A non-btree `using = "<method>"` on `unique(...)` is rejected by
+/// [`validate_decl`] **before** lowering reaches this predicate
+/// (PostgreSQL unique indexes are btree-only; `ALTER TABLE … ADD
+/// CONSTRAINT … UNIQUE` also has no `USING` clause). The predicate
+/// therefore never sees a non-btree unique declaration in well-formed
+/// code; the `using` field is intentionally absent from the
+/// escalation table above.
 fn forces_unique_index(body: &IndexDeclBody) -> bool {
     body.predicate.is_some()
         || body.nulls_not_distinct
@@ -590,12 +599,9 @@ fn forces_unique_index(body: &IndexDeclBody) -> bool {
         // Any per-column modifier (opclass / DESC / NULLS FIRST|LAST) is also
         // index-element syntax and must escalate to CREATE UNIQUE INDEX.
         || unique_columns_have_index_only_modifiers(&body.target)
-        // A non-btree `using = "…"` declaration requires `CREATE INDEX …
-        // USING <method>`. The `ADD CONSTRAINT UNIQUE` form has no `USING`
-        // clause; silently dropping the method produces wrong SQL. Hash is
-        // already rejected by `validate_decl` before reaching here; all
-        // other non-btree methods escalate so the USING clause is preserved.
-        || matches!(body.using.as_deref(), Some(m) if m != "btree")
+    // Non-btree `using` on `unique(...)` is rejected at validation time
+    // (PostgreSQL unique indexes are btree-only). See `validate_decl`.
+    // Lowering never sees that combination from a well-formed parse.
 }
 
 /// Returns `true` when at least one column in a `Fields` target carries a
@@ -786,12 +792,48 @@ fn validate_decl(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> syn::Result<()
     let body = &decl.body;
     let span = decl.head_span;
 
-    // §5 Q3 — hash + (unique | multi-column | expr | where | include) → error.
+    // Phase 8.5 #83 — PostgreSQL unique indexes are btree-only.
+    //
+    // `CREATE UNIQUE INDEX … USING <method>` is rejected by PostgreSQL for
+    // every non-btree access method (gin / gist / brin / spgist / hash);
+    // `ALTER TABLE … ADD CONSTRAINT … UNIQUE` has no `USING` clause at all
+    // and always uses btree internally. So `unique(..., using = "<non-btree>")`
+    // has no valid lowering and must be rejected at compile time — silently
+    // emitting `CREATE UNIQUE INDEX … USING gist` (or similar) would compile
+    // a model whose generated migration SQL fails at apply with PG's
+    // "access method does not support unique indexes" error.
+    //
+    // Hash is included in the rejection set: hash is non-btree, and a
+    // unique hash index has the same impossibility as a unique gin / gist /
+    // brin / spgist index. The original §5 Q3 hash-only carve-out (Phase
+    // 7-Zero) is subsumed by this rule. Below, the hash-specific rejection
+    // of multi-column / where / include / expression combinations is
+    // retained, because those combinations are hash-incompatible
+    // independently of unique.
+    if decl.is_unique
+        && let Some(method) = body.using.as_deref()
+        && method != "btree"
+    {
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "`unique(..., using = \"{method}\")` is rejected: PostgreSQL unique indexes \
+                 are btree-only. Either use `using = \"btree\"` (or omit `using`), or drop \
+                 `unique` if a non-unique `{method}` lookup index is what you want."
+            ),
+        ));
+    }
+
+    // §5 Q3 — `using = "hash"` + (multi-column | expr | where | include) → error.
+    //
+    // Hash + unique is already covered by the btree-only rule above; the
+    // remaining hash-incompatible combinations stay as separate diagnostics
+    // because their root cause is hash's own structural limitations (no
+    // partial predicate support, no covering columns, no expression
+    // targets, single-column only).
     if body.using.as_deref() == Some("hash") {
         let mut reason: Option<&'static str> = None;
-        if decl.is_unique {
-            reason = Some("unique");
-        } else if body.predicate.is_some() {
+        if body.predicate.is_some() {
             reason = Some("a `where = \"..\"` partial predicate");
         } else if !body.include.is_empty() {
             reason = Some("`include = [..]` covering columns");
@@ -1480,28 +1522,44 @@ mod tests {
         );
     }
 
-    /// `unique(using = "gist")` must escalate to `UniqueIndex` because the
-    /// `ALTER TABLE … ADD CONSTRAINT … UNIQUE` form has no `USING` clause.
-    /// Silently dropping the method would produce a btree constraint where the
-    /// user declared a gist unique index.
+    /// `unique(..., using = "<non-btree>")` is rejected at validation time
+    /// because PostgreSQL unique indexes are btree-only. Every non-btree
+    /// method gets the same diagnostic, naming the rejected method and
+    /// pointing the user at the three resolutions (use `btree`, omit
+    /// `using`, or drop `unique`).
+    ///
+    /// Pre-Phase 8.5, the macro silently escalated `unique(... using =
+    /// "gist")` to `UniqueIndex` and emitted `CREATE UNIQUE INDEX … USING
+    /// gist`, which PostgreSQL rejects at migration apply. The fix is to
+    /// reject at the macro layer so the model never compiles.
     #[test]
-    fn unique_with_non_btree_using_escalates_to_unique_index() {
-        let decls = parse_indexes_from_attr(quote! {
-            unique(fields = [location], using = "gist")
-        })
-        .unwrap();
-        let ctx = LoweringCtx {
-            table_name: "places",
-            declared_columns: &["location".to_string()],
-            reserved_generated_names: &[],
-        };
-        let (name, tokens) = emit_index_spec_tokens(&decls[0], &ctx).unwrap();
-        let rendered = tokens.to_string();
-        assert!(
-            rendered.contains("IndexKind :: UniqueIndex"),
-            "non-btree using must escalate unique to UniqueIndex; got: {rendered}"
-        );
-        assert_eq!(name, "places_location_uidx");
+    fn unique_with_non_btree_using_is_rejected() {
+        for method in ["gin", "gist", "brin", "spgist", "hash"] {
+            let attr_tokens = match method {
+                "gin" => quote! { unique(fields = [location], using = "gin") },
+                "gist" => quote! { unique(fields = [location], using = "gist") },
+                "brin" => quote! { unique(fields = [location], using = "brin") },
+                "spgist" => quote! { unique(fields = [location], using = "spgist") },
+                "hash" => quote! { unique(fields = [location], using = "hash") },
+                _ => unreachable!(),
+            };
+            let decls = parse_indexes_from_attr(attr_tokens).unwrap();
+            let ctx = LoweringCtx {
+                table_name: "places",
+                declared_columns: &["location".to_string()],
+                reserved_generated_names: &[],
+            };
+            let err = emit_index_spec_tokens(&decls[0], &ctx).unwrap_err();
+            let s = err.to_string();
+            assert!(
+                s.contains("PostgreSQL unique indexes") && s.contains("btree-only"),
+                "{method}: expected btree-only rejection, got: {s}"
+            );
+            assert!(
+                s.contains(&format!("unique(..., using = \"{method}\")")),
+                "{method}: expected error to name the rejected method, got: {s}"
+            );
+        }
     }
 
     /// Explicit `using = "btree"` on `unique(...)` does NOT escalate — btree

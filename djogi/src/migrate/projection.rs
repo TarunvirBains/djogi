@@ -2345,6 +2345,30 @@ fn project_partition(p: &PartitionSpec) -> PartitionSchema {
 }
 
 fn project_index(idx: &IndexSpec, table: &str) -> IndexSchema {
+    // Invariant: unique-bearing variants (`UniqueConstraint` /
+    // `UniqueIndex`) must be btree-only — PostgreSQL rejects
+    // `CREATE UNIQUE INDEX … USING <non-btree>` and the constraint form
+    // has no `USING` clause at all (Phase 8.5 #83). The macro layer
+    // rejects `unique(..., using = "<non-btree>")` at compile time. The
+    // debug-mode assertion here catches any descriptor that bypasses the
+    // macro path (direct `IndexSpec` construction, future code paths)
+    // before it lands in a snapshot or reaches the SQL emitter, where
+    // the same condition would produce invalid generated DDL. Release
+    // mode trusts the macro invariant; the SQL emitter's hard panic in
+    // `emit_add_index` is the production backstop.
+    debug_assert!(
+        !matches!(
+            idx.kind,
+            IndexKind::UniqueConstraint | IndexKind::UniqueIndex
+        ) || matches!(idx.index_type, IndexType::BTree),
+        "project_index: PostgreSQL unique indexes are btree-only; \
+         IndexSpec {name:?} on table {table:?} carries kind {kind:?} \
+         with non-btree index_type {ty:?} (Phase 8.5 #83).",
+        name = idx.name,
+        table = table,
+        kind = idx.kind,
+        ty = idx.index_type,
+    );
     IndexSchema {
         extension_dependency: idx.extension_dependency.map(|s| s.to_string()),
         include: idx.include.iter().map(|s| s.to_string()).collect(),

@@ -1,7 +1,7 @@
-error: `using = "hash"` is incompatible with unique. Postgres hash indexes do not support this combination — drop the combination or switch to a btree index.
- --> $DIR/phase7_zero_model_indexes_hash_unique.rs:5:5
-  |
-5 |     unique(fields = [email], using = "hash"),
-  |     ^^^^^^
+error: `unique(..., using = "hash")` is rejected: PostgreSQL unique indexes are btree-only. Either use `using = "btree"` (or omit `using`), or drop `unique` if a non-unique `hash` lookup index is what you want.
+  --> $DIR/phase7_zero_model_indexes_hash_unique.rs:16:5
+   |
+16 |     unique(fields = [email], using = "hash"),
+   |     ^^^^^^
 
 error: aborting due to 1 previous error
