@@ -170,9 +170,9 @@ jobs:
       - name: Build
         run: cargo build --workspace
 
-      # Macro-fixture gate — currently 302 proc-macro fixtures using
+      # Macro-fixture gate — currently 304 proc-macro fixtures using
       # lihaaf's build-once-dylib + per-fixture-rustc model:
-      #   • default suite: 297 fixtures (114 compile_pass + 183 compile_fail)
+      #   • default suite: 299 fixtures (114 compile_pass + 185 compile_fail)
       #   • named suites:    4 compile_pass_spatial, 1 compile_pass_network
       #   • djogi is built once as a dylib per session
       #   • per-fixture rustc invocations are parallel (-j 2 on 2-vCPU GHA)
