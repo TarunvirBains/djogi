@@ -46,8 +46,7 @@
 // # Spec anchors
 //
 // - `docs/spec/decisions.md` — "Decimal precision and scale projection
-//   (djogi#188)" + "`Range<T>` typed substrate (djogi#148 + djogi#150,
-//   Phase 8.5 G0)".
+//   (djogi#188)" + "`Range<T>` typed substrate (djogi#215, Phase 8.5 G0)".
 // - `djogi/src/migrate/projection.rs::decimal_repr_expr` — central
 //   representability predicate with the `scale IS NOT NULL` guard.
 // - `djogi/src/migrate/compose.rs::NUMERIC_ARRAY_HELPER_PRELUDE` —

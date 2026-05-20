@@ -62,6 +62,14 @@ pub enum Condition {
     /// Produced by [`crate::query::field::FieldRef::<M, Vec<V>>::overlap`].
     ArrayOverlap(crate::array::ArrayOverlapLeaf),
 
+    /// Postgres range predicate (`@>`, `<@`, `&&`, `<<`, `>>`, `&<`, `&>`,
+    /// `-|-`) over a `Range<T>` column.
+    ///
+    /// Produced by the SQL-only range methods on
+    /// [`crate::query::field::ExplicitPgPredicateField`] and the legacy
+    /// [`crate::query::field::FieldRef`] surface.
+    RangePredicate(crate::range::RangePredicateLeaf),
+
     /// JSONB flat-path comparison — `(col->'a'->>'b')::cast op $1`.
     ///
     /// Produced by [`crate::jsonb::path::JsonbPathRef`] comparison methods.
@@ -588,6 +596,9 @@ pub enum FilterValue {
     F32(f32),
     F64(f64),
     Bool(bool),
+    /// `TIMESTAMP` / timestamp-without-timezone values. Currently used as
+    /// the element RHS for `Range<time::PrimitiveDateTime>::contains(...)`.
+    Timestamp(time::PrimitiveDateTime),
     DateTime(time::OffsetDateTime),
     Date(time::Date),
     Uuid(uuid::Uuid),
@@ -635,6 +646,24 @@ pub enum FilterValue {
     /// Carries `djogi::MacAddr([u8; 6])`.
     #[cfg(feature = "network")]
     Macaddr(crate::MacAddr),
+
+    // ── Range variants (djogi#215) ───────────────────────────────────────
+    //
+    // Used by PostgreSQL range operators and explicit SQL equality over
+    // range columns. Each variant binds a typed `Range<T>` as a Postgres
+    // range parameter so tokio-postgres can encode the correct OID.
+    /// `Range<i32>` parameter (`int4range`).
+    RangeI32(crate::Range<i32>),
+    /// `Range<i64>` parameter (`int8range`).
+    RangeI64(crate::Range<i64>),
+    /// `Range<rust_decimal::Decimal>` parameter (`numrange`).
+    RangeDecimal(crate::Range<rust_decimal::Decimal>),
+    /// `Range<time::PrimitiveDateTime>` parameter (`tsrange`).
+    RangeTimestamp(crate::Range<time::PrimitiveDateTime>),
+    /// `Range<time::OffsetDateTime>` parameter (`tstzrange`).
+    RangeDateTime(crate::Range<time::OffsetDateTime>),
+    /// `Range<time::Date>` parameter (`daterange`).
+    RangeDate(crate::Range<time::Date>),
 
     // ── Array variants (Phase 5 Task 5) ──────────────────────────────────
     //

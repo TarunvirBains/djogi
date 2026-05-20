@@ -2464,6 +2464,124 @@ impl<M: Model, V: IntoArrayFilterValue + Clone + 'static> ExplicitPgPredicateFie
     }
 }
 
+impl<M: Model, T> ExplicitPgPredicateField<M, crate::Range<T>>
+where
+    T: crate::range::RangeElement + IntoFilterValue,
+{
+    /// Postgres range contains element (`@>`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contains(self, value: T) -> Condition {
+        self.sql.contains(value)
+    }
+
+    /// Postgres range contains range (`@>`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contains_range(self, range: crate::Range<T>) -> Condition {
+        self.sql.contains_range(range)
+    }
+
+    /// Postgres range contained-by (`<@`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contained_by(self, range: crate::Range<T>) -> Condition {
+        self.sql.contained_by(range)
+    }
+
+    /// Postgres range overlap (`&&`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn overlaps(self, range: crate::Range<T>) -> Condition {
+        self.sql.overlaps(range)
+    }
+
+    /// Postgres range strictly-left (`<<`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn strictly_left_of(self, range: crate::Range<T>) -> Condition {
+        self.sql.strictly_left_of(range)
+    }
+
+    /// Postgres range strictly-right (`>>`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn strictly_right_of(self, range: crate::Range<T>) -> Condition {
+        self.sql.strictly_right_of(range)
+    }
+
+    /// Postgres range does-not-extend-right (`&<`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_extends_right_of(self, range: crate::Range<T>) -> Condition {
+        self.sql.not_extends_right_of(range)
+    }
+
+    /// Postgres range does-not-extend-left (`&>`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_extends_left_of(self, range: crate::Range<T>) -> Condition {
+        self.sql.not_extends_left_of(range)
+    }
+
+    /// Postgres range adjacency (`-|-`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn adjacent_to(self, range: crate::Range<T>) -> Condition {
+        self.sql.adjacent_to(range)
+    }
+}
+
+impl<M: Model, T> DjogiPresentField<M, crate::Range<T>>
+where
+    T: crate::range::RangeElement + IntoFilterValue,
+{
+    /// Present-only nullable range contains element (`@>`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contains(self, value: T) -> Condition {
+        self.sql.contains(value)
+    }
+
+    /// Present-only nullable range contains range (`@>`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contains_range(self, range: crate::Range<T>) -> Condition {
+        self.sql.contains_range(range)
+    }
+
+    /// Present-only nullable range contained-by (`<@`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contained_by(self, range: crate::Range<T>) -> Condition {
+        self.sql.contained_by(range)
+    }
+
+    /// Present-only nullable range overlap (`&&`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn overlaps(self, range: crate::Range<T>) -> Condition {
+        self.sql.overlaps(range)
+    }
+
+    /// Present-only nullable range strictly-left (`<<`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn strictly_left_of(self, range: crate::Range<T>) -> Condition {
+        self.sql.strictly_left_of(range)
+    }
+
+    /// Present-only nullable range strictly-right (`>>`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn strictly_right_of(self, range: crate::Range<T>) -> Condition {
+        self.sql.strictly_right_of(range)
+    }
+
+    /// Present-only nullable range does-not-extend-right (`&<`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_extends_right_of(self, range: crate::Range<T>) -> Condition {
+        self.sql.not_extends_right_of(range)
+    }
+
+    /// Present-only nullable range does-not-extend-left (`&>`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_extends_left_of(self, range: crate::Range<T>) -> Condition {
+        self.sql.not_extends_left_of(range)
+    }
+
+    /// Present-only nullable range adjacency (`-|-`).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn adjacent_to(self, range: crate::Range<T>) -> Condition {
+        self.sql.adjacent_to(range)
+    }
+}
+
 impl<M: Model, V: IntoArrayFilterValue + Clone + 'static> DjogiField<M, Vec<V>> {
     /// `array_length(column, 1)`.
     #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
@@ -3110,6 +3228,11 @@ impl IntoFilterValue for bool {
         FilterValue::Bool(self)
     }
 }
+impl IntoFilterValue for time::PrimitiveDateTime {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::Timestamp(self)
+    }
+}
 impl IntoFilterValue for time::OffsetDateTime {
     fn into_filter_value(self) -> FilterValue {
         FilterValue::DateTime(self)
@@ -3153,6 +3276,14 @@ impl IntoFilterValue for rust_decimal::Decimal {
 impl IntoFilterValue for crate::Interval {
     fn into_filter_value(self) -> FilterValue {
         FilterValue::Interval(self)
+    }
+}
+impl<T> IntoFilterValue for crate::Range<T>
+where
+    T: crate::range::RangeElement,
+{
+    fn into_filter_value(self) -> FilterValue {
+        T::into_range_filter_value(self)
     }
 }
 // djogi#213 — network family. `IntoFilterValue` is feature-gated to
@@ -3816,6 +3947,92 @@ impl<M: Model, V: IntoArrayFilterValue + Clone + 'static> FieldRef<M, Vec<V>> {
         crate::expr::Expr::from_node(crate::expr::node::ExprNode::ArrayLength {
             column: self.column,
         })
+    }
+}
+
+impl<M: Model, T> FieldRef<M, crate::Range<T>>
+where
+    T: crate::range::RangeElement + IntoFilterValue,
+{
+    fn range_predicate(self, op: crate::range::RangePredicateOp, value: FilterValue) -> Condition {
+        Condition::RangePredicate(crate::range::RangePredicateLeaf::new(
+            self.column,
+            op,
+            value,
+        ))
+    }
+
+    /// `column @> value` — range contains an element.
+    ///
+    /// PostgreSQL-specific; root model fields expose this through
+    /// [`DjogiField::explicit_pg_predicate`].
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contains(self, value: T) -> Condition {
+        Condition::RangePredicate(
+            crate::range::RangePredicateLeaf::new(
+                self.column,
+                crate::range::RangePredicateOp::Contains,
+                value.into_filter_value(),
+            )
+            .with_rhs_element_cast(T::sql_element_cast()),
+        )
+    }
+
+    /// `column OP rhs` — shared range/range operator payload path.
+    fn range_rhs_predicate(
+        self,
+        op: crate::range::RangePredicateOp,
+        range: crate::Range<T>,
+    ) -> Condition {
+        self.range_predicate(op, T::into_range_filter_value(range))
+    }
+
+    /// `column @> range` — range contains another range.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contains_range(self, range: crate::Range<T>) -> Condition {
+        self.range_rhs_predicate(crate::range::RangePredicateOp::Contains, range)
+    }
+
+    /// `column <@ range` — range is contained by another range.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contained_by(self, range: crate::Range<T>) -> Condition {
+        self.range_rhs_predicate(crate::range::RangePredicateOp::ContainedBy, range)
+    }
+
+    /// `column && range` — ranges overlap.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn overlaps(self, range: crate::Range<T>) -> Condition {
+        self.range_rhs_predicate(crate::range::RangePredicateOp::Overlaps, range)
+    }
+
+    /// `column << range` — range is strictly left of another range.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn strictly_left_of(self, range: crate::Range<T>) -> Condition {
+        self.range_rhs_predicate(crate::range::RangePredicateOp::StrictlyLeftOf, range)
+    }
+
+    /// `column >> range` — range is strictly right of another range.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn strictly_right_of(self, range: crate::Range<T>) -> Condition {
+        self.range_rhs_predicate(crate::range::RangePredicateOp::StrictlyRightOf, range)
+    }
+
+    /// `column &< range` — range does not extend right of another range.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_extends_right_of(self, range: crate::Range<T>) -> Condition {
+        self.range_rhs_predicate(crate::range::RangePredicateOp::NotExtendsRightOf, range)
+    }
+
+    /// `column &> range` — range does not extend left of another range.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_extends_left_of(self, range: crate::Range<T>) -> Condition {
+        self.range_rhs_predicate(crate::range::RangePredicateOp::NotExtendsLeftOf, range)
+    }
+
+    /// `column -|- range` — ranges are adjacent.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn adjacent_to(self, range: crate::Range<T>) -> Condition {
+        self.range_rhs_predicate(crate::range::RangePredicateOp::AdjacentTo, range)
     }
 }
 
@@ -5321,6 +5538,7 @@ mod tests {
         maybe_age: Option<i64>,
         duration: crate::Interval,
         maybe_duration: Option<crate::Interval>,
+        span: crate::Range<i32>,
     }
 
     impl crate::model::__sealed::Sealed for FakeRow {}
@@ -5450,6 +5668,50 @@ mod tests {
             assert_eq!(leaf.op, LookupOp::NotIn);
         } else {
             panic!("expected Interval NOT IN to produce a SQL-only Condition leaf");
+        }
+    }
+
+    #[test]
+    fn range_predicates_build_typed_range_condition_payloads() {
+        let field = FieldRef::<Fake, crate::Range<i32>>::new("span");
+        let probe = crate::Range::inclusive_exclusive(2_i32, 4_i32);
+
+        let contains_element = field.contains(3_i32);
+        if let Condition::RangePredicate(leaf) = contains_element {
+            assert_eq!(leaf.column(), "span");
+            assert_eq!(leaf.op(), crate::range::RangePredicateOp::Contains);
+            assert!(matches!(leaf.value(), FilterValue::I32(3)));
+            assert_eq!(leaf.rhs_element_cast(), Some("int4"));
+        } else {
+            panic!("expected contains(element) to produce a range predicate condition");
+        }
+
+        let overlaps = field.overlaps(probe);
+        if let Condition::RangePredicate(leaf) = overlaps {
+            assert_eq!(leaf.column(), "span");
+            assert_eq!(leaf.op(), crate::range::RangePredicateOp::Overlaps);
+            assert!(matches!(leaf.value(), FilterValue::RangeI32(range) if range == &probe));
+            assert_eq!(leaf.rhs_element_cast(), None);
+        } else {
+            panic!("expected overlaps(range) to produce a range predicate condition");
+        }
+    }
+
+    #[test]
+    fn explicit_pg_range_predicates_forward_from_root_field() {
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, crate::Range<i32>>(
+            "span",
+            |row| &row.span,
+        );
+        let probe = crate::Range::inclusive_exclusive(2_i32, 4_i32);
+
+        let adjacent = f.explicit_pg_predicate().adjacent_to(probe);
+        if let Condition::RangePredicate(leaf) = adjacent {
+            assert_eq!(leaf.column(), "span");
+            assert_eq!(leaf.op(), crate::range::RangePredicateOp::AdjacentTo);
+            assert!(matches!(leaf.value(), FilterValue::RangeI32(range) if range == &probe));
+        } else {
+            panic!("expected explicit range predicate to produce a range predicate condition");
         }
     }
 

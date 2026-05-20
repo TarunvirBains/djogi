@@ -91,6 +91,9 @@ pub(crate) fn push_filter_value(acc: &mut SqlAccumulator, v: FilterValue) {
         FilterValue::Bool(b) => {
             acc.push_bind(b);
         }
+        FilterValue::Timestamp(d) => {
+            acc.push_bind(d);
+        }
         FilterValue::DateTime(d) => {
             acc.push_bind(d);
         }
@@ -129,6 +132,24 @@ pub(crate) fn push_filter_value(acc: &mut SqlAccumulator, v: FilterValue) {
         #[cfg(feature = "network")]
         FilterValue::Macaddr(mac) => {
             acc.push_bind(mac);
+        }
+        FilterValue::RangeI32(v) => {
+            acc.push_bind(v);
+        }
+        FilterValue::RangeI64(v) => {
+            acc.push_bind(v);
+        }
+        FilterValue::RangeDecimal(v) => {
+            acc.push_bind(v);
+        }
+        FilterValue::RangeTimestamp(v) => {
+            acc.push_bind(v);
+        }
+        FilterValue::RangeDateTime(v) => {
+            acc.push_bind(v);
+        }
+        FilterValue::RangeDate(v) => {
+            acc.push_bind(v);
         }
         FilterValue::Null => {
             acc.push_null_literal();
@@ -224,6 +245,9 @@ pub(crate) fn push_filter_value_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
         FilterValue::Bool(b) => {
             acc.push_bind(*b);
         }
+        FilterValue::Timestamp(d) => {
+            acc.push_bind(*d);
+        }
         FilterValue::DateTime(d) => {
             acc.push_bind(*d);
         }
@@ -262,6 +286,24 @@ pub(crate) fn push_filter_value_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
         #[cfg(feature = "network")]
         FilterValue::Macaddr(mac) => {
             acc.push_bind(*mac);
+        }
+        FilterValue::RangeI32(v) => {
+            acc.push_bind(*v);
+        }
+        FilterValue::RangeI64(v) => {
+            acc.push_bind(*v);
+        }
+        FilterValue::RangeDecimal(v) => {
+            acc.push_bind(*v);
+        }
+        FilterValue::RangeTimestamp(v) => {
+            acc.push_bind(*v);
+        }
+        FilterValue::RangeDateTime(v) => {
+            acc.push_bind(*v);
+        }
+        FilterValue::RangeDate(v) => {
+            acc.push_bind(*v);
         }
         FilterValue::Null => {
             acc.push_null_literal();
@@ -733,6 +775,20 @@ pub(crate) fn emit_condition(
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" && ");
             push_filter_value_ref(acc, &leaf.values);
+            Ok(())
+        }
+        // ── Range operators (djogi#215) ──────────────────────────────────
+        //
+        // All range predicates emit `col OP $n`; the RHS bind is either a
+        // range value or, for `contains(element)`, the range element type.
+        Condition::RangePredicate(leaf) => {
+            push_qualified_col(acc, leaf.column(), parent_table);
+            acc.push_sql(leaf.op().sql_token());
+            push_filter_value_ref(acc, leaf.value());
+            if let Some(cast) = leaf.rhs_element_cast() {
+                acc.push_sql("::");
+                acc.push_sql(cast);
+            }
             Ok(())
         }
         // ── JSONB flat-path condition (Phase 5 Task 5) ───────────────────
@@ -2751,6 +2807,27 @@ mod tests {
         let acc = build_select(&qs);
         let sql = acc.sql();
         assert!(sql.contains("WHERE a = $1"), "got: {sql}");
+    }
+
+    #[test]
+    fn select_with_range_predicate_emits_postgres_range_operator() {
+        let qs: QuerySet<Fake> = QuerySet::new().filter(|_| {
+            crate::query::field::FieldRef::<Fake, crate::Range<i32>>::new("span")
+                .adjacent_to(crate::Range::inclusive_exclusive(5_i32, 10_i32))
+        });
+        let acc = build_select(&qs);
+        let sql = acc.sql();
+        assert!(sql.contains("WHERE span -|- $1"), "got: {sql}");
+    }
+
+    #[test]
+    fn select_with_range_contains_element_emits_scalar_cast() {
+        let qs: QuerySet<Fake> = QuerySet::new().filter(|_| {
+            crate::query::field::FieldRef::<Fake, crate::Range<i32>>::new("span").contains(3_i32)
+        });
+        let acc = build_select(&qs);
+        let sql = acc.sql();
+        assert!(sql.contains("WHERE span @> $1::int4"), "got: {sql}");
     }
 
     #[test]

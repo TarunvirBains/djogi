@@ -1449,6 +1449,7 @@ fn field_type_check(
             // empty, and NULL ranges remain exempted by the endpoint
             // `IS NULL` guard.
             RangeSubtypeKind::Num => Some(range_endpoint_checks(&qcol, decimal_repr_expr)),
+            RangeSubtypeKind::Ts => Some(range_endpoint_checks(&qcol, timestamp_range_expr)),
             RangeSubtypeKind::Tstz => Some(range_endpoint_checks(&qcol, timestamptz_range_expr)),
             RangeSubtypeKind::Date => Some(range_endpoint_checks(&qcol, date_range_expr)),
         },
@@ -1525,6 +1526,20 @@ fn timestamptz_range_expr(column_expr: &str) -> String {
     format!(
         "pg_catalog.isfinite({column_expr}) AND \
          {column_expr} <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
+    )
+}
+
+/// Inner representability predicate for a TIMESTAMP expression that
+/// resolves to a `time::PrimitiveDateTime`-storable value.
+///
+/// Mirrors the TIMESTAMPTZ helper without a timezone suffix. PostgreSQL
+/// `TIMESTAMP` admits `infinity` / `-infinity` and years outside the default
+/// `time::PrimitiveDateTime` range, so both a finite guard and an upper-bound
+/// check are required.
+fn timestamp_range_expr(column_expr: &str) -> String {
+    format!(
+        "pg_catalog.isfinite({column_expr}) AND \
+         {column_expr} <= TIMESTAMP '9999-12-31 23:59:59.999999'"
     )
 }
 
@@ -4838,6 +4853,42 @@ mod tests {
     }
 
     #[test]
+    fn field_type_check_for_range_ts_emits_endpoint_timestamp_bounds() {
+        let expr = field_type_check(
+            &FieldSqlType::Range {
+                subtype: RangeSubtypeKind::Ts,
+            },
+            None,
+            "local_window",
+        )
+        .expect("TSRANGE must carry timestamp upper checks on finite lower and upper endpoints");
+        assert!(
+            expr.contains("lower(\"local_window\") <= TIMESTAMP '9999-12-31 23:59:59.999999'"),
+            "TSRANGE lower endpoint bound must be timestamp-without-timezone: {expr}"
+        );
+        assert!(
+            expr.contains("upper(\"local_window\") <= TIMESTAMP '9999-12-31 23:59:59.999999'"),
+            "TSRANGE upper endpoint bound must be timestamp-without-timezone: {expr}"
+        );
+        assert!(
+            expr.contains("lower(\"local_window\") IS NULL OR"),
+            "TSRANGE lower endpoint check must keep NULL/unbounded pass-through: {expr}"
+        );
+        assert!(
+            expr.contains("upper(\"local_window\") IS NULL OR"),
+            "TSRANGE upper endpoint check must keep NULL/unbounded pass-through: {expr}"
+        );
+        assert!(
+            expr.contains("pg_catalog.isfinite(lower(\"local_window\"))"),
+            "TSRANGE lower endpoint must reject infinity via the finite guard: {expr}"
+        );
+        assert!(
+            expr.contains("pg_catalog.isfinite(upper(\"local_window\"))"),
+            "TSRANGE upper endpoint must reject infinity via the finite guard: {expr}"
+        );
+    }
+
+    #[test]
     fn field_type_check_for_range_date_emits_endpoint_date_bounds() {
         let expr = field_type_check(
             &FieldSqlType::Range {
@@ -5068,6 +5119,15 @@ mod tests {
                 ..field_descriptor(
                     "window",
                     FieldSqlType::Range {
+                        subtype: RangeSubtypeKind::Ts,
+                    },
+                    false,
+                )
+            },
+            FieldDescriptor {
+                ..field_descriptor(
+                    "booking_window",
+                    FieldSqlType::Range {
                         subtype: RangeSubtypeKind::Tstz,
                     },
                     false,
@@ -5098,7 +5158,8 @@ mod tests {
         let slots = &rows[1];
         let money = &rows[2];
         let window = &rows[3];
-        let validity = &rows[4];
+        let booking_window = &rows[4];
+        let validity = &rows[5];
 
         assert!(slots.check.is_none(), "INT4RANGE should stay no-op");
         assert!(
@@ -5118,17 +5179,31 @@ mod tests {
             "NUMRANGE upper endpoint must use DECIMAL element check with special-value guard"
         );
         assert!(
-            window.check.as_deref().expect("TSTZRANGE must carry endpoint checks").contains(
-                "lower(\"window\") IS NULL OR (pg_catalog.isfinite(lower(\"window\")) AND lower(\"window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
+            window.check.as_deref().expect("TSRANGE must carry endpoint checks").contains(
+                "lower(\"window\") IS NULL OR (pg_catalog.isfinite(lower(\"window\")) AND lower(\"window\") <= TIMESTAMP '9999-12-31 23:59:59.999999'"
             ),
-            "TSTZRANGE lower endpoint must use finite-guarded TIMESTAMPTZ upper bound"
+            "TSRANGE lower endpoint must use finite-guarded TIMESTAMP upper bound"
         );
         assert!(
             window
                 .check
                 .as_deref()
+                .expect("TSRANGE must carry endpoint checks")
+                .contains("upper(\"window\") IS NULL OR (pg_catalog.isfinite(upper(\"window\")) AND upper(\"window\") <= TIMESTAMP '9999-12-31 23:59:59.999999'"),
+            "TSRANGE upper endpoint must use finite-guarded TIMESTAMP upper bound"
+        );
+        assert!(
+            booking_window.check.as_deref().expect("TSTZRANGE must carry endpoint checks").contains(
+                "lower(\"booking_window\") IS NULL OR (pg_catalog.isfinite(lower(\"booking_window\")) AND lower(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
+            ),
+            "TSTZRANGE lower endpoint must use finite-guarded TIMESTAMPTZ upper bound"
+        );
+        assert!(
+            booking_window
+                .check
+                .as_deref()
                 .expect("TSTZRANGE must carry endpoint checks")
-                .contains("upper(\"window\") IS NULL OR (pg_catalog.isfinite(upper(\"window\")) AND upper(\"window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"),
+                .contains("upper(\"booking_window\") IS NULL OR (pg_catalog.isfinite(upper(\"booking_window\")) AND upper(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"),
             "TSTZRANGE upper endpoint must use finite-guarded TIMESTAMPTZ upper bound"
         );
         assert!(

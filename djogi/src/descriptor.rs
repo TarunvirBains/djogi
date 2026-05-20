@@ -208,7 +208,7 @@ pub enum FieldSqlType {
     /// scope for the djogi#213 surface; the umbrella tracks future-work
     /// for EUI-64 if adopter demand surfaces.
     Macaddr,
-    /// Postgres range type. Phase 8.5 G0 substrate (djogi#148 + #150).
+    /// Postgres range type (djogi#215).
     ///
     /// Rust source type is `djogi::Range<T>` (`pg_types::Range<T>`).
     /// The `subtype` discriminant names the Postgres range type the
@@ -218,26 +218,24 @@ pub enum FieldSqlType {
     /// * [`RangeSubtypeKind::Int8`] — `int8range` (Rust: `Range<i64>`)
     /// * [`RangeSubtypeKind::Num`] — `numrange`
     ///   (Rust: `Range<rust_decimal::Decimal>`)
+    /// * [`RangeSubtypeKind::Ts`] — `tsrange`
+    ///   (Rust: `Range<time::PrimitiveDateTime>`)
     /// * [`RangeSubtypeKind::Tstz`] — `tstzrange`
     ///   (Rust: `Range<djogi::DateTime>`)
     /// * [`RangeSubtypeKind::Date`] — `daterange`
     ///   (Rust: `Range<djogi::Date>`)
     ///
-    /// `tsrange` (timestamp-without-timezone) is intentionally omitted
-    /// — Djogi pins to `TIMESTAMPTZ` exclusively for temporal columns
-    /// (see this file's "PG timezone discipline" decision row), so
-    /// `Range<DateTime>` lowers to `tstzrange` and a separate
-    /// non-timezone variant would invite the silent-timezone-loss
-    /// failure mode the temporal CHECK family was designed to close.
+    /// `tsrange` is the single timestamp-without-timezone range entry
+    /// point and uses `time::PrimitiveDateTime`. Djogi's `DateTime`
+    /// alias remains timezone-aware and lowers to `tstzrange`.
     ///
     /// # Future siblings
     ///
     /// This variant is the shared substrate for two future DB-level
-    /// no-overlap lanes; neither is shipped by G0:
+    /// no-overlap lanes; neither is shipped by #215:
     ///
     /// * **djogi#148** — `btree_gist` EXCLUDE constraint grammar
-    ///   (`#[model(exclude(...))]`), the `&&` overlap operator surface,
-    ///   `CREATE EXTENSION btree_gist`.
+    ///   (`#[model(exclude(...))]`) and `CREATE EXTENSION btree_gist`.
     /// * **djogi#150** — PostgreSQL 18 temporal-constraint DDL
     ///   (`WITHOUT OVERLAPS`, `PERIOD` foreign keys, `NOT ENFORCED`,
     ///   named `NOT NULL`).
@@ -350,7 +348,8 @@ pub enum FieldSqlType {
 /// # Wire-format SQL identifier (`Display`)
 ///
 /// `Display` renders the lowercase Postgres range type name
-/// (`int4range`, `int8range`, `numrange`, `tstzrange`, `daterange`).
+/// (`int4range`, `int8range`, `numrange`, `tsrange`, `tstzrange`,
+/// `daterange`).
 /// The schema snapshot stores the rendered form because the differ
 /// compares column types by rendered string, not by enum identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -361,6 +360,8 @@ pub enum RangeSubtypeKind {
     Int8,
     /// `numrange` — `Range<rust_decimal::Decimal>` columns.
     Num,
+    /// `tsrange` — `Range<time::PrimitiveDateTime>` columns.
+    Ts,
     /// `tstzrange` — `Range<DateTime>` columns (timezone-aware).
     Tstz,
     /// `daterange` — `Range<Date>` columns.
@@ -373,6 +374,7 @@ impl std::fmt::Display for RangeSubtypeKind {
             RangeSubtypeKind::Int4 => write!(f, "int4range"),
             RangeSubtypeKind::Int8 => write!(f, "int8range"),
             RangeSubtypeKind::Num => write!(f, "numrange"),
+            RangeSubtypeKind::Ts => write!(f, "tsrange"),
             RangeSubtypeKind::Tstz => write!(f, "tstzrange"),
             RangeSubtypeKind::Date => write!(f, "daterange"),
         }
@@ -437,9 +439,9 @@ impl std::fmt::Display for FieldSqlType {
             FieldSqlType::Inet => write!(f, "INET"),
             FieldSqlType::Cidr => write!(f, "CIDR"),
             FieldSqlType::Macaddr => write!(f, "MACADDR"),
-            // Phase 8.5 G0 (djogi#148 + #150 substrate) — Postgres
-            // range type. `Display` renders the lowercase subtype name
-            // (`int4range`, `tstzrange`, …); the schema snapshot stores
+            // djogi#215 — Postgres range type. `Display` renders the
+            // lowercase subtype name (`int4range`, `tsrange`,
+            // `tstzrange`, ...); the schema snapshot stores
             // the rendered form so the differ compares by string.
             FieldSqlType::Range { subtype } => write!(f, "{subtype}"),
             // Phase 8.5 djogi#216 Piece A — Postgres domain reference.
@@ -935,7 +937,7 @@ mod tests {
     use super::{
         ComputedFieldDescriptor, ExclusionConstraintSpec, ExclusionElement, FieldDescriptor,
         FieldSqlType, GeographySubtype, IndexSpec, IndexType, ModelDescriptor, PkType,
-        field_descriptor, migration_shape::MigrationShape, model_descriptor,
+        RangeSubtypeKind, field_descriptor, migration_shape::MigrationShape, model_descriptor,
     };
 
     // ── T6: GeographySubtype Display ─────────────────────────────────────────
@@ -1009,6 +1011,14 @@ mod tests {
     #[test]
     fn macaddr_field_sql_type_displays_as_upper_macaddr() {
         assert_eq!(format!("{}", FieldSqlType::Macaddr), "MACADDR");
+    }
+
+    #[test]
+    fn tsrange_field_sql_type_displays_as_lower_tsrange() {
+        let ty = FieldSqlType::Range {
+            subtype: RangeSubtypeKind::Ts,
+        };
+        assert_eq!(format!("{ty}"), "tsrange");
     }
 
     // ── djogi#216 Piece A — `FieldSqlType::Domain` ─────────────────────────
