@@ -217,6 +217,69 @@ the deduplicated row set, not the raw one.
 
 ---
 
+## Row-level locking
+
+Djogi surfaces Postgres' two row-lock families on every queryset.
+Builder methods are last-call-wins and `must_use` — chaining them
+without a terminal silently drops the lock.
+
+| Builder | SQL tail | Lock kind | Contention behaviour |
+|---|---|---|---|
+| `.select_for_update()` | `FOR UPDATE` | exclusive | blocks until released |
+| `.nowait()` | `FOR UPDATE NOWAIT` | exclusive | fails fast with `DjogiError::LockConflict` |
+| `.skip_locked()` | `FOR UPDATE SKIP LOCKED` | exclusive | silently omits locked rows |
+| `.select_for_share()` | `FOR SHARE` | shared | blocks writers, allows peer readers |
+| `.for_share_nowait()` | `FOR SHARE NOWAIT` | shared | fails fast with `DjogiError::LockConflict` |
+| `.for_share_skip_locked()` | `FOR SHARE SKIP LOCKED` | shared | silently omits exclusively-locked rows |
+
+Pick **FOR UPDATE** when this session intends to write the row after
+reading it (the canonical "read-then-write within one transaction"
+pattern). Pick **FOR SHARE** when several sessions need to lock the
+row against writers but tolerate each other reading concurrently
+(typical for two services that each verify a balance before routing
+a transfer).
+
+```rust
+// Exclusive: claim a job for processing.
+let job = Job::objects()
+    .filter(|f| f.status().eq(JobStatus::Pending))
+    .order_by(|f| f.created_at().asc())
+    .limit(1)
+    .select_for_update()
+    .skip_locked() // skip jobs another worker has already claimed
+    .first(&mut tx)
+    .await?;
+
+// Shared: every checker locks the row against writers but not each other.
+let balance = Account::objects()
+    .filter(|f| f.id().eq(account_id))
+    .select_for_share()
+    .fetch_one(&mut tx)
+    .await?;
+```
+
+### Pool-backed locks release immediately — wrap in `atomic`
+
+Every row-level lock is scoped to the active transaction. A
+pool-backed `DjogiContext` auto-commits each statement, so a lock
+acquired on a pool-backed context releases the instant the implicit
+transaction closes — **no mutual exclusion** between the fetch and any
+follow-up step. Wrap correctness-sensitive lock chains in
+`djogi::transaction::atomic` so the lock survives the read-then-decide
+window.
+
+### Contention modifiers are family-specific
+
+`.nowait()` and `.skip_locked()` historically imply `FOR UPDATE` and
+always set the FOR UPDATE family of variants — calling either after
+`.select_for_share()` silently swaps the base lock back to FOR UPDATE.
+For FOR SHARE contention semantics, use the dedicated
+`.for_share_nowait()` / `.for_share_skip_locked()` methods. Mixing
+families (e.g. `.select_for_update().for_share_nowait()`) is also
+last-call-wins — the second call sets the lock outright.
+
+---
+
 ## Terminal methods
 
 Terminal methods consume the queryset, emit SQL via the framework's
@@ -451,7 +514,9 @@ shape:
 
 - `.prefetch(...)` registrations
 - `.select_related(...)` registrations
-- `.select_for_update(...)` / `.nowait()` / `.skip_locked()` row locks
+- `.select_for_update(...)` / `.nowait()` / `.skip_locked()` /
+  `.select_for_share(...)` / `.for_share_nowait()` /
+  `.for_share_skip_locked()` row locks
 These leak structural shape (extra projections, locks) into a context where
 the arm is emitted as a plain `SELECT t.* FROM t`. Silently dropping them
 would be a correctness bug.
@@ -564,11 +629,13 @@ a programming error does not hide behind a silent `Ok(0)`.
 - `.select_related(...)` registrations — the join expands the SELECT list;
   the column mapping closure references single-model columns and cannot
   silently drop the join.
-- `.select_for_update(...)` / `.nowait()` / `.skip_locked()` row locks —
-  `SELECT ... FOR UPDATE` inside INSERT SELECT is valid Postgres semantics
-  (locking source rows for the archival duration), but the v0.1.0 surface
-  does not compose row locks with INSERT SELECT. Drop the lock call before
-  `.insert_into(...)`.
+- `.select_for_update(...)` / `.nowait()` / `.skip_locked()` /
+  `.select_for_share(...)` / `.for_share_nowait()` /
+  `.for_share_skip_locked()` row locks —
+  `SELECT ... FOR UPDATE` (or `... FOR SHARE`) inside INSERT SELECT is
+  valid Postgres semantics (locking source rows for the archival
+  duration), but the v0.1.0 surface does not compose row locks with
+  INSERT SELECT. Drop the lock call before `.insert_into(...)`.
 - `.distinct()` / `.distinct_on(...)` — deduplication inside INSERT SELECT
   is also valid Postgres, but `DISTINCT ON` requires the deduplication
   columns to appear first in `ORDER BY` and in the SELECT projection —

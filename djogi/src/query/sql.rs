@@ -3568,6 +3568,152 @@ mod tests {
         );
     }
 
+    // ── djogi#104 — FOR SHARE row-lock SQL tails ──────────────────────
+
+    #[test]
+    fn select_for_share_appends_lock_tail() {
+        let qs: QuerySet<Fake> = QuerySet::new().select_for_share();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
+        assert!(
+            sql.trim_end().ends_with("FOR SHARE"),
+            "expected FOR SHARE tail, got: {sql}"
+        );
+        // No silent escalation: the bare `select_for_share` must not
+        // leak NOWAIT / SKIP LOCKED. Mirrors the FOR UPDATE guard.
+        assert!(
+            !sql.contains("NOWAIT") && !sql.contains("SKIP LOCKED"),
+            "select_for_share must not escalate to NOWAIT / SKIP LOCKED"
+        );
+        assert!(
+            !sql.contains("FOR UPDATE"),
+            "select_for_share must not emit FOR UPDATE: {sql}"
+        );
+    }
+
+    #[test]
+    fn for_share_nowait_appends_for_share_nowait_tail() {
+        let qs: QuerySet<Fake> = QuerySet::new().for_share_nowait();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
+        assert!(
+            sql.trim_end().ends_with("FOR SHARE NOWAIT"),
+            "expected FOR SHARE NOWAIT tail, got: {sql}"
+        );
+        assert!(
+            !sql.contains("FOR UPDATE"),
+            "for_share_nowait must not emit FOR UPDATE: {sql}"
+        );
+    }
+
+    #[test]
+    fn for_share_skip_locked_appends_for_share_skip_locked_tail() {
+        let qs: QuerySet<Fake> = QuerySet::new().for_share_skip_locked();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
+        assert!(
+            sql.trim_end().ends_with("FOR SHARE SKIP LOCKED"),
+            "expected FOR SHARE SKIP LOCKED tail, got: {sql}"
+        );
+        assert!(
+            !sql.contains("FOR UPDATE"),
+            "for_share_skip_locked must not emit FOR UPDATE: {sql}"
+        );
+    }
+
+    #[test]
+    fn for_share_tail_follows_limit_and_offset() {
+        // Postgres requires the row-lock tail after LIMIT/OFFSET for
+        // FOR SHARE just as for FOR UPDATE. Mirror the FOR UPDATE
+        // order test so a future reordering surfaces here.
+        let qs: QuerySet<Fake> = QuerySet::new().limit(10).offset(5).select_for_share();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
+        let limit_idx = sql.find("LIMIT").expect("LIMIT must appear");
+        let offset_idx = sql.find("OFFSET").expect("OFFSET must appear");
+        let lock_idx = sql.find("FOR SHARE").expect("FOR SHARE must appear");
+        assert!(
+            limit_idx < offset_idx && offset_idx < lock_idx,
+            "expected LIMIT ... OFFSET ... FOR SHARE order, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn for_share_builders_last_call_wins() {
+        // `.for_share_nowait().for_share_skip_locked()` — last call
+        // wins. Same contract as the FOR UPDATE family.
+        let qs: QuerySet<Fake> = QuerySet::new().for_share_nowait().for_share_skip_locked();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
+        assert!(
+            sql.trim_end().ends_with("FOR SHARE SKIP LOCKED"),
+            "expected for_share_skip_locked to win, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn for_share_then_for_update_last_call_wins() {
+        // Swapping families also last-call-wins. Guards against any
+        // future "compatible mode promotion" logic — the contract is
+        // unconditional overwrite.
+        let qs: QuerySet<Fake> = QuerySet::new().select_for_share().select_for_update();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
+        assert!(
+            sql.trim_end().ends_with("FOR UPDATE"),
+            "expected last-call-wins flip to FOR UPDATE, got: {sql}"
+        );
+        assert!(
+            !sql.contains("FOR SHARE"),
+            "select_for_update after select_for_share must clear the FOR SHARE tail: {sql}"
+        );
+    }
+
+    #[test]
+    fn nowait_after_select_for_share_promotes_to_for_update_nowait() {
+        // Documented chaining footgun (djogi#104): the historical
+        // `.nowait()` and `.skip_locked()` modifiers unconditionally
+        // set the FOR UPDATE family. Calling them after
+        // `.select_for_share()` silently swaps the base lock back to
+        // FOR UPDATE. The rustdoc on `select_for_share` calls this
+        // out as a footgun; this test pins the documented behaviour.
+        //
+        // If a future change makes the contention modifiers
+        // family-aware (e.g., preserve the base family), this test
+        // surfaces the surface change loudly before it ships.
+        let qs: QuerySet<Fake> = QuerySet::new().select_for_share().nowait();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
+        assert!(
+            sql.trim_end().ends_with("FOR UPDATE NOWAIT"),
+            "expected .nowait() after .select_for_share() to promote to FOR UPDATE NOWAIT, got: {sql}"
+        );
+        assert!(
+            !sql.contains("FOR SHARE"),
+            ".nowait() must replace the FOR SHARE tail outright (documented footgun): {sql}"
+        );
+    }
+
+    #[test]
+    fn skip_locked_after_select_for_share_promotes_to_for_update_skip_locked() {
+        // Parallel to the `.nowait()` footgun. `.skip_locked()` also
+        // unconditionally sets the FOR UPDATE family — chaining it
+        // after `.select_for_share()` produces FOR UPDATE SKIP LOCKED,
+        // not FOR SHARE SKIP LOCKED. Adopters who want the FOR SHARE
+        // contention shape must use `for_share_skip_locked` directly.
+        let qs: QuerySet<Fake> = QuerySet::new().select_for_share().skip_locked();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
+        assert!(
+            sql.trim_end().ends_with("FOR UPDATE SKIP LOCKED"),
+            "expected .skip_locked() after .select_for_share() to promote to FOR UPDATE SKIP LOCKED, got: {sql}"
+        );
+        assert!(
+            !sql.contains("FOR SHARE"),
+            ".skip_locked() must replace the FOR SHARE tail outright (documented footgun): {sql}"
+        );
+    }
+
     // ── T2 emitter: GROUPING SETS ─────────────────────────────────────────
 
     #[test]

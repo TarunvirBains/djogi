@@ -118,12 +118,14 @@
 //! - **`cache_target`** — `.cache(&p)` writes returned rows into a
 //!   Punnu; INSERT...SELECT returns row counts, not rows. Rejecting
 //!   surfaces the bug rather than silently dropping the cache binding.
-//! - **`lock != LockMode::None`** — `SELECT ... FOR UPDATE` inside an
-//!   INSERT...SELECT is a legitimate Postgres pattern (acquire the
-//!   source rows' locks for the duration of the archival), but the
-//!   minimum coherent surface for djogi#106 ships without lock
-//!   composition. A future issue can lift this restriction with a
-//!   deliberate `.with_source_lock()` opt-in.
+//! - **`lock != LockMode::None`** — `SELECT ... FOR UPDATE` or
+//!   `... FOR SHARE` inside an INSERT...SELECT is a legitimate
+//!   Postgres pattern (acquire the source rows' locks for the
+//!   duration of the archival), but the minimum coherent surface for
+//!   djogi#106 ships without lock composition. The FOR SHARE family
+//!   added under djogi#104 is rejected by the same validator. A future
+//!   issue can lift this restriction with a deliberate
+//!   `.with_source_lock()` opt-in.
 //! - **`distinct != DistinctMode::None`** — `SELECT DISTINCT` inside
 //!   INSERT...SELECT is also valid Postgres semantics ("insert distinct
 //!   source rows only"), but the safer initial surface rejects it.
@@ -791,11 +793,13 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
             if !matches!(self.source.lock, crate::query::lock::LockMode::None,) {
                 return Err(DjogiError::Validation(format!(
                     "insert_into::<{}>: source queryset carries a row-level lock \
-                     (FOR UPDATE / NOWAIT / SKIP LOCKED) which is not yet \
-                     supported on INSERT...SELECT in djogi v0.1. Drop the \
-                     .select_for_update() / .nowait() / .skip_locked() call \
-                     before .insert_into(...); a follow-up issue can lift this \
-                     restriction with an explicit opt-in",
+                     (FOR UPDATE / FOR SHARE / NOWAIT / SKIP LOCKED) which is \
+                     not yet supported on INSERT...SELECT in djogi v0.1. Drop \
+                     the .select_for_update() / .nowait() / .skip_locked() / \
+                     .select_for_share() / .for_share_nowait() / \
+                     .for_share_skip_locked() call before .insert_into(...); a \
+                     follow-up issue can lift this restriction with an \
+                     explicit opt-in",
                     T::table_name(),
                 )));
             }
