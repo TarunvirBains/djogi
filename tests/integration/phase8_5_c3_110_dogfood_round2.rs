@@ -58,8 +58,8 @@ pub struct DogfoodWidget {
 // Post-#171 the typed-array element repertoire is wide enough that this
 // model can declare arrays directly for the small-int / wide-float / ID
 // families. The remaining Postgres-type gaps (INET/CIDR/MACADDR, MONEY,
-// DOMAIN, and timestamp-without-timezone `tsrange`) are still absent from
-// the field repertoire — that absence is the scenario-4.B probe.
+// and DOMAIN) are still absent from the field repertoire — that absence is
+// the scenario-4.B probe.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct CoverageMeta {
     pub note: String,
@@ -799,10 +799,10 @@ async fn cat4_a_typed_arrays_sealed_set_regression(mut ctx: djogi::DjogiContext)
 //     but no typed Rust newtype on the field side and no ASCII-stable
 //     ILIKE surface beyond what `String` already exposes — open question
 //     whether this needs a separate gap or stays under #105 / #110.
-//   - INET / CIDR / MACADDR, MONEY, DOMAIN TYPES, and `tsrange`: NEEDS
-//     GAP ISSUE. `INTERVAL` and the supported typed range substrate
-//     (`int4range`, `int8range`, `numrange`, `tstzrange`, `daterange`)
-//     now have descriptor projection and field-side Rust types.
+//   - INET / CIDR / MACADDR, MONEY, and DOMAIN TYPES: NEED GAP ISSUES.
+//     `INTERVAL` and the supported typed range substrate (`int4range`,
+//     `int8range`, `numrange`, `tstzrange`, `tsrange`, `daterange`) now
+//     have descriptor projection and field-side Rust types.
 //
 // Stand-in: this test only compiles the supported subset (ENUM was already
 // covered in the existing tests; we avoid duplication). The gap issue
@@ -814,8 +814,6 @@ async fn cat4_b_pg_type_coverage_gap(mut ctx: djogi::DjogiContext) {
     //   pub remote_addr: std::net::IpAddr,              // INET
     //   pub price_usd: rust_decimal::Decimal,           // (works as NUMERIC,
     //                                                   //  no MONEY surface)
-    //   pub naive_window: SomeTsRangeNewtype,           // tsrange
-    //
     // Plus DOMAIN TYPES (`CREATE DOMAIN`), which are not surfaced at all.
     // Stand-in compiles by NOT declaring any of these — the test asserts
     // the absence is real.

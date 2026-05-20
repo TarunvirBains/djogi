@@ -57,8 +57,7 @@
 // # Spec anchors
 //
 // - `docs/spec/decisions.md` — "Type-derived CHECK projection"
-//   (djogi#187) + "`Range<T>` typed substrate (djogi#148 + djogi#150,
-//   Phase 8.5 G0)".
+//   (djogi#187) + "`Range<T>` typed substrate (djogi#215, Phase 8.5 G0)".
 // - `djogi/src/migrate/projection.rs::date_range_expr` /
 //   `timestamptz_range_expr` — scalar representability predicates.
 // - `djogi/src/migrate/projection.rs::date_array_is_finite_check` /

@@ -896,7 +896,7 @@ name = "phase8_5_c4_212_interval"
 path = "../tests/integration/phase8_5_c4_212_interval.rs"
 harness = true
 
-# Phase 8.5 G0 (djogi#148 + djogi#150 substrate) — live Range<T> codec
+# Phase 8.5 G0 (djogi#215 substrate) — live Range<T> codec
 # coverage. Pins round-trip of `Range<i32>` / `Range<DateTime>` /
 # `Range<Decimal>` columns through `Model::create` → `RETURNING *` →
 # `FromPgRow` against a live Postgres database, including discrete

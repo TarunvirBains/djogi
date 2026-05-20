@@ -79,7 +79,7 @@ pub mod outbox;
 pub mod pg;
 // Phase 8.5 Cluster 4 (djogi#170 umbrella) — typed Postgres newtypes
 // with hand-rolled wire codecs. Ships `Interval` (djogi#212), `Range<T>`
-// (djogi#148 + #150 substrate), and the network family (`MacAddr` /
+// (djogi#215 substrate), and the network family (`MacAddr` /
 // `CidrAddr`, djogi#213, behind the `network` feature flag). Future
 // umbrella dispatches add more newtypes alongside without reshaping
 // the public surface.
