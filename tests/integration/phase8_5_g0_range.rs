@@ -1,5 +1,5 @@
-// Phase 8.5 G0 (djogi#148 + djogi#150 substrate) — live `Range<T>`
-// codec coverage end-to-end through Postgres.
+// Phase 8.5 G0 + #215 — live `Range<T>` codec and predicate coverage
+// end-to-end through Postgres.
 //
 // # What this file pins
 //
@@ -13,7 +13,7 @@
 // through `Model::get` against a live Postgres database, exercising
 // the `decode_bound`-backed `FromSql` path end-to-end and the
 // canonicalisation-sensitive lower-inclusive / upper-exclusive shape
-// for the three high-value element types G0 ships:
+// for the high-value element types covered here:
 //
 // 1. **`Range<i32>` discrete canonicalisation.** Postgres canonicalises
 //    every `int4range` write to lower-inclusive / upper-exclusive
@@ -41,22 +41,17 @@
 //   shape AND the typical adopter "booking window" shape. The
 //   decoder reconstructs both flags from the wire bits.
 //
-// # Predicate round-trip — out of scope for G0
+// # Predicate round-trip
 //
-// G0 ships the substrate only; `Range<T>: IntoFilterValue` /
-// `Range<T>: DjogiPortableEq` (the operator-surface traits required
-// by `f.col().eq(Range::…)` / `f.col().contains(…)`) are djogi#148 +
-// djogi#150 follow-on lanes. To satisfy the "at least one typed
-// filter or SQL predicate round-trip" obligation without dragging in
-// new public-surface work, this file filters on a non-range column
-// (`label`) while keeping the `Range<T>` column in the projection;
-// that path still exercises the `Range<T>` FromSql decode for the
-// rows that come back, which is the live path G0 ships.
+// #215 adds the SQL-only range operator surface behind
+// `explicit_pg_predicate()`. This file keeps the original non-range
+// filter/decode regression and adds a focused live predicate test for
+// every public range operator spelling.
 
 use djogi::prelude::*;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use time::OffsetDateTime;
+use time::{OffsetDateTime, PrimitiveDateTime};
 
 // ── Test models ──────────────────────────────────────────────────────────────
 
@@ -77,6 +72,16 @@ pub struct Phase85G0RangeI32Row {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Phase85G0RangeTstzRow {
     pub booking_window: Range<DateTime>,
+    pub label: String,
+}
+
+/// Continuous timestamp-without-timezone range column. This is the #215
+/// `tsrange` surface and deliberately uses `time::PrimitiveDateTime`,
+/// separate from Djogi's timezone-aware `DateTime` alias.
+#[model(table = "phase8_5_215_range_ts_rows", pk = HeerId, no_default)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Phase85215RangeTsRow {
+    pub local_window: Range<PrimitiveDateTime>,
     pub label: String,
 }
 
@@ -305,6 +310,42 @@ async fn range_tstz_unbounded_lower_round_trip(mut ctx: djogi::DjogiContext) {
     assert_eq!(*row.booking_window.upper(), RangeBound::Exclusive(upper));
 }
 
+// ── (2b) — Range<PrimitiveDateTime> continuous TSRANGE codec ────────────────
+
+#[djogi::djogi_test(sync_models = [Phase85215RangeTsRow])]
+async fn range_ts_inclusive_exclusive_round_trip(mut ctx: djogi::DjogiContext) {
+    let lower = PrimitiveDateTime::new(
+        time::Date::from_calendar_date(2026, time::Month::January, 1).expect("valid lower date"),
+        time::Time::MIDNIGHT,
+    );
+    let upper = PrimitiveDateTime::new(
+        time::Date::from_calendar_date(2026, time::Month::January, 2).expect("valid upper date"),
+        time::Time::MIDNIGHT,
+    );
+
+    let row = Phase85215RangeTsRow::create(
+        &mut ctx,
+        Phase85215RangeTsRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            local_window: Range::inclusive_exclusive(lower, upper),
+            label: "ts-local-window".into(),
+        },
+    )
+    .await
+    .expect("inclusive-exclusive Range<PrimitiveDateTime> must round-trip through tsrange");
+
+    assert_eq!(*row.local_window.lower(), RangeBound::Inclusive(lower));
+    assert_eq!(*row.local_window.upper(), RangeBound::Exclusive(upper));
+
+    let fetched = Phase85215RangeTsRow::get(&mut ctx, row.id)
+        .await
+        .expect("get round-trip on Range<PrimitiveDateTime>");
+    assert_eq!(*fetched.local_window.lower(), RangeBound::Inclusive(lower));
+    assert_eq!(*fetched.local_window.upper(), RangeBound::Exclusive(upper));
+}
+
 // ── (3) — Range<Decimal> continuous NUMERIC codec ────────────────────────────
 
 #[djogi::djogi_test(sync_models = [Phase85G0RangeDecimalRow])]
@@ -410,12 +451,9 @@ async fn range_decimal_unbounded_upper_round_trip(mut ctx: djogi::DjogiContext) 
 
 // ── (4) — SQL predicate round-trip on a Range<T> column ──────────────────────
 //
-// G0 does not ship `Range<T>: IntoFilterValue` (operator-surface work
-// belongs to djogi#148 / djogi#150). To still exercise a typed-filter
-// round-trip that decodes a `Range<T>` column from the projection,
-// filter on a non-range column (`label`) and assert that the
-// `Range<T>` field on the returned row decoded correctly through the
-// live SELECT path.
+// This regression still matters after #215: filtering on a non-range column
+// while projecting a `Range<T>` column exercises the live SELECT decode path
+// independently from the range predicate operators below.
 
 #[djogi::djogi_test(sync_models = [Phase85G0RangeI32Row])]
 async fn range_i32_filter_returns_decoded_range_column(mut ctx: djogi::DjogiContext) {
@@ -459,4 +497,134 @@ async fn range_i32_filter_returns_decoded_range_column(mut ctx: djogi::DjogiCont
     assert_eq!(rows[0].label, "filter-target");
     assert_eq!(*rows[0].span.lower(), RangeBound::Inclusive(2));
     assert_eq!(*rows[0].span.upper(), RangeBound::Exclusive(8));
+}
+
+// ── (5) — #215 SQL-only range predicate operators ───────────────────────────
+
+fn sorted_range_labels(rows: Vec<Phase85G0RangeI32Row>) -> Vec<String> {
+    let mut labels = rows.into_iter().map(|row| row.label).collect::<Vec<_>>();
+    labels.sort();
+    labels
+}
+
+async fn seed_range_predicate_rows(ctx: &mut djogi::DjogiContext) {
+    for (span, label) in [
+        (Range::inclusive_exclusive(1_i32, 5_i32), "a"),
+        (Range::inclusive_exclusive(5_i32, 10_i32), "b"),
+        (Range::inclusive_exclusive(10_i32, 15_i32), "c"),
+        (Range::inclusive_exclusive(20_i32, 30_i32), "d"),
+    ] {
+        Phase85G0RangeI32Row::create(
+            ctx,
+            Phase85G0RangeI32Row {
+                id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+                created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+                updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+                span,
+                label: label.into(),
+            },
+        )
+        .await
+        .expect("seed range predicate row");
+    }
+}
+
+#[djogi::djogi_test(sync_models = [Phase85G0RangeI32Row])]
+async fn range_i32_predicate_operators_filter_rows(mut ctx: djogi::DjogiContext) {
+    seed_range_predicate_rows(&mut ctx).await;
+
+    let contains = Phase85G0RangeI32Row::objects()
+        .filter(|f| f.span().explicit_pg_predicate().contains(3_i32))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("range contains element predicate");
+    assert_eq!(sorted_range_labels(contains), ["a"]);
+
+    let contains_range = Phase85G0RangeI32Row::objects()
+        .filter(|f| {
+            f.span()
+                .explicit_pg_predicate()
+                .contains_range(Range::inclusive_exclusive(2_i32, 4_i32))
+        })
+        .fetch_all(&mut ctx)
+        .await
+        .expect("range contains range predicate");
+    assert_eq!(sorted_range_labels(contains_range), ["a"]);
+
+    let contained_by = Phase85G0RangeI32Row::objects()
+        .filter(|f| {
+            f.span()
+                .explicit_pg_predicate()
+                .contained_by(Range::inclusive_exclusive(0_i32, 12_i32))
+        })
+        .fetch_all(&mut ctx)
+        .await
+        .expect("range contained-by predicate");
+    assert_eq!(sorted_range_labels(contained_by), ["a", "b"]);
+
+    let overlaps = Phase85G0RangeI32Row::objects()
+        .filter(|f| {
+            f.span()
+                .explicit_pg_predicate()
+                .overlaps(Range::inclusive_exclusive(4_i32, 6_i32))
+        })
+        .fetch_all(&mut ctx)
+        .await
+        .expect("range overlaps predicate");
+    assert_eq!(sorted_range_labels(overlaps), ["a", "b"]);
+
+    let strictly_left = Phase85G0RangeI32Row::objects()
+        .filter(|f| {
+            f.span()
+                .explicit_pg_predicate()
+                .strictly_left_of(Range::inclusive_exclusive(7_i32, 9_i32))
+        })
+        .fetch_all(&mut ctx)
+        .await
+        .expect("range strictly-left predicate");
+    assert_eq!(sorted_range_labels(strictly_left), ["a"]);
+
+    let strictly_right = Phase85G0RangeI32Row::objects()
+        .filter(|f| {
+            f.span()
+                .explicit_pg_predicate()
+                .strictly_right_of(Range::inclusive_exclusive(7_i32, 9_i32))
+        })
+        .fetch_all(&mut ctx)
+        .await
+        .expect("range strictly-right predicate");
+    assert_eq!(sorted_range_labels(strictly_right), ["c", "d"]);
+
+    let not_extends_right = Phase85G0RangeI32Row::objects()
+        .filter(|f| {
+            f.span()
+                .explicit_pg_predicate()
+                .not_extends_right_of(Range::inclusive_exclusive(5_i32, 10_i32))
+        })
+        .fetch_all(&mut ctx)
+        .await
+        .expect("range not-extends-right predicate");
+    assert_eq!(sorted_range_labels(not_extends_right), ["a", "b"]);
+
+    let not_extends_left = Phase85G0RangeI32Row::objects()
+        .filter(|f| {
+            f.span()
+                .explicit_pg_predicate()
+                .not_extends_left_of(Range::inclusive_exclusive(5_i32, 10_i32))
+        })
+        .fetch_all(&mut ctx)
+        .await
+        .expect("range not-extends-left predicate");
+    assert_eq!(sorted_range_labels(not_extends_left), ["b", "c", "d"]);
+
+    let adjacent = Phase85G0RangeI32Row::objects()
+        .filter(|f| {
+            f.span()
+                .explicit_pg_predicate()
+                .adjacent_to(Range::inclusive_exclusive(5_i32, 10_i32))
+        })
+        .fetch_all(&mut ctx)
+        .await
+        .expect("range adjacent-to predicate");
+    assert_eq!(sorted_range_labels(adjacent), ["a", "c"]);
 }

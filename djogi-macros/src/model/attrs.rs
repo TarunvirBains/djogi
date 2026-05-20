@@ -3469,7 +3469,7 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         return Some("JSONB");
     }
 
-    // Phase 8.5 G0 (djogi#148 + #150 substrate) — runtime-backed
+    // djogi#215 — runtime-backed
     // `djogi::Range<T>` wrappers lower to the matching Postgres range
     // type based on the element type. The outer wrapper intentionally
     // uses an explicit namespace policy instead of last-segment matching:
@@ -3485,7 +3485,7 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
     // `DjogiSqlType` field-site check.
     //
     // Element-type mapping is deliberately narrower than
-    // `rust_type_to_sql(inner)`: only the five element Rust types with a
+    // `rust_type_to_sql(inner)`: only the six element Rust types with a
     // matching `RangeSubtype` impl are accepted here. This avoids
     // silently widening `Range<u32>` to `int8range` or `Range<HeerId>`
     // to `int8range` when no runtime range codec exists for those
@@ -3495,8 +3495,7 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
     // reports the missing `DjogiSqlType` bound at the field site.
     //
     // Future siblings: djogi#148 (`btree_gist` EXCLUDE grammar) and
-    // djogi#150 (PG18 temporal DDL) build on top of this lowering. G0
-    // ships only the substrate.
+    // djogi#150 (PG18 temporal DDL) build on top of this lowering.
     if let syn::Type::Path(syn::TypePath { qself: None, path }) = ty
         && is_djogi_range_outer_path(path)
         && let Some(last) = path.segments.last()
@@ -3510,6 +3509,7 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
             "i32" => Some("INT4RANGE"),
             "i64" => Some("INT8RANGE"),
             "Decimal" | "rust_decimal::Decimal" => Some("NUMRANGE"),
+            "PrimitiveDateTime" | "time::PrimitiveDateTime" => Some("TSRANGE"),
             "DateTime"
             | "OffsetDateTime"
             | "time::OffsetDateTime"
@@ -4349,11 +4349,13 @@ mod tests {
         let djogi_types: syn::Type = parse_quote!(djogi::types::Range<i32>);
         let absolute_djogi: syn::Type = parse_quote!(::djogi::Range<i32>);
         let absolute_types: syn::Type = parse_quote!(::djogi::types::Range<i32>);
+        let ts: syn::Type = parse_quote!(Range<time::PrimitiveDateTime>);
         assert_eq!(rust_type_to_sql(&bare), Some("INT4RANGE"));
         assert_eq!(rust_type_to_sql(&djogi), Some("INT4RANGE"));
         assert_eq!(rust_type_to_sql(&djogi_types), Some("INT4RANGE"));
         assert_eq!(rust_type_to_sql(&absolute_djogi), Some("INT4RANGE"));
         assert_eq!(rust_type_to_sql(&absolute_types), Some("INT4RANGE"));
+        assert_eq!(rust_type_to_sql(&ts), Some("TSRANGE"));
     }
 
     #[test]

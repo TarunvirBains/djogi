@@ -93,6 +93,9 @@ uuid.workspace = true
 # field declarations and array operators. Already a workspace dep (djogi uses
 # it for NUMERIC columns).
 rust_decimal.workspace = true
+# time — needed by the #215 range compile-pass fixture for
+# `Range<time::PrimitiveDateTime>` / `tsrange`.
+time.workspace = true
 
 # Lihaaf v0.1 — fast, parallel proc-macro test harness. djogi-macros is
 # the canonical adopter that drove lihaaf's design (lihaaf spec §9.1).
@@ -124,7 +127,7 @@ rust_decimal.workspace = true
 dylib_crate = "djogi"
 extern_crates = ["djogi", "djogi-macros"]
 features = []
-dev_deps = ["serde", "serde_json", "sassi", "uuid", "rust_decimal"]
+dev_deps = ["serde", "serde_json", "sassi", "uuid", "rust_decimal", "time"]
 edition = "2024"
 fixture_dirs = ["tests/compile_fail", "tests/compile_pass"]
 

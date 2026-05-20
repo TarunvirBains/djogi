@@ -273,7 +273,7 @@ for any of them.
 | Postgres type | Rust shape | Feature flag | Tracking |
 |---|---|---|---|
 | `INTERVAL` | `djogi::Interval { months, days, microseconds }` | — (always on) | [#212](https://github.com/TarunvirBains/djogi/issues/212) |
-| `int4range` / `int8range` / `numrange` / `tstzrange` / `daterange` | `djogi::Range<i32>` / `djogi::Range<i64>` / `djogi::Range<rust_decimal::Decimal>` / `djogi::Range<djogi::DateTime>` / `djogi::Range<djogi::Date>` | — (always on) | [#215](https://github.com/TarunvirBains/djogi/issues/215) |
+| `int4range` / `int8range` / `numrange` / `tsrange` / `tstzrange` / `daterange` | `djogi::Range<i32>` / `djogi::Range<i64>` / `djogi::Range<rust_decimal::Decimal>` / `djogi::Range<time::PrimitiveDateTime>` / `djogi::Range<djogi::DateTime>` / `djogi::Range<djogi::Date>` | — (always on) | [#215](https://github.com/TarunvirBains/djogi/issues/215) |
 | `INET` | `std::net::IpAddr` | `network` | [#213](https://github.com/TarunvirBains/djogi/issues/213) |
 | `CIDR` | `djogi::CidrAddr { addr, prefix }` | `network` | [#213](https://github.com/TarunvirBains/djogi/issues/213) |
 | `MACADDR` | `djogi::MacAddr([u8; 6])` | `network` | [#213](https://github.com/TarunvirBains/djogi/issues/213) |
@@ -301,17 +301,35 @@ and pulls in no third-party crate.
 
 #### `djogi::Range<T>` — Postgres typed range columns
 
-Djogi ships typed substrate support for five Postgres range columns:
+Djogi ships typed support for six Postgres range columns:
 `Range<i32>` (`int4range`), `Range<i64>` (`int8range`),
-`Range<rust_decimal::Decimal>` (`numrange`), `Range<DateTime>`
+`Range<rust_decimal::Decimal>` (`numrange`),
+`Range<time::PrimitiveDateTime>` (`tsrange`), `Range<DateTime>`
 (`tstzrange`), and `Range<Date>` (`daterange`). The Rust range value
 preserves inclusive, exclusive, unbounded, and empty-bound shapes.
 
-`tsrange` remains deliberately deferred. Djogi's temporal model uses
-`TIMESTAMPTZ` for timestamp fields, so the supported timestamp range is
-`Range<DateTime>` / `tstzrange`; adding timestamp-without-timezone range
-semantics needs a separate design decision rather than an accidental
-parallel temporal surface.
+`Range<time::PrimitiveDateTime>` is the timestamp-without-timezone
+surface. Djogi's `DateTime` alias remains timezone-aware and maps to
+`tstzrange`.
+
+Range operators are PostgreSQL-specific and are reached through
+`explicit_pg_predicate()`:
+
+```rust,ignore
+let matching = Booking::objects().filter(|f| {
+    f.period()
+        .explicit_pg_predicate()
+        .overlaps(Range::inclusive_exclusive(start, end))
+});
+```
+
+Available operator methods are `contains(value)`, `contains_range(range)`,
+`contained_by(range)`, `overlaps(range)`, `strictly_left_of(range)`,
+`strictly_right_of(range)`, `not_extends_right_of(range)`,
+`not_extends_left_of(range)`, and `adjacent_to(range)`. They emit Postgres
+range operators (`@>`, `<@`, `&&`, `<<`, `>>`, `&<`, `&>`, `-|-`) and are not
+portable/Punnu predicates because Rust structural `Range<T>` equality is not
+Postgres range canonicalization.
 
 **Caveat — discrete-subtype upper-MAX bounds.** For the three discrete
 subtypes (`int4range`, `int8range`, `daterange`) Postgres canonicalises
@@ -408,7 +426,7 @@ paired with a manual `postgres_types::ToSql` / `FromSql` implementation.
 | Postgres type | Status | Workaround today | Tracking |
 |---|---|---|---|
 | `MONEY` | decision pending — `NUMERIC` recommended for new tables | Use `rust_decimal::Decimal` with a `NUMERIC` column; `Custom("MONEY")` for legacy columns | [#214](https://github.com/TarunvirBains/djogi/issues/214) |
-| `tsrange` | deferred — timestamp-without-timezone ranges conflict with Djogi's TIMESTAMPTZ-first temporal discipline; `tstzrange` is supported via `Range<DateTime>` | `Custom("tsrange")` + adopter newtype if legacy schemas require it | [#215](https://github.com/TarunvirBains/djogi/issues/215) |
+| Postgres multirange types | deferred — #215 covers single-range columns only | `Custom("int4multirange")` / sibling SQL type plus adopter newtype | future follow-up |
 | `DOMAIN` declarations — Piece B (`CREATE DOMAIN` emission via `#[model(domains = [...])]`) | gap — deferred to a follow-on dispatch | Declare the domain in raw SQL (adopter-owned bootstrap migration) and reference it via `#[field(domain = "<name>")]` (Piece A, shipped — see below) | [#216](https://github.com/TarunvirBains/djogi/issues/216) |
 
 Tracked under the [#170](https://github.com/TarunvirBains/djogi/issues/170) umbrella.
@@ -566,11 +584,12 @@ EXCLUDE constraints, so two-phase online staging is structurally
 impossible. The empty-table case (CREATE TABLE inline, or an existing
 table with zero rows) flows through the regular `OnlineSafe` path.
 
-**Range columns.** `Range<T>` typed range fields land via the G0
-substrate (`Range<i32>` → `int4range`, `Range<i64>` → `int8range`,
-`Range<rust_decimal::Decimal>` → `numrange`, `Range<DateTime>` →
-`tstzrange`, `Range<Date>` → `daterange`). See `decisions.md` for the
-substrate rationale.
+**Range columns.** `Range<T>` typed range fields cover
+`Range<i32>` → `int4range`, `Range<i64>` → `int8range`,
+`Range<rust_decimal::Decimal>` → `numrange`,
+`Range<time::PrimitiveDateTime>` → `tsrange`, `Range<DateTime>` →
+`tstzrange`, and `Range<Date>` → `daterange`. See
+[`range-types.md`](../spec/range-types.md) for the range API contract.
 
 ### DDL metadata attributes
 

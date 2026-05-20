@@ -1438,11 +1438,11 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         "INET" => quote! { ::djogi::FieldSqlType::Inet },
         "CIDR" => quote! { ::djogi::FieldSqlType::Cidr },
         "MACADDR" => quote! { ::djogi::FieldSqlType::Macaddr },
-        // Phase 8.5 G0 (djogi#148 + #150 substrate) — range SQL types
+        // djogi#215 — range SQL types
         // lower to the typed `FieldSqlType::Range { subtype }` variant.
         // The mapping tracks `rust_type_to_sql`'s explicit outer-wrapper
         // namespace policy for runtime-backed `djogi::Range<T>`; one arm
-        // per Postgres built-in range type the G0 substrate ships.
+        // per Postgres built-in range type the public surface ships.
         "INT4RANGE" | "int4range" => quote! {
             ::djogi::FieldSqlType::Range {
                 subtype: ::djogi::descriptor::RangeSubtypeKind::Int4,
@@ -1456,6 +1456,11 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         "NUMRANGE" | "numrange" => quote! {
             ::djogi::FieldSqlType::Range {
                 subtype: ::djogi::descriptor::RangeSubtypeKind::Num,
+            }
+        },
+        "TSRANGE" | "tsrange" => quote! {
+            ::djogi::FieldSqlType::Range {
+                subtype: ::djogi::descriptor::RangeSubtypeKind::Ts,
             }
         },
         "TSTZRANGE" | "tstzrange" => quote! {
@@ -1786,6 +1791,7 @@ mod tests {
         let int4 = normalize(sql_str_to_tokens("int4range").to_string());
         let int8 = normalize(sql_str_to_tokens("int8range").to_string());
         let num = normalize(sql_str_to_tokens("numrange").to_string());
+        let ts = normalize(sql_str_to_tokens("tsrange").to_string());
         let tstz = normalize(sql_str_to_tokens("tstzrange").to_string());
         let date = normalize(sql_str_to_tokens("daterange").to_string());
         assert!(
@@ -1799,6 +1805,10 @@ mod tests {
         assert!(
             num.contains("RangeSubtypeKind::Num"),
             "lowercase numrange should map to FieldSqlType::Range subtype Num"
+        );
+        assert!(
+            ts.contains("RangeSubtypeKind::Ts"),
+            "lowercase tsrange should map to FieldSqlType::Range subtype Ts"
         );
         assert!(
             tstz.contains("RangeSubtypeKind::Tstz"),

@@ -12,8 +12,8 @@
 //! | Type            | Postgres column                                | Feature flag | Issue                            |
 //! |-----------------|------------------------------------------------|--------------|----------------------------------|
 //! | [`Interval`]    | `INTERVAL`                                     | (always on)  | djogi#212                        |
-//! | [`Range<T>`]    | `int4range` / `int8range` / `numrange` /       | (always on)  | djogi#148 + #150 (Phase 8.5 G0)  |
-//! |                 | `tstzrange` / `daterange`                      |              |                                  |
+//! | [`Range<T>`]    | `int4range` / `int8range` / `numrange` /       | (always on)  | djogi#215                        |
+//! |                 | `tsrange` / `tstzrange` / `daterange`          |              |                                  |
 //! | `std::net::IpAddr` | `INET`                                      | `network`    | djogi#213                        |
 //! | [`CidrAddr`]    | `CIDR`                                         | `network`    | djogi#213                        |
 //! | [`MacAddr`]     | `MACADDR`                                      | `network`    | djogi#213                        |
@@ -254,27 +254,25 @@ impl crate::descriptor::DjogiSqlType for Interval {
     const SQL_TYPE: &'static str = "INTERVAL";
 }
 
-// ── Range / RangeBound (Phase 8.5 G0 — djogi#148 + #150 substrate) ──────────
+// ── Range / RangeBound (Phase 8.5 #215 typed surface) ─────────────────────
 //
-// Postgres range types (`int4range`, `int8range`, `numrange`, `tstzrange`,
-// `daterange`) carry a tagged bound shape: each side of the range is
+// Postgres range types (`int4range`, `int8range`, `numrange`, `tsrange`,
+// `tstzrange`, `daterange`) carry a tagged bound shape: each side is
 // inclusive, exclusive, or unbounded, with a separate "empty range" sentinel
 // that has no bounds at all. The Rust type mirrors that shape exactly so
 // adopters never need to invent their own range encoding when declaring
 // `pub period: Range<DateTime>` on a `#[model]` struct.
 //
-// G0 ships ONLY the substrate: the Rust type, the wire codec, and the
-// descriptor lowering hook. The downstream lanes are explicitly future
-// work and intentionally *not* included here:
+// #215 ships the user-facing typed field and predicate surface. Two sibling
+// lanes remain explicitly out of scope here:
 //
 // * djogi#148 — `btree_gist` EXCLUDE constraint grammar (`#[model(exclude(
-//   ...))]`), the `&&` overlap operator surface, and the `CREATE EXTENSION
-//   btree_gist` migration step.
+//   ...))]`) and the `CREATE EXTENSION btree_gist` migration step.
 // * djogi#150 — PostgreSQL 18 temporal-constraint DDL (`WITHOUT OVERLAPS`,
 //   `PERIOD` foreign keys, `NOT ENFORCED`, named `NOT NULL`).
 //
-// Both lanes consume range columns as their input. Centralising the
-// `Range<T>` shape here keeps the two future lanes from diverging on
+// Both lanes consume range columns as their input. Centralizing the
+// `Range<T>` shape here keeps future lanes from diverging on
 // what "a range column" looks like.
 //
 // # No third-party crate
@@ -375,23 +373,22 @@ pub enum RangeBound<T> {
 /// e.g. `i32` writes 4 big-endian bytes for `INT4`, `OffsetDateTime`
 /// writes 8 big-endian microseconds-since-2000 bytes for `TIMESTAMPTZ`.
 ///
-/// # Future siblings — DB-level no-overlap
+/// # Future siblings - DB-level no-overlap
 ///
-/// `Range<T>` is the substrate shared by two future DB-level
-/// no-overlap surfaces (Phase 8.5 G0 establishes the substrate; the
-/// downstream lanes are tracked separately):
+/// `Range<T>` is also the substrate for two future DB-level no-overlap
+/// surfaces tracked separately:
 ///
 /// * **djogi#148** — `btree_gist` EXCLUDE constraint grammar
-///   (`#[model(exclude(...))]`), the `&&` overlap operator, and
-///   `CREATE EXTENSION btree_gist`. The general-purpose no-overlap
-///   mechanism that works on every supported Postgres version.
+///   (`#[model(exclude(...))]`) and `CREATE EXTENSION btree_gist`.
+///   The general-purpose no-overlap mechanism that works on every
+///   supported Postgres version.
 /// * **djogi#150** — PostgreSQL 18 temporal-constraint DDL
 ///   (`WITHOUT OVERLAPS`, `PERIOD` foreign keys, `NOT ENFORCED`,
 ///   named `NOT NULL`). The modern SQL-standard no-overlap mechanism
 ///   on PG18+.
 ///
-/// Both lanes consume `Range<T>` columns as their inputs. Neither
-/// lane is shipped by G0.
+/// Both lanes consume `Range<T>` columns as their inputs. Neither lane is
+/// part of #215.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Range<T> {
     lower: RangeBound<T>,
@@ -548,17 +545,16 @@ impl<T> Default for Range<T> {
 /// | `i32`                        | `int4range`         | `INT4`             |
 /// | `i64`                        | `int8range`         | `INT8`             |
 /// | `rust_decimal::Decimal`      | `numrange`          | `NUMERIC`          |
+/// | `time::PrimitiveDateTime`    | `tsrange`           | `TIMESTAMP`        |
 /// | `time::OffsetDateTime`       | `tstzrange`         | `TIMESTAMPTZ`      |
 /// | `time::Date`                 | `daterange`         | `DATE`             |
 ///
-/// `tsrange` (timestamp-without-timezone) is intentionally not
-/// supported — Djogi pins to `TIMESTAMPTZ` exclusively for temporal
-/// columns (see `docs/spec/decisions.md` for the rationale), so
-/// adopters reach for `Range<DateTime>` (which lowers to `tstzrange`)
-/// rather than juggling the timezone-stripped variant.
+/// `tsrange` uses `time::PrimitiveDateTime` so timestamp-without-timezone
+/// semantics stay explicit. Djogi's `DateTime` alias remains
+/// timezone-aware and lowers to `tstzrange`.
 ///
 /// The trait is open for future extensions but the only implementors
-/// shipping in G0 are the five rows above. Because `Range<T>` has a
+/// shipping in #215 are the six rows above. Because `Range<T>` has a
 /// blanket `DjogiSqlType` impl for every `T: RangeSubtype`, adopters
 /// who add a custom range subtype only need to implement this trait
 /// for the element type; the `Range<T>` descriptor SQL type then
@@ -607,6 +603,16 @@ impl RangeSubtype for rust_decimal::Decimal {
         Type::NUMERIC
     }
     const PG_RANGE_NAME: &'static str = "NUMRANGE";
+}
+
+impl RangeSubtype for time::PrimitiveDateTime {
+    fn pg_range_type() -> Type {
+        Type::TS_RANGE
+    }
+    fn pg_element_type() -> Type {
+        Type::TIMESTAMP
+    }
+    const PG_RANGE_NAME: &'static str = "TSRANGE";
 }
 
 impl RangeSubtype for time::OffsetDateTime {
@@ -1523,7 +1529,7 @@ mod tests {
         assert!(!<Interval as FromSql>::accepts(&Type::INT8));
     }
 
-    // ── Range / RangeBound (Phase 8.5 G0 — djogi#148 + #150 substrate) ──────
+    // ── Range / RangeBound (djogi#215) ──────────────────────────────────────
 
     #[test]
     fn range_empty_constructor_carries_unbounded_sides_and_empty_flag() {
@@ -1540,6 +1546,7 @@ mod tests {
         assert!(<Range<i32> as Default>::default().is_empty());
         assert!(<Range<i64> as Default>::default().is_empty());
         assert!(<Range<rust_decimal::Decimal> as Default>::default().is_empty());
+        assert!(<Range<time::PrimitiveDateTime> as Default>::default().is_empty());
         assert!(<Range<time::Date> as Default>::default().is_empty());
         assert!(<Range<time::OffsetDateTime> as Default>::default().is_empty());
     }
@@ -1600,6 +1607,14 @@ mod tests {
             Type::NUMERIC
         );
         assert_eq!(
+            <time::PrimitiveDateTime as RangeSubtype>::pg_range_type(),
+            Type::TS_RANGE
+        );
+        assert_eq!(
+            <time::PrimitiveDateTime as RangeSubtype>::pg_element_type(),
+            Type::TIMESTAMP
+        );
+        assert_eq!(
             <time::OffsetDateTime as RangeSubtype>::pg_range_type(),
             Type::TSTZ_RANGE
         );
@@ -1626,6 +1641,10 @@ mod tests {
         assert_eq!(
             <Range<time::OffsetDateTime> as DjogiSqlType>::SQL_TYPE,
             "TSTZRANGE"
+        );
+        assert_eq!(
+            <Range<time::PrimitiveDateTime> as DjogiSqlType>::SQL_TYPE,
+            "TSRANGE"
         );
         assert_eq!(<Range<time::Date> as DjogiSqlType>::SQL_TYPE, "DATERANGE");
     }
@@ -1755,6 +1774,24 @@ mod tests {
     }
 
     #[test]
+    fn range_round_trip_through_wire_codec_preserves_ts_bounds() {
+        let lo = time::PrimitiveDateTime::new(
+            time::Date::from_calendar_date(2026, time::Month::January, 1).unwrap(),
+            time::Time::MIDNIGHT,
+        );
+        let hi = time::PrimitiveDateTime::new(
+            time::Date::from_calendar_date(2026, time::Month::January, 2).unwrap(),
+            time::Time::MIDNIGHT,
+        );
+        let original: Range<time::PrimitiveDateTime> = Range::inclusive_exclusive(lo, hi);
+        let mut buf = BytesMut::new();
+        original.to_sql(&Type::TS_RANGE, &mut buf).unwrap();
+        let decoded =
+            <Range<time::PrimitiveDateTime> as FromSql>::from_sql(&Type::TS_RANGE, &buf).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
     fn range_accepts_only_the_matching_range_type() {
         // i32 range accepts INT4_RANGE only.
         assert!(<Range<i32> as ToSql>::accepts(&Type::INT4_RANGE));
@@ -1772,6 +1809,13 @@ mod tests {
         ));
         assert!(!<Range<time::OffsetDateTime> as ToSql>::accepts(
             &Type::DATE_RANGE
+        ));
+        // PrimitiveDateTime range accepts TS_RANGE only.
+        assert!(<Range<time::PrimitiveDateTime> as ToSql>::accepts(
+            &Type::TS_RANGE
+        ));
+        assert!(!<Range<time::PrimitiveDateTime> as ToSql>::accepts(
+            &Type::TSTZ_RANGE
         ));
         // Date range accepts DATE_RANGE only.
         assert!(<Range<time::Date> as ToSql>::accepts(&Type::DATE_RANGE));

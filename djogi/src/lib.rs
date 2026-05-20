@@ -86,6 +86,7 @@ pub mod pg;
 pub mod pg_types;
 pub mod primary_key;
 pub mod query;
+pub mod range;
 pub mod relation;
 pub mod snapshot;
 pub mod testing;
