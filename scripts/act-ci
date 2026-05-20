@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+workflow_src="${repo_root}/.github/workflows/ci.yml"
+
+host_port="${DJOGI_POSTGRES_HOST_PORT:-5432}"
+
+case "${host_port}" in
+  ''|*[!0-9]*)
+    printf 'DJOGI_POSTGRES_HOST_PORT must be a numeric TCP port, got: %s\n' "${host_port}" >&2
+    exit 2
+    ;;
+esac
+
+if (( host_port < 1 || host_port > 65535 )); then
+  printf 'DJOGI_POSTGRES_HOST_PORT must be between 1 and 65535, got: %s\n' "${host_port}" >&2
+  exit 2
+fi
+
+default_database_url="postgres://djogi:${DJOGI_POSTGRES_PASSWORD:-djogi}@localhost:${host_port}/djogi_test"
+database_url="${DATABASE_URL:-${default_database_url}}"
+
+if [[ -n "${DJOGI_POSTGRES_HOST_PORT+x}" && -n "${DATABASE_URL+x}" ]]; then
+  case "${database_url}" in
+    *"@localhost:${host_port}/"*|*"@127.0.0.1:${host_port}/"*) ;;
+    *)
+      printf 'DATABASE_URL must target localhost:%s when DJOGI_POSTGRES_HOST_PORT is set.\n' "${host_port}" >&2
+      printf 'Current DATABASE_URL: %s\n' "${database_url}" >&2
+      exit 2
+      ;;
+  esac
+fi
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/djogi-act-ci.XXXXXX")"
+trap 'rm -rf "${tmpdir}"' EXIT
+
+workflow_tmp="${tmpdir}/ci.yml"
+DJOGI_POSTGRES_HOST_PORT="${host_port}" \
+DATABASE_URL="${database_url}" \
+  perl -pe '
+    s{5432:5432}{$ENV{DJOGI_POSTGRES_HOST_PORT}:5432}g;
+    s{postgres://djogi:djogi\@localhost:5432/djogi_test}{$ENV{DATABASE_URL}}g;
+  ' "${workflow_src}" > "${workflow_tmp}"
+
+printf 'Using act Postgres host port %s\n' "${host_port}" >&2
+printf 'Using act DATABASE_URL %s\n' "${database_url}" >&2
+
+exec act --env "DATABASE_URL=${database_url}" -W "${workflow_tmp}" "$@"
