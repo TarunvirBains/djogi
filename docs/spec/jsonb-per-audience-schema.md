@@ -98,8 +98,10 @@ typed `Jsonb<ProfileMetaPublic>` and is populated via the SQL
 construction time. `stripe_customer_id` never reaches the public-visage
 struct, the public-visage wire JSON, or the public-visage rustdoc **when
 the canonical recursive object-narrowing pattern is followed** — every
-nesting level (including nested `Jsonb<...>` sub-schemas and the per-element
-shape of array / map containers) is itself shaped with `jsonb_build_object(...)`
+nesting level (including nested `Jsonb<...>` sub-schemas — exercised by
+current fixtures + integration tests — and, pending djogi#226-container,
+the per-element shape of array / map containers) is itself shaped with
+`jsonb_build_object(...)`
 (or a comparable shape-narrowing builder); see
 [§Safety](#safety-constraints-against-accidental-leaks) for the recursive
 requirement, the new [E_DJG_VDF_017](#error-taxonomy-extension) mechanical
@@ -279,9 +281,10 @@ The macro auto-generates a narrow struct for each scope-field pair
   the SQL is shaped as canonical recursive object narrowing*. A
   top-level `jsonb_build_object(...)` that names exactly the narrow
   schema's wire keys, with every nested `Jsonb<...>` sub-schema
-  similarly wrapped in its own `jsonb_build_object(...)` and every
-  container element (array, map value) similarly shaped, narrows every
-  reachable key path. Under that shape, `Jsonb<ProfileMetaPublic>::Deserialize`
+  similarly wrapped in its own `jsonb_build_object(...)` (exercised by
+  fixtures + integration tests today) and, pending djogi#226-container,
+  every container element (array, map value) similarly shaped, narrows
+  every reachable key path. Under that shape, `Jsonb<ProfileMetaPublic>::Deserialize`
   sees only the narrow keys and `extra` is structurally empty at every
   nesting level, so no admin-only key can reach `ProfilePublic`. Simple-column
   passthrough (`sql = "metadata"`) and shallow projections that
@@ -379,18 +382,22 @@ Notes on this pattern:
   are wire-key tokens. They must match the wire keys the narrow
   schema's `serde::Serialize` / `Deserialize` impls emit and accept —
   i.e., the field names after any `#[serde(rename = "...")]` or
-  `#[serde(rename_all = "...")]` adjustments. A mismatch causes the
-  emitted key to land in `extra` on decode. The downstream failure mode
-  depends on the narrow field's declared shape: for **required** narrow
-  fields the queryset fetch surfaces
+  `#[serde(rename_all = "...")]` adjustments. A mismatch is not a
+  parse-time error. The downstream failure mode depends on the narrow
+  field's declared shape: for **required** narrow fields
+  `Jsonb<NarrowSchema>::FromSql` invokes the inner
+  `serde_json::from_value::<NarrowSchema>(raw.clone())` on the full raw
+  JSONB value before any `data`/`extra` split; `serde` returns a
+  missing-field error immediately and the mismatched key never lands in
+  `extra` — the queryset fetch surfaces
   `DjogiError::Visage(VisageError::DbComputedTypeMismatch { visage, field, expected, actual })`
   via `decode_derived_at`'s `map_derived_decode_failure` before parity
-  can run (the missing required field cannot be filled from `extra`);
-  for **optional or defaulted** narrow fields the key sits in `extra`
-  and the parity helper catches the drift between the fetched value
-  (populated `extra`) and the in-memory `(&model).into()` construction
-  (empty `extra`). See [§Interactions with serde](#with-serde) for the
-  full wire-key contract.
+  can run; for **optional or defaulted** narrow fields the inner
+  deserialize succeeds, the `data`/`extra` split runs, and the key sits
+  in `extra` — the parity helper catches the drift between the fetched
+  value (populated `extra`) and the in-memory `(&model).into()`
+  construction (empty `extra`). See [§Interactions with serde](#with-serde)
+  for the full wire-key contract.
 - The `rust` constructs a fresh `Jsonb::new(...)` with a typed
   `ProfileMetaPublic` value pulled from `model.metadata.data`. No
   `extra` is preserved on the projected visage — the typed struct
@@ -453,12 +460,14 @@ no visage ever carries the union schema.
 ## Safety constraints against accidental leaks
 
 The safety story is layered: the framework enforces what proc macros
-can mechanically detect at parse time; the spec, fixture corpus,
-parity helper, and user guide carry the recursive-narrowing
-obligation that proc macros cannot mechanically prove (since macros
-operate in token space and cannot compare `ProfileMetaPublic`'s field
-set against `ProfileMetaAdmin`'s, especially across nested `Jsonb<...>`
-sub-schemas or array / map container element shapes).
+can mechanically detect at parse time; the spec, fixture corpus
+(which currently covers nested `Jsonb<...>` sub-schemas — container
+element shapes are deferred to djogi#226-container), parity helper,
+and user guide carry the recursive-narrowing obligation that proc
+macros cannot mechanically prove (since macros operate in token space
+and cannot compare `ProfileMetaPublic`'s field set against
+`ProfileMetaAdmin`'s, especially across nested `Jsonb<...>` sub-schemas
+or array / map container element shapes).
 
 ### Mechanical guards inherited from the derived-field surface
 
@@ -611,18 +620,24 @@ simple-identifier guard catches the common accidental leak shapes;
 compound expressions require deliberate SQL composition and are pinned
 by user-guide counterexamples plus runtime parity.
 
-### Documented patterns (not mechanically enforced — verified in fixtures + integration tests)
+### Documented patterns (not mechanically enforced — nested `Jsonb<...>` verified in fixtures + integration tests; container narrowing deferred to djogi#226-container)
 
-These are patterns the spec documents and the fixture / integration
-test corpus exercises so the user-guide can recommend them; proc
-macros cannot prove type-shape equivalence, recursive narrowing
-across nested `Jsonb<...>`, or per-element container narrowing.
+These are patterns the spec documents so the user-guide can recommend
+them; proc macros cannot prove type-shape equivalence, recursive
+narrowing across nested `Jsonb<...>`, or per-element container
+narrowing. The fixture / integration test corpus currently exercises
+nested `Jsonb<...>` sub-schema narrowing (items 1 and 3–5 below);
+array / map container element narrowing (item 2) is deferred to
+djogi#226-container pending Shape V `aggregate = true` parser support.
 
 1. **Use `jsonb_build_object(...)` for top-level narrowing**, and
    nest a `jsonb_build_object(...)` (or a comparable shape-narrowing
-   builder) inside it for **every** nested `Jsonb<...>` sub-schema and
-   for every element shape inside an array / map container the narrow
-   schema declares. A shallow projection that ships a full sub-object
+   builder) inside it for **every** nested `Jsonb<...>` sub-schema
+   the narrow schema declares (verified by current fixtures +
+   integration tests). For array / map container element shapes, see
+   item 2 — those are deferred to djogi#226-container.
+
+   A shallow projection that ships a full sub-object
    (`jsonb_build_object('theme', metadata->'theme')` where the source
    `theme` carries admin-only keys) **leaks recursively**: the inner
    `Jsonb<ThemePublic>::Deserialize` puts the admin-only nested keys
@@ -678,18 +693,18 @@ across nested `Jsonb<...>`, or per-element container narrowing.
    `Deserialize` impls emit and accept. A `#[serde(rename = "displayName")]`
    on the narrow schema's `display_name` field requires the SQL to
    build `'displayName', metadata->'display_name'`, NOT `'display_name',
-   metadata->'display_name'`. Mismatches are not a parse-time error —
-   the mismatched key lands in the projected `extra` on decode. The
-   downstream failure mode then depends on the narrow field's declared
-   shape:
+   metadata->'display_name'`. Mismatches are not a parse-time error.
+   The downstream failure mode then depends on the narrow field's
+   declared shape:
    - **Required** narrow field (`display_name: String`,
      `count: u32`, etc.): `Jsonb<NarrowSchema>::FromSql` calls the
-     inner `serde_json::from_value::<NarrowSchema>(...)` after stripping
-     the projected JSONB into `data` + `extra`; the missing required
-     key surfaces as a missing-field decode error inside the inner
-     `serde_json::Error`, which `Jsonb<NarrowSchema>::FromSql`
-     propagates back to `tokio_postgres` and which
-     [`decode_derived_at`](../../djogi/src/pg/decode.rs) maps via
+     inner `serde_json::from_value::<NarrowSchema>(raw.clone())` on
+     the **full raw JSONB value — before any `data`/`extra` split**.
+     `serde` returns a missing-field error immediately; the
+     `data`/`extra` split never runs and the mismatched key never
+     lands in `extra`. The error propagates back through
+     `Jsonb<NarrowSchema>::FromSql` to `tokio_postgres` and
+     [`decode_derived_at`](../../djogi/src/pg/decode.rs) maps it via
      `map_derived_decode_failure` into
      `DjogiError::Visage(VisageError::DbComputedTypeMismatch { visage, field, expected, actual })`
      (NOT `DjogiError::Decode`, which is reserved for direct
@@ -698,9 +713,10 @@ across nested `Jsonb<...>`, or per-element container narrowing.
      fetch fails outright before parity can run. This is the failure
      mode test #8 pins.
    - **Optional or defaulted** narrow field (`Option<String>`,
-     `#[serde(default)]`, etc.): the typed `data` deserializes with
-     the field absent / defaulted while the mismatched key sits in
-     `extra`. `Jsonb<T>::Serialize` then merges `data` + `extra` on
+     `#[serde(default)]`, etc.): the inner
+     `serde_json::from_value::<NarrowSchema>(raw.clone())` succeeds
+     with the field absent / defaulted; the `data`/`extra` split then
+     runs and the mismatched key lands in `extra`. `Jsonb<T>::Serialize` then merges `data` + `extra` on
      the wire under the original mismatched key, producing wire output
      that differs from the in-memory `Jsonb::new(NarrowSchema { ... })`
      construction. The integration parity check then catches the drift
@@ -1465,17 +1481,18 @@ narrow schema. Examples:
 
 A mismatch is **not** a parse-time error — proc macros cannot read the
 narrow schema's serde attributes from the derived attribute's
-declaration site. A mismatched key lands in the projected `extra` on
-decode; the downstream failure mode depends on the narrow field's
-declared shape:
+declaration site. The downstream failure mode depends on the narrow
+field's declared shape:
 
-- **Required** narrow field (`display_name: String`): the
-  required-field decode failure surfaces as `DjogiError::Visage(VisageError::DbComputedTypeMismatch { visage, field, .. })` at
-  queryset fetch time, before any parity check can run. The inner
-  `serde_json::from_value::<NarrowSchema>(...)` cannot fill the
-  missing required field from `extra` and propagates the error up
-  through `Jsonb<NarrowSchema>::FromSql` and through the visage
-  fetch. This is the failure mode test #8 pins (see
+- **Required** narrow field (`display_name: String`): the inner
+  `serde_json::from_value::<NarrowSchema>(raw.clone())` runs on the
+  **full raw JSONB value before any `data`/`extra` split**; `serde`
+  returns `missing field` immediately and the mismatched key never
+  lands in `extra`. The required-field decode failure surfaces as
+  `DjogiError::Visage(VisageError::DbComputedTypeMismatch { visage, field, .. })` at
+  queryset fetch time, before any parity check can run. The error
+  propagates up through `Jsonb<NarrowSchema>::FromSql` and through
+  the visage fetch. This is the failure mode test #8 pins (see
   [§Integration tests](#integration-tests)).
 - **Optional / defaulted** narrow field (`Option<String>`,
   `#[serde(default)]`): the typed `data` deserializes with the field
