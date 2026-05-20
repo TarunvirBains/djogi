@@ -169,6 +169,36 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
         Ok(())
     }
 
+    /// Validate that this slot's alias does not collide with a model column name.
+    ///
+    /// # What
+    ///
+    /// Called by [`AnnotatedQuerySet::fetch_all`] with `T::COLUMNS` before
+    /// SQL build. A collision means the derived-table outer query exposes two
+    /// identically-named columns — the model column emitted as `t.<col>` and
+    /// the window annotation emitted as `<expr> AS <alias>` — making the outer
+    /// `WHERE <alias>` predicate from [`.qualify(...)`](crate::query::QuerySet)
+    /// ambiguous at Postgres.
+    ///
+    /// # Why the default is `Ok(())`
+    ///
+    /// Aggregate slots ([`crate::expr::AggregateExpr`]) use framework-generated
+    /// `__djogi_agg_N` aliases that are validated against the `__djogi_` prefix
+    /// reservation at build time and can never collide with adopter-chosen model
+    /// column names. Window function slots override this to reject matching aliases.
+    ///
+    /// # How
+    ///
+    /// Overrides compare `self.alias_name()` (if `Some`) against every entry in
+    /// `model_columns` using byte equality and return a typed
+    /// [`crate::DjogiError::Validation`] on a match.
+    fn check_no_column_collision(
+        &self,
+        #[allow(unused_variables)] model_columns: &'static [&'static str],
+    ) -> Result<(), crate::DjogiError> {
+        Ok(())
+    }
+
     /// Whether this annotation slot needs a closure-pair LEFT JOIN
     /// (i.e. `la` / `ra` aliases) to be in scope to produce valid SQL.
     ///
@@ -396,6 +426,30 @@ pub trait IntoAggregateTuple: sealed::Sealed {
         Ok(())
     }
 
+    /// Validate that no annotation alias in this tuple collides with a
+    /// model column name.
+    ///
+    /// # What
+    ///
+    /// Forwards each slot's
+    /// [`AnnotationSlot::check_no_column_collision`] check. Called by
+    /// [`AnnotatedQuerySet::fetch_all`] with `T::COLUMNS` before SQL
+    /// build so that a window alias shadowing a model column surfaces as
+    /// a typed [`crate::DjogiError::Validation`] instead of a Postgres
+    /// "column reference is ambiguous" error at execute time.
+    ///
+    /// # Default
+    ///
+    /// Returns `Ok(())` — covers the `()` no-annotation case and any
+    /// future aggregate-only tuple whose slots use framework-generated
+    /// aliases that can never match model columns.
+    fn check_no_column_collision(
+        &self,
+        #[allow(unused_variables)] model_columns: &'static [&'static str],
+    ) -> Result<(), crate::DjogiError> {
+        Ok(())
+    }
+
     /// Whether any slot in this aggregate tuple requires a closure-pair
     /// LEFT JOIN to be in scope to produce valid SQL.
     ///
@@ -599,6 +653,28 @@ macro_rules! impl_window_annotation_slot {
                 }
             }
 
+            fn check_no_column_collision(
+                &self,
+                model_columns: &'static [&'static str],
+            ) -> Result<(), crate::DjogiError> {
+                if let Some(alias) = self.alias_name() {
+                    if model_columns.contains(&alias) {
+                        return Err(crate::DjogiError::Validation(format!(
+                            "{} window annotation alias {:?} collides with the model column of \
+                             the same name. The derived-table qualify lowering exposes both the \
+                             model column (emitted as `t.{alias}`) and the window output \
+                             (emitted as `… AS {alias}`) under the same name, making an outer \
+                             `WHERE {alias}` predicate ambiguous at Postgres. Choose an alias \
+                             that does not match any model column (e.g. append \"_rank\" or \
+                             \"_window\" to make the intent clear).",
+                            $display,
+                            alias
+                        )));
+                    }
+                }
+                Ok(())
+            }
+
             // Rank-family windows (`ROW_NUMBER`, `RANK`, `DENSE_RANK`)
             // have pair-aware composition through
             // [`PairWindowExt`](crate::query::joined::PairWindowExt) —
@@ -680,6 +756,28 @@ macro_rules! impl_window_annotation_slot_generic_v {
                         $display
                     )))
                 }
+            }
+
+            fn check_no_column_collision(
+                &self,
+                model_columns: &'static [&'static str],
+            ) -> Result<(), crate::DjogiError> {
+                if let Some(alias) = self.alias_name() {
+                    if model_columns.contains(&alias) {
+                        return Err(crate::DjogiError::Validation(format!(
+                            "{} window annotation alias {:?} collides with the model column of \
+                             the same name. The derived-table qualify lowering exposes both the \
+                             model column (emitted as `t.{alias}`) and the window output \
+                             (emitted as `… AS {alias}`) under the same name, making an outer \
+                             `WHERE {alias}` predicate ambiguous at Postgres. Choose an alias \
+                             that does not match any model column (e.g. append \"_rank\" or \
+                             \"_window\" to make the intent clear).",
+                            $display,
+                            alias
+                        )));
+                    }
+                }
+                Ok(())
             }
 
             // Column-argument window functions (`FIRST_VALUE`,
@@ -764,6 +862,13 @@ where
 
     fn check_legality(&self) -> Result<(), crate::DjogiError> {
         AnnotationSlot::check_legality(self)
+    }
+
+    fn check_no_column_collision(
+        &self,
+        model_columns: &'static [&'static str],
+    ) -> Result<(), crate::DjogiError> {
+        AnnotationSlot::check_no_column_collision(self, model_columns)
     }
 
     fn requires_closure_pair_join(&self) -> bool {
@@ -878,6 +983,16 @@ macro_rules! impl_into_aggregate_tuple {
             fn check_legality(&self) -> Result<(), crate::DjogiError> {
                 $(
                     self.$slot.check_legality()?;
+                )+
+                Ok(())
+            }
+
+            fn check_no_column_collision(
+                &self,
+                model_columns: &'static [&'static str],
+            ) -> Result<(), crate::DjogiError> {
+                $(
+                    self.$slot.check_no_column_collision(model_columns)?;
                 )+
                 Ok(())
             }
@@ -1028,6 +1143,17 @@ where
             // Validate DISTINCT modifier combinations before building SQL —
             // rejected combos surface as DjogiError::UnsupportedAggregate.
             aggregates.check_legality()?;
+
+            // Reject window annotation aliases that collide with model column
+            // names. A collision causes the derived-table outer query (the
+            // qualify lowering shape, `SELECT * FROM (<inner>) AS __djogi_q
+            // WHERE <alias> <op> $N`) to expose two identically-named columns
+            // from the inner SELECT — the model column (`t.<col>`) and the
+            // window output (`<expr> AS <alias>`) — making the outer WHERE
+            // predicate ambiguous at Postgres. This check turns that
+            // runtime Postgres error into a typed DjogiError::Validation
+            // with a remediation hint before any SQL is emitted.
+            aggregates.check_no_column_collision(T::COLUMNS)?;
 
             // Reject pair-only aggregates on the single-Model annotate
             // path. Two signals together cover the rejection set:
@@ -1418,6 +1544,142 @@ mod tests {
         // decode. A user alias matching that namespace would silently
         // route window output to the wrong decode slot.
         let _ = Rank::new().alias("__djogi_agg_0");
+    }
+
+    // ── Issue #71 — alias collision validation ───────────────────────────────
+    //
+    // `check_no_column_collision` fires at annotate-time (inside
+    // `AnnotatedQuerySet::fetch_all`) when the user-supplied alias matches a
+    // column in the model's `FromPgRow::COLUMNS` list. The failure mode
+    // without this check is a Postgres "column reference is ambiguous" error
+    // at execute time because the derived-table outer query exposes both the
+    // model column (as `t.<col>`) and the window output (as `<expr> AS
+    // <alias>`) under the same name.
+    //
+    // The unit tests below call `check_no_column_collision` directly (not
+    // through `fetch_all`) to stay fast and database-free. The live-DB path
+    // is exercised by the integration test
+    // `tests/integration/phase8_zero_cluster_c_window_live.rs` which can only
+    // be run with `DATABASE_URL` configured.
+
+    #[test]
+    fn row_number_alias_colliding_with_model_column_returns_validation_error() {
+        // `Acc` declares `COLUMNS = &["id"]`. A `RowNumber` with alias `"id"`
+        // must be rejected before SQL emission so the caller gets a typed
+        // DjogiError::Validation rather than a Postgres ambiguous-column error.
+        let rn = RowNumber::new()
+            .order_by(FieldRef::<Acc, i64>::new("score").desc())
+            .alias("id");
+        let result = AnnotationSlot::check_no_column_collision(&rn, Acc::COLUMNS);
+        assert!(
+            matches!(result, Err(crate::DjogiError::Validation(_))),
+            "alias colliding with model column must yield DjogiError::Validation, got: {result:?}"
+        );
+        if let Err(crate::DjogiError::Validation(msg)) = result {
+            assert!(
+                msg.contains("id"),
+                "error message must name the conflicting alias, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn rank_alias_colliding_with_model_column_returns_validation_error() {
+        let r = Rank::new().alias("id");
+        let result = AnnotationSlot::check_no_column_collision(&r, Acc::COLUMNS);
+        assert!(
+            matches!(result, Err(crate::DjogiError::Validation(_))),
+            "Rank alias collision must yield DjogiError::Validation, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn dense_rank_alias_colliding_with_model_column_returns_validation_error() {
+        let dr = DenseRank::new().alias("id");
+        let result = AnnotationSlot::check_no_column_collision(&dr, Acc::COLUMNS);
+        assert!(
+            matches!(result, Err(crate::DjogiError::Validation(_))),
+            "DenseRank alias collision must yield DjogiError::Validation, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn row_number_alias_not_in_model_columns_passes_collision_check() {
+        // `"rank"` is not in `Acc::COLUMNS = &["id"]` — must pass.
+        let rn = RowNumber::new().alias("rank");
+        assert!(
+            AnnotationSlot::check_no_column_collision(&rn, Acc::COLUMNS).is_ok(),
+            "alias not matching any model column must pass the collision check"
+        );
+    }
+
+    #[test]
+    fn row_number_without_alias_skips_collision_check() {
+        // A RowNumber that has no alias yet (alias_name() == None) must
+        // not trigger the collision check even when columns contain every
+        // possible name — the presence check is a separate `check_legality`.
+        let rn = RowNumber::new(); // no alias set
+        assert!(
+            AnnotationSlot::check_no_column_collision(&rn, &["id", "score", "rank"]).is_ok(),
+            "unaliased window annotation must pass the collision check (no alias to compare)"
+        );
+    }
+
+    #[test]
+    fn lead_window_alias_collision_returns_validation_error() {
+        // Covers the `impl_window_annotation_slot_generic_v!` macro path.
+        use crate::expr::LeadWindow;
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let lead: LeadWindow<i64> = LeadWindow::new(amount).alias("id");
+        let result = AnnotationSlot::check_no_column_collision(&lead, Acc::COLUMNS);
+        assert!(
+            matches!(result, Err(crate::DjogiError::Validation(_))),
+            "LeadWindow alias collision must yield DjogiError::Validation, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn aggregate_expr_never_trips_column_collision_check() {
+        // AggregateExpr uses framework-generated `__djogi_agg_N` aliases that
+        // are reserved at the identifier level. The default `Ok(())` on the
+        // AnnotationSlot impl means even if we pass a column set that contains
+        // the framework prefix, no collision error fires (the prefix check
+        // happens at build time through `assert_user_supplied_ident`).
+        let f: FieldRef<Acc, i64> = FieldRef::new("balance");
+        let agg = f.sum();
+        // Pass a column list that could theoretically contain anything —
+        // AggregateExpr's check_no_column_collision must remain Ok(()).
+        let result = AnnotationSlot::check_no_column_collision(&agg, &["id", "balance", "score"]);
+        assert!(
+            result.is_ok(),
+            "AggregateExpr must never fail the column-collision check (uses framework aliases)"
+        );
+    }
+
+    #[test]
+    fn tuple_collision_check_walks_all_slots() {
+        // A 2-tuple where one slot collides must fail; both non-colliding must pass.
+        let rn_ok = RowNumber::new().alias("rank"); // not in Acc::COLUMNS
+        let rn_bad = Rank::new().alias("id"); // "id" is in Acc::COLUMNS
+
+        // Both ok → passes
+        let score: FieldRef<Acc, i64> = FieldRef::new("score");
+        let ok_pair = (rn_ok, score.sum());
+        assert!(
+            IntoAggregateTuple::check_no_column_collision(&ok_pair, Acc::COLUMNS).is_ok(),
+            "tuple of non-colliding slots must pass"
+        );
+
+        // One colliding → fails
+        let rn_ok2 = RowNumber::new().alias("rank");
+        let bad_pair = (rn_ok2, rn_bad);
+        assert!(
+            matches!(
+                IntoAggregateTuple::check_no_column_collision(&bad_pair, Acc::COLUMNS),
+                Err(crate::DjogiError::Validation(_))
+            ),
+            "tuple with any colliding slot must fail the collision check"
+        );
     }
 
     // ── Cluster E T18-T19 — new window-only functions ────────────────────────
