@@ -215,8 +215,103 @@ descriptor-level enumeration outside the Punnu boundary.
 The two are not mutually exclusive — a model can have both
 `#[computed(sql)]` fields AND `#[djogi::trait_impl]` registrations.
 
+## Computed fields are not a visage-exposure surface
+
+`#[computed(sql = "...")]` is a **model-side** surface. It declares a
+virtual column expression for query composition; it does not project
+values onto generated visage structs (`FooPublic`, `FooSelfView`,
+`FooAdmin`, `FooExport`).
+
+### Rejected forms from the early Path A draft
+
+The `expose` key is **not accepted** inside `#[computed(...)]` in any
+form:
+
+```rust
+// COMPILE ERROR — assignment form
+#[computed(sql = "base_price * 2", expose = "public")]
+pub double_price: f64,
+
+// COMPILE ERROR — list form
+#[computed(sql = "base_price * 2", expose(public, admin))]
+pub double_price: f64,
+```
+
+Both forms produce a span-precise compile error:
+
+```
+`expose = ...` is not accepted inside `#[computed(...)]` — visage
+exposure is declared as a struct-level `#[derived(name, ty, scopes,
+sql, rust)]` attribute instead. See docs/spec/visage-derived-fields.md
+```
+
+The `expose` key appeared in an early internal draft that conflated
+model-side virtual columns with visage-side projection entries. That
+draft was never adopted publicly; the key was removed before v0.1.0.
+
+### Migration to `#[derived(...)]`
+
+If you have an early-draft annotation like:
+
+```rust
+#[computed(sql = "CASE WHEN direction = 'inbound' THEN inbound_site ELSE outbound_site END", expose = "public")]
+pub facility_site: Site,
+```
+
+The correct rewrite is a struct-level `#[derived(...)]` attribute on
+the same model:
+
+```rust
+#[derive(Model, Debug, Clone)]
+#[model(table = "consignments")]
+#[derived(
+    name = facility_site,
+    ty = Site,
+    scopes = [public],
+    sql = "CASE WHEN direction = 'inbound' THEN inbound_site ELSE outbound_site END",
+    rust = "match model.direction { Direction::Inbound => model.inbound_site.clone(), _ => model.outbound_site.clone() }",
+)]
+pub struct Consignment {
+    pub inbound_site: Site,
+    pub outbound_site: Site,
+    pub direction: Direction,
+}
+```
+
+`#[derived(...)]` owns `sql`, `rust`, and `scopes` independently of
+any model-side `#[computed(...)]` field. If you also need the SQL
+expression for query composition via `Vehicle::computed().total_price()`,
+declare the `#[computed(sql = "...")]` field separately:
+
+```rust
+#[derived(
+    name = total_price,
+    ty = f64,
+    scopes = [public],
+    sql = "base_price * (1.0 + tax_rate)",
+    rust = "model.base_price * (1.0 + model.tax_rate)",
+)]
+#[model(table = "vehicles")]
+pub struct Vehicle {
+    pub base_price: f64,
+    pub tax_rate: f64,
+
+    // Model-side: used in .filter_expr() / .order_by() via
+    // Vehicle::computed().total_price() returning Expr<f64>.
+    #[computed(sql = "base_price * (1.0 + tax_rate)")]
+    pub total_price: f64,
+}
+```
+
+The two attributes are complementary: `#[computed(...)]` feeds the
+query-composition API; `#[derived(...)]` feeds the visage projection.
+See [Derived Projections](derived-projections.md) for the full
+`#[derived(...)]` surface.
+
 ## Related documents
 
 - [Models](models.md) — base `#[model(...)]` attribute reference.
 - [Expressions](expressions.md) — typed `Expr<T>` API.
+- [Derived Projections](derived-projections.md) — `#[derived(...)]` for visage-side computed fields.
+- [Visages](visages.md) — generated transport types and `#[field(expose(...))]`.
 - [Proxy Models](proxy.md) — the sibling chapter from the same cluster.
