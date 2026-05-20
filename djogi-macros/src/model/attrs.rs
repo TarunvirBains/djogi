@@ -2601,13 +2601,38 @@ impl FieldAttrs {
             }
         }
 
-        // Phase 7-Zero v3 T2 Q3 — hash indexes cannot enforce uniqueness.
-        // Postgres hash indexes store only the hash of the key, so they
-        // physically cannot support `UNIQUE`; Postgres itself errors out
-        // on `CREATE UNIQUE INDEX ... USING HASH(...)`. Catching it at the
-        // declaration gives the user a span-precise error pointing at the
-        // field rather than at a migration failure much later.
-        if attrs.unique && attrs.index_method.as_deref() == Some("hash") {
+        // Phase 7-Zero v3 T2 Q3 + Phase 8.5 #83 —
+        // `#[field(unique, index = "<non-btree>")]` is rejected.
+        //
+        // Field-level `unique` is lowered to an inline `UNIQUE` column
+        // constraint (btree-backed by PostgreSQL); field-level
+        // `index = "<method>"` is lowered to a separate secondary index
+        // of that method. Combining them in one `#[field(...)]` mixes two
+        // distinct schema objects under one declaration and is ambiguous:
+        //
+        // - Read as "a unique index using <method>" — impossible: PG
+        //   unique indexes are btree-only.
+        // - Read as "a unique column constraint plus a secondary <method>
+        //   index on the same column" — valid two-object intent, but
+        //   that intent is better expressed at the model level so the
+        //   two objects are spelled out explicitly:
+        //   `#[field(unique)]` + `#[model(indexes(index(fields = [col],
+        //   using = "<method>")))]`.
+        //
+        // The rejection is broader than the original Phase 7-Zero
+        // hash-only rule. Hash was originally rejected on the theory
+        // "hash indexes cannot enforce uniqueness" (true for
+        // `CREATE UNIQUE INDEX … USING hash`, but field-level `unique`
+        // does not lower to that — it lowers to an inline UNIQUE column
+        // constraint Postgres backs with btree). The rejection here
+        // re-grounds on the broader principle: PostgreSQL unique indexes
+        // are btree-only, and mixing field-level `unique` with a
+        // non-btree `index = "<method>"` is ambiguous shorthand that
+        // should be spelled out at the model level.
+        if attrs.unique
+            && let Some(method) = attrs.index_method.as_deref()
+            && method != "btree"
+        {
             let field_name = field
                 .ident
                 .as_ref()
@@ -2617,9 +2642,14 @@ impl FieldAttrs {
             return Err(syn::Error::new(
                 span,
                 format!(
-                    "`#[field(index = \"hash\", unique)]` on `{field_name}`: hash indexes \
-                     cannot enforce uniqueness. Use `index = \"btree\"` with `unique`, or \
-                     drop `unique` if a non-unique hash lookup index is what you want."
+                    "`#[field(index = \"{method}\", unique)]` on `{field_name}`: PostgreSQL \
+                     unique indexes are btree-only, so a non-btree `index = \"{method}\"` \
+                     combined with `unique` is ambiguous. Either: (a) use \
+                     `#[field(index = \"btree\", unique)]` (or just `#[field(unique)]`), \
+                     (b) drop `unique` if a non-unique `{method}` lookup index is what you \
+                     want, or (c) keep `#[field(unique)]` and declare the secondary \
+                     `{method}` index at the model level via \
+                     `#[model(indexes(index(fields = [{field_name}], using = \"{method}\")))]`."
                 ),
             ));
         }
@@ -4457,5 +4487,41 @@ mod tests {
         assert!(msg.contains("proxy_for"));
         assert!(msg.contains("default_order"));
         assert!(msg.contains("default_filter"));
+    }
+
+    /// Class-A regression guard: the resolution-(c) snippet emitted by the
+    /// `#[field(unique, index = "<non-btree>")]` diagnostic (attrs.rs ~2652)
+    /// must be parseable as a valid Rust attribute. If parentheses become
+    /// unbalanced again (three opens, two closes), `syn::parse_str` will
+    /// return `Err` and this test fails — catching the regression without
+    /// needing a full `lihaaf` run or a compiler invocation.
+    ///
+    /// Fixed substitutions used here: `field_name = "slug"`, `method = "gin"`.
+    ///
+    /// `syn::Attribute` does not implement `Parse` in syn 2.x, so we append
+    /// `" struct _DjogiSnippet;"` and parse the whole thing as
+    /// `syn::ItemStruct`. The attribute's delimiter balance is fully validated
+    /// by the item parser — an unbalanced snippet causes an `Err`.
+    #[test]
+    fn field_unique_non_btree_recommendation_snippet_parses() {
+        let snippet = r##"#[model(indexes(index(fields = [slug], using = "gin")))]"##;
+        let input = format!("{snippet} struct _DjogiSnippet;");
+        syn::parse_str::<syn::ItemStruct>(&input)
+            .expect("resolution-(c) snippet must parse as a valid attribute (paren balance)");
+    }
+
+    /// Class-A regression guard for the adjacent gin-on-unsupported-type
+    /// recommendation (attrs.rs ~2675). The `)))]` form was already correct
+    /// at the time of Phase 8.5 #83; this guard locks it in.
+    ///
+    /// Uses the same `struct _DjogiSnippet;` wrapping as the sibling test
+    /// above — `syn::Attribute` is not `Parse` in syn 2.x.
+    #[test]
+    fn field_gin_unsupported_type_recommendation_snippet_parses() {
+        let snippet =
+            r##"#[model(indexes(index(fields = [slug], using = "gin", opclass = "...")))]"##;
+        let input = format!("{snippet} struct _DjogiSnippet;");
+        syn::parse_str::<syn::ItemStruct>(&input)
+            .expect("gin-unsupported-type snippet must parse as a valid attribute (paren balance)");
     }
 }

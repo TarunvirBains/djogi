@@ -11,6 +11,7 @@ target/
 # Djogi runtime
 .djogi_history
 .djogi_shell_errors/
+.djogi-migrations-lock
 
 # OS
 .DS_Store

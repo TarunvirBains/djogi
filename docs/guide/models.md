@@ -179,7 +179,16 @@ pub struct User {
 
 ### `#[field(index)]`
 
-Marks the column for an index.
+Marks the column for a `CREATE INDEX` in the generated migration. The
+projection layer synthesises a full `IndexSchema` entry for every `indexed`
+column, so `diff_indexes` emits `AddIndex` on fresh table creation as well as
+when the flag is toggled on an existing table.
+
+An optional method can be supplied as a string: `#[field(index = "gin")]`,
+`#[field(index = "gist")]`, `#[field(index = "brin")]`,
+`#[field(index = "hash")]`, `#[field(index = "spgist")]`. The default method
+when no string is given is `btree`. For composite or partial indexes, or
+indexes with per-column opclasses, use `#[model(indexes(index(...)))]` instead.
 
 ```rust
 pub struct Post {

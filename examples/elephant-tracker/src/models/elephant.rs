@@ -24,8 +24,10 @@
 //!   A `save()` whose pre-image version no longer matches the row's
 //!   current version returns [`DjogiError::GoneAggregate`] rather than
 //!   silently overwriting a concurrent edit.
-//! - `Tracked<String>` on `name` — name changes write to the structural
-//!   CRUD audit log without explicit calls.
+//! - `Tracked<String>` on `name` — declares field-change tracking. Audit
+//!   `_logs` mirror-table wiring and `audit_pool` configuration are out of
+//!   scope for this example; the `Tracked` annotation is present to show
+//!   the macro surface.
 //! - `no_default` — `ForeignKey<Herd>` does not implement `Default`, so
 //!   the macro's `Default` impl is suppressed; callers populate every
 //!   field explicitly.
@@ -38,12 +40,24 @@ use djogi::prelude::*;
 pub struct Elephant {
     pub name: Tracked<String>,
 
+    /// FK to the herd this elephant belongs to. `#[field(index)]`
+    /// emits `elephants_herd_id_idx` — queries that join herds to
+    /// their members (e.g. `herd-summaries`, `cross-border-herds`)
+    /// need this index to avoid sequential scans on the elephants
+    /// table.
+    #[field(index)]
     pub herd_id: ForeignKey<Herd>,
 
     /// Maternal self-FK. `None` means the mother is unknown / not in
     /// the dataset — common for older matriarchs and members of
     /// unmonitored herds. Realistic seed data populates this for
     /// roughly 70% of individuals.
+    ///
+    /// `#[field(index)]` emits `elephants_mother_id_idx` — matrilineal
+    /// lineage queries and the recursive-CTE pedigree walker both
+    /// traverse this edge per-row; without an index each step is a
+    /// sequential scan on the entire elephants table.
+    #[field(index)]
     pub mother_id: Option<ForeignKey<Elephant>>,
 
     /// Paternal self-FK. `None` means the father is unknown — much
@@ -51,6 +65,11 @@ pub struct Elephant {
     /// because females are observed nursing while males are
     /// peripheral. Realistic seed data populates this for roughly
     /// 40% of individuals.
+    ///
+    /// `#[field(index)]` emits `elephants_father_id_idx` — the
+    /// paternal edge of the pedigree walker is traversed alongside
+    /// `mother_id`; same sequential-scan rationale applies.
+    #[field(index)]
     pub father_id: Option<ForeignKey<Elephant>>,
 
     pub estimated_birth_year: Option<i16>,

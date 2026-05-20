@@ -30,7 +30,7 @@ Each entry inside `indexes(...)` is either `index(...)` (non-unique by default) 
 |-----|-------|---------|
 | `fields` | `= [ident, ...]` or `= [(col = ident, opclass = "...", order = asc\|desc, nulls = first\|last\|default), ...]` | Column list. Mutually exclusive with `expr`. |
 | `expr` | `= "lower(email)"` | Expression target. Mutually exclusive with `fields`. |
-| `using` | `= "btree" \| "gin" \| "gist" \| "brin" \| "hash"` | Access method. Default: `btree`. |
+| `using` | `= "btree" \| "gin" \| "gist" \| "brin" \| "hash" \| "spgist"` | Access method. Default: `btree`. On `unique(...)`, only `btree` (or omitting `using`) is accepted — PostgreSQL unique indexes are btree-only; non-btree methods reject at compile time (Phase 8.5 #83). |
 | `opclass` | `= "text_pattern_ops"` | Single-column opclass declaration shortcut. |
 | `include` | `= [ident, ...]` | Covering-index payload columns (`INCLUDE(...)`). |
 | `where` | `= "deleted_at IS NULL"` | Partial-index predicate. Raw SQL — see §20.4. |
@@ -41,7 +41,8 @@ Each entry inside `indexes(...)` is either `index(...)` (non-unique by default) 
 **Rules baked into the macro (compile-fail when violated):**
 
 - An entry must supply exactly one of `fields` or `expr`. Missing both is an error; supplying both is an error.
-- `hash` indexes are unique-incompatible (hash indexes cannot enforce uniqueness) and multi-column-incompatible (Postgres hash indexes are single-column). `where`, `include`, and expression targets are also rejected — hash indexes support none of them.
+- `unique(...)` rejects every non-btree `using` method — `gin`, `gist`, `brin`, `spgist`, and `hash` — because PostgreSQL unique indexes are btree-only (`CREATE UNIQUE INDEX … USING <non-btree>` is rejected by the server). The emitter has nowhere to put the requested method, so the macro stops the model from compiling rather than producing migration SQL that fails at apply. Resolution: use `using = "btree"` (or omit `using`), drop `unique` for a non-unique non-btree lookup index, or declare an `EXCLUDE USING <method> (… WITH &&)` row-exclusion constraint when row-overlap exclusion on a non-btree column is the goal (Phase 8.5 #83).
+- `hash` indexes are additionally multi-column-incompatible (Postgres hash indexes are single-column). `where`, `include`, and expression targets are also rejected on `hash` — hash indexes support none of them.
 - `nulls_not_distinct = true` on a non-`unique(...)` entry is rejected. (It has no meaning on a plain index.)
 - A raw-identifier column reference (`r#yield`) normalises to its unraw form before the column-existence check — `fields = [r#yield]` matches `pub r#yield: String`.
 - A `name = "..."` override must not collide with a name the emitter would generate for any other declared index (implicit, spatial, or user-declared). Collisions fail at macro expansion with a span-precise error.
@@ -88,8 +89,16 @@ Pass whatever the Postgres predicate grammar accepts. If the migration fails, re
 | `nulls_not_distinct = true` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
 | `expr = "..."` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
 | `concurrently = true` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
+| `opclass = "..."` (top-level) | `CREATE UNIQUE INDEX ...` | `..._uidx` |
+| per-column `opclass = "..."` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
+| per-column `order = desc` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
+| per-column `nulls = first\|last` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
 
 Unique constraints are the default for ordinary uniqueness because they integrate with `REFERENCES`, `ON CONFLICT`, and the constraint catalogue. Unique indexes exist for the cases where Postgres requires one — partial uniqueness, `INCLUDE`, `NULLS NOT DISTINCT`, expression targets, and concurrent builds.
+
+`unique(..., using = "<non-btree>")` is **not** in this table: PostgreSQL unique indexes are btree-only (`CREATE UNIQUE INDEX … USING gin|gist|brin|spgist|hash` is rejected by the server). The macro therefore rejects every non-btree `using` on `unique(...)` at compile time rather than emit a `CREATE UNIQUE INDEX … USING <method>` statement that would fail at apply (Phase 8.5 #83). Non-unique non-btree indexes — `index(..., using = "gin")`, `index(..., using = "gist")`, etc. — remain fully supported, as do GiST-based `EXCLUDE … WITH …` row-exclusion constraints declared via `#[model(exclusion(...))]`.
+
+The opclass and per-column-modifier rows deserve a note. The Postgres table-constraint `UNIQUE` syntax (`UNIQUE ( column_name [, ...] )`) accepts only bare column identifiers in the column list; opclasses, `ASC`/`DESC`, and `NULLS FIRST`/`NULLS LAST` are part of the *index-element* grammar used by `CREATE INDEX` and `EXCLUDE` — not by table-level `UNIQUE` constraints. Djogi escalates any `unique(...)` declaration that carries these features to `CREATE UNIQUE INDEX` form so the resulting DDL is valid Postgres.
 
 The concurrent-build row deserves a callout. `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE` has no `CONCURRENTLY` form, so Djogi's contract is unambiguous: **`concurrently = true` on a `unique(...)` declaration escalates the kind to `UniqueIndex`** (plan §6.2). The emitter produces `CREATE UNIQUE INDEX CONCURRENTLY` with a `..._uidx` name; no `ALTER TABLE ... ADD CONSTRAINT ... USING INDEX` adoption follows. The user gets a unique index, not a unique constraint. If the constraint form is required (for `ON CONFLICT ON CONSTRAINT <name>` or cross-referencing FKs that must name the constraint), drop `concurrently = true` and accept the `ACCESS EXCLUSIVE` window that `ADD CONSTRAINT` takes.
 

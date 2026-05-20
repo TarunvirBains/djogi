@@ -770,6 +770,44 @@ where
             if let Some(fts) = &m.fts {
                 indexes.push(project_fts_index(m.table_name, fts));
             }
+            // Synthesise an `IndexSchema` for every `#[field(index)]` /
+            // `#[field(index = "method")]` annotation so that `diff_indexes`
+            // emits `AddIndex` on a fresh `AddTable` (empty baseline) **and**
+            // on method-change transitions where `indexed` stays `true` but
+            // `index_type` flips. Without this pass, `ColumnSchema::indexed`
+            // was a snapshot-only annotation with no SQL consequence on fresh
+            // creates — only the `ColumnChange::SetIndexed` path (common-table
+            // column diff) emitted DDL, and that path is silent for new tables.
+            //
+            // Proxy models skip index ownership: the parent already projects
+            // its own field indexes; projecting them again from the proxy
+            // would produce duplicate `IndexSchema` names and spurious
+            // `AddIndex` ops. The `proxy_for.is_some()` guard above already
+            // `continue`s before reaching this block.
+            //
+            // Explicit-wins precedence: if an explicit `#[model(indexes(...))]`
+            // entry (pushed above from `m.indexes`) already occupies the same
+            // canonical `(table, name)` as this synthetic, skip the synthetic.
+            // Both paths compute the name via `descriptor::index_name(...)` so
+            // the canonical form is byte-identical. The explicit declaration may
+            // carry richer modifiers — `predicate`, `INCLUDE`, `opclass`, etc. —
+            // that the synthetic (default-everything, single-column) would
+            // silently discard after `sort_by + BTreeMap::collect` (last-wins).
+            // Preserving the explicit entry means the user's intent survives.
+            for f in m.fields {
+                if f.indexed {
+                    let synthetic = project_field_level_index(f.name, f.index_type, m.table_name);
+                    // Skip the synthetic when an explicit declaration already
+                    // occupies the same canonical (table, name) slot.
+                    if indexes
+                        .iter()
+                        .any(|e| e.table == synthetic.table && e.name == synthetic.name)
+                    {
+                        continue;
+                    }
+                    indexes.push(synthetic);
+                }
+            }
         }
         indexes.sort_by(|a, b| {
             (a.table.as_str(), a.name.as_str()).cmp(&(b.table.as_str(), b.name.as_str()))
@@ -2230,6 +2268,55 @@ fn project_fts_index(table: &str, fts: &FtsDescriptor) -> IndexSchema {
     }
 }
 
+/// Synthesise a plain `IndexSchema` from a `#[field(index)]` /
+/// `#[field(index = "method")]` annotation.
+///
+/// `col_name` is the Postgres column name, `index_type` is the method
+/// from the field descriptor (`None` falls back to BTree), and `table`
+/// is the owning table name.
+///
+/// The resulting `IndexSchema` has `kind = NonUnique` and a single-column
+/// `target` with all modifiers at their defaults (ASC, NULLS DEFAULT, no
+/// opclass). Field-level `#[field(index)]` does not support per-column
+/// knobs; composite or custom-opclass indexes must use
+/// `#[model(indexes(index(...)))]` instead.
+///
+/// The name follows the deterministic `<table>_<col>_idx` convention from
+/// [`crate::descriptor::index_name`], matching the name used by
+/// `ColumnChange::SetIndexed` in the SQL emitter so that any outstanding
+/// pending migration serialised before this projection path landed still
+/// round-trips to the same index name.
+fn project_field_level_index(
+    col_name: &str,
+    index_type: Option<IndexType>,
+    table: &str,
+) -> IndexSchema {
+    let name = crate::descriptor::index_name(
+        table,
+        crate::descriptor::IndexNameKind::NonUnique,
+        crate::descriptor::IndexNameTarget::Columns(&[col_name]),
+    );
+    IndexSchema {
+        extension_dependency: None,
+        include: Vec::new(),
+        index_type: index_type
+            .map(project_index_type)
+            .unwrap_or(IndexTypeSchema::BTree),
+        kind: IndexKindSchema::NonUnique,
+        name,
+        nulls_not_distinct: false,
+        predicate: None,
+        requires_out_of_transaction: false,
+        table: table.to_string(),
+        target: IndexTargetSchema::Columns(vec![IndexColumnSchema {
+            name: col_name.to_string(),
+            nulls: IndexNullsOrderSchema::Default,
+            opclass: None,
+            order: IndexOrderSchema::Asc,
+        }]),
+    }
+}
+
 fn fts_index_name(table: &str, column: &str) -> String {
     let full = format!("{table}_{column}_gin");
     if full.len() <= 63 {
@@ -2258,6 +2345,30 @@ fn project_partition(p: &PartitionSpec) -> PartitionSchema {
 }
 
 fn project_index(idx: &IndexSpec, table: &str) -> IndexSchema {
+    // Invariant: unique-bearing variants (`UniqueConstraint` /
+    // `UniqueIndex`) must be btree-only — PostgreSQL rejects
+    // `CREATE UNIQUE INDEX … USING <non-btree>` and the constraint form
+    // has no `USING` clause at all (Phase 8.5 #83). The macro layer
+    // rejects `unique(..., using = "<non-btree>")` at compile time. The
+    // debug-mode assertion here catches any descriptor that bypasses the
+    // macro path (direct `IndexSpec` construction, future code paths)
+    // before it lands in a snapshot or reaches the SQL emitter, where
+    // the same condition would produce invalid generated DDL. Release
+    // mode trusts the macro invariant; the SQL emitter's hard panic in
+    // `emit_add_index` is the production backstop.
+    debug_assert!(
+        !matches!(
+            idx.kind,
+            IndexKind::UniqueConstraint | IndexKind::UniqueIndex
+        ) || matches!(idx.index_type, IndexType::BTree),
+        "project_index: PostgreSQL unique indexes are btree-only; \
+         IndexSpec {name:?} on table {table:?} carries kind {kind:?} \
+         with non-btree index_type {ty:?} (Phase 8.5 #83).",
+        name = idx.name,
+        table = table,
+        kind = idx.kind,
+        ty = idx.index_type,
+    );
     IndexSchema {
         extension_dependency: idx.extension_dependency.map(|s| s.to_string()),
         include: idx.include.iter().map(|s| s.to_string()).collect(),
@@ -6016,6 +6127,186 @@ mod tests {
         assert!(
             check.contains(") AND ("),
             "combined CHECK must AND-merge the two clauses: {check}"
+        );
+    }
+
+    /// Class A projection-layer pin (djogi#83 / strict-swe BLOCK-1) —
+    /// the framework PK column must carry `indexed: false` after the
+    /// descriptor fix, so the field-level index fanout in
+    /// `project_from_iters` must NOT synthesise a `<table>_id_idx`
+    /// NonUnique BTree index.
+    ///
+    /// Postgres already creates an implicit unique BTree index for the
+    /// `PRIMARY KEY` constraint; a second explicit index on the same
+    /// column would be redundant and would appear in every adopter's
+    /// emitted migrations.
+    ///
+    /// **Coverage scope — projection layer only.** The fixture builds a
+    /// [`FieldDescriptor`] manually with `indexed: false, unique: true`,
+    /// mirroring the post-fix `framework_field_descriptor` emission.
+    /// Because the descriptor is constructed directly (not via the
+    /// `#[derive(Model)]` proc-macro), this test proves that
+    /// `project_from_iters` does not synthesise an `_id_idx` entry when
+    /// the descriptor carries `indexed: false` — it does NOT detect drift
+    /// in `framework_field_descriptor` itself (e.g., a future regression
+    /// that re-introduces `indexed: true` in any of the five PK strategy
+    /// arms). Macro-layer regression detection requires the
+    /// `#[djogi_test(sync_models = [...])]` integration test in
+    /// `tests/integration/phase85_pk_index_coverage.rs`.
+    #[test]
+    fn framework_pk_does_not_synthesize_id_idx_on_fresh_addtable() {
+        // Shape mirrors the post-fix `framework_field_descriptor`
+        // emission for a HeerIdDesc PK: indexed=false, unique=true.
+        static FRAMEWORK_ID: &[FieldDescriptor] = &[FieldDescriptor {
+            unique: true,
+            indexed: false, // intentional: PRIMARY KEY's implicit index is sufficient
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
+        }];
+        let m = ModelDescriptor {
+            pk_type: PkType::HeerIdDesc,
+            fields: FRAMEWORK_ID,
+            ..synth_model("trackers", "Tracker")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let global = &buckets[&empty_global()];
+        // No `trackers_id_idx` (or any other index) must be emitted.
+        // The PK's implicit unique BTree index is managed by the
+        // `PRIMARY KEY` constraint, not a separate `CREATE INDEX`.
+        assert!(
+            global.indexes.is_empty(),
+            "expected no indexes but got: {:?}",
+            global
+                .indexes
+                .iter()
+                .map(|i| i.name.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Class C regression guard (djogi#83 / strict-swe FIX_BEFORE_v0.1.0)
+    /// — when a user declares both `#[field(index)]` AND a matching
+    /// `#[model(indexes(index(fields = [col])))]` on the same column, the
+    /// explicit declaration's modifiers (predicate, INCLUDE, opclass, …)
+    /// must be preserved. The field-level synthetic shares the same
+    /// canonical `<table>_<col>_idx` name and must be skipped rather than
+    /// appended (which would cause last-wins BTreeMap deduplication in
+    /// `diff_indexes` to overwrite the explicit entry with the featureless
+    /// synthetic).
+    #[test]
+    fn explicit_index_declaration_survives_when_field_level_synthetic_has_same_name() {
+        static STATUS_COL: &[IndexColumnSpec] = &[IndexColumnSpec::simple("status")];
+        static EXPLICIT_IDX: &[IndexSpec] = &[IndexSpec {
+            name: "orders_status_idx", // same canonical name as the synthetic below
+            target: IndexTarget::Columns(STATUS_COL),
+            kind: IndexKind::NonUnique,
+            index_type: IndexType::BTree,
+            predicate: Some("status != 'closed'"),
+            include: &[],
+            nulls_not_distinct: false,
+            requires_out_of_transaction: false,
+            extension_dependency: None,
+        }];
+        // `indexed: true` on "status" would normally synthesise
+        // "orders_status_idx" — the same canonical name as the explicit entry.
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            indexed: true,
+            ..field_descriptor("status", FieldSqlType::Text, false)
+        }];
+        let m = ModelDescriptor {
+            indexes: EXPLICIT_IDX,
+            fields: FIELDS,
+            ..synth_model("orders", "Order")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let global = &buckets[&empty_global()];
+        // Exactly one index — the explicit declaration survives with its
+        // partial-index predicate intact.
+        assert_eq!(
+            global.indexes.len(),
+            1,
+            "expected exactly one index but got: {:?}",
+            global
+                .indexes
+                .iter()
+                .map(|i| i.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        let idx = &global.indexes[0];
+        assert_eq!(idx.name, "orders_status_idx");
+        assert_eq!(
+            idx.predicate.as_deref(),
+            Some("status != 'closed'"),
+            "explicit partial-index predicate must survive when field-level synthetic has the same canonical name"
+        );
+    }
+
+    /// Positive field-level synthesis pin (djogi#83 sweep CLASS B —
+    /// adjacent) — when a non-FK model field carries `indexed: true`
+    /// and there is no explicit `#[model(indexes(...))]` declaration
+    /// that occupies the same canonical name, the projection must
+    /// synthesise exactly one [`IndexSchema`] named
+    /// `<table>_<col>_idx` in `global.indexes`.
+    ///
+    /// This pin targets the field-level synthesis loop added in commit
+    /// 853c42e6. The FK-indexed tests at lines 3662 and 3732 only assert
+    /// SQL-type substitution — they do not verify that `global.indexes`
+    /// gains an entry. The explicit-wins test above uses `indexed: true`
+    /// but exercises the *skip* branch (explicit already present). This
+    /// test covers the happy-path *creation* branch.
+    ///
+    /// For macro-layer coverage (full descriptor → `sync_models` →
+    /// live DDL pipeline), see the integration test
+    /// `phase85_field_index_emitted` in
+    /// `tests/integration/phase85_pk_index_coverage.rs`.
+    #[test]
+    fn field_indexed_true_synthesises_one_canonical_index_in_global() {
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            indexed: true,
+            ..field_descriptor("label", FieldSqlType::Text, false)
+        }];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("tags", "Tag")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let global = &buckets[&empty_global()];
+        // Exactly one synthetic index must exist: the canonical name is
+        // `<table>_<col>_idx` — i.e. `tags_label_idx`.
+        assert_eq!(
+            global.indexes.len(),
+            1,
+            "expected exactly one synthetic index but got: {:?}",
+            global
+                .indexes
+                .iter()
+                .map(|i| i.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            global.indexes[0].name, "tags_label_idx",
+            "synthetic field-level index must follow the <table>_<col>_idx naming convention"
+        );
+        assert_eq!(
+            global.indexes[0].table, "tags",
+            "synthetic index must be owned by the `tags` table"
         );
     }
 }

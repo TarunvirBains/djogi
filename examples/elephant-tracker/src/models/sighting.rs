@@ -35,6 +35,12 @@ use time::OffsetDateTime;
 )]
 #[derive(Debug, Clone, Serialize)]
 pub struct Sighting {
+    /// `#[field(index)]` emits `sightings_elephant_id_idx` — queries
+    /// that look up all sightings for a given elephant (e.g. the
+    /// `lineage` and `mating-pairs` demos filtering by elephant)
+    /// need this index to avoid sequential scans on the sightings
+    /// table.
+    #[field(index)]
     pub elephant_id: ForeignKey<Elephant>,
 
     /// Denormalized herd FK — duplicates `elephant.herd_id` for query
@@ -47,6 +53,11 @@ pub struct Sighting {
     /// elephant-by-elephant observation log frequently denormalize the
     /// herd FK for the same reason. The column is `NOT NULL` and
     /// always set to `elephant.herd_id` at write time.
+    ///
+    /// `#[field(index)]` emits `sightings_herd_id_idx` — the
+    /// `cluster-sightings` and `mating-pairs` demos filter by herd;
+    /// the index avoids a full-table scan on the sightings table.
+    #[field(index)]
     pub herd_id: ForeignKey<Herd>,
 
     pub observed_by_id: ForeignKey<Researcher>,

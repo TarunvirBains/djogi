@@ -411,6 +411,19 @@ pub enum IndexType {
 /// - [`IndexKind::UniqueIndex`] — `CREATE UNIQUE INDEX` without a constraint
 ///   row. Required when [`IndexSpec::predicate`] is set or when
 ///   [`IndexSpec::nulls_not_distinct`] is `true`.
+///
+/// # Invariant — unique indexes are btree-only
+///
+/// Both unique-bearing variants ([`IndexKind::UniqueConstraint`] and
+/// [`IndexKind::UniqueIndex`]) require [`IndexSpec::index_type`] to be
+/// [`IndexType::BTree`]. PostgreSQL rejects `CREATE UNIQUE INDEX … USING
+/// <non-btree>` server-side, and `ALTER TABLE … ADD CONSTRAINT … UNIQUE`
+/// has no `USING` clause at all (it is implicitly btree). The
+/// `#[model(indexes(unique(...)))]` macro layer enforces this invariant by
+/// rejecting `unique(..., using = "<non-btree>")` at compile time
+/// (Phase 8.5 #83). The migration SQL emitter and projection layer treat
+/// the invariant as a precondition: violating it would produce
+/// `CREATE UNIQUE INDEX … USING gist` etc., which fails at apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexKind {
     NonUnique,
@@ -778,12 +791,29 @@ impl IndexSpec {
     /// truly `static` contexts (macro-emitted descriptors), construct an
     /// `IndexSpec { ... }` literal directly and put the `IndexColumnSpec`
     /// slice behind a `static` binding.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `unique == true && index_type != IndexType::BTree`.
+    /// PostgreSQL unique indexes are btree-only (`CREATE UNIQUE INDEX …
+    /// USING gin|gist|brin|spgist|hash` is rejected by the server), so the
+    /// emitter has no valid lowering for a non-btree unique index. The
+    /// macro layer rejects this combination at compile time (Phase 8.5
+    /// #83); the panic here guards the same invariant for code that
+    /// constructs `IndexSpec` directly via this builder.
     pub fn simple(
         name: &'static str,
         columns: &'static [&'static str],
         unique: bool,
         index_type: IndexType,
     ) -> Self {
+        assert!(
+            !unique || matches!(index_type, IndexType::BTree),
+            "IndexSpec::simple: PostgreSQL unique indexes are btree-only; \
+             cannot construct a unique index with index_type {index_type:?}. \
+             Drop `unique` for a non-unique non-btree lookup index, or use \
+             IndexType::BTree."
+        );
         let lifted: Box<[IndexColumnSpec]> =
             columns.iter().map(|c| IndexColumnSpec::simple(c)).collect();
         let leaked: &'static [IndexColumnSpec] = Box::leak(lifted);
@@ -1015,6 +1045,69 @@ mod tests {
         use super::{IndexKind, IndexSpec, IndexType};
         let spec = IndexSpec::simple("uix", &["email"], true, IndexType::BTree);
         assert!(matches!(spec.kind, IndexKind::UniqueConstraint));
+    }
+
+    /// Phase 8.5 #83 — `IndexSpec::simple(name, cols, unique = true,
+    /// IndexType::<non-btree>)` panics. The macro layer rejects
+    /// `unique(..., using = "<non-btree>")` at compile time, but the
+    /// runtime builder also guards the invariant because direct calls
+    /// (handwritten descriptors, future extension hooks) bypass the
+    /// macro. The panic surfaces here before the descriptor is ever
+    /// projected into a snapshot or emitted as DDL.
+    #[test]
+    #[should_panic(expected = "PostgreSQL unique indexes are btree-only")]
+    fn index_spec_simple_panics_on_unique_with_gin() {
+        use super::{IndexSpec, IndexType};
+        let _ = IndexSpec::simple("u", &["payload"], true, IndexType::Gin);
+    }
+
+    #[test]
+    #[should_panic(expected = "PostgreSQL unique indexes are btree-only")]
+    fn index_spec_simple_panics_on_unique_with_gist() {
+        use super::{IndexSpec, IndexType};
+        let _ = IndexSpec::simple("u", &["loc"], true, IndexType::Gist);
+    }
+
+    #[test]
+    #[should_panic(expected = "PostgreSQL unique indexes are btree-only")]
+    fn index_spec_simple_panics_on_unique_with_hash() {
+        use super::{IndexSpec, IndexType};
+        let _ = IndexSpec::simple("u", &["slug"], true, IndexType::Hash);
+    }
+
+    #[test]
+    #[should_panic(expected = "PostgreSQL unique indexes are btree-only")]
+    fn index_spec_simple_panics_on_unique_with_brin() {
+        use super::{IndexSpec, IndexType};
+        let _ = IndexSpec::simple("u", &["happened_at"], true, IndexType::Brin);
+    }
+
+    #[test]
+    #[should_panic(expected = "PostgreSQL unique indexes are btree-only")]
+    fn index_spec_simple_panics_on_unique_with_spgist() {
+        use super::{IndexSpec, IndexType};
+        let _ = IndexSpec::simple("u", &["path"], true, IndexType::Spgist);
+    }
+
+    /// Negative cases — non-unique non-btree indexes are valid and must
+    /// not panic. The runtime guard fires only on `unique = true` +
+    /// non-btree; covering `unique = false` cases here protects the
+    /// non-unique surface from accidental over-tightening.
+    #[test]
+    fn index_spec_simple_accepts_non_unique_with_any_method() {
+        use super::{IndexSpec, IndexType};
+        for ty in [
+            IndexType::BTree,
+            IndexType::Gin,
+            IndexType::Gist,
+            IndexType::Hash,
+            IndexType::Brin,
+            IndexType::Spgist,
+        ] {
+            let spec = IndexSpec::simple("n", &["col"], false, ty);
+            assert!(matches!(spec.kind, super::IndexKind::NonUnique));
+            assert_eq!(spec.index_type, ty);
+        }
     }
 
     #[test]

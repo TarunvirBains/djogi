@@ -1,0 +1,7 @@
+error: `#[field(index = "gist", unique)]` on `location`: PostgreSQL unique indexes are btree-only, so a non-btree `index = "gist"` combined with `unique` is ambiguous. Either: (a) use `#[field(index = "btree", unique)]` (or just `#[field(unique)]`), (b) drop `unique` if a non-unique `gist` lookup index is what you want, or (c) keep `#[field(unique)]` and declare the secondary `gist` index at the model level via `#[model(indexes(index(fields = [location], using = "gist")))]`.
+  --> $DIR/phase85_field_gist_with_unique.rs:12:21
+   |
+12 |     #[field(index = "gist", unique)]
+   |                     ^^^^^^
+
+error: aborting due to 1 previous error

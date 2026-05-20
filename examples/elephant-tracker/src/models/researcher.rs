@@ -2,19 +2,22 @@
 //!
 //! ## What this demonstrates
 //!
-//! - `tenant_key = "org_id"` — Postgres-native row-level security. The
-//!   migration differ emits an `ALTER TABLE ... ENABLE ROW LEVEL SECURITY`
-//!   statement plus a `CREATE POLICY` filtering on
-//!   `current_setting('app.tenant_id')::bigint`. Inside an `atomic()`
-//!   scope, `ctx.set_tenant(org_id)` activates the policy for the current
+//! - `tenant_key = "org_id"` — declares Postgres-native row-level security
+//!   intent at the macro layer. The descriptor carries `rls_enabled = true`
+//!   and `tenant_key = "org_id"` through the projection; `ALTER TABLE …
+//!   ENABLE ROW LEVEL SECURITY` and `CREATE POLICY` DDL emission is tracked
+//!   for Phase 7. Once Phase 7 DDL lands, `ctx.set_tenant(org_id)` inside
+//!   an `atomic()` scope will activate the policy for the current
 //!   transaction.
 //! - Model-level `fts(source = "notes", dictionary = "english")` — Djogi
 //!   only supports model-level FTS specs (per `docs/spec/decisions.md`).
 //!   The macro emits an `FtsDescriptor`, the `search` GENERATED tsvector
 //!   column, a GIN index, and a `ResearcherFields::search()` typed
 //!   accessor for `@@` predicates.
-//! - `Tracked<String>` on `name` — name changes write a row in the
-//!   structural CRUD audit log without explicit calls.
+//! - `Tracked<String>` on `name` — declares field-change tracking. Audit
+//!   `_logs` mirror-table wiring and `audit_pool` configuration are out of
+//!   scope for this example; the `Tracked` annotation is present to show
+//!   the macro surface.
 //!
 //! `org_id` is a plain `i64` rather than a foreign key — the example
 //! does not ship an `Organization` model. Real apps would point at one.
@@ -29,8 +32,8 @@ use djogi::prelude::*;
 )]
 #[derive(Debug, Clone)]
 pub struct Researcher {
-    /// Tenant scope. The RLS policy filters every `Researcher` row by
-    /// `org_id = current_setting('app.tenant_id')::bigint`.
+    /// Tenant scope. The `tenant_key = "org_id"` annotation declares RLS
+    /// intent at the macro layer; DDL emission is pending Phase 7.
     pub org_id: i64,
 
     pub name: Tracked<String>,
