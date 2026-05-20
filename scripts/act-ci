@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+workflow_src="${repo_root}/.github/workflows/ci.yml"
+
+host_port="${DJOGI_POSTGRES_HOST_PORT:-5432}"
+
+case "${host_port}" in
+  ''|*[!0-9]*)
+    printf 'DJOGI_POSTGRES_HOST_PORT must be a numeric TCP port, got: %s\n' "${host_port}" >&2
+    exit 2
+    ;;
+esac
+
+if (( host_port < 1 || host_port > 65535 )); then
+  printf 'DJOGI_POSTGRES_HOST_PORT must be between 1 and 65535, got: %s\n' "${host_port}" >&2
+  exit 2
+fi
+
+default_database_url="postgres://djogi:djogi@localhost:${host_port}/djogi_test"
+database_url="${DATABASE_URL:-${default_database_url}}"
+
+# Validate consistency whenever the caller supplies DATABASE_URL — regardless
+# of whether DJOGI_POSTGRES_HOST_PORT is also set.  Omitting this check when
+# only DATABASE_URL is provided would silently pass a stale URL whose port
+# diverges from the service container's mapped host port.
+if [[ -n "${DATABASE_URL+x}" ]]; then
+  case "${database_url}" in
+    *"@localhost:${host_port}/"*|*"@127.0.0.1:${host_port}/"*) ;;
+    *)
+      printf 'DATABASE_URL port does not match act host port %s.\n' "${host_port}" >&2
+      printf 'Set DJOGI_POSTGRES_HOST_PORT to the port used in DATABASE_URL, or unset DATABASE_URL.\n' >&2
+      exit 2
+      ;;
+  esac
+fi
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/djogi-act-ci.XXXXXX")"
+trap 'rm -rf "${tmpdir}"' EXIT
+
+workflow_tmp="${tmpdir}/ci.yml"
+DJOGI_POSTGRES_HOST_PORT="${host_port}" \
+DATABASE_URL="${database_url}" \
+  perl -pe '
+    s{5432:5432}{$ENV{DJOGI_POSTGRES_HOST_PORT}:5432}g;
+    s{postgres://djogi:djogi\x40localhost:5432/djogi_test}{$ENV{DATABASE_URL}}g;
+  ' "${workflow_src}" > "${workflow_tmp}"
+
+printf 'Using act Postgres host port %s\n' "${host_port}" >&2
+# Print only the credentials-free host:port/dbname portion of the URL.
+printf 'Using act Postgres target %s\n' "${database_url#*@}" >&2
+
+# Do NOT use exec here: exec replaces the bash process before the EXIT trap
+# fires, leaking the tmpdir on every run.  Without exec, set -e propagates
+# any nonzero act exit code as this script's exit code, and the EXIT trap
+# still runs on both success and failure paths.
+act --env "DATABASE_URL=${database_url}" -W "${workflow_tmp}" "$@"

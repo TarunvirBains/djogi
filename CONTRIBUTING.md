@@ -32,6 +32,31 @@ database:
 cargo test --lib --workspace
 ```
 
+### Local `act` CI lanes
+
+GitHub CI intentionally keeps its Postgres service bound to host port
+5432. For local `act` runs, use the wrapper to bind a distinct host port
+without editing `.github/workflows/ci.yml`:
+
+```bash
+scripts/act-ci -j check
+```
+
+The default local path still uses 5432. To use a non-default port, assign
+a unique host port and a matching `DATABASE_URL`:
+
+```bash
+export DJOGI_POSTGRES_HOST_PORT=55432
+export DATABASE_URL="postgres://djogi:djogi@localhost:${DJOGI_POSTGRES_HOST_PORT}/djogi_test"
+scripts/act-ci -j check
+```
+
+A different port, such as 55433, targets a separate act lane. The
+wrapper generates a temporary workflow copy for `act`; the committed
+GitHub workflow stays on `5432:5432`. The port-override mechanism is
+verified for single-lane use; end-to-end concurrent act lanes have not
+yet been exercised — please file an issue if you hit lane interference.
+
 ## Code style
 
 - Follow stdlib conventions; idiomatic Rust over clever
