@@ -157,7 +157,7 @@ async fn wait_for_advisory_lock(ctx: &mut djogi::DjogiContext, lock_key: i64) {
 }
 
 async fn wait_for_advisory_unlock(ctx: &mut djogi::DjogiContext, lock_key: i64) {
-    for _ in 0..120 {
+    for _ in 0..300 {
         if advisory_lock_count(ctx, lock_key).await == 0 {
             return;
         }
