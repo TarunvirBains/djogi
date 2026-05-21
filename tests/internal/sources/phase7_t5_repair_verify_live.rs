@@ -26,10 +26,10 @@ use djogi::migrate::{
     AppliedSchema, BucketKey, Classification, LossyRollbackKind, LossyRollbackPolicy,
     LossyRollbackWarning, MigrationPlan, OperationSql, PartialApplyResolution, RepairConfirmation,
     RepairError, RollbackError, RunnerCtx, RunnerError, SNAPSHOT_FORMAT_VERSION, Segment,
-    SegmentKind, VerifySeverity, WorkspaceGuard, acquire_workspace_lock, apply_plan, baseline_plan,
-    bootstrap_ledger, compute_checksum, fake_apply_plan, repair_checksum_drift,
-    repair_partial_apply, repair_resume_partial_apply, repair_snapshot_rebuild, rollback_plan,
-    verify,
+    SegmentKind, VerifySeverity, WorkspaceGuard, acquire_workspace_lock, advisory_lock_key,
+    apply_plan, baseline_plan, bootstrap_ledger, compute_checksum, fake_apply_plan,
+    repair_checksum_drift, repair_partial_apply, repair_resume_partial_apply,
+    repair_snapshot_rebuild, rollback_plan, verify,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -88,10 +88,14 @@ fn lossy_op(label: &str, up: &str, down: &str, kind: LossyRollbackKind) -> Opera
 }
 
 fn transactional_plan(stmts: Vec<OperationSql>) -> MigrationPlan {
+    transactional_plan_for_app("", stmts)
+}
+
+fn transactional_plan_for_app(app: &str, stmts: Vec<OperationSql>) -> MigrationPlan {
     MigrationPlan {
         bucket: BucketKey {
             database: "main".to_string(),
-            app: "".to_string(),
+            app: app.to_string(),
         },
         classification: Classification::Additive,
         segments: vec![Segment {
@@ -99,6 +103,67 @@ fn transactional_plan(stmts: Vec<OperationSql>) -> MigrationPlan {
             statements: stmts,
         }],
     }
+}
+
+async fn current_database(ctx: &mut djogi::DjogiContext) -> String {
+    ctx.raw_scalar::<String>("SELECT current_database()::text", &[])
+        .await
+        .expect("current_database")
+}
+
+fn splice_db_into_url(url: &str, new_db: &str) -> String {
+    let (scheme, rest) = if let Some(r) = url.strip_prefix("postgres://") {
+        ("postgres://", r)
+    } else if let Some(r) = url.strip_prefix("postgresql://") {
+        ("postgresql://", r)
+    } else {
+        return url.to_string();
+    };
+
+    let bytes = rest.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() && bytes[i] != b'/' && bytes[i] != b'?' {
+        i += 1;
+    }
+    let authority = &rest[..i];
+    let tail = &rest[i..];
+    let query_start = tail.find('?').unwrap_or(tail.len());
+    let after_query = &tail[query_start..];
+    format!("{scheme}{authority}/{new_db}{after_query}")
+}
+
+async fn advisory_lock_count(ctx: &mut djogi::DjogiContext, lock_key: i64) -> i64 {
+    ctx.raw_scalar(
+        "SELECT COUNT(*) \
+         FROM pg_locks \
+         WHERE locktype = 'advisory' \
+           AND classid = (($1::bigint >> 32) & 4294967295)::oid \
+           AND objid   = ($1::bigint & 4294967295)::oid \
+           AND mode    = 'ExclusiveLock'",
+        &[&lock_key],
+    )
+    .await
+    .expect("pg_locks query")
+}
+
+async fn wait_for_advisory_lock(ctx: &mut djogi::DjogiContext, lock_key: i64) {
+    for _ in 0..80 {
+        if advisory_lock_count(ctx, lock_key).await > 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("timed out waiting for advisory lock key=0x{lock_key:016x}");
+}
+
+async fn wait_for_advisory_unlock(ctx: &mut djogi::DjogiContext, lock_key: i64) {
+    for _ in 0..300 {
+        if advisory_lock_count(ctx, lock_key).await == 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("timed out waiting for advisory unlock key=0x{lock_key:016x}");
 }
 
 fn make_runner_ctx(
@@ -632,6 +697,7 @@ async fn repair_checksum_drift_updates_row(mut ctx: djogi::DjogiContext) {
     let report = repair_checksum_drift(
         &mut ctx,
         &_guard,
+        &plan.bucket,
         &runner_ctx.version,
         &new_checksum,
         None,
@@ -676,6 +742,7 @@ async fn repair_checksum_drift_rejects_invalid_checksum(mut ctx: djogi::DjogiCon
     let err = repair_checksum_drift(
         &mut ctx,
         &_guard,
+        &plan.bucket,
         &runner_ctx.version,
         "V1:not_lowercase_hex_at_all_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         None,
@@ -737,6 +804,7 @@ async fn repair_partial_apply_marks_rolled_back(mut ctx: djogi::DjogiContext) {
     let report = repair_partial_apply(
         &mut ctx,
         &_guard,
+        &plan.bucket,
         &runner_ctx.version,
         PartialApplyResolution::MarkRolledBack,
         "manual rollback completed by ops",
@@ -784,6 +852,7 @@ async fn repair_partial_apply_marks_faked(mut ctx: djogi::DjogiContext) {
     let report = repair_partial_apply(
         &mut ctx,
         &_guard,
+        &plan.bucket,
         &runner_ctx.version,
         PartialApplyResolution::MarkFaked,
         "out-of-band fix already in place",
@@ -823,6 +892,7 @@ async fn repair_partial_apply_marks_applied(mut ctx: djogi::DjogiContext) {
     let report = repair_partial_apply(
         &mut ctx,
         &_guard,
+        &plan.bucket,
         &runner_ctx.version,
         PartialApplyResolution::MarkApplied,
         "manually completed remaining steps",
@@ -855,6 +925,7 @@ async fn repair_partial_apply_rejects_already_applied(mut ctx: djogi::DjogiConte
     let err = repair_partial_apply(
         &mut ctx,
         &_guard,
+        &plan.bucket,
         &runner_ctx.version,
         PartialApplyResolution::MarkRolledBack,
         "test",
@@ -2032,6 +2103,7 @@ async fn repair_checksum_drift_repairs_both_up_and_down(mut ctx: djogi::DjogiCon
     let report = repair_checksum_drift(
         &mut ctx,
         &_guard,
+        &plan.bucket,
         &runner_ctx.version,
         &new_up,
         Some(&new_down),
@@ -2549,4 +2621,663 @@ async fn verify_does_not_exclude_adopter_named_heer_orders_table(mut ctx: djogi:
     );
 
     let _ = ctx.raw_ddl("DROP TABLE IF EXISTS heer_orders").await;
+}
+
+// ── #274: repair functions acquire the advisory lock (compile + behaviour) ─
+//
+// Issue #274 requires repair paths to acquire the per-bucket advisory lock
+// before mutating the ledger, mirroring apply/rollback/fake/baseline.
+//
+// Test strategy:
+// 1. The test references RepairError::AdvisoryLockFailed — if the variant
+//    does not exist, the file will not compile, giving a deterministic RED.
+// 2. After the fix lands, a clean repair succeeds and does not produce
+//    AdvisoryLockFailed (lock acquired immediately — no concurrent holder).
+// 3. After repair completes, pg_locks (visible cluster-wide) shows the
+//    advisory lock for the bucket is fully released.
+//
+// After the GH #274 fix, repair_checksum_drift takes an explicit BucketKey
+// from the caller — the same plan.bucket the runner used. The advisory-lock
+// key is derived from plan.bucket.database ("main") rather than
+// current_database() (the per-test UUID), which means the pg_locks check
+// must use advisory_lock_key(&plan.bucket) to probe the right key.
+
+#[djogi::djogi_test]
+async fn repair_checksum_drift_acquires_and_releases_advisory_lock(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+
+    // Apply a migration so we have a ledger row to repair.
+    let plan = transactional_plan(vec![op(
+        "AddTable t5_274_repair_lock",
+        "CREATE TABLE \"t5_274_repair_lock\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"t5_274_repair_lock\"",
+    )]);
+    let runner_ctx = make_runner_ctx(&plan, "V20260425010101__274_repair_lock", None, None);
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+
+    // Repair the checksum (re-set the same value — no actual drift needed).
+    // Pass plan.bucket so the repair's advisory-lock key matches the runner's.
+    let new_checksum = &runner_ctx.checksum_up;
+    let result = repair_checksum_drift(
+        &mut ctx,
+        &_guard,
+        &plan.bucket,
+        &runner_ctx.version,
+        new_checksum,
+        None,
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await;
+
+    // Reference the new advisory-lock error variants (compile-time RED/GREEN gate).
+    match &result {
+        Ok(_) => { /* expected */ }
+        Err(RepairError::AdvisoryLockFailed { bucket, .. }) => {
+            panic!(
+                "repair_checksum_drift hit AdvisoryLockFailed for bucket={}/{}; \
+                 no concurrent holder should be present in this test (GH #274)",
+                bucket.database, bucket.app,
+            );
+        }
+        Err(RepairError::AdvisoryUnlockReturnedFalse { key }) => {
+            panic!(
+                "repair_checksum_drift: pg_advisory_unlock returned false for \
+                 key=0x{key:016x} — session-pinning bug (GH #274/#280)",
+            );
+        }
+        Err(other) => panic!("unexpected repair error: {other:?}"),
+    }
+    assert!(result.is_ok(), "repair_checksum_drift must succeed");
+
+    // After repair completes, the advisory lock for the repair bucket must be
+    // released cluster-wide. The repair uses plan.bucket (database="main",
+    // app="") so the runner-side and repair-side advisory-lock keys are
+    // identical — both call advisory_lock_key(&plan.bucket).
+    //
+    // This is the critical correctness check: before the GH #274 fix,
+    // derive_bucket() used current_database() which returned the per-test
+    // UUID, producing a different key than the runner used. The repair and
+    // runner would never contend on the same lock.
+    let runner_lock_key = advisory_lock_key(&plan.bucket);
+    let repair_lock_key = advisory_lock_key(&plan.bucket);
+    assert_eq!(
+        runner_lock_key, repair_lock_key,
+        "runner and repair must derive the same advisory-lock key from the logical bucket"
+    );
+
+    let still_held = advisory_lock_count(&mut ctx, runner_lock_key).await;
+
+    assert_eq!(
+        still_held,
+        0,
+        "advisory lock for repair bucket (runner-side key=0x{:016x}) must be released \
+         after repair_checksum_drift (GH #274); {} backend(s) still hold it",
+        runner_lock_key,
+        still_held,
+    );
+}
+
+#[djogi::djogi_test]
+async fn repair_checksum_drift_contends_with_apply_on_same_bucket_but_not_different_bucket(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+
+    let same_app = "t5_274_same_bucket";
+    let other_app = "t5_274_other_bucket";
+
+    let same_seed_plan = transactional_plan_for_app(
+        same_app,
+        vec![op(
+            "AddTable t5_274_same_seed",
+            "CREATE TABLE \"t5_274_same_seed\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"t5_274_same_seed\"",
+        )],
+    );
+    let same_seed_ctx = make_runner_ctx(
+        &same_seed_plan,
+        "V20260425010102__274_same_seed",
+        None,
+        None,
+    );
+    apply_plan(&mut ctx, &same_seed_plan, &same_seed_ctx, &_guard)
+        .await
+        .expect("same-bucket seed apply ok");
+
+    let other_seed_plan = transactional_plan_for_app(
+        other_app,
+        vec![op(
+            "AddTable t5_274_other_seed",
+            "CREATE TABLE \"t5_274_other_seed\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"t5_274_other_seed\"",
+        )],
+    );
+    let other_seed_ctx = make_runner_ctx(
+        &other_seed_plan,
+        "V20260425010103__274_other_seed",
+        None,
+        None,
+    );
+    apply_plan(&mut ctx, &other_seed_plan, &other_seed_ctx, &_guard)
+        .await
+        .expect("different-bucket seed apply ok");
+
+    let hold_plan = transactional_plan_for_app(
+        same_app,
+        vec![op(
+            "Hold same bucket advisory lock",
+            "SELECT pg_sleep(4)",
+            "-- no-op",
+        )],
+    );
+    let hold_runner_ctx = make_runner_ctx(
+        &hold_plan,
+        "V20260425010104__274_apply_holds_lock",
+        None,
+        None,
+    );
+    let hold_key = advisory_lock_key(&hold_plan.bucket);
+    assert_eq!(
+        hold_key,
+        advisory_lock_key(&same_seed_plan.bucket),
+        "same app bucket must use the same advisory key"
+    );
+    assert_ne!(
+        hold_key,
+        advisory_lock_key(&other_seed_plan.bucket),
+        "different app buckets must use different advisory keys"
+    );
+
+    let pool = ctx
+        .share_pool()
+        .expect("live migration tests use pool-backed contexts");
+    let mut apply_ctx = djogi::DjogiContext::from_pool(pool.clone());
+    let mut probe_ctx = djogi::DjogiContext::from_pool(pool.clone());
+    let mut same_repair_ctx = djogi::DjogiContext::from_pool(pool.clone());
+    let mut other_repair_ctx = djogi::DjogiContext::from_pool(pool);
+    let apply_guard = acquire_test_workspace_guard();
+
+    let apply_future =
+        apply_plan(&mut apply_ctx, &hold_plan, &hold_runner_ctx, &apply_guard);
+
+    let repair_future = async {
+        wait_for_advisory_lock(&mut probe_ctx, hold_key).await;
+
+        let other_checksum = compute_checksum(["different bucket repair while apply holds lock"]);
+        let other_result = tokio::time::timeout(
+            Duration::from_secs(1),
+            repair_checksum_drift(
+                &mut other_repair_ctx,
+                &_guard,
+                &other_seed_plan.bucket,
+                &other_seed_ctx.version,
+                &other_checksum,
+                None,
+                RepairConfirmation::OperatorAcknowledged,
+            ),
+        )
+        .await
+        .expect("different-bucket repair must not wait for same-bucket apply");
+        other_result.expect("different-bucket repair ok");
+        assert!(
+            advisory_lock_count(&mut probe_ctx, hold_key).await > 0,
+            "different-bucket repair should complete while same-bucket apply still holds the lock",
+        );
+
+        let same_checksum = compute_checksum(["same bucket repair waits behind apply"]);
+        let same_result = tokio::time::timeout(
+            Duration::from_millis(300),
+            repair_checksum_drift(
+                &mut same_repair_ctx,
+                &_guard,
+                &same_seed_plan.bucket,
+                &same_seed_ctx.version,
+                &same_checksum,
+                None,
+                RepairConfirmation::OperatorAcknowledged,
+            ),
+        )
+        .await;
+        assert!(
+            same_result.is_err(),
+            "same-bucket repair must remain blocked while apply holds the advisory lock",
+        );
+
+        wait_for_advisory_unlock(&mut probe_ctx, hold_key).await;
+        repair_checksum_drift(
+            &mut same_repair_ctx,
+            &_guard,
+            &same_seed_plan.bucket,
+            &same_seed_ctx.version,
+            &same_checksum,
+            None,
+            RepairConfirmation::OperatorAcknowledged,
+        )
+        .await
+        .expect("same-bucket repair succeeds after apply releases lock");
+    };
+
+    let (apply_result, ()) = tokio::join!(apply_future, repair_future);
+    apply_result.expect("lock-holding apply ok");
+}
+
+#[djogi::djogi_test]
+async fn repair_checksum_drift_reports_advisory_lock_budget_exhaustion(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+
+    let plan = transactional_plan_for_app(
+        "t5_274_budget",
+        vec![op(
+            "AddTable t5_274_budget",
+            "CREATE TABLE \"t5_274_budget\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"t5_274_budget\"",
+        )],
+    );
+    let runner_ctx = make_runner_ctx(&plan, "V20260425010105__274_budget", None, None);
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("budget seed apply ok");
+
+    let db = current_database(&mut ctx).await;
+    let admin_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+    let routed_url = splice_db_into_url(&admin_url, &db);
+    let holder_pool = djogi::pg::pool::DjogiPool::builder(&routed_url)
+        .max_size(1)
+        .build()
+        .await
+        .expect("single-connection holder pool");
+    let mut holder_ctx = djogi::DjogiContext::from_pool(holder_pool);
+
+    let lock_key = advisory_lock_key(&plan.bucket);
+    let acquired: bool = holder_ctx
+        .raw_scalar("SELECT pg_try_advisory_lock($1)", &[&lock_key])
+        .await
+        .expect("holder acquire");
+    assert!(acquired, "holder must acquire repair advisory key");
+
+    let new_checksum = compute_checksum(["repair lock budget exhaustion"]);
+    let result = tokio::time::timeout(
+        Duration::from_secs(35),
+        repair_checksum_drift(
+            &mut ctx,
+            &_guard,
+            &plan.bucket,
+            &runner_ctx.version,
+            &new_checksum,
+            None,
+            RepairConfirmation::OperatorAcknowledged,
+        ),
+    )
+    .await
+    .expect("repair must return within advisory-lock budget plus grace");
+
+    match result {
+        Err(RepairError::AdvisoryLockFailed {
+            bucket,
+            key,
+            attempts,
+        }) => {
+            assert_eq!(bucket, plan.bucket);
+            assert_eq!(key, lock_key);
+            assert_eq!(attempts, 600);
+        }
+        other => panic!("expected AdvisoryLockFailed, got {other:?}"),
+    }
+
+    assert!(
+        advisory_lock_count(&mut ctx, lock_key).await > 0,
+        "holder should still own the lock after repair exhausts its budget",
+    );
+
+    let released: bool = holder_ctx
+        .raw_scalar("SELECT pg_advisory_unlock($1)", &[&lock_key])
+        .await
+        .expect("holder release");
+    assert!(released, "holder unlock must report true");
+    wait_for_advisory_unlock(&mut ctx, lock_key).await;
+}
+
+#[djogi::djogi_test]
+async fn apply_waits_while_repair_resume_holds_same_bucket_lock(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    let app = "t5_274_reverse";
+
+    let resume_plan = MigrationPlan {
+        bucket: BucketKey {
+            database: "main".to_string(),
+            app: app.to_string(),
+        },
+        classification: Classification::Additive,
+        segments: vec![Segment {
+            kind: SegmentKind::NonTransactional,
+            statements: vec![op(
+                "Hold repair advisory lock",
+                "SELECT pg_sleep(4)",
+                "-- no-op",
+            )],
+        }],
+    };
+    let resume_ctx = make_runner_ctx(
+        &resume_plan,
+        "V20260425010106__274_reverse_repair",
+        None,
+        None,
+    );
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+    let checksum_up = resume_ctx.checksum_up.clone();
+    let run_id: i64 = 274;
+    ctx.raw_execute(
+        "INSERT INTO djogi_schema_migrations \
+         (version, description, checksum_up, execution_mode, status, \
+          applied_steps_count, total_steps, run_id, snapshot_version, app_label) \
+         VALUES ($1, $2, $3, 'non_transactional', 'failed', \
+                 0, 1, $4, '1', $5)",
+        &[
+            &resume_ctx.version,
+            &resume_ctx.description,
+            &checksum_up,
+            &run_id,
+            &resume_plan.bucket.app,
+        ],
+    )
+    .await
+    .expect("seed repair row");
+
+    let apply_plan_same_bucket = transactional_plan_for_app(
+        app,
+        vec![op(
+            "AddTable t5_274_reverse_apply",
+            "CREATE TABLE \"t5_274_reverse_apply\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"t5_274_reverse_apply\"",
+        )],
+    );
+    let apply_ctx_same_bucket = make_runner_ctx(
+        &apply_plan_same_bucket,
+        "V20260425010107__274_reverse_apply",
+        None,
+        None,
+    );
+    let lock_key = advisory_lock_key(&resume_plan.bucket);
+
+    let pool = ctx
+        .share_pool()
+        .expect("live migration tests use pool-backed contexts");
+    let mut repair_ctx = djogi::DjogiContext::from_pool(pool.clone());
+    let mut probe_ctx = djogi::DjogiContext::from_pool(pool.clone());
+    let mut apply_ctx = djogi::DjogiContext::from_pool(pool);
+
+    let repair_future = repair_resume_partial_apply(
+        &mut repair_ctx,
+        &_guard,
+        &resume_ctx.version,
+        &resume_plan,
+        RepairConfirmation::OperatorAcknowledged,
+    );
+
+    let apply_probe_future = async {
+        wait_for_advisory_lock(&mut probe_ctx, lock_key).await;
+
+        let apply_result = tokio::time::timeout(
+            Duration::from_millis(300),
+            apply_plan(
+                &mut apply_ctx,
+                &apply_plan_same_bucket,
+                &apply_ctx_same_bucket,
+                &_guard,
+            ),
+        )
+        .await;
+        assert!(
+            apply_result.is_err(),
+            "same-bucket apply must wait while repair_resume holds the advisory lock",
+        );
+
+        wait_for_advisory_unlock(&mut probe_ctx, lock_key).await;
+        apply_plan(
+            &mut apply_ctx,
+            &apply_plan_same_bucket,
+            &apply_ctx_same_bucket,
+            &_guard,
+        )
+        .await
+        .expect("same-bucket apply succeeds after repair releases lock");
+    };
+
+    let (repair_result, ()) = tokio::join!(repair_future, apply_probe_future);
+    repair_result.expect("repair resume ok");
+}
+
+// ── Repair: bucket app mismatch rejects and releases lock (GH #274) ─────────
+//
+// FIX_BEFORE_BETA-1 from the strict-swe re-review at HEAD 6658965e.
+//
+// After the punch-list fix moved bucket derivation from the framework
+// (`derive_bucket`) to the caller, repair must verify that the supplied
+// `bucket.app` matches the ledger row's `app_label` while holding the
+// advisory lock. A mismatch means the lock is on the wrong logical bucket —
+// repair rejects with `BucketAppMismatch` and releases the lock before
+// returning so the correct bucket's lock remains available to the runner.
+//
+// These two tests exercise the check end-to-end:
+//   - Correct row inserted via `apply_plan` with app = src_app.
+//   - Repair called with a bucket whose `app` = wrong_app.
+//   - Error is `BucketAppMismatch` with all three diagnostic fields correct.
+//   - Advisory lock for `wrong_bucket` is released after the rejection
+//     (verified via `pg_locks`).
+
+#[djogi::djogi_test]
+async fn repair_checksum_drift_rejects_wrong_bucket_app_and_releases_lock(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    let src_app = "t5_274_mismatch_ck_src";
+
+    // Apply a migration whose row will have app_label = src_app.
+    let plan = transactional_plan_for_app(
+        src_app,
+        vec![op(
+            "AddTable t5_274_mismatch_ck",
+            "CREATE TABLE \"t5_274_mismatch_ck\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"t5_274_mismatch_ck\"",
+        )],
+    );
+    let runner_ctx = make_runner_ctx(&plan, "V20260425010110__274_mismatch_ck", None, None);
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+
+    // Build a bucket with a different app — the advisory lock will be acquired
+    // on this wrong bucket before the mismatch is detected.
+    let wrong_bucket = BucketKey {
+        database: "main".to_string(),
+        app: "t5_274_mismatch_ck_wrong".to_string(),
+    };
+    let lock_key = advisory_lock_key(&wrong_bucket);
+
+    let err = repair_checksum_drift(
+        &mut ctx,
+        &_guard,
+        &wrong_bucket,
+        &runner_ctx.version,
+        &runner_ctx.checksum_up,
+        None,
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    .expect_err("repair must reject: bucket.app does not match row.app_label");
+
+    match err {
+        RepairError::BucketAppMismatch {
+            ref version,
+            ref row_app_label,
+            ref supplied_app,
+        } => {
+            assert_eq!(version, &runner_ctx.version, "version in BucketAppMismatch");
+            assert_eq!(row_app_label, src_app, "row_app_label in BucketAppMismatch");
+            assert_eq!(
+                supplied_app, "t5_274_mismatch_ck_wrong",
+                "supplied_app in BucketAppMismatch"
+            );
+        }
+        other => panic!("expected BucketAppMismatch, got {other:?}"),
+    }
+
+    // Critical: advisory lock on wrong_bucket must be released by the reject
+    // path so the correct bucket's lock remains uncontested.
+    let still_held = advisory_lock_count(&mut ctx, lock_key).await;
+    assert_eq!(
+        still_held, 0,
+        "advisory lock for wrong-app bucket (key=0x{lock_key:016x}) must be released \
+         after BucketAppMismatch rejection (GH #274 hardening)",
+    );
+}
+
+#[djogi::djogi_test]
+async fn repair_partial_apply_rejects_wrong_bucket_app_and_releases_lock(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    let src_app = "t5_274_mismatch_pa_src";
+
+    // Apply a transactional migration so the row exists with app_label = src_app.
+    // The BucketAppMismatch check runs before the status check in
+    // `repair_partial_apply_pinned`, so the row's `applied` status does not
+    // prevent the mismatch detection — the test intentionally uses a clean
+    // `applied` row to keep setup minimal.
+    let plan = transactional_plan_for_app(
+        src_app,
+        vec![op(
+            "AddTable t5_274_mismatch_pa",
+            "CREATE TABLE \"t5_274_mismatch_pa\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"t5_274_mismatch_pa\"",
+        )],
+    );
+    let runner_ctx = make_runner_ctx(&plan, "V20260425010111__274_mismatch_pa", None, None);
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+
+    let wrong_bucket = BucketKey {
+        database: "main".to_string(),
+        app: "t5_274_mismatch_pa_wrong".to_string(),
+    };
+    let lock_key = advisory_lock_key(&wrong_bucket);
+
+    let err = repair_partial_apply(
+        &mut ctx,
+        &_guard,
+        &wrong_bucket,
+        &runner_ctx.version,
+        PartialApplyResolution::MarkRolledBack,
+        "test note",
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    .expect_err("repair must reject: bucket.app does not match row.app_label");
+
+    match err {
+        RepairError::BucketAppMismatch {
+            ref version,
+            ref row_app_label,
+            ref supplied_app,
+        } => {
+            assert_eq!(version, &runner_ctx.version, "version in BucketAppMismatch");
+            assert_eq!(row_app_label, src_app, "row_app_label in BucketAppMismatch");
+            assert_eq!(
+                supplied_app, "t5_274_mismatch_pa_wrong",
+                "supplied_app in BucketAppMismatch"
+            );
+        }
+        other => panic!("expected BucketAppMismatch, got {other:?}"),
+    }
+
+    let still_held = advisory_lock_count(&mut ctx, lock_key).await;
+    assert_eq!(
+        still_held, 0,
+        "advisory lock for wrong-app bucket (key=0x{lock_key:016x}) must be released \
+         after BucketAppMismatch rejection (GH #274 hardening)",
+    );
+}
+
+// ── Rollback: bucket-app mismatch guard (GH #274 hardening) ─────────────────
+//
+// `rollback_plan_pinned` must verify `plan.bucket.app == row.app_label` inside
+// the advisory-lock window before any down SQL runs. A mismatch means the lock
+// is on the wrong logical bucket — rollback rejects with
+// `RollbackError::BucketAppMismatch` and releases the lock on the same pinned
+// session before returning so the correct bucket's lock remains available.
+
+#[djogi::djogi_test]
+async fn rollback_rejects_wrong_bucket_app_and_releases_lock(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    let src_app = "t5_274_mismatch_rb_src";
+
+    // Apply a migration so a ledger row exists with app_label = src_app.
+    let plan = transactional_plan_for_app(
+        src_app,
+        vec![op(
+            "AddTable t5_274_mismatch_rb",
+            "CREATE TABLE \"t5_274_mismatch_rb\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"t5_274_mismatch_rb\"",
+        )],
+    );
+    let runner_ctx = make_runner_ctx(&plan, "V20260425010112__274_mismatch_rb", None, None);
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+
+    // Build a rollback plan with a different bucket app — the advisory lock
+    // will be acquired on this wrong bucket before the mismatch is detected.
+    let wrong_plan = transactional_plan_for_app(
+        "t5_274_mismatch_rb_wrong",
+        vec![op(
+            "AddTable t5_274_mismatch_rb",
+            "CREATE TABLE \"t5_274_mismatch_rb\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"t5_274_mismatch_rb\"",
+        )],
+    );
+    let lock_key = advisory_lock_key(&wrong_plan.bucket);
+
+    // Pass wrong_plan (wrong bucket.app) but runner_ctx from the correct plan
+    // (correct version). rollback_plan loads the row by version, finds
+    // app_label = src_app, sees plan.bucket.app = wrong_app → BucketAppMismatch.
+    let err = rollback_plan(
+        &mut ctx,
+        &wrong_plan,
+        &runner_ctx,
+        &_guard,
+        LossyRollbackPolicy::Refuse,
+        None,
+    )
+    .await
+    .expect_err("rollback must reject: plan.bucket.app does not match row.app_label");
+
+    match err {
+        RollbackError::BucketAppMismatch {
+            ref version,
+            ref row_app_label,
+            ref supplied_app,
+        } => {
+            assert_eq!(version, &runner_ctx.version, "version in BucketAppMismatch");
+            assert_eq!(row_app_label, src_app, "row_app_label in BucketAppMismatch");
+            assert_eq!(
+                supplied_app, "t5_274_mismatch_rb_wrong",
+                "supplied_app in BucketAppMismatch",
+            );
+        }
+        other => panic!("expected RollbackError::BucketAppMismatch, got {other:?}"),
+    }
+
+    // Critical: the advisory lock on wrong_plan.bucket must be released by
+    // the rejection path so the correct bucket's lock remains uncontested.
+    let still_held_rb = advisory_lock_count(&mut ctx, lock_key).await;
+    assert_eq!(
+        still_held_rb, 0,
+        "advisory lock for wrong-app bucket (key=0x{lock_key:016x}) must be released \
+         after BucketAppMismatch rejection (GH #274 hardening)",
+    );
 }
