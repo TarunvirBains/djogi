@@ -404,9 +404,25 @@ pub fn expand(input: TokenStream) -> TokenStream {
         // `i64`, `uuid::Uuid`, `HeerId`, and `RanjId` already implement it;
         // adopter inners without an impl surface a clean bound error at the
         // filter call site.
+        //
+        // djogi#161 — `jsonb_sql_cast` ALSO delegates to the inner type so
+        // `JsonbPathRef<_, Self>` emits the same typed Postgres cast the
+        // inner SQL value type would emit. Pre-fix the custom PK wrapper
+        // inherited the default body, which walks `type_name::<Self>()`
+        // through the cast table. The adopter's PK type name is never in
+        // the table, so JSONB path comparisons silently fell back to text
+        // (`'10' < '9'` because text ordering is lexicographic). Adopter-
+        // supplied `sql_type` is intentionally NOT used as the cast text —
+        // it is SQL text that may be a domain, alias, or wrong value; the
+        // typed cast must come from the inner Rust type's
+        // `IntoFilterValue` impl through the `JsonbSqlCast` enum.
         impl ::djogi::IntoFilterValue for #name {
             fn into_filter_value(self) -> ::djogi::query::internal::FilterValue {
                 <#inner as ::djogi::IntoFilterValue>::into_filter_value(self.0)
+            }
+
+            fn jsonb_sql_cast() -> ::std::option::Option<::djogi::jsonb::JsonbSqlCast> {
+                <#inner as ::djogi::IntoFilterValue>::jsonb_sql_cast()
             }
         }
 

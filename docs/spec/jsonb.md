@@ -155,6 +155,44 @@ Vehicle::objects()
     // WHERE engine->'turbo'->>'manufacturer' = 'Garrett'
 ```
 Unknown fields cannot be used in typed filter closures because they are not known at compile time. Query them through an explicit raw-SQL helper guarded by `#[djogi::deliberately_bypass_convention_with_raw_sql]` and a local `JUSTIFICATION` comment.
+
+### 6.7a Typed cast dispatch and adopter scalar types
+
+`JsonbPathRef<M, V>` chooses the Postgres LHS cast via the
+`IntoFilterValue::jsonb_sql_cast` associated method, which returns a
+closed `Option<JsonbSqlCast>` enum (`Int2`, `Int4`, `Int8`, `Float4`,
+`Float8`, `Boolean`, `Timestamptz`, `Date`, `Uuid`, `Numeric`,
+`Interval`, network-gated `Inet` / `Cidr` / `Macaddr`). The default
+trait body walks `std::any::type_name::<V>()` through djogi's built-in
+cast table, covering every primitive `V` djogi ships an
+`IntoFilterValue` impl for.
+
+Adopter-defined scalar types — `primary_key!`-emitted custom PK
+newtypes, `ForeignKey<T>`, `OneToOneField<T>`, and adopter newtypes
+that wrap built-in scalars — sit outside the default table. Each
+wrapper overrides `jsonb_sql_cast` to delegate to its inner SQL value
+type:
+
+- `primary_key!` emits the override on every custom PK; the inner Rust
+  type the macro declared (`i64` / `uuid::Uuid` / …) determines the
+  emitted cast.
+- `ForeignKey<T>` and `OneToOneField<T>` delegate to `T::Pk`.
+
+`u64` is bound through `FilterValue::Decimal` (bare NUMERIC) at the
+SQL bind site, so the matching JSONB path LHS cast is `::numeric`.
+Pre-djogi#161 `u64` was deliberately absent from the cast table and
+JSONB comparisons against `u64`-typed payloads silently fell back to
+text comparison.
+
+Adopters who define a fully custom scalar type for a JSONB field (one
+that does not wrap a built-in scalar) annotate the field with
+`#[jsonb(scalar)]` so the `#[derive(JsonbSchema)]` derive emits a
+`JsonbPathRef<M, FieldType>` leaf instead of attempting to resolve
+`FieldType: JsonbSchema`. The annotation is a bare word; it accepts no
+SQL cast text. Cast selection still flows through `FieldType:
+IntoFilterValue` — adopters override `jsonb_sql_cast` on their type to
+return the matching `JsonbSqlCast` variant. Path keys remain literal
+and validated; values remain bound parameters.
 ### 6.8 Shell Access
 ```rhai
 let car = Vehicle::get(42);

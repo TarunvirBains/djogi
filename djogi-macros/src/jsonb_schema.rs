@@ -7,8 +7,8 @@
 //! 1. A `{T}Path<M: Model>` struct carrying the JSONB column name and the
 //!    accumulated path segments so far.
 //! 2. One method per field on `{T}Path<M>`:
-//!    - Scalar fields (from the cast-matrix allowlist) return
-//!      `JsonbPathRef<M, FieldType>`.
+//!    - Scalar fields (from the cast-matrix allowlist OR fields annotated
+//!      `#[jsonb(scalar)]`) return `JsonbPathRef<M, FieldType>`.
 //!    - All other field types are assumed to implement `JsonbSchema`; the
 //!      method returns `<NestedT as JsonbSchema>::Path<M>` with the path
 //!      extended by the field's JSON key.
@@ -28,12 +28,39 @@
 //!
 //! Any other type is assumed to be a nested `JsonbSchema` struct.
 //!
+//! # `#[jsonb(scalar)]` escape hatch (djogi#161)
+//!
+//! Adopter-defined scalar types — for example, a `primary_key!`-emitted
+//! custom PK newtype like `MyAppId(i64)` or a project-local `Username`
+//! that wraps `String` — sit outside the built-in allowlist. The
+//! `#[jsonb(scalar)]` field-level annotation declares "treat this field
+//! as a scalar leaf, not a nested schema":
+//!
+//! ```ignore
+//! #[derive(JsonbSchema, Serialize, Deserialize)]
+//! pub struct Spec {
+//!     #[jsonb(scalar)]
+//!     pub owner: MyAppId,        // emits JsonbPathRef<M, MyAppId>
+//!     pub engine: EngineSpec,    // descends as a nested JsonbSchema
+//! }
+//! ```
+//!
+//! The annotation accepts no parameters. Critically, it accepts no raw
+//! SQL — Postgres cast selection still flows through `FieldType:
+//! IntoFilterValue` (and from there to the typed `JsonbSqlCast` returned
+//! by `IntoFilterValue::jsonb_sql_cast`). Adopters cannot inject
+//! arbitrary cast text via the macro; the cast comes from the Rust type
+//! the macro sees at the field site.
+//!
 //! # Compile-time validation
 //!
 //! - Non-struct (enum, union) -> error.
 //! - Tuple struct (unnamed fields) -> error.
 //! - Empty named struct -> allowed (produces a `{T}Path<M>` with no methods).
 //! - Field with `#[serde(flatten)]` -> error.
+//! - `#[jsonb(scalar = "...")]` / `#[jsonb(scalar(...))]` -> error
+//!   (the marker is a bare word; rejecting value forms keeps the door
+//!   shut on adopter-supplied SQL cast text).
 //!
 //! # Path routing
 //!
@@ -98,6 +125,10 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
     // at once rather than stopping at the first.
     let mut serde_errors: Vec<Error> = Vec::new();
 
+    // djogi#161 — collect `#[jsonb(scalar)]` parse errors alongside the
+    // existing serde-flatten errors so all violations surface together.
+    let mut jsonb_errors: Vec<Error> = Vec::new();
+
     let accessor_methods: Vec<TokenStream> = named_fields
         .iter()
         .filter_map(|field| {
@@ -139,6 +170,20 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
             // json_key_str is a &str borrow of json_key for quote! interpolation.
             let json_key_str: &str = &json_key;
 
+            // djogi#161 — check the field-level `#[jsonb(...)]` attribute.
+            // The only supported marker is the bare word `scalar`, which
+            // opts the field out of the nested-schema branch and emits a
+            // `JsonbPathRef<M, FieldType>` leaf. Any other shape
+            // (`#[jsonb(scalar = "...")]`, `#[jsonb(unknown)]`, etc.) is
+            // rejected with a span-precise diagnostic.
+            let explicit_scalar = match inspect_jsonb_field(field) {
+                Ok(j) => j.scalar,
+                Err(err) => {
+                    jsonb_errors.push(err);
+                    return None;
+                }
+            };
+
             // Phase 7-Zero-2 polish (#28): peel `Option<...>` off at the
             // macro layer so `Option<i32>` / `Option<NestedSchema>` work
             // exactly like the bare inner type. Postgres JSONB `->>`
@@ -154,7 +199,7 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
             let effective_ty: Type =
                 unwrap_option(field_ty).unwrap_or_else(|| field_ty.clone());
 
-            if is_scalar_type(&effective_ty) {
+            if explicit_scalar || is_scalar_type(&effective_ty) {
                 // Scalar leaf: return JsonbPathRef<M, FieldType>.
                 // The path is base_path + [json_key_str], joined as dotted string.
                 // json_key_str is the serde rename if present, otherwise the Rust
@@ -213,9 +258,12 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
         })
         .collect();
 
-    // Surface any serde-flatten errors collected above.
-    if !serde_errors.is_empty() {
-        let combined = serde_errors
+    // Surface any serde-flatten / `#[jsonb(...)]` parse errors collected
+    // above. Both lists are folded into one combined diagnostic so the
+    // caller sees every violation at once instead of one-at-a-time.
+    let all_errors: Vec<Error> = serde_errors.into_iter().chain(jsonb_errors).collect();
+    if !all_errors.is_empty() {
+        let combined = all_errors
             .into_iter()
             .reduce(|mut acc, e| {
                 acc.combine(e);
@@ -466,12 +514,101 @@ fn extract_serde_rename(attr: &syn::Attribute) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// `#[jsonb(...)]` field-attribute inspection (djogi#161)
+// ---------------------------------------------------------------------------
+
+/// Parsed `#[jsonb(...)]` markers on a single struct field.
+///
+/// Today the only supported marker is the bare word `scalar`. Future
+/// markers (if any) extend this struct rather than introducing a new
+/// attribute name. The struct stays simple by design — `#[jsonb(...)]`
+/// is an escape hatch, not a general configuration surface.
+#[derive(Default, Debug)]
+struct JsonbFieldInfo {
+    /// `#[jsonb(scalar)]` was present — emit a `JsonbPathRef<M, FieldType>`
+    /// leaf instead of treating the field type as a nested `JsonbSchema`.
+    scalar: bool,
+}
+
+/// Walk a field's `#[jsonb(...)]` attributes and collect the parsed
+/// markers. Returns an error span-anchored on the offending attribute
+/// when an unrecognised key, an unsupported value form (e.g.
+/// `#[jsonb(scalar = "foo")]`), or a duplicate marker is encountered.
+fn inspect_jsonb_field(field: &syn::Field) -> syn::Result<JsonbFieldInfo> {
+    let mut info = JsonbFieldInfo::default();
+    for attr in &field.attrs {
+        if !attr.path().is_ident("jsonb") {
+            continue;
+        }
+        let Meta::List(list) = &attr.meta else {
+            return Err(Error::new_spanned(
+                attr,
+                "expected `#[jsonb(...)]` with a parenthesised marker list \
+                 (e.g. `#[jsonb(scalar)]`)",
+            ));
+        };
+        let nested = list.parse_args_with(
+            syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
+        )?;
+        for item in &nested {
+            match item {
+                Meta::Path(p) if p.is_ident("scalar") => {
+                    if info.scalar {
+                        return Err(Error::new_spanned(
+                            item,
+                            "duplicate `#[jsonb(scalar)]` marker on this field",
+                        ));
+                    }
+                    info.scalar = true;
+                }
+                Meta::Path(p) => {
+                    let name = p
+                        .get_ident()
+                        .map(|i| i.to_string())
+                        .unwrap_or_else(|| "<unknown>".to_string());
+                    return Err(Error::new_spanned(
+                        item,
+                        format!(
+                            "unknown `#[jsonb({name})]` marker; the only supported \
+                             marker today is the bare word `scalar`"
+                        ),
+                    ));
+                }
+                // djogi#161 — reject `#[jsonb(scalar = "...")]` and
+                // `#[jsonb(scalar(...))]` explicitly. The scalar marker is
+                // a bare-word toggle; admitting a value form would invite
+                // adopters to pass arbitrary SQL cast text through the
+                // macro layer, which is the exact anti-pattern this
+                // escape hatch was designed to avoid.
+                Meta::NameValue(nv) => {
+                    return Err(Error::new_spanned(
+                        nv,
+                        "the `#[jsonb(scalar)]` marker takes no value; \
+                         remove the `= ...` suffix. Postgres cast selection \
+                         flows through `FieldType: IntoFilterValue`, not \
+                         through adopter-supplied SQL strings",
+                    ));
+                }
+                Meta::List(l) => {
+                    return Err(Error::new_spanned(
+                        l,
+                        "the `#[jsonb(scalar)]` marker takes no nested list; \
+                         use the bare form `#[jsonb(scalar)]`",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(info)
+}
+
+// ---------------------------------------------------------------------------
 // Scalar type detection
 // ---------------------------------------------------------------------------
 
 /// Determine whether a field type is a scalar from the cast-matrix allowlist.
 ///
-/// The allowlist matches `sql_cast_for_type` in `djogi::jsonb::path`. Scalar
+/// The allowlist matches `jsonb_sql_cast_for_type` in `djogi::jsonb::path`. Scalar
 /// types produce a `JsonbPathRef<M, FieldType>` leaf; all other types are
 /// assumed to implement `JsonbSchema` (nested struct).
 ///
@@ -553,7 +690,7 @@ fn unwrap_option(ty: &Type) -> Option<Type> {
 
 /// Scalar type name strings as they appear in rendered token streams.
 ///
-/// The list mirrors `sql_cast_for_type` in `djogi::jsonb::path`. Qualified
+/// The list mirrors `jsonb_sql_cast_for_type` in `djogi::jsonb::path`. Qualified
 /// forms (`time::OffsetDateTime`) and short forms (`OffsetDateTime`) are both
 /// listed because users may import with a `use` statement or not.
 ///
@@ -565,16 +702,15 @@ fn unwrap_option(ty: &Type) -> Option<Type> {
 // Rust-idiomatic types as scalar fields. Each narrow type widens at
 // the filter-binding boundary via `IntoFilterValue` (see
 // `djogi::query::field`), and the path emitter casts to the smallest
-// Postgres int type that fits its full range (see `sql_cast_for_type`
+// Postgres int type that fits its full range (see `jsonb_sql_cast_for_type`
 // in `djogi::jsonb::path`).
 //
-// `u64` was already in this list pre-#29 but does NOT have a working
-// path-cast (no Postgres type fits the full u64 range). Adopters who
-// land on `u64` in JSONB get a derive-accepted scalar accessor whose
-// runtime cast falls back to text comparison; for correctness, use
-// `i64` instead, or `rust_decimal::Decimal` for the full unsigned
-// range. Keeping the entry preserves backward compatibility while we
-// document the gap.
+// `u64` exceeds `int8`'s positive range. djogi#161 adds
+// `u64 => JsonbSqlCast::Numeric` so the path emitter casts
+// `(col->>'key')::numeric` before comparing — aligning with the
+// `IntoFilterValue for u64` → `FilterValue::Decimal` bind path.
+// Pre-#161 no Postgres type fit the full u64 range and JSONB
+// comparisons silently fell back to text.
 const SCALAR_TYPE_PATTERNS: &[&str] = &[
     "&str",
     "Date",
@@ -900,5 +1036,85 @@ mod tests {
         // `core::option::Option` / `std::option::Option` are stripped.
         assert_eq!(unwrap_option_string("my_module::Option<i32>"), None);
         assert_eq!(unwrap_option_string("foo::bar::Option<i32>"), None);
+    }
+
+    // ── `#[jsonb(scalar)]` parsing (djogi#161) ────────────────────────────
+
+    #[test]
+    fn inspect_jsonb_field_no_attr_returns_default() {
+        let field: syn::Field = syn::parse_quote! { pub id: MyAppId };
+        let info = inspect_jsonb_field(&field).expect("no attr must parse cleanly");
+        assert!(!info.scalar);
+    }
+
+    #[test]
+    fn inspect_jsonb_field_scalar_marker_detected() {
+        let field: syn::Field = syn::parse_quote! {
+            #[jsonb(scalar)]
+            pub id: MyAppId
+        };
+        let info = inspect_jsonb_field(&field).expect("scalar marker must parse");
+        assert!(info.scalar, "scalar flag must be set");
+    }
+
+    #[test]
+    fn inspect_jsonb_field_rejects_scalar_with_value() {
+        // Adopter-supplied SQL cast text via the macro is the anti-
+        // pattern this escape hatch was designed to avoid; the parser
+        // must refuse the `#[jsonb(scalar = "...")]` shape.
+        let field: syn::Field = syn::parse_quote! {
+            #[jsonb(scalar = "::int8")]
+            pub id: MyAppId
+        };
+        let err = inspect_jsonb_field(&field).expect_err("scalar = \"...\" must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("takes no value"),
+            "expected 'takes no value' diagnostic, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn inspect_jsonb_field_rejects_scalar_with_nested_list() {
+        let field: syn::Field = syn::parse_quote! {
+            #[jsonb(scalar(int8))]
+            pub id: MyAppId
+        };
+        let err =
+            inspect_jsonb_field(&field).expect_err("scalar(...) nested list must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("nested list") || msg.contains("bare form"),
+            "expected nested-list diagnostic, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn inspect_jsonb_field_rejects_unknown_marker() {
+        let field: syn::Field = syn::parse_quote! {
+            #[jsonb(future_marker)]
+            pub id: MyAppId
+        };
+        let err = inspect_jsonb_field(&field).expect_err("unknown marker must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown") && msg.contains("future_marker"),
+            "expected 'unknown ... future_marker' diagnostic, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn inspect_jsonb_field_rejects_duplicate_scalar() {
+        let field: syn::Field = syn::parse_quote! {
+            #[jsonb(scalar, scalar)]
+            pub id: MyAppId
+        };
+        let err =
+            inspect_jsonb_field(&field).expect_err("duplicate scalar marker must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate"),
+            "expected 'duplicate' diagnostic, got: {msg}"
+        );
     }
 }

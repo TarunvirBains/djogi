@@ -333,6 +333,91 @@ async fn jsonb_flat_path_filter_works(mut ctx: djogi::DjogiContext) {
     assert!(!found.iter().any(|post| post.id == eco.id));
 }
 
+// djogi#161 — `primary_key!`-emitted custom PK newtypes (and other
+// inner-type-delegating wrappers) must emit the same typed Postgres
+// cast their inner SQL value type emits when used as the value generic
+// of `JsonbPathRef<M, V>`. Pre-fix, wrappers inherited the default
+// `IntoFilterValue::jsonb_sql_cast` body, which walks `type_name::<Self>()`
+// through the built-in cast table. The wrapper's own `type_name` is
+// never in the table, so JSONB path comparisons against a wrapper-typed
+// payload silently emitted no cast and Postgres compared the text-
+// extracted LHS lexicographically.
+//
+// Values `9` and `10` are the canonical numeric-vs-text divergence:
+// text ordering puts `'10' < '9'` because `'1' < '9'` byte-wise,
+// while numeric ordering puts `10 > 9`. A `.gt(JsonbRankId(9))` query
+// must include only `10` (numeric path) and never `10` ordered before
+// `9` (text path).
+djogi::primary_key! {
+    pub struct JsonbRankId(i64);
+    sql_type = "BIGINT";
+    default_sql = "0";
+    bulk_sql = "SELECT 0::bigint AS id FROM generate_series(1, $1)";
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn jsonb_path_custom_pk_uses_numeric_cast(mut ctx: djogi::DjogiContext) {
+    let nine = Post::create(
+        &mut ctx,
+        make_post_with_specs("Rank 9", serde_json::json!({"rank": 9})),
+    )
+    .await
+    .expect("create rank 9 post");
+    let ten = Post::create(
+        &mut ctx,
+        make_post_with_specs("Rank 10", serde_json::json!({"rank": 10})),
+    )
+    .await
+    .expect("create rank 10 post");
+
+    // `.path::<JsonbRankId>("rank").gt(JsonbRankId(9))` must emit
+    // `(specs->>'rank')::int8 > $1` so Postgres orders 10 > 9 numerically.
+    // The pre-djogi#161 bug skipped the `::int8` cast for `JsonbRankId`
+    // (the wrapper's `type_name` was not in the cast table) and the
+    // comparison ran as `(specs->>'rank') > '9'::text`, which excludes
+    // `10` because `'10' < '9'` lexicographically.
+    let above_nine = Post::objects()
+        .filter(|f| {
+            f.specs()
+                .explicit_pg_predicate()
+                .path::<JsonbRankId>("rank")
+                .gt(JsonbRankId(9))
+        })
+        .fetch_all(&mut ctx)
+        .await
+        .expect("custom-PK JSONB path filter");
+
+    // Numeric semantics: only the rank-10 row passes; rank-9 does not.
+    assert!(
+        above_nine.iter().any(|post| post.id == ten.id),
+        "rank 10 must be returned by `> 9` (numeric ordering)"
+    );
+    assert!(
+        !above_nine.iter().any(|post| post.id == nine.id),
+        "rank 9 must NOT be returned by `> 9` (strict gt)"
+    );
+
+    // Sanity: the opposite direction also matches the numeric path.
+    let below_ten = Post::objects()
+        .filter(|f| {
+            f.specs()
+                .explicit_pg_predicate()
+                .path::<JsonbRankId>("rank")
+                .lt(JsonbRankId(10))
+        })
+        .fetch_all(&mut ctx)
+        .await
+        .expect("custom-PK JSONB path filter (lt)");
+    assert!(
+        below_ten.iter().any(|post| post.id == nine.id),
+        "rank 9 must be returned by `< 10` (numeric ordering)"
+    );
+    assert!(
+        !below_ten.iter().any(|post| post.id == ten.id),
+        "rank 10 must NOT be returned by `< 10` (strict lt)"
+    );
+}
+
 #[djogi::djogi_test(sync_models = [TypedPost])]
 async fn typed_jsonb_round_trip_preserves_unknown_fields(mut ctx: djogi::DjogiContext) {
     let mut post = TypedPost::create(

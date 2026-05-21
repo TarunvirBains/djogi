@@ -376,7 +376,8 @@ pub use djogi_macros::{
 pub use geo::GeoPoint;
 pub use hooks::ModelHooks;
 pub use jsonb::{
-    Jsonb, JsonbPathRef, JsonbSchema, MirJzSON, MirJzSONError, UnknownField, UnknownFieldExt,
+    Jsonb, JsonbPathRef, JsonbSchema, JsonbSqlCast, MirJzSON, MirJzSONError, UnknownField,
+    UnknownFieldExt,
 };
 // `FromPgRow` is the canonical row-decode trait — adopters write
 // `ctx.raw_query::<MyType>(...)` against it, so it stays in the public
@@ -596,7 +597,8 @@ pub mod prelude {
     pub use crate::fts_query::FtsFieldRef;
     pub use crate::hooks::ModelHooks;
     pub use crate::jsonb::{
-        Jsonb, JsonbPathRef, JsonbSchema, MirJzSON, MirJzSONError, UnknownField, UnknownFieldExt,
+        Jsonb, JsonbPathRef, JsonbSchema, JsonbSqlCast, MirJzSON, MirJzSONError, UnknownField,
+        UnknownFieldExt,
     };
     pub use crate::model::Model;
     pub use crate::pg::decode::FromPgRow;

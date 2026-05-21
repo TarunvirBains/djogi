@@ -2970,8 +2970,66 @@ pub mod djogi_field_macro_support {
 /// External crates cannot add new `FilterValue` variants, so extending
 /// this trait for user-defined types means wrapping them in one of the
 /// shipped variants (typically `String` for JSONB-friendly types).
+///
+/// # Two distinct responsibilities
+///
+/// 1. **Bind-value conversion** — [`into_filter_value`](Self::into_filter_value)
+///    maps a Rust value to a typed [`FilterValue`] discriminant for the
+///    SQL bind site. This is the universal direction: every implementor
+///    must define it.
+///
+/// 2. **JSONB path LHS cast selection** —
+///    [`jsonb_sql_cast`](Self::jsonb_sql_cast) returns the typed
+///    [`JsonbSqlCast`](crate::jsonb::JsonbSqlCast) that
+///    [`JsonbPathRef<M, Self>`](crate::jsonb::JsonbPathRef) applies to
+///    the text-extracted LHS before comparing against the bind. The
+///    default body walks a built-in lookup table keyed by
+///    `std::any::type_name::<Self>()`; that covers every primitive Rust
+///    type djogi ships an impl for. **Wrapper implementors (custom PK
+///    newtypes from `primary_key!`, `ForeignKey<T>`, `OneToOneField<T>`,
+///    and any other inner-type-delegating shape) MUST override
+///    `jsonb_sql_cast` to delegate to the inner SQL value type's impl.**
+///    Otherwise the default lookup misses the wrapper's `type_name` and
+///    JSONB path comparisons silently fall back to text — `'10' < '9'`
+///    because text ordering is lexicographic.
 pub trait IntoFilterValue {
+    /// Convert `self` into the typed [`FilterValue`] discriminant the
+    /// SQL bind site accepts.
     fn into_filter_value(self) -> FilterValue;
+
+    /// Return the typed Postgres cast applied to the JSONB path LHS
+    /// when this type appears as the value generic of
+    /// [`JsonbPathRef<M, Self>`](crate::jsonb::JsonbPathRef).
+    ///
+    /// The default body resolves the type's `std::any::type_name`
+    /// through djogi's built-in cast table. This covers every primitive
+    /// the framework ships an `IntoFilterValue` impl for (integers,
+    /// floats, bool, temporal, UUID, Decimal, Interval, HeerId/RanjId
+    /// family, INET/CIDR/MACADDR under the `network` feature).
+    ///
+    /// **Wrapper types MUST override this method** to delegate to their
+    /// inner SQL value type's `jsonb_sql_cast` — otherwise the wrapper's
+    /// own `type_name` falls through to `None` and JSONB path
+    /// comparisons against the wrapper silently use text comparison.
+    /// Examples in this crate:
+    ///
+    /// - [`primary_key!`](crate::primary_key!)-emitted custom PK newtypes
+    ///   delegate to the inner Rust type the macro declared (e.g.
+    ///   `LocalI64Id(i64)` delegates to `i64`).
+    /// - [`ForeignKey<T>`](crate::ForeignKey) delegates to `T::Pk`.
+    /// - [`OneToOneField<T>`](crate::OneToOneField) delegates to `T::Pk`.
+    ///
+    /// Returns `None` for `String` / `&str` (text extraction already
+    /// produces text — no cast needed) and for any type not in the
+    /// table. Adopters defining a custom scalar type for a JSONB path
+    /// extend this trait by implementing `IntoFilterValue` and
+    /// overriding `jsonb_sql_cast` to return the matching variant.
+    fn jsonb_sql_cast() -> Option<crate::jsonb::JsonbSqlCast>
+    where
+        Self: Sized,
+    {
+        crate::jsonb::path::jsonb_sql_cast_for_type(std::any::type_name::<Self>())
+    }
 }
 
 /// Convert a lookup argument into the SQL bind value for a specific field type.

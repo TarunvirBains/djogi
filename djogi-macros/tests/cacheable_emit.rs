@@ -294,6 +294,59 @@ fn cacheable_emitted_for_custom_pk() {
     assert_portable_eq::<MyAppId>();
 }
 
+// ---------------------------------------------------------------------------
+// djogi#161 — `IntoFilterValue::jsonb_sql_cast` delegation for wrappers.
+//
+// `MyAppId(i64)`, `ForeignKey<CustomPkModel>`, and `OneToOneField<CustomPkModel>`
+// all wrap an inner SQL value type (`i64` via the `MyAppId` newtype). Pre-
+// djogi#161 each wrapper inherited the default `IntoFilterValue::jsonb_sql_cast`
+// body, which walks `type_name::<Self>()` through the built-in cast table.
+// The wrapper's own `type_name` is never in the table, so JSONB path
+// comparisons against any wrapper-typed payload silently fell back to
+// text comparison — `'10' < '9'` because text ordering is lexicographic.
+//
+// The fix wires `jsonb_sql_cast` overrides on `primary_key!` emit, on
+// `ForeignKey<T>`, and on `OneToOneField<T>` that delegate to the inner
+// SQL value type. These assertions pin the delegation chain end-to-end:
+// the wrapper's reported cast is identical to the inner type's cast.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn jsonb_sql_cast_delegates_through_custom_pk_newtype() {
+    // `MyAppId(i64)` must report `JsonbSqlCast::Int8` — the same cast
+    // an `i64` payload would report. The `primary_key!` macro now
+    // emits a `jsonb_sql_cast` override that delegates to `i64`.
+    assert_eq!(
+        <MyAppId as djogi::IntoFilterValue>::jsonb_sql_cast(),
+        Some(djogi::JsonbSqlCast::Int8),
+        "custom PK newtype must delegate JSONB cast to its inner SQL value type"
+    );
+}
+
+#[test]
+fn jsonb_sql_cast_delegates_through_foreign_key() {
+    // `ForeignKey<CustomPkModel>` wraps `CustomPkModel::Pk = MyAppId`,
+    // which itself delegates to `i64`. The full delegation chain is:
+    //   ForeignKey<CustomPkModel> → MyAppId → i64 → JsonbSqlCast::Int8.
+    assert_eq!(
+        <djogi::ForeignKey<CustomPkModel> as djogi::IntoFilterValue>::jsonb_sql_cast(),
+        Some(djogi::JsonbSqlCast::Int8),
+        "ForeignKey<T> must delegate JSONB cast to T::Pk's cast"
+    );
+}
+
+#[test]
+fn jsonb_sql_cast_delegates_through_one_to_one_field() {
+    // Same delegation chain as `ForeignKey<T>`, mirrored on the
+    // 1:1-relation primitive. Wire-shape parity is the load-bearing
+    // invariant `OneToOneField<T>` exists for.
+    assert_eq!(
+        <djogi::OneToOneField<CustomPkModel> as djogi::IntoFilterValue>::jsonb_sql_cast(),
+        Some(djogi::JsonbSqlCast::Int8),
+        "OneToOneField<T> must delegate JSONB cast to T::Pk's cast"
+    );
+}
+
 #[test]
 fn custom_pk_id_field_preserves_portable_membership_surface() {
     let _filtered = CustomPkModel::objects().filter(|f| f.id().in_(vec![MyAppId(0)]));

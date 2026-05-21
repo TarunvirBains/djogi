@@ -267,6 +267,20 @@ register as `PrimaryKeyKind::Custom(CustomPrimaryKeyKind { type_name,
 sql_type, default_sql })` so descriptors stay self-describing for the
 migration engine.
 
+**JSONB path cast inheritance.** Custom PK newtypes inherit their
+JSONB path LHS cast from the inner Rust type the macro declared. The
+emitted `IntoFilterValue` impl includes a `jsonb_sql_cast` override
+that delegates to `<#inner as IntoFilterValue>::jsonb_sql_cast`. A
+`MyAppId(i64)` newtype emits the same `::int8` cast a bare `i64`
+field would emit; a `ULID(uuid::Uuid)` newtype emits `::uuid`. The
+delegation goes through the typed `JsonbSqlCast` enum (`Int8`, `Uuid`,
+`Numeric`, …) — adopter-supplied `sql_type` SQL text is intentionally
+NOT used as the cast selector. `sql_type` is the column DDL; it may
+be a domain, alias, or value that does not match the Rust type's
+wire shape, and threading it through to JSONB cast selection would
+silently miscompare. The same delegation applies to `ForeignKey<T>`
+and `OneToOneField<T>`, which forward through `T::Pk`.
+
 **Migrating between primary-key shapes.** The framework's
 [`pk_flip`](./migrations.md#1010a-primary-key-flip-support-matrix)
 family auto-migrates only the four built-in asc↔desc pairs
