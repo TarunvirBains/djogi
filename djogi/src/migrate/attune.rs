@@ -2093,9 +2093,9 @@ mod tests {
         );
     }
 
-    /// Codex round-7 WARN 6: lock the unresolved-target prose for
-    /// `DryRunSquashRecordSkipped` too, so the squash-implied None
-    /// path is held to the same coverage bar as the explicit path.
+    /// Lock the unresolved-target prose for `DryRunSquashRecordSkipped`
+    /// too, so the squash-implied None path is held to the same
+    /// coverage bar as the explicit path.
     #[test]
     fn dry_run_squash_record_skipped_none_wording_is_neutral() {
         let s = AttuneDiagnostic::DryRunSquashRecordSkipped {

@@ -131,7 +131,7 @@ djogi new my-project                   # scaffold project + init migrations subm
 djogi init                             # add Djogi to existing project
 ```
 
-### CLI exit-code matrix (Codex round-1 A-1)
+### CLI Exit-Code Matrix
 
 Every `db` and `migrations` subcommand obeys a uniform three-value exit-code
 matrix so shell integrations can distinguish "operation refused" from
@@ -143,9 +143,9 @@ matrix so shell integrations can distinguish "operation refused" from
 | `1`  | Error — config load failure, network, SQL, replay, or any other underlying runtime failure. |
 | `2`  | Refusal — either a policy gate (localhost, production profile, missing `--yes`, …) blocked execution before any side effect, OR clap-style argument validation rejected the invocation (missing flag, mutually exclusive flags). |
 
-Codex round-2 A-1: exit code `2` deliberately bundles policy refusals
-and argument-validation errors. Clap's default behaviour is to return
-`2` for unknown / malformed flags; manual `2` returns in
+Exit code `2` deliberately bundles policy refusals and
+argument-validation errors. Clap's default behaviour is to return `2`
+for unknown / malformed flags; manual `2` returns in
 `migrations attune` (missing `--from`, conflicting flags) and the
 `db reset` / `db seed` gates intentionally share that code so a CI
 script can treat any `2` as "operator must intervene; nothing
@@ -165,7 +165,7 @@ the matrix in their `--help` output.
 - target may be a local or remote commit, tag, or branch
 - if `migrations/` has no remote configured, attune is limited to locally available Git targets
 - `--record` updates the parent repo's recorded submodule pointer after successful attunement
-- `--squash` is hard-gated by the conjunction of FOUR conditions: localhost URL resolution, `Djogi.toml::profile != "production"`, `Djogi.toml::[database].dev_mode = true`, and `DJOGI_ENV` env var NOT case-insensitive `"production"` (Codex umbrella U-2 — pre-fix only the first two gates were enforced; `dev_mode` was documented but never read, and `DJOGI_ENV` was unwired entirely)
+- `--squash` is hard-gated by the conjunction of FOUR conditions: localhost URL resolution, `Djogi.toml::profile != "production"`, `Djogi.toml::[database].dev_mode = true`, and `DJOGI_ENV` env var NOT case-insensitive `"production"`.
 - `--squash` should refuse when the migration history is already treated as shared staging/production history
 - `--squash --publish` requires a configured remote (the spec previously used `--push`; the CLI canonicalised on `--publish` per the OQ-04 ruling in `docs/spec/decisions.md` — `--publish` matches `cargo publish` vocabulary and avoids overloading git's `push` verb)
 ---

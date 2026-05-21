@@ -282,10 +282,10 @@ jobs:
         # `postgis/postgis` provides Postgres + PostGIS preinstalled.
         # The `:18-3.6` tag pins to Postgres 18 (Djogi's supported
         # version) with PostGIS 3.6. The image is officially maintained
-        # by the PostGIS team and is the standard choice for CI.
-        # (Codex T10 round-2 B-1: `:18-3.5` is not a published tag;
-        # the upstream image registry only ships PostGIS 3.5 against
-        # Postgres 17, and PostGIS 3.6 against Postgres 18.)
+        # by the PostGIS team and is the standard choice for CI. The
+        # `:18-3.5` tag is not published; the upstream image registry
+        # ships PostGIS 3.5 against Postgres 17 and PostGIS 3.6
+        # against Postgres 18.
         image: postgis/postgis:18-3.6
         env:
           POSTGRES_USER: djogi
@@ -328,8 +328,7 @@ jobs:
       # features and `spatial` builds with `--all-features`. Sharing a
       # `target/` would force one job's incremental artifacts to evict
       # the other's, doubling cache misses. Splitting only the build
-      # output keeps the 10 GB repo cache budget healthy. (Codex T10
-      # round-2 N-2.)
+      # output keeps the 10 GB repo cache budget healthy.
       - name: Cache cargo registry/git (shared with check job)
         uses: actions/cache@v5
         with:
