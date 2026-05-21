@@ -1269,6 +1269,8 @@ async fn load_row(ctx: &mut DjogiContext, version: &str) -> Result<LedgerRow, Re
         })
 }
 
+// RepairError is intentionally rich and unboxed; size is accepted for typed caller matching.
+#[allow(clippy::result_large_err)]
 fn ensure_row_matches_bucket_app(
     row: &LedgerRow,
     bucket: &BucketKey,
