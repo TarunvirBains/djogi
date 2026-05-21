@@ -3202,3 +3202,82 @@ async fn repair_partial_apply_rejects_wrong_bucket_app_and_releases_lock(
          after BucketAppMismatch rejection (GH #274 hardening)",
     );
 }
+
+// ── Rollback: bucket-app mismatch guard (GH #274 hardening) ─────────────────
+//
+// `rollback_plan_pinned` must verify `plan.bucket.app == row.app_label` inside
+// the advisory-lock window before any down SQL runs. A mismatch means the lock
+// is on the wrong logical bucket — rollback rejects with
+// `RollbackError::BucketAppMismatch` and releases the lock on the same pinned
+// session before returning so the correct bucket's lock remains available.
+
+#[djogi::djogi_test]
+async fn rollback_rejects_wrong_bucket_app_and_releases_lock(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    let src_app = "t5_274_mismatch_rb_src";
+
+    // Apply a migration so a ledger row exists with app_label = src_app.
+    let plan = transactional_plan_for_app(
+        src_app,
+        vec![op(
+            "AddTable t5_274_mismatch_rb",
+            "CREATE TABLE \"t5_274_mismatch_rb\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"t5_274_mismatch_rb\"",
+        )],
+    );
+    let runner_ctx = make_runner_ctx(&plan, "V20260425010112__274_mismatch_rb", None, None);
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+
+    // Build a rollback plan with a different bucket app — the advisory lock
+    // will be acquired on this wrong bucket before the mismatch is detected.
+    let wrong_plan = transactional_plan_for_app(
+        "t5_274_mismatch_rb_wrong",
+        vec![op(
+            "AddTable t5_274_mismatch_rb",
+            "CREATE TABLE \"t5_274_mismatch_rb\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"t5_274_mismatch_rb\"",
+        )],
+    );
+    let lock_key = advisory_lock_key(&wrong_plan.bucket);
+
+    // Pass wrong_plan (wrong bucket.app) but runner_ctx from the correct plan
+    // (correct version). rollback_plan loads the row by version, finds
+    // app_label = src_app, sees plan.bucket.app = wrong_app → BucketAppMismatch.
+    let err = rollback_plan(
+        &mut ctx,
+        &wrong_plan,
+        &runner_ctx,
+        &_guard,
+        LossyRollbackPolicy::Refuse,
+        None,
+    )
+    .await
+    .expect_err("rollback must reject: plan.bucket.app does not match row.app_label");
+
+    match err {
+        RollbackError::BucketAppMismatch {
+            ref version,
+            ref row_app_label,
+            ref supplied_app,
+        } => {
+            assert_eq!(version, &runner_ctx.version, "version in BucketAppMismatch");
+            assert_eq!(row_app_label, src_app, "row_app_label in BucketAppMismatch");
+            assert_eq!(
+                supplied_app, "t5_274_mismatch_rb_wrong",
+                "supplied_app in BucketAppMismatch",
+            );
+        }
+        other => panic!("expected RollbackError::BucketAppMismatch, got {other:?}"),
+    }
+
+    // Critical: the advisory lock on wrong_plan.bucket must be released by
+    // the rejection path so the correct bucket's lock remains uncontested.
+    let still_held_rb = advisory_lock_count(&mut ctx, lock_key).await;
+    assert_eq!(
+        still_held_rb, 0,
+        "advisory lock for wrong-app bucket (key=0x{lock_key:016x}) must be released \
+         after BucketAppMismatch rejection (GH #274 hardening)",
+    );
+}

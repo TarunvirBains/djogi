@@ -1425,6 +1425,20 @@ pub enum RollbackError {
     },
     /// The version was not found in the ledger at all.
     VersionNotFound { version: String },
+    /// The plan's `bucket.app` does not match the ledger row's
+    /// `app_label`. The advisory lock is acquired on `plan.bucket`
+    /// before the row is loaded; if they differ the runner would
+    /// mutate the row while holding a lock for the wrong logical
+    /// bucket. Rollback refuses and releases the lock on the same
+    /// pinned session before returning (GH #274 hardening).
+    BucketAppMismatch {
+        /// The migration version whose row was loaded.
+        version: String,
+        /// The `app_label` stored in the ledger row.
+        row_app_label: String,
+        /// The `bucket.app` from the caller-supplied plan.
+        supplied_app: String,
+    },
     /// A `down` statement raised a Postgres error mid-rollback.
     DownStatementFailed {
         segment_index: usize,
@@ -1465,6 +1479,17 @@ impl std::fmt::Display for RollbackError {
             RollbackError::VersionNotFound { version } => {
                 write!(f, "version `{version}` is not present in the ledger")
             }
+            RollbackError::BucketAppMismatch {
+                version,
+                row_app_label,
+                supplied_app,
+            } => write!(
+                f,
+                "rollback rejected: version `{version}` belongs to app \
+                 `{row_app_label}` but the supplied plan has bucket app \
+                 `{supplied_app}`; the advisory lock would be held for \
+                 the wrong logical bucket",
+            ),
             RollbackError::DownStatementFailed {
                 segment_index,
                 statement_label,
@@ -1637,6 +1662,22 @@ async fn rollback_plan_pinned(
             });
         }
     };
+    // 4a. Verify the ledger row belongs to the same logical app bucket
+    //     that owns the advisory lock. An operator-constructed or stale
+    //     MigrationPlan whose bucket.app differs from the row's
+    //     app_label would mutate the row while holding a lock for the
+    //     wrong bucket — the same hazard the repair flow guards
+    //     (GH #274 hardening).
+    if row.app_label != plan.bucket.app {
+        let e = RollbackError::BucketAppMismatch {
+            version: runner_ctx.version.clone(),
+            row_app_label: row.app_label.clone(),
+            supplied_app: plan.bucket.app.clone(),
+        };
+        let _released = release_advisory_lock(ctx, lock_key).await;
+        return Err(e);
+    }
+
     if !matches!(row.status, LedgerStatus::Applied | LedgerStatus::Faked) {
         let current_status = row.status;
         let _released = release_advisory_lock(ctx, lock_key).await;
