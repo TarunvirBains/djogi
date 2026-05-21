@@ -53,17 +53,12 @@ fn main() {
         }
     };
 
-    // Codex B-6: classify FIRST, then suppress only Outcome-3 drift.
-    //
-    // The previous code returned early on `suppress_drift_warning =
-    // true`, silencing every diagnostic — including D004 filesystem
-    // mismatches, Outcome 2 (composed-not-applied), and Outcome 4
-    // (stale pending). Those are not the diagnostics the
-    // `suppress_drift_warning` knob exists to silence; the knob's
-    // purpose is to mute the noisy "model drift detected — run
-    // `djogi migrations compose`" warning that fires every build
-    // while a developer is actively editing schema. The other three
-    // are operator-actionable signals and must always print.
+    // Classify before suppression. `suppress_drift_warning` mutes only
+    // the noisy "model drift detected — run `djogi migrations compose`"
+    // warning that fires while a developer is actively editing schema.
+    // Filesystem mismatches, composed-not-applied pending migrations,
+    // and stale pending plans are operator-actionable and must still
+    // print.
     let suppress_drift = drift_warnings_suppressed(&workspace_root);
     let diagnostics = collect_diagnostics(&workspace_root);
     for d in diagnostics {
@@ -76,8 +71,8 @@ fn main() {
 
 /// One classified diagnostic emitted by [`collect_diagnostics`].
 ///
-/// The `is_outcome3_drift` flag drives Codex B-6's selective
-/// suppression — only Outcome 3 (model drift) is silenced when
+/// The `is_outcome3_drift` flag drives selective suppression: only
+/// Outcome 3 (model drift) is silenced when
 /// `Djogi.toml::build.suppress_drift_warning = true`.
 struct BuildDiagnostic {
     text: String,
@@ -141,7 +136,7 @@ fn drift_warnings_suppressed(workspace_root: &Path) -> bool {
 ///
 /// Each returned [`BuildDiagnostic`] carries `is_outcome3_drift` so
 /// the caller can suppress only Outcome 3 when
-/// `Djogi.toml::build.suppress_drift_warning = true` (Codex B-6).
+/// `Djogi.toml::build.suppress_drift_warning = true`.
 fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic> {
     let mut out: Vec<BuildDiagnostic> = Vec::new();
     let migrations_root = workspace_root.join("migrations");
@@ -191,11 +186,11 @@ fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic> {
         }
     }
 
-    // Walk target/djogi_pending/<database>/<app>.json. Per Codex B-7
-    // we now peek `format_version` BEFORE accepting the file as a
-    // valid pending plan; a future-version pending JSON surfaces a
-    // version-mismatch warning instead of falling through to garbage
-    // outcome classification.
+    // Walk target/djogi_pending/<database>/<app>.json. Peek
+    // `format_version` before accepting a file as a valid pending
+    // plan, so future-version pending JSON surfaces a version-mismatch
+    // warning instead of falling through to garbage outcome
+    // classification.
     let mut pendings: BTreeMap<(String, String), JsonValue> = BTreeMap::new();
     if let Ok(db_entries) = std::fs::read_dir(&pending_root) {
         for db_entry in db_entries.flatten() {
@@ -233,14 +228,13 @@ fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic> {
                 let Ok(v) = parse_json(&text) else {
                     continue;
                 };
-                // Codex B-7 — pending format_version peek. The
-                // [`PendingPlan`] struct uses `#[serde(deny_unknown_fields)]`
-                // server-side, but build.rs reads pending JSON via a
-                // raw walk; without an explicit version peek a
-                // `format_version: "2"` pending file with new fields
-                // would flow into `classify_outcome` and produce a
-                // garbage diagnostic. We detect the mismatch and
-                // emit a structured warning instead.
+                // The [`PendingPlan`] struct uses
+                // `#[serde(deny_unknown_fields)]` server-side, but
+                // build.rs reads pending JSON via a raw walk. Without
+                // an explicit version peek, a `format_version: "2"`
+                // pending file with new fields would flow into
+                // `classify_outcome` and produce a garbage diagnostic.
+                // Detect the mismatch and emit a structured warning.
                 if let Some(found) = peek_format_version(&v)
                     && found != PENDING_FORMAT_VERSION
                 {
@@ -459,11 +453,11 @@ fn json_equiv_inner(a: &JsonValue, b: &JsonValue) -> bool {
 // asserts agreement.
 // MIRROR: keep in lockstep with djogi::migrate::build_match
 
-/// Codex B-8: Outcome 2 wording must include the pending migration's
-/// filename + version. We dig into the parsed pending JSON to recover
-/// `version`, then derive `<version>.sql` (the up-side filename per
-/// `naming::up_filename`). On a malformed pending JSON we fall back
-/// to placeholders so the build never panics over bad data.
+/// Outcome 2 wording includes the pending migration's filename and
+/// version. We dig into the parsed pending JSON to recover `version`,
+/// then derive `<version>.sql` (the up-side filename per
+/// `naming::up_filename`). On malformed pending JSON, fall back to
+/// placeholders so the build never panics over bad data.
 fn format_outcome2(bucket: &(String, String), pending_full: Option<&JsonValue>) -> String {
     let (filename, version) = pending_full
         .and_then(|v| {

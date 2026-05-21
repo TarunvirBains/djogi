@@ -799,7 +799,7 @@ djogi db seed --database crud_log
 djogi docs
 
 # Phase-7-deferred — library APIs ship today; CLI dispatch lands in a follow-up
-# task (see Codex round-1 A-4 / A-5 closeout in T8). The runtime entry points
+# task. The runtime entry points
 # (`apply_plan`, `rollback_plan`, `verify`, `repair_*`, `baseline_plan`) are
 # all public and exercised by the integration test suite; the gap is the
 # config / snapshot / plan / ledger plumbing the CLI dispatch needs around
@@ -827,7 +827,7 @@ Contract:
 - `--squash` must refuse when the migration history is already treated as shared staging/production history
 - publishing a squashed history requires the explicit `--publish` flag and a configured remote (the CLI verb is `--publish`, not `--push`, per the OQ-04 ruling in `docs/spec/decisions.md`)
 
-`attune` does not reconcile seed runs. Seeds live at a separate ledger (`djogi_seed_runs`) and follow a separate lifecycle: `djogi db seed --database <name>` discovers `seeds/<name>/*.sql`, applies each one once, and records the result keyed by file name + checksum. The two ledgers do not share any data flow — schema migrations are reproducible, idempotent operations on shape; seeds are operator-authored data that may not survive `db reset` and intentionally lives outside the schema-snapshot contract. Per Codex umbrella (PARTIAL): `attune` is scoped to `djogi_schema_migrations` reconciliation; an operator who wants to inspect or re-run seeds runs `djogi db seed` directly. The asymmetry is by design — conflating the two ledgers would muddle the snapshot invariants the migration runner owes T5 / T7.
+`attune` does not reconcile seed runs. Seeds live at a separate ledger (`djogi_seed_runs`) and follow a separate lifecycle: `djogi db seed --database <name>` discovers `seeds/<name>/*.sql`, applies each one once, and records the result keyed by file name + checksum. The two ledgers do not share any data flow — schema migrations are reproducible, idempotent operations on shape; seeds are operator-authored data that may not survive `db reset` and intentionally lives outside the schema-snapshot contract. `attune` is scoped to `djogi_schema_migrations` reconciliation; an operator who wants to inspect or re-run seeds runs `djogi db seed` directly. The asymmetry is by design — conflating the two ledgers would muddle the snapshot invariants the migration runner owes T5 / T7.
 
 Apply semantics:
 

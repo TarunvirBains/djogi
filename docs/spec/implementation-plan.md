@@ -800,7 +800,7 @@ The dylib coupling is gated on a research spike that validates (a) `cargo rustc 
 **Phase ordering (sequencing constraints).** Phase 9 milestones depend on upstream work landing in a specific order:
 
 - **Phase 8ε wrap (set_role + snapshot signing + djogi verify) must complete before §9a implementation begins.** Rationale: the shell uses `DjogiContext`'s post-8ε surface for transaction-scoped role propagation in REPL transactions. §9a code that reaches into a pre-8ε `DjogiContext` would need rewrite when 8ε lands
-- **`lihaaf v0.1` spec must land (self-review ALLOW + Codex review ALLOW or ALLOW_WITH_NITS) before any precompiled-Rhai-plugin (§9a-Plugins) work begins.** Rationale: the cross-harness boundary (lihaaf is Rust-only; Phase 9 owns Rhai test fixtures) needs both specs in agreement before either harness commits to ownership
+- **`lihaaf v0.1` spec must land with self-review and independent review before any precompiled-Rhai-plugin (§9a-Plugins) work begins.** Rationale: the cross-harness boundary (lihaaf is Rust-only; Phase 9 owns Rhai test fixtures) needs both specs in agreement before either harness commits to ownership
 - **Inventory-on-dylib spike must complete before §9a implementation begins.** Already gated above; recorded here for completeness
 - **`rhai-dylib` audit (per shell.md §13.12) must complete before §9a-Plugins implementation begins.** Audit `PASS` enables §9a-Plugins; `FAIL` defers §9a-Plugins indefinitely (source-form Rhai modules ship regardless via the standard `.import` path)
 - **§9b (Static Query Analyzer) and §9c (djqry SQL override registry) have no dependency on the dylib coupling.** They can land in parallel with §9a once Phase 8ε wraps

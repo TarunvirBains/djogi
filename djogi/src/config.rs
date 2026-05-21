@@ -238,7 +238,7 @@ impl DjogiConfig {
     /// cwd-relative `Djogi.toml`.
     ///
     /// This is the path-aware loader used by CLI subcommands that
-    /// accept `--workspace <path>` (per Codex A-1). The default
+    /// accept `--workspace <path>`. The default
     /// [`load`](Self::load) reads `Djogi.toml` from the current
     /// working directory; callers that want to operate against a
     /// different workspace pass the resolved path here. Environment-
