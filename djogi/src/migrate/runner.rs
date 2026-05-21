@@ -345,6 +345,34 @@ pub enum RunnerError {
         /// The underlying Postgres error.
         source: DjogiError,
     },
+
+    /// **#274** — Failed to check out a single pinned Postgres connection
+    /// from the pool before the migration operation began. The runner
+    /// requires one physical session for the entire advisory-lock window
+    /// (lock acquisition, DDL, ledger writes, and lock release must all
+    /// occur on the same backend). Pool checkout failure means the
+    /// operation cannot start; no ledger row is inserted and no DDL runs.
+    PinnedSessionCheckoutFailed {
+        /// The underlying pool or connection error.
+        source: DjogiError,
+    },
+
+    /// **#274 / #280** — `pg_advisory_unlock` returned `false`, meaning
+    /// the advisory lock was NOT held on the physical session that called
+    /// it. This is a session-pinning correctness failure: the lock was
+    /// either never acquired on this session or was acquired on a
+    /// different one (the pre-#274 pool-backed bug).
+    ///
+    /// This variant fires ONLY when the migration operation itself
+    /// succeeded. If both the operation and the release fail, the
+    /// original operation error is returned and the unlock failure is
+    /// logged via `tracing::error!`.
+    AdvisoryUnlockReturnedFalse {
+        /// The advisory lock key that `pg_advisory_unlock` returned false for.
+        key: i64,
+        /// The bucket whose advisory lock could not be confirmed as released.
+        bucket: BucketKey,
+    },
 }
 
 impl std::fmt::Display for RunnerError {
@@ -556,6 +584,21 @@ impl std::fmt::Display for RunnerError {
                 query_label,
                 source,
             } => write!(f, "Postgres catalog query '{query_label}' failed: {source}",),
+            RunnerError::PinnedSessionCheckoutFailed { source } => write!(
+                f,
+                "failed to check out a pinned Postgres session from the pool before \
+                 the migration operation began (GH #274): {source}",
+            ),
+            RunnerError::AdvisoryUnlockReturnedFalse { key, bucket } => write!(
+                f,
+                "D274 pg_advisory_unlock returned false for bucket database={db} app={app} \
+                 (key=0x{key:016x}); the advisory lock was not held on the session that \
+                 called pg_advisory_unlock — this is a session-pinning correctness failure \
+                 (GH #274/#280). The migration SQL and ledger writes may have succeeded; \
+                 inspect the ledger row to determine the actual applied state.",
+                db = bucket.database,
+                app = bucket.app,
+            ),
         }
     }
 }
@@ -577,6 +620,7 @@ impl std::error::Error for RunnerError {
             RunnerError::LedgerQueryFailed { source, .. } => Some(source),
             RunnerError::RunIdGenerationFailed { source } => Some(source),
             RunnerError::LedgerBootstrapFailed { source } => Some(source),
+            RunnerError::PinnedSessionCheckoutFailed { source } => Some(source),
             _ => None,
         }
     }
@@ -720,6 +764,40 @@ pub async fn apply_plan(
     runner_ctx: &RunnerCtx,
     _guard: &WorkspaceGuard,
 ) -> Result<RunReport, RunnerError> {
+    // GH #274 — pin one physical Postgres session for the entire
+    // operation window so the advisory lock, DDL, ledger writes,
+    // and lock release all run on the same backend.
+    //
+    // Pool-backed contexts: check out one connection and wrap it in
+    // a DjogiContext::from_connection so every subsequent query in
+    // this call goes to that single backend.
+    //
+    // Transaction-backed contexts: already pinned to one connection;
+    // pass through unchanged.
+    let pool_opt = ctx.pool().cloned();
+    if let Some(pool) = pool_opt {
+        let conn = pool
+            .get()
+            .await
+            .map_err(|e| RunnerError::PinnedSessionCheckoutFailed { source: e })?;
+        let mut pinned = DjogiContext::from_connection(conn);
+        apply_plan_pinned(&mut pinned, plan, runner_ctx).await
+    } else {
+        apply_plan_pinned(ctx, plan, runner_ctx).await
+    }
+}
+
+/// Internal apply path that runs on an already-pinned context.
+///
+/// Both pool-backed (after checkout) and transaction-backed callers
+/// route here. All queries in this function — bootstrap, advisory
+/// lock, DDL, ledger writes, and unlock — run on the same physical
+/// Postgres session.
+async fn apply_plan_pinned(
+    ctx: &mut DjogiContext,
+    plan: &MigrationPlan,
+    runner_ctx: &RunnerCtx,
+) -> Result<RunReport, RunnerError> {
     // 1. Bootstrap the ledger table.
     ledger::bootstrap(ctx)
         .await
@@ -732,15 +810,16 @@ pub async fn apply_plan(
     // Whatever happens below, we must release the advisory lock.
     let result = apply_plan_inner(ctx, plan, runner_ctx).await;
 
-    // 9. Always release advisory lock — best effort, log on failure.
-    release_advisory_lock(ctx, lock_key).await;
+    // 9. Always release advisory lock. Check the bool: false means the
+    // lock was not held on this session (GH #274/#280).
+    let released = release_advisory_lock(ctx, lock_key).await;
 
-    result
+    handle_release_result(result, released, &plan.bucket, lock_key)
 }
 
-/// Internal apply path — keeps the lock-release on the outer
-/// function via a deferred call. Returning early from any error
-/// path is fine; the caller's `release_advisory_lock` runs after.
+/// Core apply logic. Called from `apply_plan_pinned` after the advisory
+/// lock is held. Returning early from any error path is fine; the outer
+/// function's `release_advisory_lock` runs after.
 async fn apply_plan_inner(
     ctx: &mut DjogiContext,
     plan: &MigrationPlan,
@@ -1467,15 +1546,33 @@ pub async fn rollback_plan(
 ) -> Result<RollbackReport, RollbackError> {
     // B-3: hoist the PriorSnapshotMissing check to the very top —
     // before any ledger bootstrap, before any DDL, before any ledger
-    // mutation. The previous arrangement only caught the
-    // missing-snapshot condition AFTER down SQL had run and the
-    // ledger row had been flipped to `rolled_back`, leaving the
-    // database in a half-rolled-back state on what should be a
-    // pure-validation error.
+    // mutation.
     if prior_snapshot.is_none() && runner_ctx.snapshot_path.is_some() {
         return Err(RollbackError::PriorSnapshotMissing);
     }
 
+    // GH #274 — pin one physical Postgres session for the entire
+    // rollback window (same contract as apply_plan).
+    let pool_opt = ctx.pool().cloned();
+    if let Some(pool) = pool_opt {
+        let conn = pool.get().await.map_err(|e| {
+            RollbackError::Runner(RunnerError::PinnedSessionCheckoutFailed { source: e })
+        })?;
+        let mut pinned = DjogiContext::from_connection(conn);
+        rollback_plan_pinned(&mut pinned, plan, runner_ctx, lossy_policy, prior_snapshot).await
+    } else {
+        rollback_plan_pinned(ctx, plan, runner_ctx, lossy_policy, prior_snapshot).await
+    }
+}
+
+/// Internal rollback path that runs on an already-pinned context.
+async fn rollback_plan_pinned(
+    ctx: &mut DjogiContext,
+    plan: &MigrationPlan,
+    runner_ctx: &RunnerCtx,
+    lossy_policy: LossyRollbackPolicy,
+    prior_snapshot: Option<&super::schema::AppliedSchema>,
+) -> Result<RollbackReport, RollbackError> {
     // 1. Bootstrap the ledger so the SELECT below cannot fail with
     //    relation-not-found.
     ledger::bootstrap(ctx)
@@ -1531,12 +1628,22 @@ pub async fn rollback_plan(
 
     let result = rollback_inner(ctx, plan, runner_ctx, prior_snapshot, allow_reason).await;
 
-    release_advisory_lock(ctx, lock_key).await;
+    let released = release_advisory_lock(ctx, lock_key).await;
 
-    result
+    // Mirror handle_release_result for the RollbackError type.
+    match (result, released) {
+        (Ok(r), true) => Ok(r),
+        (Ok(_), false) => Err(RollbackError::Runner(
+            RunnerError::AdvisoryUnlockReturnedFalse {
+                key: lock_key,
+                bucket: plan.bucket.clone(),
+            },
+        )),
+        (Err(e), _) => Err(e),
+    }
 }
 
-/// Internal rollback path — split out so the advisory-lock release
+/// Internal rollback core logic — split out so the advisory-lock release
 /// runs on every exit branch.
 ///
 /// **Atomicity contract (B-1).** The transactional segments share ONE
@@ -1744,6 +1851,27 @@ pub async fn fake_apply_plan(
     _guard: &WorkspaceGuard,
     reason: &str,
 ) -> Result<RunReport, RunnerError> {
+    // GH #274 — pin one physical Postgres session (same contract as apply_plan).
+    let pool_opt = ctx.pool().cloned();
+    if let Some(pool) = pool_opt {
+        let conn = pool
+            .get()
+            .await
+            .map_err(|e| RunnerError::PinnedSessionCheckoutFailed { source: e })?;
+        let mut pinned = DjogiContext::from_connection(conn);
+        fake_apply_pinned(&mut pinned, plan, runner_ctx, reason).await
+    } else {
+        fake_apply_pinned(ctx, plan, runner_ctx, reason).await
+    }
+}
+
+/// Internal fake-apply path that runs on an already-pinned context.
+async fn fake_apply_pinned(
+    ctx: &mut DjogiContext,
+    plan: &MigrationPlan,
+    runner_ctx: &RunnerCtx,
+    reason: &str,
+) -> Result<RunReport, RunnerError> {
     // Same advisory-lock dance as apply_plan; fake-apply still needs
     // exclusive access to the ledger row insertion.
     ledger::bootstrap(ctx)
@@ -1754,8 +1882,8 @@ pub async fn fake_apply_plan(
     acquire_advisory_lock(ctx, &plan.bucket, lock_key).await?;
 
     let result = fake_apply_inner(ctx, plan, runner_ctx, reason).await;
-    release_advisory_lock(ctx, lock_key).await;
-    result
+    let released = release_advisory_lock(ctx, lock_key).await;
+    handle_release_result(result, released, &plan.bucket, lock_key)
 }
 
 async fn fake_apply_inner(
@@ -1879,15 +2007,32 @@ pub async fn baseline_plan(
     _guard: &WorkspaceGuard,
     reason: &str,
 ) -> Result<RunReport, RunnerError> {
-    // B-11: refuse caller-supplied snapshots — baseline projects the
-    // live DB itself. The pre-existing channel was a footgun: a
-    // caller could pass a known-stale snapshot and the runner would
-    // happily write it as the baseline. The structurally-typed
-    // refusal forces the caller to set both fields to None.
+    // B-11: refuse caller-supplied snapshots.
     if runner_ctx.snapshot.is_some() {
         return Err(RunnerError::BaselineSnapshotShouldNotBeProvided);
     }
 
+    // GH #274 — pin one physical Postgres session (same contract as apply_plan).
+    let pool_opt = ctx.pool().cloned();
+    if let Some(pool) = pool_opt {
+        let conn = pool
+            .get()
+            .await
+            .map_err(|e| RunnerError::PinnedSessionCheckoutFailed { source: e })?;
+        let mut pinned = DjogiContext::from_connection(conn);
+        baseline_pinned(&mut pinned, bucket, runner_ctx, reason).await
+    } else {
+        baseline_pinned(ctx, bucket, runner_ctx, reason).await
+    }
+}
+
+/// Internal baseline path that runs on an already-pinned context.
+async fn baseline_pinned(
+    ctx: &mut DjogiContext,
+    bucket: &BucketKey,
+    runner_ctx: &RunnerCtx,
+    reason: &str,
+) -> Result<RunReport, RunnerError> {
     ledger::bootstrap(ctx)
         .await
         .map_err(|e| RunnerError::LedgerBootstrapFailed { source: e })?;
@@ -1896,8 +2041,8 @@ pub async fn baseline_plan(
     acquire_advisory_lock(ctx, bucket, lock_key).await?;
 
     let result = baseline_inner(ctx, bucket, runner_ctx, reason).await;
-    release_advisory_lock(ctx, lock_key).await;
-    result
+    let released = release_advisory_lock(ctx, lock_key).await;
+    handle_release_result(result, released, bucket, lock_key)
 }
 
 async fn baseline_inner(
@@ -2205,11 +2350,23 @@ pub fn advisory_lock_key(bucket: &BucketKey) -> i64 {
     i64::from_be_bytes(buf)
 }
 
-/// Acquire a Postgres advisory lock on `key`. Postgres
-/// `pg_advisory_lock(bigint)` blocks indefinitely; we use
-/// `pg_try_advisory_lock(bigint)` in a bounded retry loop so a
-/// stuck holder cannot wedge the runner.
-async fn acquire_advisory_lock(
+/// Acquire a Postgres advisory lock on `key`.
+///
+/// Postgres `pg_advisory_lock(bigint)` blocks indefinitely; this
+/// function uses `pg_try_advisory_lock(bigint)` in a bounded retry
+/// loop so a stuck holder cannot wedge the runner.
+///
+/// **Session contract (GH #274).** This function MUST be called on
+/// a pinned `DjogiContext` — i.e., one backed by a single checked-out
+/// `PgConnection`. Postgres session-level advisory locks are bound to
+/// the physical backend that issued the SQL; calling this on a
+/// pool-backed context would acquire the lock on connection A, but
+/// subsequent DDL/ledger operations would run on B, C, … and the
+/// `release_advisory_lock` call would return false when invoked on any
+/// connection other than A. The entry points (`apply_plan`,
+/// `rollback_plan`, `fake_apply_plan`, `baseline_plan`) enforce this
+/// by pinning a connection from the pool before calling here.
+pub(crate) async fn acquire_advisory_lock(
     ctx: &mut DjogiContext,
     bucket: &BucketKey,
     key: i64,
@@ -2252,16 +2409,102 @@ async fn acquire_advisory_lock(
     })
 }
 
-/// Release a previously-acquired advisory lock. Best-effort —
-/// logs on failure but does not surface the error because the
-/// runner is on its way out.
-async fn release_advisory_lock(ctx: &mut DjogiContext, key: i64) {
-    if let Err(e) = ctx.execute("SELECT pg_advisory_unlock($1)", &[&key]).await {
-        tracing::warn!(
-            ?e,
+/// Release a previously-acquired advisory lock.
+///
+/// Returns `true` when `pg_advisory_unlock` confirms the lock was
+/// held and released. Returns `false` when `pg_advisory_unlock`
+/// returns `false` — meaning the lock was NOT held on this physical
+/// session. A `false` return is a session-pinning correctness failure
+/// (GH #274 / #280): the lock was either acquired on a different
+/// connection or never acquired at all.
+///
+/// When the unlock query itself fails (e.g. the connection closed),
+/// this function logs a `tracing::warn!` and returns `true` — the
+/// session death will release the lock anyway and the warn is the
+/// observable signal.
+///
+/// **Callers must always invoke this function even when the migration
+/// operation errored.** Use [`handle_release_result`] to reconcile
+/// the operation result with the bool returned here: if the operation
+/// succeeded but this returns `false`, surface
+/// [`RunnerError::AdvisoryUnlockReturnedFalse`]; if both errored,
+/// log this result and return the original error.
+pub(crate) async fn release_advisory_lock(ctx: &mut DjogiContext, key: i64) -> bool {
+    let row = match ctx
+        .query_one("SELECT pg_advisory_unlock($1)", &[&key])
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            // Query failure likely means the connection died; Postgres will
+            // auto-release the lock when the backend exits.
+            tracing::warn!(
+                ?e,
+                key,
+                "pg_advisory_unlock query failed; lock will auto-release on session close",
+            );
+            return true;
+        }
+    };
+    let released: bool = match row.try_get(0) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                ?e,
+                key,
+                "pg_advisory_unlock result could not be decoded; assuming released",
+            );
+            return true;
+        }
+    };
+    if !released {
+        // This is a session-pinning correctness failure: pg_advisory_unlock
+        // returned false, meaning the lock was NOT held on this session.
+        // Log at error level so it is never silently swallowed. Callers are
+        // responsible for converting this to a typed RunnerError or RepairError.
+        tracing::error!(
             key,
-            "pg_advisory_unlock failed; lock will be released on session close"
+            "pg_advisory_unlock returned false — lock was not held on this Postgres \
+             session. This indicates a session-pinning bug: the advisory lock was \
+             acquired on a different physical backend than the one executing the \
+             migration operations (GH #274/#280).",
         );
+    }
+    released
+}
+
+/// Reconcile an operation result with the advisory lock release outcome.
+///
+/// # Behaviour matrix
+///
+/// | Operation | Release | Result |
+/// |-----------|---------|--------|
+/// | `Ok`  | `true`  | `Ok` (success, lock properly released) |
+/// | `Ok`  | `false` | `Err(AdvisoryUnlockReturnedFalse)` — correctness failure |
+/// | `Err` | `true`  | `Err` — original operation error |
+/// | `Err` | `false` | `Err` — original error; release failure already logged |
+///
+/// The `false` case on the success path is the hard correctness failure
+/// added by GH #274 / #280: it means the migration SQL may have run but
+/// the advisory lock was not protecting it on the correct session.
+// RunnerError is a large enum by design (it carries full operator context in
+// every variant). Async callers return it through boxed futures so clippy
+// does not flag them; this sync helper also returns it and needs the
+// suppression. Same rationale as reset.rs / compose.rs.
+#[allow(clippy::result_large_err)]
+pub(crate) fn handle_release_result<T>(
+    result: Result<T, RunnerError>,
+    released: bool,
+    bucket: &BucketKey,
+    key: i64,
+) -> Result<T, RunnerError> {
+    match result {
+        Ok(v) if released => Ok(v),
+        Ok(_) => Err(RunnerError::AdvisoryUnlockReturnedFalse {
+            key,
+            bucket: bucket.clone(),
+        }),
+        Err(e) => Err(e), // release false already logged inside release_advisory_lock
     }
 }
 

@@ -74,6 +74,7 @@ use super::ledger::{
     load_full_row_by_version, validate_checksum_format,
 };
 use super::projection::BucketKey;
+use super::runner::{acquire_advisory_lock, advisory_lock_key, release_advisory_lock};
 use super::segment::{MigrationPlan, SegmentKind};
 use super::snapshot::{SnapshotError, save_snapshot};
 
@@ -255,6 +256,51 @@ pub enum RepairError {
     /// table list so the operator can investigate without re-running
     /// the projection by hand.
     SuppliedSnapshotDiverges { differences: Vec<String> },
+
+    /// **#274** — Failed to acquire the per-bucket Postgres advisory
+    /// lock before the repair mutation. The lock is held by another
+    /// concurrent runner or repair invocation; the repair was not
+    /// attempted. Retry after the competing operation completes.
+    AdvisoryLockFailed {
+        /// The bucket whose lock could not be acquired.
+        bucket: BucketKey,
+        /// The advisory lock key that was contested.
+        key: i64,
+        /// Number of acquisition attempts made.
+        attempts: u32,
+    },
+
+    /// **#274** — The `pg_try_advisory_lock` query itself errored before
+    /// the lock result could be retrieved. Distinct from
+    /// [`RepairError::AdvisoryLockFailed`] (which fires after the probe
+    /// succeeded but returned `false` for every retry).
+    AdvisoryLockQueryFailed {
+        /// The `app_label` of the bucket whose lock was being acquired.
+        app_label: String,
+        /// The underlying Postgres error.
+        source: DjogiError,
+    },
+
+    /// **#274 / #280** — `pg_advisory_unlock` returned `false` after
+    /// the repair mutation completed successfully. The lock was not held
+    /// on the physical session that called the unlock, indicating a
+    /// session-pinning correctness failure.
+    ///
+    /// This variant fires ONLY when the repair mutation itself succeeded.
+    /// If both the mutation and the release fail, the original mutation
+    /// error is returned and the unlock failure is logged via
+    /// `tracing::error!`.
+    AdvisoryUnlockReturnedFalse {
+        /// The advisory lock key that `pg_advisory_unlock` returned false for.
+        key: i64,
+    },
+
+    /// **#274** — Failed to check out a single pinned Postgres connection
+    /// from the pool before the repair operation began.
+    PinnedSessionCheckoutFailed {
+        /// The underlying pool or connection error.
+        source: DjogiError,
+    },
 }
 
 impl std::fmt::Display for RepairError {
@@ -335,6 +381,34 @@ impl std::fmt::Display for RepairError {
                 "repair_snapshot_rebuild: supplied / rebuilt snapshot diverges from \
                  the live catalog projection: {differences:?}",
             ),
+            RepairError::AdvisoryLockFailed {
+                bucket,
+                key,
+                attempts,
+            } => write!(
+                f,
+                "D274 repair advisory lock for bucket database={db} app={app} \
+                 (key=0x{key:016x}) could not be acquired after {attempts} attempts; \
+                 a concurrent runner or repair invocation holds the lock (GH #274)",
+                db = bucket.database,
+                app = bucket.app,
+            ),
+            RepairError::AdvisoryLockQueryFailed { app_label, source } => write!(
+                f,
+                "D274 repair pg_try_advisory_lock query failed for app `{app_label}`: \
+                 {source} (GH #274)",
+            ),
+            RepairError::AdvisoryUnlockReturnedFalse { key } => write!(
+                f,
+                "D274 repair pg_advisory_unlock returned false for key=0x{key:016x}; \
+                 the advisory lock was not held on this session — session-pinning \
+                 correctness failure (GH #274/#280)",
+            ),
+            RepairError::PinnedSessionCheckoutFailed { source } => write!(
+                f,
+                "D274 repair failed to check out a pinned Postgres session from the \
+                 pool before the repair operation began (GH #274): {source}",
+            ),
         }
     }
 }
@@ -345,9 +419,94 @@ impl std::error::Error for RepairError {
             RepairError::LedgerIo { source } => Some(source),
             RepairError::SnapshotIo { source, .. } => Some(source),
             RepairError::ResumeStepFailed { source, .. } => Some(source),
+            RepairError::AdvisoryLockQueryFailed { source, .. } => Some(source),
+            RepairError::PinnedSessionCheckoutFailed { source } => Some(source),
             _ => None,
         }
     }
+}
+
+// ── Advisory-lock helpers for repair ─────────────────────────────────────
+
+/// Acquire the per-bucket advisory lock on the pinned context.
+///
+/// Wraps [`runner::acquire_advisory_lock`] and maps the `RunnerError`
+/// variants into their `RepairError` counterparts so callers can use
+/// the repair error type uniformly.
+async fn acquire_advisory_lock_repair(
+    ctx: &mut DjogiContext,
+    bucket: &BucketKey,
+    key: i64,
+) -> Result<(), RepairError> {
+    acquire_advisory_lock(ctx, bucket, key)
+        .await
+        .map_err(|e| match e {
+            super::runner::RunnerError::AdvisoryLockFailed {
+                bucket,
+                key,
+                attempts,
+            } => RepairError::AdvisoryLockFailed {
+                bucket,
+                key,
+                attempts,
+            },
+            super::runner::RunnerError::AdvisoryLockQueryFailed { app_label, source } => {
+                RepairError::AdvisoryLockQueryFailed { app_label, source }
+            }
+            other => {
+                // Unreachable: acquire_advisory_lock only returns the two variants above.
+                // Wrap defensively rather than panic so future runner changes do not
+                // silently produce a misclassified error.
+                RepairError::AdvisoryLockQueryFailed {
+                    app_label: bucket.app.clone(),
+                    source: DjogiError::Db(crate::error::DbError::other(format!(
+                        "unexpected acquire error: {other}"
+                    ))),
+                }
+            }
+        })
+}
+
+/// Reconcile a repair mutation result with the advisory lock release bool.
+///
+/// - Success + true  → Ok (lock properly released)
+/// - Success + false → `RepairError::AdvisoryUnlockReturnedFalse`
+/// - Failure + _     → the original error (false is already logged)
+// RepairError is a large enum by design. Async callers return it through
+// boxed futures so clippy does not flag them; this sync helper also returns
+// it and needs the suppression. Same rationale as reset.rs / compose.rs.
+#[allow(clippy::result_large_err)]
+fn handle_repair_release<T>(
+    result: Result<T, RepairError>,
+    released: bool,
+    key: i64,
+) -> Result<T, RepairError> {
+    match result {
+        Ok(v) if released => Ok(v),
+        Ok(_) => Err(RepairError::AdvisoryUnlockReturnedFalse { key }),
+        Err(e) => Err(e),
+    }
+}
+
+/// Query `current_database()` and combine with the ledger row's
+/// `app_label` to construct the [`BucketKey`] used for the advisory
+/// lock.
+///
+/// Called by repair functions that receive a `version` string but not
+/// a `BucketKey`. The lock key must match what the runner uses for the
+/// same `(database, app)` pair.
+async fn derive_bucket(ctx: &mut DjogiContext, app_label: &str) -> Result<BucketKey, RepairError> {
+    let row = ctx
+        .query_one("SELECT current_database()", &[])
+        .await
+        .map_err(|e| RepairError::LedgerIo { source: e })?;
+    let database: String = row.try_get(0).map_err(|e| RepairError::LedgerIo {
+        source: DjogiError::from(e),
+    })?;
+    Ok(BucketKey {
+        database,
+        app: app_label.to_string(),
+    })
 }
 
 // ── Public entry points ───────────────────────────────────────────────────
@@ -406,19 +565,76 @@ pub async fn repair_checksum_drift(
         });
     }
 
+    // Load row to discover app_label for the advisory-lock bucket.
+    // This initial read can run on any pool connection; the mutation
+    // runs on the pinned session below.
     let row = load_row(ctx, version).await?;
+
+    // GH #274: derive the bucket and pin one physical session for the
+    // lock + mutation window.
+    let bucket = derive_bucket(ctx, &row.app_label).await?;
+    let lock_key = advisory_lock_key(&bucket);
+
+    let pool_opt = ctx.pool().cloned();
+    if let Some(pool) = pool_opt {
+        let conn = pool
+            .get()
+            .await
+            .map_err(|e| RepairError::PinnedSessionCheckoutFailed { source: e })?;
+        let mut pinned = DjogiContext::from_connection(conn);
+        repair_checksum_drift_pinned(
+            &mut pinned,
+            version,
+            &row,
+            new_checksum_up,
+            new_checksum_down,
+            &bucket,
+            lock_key,
+        )
+        .await
+    } else {
+        repair_checksum_drift_pinned(
+            ctx,
+            version,
+            &row,
+            new_checksum_up,
+            new_checksum_down,
+            &bucket,
+            lock_key,
+        )
+        .await
+    }
+}
+
+/// Core checksum-drift repair on an already-pinned context.
+async fn repair_checksum_drift_pinned(
+    ctx: &mut DjogiContext,
+    version: &str,
+    row: &LedgerRow,
+    new_checksum_up: &str,
+    new_checksum_down: Option<&str>,
+    bucket: &BucketKey,
+    lock_key: i64,
+) -> Result<RepairReport, RepairError> {
+    acquire_advisory_lock_repair(ctx, bucket, lock_key).await?;
+
     let before_up = row.checksum_up.clone();
     let before_down = row.checksum_down.clone();
     let new_down_owned = new_checksum_down.map(|s| s.to_string());
 
-    ctx.execute(
-        "UPDATE djogi_schema_migrations \
-         SET checksum_up = $2, checksum_down = $3 \
-         WHERE version = $1",
-        &[&version, &new_checksum_up, &new_down_owned],
-    )
-    .await
-    .map_err(|e| RepairError::LedgerIo { source: e })?;
+    let mutation_result = ctx
+        .execute(
+            "UPDATE djogi_schema_migrations \
+             SET checksum_up = $2, checksum_down = $3 \
+             WHERE version = $1",
+            &[&version, &new_checksum_up, &new_down_owned],
+        )
+        .await
+        .map_err(|e| RepairError::LedgerIo { source: e })
+        .map(|_| ());
+
+    let released = release_advisory_lock(ctx, lock_key).await;
+    handle_repair_release(mutation_result, released, lock_key)?;
 
     let mut actions = vec![format!(
         "checksum_up of `{version}` updated from {before_up} to {new_checksum_up}"
@@ -498,6 +714,7 @@ pub async fn repair_partial_apply(
         return Err(RepairError::InsufficientConfirmation);
     }
 
+    // Load row to get app_label for the advisory-lock bucket.
     let row = load_row(ctx, version).await?;
     if !matches!(row.status, LedgerStatus::Failed | LedgerStatus::Pending) {
         return Err(RepairError::InvalidResolution {
@@ -506,6 +723,45 @@ pub async fn repair_partial_apply(
             attempted: resolution,
         });
     }
+
+    // GH #274: derive bucket and pin one physical session.
+    let bucket = derive_bucket(ctx, &row.app_label).await?;
+    let lock_key = advisory_lock_key(&bucket);
+
+    let pool_opt = ctx.pool().cloned();
+    if let Some(pool) = pool_opt {
+        let conn = pool
+            .get()
+            .await
+            .map_err(|e| RepairError::PinnedSessionCheckoutFailed { source: e })?;
+        let mut pinned = DjogiContext::from_connection(conn);
+        repair_partial_apply_pinned(
+            &mut pinned,
+            version,
+            &row,
+            resolution,
+            note,
+            &bucket,
+            lock_key,
+        )
+        .await
+    } else {
+        repair_partial_apply_pinned(ctx, version, &row, resolution, note, &bucket, lock_key).await
+    }
+}
+
+/// Core partial-apply repair on an already-pinned context.
+#[allow(clippy::too_many_arguments)]
+async fn repair_partial_apply_pinned(
+    ctx: &mut DjogiContext,
+    version: &str,
+    row: &LedgerRow,
+    resolution: PartialApplyResolution,
+    note: &str,
+    bucket: &BucketKey,
+    lock_key: i64,
+) -> Result<RepairReport, RepairError> {
+    acquire_advisory_lock_repair(ctx, bucket, lock_key).await?;
 
     let target_status = match resolution {
         PartialApplyResolution::MarkRolledBack => LedgerStatus::RolledBack,
@@ -521,14 +777,19 @@ pub async fn repair_partial_apply(
     };
 
     let status_str = target_status.as_db_str();
-    ctx.execute(
-        "UPDATE djogi_schema_migrations \
-         SET status = $2, applied_steps_count = $3, partial_apply_note = $4 \
-         WHERE version = $1",
-        &[&version, &status_str, &target_steps, &note],
-    )
-    .await
-    .map_err(|e| RepairError::LedgerIo { source: e })?;
+    let mutation_result = ctx
+        .execute(
+            "UPDATE djogi_schema_migrations \
+             SET status = $2, applied_steps_count = $3, partial_apply_note = $4 \
+             WHERE version = $1",
+            &[&version, &status_str, &target_steps, &note],
+        )
+        .await
+        .map_err(|e| RepairError::LedgerIo { source: e })
+        .map(|_| ());
+
+    let released = release_advisory_lock(ctx, lock_key).await;
+    handle_repair_release(mutation_result, released, lock_key)?;
 
     Ok(RepairReport {
         actions_taken: vec![format!(
@@ -609,9 +870,7 @@ pub async fn repair_resume_partial_apply(
 
     let row = load_row(ctx, version).await?;
 
-    // Plan version must match the ledger row's version. The caller's
-    // `version` argument names the row to repair; the plan must
-    // produce the same SQL the original apply consumed.
+    // Plan version must match the ledger row's version.
     let plan_checksum = compute_plan_checksum_up(plan);
     if plan_checksum != row.checksum_up {
         return Err(RepairError::PlanChecksumMismatch {
@@ -648,16 +907,50 @@ pub async fn repair_resume_partial_apply(
         });
     }
 
+    // GH #274: use plan.bucket (already available) and pin one session.
+    let lock_key = advisory_lock_key(&plan.bucket);
+
+    let pool_opt = ctx.pool().cloned();
+    if let Some(pool) = pool_opt {
+        let conn = pool
+            .get()
+            .await
+            .map_err(|e| RepairError::PinnedSessionCheckoutFailed { source: e })?;
+        let mut pinned = DjogiContext::from_connection(conn);
+        repair_resume_pinned(
+            &mut pinned,
+            version,
+            plan,
+            &row,
+            total,
+            &plan.bucket,
+            lock_key,
+        )
+        .await
+    } else {
+        repair_resume_pinned(ctx, version, plan, &row, total, &plan.bucket, lock_key).await
+    }
+}
+
+/// Core resume-partial-apply logic on an already-pinned context.
+async fn repair_resume_pinned(
+    ctx: &mut DjogiContext,
+    _version: &str,
+    plan: &MigrationPlan,
+    row: &LedgerRow,
+    total: i32,
+    bucket: &BucketKey,
+    lock_key: i64,
+) -> Result<RepairReport, RepairError> {
+    acquire_advisory_lock_repair(ctx, bucket, lock_key).await?;
+
     // The runner CRUD helpers (`update_progress` / `mark_partial`)
     // take the row's BIGINT id, but `LedgerRow` does not carry the
     // id. Look it up once before the loop.
-    let ledger_id = lookup_ledger_id_by_version(ctx, version).await?;
+    let ledger_id = lookup_ledger_id_by_version(ctx, &row.version).await?;
 
     // Walk the non-transactional segments in plan order, skipping
-    // the first `applied_steps_count` statements globally. The
-    // counting is across all non-tx segments — the runner records
-    // a single cross-segment tally, so the resume math has to mirror
-    // that.
+    // the first `applied_steps_count` statements globally.
     let mut remaining_to_skip = row.applied_steps_count as usize;
     let mut applied = row.applied_steps_count;
     let mut ledger_changes: Vec<LedgerChange> = Vec::new();
@@ -675,18 +968,17 @@ pub async fn repair_resume_partial_apply(
             // Run the statement.
             if let Err(e) = ctx.raw_ddl(&stmt.up).await {
                 // Best-effort: record the new partial state before
-                // returning the typed error. The caller's path is
-                // either to fix the underlying issue and re-resume,
-                // or to fall back to MarkRolledBack / MarkFaked via
-                // repair_partial_apply.
+                // returning the typed error.
                 let note = format!(
                     "resume failed at segment {seg_idx} step {step_within}: \
                      {label} — {e}",
                     label = stmt.label,
                 );
                 let _ = ledger::mark_partial(ctx, ledger_id, applied, &note).await;
+                // Release the advisory lock before returning the error.
+                let _released = release_advisory_lock(ctx, lock_key).await;
                 return Err(RepairError::ResumeStepFailed {
-                    version: version.to_string(),
+                    version: row.version.clone(),
                     step_index: applied as usize,
                     statement_label: stmt.label.clone(),
                     applied_steps_count: applied,
@@ -694,11 +986,10 @@ pub async fn repair_resume_partial_apply(
                 });
             }
             applied = applied.saturating_add(1);
-            // Update progress so a second crash sees the right
-            // resume point.
+            // Update progress so a second crash sees the right resume point.
             if let Err(e) = ledger::update_progress(ctx, ledger_id, applied).await {
                 tracing::warn!(
-                    version = version,
+                    version = row.version.as_str(),
                     applied,
                     error = ?e,
                     "ledger progress update failed during resume; SQL already applied",
@@ -712,23 +1003,28 @@ pub async fn repair_resume_partial_apply(
     }
 
     // Full success — finalise to applied.
-    ctx.execute(
-        "UPDATE djogi_schema_migrations \
-         SET status = 'applied', applied_steps_count = $2, partial_apply_note = NULL \
-         WHERE version = $1",
-        &[&version, &applied],
-    )
-    .await
-    .map_err(|e| RepairError::LedgerIo { source: e })?;
+    let finalise_result = ctx
+        .execute(
+            "UPDATE djogi_schema_migrations \
+             SET status = 'applied', applied_steps_count = $2, partial_apply_note = NULL \
+             WHERE version = $1",
+            &[&row.version, &applied],
+        )
+        .await
+        .map_err(|e| RepairError::LedgerIo { source: e })
+        .map(|_| ());
+
+    let released = release_advisory_lock(ctx, lock_key).await;
+    handle_repair_release(finalise_result, released, lock_key)?;
 
     ledger_changes.push(LedgerChange::new(
-        version,
+        &row.version,
         "status",
         row.status.as_db_str().to_string(),
         LedgerStatus::Applied.as_db_str().to_string(),
     ));
     ledger_changes.push(LedgerChange::new(
-        version,
+        &row.version,
         "applied_steps_count",
         row.applied_steps_count.to_string(),
         applied.to_string(),
@@ -804,6 +1100,31 @@ pub async fn repair_snapshot_rebuild(
         return Err(RepairError::InsufficientConfirmation);
     }
 
+    // GH #274: pin one physical session and acquire advisory lock.
+    let lock_key = advisory_lock_key(bucket);
+
+    let pool_opt = ctx.pool().cloned();
+    if let Some(pool) = pool_opt {
+        let conn = pool
+            .get()
+            .await
+            .map_err(|e| RepairError::PinnedSessionCheckoutFailed { source: e })?;
+        let mut pinned = DjogiContext::from_connection(conn);
+        repair_snapshot_rebuild_pinned(&mut pinned, bucket, snapshot_path, lock_key).await
+    } else {
+        repair_snapshot_rebuild_pinned(ctx, bucket, snapshot_path, lock_key).await
+    }
+}
+
+/// Core snapshot-rebuild logic on an already-pinned context.
+async fn repair_snapshot_rebuild_pinned(
+    ctx: &mut DjogiContext,
+    bucket: &BucketKey,
+    snapshot_path: &std::path::Path,
+    lock_key: i64,
+) -> Result<RepairReport, RepairError> {
+    acquire_advisory_lock_repair(ctx, bucket, lock_key).await?;
+
     // Always re-project from live. The verify-side helper is the
     // single source of truth for the live-DB projection so verify and
     // baseline / repair-rebuild agree by construction.
@@ -822,7 +1143,7 @@ pub async fn repair_snapshot_rebuild(
             source: DjogiError::Db(crate::error::DbError::other(format!(
                 "live-DB projection failed: {e}"
             ))),
-        })?;
+        });
 
     // Sanity-check: count applied rows for the bucket. A rebuild on
     // an empty ledger is suspicious but legal (a fresh bucket bootstrap
@@ -834,6 +1155,15 @@ pub async fn repair_snapshot_rebuild(
         .await
         .ok()
         .unwrap_or(-1);
+
+    // Release the advisory lock before writing to the filesystem (which
+    // can be slow for large schemas) so we hold the PG lock no longer
+    // than necessary.
+    let released = release_advisory_lock(ctx, lock_key).await;
+
+    // Surface advisory-lock release failure before the filesystem write.
+    // The projected value is only available if the DB query succeeded.
+    let projected = handle_repair_release(projected, released, lock_key)?;
 
     save_snapshot(&projected, snapshot_path).map_err(|e| RepairError::SnapshotIo {
         path: snapshot_path.to_path_buf(),

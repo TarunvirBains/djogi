@@ -26,10 +26,10 @@ use djogi::migrate::{
     AppliedSchema, BucketKey, Classification, LossyRollbackKind, LossyRollbackPolicy,
     LossyRollbackWarning, MigrationPlan, OperationSql, PartialApplyResolution, RepairConfirmation,
     RepairError, RollbackError, RunnerCtx, RunnerError, SNAPSHOT_FORMAT_VERSION, Segment,
-    SegmentKind, VerifySeverity, WorkspaceGuard, acquire_workspace_lock, apply_plan, baseline_plan,
-    bootstrap_ledger, compute_checksum, fake_apply_plan, repair_checksum_drift,
-    repair_partial_apply, repair_resume_partial_apply, repair_snapshot_rebuild, rollback_plan,
-    verify,
+    SegmentKind, VerifySeverity, WorkspaceGuard, acquire_workspace_lock, advisory_lock_key,
+    apply_plan, baseline_plan, bootstrap_ledger, compute_checksum, fake_apply_plan,
+    repair_checksum_drift, repair_partial_apply, repair_resume_partial_apply,
+    repair_snapshot_rebuild, rollback_plan, verify,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -2549,4 +2549,110 @@ async fn verify_does_not_exclude_adopter_named_heer_orders_table(mut ctx: djogi:
     );
 
     let _ = ctx.raw_ddl("DROP TABLE IF EXISTS heer_orders").await;
+}
+
+// ── #274: repair functions acquire the advisory lock (compile + behaviour) ─
+//
+// Issue #274 requires repair paths to acquire the per-bucket advisory lock
+// before mutating the ledger, mirroring apply/rollback/fake/baseline.
+//
+// Test strategy:
+// 1. The test references RepairError::AdvisoryLockFailed — if the variant
+//    does not exist, the file will not compile, giving a deterministic RED.
+// 2. After the fix lands, a clean repair succeeds and does not produce
+//    AdvisoryLockFailed (lock acquired immediately — no concurrent holder).
+// 3. After repair completes, pg_locks (visible cluster-wide) shows the
+//    advisory lock for the bucket is fully released.
+
+#[djogi::djogi_test]
+async fn repair_checksum_drift_acquires_and_releases_advisory_lock(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+
+    // Apply a migration so we have a ledger row to repair.
+    let plan = transactional_plan(vec![op(
+        "AddTable t5_274_repair_lock",
+        "CREATE TABLE \"t5_274_repair_lock\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"t5_274_repair_lock\"",
+    )]);
+    let runner_ctx = make_runner_ctx(&plan, "V20260425010101__274_repair_lock", None, None);
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+
+    // Repair the checksum (re-set the same value — no actual drift needed).
+    let new_checksum = &runner_ctx.checksum_up;
+    let result = repair_checksum_drift(
+        &mut ctx,
+        &_guard,
+        &runner_ctx.version,
+        new_checksum,
+        None,
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await;
+
+    // Reference the new advisory-lock error variants (compile-time RED/GREEN gate).
+    match &result {
+        Ok(_) => { /* expected */ }
+        Err(RepairError::AdvisoryLockFailed { bucket, .. }) => {
+            panic!(
+                "repair_checksum_drift hit AdvisoryLockFailed for bucket={}/{}; \
+                 no concurrent holder should be present in this test (GH #274)",
+                bucket.database, bucket.app,
+            );
+        }
+        Err(RepairError::AdvisoryUnlockReturnedFalse { key }) => {
+            panic!(
+                "repair_checksum_drift: pg_advisory_unlock returned false for \
+                 key=0x{key:016x} — session-pinning bug (GH #274/#280)",
+            );
+        }
+        Err(other) => panic!("unexpected repair error: {other:?}"),
+    }
+    assert!(result.is_ok(), "repair_checksum_drift must succeed");
+
+    // After repair completes, the advisory lock for the REPAIR bucket must be
+    // released cluster-wide.
+    //
+    // Important: repair_checksum_drift derives its advisory-lock bucket via
+    // `derive_bucket(ctx, app_label)`, which calls `current_database()` to get
+    // the actual connected database name — NOT the placeholder `"main"` stored
+    // in plan.bucket.database. In the test environment, `current_database()`
+    // returns the unique `djogi_test_<uuid>` name for this test run. Using that
+    // unique name here ensures the pg_locks check is not racy: no other
+    // concurrent test database shares the same advisory-lock key.
+    let repair_db: String = ctx
+        .raw_scalar("SELECT current_database()", &[])
+        .await
+        .expect("current_database");
+    let repair_bucket = BucketKey {
+        database: repair_db,
+        app: plan.bucket.app.clone(),
+    };
+    let repair_lock_key = advisory_lock_key(&repair_bucket);
+    // Use ::oid (unsigned 32-bit) for classid/objid comparison. ::int4 would
+    // overflow for keys whose upper or lower 32 bits exceed 2^31-1. The mask
+    // & 4294967295 on the upper half ensures sign-extended shift bits are
+    // truncated before the oid cast.
+    let still_held: i64 = ctx
+        .raw_scalar(
+            "SELECT COUNT(*) \
+             FROM pg_locks \
+             WHERE locktype = 'advisory' \
+               AND classid = (($1::bigint >> 32) & 4294967295)::oid \
+               AND objid   = ($1::bigint & 4294967295)::oid \
+               AND mode    = 'ExclusiveLock'",
+            &[&repair_lock_key],
+        )
+        .await
+        .expect("pg_locks query");
+
+    assert_eq!(
+        still_held,
+        0,
+        "advisory lock for repair bucket must be released after repair_checksum_drift \
+         (GH #274); {} backend(s) still hold key=0x{:016x}",
+        still_held,
+        repair_lock_key,
+    );
 }

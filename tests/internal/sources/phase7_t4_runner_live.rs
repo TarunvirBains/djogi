@@ -1005,3 +1005,118 @@ async fn advisory_lock_key_is_stable_across_processes(mut ctx: djogi::DjogiConte
         .expect("unlock");
     assert!(released);
 }
+
+// ── #274 Session-pinning regression: advisory lock released after apply ────
+//
+// Issue #274: pool-backed DjogiContext previously acquired the advisory lock
+// on one connection checkout, then ran DDL/ledger writes on other checkouts,
+// and released the lock on yet another checkout — giving pg_advisory_unlock
+// no lock to release (it would return false, which the old code ignored).
+//
+// After the fix, apply_plan pins ONE physical Postgres session for the entire
+// operation window. We verify through pg_locks:
+//
+// pg_locks shows advisory locks held by ALL sessions cluster-wide. If the pre-fix
+// bug occurs (lock acquired on session A, release attempted on session B → false
+// ignored → lock stays on A), the lock appears in pg_locks after apply_plan returns.
+// With the fix, the lock is properly released on the same pinned session and
+// pg_locks shows zero advisory locks for the key.
+
+#[djogi::djogi_test]
+async fn apply_plan_advisory_lock_not_held_after_success(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+
+    let plan = transactional_plan(vec![op(
+        "AddTable t4_274_lock_release",
+        "CREATE TABLE \"t4_274_lock_release\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"t4_274_lock_release\"",
+    )]);
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260425000020__274_lock_release",
+        None,
+        None,
+        MigrateConfig::default(),
+    );
+
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+
+    // After apply_plan the advisory lock must be fully released cluster-wide.
+    // pg_locks surfaces advisory locks held by ANY backend, so this query
+    // detects the pre-fix bug (lock leaked on the acquirer's session) regardless
+    // of which pool connection the query itself uses.
+    let lock_key = advisory_lock_key(&plan.bucket);
+    let still_held: i64 = ctx
+        .raw_scalar(
+            "SELECT COUNT(*) \
+             FROM pg_locks \
+             WHERE locktype = 'advisory' \
+               AND classid = ($1::bigint >> 32)::int4 \
+               AND objid   = ($1::bigint & 4294967295)::int4 \
+               AND mode    = 'ExclusiveLock'",
+            &[&lock_key],
+        )
+        .await
+        .expect("pg_locks query");
+
+    assert_eq!(
+        still_held,
+        0,
+        "advisory lock for bucket={}/{} (key=0x{:016x}) must be released after \
+         apply_plan completes; {} backend(s) still hold it — session-pinning bug (GH #274)",
+        plan.bucket.database,
+        plan.bucket.app,
+        lock_key,
+        still_held,
+    );
+}
+
+// ── #274/#280: AdvisoryUnlockReturnedFalse is a first-class error variant ─
+//
+// RunnerError::AdvisoryUnlockReturnedFalse (added in #274/#280) is the typed
+// correctness failure for when pg_advisory_unlock returns false. This test:
+//
+// 1. Confirms the variant exists at compile time (the match arm would fail
+//    to compile if the variant is absent — the primary RED/GREEN gate).
+// 2. Confirms that a clean apply does NOT trigger it (pinned session ensures
+//    the unlock always runs on the session that holds the lock).
+
+#[djogi::djogi_test]
+async fn advisory_unlock_false_variant_exists_and_is_not_triggered_on_clean_apply(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+
+    let plan = transactional_plan(vec![op(
+        "AddTable t4_274_unlock_variant",
+        "CREATE TABLE \"t4_274_unlock_variant\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"t4_274_unlock_variant\"",
+    )]);
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260425000021__274_unlock_variant",
+        None,
+        None,
+        MigrateConfig::default(),
+    );
+
+    // A clean apply must never produce AdvisoryUnlockReturnedFalse — the
+    // pinned session ensures the lock and unlock are always on the same
+    // physical backend.
+    let result = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard).await;
+
+    match &result {
+        Ok(_) => { /* expected */ }
+        Err(RunnerError::AdvisoryUnlockReturnedFalse { key, .. }) => {
+            panic!(
+                "AdvisoryUnlockReturnedFalse (key=0x{key:016x}): apply_plan must \
+                 not surface this on a clean apply — session-pinning bug (GH #274/#280)",
+            );
+        }
+        Err(other) => panic!("unexpected error: {other:?}"),
+    }
+
+    assert!(result.is_ok());
+}
