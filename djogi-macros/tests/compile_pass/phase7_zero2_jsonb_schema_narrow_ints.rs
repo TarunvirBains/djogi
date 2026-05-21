@@ -9,7 +9,8 @@
 //
 // The fix:
 // 1. Extend SCALAR_TYPE_PATTERNS with `i8` / `u8` / `u16` / `u32`.
-// 2. Extend `sql_cast_for_type` with the same set, each widening to
+// 2. Extend `jsonb_sql_cast_for_type` (and its `#[cfg(test)]` shim
+//    `sql_cast_for_type`) with the same set, each widening to
 //    the smallest signed Postgres int that fits the full range:
 //    - `i8` → `int2`
 //    - `u8` → `int2` (u8 max 255 fits in i16)
@@ -18,10 +19,10 @@
 // 3. Extend `IntoFilterValue` with the same widening on the binding
 //    side so `.eq(80u16)` etc. compile.
 //
-// `u64` had a SCALAR_TYPE_PATTERNS entry pre-#29 but no working SQL
-// cast. Documented in the source as a known gap; users on `u64` should
-// either downcast to `i64` or use `rust_decimal::Decimal` for the full
-// unsigned range.
+// `u64` was already present in SCALAR_TYPE_PATTERNS before #29 but lacked
+// a `JsonbSqlCast` mapping; djogi#161 completed that by adding
+// `u64 => JsonbSqlCast::Numeric` (`::numeric`). Boundary: #29 covers the
+// new narrow types (i8 / u8 / u16 / u32); #161 wired u64 to `::numeric`.
 
 use djogi::JsonbSchema;
 use djogi::prelude::*;

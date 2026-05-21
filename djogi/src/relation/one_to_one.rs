@@ -172,6 +172,15 @@ where
     fn into_filter_value(self) -> crate::query::condition::FilterValue {
         self.0.into_filter_value()
     }
+
+    /// Delegate JSONB path LHS cast metadata to the target PK type
+    /// (djogi#161). Same rationale as the `ForeignKey<T>` override —
+    /// without this, `JsonbPathRef::<M, OneToOneField<T>>` falls back
+    /// to text comparison because `type_name::<OneToOneField<T>>()`
+    /// is not in the built-in cast table.
+    fn jsonb_sql_cast() -> Option<crate::jsonb::JsonbSqlCast> {
+        <T::Pk as crate::query::field::IntoFilterValue>::jsonb_sql_cast()
+    }
 }
 
 impl<T: Model + 'static> crate::query::field::DjogiPortableEq for OneToOneField<T> where

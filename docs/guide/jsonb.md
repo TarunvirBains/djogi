@@ -156,6 +156,64 @@ public fields.
 still being designed. Switch to `#[derive(JsonbSchema)]` once the schema
 stabilizes — the compiler catches typos and type mismatches.
 
+### Custom scalar types — `#[jsonb(scalar)]`
+
+Adopter-defined scalar types — for example a `primary_key!`-emitted
+custom PK newtype like `MyAppId(i64)` or a project-local `Username`
+that wraps `String` — sit outside the built-in cast-matrix allowlist.
+The `#[jsonb(scalar)]` field-level annotation declares "treat this
+field as a scalar leaf, not as a nested `JsonbSchema`":
+
+```rust
+use djogi::prelude::*;
+use serde::{Deserialize, Serialize};
+
+djogi::primary_key! {
+    pub struct OwnerId(i64);
+    sql_type = "BIGINT";
+    default_sql = "0";
+    bulk_sql = "SELECT 0::bigint AS id FROM generate_series(1, $1)";
+}
+
+#[derive(JsonbSchema, Serialize, Deserialize)]
+pub struct Spec {
+    #[jsonb(scalar)]
+    pub owner_id: OwnerId,
+    pub displacement_cc: f32,    // built-in scalar — no marker needed
+}
+```
+
+The annotation accepts no parameters. Critically, it accepts **no raw
+SQL** — Postgres cast selection still flows through
+`FieldType: IntoFilterValue`'s `jsonb_sql_cast` method (which returns a
+typed [`JsonbSqlCast`](#typed-cast-dispatch) enum variant). Adopters
+cannot inject arbitrary cast text via the macro; the cast comes from
+the Rust type the macro sees at the field site. Path keys remain
+literal and validated; values remain bound parameters.
+
+Custom PK newtypes inherit JSONB path cast metadata from their inner
+Rust type automatically. A `#[jsonb(scalar)]` field of type
+`OwnerId(i64)` emits the same `::int8` cast a bare `i64` field would
+emit, because `OwnerId`'s `IntoFilterValue::jsonb_sql_cast` delegates
+to `i64`. The same delegation applies to `ForeignKey<T>` and
+`OneToOneField<T>` — both forward to `T::Pk`'s cast.
+
+### Typed cast dispatch
+
+`JsonbPathRef<M, V>` selects the Postgres cast for the path LHS through
+the [`IntoFilterValue::jsonb_sql_cast`](https://docs.rs/djogi/latest/djogi/query/trait.IntoFilterValue.html)
+trait method, which returns an `Option<JsonbSqlCast>`. The returned
+enum is closed (`Int2`, `Int4`, `Int8`, `Float4`, `Float8`, `Boolean`,
+`Timestamptz`, `Date`, `Uuid`, `Numeric`, `Interval`, and the
+network-gated `Inet` / `Cidr` / `Macaddr`); the SQL emitter renders the
+matching `::int8` / `::numeric` / etc. suffix. Wrapper types (custom
+PK newtypes, `ForeignKey<T>`, `OneToOneField<T>`) delegate the method
+to their inner SQL value type, so JSONB path comparisons against a
+wrapper emit the same typed cast the underlying scalar would emit.
+Pre-djogi#161 the delegation was missing — wrapper-typed payloads
+silently fell back to text comparison (`'10' < '9'` because text
+ordering is lexicographic).
+
 ---
 
 ## Unknown Fields

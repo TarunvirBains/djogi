@@ -334,7 +334,7 @@ pub fn derive_djogi_enum(input: TokenStream) -> TokenStream {
 ///
 /// - Non-struct (enum, union) → "can only be applied to named structs".
 /// - Tuple struct → "requires a named struct — tuple structs are not supported".
-#[proc_macro_derive(JsonbSchema)]
+#[proc_macro_derive(JsonbSchema, attributes(jsonb))]
 pub fn derive_jsonb_schema(input: TokenStream) -> TokenStream {
     jsonb_schema::expand(input.into())
         .unwrap_or_else(|e| e.to_compile_error())

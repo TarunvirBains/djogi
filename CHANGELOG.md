@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Typed JSONB path cast dispatch** (closes djogi#161). Added
+  `JsonbSqlCast` — a closed, non-exhaustive enum of every Postgres cast
+  suffix `JsonbPathRef<M, V>` can apply — and the
+  `IntoFilterValue::jsonb_sql_cast() -> Option<JsonbSqlCast>` trait
+  method. Wrapper types now delegate JSONB path cast metadata to their
+  inner SQL value type instead of silently falling back to text
+  comparison: `primary_key!`-emitted custom PK newtypes delegate to the
+  declared inner Rust type, and `ForeignKey<T>` / `OneToOneField<T>`
+  delegate to `T::Pk`. A `MyAppId(i64)` field of `Jsonb<Spec>` now emits
+  `(specs->>'rank')::int8 > $1` (numeric ordering) rather than the
+  pre-fix `(specs->>'rank') > $1` (text ordering, where `'10' < '9'`).
+  `u64` is added to the cast table as `::numeric`, matching its
+  `FilterValue::Decimal` bind path. `#[jsonb(scalar)]` is added as the
+  escape hatch on `#[derive(JsonbSchema)]` for adopter-defined scalar
+  field types — the marker is bare-word; it accepts no SQL cast text
+  (cast selection still flows through `FieldType: IntoFilterValue`).
 - **Transaction retry backoff policy** (djogi#164). Added
   `TransactionRetryBackoff` and `retry_on_conflict_with_backoff` as the
   production sibling to immediate `retry_on_conflict`, with separate defaults

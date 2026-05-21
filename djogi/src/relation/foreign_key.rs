@@ -271,6 +271,17 @@ where
     fn into_filter_value(self) -> crate::query::condition::FilterValue {
         self.key.into_filter_value()
     }
+
+    /// Delegate JSONB path LHS cast metadata to the target PK type
+    /// (djogi#161). Without this override the default body would walk
+    /// `type_name::<ForeignKey<T>>()` (e.g.
+    /// `djogi::relation::foreign_key::ForeignKey<adopter::Owner>`),
+    /// which is not in the built-in cast table, so JSONB path
+    /// comparisons against a `ForeignKey<T>`-typed payload would
+    /// silently fall back to text comparison.
+    fn jsonb_sql_cast() -> Option<crate::jsonb::JsonbSqlCast> {
+        <T::Pk as crate::query::field::IntoFilterValue>::jsonb_sql_cast()
+    }
 }
 
 impl<T: Model + 'static> crate::query::field::DjogiPortableEq for ForeignKey<T> where
