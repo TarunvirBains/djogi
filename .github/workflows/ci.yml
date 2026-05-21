@@ -165,7 +165,7 @@ jobs:
       # in lihaaf's published Cargo.lock rather than resolving fresh; this
       # makes the install deterministic across CI runs.
       - name: Install lihaaf (compile-fixture CI gate)
-        run: cargo install lihaaf --version 0.1.0-beta.10 --locked
+        run: cargo install lihaaf --version 0.1.0 --locked
 
       - name: Build
         run: cargo build --workspace
