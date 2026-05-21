@@ -203,6 +203,15 @@ pub enum RepairError {
         attempted: PartialApplyResolution,
     },
 
+    /// Caller supplied a bucket whose app does not match the ledger
+    /// row's `app_label`. Repair refuses rather than mutating a row
+    /// while holding an advisory lock for the wrong logical bucket.
+    BucketAppMismatch {
+        version: String,
+        row_app_label: String,
+        supplied_app: String,
+    },
+
     /// Database I/O while reading or updating a ledger row.
     LedgerIo { source: DjogiError },
 
@@ -327,6 +336,16 @@ impl std::fmt::Display for RepairError {
                 "repair resolution {attempted:?} is not valid for version `{version}` \
                  (current status: {current})",
                 current = current_status.as_db_str(),
+            ),
+            RepairError::BucketAppMismatch {
+                version,
+                row_app_label,
+                supplied_app,
+            } => write!(
+                f,
+                "repair refused for version `{version}`: supplied bucket app `{supplied_app}` \
+                 does not match ledger row app_label `{row_app_label}`; repair would hold \
+                 the advisory lock for the wrong bucket",
             ),
             RepairError::LedgerIo { source } => write!(f, "repair ledger I/O failed: {source}"),
             RepairError::SnapshotIo { path, source } => {
@@ -614,6 +633,10 @@ async fn repair_checksum_drift_pinned(
             return Err(e);
         }
     };
+    if let Err(e) = ensure_row_matches_bucket_app(&row, bucket, version) {
+        let _released = release_advisory_lock(ctx, lock_key).await;
+        return Err(e);
+    }
 
     let before_up = row.checksum_up.clone();
     let before_down = row.checksum_down.clone();
@@ -756,6 +779,10 @@ async fn repair_partial_apply_pinned(
             return Err(e);
         }
     };
+    if let Err(e) = ensure_row_matches_bucket_app(&row, bucket, version) {
+        let _released = release_advisory_lock(ctx, lock_key).await;
+        return Err(e);
+    }
     if !matches!(row.status, LedgerStatus::Failed | LedgerStatus::Pending) {
         let current_status = row.status;
         let _released = release_advisory_lock(ctx, lock_key).await;
@@ -908,7 +935,7 @@ async fn repair_resume_pinned(
     // All work — row load, validation, step execution, and finalise —
     // runs inside `repair_resume_body`. Any `?`/early-return there
     // surfaces as the `result` below; the lock release always follows.
-    let result = repair_resume_body(ctx, version, plan).await;
+    let result = repair_resume_body(ctx, version, plan, bucket).await;
 
     let released = release_advisory_lock(ctx, lock_key).await;
     handle_repair_release(result, released, lock_key)
@@ -923,10 +950,12 @@ async fn repair_resume_body(
     ctx: &mut DjogiContext,
     version: &str,
     plan: &MigrationPlan,
+    bucket: &BucketKey,
 ) -> Result<RepairReport, RepairError> {
     // Load row and run all validation inside the lock window to prevent
     // TOCTOU races (GH #274).
     let row = load_row(ctx, version).await?;
+    ensure_row_matches_bucket_app(&row, bucket, version)?;
 
     let plan_checksum = compute_plan_checksum_up(plan);
     if plan_checksum != row.checksum_up {
@@ -1240,6 +1269,22 @@ async fn load_row(ctx: &mut DjogiContext, version: &str) -> Result<LedgerRow, Re
         })
 }
 
+fn ensure_row_matches_bucket_app(
+    row: &LedgerRow,
+    bucket: &BucketKey,
+    version: &str,
+) -> Result<(), RepairError> {
+    if row.app_label == bucket.app {
+        return Ok(());
+    }
+
+    Err(RepairError::BucketAppMismatch {
+        version: version.to_string(),
+        row_app_label: row.app_label.clone(),
+        supplied_app: bucket.app.clone(),
+    })
+}
+
 fn io_err(e: tokio_postgres::Error) -> RepairError {
     RepairError::LedgerIo {
         source: DjogiError::from(e),
@@ -1407,5 +1452,98 @@ mod tests {
         };
         let m = format!("{no_total}");
         assert!(m.contains("total_steps is NULL"));
+    }
+
+    // ── BucketAppMismatch — FIX_BEFORE_BETA-1 (GH #274) ─────────────────
+
+    /// Minimal `LedgerRow` fixture used only for the `ensure_row_matches_bucket_app`
+    /// unit tests. Fills non-tested fields with zero/default values.
+    fn minimal_ledger_row(app_label: &str) -> LedgerRow {
+        use crate::migrate::ledger::ExecutionMode;
+        LedgerRow {
+            version: "V1__test".to_string(),
+            description: "unit test row".to_string(),
+            // A structurally valid but semantically meaningless checksum.
+            checksum_up: "V1:0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
+            checksum_down: None,
+            execution_mode: ExecutionMode::Transactional,
+            status: LedgerStatus::Applied,
+            execution_time_ms: 0,
+            out_of_order_flag: false,
+            applied_steps_count: 0,
+            total_steps: None,
+            partial_apply_note: None,
+            run_id: 0,
+            snapshot_version: "1".to_string(),
+            app_label: app_label.to_string(),
+        }
+    }
+
+    /// `BucketAppMismatch` Display must name all three diagnostic fields:
+    /// version, row_app_label, and supplied_app.
+    #[test]
+    fn bucket_app_mismatch_display_names_all_fields() {
+        let e = RepairError::BucketAppMismatch {
+            version: "V20260425__add_users".to_string(),
+            row_app_label: "blog".to_string(),
+            supplied_app: "store".to_string(),
+        };
+        let msg = format!("{e}");
+        assert!(
+            msg.contains("V20260425__add_users"),
+            "Display must include the version; msg={msg}"
+        );
+        assert!(
+            msg.contains("blog"),
+            "Display must include the row's app_label; msg={msg}"
+        );
+        assert!(
+            msg.contains("store"),
+            "Display must include the supplied (wrong) app; msg={msg}"
+        );
+    }
+
+    /// `ensure_row_matches_bucket_app` returns `Ok(())` when `row.app_label`
+    /// and `bucket.app` are equal.
+    #[test]
+    fn ensure_row_matches_bucket_app_ok_when_apps_agree() {
+        let row = minimal_ledger_row("blog");
+        let bucket = BucketKey {
+            database: "main".to_string(),
+            app: "blog".to_string(),
+        };
+        assert!(
+            ensure_row_matches_bucket_app(&row, &bucket, "V1__test").is_ok(),
+            "matching apps must return Ok"
+        );
+    }
+
+    /// `ensure_row_matches_bucket_app` returns `BucketAppMismatch` with the
+    /// correct diagnostic fields when `row.app_label != bucket.app`.
+    #[test]
+    fn ensure_row_matches_bucket_app_err_when_apps_differ() {
+        let row = minimal_ledger_row("blog");
+        let bucket = BucketKey {
+            database: "main".to_string(),
+            app: "store".to_string(),
+        };
+        let err = ensure_row_matches_bucket_app(&row, &bucket, "V1__test")
+            .expect_err("mismatched apps must return Err");
+        match err {
+            RepairError::BucketAppMismatch {
+                version,
+                row_app_label,
+                supplied_app,
+            } => {
+                assert_eq!(version, "V1__test", "error must carry the version");
+                assert_eq!(
+                    row_app_label, "blog",
+                    "error must carry the row's app_label"
+                );
+                assert_eq!(supplied_app, "store", "error must carry the supplied app");
+            }
+            other => panic!("expected BucketAppMismatch, got {other:?}"),
+        }
     }
 }

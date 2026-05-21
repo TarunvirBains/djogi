@@ -3050,3 +3050,155 @@ async fn apply_waits_while_repair_resume_holds_same_bucket_lock(mut ctx: djogi::
     let (repair_result, ()) = tokio::join!(repair_future, apply_probe_future);
     repair_result.expect("repair resume ok");
 }
+
+// ── Repair: bucket app mismatch rejects and releases lock (GH #274) ─────────
+//
+// FIX_BEFORE_BETA-1 from the strict-swe re-review at HEAD 6658965e.
+//
+// After the punch-list fix moved bucket derivation from the framework
+// (`derive_bucket`) to the caller, repair must verify that the supplied
+// `bucket.app` matches the ledger row's `app_label` while holding the
+// advisory lock. A mismatch means the lock is on the wrong logical bucket —
+// repair rejects with `BucketAppMismatch` and releases the lock before
+// returning so the correct bucket's lock remains available to the runner.
+//
+// These two tests exercise the check end-to-end:
+//   - Correct row inserted via `apply_plan` with app = src_app.
+//   - Repair called with a bucket whose `app` = wrong_app.
+//   - Error is `BucketAppMismatch` with all three diagnostic fields correct.
+//   - Advisory lock for `wrong_bucket` is released after the rejection
+//     (verified via `pg_locks`).
+
+#[djogi::djogi_test]
+async fn repair_checksum_drift_rejects_wrong_bucket_app_and_releases_lock(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    let src_app = "t5_274_mismatch_ck_src";
+
+    // Apply a migration whose row will have app_label = src_app.
+    let plan = transactional_plan_for_app(
+        src_app,
+        vec![op(
+            "AddTable t5_274_mismatch_ck",
+            "CREATE TABLE \"t5_274_mismatch_ck\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"t5_274_mismatch_ck\"",
+        )],
+    );
+    let runner_ctx = make_runner_ctx(&plan, "V20260425010110__274_mismatch_ck", None, None);
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+
+    // Build a bucket with a different app — the advisory lock will be acquired
+    // on this wrong bucket before the mismatch is detected.
+    let wrong_bucket = BucketKey {
+        database: "main".to_string(),
+        app: "t5_274_mismatch_ck_wrong".to_string(),
+    };
+    let lock_key = advisory_lock_key(&wrong_bucket);
+
+    let err = repair_checksum_drift(
+        &mut ctx,
+        &_guard,
+        &wrong_bucket,
+        &runner_ctx.version,
+        &runner_ctx.checksum_up,
+        None,
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    .expect_err("repair must reject: bucket.app does not match row.app_label");
+
+    match err {
+        RepairError::BucketAppMismatch {
+            ref version,
+            ref row_app_label,
+            ref supplied_app,
+        } => {
+            assert_eq!(version, &runner_ctx.version, "version in BucketAppMismatch");
+            assert_eq!(row_app_label, src_app, "row_app_label in BucketAppMismatch");
+            assert_eq!(
+                supplied_app, "t5_274_mismatch_ck_wrong",
+                "supplied_app in BucketAppMismatch"
+            );
+        }
+        other => panic!("expected BucketAppMismatch, got {other:?}"),
+    }
+
+    // Critical: advisory lock on wrong_bucket must be released by the reject
+    // path so the correct bucket's lock remains uncontested.
+    let still_held = advisory_lock_count(&mut ctx, lock_key).await;
+    assert_eq!(
+        still_held, 0,
+        "advisory lock for wrong-app bucket (key=0x{lock_key:016x}) must be released \
+         after BucketAppMismatch rejection (GH #274 hardening)",
+    );
+}
+
+#[djogi::djogi_test]
+async fn repair_partial_apply_rejects_wrong_bucket_app_and_releases_lock(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    let src_app = "t5_274_mismatch_pa_src";
+
+    // Apply a transactional migration so the row exists with app_label = src_app.
+    // The BucketAppMismatch check runs before the status check in
+    // `repair_partial_apply_pinned`, so the row's `applied` status does not
+    // prevent the mismatch detection — the test intentionally uses a clean
+    // `applied` row to keep setup minimal.
+    let plan = transactional_plan_for_app(
+        src_app,
+        vec![op(
+            "AddTable t5_274_mismatch_pa",
+            "CREATE TABLE \"t5_274_mismatch_pa\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"t5_274_mismatch_pa\"",
+        )],
+    );
+    let runner_ctx = make_runner_ctx(&plan, "V20260425010111__274_mismatch_pa", None, None);
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+
+    let wrong_bucket = BucketKey {
+        database: "main".to_string(),
+        app: "t5_274_mismatch_pa_wrong".to_string(),
+    };
+    let lock_key = advisory_lock_key(&wrong_bucket);
+
+    let err = repair_partial_apply(
+        &mut ctx,
+        &_guard,
+        &wrong_bucket,
+        &runner_ctx.version,
+        PartialApplyResolution::MarkRolledBack,
+        "test note",
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    .expect_err("repair must reject: bucket.app does not match row.app_label");
+
+    match err {
+        RepairError::BucketAppMismatch {
+            ref version,
+            ref row_app_label,
+            ref supplied_app,
+        } => {
+            assert_eq!(version, &runner_ctx.version, "version in BucketAppMismatch");
+            assert_eq!(row_app_label, src_app, "row_app_label in BucketAppMismatch");
+            assert_eq!(
+                supplied_app, "t5_274_mismatch_pa_wrong",
+                "supplied_app in BucketAppMismatch"
+            );
+        }
+        other => panic!("expected BucketAppMismatch, got {other:?}"),
+    }
+
+    let still_held = advisory_lock_count(&mut ctx, lock_key).await;
+    assert_eq!(
+        still_held, 0,
+        "advisory lock for wrong-app bucket (key=0x{lock_key:016x}) must be released \
+         after BucketAppMismatch rejection (GH #274 hardening)",
+    );
+}
