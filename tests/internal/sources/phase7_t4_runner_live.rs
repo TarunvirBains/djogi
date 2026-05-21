@@ -1048,13 +1048,16 @@ async fn apply_plan_advisory_lock_not_held_after_success(mut ctx: djogi::DjogiCo
     // detects the pre-fix bug (lock leaked on the acquirer's session) regardless
     // of which pool connection the query itself uses.
     let lock_key = advisory_lock_key(&plan.bucket);
+    // Use ::oid (unsigned 32-bit) for classid/objid. ::int4 would sign-extend
+    // keys whose upper or lower 32 bits exceed 2^31-1, causing the comparison
+    // to always return false for large lock keys (GH #274).
     let still_held: i64 = ctx
         .raw_scalar(
             "SELECT COUNT(*) \
              FROM pg_locks \
              WHERE locktype = 'advisory' \
-               AND classid = ($1::bigint >> 32)::int4 \
-               AND objid   = ($1::bigint & 4294967295)::int4 \
+               AND classid = (($1::bigint >> 32) & 4294967295)::oid \
+               AND objid   = ($1::bigint & 4294967295)::oid \
                AND mode    = 'ExclusiveLock'",
             &[&lock_key],
         )

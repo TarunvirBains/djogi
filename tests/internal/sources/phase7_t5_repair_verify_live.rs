@@ -632,6 +632,7 @@ async fn repair_checksum_drift_updates_row(mut ctx: djogi::DjogiContext) {
     let report = repair_checksum_drift(
         &mut ctx,
         &_guard,
+        &plan.bucket,
         &runner_ctx.version,
         &new_checksum,
         None,
@@ -676,6 +677,7 @@ async fn repair_checksum_drift_rejects_invalid_checksum(mut ctx: djogi::DjogiCon
     let err = repair_checksum_drift(
         &mut ctx,
         &_guard,
+        &plan.bucket,
         &runner_ctx.version,
         "V1:not_lowercase_hex_at_all_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         None,
@@ -737,6 +739,7 @@ async fn repair_partial_apply_marks_rolled_back(mut ctx: djogi::DjogiContext) {
     let report = repair_partial_apply(
         &mut ctx,
         &_guard,
+        &plan.bucket,
         &runner_ctx.version,
         PartialApplyResolution::MarkRolledBack,
         "manual rollback completed by ops",
@@ -784,6 +787,7 @@ async fn repair_partial_apply_marks_faked(mut ctx: djogi::DjogiContext) {
     let report = repair_partial_apply(
         &mut ctx,
         &_guard,
+        &plan.bucket,
         &runner_ctx.version,
         PartialApplyResolution::MarkFaked,
         "out-of-band fix already in place",
@@ -823,6 +827,7 @@ async fn repair_partial_apply_marks_applied(mut ctx: djogi::DjogiContext) {
     let report = repair_partial_apply(
         &mut ctx,
         &_guard,
+        &plan.bucket,
         &runner_ctx.version,
         PartialApplyResolution::MarkApplied,
         "manually completed remaining steps",
@@ -855,6 +860,7 @@ async fn repair_partial_apply_rejects_already_applied(mut ctx: djogi::DjogiConte
     let err = repair_partial_apply(
         &mut ctx,
         &_guard,
+        &plan.bucket,
         &runner_ctx.version,
         PartialApplyResolution::MarkRolledBack,
         "test",
@@ -2032,6 +2038,7 @@ async fn repair_checksum_drift_repairs_both_up_and_down(mut ctx: djogi::DjogiCon
     let report = repair_checksum_drift(
         &mut ctx,
         &_guard,
+        &plan.bucket,
         &runner_ctx.version,
         &new_up,
         Some(&new_down),
@@ -2563,6 +2570,12 @@ async fn verify_does_not_exclude_adopter_named_heer_orders_table(mut ctx: djogi:
 //    AdvisoryLockFailed (lock acquired immediately — no concurrent holder).
 // 3. After repair completes, pg_locks (visible cluster-wide) shows the
 //    advisory lock for the bucket is fully released.
+//
+// After the GH #274 fix, repair_checksum_drift takes an explicit BucketKey
+// from the caller — the same plan.bucket the runner used. The advisory-lock
+// key is derived from plan.bucket.database ("main") rather than
+// current_database() (the per-test UUID), which means the pg_locks check
+// must use advisory_lock_key(&plan.bucket) to probe the right key.
 
 #[djogi::djogi_test]
 async fn repair_checksum_drift_acquires_and_releases_advisory_lock(mut ctx: djogi::DjogiContext) {
@@ -2580,10 +2593,12 @@ async fn repair_checksum_drift_acquires_and_releases_advisory_lock(mut ctx: djog
         .expect("apply ok");
 
     // Repair the checksum (re-set the same value — no actual drift needed).
+    // Pass plan.bucket so the repair's advisory-lock key matches the runner's.
     let new_checksum = &runner_ctx.checksum_up;
     let result = repair_checksum_drift(
         &mut ctx,
         &_guard,
+        &plan.bucket,
         &runner_ctx.version,
         new_checksum,
         None,
@@ -2611,29 +2626,18 @@ async fn repair_checksum_drift_acquires_and_releases_advisory_lock(mut ctx: djog
     }
     assert!(result.is_ok(), "repair_checksum_drift must succeed");
 
-    // After repair completes, the advisory lock for the REPAIR bucket must be
-    // released cluster-wide.
+    // After repair completes, the advisory lock for the repair bucket must be
+    // released cluster-wide. The repair uses plan.bucket (database="main",
+    // app="") so the runner-side and repair-side advisory-lock keys are
+    // identical — both call advisory_lock_key(&plan.bucket).
     //
-    // Important: repair_checksum_drift derives its advisory-lock bucket via
-    // `derive_bucket(ctx, app_label)`, which calls `current_database()` to get
-    // the actual connected database name — NOT the placeholder `"main"` stored
-    // in plan.bucket.database. In the test environment, `current_database()`
-    // returns the unique `djogi_test_<uuid>` name for this test run. Using that
-    // unique name here ensures the pg_locks check is not racy: no other
-    // concurrent test database shares the same advisory-lock key.
-    let repair_db: String = ctx
-        .raw_scalar("SELECT current_database()", &[])
-        .await
-        .expect("current_database");
-    let repair_bucket = BucketKey {
-        database: repair_db,
-        app: plan.bucket.app.clone(),
-    };
-    let repair_lock_key = advisory_lock_key(&repair_bucket);
+    // This is the critical correctness check: before the GH #274 fix,
+    // derive_bucket() used current_database() which returned the per-test
+    // UUID, producing a different key than the runner used. The repair and
+    // runner would never contend on the same lock.
+    let repair_lock_key = advisory_lock_key(&plan.bucket);
     // Use ::oid (unsigned 32-bit) for classid/objid comparison. ::int4 would
-    // overflow for keys whose upper or lower 32 bits exceed 2^31-1. The mask
-    // & 4294967295 on the upper half ensures sign-extended shift bits are
-    // truncated before the oid cast.
+    // sign-extend keys whose upper or lower 32 bits exceed 2^31-1 (GH #274).
     let still_held: i64 = ctx
         .raw_scalar(
             "SELECT COUNT(*) \
@@ -2650,9 +2654,9 @@ async fn repair_checksum_drift_acquires_and_releases_advisory_lock(mut ctx: djog
     assert_eq!(
         still_held,
         0,
-        "advisory lock for repair bucket must be released after repair_checksum_drift \
-         (GH #274); {} backend(s) still hold key=0x{:016x}",
-        still_held,
+        "advisory lock for repair bucket (runner-side key=0x{:016x}) must be released \
+         after repair_checksum_drift (GH #274); {} backend(s) still hold it",
         repair_lock_key,
+        still_held,
     );
 }

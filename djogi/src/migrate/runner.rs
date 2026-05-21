@@ -1579,27 +1579,10 @@ async fn rollback_plan_pinned(
         .await
         .map_err(|e| RollbackError::Runner(RunnerError::LedgerBootstrapFailed { source: e }))?;
 
-    // 2. Confirm the row exists and is in a rollbackable status.
-    let row = load_ledger_row_for_version(ctx, &runner_ctx.version)
-        .await
-        .map_err(|e| {
-            RollbackError::Runner(RunnerError::LedgerQueryFailed {
-                query_label: "load_row_for_version",
-                source: e,
-            })
-        })?;
-    let row = row.ok_or_else(|| RollbackError::VersionNotFound {
-        version: runner_ctx.version.clone(),
-    })?;
-    if !matches!(row.status, LedgerStatus::Applied | LedgerStatus::Faked) {
-        return Err(RollbackError::VersionNotRollbackable {
-            version: runner_ctx.version.clone(),
-            current_status: row.status,
-        });
-    }
-
-    // 3. Pre-walk: collect every lossy operation. Refuse early when
-    //    the policy is `Refuse`.
+    // 2. Pre-walk: collect every lossy operation from the plan. This is
+    //    pure plan-data computation — no DB access — so it can run
+    //    before the advisory lock. The `LossyRollbackRefused` early
+    //    return here avoids acquiring the lock unnecessarily.
     let lossy_ops: Vec<(String, LossyRollbackKind)> = plan
         .segments
         .iter()
@@ -1619,12 +1602,49 @@ async fn rollback_plan_pinned(
         (LossyRollbackPolicy::Allow { reason }, false) => Some(reason.clone()),
     };
 
-    // 4. Acquire the per-bucket advisory lock so a concurrent apply /
-    //    rollback cannot interleave with this one.
+    // 3. Acquire the per-bucket advisory lock BEFORE loading the ledger
+    //    row. Moving the row read inside the lock eliminates the TOCTOU
+    //    window between the status check and the down-SQL mutations
+    //    (GH #274).
     let lock_key = advisory_lock_key(&plan.bucket);
     acquire_advisory_lock(ctx, &plan.bucket, lock_key)
         .await
         .map_err(RollbackError::Runner)?;
+
+    // 4. Confirm the row exists and is in a rollbackable status — inside
+    //    the lock so the status read is atomic with the subsequent write.
+    let row_result = load_ledger_row_for_version(ctx, &runner_ctx.version)
+        .await
+        .map_err(|e| {
+            RollbackError::Runner(RunnerError::LedgerQueryFailed {
+                query_label: "load_row_for_version",
+                source: e,
+            })
+        });
+    let row_opt = match row_result {
+        Ok(r) => r,
+        Err(e) => {
+            let _released = release_advisory_lock(ctx, lock_key).await;
+            return Err(e);
+        }
+    };
+    let row = match row_opt {
+        Some(r) => r,
+        None => {
+            let _released = release_advisory_lock(ctx, lock_key).await;
+            return Err(RollbackError::VersionNotFound {
+                version: runner_ctx.version.clone(),
+            });
+        }
+    };
+    if !matches!(row.status, LedgerStatus::Applied | LedgerStatus::Faked) {
+        let current_status = row.status;
+        let _released = release_advisory_lock(ctx, lock_key).await;
+        return Err(RollbackError::VersionNotRollbackable {
+            version: runner_ctx.version.clone(),
+            current_status,
+        });
+    }
 
     let result = rollback_inner(ctx, plan, runner_ctx, prior_snapshot, allow_reason).await;
 
