@@ -2383,9 +2383,10 @@ pub fn advisory_lock_key(bucket: &BucketKey) -> i64 {
 /// pool-backed context would acquire the lock on connection A, but
 /// subsequent DDL/ledger operations would run on B, C, … and the
 /// `release_advisory_lock` call would return false when invoked on any
-/// connection other than A. The entry points (`apply_plan`,
-/// `rollback_plan`, `fake_apply_plan`, `baseline_plan`) enforce this
-/// by pinning a connection from the pool before calling here.
+/// connection other than A. Runner entry points (`apply_plan`,
+/// `rollback_plan`, `fake_apply_plan`, `baseline_plan`) and repair
+/// entry points in `migrate::repair` enforce this by pinning a
+/// connection from the pool before calling here.
 pub(crate) async fn acquire_advisory_lock(
     ctx: &mut DjogiContext,
     bucket: &BucketKey,

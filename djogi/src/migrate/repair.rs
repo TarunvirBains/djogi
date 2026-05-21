@@ -21,8 +21,10 @@
 //! repair_checksum_drift(
 //!     &mut ctx,
 //!     &guard,
+//!     &bucket,
 //!     "V20260425010203__add_users",
 //!     &fresh_checksum,
+//!     None,
 //!     RepairConfirmation::OperatorAcknowledged,
 //! ).await?;
 //! ```
