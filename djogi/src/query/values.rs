@@ -1067,8 +1067,34 @@ where
 
 /// Build SELECT SQL for a LEFT JOIN where the values side is empty.
 ///
-/// Returns all model rows with typed NULLs in the values columns and a NULL
-/// sentinel, without emitting a VALUES clause.
+/// Per the owner decision, uses a **typed zero-row relation** subquery rather
+/// than inlining `NULL::TYPE` directly in the SELECT list.  Postgres can
+/// fully type-check and plan the query from the subquery column types, and
+/// the ON predicate is preserved so the join shape is structurally identical
+/// to the non-empty path.
+///
+/// Emitted shape (arity-2 example):
+///
+/// ```sql
+/// SELECT __djogi_m.id   AS id,
+///        __djogi_m.name AS name, ...,
+///        weights.animal_id AS __djogi_values_0,
+///        weights.score     AS __djogi_values_1,
+///        weights.__djogi_present AS __djogi_values_present
+/// FROM animals AS __djogi_m
+/// LEFT JOIN (
+///     SELECT NULL::BIGINT         AS animal_id,
+///            NULL::DOUBLE PRECISION AS score,
+///            NULL::BOOLEAN          AS __djogi_present
+///     WHERE 1=0
+/// ) AS weights
+/// ON __djogi_m.id = weights.animal_id
+/// [WHERE ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]
+/// ```
+///
+/// The `WHERE 1=0` in the subquery is a constant-false predicate; the Postgres
+/// planner folds it away (zero rows, no scan), but the column definitions
+/// provide the type context needed to validate the outer query.
 pub(crate) fn build_left_values_join_empty_select<T, Row>(
     vqs: &LeftValuesJoinedQuerySet<T, Row>,
 ) -> Result<SqlAccumulator, PortablePredicateError>
@@ -1076,30 +1102,53 @@ where
     T: Model + FromPgRow,
     Row: ValuesRow,
 {
-    let mut acc = SqlAccumulator::new("SELECT ");
-    for (i, col) in <T as FromPgRow>::COLUMNS.iter().enumerate() {
-        if i > 0 {
-            acc.push_sql(", ");
-        }
-        acc.push_sql(MODEL_ALIAS);
-        acc.push_sql(".");
-        acc.push_sql(col);
-        acc.push_sql(" AS ");
-        acc.push_sql(col);
-    }
-    let casts = Row::sql_casts();
-    for (i, _) in vqs.values.columns.iter().enumerate() {
-        acc.push_sql(", NULL::");
-        acc.push_sql(casts[i]);
-        acc.push_sql(" AS ");
-        acc.push_sql(VALUES_ALIASES[i]);
-    }
-    acc.push_sql(", NULL::BOOLEAN AS __djogi_values_present");
+    let values = &vqs.values;
+    let on = &vqs.on;
+
+    let mut acc = SqlAccumulator::new("");
+
+    // SELECT: model columns qualified by MODEL_ALIAS, then values columns
+    // from the alias (same projection shape as the non-empty left-join path).
+    emit_select_projection::<T, Row>(values, &mut acc, true);
+
+    // FROM <table> AS __djogi_m
     acc.push_sql(" FROM ");
     acc.push_sql(T::table_name());
     acc.push_sql(" AS ");
     acc.push_sql(MODEL_ALIAS);
+
+    // LEFT JOIN (typed zero-row subquery) AS <alias>
+    //
+    // The subquery selects typed NULLs for each values column plus the
+    // sentinel, with WHERE 1=0 to guarantee zero rows.  The column names
+    // match what the outer SELECT projection references so Postgres can
+    // resolve the aliases.
+    acc.push_sql(" LEFT JOIN (SELECT ");
+    let casts = Row::sql_casts();
+    for (i, user_col) in values.columns.iter().enumerate() {
+        if i > 0 {
+            acc.push_sql(", ");
+        }
+        acc.push_sql("NULL::");
+        acc.push_sql(casts[i]);
+        acc.push_sql(" AS ");
+        acc.push_sql(user_col);
+    }
+    if !values.columns.is_empty() {
+        acc.push_sql(", ");
+    }
+    acc.push_sql("NULL::BOOLEAN AS ");
+    acc.push_sql(SENTINEL_COL);
+    acc.push_sql(" WHERE 1=0) AS ");
+    acc.push_sql(&values.alias);
+
+    // ON predicate — same structured predicate as the non-empty path.
+    acc.push_sql(" ON ");
+    push_on_predicate(on, values, &mut acc);
+
+    // WHERE / ORDER BY / LIMIT / OFFSET
     push_qualified_tail(&mut acc, &vqs.left)?;
+
     Ok(acc)
 }
 
@@ -1932,7 +1981,11 @@ mod tests {
     }
 
     #[test]
-    fn left_join_empty_values_sql_projects_null_typed_values_columns() {
+    fn left_join_empty_values_sql_uses_typed_zero_row_relation_join() {
+        // Owner decision: empty InlineValues on a left join must use a typed
+        // zero-row relation shape — a LEFT JOIN against a subquery that returns
+        // no rows but has correctly-typed columns — NOT an alternate SELECT path
+        // that inlines NULL::TYPE directly in the top-level projection.
         let values: InlineValues<(i64, f64)> =
             InlineValues::new(vec![], "w", ("aid", "sc")).unwrap();
         let vqs = LeftValuesJoinedQuerySet {
@@ -1946,19 +1999,48 @@ mod tests {
         };
         let acc = build_left_values_join_empty_select(&vqs).unwrap();
         let s = acc.sql().to_owned();
+
+        // The zero-row typed subquery must be present inside a LEFT JOIN.
         assert!(
-            s.contains("NULL::BIGINT AS __djogi_values_0"),
-            "typed null col0; sql = {s}"
+            s.contains("LEFT JOIN (SELECT"),
+            "must emit a LEFT JOIN with typed subquery; sql = {s}"
+        );
+        // Typed NULL columns inside the subquery.
+        assert!(
+            s.contains("NULL::BIGINT AS aid"),
+            "typed null col0 inside subquery; sql = {s}"
         );
         assert!(
-            s.contains("NULL::DOUBLE PRECISION AS __djogi_values_1"),
-            "typed null col1; sql = {s}"
+            s.contains("NULL::DOUBLE PRECISION AS sc"),
+            "typed null col1 inside subquery; sql = {s}"
         );
         assert!(
-            s.contains("NULL::BOOLEAN AS __djogi_values_present"),
-            "sentinel null; sql = {s}"
+            s.contains("NULL::BOOLEAN AS __djogi_present"),
+            "typed null sentinel inside subquery; sql = {s}"
         );
-        // No VALUES clause — zero binds.
+        // Constant-false predicate collapses the subquery to zero rows.
+        assert!(s.contains("WHERE 1=0"), "zero-row guard; sql = {s}");
+        // The subquery is aliased to the user alias so ON and the outer
+        // projection can reference it.
+        assert!(
+            s.contains(") AS w"),
+            "subquery aliased to user alias; sql = {s}"
+        );
+        // The structured ON predicate is still emitted (same shape as non-empty).
+        assert!(
+            s.contains("ON __djogi_m.id = w.aid"),
+            "ON predicate present; sql = {s}"
+        );
+        // Outer projection references the alias, not raw NULLs.
+        assert!(
+            s.contains("w.aid AS __djogi_values_0"),
+            "outer projection references alias; sql = {s}"
+        );
+        assert!(
+            s.contains("w.__djogi_present AS __djogi_values_present"),
+            "sentinel from alias; sql = {s}"
+        );
+        // No binds — the subquery uses SQL literals only.
         assert_eq!(
             acc.bind_count(),
             0,
