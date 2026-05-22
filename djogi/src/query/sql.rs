@@ -1243,7 +1243,7 @@ fn push_tail<T: Model>(
 /// `ORDER BY id` on a joined query renders as `ORDER BY {table}.id`.
 /// `LIMIT` / `OFFSET` need no qualification — they carry no column
 /// references.
-fn push_tail_qualified<T: Model>(
+pub(crate) fn push_tail_qualified<T: Model>(
     acc: &mut SqlAccumulator,
     qs: &QuerySet<T>,
     parent_table: Option<&'static str>,

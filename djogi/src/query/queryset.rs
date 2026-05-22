@@ -755,6 +755,38 @@ impl<T: Model> QuerySet<T> {
         }
     }
 
+    /// Performs an `INNER JOIN LATERAL` against the provided `inner` queryset.
+    ///
+    /// Returns a [`LateralQuerySet`] that evaluates to `(L, R)` tuples.
+    /// Parent rows (`L`) are dropped from the result if the `inner`
+    /// queryset returns no rows for that parent.
+    ///
+    /// Inside `inner`, you can use `OuterRef::as_lateral_outer_expr()` to
+    /// refer to columns from this outer queryset.
+    pub fn join_lateral<R: Model>(self, inner: QuerySet<R>) -> crate::query::lateral::LateralQuerySet<T, R, crate::query::lateral::InnerLateral> {
+        crate::query::lateral::LateralQuerySet {
+            outer: self,
+            inner,
+            _mode: std::marker::PhantomData,
+        }
+    }
+
+    /// Performs a `LEFT JOIN LATERAL` against the provided `inner` queryset.
+    ///
+    /// Returns a [`LateralQuerySet`] that evaluates to `(L, Option<R>)` tuples.
+    /// Parent rows (`L`) are preserved with `None` if the `inner`
+    /// queryset returns no rows for that parent.
+    ///
+    /// Inside `inner`, you can use `OuterRef::as_lateral_outer_expr()` to
+    /// refer to columns from this outer queryset.
+    pub fn left_join_lateral<R: Model>(self, inner: QuerySet<R>) -> crate::query::lateral::LateralQuerySet<T, R, crate::query::lateral::LeftLateral> {
+        crate::query::lateral::LateralQuerySet {
+            outer: self,
+            inner,
+            _mode: std::marker::PhantomData,
+        }
+    }
+
     /// Structural empty QuerySet — every terminal method (Task 6) short-
     /// circuits to the empty result without touching the database.
     ///

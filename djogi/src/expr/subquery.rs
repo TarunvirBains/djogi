@@ -420,6 +420,21 @@ impl<M: Model, V> OuterRef<M, V> {
             column: self.column,
         })
     }
+
+    /// Promote this outer-scope column ref to a typed [`Expr<V>`] that
+    /// emits as `l.<column>`, using the fixed `l` alias defined by
+    /// lateral queries.
+    ///
+    /// Use this in the inner closure of `join_lateral` or
+    /// `left_join_lateral` to correlate the inner query with the
+    /// outer query.
+    #[must_use = "OuterRef is inert unless promoted to Expr<V>"]
+    pub fn as_lateral_outer_expr(self) -> Expr<V> {
+        Expr::from_node(ExprNode::OuterRefAlias {
+            alias: "l",
+            column: self.column,
+        })
+    }
 }
 
 // ── Q<T> → Option<ErasedSubqueryPredicate> helper ─────────────────────

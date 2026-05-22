@@ -422,6 +422,16 @@ pub(crate) enum ExprNode {
         column: &'static str,
     },
 
+    /// Alias-qualified outer-scope column reference inside a correlated
+    /// subquery — emits `<alias>.<column>`. Used by LATERAL joins to
+    /// unambiguously reference the outer table by its framework alias.
+    OuterRefAlias {
+        /// The framework alias for the outer scope (e.g. `"l"`).
+        alias: &'static str,
+        /// Column on that outer table. Validated.
+        column: &'static str,
+    },
+
     /// `<col> @@ to_tsquery('<dictionary>', $n)` — full-text search match.
     ///
     /// Produced by `FtsFieldRef::matches(query)`. The column name is the

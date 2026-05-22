@@ -1023,6 +1023,14 @@ pub(crate) fn emit_expr(
             acc.push_sql(".");
             acc.push_sql(column);
         }
+        ExprNode::OuterRefAlias { alias, column } => {
+            // Alias-qualified outer-scope column reference — emits
+            // `<alias>.<column>` to disambiguate columns using a fixed
+            // framework alias, e.g., in a LATERAL join context.
+            acc.push_sql(alias);
+            acc.push_sql(".");
+            acc.push_sql(column);
+        }
         ExprNode::IntervalLiteral { microseconds } => {
             // INTERVAL '{N} microseconds' — the full precision of
             // `time::Duration` as a Postgres interval literal. The

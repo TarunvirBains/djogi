@@ -804,6 +804,12 @@ path = "../tests/internal/phase8_5_c4b_set_op_sql_shape.rs"
 harness = true
 required-features = ["testing"]
 
+[[test]]
+name = "phase8_5_c4b_lateral_sql_shape"
+path = "../tests/internal/phase8_5_c4b_lateral_sql_shape.rs"
+harness = true
+required-features = ["testing"]
+
 # Phase 8.5 Cluster 4 (djogi#220 + djogi#221) — DDL metadata SQL shape pins.
 #
 # Internal test pinning the two DDL gaps closed by Cluster 4:
@@ -836,6 +842,11 @@ harness = true
 [[test]]
 name = "phase8_5_c4b_set_op_live"
 path = "../tests/integration/phase8_5_c4b_set_op_live.rs"
+harness = true
+
+[[test]]
+name = "phase8_5_c4b_lateral_join_live"
+path = "../tests/integration/phase8_5_c4b_lateral_join_live.rs"
 harness = true
 
 # Phase 8.5 Cluster 4B issue #106 — typed INSERT...SELECT live coverage.

@@ -460,10 +460,10 @@ pub use fts_query::FtsFieldRef;
 // never reaches for `Condition` directly.
 pub use query::{
     AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
-    ClosureModel, ConditionExt, DjogiPortableEq, FieldRef, FilterClause, InsertSelectColumn,
+    ClosureModel, ConditionExt, DjogiPortableEq, FieldRef, FilterClause, InnerLateral, InsertSelectColumn,
     InsertSelectSource, InsertSelectStmt, IntoAggregateTuple, IntoFieldFilterValue,
     IntoFilterValue, IntoInsertColumns, IntoPortableFieldValue, IntoSetOpArm,
-    JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, Lookup, MaterializeClosureOptions,
+    JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, LateralQuerySet, LeftLateral, Lookup, MaterializeClosureOptions,
     MaterializeClosureReport, ModelCursorStream, ModelFilter, OrderExpr, PairClosureKinshipSum,
     PairOrderExpr, PairSide, PairWindowExt, PortableQuerySet, Q, QuerySet, RawCursorStream,
     RecursiveDirection, RecursiveQuerySet, SetOpKind, SetOpQuerySet, UpdateAssignment, UpdateStmt,

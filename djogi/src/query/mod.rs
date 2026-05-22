@@ -56,6 +56,7 @@ pub mod insert_select;
 // `query::joined` for the design rationale, SQL emission shape, and
 // entry points.
 pub mod joined;
+pub mod lateral;
 pub(crate) mod lock;
 // Phase 8.5 djogi#195 — `MirJzSON` JSON predicate builders.
 //
@@ -158,6 +159,7 @@ pub use joined::{
     JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, PairClosureKinshipSum,
     PairOrderExpr, PairSide, PairWindowExt,
 };
+pub use lateral::{InnerLateral, LateralQuerySet, LeftLateral};
 // `PairAreaOverlapRatio<L, R>` ships only with the `spatial` feature
 // flag enabled: its constructor's `SpatialColumnValue` bound and the
 // `crate::geo::*` types its SQL emitter references are themselves
