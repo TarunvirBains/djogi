@@ -35,9 +35,8 @@
 //!
 //! Both `old` and `new` contain full model-field values, including any fields
 //! annotated `#[field(protected(...))]`. The pair-returning APIs do not implement
-//! field-level redaction — that policy is deferred to issue #227. Adopters who log
-//! or persist a `ReturningPair<T>` are responsible for handling protected-data
-//! exposure until #227 defines a framework-level redaction surface.
+//! field-level redaction. Adopters who log or persist a `ReturningPair<T>` are
+//! responsible for handling protected-data exposure.
 
 /// A before/after snapshot pair returned by PostgreSQL 18 `OLD`/`NEW`
 /// `RETURNING` on an `UPDATE` statement.
@@ -76,8 +75,8 @@
 /// # Protected fields
 ///
 /// Both sides expose full model-field values, including
-/// `#[field(protected(...))]` fields. Framework-level redaction is deferred to
-/// issue #227. Log and persist pairs with care.
+/// `#[field(protected(...))]` fields. Field-level redaction is not presently
+/// implemented. Log and persist pairs with care.
 #[must_use = "inspect both old and new snapshots or explicitly drop the pair"]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReturningPair<T> {

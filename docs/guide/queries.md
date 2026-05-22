@@ -7,9 +7,6 @@ filters, ordering, distinct mode, and pagination without touching the
 database; only terminal methods (`fetch_all`, `count`, `update`, …) emit
 SQL and execute it against a `&mut DjogiContext`.
 
-This document is a Phase 2 reference. For features still on the roadmap —
-expression-backed SET, JOIN-spanning filters, window/aggregate terminals —
-see [the querying roadmap](../roadmap/querying.md).
 
 ---
 
@@ -378,7 +375,7 @@ does not currently have a `Lookup` equivalent because no caller has
 needed the runtime-decided form. Adding `Lookup::IRegex(String)` is
 non-breaking when needed.
 
-`Lookup` is `#[non_exhaustive]` — future phases add variants without a
+`Lookup` is `#[non_exhaustive]` — additional variants may be added without a
 breaking change.
 
 `filter_struct` produces a structurally equivalent condition tree to the
@@ -423,10 +420,7 @@ Empty-assignment short-circuit: `filter(...).update(|_| vec![])` returns
 a Postgres syntax error, so the short-circuit is load-bearing.
 
 Expression-backed SET (`col = col + 1`, `col = NOW()`,
-`col = other_col`) is not in Phase 2 — see the [query roadmap][phase-4]
-for the Phase 4 expression layer, or drop to raw SQL for the one-off case.
-
-[phase-4]: ../roadmap/querying.md
+`col = other_col`) is not presently supported; drop to raw SQL for the one-off case.
 
 ### `delete(&mut ctx)`
 
@@ -739,7 +733,7 @@ a programming error does not hide behind a silent `Ok(0)`.
 ### Return value and RETURNING
 
 The terminal returns the affected row count (`u64`). `RETURNING` for
-INSERT SELECT is not in v0.1.0 — follow up with a SELECT on the target
+INSERT SELECT is not presently supported; follow up with a SELECT on the target
 when you need the inserted rows back.
 
 ---

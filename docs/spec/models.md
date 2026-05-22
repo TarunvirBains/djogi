@@ -140,7 +140,7 @@ Hook order: `before_delete → DELETE RETURNING → outbox(deleted) → after_de
 
 **PG18 only.** No fallback or polyfill for older PostgreSQL versions.
 
-**Protected fields.** Both sides expose full model values including `#[field(protected(...))]` fields. Redaction policy is deferred to issue #227.
+**Protected fields.** Both sides expose full model values including `#[field(protected(...))]` fields. Field-level redaction is not presently implemented.
 
 **Outbox.** The outbox `Save` payload is `pair.new` (the DB post-image). No diff-shaped payload is emitted — outbox consumers receive the same single-payload schema as `save()`.
 
@@ -185,7 +185,7 @@ The public API does NOT require user-defined field types to implement `Default`.
 - `impl djogi::model::Model for <Name>` — CRUD methods backed by `tokio-postgres`
 - `impl Default for <Name>` — suppressed by `#[model(no_default)]` when any user field lacks `Default`
 - `impl djogi::pg::decode::FromPgRow for <Name>` — `tokio-postgres` row deserialization
-- `<Name>Fields` / `<Name>Filter` — typed field accessors and programmatic filter builder (skeleton in Phase 1; Phase 2 fills them in)
+- `<Name>Fields` / `<Name>Filter` — typed field accessors and programmatic filter builder
 - `ModelDescriptor` via `inventory::submit!` — for app registration and migration differ
 - `<Name>::create_with_id(...)` — HeerId models only; pre-allocates the ID before INSERT (used in form pre-generation and bulk workflows)
 - `impl djogi::label::Label for <Name>` — visibility-aware row label, consumed by FK dropdowns, list-view default columns, audit-log entry rendering, and shell `pp()` defaults. The trait method takes a `VisibleFields` parameter; the emitted impl never returns values from fields outside that set. Resolution order: `#[model(label_fn = "...")]` > `#[field(label)]` > first non-id `String`-like field > ID-only fallback. Concurrent `label_fn` and `#[field(label)]` is a compile error. Phase 10 / Maahi consumes the trait but the trait itself lives in `djogi` so non-admin surfaces use it without depending on the admin crate. See [Maahi field-visibility](./maahi/field-visibility.md) for usage detail.
@@ -194,7 +194,7 @@ The public API does NOT require user-defined field types to implement `Default`.
 
 The following core scalar and container types are supported by the current model layer. Relation and JSONB wrappers are documented in their dedicated specs.
 
-Phase 1's `String -> TEXT` rule is the bootstrap mapping, not the long-term public contract for every string-shaped column. The roadmap treats **bounded character storage** and **unbounded text storage** as distinct schema primitives, because `VARCHAR(n)` versus `TEXT` affects generated DDL, migration diffs, and schema intent even when both decode to Rust strings at runtime.
+The `String -> TEXT` rule represents **unbounded text storage**. **Bounded character storage** via `VARCHAR(n)` remains a future direction: `VARCHAR(n)` versus `TEXT` affects generated DDL, migration diffs, and schema intent even when both decode to Rust strings at runtime.
 
 | Rust Type | SQL Type (Postgres) |
 |---|---|
@@ -230,7 +230,7 @@ pub email: String,
 #[field(index)]
 pub slug: String,
 
-#[field(max_length = 100)]          // Phase 1 bootstrap: emits CHECK constraint on TEXT
+#[field(max_length = 100)]          // emits CHECK constraint on TEXT
 pub slug: String,
 
 pub bio: Option<String>,            // Option<T> implies nullable
@@ -245,7 +245,7 @@ pub new_name: String,
 pub weight_kg: f64,
 ```
 
-`#[field(max_length = N)]` is acceptable as the Phase 1 bootstrap surface, but the stronger roadmap contract is that bounded string fields and text fields remain distinguishable in descriptor metadata so migration tooling can treat `TEXT <-> VARCHAR(n)` as a real schema change rather than only as validation.
+Bounded string fields and text fields remain distinguishable in descriptor metadata so migration tooling can treat `TEXT <-> VARCHAR(n)` as a real schema change rather than only as validation.
 
 `#[field(check = "<sql>")]` declares an arbitrary CHECK constraint emitted verbatim by the migration layer. The expression is treated as a raw SQL escape — djogi performs no parsing, sanitization, or semantic validation beyond rejecting empty / whitespace-only strings at parse time. Adopters carry the same review-time responsibility this framework treats `unsafe`-equivalent surfaces with: every callsite is reviewable as raw SQL, syntactic correctness is on the adopter, and the predicate must be Postgres-`IMMUTABLE` (no `now()`, no volatile function calls, no references to other tables). When the framework also projects a type-derived CHECK on the same column (e.g. a `u32` field's `0..=4294967295` range bound), the projection layer combines both via logical `AND` into a single constraint slot; both clauses must pass for an INSERT / UPDATE to land. See [migrations §10.6.2](./migrations.md#1062-adopter-fieldcheck--sql-djogi105) for the full contract.
 
