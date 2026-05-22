@@ -624,6 +624,8 @@ pub mod prelude {
         DjogiPortableEq,
         FieldRef,
         FilterClause,
+        // Phase 8.5 djogi#103 — VALUES join.
+        InlineValues,
         InsertSelectColumn,
         InsertSelectSource,
         InsertSelectStmt,
@@ -633,9 +635,11 @@ pub mod prelude {
         IntoInsertColumns,
         IntoPortableFieldValue,
         IntoSetOpArm,
+        IntoValuesColumns,
         JoinedAnnotatedQuerySet,
         JoinedAnnotatedRow,
         JoinedQuerySet,
+        LeftValuesJoinedQuerySet,
         Lookup,
         MaterializeClosureOptions,
         MaterializeClosureReport,
@@ -657,6 +661,12 @@ pub mod prelude {
         ReturningPair,
         SetOpKind,
         SetOpQuerySet,
+        ValuesFieldRef,
+        ValuesFields,
+        ValuesJoinedQuerySet,
+        ValuesOn,
+        ValuesRow,
+        ValuesScalar,
         VisageQuerySet,
     };
     // `atomic` / `atomic_with` / `retry_on_conflict` /

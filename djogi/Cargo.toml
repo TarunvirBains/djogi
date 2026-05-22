@@ -870,6 +870,11 @@ path = "../tests/integration/phase8_5_c4b_insert_select.rs"
 harness = true
 
 [[test]]
+name = "phase8_5_c4b_values_join_live"
+path = "../tests/integration/phase8_5_c4b_values_join_live.rs"
+harness = true
+
+[[test]]
 name = "phase8_5_c4b_insert_select_projection_order"
 path = "../tests/internal/phase8_5_c4b_insert_select_projection_order.rs"
 harness = true

@@ -186,6 +186,54 @@ PostgreSQL 18 added `OLD`/`NEW` aliases in `RETURNING` clauses for `UPDATE` and 
 
 **MERGE** — MERGE result hydration is presently not supported. `ReturningPair<T>` is intentionally non-optional to preserve UPDATE ergonomics.
 
+### 5.7b VALUES Inline-Relation Joins — djogi#103
+
+`InlineValues<Row>` holds a typed `Vec<Row>` of tuple data computed in Rust.
+`QuerySet<T>::join_values` / `left_join_values` join it against the model
+table with a structured, typed `ON` predicate via `FieldRef::eq_values` /
+`DjogiField::eq_values`.
+
+SQL shape:
+
+```sql
+SELECT
+    __djogi_m.<col>  AS <col>, ...,       -- T's COLUMN_LIST
+    <alias>.<vcol_0> AS __djogi_values_0, -- projected values cols
+    ...
+FROM <table> AS __djogi_m
+INNER JOIN (VALUES
+    ($1::BIGINT, $2::DOUBLE PRECISION),   -- first row: per-column casts
+    ($3, $4)                              -- subsequent rows: bare
+) AS <alias>(<vcol_0>, ...)
+  ON __djogi_m.<model_col> = <alias>.<vcol_0>
+[WHERE __djogi_m.<filter_col> op $n]
+[ORDER BY ...] [LIMIT $n] [OFFSET $n]
+```
+
+Key design properties:
+
+- No implicit `ON TRUE` / cartesian join.  The predicate is always explicit.
+- All row data binds through `SqlAccumulator::push_bind`; alias and column
+  identifiers are validated with `check_user_supplied_ident` at construction.
+- First-row placeholders are cast (`$1::BIGINT`) so Postgres can infer column
+  types even for otherwise ambiguous NULL rows.
+- Empty `InlineValues` short-circuits on inner join (no DB round-trip) and
+  returns typed NULLs for the values side on left join.
+- Unsupported left-queryset state (`prefetch`, `select_related`, `cache`,
+  row locks, non-default `distinct`) returns `DjogiError::Validation`.
+- `left_join_values` uses a framework-owned presence sentinel column to
+  distinguish "no match" from "matched row with nullable columns".
+- Tuple rows arity 1–6.  Supported scalars: standard integers (incl. widened
+  `i8/u8/u16/u32/u64`), floats, `bool`, `Decimal`, `Uuid`, `HeerId`,
+  `HeerIdDesc`, `RanjId`, `RanjIdDesc`, `DateTime`, `Date`, `Time`,
+  `PrimitiveDateTime`, `Interval`, `Vec<u8>`, and `Option<T>` for each.
+
+Adoption note: very large client-side value lists should be loaded into a
+temporary/staging table instead of sent as `VALUES`; Postgres planning cost
+grows with `VALUES` size.  Keep per-query VALUES under ~1 000 rows as a rule
+of thumb.  The framework rejects lists where `rows × arity > 65 535`
+(Postgres parameter ceiling).
+
 ### 5.8 Performance Contract
 
 The query API is expected to support efficient Postgres forms for the workload shapes Djogi targets. That means:
