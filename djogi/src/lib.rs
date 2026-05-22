@@ -463,10 +463,10 @@ pub use query::{
     InsertSelectSource, InsertSelectStmt, IntoAggregateTuple, IntoFieldFilterValue,
     IntoFilterValue, IntoInsertColumns, IntoPortableFieldValue, IntoSetOpArm,
     JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, Lookup, MaterializeClosureOptions,
-    MaterializeClosureReport, ModelCursorStream, ModelFilter, OrderExpr, PairClosureKinshipSum,
-    PairOrderExpr, PairSide, PairWindowExt, PortableQuerySet, Q, QuerySet, RawCursorStream,
-    RecursiveDirection, RecursiveQuerySet, SetOpKind, SetOpQuerySet, UpdateAssignment, UpdateStmt,
-    VisageQuerySet,
+    MaterializeClosureReport, MergeCounts, MergeStmt, ModelCursorStream, ModelFilter, OrderExpr,
+    PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt, PortableQuerySet, Q, QuerySet,
+    RawCursorStream, RecursiveDirection, RecursiveQuerySet, SetOpKind, SetOpQuerySet,
+    UpdateAssignment, UpdateStmt, VisageQuerySet,
 };
 pub use relation::{
     ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
@@ -613,9 +613,10 @@ pub mod prelude {
         InsertSelectSource, InsertSelectStmt, IntoAggregateTuple, IntoFieldFilterValue,
         IntoFilterValue, IntoInsertColumns, IntoPortableFieldValue, IntoSetOpArm,
         JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, Lookup,
-        MaterializeClosureOptions, MaterializeClosureReport, ModelFilter, OrderExpr,
-        PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt, PortableQuerySet, Q,
-        QuerySet, RecursiveDirection, RecursiveQuerySet, SetOpKind, SetOpQuerySet, VisageQuerySet,
+        MaterializeClosureOptions, MaterializeClosureReport, MergeCounts, MergeStmt, ModelFilter,
+        OrderExpr, PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt, PortableQuerySet,
+        Q, QuerySet, RecursiveDirection, RecursiveQuerySet, SetOpKind, SetOpQuerySet,
+        VisageQuerySet,
     };
     // `atomic` / `atomic_with` / `retry_on_conflict` /
     // `retry_on_conflict_with_backoff` — Phase 4 Task 1 canonical transaction

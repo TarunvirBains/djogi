@@ -40,6 +40,8 @@ use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
 use crate::query::portable::{PortablePredicateError, SqlEmitContext};
 use crate::query::q::{ArrayPredicate, CompoundOp, Q};
 use crate::query::queryset::{DistinctMode, QuerySet};
+// Phase 8.5 Issue #178 — typed MERGE types.
+use crate::query::merge::{MergeAction, MergeBranch, MergeMatchKind, MergeOnEq, MergeValue};
 
 /// Escape LIKE/ILIKE wildcards (`%`, `_`, `\\`) so user input is treated
 /// literally. The emitter adds its own surrounding `%` for contains /
@@ -2465,6 +2467,125 @@ pub(crate) fn build_delete<T: Model>(
     let mut acc = SqlAccumulator::new("DELETE FROM ");
     acc.push_sql(T::table_name());
     push_where(&mut acc, qs)?;
+    Ok(acc)
+}
+
+/// Build `MERGE INTO <target> AS tgt USING (...) AS __djogi_src ON ...
+/// [WHEN MATCHED [AND ...] THEN UPDATE SET ... | DELETE]
+/// [WHEN NOT MATCHED [BY TARGET] [AND ...] THEN INSERT (...) VALUES (...)]
+/// [WHEN NOT MATCHED BY SOURCE [AND ...] THEN UPDATE SET ... | DELETE]`.
+///
+/// Phase 8.5 Issue #178 — typed MERGE query surface.
+pub(crate) fn build_merge<S: Model + FromPgRow, T: Model>(
+    source: &QuerySet<S>,
+    on: &[MergeOnEq<S, T>],
+    branches: &[MergeBranch<S, T>],
+    _returning: Option<()>,
+) -> Result<SqlAccumulator, PortablePredicateError> {
+    let mut acc = SqlAccumulator::new("MERGE INTO ");
+    acc.push_sql(T::table_name());
+    acc.push_sql(" AS tgt ");
+
+    // USING (...) AS __djogi_src
+    acc.push_sql("USING (");
+    // Emit source QuerySet as a subquery.
+    let source_acc = build_select(source)?;
+    acc.extend_with(source_acc);
+    acc.push_sql(") AS __djogi_src ");
+
+    // ON (tgt.col = __djogi_src.col AND ...)
+    acc.push_sql("ON ");
+    for (i, cond) in on.iter().enumerate() {
+        if i > 0 {
+            acc.push_sql(" AND ");
+        }
+        acc.push_sql("tgt.");
+        acc.push_sql(cond.target_col);
+        acc.push_sql(" = __djogi_src.");
+        acc.push_sql(cond.source_col);
+    }
+
+    // Branches
+    for branch in branches {
+        acc.push_sql("\nWHEN ");
+        match branch.match_kind {
+            MergeMatchKind::Matched => acc.push_sql("MATCHED"),
+            MergeMatchKind::NotMatchedByTarget => acc.push_sql("NOT MATCHED"),
+            MergeMatchKind::NotMatchedBySource => acc.push_sql("NOT MATCHED BY SOURCE"),
+        }
+
+        if let Some(cond) = &branch.condition {
+            acc.push_sql(" AND ");
+            // Emit condition. Target fields are qualified with `tgt`.
+            // Source fields in the condition must be qualified with `__djogi_src`.
+            // Our MergeWhenCondition::Expr construction uses OuterRefColumn
+            // for source fields, which emit_expr renders verbatim.
+            crate::expr::sql::emit_expr(&mut acc, &cond.node, SqlEmitContext::joined("tgt"))?;
+        }
+
+        acc.push_sql(" THEN ");
+        match &branch.action {
+            MergeAction::Update(updates) => {
+                acc.push_sql("UPDATE SET ");
+                // updated_at = now()
+                acc.push_sql("updated_at = now()");
+                for update in updates {
+                    acc.push_sql(", ");
+                    acc.push_sql(update.target_col);
+                    acc.push_sql(" = ");
+                    match &update.value {
+                        MergeValue::Literal(v, _) => push_filter_value(&mut acc, v.clone()),
+                        MergeValue::SourceField(col, _) => {
+                            acc.push_sql("__djogi_src.");
+                            acc.push_sql(col);
+                        }
+                        MergeValue::TargetExpr(node, _) => {
+                            crate::expr::sql::emit_expr(
+                                &mut acc,
+                                node,
+                                SqlEmitContext::joined("tgt"),
+                            )?;
+                        }
+                    }
+                }
+            }
+            MergeAction::Delete => {
+                acc.push_sql("DELETE");
+            }
+            MergeAction::Insert(columns) => {
+                acc.push_sql("INSERT (");
+                for (i, col) in columns.iter().enumerate() {
+                    if i > 0 {
+                        acc.push_sql(", ");
+                    }
+                    acc.push_sql(col.target_col);
+                }
+                acc.push_sql(") VALUES (");
+                for (i, col) in columns.iter().enumerate() {
+                    if i > 0 {
+                        acc.push_sql(", ");
+                    }
+                    match &col.value {
+                        MergeValue::Literal(v, _) => push_filter_value(&mut acc, v.clone()),
+                        MergeValue::SourceField(scol, _) => {
+                            acc.push_sql("__djogi_src.");
+                            acc.push_sql(scol);
+                        }
+                        MergeValue::TargetExpr(node, _) => {
+                            crate::expr::sql::emit_expr(
+                                &mut acc,
+                                node,
+                                SqlEmitContext::joined("tgt"),
+                            )?;
+                        }
+                    }
+                }
+                acc.push_sql(")");
+            }
+            MergeAction::_Marker(_) => unreachable!("MergeAction::_Marker is a type marker only"),
+        }
+    }
+
     Ok(acc)
 }
 

@@ -73,7 +73,7 @@ use std::marker::PhantomData;
 /// `On(cols)` emits `SELECT DISTINCT ON (col_a, col_b) ...` — the Postgres
 /// extension that keeps the first row per `(col_a, col_b)` tuple, where
 /// "first" is determined by the query's `ORDER BY`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DistinctMode {
     /// `SELECT ...` — no DISTINCT clause.
