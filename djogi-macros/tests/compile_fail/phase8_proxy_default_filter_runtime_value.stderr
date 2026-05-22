@@ -285,9 +285,9 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `djogi::expr::subquery::__macro_support::__make_outer_ref`
-   --> djogi/src/expr/subquery.rs:514:32
+   --> djogi/src/expr/subquery.rs:529:32
     |
-514 |     pub fn __make_outer_ref<M: Model, V>(column: &'static str) -> OuterRef<M, V> {
+529 |     pub fn __make_outer_ref<M: Model, V>(column: &'static str) -> OuterRef<M, V> {
     |                                ^^^^^ required by this bound in `__make_outer_ref`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
