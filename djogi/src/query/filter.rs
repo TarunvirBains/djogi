@@ -36,9 +36,13 @@
 //! 3. **Dynamic SQL assemblers** — search/export jobs that stitch a query
 //!    from a config file or a feature flag.
 //!
-//! Both paths produce the same `Condition` tree and the same SQL — an
-//! integration test in `tests/integration/phase2_queryset.rs` asserts
-//! row-count parity between the two surfaces.
+//! Both paths preserve the same **query result semantics**, but they do
+//! not always materialize the same internal predicate tree: closure
+//! filters build typed portable predicates directly, while
+//! `{Model}Filter` stores erased [`FilterClause`] values and lazily
+//! reconstructs portable `Q` leaves only for owner-approved portable
+//! cases (`bool`/`String` Eq/Neq/In/NotIn). Everything else
+//! conservatively falls back to `Q::Condition`, preserving SQL behavior.
 //!
 //! # How (user surface)
 //!
@@ -158,8 +162,8 @@ impl<V: IntoFilterValue> Lookup<V> {
     ///
     /// `Regex` maps to [`LookupOp::Regex`] — the case-sensitive POSIX
     /// operator (`~`). The closure API exposes `.iregex` for the
-    /// case-insensitive counterpart. The `#[non_exhaustive]` marker allows
-    /// `Lookup::IRegex` to be added without a breaking change.
+    /// case-insensitive counterpart; `Lookup::IRegex` can be added
+    /// without a breaking change thanks to the `#[non_exhaustive]` marker.
     pub(crate) fn into_op_value(self) -> (LookupOp, FilterValue) {
         match self {
             Lookup::Eq(v) => (LookupOp::Eq, v.into_filter_value()),
