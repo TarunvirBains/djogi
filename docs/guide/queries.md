@@ -947,3 +947,65 @@ for the raw-query surface.
 The raw path sits next to the typed one — a query that starts as
 `QuerySet` can pick up a raw tail when a feature isn't shipped yet,
 without migrating the entire call site.
+
+---
+
+## MERGE INTO
+
+`MERGE` (Phase 8.5, GH #178) is a powerful single statement that synchronizes
+a source relation (any `QuerySet<S>`) into a target table. It can perform
+`INSERT`, `UPDATE`, or `DELETE` actions based on whether rows match a join
+condition.
+
+Common use cases include:
+- **Bulk Upsert**: Insert new rows and update existing ones from an external feed.
+- **Update if Changed**: Only update target rows when the source value actually differs (using `.is_distinct_from_source()`).
+- **Soft Deletion**: Flag target rows as "inactive" if they are no longer present in the source relation.
+
+### Basic Syntax
+
+```rust
+use djogi::prelude::*;
+
+source_qs.merge_into::<Target, _, _>(|target, source| {
+    target.external_id().merge_on_eq(source.external_id())
+})
+.when_matched_and_update(Some(target.payload().is_distinct_from_source(source.payload())), vec![
+    target.payload().merge_copy_from(source.payload()),
+])
+.when_not_matched_then_insert(None, vec![
+    target.external_id().merge_insert_from(source.external_id()),
+    target.payload().merge_insert_from(source.payload()),
+])
+.execute(&mut ctx).await?;
+```
+
+### Convenience: `when_matched_update_changed`
+
+Building a manual "update if changed" condition for multiple columns is tedious.
+Djogi provides a convenience helper that automatically builds an
+`IS DISTINCT FROM` chain for you:
+
+```rust
+.when_matched_update_changed(vec![
+    target.field_a().merge_copy_from(source.field_a()),
+    target.field_b().merge_copy_from(source.field_b()),
+])
+// Emits: WHEN MATCHED AND (tgt.field_a IS DISTINCT FROM src.field_a OR tgt.field_b IS DISTINCT FROM src.field_b)
+```
+
+### Validations & Safety
+
+To prevent accidental broad data loss or corruption, Djogi enforces several
+safety invariants on the `MERGE` surface:
+
+1. **Structural `.none()` Rejection**: If you attempt to run a `MERGE` with
+   source.none() and a `WHEN NOT MATCHED BY SOURCE` branch is present, Djogi
+   will return an error. This prevents accidentally deleting your entire target
+   table because the source happened to be empty.
+2. **Target-only predicates for BY SOURCE**: Branches that act on missing source
+   rows cannot reference source fields in their conditions.
+3. **Auto-stamping**: All `UPDATE` actions in a `MERGE` automatically append
+   `updated_at = now()` to the set list, maintaining Djogi's audit integrity.
+4. **Source State**: The source queryset must not carry state that is incompatible
+   with a `USING` subquery (e.g., prefetch, cache, or locks).

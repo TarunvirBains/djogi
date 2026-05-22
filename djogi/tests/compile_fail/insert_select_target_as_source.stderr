@@ -1,4 +1,4 @@
-error[E0277]: the trait bound `Vec<InsertSelectColumn<..., ...>>: IntoInsertColumns<..., ...>` is not satisfied
+error[E0277]: the trait bound `Vec<...>: IntoInsertColumns<..., ...>` is not satisfied
    --> $DIR/insert_select_target_as_source.rs:32:49
     |
  32 |         .insert_into::<TargetAsSourceTarget, _, _>(|target, _source| {
@@ -6,7 +6,7 @@ error[E0277]: the trait bound `Vec<InsertSelectColumn<..., ...>>: IntoInsertColu
     |          |
     |          required by a bound introduced by this call
     |
-help: the trait `IntoInsertColumns<TargetAsSourceSource, TargetAsSourceTarget>` is not implemented for `Vec<InsertSelectColumn<TargetAsSourceTarget, TargetAsSourceTarget>>`
+help: the trait `IntoInsertColumns<TargetAsSourceSource, TargetAsSourceTarget>` is not implemented for `Vec<InsertSelectColumn<TargetAsSourceTarget, ...>>`
       but trait `IntoInsertColumns<TargetAsSourceTarget, TargetAsSourceTarget>` is implemented for it
    --> djogi/src/query/insert_select.rs:596:1
     |

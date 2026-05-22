@@ -1,9 +1,10 @@
-error[E0277]: the trait bound `(AggregateExpr<f64>, AggregateExpr<f64, ...>): PlainAnnotationTuple` is not satisfied
+error[E0277]: the trait bound `(AggregateExpr<f64>, ...): PlainAnnotationTuple` is not satisfied
     --> $DIR/plain_annotate_mixed_tuple_non_windowable.rs:14:10
      |
   14 |         .annotate(|f| (f.score().sum(), f.score().percentile_cont(0.5)));
-     |          ^^^^^^^^ the trait `djogi::query::annotate::PlainAnnotationTuple` is not implemented for `(AggregateExpr<f64>, AggregateExpr<f64, OrderedSetAgg>)`
+     |          ^^^^^^^^ unsatisfied trait bound
      |
+     = help: the trait `djogi::query::annotate::PlainAnnotationTuple` is not implemented for `(AggregateExpr<f64>, AggregateExpr<f64, OrderedSetAgg>)`
 help: the following other types implement trait `djogi::query::annotate::PlainAnnotationTuple`
     --> djogi/src/query/annotate.rs:977:1
      |

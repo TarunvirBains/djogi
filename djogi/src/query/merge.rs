@@ -44,6 +44,11 @@ use crate::query::terminal::auto_set_tenant;
 use std::collections::HashSet;
 use std::marker::PhantomData;
 
+/// Framework-fixed alias for the target table in `MERGE`.
+pub(crate) const TGT_ALIAS: &str = "tgt";
+/// Framework-fixed alias for the source subquery in `MERGE`.
+pub(crate) const SRC_ALIAS: &str = "__djogi_src";
+
 /// Result count for a `MERGE` operation.
 ///
 /// PostgreSQL returns the total number of rows affected across all actions
@@ -66,6 +71,27 @@ pub struct MergeStmt<S: Model + FromPgRow, T: Model> {
     pub(crate) on: Vec<MergeOnEq<S, T>>,
     pub(crate) branches: Vec<MergeBranch<S, T>>,
     pub(crate) _target: PhantomData<T>,
+}
+
+impl<S: Model + FromPgRow, T: Model> Clone for MergeStmt<S, T> {
+    fn clone(&self) -> Self {
+        Self {
+            source: self.source.clone(),
+            on: self.on.clone(),
+            branches: self.branches.clone(),
+            _target: PhantomData,
+        }
+    }
+}
+
+impl<S: Model + FromPgRow, T: Model> std::fmt::Debug for MergeStmt<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MergeStmt")
+            .field("source", &self.source)
+            .field("on", &self.on)
+            .field("branches", &self.branches)
+            .finish()
+    }
 }
 
 impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
@@ -162,7 +188,7 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
                             column: update.target_col,
                         }),
                         rhs: Box::new(ExprNode::OuterRefColumn {
-                            table: "__djogi_src",
+                            table: SRC_ALIAS,
                             column: source_col,
                         }),
                     },
@@ -186,11 +212,10 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
         // 2. Short-circuit: structural-empty source.
         // If there are BY SOURCE branches, we cannot short-circuit because an empty
         // source means all target rows are NOT MATCHED BY SOURCE.
-        let has_by_source = self
-            .branches
-            .iter()
-            .any(|b| b.match_kind == MergeMatchKind::NotMatchedBySource);
-        if self.source.is_empty() && !has_by_source {
+        //
+        // However, structural-empty source (`.none()`) with BY SOURCE branches is
+        // rejected in validate() to prevent unintentional broad updates.
+        if self.source.is_empty() {
             return Ok(MergeCounts::zero());
         }
 
@@ -228,8 +253,6 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
         }
 
         // 1. Reject incompatible source state.
-        // MERGE USING subquery does not support Djogi-side prefetch/select_related/cache.
-        // Locks (FOR UPDATE) inside the USING subquery are rejected by PG.
         if !self.source.prefetch_paths.is_empty() {
             return Err(DjogiError::MergeSourceInvalid {
                 table: S::table_name(),
@@ -261,6 +284,18 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
             });
         }
 
+        // Reject structural-empty source with BY SOURCE branches by default (Spec #178 BLOCK 1).
+        let has_by_source = self
+            .branches
+            .iter()
+            .any(|b| b.match_kind == MergeMatchKind::NotMatchedBySource);
+        if self.source.is_empty() && has_by_source {
+            return Err(DjogiError::MergeSourceInvalid {
+                table: S::table_name(),
+                reason: "structural-empty source (.none()) is rejected when BY SOURCE branches exist to prevent broad updates; use an explicit filter that matches no rows if this was intentional",
+            });
+        }
+
         // 2. Branch-level validations.
         let mut seen_unconditional_matched = false;
         let mut seen_unconditional_not_matched = false;
@@ -269,7 +304,6 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
         for (i, branch) in self.branches.iter().enumerate() {
             let is_unconditional = branch.condition.is_none();
 
-            // Unreachable branch check: same-kind unconditional branch follows another.
             match branch.match_kind {
                 MergeMatchKind::Matched => {
                     if seen_unconditional_matched {
@@ -312,6 +346,13 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
                     if is_unconditional {
                         seen_unconditional_not_matched_by_source = true;
                     }
+                }
+            }
+
+            // BY SOURCE predicates must only reference target fields (Spec #178 BLOCK 2).
+            if branch.match_kind == MergeMatchKind::NotMatchedBySource {
+                if let Some(cond) = &branch.condition {
+                    check_target_only_predicate(&cond.node, target_table)?;
                 }
             }
 
@@ -367,11 +408,64 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
     }
 }
 
-#[derive(Debug, Clone)]
+fn check_target_only_predicate(node: &ExprNode, table: &'static str) -> Result<(), DjogiError> {
+    match node {
+        ExprNode::Field { .. } => Ok(()),
+        ExprNode::OuterRefColumn { table: alias, column } => {
+            if *alias == SRC_ALIAS {
+                return Err(DjogiError::MergeBranchInvalid {
+                    table,
+                    reason: format!(
+                        "BY SOURCE branch condition cannot reference source field `{}`",
+                        column
+                    ),
+                });
+            }
+            Ok(())
+        }
+        ExprNode::Literal(_) => Ok(()),
+        ExprNode::Add(l, r)
+        | ExprNode::Sub(l, r)
+        | ExprNode::Mul(l, r)
+        | ExprNode::Div(l, r)
+        | ExprNode::And(l, r)
+        | ExprNode::Or(l, r) => {
+            check_target_only_predicate(l, table)?;
+            check_target_only_predicate(r, table)
+        }
+        ExprNode::Not(e) => check_target_only_predicate(e, table),
+        ExprNode::Cmp { lhs, rhs, .. } => {
+            check_target_only_predicate(lhs, table)?;
+            check_target_only_predicate(rhs, table)
+        }
+        _ => Ok(()),
+    }
+}
+
 pub struct MergeBranch<S: Model, T: Model> {
     pub(crate) match_kind: MergeMatchKind,
     pub(crate) condition: Option<MergeWhenCondition<S, T>>,
     pub(crate) action: MergeAction<S, T>,
+}
+
+impl<S: Model, T: Model> Clone for MergeBranch<S, T> {
+    fn clone(&self) -> Self {
+        Self {
+            match_kind: self.match_kind,
+            condition: self.condition.clone(),
+            action: self.action.clone(),
+        }
+    }
+}
+
+impl<S: Model, T: Model> std::fmt::Debug for MergeBranch<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MergeBranch")
+            .field("match_kind", &self.match_kind)
+            .field("condition", &self.condition)
+            .field("action", &self.action)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -381,7 +475,6 @@ pub enum MergeMatchKind {
     NotMatchedBySource,
 }
 
-#[derive(Debug, Clone)]
 pub enum MergeAction<S: Model, T: Model> {
     Update(Vec<MergeUpdateAssignment<S, T>>),
     Delete,
@@ -390,17 +483,73 @@ pub enum MergeAction<S: Model, T: Model> {
     _Marker(PhantomData<(S, T)>),
 }
 
-#[derive(Debug, Clone)]
+impl<S: Model, T: Model> Clone for MergeAction<S, T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Update(v) => Self::Update(v.clone()),
+            Self::Delete => Self::Delete,
+            Self::Insert(v) => Self::Insert(v.clone()),
+            Self::_Marker(_) => Self::_Marker(PhantomData),
+        }
+    }
+}
+
+impl<S: Model, T: Model> std::fmt::Debug for MergeAction<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Update(v) => f.debug_tuple("Update").field(v).finish(),
+            Self::Delete => f.write_str("Delete"),
+            Self::Insert(v) => f.debug_tuple("Insert").field(v).finish(),
+            Self::_Marker(_) => f.write_str("_Marker"),
+        }
+    }
+}
+
 pub struct MergeOnEq<S: Model, T: Model> {
     pub(crate) target_col: &'static str,
     pub(crate) source_col: &'static str,
     pub(crate) _marker: PhantomData<(S, T)>,
 }
 
-#[derive(Debug, Clone)]
+impl<S: Model, T: Model> Clone for MergeOnEq<S, T> {
+    fn clone(&self) -> Self {
+        Self {
+            target_col: self.target_col,
+            source_col: self.source_col,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S: Model, T: Model> std::fmt::Debug for MergeOnEq<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MergeOnEq")
+            .field("target_col", &self.target_col)
+            .field("source_col", &self.source_col)
+            .finish()
+    }
+}
+
 pub struct MergeWhenCondition<S: Model, T: Model> {
     pub(crate) node: ExprNode,
     pub(crate) _marker: PhantomData<(S, T)>,
+}
+
+impl<S: Model, T: Model> Clone for MergeWhenCondition<S, T> {
+    fn clone(&self) -> Self {
+        Self {
+            node: self.node.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S: Model, T: Model> std::fmt::Debug for MergeWhenCondition<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MergeWhenCondition")
+            .field("node", &self.node)
+            .finish()
+    }
 }
 
 impl<S: Model, T: Model> MergeWhenCondition<S, T> {
@@ -430,25 +579,80 @@ impl<S: Model + FromPgRow, T: Model> std::ops::Not for MergeWhenCondition<S, T> 
     }
 }
 
-#[derive(Debug, Clone)]
 pub struct MergeUpdateAssignment<S: Model, T: Model> {
     pub(crate) target_col: &'static str,
     pub(crate) value: MergeValue<S, T>,
     pub(crate) _marker: PhantomData<(S, T)>,
 }
 
-#[derive(Debug, Clone)]
+impl<S: Model, T: Model> Clone for MergeUpdateAssignment<S, T> {
+    fn clone(&self) -> Self {
+        Self {
+            target_col: self.target_col,
+            value: self.value.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S: Model, T: Model> std::fmt::Debug for MergeUpdateAssignment<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MergeUpdateAssignment")
+            .field("target_col", &self.target_col)
+            .field("value", &self.value)
+            .finish()
+    }
+}
+
 pub struct MergeInsertColumn<S: Model, T: Model> {
     pub(crate) target_col: &'static str,
     pub(crate) value: MergeValue<S, T>,
     pub(crate) _marker: PhantomData<(S, T)>,
 }
 
-#[derive(Debug, Clone)]
+impl<S: Model, T: Model> Clone for MergeInsertColumn<S, T> {
+    fn clone(&self) -> Self {
+        Self {
+            target_col: self.target_col,
+            value: self.value.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S: Model, T: Model> std::fmt::Debug for MergeInsertColumn<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MergeInsertColumn")
+            .field("target_col", &self.target_col)
+            .field("value", &self.value)
+            .finish()
+    }
+}
+
 pub(crate) enum MergeValue<S: Model, T: Model> {
     Literal(crate::query::condition::FilterValue, PhantomData<(S, T)>),
     SourceField(&'static str, PhantomData<(S, T)>),
     TargetExpr(crate::expr::node::ExprNode, PhantomData<(S, T)>),
+}
+
+impl<S: Model, T: Model> Clone for MergeValue<S, T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Literal(v, _) => Self::Literal(v.clone(), PhantomData),
+            Self::SourceField(c, _) => Self::SourceField(c, PhantomData),
+            Self::TargetExpr(e, _) => Self::TargetExpr(e.clone(), PhantomData),
+        }
+    }
+}
+
+impl<S: Model, T: Model> std::fmt::Debug for MergeValue<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Literal(v, _) => f.debug_tuple("Literal").field(v).finish(),
+            Self::SourceField(c, _) => f.debug_tuple("SourceField").field(c).finish(),
+            Self::TargetExpr(e, _) => f.debug_tuple("TargetExpr").field(e).finish(),
+        }
+    }
 }
 
 pub trait IntoMergeWhenCondition<S: Model, T: Model> {
@@ -599,7 +803,7 @@ impl<T: Model, V> FieldRef<T, V> {
                     column: self.column(),
                 }),
                 rhs: Box::new(ExprNode::OuterRefColumn {
-                    table: "__djogi_src",
+                    table: SRC_ALIAS,
                     column: source.column(),
                 }),
             },
@@ -789,9 +993,7 @@ mod tests {
             "USING (SELECT id, created_at, updated_at, payload FROM fake) AS __djogi_src"
         ));
         assert!(sql.contains("ON tgt.id = __djogi_src.id"));
-        assert!(sql.contains(
-            "WHEN MATCHED THEN UPDATE SET updated_at = now(), payload = __djogi_src.payload"
-        ));
+        assert!(sql.contains("WHEN MATCHED THEN UPDATE SET updated_at = now(), payload = __djogi_src.payload"));
         assert!(sql.contains("WHEN NOT MATCHED THEN INSERT (id, payload) VALUES (__djogi_src.id, __djogi_src.payload)"));
     }
 
@@ -844,6 +1046,36 @@ mod tests {
         assert!(matches!(res, Err(DjogiError::MergeBranchInvalid { .. })));
         if let Err(DjogiError::MergeBranchInvalid { reason, .. }) = res {
             assert!(reason.contains("duplicate target column `payload`"));
+        }
+    }
+
+    #[test]
+    fn merge_validation_rejects_structural_none_with_by_source() {
+        let source: QuerySet<Fake> = QuerySet::new().none();
+        let stmt = source
+            .merge_into::<Fake, _, _>(|tgt, src| tgt.id().merge_on_eq(src.id()))
+            .when_not_matched_by_source_then_delete(None::<MergeWhenCondition<Fake, Fake>>);
+
+        let res = stmt.validate();
+        assert!(matches!(res, Err(DjogiError::MergeSourceInvalid { .. })));
+        if let Err(DjogiError::MergeSourceInvalid { reason, .. }) = res {
+            assert!(reason.contains("structural-empty source (.none()) is rejected"));
+        }
+    }
+
+    #[test]
+    fn merge_validation_rejects_by_source_with_source_ref() {
+        let source: QuerySet<Fake> = QuerySet::new();
+        let stmt = source
+            .merge_into::<Fake, _, _>(|tgt, src| tgt.id().merge_on_eq(src.id()))
+            .when_not_matched_by_source_then_delete(Some(
+                Fake::fields().payload().is_distinct_from_source(Fake::fields().payload()),
+            ));
+
+        let res = stmt.validate();
+        assert!(matches!(res, Err(DjogiError::MergeBranchInvalid { .. })));
+        if let Err(DjogiError::MergeBranchInvalid { reason, .. }) = res {
+            assert!(reason.contains("BY SOURCE branch condition cannot reference source field"));
         }
     }
 }

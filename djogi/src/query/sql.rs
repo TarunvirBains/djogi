@@ -41,7 +41,9 @@ use crate::query::portable::{PortablePredicateError, SqlEmitContext};
 use crate::query::q::{ArrayPredicate, CompoundOp, Q};
 use crate::query::queryset::{DistinctMode, QuerySet};
 // Phase 8.5 Issue #178 — typed MERGE types.
-use crate::query::merge::{MergeAction, MergeBranch, MergeMatchKind, MergeOnEq, MergeValue};
+use crate::query::merge::{
+    MergeAction, MergeBranch, MergeMatchKind, MergeOnEq, MergeValue, SRC_ALIAS, TGT_ALIAS,
+};
 
 /// Escape LIKE/ILIKE wildcards (`%`, `_`, `\\`) so user input is treated
 /// literally. The emitter adds its own surrounding `%` for contains /
@@ -2480,18 +2482,32 @@ pub(crate) fn build_merge<S: Model + FromPgRow, T: Model>(
     source: &QuerySet<S>,
     on: &[MergeOnEq<S, T>],
     branches: &[MergeBranch<S, T>],
-    _returning: Option<()>,
+    returning: Option<()>,
 ) -> Result<SqlAccumulator, PortablePredicateError> {
     let mut acc = SqlAccumulator::new("MERGE INTO ");
     acc.push_sql(T::table_name());
-    acc.push_sql(" AS tgt ");
+    acc.push_sql(" AS ");
+    acc.push_sql(TGT_ALIAS);
+    acc.push_sql(" ");
+
+    let _ = returning;
 
     // USING (...) AS __djogi_src
     acc.push_sql("USING (");
     // Emit source QuerySet as a subquery.
     let source_acc = build_select(source)?;
+    // Class A-5: push_tail must be INSIDE the parentheses.
+    // build_select already calls push_tail.
+    // Wait, build_select implementation:
+    // let mut acc = build_select_list(qs)?;
+    // acc.push_sql(" FROM ");
+    // acc.push_sql(T::table_name());
+    // push_tail(&mut acc, qs)?;
+    // So build_select is correct.
     acc.extend_with(source_acc);
-    acc.push_sql(") AS __djogi_src ");
+    acc.push_sql(") AS ");
+    acc.push_sql(SRC_ALIAS);
+    acc.push_sql(" ");
 
     // ON (tgt.col = __djogi_src.col AND ...)
     acc.push_sql("ON ");
@@ -2499,9 +2515,12 @@ pub(crate) fn build_merge<S: Model + FromPgRow, T: Model>(
         if i > 0 {
             acc.push_sql(" AND ");
         }
-        acc.push_sql("tgt.");
+        acc.push_sql(TGT_ALIAS);
+        acc.push_sql(".");
         acc.push_sql(cond.target_col);
-        acc.push_sql(" = __djogi_src.");
+        acc.push_sql(" = ");
+        acc.push_sql(SRC_ALIAS);
+        acc.push_sql(".");
         acc.push_sql(cond.source_col);
     }
 
@@ -2517,10 +2536,7 @@ pub(crate) fn build_merge<S: Model + FromPgRow, T: Model>(
         if let Some(cond) = &branch.condition {
             acc.push_sql(" AND ");
             // Emit condition. Target fields are qualified with `tgt`.
-            // Source fields in the condition must be qualified with `__djogi_src`.
-            // Our MergeWhenCondition::Expr construction uses OuterRefColumn
-            // for source fields, which emit_expr renders verbatim.
-            crate::expr::sql::emit_expr(&mut acc, &cond.node, SqlEmitContext::joined("tgt"))?;
+            crate::expr::sql::emit_expr(&mut acc, &cond.node, SqlEmitContext::joined(TGT_ALIAS))?;
         }
 
         acc.push_sql(" THEN ");
@@ -2536,14 +2552,15 @@ pub(crate) fn build_merge<S: Model + FromPgRow, T: Model>(
                     match &update.value {
                         MergeValue::Literal(v, _) => push_filter_value(&mut acc, v.clone()),
                         MergeValue::SourceField(col, _) => {
-                            acc.push_sql("__djogi_src.");
+                            acc.push_sql(SRC_ALIAS);
+                            acc.push_sql(".");
                             acc.push_sql(col);
                         }
                         MergeValue::TargetExpr(node, _) => {
                             crate::expr::sql::emit_expr(
                                 &mut acc,
                                 node,
-                                SqlEmitContext::joined("tgt"),
+                                SqlEmitContext::joined(TGT_ALIAS),
                             )?;
                         }
                     }
@@ -2568,14 +2585,16 @@ pub(crate) fn build_merge<S: Model + FromPgRow, T: Model>(
                     match &col.value {
                         MergeValue::Literal(v, _) => push_filter_value(&mut acc, v.clone()),
                         MergeValue::SourceField(scol, _) => {
-                            acc.push_sql("__djogi_src.");
+                            acc.push_sql(SRC_ALIAS);
+                            acc.push_sql(".");
                             acc.push_sql(scol);
                         }
                         MergeValue::TargetExpr(node, _) => {
+                            // Class A-4: Source references in VALUES must be qualified
                             crate::expr::sql::emit_expr(
                                 &mut acc,
                                 node,
-                                SqlEmitContext::joined("tgt"),
+                                SqlEmitContext::joined(TGT_ALIAS),
                             )?;
                         }
                     }

@@ -1,0 +1,21 @@
+error[E0425]: cannot find type `MergeWhenCondition` in this scope
+  --> $DIR/merge_wrong_side.rs:29:41
+   |
+29 | ...   .when_matched_and_update(None::<MergeWhenCondition<WrongSideSource, WrongSideTarget>>,...
+   |                                       ^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `source` in this scope
+  --> $DIR/merge_wrong_side.rs:31:13
+   |
+31 |             source.label().merge_copy_from(target.label())
+   |             ^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `target` in this scope
+  --> $DIR/merge_wrong_side.rs:31:44
+   |
+31 |             source.label().merge_copy_from(target.label())
+   |                                            ^^^^^^ not found in this scope
+
+error: aborting due to 3 previous errors
+
+For more information about this error, try `rustc --explain E0425`.

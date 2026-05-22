@@ -175,7 +175,51 @@ Related framework gaps not covered by this surface:
 - `RETURNING` for INSERT...SELECT — follow-up issue; current terminal
   returns the affected row count only.
 
-### 5.8 Performance Contract
+### 5.8 Typed MERGE INTO (Phase 8.5 — djogi#178)
+
+Adopter shape — perform upserts, "update if changed" guards, or soft-deletions
+using a single statement that synchronizes a source relation into a target table:
+
+```rust
+use djogi::prelude::*;
+
+source_qs.merge_into::<Target, _, _>(|target, source| {
+    target.external_id().merge_on_eq(source.external_id())
+})
+.when_matched_and_update(Some(target.payload().is_distinct_from_source(source.payload())), vec![
+    target.payload().merge_copy_from(source.payload()),
+])
+.when_not_matched_then_insert(None, vec![
+    target.external_id().merge_insert_from(source.external_id()),
+    target.payload().merge_insert_from(source.payload()),
+])
+.execute(&mut ctx).await?;
+```
+
+Contract:
+
+- The entry point `merge_into` receives a closure `(T::Fields, S::Fields)` and
+  returns one or more join conditions via `target.col().merge_on_eq(source.col())`.
+- `WHEN MATCHED [AND condition] THEN UPDATE SET ...` allows updating the matched
+  target row using source values, literal values, or target-side expressions.
+- `WHEN NOT MATCHED [BY TARGET] [AND condition] THEN INSERT (...) VALUES (...)`
+  allows inserting a new row when the source row has no target counterpart.
+- `WHEN MATCHED [AND condition] THEN DELETE` removes the target row.
+- `WHEN NOT MATCHED BY SOURCE [AND condition] THEN [UPDATE | DELETE]` allows
+  acting on target rows that have no source counterpart (requires Postgres 18+).
+- **Auto-stamping**: `UPDATE` actions automatically append `tgt.updated_at = now()`.
+- **Validations**:
+  - Rejects `source.none()` (structural empty) by default if `BY SOURCE` branches
+    exist to prevent unintentional broad updates.
+  - `BY SOURCE` predicates are constrained to target-only fields (enforced at
+    runtime by the emitter).
+  - Rejects source state that cannot be safely represented (`prefetch`,
+    `select_related`, `cache`, `lock`, `distinct`).
+  - Rejects manual assignment to `updated_at` and duplicate target columns.
+- **Convenience**: `when_matched_update_changed(updates)` automatically builds
+  an `IS DISTINCT FROM` condition for the mapped columns.
+
+### 5.9 Performance Contract
 
 The query API is expected to support efficient Postgres forms for the workload shapes Djogi targets. That means:
 
