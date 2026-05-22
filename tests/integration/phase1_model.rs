@@ -567,3 +567,135 @@ async fn rich_field_types_roundtrip(mut ctx: djogi::DjogiContext) {
     assert_eq!(fetched.tags.len(), 2);
     assert_eq!(fetched.ratings, vec![5, 4, 5]);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING integration tests
+// ---------------------------------------------------------------------------
+//
+// The `Post` model (table = "posts", pk = HeerId) is reused below. All tests
+// are additive and do not change the model schema.
+
+#[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
+async fn update_returning_pair_returns_old_and_new_snapshots(mut ctx: djogi::DjogiContext) {
+    let post = Post::create(
+        &mut ctx,
+        Post {
+            title: "Before".into(),
+            body: "initial body".into(),
+            published: false,
+            view_count: 0,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create should succeed");
+
+    let original_id = post.id;
+    let original_created_at = post.created_at;
+
+    // Mutate the in-memory instance and call update_returning_pair.
+    let mut to_update = post;
+    to_update.title = "After".into();
+    to_update.published = true;
+    to_update.view_count = 42;
+
+    let pair = to_update
+        .update_returning_pair(&mut ctx)
+        .await
+        .expect("update_returning_pair should succeed");
+
+    // old and new share the same primary key and created_at.
+    assert_eq!(pair.old.id, original_id, "old.id must equal new.id");
+    assert_eq!(pair.new.id, original_id, "new.id must equal original id");
+    assert_eq!(
+        pair.old.created_at, original_created_at,
+        "created_at must not change on update"
+    );
+    assert_eq!(pair.new.created_at, original_created_at);
+
+    // old side preserves the pre-update values.
+    assert_eq!(pair.old.title, "Before");
+    assert!(!pair.old.published);
+    assert_eq!(pair.old.view_count, 0);
+
+    // new side reflects the applied changes.
+    assert_eq!(pair.new.title, "After");
+    assert!(pair.new.published);
+    assert_eq!(pair.new.view_count, 42);
+
+    // updated_at must not regress.
+    assert!(
+        pair.new.updated_at >= pair.old.updated_at,
+        "new.updated_at must not be before old.updated_at"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
+async fn update_returning_pair_reflects_db_in_new_row(mut ctx: djogi::DjogiContext) {
+    // Verify that pair.new can be fetched from the DB and matches.
+    let post = Post::create(
+        &mut ctx,
+        Post {
+            title: "DB Check".into(),
+            body: "check body".into(),
+            published: false,
+            view_count: 0,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create should succeed");
+
+    let id = post.id;
+    let mut to_update = post;
+    to_update.title = "DB Check Updated".into();
+    let pair = to_update
+        .update_returning_pair(&mut ctx)
+        .await
+        .expect("update_returning_pair should succeed");
+
+    // Fetch fresh from DB and compare with pair.new.
+    let from_db = Post::get(&mut ctx, id)
+        .await
+        .expect("get should find updated post");
+    assert_eq!(from_db.title, pair.new.title);
+    assert_eq!(from_db.updated_at, pair.new.updated_at);
+}
+
+#[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
+async fn delete_returning_returns_pre_delete_snapshot(mut ctx: djogi::DjogiContext) {
+    let post = Post::create(
+        &mut ctx,
+        Post {
+            title: "To Delete".into(),
+            body: "delete body".into(),
+            published: true,
+            view_count: 7,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create should succeed");
+
+    let id = post.id;
+    let title = post.title.clone();
+    let view_count = post.view_count;
+
+    let deleted = post
+        .delete_returning(&mut ctx)
+        .await
+        .expect("delete_returning should succeed");
+
+    // The returned snapshot matches what was in the DB.
+    assert_eq!(deleted.id, id);
+    assert_eq!(deleted.title, title);
+    assert_eq!(deleted.view_count, view_count);
+    assert!(deleted.published);
+
+    // Row is gone from the DB.
+    let result = Post::get(&mut ctx, id).await;
+    assert!(
+        matches!(result, Err(DjogiError::NotFound { .. })),
+        "row should be gone after delete_returning, got {result:?}"
+    );
+}

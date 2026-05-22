@@ -288,6 +288,117 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
         ctx: &'ctx mut DjogiContext,
     ) -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx;
 
+    // ── Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING ─────────────────────────
+
+    /// Update this row and return a before/after snapshot pair.
+    ///
+    /// Uses PostgreSQL 18 `RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)`
+    /// to retrieve both the pre-update and post-update row images in a single
+    /// round-trip, decoded into a [`ReturningPair<Self>`].
+    ///
+    /// # Consumes `self`
+    ///
+    /// This method consumes `self` because the caller's in-memory instance is
+    /// stale after the update. The type system prevents accidental reuse.
+    /// Continue working with `pair.new` after the call returns.
+    ///
+    /// # Relation to `save()`
+    ///
+    /// `save()` is the in-place update API — it rehydrates `self` from the DB
+    /// and returns `()`. Use `save()` when you want to continue using the same
+    /// instance. Use `update_returning_pair` when you need both the before and
+    /// after snapshots.
+    ///
+    /// # Versioned models
+    ///
+    /// For models with `#[field(version)]`, this method enforces the same
+    /// optimistic-lock behavior as `save()`: if the DB version has advanced
+    /// beyond the in-memory value, the call returns
+    /// [`DjogiError::LockConflict`].
+    ///
+    /// # Hooks and outbox
+    ///
+    /// Hook and outbox order mirrors `save()`:
+    /// `before_save → UPDATE RETURNING → outbox(pair.new) → after_save(pair.new) → on_commit`.
+    ///
+    /// The outbox `Save` payload is the DB-returned post-image (`pair.new`),
+    /// not the (stale) consumed `self`. No diff-shaped outbox payload is
+    /// emitted in this release — see the outbox module docs for the v1 policy.
+    ///
+    /// # Protected fields
+    ///
+    /// Both `old` and `new` expose full model field values, including
+    /// `#[field(protected(...))]` fields. Redaction policy is deferred to
+    /// issue #227.
+    ///
+    /// # PostgreSQL 18 only
+    ///
+    /// Djogi has a hard PostgreSQL 18 floor. No fallback or polyfill is
+    /// provided for older PostgreSQL versions.
+    fn update_returning_pair(
+        self,
+        ctx: &mut DjogiContext,
+    ) -> impl Future<Output = Result<crate::query::ReturningPair<Self>, DjogiError>> + Send {
+        // The `#[model]` macro emits a real implementation that issues the PG18
+        // `UPDATE … RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)`
+        // SQL. This default body exists only so hand-rolled test `Fake` models
+        // (which are never actually called for returning-pair operations) satisfy
+        // the trait without boilerplate — the same pattern used for
+        // `__delta_should_tombstone` and `__djogi_emit_field_predicate`. Using
+        // `ctx` in the signature keeps the bound parameter visible; suppress the
+        // unused-variable lint explicitly.
+        let _ = ctx;
+        async {
+            unreachable!("update_returning_pair: #[model] macro must emit this implementation")
+        }
+    }
+
+    /// Delete this row and return the pre-delete DB snapshot.
+    ///
+    /// Uses PostgreSQL 18 `RETURNING WITH (OLD AS __djogi_old)` to retrieve the
+    /// row's state at the moment of deletion. The returned `Self` reflects
+    /// server-side defaults and trigger effects visible in the `OLD` table
+    /// reference — it is more reliable than the consumed `self` for outbox
+    /// and audit purposes.
+    ///
+    /// DELETE has no `NEW` side. For UPDATE before/after pairs see
+    /// [`Model::update_returning_pair`].
+    ///
+    /// # Consumes `self`
+    ///
+    /// Like [`Model::delete`], this method consumes `self`. The returned value
+    /// is the DB-authoritative pre-delete snapshot, not the caller's value.
+    ///
+    /// # Hooks and outbox
+    ///
+    /// Hook and outbox order mirrors `delete()`:
+    /// `before_delete → DELETE RETURNING → outbox(deleted) → after_delete(deleted) → on_commit`.
+    ///
+    /// The outbox `Delete` payload is the DB-returned snapshot (`deleted`), not
+    /// the consumed `self`. This is more accurate when `BEFORE DELETE` triggers
+    /// modify the row before deletion.
+    ///
+    /// # Protected fields
+    ///
+    /// The returned snapshot contains full model field values, including
+    /// `#[field(protected(...))]` fields. Redaction policy is deferred to
+    /// issue #227.
+    ///
+    /// # PostgreSQL 18 only
+    ///
+    /// Djogi has a hard PostgreSQL 18 floor. No fallback or polyfill is
+    /// provided for older PostgreSQL versions.
+    fn delete_returning(
+        self,
+        ctx: &mut DjogiContext,
+    ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
+        // Same rationale as `update_returning_pair` above — the `#[model]` macro
+        // emits the real PG18 `DELETE … RETURNING WITH (OLD AS __djogi_old)`
+        // body. Hand-rolled test stubs get this default.
+        let _ = ctx;
+        async { unreachable!("delete_returning: #[model] macro must emit this implementation") }
+    }
+
     // ── Tree-recursive sugar (Phase 8-Zero Cluster B2 — T9) ─────────────────
     //
     // These default methods provide a `tree_edge`-aware shorthand for

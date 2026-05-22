@@ -737,3 +737,130 @@ async fn bulk_update_empty_assignments_short_circuits(mut ctx: djogi::DjogiConte
         "updated_at must still equal created_at — no UPDATE fired"
     );
 }
+
+// ── Phase 8.5 djogi#180 — PG18 OLD/NEW bulk RETURNING integration tests ──
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn execute_returning_pairs_returns_old_and_new_for_each_row(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    // Update only the three published rows.
+    let pairs = Post::objects()
+        .filter(|f| f.published().eq(true))
+        .update(|f| f.view_count().set(999i32))
+        .execute_returning_pairs(&mut ctx)
+        .await
+        .expect("execute_returning_pairs should succeed");
+
+    assert_eq!(pairs.len(), 3, "expected one pair per affected row");
+
+    for pair in &pairs {
+        // id and created_at must not change across an update.
+        assert_eq!(pair.old.id, pair.new.id, "id must be stable");
+        assert_eq!(
+            pair.old.created_at, pair.new.created_at,
+            "created_at must be stable"
+        );
+        // The old side reflects the seeded view_count values (not 999).
+        assert_ne!(
+            pair.old.view_count, 999,
+            "old view_count must be the pre-update seeded value"
+        );
+        // The new side reflects the new value.
+        assert_eq!(pair.new.view_count, 999, "new view_count must be 999");
+        // updated_at must not regress.
+        assert!(
+            pair.new.updated_at >= pair.old.updated_at,
+            "new.updated_at must not be before old.updated_at"
+        );
+    }
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn execute_returning_pairs_none_queryset_returns_empty(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    let pairs = Post::objects()
+        .none()
+        .update(|f| f.view_count().set(0i32))
+        .execute_returning_pairs(&mut ctx)
+        .await
+        .expect("execute_returning_pairs on none() should return empty");
+
+    assert!(pairs.is_empty(), "none() queryset must return empty pairs");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn execute_returning_pairs_empty_assignments_returns_empty(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    let pairs = Post::objects()
+        .update(|_| Vec::<djogi::UpdateAssignment>::new())
+        .execute_returning_pairs(&mut ctx)
+        .await
+        .expect("empty assignments should return empty pairs");
+
+    assert!(
+        pairs.is_empty(),
+        "empty assignment list must return empty pairs without SQL"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_delete_returning_returns_deleted_rows(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    // Delete only unpublished rows (just "gamma").
+    let deleted = Post::objects()
+        .filter(|f| f.published().eq(false))
+        .delete_returning(&mut ctx)
+        .await
+        .expect("delete_returning should succeed");
+
+    assert_eq!(deleted.len(), 1, "expected 1 deleted row");
+    assert_eq!(deleted[0].title, "gamma");
+    assert!(!deleted[0].published);
+
+    // Confirm the rows are actually gone.
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 3, "3 published rows should remain");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_delete_returning_none_queryset_returns_empty(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    let deleted = Post::objects()
+        .none()
+        .delete_returning(&mut ctx)
+        .await
+        .expect("delete_returning on none() should return empty");
+
+    assert!(deleted.is_empty(), "none() delete_returning must be empty");
+
+    // No rows deleted.
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "no rows should have been deleted");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_delete_returning_preserves_snapshot_values(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    // Delete all rows and verify the returned snapshots match the seeded data.
+    let mut deleted = Post::objects()
+        .delete_returning(&mut ctx)
+        .await
+        .expect("delete_returning all rows should succeed");
+
+    assert_eq!(deleted.len(), 4, "all 4 rows should be returned");
+
+    // Sort by title for deterministic comparison.
+    deleted.sort_by(|a, b| a.title.cmp(&b.title));
+    let titles: Vec<&str> = deleted.iter().map(|p| p.title.as_str()).collect();
+    assert_eq!(titles, ["alpha", "beta", "delta", "gamma"]);
+
+    // Table should be empty.
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 0, "all rows should be deleted");
+}

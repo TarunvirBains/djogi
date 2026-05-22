@@ -2468,6 +2468,105 @@ pub(crate) fn build_delete<T: Model>(
     Ok(acc)
 }
 
+// ── Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING helpers ──────────────────
+
+/// Append the `RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)`
+/// clause and the fully-aliased column projection for both sides to `acc`.
+///
+/// The column aliases use the `__djogi_old__` and `__djogi_new__` prefixes
+/// from Djogi's reserved `__djogi_` namespace, so they can never collide with
+/// user-declared model field names (which the macro-time validator rejects for
+/// any identifier beginning with `__djogi_`).
+///
+/// Column names come from `T::COLUMNS`, which are macro-validated `&'static str`
+/// identifiers; `push_sql` is safe here because no user data flows in.
+///
+/// Called by [`build_update_returning_pairs`] and [`build_delete_returning`].
+fn push_old_new_returning_projection<T: FromPgRow>(acc: &mut SqlAccumulator, include_new: bool) {
+    if include_new {
+        acc.push_sql(" RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)");
+    } else {
+        acc.push_sql(" RETURNING WITH (OLD AS __djogi_old)");
+    }
+    // Old-side columns: __djogi_old.<col> AS "__djogi_old__<col>"
+    let mut first = true;
+    for col in T::COLUMNS {
+        if first {
+            acc.push_sql(" ");
+            first = false;
+        } else {
+            acc.push_sql(", ");
+        }
+        acc.push_sql("__djogi_old.");
+        acc.push_sql(col);
+        acc.push_sql(" AS \"__djogi_old__");
+        acc.push_sql(col);
+        acc.push_sql("\"");
+    }
+    if include_new {
+        // New-side columns: __djogi_new.<col> AS "__djogi_new__<col>"
+        for col in T::COLUMNS {
+            acc.push_sql(", __djogi_new.");
+            acc.push_sql(col);
+            acc.push_sql(" AS \"__djogi_new__");
+            acc.push_sql(col);
+            acc.push_sql("\"");
+        }
+    }
+}
+
+/// Build `UPDATE <table> SET ... RETURNING WITH (OLD AS __djogi_old, NEW AS
+/// __djogi_new) __djogi_old.<col> AS "__djogi_old__<col>", ...,
+/// __djogi_new.<col> AS "__djogi_new__<col>", ...`.
+///
+/// This is the bulk-returning variant of [`build_update`]; the WHERE clause and
+/// SET assignments are identical. The RETURNING projection appends the full
+/// column list for both the pre-update (`OLD`) and post-update (`NEW`) row
+/// images using Djogi's reserved `__djogi_` namespace for the table aliases.
+///
+/// Callers must guarantee `assignments` is non-empty — the same contract as
+/// [`build_update`]. The callers in [`crate::query::update::UpdateStmt::execute_returning_pairs`]
+/// short-circuit on an empty assignment list before reaching this emitter.
+///
+/// # SQL injection guarantee
+///
+/// All column names come from `T::COLUMNS` (macro-validated `&'static str`).
+/// All values flow through `push_bind` via the shared [`build_update`] path.
+/// The `__djogi_old` / `__djogi_new` table aliases are framework-internal
+/// `&'static str` literals.
+pub(crate) fn build_update_returning_pairs<T>(
+    qs: &QuerySet<T>,
+    assignments: &[crate::query::update::UpdateAssignment],
+) -> Result<SqlAccumulator, PortablePredicateError>
+where
+    T: Model + FromPgRow,
+{
+    let mut acc = build_update(qs, assignments)?;
+    push_old_new_returning_projection::<T>(&mut acc, true);
+    Ok(acc)
+}
+
+/// Build `DELETE FROM <table> [WHERE ...] RETURNING WITH (OLD AS __djogi_old)
+/// __djogi_old.<col> AS "__djogi_old__<col>", ...`.
+///
+/// The DELETE variant only has an `OLD` side — `NEW` is semantically absent for
+/// deleted rows. The projection aliases use the same `__djogi_old__` prefix
+/// convention as the UPDATE variant so the `FromJoinedPgRow` path is identical
+/// (`from_joined_pg_row(row, "__djogi_old__")`).
+///
+/// Callers must guarantee the queryset is not `QuerySet::none()`-derived before
+/// reaching this emitter — same contract as [`build_delete`].
+pub(crate) fn build_delete_returning<T>(
+    qs: &QuerySet<T>,
+) -> Result<SqlAccumulator, PortablePredicateError>
+where
+    T: Model + FromPgRow,
+{
+    let mut acc = build_delete(qs)?;
+    push_old_new_returning_projection::<T>(&mut acc, false);
+    Ok(acc)
+}
+
 /// Build `INSERT INTO <target> (cols...) SELECT exprs... FROM <source>
 /// [WHERE ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]`.
 ///
@@ -2744,6 +2843,16 @@ mod tests {
         const COLUMNS: &'static [&'static str] = &["id"];
         const COLUMN_LIST: &'static str = "id";
         fn from_pg_row(_row: &tokio_postgres::Row) -> Result<Self, crate::DjogiError> {
+            unreachable!("SQL-text unit tests do not exercise row decode")
+        }
+    }
+
+    // Stub `FromJoinedPgRow` for Fake — required by the #180 returning builders.
+    impl crate::pg::decode::FromJoinedPgRow for Fake {
+        fn from_joined_pg_row(
+            _row: &tokio_postgres::Row,
+            _prefix: &str,
+        ) -> Result<Self, crate::DjogiError> {
             unreachable!("SQL-text unit tests do not exercise row decode")
         }
     }
@@ -4361,5 +4470,151 @@ mod tests {
             !sql.contains("LEFT JOIN"),
             "geohash path should not emit LEFT JOIN, got: {sql}"
         );
+    }
+
+    // ── djogi#180 — PG18 OLD/NEW RETURNING builder unit tests ────────────────
+
+    fn build_update_returning_pairs<T: Model + FromPgRow + crate::pg::decode::FromJoinedPgRow>(
+        qs: &QuerySet<T>,
+        assignments: &[crate::query::update::UpdateAssignment],
+    ) -> SqlAccumulator {
+        super::build_update_returning_pairs(qs, assignments)
+            .expect("update_returning_pairs should build successfully")
+    }
+
+    fn build_delete_returning<T: Model + FromPgRow + crate::pg::decode::FromJoinedPgRow>(
+        qs: &QuerySet<T>,
+    ) -> SqlAccumulator {
+        super::build_delete_returning(qs).expect("build_delete_returning should build successfully")
+    }
+
+    #[test]
+    fn update_returning_pairs_emits_returning_with_old_and_new_clause() {
+        let f: crate::query::field::FieldRef<Fake, i32> =
+            crate::query::field::FieldRef::new("view_count");
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let stmt = qs.update(|_| f.set(999i32));
+        let acc = build_update_returning_pairs(&stmt.qs, &stmt.assignments);
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)"),
+            "expected RETURNING WITH clause, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn update_returning_pairs_includes_old_id_alias() {
+        let f: crate::query::field::FieldRef<Fake, i32> =
+            crate::query::field::FieldRef::new("view_count");
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let stmt = qs.update(|_| f.set(999i32));
+        let acc = build_update_returning_pairs(&stmt.qs, &stmt.assignments);
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("\"__djogi_old__id\""),
+            "expected __djogi_old__id alias, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn update_returning_pairs_includes_new_id_alias() {
+        let f: crate::query::field::FieldRef<Fake, i32> =
+            crate::query::field::FieldRef::new("view_count");
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let stmt = qs.update(|_| f.set(999i32));
+        let acc = build_update_returning_pairs(&stmt.qs, &stmt.assignments);
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("\"__djogi_new__id\""),
+            "expected __djogi_new__id alias, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn update_returning_pairs_bind_order_assignments_before_filter() {
+        // Assignments must fill bind slots before the WHERE filter binds.
+        // Fake has no WHERE filter here so there is only the assignment bind ($1).
+        let f: crate::query::field::FieldRef<Fake, i32> =
+            crate::query::field::FieldRef::new("view_count");
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let stmt = qs.update(|_| f.set(999i32));
+        let acc = build_update_returning_pairs(&stmt.qs, &stmt.assignments);
+        let sql = acc.sql();
+        // The assignment bind $1 is inside the SET clause, before RETURNING.
+        let returning_pos = sql.find("RETURNING").expect("should contain RETURNING");
+        let bind_pos = sql.find("$1").expect("should contain $1");
+        assert!(
+            bind_pos < returning_pos,
+            "bind slot $1 should appear before RETURNING clause, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn delete_returning_emits_returning_with_old_clause() {
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let acc = build_delete_returning(&qs);
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("RETURNING WITH (OLD AS __djogi_old)"),
+            "expected DELETE RETURNING WITH OLD clause, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn delete_returning_includes_old_id_alias() {
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let acc = build_delete_returning(&qs);
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("\"__djogi_old__id\""),
+            "expected __djogi_old__id alias in DELETE returning, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn delete_returning_does_not_include_new_projection() {
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let acc = build_delete_returning(&qs);
+        let sql = acc.sql();
+
+        assert!(
+            !sql.contains("__djogi_new"),
+            "DELETE returning must not include new projection, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn update_returning_pairs_projection_includes_both_sides_shape() {
+        // Verify the OLD/NEW projection shape by looking at the SQL generated by
+        // build_update_returning_pairs (no suffix helper needed — test the actual
+        // public builder).
+        let f: crate::query::field::FieldRef<Fake, i32> =
+            crate::query::field::FieldRef::new("view_count");
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let stmt = qs.update(|_| f.set(0i32));
+        let acc = build_update_returning_pairs(&stmt.qs, &stmt.assignments);
+        let sql = acc.sql();
+
+        // Both sides must be present.
+        assert!(sql.contains("OLD AS __djogi_old"), "{sql}");
+        assert!(sql.contains("NEW AS __djogi_new"), "{sql}");
+        assert!(sql.contains("\"__djogi_old__id\""), "{sql}");
+        assert!(sql.contains("\"__djogi_new__id\""), "{sql}");
+    }
+
+    #[test]
+    fn delete_returning_projection_is_old_only_shape() {
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let acc = build_delete_returning(&qs);
+        let sql = acc.sql();
+
+        assert!(sql.contains("OLD AS __djogi_old"), "{sql}");
+        assert!(!sql.contains("NEW"), "{sql}");
+        assert!(sql.contains("\"__djogi_old__id\""), "{sql}");
     }
 }

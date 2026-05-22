@@ -74,10 +74,14 @@ use crate::DjogiError;
 use crate::context::DjogiContext;
 use crate::model::Model;
 use crate::pg::accumulator::as_params;
+use crate::pg::decode::{FromJoinedPgRow, FromPgRow};
 use crate::query::condition::FilterValue;
 use crate::query::field::{FieldRef, IntoFilterValue};
 use crate::query::queryset::QuerySet;
-use crate::query::sql::{build_delete, build_update};
+use crate::query::returning::ReturningPair;
+use crate::query::sql::{
+    build_delete, build_delete_returning, build_update, build_update_returning_pairs,
+};
 use crate::query::terminal::auto_set_tenant;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -348,6 +352,75 @@ impl<T: Model> UpdateStmt<T> {
             Ok(rows_affected)
         }
     }
+
+    /// Run the accumulated UPDATE and return a before/after snapshot pair for
+    /// every affected row.
+    ///
+    /// Uses PostgreSQL 18 `RETURNING WITH (OLD AS __djogi_old, NEW AS
+    /// __djogi_new)` to retrieve both row images in a single round-trip. The
+    /// rows are decoded using [`FromJoinedPgRow`] with the `"__djogi_old__"`
+    /// and `"__djogi_new__"` prefixes.
+    ///
+    /// # Short-circuits
+    ///
+    /// Returns `Ok(Vec::new())` without issuing any SQL when:
+    /// - The underlying queryset is `QuerySet::none()`-derived.
+    /// - The assignment list is empty (an UPDATE with an empty SET list is a
+    ///   Postgres syntax error).
+    ///
+    /// # Warning — unbounded materialization
+    ///
+    /// This method loads **one `ReturningPair<T>` per affected row** into memory.
+    /// On large tables or unfiltered updates this can exhaust available memory.
+    /// Narrow the queryset with `.filter(...)` before calling
+    /// `execute_returning_pairs`, or process rows in application-level chunks
+    /// using multiple filtered update passes.
+    ///
+    /// # Protected fields
+    ///
+    /// Both `old` and `new` contain full model values, including
+    /// `#[field(protected(...))]` fields. Redaction policy is deferred to
+    /// issue #227. Log or persist pairs with care.
+    ///
+    /// # PostgreSQL 18 only
+    ///
+    /// Djogi has a hard PostgreSQL 18 floor. No fallback or polyfill is
+    /// provided for older PostgreSQL versions.
+    ///
+    /// # Cache invalidation
+    ///
+    /// Cache invalidation for bulk update is deferred (same as
+    /// [`UpdateStmt::execute`]). Single-row update paths via
+    /// [`Model::update_returning_pair`](crate::model::Model::update_returning_pair)
+    /// do enqueue per-row invalidation.
+    pub fn execute_returning_pairs<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Vec<ReturningPair<T>>, DjogiError>> + Send + 'ctx
+    where
+        T: FromPgRow + FromJoinedPgRow + 'ctx,
+    {
+        async move {
+            // TASK6:empty_contract — structural-none queryset OR empty
+            // assignment list: return empty vector without touching the DB.
+            if self.qs.is_empty() || self.assignments.is_empty() {
+                return Ok(Vec::new());
+            }
+            auto_set_tenant::<T>(ctx).await?;
+            let acc = build_update_returning_pairs(&self.qs, &self.assignments)
+                .map_err(crate::DjogiError::from)?;
+            let (sql, binds) = acc.into_parts();
+            let params = as_params(&binds);
+            let rows = ctx.query_all(&sql, &params).await?;
+            let mut pairs = Vec::with_capacity(rows.len());
+            for row in &rows {
+                let old = T::from_joined_pg_row(row, "__djogi_old__")?;
+                let new = T::from_joined_pg_row(row, "__djogi_new__")?;
+                pairs.push(ReturningPair { old, new });
+            }
+            Ok(pairs)
+        }
+    }
 }
 
 impl<T: Model> QuerySet<T> {
@@ -433,6 +506,64 @@ impl<T: Model> QuerySet<T> {
             let params = as_params(&binds);
             let rows_affected = ctx.execute(&sql, &params).await?;
             Ok(rows_affected)
+        }
+    }
+
+    /// Run `DELETE FROM <table> [WHERE ...]` and return the deleted rows as
+    /// typed model instances.
+    ///
+    /// Uses PostgreSQL 18 `RETURNING WITH (OLD AS __djogi_old)` to retrieve the
+    /// pre-delete row snapshot for every deleted row. The rows are decoded using
+    /// [`FromJoinedPgRow`] with the `"__djogi_old__"` prefix.
+    ///
+    /// DELETE has no `NEW` side — the returned `Vec<T>` contains only old-row
+    /// snapshots. For UPDATE old/new pairs see
+    /// [`UpdateStmt::execute_returning_pairs`].
+    ///
+    /// # Short-circuit
+    ///
+    /// Returns `Ok(Vec::new())` for `QuerySet::none()`-derived querysets
+    /// without issuing any SQL.
+    ///
+    /// # Warning — unbounded materialization
+    ///
+    /// This method loads **one `T` per deleted row** into memory. On large
+    /// tables or unfiltered deletes this can exhaust available memory. Narrow
+    /// the queryset with `.filter(...)` or process rows in application-level
+    /// chunks.
+    ///
+    /// # Protected fields
+    ///
+    /// The returned snapshots contain full model values, including
+    /// `#[field(protected(...))]` fields. Redaction policy is deferred to
+    /// issue #227.
+    ///
+    /// # PostgreSQL 18 only
+    ///
+    /// Djogi has a hard PostgreSQL 18 floor. No fallback or polyfill is
+    /// provided for older PostgreSQL versions.
+    pub fn delete_returning<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Vec<T>, DjogiError>> + Send + 'ctx
+    where
+        T: FromPgRow + FromJoinedPgRow + 'ctx,
+    {
+        async move {
+            // TASK6:empty_contract — structural-none queryset: no SQL.
+            if self.is_empty() {
+                return Ok(Vec::new());
+            }
+            auto_set_tenant::<T>(ctx).await?;
+            let acc = build_delete_returning(&self).map_err(crate::DjogiError::from)?;
+            let (sql, binds) = acc.into_parts();
+            let params = as_params(&binds);
+            let rows = ctx.query_all(&sql, &params).await?;
+            let mut deleted = Vec::with_capacity(rows.len());
+            for row in &rows {
+                deleted.push(T::from_joined_pg_row(row, "__djogi_old__")?);
+            }
+            Ok(deleted)
         }
     }
 }

@@ -106,6 +106,44 @@ pub trait Model: Sized + Send + Sync + 'static {
 
 The context parameter is a `&mut DjogiContext`, which carries either a pool handle or an active transaction. The same call site works against either; the framework pattern-matches on the inner variant at each `tokio-postgres` boundary. `djogi::transaction::atomic(&mut ctx, |tx| Box::pin(async move { ... }))` is the canonical scope helper — it commits on `Ok`, rolls back on `Err`, and pushes savepoints for nested calls. Callers that need to drop below `atomic()` reach for the raw escape hatches on `RawAccessExt` / `RawPoolAccessExt` under the `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute (see [Raw SQL escape hatches](raw-sql-escape-hatches.md)).
 
+#### 4.2.0a PG18 OLD/NEW RETURNING (djogi#180)
+
+In addition to the five base trait methods, `#[model]` emits two PG18-only returning methods for every pk-backed model:
+
+```rust
+fn update_returning_pair(
+    self,
+    ctx: &mut DjogiContext,
+) -> impl Future<Output = Result<ReturningPair<Self>, DjogiError>> + Send;
+
+fn delete_returning(
+    self,
+    ctx: &mut DjogiContext,
+) -> impl Future<Output = Result<Self, DjogiError>> + Send;
+```
+
+**`update_returning_pair`** — consumes `self`, performs `UPDATE … RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)`, and returns a `ReturningPair<Self>` with both the pre- and post-update row snapshots. This is distinct from `save()`:
+- `save()` is the in-place API — it rehydrates `*self` from the DB and returns `()`.
+- `update_returning_pair` is the diff API — it consumes `self` (preventing stale reuse) and returns both snapshots.
+
+Hook order: `before_save → UPDATE RETURNING → outbox(pair.new) → after_save(pair.new) → on_commit`.
+
+For models with `#[field(version)]`, the same optimistic-lock behavior applies: `DjogiError::LockConflict` when the DB version has advanced.
+
+**`delete_returning`** — consumes `self`, performs `DELETE … RETURNING WITH (OLD AS __djogi_old)`, and returns the pre-delete DB snapshot (`Self`). The returned row is more authoritative than the consumed `self` because it reflects any `BEFORE DELETE` trigger effects.
+
+Hook order: `before_delete → DELETE RETURNING → outbox(deleted) → after_delete(deleted) → on_commit`.
+
+**`ReturningPair<T>`** — both fields are non-null typed model instances:
+- `pair.old` — row state immediately before the UPDATE.
+- `pair.new` — row state after the UPDATE and all trigger effects. Continue working with `pair.new`.
+
+**PG18 only.** No fallback or polyfill for older PostgreSQL versions.
+
+**Protected fields.** Both sides expose full model values including `#[field(protected(...))]` fields. Redaction policy is deferred to issue #227.
+
+**Outbox.** The outbox `Save` payload is `pair.new` (the DB post-image). No diff-shaped payload is emitted — outbox consumers receive the same single-payload schema as `save()`.
+
 #### 4.2.1 Construction
 
 Users set framework fields to any value; `create()` ignores them and the database populates them via column defaults + `RETURNING *`.

@@ -445,6 +445,100 @@ DDL-style reaches for `TRUNCATE` via `ctx.raw_execute`.
 
 ---
 
+## PG18 OLD/NEW RETURNING (djogi#180)
+
+PostgreSQL 18 added `OLD`/`NEW` aliases in `RETURNING` clauses, exposing
+both the pre- and post-DML row in a single round-trip. Djogi exposes this
+through four additive APIs.
+
+### `Model::update_returning_pair(self, ctx)`
+
+Returns a `ReturningPair<T>` with both the before and after row images for
+a single-row UPDATE:
+
+```rust
+// update_returning_pair consumes self — the caller's instance is stale
+// after the update, and ownership transfer enforces this at the type level.
+let mut post: Post = Post::get(&mut ctx, id).await?;
+post.title = "New Title".into();
+post.view_count += 1;
+
+let pair = post.update_returning_pair(&mut ctx).await?;
+// pair.old — state before the UPDATE.
+// pair.new — state after the UPDATE; continue working with this.
+assert!(pair.new.updated_at >= pair.old.updated_at);
+```
+
+Use `save()` when you want in-place rehydration and do not need the old
+row. Use `update_returning_pair` when you need both snapshots (e.g. for
+audit logs, event sourcing, or change detection).
+
+### `UpdateStmt::execute_returning_pairs(ctx)`
+
+Bulk UPDATE with per-row before/after pairs:
+
+```rust
+let pairs: Vec<ReturningPair<Post>> = Post::objects()
+    .filter(|f| f.published().eq(true))
+    .update(|f| f.view_count().set(999i32))
+    .execute_returning_pairs(&mut ctx)
+    .await?;
+
+for pair in &pairs {
+    println!("id={} old={} new={}", pair.new.id, pair.old.view_count, pair.new.view_count);
+}
+```
+
+> **Warning — unbounded materialization.** `execute_returning_pairs` loads
+> one `ReturningPair<T>` per affected row. On large tables this can exhaust
+> available memory. Apply `.filter(...)` to narrow the queryset, or chunk
+> updates at the application level.
+
+Short-circuits: `none()` querysets and empty assignment lists return
+`Ok(Vec::new())` without issuing SQL.
+
+### `Model::delete_returning(self, ctx)`
+
+Consuming single-row DELETE that returns the pre-delete DB snapshot:
+
+```rust
+let deleted: Post = post.delete_returning(&mut ctx).await?;
+// deleted contains the row's state as it was in the DB at deletion time,
+// including any BEFORE DELETE trigger effects.
+emit_tombstone_event(&deleted).await;
+```
+
+### `QuerySet::delete_returning(ctx)`
+
+Bulk DELETE returning one snapshot per deleted row:
+
+```rust
+let deleted_rows: Vec<Post> = Post::objects()
+    .filter(|f| f.published().eq(false))
+    .delete_returning(&mut ctx)
+    .await?;
+```
+
+> **Warning — unbounded materialization.** Applies the same as
+> `execute_returning_pairs` — narrow with `.filter(...)` first.
+
+Short-circuits: `none()` querysets return `Ok(Vec::new())` without SQL.
+
+### Notes
+
+- **PG18 only.** Djogi has a hard PostgreSQL 18 floor; no polyfill exists.
+- **INSERT** — `create()` already returns the DB post-image; the `OLD` side
+  is normally NULL for a simple INSERT. No pair type is needed or provided.
+- **MERGE** — MERGE result hydration is owned by djogi#178.
+- **Protected fields.** Both sides of `ReturningPair<T>` expose full model
+  values including `#[field(protected(...))]` fields. Log or persist with
+  care until issue #227 defines framework-level redaction.
+- **Outbox.** The `Save` outbox payload for `update_returning_pair` is the
+  DB post-image (`pair.new`) — the same single-payload schema as `save()`.
+  No diff-shaped outbox envelope is emitted in this release.
+
+---
+
 ## Set operations (Phase 8.5)
 
 `QuerySet<T>` exposes four SQL set operators — `union`, `union_all`,

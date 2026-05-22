@@ -1,13 +1,32 @@
 //! Transactional outbox — Phase 4 Task 6 (write side) + Phase 5 Task 11.5 (worker side).
 //!
 //! Models annotated with `#[model(events)]` emit one outbox row into
-//! `{table}_outbox` on every successful `create`, `save`, or `delete`
-//! performed through a [`DjogiContext`]. Because the outbox INSERT
-//! shares the same context (and therefore the same active transaction),
-//! the outbox row commits or rolls back atomically with the primary
-//! write — no separate "event publisher" fan-out is required at the
-//! write side. A downstream poller / CDC consumer drains `{table}_outbox`
-//! asynchronously.
+//! `{table}_outbox` on every successful `create`, `save`, `delete`,
+//! `update_returning_pair`, or `delete_returning` performed through a
+//! [`DjogiContext`]. Because the outbox INSERT shares the same context (and
+//! therefore the same active transaction), the outbox row commits or rolls back
+//! atomically with the primary write — no separate "event publisher" fan-out is
+//! required at the write side. A downstream poller / CDC consumer drains
+//! `{table}_outbox` asynchronously.
+//!
+//! # PG18 OLD/NEW RETURNING and the outbox (djogi#180)
+//!
+//! `Model::update_returning_pair` and `QuerySet::execute_returning_pairs`
+//! expose both the pre- and post-update row snapshots to the **caller**, but
+//! the outbox **still emits a single `Save` row** with the DB-returned
+//! post-image (`pair.new`) as the payload, after `outbox_exclude` filtering.
+//! This matches the `save()` outbox contract — no diff-shaped `{ old, new }`
+//! payload is emitted in v1.
+//!
+//! Rationale: the existing outbox schema (`action` + single `payload` column)
+//! cannot represent a diff without a breaking schema change. Downstream
+//! consumers that currently process `Save` payloads would break if the payload
+//! shape changed silently. A diff-outbox schema requires a separate plan
+//! (migration, new action type, worker shape change, and publisher review).
+//!
+//! `Model::delete_returning` similarly emits a single `Delete` row with the
+//! DB-returned pre-delete snapshot as the payload — identical to `delete()`
+//! but using the authoritative DB snapshot rather than the consumed `self`.
 //!
 //! # Module layout
 //!

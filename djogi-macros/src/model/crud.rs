@@ -1394,6 +1394,338 @@ pub fn expand(
         }
     };
 
+    // ── Phase 8.5 djogi#180 — update_returning_pair / delete_returning bodies ──
+    //
+    // Both methods are emitted for every pk-backed `#[model]` struct alongside
+    // the existing five CRUD methods. The trait provides default
+    // `unreachable!()` bodies so hand-rolled test Fake models need not change.
+    //
+    // SQL construction:
+    // - The RETURNING suffix is baked at macro-expansion time using the
+    //   already-built `column_list` slice (`framework_cols + user_col_names`),
+    //   mirroring `save()` / `delete()` which also bake their SQL at expansion.
+    // - Projection aliases use the `__djogi_old__` / `__djogi_new__` prefixes
+    //   from Djogi's reserved `__djogi_` namespace, matching the runtime
+    //   builders in `djogi/src/query/sql.rs`.
+    // - `FromJoinedPgRow` with prefix `"__djogi_old__"` / `"__djogi_new__"`
+    //   decodes the two sides.
+    //
+    // Hook / outbox / cache sequencing:
+    // - `update_returning_pair`: before_save → UPDATE RETURNING → decode pair
+    //   → outbox(pair.new) → after_save(pair.new) → on_commit cache.
+    // - `delete_returning`:      before_delete → DELETE RETURNING → decode deleted
+    //   → outbox(deleted) → after_delete(deleted) → on_commit cache.
+    // Both use the DB-returned snapshot for outbox and hooks, not stale `self`.
+
+    // Static RETURNING suffixes — built once at expansion time.
+    let all_cols: Vec<&str> = framework_cols
+        .iter()
+        .copied()
+        .chain(user_col_names.iter().map(|s| s.as_str()))
+        .collect();
+    let update_returning_suffix: String = {
+        let mut s = String::from(" RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)");
+        let mut first = true;
+        for col in &all_cols {
+            if first {
+                s.push(' ');
+                first = false;
+            } else {
+                s.push_str(", ");
+            }
+            s.push_str("__djogi_old.");
+            s.push_str(col);
+            s.push_str(" AS \"__djogi_old__");
+            s.push_str(col);
+            s.push('"');
+        }
+        for col in &all_cols {
+            s.push_str(", __djogi_new.");
+            s.push_str(col);
+            s.push_str(" AS \"__djogi_new__");
+            s.push_str(col);
+            s.push('"');
+        }
+        s
+    };
+    let delete_returning_suffix: String = {
+        let mut s = String::from(" RETURNING WITH (OLD AS __djogi_old)");
+        let mut first = true;
+        for col in &all_cols {
+            if first {
+                s.push(' ');
+                first = false;
+            } else {
+                s.push_str(", ");
+            }
+            s.push_str("__djogi_old.");
+            s.push_str(col);
+            s.push_str(" AS \"__djogi_old__");
+            s.push_str(col);
+            s.push('"');
+        }
+        s
+    };
+
+    // `delete_returning` uses a single WHERE id = $1 SQL plus the OLD suffix.
+    let delete_returning_sql =
+        format!("DELETE FROM {table} WHERE id = $1{delete_returning_suffix}");
+
+    // Hook aliases for update_returning_pair.
+    // `before_save` is reused (same pre-write hook). `after_save` receives
+    // `&pair.new` — the DB-returned post-image — not a stale `&*self`.
+    let (before_urp_call, after_urp_call) = if model_attrs.hooks {
+        (
+            quote! {
+                <Self as ::djogi::__private::hooks::ModelHooks>::before_save(
+                    &mut self,
+                    ctx,
+                ).await?;
+            },
+            // `after_save` takes `&pair.new`, not `&*self`.
+            quote! {
+                <Self as ::djogi::__private::hooks::ModelHooks>::after_save(
+                    &__pair.new,
+                    ctx,
+                ).await?;
+            },
+        )
+    } else {
+        (TokenStream::new(), TokenStream::new())
+    };
+
+    // Hook aliases for delete_returning.
+    let (before_drp_call, after_drp_call) = if model_attrs.hooks {
+        (
+            quote! {
+                <Self as ::djogi::__private::hooks::ModelHooks>::before_delete(
+                    &mut self,
+                    ctx,
+                ).await?;
+            },
+            // `after_delete` takes `&__deleted` — DB-returned snapshot.
+            quote! {
+                <Self as ::djogi::__private::hooks::ModelHooks>::after_delete(
+                    &__deleted,
+                    ctx,
+                ).await?;
+            },
+        )
+    } else {
+        (TokenStream::new(), TokenStream::new())
+    };
+
+    // Outbox for update_returning_pair: emit Save with pair.new (post-image).
+    let emit_outbox_urp_save = if model_attrs.events {
+        quote! {
+            ::djogi::outbox::emit_event(
+                ctx,
+                &__pair.new,
+                ::djogi::outbox::OutboxAction::Save,
+            ).await?;
+        }
+    } else {
+        quote! {}
+    };
+
+    // Outbox for delete_returning: emit Delete with the DB-returned deleted snapshot.
+    let emit_outbox_drp_delete = if model_attrs.events {
+        quote! {
+            ::djogi::outbox::emit_event(
+                ctx,
+                &__deleted,
+                ::djogi::outbox::OutboxAction::Delete,
+            ).await?;
+        }
+    } else {
+        quote! {}
+    };
+
+    // self-binding pattern for delete_returning (mut self if hooks; self otherwise).
+    let drp_self_pat = if model_attrs.hooks {
+        quote! { mut self }
+    } else {
+        quote! { self }
+    };
+
+    // update_returning_pair body — non-versioned shape (Shape A).
+    // Mirrors save() Shape A but decodes pair instead of rehydrating self.
+    let update_returning_pair_body_shape_a = quote! {
+        async move {
+            // `mut self` so before_save can take `&mut self`.
+            #auto_set_tenant
+            #before_urp_call
+            // Build the SET clause — same logic as save() Shape A.
+            let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#save_acc_prefix);
+            {
+                let mut __first = true;
+                #(#save_set_fragments)*
+                if !__first { __acc.push_sql(", "); }
+                __acc.push_sql("updated_at = now()");
+            }
+            __acc.push_sql(" WHERE id = ");
+            let __id_val = self.id.clone();
+            __acc.push_bind(__id_val);
+            __acc.push_sql(#update_returning_suffix);
+            let (__sql, __binds) = __acc.into_parts();
+            let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+                __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+            let __raw_row = ctx.__query_one_for_macros(&__sql, &__params).await?;
+            let __old = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
+                &__raw_row, "__djogi_old__",
+            )?;
+            let __new = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
+                &__raw_row, "__djogi_new__",
+            )?;
+            let __pair = ::djogi::query::ReturningPair { old: __old, new: __new };
+            // Outbox: post-image only (pair.new), same outbox schema as save().
+            #emit_outbox_urp_save
+            // Hooks: after_save receives pair.new (DB truth, not stale self).
+            #after_urp_call
+            // Cache invalidation: invalidate pair.new.id (same as save()).
+            if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
+                let __id_for_cache = ::core::clone::Clone::clone(&__pair.new.id);
+                ctx.on_commit(move || async move {
+                    if let ::std::result::Result::Err(__e) = __punnu
+                        .invalidate(
+                            &__id_for_cache,
+                            ::djogi::cache::InvalidationReason::OnSave,
+                        )
+                        .await
+                    {
+                        ::djogi::__private::tracing::warn!(
+                            target: "djogi::cache",
+                            error = ?__e,
+                            model = ::std::any::type_name::<Self>(),
+                            "Punnu::invalidate L2 backend failed during on_commit drain (update_returning_pair)",
+                        );
+                    }
+                    ::std::result::Result::Ok(())
+                });
+            }
+            ::std::result::Result::Ok(__pair)
+        }
+    };
+
+    // update_returning_pair body — versioned shape (Shape B).
+    // Mirrors save() Shape B: version predicate in WHERE, query_opt, LockConflict.
+    let update_returning_pair_body = if let Some((ver_ident, ver_col)) = &version_field_info {
+        let ver_set = format!(", {ver_col} = {ver_col} + 1");
+        let ver_where = format!(" AND {ver_col} = ");
+        let ver_conflict_msg =
+            format!("optimistic lock conflict: {ver_col} mismatch in table {table}");
+        quote! {
+            async move {
+                #auto_set_tenant
+                #before_urp_call
+                let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#save_acc_prefix);
+                {
+                    let mut __first = true;
+                    #(#save_set_fragments)*
+                    if !__first { __acc.push_sql(", "); }
+                    __acc.push_sql("updated_at = now()");
+                    __acc.push_sql(#ver_set);
+                }
+                __acc.push_sql(" WHERE id = ");
+                let __id_val = self.id.clone();
+                __acc.push_bind(__id_val);
+                __acc.push_sql(#ver_where);
+                let __ver_val = self.#ver_ident.clone();
+                __acc.push_bind(__ver_val);
+                __acc.push_sql(#update_returning_suffix);
+                let (__sql, __binds) = __acc.into_parts();
+                let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+                    __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+                match ctx.__query_opt_for_macros(&__sql, &__params).await? {
+                    ::std::option::Option::Some(__raw_row) => {
+                        let __old = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
+                            &__raw_row, "__djogi_old__",
+                        )?;
+                        let __new = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
+                            &__raw_row, "__djogi_new__",
+                        )?;
+                        let __pair = ::djogi::query::ReturningPair { old: __old, new: __new };
+                        #emit_outbox_urp_save
+                        #after_urp_call
+                        if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
+                            let __id_for_cache = ::core::clone::Clone::clone(&__pair.new.id);
+                            ctx.on_commit(move || async move {
+                                if let ::std::result::Result::Err(__e) = __punnu
+                                    .invalidate(
+                                        &__id_for_cache,
+                                        ::djogi::cache::InvalidationReason::OnSave,
+                                    )
+                                    .await
+                                {
+                                    ::djogi::__private::tracing::warn!(
+                                        target: "djogi::cache",
+                                        error = ?__e,
+                                        model = ::std::any::type_name::<Self>(),
+                                        "Punnu::invalidate L2 backend failed during on_commit drain (update_returning_pair versioned)",
+                                    );
+                                }
+                                ::std::result::Result::Ok(())
+                            });
+                        }
+                        ::std::result::Result::Ok(__pair)
+                    }
+                    ::std::option::Option::None => {
+                        ::std::result::Result::Err(
+                            ::djogi::DjogiError::LockConflict(
+                                ::djogi::DbError::other(#ver_conflict_msg)
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    } else {
+        update_returning_pair_body_shape_a
+    };
+
+    // delete_returning body.
+    // Mirrors delete() but adds RETURNING WITH (OLD AS __djogi_old) and
+    // returns the DB-returned snapshot instead of ().
+    let delete_returning_body = quote! {
+        async move {
+            #auto_set_tenant
+            #before_drp_call
+            let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
+                #owned_pk_param,
+            ];
+            let __raw_row = ctx.__query_one_for_macros(#delete_returning_sql, __params).await?;
+            let __deleted = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
+                &__raw_row, "__djogi_old__",
+            )?;
+            // Outbox: use DB-returned snapshot (more authoritative than consumed self).
+            #emit_outbox_drp_delete
+            // Hooks: after_delete receives __deleted (DB truth).
+            #after_drp_call
+            // Cache invalidation: invalidate the deleted row's id.
+            if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
+                let __id_for_cache = ::core::clone::Clone::clone(&__deleted.id);
+                ctx.on_commit(move || async move {
+                    if let ::std::result::Result::Err(__e) = __punnu
+                        .invalidate(
+                            &__id_for_cache,
+                            ::djogi::cache::InvalidationReason::OnDelete,
+                        )
+                        .await
+                    {
+                        ::djogi::__private::tracing::warn!(
+                            target: "djogi::cache",
+                            error = ?__e,
+                            model = ::std::any::type_name::<Self>(),
+                            "Punnu::invalidate L2 backend failed during on_commit drain (delete_returning)",
+                        );
+                    }
+                    ::std::result::Result::Ok(())
+                });
+            }
+            ::std::result::Result::Ok(__deleted)
+        }
+    };
+
     let refresh_body = quote! {
         async move {
             #auto_set_tenant
@@ -2958,6 +3290,31 @@ pub fn expand(
                 Output = ::std::result::Result<Self, ::djogi::DjogiError>,
             > + ::std::marker::Send + 'ctx {
                 #refresh_body
+            }
+
+            // Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING.
+            fn update_returning_pair(
+                mut self,
+                ctx: &mut ::djogi::context::DjogiContext,
+            ) -> impl ::std::future::Future<
+                Output = ::std::result::Result<
+                    ::djogi::query::ReturningPair<Self>,
+                    ::djogi::DjogiError,
+                >,
+            > + ::std::marker::Send {
+                // `mut self` lets before_save take `&mut self` even though
+                // the consuming path has already moved `self` in. Rust
+                // permits `mut self` as a binding pattern in `fn` signatures.
+                #update_returning_pair_body
+            }
+
+            fn delete_returning(
+                #drp_self_pat,
+                ctx: &mut ::djogi::context::DjogiContext,
+            ) -> impl ::std::future::Future<
+                Output = ::std::result::Result<Self, ::djogi::DjogiError>,
+            > + ::std::marker::Send {
+                #delete_returning_body
             }
 
             // Cluster 8δ T8.6 — soft-deletable tombstone signal.

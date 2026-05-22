@@ -608,14 +608,50 @@ pub mod prelude {
     // prelude. Adopter code composes through `Q<T>` (in this list);
     // legacy `Condition` callers reach `djogi::query::internal::Condition`.
     pub use crate::query::{
-        AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
-        ClosureModel, ConditionExt, DjogiPortableEq, FieldRef, FilterClause, InsertSelectColumn,
-        InsertSelectSource, InsertSelectStmt, IntoAggregateTuple, IntoFieldFilterValue,
-        IntoFilterValue, IntoInsertColumns, IntoPortableFieldValue, IntoSetOpArm,
-        JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, Lookup,
-        MaterializeClosureOptions, MaterializeClosureReport, ModelFilter, OrderExpr,
-        PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt, PortableQuerySet, Q,
-        QuerySet, RecursiveDirection, RecursiveQuerySet, SetOpKind, SetOpQuerySet, VisageQuerySet,
+        AggregateQuery,
+        AnnotatedQuerySet,
+        ArrayPredicate,
+        BasicPredicate,
+        CachedPortableQuerySet,
+        ClosureModel,
+        ConditionExt,
+        DjogiPortableEq,
+        FieldRef,
+        FilterClause,
+        InsertSelectColumn,
+        InsertSelectSource,
+        InsertSelectStmt,
+        IntoAggregateTuple,
+        IntoFieldFilterValue,
+        IntoFilterValue,
+        IntoInsertColumns,
+        IntoPortableFieldValue,
+        IntoSetOpArm,
+        JoinedAnnotatedQuerySet,
+        JoinedAnnotatedRow,
+        JoinedQuerySet,
+        Lookup,
+        MaterializeClosureOptions,
+        MaterializeClosureReport,
+        ModelFilter,
+        OrderExpr,
+        PairClosureKinshipSum,
+        PairOrderExpr,
+        PairSide,
+        PairWindowExt,
+        PortableQuerySet,
+        Q,
+        QuerySet,
+        RecursiveDirection,
+        RecursiveQuerySet,
+        // Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING result type.
+        // `ReturningPair<T>` carries both the before- and after-UPDATE row
+        // snapshots; used by `Model::update_returning_pair` and
+        // `UpdateStmt::execute_returning_pairs`.
+        ReturningPair,
+        SetOpKind,
+        SetOpQuerySet,
+        VisageQuerySet,
     };
     // `atomic` / `atomic_with` / `retry_on_conflict` /
     // `retry_on_conflict_with_backoff` — Phase 4 Task 1 canonical transaction
