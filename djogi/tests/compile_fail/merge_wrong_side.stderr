@@ -1,8 +1,8 @@
 error[E0425]: cannot find type `MergeWhenCondition` in this scope
   --> $DIR/merge_wrong_side.rs:29:41
    |
-29 | ...   .when_matched_and_update(None::<MergeWhenCondition<WrongSideSource, WrongSideTarget>>,...
-   |                                       ^^^^^^^^^^^^^^^^^^ not found in this scope
+29 |         .when_matched_and_update(None::<MergeWhenCondition<WrongSideSource, WrongSideTarget>>, vec![
+   |                                         ^^^^^^^^^^^^^^^^^^ not found in this scope
 
 error[E0425]: cannot find value `source` in this scope
   --> $DIR/merge_wrong_side.rs:31:13
