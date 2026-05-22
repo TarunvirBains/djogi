@@ -202,6 +202,17 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
             }
         }
 
+        // Safety rail: if no `merge_copy_from` mappings were provided, this helper
+        // must not silently degrade into an unconditional MATCHED update.
+        // Force the branch predicate to `FALSE` so the statement becomes a no-op
+        // for MATCHED rows instead of broad-updating unexpectedly.
+        let condition = condition.or_else(|| {
+            Some(MergeWhenCondition {
+                node: ExprNode::Literal(crate::query::condition::FilterValue::Bool(false)),
+                _marker: PhantomData,
+            })
+        });
+
         self.when_matched_and_update(condition, updates)
     }
 
@@ -350,10 +361,10 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
             }
 
             // BY SOURCE predicates must only reference target fields (Spec #178 BLOCK 2).
-            if branch.match_kind == MergeMatchKind::NotMatchedBySource {
-                if let Some(cond) = &branch.condition {
-                    check_target_only_predicate(&cond.node, target_table)?;
-                }
+            if branch.match_kind == MergeMatchKind::NotMatchedBySource
+                && let Some(cond) = &branch.condition
+            {
+                check_target_only_predicate(&cond.node, target_table)?;
             }
 
             // Action validations.
@@ -411,7 +422,10 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
 fn check_target_only_predicate(node: &ExprNode, table: &'static str) -> Result<(), DjogiError> {
     match node {
         ExprNode::Field { .. } => Ok(()),
-        ExprNode::OuterRefColumn { table: alias, column } => {
+        ExprNode::OuterRefColumn {
+            table: alias,
+            column,
+        } => {
             if *alias == SRC_ALIAS {
                 return Err(DjogiError::MergeBranchInvalid {
                     table,
@@ -438,7 +452,10 @@ fn check_target_only_predicate(node: &ExprNode, table: &'static str) -> Result<(
             check_target_only_predicate(lhs, table)?;
             check_target_only_predicate(rhs, table)
         }
-        _ => Ok(()),
+        _ => Err(DjogiError::MergeBranchInvalid {
+            table,
+            reason: "BY SOURCE branch condition uses an unsupported expression shape".to_string(),
+        }),
     }
 }
 
@@ -993,7 +1010,9 @@ mod tests {
             "USING (SELECT id, created_at, updated_at, payload FROM fake) AS __djogi_src"
         ));
         assert!(sql.contains("ON tgt.id = __djogi_src.id"));
-        assert!(sql.contains("WHEN MATCHED THEN UPDATE SET updated_at = now(), payload = __djogi_src.payload"));
+        assert!(sql.contains(
+            "WHEN MATCHED THEN UPDATE SET updated_at = now(), payload = __djogi_src.payload"
+        ));
         assert!(sql.contains("WHEN NOT MATCHED THEN INSERT (id, payload) VALUES (__djogi_src.id, __djogi_src.payload)"));
     }
 
@@ -1014,6 +1033,23 @@ mod tests {
         assert!(sql.contains(
             "WHEN MATCHED AND tgt.payload IS DISTINCT FROM __djogi_src.payload THEN UPDATE SET"
         ));
+    }
+
+    #[test]
+    fn merge_update_changed_without_source_mapping_is_guarded() {
+        let source: QuerySet<Fake> = QuerySet::new();
+        let stmt = source
+            .merge_into::<Fake, _, _>(|tgt, src| tgt.id().merge_on_eq(src.id()))
+            .when_matched_update_changed(vec![Fake::fields().payload().merge_set("x".to_string())]);
+
+        let branch = stmt
+            .branches
+            .first()
+            .expect("expected one WHEN MATCHED UPDATE branch");
+        assert!(
+            branch.condition.is_some(),
+            "update_changed must not degrade to unconditional MATCHED UPDATE"
+        );
     }
 
     #[test]
@@ -1069,7 +1105,9 @@ mod tests {
         let stmt = source
             .merge_into::<Fake, _, _>(|tgt, src| tgt.id().merge_on_eq(src.id()))
             .when_not_matched_by_source_then_delete(Some(
-                Fake::fields().payload().is_distinct_from_source(Fake::fields().payload()),
+                Fake::fields()
+                    .payload()
+                    .is_distinct_from_source(Fake::fields().payload()),
             ));
 
         let res = stmt.validate();

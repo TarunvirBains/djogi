@@ -207,7 +207,7 @@ Contract:
 - `WHEN MATCHED [AND condition] THEN DELETE` removes the target row.
 - `WHEN NOT MATCHED BY SOURCE [AND condition] THEN [UPDATE | DELETE]` allows
   acting on target rows that have no source counterpart (requires Postgres 18+).
-- **Auto-stamping**: `UPDATE` actions automatically append `tgt.updated_at = now()`.
+- **Auto-stamping**: `UPDATE` actions automatically append `updated_at = now()`.
 - **Validations**:
   - Rejects `source.none()` (structural empty) by default if `BY SOURCE` branches
     exist to prevent unintentional broad updates.
