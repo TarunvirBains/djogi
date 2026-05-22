@@ -80,7 +80,7 @@
 //! `PrimitiveDateTime`, `Date`, `Time`, `Interval`, `Vec<u8>`, and
 //! `Option<T>` for each of the above.
 //!
-//! # Non-goals (v0.1)
+//! # Non-goals
 //!
 //! - No implicit cartesian join.  Use an explicit `cross_join_values` API later.
 //! - No struct rows — only tuples.
