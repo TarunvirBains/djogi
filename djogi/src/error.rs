@@ -968,8 +968,7 @@ pub enum DjogiError {
         second_field: String,
     },
 
-    /// `DjogiContext::clone_for_concurrent_reads` was invoked on a
-    /// transaction-backed context. Phase 8.5 Cluster 3 (issue #173)
+    /// `QuerySet::merge_into` was invoked on a transaction-backed context. Phase 8.5 Cluster 3 (issue #173)
     /// introduces this variant alongside the typed concurrent-reads
     /// helper.
     ///
@@ -997,6 +996,37 @@ pub enum DjogiError {
          sequentially"
     )]
     ConcurrentReadsRequirePoolContext,
+
+    /// `QuerySet::merge_into` observed a source queryset with state that
+    /// cannot be safely represented in a `MERGE` statement: `prefetch`,
+    /// `select_related`, `cache`, `lock`, or `distinct`. Phase 8.5
+    /// Issue #178.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`].
+    #[error("merge source queryset on `{table}` is invalid: {reason}")]
+    #[non_exhaustive]
+    MergeSourceInvalid {
+        table: &'static str,
+        reason: &'static str,
+    },
+
+    /// `QuerySet::merge_into` observed an invalid branch configuration:
+    /// unreachable branches (same-kind unconditional branch follows another),
+    /// duplicate target columns in an update or insert action, or manual
+    /// `updated_at` assignment in an update action. Phase 8.5 Issue #178.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`].
+    #[error("merge branch on `{table}` is invalid: {reason}")]
+    #[non_exhaustive]
+    MergeBranchInvalid { table: &'static str, reason: String },
+
+    /// `QuerySet::merge_into` was invoked without any `ON` conditions or
+    /// without any `WHEN` branches. Phase 8.5 Issue #178.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`].
+    #[error("merge statement on `{table}` is invalid: {reason}")]
+    #[non_exhaustive]
+    MergeNoBranches { table: &'static str, reason: String },
 }
 
 /// Bridge: convert `tokio_postgres::Error` into `DjogiError`.
@@ -1320,6 +1350,30 @@ mod tests {
             }
             .is_terminal(),
             "SetOpOuterOrderingInvalid must be terminal — retry cannot reshape the ordering"
+        );
+        assert!(
+            DjogiError::MergeSourceInvalid {
+                table: "t",
+                reason: "prefetch is not supported"
+            }
+            .is_terminal(),
+            "MergeSourceInvalid must be terminal"
+        );
+        assert!(
+            DjogiError::MergeBranchInvalid {
+                table: "t",
+                reason: "duplicate column".into()
+            }
+            .is_terminal(),
+            "MergeBranchInvalid must be terminal"
+        );
+        assert!(
+            DjogiError::MergeNoBranches {
+                table: "t",
+                reason: "at least one branch required".into()
+            }
+            .is_terminal(),
+            "MergeNoBranches must be terminal"
         );
     }
 

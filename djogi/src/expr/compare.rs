@@ -88,4 +88,16 @@ impl<T> Expr<T> {
     pub fn lte<R: Into<Expr<T>>>(self, rhs: R) -> Expr<bool> {
         self.cmp(CmpOp::Lte, rhs)
     }
+
+    /// `lhs IS DISTINCT FROM rhs` — true if operands differ, including
+    /// NULL vs non-NULL (unlike `=`).
+    pub fn is_distinct_from<R: Into<Expr<T>>>(self, rhs: R) -> Expr<bool> {
+        self.cmp(CmpOp::IsDistinctFrom, rhs)
+    }
+
+    /// `lhs IS NOT DISTINCT FROM rhs` — true if operands are equal OR
+    /// both are NULL.
+    pub fn is_not_distinct_from<R: Into<Expr<T>>>(self, rhs: R) -> Expr<bool> {
+        self.cmp(CmpOp::IsNotDistinctFrom, rhs)
+    }
 }

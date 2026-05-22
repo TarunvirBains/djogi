@@ -211,14 +211,21 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             Ok(())
         }
         // Recurse into compound expression nodes.
-        ExprNode::Add(l, r) | ExprNode::Sub(l, r) | ExprNode::Mul(l, r) | ExprNode::Div(l, r) => {
+        ExprNode::Add(l, r)
+        | ExprNode::Sub(l, r)
+        | ExprNode::Mul(l, r)
+        | ExprNode::Div(l, r)
+        | ExprNode::And(l, r)
+        | ExprNode::Or(l, r) => {
             check_aggregate_legality(l)?;
             check_aggregate_legality(r)
         }
+        ExprNode::Not(expr) => check_aggregate_legality(expr),
         ExprNode::Cmp { lhs, rhs, .. } => {
             check_aggregate_legality(lhs)?;
             check_aggregate_legality(rhs)
         }
+
         ExprNode::Case { arms, otherwise } => {
             for (cond, val) in arms {
                 check_aggregate_legality(cond)?;
@@ -325,6 +332,17 @@ pub(crate) fn emit_expr(
         ExprNode::Div(lhs, rhs) => {
             emit_arith(acc, lhs, " / ", rhs, ctx)?;
         }
+        ExprNode::And(lhs, rhs) => {
+            emit_arith(acc, lhs, " AND ", rhs, ctx)?;
+        }
+        ExprNode::Or(lhs, rhs) => {
+            emit_arith(acc, lhs, " OR ", rhs, ctx)?;
+        }
+        ExprNode::Not(expr) => {
+            acc.push_sql("NOT (");
+            emit_expr(acc, expr, ctx)?;
+            acc.push_sql(")");
+        }
         ExprNode::Cmp { op, lhs, rhs } => {
             emit_expr(acc, lhs, ctx)?;
             acc.push_sql(match op {
@@ -334,6 +352,8 @@ pub(crate) fn emit_expr(
                 CmpOp::Gte => " >= ",
                 CmpOp::Lt => " < ",
                 CmpOp::Lte => " <= ",
+                CmpOp::IsDistinctFrom => " IS DISTINCT FROM ",
+                CmpOp::IsNotDistinctFrom => " IS NOT DISTINCT FROM ",
             });
             emit_expr(acc, rhs, ctx)?;
         }
