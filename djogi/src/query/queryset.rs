@@ -763,7 +763,10 @@ impl<T: Model> QuerySet<T> {
     ///
     /// Inside `inner`, you can use `OuterRef::as_lateral_outer_expr()` to
     /// refer to columns from this outer queryset.
-    pub fn join_lateral<R: Model>(self, inner: QuerySet<R>) -> crate::query::lateral::LateralQuerySet<T, R, crate::query::lateral::InnerLateral> {
+    pub fn join_lateral<R: Model>(
+        self,
+        inner: QuerySet<R>,
+    ) -> crate::query::lateral::LateralQuerySet<T, R, crate::query::lateral::InnerLateral> {
         crate::query::lateral::LateralQuerySet {
             outer: self,
             inner,
@@ -779,7 +782,10 @@ impl<T: Model> QuerySet<T> {
     ///
     /// Inside `inner`, you can use `OuterRef::as_lateral_outer_expr()` to
     /// refer to columns from this outer queryset.
-    pub fn left_join_lateral<R: Model>(self, inner: QuerySet<R>) -> crate::query::lateral::LateralQuerySet<T, R, crate::query::lateral::LeftLateral> {
+    pub fn left_join_lateral<R: Model>(
+        self,
+        inner: QuerySet<R>,
+    ) -> crate::query::lateral::LateralQuerySet<T, R, crate::query::lateral::LeftLateral> {
         crate::query::lateral::LateralQuerySet {
             outer: self,
             inner,

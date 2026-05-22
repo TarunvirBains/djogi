@@ -1,15 +1,18 @@
-use crate::error::DjogiError;
 use crate::Result;
+use crate::context::DjogiContext;
+use crate::error::DjogiError;
 use crate::model::Model;
-use crate::pg::accumulator::{as_params, SqlAccumulator};
+use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::{FromJoinedPgRow, FromPgRow};
-use crate::query::queryset::QuerySet;
-use crate::query::terminal::auto_set_tenant;
-use crate::query::joined::{PairSide, LEFT_ALIAS, RIGHT_ALIAS, push_aliased_columns, LEFT_COLUMN_PREFIX, RIGHT_COLUMN_PREFIX};
-use crate::query::sql::push_tail_qualified;
+use crate::query::joined::{
+    LEFT_ALIAS, LEFT_COLUMN_PREFIX, PairSide, RIGHT_ALIAS, RIGHT_COLUMN_PREFIX,
+    push_aliased_columns,
+};
 use crate::query::lock::LockMode;
 use crate::query::queryset::DistinctMode;
-use crate::context::DjogiContext;
+use crate::query::queryset::QuerySet;
+use crate::query::sql::push_tail_qualified;
+use crate::query::terminal::auto_set_tenant;
 use std::marker::PhantomData;
 
 /// Mode marker for a `JOIN LATERAL` where the parent row is dropped if there is no child row.
@@ -28,34 +31,42 @@ pub struct LateralQuerySet<L: Model, R: Model, M = InnerLateral> {
 impl<L: Model + FromPgRow, R: Model + FromPgRow, M> LateralQuerySet<L, R, M> {
     fn validate(&self) -> Result<()> {
         if !self.outer.prefetch_paths.is_empty() || !self.inner.prefetch_paths.is_empty() {
-            return Err(DjogiError::Validation("Lateral queries do not support prefetch paths".into()));
+            return Err(DjogiError::Validation(
+                "Lateral queries do not support prefetch paths".into(),
+            ));
         }
-        if !self.outer.select_related_paths.is_empty() || !self.inner.select_related_paths.is_empty() {
-            return Err(DjogiError::Validation("Lateral queries do not support select_related".into()));
+        if !self.outer.select_related_paths.is_empty()
+            || !self.inner.select_related_paths.is_empty()
+        {
+            return Err(DjogiError::Validation(
+                "Lateral queries do not support select_related".into(),
+            ));
         }
         if self.outer.cache_target.is_some() || self.inner.cache_target.is_some() {
-            return Err(DjogiError::Validation("Lateral queries do not support cache_target".into()));
+            return Err(DjogiError::Validation(
+                "Lateral queries do not support cache_target".into(),
+            ));
         }
-        if !matches!(self.outer.lock, LockMode::None) || !matches!(self.inner.lock, LockMode::None) {
-            return Err(DjogiError::Validation("Lateral queries do not support row locks".into()));
-        }
-        if !matches!(self.inner.distinct, DistinctMode::None) {
-            return Err(DjogiError::Validation("Lateral queries do not support inner distinct".into()));
+        if !matches!(self.outer.lock, LockMode::None) || !matches!(self.inner.lock, LockMode::None)
+        {
+            return Err(DjogiError::Validation(
+                "Lateral queries do not support row locks".into(),
+            ));
         }
         Ok(())
     }
 
     pub(crate) fn build_sql(&self, is_left: bool, is_count: bool) -> Result<SqlAccumulator> {
         let mut acc = SqlAccumulator::new("");
-        
+
         if is_count {
             acc.push_sql("SELECT COUNT(*) FROM (");
         }
-        
+
         acc.push_sql("SELECT ");
         push_aliased_columns::<L>(&mut acc, PairSide::Left, true);
         push_aliased_columns::<R>(&mut acc, PairSide::Right, false);
-        
+
         if is_left {
             acc.push_sql(", ");
             acc.push_sql(RIGHT_ALIAS);
@@ -66,19 +77,33 @@ impl<L: Model + FromPgRow, R: Model + FromPgRow, M> LateralQuerySet<L, R, M> {
         acc.push_sql(L::table_name());
         acc.push_sql(" AS ");
         acc.push_sql(LEFT_ALIAS);
-        
+
         if is_left {
             acc.push_sql(" LEFT JOIN LATERAL (");
         } else {
             acc.push_sql(" JOIN LATERAL (");
         }
-        
+
         // Inner lateral query
         let mut inner_acc = SqlAccumulator::new("");
-        inner_acc.push_sql("SELECT ");
-        // We only need R columns, no alias prefixes for the subquery's own projection
+        match &self.inner.distinct {
+            DistinctMode::None => {
+                inner_acc.push_sql("SELECT ");
+            }
+            DistinctMode::Plain => {
+                inner_acc.push_sql("SELECT DISTINCT ");
+            }
+            DistinctMode::On(cols) => {
+                inner_acc.push_sql("SELECT DISTINCT ON (");
+                inner_acc.push_csv(cols.iter().copied());
+                inner_acc.push_sql(") ");
+            }
+        }
+        // We only need R columns, no alias prefixes for the subquery's own projection.
         for (i, col) in <R as FromPgRow>::COLUMNS.iter().enumerate() {
-            if i > 0 { inner_acc.push_sql(", "); }
+            if i > 0 {
+                inner_acc.push_sql(", ");
+            }
             inner_acc.push_sql(col);
         }
         if is_left {
@@ -97,7 +122,7 @@ impl<L: Model + FromPgRow, R: Model + FromPgRow, M> LateralQuerySet<L, R, M> {
 
         // Outer modifiers
         let mut outer_acc = SqlAccumulator::new("");
-        
+
         // If we are building COUNT, we strip outer ORDER BY, LIMIT, OFFSET, but we keep WHERE.
         if is_count {
             let mut shadow = QuerySet::<L>::new();
@@ -108,7 +133,7 @@ impl<L: Model + FromPgRow, R: Model + FromPgRow, M> LateralQuerySet<L, R, M> {
             push_tail_qualified(&mut outer_acc, &self.outer, Some(LEFT_ALIAS))
                 .map_err(|e| DjogiError::Validation(e.to_string()))?;
         }
-        
+
         acc.extend_with(outer_acc);
 
         if is_count {
@@ -119,7 +144,9 @@ impl<L: Model + FromPgRow, R: Model + FromPgRow, M> LateralQuerySet<L, R, M> {
     }
 }
 
-impl<L: Model + FromJoinedPgRow + FromPgRow, R: Model + FromJoinedPgRow + FromPgRow> LateralQuerySet<L, R, InnerLateral> {
+impl<L: Model + FromJoinedPgRow + FromPgRow, R: Model + FromJoinedPgRow + FromPgRow>
+    LateralQuerySet<L, R, InnerLateral>
+{
     /// Build the lateral SELECT SQL this queryset would execute, without
     /// touching a database. **Internal-test plumbing — never call
     /// this from adopter code.**
@@ -167,7 +194,7 @@ impl<L: Model + FromJoinedPgRow + FromPgRow, R: Model + FromJoinedPgRow + FromPg
         let (sql, binds) = acc.into_parts();
         let params = as_params(&binds);
         let rows = ctx.query_all(&sql, &params).await?;
-        
+
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             out.push((
@@ -185,7 +212,9 @@ impl<L: Model + FromJoinedPgRow + FromPgRow, R: Model + FromJoinedPgRow + FromPg
     }
 }
 
-impl<L: Model + FromJoinedPgRow + FromPgRow, R: Model + FromJoinedPgRow + FromPgRow> LateralQuerySet<L, R, LeftLateral> {
+impl<L: Model + FromJoinedPgRow + FromPgRow, R: Model + FromJoinedPgRow + FromPgRow>
+    LateralQuerySet<L, R, LeftLateral>
+{
     /// Build the lateral SELECT SQL this queryset would execute, without
     /// touching a database. **Internal-test plumbing — never call
     /// this from adopter code.**
@@ -233,7 +262,7 @@ impl<L: Model + FromJoinedPgRow + FromPgRow, R: Model + FromJoinedPgRow + FromPg
         let (sql, binds) = acc.into_parts();
         let params = as_params(&binds);
         let rows = ctx.query_all(&sql, &params).await?;
-        
+
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             let left = L::from_joined_pg_row(&row, LEFT_COLUMN_PREFIX)?;

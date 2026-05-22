@@ -68,3 +68,23 @@ fn test_count_lateral_shape() {
     // Inner limit must be preserved inside the parens
     assert!(sql.contains("LIMIT $1"), "inner limit preserved: {}", sql);
 }
+
+#[test]
+fn test_inner_distinct_is_preserved() {
+    let outer = Parent::objects();
+    let inner = Child::objects().distinct().limit(1);
+
+    let lat = outer.join_lateral(inner);
+    let sql = lat.__sql_for_test().unwrap();
+
+    assert!(
+        sql.contains("JOIN LATERAL (SELECT DISTINCT "),
+        "inner distinct keyword preserved: {}",
+        sql
+    );
+    assert!(
+        sql.contains("FROM phase8_5_c4b_lateral_children"),
+        "inner lateral source table present: {}",
+        sql
+    );
+}
