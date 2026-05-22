@@ -3,8 +3,8 @@
 // Pins the live-DB behavior of the new `QuerySet::merge_into` surface.
 // Covers basic upsert, soft-delete (sync), and validation rejections.
 
-use djogi::prelude::*;
 use djogi::cache::Cacheable;
+use djogi::prelude::*;
 use djogi::query::MergeWhenCondition;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -64,28 +64,51 @@ async fn merge_upsert_syncs_into_target(mut ctx: djogi::DjogiContext) {
         .merge_into::<MergeTarget, _, _>(|target, source| {
             target.external_id().merge_on_eq(source.external_id())
         })
-        .when_matched_and_update(None::<MergeWhenCondition<MergeSource, MergeTarget>>, vec![
-            MergeTarget::fields().payload().merge_copy_from(MergeSource::fields().payload()),
-        ])
-        .when_not_matched_then_insert(None::<MergeWhenCondition<MergeSource, MergeTarget>>, vec![
-            MergeTarget::fields().external_id().merge_insert_from(MergeSource::fields().external_id()),
-            MergeTarget::fields().payload().merge_insert_from(MergeSource::fields().payload()),
-            MergeTarget::fields().active().merge_insert_value(true),
-        ])
+        .when_matched_and_update(
+            None::<MergeWhenCondition<MergeSource, MergeTarget>>,
+            vec![
+                MergeTarget::fields()
+                    .payload()
+                    .merge_copy_from(MergeSource::fields().payload()),
+            ],
+        )
+        .when_not_matched_then_insert(
+            None::<MergeWhenCondition<MergeSource, MergeTarget>>,
+            vec![
+                MergeTarget::fields()
+                    .external_id()
+                    .merge_insert_from(MergeSource::fields().external_id()),
+                MergeTarget::fields()
+                    .payload()
+                    .merge_insert_from(MergeSource::fields().payload()),
+                MergeTarget::fields().active().merge_insert_value(true),
+            ],
+        )
         .execute(&mut ctx)
         .await
-        .map_err(|e| { eprintln!("MERGE EXECUTE ERROR: {:?}", e); e })
+        .map_err(|e| {
+            eprintln!("MERGE EXECUTE ERROR: {:?}", e);
+            e
+        })
         .unwrap();
 
     // 1 matched (alpha) + 1 not matched (beta) = 2 affected rows.
     assert_eq!(counts.total_affected, 2);
 
     // Verify "alpha" was updated
-    let alpha = MergeTarget::objects().filter(|f| f.external_id().eq("alpha".to_string())).fetch_one(&mut ctx).await.unwrap();
+    let alpha = MergeTarget::objects()
+        .filter(|f| f.external_id().eq("alpha".to_string()))
+        .fetch_one(&mut ctx)
+        .await
+        .unwrap();
     assert_eq!(alpha.payload, "v2");
 
     // Verify "beta" was inserted
-    let beta = MergeTarget::objects().filter(|f| f.external_id().eq("beta".to_string())).fetch_one(&mut ctx).await.unwrap();
+    let beta = MergeTarget::objects()
+        .filter(|f| f.external_id().eq("beta".to_string()))
+        .fetch_one(&mut ctx)
+        .await
+        .unwrap();
     assert_eq!(beta.payload, "new");
 }
 
@@ -103,19 +126,32 @@ async fn merge_delete_missing_source_rows(mut ctx: djogi::DjogiContext) {
         .merge_into::<MergeTarget, _, _>(|target, source| {
             target.external_id().merge_on_eq(source.external_id())
         })
-        .when_not_matched_by_source_then_delete(None::<MergeWhenCondition<MergeSource, MergeTarget>>)
+        .when_not_matched_by_source_then_delete(
+            None::<MergeWhenCondition<MergeSource, MergeTarget>>,
+        )
         .execute(&mut ctx)
         .await
-        .map_err(|e| { eprintln!("MERGE EXECUTE ERROR: {:?}", e); e })
+        .map_err(|e| {
+            eprintln!("MERGE EXECUTE ERROR: {:?}", e);
+            e
+        })
         .unwrap();
 
     // "alpha" matches (no action), "gamma" doesn't match source -> deleted.
     assert_eq!(counts.total_affected, 1);
 
-    let exists = MergeTarget::objects().filter(|f| f.external_id().eq("gamma".to_string())).exists(&mut ctx).await.unwrap();
+    let exists = MergeTarget::objects()
+        .filter(|f| f.external_id().eq("gamma".to_string()))
+        .exists(&mut ctx)
+        .await
+        .unwrap();
     assert!(!exists, "gamma should have been deleted");
 
-    let alpha_exists = MergeTarget::objects().filter(|f| f.external_id().eq("alpha".to_string())).exists(&mut ctx).await.unwrap();
+    let alpha_exists = MergeTarget::objects()
+        .filter(|f| f.external_id().eq("alpha".to_string()))
+        .exists(&mut ctx)
+        .await
+        .unwrap();
     assert!(alpha_exists, "alpha should still exist");
 }
 
@@ -136,17 +172,28 @@ async fn merge_update_changed_only_prevents_unnecessary_stamps(mut ctx: djogi::D
             target.external_id().merge_on_eq(source.external_id())
         })
         .when_matched_update_changed(vec![
-            MergeTarget::fields().payload().merge_copy_from(MergeSource::fields().payload()),
+            MergeTarget::fields()
+                .payload()
+                .merge_copy_from(MergeSource::fields().payload()),
         ])
         .execute(&mut ctx)
         .await
-        .map_err(|e| { eprintln!("MERGE EXECUTE ERROR: {:?}", e); e })
+        .map_err(|e| {
+            eprintln!("MERGE EXECUTE ERROR: {:?}", e);
+            e
+        })
         .unwrap();
 
-    assert_eq!(counts.total_affected, 0, "no rows should be affected if payload is identical");
+    assert_eq!(
+        counts.total_affected, 0,
+        "no rows should be affected if payload is identical"
+    );
 
     let final_row = MergeTarget::get(&mut ctx, target.id).await.unwrap();
-    assert_eq!(final_row.updated_at, target.updated_at, "updated_at should not have advanced");
+    assert_eq!(
+        final_row.updated_at, target.updated_at,
+        "updated_at should not have advanced"
+    );
 }
 
 // ── Validation Rejections ────────────────────────────────────────────────
@@ -158,7 +205,9 @@ async fn merge_rejects_structural_none_source_with_by_source_branch(mut ctx: djo
         .merge_into::<MergeTarget, _, _>(|target, source| {
             target.external_id().merge_on_eq(source.external_id())
         })
-        .when_not_matched_by_source_then_delete(None::<MergeWhenCondition<MergeSource, MergeTarget>>)
+        .when_not_matched_by_source_then_delete(
+            None::<MergeWhenCondition<MergeSource, MergeTarget>>,
+        )
         .execute(&mut ctx)
         .await;
 
@@ -174,12 +223,16 @@ async fn merge_rejects_by_source_predicate_referencing_source(mut ctx: djogi::Dj
             target.external_id().merge_on_eq(source.external_id())
         })
         .when_not_matched_by_source_then_delete(Some(
-            MergeTarget::fields().payload().is_distinct_from_source(MergeSource::fields().payload()),
+            MergeTarget::fields()
+                .payload()
+                .is_distinct_from_source(MergeSource::fields().payload()),
         ))
         .execute(&mut ctx)
         .await;
 
     assert!(res.is_err());
     let err = res.unwrap_err();
-    assert!(format!("{}", err).contains("BY SOURCE branch condition cannot reference source field"));
+    assert!(
+        format!("{}", err).contains("BY SOURCE branch condition cannot reference source field")
+    );
 }
