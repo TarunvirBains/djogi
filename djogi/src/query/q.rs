@@ -215,9 +215,8 @@ pub enum Q<T: Model> {
     ///   closure API (which returns `Condition` from `FieldRef::eq` /
     ///   `gt` / `ilike` / etc.) keeps compiling unchanged.
     /// - The [`crate::query::filter::ModelFilter`] programmatic
-    ///   builder bridges into `Q<T>` by folding its clauses through
-    ///   the existing `clauses_into_condition` helper and wrapping
-    ///   the result as `Q::Condition(_)`.
+    ///   builder uses this variant for clauses that cannot be safely
+    ///   reconstructed as portable Q leaves.
     /// - Sister clusters (8β `default_filter_condition`, etc.) that
     ///   still produce `Condition` can compose with `Q<T>` without a
     ///   parallel rewrite.
@@ -495,11 +494,12 @@ impl<T: Model> From<crate::array::ArrayOverlapLeaf> for Q<T> {
 //    `filter_expr` call.
 // 6. The `{Model}Filter` programmatic builder — emitted by the
 //    `#[derive(Model)]` macro alongside the existing `ModelFilter`
-//    impl. The bridge folds `into_clauses()` through the existing
-//    `clauses_into_condition` helper and lifts the result via
-//    `Q::Condition(_)`. SQL parity with the legacy `Condition`
-//    substrate is exact because the lowering bridge round-trips the
-//    `Condition` as the identity (see `q_to_condition` for the contract).
+//    impl. The bridge consumes the stored `FilterClause` vector and
+//    lazily reconstructs portable Q leaves for the conservative cases
+//    the macro can prove from model metadata. Unsupported fields,
+//    wrapped/optional shapes, value mismatches, and SQL-only operators
+//    fall back to `Q::Condition(_)`, so SQL behavior remains the
+//    compatibility floor without storing parallel predicate state.
 //
 // `IntoQ<T> for sassi::BasicPredicate<T>` and
 // `From<sassi::BasicPredicate<T>> for Q<T>` are deliberately not exposed:
@@ -592,11 +592,10 @@ impl<T: Model> IntoQ<T> for crate::expr::Expr<bool> {
 // ── Macro-emitted `IntoQ<T>` for `{Model}Filter` ────────────────────────────
 //
 // The `#[derive(Model)]` macro emits an `IntoQ<#model_ty>` impl for
-// each `{Model}Filter` it generates. The impl folds `into_clauses()`
-// through `crate::query::filter::clauses_into_condition` and wraps the
-// result as `Q::Condition(_)`. Character-for-character SQL parity with
-// the pre-T6.9 `Condition` substrate is preserved because
-// `q_to_condition` round-trips `Q::Condition(_)` as the identity.
+// each `{Model}Filter` it generates. The impl keeps the filter's
+// `FilterClause` vector as the single source of truth, reconstructs
+// conservative portable leaves lazily, and uses `Q::Condition(_)` as
+// the fallback for SQL-only clauses.
 //
 // The seal extension lives in `crate::__private::__seal_into_q_for_model_filter`
 // so adopter crates cannot impl `IntoQ<T>` for arbitrary types — only

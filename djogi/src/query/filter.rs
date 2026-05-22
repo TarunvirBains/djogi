@@ -63,8 +63,10 @@
 //! [`QuerySet::filter_struct`]: crate::query::QuerySet::filter_struct
 //! [`Condition::And`]: crate::query::Condition::And
 
+use crate::model::Model;
 use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
 use crate::query::field::IntoFilterValue;
+use crate::query::q::{CompoundOp, Q};
 
 /// User-facing lookup constructor — one variant per operator the
 /// programmatic filter API exposes.
@@ -229,6 +231,28 @@ pub struct FilterClause {
     pub(crate) value: FilterValue,
 }
 
+/// Consumed [`FilterClause`] parts for macro-generated clause-to-`Q` mapping.
+///
+/// This is hidden implementation surface: generated `{Model}Filter`
+/// `IntoQ` impls need to inspect the erased column/op/value tuple after
+/// consuming the clause, but external callers still cannot construct a
+/// `FilterClause` except through [`FilterClause::from_lookup`].
+#[doc(hidden)]
+pub struct FilterClauseParts {
+    pub column: &'static str,
+    pub op: LookupOp,
+    pub value: FilterValue,
+}
+
+impl FilterClauseParts {
+    /// Fall back to the legacy condition leaf for clauses that cannot be
+    /// safely reconstructed as portable `Q` leaves.
+    #[doc(hidden)]
+    pub fn into_condition(self) -> Condition {
+        Condition::Leaf(Leaf::new(self.column, self.op, self.value))
+    }
+}
+
 impl FilterClause {
     /// Project a `Lookup<V>` into a type-erased `FilterClause`.
     ///
@@ -258,6 +282,17 @@ impl FilterClause {
     /// [`QuerySet::filter_struct`]: crate::query::QuerySet::filter_struct
     pub fn into_condition(self) -> Condition {
         Condition::Leaf(Leaf::new(self.column, self.op, self.value))
+    }
+
+    /// Consume this clause into inspectable parts for macro-generated
+    /// lazy conversion to `Q<T>`.
+    #[doc(hidden)]
+    pub fn into_parts(self) -> FilterClauseParts {
+        FilterClauseParts {
+            column: self.column,
+            op: self.op,
+            value: self.value,
+        }
     }
 }
 
@@ -338,6 +373,35 @@ pub fn clauses_into_condition(clauses: Vec<FilterClause>) -> Condition {
                 .map(FilterClause::into_condition)
                 .collect(),
         ),
+    }
+}
+
+/// Fold consumed clauses into `Q<M>`, delegating leaf reconstruction to
+/// macro-generated model-aware code.
+///
+/// Empty filters are the portable true identity. Single clauses return the
+/// mapped leaf directly. Multi-clause filters preserve setter order under an
+/// explicit `AND` compound node rather than routing through the legacy
+/// `Condition` path.
+#[doc(hidden)]
+pub fn clauses_into_q<M, F>(clauses: Vec<FilterClause>, mut map: F) -> Q<M>
+where
+    M: Model,
+    F: FnMut(FilterClause) -> Q<M>,
+{
+    match clauses.len() {
+        0 => Q::always_true(),
+        1 => {
+            let clause = clauses
+                .into_iter()
+                .next()
+                .expect("len == 1 branch guarantees one element");
+            map(clause)
+        }
+        _ => Q::Compound {
+            op: CompoundOp::And,
+            parts: clauses.into_iter().map(map).collect(),
+        },
     }
 }
 

@@ -58,6 +58,16 @@ use djogi::prelude::*;
 #[derive(Debug, Clone)]
 pub struct ExtractRow {
     pub label: String,
+    pub active: bool,
+}
+
+#[model(table = "phase8_t8_4_filter_bridge_wrap_rows", pk = HeerId)]
+#[derive(Debug, Clone)]
+pub struct FilterBridgeWrapRow {
+    pub tracked_active: Tracked<bool>,
+    pub tracked_label: Tracked<String>,
+    pub maybe_active: Option<bool>,
+    pub maybe_label: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -127,26 +137,65 @@ async fn excluded_queryset_extracts_portable_negation(mut ctx: djogi::DjogiConte
 }
 
 // ---------------------------------------------------------------------------
-// Test 4 — Queryset with filter_struct (model filter builder) → None.
+// Test 4 — Queryset with filter_struct over a portable bool field reduces.
 //
-// The macro-generated `{Model}Filter` builder still routes through the legacy
-// condition payload and remains unreducible at the PR4 cache / refresh gate.
+// The macro-generated `{Model}Filter` builder stores erased clauses, but
+// bool equality is safe to reconstruct lazily into a portable predicate at
+// consumption time.
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test(sync_models = [ExtractRow])]
-async fn filter_struct_with_model_filter_returns_none(mut ctx: djogi::DjogiContext) {
+#[test]
+fn filter_struct_with_portable_bool_model_filter_extracts() {
     let qs = ExtractRow::objects()
-        .filter_struct(ExtractRowFilter::new().label(djogi::Lookup::Eq("test".to_string())));
+        .filter_struct(ExtractRowFilter::new().active(djogi::Lookup::Eq(true)));
+
+    let result = qs.into_basic_predicate();
+
+    assert!(
+        matches!(result, Some(djogi::BasicPredicate::Field(_))),
+        "queryset built with filter_struct(ExtractRowFilter::active(true)) must reduce to a field BasicPredicate"
+    );
+}
+
+#[test]
+fn empty_model_filter_extracts_as_true() {
+    let qs = ExtractRow::objects().filter_struct(ExtractRowFilter::new());
+
+    let result = qs.into_basic_predicate();
+
+    assert!(
+        matches!(result, Some(djogi::BasicPredicate::True)),
+        "empty generated filters must fold to portable true"
+    );
+}
+
+#[test]
+fn mixed_model_filter_portable_and_fallback_remains_unreducible() {
+    let qs = ExtractRow::objects().filter_struct(
+        ExtractRowFilter::new()
+            .active(djogi::Lookup::Eq(true))
+            .label(djogi::Lookup::Contains("test".to_string())),
+    );
 
     let result = qs.into_basic_predicate();
 
     assert!(
         result.is_none(),
-        "queryset built with filter_struct(ExtractRowFilter) must return None — \
-         the model-filter path still carries a legacy Condition payload"
+        "mixed generated portable and fallback clauses must be rejected as a whole"
     );
+}
 
-    let _ = &mut ctx;
+#[test]
+fn filter_struct_bridge_compiles_with_tracked_and_option_bool_string_fields() {
+    let qs = FilterBridgeWrapRow::objects().filter_struct(FilterBridgeWrapRowFilter::new());
+
+    let result = qs.into_basic_predicate();
+
+    assert!(
+        matches!(result, Some(djogi::BasicPredicate::True)),
+        "empty generated filters must compile and fold to portable true even when \
+         the model has tracked and optional bool/string fields"
+    );
 }
 
 // ---------------------------------------------------------------------------

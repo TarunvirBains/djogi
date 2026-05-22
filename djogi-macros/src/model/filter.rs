@@ -145,6 +145,7 @@
 //! [`unwrap_option`]: crate::model::attrs::unwrap_option
 
 use crate::model::attrs::{FieldAttrs, ModelAttrs, PkStrategy};
+use crate::model::portable_field_emit::{PortableFieldEmitInfo, PortableFieldKind};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::ItemStruct;
@@ -167,6 +168,7 @@ pub fn expand(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
     _field_attrs: &[FieldAttrs],
+    portable_field_info: &[PortableFieldEmitInfo],
 ) -> TokenStream {
     let name = &struct_item.ident;
     let filter_name = format_ident!("{}Filter", name);
@@ -267,17 +269,18 @@ pub fn expand(
         "Programmatic filter builder for [`{name}`] — one setter per user field. \
          Use with `QuerySet::filter_struct` for closure-free filtering (shell, admin, dynamic UI). \
          The closure API (`QuerySet::filter(|f| ...)`) is the preferred surface when a closure is writable; \
-         both paths produce structurally equivalent condition trees."
+         both paths preserve the same database result semantics."
     );
 
     // ── `IntoQ<#name>` bridge (Cluster 8γ Stage 2 — T6.7) ───────────────
     //
     // Lifts `{Model}Filter` into the `Q<T>` algebra so it composes with
     // the `QuerySet::filter_struct` / `exclude_struct` signature
-    // `<F: IntoQ<T>>`. The impl folds the accumulated clauses through
-    // `clauses_into_condition` and wraps the result as
-    // `Q::Condition(_)`. Character-for-character SQL parity is
-    // preserved by construction.
+    // `<F: IntoQ<T>>`. The impl lazily maps the single stored
+    // `Vec<FilterClause>` source into portable Q leaves when the erased
+    // column/op/value tuple is known to match the model field. Clauses
+    // outside that conservative mapping fall back to `Q::Condition`,
+    // preserving existing SQL behavior without storing parallel Q state.
     //
     // Gated on `pk != PkStrategy::None`: `Q<T: Model>` carries a
     // `Model` bound, but `crud::expand` does not emit `impl Model` for
@@ -285,6 +288,8 @@ pub fn expand(
     // `{Model}Filter` (struct, setters, `ModelFilter` impl) usable for
     // pk-less models even though the closure-free filter path is not
     // reachable on them.
+    let filter_clause_arms = filter_clause_to_q_arms(name, portable_field_info);
+
     let into_q_bridge = if matches!(model_attrs.pk, PkStrategy::None) {
         quote! {}
     } else {
@@ -294,8 +299,24 @@ pub fn expand(
                 #[inline]
                 fn into_q(self) -> ::djogi::__private::query::Q<#name> {
                     let clauses = <Self as ::djogi::ModelFilter>::into_clauses(self);
-                    let cond = ::djogi::__private::query::clauses_into_condition(clauses);
-                    ::djogi::__private::query::Q::Condition(cond)
+                    ::djogi::__private::query::clauses_into_q::<#name, _>(
+                        clauses,
+                        |__djogi_clause| {
+                            let __djogi_parts = __djogi_clause.into_parts();
+                            match (__djogi_parts.column, __djogi_parts.op, __djogi_parts.value) {
+                                #(#filter_clause_arms)*
+                                (__djogi_column, __djogi_op, __djogi_value) => {
+                                    ::djogi::__private::query::Q::Condition(
+                                        ::djogi::__private::query::FilterClauseParts {
+                                            column: __djogi_column,
+                                            op: __djogi_op,
+                                            value: __djogi_value,
+                                        }.into_condition(),
+                                    )
+                                }
+                            }
+                        },
+                    )
                 }
             }
         }
@@ -331,5 +352,250 @@ pub fn expand(
         }
 
         #into_q_bridge
+    }
+}
+
+fn filter_clause_to_q_arms(
+    model_name: &syn::Ident,
+    portable_field_info: &[PortableFieldEmitInfo],
+) -> Vec<TokenStream> {
+    portable_field_info
+        .iter()
+        .filter_map(|info| {
+            if info.tracked_wrapped || info.field_kind.is_optional() {
+                return None;
+            }
+            let ident = &info.rust_ident;
+            let column = info.column_name.as_str();
+            match info.field_kind {
+                PortableFieldKind::Bool => Some(quote! {
+                    (
+                        #column,
+                        ::djogi::__private::query::LookupOp::Eq,
+                        ::djogi::__private::query::FilterValue::Bool(__djogi_value),
+                    ) => {
+                        let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, bool>(
+                            #column,
+                            |__djogi_row: &#model_name| &__djogi_row.#ident,
+                        );
+                        ::djogi::__private::query::Q::Portable(__djogi_field.eq(__djogi_value))
+                    }
+                    (
+                        #column,
+                        ::djogi::__private::query::LookupOp::Neq,
+                        ::djogi::__private::query::FilterValue::Bool(__djogi_value),
+                    ) => {
+                        let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, bool>(
+                            #column,
+                            |__djogi_row: &#model_name| &__djogi_row.#ident,
+                        );
+                        ::djogi::__private::query::Q::Portable(__djogi_field.neq(__djogi_value))
+                    }
+                    (
+                        #column,
+                        ::djogi::__private::query::LookupOp::In,
+                        ::djogi::__private::query::FilterValue::List(__djogi_values),
+                    ) if __djogi_values.iter().all(|__djogi_value| matches!(
+                        __djogi_value,
+                        ::djogi::__private::query::FilterValue::Bool(_)
+                    )) => {
+                        let __djogi_values = __djogi_values
+                            .into_iter()
+                            .filter_map(|__djogi_value| {
+                                match __djogi_value {
+                                    ::djogi::__private::query::FilterValue::Bool(__djogi_value) => {
+                                        ::std::option::Option::Some(__djogi_value)
+                                    }
+                                    _ => ::std::option::Option::None,
+                                }
+                            })
+                            .collect::<::std::vec::Vec<bool>>();
+                        let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, bool>(
+                            #column,
+                            |__djogi_row: &#model_name| &__djogi_row.#ident,
+                        );
+                        ::djogi::__private::query::Q::Portable(__djogi_field.in_(__djogi_values))
+                    }
+                    (
+                        #column,
+                        ::djogi::__private::query::LookupOp::NotIn,
+                        ::djogi::__private::query::FilterValue::List(__djogi_values),
+                    ) if __djogi_values.iter().all(|__djogi_value| matches!(
+                        __djogi_value,
+                        ::djogi::__private::query::FilterValue::Bool(_)
+                    )) => {
+                        let __djogi_values = __djogi_values
+                            .into_iter()
+                            .filter_map(|__djogi_value| {
+                                match __djogi_value {
+                                    ::djogi::__private::query::FilterValue::Bool(__djogi_value) => {
+                                        ::std::option::Option::Some(__djogi_value)
+                                    }
+                                    _ => ::std::option::Option::None,
+                                }
+                            })
+                            .collect::<::std::vec::Vec<bool>>();
+                        let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, bool>(
+                            #column,
+                            |__djogi_row: &#model_name| &__djogi_row.#ident,
+                        );
+                        ::djogi::__private::query::Q::Portable(__djogi_field.not_in(__djogi_values))
+                    }
+                }),
+                PortableFieldKind::String => Some(quote! {
+                    (
+                        #column,
+                        ::djogi::__private::query::LookupOp::Eq,
+                        ::djogi::__private::query::FilterValue::String(__djogi_value),
+                    ) => {
+                        let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, ::std::string::String>(
+                            #column,
+                            |__djogi_row: &#model_name| &__djogi_row.#ident,
+                        );
+                        ::djogi::__private::query::Q::Portable(__djogi_field.eq(__djogi_value))
+                    }
+                    (
+                        #column,
+                        ::djogi::__private::query::LookupOp::Neq,
+                        ::djogi::__private::query::FilterValue::String(__djogi_value),
+                    ) => {
+                        let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, ::std::string::String>(
+                            #column,
+                            |__djogi_row: &#model_name| &__djogi_row.#ident,
+                        );
+                        ::djogi::__private::query::Q::Portable(__djogi_field.neq(__djogi_value))
+                    }
+                    (
+                        #column,
+                        ::djogi::__private::query::LookupOp::In,
+                        ::djogi::__private::query::FilterValue::List(__djogi_values),
+                    ) if __djogi_values.iter().all(|__djogi_value| matches!(
+                        __djogi_value,
+                        ::djogi::__private::query::FilterValue::String(_)
+                    )) => {
+                        let __djogi_values = __djogi_values
+                            .into_iter()
+                            .filter_map(|__djogi_value| {
+                                match __djogi_value {
+                                    ::djogi::__private::query::FilterValue::String(__djogi_value) => {
+                                        ::std::option::Option::Some(__djogi_value)
+                                    }
+                                    _ => ::std::option::Option::None,
+                                }
+                            })
+                            .collect::<::std::vec::Vec<::std::string::String>>();
+                        let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, ::std::string::String>(
+                            #column,
+                            |__djogi_row: &#model_name| &__djogi_row.#ident,
+                        );
+                        ::djogi::__private::query::Q::Portable(__djogi_field.in_(__djogi_values))
+                    }
+                    (
+                        #column,
+                        ::djogi::__private::query::LookupOp::NotIn,
+                        ::djogi::__private::query::FilterValue::List(__djogi_values),
+                    ) if __djogi_values.iter().all(|__djogi_value| matches!(
+                        __djogi_value,
+                        ::djogi::__private::query::FilterValue::String(_)
+                    )) => {
+                        let __djogi_values = __djogi_values
+                            .into_iter()
+                            .filter_map(|__djogi_value| {
+                                match __djogi_value {
+                                    ::djogi::__private::query::FilterValue::String(__djogi_value) => {
+                                        ::std::option::Option::Some(__djogi_value)
+                                    }
+                                    _ => ::std::option::Option::None,
+                                }
+                            })
+                            .collect::<::std::vec::Vec<::std::string::String>>();
+                        let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, ::std::string::String>(
+                            #column,
+                            |__djogi_row: &#model_name| &__djogi_row.#ident,
+                        );
+                        ::djogi::__private::query::Q::Portable(__djogi_field.not_in(__djogi_values))
+                    }
+                }),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    fn portable_info(
+        rust_ident: syn::Ident,
+        field_kind: PortableFieldKind,
+        tracked_wrapped: bool,
+    ) -> PortableFieldEmitInfo {
+        PortableFieldEmitInfo {
+            rust_ident,
+            column_name: "probe".to_string(),
+            rust_type: parse_quote!(bool),
+            option_inner_type: None,
+            field_kind,
+            tracked_wrapped,
+        }
+    }
+
+    #[test]
+    fn filter_clause_to_q_arms_skips_tracked_bool_and_string_fields() {
+        let model_name: syn::Ident = parse_quote!(Probe);
+        let fields = vec![
+            portable_info(parse_quote!(tracked_active), PortableFieldKind::Bool, true),
+            portable_info(parse_quote!(tracked_label), PortableFieldKind::String, true),
+        ];
+
+        let arms = filter_clause_to_q_arms(&model_name, &fields);
+
+        assert!(
+            arms.is_empty(),
+            "tracked bool/string fields must not emit portable filter_struct arms"
+        );
+    }
+
+    #[test]
+    fn filter_clause_to_q_arms_does_not_emit_optional_bool_or_string_fields() {
+        let model_name: syn::Ident = parse_quote!(Probe);
+        let fields = vec![
+            portable_info(
+                parse_quote!(maybe_active),
+                PortableFieldKind::OptionBool,
+                false,
+            ),
+            portable_info(
+                parse_quote!(maybe_label),
+                PortableFieldKind::OptionString,
+                false,
+            ),
+        ];
+
+        let arms = filter_clause_to_q_arms(&model_name, &fields);
+
+        assert!(
+            arms.is_empty(),
+            "optional bool/string fields are not part of the bool/string-only bridge"
+        );
+    }
+
+    #[test]
+    fn filter_clause_to_q_arms_emits_plain_bool_and_string_fields() {
+        let model_name: syn::Ident = parse_quote!(Probe);
+        let fields = vec![
+            portable_info(parse_quote!(active), PortableFieldKind::Bool, false),
+            portable_info(parse_quote!(label), PortableFieldKind::String, false),
+        ];
+
+        let arms = filter_clause_to_q_arms(&model_name, &fields);
+
+        assert_eq!(
+            arms.len(),
+            2,
+            "plain bool/string fields should remain on the portable filter_struct path"
+        );
     }
 }

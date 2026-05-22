@@ -251,6 +251,15 @@ let posts = Post::objects()
 
 `ModelFilter` is serializable — it can be stored, transmitted, and reconstructed. The shell uses this API because Rhai closures cannot capture Rust types.
 
+Generated filters keep their stored `FilterClause` list as the single source
+of truth. At `filter_struct` consumption time, djogi lazily maps conservative
+bool/string equality and membership clauses into Q-algebra portable leaves so
+cache and refresh filters can be pushed down. Unsupported fields, wrapped or
+optional bool/string fields, JSONB, spatial, FTS, regex, string pattern
+lookups, and mismatched value shapes stay on the SQL-only fallback path. Mixed
+portable/fallback generated filters are not partially pushed down; the portable
+gate rejects the whole filter and the query uses the normal database path.
+
 Available operators for `ModelFilter`:
 
 | Operator | Equivalent closure |

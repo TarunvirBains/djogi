@@ -950,26 +950,22 @@ impl<T: Model> QuerySet<T> {
     /// `sassi::BasicPredicate<T>` is deliberately excluded: it can pair a
     /// forged SQL column name with an unrelated Rust extractor.
     ///
-    /// Legacy `Condition` and `{Model}Filter` inputs still produce
-    /// character-for-character SQL parity with the pre-Cluster-8γ
-    /// `Condition`-substrate `filter_struct`; portable inputs now stay in the
-    /// trusted `Q::Portable` path so cache pushdown can distinguish them.
+    /// Legacy `Condition` inputs still produce character-for-character SQL
+    /// parity with the pre-Cluster-8γ `Condition` substrate. `{Model}Filter`
+    /// inputs keep `FilterClause` as their single source of truth and lazily
+    /// reconstruct portable Q leaves for conservative bool/string equality and
+    /// membership clauses; unsupported fields, wrapped/optional shapes, value
+    /// mismatches, and SQL-only operators fall back to `Q::Condition`.
     ///
-    /// Empty `{Model}Filter` bodies short-circuit — no AND-ing, no
-    /// vacuous `TRUE` sub-tree. Single-clause filters unwrap to a
-    /// plain `Condition::Leaf` inside `Q::Condition(_)` so the SQL
-    /// emitter renders `col = $1` rather than `(col = $1)`. Both
-    /// shapes are preserved by routing through the existing
-    /// `clauses_into_condition` helper inside the macro-emitted
-    /// `IntoQ<#model>` impl.
+    /// Empty `{Model}Filter` bodies short-circuit — no AND-ing, no vacuous
+    /// `TRUE` sub-tree. Single portable clauses remain a single Q leaf; single
+    /// fallback clauses remain a plain `Condition::Leaf` inside
+    /// `Q::Condition(_)`, so SQL emission avoids redundant parentheses.
     ///
-    /// This is the closure-free sibling of [`QuerySet::filter`] — the
-    /// two paths produce structurally equivalent condition trees for
-    /// the same set of lookups, and the SQL emitter treats them
-    /// identically. Use this method from shell bindings, admin UIs,
-    /// any dynamic assembler that can't write a `|f|` closure at
-    /// compile time, and any new caller composing a `Q<T>` directly
-    /// through the public algebra.
+    /// This is the closure-free sibling of [`QuerySet::filter`]. Use this
+    /// method from shell bindings, admin UIs, any dynamic assembler that can't
+    /// write a `|f|` closure at compile time, and any new caller composing a
+    /// `Q<T>` directly through the public algebra.
     ///
     /// ```ignore
     /// // ModelFilter — closure-free
@@ -2649,12 +2645,12 @@ impl<T: crate::model::Model> QuerySet<T> {
     /// `Q::Ilike`, `Q::JsonbPath`, `Q::Regex`, `Q::Expression`,
     /// `Q::Array`, `Q::Condition`.
     ///
-    /// `Q::Condition` covers legacy SQL-only payloads and macro-generated
-    /// `{Model}Filter` inputs — those routes intentionally preserve the
-    /// legacy `Condition` tree for SQL parity. Direct `Q<T>`,
-    /// `PortablePredicate<T>`, and ordinary generated field-accessor closure
-    /// filters stay reducible; a fresh `QuerySet::new()` (no filters) starts
-    /// as `Q::Portable(True)` and is reducible.
+    /// `Q::Condition` covers SQL-only payloads, including generated
+    /// `{Model}Filter` clauses that fall outside the conservative portable
+    /// mapping. Direct `Q<T>`, `PortablePredicate<T>`, ordinary generated
+    /// field-accessor closure filters, and portable generated filter clauses
+    /// stay reducible; a fresh `QuerySet::new()` (no filters) starts as
+    /// `Q::Portable(True)` and is reducible.
     ///
     /// # When to use this
     ///
@@ -3957,13 +3953,12 @@ mod tests {
         );
     }
 
-    /// `Q::Condition(...)` is always Unreducible. After PR3 the ordinary
-    /// `.filter(|f| f.col().eq(...))` closure returns a portable predicate
-    /// and produces `Q::Portable`, but `.filter_struct(...)` (model-filter
-    /// builder) and any closure that hand-rolls a raw `Condition` still
-    /// route through `Q::Condition(_)` for SQL parity. This test pins the
-    /// SQL-only `Q::Condition` arm: the legacy escape hatch returns `None`
-    /// from `into_basic_predicate`.
+    /// `Q::Condition(...)` is always Unreducible. Ordinary
+    /// `.filter(|f| f.col().eq(...))` closures and portable generated
+    /// `{Model}Filter` clauses produce `Q::Portable`, but SQL-only generated
+    /// filter clauses and any closure that hand-rolls a raw `Condition` still
+    /// route through `Q::Condition(_)`. This test pins that SQL-only escape
+    /// hatch.
     #[test]
     fn into_basic_predicate_legacy_condition_refuses() {
         use crate::query::condition::{FilterValue, Leaf};
