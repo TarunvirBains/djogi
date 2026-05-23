@@ -218,6 +218,83 @@ impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
     pub fn set_expr(self, expr: crate::expr::Expr<V>) -> UpdateAssignment {
         UpdateAssignment::new_expr(self.column(), expr.node)
     }
+
+    /// Build a column-to-column copy assignment: `SET self = other`.
+    ///
+    /// Sugar for `self.set_expr(other.as_expr())`. Both sides must be
+    /// refs on the same model `M` with matching value type `V` — the
+    /// type system enforces this at compile time. Both `self` and
+    /// `other` are taken by value because [`FieldRef`] is `Copy`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Reset each account's working_balance to its confirmed_balance.
+    /// Account::objects()
+    ///     .filter(|f| f.needs_reset().eq(true))
+    ///     .update(|f| f.working_balance().set_field(f.confirmed_balance()))
+    ///     .execute(&mut ctx).await?;
+    /// ```
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn set_field(self, other: FieldRef<M, V>) -> UpdateAssignment {
+        UpdateAssignment::new_expr(self.column(), other.as_expr().node)
+    }
+}
+
+/// Numeric-column arithmetic assignments — `increment(amount)` and
+/// `decrement(amount)` emit `SET col = col + $n` and `SET col = col - $n`
+/// respectively.
+///
+/// The `V: Numeric` bound is the same sealed trait that gates
+/// [`crate::expr::Expr<V>`] arithmetic (`+`, `-`, `*`, `/`). Djogi's
+/// [`crate::expr::arithmetic::Numeric`] is sealed to the framework-blessed
+/// numeric types: `i16`, `i32`, `i64`, `f32`, `f64`, and
+/// `time::Duration`. Calling `increment` / `decrement` on a non-numeric
+/// field type is a compile error.
+///
+/// The additional `Into<crate::expr::Expr<V>>` bound lets
+/// [`crate::expr::Expr::literal`] wrap `amount` into the expression IR;
+/// every `Numeric` type has a matching `From<V> for Expr<V>` impl so
+/// this bound is always satisfied alongside `Numeric`.
+///
+/// # Examples
+///
+/// ```ignore
+/// use djogi::prelude::*;
+///
+/// // Increment a post's view count by 1.
+/// Post::objects()
+///     .filter(|f| f.id().eq(post_id))
+///     .update(|f| f.view_count().increment(1i32))
+///     .execute(&mut ctx).await?;
+///
+/// // Deduct a withdrawal amount from an account balance.
+/// Account::objects()
+///     .filter(|f| f.id().eq(account_id))
+///     .update(|f| f.balance().decrement(withdrawal_amount))
+///     .execute(&mut ctx).await?;
+/// ```
+impl<M: Model, V> FieldRef<M, V>
+where
+    V: IntoFilterValue + crate::expr::arithmetic::Numeric + Into<crate::expr::Expr<V>>,
+{
+    /// Build `SET col = col + amount` — emits `col = col + $n` in SQL.
+    ///
+    /// `amount` is bound as a positional parameter (`$n`), not inlined.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn increment(self, amount: V) -> UpdateAssignment {
+        let expr = self.as_expr() + crate::expr::Expr::literal(amount);
+        UpdateAssignment::new_expr(self.column(), expr.node)
+    }
+
+    /// Build `SET col = col - amount` — emits `col = col - $n` in SQL.
+    ///
+    /// `amount` is bound as a positional parameter (`$n`), not inlined.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn decrement(self, amount: V) -> UpdateAssignment {
+        let expr = self.as_expr() - crate::expr::Expr::literal(amount);
+        UpdateAssignment::new_expr(self.column(), expr.node)
+    }
 }
 
 /// Closure-return shape for [`QuerySet::update`]. The closure can return
@@ -689,5 +766,34 @@ mod tests {
         let cloned = stmt.clone();
         assert_eq!(cloned.assignments.len(), 1);
         assert_eq!(cloned.assignments[0].column(), "view_count");
+    }
+
+    #[test]
+    fn set_field_builds_expr_assignment() {
+        // set_field(other) — wraps `other.as_expr().node` so the
+        // variant is Expr, not Literal. The SQL emitter renders
+        // `target_col = source_col` (no bind slot for a column ref).
+        let target: FieldRef<Fake, i64> = FieldRef::new("balance");
+        let source: FieldRef<Fake, i64> = FieldRef::new("overdraft_limit");
+        let a = target.set_field(source);
+        assert_eq!(a.column(), "balance");
+        assert!(
+            matches!(a.value(), AssignmentValue::Expr(_)),
+            "set_field must produce an Expr assignment, not a Literal"
+        );
+    }
+
+    #[test]
+    fn increment_builds_add_expr_assignment() {
+        // increment(n) — column + literal. The variant must be Expr
+        // (the Add node wraps both the field-ref node and the literal
+        // node) so the emitter renders `balance = balance + $n`.
+        let f: FieldRef<Fake, i64> = FieldRef::new("balance");
+        let a = f.increment(10i64);
+        assert_eq!(a.column(), "balance");
+        assert!(
+            matches!(a.value(), AssignmentValue::Expr(_)),
+            "increment must produce an Expr assignment"
+        );
     }
 }

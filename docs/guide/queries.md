@@ -419,8 +419,54 @@ Empty-assignment short-circuit: `filter(...).update(|_| vec![])` returns
 `Ok(0)` without issuing SQL. An `UPDATE ... SET` with no assignments is
 a Postgres syntax error, so the short-circuit is load-bearing.
 
-Expression-backed SET (`col = col + 1`, `col = NOW()`,
-`col = other_col`) is not presently supported; drop to raw SQL for the one-off case.
+#### Expression-backed SET
+
+Three convenience forms avoid writing out the full `set_expr(field.as_expr() + ...)` pattern:
+
+**`field.set_expr(Expr<V>)`** — full expression IR:
+
+```rust
+// col = col + 1 (explicit IR form)
+Post::objects()
+    .filter(|f| f.id().eq(post_id))
+    .update(|f| f.view_count().set_expr(
+        f.view_count().as_expr() + Expr::literal(1i32)
+    ))
+    .execute(&mut ctx).await?;
+```
+
+**`field.set_field(other)`** — column-to-column copy (`SET self = other`):
+
+```rust
+// Reset working_balance to confirmed_balance on reconciliation.
+Account::objects()
+    .filter(|f| f.needs_reset().eq(true))
+    .update(|f| f.working_balance().set_field(f.confirmed_balance()))
+    .execute(&mut ctx).await?;
+```
+
+**`field.increment(amount)` / `field.decrement(amount)`** — numeric add/subtract:
+
+```rust
+// Atomically bump the view counter.
+Post::objects()
+    .filter(|f| f.id().eq(post_id))
+    .update(|f| f.view_count().increment(1i32))
+    .execute(&mut ctx).await?;
+
+// Deduct a withdrawal from the account balance.
+Account::objects()
+    .filter(|f| f.id().eq(account_id))
+    .update(|f| f.balance().decrement(withdrawal_amount))
+    .execute(&mut ctx).await?;
+```
+
+`increment` and `decrement` are restricted to Djogi-blessed numeric types (`i16`,
+`i32`, `i64`, `f32`, `f64`, `time::Duration`) — calling them on a `String` or
+`bool` column is a compile error.
+
+For SQL the expression builder cannot express, reach for the raw escape hatch
+described below.
 
 ### `delete(&mut ctx)`
 
