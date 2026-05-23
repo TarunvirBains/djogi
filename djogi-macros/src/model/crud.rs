@@ -174,6 +174,36 @@ pub fn expand(
         quote! {}
     };
 
+    let emit_outbox_returning_save = quote! {
+        <Self as ::djogi::model::Model>::__djogi_emit_save_outbox(
+            ctx,
+            &__pair.new,
+        )
+        .await
+    };
+
+    let emit_outbox_returning_save_override = if model_attrs.events {
+        quote! {
+            fn __djogi_emit_save_outbox<'ctx>(
+                ctx: &'ctx mut ::djogi::context::DjogiContext,
+                row: &'ctx Self,
+            ) -> impl ::std::future::Future<
+                Output = ::std::result::Result<(), ::djogi::DjogiError>,
+            > + ::std::marker::Send {
+                async move {
+                    ::djogi::outbox::emit_event(
+                        ctx,
+                        row,
+                        ::djogi::outbox::OutboxAction::Save,
+                    )
+                    .await
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     let name = &struct_item.ident;
     let fields_name = format_ident!("{}Fields", name);
     let (impl_generics, ty_generics, where_clause) = struct_item.generics.split_for_impl();
@@ -1404,9 +1434,8 @@ pub fn expand(
     // - The RETURNING suffix is baked at macro-expansion time using the
     //   already-built `column_list` slice (`framework_cols + user_col_names`),
     //   mirroring `save()` / `delete()` which also bake their SQL at expansion.
-    // - Projection aliases use the `__djogi_old__` / `__djogi_new__` prefixes
-    //   from Djogi's reserved `__djogi_` namespace, matching the runtime
-    //   builders in `djogi/src/query/sql.rs`.
+    // - Projection aliases use short ordinal aliases (`o{idx}` / `n{idx}`) to
+    //   avoid PostgreSQL identifier-limit truncation, matching runtime builders.
     // - `FromJoinedPgRow` with prefix `"__djogi_old__"` / `"__djogi_new__"`
     //   decodes the two sides.
     //
@@ -1414,8 +1443,9 @@ pub fn expand(
     // - `update_returning_pair`: before_save → UPDATE RETURNING → decode pair
     //   → outbox(pair.new) → after_save(pair.new) → on_commit cache.
     // - `delete_returning`:      before_delete → DELETE RETURNING → decode deleted
-    //   → outbox(deleted) → after_delete(deleted) → on_commit cache.
-    // Both use the DB-returned snapshot for outbox and hooks, not stale `self`.
+    //   → outbox(self) → after_delete(self) → on_commit cache.
+    // Old snapshot comes from DB `OLD`; hook/outbox keep any
+    // `before_delete` mutations on the in-memory instance.
 
     // Static RETURNING suffixes — built once at expansion time.
     let all_cols: Vec<&str> = framework_cols
@@ -1430,7 +1460,7 @@ pub fn expand(
             String::from(" RETURNING WITH (OLD AS __djogi_old)")
         };
         let mut first = true;
-        for col in &all_cols {
+        for (idx, col) in all_cols.iter().enumerate() {
             if first {
                 s.push(' ');
                 first = false;
@@ -1439,16 +1469,16 @@ pub fn expand(
             }
             s.push_str("__djogi_old.");
             s.push_str(col);
-            s.push_str(" AS \"__djogi_old__");
-            s.push_str(col);
+            s.push_str(" AS \"o");
+            s.push_str(&idx.to_string());
             s.push('"');
         }
         if include_new {
-            for col in &all_cols {
+            for (idx, col) in all_cols.iter().enumerate() {
                 s.push_str(", __djogi_new.");
                 s.push_str(col);
-                s.push_str(" AS \"__djogi_new__");
-                s.push_str(col);
+                s.push_str(" AS \"n");
+                s.push_str(&idx.to_string());
                 s.push('"');
             }
         }
@@ -1493,10 +1523,11 @@ pub fn expand(
                     ctx,
                 ).await?;
             },
-            // `after_delete` takes `&__deleted` — DB-returned snapshot.
+            // `after_delete` takes `&self` — consumed instance after
+            // `before_delete` hooks.
             quote! {
                 <Self as ::djogi::__private::hooks::ModelHooks>::after_delete(
-                    &__deleted,
+                    &self,
                     ctx,
                 ).await?;
             },
@@ -1505,25 +1536,13 @@ pub fn expand(
         (TokenStream::new(), TokenStream::new())
     };
 
-    // Outbox for update_returning_pair: emit Save with pair.new (post-image).
-    let emit_outbox_urp_save = if model_attrs.events {
-        quote! {
-            ::djogi::outbox::emit_event(
-                ctx,
-                &__pair.new,
-                ::djogi::outbox::OutboxAction::Save,
-            ).await?;
-        }
-    } else {
-        quote! {}
-    };
-
-    // Outbox for delete_returning: emit Delete with the DB-returned deleted snapshot.
+    // Outbox for delete_returning: emit Delete from `self` so hook-time
+    // mutations are preserved.
     let emit_outbox_drp_delete = if model_attrs.events {
         quote! {
             ::djogi::outbox::emit_event(
                 ctx,
-                &__deleted,
+                &self,
                 ::djogi::outbox::OutboxAction::Delete,
             ).await?;
         }
@@ -1560,40 +1579,46 @@ pub fn expand(
             let (__sql, __binds) = __acc.into_parts();
             let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
                 __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-            let __raw_row = ctx.__query_one_for_macros(&__sql, &__params).await?;
-            let __old = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
-                &__raw_row, "__djogi_old__",
-            )?;
-            let __new = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
-                &__raw_row, "__djogi_new__",
-            )?;
-            let __pair = ::djogi::query::ReturningPair { old: __old, new: __new };
-            // Outbox: post-image only (pair.new), same outbox schema as save().
-            #emit_outbox_urp_save
-            // Hooks: after_save receives pair.new (DB truth, not stale self).
-            #after_urp_call
-            // Cache invalidation: invalidate pair.new.id (same as save()).
-            if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
-                let __id_for_cache = ::core::clone::Clone::clone(&__pair.new.id);
-                ctx.on_commit(move || async move {
-                    if let ::std::result::Result::Err(__e) = __punnu
-                        .invalidate(
-                            &__id_for_cache,
-                            ::djogi::cache::InvalidationReason::OnSave,
-                        )
-                        .await
-                    {
-                        ::djogi::__private::tracing::warn!(
-                            target: "djogi::cache",
-                            error = ?__e,
-                            model = ::std::any::type_name::<Self>(),
-                            "Punnu::invalidate L2 backend failed during on_commit drain (update_returning_pair)",
-                        );
+            match ctx.__query_opt_for_macros(&__sql, &__params).await? {
+                ::std::option::Option::Some(__raw_row) => {
+                    let __old = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
+                        &__raw_row, "__djogi_old__",
+                    )?;
+                    let __new = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
+                        &__raw_row, "__djogi_new__",
+                    )?;
+                    let __pair = ::djogi::query::ReturningPair { old: __old, new: __new };
+                    // Outbox: post-image only (pair.new), same outbox schema as save().
+                    #emit_outbox_returning_save?;
+                    // Hooks: after_save receives pair.new (DB truth, not stale self).
+                    #after_urp_call
+                    // Cache invalidation: invalidate pair.new.id (same as save()).
+                    if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
+                        let __id_for_cache = ::core::clone::Clone::clone(&__pair.new.id);
+                        ctx.on_commit(move || async move {
+                            if let ::std::result::Result::Err(__e) = __punnu
+                                .invalidate(
+                                    &__id_for_cache,
+                                    ::djogi::cache::InvalidationReason::OnSave,
+                                )
+                                .await
+                            {
+                                ::djogi::__private::tracing::warn!(
+                                    target: "djogi::cache",
+                                    error = ?__e,
+                                    model = ::std::any::type_name::<Self>(),
+                                    "Punnu::invalidate L2 backend failed during on_commit drain (update_returning_pair)",
+                                );
+                            }
+                            ::std::result::Result::Ok(())
+                        });
                     }
-                    ::std::result::Result::Ok(())
-                });
+                    ::std::result::Result::Ok(__pair)
+                }
+                ::std::option::Option::None => {
+                    ::std::result::Result::Err(::djogi::DjogiError::not_found(#table))
+                }
             }
-            ::std::result::Result::Ok(__pair)
         }
     };
 
@@ -1635,7 +1660,7 @@ pub fn expand(
                             &__raw_row, "__djogi_new__",
                         )?;
                         let __pair = ::djogi::query::ReturningPair { old: __old, new: __new };
-                        #emit_outbox_urp_save
+                        #emit_outbox_returning_save?;
                         #after_urp_call
                         if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
                             let __id_for_cache = ::core::clone::Clone::clone(&__pair.new.id);
@@ -1683,36 +1708,42 @@ pub fn expand(
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #owned_pk_param,
             ];
-            let __raw_row = ctx.__query_one_for_macros(#delete_returning_sql, __params).await?;
-            let __deleted = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
-                &__raw_row, "__djogi_old__",
-            )?;
-            // Outbox: use DB-returned snapshot (more authoritative than consumed self).
-            #emit_outbox_drp_delete
-            // Hooks: after_delete receives __deleted (DB truth).
-            #after_drp_call
-            // Cache invalidation: invalidate the deleted row's id.
-            if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
-                let __id_for_cache = ::core::clone::Clone::clone(&__deleted.id);
-                ctx.on_commit(move || async move {
-                    if let ::std::result::Result::Err(__e) = __punnu
-                        .invalidate(
-                            &__id_for_cache,
-                            ::djogi::cache::InvalidationReason::OnDelete,
-                        )
-                        .await
-                    {
-                        ::djogi::__private::tracing::warn!(
-                            target: "djogi::cache",
-                            error = ?__e,
-                            model = ::std::any::type_name::<Self>(),
-                            "Punnu::invalidate L2 backend failed during on_commit drain (delete_returning)",
-                        );
+            match ctx.__query_opt_for_macros(#delete_returning_sql, __params).await? {
+                ::std::option::Option::Some(__raw_row) => {
+                    let __deleted = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
+                        &__raw_row, "__djogi_old__",
+                    )?;
+                    // Outbox: emit from `self` so `before_delete` mutations are included.
+                    #emit_outbox_drp_delete
+                    // Hooks: after_delete receives `self` (after outbox emission).
+                    #after_drp_call
+                    // Cache invalidation: invalidate the deleted row's id.
+                    if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
+                        let __id_for_cache = ::core::clone::Clone::clone(&__deleted.id);
+                        ctx.on_commit(move || async move {
+                            if let ::std::result::Result::Err(__e) = __punnu
+                                .invalidate(
+                                    &__id_for_cache,
+                                    ::djogi::cache::InvalidationReason::OnDelete,
+                                )
+                                .await
+                            {
+                                ::djogi::__private::tracing::warn!(
+                                    target: "djogi::cache",
+                                    error = ?__e,
+                                    model = ::std::any::type_name::<Self>(),
+                                    "Punnu::invalidate L2 backend failed during on_commit drain (delete_returning)",
+                                );
+                            }
+                            ::std::result::Result::Ok(())
+                        });
                     }
-                    ::std::result::Result::Ok(())
-                });
+                    ::std::result::Result::Ok(__deleted)
+                }
+                ::std::option::Option::None => {
+                    ::std::result::Result::Err(::djogi::DjogiError::not_found(#table))
+                }
             }
-            ::std::result::Result::Ok(__deleted)
         }
     };
 
@@ -3104,6 +3135,88 @@ pub fn expand(
                     }
                 }
 
+                /// Delete this row and return the pre-delete snapshot,
+                /// bypassing the RLS tenant predicate.
+                ///
+                /// Issues `SET LOCAL row_security = off` before the DELETE so the
+                /// policy's `USING` clause is lifted for this statement.
+                ///
+                /// **Bypass only takes effect inside
+                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// context the call still executes but RLS remains active.
+                ///
+                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+                /// is emitted on every call.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+                #[track_caller]
+                pub fn delete_returning_insecurely<'ctx>(
+                    self,
+                    ctx: &'ctx mut ::djogi::context::DjogiContext,
+                ) -> impl ::std::future::Future<
+                    Output = ::std::result::Result<Self, ::djogi::DjogiError>,
+                > + ::std::marker::Send + 'ctx {
+                    let __caller = ::std::panic::Location::caller();
+                    async move {
+                        ::djogi::__private::tracing::warn!(
+                            model = #model_name_str,
+                            method = "delete_returning_insecurely",
+                            caller = %__caller,
+                            "insecure method bypasses tenant scope",
+                        );
+                        ::djogi::__bypass::RawAccessExt::raw_execute(
+                            ctx,
+                            "SET LOCAL row_security = off",
+                            &[],
+                        )
+                        .await?;
+                        <Self as ::djogi::model::Model>::delete_returning(self, ctx).await
+                    }
+                }
+
+                /// Update this row and return old/new snapshots, bypassing the
+                /// RLS tenant predicate.
+                ///
+                /// Issues `SET LOCAL row_security = off` before the UPDATE so both
+                /// the `USING` (row visibility) and `WITH CHECK` (write restriction)
+                /// clauses are lifted for this statement.
+                ///
+                /// **Bypass only takes effect inside
+                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// context the call still executes but RLS remains active.
+                ///
+                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+                /// is emitted on every call.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+                #[track_caller]
+                pub fn update_returning_pair_insecurely<'ctx>(
+                    self,
+                    ctx: &'ctx mut ::djogi::context::DjogiContext,
+                ) -> impl ::std::future::Future<
+                    Output = ::std::result::Result<
+                        ::djogi::query::ReturningPair<Self>,
+                        ::djogi::DjogiError,
+                    >,
+                > + ::std::marker::Send + 'ctx {
+                    let __caller = ::std::panic::Location::caller();
+                    async move {
+                        ::djogi::__private::tracing::warn!(
+                            model = #model_name_str,
+                            method = "update_returning_pair_insecurely",
+                            caller = %__caller,
+                            "insecure method bypasses tenant scope",
+                        );
+                        ::djogi::__bypass::RawAccessExt::raw_execute(
+                            ctx,
+                            "SET LOCAL row_security = off",
+                            &[],
+                        )
+                        .await?;
+                        <Self as ::djogi::model::Model>::update_returning_pair(self, ctx).await
+                    }
+                }
+
                 /// Return a lazy `QuerySet<Self>` without any tenant predicate.
                 ///
                 /// This method itself is synchronous — it just constructs the
@@ -3306,6 +3419,10 @@ pub fn expand(
             > + ::std::marker::Send {
                 #delete_returning_body
             }
+
+            // Phase 8.5 djogi#180 — bulk RETURNING save outbox hook.
+            // Non-events models inherit `Model` default no-op.
+            #emit_outbox_returning_save_override
 
             // Cluster 8δ T8.6 — soft-deletable tombstone signal.
             // Emitted only for `#[model(soft_deletable)]` models; non-soft-deletable

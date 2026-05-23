@@ -321,3 +321,114 @@ async fn delete_consumes_self_hook_can_inspect(mut ctx: djogi::DjogiContext) {
         })
         .await;
 }
+
+// ---------------------------------------------------------------------------
+// Test 5 — `delete_returning` keeps DB snapshot return value while hook/outbox
+// paths keep `before_delete` mutations.
+// ---------------------------------------------------------------------------
+
+#[model(table = "del_self_inspect_returning", pk = HeerId, hooks, events)]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DelSelfInspectReturning {
+    pub flag: bool,
+    pub note: String,
+}
+
+tokio::task_local! {
+    static DSR_AFTER_SAW_FLAG: Cell<bool>;
+    static DSR_AFTER_SAW_NOTE_LEN: Cell<usize>;
+    static DSR_AFTER_SAW_OUTBOX_NOTE_MATCH: Cell<bool>;
+}
+
+impl djogi::hooks::ModelHooks for DelSelfInspectReturning {
+    async fn before_delete(
+        &mut self,
+        _ctx: &mut djogi::DjogiContext,
+    ) -> Result<(), djogi::DjogiError> {
+        self.flag = true;
+        self.note = "set-by-before-delete".to_string();
+        Ok(())
+    }
+
+    async fn after_delete(&self, ctx: &mut djogi::DjogiContext) -> Result<(), djogi::DjogiError> {
+        DSR_AFTER_SAW_FLAG.with(|c| c.set(self.flag));
+        DSR_AFTER_SAW_NOTE_LEN.with(|c| c.set(self.note.len()));
+
+        let row_id = self.id.as_i64().to_string();
+        let rows =
+            djogi::testing::outbox_rows_for_test(ctx, "del_self_inspect_returning_outbox").await?;
+
+        if let Some(row) = rows
+            .iter()
+            .find(|row| row.row_id == row_id && row.action == "delete")
+        {
+            let payload_note = row
+                .payload
+                .get("note")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            DSR_AFTER_SAW_OUTBOX_NOTE_MATCH.with(|c| {
+                c.set(payload_note == "set-by-before-delete");
+            });
+        } else {
+            DSR_AFTER_SAW_OUTBOX_NOTE_MATCH.with(|c| c.set(false));
+        }
+
+        Ok(())
+    }
+}
+
+#[djogi::djogi_test(sync_models = [DelSelfInspectReturning])]
+async fn delete_returning_runs_hooks_after_before_delete(mut ctx: djogi::DjogiContext) {
+    DSR_AFTER_SAW_FLAG
+        .scope(Cell::new(false), async {
+            DSR_AFTER_SAW_NOTE_LEN
+                .scope(Cell::new(0), async {
+                    DSR_AFTER_SAW_OUTBOX_NOTE_MATCH
+                        .scope(Cell::new(false), async {
+                            let row = DelSelfInspectReturning::create(
+                                &mut ctx,
+                                DelSelfInspectReturning {
+                                    flag: false,
+                                    note: "initial-note".to_string(),
+                                    ..Default::default()
+                                },
+                            )
+                            .await
+                            .expect("create should succeed");
+
+                            let deleted = row
+                                .delete_returning(&mut ctx)
+                                .await
+                                .expect("delete_returning should succeed");
+
+                            assert_eq!(
+                                deleted.flag,
+                                false,
+                                "returned snapshot should come from DB OLD, not hook mutation",
+                            );
+                            assert_eq!(
+                                deleted.note,
+                                "initial-note",
+                                "returned snapshot should preserve original DB payload",
+                            );
+                            assert!(
+                                DSR_AFTER_SAW_FLAG.with(Cell::get),
+                                "after_delete should observe before_delete's mutation to `self.flag` even though DB row is gone",
+                            );
+                            assert_eq!(
+                                DSR_AFTER_SAW_NOTE_LEN.with(Cell::get),
+                                "set-by-before-delete".len(),
+                                "after_delete should observe before_delete's mutation to `self.note`",
+                            );
+                            assert!(
+                                DSR_AFTER_SAW_OUTBOX_NOTE_MATCH.with(Cell::get),
+                                "delete outbox payload should come from self after before_delete",
+                            );
+                        })
+                        .await
+                })
+                .await;
+        })
+        .await;
+}

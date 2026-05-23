@@ -497,6 +497,35 @@ fn model_descriptor_registered() {
     assert!(post_desc.indexes.is_empty());
 }
 
+#[model(table = "bounded_texts", pk = HeerId)]
+#[derive(Debug, Clone)]
+pub struct BoundedText {
+    #[field(max_length = 64)]
+    pub title: String,
+    pub body: String,
+}
+
+#[test]
+fn varchar_max_length_descriptor_and_ddl_shape() {
+    let descriptor = <BoundedText as ::djogi::prelude::Model>::descriptor();
+    let title = descriptor
+        .fields
+        .iter()
+        .find(|f| f.name == "title")
+        .expect("`title` field must be present in descriptor");
+
+    assert_eq!(title.sql_type, ::djogi::FieldSqlType::Varchar(64));
+    assert_eq!(title.max_length, Some(64));
+
+    let title_shape = descriptor
+        .migration_shape()
+        .columns
+        .into_iter()
+        .find(|column| column.name == "title")
+        .expect("`title` must have migration shape");
+    assert_eq!(title_shape.sql_type_text, "VARCHAR(64)");
+}
+
 // ==========================================================================
 // TASK 10 — rich field types (Decimal, Vec<T>, time::Date, Option<String>)
 // ==========================================================================
@@ -515,6 +544,18 @@ pub struct Product {
     pub ratings: Vec<i32>,
     pub launch_date: ::time::Date,
     pub description: Option<String>,
+}
+
+#[model(table = "phase1_returning_pair_long_aliases", pk = HeerId)]
+#[derive(Debug, Clone)]
+pub struct ReturningPairLongAliasSingle {
+    // 50 chars: below Postgres boundary when prefixed.
+    pub xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx: i32,
+    // 52 chars: boundary +1 when prefixed with "__djogi_old." / "__djogi_new.".
+    pub xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxa: i32,
+    // 52 chars, same first 51 chars as previous field to model truncation
+    // collision pressure in legacy alias projection styles.
+    pub xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxb: i32,
 }
 
 #[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
@@ -697,5 +738,141 @@ async fn delete_returning_returns_pre_delete_snapshot(mut ctx: djogi::DjogiConte
     assert!(
         matches!(result, Err(DjogiError::NotFound { .. })),
         "row should be gone after delete_returning, got {result:?}"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
+async fn delete_returning_not_found_for_missing_row(mut ctx: djogi::DjogiContext) {
+    let post = Post::create(
+        &mut ctx,
+        Post {
+            title: "To Delete".into(),
+            body: "delete body".into(),
+            published: true,
+            view_count: 7,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create should succeed");
+
+    let deleted = post
+        .delete_returning(&mut ctx)
+        .await
+        .expect("first delete_returning should succeed");
+
+    let result = deleted.delete_returning(&mut ctx).await;
+    assert!(
+        matches!(result, Err(DjogiError::NotFound { .. })),
+        "delete_returning on missing row should return typed NotFound, got {result:?}"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
+async fn update_returning_pair_not_found_for_missing_row(mut ctx: djogi::DjogiContext) {
+    let post = Post::create(
+        &mut ctx,
+        Post {
+            title: "Versionless".into(),
+            body: "before delete".into(),
+            published: false,
+            view_count: 3,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create should succeed");
+
+    let deleted = post
+        .delete_returning(&mut ctx)
+        .await
+        .expect("first delete_returning should succeed");
+
+    let mut stale = deleted;
+    stale.view_count += 1;
+    stale.title = "after-delete-update".into();
+
+    let result = stale.update_returning_pair(&mut ctx).await;
+    assert!(
+        matches!(result, Err(DjogiError::NotFound { .. })),
+        "update_returning_pair on missing row should return typed NotFound, got {result:?}"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [ReturningPairLongAliasSingle])]
+async fn update_returning_pair_handles_boundary_and_collision_oriented_aliases(
+    mut ctx: djogi::DjogiContext,
+) {
+    assert_eq!(
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx".len(),
+        50,
+        "first long column name should be 50 chars"
+    );
+    assert_eq!(
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxa".len(),
+        52,
+        "second long column name should be 52 chars"
+    );
+    assert_eq!(
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxb".len(),
+        52,
+        "third long column name should be 52 chars"
+    );
+
+    let row = ReturningPairLongAliasSingle::create(
+        &mut ctx,
+        ReturningPairLongAliasSingle {
+            xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx: 10,
+            xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxa: 20,
+            xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxb: 30,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create should decode via canonical FromPgRow ordering");
+
+    let mut updated = row;
+    updated.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx = 1010;
+    updated.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxa = 2020;
+    updated.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxb = 3030;
+
+    let pair = updated
+        .update_returning_pair(&mut ctx)
+        .await
+        .expect("update_returning_pair should decode stable alias projection");
+
+    assert_eq!(pair.old.id, pair.new.id);
+    assert_eq!(pair.old.created_at, pair.new.created_at);
+    assert_eq!(
+        pair.old.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx, 10,
+        "short/near-boundary long name should preserve old value"
+    );
+    assert_eq!(
+        pair.old
+            .xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxa,
+        20,
+        "second long name should preserve pre-update value"
+    );
+    assert_eq!(
+        pair.old
+            .xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxb,
+        30,
+        "third long name should preserve pre-update value"
+    );
+    assert_eq!(
+        pair.new.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx, 1010,
+        "first long name should reflect new value"
+    );
+    assert_eq!(
+        pair.new
+            .xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxa,
+        2020,
+        "second long name should reflect new value"
+    );
+    assert_eq!(
+        pair.new
+            .xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxb,
+        3030,
+        "third long name should reflect new value"
     );
 }

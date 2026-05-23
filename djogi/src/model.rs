@@ -372,11 +372,12 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// # Hooks and outbox
     ///
     /// Hook and outbox order mirrors `delete()`:
-    /// `before_delete → DELETE RETURNING → outbox(deleted) → after_delete(deleted) → on_commit`.
+    /// `before_delete → DELETE RETURNING → outbox(self) → after_delete(self) → on_commit`.
     ///
-    /// The outbox `Delete` payload is the DB-returned snapshot (`deleted`), not
-    /// the consumed `self`. This is more accurate when `BEFORE DELETE` triggers
-    /// modify the row before deletion.
+    /// The outbox `Delete` payload is the in-memory instance (`self`) after
+    /// `before_delete` mutations. This keeps hook-time mutations visible to both
+    /// `after_delete` and outbox consumers, while the return value remains the
+    /// DB snapshot (`deleted`) returned by `RETURNING`.
     ///
     /// # Protected fields
     ///
@@ -527,6 +528,23 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
         Err(crate::query::PortablePredicateError::UnsupportedModel {
             model: ::core::any::type_name::<Self>(),
         })
+    }
+
+    /// Framework-internal outbox hook for `execute_returning_pairs`/bulk
+    /// save-style mutations.
+    ///
+    /// The default implementation is a hidden no-op so non-events models
+    /// compile without `serde::Serialize`/outbox plumbing.
+    ///
+    /// #[model(events)]-annotated implementations override this hook to
+    /// emit a single `Save` outbox row per returned `pair.new` payload.
+    #[doc(hidden)]
+    fn __djogi_emit_save_outbox<'ctx>(
+        ctx: &'ctx mut DjogiContext,
+        row: &'ctx Self,
+    ) -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx {
+        let _ = (ctx, row);
+        async { Ok(()) }
     }
 
     /// Walk **every** self-FK edge declared on this model upward —

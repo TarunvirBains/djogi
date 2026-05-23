@@ -8,15 +8,15 @@
 //! ```sql
 //! UPDATE posts SET title = $1
 //! RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)
-//!   __djogi_old.id AS "__djogi_old__id", ...,
-//!   __djogi_new.id AS "__djogi_new__id", ...
+//!   __djogi_old.id AS "o0", ...,
+//!   __djogi_new.id AS "n0", ...
 //! ```
 //!
 //! `ReturningPair<T>` carries both snapshots as fully-typed model instances.
 //! Djogi emits the projection using its `__djogi_` reserved namespace and
 //! decodes both sides through
-//! [`FromJoinedPgRow`](crate::pg::decode::FromJoinedPgRow) with the prefixes
-//! `"__djogi_old__"` and `"__djogi_new__"`.
+//! [`FromJoinedPgRow`](crate::pg::decode::FromJoinedPgRow) using aliases
+//! `"__djogi_old__"` / `"__djogi_new__"` and stable `o0` / `n0` column aliases.
 //!
 //! # Why PostgreSQL 18 only
 //!

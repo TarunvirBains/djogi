@@ -2790,25 +2790,46 @@ impl FieldAttrs {
             }
         }
 
-        // Validate `#[field(max_length = N)]` range.
+        // Validate `#[field(max_length = N)]`.
         //
-        // Postgres rejects `VARCHAR(0)` with:
-        //   `ERROR: length for type varchar must be at least 1`
-        // Catch this at macro-expansion time so the adopter gets a
-        // span-precise error rather than a runtime migration failure.
+        // Postgres enforces:
+        // - `VARCHAR(0)` is invalid (`length for type varchar must be at least 1`);
+        // - `VARCHAR(N)` is bounded above by 10_485_760 (same as the
+        //   protocol row-size cap).
         //
-        // The practical upper cap is 10,485,760 (Postgres's storage
-        // maximum for a single field) — values above this are valid SQL
-        // but functionally equivalent to TEXT, so we surface a warning-
-        // level guidance here. Any value > 0 is accepted; the `= 0`
-        // case is the only hard error.
-        if let Some(0) = attrs.max_length {
+        // The attribute is also only meaningful on `String` fields.
+        // Any non-String type gets the explicit compile-time error instead of
+        // being silently retained as metadata.
+        if let Some(max_length) = attrs.max_length {
             let span = find_named_int_lit_span(field, "max_length").unwrap_or_else(|| field.span());
-            return Err(syn::Error::new(
-                span,
-                "`#[field(max_length = 0)]` is invalid — Postgres requires \
-                 `VARCHAR(N)` where N >= 1 (received N = 0)",
-            ));
+            if max_length == 0 {
+                return Err(syn::Error::new(
+                    span,
+                    "`#[field(max_length = 0)]` is invalid — Postgres requires \
+                     `VARCHAR(N)` where N >= 1 (received N = 0)",
+                ));
+            }
+            if max_length > 10_485_760 {
+                return Err(syn::Error::new(
+                    span,
+                    format!(
+                        "`#[field(max_length = {max_length})]` is invalid — Postgres caps `VARCHAR` at \
+                         10_485_760 (received N = {max_length})"
+                    ),
+                ));
+            }
+
+            let (inner_ty, _nullable) = unwrap_schema_type(&attrs.ty);
+            if rust_type_to_sql(&inner_ty) != Some("TEXT") {
+                return Err(syn::Error::new(
+                    span,
+                    format!(
+                        "`#[field(max_length = {max_length})]` is only valid on `String` fields. \
+                         `String` columns emit `VARCHAR(N)`; non-String fields ignore the length \
+                         contract at runtime and must not use this attribute"
+                    ),
+                ));
+            }
         }
 
         // Walk raw `#[field(expose(...))]` attrs — darling's declarative

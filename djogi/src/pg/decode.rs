@@ -139,6 +139,21 @@ pub trait FromJoinedPgRow: Sized {
     fn from_joined_pg_row(row: &Row, prefix: &str) -> Result<Self, DjogiError>;
 }
 
+/// Map a logical joined-field index to the SQL projection column name.
+///
+/// Most joined projections use `"{prefix}{field_name}"` naming.
+/// For OLD/NEW pair returning, Djogi emits compact aliases (`o0`, `o1`, `n0`,
+/// `n1`, ...) and keeps runtime decoding stable across PostgreSQL identifier
+/// truncation boundaries.
+#[doc(hidden)]
+pub fn joined_alias_for_prefix(prefix: &str, idx: usize, col_name: &str) -> String {
+    match prefix {
+        "__djogi_old__" => format!("o{idx}"),
+        "__djogi_new__" => format!("n{idx}"),
+        _ => format!("{prefix}{col_name}"),
+    }
+}
+
 /// Decode a column at a positional index, with a debug-build name
 /// guard and a column-name-tagged error.
 ///

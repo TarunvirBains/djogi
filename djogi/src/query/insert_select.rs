@@ -855,10 +855,10 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     /// Run the accumulated INSERT...SELECT and return every inserted row
     /// as a decoded model instance.
     ///
-    /// Uses PostgreSQL's `RETURNING *` clause to retrieve the full row
-    /// image for each inserted row, including all column defaults (`id`,
-    /// `created_at`, `updated_at`) populated by the target table.  Rows
-    /// are decoded via [`FromPgRow`].
+    /// Uses PostgreSQL's canonical `RETURNING <column_list>` projection to
+    /// retrieve the inserted rows in model order, including framework and user
+    /// columns (`id`, `created_at`, `updated_at`) populated by target-table
+    /// defaults. Rows are decoded via [`FromPgRow`].
     ///
     /// # Hooks and outbox
     ///

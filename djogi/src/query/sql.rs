@@ -2473,10 +2473,10 @@ pub(crate) fn build_delete<T: Model>(
 /// Append the `RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)`
 /// clause and the fully-aliased column projection for both sides to `acc`.
 ///
-/// The column aliases use the `__djogi_old__` and `__djogi_new__` prefixes
-/// from Djogi's reserved `__djogi_` namespace, so they can never collide with
-/// user-declared model field names (which the macro-time validator rejects for
-/// any identifier beginning with `__djogi_`).
+/// The table aliases (`__djogi_old` / `__djogi_new`) use Djogi's reserved
+/// namespace. Column aliases are short ordinals (`o0`, `o1`, ... and
+/// `n0`, `n1`, ...) so projection aliases stay safely below the 63-byte
+/// identifier limit while preserving a stable positional mapping.
 ///
 /// Column names come from `T::COLUMNS`, which are macro-validated `&'static str`
 /// identifiers; `push_sql` is safe here because no user data flows in.
@@ -2488,9 +2488,9 @@ fn push_old_new_returning_projection<T: FromPgRow>(acc: &mut SqlAccumulator, inc
     } else {
         acc.push_sql(" RETURNING WITH (OLD AS __djogi_old)");
     }
-    // Old-side columns: __djogi_old.<col> AS "__djogi_old__<col>"
+    // Old-side columns: __djogi_old.<col> AS "o{idx}".
     let mut first = true;
-    for col in T::COLUMNS {
+    for (idx, col) in T::COLUMNS.iter().enumerate() {
         if first {
             acc.push_sql(" ");
             first = false;
@@ -2499,30 +2499,31 @@ fn push_old_new_returning_projection<T: FromPgRow>(acc: &mut SqlAccumulator, inc
         }
         acc.push_sql("__djogi_old.");
         acc.push_sql(col);
-        acc.push_sql(" AS \"__djogi_old__");
-        acc.push_sql(col);
+        acc.push_sql(" AS \"o");
+        acc.push_sql(&idx.to_string());
         acc.push_sql("\"");
     }
     if include_new {
-        // New-side columns: __djogi_new.<col> AS "__djogi_new__<col>"
-        for col in T::COLUMNS {
+        // New-side columns: __djogi_new.<col> AS "n{idx}".
+        for (idx, col) in T::COLUMNS.iter().enumerate() {
             acc.push_sql(", __djogi_new.");
             acc.push_sql(col);
-            acc.push_sql(" AS \"__djogi_new__");
-            acc.push_sql(col);
+            acc.push_sql(" AS \"n");
+            acc.push_sql(&idx.to_string());
             acc.push_sql("\"");
         }
     }
 }
 
 /// Build `UPDATE <table> SET ... RETURNING WITH (OLD AS __djogi_old, NEW AS
-/// __djogi_new) __djogi_old.<col> AS "__djogi_old__<col>", ...,
-/// __djogi_new.<col> AS "__djogi_new__<col>", ...`.
+/// __djogi_new) __djogi_old.<col> AS "o{idx}", ...,
+/// __djogi_new.<col> AS "n{idx}", ...`.
 ///
 /// This is the bulk-returning variant of [`build_update`]; the WHERE clause and
 /// SET assignments are identical. The RETURNING projection appends the full
 /// column list for both the pre-update (`OLD`) and post-update (`NEW`) row
-/// images using Djogi's reserved `__djogi_` namespace for the table aliases.
+/// images using short ordinal aliases (`o{idx}` / `n{idx}`) to avoid
+/// PostgreSQL identifier truncation.
 ///
 /// Callers must guarantee `assignments` is non-empty — the same contract as
 /// [`build_update`]. The callers in [`crate::query::update::UpdateStmt::execute_returning_pairs`]
@@ -2547,11 +2548,11 @@ where
 }
 
 /// Build `DELETE FROM <table> [WHERE ...] RETURNING WITH (OLD AS __djogi_old)
-/// __djogi_old.<col> AS "__djogi_old__<col>", ...`.
+/// __djogi_old.<col> AS "o{idx}", ...`.
 ///
 /// The DELETE variant only has an `OLD` side — `NEW` is semantically absent for
-/// deleted rows. The projection aliases use the same `__djogi_old__` prefix
-/// convention as the UPDATE variant so the `FromJoinedPgRow` path is identical
+/// deleted rows. The projection aliases use the same short `o{idx}` pattern as
+/// the UPDATE variant so the `FromJoinedPgRow` path is identical
 /// (`from_joined_pg_row(row, "__djogi_old__")`).
 ///
 /// Callers must guarantee the queryset is not `QuerySet::none()`-derived before
@@ -2680,26 +2681,27 @@ pub(crate) fn build_insert_select<S: Model, T: Model>(
     Ok(acc)
 }
 
-/// Build `INSERT INTO target (cols...) SELECT exprs... FROM source [WHERE ...] RETURNING *`.
+/// Build `INSERT INTO target (cols...) SELECT exprs... FROM source [WHERE ...] RETURNING <column_list>`.
 ///
-/// Identical to [`build_insert_select`] but appends ` RETURNING *` so the
+/// Identical to [`build_insert_select`] but appends ` RETURNING <column_list>` so the
 /// caller can decode the inserted rows via [`crate::pg::decode::FromPgRow`].
 ///
-/// The `RETURNING *` clause causes Postgres to return the full row image
-/// for every inserted row, including all column defaults (`id`, `created_at`,
-/// `updated_at`) populated by the target table's column defaults.
+/// This uses the model's canonical projection (`T::COLUMN_LIST`) rather than
+/// physical `*`, so insert-select returning remains stable when table order and
+/// model decode order differ.
 ///
 /// # Errors
 ///
 /// Returns the same [`PortablePredicateError`] variants as
 /// [`build_insert_select`] — the additional SQL token is always trusted
-/// (`RETURNING *` never contains user input).
-pub(crate) fn build_insert_select_returning<S: Model, T: Model>(
+/// (`T::COLUMN_LIST` is crate-owned static SQL text).
+pub(crate) fn build_insert_select_returning<S: Model, T: Model + FromPgRow>(
     qs: &QuerySet<S>,
     columns: &[crate::query::insert_select::InsertSelectColumn<S, T>],
 ) -> Result<SqlAccumulator, PortablePredicateError> {
     let mut acc = build_insert_select::<S, T>(qs, columns)?;
-    acc.push_sql(" RETURNING *");
+    acc.push_sql(" RETURNING ");
+    acc.push_sql(<T as FromPgRow>::COLUMN_LIST);
     Ok(acc)
 }
 
@@ -4535,10 +4537,7 @@ mod tests {
         let acc = build_update_returning_pairs(&stmt.qs, &stmt.assignments);
         let sql = acc.sql();
 
-        assert!(
-            sql.contains("\"__djogi_old__id\""),
-            "expected __djogi_old__id alias, got: {sql}"
-        );
+        assert!(sql.contains("\"o0\""), "expected o0 alias, got: {sql}");
     }
 
     #[test]
@@ -4550,10 +4549,7 @@ mod tests {
         let acc = build_update_returning_pairs(&stmt.qs, &stmt.assignments);
         let sql = acc.sql();
 
-        assert!(
-            sql.contains("\"__djogi_new__id\""),
-            "expected __djogi_new__id alias, got: {sql}"
-        );
+        assert!(sql.contains("\"n0\""), "expected n0 alias, got: {sql}");
     }
 
     #[test]
@@ -4594,8 +4590,8 @@ mod tests {
         let sql = acc.sql();
 
         assert!(
-            sql.contains("\"__djogi_old__id\""),
-            "expected __djogi_old__id alias in DELETE returning, got: {sql}"
+            sql.contains("\"o0\""),
+            "expected o0 alias in DELETE returning, got: {sql}"
         );
     }
 
@@ -4626,8 +4622,8 @@ mod tests {
         // Both sides must be present.
         assert!(sql.contains("OLD AS __djogi_old"), "{sql}");
         assert!(sql.contains("NEW AS __djogi_new"), "{sql}");
-        assert!(sql.contains("\"__djogi_old__id\""), "{sql}");
-        assert!(sql.contains("\"__djogi_new__id\""), "{sql}");
+        assert!(sql.contains("\"o0\""), "{sql}");
+        assert!(sql.contains("\"n0\""), "{sql}");
     }
 
     #[test]
@@ -4638,6 +4634,6 @@ mod tests {
 
         assert!(sql.contains("OLD AS __djogi_old"), "{sql}");
         assert!(!sql.contains("NEW"), "{sql}");
-        assert!(sql.contains("\"__djogi_old__id\""), "{sql}");
+        assert!(sql.contains("\"o0\""), "{sql}");
     }
 }

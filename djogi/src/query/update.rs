@@ -297,6 +297,26 @@ where
     }
 }
 
+impl<M: Model> FieldRef<M, crate::Interval> {
+    /// Build `SET col = col + amount` — emits `col = col + $n` in SQL.
+    ///
+    /// `amount` is bound as a positional parameter (`$n`), not inlined.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn increment(self, amount: crate::Interval) -> UpdateAssignment {
+        let expr = self.as_expr() + crate::expr::Expr::literal(amount);
+        UpdateAssignment::new_expr(self.column(), expr.node)
+    }
+
+    /// Build `SET col = col - amount` — emits `col = col - $n` in SQL.
+    ///
+    /// `amount` is bound as a positional parameter (`$n`), not inlined.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn decrement(self, amount: crate::Interval) -> UpdateAssignment {
+        let expr = self.as_expr() - crate::expr::Expr::literal(amount);
+        UpdateAssignment::new_expr(self.column(), expr.node)
+    }
+}
+
 /// Closure-return shape for [`QuerySet::update`]. The closure can return
 /// a single [`UpdateAssignment`] or a `Vec<UpdateAssignment>` — this trait
 /// bridges both so the user writes the natural thing at the call site.
@@ -395,6 +415,7 @@ impl<T: Model> UpdateStmt<T> {
         T: 'ctx,
     {
         async move {
+            self.qs.validate_mutation_read_tail("update")?;
             // TASK6:empty_contract — structural-none queryset OR empty
             // assignment list: return `Ok(0)` without touching the DB.
             //
@@ -478,6 +499,8 @@ impl<T: Model> UpdateStmt<T> {
         T: FromPgRow + FromJoinedPgRow + 'ctx,
     {
         async move {
+            self.qs
+                .validate_mutation_read_tail("execute_returning_pairs")?;
             // TASK6:empty_contract — structural-none queryset OR empty
             // assignment list: return empty vector without touching the DB.
             if self.qs.is_empty() || self.assignments.is_empty() {
@@ -493,7 +516,9 @@ impl<T: Model> UpdateStmt<T> {
             for row in &rows {
                 let old = T::from_joined_pg_row(row, "__djogi_old__")?;
                 let new = T::from_joined_pg_row(row, "__djogi_new__")?;
-                pairs.push(ReturningPair { old, new });
+                let pair = ReturningPair { old, new };
+                <T as Model>::__djogi_emit_save_outbox(ctx, &pair.new).await?;
+                pairs.push(pair);
             }
             Ok(pairs)
         }
@@ -573,6 +598,7 @@ impl<T: Model> QuerySet<T> {
         T: 'ctx,
     {
         async move {
+            self.validate_mutation_read_tail("delete")?;
             // TASK6:empty_contract — structural-none queryset: no SQL.
             if self.is_empty() {
                 return Ok(0);
@@ -627,6 +653,7 @@ impl<T: Model> QuerySet<T> {
         T: FromPgRow + FromJoinedPgRow + 'ctx,
     {
         async move {
+            self.validate_mutation_read_tail("delete_returning")?;
             // TASK6:empty_contract — structural-none queryset: no SQL.
             if self.is_empty() {
                 return Ok(Vec::new());

@@ -164,7 +164,8 @@ pub mod __private {
             FromJoinedPgRow, FromPgRow, decode_at, decode_derived_at, decode_narrowed,
             decode_narrowed_by_name, decode_narrowed_opt, decode_narrowed_opt_by_name,
             decode_opt_u64_from_decimal, decode_opt_u64_from_decimal_by_name,
-            decode_u64_from_decimal, decode_u64_from_decimal_by_name, try_get_scalar,
+            decode_u64_from_decimal, decode_u64_from_decimal_by_name, joined_alias_for_prefix,
+            try_get_scalar,
         };
         pub use ::postgres_types::{FromSql, ToSql, Type as PgType};
         pub use ::tokio_postgres::Row as PgRow;

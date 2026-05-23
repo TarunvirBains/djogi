@@ -237,3 +237,81 @@ async fn nested_transaction_rollback_restores_auth_state(mut ctx: djogi::DjogiCo
     );
     outer.rollback().await.expect("rollback outer transaction");
 }
+
+#[djogi::djogi_test(sync_models = [TenantPost])]
+async fn update_returning_pair_insecurely_bypasses_tenant_scope(mut ctx: djogi::DjogiContext) {
+    let mut tx = ctx.begin().await.expect("begin transaction");
+
+    tx.set_auth(AuthContext::new(HeerId::from_i64(1).unwrap()).with_tenant("org_a"));
+    let created = TenantPost::create(
+        &mut tx,
+        TenantPost {
+            org_id: "org_a".to_string(),
+            title: "original".to_string(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create tenant-scoped row");
+
+    // Run through the returning wrapper in a different tenant context to pin the
+    // new bypass surface and argument flow (`self`, `ctx`) on a tenant-keyed
+    // model.
+    tx.set_auth(AuthContext::new(HeerId::from_i64(1).unwrap()).with_tenant("org_b"));
+    let stale = TenantPost {
+        id: created.id,
+        org_id: "org_a".to_string(),
+        title: "patched".to_string(),
+        ..Default::default()
+    };
+
+    let pair = stale
+        .update_returning_pair_insecurely(&mut tx)
+        .await
+        .expect("insecure update_returning_pair should bypass tenant scope");
+
+    assert_eq!(pair.old.id, created.id);
+    assert_eq!(pair.new.id, created.id);
+    assert_eq!(pair.old.title, "original");
+    assert_eq!(pair.new.title, "patched");
+
+    tx.commit().await.expect("commit transaction");
+}
+
+#[djogi::djogi_test(sync_models = [TenantPost])]
+async fn delete_returning_insecurely_bypasses_tenant_scope(mut ctx: djogi::DjogiContext) {
+    let mut tx = ctx.begin().await.expect("begin transaction");
+
+    tx.set_auth(AuthContext::new(HeerId::from_i64(1).unwrap()).with_tenant("org_a"));
+    let created = TenantPost::create(
+        &mut tx,
+        TenantPost {
+            org_id: "org_a".to_string(),
+            title: "delete-me".to_string(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create tenant-scoped row");
+
+    // Run through the returning wrapper in a different tenant context to pin the
+    // new bypassing method shape on tenant-keyed models.
+    tx.set_auth(AuthContext::new(HeerId::from_i64(1).unwrap()).with_tenant("org_b"));
+    let stale = TenantPost {
+        id: created.id,
+        org_id: "org_a".to_string(),
+        title: "delete-me".to_string(),
+        ..Default::default()
+    };
+
+    let deleted = stale
+        .delete_returning_insecurely(&mut tx)
+        .await
+        .expect("insecure delete_returning should bypass tenant scope");
+
+    assert_eq!(deleted.id, created.id);
+    assert_eq!(deleted.org_id, "org_a");
+    assert_eq!(deleted.title, "delete-me");
+
+    tx.commit().await.expect("commit transaction");
+}
