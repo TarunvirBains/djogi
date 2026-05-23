@@ -522,6 +522,41 @@ pub enum VisageError {
         /// Postgres-side type description (e.g. `"INTEGER"`).
         actual: &'static str,
     },
+
+    /// A presentation codec failed while projecting a protected field
+    /// during visage construction.
+    ///
+    /// This variant is emitted when a `TryPresentationCodec` implementation
+    /// returns an error for a specific `(model, field, scope)` triple.
+    /// The `codec` field names the Rust type path of the failing codec so
+    /// operators can identify which presentation declaration needs attention
+    /// (e.g. a missing HMAC key that was not caught at startup validation
+    /// because `validate_startup_inventory` was not called).
+    ///
+    /// # Note on `source`
+    ///
+    /// The inner error is boxed as `dyn Error + Send + Sync` because codec
+    /// error types vary. The original error type is preserved via
+    /// `#[source]` for `.source()` chaining and for `std::error::Error`
+    /// downcast.
+    #[error(
+        "visage of {model}.{field} for scope `{scope}` failed: \
+         codec `{codec}` presentation error"
+    )]
+    PresentationCodec {
+        /// Rust type name of the owning model (e.g. `"User"`).
+        model: &'static str,
+        /// Field name (Rust ident) of the failing field.
+        field: &'static str,
+        /// Scope key for which the codec ran (e.g. `"public"`).
+        scope: &'static str,
+        /// Rust type-path string of the codec (e.g.
+        /// `"djogi::presentation::builtins::HmacSha256HexString"`).
+        codec: &'static str,
+        /// The underlying error returned by the codec.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
 
 /// Unreachable — `Infallible` has no inhabitants. The impl exists so

@@ -84,6 +84,7 @@ pub mod pg;
 // umbrella dispatches add more newtypes alongside without reshaping
 // the public surface.
 pub mod pg_types;
+pub mod presentation;
 pub mod primary_key;
 pub mod query;
 pub mod range;

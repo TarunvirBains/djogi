@@ -997,6 +997,34 @@ pub enum DjogiError {
          sequentially"
     )]
     ConcurrentReadsRequirePoolContext,
+
+    /// One or more presentation codecs failed startup validation.
+    ///
+    /// Returned by
+    /// [`validate_startup_inventory`](crate::presentation::validate_startup_inventory)
+    /// when any [`PresentationCodecUsage`](crate::presentation::inventory::PresentationCodecUsage)
+    /// entry's `validate_startup` hook returns an error.
+    ///
+    /// This variant is the conversion target for pool-construction callers
+    /// (`DjogiPool::connect`, `DjogiPool::from_database_config`,
+    /// `DjogiPoolBuilder::build`) that call `validate_startup_inventory`
+    /// before accepting traffic. Stage 3 of GH #227 wires those callers.
+    ///
+    /// The inner `Vec` carries one
+    /// [`PresentationStartupError`](crate::presentation::PresentationStartupError)
+    /// per failing codec usage. Each entry names the `(model, field, scope,
+    /// codec)` quadruple and the underlying error so operators can identify
+    /// every misconfigured codec in one pass rather than discovering failures
+    /// one at a time.
+    ///
+    /// Classified as **terminal** by the framework — a codec with a missing
+    /// or invalid key cannot serve traffic until the key is provided. The
+    /// fix is an environment-variable or configuration change, not a retry.
+    #[error(
+        "presentation codec startup validation failed ({} error(s))",
+        .0.len()
+    )]
+    PresentationStartup(Vec<crate::presentation::PresentationStartupError>),
 }
 
 /// Bridge: convert `tokio_postgres::Error` into `DjogiError`.

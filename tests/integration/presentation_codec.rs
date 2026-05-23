@@ -6,9 +6,9 @@
 //! **Compile errors in this file are expected until Stages 2–7 complete.**
 //! This file is the acceptance criterion for the full feature:
 //!
-//! - Stage 2 defines `DjogiError::Presentation` and the `djogi::presentation`
-//!   module skeleton.
-//! - Stage 3 defines the `PresentationCodecInfo` trait.
+//! - Stage 2 defines `DjogiError::PresentationStartup` and the `djogi::presentation`
+//!   module with its full trait surface, built-in codecs, and startup validation.
+//! - Stage 3 wires `validate_startup_inventory()` into `DjogiPool::connect`.
 //! - Stage 4 extends `#[derive(Model)]` with the `visage_scopes(name = Suffix)`
 //!   syntax and the `per_scope` codec grammar inside `protected(...)`.
 //! - Stage 5 implements `MaskString` and other built-in codecs.
@@ -21,8 +21,8 @@
 //! # What is asserted
 //!
 //! 1. **Pool startup validation** — `DjogiPool::connect` with
-//!    `DJOGI_PRESENTATION_HMAC_KEY` unset returns `Err(DjogiError::Presentation
-//!    { .. })`, not a panic.
+//!    `DJOGI_PRESENTATION_HMAC_KEY` unset returns
+//!    `Err(DjogiError::PresentationStartup(..))`, not a panic.
 //! 2. **Custom scope generates visage struct** — `visage_scopes(support =
 //!    Support)` on `#[model(...)]` causes the macro to emit a `UserSupport`
 //!    struct; `UserSupport::from(&user)` is infallible and preserves `id`,
@@ -150,7 +150,7 @@ pub struct UserWithCodec {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// `DjogiPool::connect` with `DJOGI_PRESENTATION_HMAC_KEY` absent from the
-/// environment must return `Err(DjogiError::Presentation { .. })`.
+/// environment must return `Err(DjogiError::PresentationStartup(..))`.
 ///
 /// The error is returned, not panicked, so callers can surface a useful
 /// diagnostic rather than crashing the process on mis-configured deployments.
@@ -158,33 +158,38 @@ pub struct UserWithCodec {
 /// Uses `ENV_MUTEX` to serialise env mutation with Assertion 5.
 #[tokio::test]
 async fn pool_connect_fails_without_hmac_key() {
-    let url =
-        std::env::var("DATABASE_URL").expect("DATABASE_URL required for pool startup tests");
+    let url = std::env::var("DATABASE_URL").expect("DATABASE_URL required for pool startup tests");
 
     let _guard = ENV_MUTEX.lock().expect("ENV_MUTEX poisoned");
 
     // Save the current value so we can restore it after the test.
     let saved = std::env::var("DJOGI_PRESENTATION_HMAC_KEY").ok();
 
-    std::env::remove_var("DJOGI_PRESENTATION_HMAC_KEY");
+    // SAFETY: guarded by ENV_MUTEX held above; no concurrent readers of
+    // DJOGI_PRESENTATION_HMAC_KEY in this test binary during this window.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::remove_var("DJOGI_PRESENTATION_HMAC_KEY");
+    }
 
     let result = DjogiPool::connect(&url).await;
 
     // Restore before any assertion so a test failure cannot leave other
     // tests running without the key.
+    // SAFETY: same ENV_MUTEX guard; no concurrent env readers.
+    #[allow(unsafe_code)]
     match &saved {
-        Some(v) => std::env::set_var("DJOGI_PRESENTATION_HMAC_KEY", v),
-        None => std::env::remove_var("DJOGI_PRESENTATION_HMAC_KEY"),
+        Some(v) => unsafe { std::env::set_var("DJOGI_PRESENTATION_HMAC_KEY", v) },
+        None => unsafe { std::env::remove_var("DJOGI_PRESENTATION_HMAC_KEY") },
     }
 
-    // TODO Stage 2: pin the exact variant name once DjogiError::Presentation
-    // is defined. The pattern below uses struct-form `{ .. }` which matches
-    // any named-field variant — update to a tighter pattern (e.g. checking
-    // `message` or an inner error type) once the variant shape is known.
+    // Stage 2 defines `DjogiError::PresentationStartup(Vec<PresentationStartupError>)`.
+    // The pool connect path (Stage 3) calls `validate_startup_inventory()` and
+    // maps `Err(errors)` → `DjogiError::PresentationStartup(errors)`.
     let err = result.expect_err("pool connect must fail when HMAC key is absent");
     assert!(
-        matches!(err, DjogiError::Presentation { .. }),
-        "expected DjogiError::Presentation, got: {err:?}"
+        matches!(err, DjogiError::PresentationStartup(..)),
+        "expected DjogiError::PresentationStartup, got: {err:?}"
     );
 }
 
@@ -268,14 +273,20 @@ async fn validate_startup_inventory_errs_without_hmac_key() {
 
     let saved = std::env::var("DJOGI_PRESENTATION_HMAC_KEY").ok();
 
-    std::env::remove_var("DJOGI_PRESENTATION_HMAC_KEY");
+    // SAFETY: guarded by ENV_MUTEX held above.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::remove_var("DJOGI_PRESENTATION_HMAC_KEY");
+    }
 
     let result = djogi::presentation::validate_startup_inventory();
 
     // Restore before asserting.
+    // SAFETY: same ENV_MUTEX guard; no concurrent env readers.
+    #[allow(unsafe_code)]
     match &saved {
-        Some(v) => std::env::set_var("DJOGI_PRESENTATION_HMAC_KEY", v),
-        None => std::env::remove_var("DJOGI_PRESENTATION_HMAC_KEY"),
+        Some(v) => unsafe { std::env::set_var("DJOGI_PRESENTATION_HMAC_KEY", v) },
+        None => unsafe { std::env::remove_var("DJOGI_PRESENTATION_HMAC_KEY") },
     }
 
     assert!(
@@ -327,8 +338,7 @@ async fn custom_scope_generates_visage_struct(mut ctx: DjogiContext) {
     // The email is in the support scope without a codec — it carries the
     // plaintext value.
     assert_eq!(
-        support_view.email,
-        "acceptance@example.com",
+        support_view.email, "acceptance@example.com",
         "UserSupport::email must be the plaintext source value"
     );
 }
