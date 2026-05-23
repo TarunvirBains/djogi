@@ -1122,3 +1122,15 @@ required-features = ["trgm"]
 name = "phase85_pk_index_coverage"
 path = "../tests/integration/phase85_pk_index_coverage.rs"
 harness = true
+
+# GH #227 — presentation-codec acceptance test.
+#
+# Compile errors in this target are EXPECTED until Stages 2–7 complete.
+# This registration is intentional: it lets `cargo test --test
+# presentation_codec` fail with a compile error (not a "test not found"
+# error) so the acceptance gate is clear throughout the multi-stage
+# implementation.
+[[test]]
+name = "presentation_codec"
+path = "../tests/integration/presentation_codec.rs"
+harness = true
