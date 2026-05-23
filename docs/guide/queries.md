@@ -7,9 +7,7 @@ filters, ordering, distinct mode, and pagination without touching the
 database; only terminal methods (`fetch_all`, `count`, `update`, …) emit
 SQL and execute it against a `&mut DjogiContext`.
 
-This document is a Phase 2 reference. For features still on the roadmap —
-expression-backed SET, JOIN-spanning filters, window/aggregate terminals —
-see [the querying roadmap](../roadmap/querying.md).
+This is a reference guide to `QuerySet<T>`, Djogi's lazy typed query builder.
 
 ---
 
@@ -372,13 +370,11 @@ let rows = Post::objects()
 `Regex(String)`. `Contains` / `StartsWith` / `EndsWith` map to the
 case-insensitive `ILIKE` operators, matching the closure API's default.
 `Regex(String)` routes to the Postgres `~` operator (case-sensitive
-POSIX regex, server-side — see the closure-API `.regex` notes above
-for the Postgres-feature framing); the closure API's `.iregex` (`~*`)
-does not currently have a `Lookup` equivalent because no caller has
-needed the runtime-decided form. Adding `Lookup::IRegex(String)` is
-non-breaking when needed.
+POSIX regex, server-side); `IRegex(String)` routes to the Postgres `~*`
+operator (case-insensitive POSIX regex, server-side — matching the closure
+API's `.iregex` method).
 
-`Lookup` is `#[non_exhaustive]` — future phases add variants without a
+`Lookup` is `#[non_exhaustive]`, allowing new variants to be added without
 breaking change.
 
 `filter_struct` produces a structurally equivalent condition tree to the
@@ -423,10 +419,7 @@ Empty-assignment short-circuit: `filter(...).update(|_| vec![])` returns
 a Postgres syntax error, so the short-circuit is load-bearing.
 
 Expression-backed SET (`col = col + 1`, `col = NOW()`,
-`col = other_col`) is not in Phase 2 — see the [query roadmap][phase-4]
-for the Phase 4 expression layer, or drop to raw SQL for the one-off case.
-
-[phase-4]: ../roadmap/querying.md
+`col = other_col`) is available via `FieldRef::set_expr` and `set_field`.
 
 ### `delete(&mut ctx)`
 
@@ -445,7 +438,7 @@ DDL-style reaches for `TRUNCATE` via `ctx.raw_execute`.
 
 ---
 
-## Set operations (Phase 8.5)
+## Set operations
 
 `QuerySet<T>` exposes four SQL set operators — `union`, `union_all`,
 `intersect`, and `except` — each of which combines two same-model
@@ -540,7 +533,7 @@ a.union(b).intersect(c)
 
 ---
 
-## INSERT SELECT — bulk copy (Phase 8.5)
+## INSERT SELECT — bulk copy
 
 `QuerySet::insert_into::<T, _, _>(...)` executes a typed
 `INSERT INTO target (cols…) SELECT exprs… FROM source [WHERE …]` —
@@ -657,7 +650,7 @@ threads, biological pedigrees — Djogi exposes a typed recursive query
 surface that emits a Postgres `WITH RECURSIVE ... SELECT * FROM ...`
 CTE under the hood. No raw SQL, no `JUSTIFICATION` bypass.
 
-The shipped surface (Phase 8-Zero Cluster B, GH #65) has two layers:
+Djogi exposes two layers for recursive queries:
 
 ### Tree-edge sugar — `Model::tree_descendants` / `Model::tree_ancestors`
 
@@ -777,7 +770,7 @@ against a third table." Wright F kinship over a materialised pedigree
 closure is the canonical example. Djogi exposes a typed pair-tuple
 substrate so adopters write these queries without raw SQL.
 
-The shipped surface (Phase 8.5 Cluster 4A, GH #99) is rooted at
+Djogi exposes a typed pair-tuple substrate rooted at
 `QuerySet::self_pairs()`:
 
 ```rust
@@ -837,9 +830,7 @@ Composite scores that mix pair-aggregate output with Rust-side state
 their final ranking in Rust; the typed pair-tuple `qualify(...)` window
 surface accepts column references only on its
 `partition_by_pair` / `order_by_pair_desc` methods, not arbitrary
-`Expr<f64>` derived from external state. A future slice that adds an
-`Expr`-based pair-side `order_by` is tracked on #99's substrate
-roadmap.
+`Expr<f64>` derived from external state.
 
 ### Pair-side spatial overlap — `PairAreaOverlapRatio<L, R>`
 
@@ -876,8 +867,7 @@ column-type rules.
 Repeat-read query patterns (request handlers re-reading the same row
 across endpoints, periodic scoring jobs re-evaluating the same
 candidate set) amortise the DB round-trip by binding a queryset to a
-`Punnu<T>` L1 identity-map pool. Djogi's typed surface for this
-(Phase 8.5 Cluster 4A, GH #108) is the `.cache(&pool)?` modifier:
+`Punnu<T>` L1 identity-map pool. Use the `.cache(&pool)?` modifier:
 
 ```rust
 use djogi::prelude::*;
@@ -952,7 +942,7 @@ without migrating the entire call site.
 
 ## MERGE INTO
 
-`MERGE` (Phase 8.5, GH #178) is a powerful single statement that synchronizes
+`MERGE` is a powerful single statement that synchronizes
 a source relation (any `QuerySet<S>`) into a target table. It can perform
 `INSERT`, `UPDATE`, or `DELETE` actions based on whether rows match a join
 condition.

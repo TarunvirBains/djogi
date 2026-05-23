@@ -91,7 +91,6 @@ Vehicle::objects()
 
 `QuerySet<T>` compiles its `Condition` tree into SQL via Djogi's own internal `ConditionBuilder`, which writes through `pg::accumulator::SqlAccumulator` — a thin owned-strings + bound-values pair handed to `tokio_postgres::Client::query` at terminal time. The framework does not depend on any third-party query-building crate; this layer is owned entirely by Djogi.
 
-> **Historical note**: The original Phase 2 implementation built on `sqlx::QueryBuilder<Postgres>`. Phase 5-Zero retired the `sqlx` substrate in favour of `tokio-postgres + deadpool-postgres + postgres-types`; the typed `ConditionBuilder` shape carried over unchanged.
 
 | Layer | What it does |
 |---|---|
@@ -115,7 +114,7 @@ Ok(rows)
 
 For shapes outside the typed `FromPgRow` decoder (recursive CTEs, custom row tuples, scalar aggregates), `ctx.raw_scalar`, `ctx.raw_fetch_one`, and the other `RawAccessExt` helpers cover the remaining cases. Direct `tokio_postgres::Client` access is not a public `DjogiContext` API.
 
-### 5.7 Typed INSERT ... SELECT (Phase 8.5 Cluster 4B — djogi#106)
+### 5.7 Typed INSERT ... SELECT
 
 Adopter shape — copy rows from one model's queryset into another model's
 table, with closure-built column mappings:
@@ -168,14 +167,10 @@ Contract:
 Related framework gaps not covered by this surface:
 
 - Set operations (`UNION` / `INTERSECT` / `EXCEPT`) — djogi#101.
-- `LATERAL` joins — djogi#102.
-- `VALUES` inline relations as join sources — djogi#103.
-- `MERGE INTO ... USING ...` — djogi#178.
-- PG18 `OLD` / `NEW` in `RETURNING` — djogi#180.
 - `RETURNING` for INSERT...SELECT — follow-up issue; current terminal
   returns the affected row count only.
 
-### 5.8 Typed MERGE INTO (Phase 8.5 — djogi#178)
+### 5.8 Typed MERGE INTO
 
 Adopter shape — perform upserts, "update if changed" guards, or soft-deletions
 using a single statement that synchronizes a source relation into a target table:
@@ -223,7 +218,7 @@ Contract:
 
 The query API is expected to support efficient Postgres forms for the workload shapes Djogi targets. That means:
 
-- expression-backed filtering and updates belong in-framework once Phase 4 lands
+- expression-backed filtering and updates are part of the query API via `set_expr` and `set_field`
 - aggregation, subqueries, locking, and typed result shaping are part of normal ORM work, not exceptional edge cases
 - explicit eager loading must keep query counts understandable and avoid hidden N+1 behavior
 - large-result evaluation must eventually support streaming/chunking rather than requiring full materialization
