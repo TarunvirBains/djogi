@@ -778,9 +778,33 @@ a programming error does not hide behind a silent `Ok(0)`.
 
 ### Return value and RETURNING
 
-The terminal returns the affected row count (`u64`). `RETURNING` for
-INSERT SELECT is not presently supported; follow up with a SELECT on the target
-when you need the inserted rows back.
+**`.execute(&mut ctx)`** returns the affected row count (`u64`).
+
+**`.execute_returning(&mut ctx)`** runs the same INSERT...SELECT but appends
+`RETURNING *`, decodes each returned row via the target model's [`FromPgRow`]
+impl, and returns `Vec<T>`:
+
+```rust
+let inserted: Vec<OrderArchive> = CompletedOrder::objects()
+    .filter(|f| f.completed_at().lt(cutoff))
+    .insert_into::<OrderArchive, _, _>(|target, source| vec![
+        target.order_id().copy_from(source.id().as_insert_source()),
+        target.title().copy_from(source.title().as_insert_source()),
+    ])
+    .execute_returning(&mut ctx)
+    .await?;
+```
+
+`execute_returning` does **not** fire `before_save` / `after_save` hooks or
+enqueue outbox events — INSERT...SELECT is a bulk operation and per-row hooks
+would be prohibitively expensive. Adopters who need per-row side effects should
+use the returned `Vec<T>` to drive a subsequent hook loop or re-query the target
+table.
+
+**Warning — unbounded materialisation.** `execute_returning` loads one `T` per
+inserted row into memory. For large copy operations, prefer `.execute(...)` for
+the count and then query the target table with a filter on the known ID range or
+a `created_at` window.
 
 ---
 

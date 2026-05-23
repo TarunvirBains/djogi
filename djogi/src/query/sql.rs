@@ -2680,6 +2680,29 @@ pub(crate) fn build_insert_select<S: Model, T: Model>(
     Ok(acc)
 }
 
+/// Build `INSERT INTO target (cols...) SELECT exprs... FROM source [WHERE ...] RETURNING *`.
+///
+/// Identical to [`build_insert_select`] but appends ` RETURNING *` so the
+/// caller can decode the inserted rows via [`crate::pg::decode::FromPgRow`].
+///
+/// The `RETURNING *` clause causes Postgres to return the full row image
+/// for every inserted row, including all column defaults (`id`, `created_at`,
+/// `updated_at`) populated by the target table's column defaults.
+///
+/// # Errors
+///
+/// Returns the same [`PortablePredicateError`] variants as
+/// [`build_insert_select`] — the additional SQL token is always trusted
+/// (`RETURNING *` never contains user input).
+pub(crate) fn build_insert_select_returning<S: Model, T: Model>(
+    qs: &QuerySet<S>,
+    columns: &[crate::query::insert_select::InsertSelectColumn<S, T>],
+) -> Result<SqlAccumulator, PortablePredicateError> {
+    let mut acc = build_insert_select::<S, T>(qs, columns)?;
+    acc.push_sql(" RETURNING *");
+    Ok(acc)
+}
+
 /// Walk the emitted SELECT list and check that every column's alias (or
 /// plain column name if no `AS` alias) is unique. A collision would cause
 /// the terminal decoder to read the wrong value for one of the columns.
