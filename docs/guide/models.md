@@ -895,3 +895,176 @@ for desc in inventory::iter::<djogi::ModelDescriptor> {
 ```
 
 `ModelDescriptor::fields` is the complete schema contract — it includes the framework columns (`id`, `created_at`, `updated_at`) in injection order, then user fields in source order. No `pk_type`-based synthesis required downstream; just iterate `fields`.
+
+---
+
+## Protected Fields and Presentation Codecs
+
+Field values can be transformed when projecting to different visage scopes. Use `#[field(protected(...))]` with `per_scope` to declare which codecs apply per scope; the generated visage struct's conversion method (`From<&Model>` or `TryFrom<&Model>`) transparently applies the codec.
+
+**Purpose:** Emit masked, hashed, or otherwise redacted field values in public-facing visages while keeping unmodified values in internal or admin visages — all enforced by the type system at compile time.
+
+### Macro grammar
+
+```rust
+use djogi::prelude::*;
+
+#[model(
+    table = "users",
+    visage_scopes(support = Support)  // declares a custom "support" scope → UserSupport visage
+)]
+#[derive(Debug, Clone)]
+pub struct User {
+    #[field(
+        expose(public, support, admin),  // field appears in all three scopes
+        protected(
+            sensitivity = "pii",                        // semantic label; not used by the framework
+            rationale = "email is personally identifiable",  // documentation
+            per_scope = {
+                public = {
+                    // public visage gets a MaskString codec
+                    presentation_codec = djogi::presentation::builtins::MaskString
+                }
+                // support scope: no codec → field appears unmasked in UserSupport
+                // admin scope: no codec → field appears unmasked in UserAdmin
+            }
+        )
+    )]
+    pub email: String,
+
+    #[field(
+        expose(public, admin),
+        protected(
+            sensitivity = "pii",
+            rationale = "phone is personally identifiable",
+            per_scope = {
+                public = {
+                    // public visage hashes the phone number
+                    try_presentation_codec = djogi::presentation::builtins::HmacSha256HexString
+                }
+                // admin scope: no codec → field appears unmasked in UserAdmin
+            }
+        )
+    )]
+    pub phone: String,
+}
+```
+
+### Infallible vs fallible transforms
+
+`presentation_codec` invokes an infallible `PresentationCodec<Input>` trait. The generated visage uses `From<&Model>`:
+
+```rust
+let user: User = /* ... load from DB ... */;
+let public: UserPublic = UserPublic::from(&user);  // infallible
+```
+
+`try_presentation_codec` invokes a fallible `TryPresentationCodec<Input>` trait. If any field in a scope has a fallible codec, the entire scope visage uses `TryFrom<&Model>`:
+
+```rust
+let user: User = /* ... load from DB ... */;
+let public: UserPublic = UserPublic::try_from(&user)?;  // fallible
+```
+
+A codec type may implement both traits for the same input type; either annotation works for that codec.
+
+### Custom visage scopes
+
+By default, `#[model]` generates four visages: `Public`, `SelfView`, `Admin`, `Export`. Declare custom scopes with `visage_scopes(name = Suffix)` on the `#[model(...)]` attribute:
+
+```rust
+#[model(
+    table = "users",
+    visage_scopes(support = Support, analytics = Analytics)
+)]
+pub struct User { ... }
+```
+
+This generates six visages: the four built-ins plus `UserSupport` and `UserAnalytics`. The `Suffix` is appended to the model name to derive the visage struct name.
+
+### Built-in presentation codecs
+
+| Codec | Input | Output | Reversible | Queryable | Notes |
+|-------|-------|--------|------------|-----------|-------|
+| `Identity` | `T` | `T` | Yes | Predicate + Order | No-op codec; primarily for testing and explicit "unmodified" scopes |
+| `MaskString` | `String` | `String` | No | No | Replaces all characters with `*`; implements both `PresentationCodec` and `TryPresentationCodec` |
+| `MaskOptionString` | `Option<String>` | `Option<String>` | No | No | Like `MaskString` for wrapped values; `None` remains `None` |
+| `HmacSha256HexString` | `String` | `HmacSha256Hex` | No | No | HMAC-SHA256 keyed hash, output as lowercase hex; requires `DJOGI_PRESENTATION_HMAC_KEY` environment variable |
+| `HmacSha256HexOptionString` | `Option<String>` | `Option<HmacSha256Hex>` | No | No | Like `HmacSha256HexString` for wrapped values; `None` remains `None` |
+
+**Reversibility:** A `Reversible` codec may be inverted at runtime (for decryption or deobfuscation). One-way codecs like `MaskString` and `HmacSha256HexString` are `OneWay`. Affects whether the codec can be used in certain query contexts.
+
+**Queryability:** A codec declares whether it can be used in filter predicates (`Disabled`, `PredicateOnly`, `OrderOnly`, `PredicateAndOrder`). Identity is fully queryable; masking and hashing codecs disable query participation since the masked/hashed value is not meaningful in filters.
+
+### HMAC key configuration
+
+`HmacSha256HexString` and `HmacSha256HexOptionString` require the `DJOGI_PRESENTATION_HMAC_KEY` environment variable. The key must be exactly 64 lowercase hexadecimal characters (representing 32 bytes). Validation runs at pool connection time:
+
+```rust
+let pool = DjogiPool::connect(&database_url).await?;
+// Pool calls validate_startup_inventory() internally.
+// If DJOGI_PRESENTATION_HMAC_KEY is invalid or missing, returns
+// Err(DjogiError::PresentationStartup(vec![...]))
+```
+
+In tests, use the helper:
+
+```rust
+#[tokio::test]
+async fn test_with_hmac() {
+    djogi::testing::install_presentation_hmac_key_for_testing(
+        "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    );
+    let pool = DjogiPool::connect(url).await?;
+    // ...
+}
+```
+
+The key is cached in a `OnceLock` once validated; failed loads (e.g. invalid format) are not cached and can be retried on the next pool connect.
+
+### Implementing a custom codec
+
+Implement three traits:
+
+```rust
+use djogi::presentation::{
+    PresentationCodecInfo, PresentationCodec, TryPresentationCodec,
+    Reversibility, Queryability, PresentationStartupError,
+};
+
+pub struct MyCodec;
+
+impl PresentationCodecInfo<String> for MyCodec {
+    type Output = String;
+    const REVERSIBILITY: Reversibility = Reversibility::OneWay;
+    const QUERYABILITY: Queryability = Queryability::Disabled;
+
+    fn validate_startup() -> Result<(), PresentationStartupError> {
+        Ok(())
+    }
+}
+
+impl PresentationCodec<String> for MyCodec {
+    fn encode(_input: &String) -> Self::Output {
+        // Infallible encoding
+        "encoded".to_string()
+    }
+}
+```
+
+For a fallible codec:
+
+```rust
+impl TryPresentationCodec<String> for MyCodec {
+    type Err = MyCodecError;
+
+    fn try_encode(_input: &String) -> Result<Self::Output, Self::Err> {
+        // Fallible encoding
+        Ok("encoded".to_string())
+    }
+}
+```
+
+**Output type constraints:** `Output` must satisfy `Clone + Debug + Serialize + DeserializeOwned + 'static`.
+
+**Multiple traits on one codec:** A single codec type can implement both `PresentationCodec<Input>` and `TryPresentationCodec<Input>` for the same input type. The field annotation (`presentation_codec = C` or `try_presentation_codec = C`) selects which path to use; both are equally valid at the macro callsite.

@@ -188,8 +188,7 @@ pub enum VisageError {
 The variant fires when a relation field's `.resolved()` returns
 `None` — i.e. the caller didn't prefetch / select_related the
 relation. The `#[non_exhaustive]` attribute means you must write `_ =>
-...` when matching: later phases (e.g. Phase 7.5 protected-data) may
-add variants.
+...` when matching: later phases may add variants.
 
 Handler-level recovery pattern:
 
@@ -371,13 +370,10 @@ visage layer:
 - **Nested `expose(scope -> Peer { ... })` brace traversal** — the
   parser rejects this grammar today with an actionable compile error.
   Reserved for a follow-up phase.
-- **Custom user-defined scopes** — only the four built-ins. Deferred
-  until at least one app needs a fifth scope.
 - **Field renaming inside `expose(...)`** — rename at the serde level
   if you need a different JSON shape.
 - **JSONB subfield visages** — per-subfield masking of `Jsonb<T>`
   fields is deferred.
-- **Protected-data / `#[field(sensitive)]`** — Phase 7.5.
 - **Admin UI / export UI** consuming visage metadata — Phase 9.
 
 All of the above are non-breaking additions when they land — the
