@@ -18,6 +18,19 @@
 //! Once all seven stages are complete every item in this file must compile and
 //! every `#[tokio::test]` / `#[djogi_test]` body must pass.
 //!
+//! # Environment requirement
+//!
+//! This test binary links a model using `HmacSha256HexString` (see
+//! `UserWithHmac`). That codec's `validate_startup` checks for
+//! `DJOGI_PRESENTATION_HMAC_KEY` in the process environment, so
+//! **`DJOGI_PRESENTATION_HMAC_KEY` must be set to a valid 64-lowercase-hex-char
+//! key before running this binary**. Use
+//! `DJOGI_PRESENTATION_HMAC_KEY=aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899`
+//! for local development and CI. Tests that assert startup-validation failure
+//! (Assertions 1 and 5) temporarily remove the key inside an `ENV_MUTEX` guard
+//! and restore it afterward — the env-var requirement is not in conflict with
+//! those tests.
+//!
 //! # What is asserted
 //!
 //! 1. **Pool startup validation** — `DjogiPool::connect` with
@@ -143,6 +156,49 @@ pub struct UserWithCodec {
         )
     )]
     pub display_name: String,
+}
+
+/// Model whose field uses `HmacSha256HexString` as a `try_presentation_codec`.
+///
+/// This model is not used in any `#[djogi_test]` body. Its sole purpose is
+/// to register a [`djogi::presentation::inventory::PresentationCodecUsage`]
+/// entry in the binary's linked inventory whose `validate_startup` function
+/// calls `HmacSha256HexString::validate_startup`, which checks for
+/// `DJOGI_PRESENTATION_HMAC_KEY`. Without this entry, the startup-validation
+/// assertions (Assertions 1 and 5) would see an empty-or-MaskString-only
+/// inventory and find no failures, causing those tests to incorrectly pass
+/// even when the HMAC key is absent.
+///
+/// # Env-var requirement
+///
+/// Because this model is linked into the test binary, **`DJOGI_PRESENTATION_HMAC_KEY`
+/// must be set to a valid 64-lowercase-hex-char value before running this test
+/// binary** (e.g. export the key in `.envrc` or pass it on the `cargo test`
+/// command line). The `ENV_MUTEX`-guarded tests (Assertions 1 and 5) temporarily
+/// remove the key for their test window and restore it afterward, so the overall
+/// binary-wide key requirement does not conflict with those tests.
+///
+/// The constant `"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"` is
+/// the conventional test key used throughout this file and in
+/// `djogi::testing::install_presentation_hmac_key_for_testing`.
+#[model(table = "gh227_hmac_users")]
+#[derive(Debug, Clone)]
+pub struct UserWithHmac {
+    /// Field protected with an HMAC codec. Used only to register a startup-
+    /// validation inventory entry — no `#[djogi_test]` body exercises this model.
+    #[field(
+        expose(public),
+        protected(
+            sensitivity = "pii",
+            rationale = "GH #227: HMAC codec registers startup-validation inventory entry",
+            per_scope = {
+                public = {
+                    try_presentation_codec = djogi::presentation::builtins::HmacSha256HexString
+                }
+            }
+        )
+    )]
+    pub email: String,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
