@@ -368,6 +368,33 @@ impl HmacSha256Hex {
     }
 }
 
+impl<'a> tokio_postgres::types::FromSql<'a> for HmacSha256Hex {
+    /// Decode an `HmacSha256Hex` from a Postgres TEXT column.
+    ///
+    /// The underlying Postgres type must be TEXT (or a compatible VARCHAR),
+    /// because `HmacSha256Hex` is always a 64-character lowercase hex string.
+    /// Decoding delegates to `String::from_sql` — no length or character-set
+    /// validation is performed at decode time; the inner string is whatever
+    /// Postgres returns.
+    ///
+    /// This impl is provided so that `VisageQuerySet` and `FromPgRow` for
+    /// visages whose fields use `HmacSha256HexString` as a codec can be
+    /// compiled. In practice, `HmacSha256Hex` values are computed in-memory
+    /// and are not normally stored back into Postgres columns; the impl exists
+    /// to satisfy the type system, not to encourage storage.
+    fn from_sql(
+        ty: &tokio_postgres::types::Type,
+        raw: &'a [u8],
+    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        let s = String::from_sql(ty, raw)?;
+        Ok(HmacSha256Hex(s))
+    }
+
+    fn accepts(ty: &tokio_postgres::types::Type) -> bool {
+        <String as tokio_postgres::types::FromSql<'_>>::accepts(ty)
+    }
+}
+
 // ── HmacSha256HexString ────────────────────────────────────────────────────
 
 /// HMAC-SHA256 presentation codec for `String` fields.
@@ -761,6 +788,16 @@ mod tests {
     fn hmac_sha256_hex_as_str_returns_inner() {
         let h = HmacSha256Hex::new_unchecked("aabb".to_string());
         assert_eq!(h.as_str(), "aabb");
+    }
+
+    #[test]
+    fn hmac_sha256_hex_from_sql_accepts_text_type() {
+        // `HmacSha256Hex: FromSql` delegates to `String::accepts`, so it accepts TEXT.
+        use tokio_postgres::types::FromSql;
+        assert!(
+            HmacSha256Hex::accepts(&tokio_postgres::types::Type::TEXT),
+            "HmacSha256Hex must accept the Postgres TEXT type"
+        );
     }
 
     // ── hex_encode ────────────────────────────────────────────────────────
