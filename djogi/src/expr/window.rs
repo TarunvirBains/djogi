@@ -25,6 +25,34 @@
 use crate::pg::accumulator::SqlAccumulator;
 use crate::query::order::Direction;
 
+/// A window-function partition or order-by element — either a bare column
+/// reference or an expression emitted under an explicit alias.
+///
+/// Used internally by [`WindowSpec`] to store both plain-column window
+/// elements (via [`WindowBuilder::partition_by`] / [`WindowBuilder::order_by`])
+/// and expression-based elements (via the pair-tuple-aware
+/// [`PairWindowExt::partition_by_pair_expr`](crate::query::joined::PairWindowExt::partition_by_pair_expr) /
+/// [`PairWindowExt::order_by_pair_expr_asc`](crate::query::joined::PairWindowExt::order_by_pair_expr_asc) /
+/// [`PairWindowExt::order_by_pair_expr_desc`](crate::query::joined::PairWindowExt::order_by_pair_expr_desc)
+/// methods added in GH #302).
+///
+/// The `Expr` variant carries a boxed [`crate::expr::node::ExprNode`] plus
+/// the alias under which the expression is emitted in the SELECT list. At
+/// emit time, the alias is pushed into the window clause (`PARTITION BY
+/// <alias>` / `ORDER BY <alias> ASC`), and the window-function-owning
+/// annotate terminal ensures the expression itself is emitted in the SELECT
+/// list with `AS <alias>` before the window function references it.
+#[derive(Clone, Debug)]
+pub(crate) enum WindowTerm {
+    /// A bare column reference — emitted as-is.
+    Column(&'static str),
+    /// An expression emitted under an explicit alias.
+    Expr {
+        node: Box<crate::expr::node::ExprNode>,
+        alias: &'static str,
+    },
+}
+
 /// A fully specified window clause — partition, ordering, and optional frame.
 /// Constructed via [`WindowBuilder`] and stored inside
 /// [`crate::expr::node::ExprNode::Aggregate`] when the user calls
@@ -32,8 +60,8 @@ use crate::query::order::Direction;
 /// The `Default` impl produces an empty spec that emits `OVER ()`.
 #[derive(Debug, Clone, Default)]
 pub struct WindowSpec {
-    pub(crate) partition_by: Vec<&'static str>,
-    pub(crate) order_by: Vec<(&'static str, Direction)>,
+    pub(crate) partition_by: Vec<WindowTerm>,
+    pub(crate) order_by: Vec<(WindowTerm, Direction)>,
     pub(crate) frame: Option<Frame>,
 }
 
@@ -144,7 +172,9 @@ impl WindowBuilder {
         M: crate::model::Model,
         S: crate::query::field::IntoSqlField<M, V>,
     {
-        self.0.partition_by.push(f.into_sql_field().column());
+        self.0
+            .partition_by
+            .push(WindowTerm::Column(f.into_sql_field().column()));
         self
     }
 
@@ -159,9 +189,10 @@ impl WindowBuilder {
         M: crate::model::Model,
         S: crate::query::field::IntoSqlField<M, V>,
     {
-        self.0
-            .order_by
-            .push((f.into_sql_field().column(), Direction::Asc));
+        self.0.order_by.push((
+            WindowTerm::Column(f.into_sql_field().column()),
+            Direction::Asc,
+        ));
         self
     }
 
@@ -174,9 +205,10 @@ impl WindowBuilder {
         M: crate::model::Model,
         S: crate::query::field::IntoSqlField<M, V>,
     {
-        self.0
-            .order_by
-            .push((f.into_sql_field().column(), Direction::Desc));
+        self.0.order_by.push((
+            WindowTerm::Column(f.into_sql_field().column()),
+            Direction::Desc,
+        ));
         self
     }
 
@@ -270,9 +302,18 @@ impl WindowSpec {
     /// This method is the per-instance safety witness for window slots
     /// whose `is_joined_safe` impl forwards here.
     pub(crate) fn is_pair_qualified(&self) -> bool {
-        let is_pair_prefixed = |s: &str| s.starts_with("l.") || s.starts_with("r.");
-        self.partition_by.iter().all(|c| is_pair_prefixed(c))
-            && self.order_by.iter().all(|(c, _)| is_pair_prefixed(c))
+        let is_term_pair_qualified = |term: &WindowTerm| match term {
+            WindowTerm::Column(s) => s.starts_with("l.") || s.starts_with("r."),
+            // Expr entries are pair-qualified by construction — only
+            // reachable through pair-aware methods that supply an
+            // explicit alias.
+            WindowTerm::Expr { .. } => true,
+        };
+        self.partition_by.iter().all(is_term_pair_qualified)
+            && self
+                .order_by
+                .iter()
+                .all(|(term, _)| is_term_pair_qualified(term))
     }
 
     /// Emit ` OVER (PARTITION BY ... ORDER BY ... frame EXCLUDE ...)` onto
@@ -285,11 +326,23 @@ impl WindowSpec {
 
         if !self.partition_by.is_empty() {
             acc.push_sql("PARTITION BY ");
-            for (i, c) in self.partition_by.iter().enumerate() {
+            for (i, term) in self.partition_by.iter().enumerate() {
                 if i > 0 {
                     acc.push_sql(", ");
                 }
-                acc.push_sql(c);
+                match term {
+                    WindowTerm::Column(c) => acc.push_sql(c),
+                    WindowTerm::Expr { node, alias } => crate::expr::sql::emit_expr(
+                        acc,
+                        node,
+                        crate::query::portable::SqlEmitContext::joined(alias),
+                    )
+                    .expect(
+                        "ExprNode in window partition/order slot must not contain \
+                             JSON predicates or grouping aggregates — only arithmetic, \
+                             field references, and scalar functions are valid here",
+                    ),
+                }
             }
             spacer = true;
         }
@@ -299,11 +352,23 @@ impl WindowSpec {
                 acc.push_sql(" ");
             }
             acc.push_sql("ORDER BY ");
-            for (i, (c, d)) in self.order_by.iter().enumerate() {
+            for (i, (term, d)) in self.order_by.iter().enumerate() {
                 if i > 0 {
                     acc.push_sql(", ");
                 }
-                acc.push_sql(c);
+                match term {
+                    WindowTerm::Column(c) => acc.push_sql(c),
+                    WindowTerm::Expr { node, alias } => crate::expr::sql::emit_expr(
+                        acc,
+                        node,
+                        crate::query::portable::SqlEmitContext::joined(alias),
+                    )
+                    .expect(
+                        "ExprNode in window partition/order slot must not contain \
+                             JSON predicates or grouping aggregates — only arithmetic, \
+                             field references, and scalar functions are valid here",
+                    ),
+                }
                 acc.push_sql(match d {
                     Direction::Asc => " ASC",
                     Direction::Desc => " DESC",
@@ -384,7 +449,7 @@ mod tests {
     #[test]
     fn partition_by_single_column() {
         let spec = WindowSpec {
-            partition_by: vec!["org_id"],
+            partition_by: vec![WindowTerm::Column("org_id")],
             ..Default::default()
         };
         assert_eq!(emit(&spec), " OVER (PARTITION BY org_id)");
@@ -393,7 +458,10 @@ mod tests {
     #[test]
     fn partition_by_two_columns() {
         let spec = WindowSpec {
-            partition_by: vec!["org_id", "department_id"],
+            partition_by: vec![
+                WindowTerm::Column("org_id"),
+                WindowTerm::Column("department_id"),
+            ],
             ..Default::default()
         };
         assert_eq!(emit(&spec), " OVER (PARTITION BY org_id, department_id)");
@@ -404,7 +472,7 @@ mod tests {
     #[test]
     fn order_by_asc() {
         let spec = WindowSpec {
-            order_by: vec![("created_at", Direction::Asc)],
+            order_by: vec![(WindowTerm::Column("created_at"), Direction::Asc)],
             ..Default::default()
         };
         assert_eq!(emit(&spec), " OVER (ORDER BY created_at ASC)");
@@ -413,7 +481,7 @@ mod tests {
     #[test]
     fn order_by_desc() {
         let spec = WindowSpec {
-            order_by: vec![("amount", Direction::Desc)],
+            order_by: vec![(WindowTerm::Column("amount"), Direction::Desc)],
             ..Default::default()
         };
         assert_eq!(emit(&spec), " OVER (ORDER BY amount DESC)");
@@ -422,7 +490,10 @@ mod tests {
     #[test]
     fn order_by_asc_and_desc() {
         let spec = WindowSpec {
-            order_by: vec![("created_at", Direction::Asc), ("amount", Direction::Desc)],
+            order_by: vec![
+                (WindowTerm::Column("created_at"), Direction::Asc),
+                (WindowTerm::Column("amount"), Direction::Desc),
+            ],
             ..Default::default()
         };
         assert_eq!(emit(&spec), " OVER (ORDER BY created_at ASC, amount DESC)");
@@ -433,8 +504,8 @@ mod tests {
     #[test]
     fn partition_and_order_by_separated_by_space() {
         let spec = WindowSpec {
-            partition_by: vec!["org_id"],
-            order_by: vec![("created_at", Direction::Asc)],
+            partition_by: vec![WindowTerm::Column("org_id")],
+            order_by: vec![(WindowTerm::Column("created_at"), Direction::Asc)],
             ..Default::default()
         };
         assert_eq!(
@@ -611,8 +682,8 @@ mod tests {
     #[test]
     fn full_composition_partition_order_rows_exclude() {
         let spec = WindowSpec {
-            partition_by: vec!["org_id"],
-            order_by: vec![("created_at", Direction::Asc)],
+            partition_by: vec![WindowTerm::Column("org_id")],
+            order_by: vec![(WindowTerm::Column("created_at"), Direction::Asc)],
             frame: Some(Frame {
                 kind: FrameKind::Rows,
                 start: FrameBound::Preceding(3),
@@ -654,7 +725,7 @@ mod tests {
     #[test]
     fn is_pair_qualified_true_for_left_qualified_partition() {
         let spec = WindowSpec {
-            partition_by: vec!["l.id"],
+            partition_by: vec![WindowTerm::Column("l.id")],
             ..Default::default()
         };
         assert!(
@@ -666,7 +737,7 @@ mod tests {
     #[test]
     fn is_pair_qualified_true_for_right_qualified_partition() {
         let spec = WindowSpec {
-            partition_by: vec!["r.id"],
+            partition_by: vec![WindowTerm::Column("r.id")],
             ..Default::default()
         };
         assert!(
@@ -678,8 +749,8 @@ mod tests {
     #[test]
     fn is_pair_qualified_true_for_mixed_sides() {
         let spec = WindowSpec {
-            partition_by: vec!["l.id", "r.name"],
-            order_by: vec![("l.score", Direction::Desc)],
+            partition_by: vec![WindowTerm::Column("l.id"), WindowTerm::Column("r.name")],
+            order_by: vec![(WindowTerm::Column("l.score"), Direction::Desc)],
             ..Default::default()
         };
         assert!(
@@ -693,7 +764,7 @@ mod tests {
         // The exact emission the blocker calls out: `partition_by(l.id())`
         // through the non-pair-aware path stores a bare `"id"`.
         let spec = WindowSpec {
-            partition_by: vec!["id"],
+            partition_by: vec![WindowTerm::Column("id")],
             ..Default::default()
         };
         assert!(
@@ -705,7 +776,7 @@ mod tests {
     #[test]
     fn is_pair_qualified_false_for_bare_order_by() {
         let spec = WindowSpec {
-            order_by: vec![("score", Direction::Desc)],
+            order_by: vec![(WindowTerm::Column("score"), Direction::Desc)],
             ..Default::default()
         };
         assert!(
@@ -719,8 +790,8 @@ mod tests {
         // One bare slot poisons the whole spec — matches the AND logic in
         // the joined-annotation gate.
         let spec = WindowSpec {
-            partition_by: vec!["l.id", "name"],
-            order_by: vec![("r.score", Direction::Desc)],
+            partition_by: vec![WindowTerm::Column("l.id"), WindowTerm::Column("name")],
+            order_by: vec![(WindowTerm::Column("r.score"), Direction::Desc)],
             ..Default::default()
         };
         assert!(
@@ -735,12 +806,78 @@ mod tests {
         // cannot occur today (idents are validated to be alnum/underscore
         // only), but assert the check rejects anything that's not l./r.
         let spec = WindowSpec {
-            partition_by: vec!["la.path_count"],
+            partition_by: vec![WindowTerm::Column("la.path_count")],
             ..Default::default()
         };
         assert!(
             !spec.is_pair_qualified(),
             "`la.` prefix (closure-pair alias) is not a pair-window-qualified prefix"
+        );
+    }
+
+    // ── WindowTerm::Expr support ─────────────────────────────────────────
+
+    #[test]
+    fn partition_by_pair_expr_emits_qualified_field() {
+        use crate::expr::node::ExprNode;
+        let spec = WindowSpec {
+            partition_by: vec![crate::expr::window::WindowTerm::Expr {
+                node: Box::new(ExprNode::Field { column: "score" }),
+                alias: "l",
+            }],
+            ..Default::default()
+        };
+        assert_eq!(emit(&spec), " OVER (PARTITION BY l.score)");
+    }
+
+    #[test]
+    fn order_by_pair_expr_desc_emits_qualified_arithmetic() {
+        use crate::expr::node::ExprNode;
+        let spec = WindowSpec {
+            order_by: vec![(
+                crate::expr::window::WindowTerm::Expr {
+                    node: Box::new(ExprNode::Field { column: "score" }),
+                    alias: "r",
+                },
+                Direction::Desc,
+            )],
+            ..Default::default()
+        };
+        assert_eq!(emit(&spec), " OVER (ORDER BY r.score DESC)");
+    }
+
+    #[test]
+    fn is_pair_qualified_true_for_expr_term() {
+        use crate::expr::node::ExprNode;
+        let spec = WindowSpec {
+            partition_by: vec![crate::expr::window::WindowTerm::Expr {
+                node: Box::new(ExprNode::Field { column: "id" }),
+                alias: "l",
+            }],
+            ..Default::default()
+        };
+        assert!(
+            spec.is_pair_qualified(),
+            "Expr term must be pair-qualified by construction"
+        );
+    }
+
+    #[test]
+    fn is_pair_qualified_false_when_bare_column_mixed_with_expr() {
+        use crate::expr::node::ExprNode;
+        let spec = WindowSpec {
+            partition_by: vec![
+                crate::expr::window::WindowTerm::Column("bare_col"),
+                crate::expr::window::WindowTerm::Expr {
+                    node: Box::new(ExprNode::Field { column: "id" }),
+                    alias: "l",
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(
+            !spec.is_pair_qualified(),
+            "bare Column entry poisons the spec"
         );
     }
 }

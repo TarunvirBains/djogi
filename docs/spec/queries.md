@@ -311,3 +311,35 @@ The query API is expected to support efficient Postgres forms for the workload s
 - generated SQL must remain inspectable, and `EXPLAIN` support belongs in the public query surface
 
 This contract is why Djogi owns its `ConditionBuilder` and later expression IR directly instead of treating advanced query power as an optional wrapper around raw SQL.
+
+### 5.9 Pair-Tuple Window Functions — Expr Support and V1 Restrictions
+
+The pair-tuple annotation surface (`JoinedQuerySet::annotate`) supports
+window functions (`RowNumber`, `Rank`, `DenseRank`) with both
+column-reference-based and expression-based partition/order keys:
+
+- **Column references:** `partition_by_pair(side, field)`,
+  `order_by_pair_asc(side, field)`, `order_by_pair_desc(side, field)`.
+- **Expressions:** `partition_by_pair_expr(side, expr)`,
+  `order_by_pair_expr_asc(side, expr)`,
+  `order_by_pair_expr_desc(side, expr)`.
+
+**V1 architectural restriction (permanent):** Expressions passed to
+`*_pair_expr` methods must reference fields from the declared side only.
+Cross-pair arithmetic (e.g., `l.score / r.score`) requires
+`ExprNode::PairField`, which is not implemented in v0.1.0 and has no
+planned implementation timeline. The restriction is architectural — no
+compile-time guard is possible — because the expression is evaluated in a
+single-side `SqlEmitContext::joined(<alias>)`, and referencing the other
+side's alias produces a Postgres `42P01 missing FROM-clause` error at
+execute time.
+
+Additional v0.1.0 restrictions on the expression path:
+
+- `#[computed]` fields are unsupported — the macro-emitted computed-field
+  SQL is not available inside the `Expr<V>` node structure.
+- `RawSql` expressions are unsupported — the arbitrary SQL string cannot
+  be projected through the side-alias context.
+- Aggregate and subquery nodes are rejected via `debug_assert!` at
+  construction time — window clauses require scalar expressions per row,
+  not row-group aggregates.

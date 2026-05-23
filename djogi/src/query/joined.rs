@@ -1506,6 +1506,62 @@ pub trait PairWindowExt: Sized {
     where
         M: Model,
         S: crate::query::field::IntoSqlField<M, V>;
+
+    /// Add a `PARTITION BY <expr-alias>` entry to the underlying window
+    /// spec, where the expression is evaluated under the side's alias
+    /// context (`l` or `r`). The expression is emitted in the SELECT list
+    /// with `AS <alias>`, and the window clause references that alias.
+    ///
+    /// V1 restriction: expressions must reference fields from the declared
+    /// side only. Cross-pair arithmetic (e.g., `l.score / r.score`) requires
+    /// `ExprNode::PairField` (not implemented in v0.1.0). A `debug_assert!`
+    /// at construction guards against `Aggregate` / `Subquery` nodes.
+    #[must_use = "window functions are lazy annotations - dropping one omits the column"]
+    fn partition_by_pair_expr<V>(self, side: PairSide, expr: crate::expr::Expr<V>) -> Self;
+
+    /// Add an `ORDER BY <expr-alias> ASC` entry to the underlying window
+    /// spec. Same semantics and restrictions as
+    /// [`partition_by_pair_expr`](Self::partition_by_pair_expr).
+    #[must_use = "window functions are lazy annotations - dropping one omits the column"]
+    fn order_by_pair_expr_asc<V>(self, side: PairSide, expr: crate::expr::Expr<V>) -> Self;
+
+    /// Add an `ORDER BY <expr-alias> DESC` entry to the underlying window
+    /// spec. Same semantics and restrictions as
+    /// [`partition_by_pair_expr`](Self::partition_by_pair_expr).
+    #[must_use = "window functions are lazy annotations - dropping one omits the column"]
+    fn order_by_pair_expr_desc<V>(self, side: PairSide, expr: crate::expr::Expr<V>) -> Self;
+}
+
+/// Debug-mode guard against aggregate and subquery `ExprNode` variants in
+/// window partition/order slots.
+///
+/// Window clauses reference columns or expressions that produce scalar
+/// values per row. Aggregate nodes (`COUNT(*)`, `SUM(col)`) are illegal
+/// in `PARTITION BY` / `ORDER BY` because aggregates operate across row
+/// groups, not individual rows. Subquery nodes are similarly rejected —
+/// window partitions and ordering keys must be simple expressions over
+/// the row's own fields.
+///
+/// This helper fires a `debug_assert!` when the node is an illegal
+/// variant. The check runs in debug / test builds; release builds skip
+/// it for performance (the Postgres server would reject the illegal SQL
+/// at execute time anyway, but catching it here surfaces a clearer
+/// panic message in tests).
+fn assert_window_expr_node(node: &crate::expr::node::ExprNode) {
+    debug_assert!(
+        !matches!(
+            node,
+            crate::expr::node::ExprNode::Aggregate { .. }
+                | crate::expr::node::ExprNode::Subquery(_)
+        ),
+        "aggregate and subquery ExprNodes are not valid in window \
+         partition/order slots — use arithmetic and field references only"
+    );
+    #[cfg(feature = "spatial")]
+    debug_assert!(
+        !matches!(node, crate::expr::node::ExprNode::RowAggregate { .. }),
+        "RowAggregate ExprNodes are not valid in window partition/order slots"
+    );
 }
 
 /// Intern a `"<alias>.<column>"` composite into a `&'static str`,
@@ -1550,7 +1606,9 @@ macro_rules! impl_pair_window_ext {
                 S: crate::query::field::IntoSqlField<M, V>,
             {
                 let qualified = intern_alias_column(side.alias(), field.into_sql_field().column());
-                self.window.partition_by.push(qualified);
+                self.window
+                    .partition_by
+                    .push(crate::expr::window::WindowTerm::Column(qualified));
                 self
             }
 
@@ -1560,9 +1618,10 @@ macro_rules! impl_pair_window_ext {
                 S: crate::query::field::IntoSqlField<M, V>,
             {
                 let qualified = intern_alias_column(side.alias(), field.into_sql_field().column());
-                self.window
-                    .order_by
-                    .push((qualified, crate::query::order::Direction::Asc));
+                self.window.order_by.push((
+                    crate::expr::window::WindowTerm::Column(qualified),
+                    crate::query::order::Direction::Asc,
+                ));
                 self
             }
 
@@ -1572,9 +1631,57 @@ macro_rules! impl_pair_window_ext {
                 S: crate::query::field::IntoSqlField<M, V>,
             {
                 let qualified = intern_alias_column(side.alias(), field.into_sql_field().column());
+                self.window.order_by.push((
+                    crate::expr::window::WindowTerm::Column(qualified),
+                    crate::query::order::Direction::Desc,
+                ));
+                self
+            }
+
+            fn partition_by_pair_expr<V>(
+                mut self,
+                side: PairSide,
+                expr: crate::expr::Expr<V>,
+            ) -> Self {
+                assert_window_expr_node(&expr.node);
                 self.window
-                    .order_by
-                    .push((qualified, crate::query::order::Direction::Desc));
+                    .partition_by
+                    .push(crate::expr::window::WindowTerm::Expr {
+                        node: Box::new(expr.node),
+                        alias: side.alias(),
+                    });
+                self
+            }
+
+            fn order_by_pair_expr_asc<V>(
+                mut self,
+                side: PairSide,
+                expr: crate::expr::Expr<V>,
+            ) -> Self {
+                assert_window_expr_node(&expr.node);
+                self.window.order_by.push((
+                    crate::expr::window::WindowTerm::Expr {
+                        node: Box::new(expr.node),
+                        alias: side.alias(),
+                    },
+                    crate::query::order::Direction::Asc,
+                ));
+                self
+            }
+
+            fn order_by_pair_expr_desc<V>(
+                mut self,
+                side: PairSide,
+                expr: crate::expr::Expr<V>,
+            ) -> Self {
+                assert_window_expr_node(&expr.node);
+                self.window.order_by.push((
+                    crate::expr::window::WindowTerm::Expr {
+                        node: Box::new(expr.node),
+                        alias: side.alias(),
+                    },
+                    crate::query::order::Direction::Desc,
+                ));
                 self
             }
         }
@@ -3990,5 +4097,58 @@ mod tests {
         // FieldRef on both sides, and Mini = L = R is a valid type
         // signature for the L:Model, R:Model bounds.
         let _: PairAreaOverlapRatio<Mini, Mini> = PairAreaOverlapRatio::new(l_col, r_col);
+    }
+
+    // ── PairWindowExt::*_pair_expr round-trip tests ──────────────────────
+
+    #[test]
+    fn partition_by_pair_expr_round_trip() {
+        use crate::expr::{Expr, RowNumber};
+        use crate::query::FieldRef;
+
+        let score_ref: FieldRef<Mini, i32> = FieldRef::new("score");
+        let expr = score_ref.as_expr() * Expr::literal(10i32);
+
+        let rn = RowNumber::new().partition_by_pair_expr(PairSide::Left, expr);
+
+        // The WindowSpec should have one partition_by entry, which is an Expr variant.
+        assert_eq!(rn.window.partition_by.len(), 1);
+        match &rn.window.partition_by[0] {
+            crate::expr::window::WindowTerm::Expr { alias, .. } => {
+                assert_eq!(
+                    *alias, "l",
+                    "partition_by_pair_expr with PairSide::Left must store alias 'l'"
+                );
+            }
+            crate::expr::window::WindowTerm::Column(_) => {
+                panic!("expected WindowTerm::Expr, got Column");
+            }
+        }
+    }
+
+    #[test]
+    fn order_by_pair_expr_desc_round_trip() {
+        use crate::expr::{Expr, Rank};
+        use crate::query::FieldRef;
+
+        let value_ref: FieldRef<Mini, i32> = FieldRef::new("value");
+        let expr = value_ref.as_expr() / Expr::literal(2i32);
+
+        let rank = Rank::new().order_by_pair_expr_desc(PairSide::Right, expr);
+
+        // The WindowSpec should have one order_by entry, which is an Expr variant.
+        assert_eq!(rank.window.order_by.len(), 1);
+        match &rank.window.order_by[0] {
+            (crate::expr::window::WindowTerm::Expr { alias, .. }, dir) => {
+                assert_eq!(
+                    *alias, "r",
+                    "order_by_pair_expr_desc with PairSide::Right must store alias 'r'"
+                );
+                assert_eq!(*dir, crate::query::order::Direction::Desc);
+            }
+            (crate::expr::window::WindowTerm::Column(_), _) => {
+                panic!("expected WindowTerm::Expr, got Column");
+            }
+        }
     }
 }

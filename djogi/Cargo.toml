@@ -1031,6 +1031,16 @@ path = "../tests/integration/pair_area_overlap_ratio_live.rs"
 harness = true
 required-features = ["spatial"]
 
+# Phase 8.5 GH #302 — Expr<V> support in PairWindowExt methods.
+# Exercises partition_by_pair_expr, order_by_pair_expr_asc, and
+# order_by_pair_expr_desc against live Postgres, verifying that window
+# functions can reference arithmetic expressions in their partition/order
+# clauses.
+[[test]]
+name = "phase8_5_pair_window_expr"
+path = "../tests/integration/phase8_5_pair_window_expr.rs"
+harness = true
+
 # Issue #92 — row-shape PostGIS aggregate terminals.
 # Exercises `QuerySet::as_mvt`, `AnnotatedQuerySet::as_mvt`, and
 # `QuerySet::as_geobuf` end-to-end against live PostGIS with geography
