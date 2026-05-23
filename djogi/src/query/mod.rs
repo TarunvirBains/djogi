@@ -99,6 +99,10 @@ pub mod row_aggregate_terminal;
 pub mod set_op;
 #[cfg(feature = "spatial")]
 pub mod spatial_grouping;
+// Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING result type.
+// `ReturningPair<T>` is the public before/after snapshot for UPDATE returning.
+// No PG17 fallback; Djogi already has a hard PG18 floor.
+pub mod returning;
 pub(crate) mod sql;
 pub mod stream;
 pub mod terminal;
@@ -207,6 +211,8 @@ pub use sassi::BasicPredicate;
 #[cfg(feature = "spatial")]
 pub use spatial_grouping::{ClusterId, ClusterRadius, GeohashKey, GeohashPrecision, RegionKey};
 pub use stream::{ModelCursorStream, RawCursorStream};
+// Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING result type.
+pub use returning::ReturningPair;
 pub use update::{IntoAssignments, UpdateAssignment, UpdateStmt};
 pub use visage_queryset::VisageQuerySet;
 

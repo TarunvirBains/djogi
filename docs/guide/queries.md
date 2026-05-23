@@ -7,9 +7,6 @@ filters, ordering, distinct mode, and pagination without touching the
 database; only terminal methods (`fetch_all`, `count`, `update`, …) emit
 SQL and execute it against a `&mut DjogiContext`.
 
-This document is a Phase 2 reference. For features still on the roadmap —
-expression-backed SET, JOIN-spanning filters, window/aggregate terminals —
-see [the querying roadmap](../roadmap/querying.md).
 
 ---
 
@@ -378,7 +375,7 @@ does not currently have a `Lookup` equivalent because no caller has
 needed the runtime-decided form. Adding `Lookup::IRegex(String)` is
 non-breaking when needed.
 
-`Lookup` is `#[non_exhaustive]` — future phases add variants without a
+`Lookup` is `#[non_exhaustive]` — additional variants may be added without a
 breaking change.
 
 `filter_struct` produces a structurally equivalent condition tree to the
@@ -422,11 +419,54 @@ Empty-assignment short-circuit: `filter(...).update(|_| vec![])` returns
 `Ok(0)` without issuing SQL. An `UPDATE ... SET` with no assignments is
 a Postgres syntax error, so the short-circuit is load-bearing.
 
-Expression-backed SET (`col = col + 1`, `col = NOW()`,
-`col = other_col`) is not in Phase 2 — see the [query roadmap][phase-4]
-for the Phase 4 expression layer, or drop to raw SQL for the one-off case.
+#### Expression-backed SET
 
-[phase-4]: ../roadmap/querying.md
+Three convenience forms avoid writing out the full `set_expr(field.as_expr() + ...)` pattern:
+
+**`field.set_expr(Expr<V>)`** — full expression IR:
+
+```rust
+// col = col + 1 (explicit IR form)
+Post::objects()
+    .filter(|f| f.id().eq(post_id))
+    .update(|f| f.view_count().set_expr(
+        f.view_count().as_expr() + Expr::literal(1i32)
+    ))
+    .execute(&mut ctx).await?;
+```
+
+**`field.set_field(other)`** — column-to-column copy (`SET self = other`):
+
+```rust
+// Reset working_balance to confirmed_balance on reconciliation.
+Account::objects()
+    .filter(|f| f.needs_reset().eq(true))
+    .update(|f| f.working_balance().set_field(f.confirmed_balance()))
+    .execute(&mut ctx).await?;
+```
+
+**`field.increment(amount)` / `field.decrement(amount)`** — numeric add/subtract:
+
+```rust
+// Atomically bump the view counter.
+Post::objects()
+    .filter(|f| f.id().eq(post_id))
+    .update(|f| f.view_count().increment(1i32))
+    .execute(&mut ctx).await?;
+
+// Deduct a withdrawal from the account balance.
+Account::objects()
+    .filter(|f| f.id().eq(account_id))
+    .update(|f| f.balance().decrement(withdrawal_amount))
+    .execute(&mut ctx).await?;
+```
+
+`increment` and `decrement` are restricted to Djogi-blessed numeric types (`i16`,
+`i32`, `i64`, `f32`, `f64`, `time::Duration`) — calling them on a `String` or
+`bool` column is a compile error.
+
+For SQL the expression builder cannot express, reach for the raw escape hatch
+described below.
 
 ### `delete(&mut ctx)`
 
@@ -442,6 +482,100 @@ let n = Post::objects()
 pending struct — there's no payload to carry across a split). An
 unfiltered queryset deletes every row in the table; "wipe this table"
 DDL-style reaches for `TRUNCATE` via `ctx.raw_execute`.
+
+---
+
+## PG18 OLD/NEW RETURNING (djogi#180)
+
+PostgreSQL 18 added `OLD`/`NEW` aliases in `RETURNING` clauses, exposing
+both the pre- and post-DML row in a single round-trip. Djogi exposes this
+through four additive APIs.
+
+### `Model::update_returning_pair(self, ctx)`
+
+Returns a `ReturningPair<T>` with both the before and after row images for
+a single-row UPDATE:
+
+```rust
+// update_returning_pair consumes self — the caller's instance is stale
+// after the update, and ownership transfer enforces this at the type level.
+let mut post: Post = Post::get(&mut ctx, id).await?;
+post.title = "New Title".into();
+post.view_count += 1;
+
+let pair = post.update_returning_pair(&mut ctx).await?;
+// pair.old — state before the UPDATE.
+// pair.new — state after the UPDATE; continue working with this.
+assert!(pair.new.updated_at >= pair.old.updated_at);
+```
+
+Use `save()` when you want in-place rehydration and do not need the old
+row. Use `update_returning_pair` when you need both snapshots (e.g. for
+audit logs, event sourcing, or change detection).
+
+### `UpdateStmt::execute_returning_pairs(ctx)`
+
+Bulk UPDATE with per-row before/after pairs:
+
+```rust
+let pairs: Vec<ReturningPair<Post>> = Post::objects()
+    .filter(|f| f.published().eq(true))
+    .update(|f| f.view_count().set(999i32))
+    .execute_returning_pairs(&mut ctx)
+    .await?;
+
+for pair in &pairs {
+    println!("id={} old={} new={}", pair.new.id, pair.old.view_count, pair.new.view_count);
+}
+```
+
+> **Warning — unbounded materialization.** `execute_returning_pairs` loads
+> one `ReturningPair<T>` per affected row. On large tables this can exhaust
+> available memory. Apply `.filter(...)` to narrow the queryset, or chunk
+> updates at the application level.
+
+Short-circuits: `none()` querysets and empty assignment lists return
+`Ok(Vec::new())` without issuing SQL.
+
+### `Model::delete_returning(self, ctx)`
+
+Consuming single-row DELETE that returns the pre-delete DB snapshot:
+
+```rust
+let deleted: Post = post.delete_returning(&mut ctx).await?;
+// deleted contains the row's state as it was in the DB at deletion time,
+// including any BEFORE DELETE trigger effects.
+emit_tombstone_event(&deleted).await;
+```
+
+### `QuerySet::delete_returning(ctx)`
+
+Bulk DELETE returning one snapshot per deleted row:
+
+```rust
+let deleted_rows: Vec<Post> = Post::objects()
+    .filter(|f| f.published().eq(false))
+    .delete_returning(&mut ctx)
+    .await?;
+```
+
+> **Warning — unbounded materialization.** Applies the same as
+> `execute_returning_pairs` — narrow with `.filter(...)` first.
+
+Short-circuits: `none()` querysets return `Ok(Vec::new())` without SQL.
+
+### Notes
+
+- **PG18 only.** Djogi has a hard PostgreSQL 18 floor; no polyfill exists.
+- **INSERT** — `create()` already returns the DB post-image; the `OLD` side
+  is normally NULL for a simple INSERT. No pair type is needed or provided.
+- **MERGE** — MERGE result hydration is owned by djogi#178.
+- **Protected fields.** Both sides of `ReturningPair<T>` expose full model
+  values including `#[field(protected(...))]` fields. Log or persist with
+  care until issue #227 defines framework-level redaction.
+- **Outbox.** The `Save` outbox payload for `update_returning_pair` is the
+  DB post-image (`pair.new`) — the same single-payload schema as `save()`.
+  No diff-shaped outbox envelope is emitted in this release.
 
 ---
 
@@ -644,9 +778,33 @@ a programming error does not hide behind a silent `Ok(0)`.
 
 ### Return value and RETURNING
 
-The terminal returns the affected row count (`u64`). `RETURNING` for
-INSERT SELECT is not in v0.1.0 — follow up with a SELECT on the target
-when you need the inserted rows back.
+**`.execute(&mut ctx)`** returns the affected row count (`u64`).
+
+**`.execute_returning(&mut ctx)`** runs the same INSERT...SELECT but appends
+`RETURNING *`, decodes each returned row via the target model's [`FromPgRow`]
+impl, and returns `Vec<T>`:
+
+```rust
+let inserted: Vec<OrderArchive> = CompletedOrder::objects()
+    .filter(|f| f.completed_at().lt(cutoff))
+    .insert_into::<OrderArchive, _, _>(|target, source| vec![
+        target.order_id().copy_from(source.id().as_insert_source()),
+        target.title().copy_from(source.title().as_insert_source()),
+    ])
+    .execute_returning(&mut ctx)
+    .await?;
+```
+
+`execute_returning` does **not** fire `before_save` / `after_save` hooks or
+enqueue outbox events — INSERT...SELECT is a bulk operation and per-row hooks
+would be prohibitively expensive. Adopters who need per-row side effects should
+use the returned `Vec<T>` to drive a subsequent hook loop or re-query the target
+table.
+
+**Warning — unbounded materialisation.** `execute_returning` loads one `T` per
+inserted row into memory. For large copy operations, prefer `.execute(...)` for
+the count and then query the target table with a filter on the known ID range or
+a `created_at` window.
 
 ---
 

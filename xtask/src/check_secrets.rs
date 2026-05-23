@@ -304,7 +304,7 @@ const PEM_KEY_LABEL_NEEDLE: &str = "PRIVATE KEY";
 
 fn scan_repo() -> Result<Vec<Finding>, String> {
     let mut findings = Vec::new();
-    let files = list_tracked_files()?;
+    let files = list_repo_files()?;
     for path in files {
         if should_skip_file(&path) {
             continue;
@@ -411,6 +411,17 @@ fn report(findings: &[Finding], mode: ScanMode) -> ExitCode {
 
 // ===== file enumeration =====
 
+fn list_repo_files() -> Result<Vec<PathBuf>, String> {
+    match list_tracked_files() {
+        Ok(files) => Ok(files),
+        Err(error) if should_use_act_filesystem_fallback(&error) => {
+            eprintln!("check-secrets: git ls-files unavailable under act; using filesystem sweep");
+            list_filesystem_repo_files(Path::new("."))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn list_tracked_files() -> Result<Vec<PathBuf>, String> {
     let output = run_git(&["ls-files", "-z"])?;
     let mut paths = Vec::new();
@@ -422,6 +433,45 @@ fn list_tracked_files() -> Result<Vec<PathBuf>, String> {
     }
     paths.sort();
     Ok(paths)
+}
+
+fn should_use_act_filesystem_fallback(error: &str) -> bool {
+    env::var_os("ACT").is_some() && error.contains("not a git repository")
+}
+
+fn list_filesystem_repo_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut paths = Vec::new();
+    collect_filesystem_repo_files(root, root, &mut paths)
+        .map_err(|error| format!("filesystem sweep failed: {error}"))?;
+    paths.sort();
+    Ok(paths)
+}
+
+fn collect_filesystem_repo_files(
+    root: &Path,
+    dir: &Path,
+    paths: &mut Vec<PathBuf>,
+) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+
+        if file_type.is_dir() {
+            if matches!(name, ".git" | ".worktrees" | "node_modules" | "target") {
+                continue;
+            }
+            collect_filesystem_repo_files(root, &path, paths)?;
+        } else if file_type.is_file() {
+            paths.push(path.strip_prefix(root).unwrap_or(&path).to_owned());
+        }
+    }
+
+    Ok(())
 }
 
 fn should_skip_file(path: &Path) -> bool {
@@ -1248,6 +1298,61 @@ mod tests {
             !matches!(lookup("GIT_WORK_TREE"), Some(None)),
             "valid GIT_WORK_TREE should not be explicitly removed from the command env",
         );
+    }
+
+    #[test]
+    fn act_filesystem_fallback_requires_act_and_not_git_repo_error() {
+        let _env_restore = ProcessEnvRestore::new(&["ACT"]);
+        let error =
+            "git ls-files -z failed (exit status: 128): fatal: not a git repository: (null)";
+
+        unsafe {
+            env::remove_var("ACT");
+        }
+        assert!(!should_use_act_filesystem_fallback(error));
+
+        unsafe {
+            env::set_var("ACT", "true");
+        }
+        assert!(should_use_act_filesystem_fallback(error));
+        assert!(!should_use_act_filesystem_fallback(
+            "git ls-files -z failed: permission denied",
+        ));
+    }
+
+    #[test]
+    fn filesystem_repo_sweep_skips_build_and_git_state_dirs_but_keeps_dotgithub() {
+        let root = env::temp_dir().join(format!("djogi-check-secrets-fs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join(".github/workflows")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("target/debug")).unwrap();
+        fs::create_dir_all(root.join(".git/objects")).unwrap();
+        fs::create_dir_all(root.join(".worktrees/issue")).unwrap();
+
+        fs::write(root.join(".github/workflows/ci.yml"), "name: CI").unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn ok() {}").unwrap();
+        fs::write(
+            root.join("target/debug/build.log"),
+            "DATABASE_URL=postgres://real:secret@db/app",
+        )
+        .unwrap();
+        fs::write(root.join(".git/config"), "ignored").unwrap();
+        fs::write(root.join(".worktrees/issue/file.rs"), "ignored").unwrap();
+
+        let files = list_filesystem_repo_files(&root).unwrap();
+        let as_strings: BTreeSet<_> = files
+            .iter()
+            .map(|path| path.to_string_lossy().replace('\\', "/"))
+            .collect();
+
+        assert!(as_strings.contains(".github/workflows/ci.yml"));
+        assert!(as_strings.contains("src/lib.rs"));
+        assert!(!as_strings.contains("target/debug/build.log"));
+        assert!(!as_strings.contains(".git/config"));
+        assert!(!as_strings.contains(".worktrees/issue/file.rs"));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     // ---- URL detection ----

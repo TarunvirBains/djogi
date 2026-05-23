@@ -858,6 +858,41 @@ impl<M: Model, V: IntoFilterValue> DjogiField<M, V> {
     pub fn set_expr(self, expr: crate::expr::Expr<V>) -> crate::query::update::UpdateAssignment {
         self.sql.set_expr(expr)
     }
+
+    /// Copy from another field in the same query scope — sugar for
+    /// `self.set_field(other.into_sql_field())`.
+    ///
+    /// `other` follows Djogi's sealed SQL-field conversion path so
+    /// callers can pass any supported SQL-handle type (`FieldRef`
+    /// or `DjogiField`) without manually extracting raw handles.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn set_field<T>(self, other: T) -> crate::query::update::UpdateAssignment
+    where
+        T: IntoSqlField<M, V>,
+    {
+        self.sql.set_field(other.into_sql_field())
+    }
+}
+
+impl<M: Model, V> DjogiField<M, V>
+where
+    V: IntoFilterValue + crate::expr::arithmetic::Numeric + Into<crate::expr::Expr<V>>,
+{
+    /// Forwarded arithmetic assignment: `SET col = col + amount`.
+    ///
+    /// See [`FieldRef::increment`] for semantics.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn increment(self, amount: V) -> crate::query::update::UpdateAssignment {
+        self.sql.increment(amount)
+    }
+
+    /// Forwarded arithmetic assignment: `SET col = col - amount`.
+    ///
+    /// See [`FieldRef::decrement`] for semantics.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn decrement(self, amount: V) -> crate::query::update::UpdateAssignment {
+        self.sql.decrement(amount)
+    }
 }
 
 // Phase 8.5 Cluster 4B (djogi#106) — INSERT...SELECT column mapping.
@@ -1340,6 +1375,22 @@ where
 // advertised as Punnu-evaluable portable predicates.
 
 impl<M: Model> DjogiField<M, crate::Interval> {
+    /// Forwarded arithmetic assignment: `SET col = col + amount`.
+    ///
+    /// See [`FieldRef::increment`] for semantics.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn increment(self, amount: crate::Interval) -> crate::query::update::UpdateAssignment {
+        self.sql.increment(amount)
+    }
+
+    /// Forwarded arithmetic assignment: `SET col = col - amount`.
+    ///
+    /// See [`FieldRef::decrement`] for semantics.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn decrement(self, amount: crate::Interval) -> crate::query::update::UpdateAssignment {
+        self.sql.decrement(amount)
+    }
+
     /// `interval_column = value` using PostgreSQL `INTERVAL` equality.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn eq(self, value: crate::Interval) -> Condition {

@@ -3,8 +3,8 @@
 //! # What
 //!
 //! Emits the prefix-aware row decoder for every `#[model]`-annotated struct.
-//! The generated `from_joined_pg_row(row, prefix)` reads each field under
-//! `"{prefix}{column_name}"` via `row.try_get(...)`, letting the
+//! The generated `from_joined_pg_row(row, prefix)` reads each field by name via
+//! `row.try_get(...)`, letting the
 //! `select_related` emitter decode both the parent (empty prefix) and a
 //! child (e.g. `"rel_owner_id."`) from the same joined row without
 //! column-name collisions.
@@ -14,7 +14,9 @@
 //! [`FromPgRow`](::djogi::pg::decode::FromPgRow) decodes by canonical
 //! projection order and therefore has no prefix parameter. Joined decode
 //! needs a caller-supplied alias stem, so the macro emits a sibling impl
-//! with one `row.try_get` per field under `"{prefix}{column_name}"`.
+//! with one `row.try_get` per field using stable alias mapping:
+//! `"{prefix}{column_name}"` for generic joined rows and `o{idx}` / `n{idx}`
+//! for legacy `__djogi_old__` / `__djogi_new__` decoding.
 //!
 //! An empty prefix (`""`) degenerates to the same column names the model
 //! declares directly. The macro intentionally does not derive joined decode
@@ -60,7 +62,8 @@ pub fn expand(
     let field_assignments: Vec<TokenStream> = struct_item
         .fields
         .iter()
-        .map(|f| {
+        .enumerate()
+        .map(|(idx, f)| {
             let fname = f.ident.as_ref().expect("only named structs supported");
             // Raw identifiers (`r#type`) must strip the `r#` prefix to match
             // the SQL column name — same rule as `from_row::expand`.
@@ -69,11 +72,41 @@ pub fn expand(
             let nullable = is_nullable(&f.ty);
             let tracked = is_tracked_inner(&f.ty);
             let col_name_expr = quote! {
-                &::std::format!("{}{}", prefix, #col_name) as &str
+                &::djogi::__private::pg::joined_alias_for_prefix(
+                    prefix,
+                    #idx,
+                    #col_name,
+                ) as &str
             };
             let decode_expr = decode_joined_field_tokens(&kind, nullable, tracked, col_name_expr);
             quote! {
                 #fname: #decode_expr
+            }
+        })
+        .collect();
+
+    let debug_alias_guards: Vec<TokenStream> = struct_item
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(idx, f)| {
+            let col_name = crate::syn_util::column_name_from_field(f);
+            quote! {
+                {
+                    let __expected_alias = ::djogi::__private::pg::joined_alias_for_prefix(
+                        prefix,
+                        #idx,
+                        #col_name,
+                    );
+                    assert!(
+                        __djogi_joined_columns.iter().any(|__column| __column.name() == __expected_alias),
+                        "FromJoinedPgRow alias drift: prefix {:?} missing alias {:?} for field {:?} at position {}",
+                        prefix,
+                        __expected_alias,
+                        #col_name,
+                        #idx,
+                    );
+                }
             }
         })
         .collect();
@@ -84,6 +117,11 @@ pub fn expand(
                 row: &::djogi::__private::tokio_postgres::Row,
                 prefix: &str,
             ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
+                #[cfg(debug_assertions)]
+                {
+                    let __djogi_joined_columns = row.columns();
+                    #(#debug_alias_guards)*
+                }
                 ::std::result::Result::Ok(Self {
                     #(#field_assignments,)*
                 })

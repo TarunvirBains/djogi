@@ -2790,6 +2790,48 @@ impl FieldAttrs {
             }
         }
 
+        // Validate `#[field(max_length = N)]`.
+        //
+        // Postgres enforces:
+        // - `VARCHAR(0)` is invalid (`length for type varchar must be at least 1`);
+        // - `VARCHAR(N)` is bounded above by 10_485_760 (same as the
+        //   protocol row-size cap).
+        //
+        // The attribute is also only meaningful on `String` fields.
+        // Any non-String type gets the explicit compile-time error instead of
+        // being silently retained as metadata.
+        if let Some(max_length) = attrs.max_length {
+            let span = find_named_int_lit_span(field, "max_length").unwrap_or_else(|| field.span());
+            if max_length == 0 {
+                return Err(syn::Error::new(
+                    span,
+                    "`#[field(max_length = 0)]` is invalid — Postgres requires \
+                     `VARCHAR(N)` where N >= 1 (received N = 0)",
+                ));
+            }
+            if max_length > 10_485_760 {
+                return Err(syn::Error::new(
+                    span,
+                    format!(
+                        "`#[field(max_length = {max_length})]` is invalid — Postgres caps `VARCHAR` at \
+                         10_485_760 (received N = {max_length})"
+                    ),
+                ));
+            }
+
+            let (inner_ty, _nullable) = unwrap_schema_type(&attrs.ty);
+            if rust_type_to_sql(&inner_ty) != Some("TEXT") {
+                return Err(syn::Error::new(
+                    span,
+                    format!(
+                        "`#[field(max_length = {max_length})]` is only valid on `String` fields. \
+                         `String` columns emit `VARCHAR(N)`; non-String fields ignore the length \
+                         contract at runtime and must not use this attribute"
+                    ),
+                ));
+            }
+        }
+
         // Walk raw `#[field(expose(...))]` attrs — darling's declarative
         // derive cannot destructure the two-form `expose(scope)` vs
         // `expose(scope = "Peer")` grammar, so we recover the tokens
@@ -3407,6 +3449,40 @@ fn find_named_str_lit_span(field: &syn::Field, key: &str) -> Option<proc_macro2:
                 value:
                     Expr::Lit(ExprLit {
                         lit: lit @ Lit::Str(_),
+                        ..
+                    }),
+                ..
+            }) = meta
+                && path.is_ident(key)
+            {
+                return Some(lit.span());
+            }
+        }
+    }
+    None
+}
+
+/// Walk `#[field(...)]` attrs and return the span of the integer literal
+/// paired with `key = <integer>`. Used by post-parse validators to
+/// produce span-precise errors that underline the offending literal
+/// rather than the whole field.
+///
+/// Mirrors [`find_named_str_lit_span`] but matches integer literals
+/// (`Lit::Int`) instead of string literals (`Lit::Str`).
+fn find_named_int_lit_span(field: &syn::Field, key: &str) -> Option<proc_macro2::Span> {
+    for attr in &field.attrs {
+        if !attr.path().is_ident("field") {
+            continue;
+        }
+        let metas = attr
+            .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            .ok()?;
+        for meta in &metas {
+            if let Meta::NameValue(MetaNameValue {
+                path,
+                value:
+                    Expr::Lit(ExprLit {
+                        lit: lit @ Lit::Int(_),
                         ..
                     }),
                 ..

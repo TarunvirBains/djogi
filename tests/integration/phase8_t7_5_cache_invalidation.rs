@@ -429,3 +429,92 @@ async fn nested_savepoint_save_invalidates_only_on_outer_commit(ctx: djogi::Djog
          failed or the drain did not fire.",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test 5 — bulk `execute_returning_pairs` enqueues per-row OnSave invalidation
+// and drains on commit.
+// ---------------------------------------------------------------------------
+
+#[djogi::djogi_test(sync_models = [InvalRow])]
+async fn bulk_execute_returning_pairs_invalidates_on_commit(ctx: djogi::DjogiContext) {
+    let pool = ctx
+        .share_pool()
+        .expect("djogi_test context must be pool-backed");
+
+    let created_rows = atomic(&pool, |tx| {
+        Box::pin(async move {
+            let mut rows = Vec::new();
+            for i in 0..3 {
+                rows.push(
+                    InvalRow::create(
+                        tx,
+                        InvalRow {
+                            note: format!("bulk-{i}"),
+                            ..Default::default()
+                        },
+                    )
+                    .await?,
+                );
+            }
+            Ok::<_, DjogiError>(rows)
+        })
+    })
+    .await
+    .expect("bulk seed should succeed");
+
+    let row_ids: Vec<_> = created_rows.iter().map(|row| row.id).collect();
+    let captured_punnu: Arc<Mutex<Option<Arc<djogi::cache::Punnu<InvalRow>>>>> =
+        Arc::new(Mutex::new(None));
+
+    {
+        let captured_punnu = captured_punnu.clone();
+        let row_ids = row_ids.clone();
+        atomic(&pool, |tx| {
+            let captured_punnu = captured_punnu.clone();
+            let row_ids = row_ids.clone();
+            Box::pin(async move {
+                if let Some(punnu) = tx.punnu::<InvalRow>() {
+                    *captured_punnu.lock().unwrap() = Some(punnu.clone());
+                    for id in &row_ids {
+                        punnu
+                            .insert(InvalRow {
+                                id: *id,
+                                note: "stale-pre-bulk-update".into(),
+                                ..Default::default()
+                            })
+                            .await
+                            .expect("Punnu::insert should succeed");
+                    }
+                }
+
+                let pairs = InvalRow::objects()
+                    .update(|f| f.note().set("bulk-updated".to_string()))
+                    .execute_returning_pairs(tx)
+                    .await?;
+                assert_eq!(
+                    pairs.len(),
+                    row_ids.len(),
+                    "bulk execute_returning_pairs should update every seeded row"
+                );
+
+                Ok::<_, DjogiError>(())
+            })
+        })
+        .await
+        .expect("bulk execute_returning_pairs should succeed");
+    }
+
+    let punnu = captured_punnu
+        .lock()
+        .unwrap()
+        .take()
+        .expect("Punnu Arc must have been captured inside the closure");
+
+    for id in row_ids {
+        assert!(
+            punnu.get(&id).is_none(),
+            "Punnu entry for each bulk-updated row must be gone after commit; \
+             execute_returning_pairs enqueues per-row OnSave invalidation via on_commit"
+        );
+    }
+}

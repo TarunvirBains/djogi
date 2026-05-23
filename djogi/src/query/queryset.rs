@@ -227,6 +227,13 @@ pub struct QuerySet<T: Model> {
     /// Ordering expressions in emission order. `order_by` appends; it does
     /// not replace.
     pub(crate) ordering: Vec<OrderExpr>,
+    /// `true` when user code explicitly called [`QuerySet::order_by`].
+    ///
+    /// `QuerySet::new()` may seed `ordering` from
+    /// [`Model::default_order_by`], especially for proxy models.
+    /// Mutating terminals should reject only *explicit* `order_by(...)`
+    /// tails, not model-default ordering.
+    pub(crate) has_explicit_ordering: bool,
     /// DISTINCT mode — see [`DistinctMode`].
     pub(crate) distinct: DistinctMode,
     /// SQL `LIMIT` — `None` means no limit. `i64` to match Postgres.
@@ -557,6 +564,7 @@ impl<T: Model> Clone for QuerySet<T> {
         QuerySet {
             condition: self.condition.clone(),
             ordering: self.ordering.clone(),
+            has_explicit_ordering: self.has_explicit_ordering,
             distinct: self.distinct.clone(),
             limit: self.limit,
             offset: self.offset,
@@ -730,6 +738,7 @@ impl<T: Model> QuerySet<T> {
         QuerySet {
             condition,
             ordering,
+            has_explicit_ordering: false,
             distinct: DistinctMode::None,
             limit: None,
             offset: None,
@@ -1013,6 +1022,7 @@ impl<T: Model> QuerySet<T> {
         F: FnOnce(T::Fields) -> O,
         O: Into<Vec<OrderExpr>>,
     {
+        self.has_explicit_ordering = true;
         let exprs: Vec<OrderExpr> = f(T::Fields::default()).into();
         // Django-style append: library code can add tiebreakers without
         // clobbering the caller's primary ordering. NOT SeaORM-style
@@ -1022,6 +1032,40 @@ impl<T: Model> QuerySet<T> {
         // `reorder_by` method rather than mutating this one.
         self.ordering.extend(exprs);
         self
+    }
+
+    /// Reject SELECT-only read-tail modifiers on mutating terminals.
+    ///
+    /// Bulk UPDATE / DELETE currently emit only `WHERE` state; allowing
+    /// `limit`, `offset`, `distinct`, row locks, or explicit `order_by`
+    /// would silently ignore caller intent.
+    pub(crate) fn validate_mutation_read_tail(
+        &self,
+        terminal: &str,
+    ) -> Result<(), crate::DjogiError> {
+        let mut rejected: Vec<&'static str> = Vec::new();
+        if self.limit.is_some() {
+            rejected.push("limit");
+        }
+        if self.offset.is_some() {
+            rejected.push("offset");
+        }
+        if !matches!(self.distinct, DistinctMode::None) {
+            rejected.push("distinct");
+        }
+        if self.lock != crate::query::lock::LockMode::None {
+            rejected.push("row locks");
+        }
+        if self.has_explicit_ordering {
+            rejected.push("order_by");
+        }
+        if rejected.is_empty() {
+            return Ok(());
+        }
+        let rejected = rejected.join(", ");
+        Err(crate::DjogiError::Validation(format!(
+            "{terminal}() does not support queryset read-tail modifiers ({rejected}); remove them before calling {terminal}()"
+        )))
     }
 
     /// Apply SQL `LIMIT n`. Replaces any prior `limit` value.
@@ -3222,6 +3266,64 @@ mod tests {
             crate::query::OrderExpr::Column { column, .. } => assert_eq!(*column, "id"),
             #[allow(unreachable_patterns)]
             other => panic!("expected Column, got {other:?}"),
+        }
+    }
+
+    /// Mutation read-tail guard must allow model/proxy default ordering.
+    /// Default ordering is seeded by `QuerySet::new()` and should not be
+    /// treated as an explicit user-specified `order_by`.
+    #[test]
+    fn mutation_guard_allows_proxy_default_ordering() {
+        let qs: QuerySet<FakeProxy> = QuerySet::new();
+        assert!(
+            qs.validate_mutation_read_tail("delete").is_ok(),
+            "proxy default ordering must not trip mutation guard"
+        );
+    }
+
+    /// Calling `.order_by(...)` marks ordering as explicit and must trip
+    /// mutation guard, even when proxy default ordering is also present.
+    #[test]
+    fn mutation_guard_rejects_explicit_order_by() {
+        let user_order = crate::query::OrderExpr::__from_macro_column(
+            "id",
+            crate::query::Direction::Asc,
+            crate::query::NullsOrder::Default,
+        );
+        let qs: QuerySet<FakeProxy> = QuerySet::<FakeProxy>::new().order_by(|_| user_order);
+        let err = qs
+            .validate_mutation_read_tail("delete")
+            .expect_err("explicit order_by should be rejected for mutation terminals");
+        match err {
+            crate::DjogiError::Validation(msg) => {
+                assert!(
+                    msg.contains("order_by"),
+                    "validation should mention order_by, got: {msg}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mutation_guard_rejects_other_read_tail_modifiers() {
+        for (qs, expected) in [
+            (QuerySet::<Fake>::new().offset(10), "offset"),
+            (QuerySet::<Fake>::new().distinct(), "distinct"),
+            (QuerySet::<Fake>::new().select_for_update(), "row locks"),
+        ] {
+            let err = qs
+                .validate_mutation_read_tail("delete")
+                .expect_err("read-tail modifier should be rejected for mutation terminals");
+            match err {
+                crate::DjogiError::Validation(msg) => {
+                    assert!(
+                        msg.contains(expected),
+                        "validation should mention {expected}, got: {msg}"
+                    );
+                }
+                other => panic!("expected Validation, got {other:?}"),
+            }
         }
     }
 

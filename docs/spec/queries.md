@@ -91,7 +91,6 @@ Vehicle::objects()
 
 `QuerySet<T>` compiles its `Condition` tree into SQL via Djogi's own internal `ConditionBuilder`, which writes through `pg::accumulator::SqlAccumulator` — a thin owned-strings + bound-values pair handed to `tokio_postgres::Client::query` at terminal time. The framework does not depend on any third-party query-building crate; this layer is owned entirely by Djogi.
 
-> **Historical note**: The original Phase 2 implementation built on `sqlx::QueryBuilder<Postgres>`. Phase 5-Zero retired the `sqlx` substrate in favour of `tokio-postgres + deadpool-postgres + postgres-types`; the typed `ConditionBuilder` shape carried over unchanged.
 
 | Layer | What it does |
 |---|---|
@@ -171,15 +170,33 @@ Related framework gaps not covered by this surface:
 - `LATERAL` joins — djogi#102.
 - `VALUES` inline relations as join sources — djogi#103.
 - `MERGE INTO ... USING ...` — djogi#178.
-- PG18 `OLD` / `NEW` in `RETURNING` — djogi#180.
 - `RETURNING` for INSERT...SELECT — follow-up issue; current terminal
   returns the affected row count only.
+
+### 5.7a PG18 OLD/NEW RETURNING (djogi#180)
+
+PostgreSQL 18 added `OLD`/`NEW` aliases in `RETURNING` clauses for `UPDATE` and `DELETE`. Djogi exposes this through:
+
+- `Model::update_returning_pair(self, ctx) -> Result<ReturningPair<Self>>` — consuming update that returns both pre- and post-update row snapshots in a single round-trip.
+- `UpdateStmt::execute_returning_pairs(ctx) -> Result<Vec<ReturningPair<T>>>` — bulk update returning one pair per affected row.
+- `Model::delete_returning(self, ctx) -> Result<Self>` — consuming delete that returns the pre-delete DB snapshot.
+- `QuerySet::delete_returning(ctx) -> Result<Vec<T>>` — bulk delete returning one snapshot per deleted row.
+
+`ReturningPair<T>` has `pub old: T` and `pub new: T`. Both are non-null, fully-typed model instances decoded from the database using `FromJoinedPgRow` with the reserved `__djogi_old__` / `__djogi_new__` prefixes.
+
+**PG18 only.** No fallback or polyfill is provided. Djogi already has a hard PG18 floor.
+
+**Bulk memory warning.** `execute_returning_pairs` and `QuerySet::delete_returning` materialize one value per affected row. Apply `.filter(...)` to narrow the queryset before calling these terminals on large tables.
+
+**INSERT** — `create` already returns the DB post-image; no pair type is needed. PG `OLD` is normally NULL for a simple INSERT.
+
+**MERGE** — MERGE result hydration is owned by djogi#178. `ReturningPair<T>` is intentionally non-optional to preserve UPDATE ergonomics; MERGE needs a richer result shape.
 
 ### 5.8 Performance Contract
 
 The query API is expected to support efficient Postgres forms for the workload shapes Djogi targets. That means:
 
-- expression-backed filtering and updates belong in-framework once Phase 4 lands
+- expression-backed filtering and updates belong in-framework
 - aggregation, subqueries, locking, and typed result shaping are part of normal ORM work, not exceptional edge cases
 - explicit eager loading must keep query counts understandable and avoid hidden N+1 behavior
 - large-result evaluation must eventually support streaming/chunking rather than requiring full materialization

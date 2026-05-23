@@ -63,6 +63,12 @@ fn _check_interval_query_surface() {
             f.label().set("updated".to_string()),
         ]
     });
+    let _increment = IntervalRow212::objects().update(|f| {
+        f.duration().increment(Interval::days_only(1))
+    });
+    let _decrement = IntervalRow212::objects().update(|f| {
+        f.duration().decrement(Interval::days_only(1))
+    });
 }
 
 fn main() {}

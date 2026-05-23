@@ -164,7 +164,8 @@ pub mod __private {
             FromJoinedPgRow, FromPgRow, decode_at, decode_derived_at, decode_narrowed,
             decode_narrowed_by_name, decode_narrowed_opt, decode_narrowed_opt_by_name,
             decode_opt_u64_from_decimal, decode_opt_u64_from_decimal_by_name,
-            decode_u64_from_decimal, decode_u64_from_decimal_by_name, try_get_scalar,
+            decode_u64_from_decimal, decode_u64_from_decimal_by_name, joined_alias_for_prefix,
+            try_get_scalar,
         };
         pub use ::postgres_types::{FromSql, ToSql, Type as PgType};
         pub use ::tokio_postgres::Row as PgRow;
@@ -608,14 +609,50 @@ pub mod prelude {
     // prelude. Adopter code composes through `Q<T>` (in this list);
     // legacy `Condition` callers reach `djogi::query::internal::Condition`.
     pub use crate::query::{
-        AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
-        ClosureModel, ConditionExt, DjogiPortableEq, FieldRef, FilterClause, InsertSelectColumn,
-        InsertSelectSource, InsertSelectStmt, IntoAggregateTuple, IntoFieldFilterValue,
-        IntoFilterValue, IntoInsertColumns, IntoPortableFieldValue, IntoSetOpArm,
-        JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, Lookup,
-        MaterializeClosureOptions, MaterializeClosureReport, ModelFilter, OrderExpr,
-        PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt, PortableQuerySet, Q,
-        QuerySet, RecursiveDirection, RecursiveQuerySet, SetOpKind, SetOpQuerySet, VisageQuerySet,
+        AggregateQuery,
+        AnnotatedQuerySet,
+        ArrayPredicate,
+        BasicPredicate,
+        CachedPortableQuerySet,
+        ClosureModel,
+        ConditionExt,
+        DjogiPortableEq,
+        FieldRef,
+        FilterClause,
+        InsertSelectColumn,
+        InsertSelectSource,
+        InsertSelectStmt,
+        IntoAggregateTuple,
+        IntoFieldFilterValue,
+        IntoFilterValue,
+        IntoInsertColumns,
+        IntoPortableFieldValue,
+        IntoSetOpArm,
+        JoinedAnnotatedQuerySet,
+        JoinedAnnotatedRow,
+        JoinedQuerySet,
+        Lookup,
+        MaterializeClosureOptions,
+        MaterializeClosureReport,
+        ModelFilter,
+        OrderExpr,
+        PairClosureKinshipSum,
+        PairOrderExpr,
+        PairSide,
+        PairWindowExt,
+        PortableQuerySet,
+        Q,
+        QuerySet,
+        RecursiveDirection,
+        RecursiveQuerySet,
+        // Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING result type.
+        // `ReturningPair<T>` carries both the before- and after-UPDATE row
+        // snapshots; used by `Model::update_returning_pair` and
+        // `UpdateStmt::execute_returning_pairs`.
+        ReturningPair,
+        SetOpKind,
+        SetOpQuerySet,
+        VisageQuerySet,
     };
     // `atomic` / `atomic_with` / `retry_on_conflict` /
     // `retry_on_conflict_with_backoff` — Phase 4 Task 1 canonical transaction

@@ -414,6 +414,16 @@ impl DjogiContext {
         }
     }
 
+    /// Macro-safe auth snapshot shim.
+    ///
+    /// Macro-emitted code in downstream crates cannot call
+    /// crate-private methods, so this hidden public wrapper exposes the
+    /// same snapshot used by nested `atomic()` rollback.
+    #[doc(hidden)]
+    pub fn __snapshot_auth_state_for_macros(&self) -> AuthStateSnapshot {
+        self.snapshot_auth_state()
+    }
+
     /// Restore auth-related state captured by
     /// [`Self::snapshot_auth_state`]. Called by the nested `atomic()`
     /// path on rollback paths (closure returned Err, or panicked) so
@@ -424,6 +434,29 @@ impl DjogiContext {
         self.applied_tenant_id = snapshot.applied_tenant_id;
         self.tenant_set = snapshot.tenant_set;
         self.tenant_scope_suppressed = snapshot.tenant_scope_suppressed;
+    }
+
+    /// Macro-safe auth restore shim.
+    ///
+    /// This restores both the transaction-scoped tenant GUC and the
+    /// in-memory auth trackers to match the supplied snapshot.
+    #[doc(hidden)]
+    pub async fn __restore_auth_state_for_macros(
+        &mut self,
+        snapshot: AuthStateSnapshot,
+    ) -> Result<(), DjogiError> {
+        match snapshot.applied_tenant_id.as_deref() {
+            Some(tenant_id) => {
+                self.set_tenant(tenant_id).await?;
+            }
+            None => {
+                if self.applied_tenant_id.is_some() {
+                    self.clear_tenant().await?;
+                }
+            }
+        }
+        self.restore_auth_state(snapshot);
+        Ok(())
     }
 
     // -------------------------------------------------------------------------

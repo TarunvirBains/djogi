@@ -192,6 +192,29 @@ impl<T: Numeric> std::ops::Div for Expr<T> {
     }
 }
 
+// ── Interval +/- interval arithmetic ────────────────────────────────────
+//
+// `crate::Interval` is `djogi::Interval` (a three-component
+// month/day/microsecond representation). SQL supports interval
+// arithmetic natively, and callers now need `Expr<crate::Interval>`
+// to compose `col + $interval` / `col - $interval` update expressions
+// through narrow impls.
+impl std::ops::Add for Expr<crate::Interval> {
+    type Output = Expr<crate::Interval>;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Expr::from_node(ExprNode::Add(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
+impl std::ops::Sub for Expr<crate::Interval> {
+    type Output = Expr<crate::Interval>;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Expr::from_node(ExprNode::Sub(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
 // ── Heterogeneous datetime + interval arithmetic ───────────────────────────
 //
 // `Expr<OffsetDateTime> + Expr<Duration>` → `Expr<OffsetDateTime>`.

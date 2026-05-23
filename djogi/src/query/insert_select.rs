@@ -63,11 +63,11 @@
 //! - **`VALUES` inline relations as join sources** — tracked in djogi#103.
 //! - **`MERGE INTO ... USING ...`** — tracked in djogi#178.
 //! - **PG18 `OLD` / `NEW` in `RETURNING`** — tracked in djogi#180.
-//! - **`RETURNING` for INSERT...SELECT** — this terminal returns the
-//!   affected row count only. Adopters who need the inserted rows back
-//!   should follow up with a SELECT on the target. A `.execute_returning(...)`
-//!   variant can be added in a future issue without breaking the existing
-//!   surface.
+//! - **`RETURNING` for INSERT...SELECT** — use
+//!   [`InsertSelectStmt::execute_returning`] to receive every inserted
+//!   row back as a decoded `Vec<T>` (closes djogi#298).
+//!   [`InsertSelectStmt::execute`] remains the default for bulk operations
+//!   where materialising the full result set is unnecessary.
 //!
 //! # Framework-column semantics
 //!
@@ -181,9 +181,10 @@ use crate::expr::arithmetic::Numeric;
 use crate::expr::node::ExprNode;
 use crate::model::Model;
 use crate::pg::accumulator::as_params;
+use crate::pg::decode::FromPgRow;
 use crate::query::field::FieldRef;
 use crate::query::queryset::QuerySet;
-use crate::query::sql::build_insert_select;
+use crate::query::sql::{build_insert_select, build_insert_select_returning};
 use crate::query::terminal::auto_set_tenant;
 use std::collections::HashSet;
 use std::future::Future;
@@ -655,6 +656,105 @@ impl<S: Model, T: Model> std::fmt::Debug for InsertSelectStmt<S, T> {
 }
 
 impl<S: Model, T: Model> InsertSelectStmt<S, T> {
+    /// Validate the column mapping and source-queryset state.
+    ///
+    /// Called by both [`execute`](InsertSelectStmt::execute) and
+    /// [`execute_returning`](InsertSelectStmt::execute_returning) before
+    /// they issue any SQL.  Centralising the checks here means both
+    /// terminals surface the same error classes (empty column list,
+    /// duplicate target column, unsupported source-queryset state) even
+    /// when the source queryset is [`QuerySet::none`]-derived — a
+    /// silent `Ok` under `.none()` would otherwise mask mapping bugs
+    /// until the `.none()` guard was removed.
+    ///
+    /// Returns `Ok(())` when validation passes.  Returns
+    /// `Err(DjogiError::Validation(...))` for any of the rejection cases
+    /// listed on [`execute`](InsertSelectStmt::execute).
+    fn validate_execute(&self) -> Result<(), DjogiError> {
+        // Validation: empty column list.
+        if self.columns.is_empty() {
+            return Err(DjogiError::Validation(format!(
+                "insert_into::<{}>: column mapping is empty; an INSERT...SELECT \
+                 with no columns is invalid SQL. The closure passed to \
+                 QuerySet::insert_into must return at least one column mapping \
+                 via FieldRef::copy_from",
+                T::table_name(),
+            )));
+        }
+
+        // Validation: duplicate target columns.
+        let mut seen: HashSet<&'static str> = HashSet::with_capacity(self.columns.len());
+        for col in &self.columns {
+            if !seen.insert(col.target_column) {
+                return Err(DjogiError::Validation(format!(
+                    "insert_into::<{}>: target column '{}' appears more than \
+                     once in the column mapping; Postgres rejects duplicate \
+                     columns in an INSERT column list (SQLSTATE 42701)",
+                    T::table_name(),
+                    col.target_column,
+                )));
+            }
+        }
+
+        // Validation: reject unsupported source-queryset state.
+        if !self.source.prefetch_paths.is_empty() {
+            return Err(DjogiError::Validation(format!(
+                "insert_into::<{}>: source queryset has registered prefetch \
+                 paths, which have no meaning for INSERT...SELECT (no rows \
+                 are returned to the caller). Drop the .prefetch(...) calls \
+                 before .insert_into(...)",
+                T::table_name(),
+            )));
+        }
+        if !self.source.select_related_paths.is_empty() {
+            return Err(DjogiError::Validation(format!(
+                "insert_into::<{}>: source queryset has registered \
+                 select_related paths, which expand the SELECT list with \
+                 aliased joined columns the INSERT...SELECT column-mapping \
+                 closure cannot reference. Drop the .select_related(...) \
+                 calls before .insert_into(...)",
+                T::table_name(),
+            )));
+        }
+        if self.source.cache_target.is_some() {
+            return Err(DjogiError::Validation(format!(
+                "insert_into::<{}>: source queryset is bound to a Punnu via \
+                 .cache(...). INSERT...SELECT returns the affected row count, \
+                 not rows, so the cache binding has nothing to insert. Drop \
+                 the .cache(...) call before .insert_into(...)",
+                T::table_name(),
+            )));
+        }
+        if !matches!(self.source.lock, crate::query::lock::LockMode::None) {
+            return Err(DjogiError::Validation(format!(
+                "insert_into::<{}>: source queryset carries a row-level lock \
+                 (FOR UPDATE / FOR SHARE / NOWAIT / SKIP LOCKED) which is \
+                 not yet supported on INSERT...SELECT in djogi v0.1. Drop \
+                 the .select_for_update() / .nowait() / .skip_locked() / \
+                 .select_for_share() / .for_share_nowait() / \
+                 .for_share_skip_locked() call before .insert_into(...); a \
+                 follow-up issue can lift this restriction with an \
+                 explicit opt-in",
+                T::table_name(),
+            )));
+        }
+        if !matches!(
+            self.source.distinct,
+            crate::query::queryset::DistinctMode::None,
+        ) {
+            return Err(DjogiError::Validation(format!(
+                "insert_into::<{}>: source queryset carries .distinct() / \
+                 .distinct_on(...) which is not yet supported on \
+                 INSERT...SELECT in djogi v0.1. Drop the .distinct...() call \
+                 before .insert_into(...); a follow-up issue can lift this \
+                 restriction with an explicit opt-in",
+                T::table_name(),
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Run the accumulated INSERT...SELECT and return the affected row
     /// count.
     ///
@@ -719,103 +819,9 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
             // (or it was guarded by an auth / feature-flag branch that
             // flipped), at which point the same SQL the framework would
             // have rejected here would surface as a live Postgres
-            // syntax error / SQLSTATE 42701 / etc.
-
-            // Validation: empty column list. The Postgres surface is a
-            // syntax error; surface as DjogiError::Validation before
-            // the SQL leaves the framework so the diagnostic carries
-            // the target table name rather than the bare SQLSTATE.
-            if self.columns.is_empty() {
-                return Err(DjogiError::Validation(format!(
-                    "insert_into::<{}>: column mapping is empty; an INSERT...SELECT \
-                     with no columns is invalid SQL. The closure passed to \
-                     QuerySet::insert_into must return at least one column mapping \
-                     via FieldRef::copy_from",
-                    T::table_name(),
-                )));
-            }
-
-            // Validation: duplicate target columns. Postgres would
-            // reject with 42701; pre-validate so the diagnostic names
-            // the offending column.
-            let mut seen: HashSet<&'static str> = HashSet::with_capacity(self.columns.len());
-            for col in &self.columns {
-                if !seen.insert(col.target_column) {
-                    return Err(DjogiError::Validation(format!(
-                        "insert_into::<{}>: target column '{}' appears more than \
-                         once in the column mapping; Postgres rejects duplicate \
-                         columns in an INSERT column list (SQLSTATE 42701)",
-                        T::table_name(),
-                        col.target_column,
-                    )));
-                }
-            }
-
-            // Validation: reject unsupported source-queryset state.
-            // See the module docs for the rationale on each rejection.
-            // `QuerySet::none()` resets every one of these fields back
-            // to its `Self::new()` default (it returns a fresh queryset
-            // with `is_empty = true` set), so a bare `.none()` chain
-            // passes silently here; the rejections only fire when the
-            // adopter chained state-adding methods AFTER `.none()`
-            // (e.g. `Source::objects().none().distinct()` — which
-            // surfaces the distinct rejection rather than silently
-            // succeeding because the bug would surface the moment the
-            // `.none()` was removed).
-            if !self.source.prefetch_paths.is_empty() {
-                return Err(DjogiError::Validation(format!(
-                    "insert_into::<{}>: source queryset has registered prefetch \
-                     paths, which have no meaning for INSERT...SELECT (no rows \
-                     are returned to the caller). Drop the .prefetch(...) calls \
-                     before .insert_into(...)",
-                    T::table_name(),
-                )));
-            }
-            if !self.source.select_related_paths.is_empty() {
-                return Err(DjogiError::Validation(format!(
-                    "insert_into::<{}>: source queryset has registered \
-                     select_related paths, which expand the SELECT list with \
-                     aliased joined columns the INSERT...SELECT column-mapping \
-                     closure cannot reference. Drop the .select_related(...) \
-                     calls before .insert_into(...)",
-                    T::table_name(),
-                )));
-            }
-            if self.source.cache_target.is_some() {
-                return Err(DjogiError::Validation(format!(
-                    "insert_into::<{}>: source queryset is bound to a Punnu via \
-                     .cache(...). INSERT...SELECT returns the affected row count, \
-                     not rows, so the cache binding has nothing to insert. Drop \
-                     the .cache(...) call before .insert_into(...)",
-                    T::table_name(),
-                )));
-            }
-            if !matches!(self.source.lock, crate::query::lock::LockMode::None,) {
-                return Err(DjogiError::Validation(format!(
-                    "insert_into::<{}>: source queryset carries a row-level lock \
-                     (FOR UPDATE / FOR SHARE / NOWAIT / SKIP LOCKED) which is \
-                     not yet supported on INSERT...SELECT in djogi v0.1. Drop \
-                     the .select_for_update() / .nowait() / .skip_locked() / \
-                     .select_for_share() / .for_share_nowait() / \
-                     .for_share_skip_locked() call before .insert_into(...); a \
-                     follow-up issue can lift this restriction with an \
-                     explicit opt-in",
-                    T::table_name(),
-                )));
-            }
-            if !matches!(
-                self.source.distinct,
-                crate::query::queryset::DistinctMode::None,
-            ) {
-                return Err(DjogiError::Validation(format!(
-                    "insert_into::<{}>: source queryset carries .distinct() / \
-                     .distinct_on(...) which is not yet supported on \
-                     INSERT...SELECT in djogi v0.1. Drop the .distinct...() call \
-                     before .insert_into(...); a follow-up issue can lift this \
-                     restriction with an explicit opt-in",
-                    T::table_name(),
-                )));
-            }
+            // syntax error / SQLSTATE 42701 / etc. See
+            // [`validate_execute`] for the full per-case rationale.
+            self.validate_execute()?;
 
             // Short-circuit: structural-empty source. Runs AFTER the
             // validation block above so a `.none()` source with a
@@ -843,6 +849,73 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
             let params = as_params(&binds);
             let rows_affected = ctx.execute(&sql, &params).await?;
             Ok(rows_affected)
+        }
+    }
+
+    /// Run the accumulated INSERT...SELECT and return every inserted row
+    /// as a decoded model instance.
+    ///
+    /// Uses PostgreSQL's canonical `RETURNING <column_list>` projection to
+    /// retrieve the inserted rows in model order, including framework and user
+    /// columns (`id`, `created_at`, `updated_at`) populated by target-table
+    /// defaults. Rows are decoded via [`FromPgRow`].
+    ///
+    /// # Hooks and outbox
+    ///
+    /// Like [`execute`](InsertSelectStmt::execute), this terminal does
+    /// **not** fire `before_save` / `after_save` hooks or enqueue outbox
+    /// events.  INSERT...SELECT is designed for bulk operations where
+    /// per-row hooks would be prohibitively expensive.  Adopters who need
+    /// per-row side effects should follow up with a typed queryset over
+    /// the returned IDs.
+    ///
+    /// # Warning — unbounded materialisation
+    ///
+    /// This method loads **one `T` per inserted row** into memory.  For
+    /// large copy operations, consider calling [`execute`] for the count
+    /// and then querying the target table with a filter on the known ID
+    /// range or a `created_at` window.
+    ///
+    /// # Validation rejections
+    ///
+    /// Same as [`execute`](InsertSelectStmt::execute): empty column
+    /// mapping, duplicate target column, unsupported source-queryset
+    /// state.
+    ///
+    /// # Short-circuit
+    ///
+    /// Returns `Ok(Vec::new())` when the source queryset is
+    /// [`QuerySet::none`]-derived (`is_empty() == true`).
+    pub fn execute_returning<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Vec<T>, DjogiError>> + Send + 'ctx
+    where
+        S: 'ctx,
+        T: 'ctx + FromPgRow,
+    {
+        async move {
+            // Same validation contract as execute().
+            self.validate_execute()?;
+
+            // Short-circuit for structural-empty source.
+            if self.source.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            auto_set_tenant::<T>(ctx).await?;
+            auto_set_tenant::<S>(ctx).await?;
+
+            let acc = build_insert_select_returning::<S, T>(&self.source, &self.columns)
+                .map_err(DjogiError::from)?;
+            let (sql, binds) = acc.into_parts();
+            let params = as_params(&binds);
+            let rows = ctx.query_all(&sql, &params).await?;
+            let mut results = Vec::with_capacity(rows.len());
+            for row in &rows {
+                results.push(T::from_pg_row(row)?);
+            }
+            Ok(results)
         }
     }
 }
