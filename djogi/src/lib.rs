@@ -603,6 +603,10 @@ pub mod prelude {
         UnknownFieldExt,
     };
     pub use crate::model::Model;
+    // DjogiPool is the adopter-facing pool handle. It belongs in the prelude
+    // because pool construction (`DjogiPool::connect`, `DjogiPoolBuilder`) is
+    // the framework entry point — adopters spell it without a full path.
+    pub use crate::pg::pool::DjogiPool;
     pub use crate::pg::decode::FromPgRow;
     #[doc(hidden)]
     pub use crate::pg::decode::{FromJoinedPgRow, try_get_scalar};

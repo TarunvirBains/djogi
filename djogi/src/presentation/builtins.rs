@@ -8,13 +8,23 @@
 //!
 //! # Codec catalog
 //!
-//! | Type | Input | Output | Reversible | Queryable |
-//! |------|-------|--------|------------|-----------|
-//! | [`Identity`] | `T` | `T` | Yes | Predicate + Order |
-//! | [`MaskString`] | `String` | `String` | No | No |
-//! | [`MaskOptionString`] | `Option<String>` | `Option<String>` | No | No |
-//! | [`HmacSha256HexString`] | `String` | [`HmacSha256Hex`] | No | No |
-//! | [`HmacSha256HexOptionString`] | `Option<String>` | `Option<HmacSha256Hex>` | No | No |
+//! | Type | Input | Output | Reversible | Queryable | Infallible? |
+//! |------|-------|--------|------------|-----------|-------------|
+//! | [`Identity`] | `T` | `T` | Yes | Predicate + Order | Yes |
+//! | [`MaskString`] | `String` | `String` | No | No | Yes (both slots) |
+//! | [`MaskOptionString`] | `Option<String>` | `Option<String>` | No | No | Yes |
+//! | [`HmacSha256HexString`] | `String` | [`HmacSha256Hex`] | No | No | No |
+//! | [`HmacSha256HexOptionString`] | `Option<String>` | `Option<HmacSha256Hex>` | No | No | No |
+//!
+//! **`MaskString` in both slots**: `MaskString` implements both
+//! [`PresentationCodec<String>`](super::PresentationCodec) (infallible,
+//! used in `presentation_codec = MaskString`) and
+//! [`TryPresentationCodec<String>`](super::TryPresentationCodec) (used in
+//! `try_presentation_codec = MaskString`). The `TryPresentationCodec` impl
+//! delegates to `PresentationCodec::present` and uses `Infallible` as its
+//! error type — it can never fail. This allows `MaskString` to be used in
+//! visage scopes that mix infallible and fallible codecs without requiring a
+//! separate masking type.
 //!
 //! # Key format for HMAC built-ins
 //!
@@ -267,6 +277,23 @@ impl PresentationCodec<String> for MaskString {
     /// `Model::objects()` (which remains privileged).
     fn present(_value: &String) -> String {
         MASK_LITERAL.to_string()
+    }
+}
+
+impl TryPresentationCodec<String> for MaskString {
+    /// This codec is infallible — the error type is [`std::convert::Infallible`].
+    ///
+    /// `MaskString` may be used in both `presentation_codec = MaskString`
+    /// (infallible slot, calls [`PresentationCodec::present`]) and
+    /// `try_presentation_codec = MaskString` (fallible slot, calls this
+    /// method). When used in the fallible slot the `Infallible` error type
+    /// is propagated through the generated `TryFrom<&Model>` impl — the error
+    /// can never actually occur, but the `TryFrom` surface must be satisfied
+    /// when any field in the scope has a fallible codec.
+    type Error = std::convert::Infallible;
+
+    fn try_present(value: &String) -> Result<String, std::convert::Infallible> {
+        Ok(MaskString::present(value))
     }
 }
 
@@ -530,6 +557,14 @@ mod tests {
             <MaskString as PresentationCodecInfo<String>>::QUERYABILITY,
             Queryability::Disabled
         );
+    }
+
+    #[test]
+    fn mask_string_try_present_delegates_to_present() {
+        let input = "alice@example.com".to_string();
+        let result = MaskString::try_present(&input);
+        assert!(result.is_ok(), "try_present must never fail for MaskString");
+        assert_eq!(result.unwrap(), MaskString::present(&input));
     }
 
     // ── MaskOptionString ──────────────────────────────────────────────────
