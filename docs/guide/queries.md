@@ -993,8 +993,9 @@ Surface notes:
 Composite scores that mix pair-aggregate output with Rust-side state
 (score from kinship × Rust-side overlap × Rust-side age product) land
 their final ranking in Rust; the typed pair-tuple `qualify(...)` window
-surface accepts column references on its `partition_by_pair` /
-`order_by_pair_desc` methods.
+surface accepts column references only on its `partition_by_pair` /
+`order_by_pair_desc` methods, not arbitrary `Expr<f64>` derived from
+external state.
 
 ### Pair-side spatial overlap — `PairAreaOverlapRatio<L, R>`
 
