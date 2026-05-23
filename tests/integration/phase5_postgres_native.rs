@@ -207,6 +207,41 @@ async fn optimistic_lock_success_and_conflict(mut ctx: djogi::DjogiContext) {
     assert!(matches!(result, Err(djogi::DjogiError::LockConflict(_))));
 }
 
+#[djogi::djogi_test(sync_models = [Account])]
+async fn update_returning_pair_reports_lock_conflict_for_stale_version(
+    mut ctx: djogi::DjogiContext,
+) {
+    let account = Account::create(
+        &mut ctx,
+        Account {
+            name: Tracked::new("dave".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create account");
+
+    let mut winner = account.clone();
+    let mut stale = account;
+
+    *winner.name = "winner".to_string();
+    let pair = winner
+        .update_returning_pair(&mut ctx)
+        .await
+        .expect("winner update_returning_pair should succeed");
+    assert_eq!(*pair.old.name, "dave");
+    assert_eq!(*pair.new.name, "winner");
+    assert_eq!(pair.old.revision, 0);
+    assert_eq!(pair.new.revision, 1);
+
+    *stale.name = "stale".to_string();
+    let result = stale.update_returning_pair(&mut ctx).await;
+    assert!(
+        matches!(result, Err(djogi::DjogiError::LockConflict(_))),
+        "stale update_returning_pair must return LockConflict, got: {result:?}"
+    );
+}
+
 #[djogi::djogi_test(sync_models = [Vehicle])]
 async fn vehicle_status_all_variants_round_trip(mut ctx: djogi::DjogiContext) {
     for status in [

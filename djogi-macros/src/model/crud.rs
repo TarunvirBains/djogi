@@ -1423,8 +1423,12 @@ pub fn expand(
         .copied()
         .chain(user_col_names.iter().map(|s| s.as_str()))
         .collect();
-    let update_returning_suffix: String = {
-        let mut s = String::from(" RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)");
+    let build_returning_suffix = |include_new: bool| -> String {
+        let mut s = if include_new {
+            String::from(" RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)")
+        } else {
+            String::from(" RETURNING WITH (OLD AS __djogi_old)")
+        };
         let mut first = true;
         for col in &all_cols {
             if first {
@@ -1439,33 +1443,19 @@ pub fn expand(
             s.push_str(col);
             s.push('"');
         }
-        for col in &all_cols {
-            s.push_str(", __djogi_new.");
-            s.push_str(col);
-            s.push_str(" AS \"__djogi_new__");
-            s.push_str(col);
-            s.push('"');
-        }
-        s
-    };
-    let delete_returning_suffix: String = {
-        let mut s = String::from(" RETURNING WITH (OLD AS __djogi_old)");
-        let mut first = true;
-        for col in &all_cols {
-            if first {
-                s.push(' ');
-                first = false;
-            } else {
-                s.push_str(", ");
+        if include_new {
+            for col in &all_cols {
+                s.push_str(", __djogi_new.");
+                s.push_str(col);
+                s.push_str(" AS \"__djogi_new__");
+                s.push_str(col);
+                s.push('"');
             }
-            s.push_str("__djogi_old.");
-            s.push_str(col);
-            s.push_str(" AS \"__djogi_old__");
-            s.push_str(col);
-            s.push('"');
         }
         s
     };
+    let update_returning_suffix: String = build_returning_suffix(true);
+    let delete_returning_suffix: String = build_returning_suffix(false);
 
     // `delete_returning` uses a single WHERE id = $1 SQL plus the OLD suffix.
     let delete_returning_sql =
