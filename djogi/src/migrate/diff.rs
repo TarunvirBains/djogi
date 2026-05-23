@@ -5079,4 +5079,67 @@ mod tests {
         assert!(display.contains("65 levels"));
         assert!(display.contains("table_chain"));
     }
+
+    // ── djogi#297 — VARCHAR(n) type-change detection ──────────────────────
+
+    #[test]
+    fn text_to_varchar_emits_change_type() {
+        // `String` field with no `max_length` → `String` field with
+        // `max_length = 100`: the descriptor flips from `Text` to
+        // `Varchar(100)`, which must surface as `ColumnChange::ChangeType`
+        // from "TEXT" to "VARCHAR(100)".
+        const TEXT: FieldDescriptor = field_descriptor("slug", FieldSqlType::Text, false);
+        const VARCHAR: FieldDescriptor =
+            field_descriptor("slug", FieldSqlType::Varchar(100), false);
+        static TEXT_SLICE: &[FieldDescriptor] = &[TEXT];
+        static VARCHAR_SLICE: &[FieldDescriptor] = &[VARCHAR];
+        let model_text = ModelDescriptor {
+            fields: TEXT_SLICE,
+            ..synth_model("articles", "Article")
+        };
+        let model_varchar = ModelDescriptor {
+            fields: VARCHAR_SLICE,
+            ..synth_model("articles", "Article")
+        };
+        let before = project_one(&model_text);
+        let after = project_one(&model_varchar);
+        let delta = diff_schemas(&before, &after, empty_global());
+        let changes = alter_column_changes_for(&delta, "slug");
+        assert!(
+            changes.iter().any(|c| matches!(
+                c,
+                ColumnChange::ChangeType { from, to }
+                    if from == "TEXT" && to == "VARCHAR(100)"
+            )),
+            "TEXT → VARCHAR(100) must emit ColumnChange::ChangeType; got: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn varchar_width_change_emits_change_type() {
+        // `VARCHAR(100)` → `VARCHAR(200)`: must surface as
+        // `ColumnChange::ChangeType` from "VARCHAR(100)" to "VARCHAR(200)".
+        const V100: FieldDescriptor = field_descriptor("slug", FieldSqlType::Varchar(100), false);
+        const V200: FieldDescriptor = field_descriptor("slug", FieldSqlType::Varchar(200), false);
+        static V100_SLICE: &[FieldDescriptor] = &[V100];
+        static V200_SLICE: &[FieldDescriptor] = &[V200];
+        let before = project_one(&ModelDescriptor {
+            fields: V100_SLICE,
+            ..synth_model("articles", "Article")
+        });
+        let after = project_one(&ModelDescriptor {
+            fields: V200_SLICE,
+            ..synth_model("articles", "Article")
+        });
+        let delta = diff_schemas(&before, &after, empty_global());
+        let changes = alter_column_changes_for(&delta, "slug");
+        assert!(
+            changes.iter().any(|c| matches!(
+                c,
+                ColumnChange::ChangeType { from, to }
+                    if from == "VARCHAR(100)" && to == "VARCHAR(200)"
+            )),
+            "VARCHAR(100) → VARCHAR(200) must emit ColumnChange::ChangeType; got: {changes:?}"
+        );
+    }
 }

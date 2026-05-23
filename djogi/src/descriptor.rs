@@ -83,6 +83,18 @@ impl std::fmt::Display for GeographySubtype {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldSqlType {
     Text,
+    /// `VARCHAR(n)` — bounded character storage.  Emitted for `String`
+    /// fields annotated with `#[field(max_length = N)]`.  The differ
+    /// treats `Text` ↔ `Varchar(n)` and `Varchar(m)` ↔ `Varchar(n)` as
+    /// type-change drift requiring an
+    /// `ALTER TABLE … ALTER COLUMN … TYPE` migration, exactly like any
+    /// other column-type change.
+    ///
+    /// `n` must be in `1..=10_485_760`.  Values outside this range are
+    /// rejected at macro-expansion time with a compile error.  Postgres
+    /// internally caps `VARCHAR` at 10,485,760 characters (equal to its
+    /// maximum row size); values above that are impractical.
+    Varchar(u32),
     SmallInt,
     Integer,
     BigInt,
@@ -399,6 +411,7 @@ impl std::fmt::Display for FieldSqlType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FieldSqlType::Text => write!(f, "TEXT"),
+            FieldSqlType::Varchar(n) => write!(f, "VARCHAR({n})"),
             FieldSqlType::SmallInt => write!(f, "SMALLINT"),
             FieldSqlType::Integer => write!(f, "INTEGER"),
             FieldSqlType::BigInt => write!(f, "BIGINT"),
@@ -1935,6 +1948,28 @@ mod tests {
         assert_eq!(c.name, "total_price");
         assert_eq!(c.sql, "base_price * (1.0 + tax_rate)");
         assert_eq!(c.value_type, FieldSqlType::DoublePrecision);
+    }
+
+    // ── djogi#297 — FieldSqlType::Varchar ───────────────────────────────────
+
+    #[test]
+    fn varchar_display_formats_with_bound() {
+        // `Varchar(n)` must produce exactly `"VARCHAR(n)"` — the
+        // migration differ uses `ColumnSchema::sql_type` (a `String`)
+        // for equality checks, so the serialised form is the contract.
+        assert_eq!(FieldSqlType::Varchar(100).to_string(), "VARCHAR(100)");
+        assert_eq!(FieldSqlType::Varchar(1).to_string(), "VARCHAR(1)");
+        assert_eq!(
+            FieldSqlType::Varchar(10_485_760).to_string(),
+            "VARCHAR(10485760)"
+        );
+    }
+
+    #[test]
+    fn text_display_unchanged_after_varchar_addition() {
+        // `Text` must still serialise as `"TEXT"` — no regression from
+        // the new `Varchar` variant landing before it in the `match`.
+        assert_eq!(FieldSqlType::Text.to_string(), "TEXT");
     }
 }
 

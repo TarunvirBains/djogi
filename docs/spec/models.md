@@ -194,7 +194,11 @@ The public API does NOT require user-defined field types to implement `Default`.
 
 The following core scalar and container types are supported by the current model layer. Relation and JSONB wrappers are documented in their dedicated specs.
 
-The `String -> TEXT` rule represents **unbounded text storage**. **Bounded character storage** via `VARCHAR(n)` remains a future direction: `VARCHAR(n)` versus `TEXT` affects generated DDL, migration diffs, and schema intent even when both decode to Rust strings at runtime.
+The `String -> TEXT` rule represents **unbounded text storage**. Use
+`#[field(max_length = N)]` on a `String` field to emit `VARCHAR(N)` instead of
+`TEXT`. The migration differ treats `TEXT` ↔ `VARCHAR(N)` and `VARCHAR(M)` ↔
+`VARCHAR(N)` as type-change drift requiring an
+`ALTER TABLE … ALTER COLUMN … TYPE` migration.
 
 | Rust Type | SQL Type (Postgres) |
 |---|---|
@@ -230,7 +234,7 @@ pub email: String,
 #[field(index)]
 pub slug: String,
 
-#[field(max_length = 100)]          // emits CHECK constraint on TEXT
+#[field(max_length = 100)]          // emits VARCHAR(100) instead of TEXT
 pub slug: String,
 
 pub bio: Option<String>,            // Option<T> implies nullable
@@ -245,7 +249,11 @@ pub new_name: String,
 pub weight_kg: f64,
 ```
 
-Bounded string fields and text fields remain distinguishable in descriptor metadata so migration tooling can treat `TEXT <-> VARCHAR(n)` as a real schema change rather than only as validation.
+Bounded string fields (`VARCHAR(N)`) and unbounded text fields (`TEXT`) are
+represented by distinct `FieldSqlType` variants (`Varchar(n)` vs `Text`) so
+the migration differ treats `TEXT ↔ VARCHAR(N)` and `VARCHAR(M) ↔ VARCHAR(N)`
+as real type-change drift, producing the appropriate
+`ALTER TABLE … ALTER COLUMN … TYPE` migration.
 
 `#[field(check = "<sql>")]` declares an arbitrary CHECK constraint emitted verbatim by the migration layer. The expression is treated as a raw SQL escape — djogi performs no parsing, sanitization, or semantic validation beyond rejecting empty / whitespace-only strings at parse time. Adopters carry the same review-time responsibility this framework treats `unsafe`-equivalent surfaces with: every callsite is reviewable as raw SQL, syntactic correctness is on the adopter, and the predicate must be Postgres-`IMMUTABLE` (no `now()`, no volatile function calls, no references to other tables). When the framework also projects a type-derived CHECK on the same column (e.g. a `u32` field's `0..=4294967295` range bound), the projection layer combines both via logical `AND` into a single constraint slot; both clauses must pass for an INSERT / UPDATE to land. See [migrations §10.6.2](./migrations.md#1062-adopter-fieldcheck--sql-djogi105) for the full contract.
 

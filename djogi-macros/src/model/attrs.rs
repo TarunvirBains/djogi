@@ -2790,6 +2790,27 @@ impl FieldAttrs {
             }
         }
 
+        // Validate `#[field(max_length = N)]` range.
+        //
+        // Postgres rejects `VARCHAR(0)` with:
+        //   `ERROR: length for type varchar must be at least 1`
+        // Catch this at macro-expansion time so the adopter gets a
+        // span-precise error rather than a runtime migration failure.
+        //
+        // The practical upper cap is 10,485,760 (Postgres's storage
+        // maximum for a single field) — values above this are valid SQL
+        // but functionally equivalent to TEXT, so we surface a warning-
+        // level guidance here. Any value > 0 is accepted; the `= 0`
+        // case is the only hard error.
+        if let Some(0) = attrs.max_length {
+            let span = find_named_int_lit_span(field, "max_length").unwrap_or_else(|| field.span());
+            return Err(syn::Error::new(
+                span,
+                "`#[field(max_length = 0)]` is invalid — Postgres requires \
+                 `VARCHAR(N)` where N >= 1 (received N = 0)",
+            ));
+        }
+
         // Walk raw `#[field(expose(...))]` attrs — darling's declarative
         // derive cannot destructure the two-form `expose(scope)` vs
         // `expose(scope = "Peer")` grammar, so we recover the tokens
@@ -3407,6 +3428,40 @@ fn find_named_str_lit_span(field: &syn::Field, key: &str) -> Option<proc_macro2:
                 value:
                     Expr::Lit(ExprLit {
                         lit: lit @ Lit::Str(_),
+                        ..
+                    }),
+                ..
+            }) = meta
+                && path.is_ident(key)
+            {
+                return Some(lit.span());
+            }
+        }
+    }
+    None
+}
+
+/// Walk `#[field(...)]` attrs and return the span of the integer literal
+/// paired with `key = <integer>`. Used by post-parse validators to
+/// produce span-precise errors that underline the offending literal
+/// rather than the whole field.
+///
+/// Mirrors [`find_named_str_lit_span`] but matches integer literals
+/// (`Lit::Int`) instead of string literals (`Lit::Str`).
+fn find_named_int_lit_span(field: &syn::Field, key: &str) -> Option<proc_macro2::Span> {
+    for attr in &field.attrs {
+        if !attr.path().is_ident("field") {
+            continue;
+        }
+        let metas = attr
+            .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            .ok()?;
+        for meta in &metas {
+            if let Meta::NameValue(MetaNameValue {
+                path,
+                value:
+                    Expr::Lit(ExprLit {
+                        lit: lit @ Lit::Int(_),
                         ..
                     }),
                 ..

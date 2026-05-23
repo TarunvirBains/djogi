@@ -427,6 +427,10 @@ fn try_expand(
             // static / const `FieldDescriptor` literal in the test
             // suite depend on.
             let sql_type = if relation.is_some() {
+                // FK columns use the target's PK SQL type, resolved at
+                // projection time.  Emit TEXT as a placeholder here;
+                // `migrate::projection` overwrites it with the actual
+                // target PK type when it has access to all descriptors.
                 sql_str_to_tokens("TEXT")
             } else if let Some(domain_name) = &fa.domain {
                 let domain_name = domain_name.as_str();
@@ -436,6 +440,16 @@ fn try_expand(
                         name: #domain_name,
                         base: &#base,
                     }
+                }
+            } else if let Some(n) = fa.max_length {
+                // `#[field(max_length = N)]` on a `String` field emits
+                // `VARCHAR(N)` instead of `TEXT`.  For non-String types
+                // `max_length` is silently unused (the value is still
+                // stored in `FieldDescriptor::max_length` for metadata
+                // consumers, but the SQL type stays as-is).
+                match rust_type_to_sql(&inner_ty) {
+                    Some("TEXT") => quote! { ::djogi::FieldSqlType::Varchar(#n) },
+                    _ => field_sql_type_tokens(&inner_ty),
                 }
             } else {
                 field_sql_type_tokens(&inner_ty)
