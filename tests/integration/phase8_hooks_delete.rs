@@ -402,9 +402,8 @@ async fn delete_returning_runs_hooks_after_before_delete(mut ctx: djogi::DjogiCo
                                 .await
                                 .expect("delete_returning should succeed");
 
-                            assert_eq!(
-                                deleted.flag,
-                                false,
+                            assert!(
+                                !deleted.flag,
                                 "returned snapshot should come from DB OLD, not hook mutation",
                             );
                             assert_eq!(

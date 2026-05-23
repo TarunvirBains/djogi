@@ -121,6 +121,13 @@ use crate::descriptor::ModelDescriptor;
 use crate::model::Model;
 use postgres_types::ToSql;
 use serde::Serialize;
+use std::fmt::Write as _;
+
+// Postgres parameter indices are `u16`-bounded (`$1..$65535`). Bulk save
+// outbox inserts use 3 binds per row (`row_id`, `action`, `payload`), so
+// cap each statement well below the ceiling.
+const BULK_SAVE_INSERT_MAX_BINDS: usize = 30_000;
+const BULK_SAVE_INSERT_ROWS_PER_CHUNK: usize = BULK_SAVE_INSERT_MAX_BINDS / 3;
 
 /// The three CRUD operations a model can emit an outbox row for.
 ///
@@ -237,6 +244,80 @@ where
             &[&channel.as_str(), &notify_payload.as_str()],
         )
         .await?;
+    }
+
+    Ok(())
+}
+
+/// Emit one `Save` outbox row per entry in `rows` using a single batched
+/// `INSERT ... VALUES (...), (...), ...` statement.
+///
+/// This is used by bulk `execute_returning_pairs` to preserve per-row outbox
+/// semantics without issuing one INSERT round-trip per updated row.
+pub async fn emit_save_events_batch<T: Model + Serialize>(
+    ctx: &mut DjogiContext,
+    rows: &[&T],
+) -> Result<(), DjogiError>
+where
+    T::Pk: std::fmt::Display,
+{
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let outbox_table = format!("{}_outbox", T::table_name());
+    crate::ident::check_plain_ident(&outbox_table, false).map_err(|e| {
+        DjogiError::Db(crate::error::DbError::other(format!(
+            "outbox emit_save_events_batch: invalid outbox table name {outbox_table:?}: {e:?}"
+        )))
+    })?;
+
+    let mut payloads = Vec::with_capacity(rows.len());
+    for row in rows {
+        payloads.push(build_payload(row, T::descriptor())?);
+    }
+
+    let action = OutboxAction::Save.as_sql_str();
+    for (chunk_idx, chunk) in rows
+        .chunks(BULK_SAVE_INSERT_ROWS_PER_CHUNK.max(1))
+        .enumerate()
+    {
+        let mut sql = format!("INSERT INTO {outbox_table} (row_id, action, payload) VALUES ");
+        let mut params: Vec<&(dyn ToSql + Sync)> = Vec::with_capacity(chunk.len() * 3);
+        let payload_base = chunk_idx * BULK_SAVE_INSERT_ROWS_PER_CHUNK.max(1);
+
+        for (i, row) in chunk.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            let base = i * 3;
+            let _ = write!(sql, "(${}, ${}, ${})", base + 1, base + 2, base + 3);
+            params.push(row.pk_value());
+            params.push(&action);
+            params.push(&payloads[payload_base + i]);
+        }
+
+        ctx.execute(&sql, &params).await?;
+    }
+
+    #[cfg(feature = "notify")]
+    {
+        let table = T::table_name();
+        let channel = format!("djogi_{table}");
+        crate::ident::check_plain_ident(&channel, false).map_err(|e| {
+            DjogiError::Db(crate::error::DbError::other(format!(
+                "notify hook: invalid channel name {channel:?}: {e:?}"
+            )))
+        })?;
+        for row in rows {
+            let id_str = format!("{}", row.pk_value());
+            let notify_payload = build_notify_payload(OutboxAction::Save, &id_str);
+            ctx.execute(
+                "SELECT pg_notify($1, $2)",
+                &[&channel.as_str(), &notify_payload.as_str()],
+            )
+            .await?;
+        }
     }
 
     Ok(())

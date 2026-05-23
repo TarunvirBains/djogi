@@ -259,6 +259,11 @@ path = "../tests/integration/phase1_model.rs"
 harness = true
 
 [[test]]
+name = "phase1_from_joined_debug_guard"
+path = "../tests/internal/phase1_from_joined_debug_guard.rs"
+harness = true
+
+[[test]]
 name = "phase2_queryset"
 path = "../tests/integration/phase2_queryset.rs"
 harness = true
@@ -316,6 +321,11 @@ harness = true
 [[test]]
 name = "phase5_5_auth"
 path = "../tests/integration/phase5_5_auth.rs"
+harness = true
+
+[[test]]
+name = "phase5_5_auth_hook_restore"
+path = "../tests/internal/phase5_5_auth_hook_restore.rs"
 harness = true
 
 [[test]]
@@ -836,6 +846,11 @@ harness = true
 [[test]]
 name = "phase8_5_c4b_insert_select"
 path = "../tests/integration/phase8_5_c4b_insert_select.rs"
+harness = true
+
+[[test]]
+name = "phase8_5_c4b_insert_select_projection_order"
+path = "../tests/internal/phase8_5_c4b_insert_select_projection_order.rs"
 harness = true
 
 # Phase 8.5 Cluster 4A (#85 T27) — Wright F-coefficient correctness

@@ -433,7 +433,7 @@ impl<T: Model> UpdateStmt<T> {
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows_affected = ctx.execute(&sql, &params).await?;
-            // TODO(8δ T7.5 follow-up): bulk-update cache invalidation.
+            // TODO(8δ T7.5 follow-up): bulk-update cache invalidation (issue #304).
             // The safe path (Option B — opt-in `with_cache_invalidation()`
             // builder) requires adding an `invalidate: bool` flag to
             // `UpdateStmt`, switching the SQL to `UPDATE ... RETURNING id`
@@ -485,12 +485,17 @@ impl<T: Model> UpdateStmt<T> {
     /// Djogi has a hard PostgreSQL 18 floor. No fallback or polyfill is
     /// provided for older PostgreSQL versions.
     ///
-    /// # Cache invalidation
+    /// # Hooks, outbox, and cache invalidation
     ///
-    /// Cache invalidation for bulk update is deferred (same as
-    /// [`UpdateStmt::execute`]). Single-row update paths via
-    /// [`Model::update_returning_pair`](crate::model::Model::update_returning_pair)
-    /// do enqueue per-row invalidation.
+    /// Lifecycle hooks are **not** run for this bulk path:
+    /// `before_save`/`after_save` do not fire per row.
+    ///
+    /// For `#[model(events)]` models, this method emits one `Save` outbox row
+    /// per returned `pair.new` payload using a batched insert path.
+    ///
+    /// Cache invalidation is enqueued per returned row with
+    /// `InvalidationReason::OnSave` via `ctx.on_commit`, matching single-row
+    /// save/update-returning semantics.
     pub fn execute_returning_pairs<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -516,9 +521,12 @@ impl<T: Model> UpdateStmt<T> {
             for row in &rows {
                 let old = T::from_joined_pg_row(row, "__djogi_old__")?;
                 let new = T::from_joined_pg_row(row, "__djogi_new__")?;
-                let pair = ReturningPair { old, new };
-                <T as Model>::__djogi_emit_save_outbox(ctx, &pair.new).await?;
-                pairs.push(pair);
+                pairs.push(ReturningPair { old, new });
+            }
+            let outbox_rows: Vec<&T> = pairs.iter().map(|pair| &pair.new).collect();
+            <T as Model>::__djogi_emit_save_outbox_batch(ctx, &outbox_rows).await?;
+            for pair in &pairs {
+                <T as Model>::__djogi_enqueue_on_save_cache_invalidation(ctx, &pair.new)?;
             }
             Ok(pairs)
         }

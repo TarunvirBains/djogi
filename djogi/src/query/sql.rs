@@ -35,7 +35,7 @@
 
 use crate::model::Model;
 use crate::pg::accumulator::SqlAccumulator;
-use crate::pg::decode::FromPgRow;
+use crate::pg::decode::{FromPgRow, joined_alias_for_prefix};
 use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
 use crate::query::portable::{PortablePredicateError, SqlEmitContext};
 use crate::query::q::{ArrayPredicate, CompoundOp, Q};
@@ -2499,8 +2499,9 @@ fn push_old_new_returning_projection<T: FromPgRow>(acc: &mut SqlAccumulator, inc
         }
         acc.push_sql("__djogi_old.");
         acc.push_sql(col);
-        acc.push_sql(" AS \"o");
-        acc.push_sql(&idx.to_string());
+        let old_alias = joined_alias_for_prefix("__djogi_old__", idx, col);
+        acc.push_sql(" AS \"");
+        acc.push_sql(&old_alias);
         acc.push_sql("\"");
     }
     if include_new {
@@ -2508,8 +2509,9 @@ fn push_old_new_returning_projection<T: FromPgRow>(acc: &mut SqlAccumulator, inc
         for (idx, col) in T::COLUMNS.iter().enumerate() {
             acc.push_sql(", __djogi_new.");
             acc.push_sql(col);
-            acc.push_sql(" AS \"n");
-            acc.push_sql(&idx.to_string());
+            let new_alias = joined_alias_for_prefix("__djogi_new__", idx, col);
+            acc.push_sql(" AS \"");
+            acc.push_sql(&new_alias);
             acc.push_sql("\"");
         }
     }

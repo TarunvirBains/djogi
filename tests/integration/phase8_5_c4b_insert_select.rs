@@ -15,7 +15,6 @@
 // `original_id` column so the source's id is copied without colliding
 // with the framework `id` slot on the target.
 
-use djogi::__bypass::RawAccessExt;
 use djogi::prelude::*;
 
 #[model(table = "phase8_5_c4b_sources", pk = HeerIdRecencyBiased)]
@@ -45,18 +44,6 @@ pub struct Phase85C4bArchive {
     pub view_count: i32,
 }
 
-#[model(table = "phase8_5_c4b_projection_sources", pk = HeerIdRecencyBiased)]
-#[derive(Debug, Clone)]
-pub struct Phase85C4bProjectionSource {
-    pub value: i32,
-}
-
-#[model(table = "phase8_5_c4b_projection_targets", pk = HeerIdRecencyBiased)]
-#[derive(Debug, Clone)]
-pub struct Phase85C4bProjectionTarget {
-    pub value: i32,
-}
-
 async fn seed_sources(ctx: &mut djogi::DjogiContext) -> Vec<Phase85C4bSource> {
     let mut out = Vec::new();
     for (label, published, view_count) in [
@@ -79,22 +66,6 @@ async fn seed_sources(ctx: &mut djogi::DjogiContext) -> Vec<Phase85C4bSource> {
         out.push(row);
     }
     out
-}
-
-async fn recreate_projection_target_noncanonical_order(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_ddl("DROP TABLE IF EXISTS phase8_5_c4b_projection_targets")
-        .await
-        .expect("target projection table drop should succeed");
-    ctx.raw_ddl(
-        "CREATE TABLE phase8_5_c4b_projection_targets (
-            id BIGINT PRIMARY KEY DEFAULT generate_id(),
-            value INTEGER NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )",
-    )
-    .await
-    .expect("target projection table should be recreated in non-canonical order");
 }
 
 // ── Happy path ────────────────────────────────────────────────────────────
@@ -248,47 +219,6 @@ async fn insert_select_framework_columns_populated_by_defaults(mut ctx: djogi::D
     let mut expected_source_ids = source_ids.clone();
     expected_source_ids.sort();
     assert_eq!(original_ids, expected_source_ids);
-}
-
-#[djogi::djogi_test(sync_models = [
-    Phase85C4bSource,
-    Phase85C4bArchive,
-    Phase85C4bProjectionSource,
-    Phase85C4bProjectionTarget
-])]
-async fn insert_select_execute_returning_uses_canonical_projection_for_noncanonical_ddl(
-    mut ctx: djogi::DjogiContext,
-) {
-    recreate_projection_target_noncanonical_order(&mut ctx).await;
-
-    let source_row = Phase85C4bProjectionSource::create(
-        &mut ctx,
-        Phase85C4bProjectionSource {
-            value: 101,
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("source row should be created");
-
-    let returned = Phase85C4bProjectionSource::objects()
-        .filter(|f| f.id().eq(source_row.id))
-        .insert_into::<Phase85C4bProjectionTarget, _, _>(|t, s| {
-            vec![t.value().copy_from(s.value().as_insert_source())]
-        })
-        .execute_returning(&mut ctx)
-        .await
-        .expect("execute_returning should decode rows via canonical projection");
-
-    assert_eq!(returned.len(), 1, "expected one source row to be copied");
-    assert_eq!(
-        returned[0].value, 101,
-        "copied value should decode correctly"
-    );
-    assert_ne!(
-        returned[0].id, source_row.id,
-        "inserted target row should get a fresh framework id"
-    );
 }
 
 #[djogi::djogi_test(sync_models = [Phase85C4bSource, Phase85C4bArchive])]

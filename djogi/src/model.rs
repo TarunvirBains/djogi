@@ -547,6 +547,33 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
         async { Ok(()) }
     }
 
+    /// Framework-internal batched outbox hook for bulk
+    /// `execute_returning_pairs` writes.
+    ///
+    /// Default is a hidden no-op so non-events models compile without
+    /// `serde::Serialize`/outbox plumbing.
+    #[doc(hidden)]
+    fn __djogi_emit_save_outbox_batch<'ctx>(
+        ctx: &'ctx mut DjogiContext,
+        rows: &'ctx [&'ctx Self],
+    ) -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx {
+        let _ = (ctx, rows);
+        async { Ok(()) }
+    }
+
+    /// Framework-internal cache invalidation hook for save-style writes.
+    ///
+    /// Default is a hidden no-op so callers can invoke this from generic
+    /// bulk paths without imposing extra public trait bounds.
+    #[doc(hidden)]
+    fn __djogi_enqueue_on_save_cache_invalidation<'ctx>(
+        ctx: &'ctx mut DjogiContext,
+        row: &'ctx Self,
+    ) -> Result<(), DjogiError> {
+        let _ = (ctx, row);
+        Ok(())
+    }
+
     /// Walk **every** self-FK edge declared on this model upward —
     /// the multi-edge sibling of [`Model::tree_ancestors`]. Phase
     /// 8-Zero Cluster B3 (T13a).

@@ -1,6 +1,7 @@
 // Phase 2 QuerySet integration tests.
 
 use djogi::prelude::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Separate table name (`posts_p2`) so this integration test can share a DB
 // with `phase1_model.rs` without DDL collisions.
@@ -44,6 +45,30 @@ pub struct BulkOutboxEvtRow {
 #[derive(Debug, Clone)]
 pub struct BulkOutboxNoEvtRow {
     pub score: i32,
+}
+
+#[model(table = "phase2_bulk_hooks_row", pk = HeerId, hooks)]
+#[derive(Debug, Clone)]
+pub struct BulkHooksRow {
+    pub score: i32,
+}
+
+static BULK_BEFORE_SAVE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static BULK_AFTER_SAVE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+impl djogi::hooks::ModelHooks for BulkHooksRow {
+    async fn before_save(
+        &mut self,
+        _ctx: &mut djogi::DjogiContext,
+    ) -> Result<(), djogi::DjogiError> {
+        BULK_BEFORE_SAVE_CALLS.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn after_save(&self, _ctx: &mut djogi::DjogiContext) -> Result<(), djogi::DjogiError> {
+        BULK_AFTER_SAVE_CALLS.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 async fn seed_returning_pair_long_alias_bulk_rows(
@@ -97,6 +122,25 @@ async fn seed_bulk_outbox_no_evt_rows(
                 ctx,
                 BulkOutboxNoEvtRow {
                     score: 10 + i,
+                    ..Default::default()
+                },
+            )
+            .await?,
+        );
+    }
+    Ok(rows)
+}
+
+async fn seed_bulk_hooks_rows(
+    ctx: &mut djogi::DjogiContext,
+) -> Result<Vec<BulkHooksRow>, DjogiError> {
+    let mut rows = Vec::new();
+    for i in 0..3 {
+        rows.push(
+            BulkHooksRow::create(
+                ctx,
+                BulkHooksRow {
+                    score: 100 + i,
                     ..Default::default()
                 },
             )
@@ -1083,6 +1127,34 @@ async fn execute_returning_pairs_non_events_model_does_not_require_outbox_plumbi
     assert!(
         !BulkOutboxNoEvtRow::descriptor().has_outbox,
         "non-events model must not have outbox"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [BulkHooksRow])]
+async fn execute_returning_pairs_does_not_dispatch_lifecycle_hooks(mut ctx: djogi::DjogiContext) {
+    BULK_BEFORE_SAVE_CALLS.store(0, Ordering::SeqCst);
+    BULK_AFTER_SAVE_CALLS.store(0, Ordering::SeqCst);
+
+    let rows = seed_bulk_hooks_rows(&mut ctx)
+        .await
+        .expect("seed hook-enabled rows");
+
+    let pairs = BulkHooksRow::objects()
+        .update(|f| f.score().set(777i32))
+        .execute_returning_pairs(&mut ctx)
+        .await
+        .expect("bulk execute_returning_pairs should succeed");
+
+    assert_eq!(pairs.len(), rows.len(), "one pair per updated row");
+    assert_eq!(
+        BULK_BEFORE_SAVE_CALLS.load(Ordering::SeqCst),
+        0,
+        "bulk execute_returning_pairs must not run before_save hooks"
+    );
+    assert_eq!(
+        BULK_AFTER_SAVE_CALLS.load(Ordering::SeqCst),
+        0,
+        "bulk execute_returning_pairs must not run after_save hooks"
     );
 }
 

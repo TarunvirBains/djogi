@@ -242,6 +242,32 @@ async fn update_returning_pair_reports_lock_conflict_for_stale_version(
     );
 }
 
+#[djogi::djogi_test(sync_models = [Account])]
+async fn update_returning_pair_not_found_for_deleted_versioned_row(mut ctx: djogi::DjogiContext) {
+    let account = Account::create(
+        &mut ctx,
+        Account {
+            name: Tracked::new("edgar".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create account");
+
+    let deleted = account
+        .delete_returning(&mut ctx)
+        .await
+        .expect("delete_returning should remove account");
+
+    let mut stale = deleted;
+    *stale.name = "stale".to_string();
+    let result = stale.update_returning_pair(&mut ctx).await;
+    assert!(
+        matches!(result, Err(djogi::DjogiError::NotFound { .. })),
+        "deleted account update_returning_pair must return NotFound, got: {result:?}"
+    );
+}
+
 #[djogi::djogi_test(sync_models = [Vehicle])]
 async fn vehicle_status_all_variants_round_trip(mut ctx: djogi::DjogiContext) {
     for status in [
