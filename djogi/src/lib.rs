@@ -621,10 +621,11 @@ pub mod prelude {
         CachedPortableQuerySet,
         ClosureModel,
         ConditionExt,
+        // Phase 8.5 djogi#103 + GH#299 — VALUES join (inner, left, cross).
+        CrossValuesJoinedQuerySet,
         DjogiPortableEq,
         FieldRef,
         FilterClause,
-        // Phase 8.5 djogi#103 — VALUES join.
         InlineValues,
         InsertSelectColumn,
         InsertSelectSource,

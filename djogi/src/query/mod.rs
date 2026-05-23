@@ -219,15 +219,16 @@ pub use stream::{ModelCursorStream, RawCursorStream};
 pub use returning::ReturningPair;
 pub use update::{IntoAssignments, UpdateAssignment, UpdateStmt};
 // Phase 8.5 djogi#103 — typed VALUES join surface.
-// `InlineValues` and the two queryset types are the user-facing names.
-// `ValuesScalar` / `ValuesRow` / `IntoValuesColumns` are sealed but must be
-// re-exported so trait-method dispatch (`eq_values`, `col0`, …) resolves in
-// downstream crates.  `ValuesFields` and `ValuesFieldRef` must be nameable
-// as closure parameter / return types when adopters write helpers that accept
-// an `ON` predicate directly.
+// `InlineValues`, the three queryset types, and the supporting traits are the
+// user-facing names.  `ValuesScalar` / `ValuesRow` / `IntoValuesColumns` are
+// sealed but must be re-exported so trait-method dispatch (`eq_values`,
+// `col0`, …) resolves in downstream crates.  `ValuesFields` and
+// `ValuesFieldRef` must be nameable as closure parameter / return types when
+// adopters write helpers that accept an `ON` predicate directly.
+// `CrossValuesJoinedQuerySet` (GH #299) is the unconditional Cartesian join.
 pub use values::{
-    InlineValues, IntoValuesColumns, LeftValuesJoinedQuerySet, ValuesFieldRef, ValuesFields,
-    ValuesJoinedQuerySet, ValuesOn, ValuesRow, ValuesScalar,
+    CrossValuesJoinedQuerySet, InlineValues, IntoValuesColumns, LeftValuesJoinedQuerySet,
+    ValuesFieldRef, ValuesFields, ValuesJoinedQuerySet, ValuesOn, ValuesRow, ValuesScalar,
 };
 pub use visage_queryset::VisageQuerySet;
 

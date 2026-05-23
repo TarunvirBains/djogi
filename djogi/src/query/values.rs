@@ -63,13 +63,13 @@
 //! Empty `InlineValues` is valid.  Terminal methods short-circuit after
 //! validation:
 //!
-//! | Method      | Inner join result            | Left join result                               |
-//! |:------------|:-----------------------------|:-----------------------------------------------|
-//! | `fetch_all` | `Ok(vec![])`                 | executes query — all left rows with `None`     |
-//! | `first`     | `Ok(None)`                   | executes query — first left row with `None`    |
-//! | `fetch_one` | `Err(NotFound)`              | executes query — first left row or `NotFound`  |
-//! | `count`     | `Ok(0)`                      | executes query — count of left rows            |
-//! | `exists`    | `Ok(false)`                  | executes query — any left rows?                |
+//! | Method      | Inner join result            | Left join result                               | Cross join result     |
+//! |:------------|:-----------------------------|:-----------------------------------------------|:----------------------|
+//! | `fetch_all` | `Ok(vec![])`                 | executes query — all left rows with `None`     | `Ok(vec![])`          |
+//! | `first`     | `Ok(None)`                   | executes query — first left row with `None`    | `Ok(None)`            |
+//! | `fetch_one` | `Err(NotFound)`              | executes query — first left row or `NotFound`  | `Err(NotFound)`       |
+//! | `count`     | `Ok(0)`                      | executes query — count of left rows            | `Ok(0)`               |
+//! | `exists`    | `Ok(false)`                  | executes query — any left rows?                | `Ok(false)`           |
 //!
 //! # Supported row types
 //!
@@ -80,9 +80,18 @@
 //! `PrimitiveDateTime`, `Date`, `Time`, `Interval`, `Vec<u8>`, and
 //! `Option<T>` for each of the above.
 //!
+//! # Supported join types
+//!
+//! | Entry point                           | Join kind      | Result type          |
+//! |:--------------------------------------|:---------------|:---------------------|
+//! | [`QuerySet::join_values`]             | INNER JOIN     | `Vec<(T, Row)>`      |
+//! | [`QuerySet::left_join_values`]        | LEFT JOIN      | `Vec<(T, Option<Row>)>` |
+//! | [`QuerySet::cross_join_values`]       | CROSS JOIN     | `Vec<(T, Row)>`      |
+//!
 //! # Non-goals
 //!
-//! - No implicit cartesian join.  Use an explicit `cross_join_values` API later.
+//! - No implicit `ON TRUE` joins; cartesian products require the explicit
+//!   [`QuerySet::cross_join_values`] API.
 //! - No struct rows — only tuples.
 //! - Very large value lists should be loaded through a temp/staging table; Postgres
 //!   plans large `VALUES` clauses expensively.  Keep per-query VALUES under ~1 000
@@ -919,6 +928,32 @@ impl<T: Model, Row: ValuesRow> std::fmt::Debug for LeftValuesJoinedQuerySet<T, R
     }
 }
 
+// ── CrossValuesJoinedQuerySet (cartesian join) ────────────────────────────────
+
+/// A lazy CROSS JOIN of a model queryset against an inline VALUES relation.
+///
+/// Constructed by [`QuerySet::cross_join_values`].  Terminals produce `(T, Row)`
+/// pairs — one pair for every combination of model row and VALUES row
+/// (Cartesian product, no `ON` predicate).
+///
+/// # Empty behaviour
+///
+/// If either the model queryset is `none()`-derived or [`InlineValues`] has
+/// zero rows, terminals short-circuit and return the empty result without a
+/// database round-trip.  A Cartesian product with an empty set is always empty.
+pub struct CrossValuesJoinedQuerySet<T: Model, Row: ValuesRow> {
+    pub(crate) left: QuerySet<T>,
+    pub(crate) values: InlineValues<Row>,
+}
+
+impl<T: Model, Row: ValuesRow> std::fmt::Debug for CrossValuesJoinedQuerySet<T, Row> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CrossValuesJoinedQuerySet")
+            .field("values", &self.values)
+            .finish()
+    }
+}
+
 // ── QuerySet builder methods ──────────────────────────────────────────────────
 
 impl<T: Model> QuerySet<T> {
@@ -981,6 +1016,34 @@ impl<T: Model> QuerySet<T> {
             on,
         }
     }
+
+    /// CROSS JOIN this queryset against an inline VALUES relation.
+    ///
+    /// Returns a [`CrossValuesJoinedQuerySet<T, Row>`] whose terminals produce
+    /// `(T, Row)` pairs — one for every combination of model row and VALUES row
+    /// (Cartesian product; no `ON` predicate).
+    ///
+    /// # Unsupported left-queryset state
+    ///
+    /// `.prefetch(…)`, `.select_related(…)`, `.cache(…)`, row locks, and
+    /// non-default `distinct` are rejected at terminal time with
+    /// [`DjogiError::Validation`].  Filters, ordering, limit, and offset are
+    /// supported.
+    ///
+    /// # Short-circuit
+    ///
+    /// If the left queryset is `none()`-derived or [`InlineValues`] has zero
+    /// rows, terminals return the empty result without a database round-trip.
+    /// A Cartesian product with an empty set is always empty.
+    pub fn cross_join_values<Row>(
+        self,
+        values: InlineValues<Row>,
+    ) -> CrossValuesJoinedQuerySet<T, Row>
+    where
+        Row: ValuesRow,
+    {
+        CrossValuesJoinedQuerySet { left: self, values }
+    }
 }
 
 // ── Left-queryset state validation ───────────────────────────────────────────
@@ -989,32 +1052,37 @@ fn validate_left_qs<T: Model>(qs: &QuerySet<T>, site: &str) -> Result<(), DjogiE
     if !qs.prefetch_paths.is_empty() {
         return Err(DjogiError::Validation(format!(
             "{site}: left queryset has prefetch paths, which change the row shape. \
-             Drop .prefetch(…) calls before .join_values(…) / .left_join_values(…)."
+             Drop .prefetch(…) calls before \
+             .join_values(…) / .left_join_values(…) / .cross_join_values(…)."
         )));
     }
     if !qs.select_related_paths.is_empty() {
         return Err(DjogiError::Validation(format!(
             "{site}: left queryset has select_related paths, which expand the \
-             SELECT list incompatibly.  Drop .select_related(…) calls."
+             SELECT list incompatibly.  Drop .select_related(…) calls before \
+             .join_values(…) / .left_join_values(…) / .cross_join_values(…)."
         )));
     }
     if qs.cache_target.is_some() {
         return Err(DjogiError::Validation(format!(
             "{site}: left queryset is bound to a Punnu via .cache(…). \
              VALUES join terminals return pairs, not bare model rows.  \
-             Drop the .cache(…) call."
+             Drop the .cache(…) call before \
+             .join_values(…) / .left_join_values(…) / .cross_join_values(…)."
         )));
     }
     if !matches!(qs.lock, crate::query::lock::LockMode::None) {
         return Err(DjogiError::Validation(format!(
             "{site}: left queryset carries a row-level lock, which is not \
-             supported on VALUES joins.  Drop the row-lock call."
+             supported on VALUES joins.  Drop the row-lock call before \
+             .join_values(…) / .left_join_values(…) / .cross_join_values(…)."
         )));
     }
     if !matches!(qs.distinct, DistinctMode::None) {
         return Err(DjogiError::Validation(format!(
             "{site}: left queryset carries a non-default DISTINCT mode, which \
-             is not supported on VALUES joins.  Drop .distinct…() calls."
+             is not supported on VALUES joins.  Drop .distinct…() calls before \
+             .join_values(…) / .left_join_values(…) / .cross_join_values(…)."
         )));
     }
     Ok(())
@@ -1206,6 +1274,75 @@ where
     Ok(acc)
 }
 
+/// Build the full SELECT SQL for a CROSS VALUES join.
+///
+/// # Preconditions
+///
+/// - `cqs.values.rows` is non-empty (callers short-circuit before calling).
+/// - Left queryset state has been validated via [`validate_left_qs`].
+pub(crate) fn build_cross_values_join_select<T, Row>(
+    cqs: &CrossValuesJoinedQuerySet<T, Row>,
+) -> Result<SqlAccumulator, PortablePredicateError>
+where
+    T: Model + FromPgRow,
+    Row: ValuesRow,
+{
+    let mut acc = SqlAccumulator::new("");
+    emit_select_projection::<T, Row>(&cqs.values, &mut acc, false);
+    acc.push_sql(" FROM ");
+    acc.push_sql(T::table_name());
+    acc.push_sql(" AS ");
+    acc.push_sql(MODEL_ALIAS);
+    push_cross_join_values(&cqs.values, &mut acc);
+    push_qualified_tail(&mut acc, &cqs.left)?;
+    Ok(acc)
+}
+
+/// Build COUNT(*) for a CROSS VALUES join.
+///
+/// # Preconditions
+///
+/// - `cqs.values.rows` is non-empty (callers short-circuit before calling).
+/// - Left queryset state has been validated via [`validate_left_qs`].
+pub(crate) fn build_cross_values_join_count<T, Row>(
+    cqs: &CrossValuesJoinedQuerySet<T, Row>,
+) -> Result<SqlAccumulator, PortablePredicateError>
+where
+    T: Model + FromPgRow,
+    Row: ValuesRow,
+{
+    let mut acc = SqlAccumulator::new("SELECT COUNT(*) FROM ");
+    acc.push_sql(T::table_name());
+    acc.push_sql(" AS ");
+    acc.push_sql(MODEL_ALIAS);
+    push_cross_join_values(&cqs.values, &mut acc);
+    push_qualified_where(&mut acc, &cqs.left)?;
+    Ok(acc)
+}
+
+/// Build EXISTS for a CROSS VALUES join.
+///
+/// # Preconditions
+///
+/// - `cqs.values.rows` is non-empty (callers short-circuit before calling).
+/// - Left queryset state has been validated via [`validate_left_qs`].
+pub(crate) fn build_cross_values_join_exists<T, Row>(
+    cqs: &CrossValuesJoinedQuerySet<T, Row>,
+) -> Result<SqlAccumulator, PortablePredicateError>
+where
+    T: Model + FromPgRow,
+    Row: ValuesRow,
+{
+    let mut acc = SqlAccumulator::new("SELECT EXISTS (SELECT 1 FROM ");
+    acc.push_sql(T::table_name());
+    acc.push_sql(" AS ");
+    acc.push_sql(MODEL_ALIAS);
+    push_cross_join_values(&cqs.values, &mut acc);
+    push_qualified_where(&mut acc, &cqs.left)?;
+    acc.push_sql(")");
+    Ok(acc)
+}
+
 // ── SQL sub-helpers ───────────────────────────────────────────────────────────
 
 /// Emit `SELECT <model cols>, <values cols> [, sentinel]`.
@@ -1270,6 +1407,19 @@ fn push_left_join_values<Row: ValuesRow, T: Model>(
     push_col_list(values, acc, true);
     acc.push_sql(" ON ");
     push_on_predicate(on, values, acc);
+}
+
+/// Emit `CROSS JOIN (VALUES ...) AS alias(cols)`.
+///
+/// No `ON` predicate — cross joins are unconditional Cartesian products.
+/// No sentinel column — every VALUES row pairs with every model row; there
+/// is no "no match" case to detect.
+fn push_cross_join_values<Row: ValuesRow>(values: &InlineValues<Row>, acc: &mut SqlAccumulator) {
+    acc.push_sql(" CROSS JOIN (VALUES ");
+    push_values_rows(values, acc, false);
+    acc.push_sql(") AS ");
+    acc.push_sql(&values.alias);
+    push_col_list(values, acc, false);
 }
 
 /// Emit `VALUES (...), (...)`.  If `with_sentinel`, appends `, TRUE` to each row.
@@ -1724,6 +1874,165 @@ where
     }
 }
 
+// ── Terminals: CrossValuesJoinedQuerySet ──────────────────────────────────────
+
+impl<T, Row> CrossValuesJoinedQuerySet<T, Row>
+where
+    T: Model + FromPgRow + Send + Unpin,
+    Row: ValuesRow + Send + Unpin,
+{
+    /// Execute and collect all `(T, Row)` pairs (Cartesian product).
+    ///
+    /// Short-circuits to `Ok(vec![])` when the model queryset is
+    /// `none()`-derived or `InlineValues` has zero rows.
+    pub fn fetch_all<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Vec<(T, Row)>, DjogiError>> + Send + 'ctx
+    where
+        T: 'ctx,
+        Row: 'ctx,
+    {
+        async move {
+            validate_left_qs(&self.left, "cross_join_values::fetch_all")?;
+            if self.left.is_empty() || self.values.is_empty() {
+                return Ok(vec![]);
+            }
+            crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
+            let (sql, binds) = build_cross_values_join_select(&self)
+                .map_err(DjogiError::from)?
+                .into_parts();
+            let params = as_params(&binds);
+            ctx.query_all(&sql, &params)
+                .await?
+                .iter()
+                .map(|r| decode_inner_pair::<T, Row>(r))
+                .collect()
+        }
+    }
+
+    /// Return the first `(T, Row)` pair from the Cartesian product, or `None`.
+    ///
+    /// Short-circuits to `Ok(None)` when the model queryset is
+    /// `none()`-derived or `InlineValues` has zero rows.
+    pub fn first<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Option<(T, Row)>, DjogiError>> + Send + 'ctx
+    where
+        T: 'ctx,
+        Row: 'ctx,
+    {
+        async move {
+            validate_left_qs(&self.left, "cross_join_values::first")?;
+            if self.left.is_empty() || self.values.is_empty() {
+                return Ok(None);
+            }
+            crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
+            let mut limited = self;
+            limited.left.limit = Some(1);
+            let (sql, binds) = build_cross_values_join_select(&limited)
+                .map_err(DjogiError::from)?
+                .into_parts();
+            let params = as_params(&binds);
+            ctx.query_opt(&sql, &params)
+                .await?
+                .as_ref()
+                .map(|r| decode_inner_pair::<T, Row>(r))
+                .transpose()
+        }
+    }
+
+    /// Expect exactly one pair in the Cartesian product; error on zero or multiple.
+    ///
+    /// Short-circuits to `Err(DjogiError::NotFound)` when the model queryset
+    /// is `none()`-derived or `InlineValues` has zero rows.
+    pub fn fetch_one<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<(T, Row), DjogiError>> + Send + 'ctx
+    where
+        T: 'ctx,
+        Row: 'ctx,
+    {
+        async move {
+            validate_left_qs(&self.left, "cross_join_values::fetch_one")?;
+            if self.left.is_empty() || self.values.is_empty() {
+                return Err(DjogiError::not_found(T::table_name()));
+            }
+            crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
+            let mut probe = self;
+            probe.left.limit = Some(2);
+            let (sql, binds) = build_cross_values_join_select(&probe)
+                .map_err(DjogiError::from)?
+                .into_parts();
+            let params = as_params(&binds);
+            let rows = ctx.query_all(&sql, &params).await?;
+            match rows.len() {
+                0 => Err(DjogiError::not_found(T::table_name())),
+                1 => decode_inner_pair::<T, Row>(&rows[0]),
+                n => Err(DjogiError::multiple_objects(T::table_name(), n)),
+            }
+        }
+    }
+
+    /// Count pairs in the Cartesian product.
+    ///
+    /// Short-circuits to `Ok(0)` when the model queryset is `none()`-derived
+    /// or `InlineValues` has zero rows.
+    pub fn count<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<i64, DjogiError>> + Send + 'ctx
+    where
+        T: 'ctx,
+        Row: 'ctx,
+    {
+        async move {
+            validate_left_qs(&self.left, "cross_join_values::count")?;
+            if self.left.is_empty() || self.values.is_empty() {
+                return Ok(0);
+            }
+            crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
+            let (sql, binds) = build_cross_values_join_count(&self)
+                .map_err(DjogiError::from)?
+                .into_parts();
+            let params = as_params(&binds);
+            let row = ctx.query_one(&sql, &params).await?;
+            row.try_get::<_, i64>(0)
+                .map_err(|e| DjogiError::Decode(format!("cross_join_values count: {e}")))
+        }
+    }
+
+    /// Return `true` if the Cartesian product is non-empty (both sides have rows).
+    ///
+    /// Short-circuits to `Ok(false)` when the model queryset is
+    /// `none()`-derived or `InlineValues` has zero rows.
+    pub fn exists<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<bool, DjogiError>> + Send + 'ctx
+    where
+        T: 'ctx,
+        Row: 'ctx,
+    {
+        async move {
+            validate_left_qs(&self.left, "cross_join_values::exists")?;
+            if self.left.is_empty() || self.values.is_empty() {
+                return Ok(false);
+            }
+            crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
+            let (sql, binds) = build_cross_values_join_exists(&self)
+                .map_err(DjogiError::from)?
+                .into_parts();
+            let params = as_params(&binds);
+            let row = ctx.query_one(&sql, &params).await?;
+            row.try_get::<_, bool>(0)
+                .map_err(|e| DjogiError::Decode(format!("cross_join_values exists: {e}")))
+        }
+    }
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1978,6 +2287,128 @@ mod tests {
         let iv: InlineValues<(i64,)> =
             InlineValues::new(vec![], "w", ("id",)).expect("empty is valid");
         assert!(iv.is_empty());
+    }
+
+    fn stub_cross_vqs(alias: &str) -> CrossValuesJoinedQuerySet<Stub, (i64, f64)> {
+        let values = InlineValues::new(vec![(1_i64, 0.5_f64)], alias, ("aid", "sc")).unwrap();
+        CrossValuesJoinedQuerySet {
+            left: stub_qs(),
+            values,
+        }
+    }
+
+    #[test]
+    fn cross_join_sql_projects_model_then_values_columns() {
+        let acc = build_cross_values_join_select(&stub_cross_vqs("labels")).unwrap();
+        let s = acc.sql().to_owned();
+        assert!(
+            s.starts_with("SELECT __djogi_m.id AS id"),
+            "model columns first; sql = {s}"
+        );
+        assert!(
+            s.contains("labels.aid AS __djogi_values_0"),
+            "values col 0; sql = {s}"
+        );
+        assert!(
+            s.contains("labels.sc AS __djogi_values_1"),
+            "values col 1; sql = {s}"
+        );
+    }
+
+    #[test]
+    fn cross_join_sql_uses_cross_join_keyword_not_inner_or_left() {
+        let acc = build_cross_values_join_select(&stub_cross_vqs("lbl")).unwrap();
+        let s = acc.sql().to_owned();
+        assert!(s.contains("CROSS JOIN"), "must use CROSS JOIN; sql = {s}");
+        assert!(
+            !s.contains("INNER JOIN"),
+            "must not have INNER JOIN; sql = {s}"
+        );
+        assert!(
+            !s.contains("LEFT JOIN"),
+            "must not have LEFT JOIN; sql = {s}"
+        );
+        assert!(
+            !s.contains(" ON "),
+            "no ON predicate for cross join; sql = {s}"
+        );
+    }
+
+    #[test]
+    fn cross_join_sql_has_no_sentinel_column() {
+        let acc = build_cross_values_join_select(&stub_cross_vqs("lbl")).unwrap();
+        let s = acc.sql().to_owned();
+        assert!(
+            !s.contains("__djogi_present"),
+            "no sentinel for cross join; sql = {s}"
+        );
+    }
+
+    #[test]
+    fn cross_join_sql_casts_first_row_placeholders() {
+        let values = InlineValues::new(
+            vec![(1_i64, 0.5_f64), (2_i64, 0.8_f64)],
+            "lbl",
+            ("aid", "sc"),
+        )
+        .unwrap();
+        let cqs = CrossValuesJoinedQuerySet {
+            left: stub_qs(),
+            values,
+        };
+        let acc = build_cross_values_join_select(&cqs).unwrap();
+        let s = acc.sql().to_owned();
+        assert!(
+            s.contains("$1::BIGINT") && s.contains("$2::DOUBLE PRECISION"),
+            "first row has casts; sql = {s}"
+        );
+        assert!(
+            s.contains(", ($3, $4)"),
+            "second row bare params; sql = {s}"
+        );
+    }
+
+    #[test]
+    fn cross_join_count_sql_uses_cross_join() {
+        let acc = build_cross_values_join_count(&stub_cross_vqs("lbl")).unwrap();
+        let s = acc.sql().to_owned();
+        assert!(
+            s.starts_with("SELECT COUNT(*) FROM"),
+            "starts with COUNT(*); sql = {s}"
+        );
+        assert!(s.contains("CROSS JOIN"), "count uses CROSS JOIN; sql = {s}");
+        assert!(!s.contains(" ON "), "no ON in count; sql = {s}");
+    }
+
+    #[test]
+    fn cross_join_exists_sql_uses_cross_join() {
+        let acc = build_cross_values_join_exists(&stub_cross_vqs("lbl")).unwrap();
+        let s = acc.sql().to_owned();
+        assert!(
+            s.starts_with("SELECT EXISTS"),
+            "starts with EXISTS; sql = {s}"
+        );
+        assert!(
+            s.contains("CROSS JOIN"),
+            "exists uses CROSS JOIN; sql = {s}"
+        );
+        assert!(!s.contains(" ON "), "no ON in exists; sql = {s}");
+    }
+
+    #[test]
+    fn cross_join_sql_uses_lexical_bind_order() {
+        // VALUES binds appear before WHERE binds because the CROSS JOIN clause
+        // precedes the WHERE clause in the emitted SQL.
+        use crate::query::condition::{Condition, FilterValue, Leaf};
+        let values = InlineValues::new(vec![(99_i64, 1.0_f64)], "lbl", ("aid", "sc")).unwrap();
+        let qs = stub_qs().filter(|_| Condition::Leaf(Leaf::eq_raw("id", FilterValue::I64(42))));
+        let cqs = CrossValuesJoinedQuerySet { left: qs, values };
+        let acc = build_cross_values_join_select(&cqs).unwrap();
+        let s = acc.sql().to_owned();
+        let pos_values = s.find("$1::BIGINT").expect("VALUES bind first");
+        let pos_where = s.rfind("$3").expect("WHERE bind present");
+        assert!(pos_values < pos_where, "VALUES before WHERE; sql = {s}");
+        assert_eq!(acc.bind_count(), 3, "2 VALUES + 1 WHERE; sql = {s}");
     }
 
     #[test]

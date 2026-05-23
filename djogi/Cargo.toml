@@ -874,6 +874,16 @@ name = "phase8_5_c4b_values_join_live"
 path = "../tests/integration/phase8_5_c4b_values_join_live.rs"
 harness = true
 
+# Phase 8.5 djogi#299 — typed CROSS JOIN VALUES live coverage.
+# Pins the Cartesian product round trip end-to-end against a real database:
+# basic 2×2 product, empty-VALUES short-circuit, none()-queryset short-circuit,
+# count() product cardinality, model-side WHERE filter reduction,
+# exists() truth, and the .distinct() incompatible-state rejection.
+[[test]]
+name = "phase8_5_c4b_values_crossjoin_live"
+path = "../tests/integration/phase8_5_c4b_values_crossjoin_live.rs"
+harness = true
+
 [[test]]
 name = "phase8_5_c4b_insert_select_projection_order"
 path = "../tests/internal/phase8_5_c4b_insert_select_projection_order.rs"
