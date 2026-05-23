@@ -1,7 +1,7 @@
-error: unknown scope `notascope`; expected one of: public, self_view, admin, export, none, internal
- --> $DIR/expose_unknown_scope.rs:8:20
+error: unknown scope `notascope` in `#[field(expose(...))]`. Built-in scopes: public, self_view, admin, export. no custom scopes declared on this model. Declare additional scopes via `#[model(visage_scopes(name = Suffix))]` on the model.
+ --> $DIR/expose_unknown_scope.rs:9:5
   |
-8 |     #[field(expose(notascope))]
-  |                    ^^^^^^^^^
+9 |     pub name: String,
+  |     ^^^^^^^^^^^^^^^^
 
 error: aborting due to 1 previous error
