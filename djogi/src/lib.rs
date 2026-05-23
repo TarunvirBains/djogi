@@ -606,10 +606,10 @@ pub mod prelude {
     // DjogiPool is the adopter-facing pool handle. It belongs in the prelude
     // because pool construction (`DjogiPool::connect`, `DjogiPoolBuilder`) is
     // the framework entry point — adopters spell it without a full path.
-    pub use crate::pg::pool::DjogiPool;
     pub use crate::pg::decode::FromPgRow;
     #[doc(hidden)]
     pub use crate::pg::decode::{FromJoinedPgRow, try_get_scalar};
+    pub use crate::pg::pool::DjogiPool;
     // Cluster 8γ Stage 2 (T6.9b): `Condition` retired from the
     // prelude. Adopter code composes through `Q<T>` (in this list);
     // legacy `Condition` callers reach `djogi::query::internal::Condition`.
