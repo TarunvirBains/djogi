@@ -1233,6 +1233,37 @@ pub async fn install_accounts_balance_increment_trigger_for_test(
     .await
 }
 
+/// Install a presentation HMAC key for tests that exercise HMAC codecs.
+///
+/// Sets `DJOGI_PRESENTATION_HMAC_KEY` to the given hex string and calls
+/// [`validate_startup_inventory`](crate::presentation::validate_startup_inventory)
+/// to prime the key cache. Call this under a mutex guard (the test's own
+/// `ENV_MUTEX` or equivalent) before constructing a `DjogiPool` in tests
+/// that use HMAC presentation codecs.
+///
+/// # Panics
+///
+/// Panics if `key` fails startup validation (wrong length, non-lowercase,
+/// non-hex characters, etc.). This is intentional: a malformed test key
+/// is a test bug, not a runtime condition the caller should handle.
+///
+/// # Safety note
+///
+/// The `set_var` call is in an `unsafe` block. The caller is responsible for
+/// holding an exclusive mutex over the environment while this function runs
+/// and for the duration of the test's pool construction.
+#[doc(hidden)]
+pub fn install_presentation_hmac_key_for_testing(key: &str) {
+    // SAFETY: caller holds ENV_MUTEX (or an equivalent serialising mutex)
+    // so no other thread reads DJOGI_PRESENTATION_HMAC_KEY concurrently.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var("DJOGI_PRESENTATION_HMAC_KEY", key);
+    }
+    crate::presentation::validate_startup_inventory()
+        .expect("install_presentation_hmac_key_for_testing: key validation failed");
+}
+
 /// Minimal outbox row shape used by integration tests.
 ///
 /// Runtime outbox tables are framework-owned tables, not ordinary

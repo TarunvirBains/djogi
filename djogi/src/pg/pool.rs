@@ -718,6 +718,13 @@ impl DjogiPoolBuilder {
     /// [`DjogiError::Db`] if the underlying `deadpool` config fails to
     /// build.
     pub async fn build(self) -> Result<DjogiPool, DjogiError> {
+        // Validate all registered presentation-codec startup requirements
+        // (GH #227). Keyed built-ins (e.g. HmacSha256HexString) confirm their
+        // env-var key is present and correctly formatted. Collect-all: all errors
+        // are surfaced in a single startup message rather than one at a time.
+        crate::presentation::validate_startup_inventory()
+            .map_err(DjogiError::PresentationStartup)?;
+
         if self.max_size == 0 {
             return Err(DjogiError::Validation(
                 "DjogiPoolBuilder::max_size must be >= 1; \
