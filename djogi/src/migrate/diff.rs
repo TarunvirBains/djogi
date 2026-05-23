@@ -5108,7 +5108,7 @@ mod tests {
         assert!(
             changes.iter().any(|c| matches!(
                 c,
-                ColumnChange::ChangeType { from, to }
+                ColumnChange::ChangeType { from, to, .. }
                     if from == "TEXT" && to == "VARCHAR(100)"
             )),
             "TEXT → VARCHAR(100) must emit ColumnChange::ChangeType; got: {changes:?}"
@@ -5136,7 +5136,7 @@ mod tests {
         assert!(
             changes.iter().any(|c| matches!(
                 c,
-                ColumnChange::ChangeType { from, to }
+                ColumnChange::ChangeType { from, to, .. }
                     if from == "VARCHAR(100)" && to == "VARCHAR(200)"
             )),
             "VARCHAR(100) → VARCHAR(200) must emit ColumnChange::ChangeType; got: {changes:?}"
