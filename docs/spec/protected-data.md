@@ -238,6 +238,78 @@ the meantime work around it at the application layer.
 
 ---
 
+## Per-Scope Presentation Codecs
+
+### Syntax and Scope Coverage
+
+Presentation codecs allow field values to be transformed differently depending on the visage scope they appear in. Declare them inside the `per_scope` block within `protected(...)`:
+
+```rust
+#[field(
+    expose(public, support),
+    protected(
+        sensitivity = "pii",
+        rationale = "...",
+        per_scope = {
+            public = {
+                presentation_codec = djogi::presentation::builtins::MaskString
+            }
+        }
+    )
+)]
+pub email: String,
+```
+
+Each entry in `per_scope` maps a scope name to a codec configuration. A scope that is omitted from `per_scope` receives the field's storage type unchanged in that scope's generated visage.
+
+Example: if `email` is `expose(public, support)` with only `per_scope = { public = {...} }`, then:
+
+- `UserPublic::email` has the codec's output type
+- `UserSupport::email` is `String` (the storage type)
+
+### `presentation_codec` vs `try_presentation_codec`
+
+Two keys control whether codec application is infallible or fallible:
+
+- **`presentation_codec = Type`** — the codec application is infallible. The generated visage
+  for that scope implements `From<&Model>`.
+- **`try_presentation_codec = Type`** — the codec application may fail. If any field in a scope
+  uses `try_presentation_codec`, the generated visage for that scope implements
+  `TryFrom<&Model>` instead of `From<&Model>`.
+
+### Output Type in Generated Visages
+
+When a field carries a codec, the field's type in the generated visage is not the storage type
+but the codec's associated output type:
+
+```rust
+<CodecType as djogi::presentation::PresentationCodecInfo<StorageType>>::Output
+```
+
+This contract is verified at compile time. The macro emits the associated type directly, not
+the storage type.
+
+### HMAC Key Requirement and Startup Validation
+
+Any model that uses at least one `presentation_codec` or `try_presentation_codec` field
+requires the environment variable `DJOGI_PRESENTATION_HMAC_KEY` to be set at pool connect
+time.
+
+The key must be exactly 64 lowercase hexadecimal characters, which encodes 32 bytes (256 bits)
+of entropy for HMAC operations.
+
+**Pool startup behavior:** `DjogiPool::connect(&database_url)` validates the key and returns
+`Err(DjogiError::PresentationStartup(..))` if the key is absent or invalid — not a panic.
+
+**Freestanding validation:** `djogi::presentation::validate_startup_inventory()` performs the
+same check without requiring a pool. Useful for early-boot validation before accepting traffic.
+
+**Testing:** use `djogi::testing::install_presentation_hmac_key_for_testing("aabbcc...")` to
+install a test key before calling `DjogiPool::connect`. The helper validates that the key is
+exactly 64 lowercase hex characters and sets the environment variable.
+
+---
+
 ## Descriptor Contract
 
 `FieldDescriptor` carries enough metadata to answer:
