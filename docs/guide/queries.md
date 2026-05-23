@@ -368,12 +368,14 @@ let rows = Post::objects()
 `Lookup<V>` variants: `Eq`, `Neq`, `Gt`, `Gte`, `Lt`, `Lte`, `In(Vec<V>)`,
 `NotIn(Vec<V>)`, `IsNull`, `IsNotNull`, `Contains(String)`,
 `StartsWith(String)`, `EndsWith(String)`, `Between(V, V)`,
-`Regex(String)`. `Contains` / `StartsWith` / `EndsWith` map to the
-case-insensitive `ILIKE` operators, matching the closure API's default.
-`Regex(String)` routes to the Postgres `~` operator (case-sensitive
-POSIX regex, server-side — see the closure-API `.regex` notes above
-for the Postgres-feature framing). `IRegex(String)` routes to `~*`
-(case-insensitive POSIX regex), matching the closure API's `.iregex`.
+`Regex(String)`, `IRegex(String)`. `Contains` / `StartsWith` / `EndsWith`
+map to the case-insensitive `ILIKE` operators, matching the closure API's
+default. `Regex(String)` routes to the Postgres `~` operator
+(case-sensitive POSIX regex, server-side — see the closure-API `.regex`
+notes above for the Postgres-feature framing). `IRegex(String)` routes to
+the Postgres `~*` operator (case-insensitive POSIX regex, server-side —
+same Postgres-feature framing as `Regex`; see the closure-API `.iregex`
+notes above).
 
 `Lookup` is `#[non_exhaustive]` — new variants are added as needed without
 a breaking change.

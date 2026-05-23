@@ -123,11 +123,22 @@ pub enum Lookup<V> {
     /// `value` is a Postgres POSIX regex pattern, evaluated entirely
     /// server-side. Djogi does not link a Rust regex engine — this
     /// variant exists because the match itself is a Postgres feature
-    /// (the `~` operator). Use the closure API's `.iregex` for the
-    /// case-insensitive variant; the programmatic builder does not
-    /// currently expose a `Lookup::IRegex` because no caller has needed
-    /// the runtime-decided form. Adding it is non-breaking when needed.
+    /// (the `~` operator). See [`Lookup::IRegex`] for the
+    /// case-insensitive counterpart.
     Regex(String),
+    /// Postgres POSIX case-insensitive regex match — `column ~* value`.
+    ///
+    /// Routes to the same operator as
+    /// [`FieldRef::iregex`](crate::query::field::FieldRef::iregex);
+    /// `value` is a Postgres POSIX regex pattern, evaluated entirely
+    /// server-side via the `~*` operator. Djogi does not link a Rust
+    /// regex engine — the match runs on the database. See
+    /// [`Lookup::Regex`] for the case-sensitive counterpart.
+    ///
+    /// **SQL-only.** This variant does not lift into a Sassi portable
+    /// predicate (which would require a Rust regex engine); it stays on
+    /// the djogi side as a `Q::Condition` leaf.
+    IRegex(String),
 }
 
 impl<V: IntoFilterValue> Lookup<V> {
@@ -161,9 +172,9 @@ impl<V: IntoFilterValue> Lookup<V> {
     /// `ctx.raw_execute` / `ctx.raw_scalar` escape hatch.
     ///
     /// `Regex` maps to [`LookupOp::Regex`] — the case-sensitive POSIX
-    /// operator (`~`). The closure API exposes `.iregex` for the
-    /// case-insensitive counterpart; `Lookup::IRegex` can be added
-    /// without a breaking change thanks to the `#[non_exhaustive]` marker.
+    /// operator (`~`). `IRegex` maps to [`LookupOp::IRegex`] — the
+    /// case-insensitive POSIX operator (`~*`). Both are SQL-only and
+    /// stay on the djogi side as `Q::Condition` leaves.
     pub(crate) fn into_op_value(self) -> (LookupOp, FilterValue) {
         match self {
             Lookup::Eq(v) => (LookupOp::Eq, v.into_filter_value()),
@@ -193,6 +204,7 @@ impl<V: IntoFilterValue> Lookup<V> {
                 ),
             ),
             Lookup::Regex(s) => (LookupOp::Regex, FilterValue::String(s)),
+            Lookup::IRegex(s) => (LookupOp::IRegex, FilterValue::String(s)),
         }
     }
 }
@@ -526,6 +538,25 @@ mod tests {
         // Documented mapping: plain `Regex` is case-sensitive (`~`), not `~*`.
         let clause = FilterClause::from_lookup("slug", Lookup::<String>::Regex("^foo".to_string()));
         assert_eq!(clause.op, LookupOp::Regex);
+    }
+
+    #[test]
+    fn lookup_iregex_projects_to_iregex_op_and_string_value() {
+        // `Lookup::IRegex` maps to `LookupOp::IRegex` (Postgres `~*` —
+        // case-insensitive POSIX regex). The pattern string is passed
+        // verbatim as `FilterValue::String`; no Rust regex engine is
+        // linked — the match runs server-side.
+        let (op, value) = Lookup::<String>::IRegex("^foo".to_string()).into_op_value();
+        assert_eq!(op, LookupOp::IRegex);
+        assert!(matches!(value, FilterValue::String(ref s) if s == "^foo"));
+
+        // Also verify via the FilterClause funnel that the op/column round-trip
+        // is stable — this is the path the macro-emitted setter uses.
+        let clause =
+            FilterClause::from_lookup("slug", Lookup::<String>::IRegex("^foo".to_string()));
+        assert_eq!(clause.column, "slug");
+        assert_eq!(clause.op, LookupOp::IRegex);
+        assert!(matches!(clause.value, FilterValue::String(ref s) if s == "^foo"));
     }
 
     #[test]
