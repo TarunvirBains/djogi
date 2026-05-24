@@ -18,10 +18,13 @@
 //! closure-API's `.eq` / `.gte` / … lookups to the column's value type
 //! at compile time. `{Model}Filter` is the **erased** counterpart: a
 //! setter call projects `Lookup<V>` through `IntoFilterValue` into a
-//! [`FilterClause`] and pushes it into a `Vec<FilterClause>`. Both paths
-//! converge on the same `Condition` tree — the integration test in
-//! `tests/integration/phase2_queryset.rs` asserts row-count parity — but
-//! the erased shape is what makes closure-free callers (shell, admin,
+//! [`FilterClause`] and pushes it into a `Vec<FilterClause>`. The closure
+//! path and builder path preserve the same query result semantics, but
+//! they no longer always converge on the same internal `Condition` tree:
+//! the generated `IntoQ` bridge lazily reconstructs portable `Q` leaves
+//! for owner-approved `bool`/`String` Eq/Neq/In/NotIn cases and
+//! conservatively falls back to `Q::Condition` otherwise. The erased
+//! builder shape is what makes closure-free callers (shell, admin,
 //! dynamic UIs) possible at all.
 //!
 //! Setters consume `self` and return `Self` — the idiomatic Rust

@@ -186,6 +186,63 @@ fn mixed_model_filter_portable_and_fallback_remains_unreducible() {
 }
 
 #[test]
+fn filter_struct_with_portable_bool_in_not_in_extracts() {
+    let in_qs = ExtractRow::objects()
+        .filter_struct(ExtractRowFilter::new().active(djogi::Lookup::In(vec![true, false])));
+    let not_in_qs = ExtractRow::objects()
+        .filter_struct(ExtractRowFilter::new().active(djogi::Lookup::NotIn(vec![true])));
+
+    let in_result = in_qs.into_basic_predicate();
+    let not_in_result = not_in_qs.into_basic_predicate();
+
+    assert!(
+        matches!(in_result, Some(djogi::BasicPredicate::Field(_))),
+        "bool In lookups from generated filters must reconstruct as portable field predicates"
+    );
+    assert!(
+        matches!(not_in_result, Some(djogi::BasicPredicate::Field(_))),
+        "bool NotIn lookups from generated filters must reconstruct as portable field predicates"
+    );
+}
+
+#[test]
+fn filter_struct_with_portable_string_in_not_in_extracts() {
+    let in_qs = ExtractRow::objects().filter_struct(ExtractRowFilter::new().label(
+        djogi::Lookup::In(vec!["alpha".to_string(), "beta".to_string()]),
+    ));
+    let not_in_qs = ExtractRow::objects().filter_struct(
+        ExtractRowFilter::new().label(djogi::Lookup::NotIn(vec!["draft".to_string()])),
+    );
+
+    let in_result = in_qs.into_basic_predicate();
+    let not_in_result = not_in_qs.into_basic_predicate();
+
+    assert!(
+        matches!(in_result, Some(djogi::BasicPredicate::Field(_))),
+        "string In lookups from generated filters must reconstruct as portable field predicates"
+    );
+    assert!(
+        matches!(not_in_result, Some(djogi::BasicPredicate::Field(_))),
+        "string NotIn lookups from generated filters must reconstruct as portable field predicates"
+    );
+}
+
+#[test]
+fn bool_field_with_mismatched_lookup_shape_falls_back_to_non_portable_q() {
+    let qs =
+        ExtractRow::objects().filter_struct(
+            ExtractRowFilter::new().active(djogi::Lookup::<bool>::Contains("true".to_string())),
+        );
+
+    let result = qs.into_basic_predicate();
+
+    assert!(
+        result.is_none(),
+        "op/value shapes outside the conservative bool/string Eq/Neq/In/NotIn map must fallback to non-portable Q"
+    );
+}
+
+#[test]
 fn filter_struct_bridge_compiles_with_tracked_and_option_bool_string_fields() {
     let qs = FilterBridgeWrapRow::objects().filter_struct(FilterBridgeWrapRowFilter::new());
 
