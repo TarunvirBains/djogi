@@ -69,12 +69,12 @@ use djogi::presentation::{
 // The startup-validation tests temporarily remove
 // `DJOGI_PRESENTATION_HMAC_KEY` from the process environment. Any two
 // tests running concurrently that touch the same env var will see each
-// other's mutations. This static mutex serialises every test that calls
+// other's mutations. This static async mutex serialises every test that calls
 // `std::env::remove_var` / `std::env::set_var` so the process state is
 // predictable regardless of test-thread scheduling.
 // ─────────────────────────────────────────────────────────────────────────────
 
-static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static ENV_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Model declarations used across multiple assertions.
@@ -273,7 +273,7 @@ impl TryPresentationCodec<String> for FailingFetchCodec {
 async fn pool_connect_fails_without_hmac_key() {
     let url = std::env::var("DATABASE_URL").expect("DATABASE_URL required for pool startup tests");
 
-    let _guard = ENV_MUTEX.lock().expect("ENV_MUTEX poisoned");
+    let _guard = ENV_MUTEX.lock().await;
 
     // Save the current value so we can restore it after the test.
     let saved = std::env::var("DJOGI_PRESENTATION_HMAC_KEY").ok();
@@ -383,7 +383,7 @@ const _: () = {
 #[tokio::test]
 #[cfg(feature = "hmac-codec")]
 async fn validate_startup_inventory_errs_without_hmac_key() {
-    let _guard = ENV_MUTEX.lock().expect("ENV_MUTEX poisoned");
+    let _guard = ENV_MUTEX.lock().await;
 
     let saved = std::env::var("DJOGI_PRESENTATION_HMAC_KEY").ok();
 
@@ -415,7 +415,7 @@ async fn validate_startup_inventory_errs_without_hmac_key() {
 #[cfg(not(feature = "hmac-codec"))]
 #[tokio::test]
 async fn validate_startup_inventory_allows_missing_hmac_key_when_hmac_codec_disabled() {
-    let _guard = ENV_MUTEX.lock().expect("ENV_MUTEX poisoned");
+    let _guard = ENV_MUTEX.lock().await;
 
     let saved = std::env::var("DJOGI_PRESENTATION_HMAC_KEY").ok();
 
@@ -619,7 +619,7 @@ async fn test_key_installed_before_pool_connect() {
     }
 
     let url = std::env::var("DATABASE_URL").expect("DATABASE_URL required for pool startup tests");
-    let _guard = ENV_MUTEX.lock().expect("ENV_MUTEX poisoned");
+    let _guard = ENV_MUTEX.lock().await;
     let _restore_key = RestorePresentationKey(std::env::var("DJOGI_PRESENTATION_HMAC_KEY").ok());
 
     #[allow(unsafe_code)]
