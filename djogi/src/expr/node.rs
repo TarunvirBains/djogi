@@ -35,6 +35,7 @@
 //!   an `Expr<bool>` into the filter tree.
 
 use crate::query::condition::FilterValue;
+use std::any::TypeId;
 
 // Phase 4 Task 5 landed the `Case` / `Exists` / `Subquery` / `OuterRef`
 // variants alongside the `SubqueryNode` payload at the bottom of this
@@ -430,6 +431,13 @@ pub(crate) enum ExprNode {
         alias: &'static str,
         /// Column on that outer table. Validated.
         column: &'static str,
+        /// Source model identity for this outer reference. Used to
+        /// enforce that lateral inner expressions only reference the
+        /// actual outer model for the current lateral join.
+        model_type: TypeId,
+        /// Source model diagnostic name (`type_name::<M>()`) for error
+        /// messages when lateral scoping validation fails.
+        model_name: &'static str,
     },
 
     /// `<col> @@ to_tsquery('<dictionary>', $n)` — full-text search match.
@@ -714,10 +722,12 @@ pub(crate) struct ErasedSubqueryPredicate(std::sync::Arc<dyn SubqueryPredicateEm
 /// and emits SQL through the direct walker
 /// (`crate::query::sql::emit_q::<T>`).
 ///
-/// Subquery emission always uses `SqlEmitContext::root()` because the
-/// subquery owns its own table scope — outer-table qualification is
-/// handled by the inclusive `OuterRefColumn` / `OuterRef` IR nodes, not
-/// here.
+/// Subquery emission threads the caller's `SqlEmitContext`. This keeps
+/// lateral-scope metadata alive for nested expression/subquery emission
+/// while preserving the existing column-qualification behavior: subquery
+/// table qualification still flows through the IR nodes (`OuterRef`,
+/// `OuterRefColumn`, `OuterRefAlias`) and regular root columns continue
+/// to emit according to the caller's context.
 pub(crate) trait SubqueryPredicateEmitter: Send + Sync + 'static {
     /// Emit the subquery's `WHERE` body into the outer accumulator. The
     /// outer accumulator owns global bind numbering, so binds emitted
@@ -725,6 +735,7 @@ pub(crate) trait SubqueryPredicateEmitter: Send + Sync + 'static {
     fn emit(
         &self,
         acc: &mut crate::pg::accumulator::SqlAccumulator,
+        ctx: crate::query::portable::SqlEmitContext,
     ) -> Result<(), crate::query::portable::PortablePredicateError>;
     /// Format the wrapped `Q<T>` for `Debug` output without requiring
     /// `T: Debug`. Delegates to `Q<T>`'s manual `Debug` impl, which
@@ -743,8 +754,9 @@ impl<T: crate::model::Model> SubqueryPredicateEmitter for TypedSubqueryPredicate
     fn emit(
         &self,
         acc: &mut crate::pg::accumulator::SqlAccumulator,
+        ctx: crate::query::portable::SqlEmitContext,
     ) -> Result<(), crate::query::portable::PortablePredicateError> {
-        crate::query::sql::emit_q::<T>(acc, &self.q, crate::query::portable::SqlEmitContext::root())
+        crate::query::sql::emit_q::<T>(acc, &self.q, ctx)
     }
 
     fn fmt_debug(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -767,8 +779,9 @@ impl ErasedSubqueryPredicate {
     pub(crate) fn emit(
         &self,
         acc: &mut crate::pg::accumulator::SqlAccumulator,
+        ctx: crate::query::portable::SqlEmitContext,
     ) -> Result<(), crate::query::portable::PortablePredicateError> {
-        self.0.emit(acc)
+        self.0.emit(acc, ctx)
     }
 }
 

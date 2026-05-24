@@ -25,9 +25,9 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `Q`
-   --> djogi/src/query/q.rs:165:15
+   --> djogi/src/query/q.rs:158:15
     |
-165 | pub enum Q<T: Model> {
+158 | pub enum Q<T: Model> {
     |               ^^^^^ required by this bound in `Q`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -52,9 +52,9 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `IntoQ`
-   --> djogi/src/query/q.rs:550:20
+   --> djogi/src/query/q.rs:539:20
     |
-550 | pub trait IntoQ<T: Model>: sealed_into_q::Sealed {
+539 | pub trait IntoQ<T: Model>: sealed_into_q::Sealed {
     |                    ^^^^^ required by this bound in `IntoQ`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -183,9 +183,9 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `OuterRef`
-   --> djogi/src/expr/subquery.rs:343:24
+   --> djogi/src/expr/subquery.rs:344:24
     |
-343 | pub struct OuterRef<M: Model, V> {
+344 | pub struct OuterRef<M: Model, V> {
     |                        ^^^^^ required by this bound in `OuterRef`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -259,12 +259,12 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `Condition`
-   --> djogi/src/query/q.rs:165:15
+   --> djogi/src/query/q.rs:158:15
     |
-165 | pub enum Q<T: Model> {
+158 | pub enum Q<T: Model> {
     |               ^^^^^ required by this bound in `Condition`
 ...
-242 |     Condition(Condition),
+234 |     Condition(Condition),
     |     --------- required by a bound in this tuple variant
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -285,9 +285,9 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `djogi::expr::subquery::__macro_support::__make_outer_ref`
-   --> djogi/src/expr/subquery.rs:529:32
+   --> djogi/src/expr/subquery.rs:540:32
     |
-529 |     pub fn __make_outer_ref<M: Model, V>(column: &'static str) -> OuterRef<M, V> {
+540 |     pub fn __make_outer_ref<M: Model, V>(column: &'static str) -> OuterRef<M, V> {
     |                                ^^^^^ required by this bound in `__make_outer_ref`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 

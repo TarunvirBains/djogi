@@ -94,6 +94,7 @@ use crate::model::Model;
 // tests under `mod tests` construct `FieldRef` values directly via
 // their own scoped imports — no top-level use is needed.
 use crate::query::queryset::QuerySet;
+use std::any::TypeId;
 use std::marker::PhantomData;
 
 // ── Subquery<T, V> ────────────────────────────────────────────────────
@@ -428,11 +429,21 @@ impl<M: Model, V> OuterRef<M, V> {
     /// Use this in the inner closure of `join_lateral` or
     /// `left_join_lateral` to correlate the inner query with the
     /// outer query.
+    ///
+    /// The returned expression is validated when SQL is built:
+    ///
+    /// - It is only legal inside a lateral-inner lowering scope.
+    /// - Its source model `M` must match the actual lateral outer model.
+    ///
+    /// Out-of-scope or wrong-model usage fails as a typed
+    /// `DjogiError::Predicate` before any SQL reaches PostgreSQL.
     #[must_use = "OuterRef is inert unless promoted to Expr<V>"]
     pub fn as_lateral_outer_expr(self) -> Expr<V> {
         Expr::from_node(ExprNode::OuterRefAlias {
             alias: "l",
             column: self.column,
+            model_type: TypeId::of::<M>(),
+            model_name: std::any::type_name::<M>(),
         })
     }
 }
@@ -720,6 +731,23 @@ mod tests {
             sql.trim(),
             "EXISTS (SELECT 1 FROM entries WHERE active = $1)",
             "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn exists_under_joined_context_keeps_subquery_fields_unqualified() {
+        use crate::query::field::djogi_field_macro_support::__make_djogi_field;
+
+        let active = __make_djogi_field::<Entry, bool>("active", |row| &row.active);
+        let qs: QuerySet<Entry> = QuerySet::new().filter_struct(active.eq(true));
+        let expr = Exists::new(qs).as_expr();
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &expr.node, SqlEmitContext::joined("l")).expect("expression emission");
+        let sql = qb.sql();
+        assert_eq!(
+            sql.trim(),
+            "EXISTS (SELECT 1 FROM entries WHERE active = $1)",
+            "subquery-owned fields must not inherit the outer joined alias: {sql}"
         );
     }
 

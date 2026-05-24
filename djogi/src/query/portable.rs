@@ -35,6 +35,7 @@ use crate::model::Model;
 use crate::pg::accumulator::SqlAccumulator;
 use crate::query::predicate::PortablePredicate;
 use sassi::BasicPredicate;
+use std::any::TypeId;
 
 /// Typed error returned by the portable SQL lowering pipeline.
 ///
@@ -95,6 +96,35 @@ pub enum PortablePredicateError {
     UnsupportedFieldType {
         /// The Sassi `field_name` reported on the predicate leaf.
         field: &'static str,
+    },
+
+    /// A lateral-only outer reference was lowered outside a lateral
+    /// inner-scope emission context.
+    #[error(
+        "lateral outer ref {source_model}.{column} is out of scope; \
+         it can only be used inside a lateral inner query"
+    )]
+    LateralOuterRefOutOfScope {
+        /// The referenced column.
+        column: &'static str,
+        /// The source model diagnostic name (`type_name::<M>()`).
+        source_model: &'static str,
+    },
+
+    /// A lateral outer reference was emitted inside lateral scope, but
+    /// its source model did not match the actual outer model of the
+    /// lateral join being lowered.
+    #[error(
+        "lateral outer ref model mismatch for column {column}: source model \
+         {source_model} does not match lateral outer model {expected_model}"
+    )]
+    LateralOuterRefModelMismatch {
+        /// The referenced column.
+        column: &'static str,
+        /// Source outer-ref model (`type_name::<M>()`).
+        source_model: &'static str,
+        /// Expected lateral outer model for the active join.
+        expected_model: &'static str,
     },
 
     /// A `Q<T>` node reached the portable cache/refresh boundary but is not
@@ -165,6 +195,16 @@ pub enum PortablePredicateError {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SqlEmitContext {
     parent_table: Option<&'static str>,
+    lateral_outer: Option<LateralOuterScope>,
+}
+
+/// Lateral-inner emission scope metadata. Used to validate
+/// `OuterRef::as_lateral_outer_expr()` nodes at SQL-build time.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LateralOuterScope {
+    pub(crate) alias: &'static str,
+    pub(crate) model_type: TypeId,
+    pub(crate) model_name: &'static str,
 }
 
 /// Trust marker threaded through SQL emission to gate `LookupOp::Json`
@@ -252,7 +292,10 @@ impl SqlEmitContext {
     /// and similar non-joined builders in PR2b.
     #[doc(hidden)]
     pub const fn root() -> Self {
-        Self { parent_table: None }
+        Self {
+            parent_table: None,
+            lateral_outer: None,
+        }
     }
 
     /// Joined context — columns emit qualified as `<parent_table>.<column>`.
@@ -263,6 +306,22 @@ impl SqlEmitContext {
     pub const fn joined(parent_table: &'static str) -> Self {
         Self {
             parent_table: Some(parent_table),
+            lateral_outer: None,
+        }
+    }
+
+    /// Lateral-inner scope: columns still emit in root mode (no
+    /// parent-table qualifier), but lateral outer refs are validated
+    /// against the provided outer model and emitted against `alias`.
+    #[doc(hidden)]
+    pub fn lateral_inner_scope<L: Model>(alias: &'static str) -> Self {
+        Self {
+            parent_table: None,
+            lateral_outer: Some(LateralOuterScope {
+                alias,
+                model_type: TypeId::of::<L>(),
+                model_name: std::any::type_name::<L>(),
+            }),
         }
     }
 
@@ -296,6 +355,26 @@ impl SqlEmitContext {
     #[allow(dead_code)] // PR2b uses this to thread parent_table through emit_condition
     pub(crate) const fn parent_table(self) -> Option<&'static str> {
         self.parent_table
+    }
+
+    /// Crate-internal accessor for lateral-inner validation context.
+    #[doc(hidden)]
+    pub(crate) fn lateral_outer_scope(self) -> Option<LateralOuterScope> {
+        self.lateral_outer
+    }
+
+    /// Context for entering a subquery body from an outer expression.
+    ///
+    /// A subquery's own root fields belong to its `FROM` table, not to the
+    /// caller's joined alias, so parent-table qualification must be reset.
+    /// Lateral metadata is preserved so nested subqueries inside a lateral
+    /// inner query can still validate `OuterRef::as_lateral_outer_expr()`.
+    #[doc(hidden)]
+    pub(crate) const fn subquery_body(self) -> Self {
+        Self {
+            parent_table: None,
+            lateral_outer: self.lateral_outer,
+        }
     }
 }
 
@@ -2004,6 +2083,18 @@ mod tests {
     fn parent_table_accessor_returns_stored_value() {
         assert_eq!(SqlEmitContext::root().parent_table(), None);
         assert_eq!(SqlEmitContext::joined("t").parent_table(), Some("t"));
+    }
+
+    #[test]
+    fn lateral_scope_accessor_returns_outer_model_metadata() {
+        let ctx = SqlEmitContext::lateral_inner_scope::<TestModel>("l");
+        assert_eq!(ctx.parent_table(), None);
+        let scope = ctx
+            .lateral_outer_scope()
+            .expect("lateral scope should be present");
+        assert_eq!(scope.alias, "l");
+        assert_eq!(scope.model_type, std::any::TypeId::of::<TestModel>());
+        assert!(scope.model_name.contains("TestModel"));
     }
 
     // ── PR2d helper-level SQL lowering tests ──────────────────────────────

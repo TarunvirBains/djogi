@@ -959,7 +959,7 @@ pub(crate) fn emit_expr(
             // constructor is the sole producer of this shape and always
             // sets `select_column = None`.
             acc.push_sql("EXISTS (");
-            emit_subquery(acc, sub)?;
+            emit_subquery(acc, sub, ctx)?;
             acc.push_sql(")");
         }
         ExprNode::Subquery(sub) => {
@@ -969,7 +969,7 @@ pub(crate) fn emit_expr(
             // `SELECT <col> FROM ... WHERE ...` body; the outer parens
             // here are structural.
             acc.push_sql("(");
-            emit_subquery(acc, sub)?;
+            emit_subquery(acc, sub, ctx)?;
             acc.push_sql(")");
         }
         ExprNode::ArrayLength { column } => {
@@ -1023,11 +1023,33 @@ pub(crate) fn emit_expr(
             acc.push_sql(".");
             acc.push_sql(column);
         }
-        ExprNode::OuterRefAlias { alias, column } => {
-            // Alias-qualified outer-scope column reference — emits
-            // `<alias>.<column>` to disambiguate columns using a fixed
-            // framework alias, e.g., in a LATERAL join context.
-            acc.push_sql(alias);
+        ExprNode::OuterRefAlias {
+            alias,
+            column,
+            model_type,
+            model_name,
+        } => {
+            // Lateral-only outer ref. Enforce scope + model identity at
+            // SQL-build time so escaped/wrong-model refs fail as
+            // `DjogiError::Predicate` before PostgreSQL execution.
+            let Some(scope) = ctx.lateral_outer_scope() else {
+                return Err(PortablePredicateError::LateralOuterRefOutOfScope {
+                    column,
+                    source_model: model_name,
+                });
+            };
+            if *model_type != scope.model_type {
+                return Err(PortablePredicateError::LateralOuterRefModelMismatch {
+                    column,
+                    source_model: model_name,
+                    expected_model: scope.model_name,
+                });
+            }
+            debug_assert_eq!(
+                *alias, scope.alias,
+                "lateral outer-ref alias diverged from emit context"
+            );
+            acc.push_sql(scope.alias);
             acc.push_sql(".");
             acc.push_sql(column);
         }
@@ -1548,6 +1570,7 @@ fn op_emits_outer_cast(op: &AggOp) -> bool {
 fn emit_subquery(
     acc: &mut SqlAccumulator,
     node: &SubqueryNode,
+    ctx: SqlEmitContext,
 ) -> Result<(), PortablePredicateError> {
     acc.push_sql("SELECT ");
     match &node.select_column {
@@ -1576,12 +1599,10 @@ fn emit_subquery(
         // [`crate::expr::node::ErasedSubqueryPredicate`] handle so
         // expression subqueries carry full `Q<T>` predicates without
         // round-tripping through `q_to_condition`. The handle's
-        // `emit` method drives `query::sql::emit_q::<T>(...)` under
-        // `SqlEmitContext::root()` (the subquery's own table is the
-        // primary `FROM` source — qualified emission stays out of
-        // scope here, matching the pre-PR2b `parent_table = None`
-        // contract).
-        predicate.emit(acc)?;
+        // `emit` method drives `query::sql::emit_q::<T>(...)`. A subquery's
+        // own root columns must not inherit the caller's joined-table alias,
+        // but nested lateral outer refs still need the lateral scope metadata.
+        predicate.emit(acc, ctx.subquery_body())?;
     }
     Ok(())
 }

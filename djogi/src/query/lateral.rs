@@ -9,9 +9,10 @@ use crate::query::joined::{
     push_aliased_columns,
 };
 use crate::query::lock::LockMode;
+use crate::query::portable::SqlEmitContext;
 use crate::query::queryset::DistinctMode;
 use crate::query::queryset::QuerySet;
-use crate::query::sql::push_tail_qualified;
+use crate::query::sql::{build_select, push_tail_with_ctx};
 use crate::query::terminal::auto_set_tenant;
 use std::marker::PhantomData;
 
@@ -56,37 +57,25 @@ impl<L: Model + FromPgRow, R: Model + FromPgRow, M> LateralQuerySet<L, R, M> {
         Ok(())
     }
 
-    pub(crate) fn build_sql(&self, is_left: bool, is_count: bool) -> Result<SqlAccumulator> {
-        let mut acc = SqlAccumulator::new("");
-
-        if is_count {
-            acc.push_sql("SELECT COUNT(*) FROM (");
-        }
-
-        acc.push_sql("SELECT ");
-        push_aliased_columns::<L>(&mut acc, PairSide::Left, true);
-        push_aliased_columns::<R>(&mut acc, PairSide::Right, false);
-
-        if is_left {
-            acc.push_sql(", ");
-            acc.push_sql(RIGHT_ALIAS);
-            acc.push_sql(".__djogi_lateral_present");
-        }
-
-        acc.push_sql(" FROM ");
-        acc.push_sql(L::table_name());
-        acc.push_sql(" AS ");
-        acc.push_sql(LEFT_ALIAS);
-
-        if is_left {
-            acc.push_sql(" LEFT JOIN LATERAL (");
-        } else {
-            acc.push_sql(" JOIN LATERAL (");
-        }
-
+    fn build_inner_lateral_select(&self, is_left: bool) -> Result<SqlAccumulator> {
         // Inner lateral query
+        let inner_for_sql;
+        let inner = if self.inner.is_empty {
+            // Structural-none inner query: preserve the lateral shape but
+            // force the subquery to return no rows so LEFT JOIN LATERAL keeps
+            // the outer row and decodes the right side as `None`.
+            inner_for_sql = {
+                let mut qs = self.inner.clone();
+                qs.condition = crate::query::Q::always_false();
+                qs
+            };
+            &inner_for_sql
+        } else {
+            &self.inner
+        };
+
         let mut inner_acc = SqlAccumulator::new("");
-        match &self.inner.distinct {
+        match &inner.distinct {
             DistinctMode::None => {
                 inner_acc.push_sql("SELECT ");
             }
@@ -111,30 +100,62 @@ impl<L: Model + FromPgRow, R: Model + FromPgRow, M> LateralQuerySet<L, R, M> {
         }
         inner_acc.push_sql(" FROM ");
         inner_acc.push_sql(R::table_name());
-        push_tail_qualified(&mut inner_acc, &self.inner, None)
-            .map_err(|e| DjogiError::Validation(e.to_string()))?; // inner modifiers
+        push_tail_with_ctx(
+            &mut inner_acc,
+            inner,
+            SqlEmitContext::lateral_inner_scope::<L>(LEFT_ALIAS),
+        )?;
 
+        Ok(inner_acc)
+    }
+
+    pub(crate) fn build_sql(
+        &self,
+        is_left: bool,
+        is_count: bool,
+        final_tuple_limit: Option<i64>,
+    ) -> Result<SqlAccumulator> {
+        let mut acc = SqlAccumulator::new("");
+
+        if is_count {
+            acc.push_sql("SELECT COUNT(*) FROM (");
+        }
+
+        acc.push_sql("SELECT ");
+        push_aliased_columns::<L>(&mut acc, PairSide::Left, true);
+        push_aliased_columns::<R>(&mut acc, PairSide::Right, false);
+
+        if is_left {
+            acc.push_sql(", ");
+            acc.push_sql(RIGHT_ALIAS);
+            acc.push_sql(".__djogi_lateral_present");
+        }
+
+        // Outer queryset is treated as the source relation so its WHERE / DISTINCT /
+        // ORDER / LIMIT / OFFSET semantics apply before lateral fan-out.
+        acc.push_sql(" FROM (");
+        let outer_acc = build_select(&self.outer)?;
+        acc.extend_with(outer_acc);
+        acc.push_sql(") AS ");
+        acc.push_sql(LEFT_ALIAS);
+
+        if is_left {
+            acc.push_sql(" LEFT JOIN LATERAL (");
+        } else {
+            acc.push_sql(" JOIN LATERAL (");
+        }
+
+        let inner_acc = self.build_inner_lateral_select(is_left)?;
         acc.extend_with(inner_acc);
 
         acc.push_sql(") AS ");
         acc.push_sql(RIGHT_ALIAS);
         acc.push_sql(" ON TRUE");
 
-        // Outer modifiers
-        let mut outer_acc = SqlAccumulator::new("");
-
-        // If we are building COUNT, we strip outer ORDER BY, LIMIT, OFFSET, but we keep WHERE.
-        if is_count {
-            let mut shadow = QuerySet::<L>::new();
-            shadow.condition = self.outer.condition.clone();
-            push_tail_qualified(&mut outer_acc, &shadow, Some(LEFT_ALIAS))
-                .map_err(|e| DjogiError::Validation(e.to_string()))?;
-        } else {
-            push_tail_qualified(&mut outer_acc, &self.outer, Some(LEFT_ALIAS))
-                .map_err(|e| DjogiError::Validation(e.to_string()))?;
+        if let Some(limit) = final_tuple_limit {
+            acc.push_sql(" LIMIT ");
+            acc.push_bind(limit);
         }
-
-        acc.extend_with(outer_acc);
 
         if is_count {
             acc.push_sql(")");
@@ -152,7 +173,7 @@ impl<L: Model + FromJoinedPgRow + FromPgRow, R: Model + FromJoinedPgRow + FromPg
     /// this from adopter code.**
     #[doc(hidden)]
     pub fn __sql_for_test(&self) -> Result<String> {
-        let acc = self.build_sql(false, false)?;
+        let acc = self.build_sql(false, false, None)?;
         let (sql, _binds) = acc.into_parts();
         Ok(sql)
     }
@@ -162,20 +183,20 @@ impl<L: Model + FromJoinedPgRow + FromPgRow, R: Model + FromJoinedPgRow + FromPg
     /// this from adopter code.**
     #[doc(hidden)]
     pub fn __count_sql_for_test(&self) -> Result<String> {
-        let acc = self.build_sql(false, true)?;
+        let acc = self.build_sql(false, true, None)?;
         let (sql, _binds) = acc.into_parts();
         Ok(sql)
     }
 
     pub async fn count(self, ctx: &mut DjogiContext) -> Result<i64> {
+        self.validate()?;
         if self.outer.is_empty || self.inner.is_empty {
             return Ok(0);
         }
-        self.validate()?;
         auto_set_tenant::<L>(ctx).await?;
         auto_set_tenant::<R>(ctx).await?;
 
-        let acc = self.build_sql(false, true)?;
+        let acc = self.build_sql(false, true, None)?;
         let (sql, binds) = acc.into_parts();
         let params = as_params(&binds);
         let row = ctx.query_one(&sql, &params).await?;
@@ -183,14 +204,14 @@ impl<L: Model + FromJoinedPgRow + FromPgRow, R: Model + FromJoinedPgRow + FromPg
     }
 
     pub async fn fetch_all(self, ctx: &mut DjogiContext) -> Result<Vec<(L, R)>> {
+        self.validate()?;
         if self.outer.is_empty || self.inner.is_empty {
             return Ok(Vec::new());
         }
-        self.validate()?;
         auto_set_tenant::<L>(ctx).await?;
         auto_set_tenant::<R>(ctx).await?;
 
-        let acc = self.build_sql(false, false)?;
+        let acc = self.build_sql(false, false, None)?;
         let (sql, binds) = acc.into_parts();
         let params = as_params(&binds);
         let rows = ctx.query_all(&sql, &params).await?;
@@ -205,10 +226,26 @@ impl<L: Model + FromJoinedPgRow + FromPgRow, R: Model + FromJoinedPgRow + FromPg
         Ok(out)
     }
 
-    pub async fn first(mut self, ctx: &mut DjogiContext) -> Result<Option<(L, R)>> {
-        self.outer.limit = Some(1);
-        let mut all = self.fetch_all(ctx).await?;
-        Ok(all.pop())
+    pub async fn first(self, ctx: &mut DjogiContext) -> Result<Option<(L, R)>> {
+        self.validate()?;
+        if self.outer.is_empty || self.inner.is_empty {
+            return Ok(None);
+        }
+        auto_set_tenant::<L>(ctx).await?;
+        auto_set_tenant::<R>(ctx).await?;
+
+        let acc = self.build_sql(false, false, Some(1))?;
+        let (sql, binds) = acc.into_parts();
+        let params = as_params(&binds);
+        let row = ctx.query_opt(&sql, &params).await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        Ok(Some((
+            L::from_joined_pg_row(&row, LEFT_COLUMN_PREFIX)?,
+            R::from_joined_pg_row(&row, RIGHT_COLUMN_PREFIX)?,
+        )))
     }
 }
 
@@ -220,7 +257,7 @@ impl<L: Model + FromJoinedPgRow + FromPgRow, R: Model + FromJoinedPgRow + FromPg
     /// this from adopter code.**
     #[doc(hidden)]
     pub fn __sql_for_test(&self) -> Result<String> {
-        let acc = self.build_sql(true, false)?;
+        let acc = self.build_sql(true, false, None)?;
         let (sql, _binds) = acc.into_parts();
         Ok(sql)
     }
@@ -230,20 +267,20 @@ impl<L: Model + FromJoinedPgRow + FromPgRow, R: Model + FromJoinedPgRow + FromPg
     /// this from adopter code.**
     #[doc(hidden)]
     pub fn __count_sql_for_test(&self) -> Result<String> {
-        let acc = self.build_sql(true, true)?;
+        let acc = self.build_sql(true, true, None)?;
         let (sql, _binds) = acc.into_parts();
         Ok(sql)
     }
 
     pub async fn count(self, ctx: &mut DjogiContext) -> Result<i64> {
+        self.validate()?;
         if self.outer.is_empty {
             return Ok(0);
         }
-        self.validate()?;
         auto_set_tenant::<L>(ctx).await?;
         auto_set_tenant::<R>(ctx).await?;
 
-        let acc = self.build_sql(true, true)?;
+        let acc = self.build_sql(true, true, None)?;
         let (sql, binds) = acc.into_parts();
         let params = as_params(&binds);
         let row = ctx.query_one(&sql, &params).await?;
@@ -251,14 +288,14 @@ impl<L: Model + FromJoinedPgRow + FromPgRow, R: Model + FromJoinedPgRow + FromPg
     }
 
     pub async fn fetch_all(self, ctx: &mut DjogiContext) -> Result<Vec<(L, Option<R>)>> {
+        self.validate()?;
         if self.outer.is_empty {
             return Ok(Vec::new());
         }
-        self.validate()?;
         auto_set_tenant::<L>(ctx).await?;
         auto_set_tenant::<R>(ctx).await?;
 
-        let acc = self.build_sql(true, false)?;
+        let acc = self.build_sql(true, false, None)?;
         let (sql, binds) = acc.into_parts();
         let params = as_params(&binds);
         let rows = ctx.query_all(&sql, &params).await?;
@@ -277,9 +314,156 @@ impl<L: Model + FromJoinedPgRow + FromPgRow, R: Model + FromJoinedPgRow + FromPg
         Ok(out)
     }
 
-    pub async fn first(mut self, ctx: &mut DjogiContext) -> Result<Option<(L, Option<R>)>> {
-        self.outer.limit = Some(1);
-        let mut all = self.fetch_all(ctx).await?;
-        Ok(all.pop())
+    pub async fn first(self, ctx: &mut DjogiContext) -> Result<Option<(L, Option<R>)>> {
+        self.validate()?;
+        if self.outer.is_empty {
+            return Ok(None);
+        }
+        auto_set_tenant::<L>(ctx).await?;
+        auto_set_tenant::<R>(ctx).await?;
+
+        let acc = self.build_sql(true, false, Some(1))?;
+        let (sql, binds) = acc.into_parts();
+        let params = as_params(&binds);
+        let row = ctx.query_opt(&sql, &params).await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let left = L::from_joined_pg_row(&row, LEFT_COLUMN_PREFIX)?;
+        let present: Option<bool> = row.get("__djogi_lateral_present");
+        let right = if present.unwrap_or(false) {
+            Some(R::from_joined_pg_row(&row, RIGHT_COLUMN_PREFIX)?)
+        } else {
+            None
+        };
+
+        Ok(Some((left, right)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::descriptor::ModelDescriptor;
+    use crate::pg::decode::{FromJoinedPgRow, FromPgRow};
+    use crate::query::field::{DjogiField, djogi_field_macro_support::__make_djogi_field};
+    use std::future::Future;
+
+    #[derive(Copy, Clone, Default)]
+    struct BrokenFields;
+
+    struct BrokenModel {
+        score: i32,
+    }
+
+    impl BrokenFields {
+        fn score(self) -> DjogiField<BrokenModel, i32> {
+            __make_djogi_field::<BrokenModel, i32>("score", |m| &m.score)
+        }
+    }
+
+    impl crate::model::__sealed::Sealed for BrokenModel {}
+
+    // Hand-written test fixtures mirror `Model`'s explicit
+    // `fn -> impl Future + Send` shape, which is also what the macro emits.
+    #[allow(clippy::manual_async_fn)]
+    impl Model for BrokenModel {
+        type Pk = i64;
+        type Fields = BrokenFields;
+
+        fn table_name() -> &'static str {
+            "broken_lateral_models"
+        }
+
+        fn pk_value(&self) -> &Self::Pk {
+            unreachable!("not used in lateral tests")
+        }
+
+        fn descriptor() -> &'static ModelDescriptor {
+            unreachable!("not used in lateral tests")
+        }
+
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: Self::Pk,
+        ) -> impl Future<Output = crate::Result<Self>> + Send {
+            async { unreachable!("not used in lateral tests") }
+        }
+
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl Future<Output = crate::Result<Self>> + Send {
+            async { unreachable!("not used in lateral tests") }
+        }
+
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl Future<Output = crate::Result<()>> + Send + 'ctx {
+            async { unreachable!("not used in lateral tests") }
+        }
+
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl Future<Output = crate::Result<()>> + Send {
+            async { unreachable!("not used in lateral tests") }
+        }
+
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl Future<Output = crate::Result<Self>> + Send + 'ctx {
+            async { unreachable!("not used in lateral tests") }
+        }
+    }
+
+    impl FromPgRow for BrokenModel {
+        const COLUMNS: &'static [&'static str] = &["score"];
+        const COLUMN_LIST: &'static str = "score";
+
+        fn from_pg_row(_row: &tokio_postgres::Row) -> crate::Result<Self> {
+            unreachable!("not used in lateral tests")
+        }
+    }
+
+    impl FromJoinedPgRow for BrokenModel {
+        fn from_joined_pg_row(_row: &tokio_postgres::Row, _prefix: &str) -> crate::Result<Self> {
+            unreachable!("not used in lateral tests")
+        }
+    }
+
+    #[test]
+    fn lateral_inner_predicate_lowering_failure_maps_to_predicate() {
+        let outer = BrokenModel::objects();
+        let inner = BrokenModel::objects().filter(|f| f.score().eq(1));
+
+        let err = outer
+            .join_lateral(inner)
+            .__sql_for_test()
+            .expect_err("unsupported portable predicate must fail SQL emission");
+
+        assert!(
+            matches!(err, crate::DjogiError::Predicate(_)),
+            "expected predicate error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn lateral_outer_predicate_lowering_failure_maps_to_predicate() {
+        let outer = BrokenModel::objects().filter(|f| f.score().eq(1));
+        let inner = BrokenModel::objects();
+
+        let err = outer
+            .join_lateral(inner)
+            .__sql_for_test()
+            .expect_err("unsupported portable predicate must fail SQL emission");
+
+        assert!(
+            matches!(err, crate::DjogiError::Predicate(_)),
+            "expected predicate error, got {err:?}"
+        );
     }
 }
