@@ -106,7 +106,7 @@ pub trait Model: Sized + Send + Sync + 'static {
 
 The context parameter is a `&mut DjogiContext`, which carries either a pool handle or an active transaction. The same call site works against either; the framework pattern-matches on the inner variant at each `tokio-postgres` boundary. `djogi::transaction::atomic(&mut ctx, |tx| Box::pin(async move { ... }))` is the canonical scope helper — it commits on `Ok`, rolls back on `Err`, and pushes savepoints for nested calls. Callers that need to drop below `atomic()` reach for the raw escape hatches on `RawAccessExt` / `RawPoolAccessExt` under the `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute (see [Raw SQL escape hatches](raw-sql-escape-hatches.md)).
 
-#### 4.2.0a PG18 OLD/NEW RETURNING (djogi#180)
+#### 4.2.0a PG18 OLD/NEW RETURNING
 
 In addition to the five base trait methods, `#[model]` emits two PG18-only returning methods for every pk-backed model:
 

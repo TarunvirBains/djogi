@@ -154,7 +154,7 @@ fn build_old_new_returning_suffix(all_cols: &[&str], include_new: bool) -> Strin
 /// front.
 ///
 /// `portable_field_info` is the shared per-field metadata vector built by
-/// [`super::portable_field_emit::build`] in `mod.rs`. PR2d threads it
+/// [`super::portable_field_emit::build`] in `mod.rs`. It is threaded
 /// through here so the emitted `Model::__djogi_emit_field_predicate`
 /// override agrees with `stubs::expand`'s `{Model}Fields` /
 /// `{Model}SqlFields` accessor emission on column names, declared Rust
@@ -663,7 +663,7 @@ pub fn expand(
     };
 
     // -------------------------------------------------------------------------
-    // Phase 8β T3.4 — proxy default-filter / default-order overrides.
+    // Proxy default-filter / default-order overrides.
     //
     // For proxy models (`#[model(proxy_for = Parent, default_filter = |f| ...,
     // default_order = [(field, Asc|Desc), ...])]`), emit overrides for
@@ -783,7 +783,7 @@ pub fn expand(
     };
 
     // -------------------------------------------------------------------------
-    // Phase 8eta PR2d — `Model::__djogi_emit_field_predicate` override.
+    // `Model::__djogi_emit_field_predicate` override.
     //
     // Generates the `(field_name, LookupOp)` -> SQL emission dispatch
     // for every PK-backed model. The emitted body matches on
@@ -972,7 +972,7 @@ pub fn expand(
         .collect();
     // `value` must be mutable when any of the following participates:
     //   - `sequence_within` (assigns the counter back into the seq field)
-    //   - `#[model(hooks)]` (`before_create(&mut value, ctx)` per Phase 8 §D3)
+    //   - `#[model(hooks)]` (`before_create(&mut value, ctx)`)
     //   - `#[model(auditable)]` (T2.4 — `value.__djogi_auditable_populate(ctx)`
     //     mutates `created_by` in place when auth is present and the field
     //     is currently None)
@@ -1031,12 +1031,12 @@ pub fn expand(
             (quote! {}, quote! {}, create_value_binding_default.clone())
         };
 
-    // Phase 8α T1.4 — hook dispatch wrapping the INSERT.
+    // Hook dispatch wrapping the INSERT.
     //
     // When `#[model(hooks)]` is set, `before_create(&mut value, ctx)` runs
     // before the INSERT (may mutate the in-memory value or abort the whole
     // operation by returning Err) and `after_create(&row, ctx)` runs after
-    // the outbox write (Phase 8 §D3 sequence:
+    // the outbox write (hook sequence:
     // before_create -> INSERT -> outbox -> after_create -> on_commit drain).
     //
     // For non-hooks models both branches collapse to empty `TokenStream`
@@ -1084,7 +1084,7 @@ pub fn expand(
         (TokenStream::new(), TokenStream::new())
     };
 
-    // Phase 8α T2.4 — composition populator for `#[model(auditable)]`.
+    // Composition populator for `#[model(auditable)]`.
     //
     // When the flag is set, the model emitter also produced an inherent
     // `__djogi_auditable_populate(&mut self, ctx: &mut DjogiContext)`
@@ -1110,7 +1110,7 @@ pub fn expand(
             #snapshot_auth_state_before_auto_set
             #auto_set_tenant
             #create_value_binding
-            // Phase 8α T2.4 — composition populator runs BEFORE the user
+            // Composition populator runs BEFORE the user
             // `before_create` hook so user hooks can inspect/override
             // the populated `created_by` value. Per spec line 1032 the
             // canonical sequence is:
@@ -1123,9 +1123,9 @@ pub fn expand(
             // Empty TokenStream when `#[model(auditable)]` is absent —
             // zero codegen for opt-out models.
             #auditable_populate
-            // Phase 8α T1.4 — before_create fires before ANY DB write on
+            // before_create fires before ANY DB write on
             // the create path (including the sequence_within counter upsert
-            // below). Per Phase 8 §D3 "before -> DB -> outbox -> after":
+            // below). Per the hook ordering contract "before -> DB -> outbox -> after":
             // a hook returning Err must leave the database untouched, so
             // the counter upsert MUST run after this point — otherwise
             // an aborted create would still increment the per-parent
@@ -1152,8 +1152,8 @@ pub fn expand(
             // Runs in the same ctx so a transactional caller gets the
             // outbox row committed/rolled back atomically with `row`.
             #emit_outbox_create
-            // Phase 8α T1.4 — after_create runs AFTER the outbox emission
-            // per Phase 8 §D3: "after_create … can read the just-inserted
+            // after_create runs AFTER the outbox emission
+            // per the hook sequence: "after_create … can read the just-inserted
             // row, can read the just-written outbox row." Order is load-
             // bearing.
             #after_create_call
@@ -1179,14 +1179,14 @@ pub fn expand(
     //    error code when the WHERE clause matches nothing).
     // -------------------------------------------------------------------------
 
-    // Phase 8α T1.5 — hook dispatch wrapping the UPDATE.
+    // Hook dispatch wrapping the UPDATE.
     //
     // When `#[model(hooks)]` is set, `before_save(self, ctx)` runs before
     // the UPDATE composes (may mutate `*self` or abort the whole operation
     // by returning Err) and `after_save(&*self, ctx)` runs after the
     // outbox emission AND after the `*self = row` rehydration so the hook
     // observes server-side defaults, triggers, and any DB-bumped column
-    // values (Phase 8 §D3 sequence:
+    // values (hook sequence:
     // before_save -> UPDATE -> outbox -> after_save -> on_commit drain).
     //
     // Critical placement notes:
@@ -1251,7 +1251,7 @@ pub fn expand(
             async move {
                 #snapshot_auth_state_before_auto_set
                 #auto_set_tenant
-                // Phase 8α T1.5 — before_save fires after auto_set_tenant
+                // before_save fires after auto_set_tenant
                 // is in scope (so the hook can read tenant context) but
                 // before the UPDATE composes its SET clause. Returning Err
                 // short-circuits via `?` — no UPDATE, no outbox row,
@@ -1298,10 +1298,10 @@ pub fn expand(
                         #(#mark_clean_fragments)*
                         // Phase 4 Task 6 — outbox after DB-refreshed rehydration.
                         #emit_outbox_save
-                        // Phase 8α T1.5 — after_save runs AFTER the outbox
+                        // after_save runs AFTER the outbox
                         // emission AND after `*self = row` rehydration so
                         // the hook observes server-side defaults, triggers,
-                        // and the bumped version counter (Phase 8 §D3:
+                        // and the bumped version counter (hook sequence:
                         // "after_save … reads DB truth, not pre-call
                         // value"). MUST stay inside the success arm — the
                         // None branch (LockConflict) skips after_save.
@@ -1349,10 +1349,10 @@ pub fn expand(
                     ::std::option::Option::None => {
                         // Zero rows updated — DB version has moved ahead of our
                         // in-memory version. Signal optimistic lock conflict.
-                        // Phase 8α T1.5 — after_save deliberately NOT
+                        // after_save deliberately NOT
                         // dispatched here: the UPDATE didn't actually
                         // mutate the row, so observing stale in-memory
-                        // state would violate the Phase 8 §D3 guarantee
+                        // state would violate the hook sequence guarantee
                         // that after_save sees DB truth.
                         ::std::result::Result::Err(
                             ::djogi::DjogiError::LockConflict(
@@ -1369,7 +1369,7 @@ pub fn expand(
             async move {
                 #snapshot_auth_state_before_auto_set
                 #auto_set_tenant
-                // Phase 8α T1.5 — before_save fires after auto_set_tenant
+                // before_save fires after auto_set_tenant
                 // is in scope (so the hook can read tenant context) but
                 // before the UPDATE composes its SET clause. Returning Err
                 // short-circuits via `?` — no UPDATE, no outbox row,
@@ -1414,10 +1414,10 @@ pub fn expand(
                 // values (triggers, column defaults), so emission runs AFTER the
                 // `*self = row` rehydration. No-op for non-events models.
                 #emit_outbox_save
-                // Phase 8α T1.5 — after_save runs AFTER the outbox emission
+                // after_save runs AFTER the outbox emission
                 // AND after `*self = row` rehydration so the hook observes
                 // server-side defaults, triggers, and any DB-bumped column
-                // values (Phase 8 §D3 sequence).
+                // values (hook sequence).
                 #after_save_call
                 // Cluster 8δ T7.5 — enqueue on_commit cache invalidation.
                 // Captured by value; pool-backed contexts warn + drop.
@@ -1449,14 +1449,14 @@ pub fn expand(
         }
     };
 
-    // Phase 8α T1.6 — hook dispatch wrapping the DELETE.
+    // Hook dispatch wrapping the DELETE.
     //
     // When `#[model(hooks)]` is set, `before_delete(&mut self, ctx)` runs
     // before the DELETE composes (may mutate the in-memory snapshot or
     // abort the whole operation by returning Err) and
     // `after_delete(&self, ctx)` runs after the outbox emission so the
     // hook can observe both the pre-delete snapshot AND the just-written
-    // outbox row (Phase 8 §D3 sequence:
+    // outbox row (hook sequence:
     // before_delete -> DELETE -> outbox -> after_delete -> on_commit drain).
     //
     // Critical placement notes:
@@ -1528,7 +1528,7 @@ pub fn expand(
         async move {
             #snapshot_auth_state_before_auto_set
             #auto_set_tenant
-            // Phase 8α T1.6 — D3 step 1: before_delete fires before the
+            // D3 step 1: before_delete fires before the
             // DELETE composes its parameter slice. Returning Err short-
             // circuits via `?` — no DELETE, no outbox row, surrounding
             // atomic() rolls back through standard error propagation.
@@ -1542,7 +1542,7 @@ pub fn expand(
             // (reads `self` before it drops at function scope end).
             // No-op for non-events models.
             #emit_outbox_delete
-            // Phase 8α T1.6 — D3 step 4: after_delete observes the
+            // D3 step 4: after_delete observes the
             // consumed-but-still-in-scope `self` (last valid read of the
             // pre-delete snapshot — the DB row is gone, but the outbox
             // row carries the canonical payload by the time after_delete
@@ -1578,7 +1578,7 @@ pub fn expand(
         }
     };
 
-    // ── Phase 8.5 djogi#180 — update_returning_pair / delete_returning bodies ──
+    // ── update_returning_pair / delete_returning bodies ──
     //
     // Both methods are emitted for every pk-backed `#[model]` struct alongside
     // the existing five CRUD methods. The trait provides default
@@ -2166,8 +2166,8 @@ pub fn expand(
     // which takes `IntoIterator<Item = V>` where
     // `V: PartialEq + ToSql + Clone + Send + Sync + 'static`. HeerId /
     // RanjId / i32 (Serial) all satisfy the bind/clone surface, so the
-    // same expression compiles for every pk_type. Phase 8eta PR3 flipped
-    // root `{Model}Fields` accessors to return `DjogiField`; the
+    // same expression compiles for every pk_type. The root
+    // `{Model}Fields` accessors return `DjogiField`; the
     // portable `.in_(ids)` produces a `PortablePredicate<Self>` that
     // `QuerySet::filter` accepts via `IntoQ<Self>` like every other
     // root predicate.
@@ -3575,7 +3575,7 @@ pub fn expand(
                 #refresh_body
             }
 
-            // Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING.
+            // PG18 OLD/NEW RETURNING.
             fn update_returning_pair(
                 mut self,
                 ctx: &mut ::djogi::context::DjogiContext,
@@ -3600,7 +3600,7 @@ pub fn expand(
                 #delete_returning_body
             }
 
-            // Phase 8.5 djogi#180 — bulk RETURNING save outbox hook.
+            // Bulk RETURNING save outbox hook.
             // Non-events models inherit `Model` default no-op.
             #emit_outbox_returning_save_override
             // Shared save-style on_commit cache invalidation hook.
@@ -3611,7 +3611,7 @@ pub fn expand(
             // models inherit the `Model` trait's default `false` impl.
             #delta_should_tombstone_override
 
-            // Phase 8eta PR2d — portable-field SQL emission override.
+            // Portable-field SQL emission override.
             // Replaces the default `Model::__djogi_emit_field_predicate`
             // hook (which returns `UnsupportedModel`) with a generated
             // `(field_name, LookupOp)` dispatch keyed off the shared
@@ -3624,7 +3624,7 @@ pub fn expand(
     }
 }
 
-// ── Phase 8eta PR2d — `Model::__djogi_emit_field_predicate` emission ──────
+// ── `Model::__djogi_emit_field_predicate` emission ──────────────────────
 //
 // The helper is split out of `expand` so `expand`'s body stays focused on
 // CRUD emission. Inputs are the model's struct ident + the shared

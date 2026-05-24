@@ -165,14 +165,9 @@ Contract:
   (`prefetch`, `select_related`, `cache`, a non-default `LockMode`, or
   a non-default `DistinctMode`).
 
-Related framework gaps not covered by this surface:
+`VALUES` inline relations as join sources and `MERGE INTO ... USING ...` are presently not supported by this surface.
 
-- `VALUES` inline relations as join sources — djogi#103.
-- `MERGE INTO ... USING ...` — djogi#178.
-- `RETURNING` for INSERT...SELECT — current terminal returns the affected
-  row count only.
-
-### 5.7a PG18 OLD/NEW RETURNING (djogi#180)
+### 5.7a PG18 OLD/NEW RETURNING
 
 PostgreSQL 18 added `OLD`/`NEW` aliases in `RETURNING` clauses for `UPDATE` and `DELETE`. Djogi exposes this through:
 
@@ -189,7 +184,7 @@ PostgreSQL 18 added `OLD`/`NEW` aliases in `RETURNING` clauses for `UPDATE` and 
 
 **INSERT** — `create` already returns the DB post-image; no pair type is needed. PG `OLD` is normally NULL for a simple INSERT.
 
-**MERGE** — MERGE result hydration is owned by djogi#178. `ReturningPair<T>` is intentionally non-optional to preserve UPDATE ergonomics; MERGE needs a richer result shape.
+**MERGE** — MERGE result hydration is presently not supported. `ReturningPair<T>` is intentionally non-optional to preserve UPDATE ergonomics.
 
 ### 5.8 Performance Contract
 

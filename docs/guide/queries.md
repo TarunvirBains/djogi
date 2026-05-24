@@ -485,7 +485,7 @@ DDL-style reaches for `TRUNCATE` via `ctx.raw_execute`.
 
 ---
 
-## PG18 OLD/NEW RETURNING (djogi#180)
+## PG18 OLD/NEW RETURNING
 
 PostgreSQL 18 added `OLD`/`NEW` aliases in `RETURNING` clauses, exposing
 both the pre- and post-DML row in a single round-trip. Djogi exposes this
@@ -569,13 +569,13 @@ Short-circuits: `none()` querysets return `Ok(Vec::new())` without SQL.
 - **PG18 only.** Djogi has a hard PostgreSQL 18 floor; no polyfill exists.
 - **INSERT** — `create()` already returns the DB post-image; the `OLD` side
   is normally NULL for a simple INSERT. No pair type is needed or provided.
-- **MERGE** — MERGE result hydration is owned by djogi#178.
+- **MERGE** — MERGE result hydration is presently not supported.
 - **Protected fields.** Both sides of `ReturningPair<T>` expose full model
-  values including `#[field(protected(...))]` fields. Log or persist with
-  care until issue #227 defines framework-level redaction.
+  values including `#[field(protected(...))]` fields. Field-level redaction
+  is presently not implemented — log or persist pairs with care.
 - **Outbox.** The `Save` outbox payload for `update_returning_pair` is the
   DB post-image (`pair.new`) — the same single-payload schema as `save()`.
-  No diff-shaped outbox envelope is emitted in this release.
+  No diff-shaped outbox envelope is emitted.
 
 ---
 
