@@ -56,6 +56,9 @@
 //!    `UserWithCodec::create` / fetch round-trip then works end-to-end.
 
 use djogi::prelude::*;
+use djogi::presentation::{
+    PresentationCodecInfo, Queryability, Reversibility, TryPresentationCodec,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Env-mutation serialisation
@@ -199,6 +202,55 @@ pub struct UserWithHmac {
         )
     )]
     pub email: String,
+}
+
+#[model(table = "gh227_failing_fetch_codec_users")]
+#[derive(Debug, Clone)]
+pub struct UserWithFailingFetchCodec {
+    #[field(
+        expose(public),
+        protected(
+            sensitivity = "pii",
+            rationale = "GH #227 F5: fetch-time presentation codec error mapping",
+            per_scope = {
+                public = {
+                    try_presentation_codec = FailingFetchCodec
+                }
+            }
+        )
+    )]
+    pub secret: String,
+}
+
+struct FailingFetchCodec;
+
+#[derive(Debug)]
+struct FailingFetchCodecError;
+
+impl std::fmt::Display for FailingFetchCodecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("failing fetch codec rejected sentinel value")
+    }
+}
+
+impl std::error::Error for FailingFetchCodecError {}
+
+impl PresentationCodecInfo<String> for FailingFetchCodec {
+    type Output = String;
+    const REVERSIBILITY: Reversibility = Reversibility::OneWay;
+    const QUERYABILITY: Queryability = Queryability::Disabled;
+}
+
+impl TryPresentationCodec<String> for FailingFetchCodec {
+    type Error = FailingFetchCodecError;
+
+    fn try_present(value: &String) -> Result<String, Self::Error> {
+        if value == "fail-on-fetch" {
+            Err(FailingFetchCodecError)
+        } else {
+            Ok(format!("presented:{value}"))
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -399,6 +451,84 @@ async fn custom_scope_generates_visage_struct(mut ctx: DjogiContext) {
     );
 }
 
+#[djogi::djogi_test(sync_models = [User])]
+async fn visage_queryset_fetch_applies_presentation_codec(mut ctx: DjogiContext) {
+    let user = User::create(
+        &mut ctx,
+        User {
+            email: "fetch-path@example.com".to_string(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create user for fetch-path codec assertion");
+
+    let public = UserPublic::filter(|f| f.id().eq(user.id))
+        .fetch_one(&mut ctx)
+        .await
+        .expect("fetch public visage must decode and present the email");
+
+    assert_eq!(
+        public.email, "[REDACTED]",
+        "UserPublic fetch must return the presentation-codec output"
+    );
+    assert_ne!(
+        public.email, user.email,
+        "UserPublic fetch must not expose the stored plaintext value"
+    );
+
+    let support = UserSupport::filter(|f| f.id().eq(user.id))
+        .fetch_one(&mut ctx)
+        .await
+        .expect("fetch support visage must preserve un-coded scope value");
+
+    assert_eq!(
+        support.email, user.email,
+        "un-coded support scope must still decode the stored value"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [UserWithFailingFetchCodec])]
+async fn visage_queryset_fetch_maps_try_codec_errors(mut ctx: DjogiContext) {
+    let user = UserWithFailingFetchCodec::create(
+        &mut ctx,
+        UserWithFailingFetchCodec {
+            secret: "fail-on-fetch".to_string(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create user for fallible fetch-path codec assertion");
+
+    let err = UserWithFailingFetchCodecPublic::filter(|f| f.id().eq(user.id))
+        .fetch_one(&mut ctx)
+        .await
+        .expect_err("fetch public visage must surface the fallible codec error");
+
+    match err {
+        DjogiError::Visage(VisageError::PresentationCodec {
+            model,
+            field,
+            scope,
+            codec,
+            source,
+        }) => {
+            assert_eq!(model, "UserWithFailingFetchCodec");
+            assert_eq!(field, "secret");
+            assert_eq!(scope, "public");
+            assert!(
+                codec.contains("FailingFetchCodec"),
+                "codec context must name FailingFetchCodec, got {codec}"
+            );
+            assert!(
+                source.is::<FailingFetchCodecError>(),
+                "source error must preserve FailingFetchCodecError, got {source:?}"
+            );
+        }
+        other => panic!("expected VisageError::PresentationCodec, got {other:?}"),
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Assertion 6 — Test-key install before pool connect
 // ─────────────────────────────────────────────────────────────────────────────
@@ -457,10 +587,9 @@ async fn test_key_installed_before_pool_connect() {
         std::env::remove_var("DJOGI_PRESENTATION_HMAC_KEY");
     }
 
-    let missing_key_err =
-        DjogiPool::connect(&url)
-            .await
-            .expect_err("pool connect must fail before the test helper installs the HMAC key");
+    let missing_key_err = DjogiPool::connect(&url)
+        .await
+        .expect_err("pool connect must fail before the test helper installs the HMAC key");
     assert!(
         matches!(missing_key_err, DjogiError::PresentationStartup(..)),
         "expected DjogiError::PresentationStartup before helper install, got: {missing_key_err:?}"

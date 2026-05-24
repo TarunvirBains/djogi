@@ -39,7 +39,8 @@
 //!
 //! [`VisageQuerySet<V>`]: ::djogi::query::VisageQuerySet
 
-use crate::model::attrs::PkStrategy;
+use crate::model::attrs::{FieldAttrs, PkStrategy};
+use crate::model::protected::PerScopeCodecEntry;
 use crate::model::visage_ctx::{ScopeMembership, VisageEmitContext, classify_field_for_scope};
 use crate::model::visages::projection_entries;
 use proc_macro2::TokenStream;
@@ -62,6 +63,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
     let field_attrs = ctx.field_attrs;
     let model_attrs = ctx.model_attrs;
     let n_framework = ctx.n_framework;
+    let source_name_str = source.to_string();
 
     // `pk = None` models do not impl `Model`; their visages have no
     // queryset entry to wire because `Model::table_name()` is the
@@ -186,7 +188,15 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
             continue;
         }
         let column = crate::syn_util::column_name_from_ident(fname);
-        decode_assignments.push(emit_decode_assignment(fname, &column, idx));
+        decode_assignments.push(emit_scalar_decode_assignment(
+            fname,
+            &field.ty,
+            attrs,
+            &source_name_str,
+            scope,
+            &column,
+            idx,
+        ));
         idx += 1;
     }
 
@@ -343,4 +353,72 @@ fn emit_decode_assignment(fname: &Ident, column_name: &str, idx: usize) -> Token
     quote! {
         #fname: ::djogi::__private::pg::decode_at::<_>(row, #idx, #column_name)?
     }
+}
+
+/// Emit the struct-init decode token for one scalar user column at ordinal
+/// `idx`, applying any per-scope presentation codec after the storage value is
+/// decoded.
+fn emit_scalar_decode_assignment(
+    fname: &Ident,
+    fty: &syn::Type,
+    attrs: &FieldAttrs,
+    source_name: &str,
+    scope: &str,
+    column_name: &str,
+    idx: usize,
+) -> TokenStream {
+    let Some(entry) = lookup_per_scope_codec(attrs, scope) else {
+        return emit_decode_assignment(fname, column_name, idx);
+    };
+
+    let codec_ty = &entry.codec_type;
+    let fname_str = fname.to_string();
+    let scope_str = scope.to_string();
+    let codec_type_name_for_err = codec_runtime_type_name_tokens(codec_ty);
+
+    if entry.fallible {
+        quote! {
+            #fname: {
+                let __djogi_storage_value: #fty =
+                    ::djogi::__private::pg::decode_at::<#fty>(row, #idx, #column_name)?;
+                <#codec_ty as ::djogi::presentation::TryPresentationCodec<#fty>>::try_present(
+                    &__djogi_storage_value,
+                )
+                .map_err(|__djogi_codec_err| ::djogi::VisageError::PresentationCodec {
+                    model: #source_name,
+                    field: #fname_str,
+                    scope: #scope_str,
+                    codec: #codec_type_name_for_err,
+                    source: ::std::boxed::Box::new(__djogi_codec_err),
+                })?
+            }
+        }
+    } else {
+        quote! {
+            #fname: {
+                let __djogi_storage_value: #fty =
+                    ::djogi::__private::pg::decode_at::<#fty>(row, #idx, #column_name)?;
+                <#codec_ty as ::djogi::presentation::PresentationCodec<#fty>>::present(
+                    &__djogi_storage_value,
+                )
+            }
+        }
+    }
+}
+
+/// Look up the per-scope presentation codec entry (if any) for the current
+/// scope on a protected scalar field.
+fn lookup_per_scope_codec<'a>(
+    attrs: &'a FieldAttrs,
+    scope: &str,
+) -> Option<&'a PerScopeCodecEntry> {
+    attrs
+        .protected
+        .as_ref()
+        .and_then(|spec| spec.per_scope.iter().find(|entry| entry.scope == scope))
+}
+
+/// Emit `::std::any::type_name::<CodecTy>()` for a codec type path.
+fn codec_runtime_type_name_tokens(path: &syn::Path) -> TokenStream {
+    quote! { ::std::any::type_name::<#path>() }
 }
