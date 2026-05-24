@@ -421,55 +421,98 @@ async fn custom_scope_generates_visage_struct(mut ctx: DjogiContext) {
 ///
 /// # Connection URL
 ///
-/// This test uses `#[djogi_test]` so the harness injects a context backed by
-/// the test database URL. The test-key helper installs the env var before the
-/// pool is created by the harness, which is why the call must happen BEFORE the
-/// `djogi_test` macro's pool-construction phase. The macro guarantees that any
-/// code in the `sync_models` prologue runs before the pool is created; until
-/// Stage 7 defines the exact hook point, we model the intended interaction in a
-/// comment here and exercise it via the env-var path inside the test body.
+/// This test controls pool creation explicitly instead of going through
+/// `#[djogi_test]`. That lets it prove the actual invariant:
 ///
-/// If Stage 7 adds a dedicated `before_pool` hook to `djogi_test`, update this
-/// test to use that hook and remove the `std::env::set_var` call from the body.
-// TODO Stage 7: if the testing helper must be called before the djogi_test
-// harness builds its pool, restructure this test to use whichever
-// pre-pool hook Stage 7 introduces. For now we call it at the top of the
-// test body as the closest approximation — the pool is already open when we
-// get here, but the call still exercises the helper's own validation path
-// (key length check, env-var installation, idempotency).
-#[djogi::djogi_test(sync_models = [UserWithCodec])]
-async fn test_key_installed_before_pool_connect(mut ctx: DjogiContext) {
-    // Install the 64-hex-char test HMAC key. The helper:
-    //   1. Validates the key length (must be exactly 64 lowercase hex chars).
-    //   2. Sets DJOGI_PRESENTATION_HMAC_KEY in the process environment.
-    //   3. Is idempotent — calling it multiple times with the same key is safe.
+/// 1. `DjogiPool::connect` fails while `DJOGI_PRESENTATION_HMAC_KEY` is absent.
+/// 2. `install_presentation_hmac_key_for_testing(...)` runs before any later
+///    pool creation.
+/// 3. The manual test harness (`setup_test_db`) then succeeds, after which the
+///    normal create/fetch round-trip still works.
+#[tokio::test]
+async fn test_key_installed_before_pool_connect() {
+    use djogi::__private::futures::FutureExt as _;
+    use std::panic::AssertUnwindSafe;
+
+    struct RestorePresentationKey(Option<String>);
+
+    impl Drop for RestorePresentationKey {
+        fn drop(&mut self) {
+            #[allow(unsafe_code)]
+            unsafe {
+                match &self.0 {
+                    Some(value) => std::env::set_var("DJOGI_PRESENTATION_HMAC_KEY", value),
+                    None => std::env::remove_var("DJOGI_PRESENTATION_HMAC_KEY"),
+                }
+            }
+        }
+    }
+
+    let url = std::env::var("DATABASE_URL").expect("DATABASE_URL required for pool startup tests");
+    let _guard = ENV_MUTEX.lock().expect("ENV_MUTEX poisoned");
+    let _restore_key = RestorePresentationKey(std::env::var("DJOGI_PRESENTATION_HMAC_KEY").ok());
+
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::remove_var("DJOGI_PRESENTATION_HMAC_KEY");
+    }
+
+    let missing_key_err =
+        DjogiPool::connect(&url)
+            .await
+            .expect_err("pool connect must fail before the test helper installs the HMAC key");
+    assert!(
+        matches!(missing_key_err, DjogiError::PresentationStartup(..)),
+        "expected DjogiError::PresentationStartup before helper install, got: {missing_key_err:?}"
+    );
+
+    // Install the 64-hex-char test HMAC key before the manual harness creates
+    // its pool. This is the invariant under test.
     djogi::testing::install_presentation_hmac_key_for_testing(
         "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
     );
 
-    // Full CRUD round-trip through the typed surface. The presentation codec
-    // is applied at create time (encode path) and at fetch time (decode path).
-    // Both must succeed for the round-trip to pass.
-    let created = UserWithCodec::create(
-        &mut ctx,
-        UserWithCodec {
-            display_name: "Acceptance Test User".to_string(),
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("create UserWithCodec must succeed when HMAC key is installed");
-
-    // Fetch back via the queryset to exercise the decode path.
-    let fetched: Vec<UserWithCodec> = UserWithCodec::objects()
-        .filter(|f| f.id().eq(created.id))
-        .fetch_all(&mut ctx)
+    let (cleanup, mut ctx) = djogi::testing::setup_test_db()
         .await
-        .expect("fetch UserWithCodec must succeed after create");
+        .expect("setup_test_db must succeed when the HMAC key is installed pre-connect");
 
-    assert_eq!(fetched.len(), 1, "exactly one row must come back");
-    assert_eq!(
-        fetched[0].id, created.id,
-        "fetched row must match the created row by id"
-    );
+    let outcome = AssertUnwindSafe(async {
+        djogi::testing::sync_models(&mut ctx, &[UserWithCodec::descriptor()])
+            .await
+            .expect("sync_models must materialize UserWithCodec for the round-trip assertion");
+
+        // Full CRUD round-trip through the typed surface. The presentation
+        // codec is applied at create time (encode path) and at fetch time
+        // (decode path). Both must succeed for the round-trip to pass.
+        let created = UserWithCodec::create(
+            &mut ctx,
+            UserWithCodec {
+                display_name: "Acceptance Test User".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create UserWithCodec must succeed when HMAC key is installed");
+
+        // Fetch back via the queryset to exercise the decode path.
+        let fetched: Vec<UserWithCodec> = UserWithCodec::objects()
+            .filter(|f| f.id().eq(created.id))
+            .fetch_all(&mut ctx)
+            .await
+            .expect("fetch UserWithCodec must succeed after create");
+
+        assert_eq!(fetched.len(), 1, "exactly one row must come back");
+        assert_eq!(
+            fetched[0].id, created.id,
+            "fetched row must match the created row by id"
+        );
+    })
+    .catch_unwind()
+    .await;
+
+    djogi::testing::teardown_test_db(cleanup).await;
+
+    if let Err(panic_payload) = outcome {
+        std::panic::resume_unwind(panic_payload);
+    }
 }
