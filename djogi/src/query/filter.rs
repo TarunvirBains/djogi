@@ -156,9 +156,8 @@ impl<V: IntoFilterValue> Lookup<V> {
     ///
     /// `Regex` maps to [`LookupOp::Regex`] — the case-sensitive POSIX
     /// operator (`~`). The closure API exposes `.iregex` for the
-    /// case-insensitive counterpart; a future phase can add
-    /// `Lookup::IRegex` without a breaking change thanks to the
-    /// `#[non_exhaustive]` marker.
+    /// case-insensitive counterpart. The `#[non_exhaustive]` marker allows
+    /// `Lookup::IRegex` to be added without a breaking change.
     pub(crate) fn into_op_value(self) -> (LookupOp, FilterValue) {
         match self {
             Lookup::Eq(v) => (LookupOp::Eq, v.into_filter_value()),
@@ -272,24 +271,21 @@ impl FilterClause {
 ///
 /// # Object safety
 ///
-/// `ModelFilter` is **not** object-safe today: [`into_clauses`] takes
+/// `ModelFilter` is **not** object-safe: [`into_clauses`] takes
 /// `self` by value, which is incompatible with `dyn ModelFilter` trait
 /// objects (`self: Box<Self>` would be the by-value equivalent, but
 /// that forces every caller through a heap allocation and a
-/// `Box::new(...)` at the call site). The two current consumers —
-/// [`QuerySet::filter_struct`] (generic `F: ModelFilter`) and the Phase
-/// 2 unit/integration tests — never need storage-erased filters, so
-/// keeping the by-value shape preserves the zero-alloc path and matches
-/// the rest of the builder surface (`QuerySet`'s chain methods are also
-/// by-value self).
+/// `Box::new(...)` at the call site). Current callers never need
+/// storage-erased filters, so keeping the by-value shape preserves
+/// the zero-alloc path and matches the rest of the builder surface
+/// (`QuerySet`'s chain methods are also by-value self).
 ///
-/// A future admin-UI use case may need to store a heterogeneous list of
-/// filters (each column's operator and value come over HTTP at request
-/// time, not known at compile time). The trait's shape is left
-/// unconstrained (no `: Sized` bound) so either of two extension paths
-/// stays open: a sibling `DynModelFilter` trait with `fn into_clauses(
-/// self: Box<Self>) -> Vec<FilterClause>`, or an owned-clauses field on
-/// the filter struct.
+/// If a use case needs to store a heterogeneous list of filters
+/// (each column's operator and value computed at runtime rather than
+/// at compile time), the trait's shape can be extended — either via
+/// a sibling `DynModelFilter` trait with `fn into_clauses(
+/// self: Box<Self>) -> Vec<FilterClause>`, or via an owned-clauses
+/// field on the filter struct.
 ///
 /// [`into_clauses`]: ModelFilter::into_clauses
 /// [`QuerySet::filter_struct`]: crate::query::QuerySet::filter_struct

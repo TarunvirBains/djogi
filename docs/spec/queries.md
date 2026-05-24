@@ -91,6 +91,7 @@ Vehicle::objects()
 
 `QuerySet<T>` compiles its `Condition` tree into SQL via Djogi's own internal `ConditionBuilder`, which writes through `pg::accumulator::SqlAccumulator` — a thin owned-strings + bound-values pair handed to `tokio_postgres::Client::query` at terminal time. The framework does not depend on any third-party query-building crate; this layer is owned entirely by Djogi.
 
+The typed `ConditionBuilder` shape is built on `tokio-postgres + deadpool-postgres + postgres-types`, not a third-party query-builder crate.
 
 | Layer | What it does |
 |---|---|
@@ -114,7 +115,7 @@ Ok(rows)
 
 For shapes outside the typed `FromPgRow` decoder (recursive CTEs, custom row tuples, scalar aggregates), `ctx.raw_scalar`, `ctx.raw_fetch_one`, and the other `RawAccessExt` helpers cover the remaining cases. Direct `tokio_postgres::Client` access is not a public `DjogiContext` API.
 
-### 5.7 Typed INSERT ... SELECT (Phase 8.5 Cluster 4B — djogi#106)
+### 5.7 Typed INSERT ... SELECT
 
 Adopter shape — copy rows from one model's queryset into another model's
 table, with closure-built column mappings:
@@ -166,12 +167,10 @@ Contract:
 
 Related framework gaps not covered by this surface:
 
-- Set operations (`UNION` / `INTERSECT` / `EXCEPT`) — djogi#101.
-- `LATERAL` joins — djogi#102.
 - `VALUES` inline relations as join sources — djogi#103.
 - `MERGE INTO ... USING ...` — djogi#178.
-- `RETURNING` for INSERT...SELECT — follow-up issue; current terminal
-  returns the affected row count only.
+- `RETURNING` for INSERT...SELECT — current terminal returns the affected
+  row count only.
 
 ### 5.7a PG18 OLD/NEW RETURNING (djogi#180)
 
@@ -196,7 +195,8 @@ PostgreSQL 18 added `OLD`/`NEW` aliases in `RETURNING` clauses for `UPDATE` and 
 
 The query API is expected to support efficient Postgres forms for the workload shapes Djogi targets. That means:
 
-- expression-backed filtering and updates belong in-framework
+- expression-backed filtering and updates via typed `Expr<V>` handles are
+  part of the framework
 - aggregation, subqueries, locking, and typed result shaping are part of normal ORM work, not exceptional edge cases
 - explicit eager loading must keep query counts understandable and avoid hidden N+1 behavior
 - large-result evaluation must eventually support streaming/chunking rather than requiring full materialization

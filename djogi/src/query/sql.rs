@@ -1194,6 +1194,21 @@ fn push_where<T: Model>(
     push_where_qualified(acc, qs, None)
 }
 
+/// Lowest-level WHERE helper — caller supplies the full SQL emission
+/// context, including joined-table qualification and any optional
+/// lateral scope metadata.
+pub(crate) fn push_where_with_ctx<T: Model>(
+    acc: &mut SqlAccumulator,
+    qs: &QuerySet<T>,
+    ctx: SqlEmitContext,
+) -> Result<(), PortablePredicateError> {
+    if q_is_vacuously_true(&qs.condition) {
+        return Ok(());
+    }
+    acc.push_sql(" WHERE ");
+    emit_q::<T>(acc, &qs.condition, ctx)
+}
+
 /// Qualification-aware variant of [`push_where`]. When `parent_table`
 /// is `Some(table)`, every bare column reference in the emitted `WHERE`
 /// clause is prefixed as `{table}.{column}` so Postgres does not raise
@@ -1210,15 +1225,11 @@ fn push_where_qualified<T: Model>(
     qs: &QuerySet<T>,
     parent_table: Option<&'static str>,
 ) -> Result<(), PortablePredicateError> {
-    if q_is_vacuously_true(&qs.condition) {
-        return Ok(());
-    }
-    acc.push_sql(" WHERE ");
     let ctx = match parent_table {
         Some(t) => SqlEmitContext::joined(t),
         None => SqlEmitContext::root(),
     };
-    emit_q::<T>(acc, &qs.condition, ctx)
+    push_where_with_ctx(acc, qs, ctx)
 }
 
 /// Shared tail emitted by SELECT variants: `ORDER BY ...`, `LIMIT $n`,
@@ -1238,17 +1249,15 @@ fn push_tail<T: Model>(
     push_tail_qualified(acc, qs, None)
 }
 
-/// Qualification-aware variant of [`push_tail`]. `parent_table` threads
-/// through to both the `WHERE` helper and the ordering emission so
-/// `ORDER BY id` on a joined query renders as `ORDER BY {table}.id`.
-/// `LIMIT` / `OFFSET` need no qualification — they carry no column
-/// references.
-fn push_tail_qualified<T: Model>(
+/// Lowest-level tail helper — caller supplies the full SQL emission
+/// context, including joined-table qualification and any optional
+/// lateral scope metadata.
+pub(crate) fn push_tail_with_ctx<T: Model>(
     acc: &mut SqlAccumulator,
     qs: &QuerySet<T>,
-    parent_table: Option<&'static str>,
+    ctx: SqlEmitContext,
 ) -> Result<(), PortablePredicateError> {
-    push_where_qualified(acc, qs, parent_table)?;
+    push_where_with_ctx(acc, qs, ctx)?;
 
     if !qs.ordering.is_empty() {
         acc.push_sql(" ORDER BY ");
@@ -1259,7 +1268,7 @@ fn push_tail_qualified<T: Model>(
             // Delegate to OrderExpr::emit — it handles both Column and
             // (when the spatial feature is on) SpatialDistance variants.
             // The table_qualifier threads through for select_related joins.
-            o.emit(acc, parent_table);
+            o.emit(acc, ctx.parent_table());
         }
     }
 
@@ -1278,6 +1287,23 @@ fn push_tail_qualified<T: Model>(
     // lock builders.
     qs.lock.push_tail(acc);
     Ok(())
+}
+
+/// Qualification-aware variant of [`push_tail`]. `parent_table` threads
+/// through to both the `WHERE` helper and the ordering emission so
+/// `ORDER BY id` on a joined query renders as `ORDER BY {table}.id`.
+/// `LIMIT` / `OFFSET` need no qualification — they carry no column
+/// references.
+pub(crate) fn push_tail_qualified<T: Model>(
+    acc: &mut SqlAccumulator,
+    qs: &QuerySet<T>,
+    parent_table: Option<&'static str>,
+) -> Result<(), PortablePredicateError> {
+    let ctx = match parent_table {
+        Some(t) => SqlEmitContext::joined(t),
+        None => SqlEmitContext::root(),
+    };
+    push_tail_with_ctx(acc, qs, ctx)
 }
 
 /// Emit the shared HAVING / ORDER BY / LIMIT / OFFSET tail for grouped-aggregate
