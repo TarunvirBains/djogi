@@ -63,7 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   codecs (`presentation_codec = C`) generate `From<&Model>`; fallible
   codecs (`try_presentation_codec = C`) generate `TryFrom<&Model>`.
   Built-in codecs — `Identity` (no-op), `MaskString` /
-  `MaskOptionString` (mask to `*`), `HmacSha256HexString` /
+  `MaskOptionString` (mask to `[REDACTED]`), `HmacSha256HexString` /
   `HmacSha256HexOptionString` (HMAC-SHA256 hash) — cover common
   sensitive-data patterns. HMAC codecs are behind the `hmac-codec`
   feature flag. Custom visage scopes beyond the four

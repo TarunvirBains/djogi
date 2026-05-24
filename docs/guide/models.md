@@ -987,7 +987,7 @@ This generates six visages: the four built-ins plus `UserSupport` and `UserAnaly
 | Codec | Input | Output | Reversible | Queryable | Notes |
 |-------|-------|--------|------------|-----------|-------|
 | `Identity` | `T` | `T` | Yes | Predicate + Order | No-op codec; explicit plaintext opt-in |
-| `MaskString` | `String` | `String` | No | No | Replaces all characters with `*`; implements both `PresentationCodec` and `TryPresentationCodec` |
+| `MaskString` | `String` | `String` | No | No | Replaces the value with `[REDACTED]`; implements both `PresentationCodec` and `TryPresentationCodec` |
 | `MaskOptionString` | `Option<String>` | `Option<String>` | No | No | Like `MaskString` for wrapped values; `None` remains `None` |
 | `HmacSha256HexString` | `String` | `HmacSha256Hex` | No | No | HMAC-SHA256 keyed hash, output as lowercase hex; requires feature `hmac-codec` and `DJOGI_PRESENTATION_HMAC_KEY` |
 | `HmacSha256HexOptionString` | `Option<String>` | `Option<HmacSha256Hex>` | No | No | Like `HmacSha256HexString` for wrapped values; `None` remains `None`; requires feature `hmac-codec` |
@@ -1055,7 +1055,7 @@ impl PresentationCodecInfo<String> for MyCodec {
 }
 
 impl PresentationCodec<String> for MyCodec {
-    fn encode(_input: &String) -> Self::Output {
+    fn present(_input: &String) -> Self::Output {
         // Infallible encoding
         "encoded".to_string()
     }
@@ -1066,9 +1066,9 @@ For a fallible codec:
 
 ```rust
 impl TryPresentationCodec<String> for MyCodec {
-    type Err = MyCodecError;
+    type Error = MyCodecError;
 
-    fn try_encode(_input: &String) -> Result<Self::Output, Self::Err> {
+    fn try_present(_input: &String) -> Result<Self::Output, Self::Error> {
         // Fallible encoding
         Ok("encoded".to_string())
     }
@@ -1078,3 +1078,34 @@ impl TryPresentationCodec<String> for MyCodec {
 **Output type constraints:** `Output` must satisfy `Clone + Debug + Serialize + DeserializeOwned + 'static`.
 
 **Multiple traits on one codec:** A single codec type can implement both `PresentationCodec<Input>` and `TryPresentationCodec<Input>` for the same input type. The field annotation (`presentation_codec = C` or `try_presentation_codec = C`) selects which path to use; both are equally valid at the macro callsite.
+
+### Compile-time constraints
+
+Two constraints are enforced at macro expansion time:
+
+- **Scope must be exposed.** Every scope key named inside `per_scope = { ... }` must already appear in the field's `expose(...)` list. Naming a scope that the field does not expose is a compile-time error:
+
+  ```rust
+  // Error: `admin` is not in expose(public) — per_scope may only name exposed scopes.
+  #[field(expose(public), protected(sensitivity = "pii", rationale = "...",
+      per_scope = { admin = { presentation_codec = MaskString } }))]
+  pub email: String,
+  ```
+
+- **Scalar fields only.** `per_scope` cannot be applied to relation fields (`ForeignKey<T>`, `OneToOneField<T>`). Relation fields already project through the `expose(scope -> Peer)` grammar; attaching a presentation codec to the relation slot itself is a compile-time error.
+
+### Codec error type
+
+When a `try_presentation_codec` codec fails during a visage queryset fetch, the error surfaces as:
+
+```rust
+DjogiError::Visage(VisageError::PresentationCodec {
+    model: &str,   // Rust type name of the model
+    field: &str,   // field name
+    scope: &str,   // scope key (e.g. "public")
+    codec: String, // codec type path string
+    source: Box<dyn std::error::Error + Send + Sync>,  // the codec's error
+})
+```
+
+This variant is `#[non_exhaustive]`. Match `_ => ...` alongside the named variant when handling `VisageError`.
