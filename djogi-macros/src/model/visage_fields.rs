@@ -28,6 +28,12 @@
 //! }
 //! ```
 //!
+//! Protected scalar fields that route through a per-scope presentation codec
+//! still use the same path-threading, but their accessors return
+//! `PresentationFieldRef<Source, Codec, StorageTy>` so predicate / ordering
+//! methods are gated by the codec traits instead of leaking the raw
+//! `FieldRef` surface.
+//!
 //! # Optional-FK accessor shape
 //!
 //! A relation-form entry on a nullable FK / O2O field emits an accessor
@@ -139,11 +145,20 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
         match classify_field_for_scope(field, attrs, scope) {
             ScopeMembership::Absent | ScopeMembership::Reject { .. } => continue,
 
-            // Scalar form on scalar field — emit a `FieldRef<Source, Ty>`
-            // accessor, path-aware.
+            // Scalar form on scalar field — plain columns emit a path-aware
+            // `FieldRef<Source, Ty>` accessor; per-scope presentation codecs
+            // emit the codec-gated `PresentationFieldRef<Source, Codec, Ty>`
+            // wrapper instead so queryability is enforced through the codec
+            // traits.
             ScopeMembership::Scalar => {
                 let fty_ts = quote! { #fty };
-                accessors.push(emit_scalar_accessor(source, fname, &column, &fty_ts));
+                if let Some(codec_ty) = lookup_per_scope_codec(attrs, scope) {
+                    accessors.push(emit_presentation_scalar_accessor(
+                        source, fname, &column, codec_ty, &fty_ts,
+                    ));
+                } else {
+                    accessors.push(emit_scalar_accessor(source, fname, &column, &fty_ts));
+                }
             }
 
             // Relation form on relation field — emit a path-threaded
@@ -260,6 +275,18 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
     }
 }
 
+/// Look up the per-scope presentation codec type (if any) for `scope`.
+fn lookup_per_scope_codec<'a>(
+    attrs: &'a crate::model::attrs::FieldAttrs,
+    scope: &str,
+) -> Option<&'a syn::Path> {
+    attrs
+        .protected
+        .as_ref()
+        .and_then(|spec| spec.per_scope.iter().find(|entry| entry.scope == scope))
+        .map(|entry| &entry.codec_type)
+}
+
 /// Emit a scalar `FieldRef` accessor that routes through the merged
 /// `__make_field_ref` helper (with optional path prefix).
 fn emit_scalar_accessor(
@@ -281,6 +308,39 @@ fn emit_scalar_accessor(
             ::djogi::query::field::__macro_support::__make_field_ref::<#source, #ty>(
                 self.__djogi_path,
                 #column,
+            )
+        }
+    }
+}
+
+/// Emit a scalar accessor wrapped in `PresentationFieldRef` so the query /
+/// ordering surface is gated by the selected presentation codec traits.
+fn emit_presentation_scalar_accessor(
+    source: &Ident,
+    fname: &Ident,
+    column: &str,
+    codec: &syn::Path,
+    ty: &TokenStream,
+) -> TokenStream {
+    let doc = format!(
+        "Typed handle for the `{column}` column (visage-scoped) governed by its \
+         per-scope presentation codec. Returns a \
+         [`PresentationFieldRef`](::djogi::presentation::query::PresentationFieldRef) \
+         bound to the source model and selected codec. Predicate / ordering \
+         methods are available only when that codec implements the matching \
+         presentation query traits."
+    );
+    quote! {
+        #[doc = #doc]
+        #[inline]
+        pub fn #fname(
+            &self,
+        ) -> ::djogi::presentation::query::PresentationFieldRef<#source, #codec, #ty> {
+            ::djogi::presentation::query::PresentationFieldRef::<#source, #codec, #ty>::__new_crate_private(
+                ::djogi::query::field::__macro_support::__make_field_ref::<#source, #ty>(
+                    self.__djogi_path,
+                    #column,
+                )
             )
         }
     }
