@@ -163,6 +163,21 @@ fn validate_startup_for_hmac_key() -> Result<(), PresentationStartupError> {
     Ok(())
 }
 
+fn hmac_sha256_hex_string_present_with_cached_key(
+    value: &str,
+    cached_key: Option<&[u8; 32]>,
+) -> Result<HmacSha256Hex, BuiltInPresentationError> {
+    let key = cached_key.ok_or(BuiltInPresentationError::KeyNotValidated {
+        env: HMAC_KEY_ENV,
+    })?;
+
+    let mut mac = HmacSha256::new_from_slice(key.as_ref())
+        .expect("HMAC-SHA256 accepts any key length; 32-byte key is always valid");
+    mac.update(value.as_bytes());
+    let result = mac.finalize().into_bytes();
+    Ok(HmacSha256Hex::new_unchecked(hex_encode(&result)))
+}
+
 // ── Identity ───────────────────────────────────────────────────────────────
 
 /// Presentation codec that returns the storage value unchanged.
@@ -521,15 +536,7 @@ impl TryPresentationCodec<String> for HmacSha256HexString {
     /// (startup validation was bypassed). Never reads the environment —
     /// the per-value path uses only the pre-cached key.
     fn try_present(value: &String) -> Result<HmacSha256Hex, BuiltInPresentationError> {
-        let key = HMAC_KEY
-            .get()
-            .ok_or(BuiltInPresentationError::KeyNotValidated { env: HMAC_KEY_ENV })?;
-
-        let mut mac = HmacSha256::new_from_slice(key.as_ref())
-            .expect("HMAC-SHA256 accepts any key length; 32-byte key is always valid");
-        mac.update(value.as_bytes());
-        let result = mac.finalize().into_bytes();
-        Ok(HmacSha256Hex::new_unchecked(hex_encode(&result)))
+        hmac_sha256_hex_string_present_with_cached_key(value, HMAC_KEY.get())
     }
 }
 
@@ -771,36 +778,26 @@ mod tests {
     /// Err(KeyNotValidated), not panic.
     ///
     /// This test does NOT set the env var or call validate_startup. It verifies
-    /// the "startup bypassed" path via a static that starts unset. Because the
-    /// global HMAC_KEY OnceLock may be set by earlier test runs in the same
-    /// process (tests in the same binary share statics), this test is only
-    /// meaningful when the HMAC_KEY OnceLock has never been set. When it IS
-    /// set, the test will succeed with Ok(_) — that is fine. The test guards
-    /// the "cache miss" code path when no key has been configured.
+    /// the "startup bypassed" path via an explicit empty cache branch. This
+    /// branch is now tested deterministically with an injected `None` key state,
+    /// instead of depending on process-wide `HMAC_KEY` state.
     ///
     /// The definitive "cache miss → KeyNotValidated" guarantee is enforced by
-    /// the type system: the per-value path exclusively reads `HMAC_KEY.get()`
-    /// and never reads the environment variable. The absence of env-var reads
-    /// in the non-cfg(test) code path is the invariant; this test only checks
-    /// the observable return value in a cache-miss scenario.
+    /// the type system: the per-value path exclusively reads an injected cache
+    /// state and never reads the environment variable in the production path.
     #[test]
     fn hmac_string_cache_miss_returns_key_not_validated() {
-        // Only meaningful if the key lock has never been set in this process.
-        // If it has been set (by another test), this will produce Ok(_) and
-        // we skip the assertion — the invariant holds either way.
-        if HMAC_KEY.get().is_none() {
-            let result = HmacSha256HexString::try_present(&"test".to_string());
-            assert!(
-                matches!(
-                    result,
-                    Err(BuiltInPresentationError::KeyNotValidated {
-                        env: "DJOGI_PRESENTATION_HMAC_KEY"
-                    })
-                ),
-                "cache miss must return KeyNotValidated: {:?}",
-                result
-            );
-        }
+        let result = hmac_sha256_hex_string_present_with_cached_key("test", None);
+        assert!(
+            matches!(
+                result,
+                Err(BuiltInPresentationError::KeyNotValidated {
+                    env: "DJOGI_PRESENTATION_HMAC_KEY"
+                })
+            ),
+            "cache miss must return KeyNotValidated: {:?}",
+            result
+        );
     }
 
     /// Two different inputs must produce different HMAC outputs (non-collision
