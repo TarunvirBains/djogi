@@ -25,10 +25,10 @@
 //! - **Retry** an UPDATE without re-running the filter closure. `UpdateStmt`
 //!   is `Clone` because [`QuerySet`] is `Clone`; cloning the statement is
 //!   exactly as cheap as cloning the underlying queryset.
-//! - **Branch on short-circuit**: callers that want to know "did I skip the
-//!   DB round-trip?" can inspect `qs.is_empty()` / `assignments.is_empty()`
-//!   themselves before calling `.execute(...)`. The default path still
-//!   short-circuits on both conditions inside [`UpdateStmt::execute`].
+//! - **Branch on short-circuit**: callers that already know a mutation is
+//!   inert can avoid constructing it; otherwise mutation terminals run
+//!   `validate_mutation_read_tail(...)` first (mirroring `insert_select.rs`),
+//!   then short-circuit on pure `none()` / empty assignments.
 //!
 //! # Constructor-only invariant on `UpdateAssignment`
 //!
@@ -57,13 +57,15 @@
 //! across a bulk update reach for the raw escape hatch — same as any
 //! other ORM layer that makes auditing hard to bypass.
 //!
-//! # `is_empty` short-circuit
+//! # Mutation validation + `is_empty` short-circuit
 //!
-//! Both terminals honour the `TASK6:empty_contract`: a queryset derived
-//! from [`QuerySet::none`] (or an empty assignment list, for `update`)
-//! returns `Ok(0)` without issuing any SQL. The grep marker lives on the
-//! `is_empty` field in `queryset.rs` — if that field's shape ever
-//! changes, every terminal that honours it surfaces through the marker.
+//! UPDATE/DELETE terminals validate unsupported read-tail state first (same
+//! contract as `insert_select.rs`), then honour `TASK6:empty_contract`.
+//! A pure [`QuerySet::none`]-derived queryset (or a pure empty assignment
+//! list, for UPDATE) still returns `Ok(0)` / empty output without issuing
+//! SQL. The grep marker lives on the `is_empty` field in `queryset.rs` —
+//! if that field's shape ever changes, every terminal that honours it
+//! surfaces through the marker.
 //!
 //! [`build_update`]: crate::query::sql::build_update
 //! [`FieldRef`]: crate::query::field::FieldRef
@@ -391,6 +393,9 @@ impl<T: Model> std::fmt::Debug for UpdateStmt<T> {
 impl<T: Model> UpdateStmt<T> {
     /// Run the accumulated UPDATE and return the affected row count.
     ///
+    /// Validation for unsupported queryset read-tail state runs first, then
+    /// inert paths short-circuit.
+    ///
     /// Short-circuits to `Ok(0)` when either:
     /// - The underlying queryset is `QuerySet::none()`-derived
     ///   (`is_empty()` is `true`), or
@@ -416,8 +421,10 @@ impl<T: Model> UpdateStmt<T> {
     {
         async move {
             self.qs.validate_mutation_read_tail("update")?;
-            // TASK6:empty_contract — structural-none queryset OR empty
-            // assignment list: return `Ok(0)` without touching the DB.
+            // TASK6:empty_contract — runs AFTER validation (see
+            // insert_select.rs validate-then-short-circuit contract):
+            // structural-none queryset OR empty assignment list returns
+            // `Ok(0)` without touching the DB.
             //
             // The assignment-list branch is load-bearing: a closure that
             // produces `vec![]` would otherwise lead to
@@ -446,6 +453,9 @@ impl<T: Model> UpdateStmt<T> {
     /// and `"__djogi_new__"` prefixes.
     ///
     /// # Short-circuits
+    ///
+    /// Validation for unsupported queryset read-tail state runs first, then
+    /// inert paths short-circuit.
     ///
     /// Returns `Ok(Vec::new())` without issuing any SQL when:
     /// - The underlying queryset is `QuerySet::none()`-derived.
@@ -492,8 +502,10 @@ impl<T: Model> UpdateStmt<T> {
         async move {
             self.qs
                 .validate_mutation_read_tail("execute_returning_pairs")?;
-            // TASK6:empty_contract — structural-none queryset OR empty
-            // assignment list: return empty vector without touching the DB.
+            // TASK6:empty_contract — runs AFTER validation (see
+            // insert_select.rs validate-then-short-circuit contract):
+            // structural-none queryset OR empty assignment list returns an
+            // empty vector without touching the DB.
             if self.qs.is_empty() || self.assignments.is_empty() {
                 return Ok(Vec::new());
             }
@@ -570,6 +582,9 @@ impl<T: Model> QuerySet<T> {
     /// builder/terminal split, so this method is a terminal directly —
     /// same shape as [`QuerySet::fetch_all`] / [`QuerySet::count`].
     ///
+    /// Validation for unsupported queryset read-tail state runs first, then
+    /// inert paths short-circuit.
+    ///
     /// Short-circuits to `Ok(0)` for `QuerySet::none()`-derived
     /// querysets (the `TASK6:empty_contract`). A DELETE with no WHERE
     /// clause (an unfiltered queryset) is still a real DELETE — it
@@ -593,7 +608,9 @@ impl<T: Model> QuerySet<T> {
     {
         async move {
             self.validate_mutation_read_tail("delete")?;
-            // TASK6:empty_contract — structural-none queryset: no SQL.
+            // TASK6:empty_contract — runs AFTER validation (see
+            // insert_select.rs validate-then-short-circuit contract):
+            // structural-none queryset returns `Ok(0)` with no SQL.
             if self.is_empty() {
                 return Ok(0);
             }
@@ -618,6 +635,9 @@ impl<T: Model> QuerySet<T> {
     /// [`UpdateStmt::execute_returning_pairs`].
     ///
     /// # Short-circuit
+    ///
+    /// Validation for unsupported queryset read-tail state runs first, then
+    /// inert paths short-circuit.
     ///
     /// Returns `Ok(Vec::new())` for `QuerySet::none()`-derived querysets
     /// without issuing any SQL.
@@ -648,7 +668,9 @@ impl<T: Model> QuerySet<T> {
     {
         async move {
             self.validate_mutation_read_tail("delete_returning")?;
-            // TASK6:empty_contract — structural-none queryset: no SQL.
+            // TASK6:empty_contract — runs AFTER validation (see
+            // insert_select.rs validate-then-short-circuit contract):
+            // structural-none queryset returns empty output with no SQL.
             if self.is_empty() {
                 return Ok(Vec::new());
             }

@@ -364,9 +364,9 @@ go in `&[&dyn ToSql]` form using `postgres-types::ToSql` (re-exported as
 
 The bypass attribute is mandatory: without it, `RawAccessExt` is not in
 scope and `ctx.raw_*` does not resolve. Inside djogi's own integration
-tests under `tests/integration/` the bypass is forbidden by policy
-(GH #133) — tests use the typed surface plus `#[djogi_test(sync_models
-= [...])]`, and the rare deliberate pin tests under `tests/pin/` carry
+tests under `tests/integration/` the bypass is forbidden by policy; tests
+use the typed surface plus `#[djogi_test(sync_models = [...])]`, and the
+rare deliberate pin tests under `tests/pin/` carry
 `JUSTIFICATION (PIN): exercises raw_<api> itself`.
 
 ---

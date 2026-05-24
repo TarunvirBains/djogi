@@ -552,6 +552,33 @@ async fn bulk_update_none_short_circuits(mut ctx: djogi::DjogiContext) {
 }
 
 #[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_update_none_with_limit_is_rejected_with_validation_error(
+    mut ctx: djogi::DjogiContext,
+) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .none()
+        .limit(1)
+        .update(|f| f.view_count().set(0i32))
+        .execute(&mut ctx)
+        .await
+        .expect_err("none().limit(1).update() must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("limit"),
+                "validation should mention limit: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "rejected update must not mutate any row");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
 async fn bulk_delete_removes_rows_and_returns_count(mut ctx: djogi::DjogiContext) {
     seed_posts(&mut ctx).await;
 
@@ -571,6 +598,43 @@ async fn bulk_delete_removes_rows_and_returns_count(mut ctx: djogi::DjogiContext
         .await
         .unwrap();
     assert_eq!(gamma_left, 0);
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_delete_none_short_circuits(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    let n = Post::objects().none().delete(&mut ctx).await.unwrap();
+    assert_eq!(n, 0, "none().delete() must short-circuit to Ok(0)");
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "none().delete() must not remove rows");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_delete_none_with_limit_is_rejected_with_validation_error(
+    mut ctx: djogi::DjogiContext,
+) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .none()
+        .limit(1)
+        .delete(&mut ctx)
+        .await
+        .expect_err("none().limit(1).delete() must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("limit"),
+                "validation should mention limit: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "rejected delete must not remove rows");
 }
 
 #[djogi::djogi_test(sync_models = [Post])]
@@ -830,13 +894,12 @@ async fn order_by_nulls_first_renders(mut ctx: djogi::DjogiContext) {
     );
 }
 
-/// `filter(...).update(|_| vec![])` must short-circuit to `Ok(0)`.
+/// `update(|_| vec![])` must short-circuit to `Ok(0)`.
 #[djogi::djogi_test(sync_models = [Post])]
 async fn bulk_update_empty_assignments_short_circuits(mut ctx: djogi::DjogiContext) {
     seed_posts(&mut ctx).await;
 
     let n = Post::objects()
-        .filter(|f| f.published().eq(true))
         .update(|_| Vec::<djogi::UpdateAssignment>::new())
         .execute(&mut ctx)
         .await
@@ -865,6 +928,32 @@ async fn bulk_update_empty_assignments_short_circuits(mut ctx: djogi::DjogiConte
         4,
         "updated_at must still equal created_at — no UPDATE fired"
     );
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_update_empty_assignments_with_limit_is_rejected_with_validation_error(
+    mut ctx: djogi::DjogiContext,
+) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .limit(1)
+        .update(|_| Vec::<djogi::UpdateAssignment>::new())
+        .execute(&mut ctx)
+        .await
+        .expect_err("limit + empty assignments on bulk update must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("limit"),
+                "validation should mention limit: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "rejected update must not mutate any row");
 }
 
 #[djogi::djogi_test(sync_models = [Post])]
@@ -1170,6 +1259,36 @@ async fn execute_returning_pairs_none_queryset_returns_empty(mut ctx: djogi::Djo
         .expect("execute_returning_pairs on none() should return empty");
 
     assert!(pairs.is_empty(), "none() queryset must return empty pairs");
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "none() must not remove rows");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn execute_returning_pairs_none_with_limit_is_rejected_with_validation_error(
+    mut ctx: djogi::DjogiContext,
+) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .none()
+        .limit(1)
+        .update(|f| f.view_count().set(0i32))
+        .execute_returning_pairs(&mut ctx)
+        .await
+        .expect_err("none().limit(1).execute_returning_pairs() must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("limit"),
+                "validation should mention limit: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "rejected update must not mutate any row");
 }
 
 #[djogi::djogi_test(sync_models = [Post])]
@@ -1186,6 +1305,51 @@ async fn execute_returning_pairs_empty_assignments_returns_empty(mut ctx: djogi:
         pairs.is_empty(),
         "empty assignment list must return empty pairs without SQL"
     );
+
+    let rows = Post::objects()
+        .order_by(|f| f.view_count().asc())
+        .fetch_all(&mut ctx)
+        .await
+        .unwrap();
+    let views: Vec<i32> = rows.iter().map(|p| p.view_count).collect();
+    assert_eq!(
+        views,
+        vec![25, 50, 100, 200],
+        "empty assignments must preserve seeded view_count values"
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.updated_at == row.created_at)
+            .count(),
+        4,
+        "empty assignments must not change updated_at"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn execute_returning_pairs_empty_assignments_with_limit_is_rejected_with_validation_error(
+    mut ctx: djogi::DjogiContext,
+) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .limit(1)
+        .update(|_| Vec::<djogi::UpdateAssignment>::new())
+        .execute_returning_pairs(&mut ctx)
+        .await
+        .expect_err("limit + empty assignments on execute_returning_pairs must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("limit"),
+                "validation should mention limit: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "rejected update must not mutate any row");
 }
 
 #[djogi::djogi_test(sync_models = [Post])]
@@ -1252,7 +1416,36 @@ async fn bulk_delete_returning_none_queryset_returns_empty(mut ctx: djogi::Djogi
 
     // No rows deleted.
     let remaining = Post::objects().count(&mut ctx).await.unwrap();
-    assert_eq!(remaining, 4, "no rows should have been deleted");
+    assert_eq!(remaining, 4, "none() delete_returning must not remove rows");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_delete_returning_none_with_limit_is_rejected_with_validation_error(
+    mut ctx: djogi::DjogiContext,
+) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .none()
+        .limit(1)
+        .delete_returning(&mut ctx)
+        .await
+        .expect_err("none().limit(1).delete_returning() must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("limit"),
+                "validation should mention limit: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(
+        remaining, 4,
+        "rejected delete_returning must not remove rows"
+    );
 }
 
 #[djogi::djogi_test(sync_models = [Post])]

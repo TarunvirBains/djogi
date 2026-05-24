@@ -240,13 +240,14 @@ pub struct QuerySet<T: Model> {
     pub(crate) limit: Option<i64>,
     /// SQL `OFFSET` — `None` means no offset. `i64` to match Postgres.
     pub(crate) offset: Option<i64>,
-    // EMPTY CONTRACT: every terminal method — `fetch_all`, `fetch_one`,
-    // `count`, `exists`, `first`, `update`, `delete` — MUST check
-    // `self.is_empty` first and return the empty result (empty `Vec`,
-    // `None`, `0`, `false`, `0 rows affected`, etc.) WITHOUT issuing any
-    // SQL. This is the whole point of `QuerySet::none()` — it lets
-    // authorization / feature-flag branches short-circuit the DB round-
-    // trip without a special-cased `if` on the caller's side.
+    // EMPTY CONTRACT: terminal methods return the empty result (`Vec::new`,
+    // `None`, `0`, `false`, etc.) WITHOUT issuing SQL when `self.is_empty`
+    // is `true`. For mutation terminals (`update`/`delete` families), this
+    // short-circuit runs AFTER unsupported-state validation, matching the
+    // validate-then-short-circuit contract in `insert_select.rs`.
+    // This is the point of `QuerySet::none()` — authorization / feature-flag
+    // branches can short-circuit the DB round-trip without a special-cased
+    // `if` at the call site.
     //
     // Grep marker: TASK6:empty_contract
     //
@@ -1075,8 +1076,9 @@ impl<T: Model> QuerySet<T> {
     /// Reject SELECT-only read-tail modifiers on mutating terminals.
     ///
     /// Bulk UPDATE / DELETE currently emit only `WHERE` state; allowing
-    /// `limit`, `offset`, `distinct`, row locks, or explicit `order_by`
-    /// would silently ignore caller intent.
+    /// `limit`, `offset`, `distinct`, row locks, explicit `order_by`,
+    /// `prefetch`, `select_related`, or `cache_target` would silently
+    /// ignore caller intent.
     pub(crate) fn validate_mutation_read_tail(
         &self,
         terminal: &str,
@@ -1096,6 +1098,15 @@ impl<T: Model> QuerySet<T> {
         }
         if self.has_explicit_ordering {
             rejected.push("order_by");
+        }
+        if !self.prefetch_paths.is_empty() {
+            rejected.push("prefetch");
+        }
+        if !self.select_related_paths.is_empty() {
+            rejected.push("select_related");
+        }
+        if self.cache_target.is_some() {
+            rejected.push("cache_target");
         }
         if rejected.is_empty() {
             return Ok(());
@@ -2889,6 +2900,8 @@ where
 mod tests {
     use super::*;
     use crate::descriptor::ModelDescriptor;
+    use crate::pg::decode::{FromJoinedPgRow, FromPgRow};
+    use crate::relation::{RelationKind, RelationPath};
 
     // Minimal `Model` impl for builder-shape tests. Mirrors the `Fake` model
     // used in `query::field`'s unit tests — keeps QuerySet builder tests in
@@ -3160,6 +3173,7 @@ mod tests {
     /// A proxy-shaped model. The hand-rolled impl overrides
     /// `default_filter_condition` and `default_order_by`; everything
     /// else mirrors `Fake`'s `unreachable!()` body.
+    #[derive(Clone)]
     struct FakeProxy;
     impl crate::model::__sealed::Sealed for FakeProxy {}
     #[allow(clippy::manual_async_fn)]
@@ -3220,6 +3234,35 @@ mod tests {
         ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx
         {
             async { unreachable!() }
+        }
+    }
+
+    impl crate::types::Cacheable for FakeProxy {
+        type Id = i64;
+        type Fields = ();
+
+        fn id(&self) -> Self::Id {
+            0
+        }
+
+        fn fields() -> Self::Fields {}
+    }
+
+    impl FromPgRow for FakeProxy {
+        const COLUMNS: &'static [&'static str] = &[];
+        const COLUMN_LIST: &'static str = "";
+
+        fn from_pg_row(_row: &tokio_postgres::Row) -> Result<Self, crate::DjogiError> {
+            unreachable!("not called in QuerySet unit tests")
+        }
+    }
+
+    impl FromJoinedPgRow for FakeProxy {
+        fn from_joined_pg_row(
+            _row: &tokio_postgres::Row,
+            _prefix: &str,
+        ) -> Result<Self, crate::DjogiError> {
+            unreachable!("not called in QuerySet unit tests")
         }
     }
 
@@ -3362,6 +3405,62 @@ mod tests {
                 }
                 other => panic!("expected Validation, got {other:?}"),
             }
+        }
+    }
+
+    fn fake_relation_path() -> RelationPath<Fake, FakeProxy> {
+        RelationPath::new("proxy_id", "fake_proxy", RelationKind::ForeignKey)
+    }
+
+    #[test]
+    fn mutation_guard_rejects_prefetch_paths() {
+        let qs: QuerySet<Fake> = QuerySet::new().prefetch(fake_relation_path());
+        let err = qs
+            .validate_mutation_read_tail("delete")
+            .expect_err("prefetch should be rejected for mutation terminals");
+        match err {
+            crate::DjogiError::Validation(msg) => {
+                assert!(
+                    msg.contains("prefetch"),
+                    "validation should mention prefetch, got: {msg}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mutation_guard_rejects_select_related_paths() {
+        let qs: QuerySet<Fake> = QuerySet::new().select_related(fake_relation_path());
+        let err = qs
+            .validate_mutation_read_tail("update")
+            .expect_err("select_related should be rejected for mutation terminals");
+        match err {
+            crate::DjogiError::Validation(msg) => {
+                assert!(
+                    msg.contains("select_related"),
+                    "validation should mention select_related, got: {msg}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mutation_guard_rejects_cache_target() {
+        let punnu = crate::cache::Punnu::<FakeProxy>::builder().build();
+        let qs: QuerySet<FakeProxy> = QuerySet::new().bind_cache_for_test(punnu);
+        let err = qs
+            .validate_mutation_read_tail("delete")
+            .expect_err("cache_target should be rejected for mutation terminals");
+        match err {
+            crate::DjogiError::Validation(msg) => {
+                assert!(
+                    msg.contains("cache_target"),
+                    "validation should mention cache_target, got: {msg}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
         }
     }
 

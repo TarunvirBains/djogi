@@ -483,6 +483,54 @@ pending struct — there's no payload to carry across a split). An
 unfiltered queryset deletes every row in the table; "wipe this table"
 DDL-style reaches for `TRUNCATE` via `ctx.raw_execute`.
 
+### Mutation guard
+
+Bulk update and delete reject queryset state that is only meaningful for
+reads. These restrictions are validated **before** any SQL is issued and
+**before** the `none()` / empty-assignment short-circuits, so decorated
+inert paths are rejected rather than silently succeeding.
+
+| Rejected modifier | Validation message contains |
+|---|---|
+| `limit(n)` | `"limit"` |
+| `offset(n)` | `"offset"` |
+| `distinct()` / `distinct_on(...)` | `"distinct"` |
+| Row locks (`.select_for_update()`, etc.) | `"row locks"` |
+| Explicit `.order_by(...)` | `"order_by"` |
+| `.prefetch(...)` registrations | `"prefetch"` |
+| `.select_related(...)` registrations | `"select_related"` |
+
+Examples:
+
+```rust
+// Rejected: limit is incompatible with bulk mutation.
+Post::objects()
+    .limit(1)
+    .update(|f| f.published().set(false))
+    .execute(&mut ctx)
+    .await
+// Err(DjogiError::Validation("update() does not support queryset read-tail modifiers (limit); ..."))
+
+// Rejected: inert paths still validate — none() does not bypass the guard.
+Post::objects()
+    .none()
+    .limit(1)
+    .delete(&mut ctx)
+    .await
+// Err(DjogiError::Validation("delete() does not support queryset read-tail modifiers (limit); ..."))
+
+// Ok — pure none(), no read-tail state.
+Post::objects()
+    .none()
+    .delete(&mut ctx)
+    .await
+// Ok(0) — short-circuits cleanly; no SQL issued.
+```
+
+Model-default ordering seeded by `QuerySet::new()` is not treated as an
+explicit `.order_by(...)` — only a user call to `.order_by(...)` trips the
+guard.
+
 ---
 
 ## PG18 OLD/NEW RETURNING
@@ -537,6 +585,11 @@ for pair in &pairs {
 Short-circuits: `none()` querysets and empty assignment lists return
 `Ok(Vec::new())` without issuing SQL.
 
+`execute_returning_pairs` applies the same mutation guard as `execute` —
+`limit`, `offset`, `distinct`, row locks, `prefetch`, `select_related`, and
+explicit `order_by` are rejected with `DjogiError::Validation` before any SQL or
+short-circuit evaluation.
+
 ### `Model::delete_returning(self, ctx)`
 
 Consuming single-row DELETE that returns the pre-delete DB snapshot:
@@ -564,15 +617,20 @@ let deleted_rows: Vec<Post> = Post::objects()
 
 Short-circuits: `none()` querysets return `Ok(Vec::new())` without SQL.
 
+`delete_returning` applies the same mutation guard as `delete` — `limit`,
+`offset`, `distinct`, row locks, `prefetch`, `select_related`, and explicit
+`order_by` are rejected with `DjogiError::Validation` before any SQL or
+short-circuit evaluation.
+
 ### Notes
 
 - **PG18 only.** Djogi has a hard PostgreSQL 18 floor; no polyfill exists.
 - **INSERT** — `create()` already returns the DB post-image; the `OLD` side
   is normally NULL for a simple INSERT. No pair type is needed or provided.
-- **MERGE** — MERGE result hydration is presently not supported.
+- **MERGE** — MERGE result hydration is not supported.
 - **Protected fields.** Both sides of `ReturningPair<T>` expose full model
   values including `#[field(protected(...))]` fields. Field-level redaction
-  is presently not implemented — log or persist pairs with care.
+  is not implemented — log or persist pairs with care.
 - **Outbox.** The `Save` outbox payload for `update_returning_pair` is the
   DB post-image (`pair.new`) — the same single-payload schema as `save()`.
   No diff-shaped outbox envelope is emitted.
@@ -660,7 +718,7 @@ carries an expression-form term Postgres rejects on set-operation `ORDER
 BY` — for example, `order_by_distance(...)` (which lowers to
 `ST_Distance(...)`). Postgres's grammar restricts set-operation outer `ORDER
 BY` to column names or position numbers. Per-arm spatial ordering is still
-legal; combined-result spatial ordering is not supported today.
+legal; combined-result spatial ordering is not supported.
 
 ### Nested composition
 
@@ -768,13 +826,12 @@ a programming error does not hide behind a silent `Ok(0)`.
   `.for_share_skip_locked()` row locks —
   `SELECT ... FOR UPDATE` (or `... FOR SHARE`) inside INSERT SELECT is
   valid Postgres semantics (locking source rows for the archival
-  duration), but the v0.1.0 surface does not compose row locks with
-  INSERT SELECT. Drop the lock call before `.insert_into(...)`.
+  duration), but row locks are not supported inside INSERT SELECT. Drop the lock call before `.insert_into(...)`.
 - `.distinct()` / `.distinct_on(...)` — deduplication inside INSERT SELECT
   is also valid Postgres, but `DISTINCT ON` requires the deduplication
   columns to appear first in `ORDER BY` and in the SELECT projection —
   neither of which the closure-built mapping guarantees. All non-default
-  distinct modes are rejected in v0.1.0.
+  distinct modes are rejected.
 
 ### Return value and RETURNING
 
@@ -815,7 +872,7 @@ threads, biological pedigrees — Djogi exposes a typed recursive query
 surface that emits a Postgres `WITH RECURSIVE ... SELECT * FROM ...`
 CTE under the hood. No raw SQL, no `JUSTIFICATION` bypass.
 
-The typed surface (GH #65) has two layers:
+The typed surface has two layers:
 
 ### Tree-edge sugar — `Model::tree_descendants` / `Model::tree_ancestors`
 
@@ -935,7 +992,7 @@ against a third table." Wright F kinship over a materialised pedigree
 closure is the canonical example. Djogi exposes a typed pair-tuple
 substrate so adopters write these queries without raw SQL.
 
-The typed surface (GH #99) is rooted at
+The typed surface is rooted at
 `QuerySet::self_pairs()`:
 
 ```rust
@@ -1021,7 +1078,7 @@ The annotation emits
 `COALESCE(ST_Area(ST_Intersection(l.col::geometry, r.col::geometry)::geography), 0)::float8
  / NULLIF(ST_Area(l.col::geography), 0)::float8` per pair. The ratio is
 left-normalised and asymmetric — see the
-[spatial guide's pair-side section](./spatial.md#pair-side-territory-overlap-phase-85-99)
+[spatial guide's pair-side section](./spatial.md#pair-side-territory-overlap)
 for the full SQL shape, NULL/disjoint/degenerate semantics, and the
 column-type rules.
 
@@ -1033,7 +1090,7 @@ Repeat-read query patterns (request handlers re-reading the same row
 across endpoints, periodic scoring jobs re-evaluating the same
 candidate set) amortise the DB round-trip by binding a queryset to a
 `Punnu<T>` L1 identity-map pool. Djogi's typed surface for this
-(GH #108) exposes the `.cache(&pool)?` modifier:
+exposes the `.cache(&pool)?` modifier:
 
 ```rust
 use djogi::prelude::*;
@@ -1080,7 +1137,7 @@ Surface contract:
   visible to the caller.
 - `Punnu::insert` is invalidated automatically when `Model::create`,
   `Model::save`, or `Model::delete` runs through djogi's hook
-  machinery (cluster 8δ T7.5). Adopters do not maintain a manual
+  machinery. Adopters do not maintain a manual
   write-through.
 
 For adopters who need to inspect whether a queryset is
