@@ -437,8 +437,7 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
                     let fname_str = fname.to_string();
                     let scope_str = scope.to_string();
                     let codec_type_name_for_err = codec_runtime_type_name_tokens(codec_ty);
-                    let codec_type_name_for_inventory =
-                        codec_inventory_identity_tokens(codec_ty);
+                    let codec_type_name_for_inventory = codec_inventory_identity_tokens(codec_ty);
 
                     // Field type: route through `PresentationCodecInfo<Input>::Output`
                     // so any change to a codec's output type flows through to the
@@ -1265,10 +1264,8 @@ mod tests {
 
     #[test]
     fn codec_inventory_identity_tokens_preserve_multi_segment_paths() {
-        let codec_path: syn::Path = syn::parse_str(
-            "djogi::presentation::builtins::MaskString",
-        )
-        .expect("parse path");
+        let codec_path: syn::Path =
+            syn::parse_str("djogi::presentation::builtins::MaskString").expect("parse path");
         let tokens = codec_inventory_identity_tokens(&codec_path).to_string();
         assert!(
             tokens.contains("\"djogi::presentation::builtins::MaskString\""),
