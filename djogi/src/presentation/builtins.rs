@@ -331,6 +331,14 @@ impl PresentationCodec<Option<String>> for MaskOptionString {
     }
 }
 
+impl TryPresentationCodec<Option<String>> for MaskOptionString {
+    type Error = std::convert::Infallible;
+
+    fn try_present(value: &Option<String>) -> Result<Option<String>, std::convert::Infallible> {
+        Ok(MaskOptionString::present(value))
+    }
+}
+
 // ── HmacSha256Hex newtype ─────────────────────────────────────────────────
 
 /// A 64-character lowercase hex-encoded HMAC-SHA256 output.
@@ -609,6 +617,18 @@ mod tests {
         let output = MaskOptionString::present(&input);
         assert_eq!(output, Some(MASK_LITERAL.to_string()));
         assert_ne!(output.unwrap(), "secret");
+    }
+
+    #[test]
+    fn mask_option_string_try_present_matches_present() {
+        let none_input: Option<String> = None;
+        let some_input = Some("secret".to_string());
+
+        let none_output = MaskOptionString::try_present(&none_input);
+        let some_output = MaskOptionString::try_present(&some_input);
+
+        assert_eq!(none_output, Ok(None));
+        assert_eq!(some_output, Ok(Some(MASK_LITERAL.to_string())));
     }
 
     // ── HMAC key parsing ─────────────────────────────────────────────────

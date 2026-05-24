@@ -38,11 +38,20 @@
 //!
 //! # Startup validation
 //!
-//! Call [`validate_startup_inventory`] before serving traffic. Keyed codecs
-//! (e.g. [`builtins::HmacSha256HexString`]) validate their environment-
-//! variable key during this pass. `DjogiPool::connect` / `DjogiPoolBuilder::build`
-//! call this automatically (Stage 3). Apps that construct visages without
-//! a pool must call it explicitly.
+//! Call [`validate_startup_inventory`] before serving traffic.
+//! This function iterates the linked-at-call-time
+//! [`PresentationCodecUsage`](inventory::PresentationCodecUsage) inventory in the
+//! current binary and validates each entry's codec startup contract.
+//! Keyed codecs (e.g. [`builtins::HmacSha256HexString`]) validate their
+//! environment-variable key during this pass.
+//!
+//! Only model crates compiled and linked into the running binary can contribute
+//! startup work. If a crate that defines `protected(per_scope = ...)` models is
+//! not linked, its presentation usages are absent from inventory and are not
+//! checked. `DjogiPool::connect` / `DjogiPoolBuilder::build` call this
+//! automatically (Stage 3). Apps that construct visages without a pool must call
+//! it explicitly, and test binaries should include a linked test model when
+//! asserting startup-failure paths.
 //!
 //! # Example — adopter-defined codec
 //!
@@ -275,6 +284,10 @@ impl std::fmt::Display for PresentationStartupError {
                 codec_path,
                 source,
             } => {
+                let source = source.to_string();
+                let source = source
+                    .strip_prefix("presentation codec startup: ")
+                    .unwrap_or(&source);
                 write!(
                     f,
                     "presentation codec startup: {model}.{field} scope `{scope}` \
@@ -515,9 +528,11 @@ pub trait ReversibleTryPresentationCodec<Input>: TryPresentationCodec<Input> {
 /// # Plugin / deferred-load architectures
 ///
 /// Call this function **after** loading any crates that use `#[model]` with
-/// `per_scope` presentation blocks. Inventory cannot see crates that are not
-/// yet linked, so calling before the crate is loaded will silently miss its
-/// usages. This is a documented manual boundary.
+/// `per_scope` presentation blocks. Startup validation only sees entries in the
+/// linked binary, so if a model crate is not linked its usages will be missing.
+/// For harnesses that assert validation failures, define or link a model with at
+/// least one keyed `PresentationCodecUsage` before calling
+/// `validate_startup_inventory()`.
 pub fn validate_startup_inventory() -> Result<(), Vec<PresentationStartupError>> {
     let errors: Vec<PresentationStartupError> =
         ::inventory::iter::<inventory::PresentationCodecUsage>
@@ -633,6 +648,15 @@ mod tests {
         assert!(msg.contains("User"), "display must include model: {msg}");
         assert!(msg.contains("email"), "display must include field: {msg}");
         assert!(msg.contains("public"), "display must include scope: {msg}");
+        assert_eq!(
+            msg.matches("presentation codec startup:").count(),
+            1,
+            "usage display must not duplicate the startup prefix: {msg}"
+        );
+        assert!(
+            !msg.contains("failed: presentation codec startup:"),
+            "usage display must not prefix the nested source twice: {msg}"
+        );
     }
 
     #[test]

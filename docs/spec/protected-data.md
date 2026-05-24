@@ -304,6 +304,41 @@ of entropy for HMAC operations.
 **Freestanding validation:** `djogi::presentation::validate_startup_inventory()` performs the
 same check without requiring a pool. Useful for early-boot validation before accepting traffic.
 
+**Linked inventory behavior:** both `DjogiPool::connect` and
+`validate_startup_inventory()` only validate `PresentationCodecUsage` records that are
+linked into the running binary. A binary that links no `#[model]` declarations with
+`per_scope` blocks can still return `Ok(())` even when `DJOGI_PRESENTATION_HMAC_KEY`
+is missing.
+
+**Test harness pattern:** to exercise startup-failure tests in a unit or integration
+binary, include (or link) a model that actually emits a keyed `PresentationCodecUsage`
+entry, for example:
+
+```rust
+// In the test binary's module path, define:
+#[model(table = "startup_inventory_harness")]
+#[derive(Debug, Clone)]
+struct PresentationStartupHarness {
+    #[field(
+        expose(public),
+        protected(
+            sensitivity = "pii",
+            rationale = "Harness uses keyed codec for startup validation coverage",
+            per_scope = {
+                public = {
+                    try_presentation_codec = djogi::presentation::builtins::HmacSha256HexString
+                }
+            }
+        )
+    )]
+    pub email: String,
+}
+```
+
+Then run `djogi::presentation::validate_startup_inventory()` (or a pool connect path) in the
+same binary after installing/removing `DJOGI_PRESENTATION_HMAC_KEY` as needed for the
+assertion.
+
 **Testing:** use `djogi::testing::install_presentation_hmac_key_for_testing("aabbcc...")` to
 install a test key before calling `DjogiPool::connect`. The helper validates that the key is
 exactly 64 lowercase hex characters and sets the environment variable.

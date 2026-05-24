@@ -1,8 +1,7 @@
 //! Inventory structs for the presentation-codec system.
 //!
-//! This module defines the two inventory-level record types that the
-//! `#[model]` macro emits (Stages 4–7) and that the runtime reads for
-//! startup validation and audit/debug purposes.
+//! This module defines the presentation-codec record types used for
+//! runtime startup validation and audit/debug visibility.
 //!
 //! ## Record types
 //!
@@ -10,8 +9,9 @@
 //!   field's presentation declaration. One entry per `(field, scope)` pair
 //!   declared in `protected(per_scope = { ... })`.
 //! - [`ProtectedPresentationFieldMetadata`] — per-field aggregate carrying
-//!   a static slice of scope entries. One inventory submission per
-//!   `#[model]`-emitted field that has a `per_scope` block.
+//!   a static slice of scope entries. This is a Stage-facing shape for richer
+//!   introspection tooling; startup validation currently consumes
+//!   `PresentationCodecUsage` entries directly.
 //! - [`PresentationCodecUsage`] — one submission per `(model, field, scope,
 //!   codec)` usage. Consumed by [`super::validate_startup_inventory`] to call
 //!   each codec's [`validate_startup`](super::PresentationCodecInfo::validate_startup)
@@ -101,17 +101,17 @@ impl ProtectedPresentationScopeMetadata {
 
 /// Per-field inventory record for protected presentation behavior.
 ///
-/// Emitted by `#[model]` for each protected scalar field carrying a
-/// `per_scope` block. The `scopes` slice holds one
+/// The `scopes` slice holds one
 /// [`ProtectedPresentationScopeMetadata`] entry per scope entry in the
-/// block.
+/// `protected(per_scope = { ... })` block.
 ///
 /// # Inventory semantics
 ///
-/// One `ProtectedPresentationFieldMetadata` is submitted to the
-/// `inventory` registry per field. Tooling that needs to enumerate all
-/// protected presentations iterates over
-/// `inventory::iter::<ProtectedPresentationFieldMetadata>`.
+/// `ProtectedPresentationFieldMetadata` is a per-field aggregate for future
+/// tooling. Stage 4+ does not currently emit this type with
+/// `inventory::submit!`, so startup validation iterates
+/// `inventory::iter::<PresentationCodecUsage>` instead. The public record still
+/// exists for future extensions and richer tooling.
 ///
 /// # Separate from `FieldDescriptor`
 ///
@@ -133,8 +133,8 @@ pub struct ProtectedPresentationFieldMetadata {
 }
 
 impl ProtectedPresentationFieldMetadata {
-    /// Construct a `ProtectedPresentationFieldMetadata` from macro-emitted
-    /// code.
+    /// Construct a `ProtectedPresentationFieldMetadata` from generated or
+    /// macro-emitted code.
     ///
     /// This constructor exists because the struct is `#[non_exhaustive]`.
     /// See [`ProtectedPresentationScopeMetadata::const_new`] for the
