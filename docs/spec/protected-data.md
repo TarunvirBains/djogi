@@ -6,10 +6,6 @@ Djogi needs a way to describe sensitive fields mechanically and to attach storag
 
 This spec defines the descriptor-level primitives for protected data. It does **not** define full governance execution or legal workflow behavior.
 
-> **Status:** Descriptor-side primitives shipped in Phase 7.5. Runtime
-> activation (codec encode/decode on CRUD, lifecycle execution,
-> redaction-aware audit logs) is staged across Phase 8 and the
-> governance/observability phases that follow.
 
 ---
 
@@ -24,8 +20,7 @@ This spec defines the descriptor-level primitives for protected data. It does **
 
 ## Minimal Public Surface
 
-Phase 7.5 stabilizes the descriptor-facing primitives via a single
-grouped attribute. Five named keys live inside `protected(...)`, and
+Field protection is declared via a single grouped attribute. Five named keys live inside `protected(...)`, and
 `sensitivity` is **mandatory**:
 
 ```rust
@@ -73,10 +68,7 @@ struct.
   capability tied to a later phase that gives the macro full
   descriptor-pass visibility.
 - **(e) `codec = "..."` must name a value in the framework's
-  compile-time codec registry.** Phase 7.5 ships an empty registry —
-  every codec string is rejected at expansion time with
-  `unregistered codec ID 'X'. Valid codec IDs in this build of
-  Djogi: (none).` The registry will be populated in future phases;
+  compile-time codec registry.** The registry is populated with built-in codecs;
   **codecs ship with the framework, not adopter code.**
 
 ### Field annotation vocabulary
@@ -92,7 +84,7 @@ struct.
 - **`rationale = "..."`** — free text. Required when sensitivity is
   above `"none"` (see rule (c)).
 
-- **`redaction = "..."`** — named redaction policy. Phase 7.5 ships:
+- **`redaction = "..."`** — named redaction policy:
   - `"none"` — default.
   - `"hash_id"` — hash to opaque identifier; PK-shaped types only
     (rule (d)).
@@ -100,17 +92,13 @@ struct.
   - `"drop"` — omit the field entirely from redacted renderings.
 
 - **`codec = "..."`** — codec identifier; resolved against the
-  compile-time registry. Phase 7.5 registry is empty (rule (e)).
+  compile-time registry.
 
-- **`retention = "..."`** — closed enum of retention/lifecycle labels.
-  Phase 7.5 ships:
+- **`retention = "..."`** — closed enum of retention/lifecycle labels:
   - `"transient"` — short-lived data.
   - `"standard"` — default retention.
   - `"extended"` — longer-than-default retention.
   - `"archival"` — long-term archival storage.
-
-  Future labels (e.g. `legal_hold`, `anonymize`) are spec amendments,
-  not adopter extensions.
 
 ### Visage-scope axis
 
@@ -156,16 +144,11 @@ For now, every adopter-visible rationale comes from
 
 ### Runtime expectations
 
-- CRUD writes apply the codec on persistence (Phase 8+).
-- Row loading applies the codec on decode (Phase 8+).
+- CRUD writes apply the codec on persistence.
+- Row loading applies the codec on decode.
 - Generated visages, admin defaults, audit-log diff renderers, and
   export bundles all read from the same `ProtectedFieldMetadata`
   source of truth.
-
-The first shipping version does not need a large codec ecosystem. It
-only needs one stable contract for how codecs are declared and
-discovered — the `FieldCodec` trait + the compile-time registry that
-landed in Phase 7.5.
 
 ---
 
@@ -226,15 +209,11 @@ The codec contract belongs in Djogi because:
 
 Field codecs are a data-layer concern, not an HTTP or UI concern.
 
-The compile-time registry (Phase 7.5 T4) provides the lookup the macro
+The compile-time registry provides the lookup the macro
 uses at expansion time to validate `protected(codec = "<id>")`. The
 registry is keyed by the codec identifier string and resolved through
 the `FieldCodec` trait. **The registry is closed: codecs ship with
-the framework, not adopter code.** Phase 7.5 ships the registry empty
-(rule (e) above) — every `codec = "..."` declaration is rejected at
-expansion time. Future framework phases will populate the registry
-with the canonical codec set; adopters who need a custom transform in
-the meantime work around it at the application layer.
+the framework, not adopter code.**
 
 ---
 
@@ -324,11 +303,10 @@ HMAC validation fail on missing/invalid `DJOGI_PRESENTATION_HMAC_KEY`.
 
 **Pool startup behavior:** `DjogiPool::connect(&database_url)` runs
 `validate_startup_inventory()` and returns `Err(DjogiError::PresentationStartup(..))` for
-startup validation failures — not a panic.
+startup validation failures.
 
 **Freestanding validation:** `djogi::presentation::validate_startup_inventory()` performs the
-same inventory check without requiring a pool. Useful for early-boot validation
-before accepting traffic.
+same inventory check without requiring a pool.
 
 **Linked inventory behavior:** both `DjogiPool::connect` and
 `validate_startup_inventory()` only validate `PresentationCodecUsage` records that are

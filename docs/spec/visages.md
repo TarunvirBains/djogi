@@ -23,8 +23,6 @@ Visage generation is backend-first but not server-only. Djogi does not own front
 
 ## Minimal Public Surface
 
-Phase 4.5 should stabilize only this much public surface:
-
 Model-side annotations:
 
 ```rust
@@ -67,8 +65,7 @@ impl TryFrom<&Vehicle> for VehiclePublic {
 }
 ```
 
-`VisageError` is `#[non_exhaustive]` so later phases (protected-data,
-codec failures) can add variants without a breaking change. Callers
+`VisageError` is `#[non_exhaustive]` so additional variants can be added without a breaking change. Callers
 matching on the error must include `_ => ...`.
 
 Generated types must:
@@ -82,12 +79,8 @@ Generated types must:
 `{Model}Internal` struct is generated. The model struct itself IS the
 internal form.
 
-Phase 7-Zero-2 lifted the Phase 4.5 deferral on optional FK / O2O
-visages: `Option<ForeignKey<T>>` / `Option<OneToOneField<T>>` now
-project as `Option<PeerVisage>` and participate in traversal under
-the `->` grammar. Phase 4.5's compile-rejection no longer applies.
-
-Anything beyond that is additive and should not block the first spec closure.
+`Option<ForeignKey<T>>` / `Option<OneToOneField<T>>` project as `Option<PeerVisage>` and participate in traversal under
+the `->` grammar.
 
 ---
 
@@ -327,23 +320,12 @@ Djogi should prefer compile-time diagnostics over runtime surprises.
 
 ---
 
-## Deferred Surface
+## Out of Scope
 
-The following are explicitly deferred beyond the minimum Phase 4.5 surface:
-
-- visage renaming rules beyond the default canonical names — when this
-  feature is taken up, the spec that introduces it MUST address the
-  relation-embedding declaration-site churn flagged in
-  [`docs/research/model-vs-visage-lower-severity-graduation.md`](../research/model-vs-visage-lower-severity-graduation.md)
-  §Surface 3 (rename of `User::Public` → `User::Summary` cannot force
-  touching every source model that embeds the visage; a target-side
-  `#[model(embeddable_as = [...])]` alias or equivalent indirection
-  is one candidate shape)
-- partial JSON subfield visages
-- fallible transforms during visage generation
-- route-specific wrapper DTO generation
-
-The first shipping surface should stay small.
+- Visage renaming rules beyond the default canonical names
+- Partial JSON subfield visages
+- Fallible transforms during visage generation
+- Route-specific wrapper DTO generation
 
 ---
 
