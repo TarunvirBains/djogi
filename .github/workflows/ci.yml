@@ -9,6 +9,12 @@ on:
 env:
   CARGO_TERM_COLOR: always
   DATABASE_URL: postgres://djogi:djogi@localhost:5432/djogi_test
+  # Required by the `presentation_codec` integration test binary, which links
+  # `UserWithHmac` — a model whose `HmacSha256HexString` codec calls
+  # `validate_startup()` and checks this env var before any pool can open.
+  # This is the conventional 64-lowercase-hex-char test key documented in
+  # `tests/integration/presentation_codec.rs`; it is not a production secret.
+  DJOGI_PRESENTATION_HMAC_KEY: aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899
 
 # dorny/paths-filter needs pull-requests:read to call GitHub's listFiles API.
 # Without this, fork/contributor PRs (and first-party PRs under default-
