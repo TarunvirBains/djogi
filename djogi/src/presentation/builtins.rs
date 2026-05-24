@@ -42,10 +42,11 @@
 //! normalization is applied. `"Caf\u{e9}"` (NFC) and `"Cafe\u{301}"` (NFD)
 //! produce different HMAC outputs.
 
-use std::sync::OnceLock;
+use std::{convert::TryFrom, sync::OnceLock};
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
+use thiserror::Error;
 
 use super::{
     BuiltInPresentationError, PresentationCodec, PresentationCodecInfo, PresentationStartupError,
@@ -349,16 +350,65 @@ impl TryPresentationCodec<Option<String>> for MaskOptionString {
 ///
 /// # No public constructor
 ///
-/// There is no public constructor that accepts arbitrary strings —
-/// `HmacSha256Hex` values are produced exclusively by `HmacSha256HexString`
-/// and `HmacSha256HexOptionString`. This prevents callers from constructing
-/// a plausible-looking HMAC output from a hand-crafted string.
+/// There is no public infallible constructor that accepts arbitrary strings —
+/// `HmacSha256Hex` values are produced by the keyed codecs, or by the
+/// fallible `TryFrom<String>` / serde-deserialization path that validates the
+/// 64-character lowercase-hex invariant before constructing the value.
 ///
 /// # Serialization
 ///
-/// Serializes as a JSON string containing the 64-char hex value.
+/// Serializes as a JSON string containing the 64-char hex value. String
+/// deserialization validates the same invariant and rejects malformed input.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String")]
 pub struct HmacSha256Hex(pub(crate) String);
+
+/// Errors produced when validating an [`HmacSha256Hex`] string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum HmacSha256HexError {
+    /// The string had the wrong number of characters.
+    #[error("HmacSha256Hex must be exactly 64 lowercase hex characters; got {actual}")]
+    InvalidLength {
+        /// Actual string length observed.
+        actual: usize,
+    },
+    /// The string contained a byte outside `0`-`9` or `a`-`f`.
+    #[error(
+        "HmacSha256Hex must contain only lowercase hex characters; invalid byte 0x{byte:02x} at index {idx}"
+    )]
+    InvalidByte {
+        /// Zero-based byte index of the offending character.
+        idx: usize,
+        /// The invalid byte value.
+        byte: u8,
+    },
+}
+
+/// Validate that `hex` is exactly 64 lowercase ASCII hex characters.
+///
+/// This helper is shared by `TryFrom<String>`, serde deserialization, and the
+/// Postgres `FromSql` path so all string-based construction paths enforce the
+/// same invariant.
+fn validate_hmac_sha256_hex(hex: &str) -> Result<(), HmacSha256HexError> {
+    let bytes = hex.as_bytes();
+    if bytes.len() != 64 {
+        return Err(HmacSha256HexError::InvalidLength {
+            actual: bytes.len(),
+        });
+    }
+
+    for (idx, &byte) in bytes.iter().enumerate() {
+        match byte {
+            b'0'..=b'9' | b'a'..=b'f' => {}
+            _ => {
+                return Err(HmacSha256HexError::InvalidByte { idx, byte });
+            }
+        }
+    }
+
+    Ok(())
+}
 
 impl HmacSha256Hex {
     /// Construct from a known-valid 64-char lowercase hex string.
@@ -376,14 +426,22 @@ impl HmacSha256Hex {
     }
 }
 
+impl TryFrom<String> for HmacSha256Hex {
+    type Error = HmacSha256HexError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        validate_hmac_sha256_hex(&value)?;
+        Ok(Self(value))
+    }
+}
+
 impl<'a> tokio_postgres::types::FromSql<'a> for HmacSha256Hex {
     /// Decode an `HmacSha256Hex` from a Postgres TEXT column.
     ///
     /// The underlying Postgres type must be TEXT (or a compatible VARCHAR),
     /// because `HmacSha256Hex` is always a 64-character lowercase hex string.
-    /// Decoding delegates to `String::from_sql` — no length or character-set
-    /// validation is performed at decode time; the inner string is whatever
-    /// Postgres returns.
+    /// Decoding delegates to `String::from_sql`, then validates the decoded
+    /// string before constructing the newtype.
     ///
     /// This impl is provided so that `VisageQuerySet` and `FromPgRow` for
     /// visages whose fields use `HmacSha256HexString` as a codec can be
@@ -395,7 +453,7 @@ impl<'a> tokio_postgres::types::FromSql<'a> for HmacSha256Hex {
         raw: &'a [u8],
     ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
         let s = String::from_sql(ty, raw)?;
-        Ok(HmacSha256Hex(s))
+        HmacSha256Hex::try_from(s).map_err(|err| Box::new(err) as _)
     }
 
     fn accepts(ty: &tokio_postgres::types::Type) -> bool {
@@ -532,6 +590,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::convert::TryFrom;
 
     // ── Identity ──────────────────────────────────────────────────────────
 
@@ -811,6 +870,34 @@ mod tests {
     }
 
     #[test]
+    fn hmac_sha256_hex_try_from_valid_lowercase_hex_succeeds() {
+        let input = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let h = HmacSha256Hex::try_from(input.to_string()).expect("valid hex must parse");
+        assert_eq!(h.as_str(), input);
+    }
+
+    #[test]
+    fn hmac_sha256_hex_try_from_rejects_invalid_length() {
+        let result = HmacSha256Hex::try_from("a".repeat(63));
+        assert!(result.is_err(), "63-char input must be rejected");
+    }
+
+    #[test]
+    fn hmac_sha256_hex_try_from_rejects_uppercase_hex() {
+        let result = HmacSha256Hex::try_from("A".repeat(64));
+        assert!(result.is_err(), "uppercase hex must be rejected");
+    }
+
+    #[test]
+    fn hmac_sha256_hex_from_sql_rejects_invalid_value() {
+        use tokio_postgres::types::FromSql;
+
+        let raw = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let result = HmacSha256Hex::from_sql(&tokio_postgres::types::Type::TEXT, raw);
+        assert!(result.is_err(), "invalid Postgres text must be rejected");
+    }
+
+    #[test]
     fn hmac_sha256_hex_from_sql_accepts_text_type() {
         // `HmacSha256Hex: FromSql` delegates to `String::accepts`, so it accepts TEXT.
         use tokio_postgres::types::FromSql;
@@ -818,6 +905,13 @@ mod tests {
             HmacSha256Hex::accepts(&tokio_postgres::types::Type::TEXT),
             "HmacSha256Hex must accept the Postgres TEXT type"
         );
+    }
+
+    #[test]
+    fn hmac_sha256_hex_serde_rejects_invalid_string() {
+        let json = format!("\"{}\"", "A".repeat(64));
+        let result = serde_json::from_str::<HmacSha256Hex>(&json);
+        assert!(result.is_err(), "invalid serde string must be rejected");
     }
 
     // ── hex_encode ────────────────────────────────────────────────────────
