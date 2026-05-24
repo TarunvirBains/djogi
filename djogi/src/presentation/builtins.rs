@@ -58,7 +58,8 @@ use thiserror::Error;
 #[cfg(feature = "hmac-codec")]
 use super::{BuiltInPresentationError, PresentationStartupError};
 use super::{
-    PresentationCodec, PresentationCodecInfo, Queryability, Reversibility, TryPresentationCodec,
+    PresentationCodec, PresentationCodecInfo, Queryability, Reversibility,
+    ReversiblePresentationCodec, ReversibleTryPresentationCodec, TryPresentationCodec,
 };
 use crate::presentation::query::{
     PresentationOrderCodec, PresentationQueryCodec, PresentationQueryField,
@@ -228,6 +229,39 @@ where
     /// Return a clone of the storage value unchanged.
     fn present(value: &T) -> T {
         value.clone()
+    }
+}
+
+impl<T> TryPresentationCodec<T> for Identity
+where
+    T: Clone + std::fmt::Debug + serde::Serialize + serde::de::DeserializeOwned + 'static,
+{
+    type Error = std::convert::Infallible;
+
+    fn try_present(value: &T) -> Result<T, Self::Error> {
+        Ok(value.clone())
+    }
+}
+
+impl<T> ReversiblePresentationCodec<T> for Identity
+where
+    T: Clone + std::fmt::Debug + serde::Serialize + serde::de::DeserializeOwned + 'static,
+{
+    type ReverseError = std::convert::Infallible;
+
+    fn try_reverse(value: &T) -> Result<T, Self::ReverseError> {
+        Ok(value.clone())
+    }
+}
+
+impl<T> ReversibleTryPresentationCodec<T> for Identity
+where
+    T: Clone + std::fmt::Debug + serde::Serialize + serde::de::DeserializeOwned + 'static,
+{
+    type ReverseError = std::convert::Infallible;
+
+    fn try_reverse(value: &T) -> Result<T, Self::ReverseError> {
+        Ok(value.clone())
     }
 }
 

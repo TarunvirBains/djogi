@@ -4,7 +4,10 @@
 //! A monomorphic local codec keeps the fixture focused on accessor emission
 //! instead of the separate generic-codec inventory path.
 use djogi::prelude::*;
-use djogi::presentation::{PresentationCodec, PresentationCodecInfo, Queryability, Reversibility};
+use djogi::presentation::{
+    PresentationCodec, PresentationCodecInfo, Queryability, Reversibility,
+    ReversiblePresentationCodec,
+};
 use djogi::presentation::query::{
     PresentationFieldRef, PresentationOrderCodec, PresentationQueryCodec, PresentationQueryField,
 };
@@ -20,6 +23,14 @@ impl PresentationCodecInfo<String> for QueryablePlaintextString {
 impl PresentationCodec<String> for QueryablePlaintextString {
     fn present(value: &String) -> String {
         value.clone()
+    }
+}
+
+impl ReversiblePresentationCodec<String> for QueryablePlaintextString {
+    type ReverseError = std::convert::Infallible;
+
+    fn try_reverse(value: &String) -> Result<String, Self::ReverseError> {
+        Ok(value.clone())
     }
 }
 

@@ -337,10 +337,14 @@ pub enum DjogiError {
     Serde(#[from] serde_json::Error),
 
     /// Visage projection failure — raised when a `TryFrom<&Model>` impl on
-    /// a generated visage cannot convert the row. Today's sole trigger is
+    /// a generated visage cannot convert the row.
+    ///
+    /// Known triggers include
     /// [`VisageError::UnresolvedRelation`](crate::visage::VisageError), raised
     /// when a relation-nesting visage is projected from a model whose
-    /// relation fields were not `prefetch()`-ed or `select_related()`-ed.
+    /// relation fields were not `prefetch()`-ed or `select_related()`-ed,
+    /// and [`VisageError::PresentationCodec`](crate::visage::VisageError)
+    /// from fallible protected-field presentation codecs.
     ///
     /// Phase 7-Zero-2 T9 introduces this variant so the visage-scoped
     /// reverse-FK / M2M accessors can flow a fallible peer-visage conversion
@@ -1321,6 +1325,19 @@ mod tests {
         assert!(
             DjogiError::gone_aggregate("M", "42".into(), "deleted").is_terminal(),
             "GoneAggregate must be terminal — retry cannot resurrect a deleted aggregate"
+        );
+        assert!(
+            DjogiError::Visage(crate::visage::VisageError::UnresolvedRelation {
+                model: "M",
+                field: "f",
+                scope: "public"
+            })
+            .is_terminal(),
+            "Visage conversion failures must be terminal unless explicitly reclassified"
+        );
+        assert!(
+            DjogiError::PresentationStartup(vec![]).is_terminal(),
+            "PresentationStartup must be terminal — missing startup prerequisites need operator action"
         );
         assert!(
             DjogiError::PoolTimeout { phase: "wait" }.is_transient(),

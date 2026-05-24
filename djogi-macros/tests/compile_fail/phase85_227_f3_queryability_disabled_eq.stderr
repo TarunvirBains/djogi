@@ -4,9 +4,9 @@ error[E0599]: the method `eq` exists for struct `PresentationFieldRef<User, Mask
  28 |     let _bad = UserPublicFields::default().ssn().eq("123-45-6789".to_string());
     |                                                  ^^ method cannot be called due to unsatisfied trait bounds
     |
-   ::: djogi/src/presentation/builtins.rs:286:1
+   ::: djogi/src/presentation/builtins.rs:320:1
     |
-286 | pub struct MaskString;
+320 | pub struct MaskString;
     | --------------------- doesn't satisfy `_: PresentationQueryCodec<String>`
     |
    ::: djogi/src/presentation/query.rs:56:1
