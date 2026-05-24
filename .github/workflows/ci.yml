@@ -129,7 +129,7 @@ jobs:
         run: cargo xtask check-secrets
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --features spatial,outbox,notify,testing -- -D warnings
+        run: cargo clippy --workspace --all-targets --features spatial,outbox,notify,testing,hmac-codec -- -D warnings
 
       # cargo-deny only runs when dependencies actually change. The license
       # / advisory check is deterministic given the lockfile, so re-running
@@ -233,6 +233,13 @@ jobs:
           --test raw_stream_with_fetch_size_pin
           --test raw_pool_access_pin
           -- --test-threads=1
+
+      - name: Presentation codec HMAC feature gate
+        # `presentation_codec` always runs in the workspace default-feature lane,
+        # but HMAC-specific assertions are gated behind `feature = "hmac-codec"`.
+        # Run the target once with that feature enabled so keyed-codec startup
+        # and round-trip behavior stay covered in CI.
+        run: cargo test -p djogi --features hmac-codec --test presentation_codec -- --test-threads=1
 
   # MSRV gate — verifies the code still compiles on the toolchain
   # declared in `workspace.package.rust-version`. The main `check`

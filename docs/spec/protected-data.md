@@ -289,20 +289,46 @@ but the codec's associated output type:
 This contract is verified at compile time. The macro emits the associated type directly, not
 the storage type.
 
+### Identity Queryability Footgun
+
+`djogi::presentation::builtins::Identity` is intentionally permissive:
+`QUERYABILITY = PredicateAndOrder`. Treat it as an explicit plaintext opt-in.
+
+If a sensitive field is exposed in a user-facing scope and uses `Identity`,
+the generated accessor grants direct predicate/order access on the storage
+value through visage query helpers. For PII fields, prefer `MaskString`,
+`MaskOptionString`, or HMAC codecs unless plaintext queryability is an
+explicitly reviewed requirement.
+
 ### HMAC Key Requirement and Startup Validation
 
-Any model that uses at least one `presentation_codec` or `try_presentation_codec` field
-requires the environment variable `DJOGI_PRESENTATION_HMAC_KEY` to be set at pool connect
-time.
+HMAC presentation codecs are optional and gated behind the crate feature
+`hmac-codec`:
+
+- `djogi::presentation::builtins::HmacSha256HexString`
+- `djogi::presentation::builtins::HmacSha256HexOptionString`
+- `djogi::testing::install_presentation_hmac_key_for_testing`
+
+When `hmac-codec` is disabled, those symbols are unavailable and no HMAC-key
+startup requirement exists for presentation codecs.
+
+When `hmac-codec` is enabled, models that use either HMAC codec require
+`DJOGI_PRESENTATION_HMAC_KEY` at startup.
 
 The key must be exactly 64 lowercase hexadecimal characters, which encodes 32 bytes (256 bits)
 of entropy for HMAC operations.
 
-**Pool startup behavior:** `DjogiPool::connect(&database_url)` validates the key and returns
-`Err(DjogiError::PresentationStartup(..))` if the key is absent or invalid — not a panic.
+`validate_startup_inventory()` invokes each linked codec's
+`PresentationCodecInfo::validate_startup()`; only keyed codecs that implement
+HMAC validation fail on missing/invalid `DJOGI_PRESENTATION_HMAC_KEY`.
+
+**Pool startup behavior:** `DjogiPool::connect(&database_url)` runs
+`validate_startup_inventory()` and returns `Err(DjogiError::PresentationStartup(..))` for
+startup validation failures — not a panic.
 
 **Freestanding validation:** `djogi::presentation::validate_startup_inventory()` performs the
-same check without requiring a pool. Useful for early-boot validation before accepting traffic.
+same inventory check without requiring a pool. Useful for early-boot validation
+before accepting traffic.
 
 **Linked inventory behavior:** both `DjogiPool::connect` and
 `validate_startup_inventory()` only validate `PresentationCodecUsage` records that are
@@ -339,9 +365,11 @@ Then run `djogi::presentation::validate_startup_inventory()` (or a pool connect 
 same binary after installing/removing `DJOGI_PRESENTATION_HMAC_KEY` as needed for the
 assertion.
 
-**Testing:** use `djogi::testing::install_presentation_hmac_key_for_testing("aabbcc...")` to
-install a test key before calling `DjogiPool::connect`. The helper validates that the key is
-exactly 64 lowercase hex characters and sets the environment variable.
+**Testing (`hmac-codec` enabled):** use
+`djogi::testing::install_presentation_hmac_key_for_testing("aabbcc...")` to
+install a test key before calling `DjogiPool::connect`. The helper validates
+that the key is exactly 64 lowercase hex characters and sets the environment
+variable.
 
 ---
 

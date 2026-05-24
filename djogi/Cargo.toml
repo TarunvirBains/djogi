@@ -114,6 +114,14 @@ trgm = []
 # cfg(test)).
 testing = []
 
+# hmac-codec — gates presentation HMAC built-ins
+# (`HmacSha256HexString`, `HmacSha256HexOptionString`) and the test helper
+# `djogi::testing::install_presentation_hmac_key_for_testing`.
+#
+# The `hmac` crate dependency itself remains always-on because the snapshot
+# signing module also uses HMAC-SHA256 independently of presentation codecs.
+hmac-codec = []
+
 [dependencies]
 argon2 = { version = "0.5", optional = true, features = ["std"] }
 # password-hash is an indirect dep of argon2. Listing it here so we can enable

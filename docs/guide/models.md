@@ -986,19 +986,29 @@ This generates six visages: the four built-ins plus `UserSupport` and `UserAnaly
 
 | Codec | Input | Output | Reversible | Queryable | Notes |
 |-------|-------|--------|------------|-----------|-------|
-| `Identity` | `T` | `T` | Yes | Predicate + Order | No-op codec; primarily for testing and explicit "unmodified" scopes |
+| `Identity` | `T` | `T` | Yes | Predicate + Order | No-op codec; explicit plaintext opt-in |
 | `MaskString` | `String` | `String` | No | No | Replaces all characters with `*`; implements both `PresentationCodec` and `TryPresentationCodec` |
 | `MaskOptionString` | `Option<String>` | `Option<String>` | No | No | Like `MaskString` for wrapped values; `None` remains `None` |
-| `HmacSha256HexString` | `String` | `HmacSha256Hex` | No | No | HMAC-SHA256 keyed hash, output as lowercase hex; requires `DJOGI_PRESENTATION_HMAC_KEY` environment variable |
-| `HmacSha256HexOptionString` | `Option<String>` | `Option<HmacSha256Hex>` | No | No | Like `HmacSha256HexString` for wrapped values; `None` remains `None` |
+| `HmacSha256HexString` | `String` | `HmacSha256Hex` | No | No | HMAC-SHA256 keyed hash, output as lowercase hex; requires feature `hmac-codec` and `DJOGI_PRESENTATION_HMAC_KEY` |
+| `HmacSha256HexOptionString` | `Option<String>` | `Option<HmacSha256Hex>` | No | No | Like `HmacSha256HexString` for wrapped values; `None` remains `None`; requires feature `hmac-codec` |
 
 **Reversibility:** A `Reversible` codec may be inverted at runtime (for decryption or deobfuscation). One-way codecs like `MaskString` and `HmacSha256HexString` are `OneWay`. Affects whether the codec can be used in certain query contexts.
 
 **Queryability:** A codec declares whether it can be used in filter predicates (`Disabled`, `PredicateOnly`, `OrderOnly`, `PredicateAndOrder`). Identity is fully queryable; masking and hashing codecs disable query participation since the masked/hashed value is not meaningful in filters.
 
+`Identity` is a deliberate footgun for protected fields: if you expose a PII
+field in a user-facing scope with `Identity`, callers can predicate/order on
+the plaintext storage value through visage query helpers. Prefer masking/HMAC
+unless plaintext queryability is explicitly required and reviewed.
+
 ### HMAC key configuration
 
-`HmacSha256HexString` and `HmacSha256HexOptionString` require the `DJOGI_PRESENTATION_HMAC_KEY` environment variable. The key must be exactly 64 lowercase hexadecimal characters (representing 32 bytes). Validation runs at pool connection time:
+Enable crate feature `hmac-codec` to use `HmacSha256HexString` and
+`HmacSha256HexOptionString`.
+
+With `hmac-codec` enabled, set `DJOGI_PRESENTATION_HMAC_KEY` to exactly 64
+lowercase hexadecimal characters (representing 32 bytes). Validation runs at
+pool connection time:
 
 ```rust
 let pool = DjogiPool::connect(&database_url).await?;
@@ -1007,7 +1017,7 @@ let pool = DjogiPool::connect(&database_url).await?;
 // Err(DjogiError::PresentationStartup(vec![...]))
 ```
 
-In tests, use the helper:
+In tests (with `hmac-codec` enabled), use the helper:
 
 ```rust
 #[tokio::test]

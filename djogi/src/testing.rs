@@ -1252,6 +1252,7 @@ pub async fn install_accounts_balance_increment_trigger_for_test(
 /// The `set_var` call is in an `unsafe` block. The caller is responsible for
 /// holding an exclusive mutex over the environment while this function runs
 /// and for the duration of the test's pool construction.
+#[cfg(feature = "hmac-codec")]
 #[doc(hidden)]
 pub fn install_presentation_hmac_key_for_testing(key: &str) {
     // SAFETY: caller holds ENV_MUTEX (or an equivalent serialising mutex)

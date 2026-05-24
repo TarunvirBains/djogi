@@ -16,6 +16,8 @@
 //! | [`HmacSha256HexString`] | `String` | [`HmacSha256Hex`] | No | No | No |
 //! | [`HmacSha256HexOptionString`] | `Option<String>` | `Option<HmacSha256Hex>` | No | No | No |
 //!
+//! The two HMAC codecs are available only with crate feature `hmac-codec`.
+//!
 //! **`MaskString` in both slots**: `MaskString` implements both
 //! [`PresentationCodec<String>`](super::PresentationCodec) (infallible,
 //! used in `presentation_codec = MaskString`) and
@@ -42,23 +44,31 @@
 //! normalization is applied. `"Caf\u{e9}"` (NFC) and `"Cafe\u{301}"` (NFD)
 //! produce different HMAC outputs.
 
-use std::{convert::TryFrom, sync::OnceLock};
+use std::convert::TryFrom;
 
+#[cfg(feature = "hmac-codec")]
+use std::sync::OnceLock;
+
+#[cfg(feature = "hmac-codec")]
 use hmac::{Hmac, KeyInit, Mac};
+#[cfg(feature = "hmac-codec")]
 use sha2::Sha256;
 use thiserror::Error;
 
+#[cfg(feature = "hmac-codec")]
+use super::{BuiltInPresentationError, PresentationStartupError};
 use super::{
-    BuiltInPresentationError, PresentationCodec, PresentationCodecInfo, PresentationStartupError,
-    Queryability, Reversibility, TryPresentationCodec,
+    PresentationCodec, PresentationCodecInfo, Queryability, Reversibility, TryPresentationCodec,
 };
 use crate::presentation::query::{
     PresentationOrderCodec, PresentationQueryCodec, PresentationQueryField,
 };
 
+#[cfg(feature = "hmac-codec")]
 type HmacSha256 = Hmac<Sha256>;
 
 /// Environment variable name for the presentation HMAC key.
+#[cfg(feature = "hmac-codec")]
 const HMAC_KEY_ENV: &str = "DJOGI_PRESENTATION_HMAC_KEY";
 
 /// Process-wide cache for the decoded 32-byte HMAC key.
@@ -69,13 +79,14 @@ const HMAC_KEY_ENV: &str = "DJOGI_PRESENTATION_HMAC_KEY";
 ///
 /// Failed loads are NOT cached — the `OnceLock` is only written after a
 /// successful parse, so retrying after fixing the environment succeeds.
+#[cfg(feature = "hmac-codec")]
 static HMAC_KEY: OnceLock<[u8; 32]> = OnceLock::new();
 
 /// Mutex serializing env-var mutation in tests so concurrent test runs
 /// do not interfere with each other's key state.
 ///
 /// Only active under `#[cfg(test)]`. Production code never uses this mutex.
-#[cfg(test)]
+#[cfg(all(test, feature = "hmac-codec"))]
 pub(crate) static TEST_HMAC_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 // ── Key parsing ────────────────────────────────────────────────────────────
@@ -90,6 +101,7 @@ pub(crate) static TEST_HMAC_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::
 ///
 /// Failed parses are never cached. The caller may retry after fixing the
 /// environment variable.
+#[cfg(feature = "hmac-codec")]
 fn parse_hmac_key(hex: &str, env_name: &'static str) -> Result<[u8; 32], PresentationStartupError> {
     let bytes = hex.as_bytes();
 
@@ -116,6 +128,7 @@ fn parse_hmac_key(hex: &str, env_name: &'static str) -> Result<[u8; 32], Present
 /// - `a`–`f` (lowercase only): returns 10–15.
 /// - `A`–`F` (uppercase): returns `NonLowercaseHexByte` error.
 /// - Any other byte: returns `InvalidHexByte` error.
+#[cfg(feature = "hmac-codec")]
 fn decode_hex_nibble(
     byte: u8,
     idx: usize,
@@ -144,6 +157,7 @@ fn decode_hex_nibble(
 ///
 /// Failed validation is NOT cached; a later retry after fixing the environment
 /// can succeed.
+#[cfg(feature = "hmac-codec")]
 fn validate_startup_for_hmac_key() -> Result<(), PresentationStartupError> {
     let raw = match std::env::var(HMAC_KEY_ENV) {
         Ok(v) => v,
@@ -163,13 +177,12 @@ fn validate_startup_for_hmac_key() -> Result<(), PresentationStartupError> {
     Ok(())
 }
 
+#[cfg(feature = "hmac-codec")]
 fn hmac_sha256_hex_string_present_with_cached_key(
     value: &str,
     cached_key: Option<&[u8; 32]>,
 ) -> Result<HmacSha256Hex, BuiltInPresentationError> {
-    let key = cached_key.ok_or(BuiltInPresentationError::KeyNotValidated {
-        env: HMAC_KEY_ENV,
-    })?;
+    let key = cached_key.ok_or(BuiltInPresentationError::KeyNotValidated { env: HMAC_KEY_ENV })?;
 
     let mut mac = HmacSha256::new_from_slice(key.as_ref())
         .expect("HMAC-SHA256 accepts any key length; 32-byte key is always valid");
@@ -431,6 +444,7 @@ impl HmacSha256Hex {
     /// This constructor is crate-private — only codec implementations
     /// inside this module may produce `HmacSha256Hex` values. Downstream
     /// code cannot construct this type from arbitrary strings.
+    #[cfg(feature = "hmac-codec")]
     pub(crate) fn new_unchecked(hex: String) -> Self {
         Self(hex)
     }
@@ -515,8 +529,10 @@ impl<'a> tokio_postgres::types::FromSql<'a> for HmacSha256Hex {
 /// The HMAC input is the exact UTF-8 bytes of the decoded Rust `String`.
 /// No Unicode normalization is applied. `"Caf\u{e9}"` (NFC) and
 /// `"Cafe\u{301}"` (NFD) produce different HMAC outputs.
+#[cfg(feature = "hmac-codec")]
 pub struct HmacSha256HexString;
 
+#[cfg(feature = "hmac-codec")]
 impl PresentationCodecInfo<String> for HmacSha256HexString {
     type Output = HmacSha256Hex;
     const REVERSIBILITY: Reversibility = Reversibility::OneWay;
@@ -527,6 +543,7 @@ impl PresentationCodecInfo<String> for HmacSha256HexString {
     }
 }
 
+#[cfg(feature = "hmac-codec")]
 impl TryPresentationCodec<String> for HmacSha256HexString {
     type Error = BuiltInPresentationError;
 
@@ -550,8 +567,10 @@ impl TryPresentationCodec<String> for HmacSha256HexString {
 ///
 /// See [`HmacSha256HexString`] for the key configuration and startup
 /// validation contract.
+#[cfg(feature = "hmac-codec")]
 pub struct HmacSha256HexOptionString;
 
+#[cfg(feature = "hmac-codec")]
 impl PresentationCodecInfo<Option<String>> for HmacSha256HexOptionString {
     type Output = Option<HmacSha256Hex>;
     const REVERSIBILITY: Reversibility = Reversibility::OneWay;
@@ -562,6 +581,7 @@ impl PresentationCodecInfo<Option<String>> for HmacSha256HexOptionString {
     }
 }
 
+#[cfg(feature = "hmac-codec")]
 impl TryPresentationCodec<Option<String>> for HmacSha256HexOptionString {
     type Error = BuiltInPresentationError;
 
@@ -582,6 +602,7 @@ impl TryPresentationCodec<Option<String>> for HmacSha256HexOptionString {
 ///
 /// Uses byte-level stdlib primitives — no regex engine, no external hex crate.
 /// Always produces a string of exactly `bytes.len() * 2` lowercase hex chars.
+#[cfg(feature = "hmac-codec")]
 fn hex_encode(bytes: &[u8]) -> String {
     const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -700,6 +721,7 @@ mod tests {
     // ── HMAC key parsing ─────────────────────────────────────────────────
 
     /// Valid 64 lowercase hex characters must pass.
+    #[cfg(feature = "hmac-codec")]
     #[test]
     fn hmac_key_validation_accepts_valid_lowercase_hex() {
         let valid = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899";
@@ -713,6 +735,7 @@ mod tests {
     }
 
     /// Uppercase characters must be rejected even though they are valid hex.
+    #[cfg(feature = "hmac-codec")]
     #[test]
     fn hmac_key_validation_rejects_uppercase_hex() {
         let uppercase = "AABBCCDDEEFF00112233445566778899AABBCCDDEEFF00112233445566778899";
@@ -729,6 +752,7 @@ mod tests {
     }
 
     /// 62-character string must be rejected for wrong length (need 64).
+    #[cfg(feature = "hmac-codec")]
     #[test]
     fn hmac_key_validation_rejects_wrong_length() {
         let short = "a".repeat(62);
@@ -745,6 +769,7 @@ mod tests {
     }
 
     /// 63-char hex produces InvalidHexLength.
+    #[cfg(feature = "hmac-codec")]
     #[test]
     fn hmac_key_validation_rejects_63_chars() {
         let s63 = "a".repeat(63);
@@ -760,6 +785,7 @@ mod tests {
     }
 
     /// Non-hex byte (e.g. `g`) must be rejected with InvalidHexByte.
+    #[cfg(feature = "hmac-codec")]
     #[test]
     fn hmac_key_validation_rejects_non_hex_byte() {
         let bad = "aabbccddeeff00112233445566778899aabbccddeeff001122334455667788gg";
@@ -785,6 +811,7 @@ mod tests {
     /// The definitive "cache miss → KeyNotValidated" guarantee is enforced by
     /// the type system: the per-value path exclusively reads an injected cache
     /// state and never reads the environment variable in the production path.
+    #[cfg(feature = "hmac-codec")]
     #[test]
     fn hmac_string_cache_miss_returns_key_not_validated() {
         let result = hmac_sha256_hex_string_present_with_cached_key("test", None);
@@ -803,6 +830,7 @@ mod tests {
     /// Two different inputs must produce different HMAC outputs (non-collision
     /// basic check). This test uses a specific test key installed via
     /// the test mutex.
+    #[cfg(feature = "hmac-codec")]
     #[test]
     fn hmac_two_different_inputs_produce_different_outputs() {
         let _guard = TEST_HMAC_ENV_MUTEX
@@ -847,6 +875,7 @@ mod tests {
 
     // ── HmacSha256HexOptionString ─────────────────────────────────────────
 
+    #[cfg(feature = "hmac-codec")]
     #[test]
     fn hmac_option_string_none_preserved() {
         let result = HmacSha256HexOptionString::try_present(&None);
@@ -860,6 +889,7 @@ mod tests {
 
     // ── HmacSha256Hex ────────────────────────────────────────────────────
 
+    #[cfg(feature = "hmac-codec")]
     #[test]
     fn hmac_sha256_hex_as_str_returns_inner() {
         let h = HmacSha256Hex::new_unchecked("aabb".to_string());
@@ -913,6 +943,7 @@ mod tests {
 
     // ── hex_encode ────────────────────────────────────────────────────────
 
+    #[cfg(feature = "hmac-codec")]
     #[test]
     fn hex_encode_known_values() {
         assert_eq!(hex_encode(&[0x00]), "00");
@@ -921,6 +952,7 @@ mod tests {
         assert_eq!(hex_encode(&[]), "");
     }
 
+    #[cfg(feature = "hmac-codec")]
     #[test]
     fn hex_encode_output_is_lowercase() {
         let bytes: Vec<u8> = (0..=255u8).collect();

@@ -18,7 +18,7 @@
 //! Once all seven stages are complete every item in this file must compile and
 //! every `#[tokio::test]` / `#[djogi_test]` body must pass.
 //!
-//! # Environment requirement
+//! # Environment requirement (`hmac-codec` only)
 //!
 //! This test binary links a model using `HmacSha256HexString` (see
 //! `UserWithHmac`). That codec's `validate_startup` checks for
@@ -31,9 +31,12 @@
 //! and restore it afterward — the env-var requirement is not in conflict with
 //! those tests.
 //!
+//! When feature `hmac-codec` is disabled, HMAC-specific assertions and models
+//! in this file are compiled out.
+//!
 //! # What is asserted
 //!
-//! 1. **Pool startup validation** — `DjogiPool::connect` with
+//! 1. **Pool startup validation** *(feature `hmac-codec` only)* — `DjogiPool::connect` with
 //!    `DJOGI_PRESENTATION_HMAC_KEY` unset returns
 //!    `Err(DjogiError::PresentationStartup(..))`, not a panic.
 //! 2. **Custom scope generates visage struct** — `visage_scopes(support =
@@ -49,8 +52,8 @@
 //!    implement `TryFrom<&User>`, not `From<&User>`.
 //! 5. **`validate_startup_inventory()` returns `Err` when the HMAC key is
 //!    missing** — the freestanding validator surfaces the same error as the pool
-//!    connection path.
-//! 6. **Test-key install before pool connect** — the testing helper
+//!    connection path. *(feature `hmac-codec` only)*
+//! 6. **Test-key install before pool connect** *(feature `hmac-codec` only)* — the testing helper
 //!    `djogi::testing::install_presentation_hmac_key_for_testing` installs a
 //!    64-hex-char key and allows `DjogiPool::connect` to succeed; a
 //!    `UserWithCodec::create` / fetch round-trip then works end-to-end.
@@ -186,6 +189,7 @@ pub struct UserWithCodec {
 /// `djogi::testing::install_presentation_hmac_key_for_testing`.
 #[model(table = "gh227_hmac_users")]
 #[derive(Debug, Clone)]
+#[cfg(feature = "hmac-codec")]
 pub struct UserWithHmac {
     /// Field protected with an HMAC codec. Used only to register a startup-
     /// validation inventory entry — no `#[djogi_test]` body exercises this model.
@@ -265,6 +269,7 @@ impl TryPresentationCodec<String> for FailingFetchCodec {
 ///
 /// Uses `ENV_MUTEX` to serialise env mutation with Assertion 5.
 #[tokio::test]
+#[cfg(feature = "hmac-codec")]
 async fn pool_connect_fails_without_hmac_key() {
     let url = std::env::var("DATABASE_URL").expect("DATABASE_URL required for pool startup tests");
 
@@ -376,6 +381,7 @@ const _: () = {
 /// This test confirms it returns `Err` when `DJOGI_PRESENTATION_HMAC_KEY` is
 /// absent — the same condition that blocks pool connect in Assertion 1.
 #[tokio::test]
+#[cfg(feature = "hmac-codec")]
 async fn validate_startup_inventory_errs_without_hmac_key() {
     let _guard = ENV_MUTEX.lock().expect("ENV_MUTEX poisoned");
 
@@ -400,6 +406,39 @@ async fn validate_startup_inventory_errs_without_hmac_key() {
     assert!(
         result.is_err(),
         "validate_startup_inventory must return Err when DJOGI_PRESENTATION_HMAC_KEY is unset"
+    );
+}
+
+/// When `hmac-codec` is disabled, no keyed presentation codec is linked by this
+/// test target, so startup validation must not require
+/// `DJOGI_PRESENTATION_HMAC_KEY`.
+#[cfg(not(feature = "hmac-codec"))]
+#[tokio::test]
+async fn validate_startup_inventory_allows_missing_hmac_key_when_hmac_codec_disabled() {
+    let _guard = ENV_MUTEX.lock().expect("ENV_MUTEX poisoned");
+
+    let saved = std::env::var("DJOGI_PRESENTATION_HMAC_KEY").ok();
+
+    // SAFETY: guarded by ENV_MUTEX held above.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::remove_var("DJOGI_PRESENTATION_HMAC_KEY");
+    }
+
+    let result = djogi::presentation::validate_startup_inventory();
+
+    // Restore before asserting.
+    // SAFETY: same ENV_MUTEX guard; no concurrent env readers.
+    #[allow(unsafe_code)]
+    match &saved {
+        Some(v) => unsafe { std::env::set_var("DJOGI_PRESENTATION_HMAC_KEY", v) },
+        None => unsafe { std::env::remove_var("DJOGI_PRESENTATION_HMAC_KEY") },
+    }
+
+    assert!(
+        result.is_ok(),
+        "with feature `hmac-codec` disabled, startup validation must not require \
+         DJOGI_PRESENTATION_HMAC_KEY"
     );
 }
 
@@ -560,6 +599,7 @@ async fn visage_queryset_fetch_maps_try_codec_errors(mut ctx: DjogiContext) {
 /// 3. The manual test harness (`setup_test_db`) then succeeds, after which the
 ///    normal create/fetch round-trip still works.
 #[tokio::test]
+#[cfg(feature = "hmac-codec")]
 async fn test_key_installed_before_pool_connect() {
     use djogi::__private::futures::FutureExt as _;
     use std::panic::AssertUnwindSafe;

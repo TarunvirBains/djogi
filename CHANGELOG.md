@@ -65,7 +65,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Built-in codecs — `Identity` (no-op), `MaskString` /
   `MaskOptionString` (mask to `*`), `HmacSha256HexString` /
   `HmacSha256HexOptionString` (HMAC-SHA256 hash) — cover common
-  sensitive-data patterns. Custom visage scopes beyond the four
+  sensitive-data patterns. HMAC codecs are behind the `hmac-codec`
+  feature flag. Custom visage scopes beyond the four
   built-ins (`Public`, `SelfView`, `Admin`, `Export`) are declared
   via `#[model(visage_scopes(name = Suffix))]`. HMAC codecs require
   `DJOGI_PRESENTATION_HMAC_KEY` (64 lowercase hex characters) set
