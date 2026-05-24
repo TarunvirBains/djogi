@@ -160,16 +160,31 @@ fn validate_field_scope_membership(
             }
         }
 
-        // GH #227 Stage 4 — `protected(per_scope = { ... })` may name
-        // scopes that the field's own `expose(...)` did not. Without
-        // this guard, an adopter could declare `per_scope = { foo = {
-        // presentation_codec = X } }` against a scope the field is not
-        // exposed in — the codec block would dangle silently because
-        // the visage emitter only consumes codec entries that match the
-        // emitter's current scope. Anchor the diagnostic at the scope
-        // ident inside the block (via `PerScopeCodecEntry::scope_span`)
-        // so the underline points at the offending key.
         if let Some(spec) = attrs.protected.as_ref() {
+            // GH #227 Cluster A F2 — `per_scope` codecs are scalar-only.
+            // Relation fields already project through `expose(scope ->
+            // Peer)` and the visage emitter never routes embedded peers
+            // through presentation codecs. Reject the entire `per_scope`
+            // block up front so adopters get a direct, field-local
+            // diagnostic instead of a silently ignored declaration.
+            if !spec.per_scope.is_empty() && detect_relation(&field.ty).is_some() {
+                let field_name = field
+                    .ident
+                    .as_ref()
+                    .expect("named-field structs only")
+                    .to_string();
+                return Err(syn::Error::new(
+                    spec.per_scope_span.unwrap_or(spec.list_span),
+                    format!(
+                        "field `{field_name}` is a relation field, so \
+                         `protected(per_scope = {{ ... }})` is not allowed here. \
+                         Presentation codecs are scalar-only and must be attached \
+                         to fields exposed with `expose(scope)`, not \
+                         `expose(scope -> Peer)` relation embeds.",
+                    ),
+                ));
+            }
+
             for entry in &spec.per_scope {
                 if !ExposeSpec::is_builtin_scope(&entry.scope)
                     && !custom_scope_keys.contains(&entry.scope.as_str())
@@ -190,6 +205,46 @@ fn validate_field_scope_membership(
                              admin, export. {}. Declare additional scopes via \
                              `#[model(visage_scopes(name = Suffix))]` on the model.",
                             entry.scope, custom_part,
+                        ),
+                    ));
+                }
+
+                // GH #227 Cluster A F1 — every `per_scope` entry must
+                // target a scope the field itself exposes. Without this
+                // cross-check, a codec declaration for a non-exposed
+                // scope compiles but is dead: the visage emitter never
+                // consults it because the field is absent from that
+                // scope's generated visage.
+                if !attrs.expose.scalar_scopes.contains(&entry.scope) {
+                    let field_name = field
+                        .ident
+                        .as_ref()
+                        .expect("named-field structs only")
+                        .to_string();
+                    let mut scalar_scope_names: Vec<&str> = attrs
+                        .expose
+                        .scalar_scopes
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect();
+                    scalar_scope_names.sort_unstable();
+                    let exposed_scopes = if attrs.expose.scalar_scopes.is_empty() {
+                        "this field is not exposed in any scalar visage scope".to_string()
+                    } else {
+                        format!(
+                            "scalar expose scopes on this field: {}",
+                            scalar_scope_names.join(", "),
+                        )
+                    };
+                    return Err(syn::Error::new(
+                        entry.scope_span,
+                        format!(
+                            "scope `{}` referenced inside `protected(per_scope = {{ ... }})` \
+                             is not exposed on field `{field_name}`. `per_scope` entries must \
+                             match the field's scalar `#[field(expose(...))]` scopes; \
+                             {exposed_scopes}. Add `expose({})` to this field or remove the \
+                             codec entry for that scope.",
+                            entry.scope, entry.scope,
                         ),
                     ));
                 }
@@ -224,20 +279,38 @@ fn unknown_scope_error(
     )
 }
 
-/// Render a `syn::Path` as the `"a::b::c"` string consumed by the
-/// `PresentationCodecUsage::const_new` inventory submission — GH #227
-/// Stage 4.
+/// Emit `::std::any::type_name::<CodecTy>()` for a codec type path.
 ///
-/// `quote! { #path }.to_string()` would also work but would inject
-/// token-level whitespace (`"djogi :: presentation :: builtins ::
-/// MaskString"`); joining the bare segment idents with `::` produces
-/// the canonical adopter-readable form the runtime inventory expects.
-fn path_to_codec_string(path: &syn::Path) -> String {
-    path.segments
-        .iter()
-        .map(|s| s.ident.to_string())
-        .collect::<Vec<_>>()
-        .join("::")
+/// Used in non-const runtime code paths (e.g. `VisageError`) where the
+/// compiler can evaluate the fully resolved type identity at runtime.
+fn codec_runtime_type_name_tokens(path: &syn::Path) -> TokenStream {
+    quote! { ::std::any::type_name::<#path>() }
+}
+
+/// Emit a const-safe codec identity string for inventory submission.
+///
+/// GH #227 Cluster A NC5: the old segment-join strategy lost fidelity
+/// for single-segment imported paths (`MaskString`). The ideal fix is
+/// `type_name::<CodecTy>()`, but this toolchain does not yet permit it
+/// in the `inventory::submit!` static initializer. Use the next-best
+/// const-safe identity:
+///
+/// - multi-segment paths keep their canonical `a::b::c` spelling;
+/// - single-segment paths are prefixed with the model module's
+///   `module_path!()` so the resulting string identifies the resolved
+///   local binding unambiguously within the adopter crate.
+fn codec_inventory_identity_tokens(path: &syn::Path) -> TokenStream {
+    if path.segments.len() == 1 {
+        quote! { ::std::concat!(::std::module_path!(), "::", ::std::stringify!(#path)) }
+    } else {
+        let joined = path
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::");
+        quote! { #joined }
+    }
 }
 
 /// Look up the per-scope presentation codec entry (if any) for the
@@ -363,7 +436,9 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
                     let codec_ty = &entry.codec_type;
                     let fname_str = fname.to_string();
                     let scope_str = scope.to_string();
-                    let codec_path_str = path_to_codec_string(codec_ty);
+                    let codec_type_name_for_err = codec_runtime_type_name_tokens(codec_ty);
+                    let codec_type_name_for_inventory =
+                        codec_inventory_identity_tokens(codec_ty);
 
                     // Field type: route through `PresentationCodecInfo<Input>::Output`
                     // so any change to a codec's output type flows through to the
@@ -386,7 +461,7 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
                                     model: #source_name_str,
                                     field: #fname_str,
                                     scope: #scope_str,
-                                    codec: #codec_path_str,
+                                    codec: #codec_type_name_for_err,
                                     source: ::std::boxed::Box::new(__djogi_codec_err),
                                 })?,
                         });
@@ -408,7 +483,7 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
                                 #source_name_str,
                                 #fname_str,
                                 #scope_str,
-                                #codec_path_str,
+                                #codec_type_name_for_inventory,
                                 #fallible_lit,
                                 || ::std::any::type_name::<#fty>(),
                                 || ::std::any::type_name::<
@@ -1158,4 +1233,46 @@ fn framework_field_inits(model_attrs: &ModelAttrs) -> Vec<TokenStream> {
     out.push(quote! { created_at: src.created_at, });
     out.push(quote! { updated_at: src.updated_at, });
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{codec_inventory_identity_tokens, codec_runtime_type_name_tokens};
+
+    #[test]
+    fn codec_runtime_type_name_tokens_use_runtime_type_identity() {
+        let codec_path: syn::Path = syn::parse_str("MaskString").expect("parse path");
+        let tokens = codec_runtime_type_name_tokens(&codec_path).to_string();
+        assert!(
+            tokens.contains("type_name :: < MaskString > ()"),
+            "expected runtime type_name emission, got: {tokens}"
+        );
+    }
+
+    #[test]
+    fn codec_inventory_identity_tokens_prefix_single_segment_paths_with_module_path() {
+        let codec_path: syn::Path = syn::parse_str("MaskString").expect("parse path");
+        let tokens = codec_inventory_identity_tokens(&codec_path).to_string();
+        assert!(
+            tokens.contains("concat !"),
+            "expected concat-based const identity, got: {tokens}"
+        );
+        assert!(
+            tokens.contains("module_path ! ()"),
+            "expected module_path prefix, got: {tokens}"
+        );
+    }
+
+    #[test]
+    fn codec_inventory_identity_tokens_preserve_multi_segment_paths() {
+        let codec_path: syn::Path = syn::parse_str(
+            "djogi::presentation::builtins::MaskString",
+        )
+        .expect("parse path");
+        let tokens = codec_inventory_identity_tokens(&codec_path).to_string();
+        assert!(
+            tokens.contains("\"djogi::presentation::builtins::MaskString\""),
+            "expected canonical literal identity, got: {tokens}"
+        );
+    }
 }
