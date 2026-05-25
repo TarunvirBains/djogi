@@ -231,6 +231,35 @@ async fn join_values_fetch_one_exact_match(mut ctx: DjogiContext) {
     assert!((score - 0.99).abs() < 1e-9);
 }
 
+/// Compound ON predicates require every clause to match.
+#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+async fn join_values_compound_on_requires_both_columns(mut ctx: DjogiContext) {
+    let animals = seed(&mut ctx, &[("elephant", true, 10), ("lion", true, 20)]).await;
+
+    let rows: InlineValues<(HeerIdDesc, i32)> = InlineValues::new(
+        vec![
+            (animals[0].id, 999),
+            (animals[0].id, 10),
+            (animals[1].id, 999),
+        ],
+        "w",
+        ("animal_id", "score"),
+    )
+    .expect("valid");
+
+    let pairs = Phase85C4bValuesAnimal::objects()
+        .join_values(rows, |a, v| {
+            a.id().eq_values(v.col0()) & a.score().eq_values(v.col1())
+        })
+        .fetch_all(&mut ctx)
+        .await
+        .expect("compound ON fetch_all");
+
+    assert_eq!(pairs.len(), 1, "only the exact id+score pair should match");
+    assert_eq!(pairs[0].0.name, "elephant");
+    assert_eq!(pairs[0].1, (animals[0].id, 10));
+}
+
 /// `fetch_one` returns NotFound on empty VALUES.
 #[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
 async fn join_values_fetch_one_empty_values_returns_not_found(mut ctx: DjogiContext) {
@@ -420,9 +449,54 @@ async fn left_join_values_empty_values_all_rows_with_none(mut ctx: DjogiContext)
     );
 }
 
-/// Left join `count` = count of model rows.
+/// Left join with duplicate VALUES rows counts joined pairs, not distinct left rows.
 #[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
-async fn left_join_values_count_equals_model_row_count(mut ctx: DjogiContext) {
+async fn left_join_values_duplicate_matches_count_pairs(mut ctx: DjogiContext) {
+    let animals = seed(&mut ctx, &[("elephant", true, 10)]).await;
+
+    let weights: InlineValues<(HeerIdDesc, f64)> = InlineValues::new(
+        vec![(animals[0].id, 0.9), (animals[0].id, 0.4)],
+        "w",
+        ("animal_id", "score"),
+    )
+    .expect("valid");
+
+    let count = Phase85C4bValuesAnimal::objects()
+        .left_join_values(weights, |a, v| a.id().eq_values(v.col0()))
+        .count(&mut ctx)
+        .await
+        .expect("count");
+
+    assert_eq!(count, 2, "count follows joined-pair cardinality");
+}
+
+/// Left join `fetch_one` errors when multiple VALUES rows match the same left row.
+#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+async fn left_join_values_duplicate_matches_fetch_one_is_multiple(mut ctx: DjogiContext) {
+    let animals = seed(&mut ctx, &[("elephant", true, 10)]).await;
+
+    let weights: InlineValues<(HeerIdDesc, f64)> = InlineValues::new(
+        vec![(animals[0].id, 0.9), (animals[0].id, 0.4)],
+        "w",
+        ("animal_id", "score"),
+    )
+    .expect("valid");
+
+    let err = Phase85C4bValuesAnimal::objects()
+        .left_join_values(weights, |a, v| a.id().eq_values(v.col0()))
+        .fetch_one(&mut ctx)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(err, DjogiError::MultipleObjects { .. }),
+        "expected MultipleObjects, got {err:?}"
+    );
+}
+
+/// Left join with empty VALUES counts filtered left rows because there are no duplicate matches.
+#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+async fn left_join_values_empty_values_count_equals_filtered_left_rows(mut ctx: DjogiContext) {
     seed(&mut ctx, &[("elephant", true, 10), ("lion", false, 20)]).await;
 
     let weights: InlineValues<(HeerIdDesc, f64)> =

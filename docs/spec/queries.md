@@ -191,7 +191,8 @@ PostgreSQL 18 added `OLD`/`NEW` aliases in `RETURNING` clauses for `UPDATE` and 
 `InlineValues<Row>` holds a typed `Vec<Row>` of tuple data computed in Rust.
 `QuerySet<T>::join_values` / `left_join_values` join it against the model
 table with a structured, typed `ON` predicate via `FieldRef::eq_values` /
-`DjogiField::eq_values`.
+`DjogiField::eq_values`. `QuerySet<T>::cross_join_values` is the explicit
+cartesian-product sibling when no `ON` predicate is desired.
 
 SQL shape:
 
@@ -212,7 +213,9 @@ INNER JOIN (VALUES
 
 Key design properties:
 
-- No implicit `ON TRUE` / cartesian join.  The predicate is always explicit.
+- No implicit `ON TRUE` / cartesian join.  The predicate is always explicit
+  on `join_values` / `left_join_values`; explicit cartesian products use
+  `cross_join_values`.
 - All row data binds through `SqlAccumulator::push_bind`; alias and column
   identifiers are validated with `check_user_supplied_ident` at construction.
 - First-row placeholders are cast (`$1::BIGINT`) so Postgres can infer column
@@ -222,17 +225,28 @@ Key design properties:
 - Unsupported left-queryset state (`prefetch`, `select_related`, `cache`,
   row locks, non-default `distinct`) returns `DjogiError::Validation`.
 - `left_join_values` uses a framework-owned presence sentinel column to
-  distinguish "no match" from "matched row with nullable columns".
+  distinguish "no match" from "matched row with nullable columns". Result
+  shape is pair-based: multiple matching VALUES rows produce multiple
+  `(T, Option<Row>)` pairs for the same left row.
 - Tuple rows arity 1–6.  Supported scalars: standard integers (incl. widened
   `i8/u8/u16/u32/u64`), floats, `bool`, `Decimal`, `Uuid`, `HeerId`,
   `HeerIdDesc`, `RanjId`, `RanjIdDesc`, `DateTime`, `Date`, `Time`,
   `PrimitiveDateTime`, `Interval`, `Vec<u8>`, and `Option<T>` for each.
 
+Entry points:
+
+- `join_values(...) -> Vec<(T, Row)>` — INNER JOIN against the inline relation.
+- `left_join_values(...) -> Vec<(T, Option<Row>)>` — LEFT JOIN; unmatched rows
+  decode as `None`.
+- `cross_join_values(...) -> Vec<(T, Row)>` — explicit cartesian join with no
+  `ON` predicate.
+
 Adoption note: very large client-side value lists should be loaded into a
 temporary/staging table instead of sent as `VALUES`; Postgres planning cost
 grows with `VALUES` size.  Keep per-query VALUES under ~1 000 rows as a rule
 of thumb.  The framework rejects lists where `rows × arity > 65 535`
-(Postgres parameter ceiling).
+(Postgres parameter ceiling) and also rejects terminals whose extra filter /
+pagination binds would push the final query above that ceiling.
 
 ### 5.8 Performance Contract
 

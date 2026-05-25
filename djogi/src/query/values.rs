@@ -63,13 +63,13 @@
 //! Empty `InlineValues` is valid.  Terminal methods short-circuit after
 //! validation:
 //!
-//! | Method      | Inner join result            | Left join result                               | Cross join result     |
-//! |:------------|:-----------------------------|:-----------------------------------------------|:----------------------|
-//! | `fetch_all` | `Ok(vec![])`                 | executes query — all left rows with `None`     | `Ok(vec![])`          |
-//! | `first`     | `Ok(None)`                   | executes query — first left row with `None`    | `Ok(None)`            |
-//! | `fetch_one` | `Err(NotFound)`              | executes query — first left row or `NotFound`  | `Err(NotFound)`       |
-//! | `count`     | `Ok(0)`                      | executes query — count of left rows            | `Ok(0)`               |
-//! | `exists`    | `Ok(false)`                  | executes query — any left rows?                | `Ok(false)`           |
+//! | Method      | Inner join result            | Left join result                                          | Cross join result     |
+//! |:------------|:-----------------------------|:----------------------------------------------------------|:----------------------|
+//! | `fetch_all` | `Ok(vec![])`                 | executes query — one pair per joined row; misses yield `None` | `Ok(vec![])`      |
+//! | `first`     | `Ok(None)`                   | executes query — first joined pair or `None`              | `Ok(None)`            |
+//! | `fetch_one` | `Err(NotFound)`              | executes query — exactly one joined pair or error         | `Err(NotFound)`       |
+//! | `count`     | `Ok(0)`                      | executes query — count of joined pairs                    | `Ok(0)`               |
+//! | `exists`    | `Ok(false)`                  | executes query — any joined pair?                         | `Ok(false)`           |
 //!
 //! # Supported row types
 //!
@@ -796,13 +796,15 @@ impl<Row: ValuesRow> InlineValues<Row> {
     /// - `alias` — SQL alias for the VALUES sub-relation (e.g. `"weights"`).
     ///   Must be a plain SQL identifier that does not start with `__djogi_`.
     /// - `columns` — arity-checked tuple of `&'static str` column names.
-    ///   Each name must pass the same validation as `alias`.  No duplicates.
+    ///   Each name must pass the same validation as `alias`.  No duplicates
+    ///   after Postgres unquoted-identifier case folding.
     ///
     /// # Errors
     ///
     /// Returns [`DjogiError::Validation`] if:
     /// - `alias` or any column name fails identifier validation.
-    /// - Column names contain duplicates.
+    /// - Column names contain duplicates, including mixed-case spellings that
+    ///   fold to the same unquoted Postgres identifier.
     /// - `rows.len() × Row::ARITY` exceeds the Postgres parameter ceiling
     ///   (65 535).  Chunk the list or use a staging table instead.
     ///
@@ -842,10 +844,12 @@ impl<Row: ValuesRow> InlineValues<Row> {
         {
             let mut seen = std::collections::HashSet::with_capacity(col_vec.len());
             for col in &col_vec {
-                if !seen.insert(*col) {
+                let folded = col.to_ascii_lowercase();
+                if !seen.insert(folded) {
                     return Err(DjogiError::Validation(format!(
-                        "InlineValues column {col:?} appears more than once; \
-                         duplicate column names are not allowed."
+                        "InlineValues column {col:?} appears more than once \
+                         after Postgres identifier case folding; duplicate \
+                         column names are not allowed."
                     )));
                 }
             }
@@ -913,6 +917,7 @@ impl<T: Model, Row: ValuesRow> std::fmt::Debug for ValuesJoinedQuerySet<T, Row> 
 ///
 /// Constructed by [`QuerySet::left_join_values`].  Terminals produce
 /// `(T, Option<Row>)` pairs — `None` when no values row matched.
+/// Multiple values rows can match the same left row, producing multiple pairs.
 pub struct LeftValuesJoinedQuerySet<T: Model, Row: ValuesRow> {
     pub(crate) left: QuerySet<T>,
     pub(crate) values: InlineValues<Row>,
@@ -994,6 +999,7 @@ impl<T: Model> QuerySet<T> {
     ///
     /// Returns a [`LeftValuesJoinedQuerySet<T, Row>`] whose terminals produce
     /// `(T, Option<Row>)` pairs.
+    /// Multiple matching values rows duplicate the left row into multiple pairs.
     ///
     /// # Empty values
     ///
@@ -1086,6 +1092,22 @@ fn validate_left_qs<T: Model>(qs: &QuerySet<T>, site: &str) -> Result<(), DjogiE
         )));
     }
     Ok(())
+}
+
+fn validate_total_bind_count(
+    acc: SqlAccumulator,
+    site: &str,
+) -> Result<SqlAccumulator, DjogiError> {
+    let bind_count = usize::try_from(acc.bind_count()).expect("u32 bind count fits in usize");
+    if bind_count > PG_MAX_PARAMS {
+        return Err(DjogiError::Validation(format!(
+            "{site}: query would require {bind_count} bind parameters after \
+             composing VALUES rows with filters/pagination, exceeding \
+             Postgres' limit of {PG_MAX_PARAMS}. Chunk the VALUES input or \
+             reduce extra bind-producing filters/limit/offset."
+        )));
+    }
+    Ok(acc)
 }
 
 // ── SQL builders ─────────────────────────────────────────────────────────────
@@ -1591,9 +1613,11 @@ where
                 return Ok(vec![]);
             }
             crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
-            let (sql, binds) = build_values_join_select(&self)
-                .map_err(DjogiError::from)?
-                .into_parts();
+            let (sql, binds) = validate_total_bind_count(
+                build_values_join_select(&self).map_err(DjogiError::from)?,
+                "join_values::fetch_all",
+            )?
+            .into_parts();
             let params = as_params(&binds);
             ctx.query_all(&sql, &params)
                 .await?
@@ -1620,9 +1644,11 @@ where
             crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
             let mut limited = self;
             limited.left.limit = Some(1);
-            let (sql, binds) = build_values_join_select(&limited)
-                .map_err(DjogiError::from)?
-                .into_parts();
+            let (sql, binds) = validate_total_bind_count(
+                build_values_join_select(&limited).map_err(DjogiError::from)?,
+                "join_values::first",
+            )?
+            .into_parts();
             let params = as_params(&binds);
             ctx.query_opt(&sql, &params)
                 .await?
@@ -1649,9 +1675,11 @@ where
             crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
             let mut probe = self;
             probe.left.limit = Some(2);
-            let (sql, binds) = build_values_join_select(&probe)
-                .map_err(DjogiError::from)?
-                .into_parts();
+            let (sql, binds) = validate_total_bind_count(
+                build_values_join_select(&probe).map_err(DjogiError::from)?,
+                "join_values::fetch_one",
+            )?
+            .into_parts();
             let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
             match rows.len() {
@@ -1677,9 +1705,11 @@ where
                 return Ok(0);
             }
             crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
-            let (sql, binds) = build_values_join_count(&self)
-                .map_err(DjogiError::from)?
-                .into_parts();
+            let (sql, binds) = validate_total_bind_count(
+                build_values_join_count(&self).map_err(DjogiError::from)?,
+                "join_values::count",
+            )?
+            .into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
             row.try_get::<_, i64>(0)
@@ -1702,9 +1732,11 @@ where
                 return Ok(false);
             }
             crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
-            let (sql, binds) = build_values_join_exists(&self)
-                .map_err(DjogiError::from)?
-                .into_parts();
+            let (sql, binds) = validate_total_bind_count(
+                build_values_join_exists(&self).map_err(DjogiError::from)?,
+                "join_values::exists",
+            )?
+            .into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
             row.try_get::<_, bool>(0)
@@ -1721,6 +1753,9 @@ where
     Row: ValuesRow + Send + Unpin,
 {
     /// Execute and collect all `(T, Option<Row>)` pairs.
+    ///
+    /// When multiple values rows match one left row, each joined row is
+    /// returned as its own pair.
     pub fn fetch_all<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -1736,12 +1771,15 @@ where
             }
             crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
             let col_count = <T as FromPgRow>::COLUMNS.len();
-            let (sql, binds) = (if self.values.is_empty() {
-                build_left_values_join_empty_select(&self)
-            } else {
-                build_left_values_join_select(&self)
-            })
-            .map_err(DjogiError::from)?
+            let (sql, binds) = validate_total_bind_count(
+                (if self.values.is_empty() {
+                    build_left_values_join_empty_select(&self)
+                } else {
+                    build_left_values_join_select(&self)
+                })
+                .map_err(DjogiError::from)?,
+                "left_join_values::fetch_all",
+            )?
             .into_parts();
             let params = as_params(&binds);
             ctx.query_all(&sql, &params)
@@ -1752,7 +1790,7 @@ where
         }
     }
 
-    /// Return the first `(T, Option<Row>)` pair, or `None` if no model rows.
+    /// Return the first `(T, Option<Row>)` pair, or `None` if no joined rows.
     pub fn first<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -1770,12 +1808,15 @@ where
             let col_count = <T as FromPgRow>::COLUMNS.len();
             let mut limited = self;
             limited.left.limit = Some(1);
-            let (sql, binds) = (if limited.values.is_empty() {
-                build_left_values_join_empty_select(&limited)
-            } else {
-                build_left_values_join_select(&limited)
-            })
-            .map_err(DjogiError::from)?
+            let (sql, binds) = validate_total_bind_count(
+                (if limited.values.is_empty() {
+                    build_left_values_join_empty_select(&limited)
+                } else {
+                    build_left_values_join_select(&limited)
+                })
+                .map_err(DjogiError::from)?,
+                "left_join_values::first",
+            )?
             .into_parts();
             let params = as_params(&binds);
             ctx.query_opt(&sql, &params)
@@ -1786,7 +1827,7 @@ where
         }
     }
 
-    /// Expect exactly one model row.
+    /// Expect exactly one joined pair.
     pub fn fetch_one<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -1804,12 +1845,15 @@ where
             let col_count = <T as FromPgRow>::COLUMNS.len();
             let mut probe = self;
             probe.left.limit = Some(2);
-            let (sql, binds) = (if probe.values.is_empty() {
-                build_left_values_join_empty_select(&probe)
-            } else {
-                build_left_values_join_select(&probe)
-            })
-            .map_err(DjogiError::from)?
+            let (sql, binds) = validate_total_bind_count(
+                (if probe.values.is_empty() {
+                    build_left_values_join_empty_select(&probe)
+                } else {
+                    build_left_values_join_select(&probe)
+                })
+                .map_err(DjogiError::from)?,
+                "left_join_values::fetch_one",
+            )?
             .into_parts();
             let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
@@ -1821,7 +1865,11 @@ where
         }
     }
 
-    /// Count model rows (left join with empty values = count of all model rows).
+    /// Count joined pairs.
+    ///
+    /// Empty values is the one special case: the typed zero-row relation path
+    /// yields one `None` pair per left row, so `count()` there equals the
+    /// filtered left-row count.
     pub fn count<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -1836,9 +1884,11 @@ where
                 return Ok(0);
             }
             crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
-            let (sql, binds) = build_left_values_join_count(&self)
-                .map_err(DjogiError::from)?
-                .into_parts();
+            let (sql, binds) = validate_total_bind_count(
+                build_left_values_join_count(&self).map_err(DjogiError::from)?,
+                "left_join_values::count",
+            )?
+            .into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
             row.try_get::<_, i64>(0)
@@ -1846,7 +1896,7 @@ where
         }
     }
 
-    /// Return `true` if any model rows exist.
+    /// Return `true` if any joined pairs exist.
     pub fn exists<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -1861,9 +1911,11 @@ where
                 return Ok(false);
             }
             crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
-            let (sql, binds) = build_left_values_join_count(&self)
-                .map_err(DjogiError::from)?
-                .into_parts();
+            let (sql, binds) = validate_total_bind_count(
+                build_left_values_join_count(&self).map_err(DjogiError::from)?,
+                "left_join_values::exists",
+            )?
+            .into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
             let n: i64 = row
@@ -1899,9 +1951,11 @@ where
                 return Ok(vec![]);
             }
             crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
-            let (sql, binds) = build_cross_values_join_select(&self)
-                .map_err(DjogiError::from)?
-                .into_parts();
+            let (sql, binds) = validate_total_bind_count(
+                build_cross_values_join_select(&self).map_err(DjogiError::from)?,
+                "cross_join_values::fetch_all",
+            )?
+            .into_parts();
             let params = as_params(&binds);
             ctx.query_all(&sql, &params)
                 .await?
@@ -1931,9 +1985,11 @@ where
             crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
             let mut limited = self;
             limited.left.limit = Some(1);
-            let (sql, binds) = build_cross_values_join_select(&limited)
-                .map_err(DjogiError::from)?
-                .into_parts();
+            let (sql, binds) = validate_total_bind_count(
+                build_cross_values_join_select(&limited).map_err(DjogiError::from)?,
+                "cross_join_values::first",
+            )?
+            .into_parts();
             let params = as_params(&binds);
             ctx.query_opt(&sql, &params)
                 .await?
@@ -1963,9 +2019,11 @@ where
             crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
             let mut probe = self;
             probe.left.limit = Some(2);
-            let (sql, binds) = build_cross_values_join_select(&probe)
-                .map_err(DjogiError::from)?
-                .into_parts();
+            let (sql, binds) = validate_total_bind_count(
+                build_cross_values_join_select(&probe).map_err(DjogiError::from)?,
+                "cross_join_values::fetch_one",
+            )?
+            .into_parts();
             let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
             match rows.len() {
@@ -1994,9 +2052,11 @@ where
                 return Ok(0);
             }
             crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
-            let (sql, binds) = build_cross_values_join_count(&self)
-                .map_err(DjogiError::from)?
-                .into_parts();
+            let (sql, binds) = validate_total_bind_count(
+                build_cross_values_join_count(&self).map_err(DjogiError::from)?,
+                "cross_join_values::count",
+            )?
+            .into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
             row.try_get::<_, i64>(0)
@@ -2022,9 +2082,11 @@ where
                 return Ok(false);
             }
             crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
-            let (sql, binds) = build_cross_values_join_exists(&self)
-                .map_err(DjogiError::from)?
-                .into_parts();
+            let (sql, binds) = validate_total_bind_count(
+                build_cross_values_join_exists(&self).map_err(DjogiError::from)?,
+                "cross_join_values::exists",
+            )?
+            .into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
             row.try_get::<_, bool>(0)
@@ -2172,6 +2234,17 @@ mod tests {
     }
 
     #[test]
+    fn inline_values_rejects_case_folded_duplicate_columns() {
+        let err =
+            InlineValues::<(i64, f64)>::new(vec![(1_i64, 0.5_f64)], "weights", ("Score", "score"))
+                .unwrap_err();
+        let DjogiError::Validation(msg) = err else {
+            panic!("expected Validation")
+        };
+        assert!(msg.contains("Score") || msg.contains("score"), "got: {msg}");
+    }
+
+    #[test]
     fn inline_values_rejects_parameter_count_overflow() {
         let rows: Vec<(i64,)> = vec![(0_i64,); PG_MAX_PARAMS + 1];
         let err = InlineValues::new(rows, "t", ("col",)).unwrap_err();
@@ -2272,6 +2345,37 @@ mod tests {
     }
 
     #[test]
+    fn values_join_first_rejects_total_bind_count_past_pg_limit() {
+        let values = InlineValues::new(vec![(1_i64,); PG_MAX_PARAMS], "w", ("aid",))
+            .expect("raw VALUES ceiling is allowed at construction");
+        let mut qs = stub_qs();
+        qs.limit = Some(1);
+        let vqs = ValuesJoinedQuerySet {
+            left: qs,
+            values,
+            on: ValuesOn::Eq {
+                model_col: "id",
+                values_col_idx: 0,
+                _phantom: PhantomData,
+            },
+        };
+        let err = match validate_total_bind_count(
+            build_values_join_select(&vqs).unwrap(),
+            "join_values::first",
+        ) {
+            Ok(_) => panic!("expected Validation"),
+            Err(err) => err,
+        };
+        let DjogiError::Validation(msg) = err else {
+            panic!("expected Validation")
+        };
+        assert!(
+            msg.contains("65535") || msg.contains("65536") || msg.contains("bind"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
     fn values_join_sql_emits_structured_on_not_on_true() {
         let acc = build_values_join_select(&stub_vqs("w")).unwrap();
         let s = acc.sql().to_owned();
@@ -2280,6 +2384,31 @@ mod tests {
             "structured ON; sql = {s}"
         );
         assert!(!s.contains("ON TRUE"), "no ON TRUE; sql = {s}");
+    }
+
+    #[test]
+    fn values_join_sql_emits_parenthesized_compound_on_predicate() {
+        let values =
+            InlineValues::new(vec![(1_i64, 10_i32)], "w", ("aid", "score")).expect("valid");
+        let vqs = ValuesJoinedQuerySet {
+            left: stub_qs(),
+            values,
+            on: ValuesOn::Eq {
+                model_col: "id",
+                values_col_idx: 0,
+                _phantom: PhantomData,
+            } & ValuesOn::Eq {
+                model_col: "score",
+                values_col_idx: 1,
+                _phantom: PhantomData,
+            },
+        };
+        let acc = build_values_join_select(&vqs).unwrap();
+        let s = acc.sql().to_owned();
+        assert!(
+            s.contains("ON (__djogi_m.id = w.aid AND __djogi_m.score = w.score)"),
+            "compound ON must be parenthesized and qualified; sql = {s}"
+        );
     }
 
     #[test]
