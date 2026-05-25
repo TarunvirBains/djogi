@@ -628,6 +628,15 @@ async fn apply_seed_body(ctx: &mut DjogiContext, body: &str) -> Result<(), Djogi
     ctx.raw_ddl(body).await
 }
 
+async fn reset_after_seed_apply_failure(ctx: &mut DjogiContext) {
+    if let Err(source) = ctx.raw_ddl("ROLLBACK").await {
+        tracing::warn!(
+            ?source,
+            "seed apply failed and best-effort ROLLBACK did not clear session state",
+        );
+    }
+}
+
 /// Run every discovered seed against the connected context.
 ///
 /// **Idempotent.** Re-runs skip seeds whose checksum already matches
@@ -767,6 +776,7 @@ async fn run_seeds_inner(
             .await
             .map_err(|e| SeedError::LedgerWrite { source: e })?;
         if let Err(e) = apply_seed_body(ctx, &body).await {
+            reset_after_seed_apply_failure(ctx).await;
             let note = format!("seed apply failed: {e}");
             let _ = mark_seed_failed(ctx, &seed.seed_name, &note).await;
             return Err(SeedError::ApplyFailed {

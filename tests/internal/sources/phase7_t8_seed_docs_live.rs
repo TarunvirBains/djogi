@@ -479,6 +479,76 @@ async fn seed_runner_marks_failed_claim_and_refuses_retry(mut ctx: djogi::DjogiC
     let _ = fs::remove_dir_all(&work);
 }
 
+#[djogi::djogi_test]
+async fn seed_runner_explicit_transaction_failure_surfaces_failed_claim_on_rerun(
+    mut ctx: djogi::DjogiContext,
+) {
+    let work = temp_workspace("seed_explicit_tx_failed_claim");
+    let database = current_database(&mut ctx).await;
+    let seeds_dir = work.join("seeds").join(&database);
+    fs::create_dir_all(&seeds_dir).unwrap();
+
+    fs::write(
+        seeds_dir.join("01_explicit_tx_broken.sql"),
+        "BEGIN;\n\
+         CREATE TABLE t8_seed_explicit_tx_probe (id BIGINT PRIMARY KEY);\n\
+         INSERT INTO t8_seed_missing_target (id) VALUES (1);\n\
+         COMMIT;\n",
+    )
+    .unwrap();
+
+    let err = run_seeds(
+        &mut ctx,
+        &work,
+        &database,
+        "postgres://localhost/main",
+        false,
+    )
+    .await
+    .expect_err("explicit transaction seed must fail");
+    assert!(matches!(err, SeedError::ApplyFailed { .. }), "got {err:?}");
+
+    let admin_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+    let per_test_url =
+        derive_per_database_url(&admin_url, &database).expect("derive per-test database URL");
+    let observer_pool = djogi::pg::pool::DjogiPool::connect(&per_test_url)
+        .await
+        .expect("connect observer pool");
+    let mut observer_ctx = djogi::DjogiContext::from_pool(observer_pool);
+
+    let status: String = observer_ctx
+        .raw_scalar(
+            "SELECT status FROM djogi_seed_runs WHERE seed_name = '01_explicit_tx_broken'",
+            &[],
+        )
+        .await
+        .expect("seed ledger status");
+    assert_eq!(status, "failed", "explicit-transaction failure must persist failed");
+
+    let rerun = run_seeds(
+        &mut observer_ctx,
+        &work,
+        &database,
+        "postgres://localhost/main",
+        false,
+    )
+    .await
+    .expect_err("failed claim must block rerun");
+    match rerun {
+        SeedError::FailedClaim {
+            seed_name,
+            failure_note,
+        } => {
+            assert_eq!(seed_name, "01_explicit_tx_broken");
+            let failure_note = failure_note.expect("failure note must be recorded");
+            assert!(failure_note.contains("seed apply failed"));
+        }
+        other => panic!("expected FailedClaim, got {other:?}"),
+    }
+
+    let _ = fs::remove_dir_all(&work);
+}
+
 // ── Docs: live test against an empty inventory ────────────────────────────
 //
 // The deterministic + non-empty inventory rendering paths are unit
