@@ -79,6 +79,7 @@ use super::sql::{LossyRollbackKind, OperationSql};
 /// for an actionable operator message — no panicking, no silent
 /// drops.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RunnerError {
     /// Workspace file lock could not be acquired within the timeout.
     LockTimeout {
@@ -166,6 +167,17 @@ pub enum RunnerError {
     VersionAlreadyApplied {
         version: String,
         applied_at: Option<OffsetDateTime>,
+    },
+
+    /// Insertion of the pending ledger row collided on `version`, but
+    /// the existing row is in a non-terminal lifecycle status. Surface
+    /// the row's status and run_id so operators can inspect and repair
+    /// the blocking run instead of being told the migration is already
+    /// applied.
+    VersionCollisionNonTerminal {
+        version: String,
+        status: LedgerStatus,
+        run_id: i64,
     },
 
     /// The relpages probe queried `pg_class` for a target table that
@@ -445,6 +457,18 @@ impl std::fmt::Display for RunnerError {
                      re-running is rejected — use `djogi migrations status` to confirm",
                 ),
             },
+            RunnerError::VersionCollisionNonTerminal {
+                version,
+                status,
+                run_id,
+            } => write!(
+                f,
+                "migration version `{version}` collided with an existing non-terminal \
+                 ledger row (status `{status}`, run_id {run_id}); re-running is rejected \
+                 until that run is reconciled — use `djogi migrations status` and then \
+                 follow the repair flow for that row",
+                status = status.as_db_str(),
+            ),
             RunnerError::TargetTableNotFound {
                 bucket,
                 index_name,
@@ -621,6 +645,7 @@ impl std::error::Error for RunnerError {
             RunnerError::RunIdGenerationFailed { source } => Some(source),
             RunnerError::LedgerBootstrapFailed { source } => Some(source),
             RunnerError::PinnedSessionCheckoutFailed { source } => Some(source),
+            RunnerError::VersionCollisionNonTerminal { .. } => None,
             _ => None,
         }
     }
@@ -951,18 +976,8 @@ async fn apply_plan_inner(
     let ledger_id = match ledger::insert_pending(ctx, &ledger_row).await {
         Ok(id) => id,
         Err(e) => {
-            // SQLSTATE 23505 (unique_violation) on the
-            // `djogi_schema_migrations.version` column means the
-            // operator is re-running an already-applied migration.
-            // Lift the raw PG error into a typed
-            // `VersionAlreadyApplied` so the message names the prior
-            // `applied_at` rather than dumping a generic CRUD failure.
             if is_unique_violation(&e) {
-                let applied_at = load_applied_at(ctx, &runner_ctx.version).await;
-                return Err(RunnerError::VersionAlreadyApplied {
-                    version: runner_ctx.version.clone(),
-                    applied_at,
-                });
+                return Err(classify_duplicate_version_collision(ctx, &runner_ctx.version).await);
             }
             return Err(RunnerError::LedgerWriteFailed {
                 version: runner_ctx.version.clone(),
@@ -2000,11 +2015,7 @@ async fn fake_apply_inner(
         Ok(id) => id,
         Err(e) => {
             if is_unique_violation(&e) {
-                let applied_at = load_applied_at(ctx, &runner_ctx.version).await;
-                return Err(RunnerError::VersionAlreadyApplied {
-                    version: runner_ctx.version.clone(),
-                    applied_at,
-                });
+                return Err(classify_duplicate_version_collision(ctx, &runner_ctx.version).await);
             }
             return Err(RunnerError::LedgerWriteFailed {
                 version: runner_ctx.version.clone(),
@@ -2169,11 +2180,7 @@ async fn baseline_inner(
         Ok(id) => id,
         Err(e) => {
             if is_unique_violation(&e) {
-                let applied_at = load_applied_at(ctx, &runner_ctx.version).await;
-                return Err(RunnerError::VersionAlreadyApplied {
-                    version: runner_ctx.version.clone(),
-                    applied_at,
-                });
+                return Err(classify_duplicate_version_collision(ctx, &runner_ctx.version).await);
             }
             return Err(RunnerError::LedgerWriteFailed {
                 version: runner_ctx.version.clone(),
@@ -3131,9 +3138,9 @@ fn elapsed_ms(t0: Instant) -> i64 {
 }
 
 /// Return `true` iff `e` carries Postgres SQLSTATE 23505
-/// (unique_violation). Used by `apply_plan` to lift the raw
-/// duplicate-version insert error into the typed
-/// `RunnerError::VersionAlreadyApplied` variant.
+/// (unique_violation). Used by runner insert paths to classify
+/// duplicate-version collisions into terminal vs. non-terminal
+/// typed errors.
 fn is_unique_violation(e: &DjogiError) -> bool {
     use tokio_postgres::error::SqlState;
     match e {
@@ -3147,6 +3154,59 @@ fn is_unique_violation(e: &DjogiError) -> bool {
 /// `Option<&SqlState>`; we compare by reference.
 fn db_code_matches(db: &DbError, target: &tokio_postgres::error::SqlState) -> bool {
     db.code().map(|c| c == target).unwrap_or(false)
+}
+
+/// Classify a duplicate-version collision by loading the full ledger
+/// row and dispatching by `status`.
+///
+/// Terminal statuses (`applied`, `faked`, `baseline`) surface the
+/// existing `VersionAlreadyApplied` variant and preserve the
+/// informational `applied_at` lookup. Non-terminal statuses
+/// (`pending`, `failed`, `rolled_back`) surface
+/// `VersionCollisionNonTerminal` with the blocking row identity.
+///
+/// If the readback lookup errors or returns `None` after a 23505,
+/// surface a `LedgerQueryFailed` path explicitly rather than
+/// pretending the row is already applied.
+async fn classify_duplicate_version_collision(
+    ctx: &mut DjogiContext,
+    version: &str,
+) -> RunnerError {
+    let row = match load_ledger_row_for_version(ctx, version).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return RunnerError::LedgerQueryFailed {
+                query_label: "load_row_for_version",
+                source: DjogiError::Db(DbError::other(format!(
+                    "duplicate-version collision for `{version}` but \
+                     no ledger row was returned by load_full_row_by_version",
+                ))),
+            };
+        }
+        Err(source) => {
+            return RunnerError::LedgerQueryFailed {
+                query_label: "load_row_for_version",
+                source,
+            };
+        }
+    };
+
+    match row.status {
+        LedgerStatus::Applied | LedgerStatus::Faked | LedgerStatus::Baseline => {
+            let applied_at = load_applied_at(ctx, version).await;
+            RunnerError::VersionAlreadyApplied {
+                version: version.to_string(),
+                applied_at,
+            }
+        }
+        LedgerStatus::Pending | LedgerStatus::Failed | LedgerStatus::RolledBack => {
+            RunnerError::VersionCollisionNonTerminal {
+                version: row.version,
+                status: row.status,
+                run_id: row.run_id,
+            }
+        }
+    }
 }
 
 /// Walk the bucket's existing applied / faked / baseline ledger
@@ -4188,6 +4248,30 @@ mod tests {
         let msg = format!("{e}");
         assert!(msg.contains("baseline_plan rejects caller-supplied snapshots"));
         assert!(msg.contains("snapshot = None"));
+    }
+
+    #[test]
+    fn version_collision_non_terminal_renders_status_and_run_id() {
+        let e = RunnerError::VersionCollisionNonTerminal {
+            version: "V20260524010101__example".to_string(),
+            status: LedgerStatus::Failed,
+            run_id: 4242,
+        };
+        let msg = format!("{e}");
+        assert!(msg.contains("V20260524010101__example"));
+        assert!(msg.contains("failed"));
+        assert!(msg.contains("run_id 4242"));
+        assert!(msg.contains("djogi migrations status"));
+    }
+
+    #[test]
+    fn version_collision_non_terminal_has_no_error_source() {
+        let e = RunnerError::VersionCollisionNonTerminal {
+            version: "V20260524010101__example".to_string(),
+            status: LedgerStatus::Pending,
+            run_id: 7,
+        };
+        assert!(std::error::Error::source(&e).is_none());
     }
 
     // ── apply_plan DDL audit wiring (T9.5) ────────────────────────────────
