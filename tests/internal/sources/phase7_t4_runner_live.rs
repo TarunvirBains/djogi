@@ -1041,6 +1041,7 @@ async fn duplicate_version_surfaces_non_terminal_collision_statuses(mut ctx: djo
         let err = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
             .await
             .expect_err("second apply must fail");
+        let msg = err.to_string();
         match err {
             RunnerError::VersionCollisionNonTerminal {
                 version,
@@ -1053,6 +1054,11 @@ async fn duplicate_version_surfaces_non_terminal_collision_statuses(mut ctx: djo
                 assert_eq!(run_id, expected_run_id);
             }
             other => panic!("expected VersionCollisionNonTerminal, got {other:?}"),
+        }
+
+        if seed_status == LedgerStatus::RolledBack {
+            assert!(msg.contains("rolled-back rows are historical and are not repair targets"));
+            assert!(!msg.contains("follow the repair flow"));
         }
     }
 }

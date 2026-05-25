@@ -461,14 +461,31 @@ impl std::fmt::Display for RunnerError {
                 version,
                 status,
                 run_id,
-            } => write!(
-                f,
-                "migration version `{version}` collided with an existing non-terminal \
-                 ledger row (status `{status}`, run_id {run_id}); re-running is rejected \
-                 until that run is reconciled — use `djogi migrations status` and then \
-                 follow the repair flow for that row",
-                status = status.as_db_str(),
-            ),
+            } => {
+                let guidance = match status {
+                    LedgerStatus::Pending => {
+                        "use `djogi migrations status` to inspect it, then `repair_partial_apply` to resolve it in place"
+                    }
+                    LedgerStatus::Failed => {
+                        "use `djogi migrations status` to inspect it, then `repair_resume_partial_apply` if it is still resumable or `repair_partial_apply` otherwise"
+                    }
+                    LedgerStatus::RolledBack => {
+                        "use `djogi migrations status` to inspect it; rolled-back rows are historical and are not repair targets"
+                    }
+                    LedgerStatus::Applied | LedgerStatus::Baseline | LedgerStatus::Faked => {
+                        unreachable!(
+                            "VersionCollisionNonTerminal only carries pending, failed, or rolled_back rows",
+                        )
+                    }
+                };
+                write!(
+                    f,
+                    "migration version `{version}` collided with an existing non-terminal \
+                     ledger row (status `{status}`, run_id {run_id}); re-running is rejected \
+                     until that run is reconciled — {guidance}",
+                    status = status.as_db_str(),
+                )
+            }
             RunnerError::TargetTableNotFound {
                 bucket,
                 index_name,
@@ -4252,16 +4269,32 @@ mod tests {
 
     #[test]
     fn version_collision_non_terminal_renders_status_and_run_id() {
-        let e = RunnerError::VersionCollisionNonTerminal {
-            version: "V20260524010101__example".to_string(),
-            status: LedgerStatus::Failed,
-            run_id: 4242,
-        };
-        let msg = format!("{e}");
-        assert!(msg.contains("V20260524010101__example"));
-        assert!(msg.contains("failed"));
-        assert!(msg.contains("run_id 4242"));
-        assert!(msg.contains("djogi migrations status"));
+        for (status, guidance) in [
+            (
+                LedgerStatus::Pending,
+                "then `repair_partial_apply` to resolve it in place",
+            ),
+            (
+                LedgerStatus::Failed,
+                "then `repair_resume_partial_apply` if it is still resumable or `repair_partial_apply` otherwise",
+            ),
+            (
+                LedgerStatus::RolledBack,
+                "rolled-back rows are historical and are not repair targets",
+            ),
+        ] {
+            let e = RunnerError::VersionCollisionNonTerminal {
+                version: "V20260524010101__example".to_string(),
+                status,
+                run_id: 4242,
+            };
+            let msg = format!("{e}");
+            assert!(msg.contains("V20260524010101__example"));
+            assert!(msg.contains(status.as_db_str()));
+            assert!(msg.contains("run_id 4242"));
+            assert!(msg.contains("djogi migrations status"));
+            assert!(msg.contains(guidance));
+        }
     }
 
     #[test]
