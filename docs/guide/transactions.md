@@ -50,6 +50,20 @@ Commits on `Ok(_)`; rolls back on `Err(_)` or panic. `on_commit`
 callbacks fire *after* commit returns — they cannot fail the
 transaction.
 
+## Cancellation guarantee
+
+`atomic()` is fail-closed on cancellation (`Future` drop).
+
+- **Top-level scope cancelled.** If the `atomic()` future is dropped
+  before commit/rollback finishes (for example by
+  `tokio::time::timeout`), Djogi detaches that connection instead of
+  returning a possibly-open transaction to the pool.
+- **Nested scope cancelled.** If a nested `atomic(&mut tx_ctx, ...)`
+  drops before savepoint cleanup runs, the outer transaction is marked
+  poisoned. Further framework work fails with
+  `DjogiError::TransactionPoisoned`, and outer commit rolls back
+  instead of committing.
+
 ## Row locks
 
 `QuerySet<T>` has three `#[must_use]` lock builders. Last call wins.
@@ -136,7 +150,7 @@ closure may need to check out a connection from a busy pool:
 
 ```rust
 use djogi::transaction::{
-    atomic_with, retry_on_conflict_with_backoff, IsolationLevel,
+    atomic_with, retry_on_conflict_with_backoff, IsolationLevel, RetryableErrorClasses,
     TransactionRetryBackoff,
 };
 
@@ -161,7 +175,10 @@ small additive jitter reduces synchronized retry bursts. Tune with
     .with_pool_timeout_initial_delay(...)
     .with_lock_conflict_initial_delay(...)
     .with_max_delay(...)
-    .with_jitter(...)`.
+    .with_jitter(...)
+    .with_retryable_error_classes(
+        RetryableErrorClasses::all().with_pool_timeout(true),
+    )`.
 
 ### SAVEPOINT vs SET LOCAL semantics
 
@@ -313,8 +330,10 @@ retry of the same closure may succeed. `LockConflict`, `PoolTimeout`,
 and raw `Db(DbError)` with SQLSTATE `40001` / `40P01` / `55P03` are
 transient; everything else (including the Phase 8.5 transaction-control
 misuse errors above) is terminal. `retry_on_conflict(ctx, attempts,
-closure)` and `retry_on_conflict_with_backoff(ctx, attempts, policy,
-closure)` drive retry using the same predicate.
+closure)` uses that classifier directly. `retry_on_conflict_with_backoff(
+ctx, attempts, policy, closure)` starts from the same default class set
+but can include/exclude classes via
+`TransactionRetryBackoff::with_retryable_error_classes(...)`.
 
 ```rust
 djogi::transaction::retry_on_conflict(ctx, 3, async |ctx| {

@@ -619,8 +619,9 @@ pub enum DjogiError {
     /// [`crate::transaction::TransactionRetryBackoff`]. Pool
     /// saturation usually belongs on the backoff path, not the
     /// immediate-retry path. Callers that need a bespoke policy can
-    /// still match on `PoolTimeout` explicitly, but the built-in
-    /// backoff helper is the default production answer.
+    /// still match on `PoolTimeout` explicitly, and the backoff policy
+    /// can include/exclude `PoolTimeout` retries via
+    /// `with_retryable_error_classes(...)`.
     #[error("pool timeout ({phase})")]
     #[non_exhaustive]
     PoolTimeout {

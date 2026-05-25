@@ -359,6 +359,67 @@ fn begin_with_isolation_sql(level: IsolationLevel) -> String {
 // Retry backoff policy — dependency-free helper for saturated-pool retries.
 // ---------------------------------------------------------------------------
 
+/// Retryable error-class selector for [`TransactionRetryBackoff`].
+///
+/// Defaults to djogi's current transient classes:
+/// [`DjogiError::LockConflict`], `Db(40001|40P01|55P03)`, and
+/// [`DjogiError::PoolTimeout`]. Callers can disable any class to make retry
+/// behavior explicit rather than incidental.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryableErrorClasses {
+    lock_conflict: bool,
+    db_lock_conflict: bool,
+    pool_timeout: bool,
+}
+
+impl Default for RetryableErrorClasses {
+    fn default() -> Self {
+        Self {
+            lock_conflict: true,
+            db_lock_conflict: true,
+            pool_timeout: true,
+        }
+    }
+}
+
+impl RetryableErrorClasses {
+    /// Construct the default class set (`LockConflict`, lock SQLSTATEs, and
+    /// `PoolTimeout`).
+    pub fn all() -> Self {
+        Self::default()
+    }
+
+    /// Enable or disable retries for [`DjogiError::LockConflict`].
+    pub fn with_lock_conflict(mut self, enabled: bool) -> Self {
+        self.lock_conflict = enabled;
+        self
+    }
+
+    /// Enable or disable retries for lock SQLSTATEs carried via
+    /// [`DjogiError::Db`] (`40001`, `40P01`, `55P03`).
+    pub fn with_db_lock_conflict(mut self, enabled: bool) -> Self {
+        self.db_lock_conflict = enabled;
+        self
+    }
+
+    /// Enable or disable retries for [`DjogiError::PoolTimeout`].
+    pub fn with_pool_timeout(mut self, enabled: bool) -> Self {
+        self.pool_timeout = enabled;
+        self
+    }
+
+    fn is_retryable(self, error: &DjogiError) -> bool {
+        match error {
+            DjogiError::LockConflict(_) => self.lock_conflict,
+            DjogiError::Db(db_error) => {
+                self.db_lock_conflict && crate::error::is_lock_error(db_error)
+            }
+            DjogiError::PoolTimeout { .. } => self.pool_timeout,
+            _ => false,
+        }
+    }
+}
+
 /// Backoff policy for [`retry_on_conflict_with_backoff`].
 ///
 /// The policy is deliberately dependency-free. Known-primitive audit:
@@ -378,6 +439,7 @@ pub struct TransactionRetryBackoff {
     pool_timeout_initial_delay: Duration,
     max_delay: Duration,
     jitter: Duration,
+    retryable_error_classes: RetryableErrorClasses,
 }
 
 impl Default for TransactionRetryBackoff {
@@ -387,6 +449,7 @@ impl Default for TransactionRetryBackoff {
             pool_timeout_initial_delay: Duration::from_millis(50),
             max_delay: Duration::from_secs(1),
             jitter: Duration::from_millis(10),
+            retryable_error_classes: RetryableErrorClasses::default(),
         }
     }
 }
@@ -405,6 +468,7 @@ impl TransactionRetryBackoff {
             pool_timeout_initial_delay: Duration::ZERO,
             max_delay: Duration::ZERO,
             jitter: Duration::ZERO,
+            retryable_error_classes: RetryableErrorClasses::default(),
         }
     }
 
@@ -438,6 +502,18 @@ impl TransactionRetryBackoff {
         self
     }
 
+    /// Set which error classes [`retry_on_conflict_with_backoff`] is allowed
+    /// to retry.
+    pub fn with_retryable_error_classes(mut self, classes: RetryableErrorClasses) -> Self {
+        self.retryable_error_classes = classes;
+        self
+    }
+
+    /// Return the configured retryable class set.
+    pub fn retryable_error_classes(self) -> RetryableErrorClasses {
+        self.retryable_error_classes
+    }
+
     /// Return the capped exponential delay before jitter for a failed attempt.
     ///
     /// `completed_attempt` is the one-based attempt number that just failed:
@@ -448,7 +524,7 @@ impl TransactionRetryBackoff {
         error: &DjogiError,
         completed_attempt: u32,
     ) -> Option<Duration> {
-        if !error.is_transient() {
+        if !self.should_retry(error) {
             return None;
         }
 
@@ -469,6 +545,10 @@ impl TransactionRetryBackoff {
 
         let jitter = jitter_duration(self.jitter);
         Some(base.saturating_add(jitter))
+    }
+
+    fn should_retry(self, error: &DjogiError) -> bool {
+        self.retryable_error_classes.is_retryable(error)
     }
 }
 
@@ -1234,7 +1314,9 @@ where
 /// This is the production-oriented sibling of [`retry_on_conflict`]. The
 /// original helper intentionally performs immediate retries; this helper uses a
 /// configurable [`TransactionRetryBackoff`] so `PoolTimeout` retries do not
-/// tight-loop against a saturated pool.
+/// tight-loop against a saturated pool. The policy also carries the retryable
+/// error class set, so callers can explicitly include or exclude classes such
+/// as `PoolTimeout`.
 ///
 /// ```ignore
 /// use djogi::transaction::{
@@ -1270,7 +1352,7 @@ where
         match closure(ctx).await {
             Ok(value) => return Ok(value),
             Err(e) => {
-                let retryable = e.is_transient();
+                let retryable = policy.should_retry(&e);
                 if retryable && attempt < attempts {
                     let delay = policy
                         .delay_for_retry(&e, attempt)
@@ -1440,6 +1522,25 @@ mod tests {
     }
 
     #[test]
+    fn retry_backoff_retry_classes_can_disable_pool_timeout() {
+        let policy = TransactionRetryBackoff::default().with_retryable_error_classes(
+            RetryableErrorClasses::default().with_pool_timeout(false),
+        );
+        let lock_error = DjogiError::LockConflict(DbError::other("synthetic lock conflict"));
+        let pool_error = DjogiError::PoolTimeout { phase: "wait" };
+
+        assert!(
+            policy.base_delay_for_retry(&lock_error, 1).is_some(),
+            "lock conflicts remain retryable with the default class set",
+        );
+        assert_eq!(
+            policy.base_delay_for_retry(&pool_error, 1),
+            None,
+            "pool timeout retries must be policy-controlled and can be disabled",
+        );
+    }
+
+    #[test]
     fn retry_backoff_jitter_can_span_multiple_seconds() {
         let max_nanos = Duration::from_secs(2).as_nanos();
         let mut saw_above_one_second = false;
@@ -1536,6 +1637,30 @@ mod tests {
 
         assert_eq!(value, 2);
         assert_eq!(observed_calls.load(AtomicOrdering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn retry_on_conflict_with_backoff_policy_can_disable_pool_timeout_retries() {
+        let mut ctx = retry_helper_test_context().await;
+        let calls = Arc::new(AtomicU32::new(0));
+        let observed_calls = calls.clone();
+        let policy = TransactionRetryBackoff::none().with_retryable_error_classes(
+            RetryableErrorClasses::default().with_pool_timeout(false),
+        );
+
+        let err = retry_on_conflict_with_backoff(&mut ctx, 5, policy, async move |_| {
+            calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Err::<(), _>(DjogiError::PoolTimeout { phase: "wait" })
+        })
+        .await
+        .expect_err("PoolTimeout should surface immediately when disabled");
+
+        assert!(matches!(err, DjogiError::PoolTimeout { phase: "wait" }));
+        assert_eq!(
+            observed_calls.load(AtomicOrdering::SeqCst),
+            1,
+            "retry class policy must prevent incidental pool-timeout retries",
+        );
     }
 
     // ── ConstraintMode — SQL keyword tests ──────────────────────────────
