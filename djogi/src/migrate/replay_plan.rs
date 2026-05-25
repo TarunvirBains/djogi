@@ -162,6 +162,11 @@ pub(crate) fn load_committed_replay_plan(
 }
 
 pub(crate) fn find_non_transactional_statement_shape(sql: &str) -> Option<&'static str> {
+    find_non_transactional_statement_shape_in_sql(sql)
+        .or_else(|| find_non_transactional_placeholder_shape(sql))
+}
+
+fn find_non_transactional_statement_shape_in_sql(sql: &str) -> Option<&'static str> {
     let bytes = sql.as_bytes();
     let mut stmt_start = 0usize;
     let mut idx = 0usize;
@@ -239,6 +244,27 @@ fn classify_non_transactional_statement_shape(sql: &str) -> Option<&'static str>
         && third.is_some_and(|tok| token_eq(tok, "CONCURRENTLY"))
     {
         return Some("DROP INDEX CONCURRENTLY");
+    }
+    if token_eq(first, "CALL") && second.is_some_and(|tok| token_eq(tok, "HEERANJID_BULK_BACKFILL"))
+    {
+        return Some("CALL heeranjid_bulk_backfill");
+    }
+    if token_eq(first, "DO") && contains_ascii_case_insensitive(sql, "COMMIT") {
+        return Some("DO block with COMMIT");
+    }
+    None
+}
+
+fn find_non_transactional_placeholder_shape(sql: &str) -> Option<&'static str> {
+    if contains_ascii_case_insensitive(sql, "PER LEAF: CREATE UNIQUE INDEX CONCURRENTLY")
+        && contains_ascii_case_insensitive(sql, "ATTACH PARTITION")
+    {
+        return Some("PARTITIONED CONCURRENTLY placeholder");
+    }
+    if contains_ascii_case_insensitive(sql, "PER LEAF: CREATE INDEX CONCURRENTLY")
+        && contains_ascii_case_insensitive(sql, "ATTACH PARTITION")
+    {
+        return Some("PARTITIONED CONCURRENTLY placeholder");
     }
     None
 }
@@ -380,6 +406,12 @@ fn is_ident_continue(byte: u8) -> bool {
 
 fn token_eq(token: &[u8], expected: &str) -> bool {
     token.eq_ignore_ascii_case(expected.as_bytes())
+}
+
+fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    haystack
+        .to_ascii_uppercase()
+        .contains(&needle.to_ascii_uppercase())
 }
 
 impl From<&Classification> for StoredClassification {

@@ -968,24 +968,10 @@ fn preflight_reset_replay_semantics(
             let replay_sql = read_replay_sql_files(workspace_root, bucket, version)?;
             let plan_status =
                 replay_plan_status_for_reset(workspace_root, bucket, version, &replay_sql);
-            let Some(statement_shape) = find_non_transactional_statement_shape(&replay_sql.up_sql)
-            else {
-                continue;
-            };
-            match plan_status {
-                ReplayPlanLoadStatus::Loaded(_) => {}
-                ReplayPlanLoadStatus::Missing => issues.push(ResetReplaySemanticsIssue {
-                    bucket: bucket.clone(),
-                    version: version.clone(),
-                    statement_shape: statement_shape.to_string(),
-                    problem: ResetReplaySemanticsProblem::MissingReplayPlan,
-                }),
-                ReplayPlanLoadStatus::Invalid(_) => issues.push(ResetReplaySemanticsIssue {
-                    bucket: bucket.clone(),
-                    version: version.clone(),
-                    statement_shape: statement_shape.to_string(),
-                    problem: ResetReplaySemanticsProblem::InvalidReplayPlan,
-                }),
+            if let Some(issue) =
+                replay_semantics_issue_for_plan_status(bucket, version, &replay_sql, &plan_status)
+            {
+                issues.push(issue);
             }
         }
     }
@@ -1020,10 +1006,38 @@ fn load_reset_replay_plan(
     version: &str,
     replay_sql: &ReplaySqlFiles,
 ) -> Result<Option<MigrationPlan>, ResetError> {
-    match replay_plan_status_for_reset(workspace_root, bucket, version, replay_sql) {
+    let plan_status = replay_plan_status_for_reset(workspace_root, bucket, version, replay_sql);
+    if let Some(issue) =
+        replay_semantics_issue_for_plan_status(bucket, version, replay_sql, &plan_status)
+    {
+        return Err(ResetError::Refused(ResetRefusal::ReplaySemantics {
+            issues: vec![issue],
+        }));
+    }
+    match plan_status {
         ReplayPlanLoadStatus::Loaded(plan) => Ok(Some(plan)),
         ReplayPlanLoadStatus::Missing | ReplayPlanLoadStatus::Invalid(_) => Ok(None),
     }
+}
+
+fn replay_semantics_issue_for_plan_status(
+    bucket: &BucketKey,
+    version: &str,
+    replay_sql: &ReplaySqlFiles,
+    plan_status: &ReplayPlanLoadStatus,
+) -> Option<ResetReplaySemanticsIssue> {
+    let statement_shape = find_non_transactional_statement_shape(&replay_sql.up_sql)?;
+    let problem = match plan_status {
+        ReplayPlanLoadStatus::Loaded(_) => return None,
+        ReplayPlanLoadStatus::Missing => ResetReplaySemanticsProblem::MissingReplayPlan,
+        ReplayPlanLoadStatus::Invalid(_) => ResetReplaySemanticsProblem::InvalidReplayPlan,
+    };
+    Some(ResetReplaySemanticsIssue {
+        bucket: bucket.clone(),
+        version: version.to_string(),
+        statement_shape: statement_shape.to_string(),
+        problem,
+    })
 }
 
 fn render_replay_semantics_issue(issue: &ResetReplaySemanticsIssue) -> String {
@@ -2211,6 +2225,150 @@ mod tests {
             }
             other => panic!("expected replay-semantics refusal, got {other:?}"),
         }
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    fn assert_single_replay_semantics_issue(
+        err: ResetError,
+        expected_bucket: &BucketKey,
+        expected_version: &str,
+        expected_problem: ResetReplaySemanticsProblem,
+        expected_shape: &str,
+    ) {
+        match err {
+            ResetError::Refused(ResetRefusal::ReplaySemantics { issues }) => {
+                assert_eq!(issues.len(), 1, "expected one replay-semantics issue");
+                assert_eq!(issues[0].bucket, *expected_bucket);
+                assert_eq!(issues[0].version, expected_version);
+                assert_eq!(issues[0].problem, expected_problem);
+                assert_eq!(issues[0].statement_shape, expected_shape);
+            }
+            other => panic!("expected replay-semantics refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn u276_preflight_replay_semantics_refuses_call_backfill_without_manifest() {
+        let work = temp_root("u276_missing_manifest_call");
+        let bucket = bk("main", "");
+        let version = "V20260301000008__pk_flip_call";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            "CALL heeranjid_bulk_backfill('widgets', 'id', 'id_desc', 'heer', 10000);\n",
+        )
+        .unwrap();
+        fs::write(bucket_dir.join(down_filename(version)), "SELECT 1;\n").unwrap();
+
+        let err = preflight_reset_replay_semantics(&work, "main")
+            .expect_err("CALL backfill replay without manifest must refuse before drop");
+        assert_single_replay_semantics_issue(
+            err,
+            &bucket,
+            version,
+            ResetReplaySemanticsProblem::MissingReplayPlan,
+            "CALL heeranjid_bulk_backfill",
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u276_preflight_replay_semantics_refuses_do_backfill_without_manifest() {
+        let work = temp_root("u276_missing_manifest_do");
+        let bucket = bk("main", "");
+        let version = "V20260301000009__pk_flip_do";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            "DO $$\n\
+             BEGIN\n\
+                 COMMIT;\n\
+             END\n\
+             $$;\n",
+        )
+        .unwrap();
+        fs::write(bucket_dir.join(down_filename(version)), "SELECT 1;\n").unwrap();
+
+        let err = preflight_reset_replay_semantics(&work, "main")
+            .expect_err("DO backfill replay without manifest must refuse before drop");
+        assert_single_replay_semantics_issue(
+            err,
+            &bucket,
+            version,
+            ResetReplaySemanticsProblem::MissingReplayPlan,
+            "DO block with COMMIT",
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u276_preflight_replay_semantics_refuses_partitioned_placeholder_without_manifest() {
+        let work = temp_root("u276_missing_manifest_partitioned");
+        let bucket = bk("main", "");
+        let version = "V20260301000010__pk_flip_partitioned";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            "CREATE UNIQUE INDEX events_partition_key_id_desc_idx\n  \
+             ON ONLY events (partition_key, id_desc);\n\
+             -- Per leaf: CREATE UNIQUE INDEX CONCURRENTLY <leaf>_partition_key_id_desc_idx\n\
+             --             ON <leaf> (partition_key, id_desc);\n\
+             -- Then ALTER INDEX events_partition_key_id_desc_idx ATTACH PARTITION\n\
+             --             <leaf>_partition_key_id_desc_idx;\n",
+        )
+        .unwrap();
+        fs::write(
+            bucket_dir.join(down_filename(version)),
+            "DROP INDEX IF EXISTS events_partition_key_id_desc_idx;\n",
+        )
+        .unwrap();
+
+        let err = preflight_reset_replay_semantics(&work, "main")
+            .expect_err("partitioned placeholder replay without manifest must refuse before drop");
+        assert_single_replay_semantics_issue(
+            err,
+            &bucket,
+            version,
+            ResetReplaySemanticsProblem::MissingReplayPlan,
+            "PARTITIONED CONCURRENTLY placeholder",
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u276_load_reset_replay_plan_refuses_invalid_call_manifest() {
+        let work = temp_root("u276_invalid_manifest_call");
+        let bucket = bk("main", "");
+        let version = "V20260301000011__pk_flip_call_invalid";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        let up_sql = "CALL heeranjid_bulk_backfill('widgets', 'id', 'id_desc', 'heer', 10000);\n";
+        fs::write(bucket_dir.join(up_filename(version)), up_sql).unwrap();
+        fs::write(bucket_dir.join(down_filename(version)), "SELECT 1;\n").unwrap();
+        fs::write(
+            bucket_dir.join(format!("{version}.plan.json")),
+            "{\n  \"format_version\": \"1\",\n  \"checksum_up\": \"V1:stale\",\n  \"checksum_down\": null,\n  \"classification\": { \"kind\": \"additive\" },\n  \"segments\": []\n}\n",
+        )
+        .unwrap();
+
+        let replay_sql =
+            read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
+        let err = load_reset_replay_plan(&work, &bucket, version, &replay_sql)
+            .expect_err("invalid non-transactional replay manifest must refuse");
+        assert_single_replay_semantics_issue(
+            err,
+            &bucket,
+            version,
+            ResetReplaySemanticsProblem::InvalidReplayPlan,
+            "CALL heeranjid_bulk_backfill",
+        );
 
         let _ = fs::remove_dir_all(&work);
     }
