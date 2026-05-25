@@ -33,10 +33,19 @@
 //
 // Each test provisions the Phase 4 tables through `#[djogi_test(sync_models = [...])]`.
 
+use djogi::auth::AuthContext;
 use djogi::prelude::*;
-use djogi::transaction::{AtomicFuture, atomic, retry_on_conflict};
+use djogi::transaction::{
+    AtomicFuture, TransactionRetryBackoff, atomic, retry_on_conflict,
+    retry_on_conflict_with_backoff,
+};
+use futures::FutureExt;
+use std::future::{Future, pending};
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
+use tokio::sync::oneshot;
 
 // ---------------------------------------------------------------------------
 // Test models
@@ -143,6 +152,83 @@ where
     }
 }
 
+async fn run_single_connection_phase4_fixture<F, Fut>(test: F)
+where
+    F: FnOnce(djogi::pg::pool::DjogiPool, djogi::DjogiContext) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let (cleanup, mut setup_ctx) = djogi::testing::setup_test_db()
+        .await
+        .expect("setup_test_db must provision a phase4 cancellation fixture");
+    djogi::testing::sync_models(
+        &mut setup_ctx,
+        &[
+            <Account as djogi::model::Model>::descriptor(),
+            <Ledger as djogi::model::Model>::descriptor(),
+            <Entry as djogi::model::Model>::descriptor(),
+            <Notification as djogi::model::Model>::descriptor(),
+        ],
+    )
+    .await
+    .expect("sync phase4 models");
+    let test_url = cleanup
+        .test_url()
+        .expect("cleanup token must produce a per-test database URL");
+    drop(setup_ctx);
+
+    let pool = djogi::pg::pool::DjogiPool::builder(&test_url)
+        .max_size(1)
+        .build()
+        .await
+        .expect("single-connection phase4 pool must build");
+    let ctx = djogi::DjogiContext::from_pool(pool.clone());
+
+    let outcome = AssertUnwindSafe(test(pool, ctx)).catch_unwind().await;
+    djogi::testing::teardown_test_db(cleanup).await;
+    if let Err(panic_payload) = outcome {
+        std::panic::resume_unwind(panic_payload);
+    }
+}
+
+async fn run_single_connection_phase4_fixture_with_timeout<F, Fut>(timeout: Duration, test: F)
+where
+    F: FnOnce(djogi::pg::pool::DjogiPool, djogi::DjogiContext) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let (cleanup, mut setup_ctx) = djogi::testing::setup_test_db()
+        .await
+        .expect("setup_test_db must provision a phase4 cancellation fixture");
+    djogi::testing::sync_models(
+        &mut setup_ctx,
+        &[
+            <Account as djogi::model::Model>::descriptor(),
+            <Ledger as djogi::model::Model>::descriptor(),
+            <Entry as djogi::model::Model>::descriptor(),
+            <Notification as djogi::model::Model>::descriptor(),
+        ],
+    )
+    .await
+    .expect("sync phase4 models");
+    let test_url = cleanup
+        .test_url()
+        .expect("cleanup token must produce a per-test database URL");
+    drop(setup_ctx);
+
+    let pool = djogi::pg::pool::DjogiPool::builder(&test_url)
+        .max_size(1)
+        .timeout(timeout)
+        .build()
+        .await
+        .expect("single-connection phase4 pool with timeout must build");
+    let ctx = djogi::DjogiContext::from_pool(pool.clone());
+
+    let outcome = AssertUnwindSafe(test(pool, ctx)).catch_unwind().await;
+    djogi::testing::teardown_test_db(cleanup).await;
+    if let Err(panic_payload) = outcome {
+        std::panic::resume_unwind(panic_payload);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Task 1 integration tests — atomic() / savepoints / on_commit
 // ---------------------------------------------------------------------------
@@ -191,6 +277,389 @@ async fn atomic_rolls_back_on_err(mut ctx: djogi::DjogiContext) {
     assert_eq!(count, 0, "rollback must leave no rows");
 }
 
+#[tokio::test]
+async fn atomic_pool_context_cancellation_detaches_dirty_connection() {
+    run_single_connection_phase4_fixture(|pool, mut ctx| async move {
+        ctx.set_auth(
+            AuthContext::new(djogi::HeerId::from_i64(7).expect("HeerId(7) is valid"))
+                .with_tenant("1000"),
+        );
+        let auth_before = ctx.auth().cloned().expect("parent auth snapshot");
+        let tenant_scope_before = ctx.__tenant_scope_suppressed_for_macros();
+        ctx.set_tenant("stage1-parent")
+            .await
+            .expect("prime parent transaction trackers");
+        assert!(ctx.tenant_set, "parent tracker should be primed");
+        assert_eq!(ctx.applied_tenant_id(), Some("stage1-parent"));
+
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
+        {
+            let fut = atomic(&mut ctx, |tx| {
+                Box::pin(async move {
+                    Account::create(
+                        tx,
+                        Account {
+                            balance: 281_001,
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+                    tx.set_auth(
+                        AuthContext::new(djogi::HeerId::from_i64(8).expect("HeerId(8) is valid"))
+                            .with_tenant("2000"),
+                    );
+                    tx.set_no_tenant_scope();
+                    let _ = ready_tx.send(());
+                    pending::<()>().await;
+                    #[allow(unreachable_code)]
+                    Ok::<_, DjogiError>(())
+                })
+            });
+            tokio::pin!(fut);
+
+            tokio::select! {
+                result = &mut fut => panic!("atomic future completed before cancellation: {result:?}"),
+                ready = ready_rx => ready.expect("dirty transaction should signal readiness"),
+            };
+
+            let result = tokio::time::timeout(Duration::from_millis(25), &mut fut).await;
+            assert!(
+                result.is_err(),
+                "timeout must drop the dirty top-level pool-context atomic future"
+            );
+        }
+
+        let status = pool.status();
+        assert_eq!(
+            status.size, 0,
+            "cancelled dirty atomic(&mut pool_ctx, ...) must detach the \
+             physical connection; pool.size should drop to 0, got: {status:?}"
+        );
+        assert!(
+            !ctx.tenant_set,
+            "pool-context cancellation must clear parent tenant_set tracker"
+        );
+        assert_eq!(
+            ctx.applied_tenant_id(),
+            None,
+            "pool-context cancellation must clear parent applied_tenant_id tracker"
+        );
+        let auth_after = ctx.auth().expect("parent auth must remain attached");
+        assert_eq!(
+            auth_after.user_id, auth_before.user_id,
+            "pool-context cancellation must not mutate parent auth user_id"
+        );
+        assert_eq!(
+            auth_after.tenant_id,
+            auth_before.tenant_id,
+            "pool-context cancellation must not mutate parent auth tenant_id"
+        );
+        assert_eq!(
+            auth_after.scopes,
+            auth_before.scopes,
+            "pool-context cancellation must not mutate parent auth scopes"
+        );
+        assert_eq!(
+            auth_after.ext, auth_before.ext,
+            "pool-context cancellation must not mutate parent auth ext"
+        );
+        assert_eq!(
+            ctx.__tenant_scope_suppressed_for_macros(),
+            tenant_scope_before,
+            "pool-context cancellation must not mutate parent tenant-scope suppression"
+        );
+
+        let count_after_cancel: i64 = Account::objects()
+            .count(&mut ctx)
+            .await
+            .expect("parent ctx should remain usable after cancellation");
+        assert_eq!(
+            count_after_cancel, 0,
+            "cancelled closure-body write must be rolled back by detach"
+        );
+
+        atomic(&mut ctx, |tx| {
+            Box::pin(async move {
+                Account::create(
+                    tx,
+                    Account {
+                        balance: 281_002,
+                        ..Default::default()
+                    },
+                )
+                .await?;
+                Ok::<_, DjogiError>(())
+            })
+        })
+        .await
+        .expect("normal work should succeed after cancellation");
+
+        let rows = Account::objects()
+            .fetch_all(&mut ctx)
+            .await
+            .expect("fetch rows after recovery");
+        let balances: Vec<i64> = rows.into_iter().map(|row| row.balance).collect();
+        assert_eq!(
+            balances,
+            vec![281_002],
+            "cancelled row must be absent and recovery row must commit"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn atomic_pool_reference_cancellation_detaches_dirty_connection() {
+    run_single_connection_phase4_fixture(|pool, mut ctx| async move {
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
+        {
+            let fut = atomic(&pool, |tx| {
+                Box::pin(async move {
+                    Account::create(
+                        tx,
+                        Account {
+                            balance: 281_101,
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+                    let _ = ready_tx.send(());
+                    pending::<()>().await;
+                    #[allow(unreachable_code)]
+                    Ok::<_, DjogiError>(())
+                })
+            });
+            tokio::pin!(fut);
+
+            tokio::select! {
+                result = &mut fut => panic!("atomic future completed before cancellation: {result:?}"),
+                ready = ready_rx => ready.expect("dirty transaction should signal readiness"),
+            };
+
+            let result = tokio::time::timeout(Duration::from_millis(25), &mut fut).await;
+            assert!(
+                result.is_err(),
+                "timeout must drop the dirty top-level pool-reference atomic future"
+            );
+        }
+
+        let status = pool.status();
+        assert_eq!(
+            status.size, 0,
+            "cancelled dirty atomic(&pool, ...) must detach the physical \
+             connection; pool.size should drop to 0, got: {status:?}"
+        );
+
+        let count_after_cancel: i64 = Account::objects()
+            .count(&mut ctx)
+            .await
+            .expect("pool should recover after pool-reference cancellation");
+        assert_eq!(
+            count_after_cancel, 0,
+            "cancelled pool-reference write must be absent"
+        );
+
+        atomic(&pool, |tx| {
+            Box::pin(async move {
+                Account::create(
+                    tx,
+                    Account {
+                        balance: 281_102,
+                        ..Default::default()
+                    },
+                )
+                .await?;
+                Ok::<_, DjogiError>(())
+            })
+        })
+        .await
+        .expect("pool-reference atomic should still work after cancellation");
+
+        let rows = Account::objects()
+            .fetch_all(&mut ctx)
+            .await
+            .expect("fetch rows after pool-reference recovery");
+        let balances: Vec<i64> = rows.into_iter().map(|row| row.balance).collect();
+        assert_eq!(
+            balances,
+            vec![281_102],
+            "cancelled pool-reference row must be absent and later work must commit"
+        );
+    })
+    .await;
+}
+
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
+async fn nested_atomic_cancellation_poisons_outer_transaction(mut ctx: djogi::DjogiContext) {
+    let callbacks = Arc::new(AtomicUsize::new(0));
+
+    let outer_result = {
+        let callbacks = Arc::clone(&callbacks);
+        atomic(&mut ctx, |outer| {
+            Box::pin(async move {
+                Account::create(
+                    outer,
+                    Account {
+                        balance: 281_201,
+                        ..Default::default()
+                    },
+                )
+                .await?;
+                outer.set_auth(
+                    AuthContext::new(djogi::HeerId::from_i64(281).expect("HeerId(281) is valid"))
+                        .with_tenant("outer-tenant"),
+                );
+                outer.set_tenant("outer-tenant").await?;
+                let auth_before = outer.auth().cloned().expect("outer auth snapshot");
+                let tenant_scope_before = outer.__tenant_scope_suppressed_for_macros();
+                let tenant_set_before = outer.tenant_set;
+                let applied_tenant_before = outer.applied_tenant_id().map(str::to_owned);
+
+                {
+                    let callbacks = Arc::clone(&callbacks);
+                    outer.on_commit(move || async move {
+                        callbacks.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    });
+                }
+
+                let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
+                {
+                    let callbacks = Arc::clone(&callbacks);
+                    let inner = atomic(&mut *outer, |inner| {
+                        Box::pin(async move {
+                            Account::create(
+                                inner,
+                                Account {
+                                    balance: 281_202,
+                                    ..Default::default()
+                                },
+                            )
+                            .await?;
+                            inner.set_auth(
+                                AuthContext::new(
+                                    djogi::HeerId::from_i64(282).expect("HeerId(282) is valid"),
+                                )
+                                .with_tenant("inner-tenant"),
+                            );
+                            inner.set_tenant("inner-tenant").await?;
+                            inner.set_no_tenant_scope();
+                            inner.on_commit(move || async move {
+                                callbacks.fetch_add(1, Ordering::SeqCst);
+                                Ok(())
+                            });
+                            let _ = ready_tx.send(());
+                            pending::<()>().await;
+                            #[allow(unreachable_code)]
+                            Ok::<_, DjogiError>(())
+                        })
+                    });
+                    tokio::pin!(inner);
+
+                    tokio::select! {
+                        result = &mut inner => {
+                            panic!("nested atomic future completed before cancellation: {result:?}")
+                        }
+                        ready = ready_rx => ready.expect("inner transaction should signal readiness"),
+                    }
+
+                    let timeout = tokio::time::timeout(Duration::from_millis(25), &mut inner).await;
+                    assert!(
+                        timeout.is_err(),
+                        "timeout must leave the nested atomic future to be dropped"
+                    );
+                }
+
+                let auth_after = outer.auth().expect("outer auth must be restored");
+                assert_eq!(auth_after.user_id, auth_before.user_id);
+                assert_eq!(auth_after.tenant_id, auth_before.tenant_id);
+                assert_eq!(auth_after.scopes, auth_before.scopes);
+                assert_eq!(auth_after.ext, auth_before.ext);
+                assert_eq!(
+                    outer.__tenant_scope_suppressed_for_macros(),
+                    tenant_scope_before
+                );
+                assert_eq!(outer.tenant_set, tenant_set_before);
+                assert_eq!(
+                    outer.applied_tenant_id(),
+                    applied_tenant_before.as_deref()
+                );
+
+                let later_query = Account::objects().count(outer).await;
+                assert!(
+                    matches!(
+                        later_query,
+                        Err(DjogiError::TransactionPoisoned {
+                            reason: "nested atomic future dropped before savepoint cleanup",
+                            ..
+                        })
+                    ),
+                    "framework-owned work after nested cancellation must return TransactionPoisoned, got: {later_query:?}"
+                );
+
+                let joined_err = Entry::objects()
+                    .select_related(EntryRelated::ledger())
+                    .fetch_all_joined(outer)
+                    .await;
+                assert!(
+                    matches!(
+                        joined_err,
+                        Err(DjogiError::TransactionPoisoned {
+                            reason: "nested atomic future dropped before savepoint cleanup",
+                            ..
+                        })
+                    ),
+                    "joined fetch after nested cancellation must return TransactionPoisoned, got: {joined_err:?}"
+                );
+
+                let prefetch_err = Entry::objects()
+                    .prefetch(EntryRelated::ledger())
+                    .fetch_all_prefetched(outer)
+                    .await;
+                assert!(
+                    matches!(
+                        prefetch_err,
+                        Err(DjogiError::TransactionPoisoned {
+                            reason: "nested atomic future dropped before savepoint cleanup",
+                            ..
+                        })
+                    ),
+                    "prefetch fetch after nested cancellation must return TransactionPoisoned, got: {prefetch_err:?}"
+                );
+
+                Ok::<_, DjogiError>(())
+            })
+        })
+        .await
+    };
+
+    assert!(
+        matches!(
+            outer_result,
+            Err(DjogiError::TransactionPoisoned {
+                reason: "nested atomic future dropped before savepoint cleanup",
+                ..
+            })
+        ),
+        "outer atomic commit must fail closed with TransactionPoisoned, got: {outer_result:?}"
+    );
+
+    let rows = Account::objects()
+        .fetch_all(&mut ctx)
+        .await
+        .expect("pool context should be usable after poisoned outer rollback");
+    let balances: Vec<i64> = rows.into_iter().map(|row| row.balance).collect();
+    assert!(
+        !balances.contains(&281_201) && !balances.contains(&281_202),
+        "poisoned outer transaction must roll back both outer and inner rows, got: {balances:?}"
+    );
+    assert_eq!(
+        callbacks.load(Ordering::SeqCst),
+        0,
+        "callbacks from poisoned transaction must not fire"
+    );
+}
+
 #[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn nested_atomic_uses_savepoints(mut ctx: djogi::DjogiContext) {
     run_atomic(&mut ctx, |outer| {
@@ -230,6 +699,167 @@ async fn nested_atomic_uses_savepoints(mut ctx: djogi::DjogiContext) {
 
     let count: i64 = Account::objects().count(&mut ctx).await.unwrap();
     assert_eq!(count, 1, "only the outer row survives the nested rollback");
+}
+
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
+async fn nested_atomic_cancellation_poisoned_outer_transaction_rolls_back_all_work(
+    mut ctx: djogi::DjogiContext,
+) {
+    let callback_count = Arc::new(AtomicUsize::new(0));
+
+    let outer_result = {
+        let callback_count = callback_count.clone();
+        atomic(&mut ctx, |outer| {
+            Box::pin(async move {
+                outer.set_auth(
+                    AuthContext::new(djogi::HeerId::from_i64(7).expect("HeerId(7) is valid"))
+                        .with_tenant("1000"),
+                );
+                let auth_before = outer.auth().cloned().expect("outer auth snapshot");
+                let tenant_scope_before = outer.__tenant_scope_suppressed_for_macros();
+
+                outer
+                    .set_tenant("1000")
+                    .await
+                    .expect("outer tenant priming must succeed");
+                let tenant_set_before = outer.tenant_set;
+                let applied_tenant_before = outer.applied_tenant_id().map(str::to_owned);
+
+                Account::create(
+                    outer,
+                    Account {
+                        balance: 281_201,
+                        ..Default::default()
+                    },
+                )
+                .await?;
+
+                {
+                    let callback_count = callback_count.clone();
+                    outer.on_commit(move || async move {
+                        callback_count.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    });
+                }
+
+                let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
+                let inner_result = {
+                    let fut = atomic(&mut *outer, |inner| {
+                        Box::pin(async move {
+                            Account::create(
+                                inner,
+                                Account {
+                                    balance: 281_202,
+                                    ..Default::default()
+                                },
+                            )
+                            .await?;
+                            inner.set_auth(
+                                AuthContext::new(
+                                    djogi::HeerId::from_i64(8).expect("HeerId(8) is valid"),
+                                )
+                                .with_tenant("2000"),
+                            );
+                            inner.set_no_tenant_scope();
+                            inner
+                                .set_tenant("2000")
+                                .await
+                                .expect("inner tenant mutation must succeed");
+                            {
+                                let callback_count = callback_count.clone();
+                                inner.on_commit(move || async move {
+                                    callback_count.fetch_add(10, Ordering::SeqCst);
+                                    Ok(())
+                                });
+                            }
+                            let _ = ready_tx.send(());
+                            pending::<()>().await;
+                            #[allow(unreachable_code)]
+                            Ok::<_, DjogiError>(())
+                        })
+                    });
+                    tokio::pin!(fut);
+
+                    tokio::select! {
+                        result = &mut fut => panic!("inner atomic completed before cancellation: {result:?}"),
+                        ready = ready_rx => ready.expect("inner atomic should signal dirty readiness"),
+                    };
+
+                    tokio::time::timeout(Duration::from_millis(25), &mut fut).await
+                };
+                assert!(
+                    inner_result.is_err(),
+                    "timeout must drop the nested atomic future before it resolves"
+                );
+
+                assert_eq!(
+                    outer.tenant_set,
+                    tenant_set_before,
+                    "nested cancellation must restore outer tenant_set tracker"
+                );
+                assert_eq!(
+                    outer.applied_tenant_id().map(str::to_owned),
+                    applied_tenant_before,
+                    "nested cancellation must restore outer applied_tenant_id"
+                );
+                let auth_after = outer.auth().expect("outer auth must remain attached");
+                assert_eq!(
+                    auth_after.user_id, auth_before.user_id,
+                    "nested cancellation must restore outer auth user_id"
+                );
+                assert_eq!(
+                    auth_after.tenant_id,
+                    auth_before.tenant_id,
+                    "nested cancellation must restore outer auth tenant_id"
+                );
+                assert_eq!(
+                    auth_after.scopes,
+                    auth_before.scopes,
+                    "nested cancellation must restore outer auth scopes"
+                );
+                assert_eq!(
+                    auth_after.ext, auth_before.ext,
+                    "nested cancellation must restore outer auth ext"
+                );
+                assert_eq!(
+                    outer.__tenant_scope_suppressed_for_macros(),
+                    tenant_scope_before,
+                    "nested cancellation must restore outer tenant-scope suppression"
+                );
+
+                let poison_err = Account::objects()
+                    .count(outer)
+                    .await
+                    .expect_err("poisoned outer context must reject further helper-path work");
+                assert!(
+                    matches!(poison_err, DjogiError::TransactionPoisoned { .. }),
+                    "expected TransactionPoisoned after nested cancellation, got: {poison_err:?}"
+                );
+
+                Ok::<_, DjogiError>(())
+            })
+        })
+        .await
+    };
+    let outer_err = outer_result.expect_err("outer transaction must refuse commit after poison");
+    assert!(
+        matches!(outer_err, DjogiError::TransactionPoisoned { .. }),
+        "expected TransactionPoisoned on outer commit, got: {outer_err:?}"
+    );
+
+    let count: i64 = Account::objects()
+        .count(&mut ctx)
+        .await
+        .expect("rolled-back outer transaction should leave parent ctx usable");
+    assert_eq!(
+        count, 0,
+        "poisoned outer transaction must roll back both outer and inner writes"
+    );
+    assert_eq!(
+        callback_count.load(Ordering::SeqCst),
+        0,
+        "neither outer nor inner on_commit callbacks may fire after nested cancellation"
+    );
 }
 
 #[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
@@ -365,9 +995,11 @@ async fn nested_atomic_on_commit_promotes_to_outer(mut ctx: djogi::DjogiContext)
 }
 
 // ---------------------------------------------------------------------------
-// retry_on_conflict — happy path + non-lock short-circuit. Actual
-// lock-error retry semantics need a real concurrent scenario and are
-// exercised in Task 7 (row locks).
+// Retry helpers — immediate-retry and public backoff surface. Actual
+// row-lock conflict semantics need a real concurrent scenario and are
+// exercised in Task 7 (row locks); the backoff helper's public
+// PoolTimeout path is covered here with a saturated single-connection
+// fixture.
 // ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
@@ -405,6 +1037,124 @@ async fn retry_on_conflict_short_circuits_on_non_lock_error(mut ctx: djogi::Djog
         1,
         "non-lock errors must not retry regardless of attempts budget"
     );
+}
+
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
+async fn retry_on_conflict_with_backoff_does_not_retry_on_success(mut ctx: djogi::DjogiContext) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let c = calls.clone();
+    let result = retry_on_conflict_with_backoff(
+        &mut ctx,
+        3,
+        TransactionRetryBackoff::none(),
+        async move |_ctx| {
+            c.fetch_add(1, Ordering::SeqCst);
+            Ok::<i32, DjogiError>(42)
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result, 42);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "closure that returns Ok on the first call must run exactly once"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
+async fn retry_on_conflict_with_backoff_short_circuits_on_terminal_error(
+    mut ctx: djogi::DjogiContext,
+) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let c = calls.clone();
+    let result = retry_on_conflict_with_backoff(
+        &mut ctx,
+        5,
+        TransactionRetryBackoff::none(),
+        async move |_ctx| {
+            c.fetch_add(1, Ordering::SeqCst);
+            Err::<(), _>(DjogiError::not_found("forced"))
+        },
+    )
+    .await;
+
+    assert!(result.is_err(), "terminal error must surface");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "terminal errors must not retry regardless of attempts budget"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
+async fn retry_on_conflict_with_backoff_retries_pool_timeout_and_recovers(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _ = &mut ctx;
+    run_single_connection_phase4_fixture_with_timeout(
+        Duration::from_millis(50),
+        |pool, mut retry_ctx| async move {
+            let (ready_tx, ready_rx) = oneshot::channel::<()>();
+            let (release_tx, release_rx) = oneshot::channel::<()>();
+
+            let mut holder_ctx = djogi::DjogiContext::from_pool(pool);
+            let hold_join = tokio::spawn(async move {
+                atomic(&mut holder_ctx, |tx| {
+                    Box::pin(async move {
+                        let _ = ready_tx.send(());
+                        let _ = release_rx.await;
+                        let _ = tx;
+                        Ok::<_, DjogiError>(())
+                    })
+                })
+                .await
+            });
+
+            ready_rx
+                .await
+                .expect("holder transaction must confirm the only connection is checked out");
+
+            let calls = Arc::new(AtomicUsize::new(0));
+            let c = calls.clone();
+            let mut release_tx = Some(release_tx);
+            let mut hold_join = Some(hold_join);
+            let result = retry_on_conflict_with_backoff(
+                &mut retry_ctx,
+                2,
+                TransactionRetryBackoff::none(),
+                async move |ctx| {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    match Account::objects().count(ctx).await {
+                        Err(err @ DjogiError::PoolTimeout { .. }) => {
+                            if let Some(tx) = release_tx.take() {
+                                let _ = tx.send(());
+                            }
+                            if let Some(handle) = hold_join.take() {
+                                handle
+                                    .await
+                                    .expect("holder task joins cleanly")
+                                    .expect("holder transaction exits cleanly");
+                            }
+                            Err(err)
+                        }
+                        other => other,
+                    }
+                },
+            )
+            .await
+            .expect("retry helper should recover after the held connection is released");
+
+            assert_eq!(result, 0, "no seeded accounts should exist in the fixture");
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                2,
+                "PoolTimeout must be retried once and then recover on the second attempt"
+            );
+        },
+    )
+    .await;
 }
 
 // ---------------------------------------------------------------------------

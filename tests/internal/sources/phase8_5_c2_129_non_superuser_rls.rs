@@ -385,3 +385,105 @@ fn non_superuser_rls_filters_typed_fetch_and_refresh() {
     // `connect_test_db_as_non_superuser`.
     let _role_name: &str = TEST_NON_SUPERUSER_ROLE;
 }
+
+#[test]
+fn pool_context_atomic_panic_clears_parent_tenant_trackers() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build current_thread Tokio runtime");
+
+    runtime.block_on(async {
+        let (cleanup, _admin_ctx) = setup_test_db()
+            .await
+            .expect("setup_test_db must succeed against DATABASE_URL");
+
+        let outcome = AssertUnwindSafe(async {
+            let mut non_super_ctx = connect_test_db_as_non_superuser(&cleanup)
+                .await
+                .expect("connect_test_db_as_non_superuser must succeed");
+
+            non_super_ctx.set_auth(
+                AuthContext::new(djogi::HeerId::from_i64(7).expect("HeerId(7) is valid"))
+                    .with_tenant("1000"),
+            );
+            non_super_ctx.set_no_tenant_scope();
+
+            let auth_before = non_super_ctx.auth().cloned().expect("auth snapshot");
+            let tenant_scope_before = non_super_ctx.__tenant_scope_suppressed_for_macros();
+
+            non_super_ctx
+                .set_tenant("1000")
+                .await
+                .expect("priming parent tenant tracker must succeed");
+            assert!(
+                non_super_ctx.tenant_set,
+                "pool-backed priming call must set the parent tracker"
+            );
+            assert_eq!(non_super_ctx.applied_tenant_id(), Some("1000"));
+
+            let panic_outcome = AssertUnwindSafe(djogi::transaction::atomic(
+                &mut non_super_ctx,
+                |tx| {
+                    Box::pin(async move {
+                        tx.set_tenant("2000").await?;
+                        panic!("intentional panic to test parent tracker cleanup");
+                        #[allow(unreachable_code)]
+                        Ok::<_, djogi::DjogiError>(())
+                    })
+                },
+            ))
+            .catch_unwind()
+            .await;
+            assert!(
+                panic_outcome.is_err(),
+                "atomic panic must propagate through catch_unwind"
+            );
+
+            assert!(
+                !non_super_ctx.tenant_set,
+                "panic path must clear the parent tenant_set tracker"
+            );
+            assert_eq!(
+                non_super_ctx.applied_tenant_id(),
+                None,
+                "panic path must clear the parent applied_tenant_id tracker"
+            );
+            let auth_after = non_super_ctx.auth().expect("parent auth must remain attached");
+            assert_eq!(
+                auth_after.user_id, auth_before.user_id,
+                "panic path must not mutate parent auth user_id"
+            );
+            assert_eq!(
+                auth_after.tenant_id,
+                auth_before.tenant_id,
+                "panic path must not mutate parent auth tenant_id"
+            );
+            assert_eq!(
+                auth_after.scopes,
+                auth_before.scopes,
+                "panic path must not mutate parent auth scopes"
+            );
+            assert_eq!(
+                auth_after.ext,
+                auth_before.ext,
+                "panic path must not mutate parent auth ext"
+            );
+            assert_eq!(
+                non_super_ctx.__tenant_scope_suppressed_for_macros(),
+                tenant_scope_before,
+                "panic path must not mutate parent tenant-scope suppression"
+            );
+        })
+        .catch_unwind()
+        .await;
+
+        teardown_test_db(cleanup).await;
+
+        if let Err(panic_payload) = outcome {
+            std::panic::resume_unwind(panic_payload);
+        }
+    });
+
+    let _role_name: &str = TEST_NON_SUPERUSER_ROLE;
+}

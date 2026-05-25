@@ -282,6 +282,10 @@ pub async fn build_raw_stream<'ctx>(
 /// Returns `Err(DjogiError::StreamOutsideTransaction)` when the context is
 /// pool-backed. Both `build_model_stream` and `build_raw_stream` call this.
 fn require_transaction(ctx: &mut DjogiContext) -> Result<&mut PgConnection, DjogiError> {
+    if let Some(err) = ctx.transaction_poison_error() {
+        return Err(err);
+    }
+
     match ctx.inner_mut() {
         ContextInner::Transaction(conn) => Ok(conn),
         ContextInner::Pool(_) => Err(DjogiError::StreamOutsideTransaction),

@@ -485,6 +485,60 @@ pub enum DjogiError {
     #[error("QuerySet::stream requires an active transaction — wrap the call in atomic()")]
     StreamOutsideTransaction,
 
+    /// A transaction-backed [`crate::DjogiContext`] was marked unsafe to
+    /// continue after a nested `atomic()` future was dropped before the
+    /// framework could run savepoint cleanup.
+    ///
+    /// Rust `Drop` cannot await `ROLLBACK TO SAVEPOINT` / `RELEASE
+    /// SAVEPOINT`, so the safe contract is fail-closed: framework-owned
+    /// operations reject further work, `commit` rolls the outer transaction
+    /// back instead of committing it, and the caller must retry the outer unit
+    /// of work from a fresh transaction.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] — retrying
+    /// against the same poisoned context cannot make the transaction safe to
+    /// commit.
+    #[error(
+        "transaction is poisoned ({reason}): a nested atomic future was dropped before \
+         savepoint cleanup could run; the transaction is unsafe to commit, roll it back \
+         and retry the outer unit of work"
+    )]
+    #[non_exhaustive]
+    TransactionPoisoned {
+        /// Static reason tag naming the poison source.
+        reason: &'static str,
+    },
+
+    /// A transaction-backed raw SQL call attempted a session-scoped statement
+    /// that `atomic()` cannot safely scrub on commit/rollback.
+    ///
+    /// This variant is used by the raw SQL bypass harness to reject
+    /// session-level control statements such as plain `SET`, `RESET`,
+    /// `LISTEN`, `UNLISTEN`, `PREPARE`, `DEALLOCATE`, and `DISCARD` when the
+    /// context is already inside an `atomic()` transaction. Those statements
+    /// either outlive the surrounding transaction entirely or invite callers
+    /// to assume rollback will clean them up when Postgres semantics say
+    /// otherwise.
+    ///
+    /// `statement` is the canonical top-level keyword (`"SET"`, `"RESET"`,
+    /// etc.) that triggered the refusal. The fix is structural: use a
+    /// transaction-local form such as `SET LOCAL` / `SET CONSTRAINTS` /
+    /// `SET TRANSACTION`, or run the session-scoped statement on a pool-backed
+    /// context outside the transaction.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// retrying the same closure against the same SQL will fail the same way.
+    #[error(
+        "raw SQL statement {statement} is not allowed inside an atomic() transaction; \
+         use a transaction-local form (`SET LOCAL`, `SET CONSTRAINTS`, `SET TRANSACTION`) \
+         or run the session-scoped statement on a pool-backed context"
+    )]
+    #[non_exhaustive]
+    SessionStatementDisallowedInTransaction {
+        /// Canonical top-level statement keyword that triggered the refusal.
+        statement: &'static str,
+    },
+
     /// An aggregate's DISTINCT modifier combination is not supported by
     /// Postgres syntax or by Djogi's current IR.
     ///
@@ -557,15 +611,16 @@ pub enum DjogiError {
     /// timeouts as retryable rather than dead-lettering them as
     /// permanent business failures.
     ///
-    /// Note that the framework's `retry_on_conflict` helper today
-    /// retries on every transient classification, which would mean
-    /// retrying pool timeouts immediately and likely tripping the
-    /// timeout again. Callers that wrap their work in
-    /// `retry_on_conflict` and want a different policy for
-    /// `PoolTimeout` should match on it explicitly and add their own
-    /// backoff. This is an honest classification — `PoolTimeout`
-    /// genuinely is transient — paired with caller-side policy where
-    /// finer-grained behaviour matters.
+    /// Note that djogi exposes two retry helpers with different
+    /// policy: [`crate::transaction::retry_on_conflict`] retries
+    /// immediately, while
+    /// [`crate::transaction::retry_on_conflict_with_backoff`]
+    /// sleeps between transient failures using
+    /// [`crate::transaction::TransactionRetryBackoff`]. Pool
+    /// saturation usually belongs on the backoff path, not the
+    /// immediate-retry path. Callers that need a bespoke policy can
+    /// still match on `PoolTimeout` explicitly, but the built-in
+    /// backoff helper is the default production answer.
     #[error("pool timeout ({phase})")]
     #[non_exhaustive]
     PoolTimeout {
@@ -1156,6 +1211,8 @@ impl DjogiError {
     /// | [`MissingIdempotencyKey`](Self::MissingIdempotencyKey) | terminal |
     /// | [`GoneAggregate`](Self::GoneAggregate) | terminal |
     /// | [`StreamOutsideTransaction`](Self::StreamOutsideTransaction) | terminal |
+    /// | [`TransactionPoisoned`](Self::TransactionPoisoned) | terminal |
+    /// | [`SessionStatementDisallowedInTransaction`](Self::SessionStatementDisallowedInTransaction) | terminal |
     /// | [`PoolTimeout`](Self::PoolTimeout) | transient |
     /// | [`SetRoleOutsideTransaction`](Self::SetRoleOutsideTransaction) | terminal |
     /// | [`InvalidRoleName`](Self::InvalidRoleName) | terminal |
@@ -1403,6 +1460,13 @@ mod tests {
             "PoolTimeout must NOT be terminal — generic retry helpers must not dead-letter it"
         );
         assert!(
+            DjogiError::TransactionPoisoned {
+                reason: "nested atomic future dropped before savepoint cleanup"
+            }
+            .is_terminal(),
+            "TransactionPoisoned must be terminal — retry cannot clean the same context"
+        );
+        assert!(
             DjogiError::SetRoleOutsideTransaction.is_terminal(),
             "SetRoleOutsideTransaction must be terminal — retry cannot promote a pool-backed context"
         );
@@ -1498,6 +1562,39 @@ mod tests {
         assert!(
             msg.contains("REPEATABLE READ"),
             "expected requested isolation level in message, got: {msg}"
+        );
+    }
+
+    /// Phase 8.5 #281 — a nested atomic cancellation poisons the parent
+    /// transaction. The only safe next step is rollback and retry from a fresh
+    /// outer transaction, so generic retry classifiers must not treat the same
+    /// context as reusable.
+    #[test]
+    fn transaction_poisoned_is_terminal() {
+        let err = DjogiError::TransactionPoisoned {
+            reason: "nested atomic future dropped before savepoint cleanup",
+        };
+        assert!(err.is_terminal(), "TransactionPoisoned must be terminal");
+        assert!(
+            !err.is_transient(),
+            "TransactionPoisoned must not be transient"
+        );
+    }
+
+    /// Phase 8.5 #282 — refusing a session-scoped raw statement inside an
+    /// existing transaction is a caller-structure error, not a transient
+    /// runtime failure. Retrying the same closure against the same SQL will
+    /// fail the same way.
+    #[test]
+    fn session_statement_disallowed_in_transaction_is_terminal() {
+        let err = DjogiError::SessionStatementDisallowedInTransaction { statement: "SET" };
+        assert!(
+            err.is_terminal(),
+            "SessionStatementDisallowedInTransaction must be terminal"
+        );
+        assert!(
+            !err.is_transient(),
+            "SessionStatementDisallowedInTransaction must not be transient"
         );
     }
 

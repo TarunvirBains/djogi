@@ -52,7 +52,10 @@
 //! [`retry_on_conflict_with_backoff`] when the closure can fail during pool
 //! saturation and immediate retries would amplify checkout pressure.
 
-use crate::context::{ContextInner, DjogiContext};
+use crate::context::{
+    AuthStateSnapshot, ContextInner, DjogiContext, NESTED_ATOMIC_CANCELLED_POISON_REASON,
+};
+use crate::pg::connection::PgConnection;
 use crate::pg::pool::DjogiPool;
 use crate::{DbError, DjogiError};
 use futures::FutureExt;
@@ -74,6 +77,181 @@ static JITTER_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// bound without falling into the "async closure implementation not
 /// general enough" inference hole that bare `AsyncFnOnce` hits today.
 pub type AtomicFuture<'a, R> = Pin<Box<dyn Future<Output = Result<R, DjogiError>> + Send + 'a>>;
+
+enum TopLevelAtomicOwner {
+    Connection(PgConnection),
+    Context(DjogiContext),
+}
+
+impl TopLevelAtomicOwner {
+    fn conn_mut(&mut self) -> &mut PgConnection {
+        match self {
+            TopLevelAtomicOwner::Connection(conn) => conn,
+            TopLevelAtomicOwner::Context(ctx) => match ctx.inner_mut() {
+                ContextInner::Transaction(conn) => conn,
+                ContextInner::Pool(_) => {
+                    unreachable!("top-level atomic owner should never hold a pool-backed context",)
+                }
+            },
+        }
+    }
+
+    fn detach(self) {
+        match self {
+            TopLevelAtomicOwner::Connection(conn) => conn.detach(),
+            TopLevelAtomicOwner::Context(ctx) => ctx.detach_transaction_connection(),
+        }
+    }
+}
+
+struct TopLevelAtomicGuard {
+    owner: Option<TopLevelAtomicOwner>,
+    clean: bool,
+    scope: &'static str,
+}
+
+impl TopLevelAtomicGuard {
+    fn from_connection(conn: PgConnection, scope: &'static str) -> Self {
+        Self {
+            owner: Some(TopLevelAtomicOwner::Connection(conn)),
+            clean: false,
+            scope,
+        }
+    }
+
+    fn conn_mut(&mut self) -> &mut PgConnection {
+        self.owner
+            .as_mut()
+            .expect("top-level atomic guard owns the connection until Drop")
+            .conn_mut()
+    }
+
+    fn promote_to_context<F>(&mut self, build_ctx: F)
+    where
+        F: FnOnce(PgConnection) -> DjogiContext,
+    {
+        let owner = self
+            .owner
+            .take()
+            .expect("promote_to_context requires an owned connection");
+        let conn = match owner {
+            TopLevelAtomicOwner::Connection(conn) => conn,
+            TopLevelAtomicOwner::Context(_) => {
+                unreachable!("top-level atomic owner already promoted to DjogiContext")
+            }
+        };
+        self.owner = Some(TopLevelAtomicOwner::Context(build_ctx(conn)));
+    }
+
+    fn tx_ctx_mut(&mut self) -> &mut DjogiContext {
+        match self
+            .owner
+            .as_mut()
+            .expect("top-level atomic guard owns the transaction context until Drop")
+        {
+            TopLevelAtomicOwner::Connection(_) => {
+                unreachable!("transaction context requested before BEGIN completed")
+            }
+            TopLevelAtomicOwner::Context(ctx) => ctx,
+        }
+    }
+
+    async fn commit(&mut self) -> Result<(), DjogiError> {
+        let result = self.tx_ctx_mut().commit_in_place().await;
+        if result.is_ok()
+            || (matches!(&result, Err(DjogiError::TransactionPoisoned { .. }))
+                && !self.tx_ctx_mut().is_transaction_poisoned())
+        {
+            self.clean = true;
+        }
+        result
+    }
+
+    async fn rollback(&mut self) -> Result<(), DjogiError> {
+        self.tx_ctx_mut().rollback_in_place().await?;
+        self.clean = true;
+        Ok(())
+    }
+}
+
+impl Drop for TopLevelAtomicGuard {
+    fn drop(&mut self) {
+        if let Some(owner) = self.owner.take() {
+            if self.clean {
+                drop(owner);
+            } else {
+                tracing::warn!(
+                    scope = self.scope,
+                    "djogi::transaction::atomic::dirty_detach: detaching dirty \
+                     top-level transaction connection on drop",
+                );
+                owner.detach();
+            }
+        }
+    }
+}
+
+struct PoolContextAtomicGuard<'a> {
+    parent_ctx: &'a mut DjogiContext,
+    inner: TopLevelAtomicGuard,
+}
+
+impl<'a> PoolContextAtomicGuard<'a> {
+    fn new(parent_ctx: &'a mut DjogiContext, conn: PgConnection) -> Self {
+        Self {
+            parent_ctx,
+            inner: TopLevelAtomicGuard::from_connection(conn, "pool_ctx"),
+        }
+    }
+
+    fn conn_mut(&mut self) -> &mut PgConnection {
+        self.inner.conn_mut()
+    }
+
+    fn promote_to_context(&mut self) {
+        let sassi = std::sync::Arc::clone(&self.parent_ctx.sassi);
+        let auth = self.parent_ctx.auth.clone();
+        let tenant_scope_suppressed = self.parent_ctx.tenant_scope_suppressed;
+        self.inner.promote_to_context(|conn| {
+            let mut tx_ctx = DjogiContext::from_connection_with_sassi(conn, sassi);
+            tx_ctx.auth = auth;
+            tx_ctx.tenant_scope_suppressed = tenant_scope_suppressed;
+            tx_ctx
+        });
+    }
+
+    fn tx_ctx_mut(&mut self) -> &mut DjogiContext {
+        self.inner.tx_ctx_mut()
+    }
+
+    async fn commit(&mut self) -> Result<(), DjogiError> {
+        self.inner.commit().await
+    }
+
+    async fn rollback(&mut self) -> Result<(), DjogiError> {
+        self.inner.rollback().await
+    }
+
+    fn propagate_success_to_parent(&mut self) {
+        let auth_after = self.tx_ctx_mut().auth.clone();
+        let tenant_scope_suppressed_after = self.tx_ctx_mut().tenant_scope_suppressed;
+        self.parent_ctx.auth = auth_after;
+        self.parent_ctx.tenant_scope_suppressed = tenant_scope_suppressed_after;
+        clear_pool_context_transaction_trackers(self.parent_ctx);
+    }
+
+    fn clear_parent_trackers(&mut self) {
+        clear_pool_context_transaction_trackers(self.parent_ctx);
+    }
+}
+
+impl Drop for PoolContextAtomicGuard<'_> {
+    fn drop(&mut self) {
+        if !self.inner.clean {
+            clear_pool_context_transaction_trackers(self.parent_ctx);
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Isolation level — typed surface for `BEGIN ISOLATION LEVEL <level>`.
@@ -523,24 +701,27 @@ where
     F: for<'a> FnOnce(&'a mut DjogiContext) -> AtomicFuture<'a, R> + Send,
 {
     // Acquire a connection and begin a transaction.
-    let mut conn = pool.get().await?;
-    conn.batch_execute(begin_sql).await?;
-    let mut ctx = DjogiContext::from_connection(conn);
+    let conn = pool.get().await?;
+    let mut guard = TopLevelAtomicGuard::from_connection(conn, "pool");
+    guard.conn_mut().batch_execute(begin_sql).await?;
+    guard.promote_to_context(DjogiContext::from_connection);
 
     // Poll the closure through `catch_unwind` so a panic turns into
     // a caught payload. See the module-level panic-semantics docs.
-    let result = AssertUnwindSafe(closure(&mut ctx)).catch_unwind().await;
+    let result = AssertUnwindSafe(closure(guard.tx_ctx_mut()))
+        .catch_unwind()
+        .await;
 
     match result {
         Ok(Ok(value)) => {
             // Closure succeeded — commit and drain on-commit queue.
-            ctx.commit().await?;
+            guard.commit().await?;
             Ok(value)
         }
         Ok(Err(err)) => {
             // Closure returned Err — roll the transaction back and
             // surface the original error.
-            if let Err(rb_err) = ctx.rollback().await {
+            if let Err(rb_err) = guard.rollback().await {
                 tracing::error!(
                     error = ?rb_err,
                     "atomic: rollback after closure Err failed; returning closure err",
@@ -551,7 +732,7 @@ where
         Err(panic_payload) => {
             // Closure panicked — roll back before resuming the
             // panic so the transaction doesn't leak.
-            if let Err(rb_err) = ctx.rollback().await {
+            if let Err(rb_err) = guard.rollback().await {
                 tracing::error!(
                     error = ?rb_err,
                     "atomic: rollback after closure panic failed; resuming panic",
@@ -577,45 +758,40 @@ where
         ))
     })?;
 
-    let mut conn = pool.get().await?;
-    conn.batch_execute(begin_sql).await?;
+    let conn = pool.get().await?;
+    let mut guard = PoolContextAtomicGuard::new(ctx, conn);
+    guard.conn_mut().batch_execute(begin_sql).await?;
+    guard.promote_to_context();
 
-    let mut tx_ctx =
-        DjogiContext::from_connection_with_sassi(conn, std::sync::Arc::clone(&ctx.sassi));
-    tx_ctx.auth = ctx.auth.clone();
-    tx_ctx.tenant_scope_suppressed = ctx.tenant_scope_suppressed;
-
-    let result = AssertUnwindSafe(closure(&mut tx_ctx)).catch_unwind().await;
+    let result = AssertUnwindSafe(closure(guard.tx_ctx_mut()))
+        .catch_unwind()
+        .await;
 
     match result {
         Ok(Ok(value)) => {
-            let auth_after = tx_ctx.auth.clone();
-            let tenant_scope_suppressed_after = tx_ctx.tenant_scope_suppressed;
-            tx_ctx.commit().await?;
-
-            ctx.auth = auth_after;
-            ctx.tenant_scope_suppressed = tenant_scope_suppressed_after;
-            clear_pool_context_transaction_trackers(ctx);
+            guard.commit().await?;
+            guard.propagate_success_to_parent();
 
             Ok(value)
         }
         Ok(Err(err)) => {
-            if let Err(rb_err) = tx_ctx.rollback().await {
+            if let Err(rb_err) = guard.rollback().await {
                 tracing::error!(
                     error = ?rb_err,
                     "atomic: rollback after closure Err failed; returning closure err",
                 );
             }
-            clear_pool_context_transaction_trackers(ctx);
+            guard.clear_parent_trackers();
             Err(err)
         }
         Err(panic_payload) => {
-            if let Err(rb_err) = tx_ctx.rollback().await {
+            if let Err(rb_err) = guard.rollback().await {
                 tracing::error!(
                     error = ?rb_err,
                     "atomic: rollback after closure panic failed; resuming panic",
                 );
             }
+            guard.clear_parent_trackers();
             resume_unwind(panic_payload);
         }
     }
@@ -624,6 +800,72 @@ where
 fn clear_pool_context_transaction_trackers(ctx: &mut DjogiContext) {
     ctx.tenant_set = false;
     ctx.applied_tenant_id = None;
+}
+
+struct NestedAtomicCancellationGuard {
+    ctx: *mut DjogiContext,
+    callbacks_before: usize,
+    auth_snapshot: AuthStateSnapshot,
+    depth_incremented: bool,
+    armed: bool,
+}
+
+// SAFETY: the guard is stored inside the same `atomic()` future that owns the
+// exclusive `&mut DjogiContext` borrow. Moving that future between executor
+// threads moves the raw pointer and the borrow together; the guard only
+// dereferences during drop after later-declared futures have released `ctx`.
+unsafe impl Send for NestedAtomicCancellationGuard {}
+
+impl NestedAtomicCancellationGuard {
+    fn armed(
+        ctx: &mut DjogiContext,
+        callbacks_before: usize,
+        auth_snapshot: AuthStateSnapshot,
+    ) -> Self {
+        Self {
+            ctx: ctx as *mut DjogiContext,
+            callbacks_before,
+            auth_snapshot,
+            depth_incremented: true,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    fn restore_parent_state(&mut self) {
+        let callbacks_before = self.callbacks_before;
+        let auth_snapshot = self.auth_snapshot.clone();
+        // SAFETY: the guard is declared before every future that borrows `ctx`
+        // in `run_nested_savepoint_atomic`. Rust drops later-declared awaited
+        // futures before this guard, so by the time Drop reaches here the
+        // closure/savepoint future no longer holds its `&mut DjogiContext`.
+        let ctx = unsafe { &mut *self.ctx };
+        ctx.truncate_on_commit_queue(callbacks_before);
+        ctx.restore_auth_state(auth_snapshot);
+    }
+}
+
+impl Drop for NestedAtomicCancellationGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        self.restore_parent_state();
+
+        // SAFETY: see `restore_parent_state`. This is the same raw context
+        // pointer, reached only after the awaited future borrowing `ctx` has
+        // been dropped.
+        let ctx = unsafe { &mut *self.ctx };
+        if self.depth_incremented {
+            ctx.decrement_savepoint_depth();
+            self.depth_incremented = false;
+        }
+        ctx.poison_transaction(NESTED_ATOMIC_CANCELLED_POISON_REASON);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -682,24 +924,6 @@ where
         "run_nested_savepoint_atomic invoked on a non-transaction inner",
     );
 
-    // Push savepoint. Depth is incremented BEFORE the SQL so
-    // `sp_<depth>` numbering starts at 1 for the first nested
-    // level. `sp_<n>` is ASCII + underscore — safe unquoted.
-    ctx.increment_savepoint_depth();
-    let depth = ctx.savepoint_depth();
-    let savepoint_name = format!("sp_{depth}");
-
-    let sp_sql = format!("SAVEPOINT {savepoint_name}");
-    let push_result = match ctx.inner_mut() {
-        ContextInner::Transaction(conn) => conn.batch_execute(&sp_sql).await,
-        // Unreachable because of the debug_assert above.
-        ContextInner::Pool(_) => unreachable!("debug_assert above rules this out"),
-    };
-    if let Err(e) = push_result {
-        ctx.decrement_savepoint_depth();
-        return Err(e);
-    }
-
     // Nested path shares the parent context directly — inner
     // writes land on the same transaction, inner on_commit
     // callbacks land on the parent's queue. Snapshot before
@@ -718,7 +942,40 @@ where
     // boundary fixup (Codex stop-gate review).
     let auth_snapshot = ctx.snapshot_auth_state();
 
-    let inner_result = AssertUnwindSafe(closure(ctx)).catch_unwind().await;
+    // Push savepoint. Depth is incremented BEFORE the SQL so
+    // `sp_<depth>` numbering starts at 1 for the first nested
+    // level. `sp_<n>` is ASCII + underscore — safe unquoted.
+    ctx.increment_savepoint_depth();
+    let depth = ctx.savepoint_depth();
+    let savepoint_name = format!("sp_{depth}");
+
+    let mut cancel_guard =
+        NestedAtomicCancellationGuard::armed(ctx, callbacks_before, auth_snapshot.clone());
+
+    let sp_sql = format!("SAVEPOINT {savepoint_name}");
+    let push_result = {
+        // Declared after `cancel_guard`, so cancellation while awaiting
+        // SAVEPOINT drops this future before the guard mutates `ctx`.
+        let push_future = match ctx.inner_mut() {
+            ContextInner::Transaction(conn) => conn.batch_execute(&sp_sql),
+            // Unreachable because of the debug_assert above.
+            ContextInner::Pool(_) => unreachable!("debug_assert above rules this out"),
+        };
+        push_future.await
+    };
+    if let Err(e) = push_result {
+        ctx.decrement_savepoint_depth();
+        cancel_guard.disarm();
+        return Err(e);
+    }
+
+    let inner_result = {
+        // The inner future borrows `ctx`. Keep it in a scope declared after
+        // `cancel_guard`: if the caller drops this outer future, Rust drops
+        // `inner_future` first, then the guard restores/poisons the parent.
+        let inner_future = AssertUnwindSafe(closure(ctx)).catch_unwind();
+        inner_future.await
+    };
 
     match inner_result {
         Ok(Ok(value)) => {
@@ -728,11 +985,15 @@ where
             // the parent and the inner's choices (e.g., set_auth) are
             // the continuing context.
             let release_sql = format!("RELEASE SAVEPOINT {savepoint_name}");
-            let release_res = match ctx.inner_mut() {
-                ContextInner::Transaction(conn) => conn.batch_execute(&release_sql).await,
-                ContextInner::Pool(_) => unreachable!(),
+            let release_res = {
+                let release_future = match ctx.inner_mut() {
+                    ContextInner::Transaction(conn) => conn.batch_execute(&release_sql),
+                    ContextInner::Pool(_) => unreachable!(),
+                };
+                release_future.await
             };
             ctx.decrement_savepoint_depth();
+            cancel_guard.disarm();
             release_res?;
             Ok(value)
         }
@@ -742,10 +1003,14 @@ where
             // parent queue back to its pre-closure length, and
             // restore auth state so it matches the reverted GUC.
             ctx.truncate_on_commit_queue(callbacks_before);
-            ctx.restore_auth_state(auth_snapshot);
+            ctx.restore_auth_state(auth_snapshot.clone());
             let rb_sql = format!("ROLLBACK TO SAVEPOINT {savepoint_name}");
             let rel_sql = format!("RELEASE SAVEPOINT {savepoint_name}");
-            if let Some(rb_err) = ctx.run_rollback_to_release(&rb_sql, &rel_sql).await {
+            let rollback_error = {
+                let rollback_future = ctx.run_rollback_to_release(&rb_sql, &rel_sql);
+                rollback_future.await
+            };
+            if let Some(rb_err) = rollback_error {
                 tracing::error!(
                     error = ?rb_err,
                     "atomic: ROLLBACK TO SAVEPOINT after closure Err failed; \
@@ -753,6 +1018,7 @@ where
                 );
             }
             ctx.decrement_savepoint_depth();
+            cancel_guard.disarm();
             Err(err)
         }
         Err(panic_payload) => {
@@ -764,7 +1030,11 @@ where
             ctx.restore_auth_state(auth_snapshot);
             let rb_sql = format!("ROLLBACK TO SAVEPOINT {savepoint_name}");
             let rel_sql = format!("RELEASE SAVEPOINT {savepoint_name}");
-            if let Some(rb_err) = ctx.run_rollback_to_release(&rb_sql, &rel_sql).await {
+            let rollback_error = {
+                let rollback_future = ctx.run_rollback_to_release(&rb_sql, &rel_sql);
+                rollback_future.await
+            };
+            if let Some(rb_err) = rollback_error {
                 tracing::error!(
                     error = ?rb_err,
                     "atomic: ROLLBACK TO SAVEPOINT after closure panic failed; \
@@ -772,6 +1042,7 @@ where
                 );
             }
             ctx.decrement_savepoint_depth();
+            cancel_guard.disarm();
             resume_unwind(panic_payload);
         }
     }
