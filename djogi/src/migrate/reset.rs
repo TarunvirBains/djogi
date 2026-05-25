@@ -98,6 +98,9 @@ use super::ledger::compute_checksum;
 use super::naming::{down_filename, up_filename};
 use super::policy::{OutOfOrderPolicy, is_localhost_connection};
 use super::projection::BucketKey;
+use super::replay_plan::{
+    ReplayPlanLoadStatus, find_non_transactional_statement_shape, load_committed_replay_plan,
+};
 use super::runner::{RunnerCtx, apply_plan};
 use super::segment::{MigrationPlan, Segment, SegmentKind};
 use super::sql::OperationSql;
@@ -225,6 +228,27 @@ pub struct ResetChecksumParityIssue {
     pub problem: ResetChecksumParityProblem,
 }
 
+/// Why reset cannot prove faithful replay semantics from the committed
+/// migration artifacts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetReplaySemanticsProblem {
+    MissingReplayPlan,
+    InvalidReplayPlan,
+}
+
+/// One replay-semantics issue found before the destructive reset step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResetReplaySemanticsIssue {
+    /// Bucket carrying the affected migration.
+    pub bucket: BucketKey,
+    /// Migration version that cannot be replayed safely from disk.
+    pub version: String,
+    /// Statement class that requires non-transactional replay semantics.
+    pub statement_shape: String,
+    /// Why reset could not recover a committed replay plan.
+    pub problem: ResetReplaySemanticsProblem,
+}
+
 /// Errors surfaced by [`reset_app_database`].
 #[derive(Debug)]
 pub enum ResetError {
@@ -310,6 +334,11 @@ pub enum ResetRefusal {
     /// the operator explicitly overrides the drift gate.
     ChecksumParity {
         issues: Vec<ResetChecksumParityIssue>,
+    },
+    /// Reset cannot prove faithful replay semantics for at least one
+    /// committed migration before the destructive drop/recreate.
+    ReplaySemantics {
+        issues: Vec<ResetReplaySemanticsIssue>,
     },
 }
 
@@ -407,6 +436,19 @@ impl std::fmt::Display for ResetRefusal {
                      {rendered}; refusing destructive drop / recreate unless you pass \
                      `--allow-checksum-drift-reset` (or set \
                      `ResetRequest::allow_checksum_drift_reset = true`)"
+                )
+            }
+            ResetRefusal::ReplaySemantics { issues } => {
+                let rendered = issues
+                    .iter()
+                    .map(render_replay_semantics_issue)
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                write!(
+                    f,
+                    "db reset cannot prove faithful replay semantics for at least one committed \
+                     migration: {rendered}; refusing destructive drop / recreate until the migration \
+                     has a committed replay manifest or is replay-safe as a single transactional plan"
                 )
             }
         }
@@ -533,6 +575,7 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
         &historical_entries,
         req.allow_checksum_drift_reset,
     )?;
+    preflight_reset_replay_semantics(req.workspace_root, &database)?;
     let historical_order = build_historical_order(&historical_entries);
 
     // 5. Drop + recreate the application database via the maintenance
@@ -913,6 +956,95 @@ fn render_checksum_parity_issue(issue: &ResetChecksumParityIssue) -> String {
     }
 }
 
+fn preflight_reset_replay_semantics(
+    workspace_root: &Path,
+    database: &str,
+) -> Result<(), ResetError> {
+    let buckets = scan_committed_migrations(workspace_root, database)?;
+    let mut issues = Vec::new();
+
+    for (bucket, versions) in &buckets {
+        for version in versions {
+            let replay_sql = read_replay_sql_files(workspace_root, bucket, version)?;
+            let plan_status =
+                replay_plan_status_for_reset(workspace_root, bucket, version, &replay_sql);
+            let Some(statement_shape) = find_non_transactional_statement_shape(&replay_sql.up_sql)
+            else {
+                continue;
+            };
+            match plan_status {
+                ReplayPlanLoadStatus::Loaded(_) => {}
+                ReplayPlanLoadStatus::Missing => issues.push(ResetReplaySemanticsIssue {
+                    bucket: bucket.clone(),
+                    version: version.clone(),
+                    statement_shape: statement_shape.to_string(),
+                    problem: ResetReplaySemanticsProblem::MissingReplayPlan,
+                }),
+                ReplayPlanLoadStatus::Invalid(_) => issues.push(ResetReplaySemanticsIssue {
+                    bucket: bucket.clone(),
+                    version: version.clone(),
+                    statement_shape: statement_shape.to_string(),
+                    problem: ResetReplaySemanticsProblem::InvalidReplayPlan,
+                }),
+            }
+        }
+    }
+
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(ResetError::Refused(ResetRefusal::ReplaySemantics {
+            issues,
+        }))
+    }
+}
+
+fn replay_plan_status_for_reset(
+    workspace_root: &Path,
+    bucket: &BucketKey,
+    version: &str,
+    replay_sql: &ReplaySqlFiles,
+) -> ReplayPlanLoadStatus {
+    load_committed_replay_plan(
+        workspace_root,
+        bucket,
+        version,
+        &replay_sql.checksum_up,
+        replay_sql.checksum_down.as_deref(),
+    )
+}
+
+fn load_reset_replay_plan(
+    workspace_root: &Path,
+    bucket: &BucketKey,
+    version: &str,
+    replay_sql: &ReplaySqlFiles,
+) -> Result<Option<MigrationPlan>, ResetError> {
+    match replay_plan_status_for_reset(workspace_root, bucket, version, replay_sql) {
+        ReplayPlanLoadStatus::Loaded(plan) => Ok(Some(plan)),
+        ReplayPlanLoadStatus::Missing | ReplayPlanLoadStatus::Invalid(_) => Ok(None),
+    }
+}
+
+fn render_replay_semantics_issue(issue: &ResetReplaySemanticsIssue) -> String {
+    let version_path = format!(
+        "{}/{}/{}",
+        issue.bucket.database,
+        app_dirname(&issue.bucket.app),
+        issue.version
+    );
+    match issue.problem {
+        ResetReplaySemanticsProblem::MissingReplayPlan => format!(
+            "{version_path} contains `{}` but has no committed replay manifest",
+            issue.statement_shape
+        ),
+        ResetReplaySemanticsProblem::InvalidReplayPlan => format!(
+            "{version_path} contains `{}` but its committed replay manifest is missing or stale",
+            issue.statement_shape
+        ),
+    }
+}
+
 /// Codex umbrella U-4 — given the on-disk bucket map and the captured
 /// historical apply order, produce the deterministic replay plan as a
 /// flat `Vec<(BucketKey, String)>` in the order migrations should be
@@ -1100,19 +1232,20 @@ async fn replay_one_migration(
 ) -> Result<(), ResetError> {
     let replay_sql = read_replay_sql_files(workspace_root, bucket, version)?;
 
-    let plan = MigrationPlan {
-        bucket: bucket.clone(),
-        classification: super::diff::Classification::Additive,
-        segments: vec![Segment {
-            kind: SegmentKind::Transactional,
-            statements: vec![OperationSql {
-                label: format!("replay {version}"),
-                up: replay_sql.up_sql.clone(),
-                down: replay_sql.down_sql,
-                lossy: None,
+    let plan = load_reset_replay_plan(workspace_root, bucket, version, &replay_sql)?
+        .unwrap_or_else(|| MigrationPlan {
+            bucket: bucket.clone(),
+            classification: super::diff::Classification::Additive,
+            segments: vec![Segment {
+                kind: SegmentKind::Transactional,
+                statements: vec![OperationSql {
+                    label: format!("replay {version}"),
+                    up: replay_sql.up_sql.clone(),
+                    down: replay_sql.down_sql.clone(),
+                    lossy: None,
+                }],
             }],
-        }],
-    };
+        });
 
     let runner_ctx = RunnerCtx {
         bucket: bucket.clone(),
@@ -2036,6 +2169,95 @@ mod tests {
             replay_sql.checksum_down.as_deref(),
             Some(compute_checksum(["DROP TABLE widgets;"]).as_str()),
             "reset replay must preserve checksum_down so later resets still enforce down-side parity"
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u276_preflight_replay_semantics_refuses_non_transactional_sql_without_manifest() {
+        let work = temp_root("u276_missing_manifest");
+        let bucket = bk("main", "");
+        let version = "V20260301000006__widgets";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            "-- AddTable widgets\n\
+             CREATE TABLE widgets (id BIGINT PRIMARY KEY);\n\n\
+             -- AddIndex widgets_id_idx\n\
+             CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\n",
+        )
+        .unwrap();
+        fs::write(
+            bucket_dir.join(down_filename(version)),
+            "DROP INDEX CONCURRENTLY widgets_id_idx;\nDROP TABLE widgets;\n",
+        )
+        .unwrap();
+
+        let err = preflight_reset_replay_semantics(&work, "main")
+            .expect_err("legacy file-only concurrent index replay must refuse before drop");
+
+        match err {
+            ResetError::Refused(ResetRefusal::ReplaySemantics { issues }) => {
+                assert_eq!(issues.len(), 1, "expected one replay-semantics issue");
+                assert_eq!(issues[0].bucket, bucket);
+                assert_eq!(issues[0].version, version);
+                assert_eq!(
+                    issues[0].problem,
+                    ResetReplaySemanticsProblem::MissingReplayPlan
+                );
+                assert_eq!(issues[0].statement_shape, "CREATE INDEX CONCURRENTLY");
+            }
+            other => panic!("expected replay-semantics refusal, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u276_load_reset_replay_plan_preserves_committed_segment_kinds() {
+        let work = temp_root("u276_manifest_roundtrip");
+        let bucket = bk("main", "");
+        let version = "V20260301000007__widgets";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+
+        let up_sql = "-- AddTable widgets\n\
+             CREATE TABLE widgets (id BIGINT PRIMARY KEY);\n\n\
+             -- AddIndex widgets_id_idx\n\
+             CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\n";
+        let down_sql = "DROP INDEX CONCURRENTLY widgets_id_idx;\nDROP TABLE widgets;\n";
+        fs::write(bucket_dir.join(up_filename(version)), up_sql).unwrap();
+        fs::write(bucket_dir.join(down_filename(version)), down_sql).unwrap();
+        fs::write(
+            bucket_dir.join(format!("{version}.plan.json")),
+            format!(
+                "{{\n  \"format_version\": \"1\",\n  \"checksum_up\": \"{}\",\n  \"checksum_down\": \"{}\",\n  \"classification\": {{ \"kind\": \"additive\" }},\n  \"segments\": [\n    {{\n      \"kind\": \"transactional\",\n      \"statements\": [\n        {{ \"label\": \"AddTable widgets\", \"up\": \"CREATE TABLE widgets (id BIGINT PRIMARY KEY);\" }}\n      ]\n    }},\n    {{\n      \"kind\": \"non_transactional\",\n      \"statements\": [\n        {{ \"label\": \"AddIndex widgets_id_idx\", \"up\": \"CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\" }}\n      ]\n    }}\n  ]\n}}\n",
+                compute_checksum([up_sql]),
+                compute_checksum([down_sql]),
+            ),
+        )
+        .unwrap();
+
+        let replay_sql =
+            read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
+        let plan = load_reset_replay_plan(&work, &bucket, version, &replay_sql)
+            .expect("manifest should load")
+            .expect("manifest should produce a replay plan");
+
+        assert_eq!(plan.bucket, bucket);
+        assert_eq!(
+            plan.classification,
+            crate::migrate::Classification::Additive
+        );
+        assert_eq!(plan.segments.len(), 2);
+        assert_eq!(plan.segments[0].kind, SegmentKind::Transactional);
+        assert_eq!(plan.segments[0].statements[0].label, "AddTable widgets");
+        assert_eq!(plan.segments[1].kind, SegmentKind::NonTransactional);
+        assert_eq!(
+            plan.segments[1].statements[0].label,
+            "AddIndex widgets_id_idx"
         );
 
         let _ = fs::remove_dir_all(&work);

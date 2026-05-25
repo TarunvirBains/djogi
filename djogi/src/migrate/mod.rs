@@ -70,6 +70,7 @@ pub mod pk_flip;
 pub mod policy;
 pub mod projection;
 pub mod repair;
+pub mod replay_plan;
 pub mod reset;
 pub mod runner;
 pub mod schema;

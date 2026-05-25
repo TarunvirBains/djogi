@@ -67,8 +67,9 @@ use super::guard::WorkspaceGuard;
 use super::ledger::compute_checksum;
 use super::naming::{down_filename, sanitize_slug, up_filename, version_id, version_prefix};
 use super::projection::BucketKey;
+use super::replay_plan::{committed_replay_plan_path, serialize_committed_replay_plan};
 use super::schema::AppliedSchema;
-use super::segment::plan_delta;
+use super::segment::{Segment, SegmentKind, plan_delta};
 use super::snapshot::SnapshotError;
 use super::sql::{OperationSql, lower_delta};
 use super::target::{bucket_dir, pending_database_dir, pending_json_path};
@@ -491,6 +492,8 @@ pub struct ComposedBucket {
     pub up_sql_path: PathBuf,
     /// Path written for the down SQL.
     pub down_sql_path: PathBuf,
+    /// Path written for the committed replay-plan sidecar.
+    pub replay_plan_path: PathBuf,
     /// Path written for the pending JSON.
     pub pending_json_path: PathBuf,
     /// Classification of the lowered delta — surfaces the
@@ -908,8 +911,8 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
         for delta in &effective {
             // Shouldn't fail — we validated classifications above.
             let mut lowered = lower_delta(delta).map_err(ComposeError::SqlEmit)?;
-            let mut executable_ops: Vec<OperationSql> = plan_delta(delta)
-                .map_err(ComposeError::SqlEmit)?
+            let mut replay_plan = plan_delta(delta).map_err(ComposeError::SqlEmit)?;
+            let mut executable_ops: Vec<OperationSql> = replay_plan
                 .segments
                 .iter()
                 .flat_map(|segment| segment.statements.iter().cloned())
@@ -923,14 +926,22 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
             // here so it's hashed into `checksum_up` and reviewable
             // in the on-disk SQL file.
             let mut folder_renames_for_delta: Vec<(String, String)> = Vec::new();
+            let mut replay_tail_sql: Vec<OperationSql> = Vec::new();
             for op in &delta.operations {
                 if let SchemaOperation::RenameApp { from, to } = op {
                     let rename_stmt =
                         emit_rename_app_ledger_update(&delta.bucket.database, from, to);
                     lowered.push(rename_stmt.clone());
-                    executable_ops.push(rename_stmt);
+                    executable_ops.push(rename_stmt.clone());
+                    replay_tail_sql.push(rename_stmt);
                     folder_renames_for_delta.push((from.clone(), to.clone()));
                 }
+            }
+            if !replay_tail_sql.is_empty() {
+                replay_plan.segments.push(Segment {
+                    kind: SegmentKind::Transactional,
+                    statements: replay_tail_sql,
+                });
             }
 
             let model_snapshot = req
@@ -956,10 +967,23 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
             let up_path = bucket_dir(req.workspace_root, &delta.bucket).join(up_filename(&version));
             let down_path =
                 bucket_dir(req.workspace_root, &delta.bucket).join(down_filename(&version));
+            let replay_plan_path =
+                committed_replay_plan_path(req.workspace_root, &delta.bucket, &version);
             let pending_path = pending_json_path(req.workspace_root, &delta.bucket);
 
             let up_sql = compose_up_text(&version, delta, &lowered);
             let down_sql = compose_down_text(&version, delta, &lowered);
+            let replay_plan_bytes = serialize_committed_replay_plan(
+                &replay_plan,
+                &checksum_up,
+                checksum_down.as_deref(),
+            )
+            .map_err(|e| {
+                ComposeError::SerializeFailed(SnapshotError::Parse {
+                    source: e,
+                    path: None,
+                })
+            })?;
             let pending_bytes = serialize_pending(&pending)?;
 
             // Codex B-3 — D013 hand-edit protection.
@@ -992,10 +1016,13 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
             let down_tmp = atomic_write(&down_path, down_sql.as_bytes())?;
             rollback.track_tmp(down_tmp.clone());
 
+            let replay_plan_tmp = atomic_write(&replay_plan_path, &replay_plan_bytes)?;
+            rollback.track_tmp(replay_plan_tmp.clone());
+
             let pending_tmp = atomic_write(&pending_path, &pending_bytes)?;
             rollback.track_tmp(pending_tmp.clone());
 
-            // Promote tmps. Order: up SQL, down SQL, pending JSON.
+            // Promote tmps. Order: up SQL, down SQL, replay sidecar, pending JSON.
             // Per Codex B-10 each promote captures any prior bytes
             // into a sibling backup file BEFORE renaming the tmp into
             // place; the `WriteRollback` guard records the backup
@@ -1007,6 +1034,13 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
 
             let down_backup = promote_tmp_with_backup(&down_tmp, &down_path)?;
             rollback.promote(&down_tmp, down_path.clone(), down_backup);
+
+            let replay_plan_backup = promote_tmp_with_backup(&replay_plan_tmp, &replay_plan_path)?;
+            rollback.promote(
+                &replay_plan_tmp,
+                replay_plan_path.clone(),
+                replay_plan_backup,
+            );
 
             let pending_backup = promote_tmp_with_backup(&pending_tmp, &pending_path)?;
             rollback.promote(&pending_tmp, pending_path.clone(), pending_backup);
@@ -1031,6 +1065,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
                 version: version.clone(),
                 up_sql_path: up_path,
                 down_sql_path: down_path,
+                replay_plan_path,
                 pending_json_path: pending_path,
                 classification: delta.classification.clone(),
             });
@@ -1781,6 +1816,7 @@ fn format_rfc3339_seconds(instant: OffsetDateTime) -> String {
 mod tests {
     use super::*;
     use crate::migrate::guard::acquire as acquire_guard;
+    use crate::migrate::replay_plan::{self, ReplayPlanLoadStatus};
     use crate::migrate::schema::{
         ColumnSchema, PkKindSchema, PrimaryKeySchema, SNAPSHOT_FORMAT_VERSION, TableSchema,
     };
@@ -2185,7 +2221,7 @@ mod tests {
     }
 
     #[test]
-    fn add_table_writes_three_files_atomically() {
+    fn add_table_writes_four_files_atomically() {
         let work = temp_workspace("add_table");
         let guard = lock_for(&work);
         let bucket = global_bucket();
@@ -2217,6 +2253,7 @@ mod tests {
         let cb = &report.composed_buckets[0];
         assert!(cb.up_sql_path.exists());
         assert!(cb.down_sql_path.exists());
+        assert!(cb.replay_plan_path.exists());
         assert!(cb.pending_json_path.exists());
         // Up SQL must contain CREATE TABLE.
         let up = fs::read_to_string(&cb.up_sql_path).unwrap();
@@ -2224,6 +2261,21 @@ mod tests {
         // Pending JSON must round-trip through PendingPlan.
         let pending_bytes = fs::read(&cb.pending_json_path).unwrap();
         let pending: PendingPlan = serde_json::from_slice(&pending_bytes).expect("parse");
+        match replay_plan::load_committed_replay_plan(
+            &work,
+            &cb.bucket,
+            &cb.version,
+            &pending.checksum_up,
+            pending.checksum_down.as_deref(),
+        ) {
+            ReplayPlanLoadStatus::Loaded(plan) => {
+                assert_eq!(plan.classification, Classification::Additive);
+                assert_eq!(plan.segments.len(), 1);
+                assert_eq!(plan.segments[0].kind, SegmentKind::Transactional);
+                assert_eq!(plan.segments[0].statements[0].label, "AddTable widgets");
+            }
+            other => panic!("expected committed replay plan, got {other:?}"),
+        }
         assert_eq!(pending.bucket_app, "");
         assert_eq!(pending.bucket_database, "main");
         assert!(pending.checksum_up.starts_with("V1:"));
