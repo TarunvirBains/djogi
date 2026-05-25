@@ -768,12 +768,17 @@ where
         .await;
 
     match result {
-        Ok(Ok(value)) => {
-            guard.commit().await?;
-            guard.propagate_success_to_parent();
-
-            Ok(value)
-        }
+        Ok(Ok(value)) => match guard.commit().await {
+            Ok(()) => {
+                guard.propagate_success_to_parent();
+                Ok(value)
+            }
+            Err(err @ DjogiError::TransactionPoisoned { .. }) => {
+                guard.clear_parent_trackers();
+                Err(err)
+            }
+            Err(err) => Err(err),
+        },
         Ok(Err(err)) => {
             if let Err(rb_err) = guard.rollback().await {
                 tracing::error!(

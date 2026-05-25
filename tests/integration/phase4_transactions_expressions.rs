@@ -705,6 +705,16 @@ async fn nested_atomic_uses_savepoints(mut ctx: djogi::DjogiContext) {
 async fn nested_atomic_cancellation_poisoned_outer_transaction_rolls_back_all_work(
     mut ctx: djogi::DjogiContext,
 ) {
+    ctx.set_auth(
+        AuthContext::new(djogi::HeerId::from_i64(7).expect("HeerId(7) is valid"))
+            .with_tenant("1000"),
+    );
+    ctx.set_tenant("stage1-parent")
+        .await
+        .expect("parent tracker priming must succeed");
+    assert!(ctx.tenant_set, "parent tracker should be primed");
+    assert_eq!(ctx.applied_tenant_id(), Some("stage1-parent"));
+
     let callback_count = Arc::new(AtomicUsize::new(0));
 
     let outer_result = {
@@ -845,6 +855,15 @@ async fn nested_atomic_cancellation_poisoned_outer_transaction_rolls_back_all_wo
     assert!(
         matches!(outer_err, DjogiError::TransactionPoisoned { .. }),
         "expected TransactionPoisoned on outer commit, got: {outer_err:?}"
+    );
+    assert!(
+        !ctx.tenant_set,
+        "poisoned outer commit must clear parent tenant_set tracker"
+    );
+    assert_eq!(
+        ctx.applied_tenant_id(),
+        None,
+        "poisoned outer commit must clear parent applied_tenant_id tracker"
     );
 
     let count: i64 = Account::objects()
