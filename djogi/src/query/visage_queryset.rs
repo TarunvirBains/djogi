@@ -11,6 +11,14 @@
 //! [`QuerySet`]'s surface and emits a SELECT narrowed to the visage's exposed
 //! column list.
 //!
+//! Predicate typing matches the source model, not the visage projection:
+//! `VisageQuerySet<V>` stores a `Q<V::Model>` filter tree and every
+//! filter-builder entry point accepts any [`IntoQ<V::Model>`](crate::query::IntoQ)
+//! payload. In practice that means ordinary legacy [`Condition`] leaves,
+//! mixed [`Predicate<V::Model>`](crate::query::Predicate) trees, portable
+//! field predicates, and codec-gated `Q<_>` values all compose through the
+//! same `filter(...)` surface.
+//!
 //! # Why a sibling type instead of relaxing `QuerySet<T>`'s bound
 //!
 //! `QuerySet<T: Model>` participates in dozens of code paths (`prefetch`,
@@ -65,9 +73,11 @@ use crate::DjogiError;
 use crate::context::DjogiContext;
 use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::{FromPgRow, try_get_scalar};
-use crate::query::condition::Condition;
 use crate::query::order::OrderExpr;
-use crate::query::sql::emit_condition;
+use crate::query::portable::SqlEmitContext;
+use crate::query::sql::{emit_q, q_is_vacuously_true};
+use crate::query::{IntoQ, Q};
+use crate::visage::DjogiVisage;
 use postgres_types::ToSql;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -95,7 +105,7 @@ use std::marker::PhantomData;
 // the full row materialised at every step, which is the column set
 // a visage narrows away. See `crate::query::recursive` module docs
 // for the full rationale and the future-work pointer.
-pub struct VisageQuerySet<V> {
+pub struct VisageQuerySet<V: DjogiVisage> {
     /// Source-model SQL table name. Captured from the macro at
     /// construction time so the queryset has no `T: Model` bound.
     pub(crate) table: &'static str,
@@ -106,8 +116,8 @@ pub struct VisageQuerySet<V> {
     /// renders the entries as `(<sql>) AS <alias>` and joins the
     /// list at compile time. Phase 8.5 issue #231.
     pub(crate) projection_list: &'static str,
-    /// Accumulated filter tree. Starts as [`Condition::True`].
-    pub(crate) condition: Condition,
+    /// Accumulated filter tree. Starts as [`Q::always_true`].
+    pub(crate) condition: Q<V::Model>,
     /// Ordering expressions in emission order. `order_by` appends.
     pub(crate) ordering: Vec<OrderExpr>,
     /// SQL `LIMIT` — `None` means no limit.
@@ -118,7 +128,7 @@ pub struct VisageQuerySet<V> {
     _visage: PhantomData<fn() -> V>,
 }
 
-impl<V> Clone for VisageQuerySet<V> {
+impl<V: DjogiVisage> Clone for VisageQuerySet<V> {
     fn clone(&self) -> Self {
         VisageQuerySet {
             table: self.table,
@@ -132,7 +142,7 @@ impl<V> Clone for VisageQuerySet<V> {
     }
 }
 
-impl<V> std::fmt::Debug for VisageQuerySet<V> {
+impl<V: DjogiVisage> std::fmt::Debug for VisageQuerySet<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VisageQuerySet")
             .field("table", &self.table)
@@ -145,12 +155,13 @@ impl<V> std::fmt::Debug for VisageQuerySet<V> {
     }
 }
 
-impl<V> VisageQuerySet<V> {
-    /// Construct a `VisageQuerySet` with the given table, narrowed
-    /// projection list, and root filter condition.
+impl<V: DjogiVisage> VisageQuerySet<V> {
+    /// Construct a `VisageQuerySet` with the given table and narrowed
+    /// projection list.
     ///
     /// Called by the `#[model]`-emitted `V::filter(...)` / `V::order_by(...)`
     /// / `V::limit(...)` entry points; not part of the user-visible API.
+    /// The queryset starts with a vacuous root predicate (`Q::always_true()`).
     /// The `projection_list` is the visage's pre-rendered SELECT
     /// projection — column entries pass through verbatim; derived
     /// entries render as `(<sql>) AS <alias>` and the list is joined
@@ -159,15 +170,11 @@ impl<V> VisageQuerySet<V> {
     /// row ordinals align with struct field order.
     #[doc(hidden)]
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
-    pub fn new_for_visage(
-        table: &'static str,
-        projection_list: &'static str,
-        condition: Condition,
-    ) -> Self {
+    pub fn new_for_visage(table: &'static str, projection_list: &'static str) -> Self {
         VisageQuerySet {
             table,
             projection_list,
-            condition,
+            condition: Q::<V::Model>::always_true(),
             ordering: Vec::new(),
             limit: None,
             offset: None,
@@ -175,12 +182,19 @@ impl<V> VisageQuerySet<V> {
         }
     }
 
-    /// AND another condition onto the accumulated filter tree.
+    /// AND another predicate onto the accumulated filter tree.
+    ///
+    /// Accepts any [`IntoQ<V::Model>`](crate::query::IntoQ) payload:
+    /// legacy [`Condition`](crate::query::internal::Condition),
+    /// portable / mixed predicate wrappers, or a pre-built `Q<V::Model>`.
     ///
     /// See also: [`QuerySet::filter`](crate::query::QuerySet::filter)
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
-    pub fn filter(mut self, cond: Condition) -> Self {
-        self.condition = Condition::and(self.condition, cond);
+    pub fn filter<P>(mut self, cond: P) -> Self
+    where
+        P: IntoQ<V::Model>,
+    {
+        self.condition = and_q_into_q(self.condition, cond);
         self
     }
 
@@ -247,7 +261,7 @@ impl<V> VisageQuerySet<V> {
 }
 
 /// Build the SELECT SQL + binds for `fetch_all`, `fetch_one`, and `first`.
-fn run_all_sql<V>(
+fn run_all_sql<V: DjogiVisage>(
     qs: &VisageQuerySet<V>,
 ) -> Result<(String, Vec<Box<dyn ToSql + Sync + Send>>), crate::DjogiError> {
     Ok(build_visage_select(qs)
@@ -262,7 +276,7 @@ fn run_all_sql<V>(
 /// from a model descriptor walk. This is the load-bearing difference
 /// from the model-side `build_select`: dropped columns never appear in
 /// the SELECT regardless of the source model's full column count.
-pub(crate) fn build_visage_select<V>(
+pub(crate) fn build_visage_select<V: DjogiVisage>(
     qs: &VisageQuerySet<V>,
 ) -> Result<SqlAccumulator, crate::query::portable::PortablePredicateError> {
     let mut acc = SqlAccumulator::new("");
@@ -285,7 +299,7 @@ pub(crate) fn build_visage_select<V>(
 /// those clauses. Mirrors the model-side `build_count` shape so the
 /// emitted statement is the simplest predicate-matching count Postgres
 /// can plan.
-pub(crate) fn build_visage_count<V>(
+pub(crate) fn build_visage_count<V: DjogiVisage>(
     qs: &VisageQuerySet<V>,
 ) -> Result<SqlAccumulator, crate::query::portable::PortablePredicateError> {
     let mut acc = SqlAccumulator::new("");
@@ -297,7 +311,7 @@ pub(crate) fn build_visage_count<V>(
 
 /// Build `SELECT EXISTS (SELECT 1 FROM <table> [WHERE ...] LIMIT 1)` for
 /// a visage queryset. Mirrors the model-side `build_exists` shape.
-pub(crate) fn build_visage_exists<V>(
+pub(crate) fn build_visage_exists<V: DjogiVisage>(
     qs: &VisageQuerySet<V>,
 ) -> Result<SqlAccumulator, crate::query::portable::PortablePredicateError> {
     let mut acc = SqlAccumulator::new("");
@@ -316,13 +330,13 @@ pub(crate) fn build_visage_exists<V>(
 /// failure path is an inner expression-IR emit error inside a
 /// `Condition::Expr`. Propagate via `Result` so the surrounding
 /// terminal can lift the error to `DjogiError::Predicate(_)`.
-fn push_visage_where<V>(
+fn push_visage_where<V: DjogiVisage>(
     acc: &mut SqlAccumulator,
     qs: &VisageQuerySet<V>,
 ) -> Result<(), crate::query::portable::PortablePredicateError> {
-    if !qs.condition.is_vacuously_true() {
+    if !q_is_vacuously_true(&qs.condition) {
         acc.push_sql(" WHERE ");
-        emit_condition(acc, &qs.condition, None)?;
+        emit_q::<V::Model>(acc, &qs.condition, SqlEmitContext::root())?;
     }
     Ok(())
 }
@@ -331,7 +345,7 @@ fn push_visage_where<V>(
 /// `OFFSET`. Visage querysets do not carry select_related / prefetch /
 /// row-lock state, so this is shorter than the model-side
 /// `push_tail_qualified`.
-fn push_visage_tail<V>(
+fn push_visage_tail<V: DjogiVisage>(
     acc: &mut SqlAccumulator,
     qs: &VisageQuerySet<V>,
 ) -> Result<(), crate::query::portable::PortablePredicateError> {
@@ -360,7 +374,7 @@ fn push_visage_tail<V>(
 
 // ── Row-returning terminals (require `V: FromPgRow`) ───────────────────────
 
-impl<V> VisageQuerySet<V>
+impl<V: DjogiVisage> VisageQuerySet<V>
 where
     V: FromPgRow + Send + Unpin + 'static,
 {
@@ -442,7 +456,7 @@ where
 
 // ── Aggregate terminals (no V: FromPgRow bound) ────────────────────────────
 
-impl<V> VisageQuerySet<V> {
+impl<V: DjogiVisage> VisageQuerySet<V> {
     /// Return the count of rows matching the queryset's predicate.
     pub fn count<'ctx>(
         self,
@@ -477,5 +491,16 @@ impl<V> VisageQuerySet<V> {
             let row = ctx.query_one(&sql, &params).await?;
             try_get_scalar::<bool>(&row, 0)
         }
+    }
+}
+
+fn and_q_into_q<T: crate::model::Model, A: IntoQ<T>>(current: Q<T>, addition: A) -> Q<T> {
+    let addition = addition.into_q();
+    if q_is_vacuously_true(&current) {
+        addition
+    } else if q_is_vacuously_true(&addition) {
+        current
+    } else {
+        current & addition
     }
 }

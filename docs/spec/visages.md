@@ -23,8 +23,6 @@ Visage generation is backend-first but not server-only. Djogi does not own front
 
 ## Minimal Public Surface
 
-Phase 4.5 should stabilize only this much public surface:
-
 Model-side annotations:
 
 ```rust
@@ -67,8 +65,7 @@ impl TryFrom<&Vehicle> for VehiclePublic {
 }
 ```
 
-`VisageError` is `#[non_exhaustive]` so later phases (protected-data,
-codec failures) can add variants without a breaking change. Callers
+`VisageError` is `#[non_exhaustive]` so additional variants can be added without a breaking change. Callers
 matching on the error must include `_ => ...`.
 
 Generated types must:
@@ -82,12 +79,8 @@ Generated types must:
 `{Model}Internal` struct is generated. The model struct itself IS the
 internal form.
 
-Phase 7-Zero-2 lifted the Phase 4.5 deferral on optional FK / O2O
-visages: `Option<ForeignKey<T>>` / `Option<OneToOneField<T>>` now
-project as `Option<PeerVisage>` and participate in traversal under
-the `->` grammar. Phase 4.5's compile-rejection no longer applies.
-
-Anything beyond that is additive and should not block the first spec closure.
+`Option<ForeignKey<T>>` / `Option<OneToOneField<T>>` project as `Option<PeerVisage>` and participate in traversal under
+the `->` grammar.
 
 ---
 
@@ -207,6 +200,55 @@ The point is to replace handwritten mapping layers that are repetitive and prone
 
 ---
 
+## Custom Scope Declaration
+
+### Syntax: `visage_scopes`
+
+Applications can define custom visage scopes beyond the built-in canonical scopes (`public`,
+`self_view`, `admin`, `export`, `internal`). Declare them with the `visage_scopes` argument
+on `#[model(...)]`:
+
+```rust
+#[model(
+    table = "users",
+    visage_scopes(support = Support)
+)]
+pub struct User {
+    #[field(expose(public, support))]
+    pub email: String,
+}
+```
+
+### Generated Visage Naming
+
+The macro generates a visage struct for each custom scope using the pattern `{Model}{Suffix}`:
+
+```
+visage_scopes(support = Support)  // on User → generates UserSupport
+```
+
+### Infallibility
+
+A custom scope visage is infallible (`From<&Model>`) when no field in that scope uses
+`try_presentation_codec`. If any field in the scope uses `try_presentation_codec`, the
+generated visage implements `TryFrom<&Model>` instead.
+
+### Framework Fields
+
+Generated custom scope visages always include `id`, `created_at`, and `updated_at`, with
+values matching the source model.
+
+### Scope Coverage
+
+Custom scope names declared with `visage_scopes` are valid identifiers inside `expose(...)`
+field annotations on the same model. A field with `expose(public, support)` appears in both
+the built-in `UserPublic` visage and the custom `UserSupport` visage.
+
+For built-in scope names and their generated visage types, see [Visage Scopes](#visage-scopes)
+above.
+
+---
+
 ## Relations
 
 Visages may include related data, but only through projected forms.
@@ -278,24 +320,12 @@ Djogi should prefer compile-time diagnostics over runtime surprises.
 
 ---
 
-## Deferred Surface
+## Out of Scope
 
-The following are explicitly deferred beyond the minimum Phase 4.5 surface:
-
-- custom user-defined visage scopes
-- visage renaming rules beyond the default canonical names — when this
-  feature is taken up, the spec that introduces it MUST address the
-  relation-embedding declaration-site churn flagged in
-  [`docs/research/model-vs-visage-lower-severity-graduation.md`](../research/model-vs-visage-lower-severity-graduation.md)
-  §Surface 3 (rename of `User::Public` → `User::Summary` cannot force
-  touching every source model that embeds the visage; a target-side
-  `#[model(embeddable_as = [...])]` alias or equivalent indirection
-  is one candidate shape)
-- partial JSON subfield visages
-- fallible transforms during visage generation
-- route-specific wrapper DTO generation
-
-The first shipping surface should stay small.
+- Visage renaming rules beyond the default canonical names
+- Partial JSON subfield visages
+- Fallible transforms during visage generation
+- Route-specific wrapper DTO generation
 
 ---
 

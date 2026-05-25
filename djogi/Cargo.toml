@@ -109,10 +109,20 @@ network = []
 # an index every row is scanned in full for every similarity call.
 trgm = []
 
-# testing — exposes djogi::testing::setup_test_db and related helpers in
-# non-test builds (e.g. for integration test harnesses that can't use
-# cfg(test)).
+# testing — exposes `djogi::testing::setup_test_db` and other general test
+# helpers in non-test builds (e.g. for integration harnesses that can't use
+# `cfg(test)`). The HMAC key installer is gated separately by `hmac-codec`.
 testing = []
+
+# hmac-codec — gates presentation HMAC built-ins
+# (`HmacSha256HexString`, `HmacSha256HexOptionString`) and the doc-hidden
+# unsafe test helper `djogi::testing::install_presentation_hmac_key_for_testing`.
+# The helper remains under this gate so HMAC support and test-key installation
+# stay aligned instead of leaking into non-HMAC builds.
+#
+# The `hmac` crate dependency itself remains always-on because the snapshot
+# signing module also uses HMAC-SHA256 independently of presentation codecs.
+hmac-codec = []
 
 [dependencies]
 argon2 = { version = "0.5", optional = true, features = ["std"] }
@@ -1121,4 +1131,16 @@ required-features = ["trgm"]
 [[test]]
 name = "phase85_pk_index_coverage"
 path = "../tests/integration/phase85_pk_index_coverage.rs"
+harness = true
+
+# GH #227 — presentation-codec acceptance test.
+#
+# Compile errors in this target are EXPECTED until Stages 2–7 complete.
+# This registration is intentional: it lets `cargo test --test
+# presentation_codec` fail with a compile error (not a "test not found"
+# error) so the acceptance gate is clear throughout the multi-stage
+# implementation.
+[[test]]
+name = "presentation_codec"
+path = "../tests/integration/presentation_codec.rs"
 harness = true

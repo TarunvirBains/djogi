@@ -1,4 +1,4 @@
-error[E0599]: no method named `facility_site` found for struct `ConsignmentPublicFields` in the current scope
+error[E0599]: no method named `facility_site` found for struct `ConsignmentPublicFields<RootModel>` in the current scope
   --> $DIR/phase85_derived_tier1_accessor_excluded.rs:53:11
    |
 22 | #[model(table = "phase85_derived_tier1_accessor_excluded_consignments")]
