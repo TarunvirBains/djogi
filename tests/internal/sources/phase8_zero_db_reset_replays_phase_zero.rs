@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 use djogi::config::MigrateConfig;
 use djogi::migrate::{
     AppLifecycle, AppliedSchema, BucketKey, ComposeRequest, GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME,
-    PHASE_ZERO_VERSION, ResetRequest, SNAPSHOT_FORMAT_VERSION, WorkspaceGuard,
-    acquire_workspace_lock, compose, reset_app_database,
+    PHASE_ZERO_VERSION, ResetError, ResetRefusal, ResetRequest, ResetSqlSide,
+    SNAPSHOT_FORMAT_VERSION, WorkspaceGuard, acquire_workspace_lock, compose, reset_app_database,
 };
 use tokio_postgres::NoTls;
 
@@ -194,6 +194,7 @@ async fn db_reset_replays_phase_zero_against_virgin_database() {
         workspace_root: &work,
         profile: "test",
         confirmed: true,
+        allow_checksum_drift_reset: false,
         migrate_config: MigrateConfig::default(),
         // Phase 0 replay coverage does not assert audit-row behaviour;
         // dedicated coverage lives in
@@ -274,6 +275,209 @@ async fn db_reset_replays_phase_zero_against_virgin_database() {
     let teardown_driver = tokio::spawn(async move {
         if let Err(e) = admin_conn.await {
             eprintln!("[phase0 replay] teardown driver: {e}");
+        }
+    });
+    let _ = admin_client
+        .batch_execute(&format!(
+            "DROP DATABASE IF EXISTS \"{virgin_db}\" WITH (FORCE)"
+        ))
+        .await;
+    drop(admin_client);
+    let _ = teardown_driver.await;
+
+    let _ = fs::remove_dir_all(&work);
+}
+
+/// Proves the `#275` checksum-parity gate is checked before the
+/// destructive `DROP DATABASE`: once a migration has been applied and
+/// recorded in the live ledger, editing its on-disk SQL must refuse a
+/// later `db reset` while leaving the existing database untouched.
+#[tokio::test]
+async fn db_reset_refuses_checksum_drift_before_drop() {
+    let admin_url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL env var must be set for live integration tests");
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let virgin_db = format!("djogi_phase0_drift_{stamp}");
+
+    {
+        let (admin_client, admin_conn) = tokio_postgres::connect(&admin_url, NoTls)
+            .await
+            .expect("admin connect");
+        let admin_driver = tokio::spawn(async move {
+            if let Err(e) = admin_conn.await {
+                eprintln!("[phase0 drift] admin driver: {e}");
+            }
+        });
+        admin_client
+            .batch_execute(&format!("CREATE DATABASE \"{virgin_db}\""))
+            .await
+            .expect("CREATE virgin DATABASE");
+        drop(admin_client);
+        let _ = admin_driver.await;
+    }
+
+    let work = temp_workspace("db_reset_drift");
+    let guard = lock_for(&work);
+    let bucket = BucketKey {
+        database: virgin_db.clone(),
+        app: String::new(),
+    };
+    let mut models = BTreeMap::new();
+    models.insert(bucket.clone(), empty_schema_for(&bucket));
+    let mut snapshots = BTreeMap::new();
+    snapshots.insert(bucket.clone(), empty_schema_for(&bucket));
+    let apps = vec![AppLifecycle {
+        label: String::new(),
+        database: virgin_db.clone(),
+        renamed_from: None,
+        tombstone: false,
+    }];
+
+    let compose_req = ComposeRequest {
+        workspace_root: &work,
+        models: &models,
+        snapshots: &snapshots,
+        apps: &apps,
+        name: "phase_zero_drift_test",
+        allow_destructive: false,
+        force_overwrite: false,
+        now: at(2026, 5, 4, 12, 30, 0),
+        _guard: &guard,
+        pk_flip_join_table_option: None,
+        skip_phase_zero_auto_emit: false,
+    };
+    let compose_report = compose(compose_req).expect("compose with auto-emit");
+    assert_eq!(compose_report.emitted_phase_zero.len(), 1);
+    drop(guard);
+
+    let virgin_url = replace_db_in_url(&admin_url, &virgin_db);
+    let reset_req = ResetRequest {
+        database_url: &virgin_url,
+        maintenance_database: "postgres",
+        workspace_root: &work,
+        profile: "test",
+        confirmed: true,
+        allow_checksum_drift_reset: false,
+        migrate_config: MigrateConfig::default(),
+        audit_pool: None,
+    };
+    let first_reset = reset_app_database(reset_req)
+        .await
+        .expect("initial reset must succeed");
+    assert!(
+        first_reset
+            .replayed_versions
+            .iter()
+            .any(|v| v.version == PHASE_ZERO_VERSION)
+    );
+
+    let (client, conn) = tokio_postgres::connect(&virgin_url, NoTls)
+        .await
+        .expect("connect to bootstrapped DB");
+    let driver = tokio::spawn(async move {
+        if let Err(e) = conn.await {
+            eprintln!("[phase0 drift] post-reset driver: {e}");
+        }
+    });
+
+    let original_checksum: String = client
+        .query_one(
+            "SELECT checksum_up FROM djogi_schema_migrations WHERE version = $1",
+            &[&PHASE_ZERO_VERSION],
+        )
+        .await
+        .expect("read original ledger checksum")
+        .get(0);
+
+    drop(client);
+    let _ = driver.await;
+
+    let phase_zero_path = work.join(format!(
+        "migrations/{virgin_db}/_global_/{PHASE_ZERO_VERSION}.sql"
+    ));
+    let original_sql = fs::read_to_string(&phase_zero_path).expect("read phase zero SQL");
+    fs::write(&phase_zero_path, format!("{original_sql}\n-- checksum drift for #275\n"))
+        .expect("mutate phase zero SQL");
+
+    let err = reset_app_database(ResetRequest {
+        database_url: &virgin_url,
+        maintenance_database: "postgres",
+        workspace_root: &work,
+        profile: "test",
+        confirmed: true,
+        allow_checksum_drift_reset: false,
+        migrate_config: MigrateConfig::default(),
+        audit_pool: None,
+    })
+    .await
+    .expect_err("drifted file must refuse before destructive reset");
+
+    match err {
+        ResetError::Refused(ResetRefusal::ChecksumParity { issues }) => {
+            let phase_zero_issue = issues
+                .iter()
+                .find(|issue| issue.version == PHASE_ZERO_VERSION)
+                .expect("phase zero drift issue must be reported");
+            assert_eq!(phase_zero_issue.bucket.database, virgin_db);
+            assert_eq!(phase_zero_issue.bucket.app, "");
+            assert_eq!(phase_zero_issue.sql_side, ResetSqlSide::Up);
+            assert_eq!(phase_zero_issue.ledger_checksum, original_checksum);
+            assert!(
+                phase_zero_issue.on_disk_checksum.is_some(),
+                "drift issue must name the on-disk checksum"
+            );
+        }
+        other => panic!("expected checksum-parity refusal, got {other:?}"),
+    }
+
+    let (client, conn) = tokio_postgres::connect(&virgin_url, NoTls)
+        .await
+        .expect("reconnect after refusal");
+    let driver = tokio::spawn(async move {
+        if let Err(e) = conn.await {
+            eprintln!("[phase0 drift] refusal driver: {e}");
+        }
+    });
+
+    let checksum_after_refusal: String = client
+        .query_one(
+            "SELECT checksum_up FROM djogi_schema_migrations WHERE version = $1",
+            &[&PHASE_ZERO_VERSION],
+        )
+        .await
+        .expect("read checksum after refusal")
+        .get(0);
+    assert_eq!(
+        checksum_after_refusal, original_checksum,
+        "ledger row must remain untouched when drift refusal fires before DROP DATABASE"
+    );
+
+    let heer_nodes_exists: bool = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 'heer_nodes' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("heer_nodes existence query")
+        .get(0);
+    assert!(
+        heer_nodes_exists,
+        "existing database state must remain intact when drift refusal fires"
+    );
+
+    drop(client);
+    let _ = driver.await;
+
+    let (admin_client, admin_conn) = tokio_postgres::connect(&admin_url, NoTls)
+        .await
+        .expect("admin teardown connect");
+    let teardown_driver = tokio::spawn(async move {
+        if let Err(e) = admin_conn.await {
+            eprintln!("[phase0 drift] teardown driver: {e}");
         }
     });
     let _ = admin_client

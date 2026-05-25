@@ -137,7 +137,8 @@ pub use repair::{
     repair_snapshot_rebuild,
 };
 pub use reset::{
-    ReplayedMigration, ResetError, ResetRefusal, ResetReport, ResetRequest, reset_app_database,
+    ReplayedMigration, ResetError, ResetRefusal, ResetReport, ResetRequest, ResetSqlSide,
+    reset_app_database,
 };
 pub use runner::{
     LossyRollbackPolicy, RollbackError, RollbackReport, RunReport, RunnerCtx, RunnerError,

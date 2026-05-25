@@ -790,6 +790,7 @@ djogi migrations attune <target> --apply --record
 djogi migrations attune --record-ledger --apply
 djogi migrations attune --squash --from V<ts> --apply
 djogi db reset --yes
+djogi db reset --yes --allow-checksum-drift-reset
 djogi db seed
 djogi db seed --database crud_log
 djogi docs

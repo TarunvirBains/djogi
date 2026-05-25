@@ -211,7 +211,7 @@ The policy lives in `RunnerCtx::out_of_order_policy` and defaults from `Djogi.to
 ## `djogi db reset`
 
 ```
-djogi db reset --yes [--maintenance-database <name>]
+djogi db reset --yes [--allow-checksum-drift-reset] [--maintenance-database <name>]
 ```
 
 Drops, recreates, and replays every committed migration against the application database. **Triple-gated**:
@@ -225,6 +225,8 @@ Only the application database is touched. Logging databases (`crud_log`, `event_
 `--maintenance-database <name>` selects the admin DB used for the `DROP DATABASE` / `CREATE DATABASE` round-trip. Defaults to `postgres`. Override for clusters that use a different admin DB (e.g. AWS RDS uses `rdsadmin`).
 
 URL paths are percent-decoded and validated against the strict Postgres-identifier grammar before splicing into DDL — defence-in-depth against URL-injection.
+
+Before `DROP DATABASE`, reset compares the live ledger's recorded migration checksums against the current committed migration files. Edited `up.sql`, edited `down.sql` (when the ledger carries a down checksum), missing historical files, or historical baseline rows whose checksums cannot be compared to file bytes all refuse with exit code `2` before any destructive step. `--allow-checksum-drift-reset` is the explicit operator override for that refusal path.
 
 Exit codes: `0` success, `1` runtime error, `2` gate refusal.
 
