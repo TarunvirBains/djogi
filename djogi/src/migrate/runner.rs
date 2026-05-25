@@ -75,6 +75,25 @@ use super::sql::{LossyRollbackKind, OperationSql};
 
 // ── Public types ──────────────────────────────────────────────────────────
 
+/// Why a migration statement is incompatible with the runner's
+/// segment execution model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentSqlExecutionModeProblem {
+    /// Top-level transaction control is forbidden in migration
+    /// statements because the runner owns every BEGIN/COMMIT boundary.
+    TransactionControl {
+        /// Canonical leading keyword or keyword pair, e.g. `BEGIN`,
+        /// `START TRANSACTION`, `RELEASE SAVEPOINT`.
+        keyword: &'static str,
+    },
+    /// The statement must run outside any transaction, but the plan
+    /// placed it in a transactional segment.
+    RequiresNonTransactional {
+        /// Canonical SQL shape that triggered the classification.
+        statement_shape: &'static str,
+    },
+}
+
 /// Errors surfaced by the runner. Each variant carries enough context
 /// for an actionable operator message — no panicking, no silent
 /// drops.
@@ -203,6 +222,16 @@ pub enum RunnerError {
         target_table: String,
         relpages: i32,
         threshold: u32,
+    },
+
+    /// A statement's SQL shape conflicts with the runner-managed
+    /// execution mode for its segment. This is a preflight refusal:
+    /// no ledger row is inserted and no SQL runs.
+    SegmentSqlExecutionModeConflict {
+        segment_index: usize,
+        segment_kind: SegmentKind,
+        statement_label: String,
+        problem: SegmentSqlExecutionModeProblem,
     },
 
     /// A statement inside a transactional segment failed; the
@@ -517,6 +546,28 @@ impl std::fmt::Display for RunnerError {
                 db = bucket.database,
                 app = bucket.app,
             ),
+            RunnerError::SegmentSqlExecutionModeConflict {
+                segment_index,
+                segment_kind,
+                statement_label,
+                problem,
+            } => match problem {
+                SegmentSqlExecutionModeProblem::TransactionControl { keyword } => write!(
+                    f,
+                    "{} segment {segment_index} statement `{statement_label}` embeds top-level \
+                     transaction control `{keyword}`; djogi owns migration transaction boundaries \
+                     and refuses inline BEGIN/COMMIT/SAVEPOINT control",
+                    segment_kind_name(*segment_kind),
+                ),
+                SegmentSqlExecutionModeProblem::RequiresNonTransactional { statement_shape } => {
+                    write!(
+                        f,
+                        "{} segment {segment_index} statement `{statement_label}` uses `{statement_shape}`, \
+                     which must run in a non-transactional segment",
+                        segment_kind_name(*segment_kind),
+                    )
+                }
+            },
             RunnerError::TransactionalSegmentFailed {
                 segment_index,
                 statement_label,
@@ -652,6 +703,7 @@ impl std::error::Error for RunnerError {
             RunnerError::GuardError(e) => Some(e),
             RunnerError::LedgerWriteFailed { source, .. } => Some(source),
             RunnerError::AdvisoryLockQueryFailed { source, .. } => Some(source),
+            RunnerError::SegmentSqlExecutionModeConflict { .. } => None,
             RunnerError::TransactionalSegmentFailed { source, .. } => Some(source),
             RunnerError::NonTransactionalSegmentFailed { source, .. } => Some(source),
             RunnerError::ConfigLoadFailed { source } => Some(source),
@@ -897,24 +949,6 @@ async fn apply_plan_inner(
         });
     }
 
-    // Determine execution_mode + total_steps from the plan shape.
-    // `total_steps` counts non-transactional steps (each of which is
-    // its own resumable unit). Transactional segments collapse to a
-    // single atomic step from the resumability perspective.
-    let mut total_non_tx_steps: i32 = 0;
-    let mut has_non_tx = false;
-    for seg in &plan.segments {
-        if seg.kind == SegmentKind::NonTransactional {
-            has_non_tx = true;
-            total_non_tx_steps = total_non_tx_steps.saturating_add(seg.statements.len() as i32);
-        }
-    }
-    let execution_mode = if has_non_tx {
-        ExecutionMode::NonTransactional
-    } else {
-        ExecutionMode::Transactional
-    };
-
     // T7: out-of-order detection. Walk the bucket's existing applied
     // ledger rows and surface any whose `version` is lexically greater
     // than ours — that indicates this version applies "before" a
@@ -968,6 +1002,35 @@ async fn apply_plan_inner(
         conflicting_peer.as_ref(),
     );
 
+    // B-2: expand `<EACH_LEAF_TABLE>` placeholders inside any
+    // partitioned-flip segment before any runner-owned writes. This
+    // produces the concrete SQL the runner will actually execute, so
+    // every downstream preflight and step-count calculation works on
+    // the real statement list.
+    let plan_owned = expand_partition_leaf_placeholders(ctx, plan).await?;
+    let plan = &plan_owned;
+
+    preflight_segment_sql_execution_compatibility(plan)?;
+
+    // Determine execution_mode + total_steps from the concrete plan
+    // shape. `total_steps` counts non-transactional steps (each of
+    // which is its own resumable unit). Transactional segments
+    // collapse to a single atomic step from the resumability
+    // perspective.
+    let mut total_non_tx_steps: i32 = 0;
+    let mut has_non_tx = false;
+    for seg in &plan.segments {
+        if seg.kind == SegmentKind::NonTransactional {
+            has_non_tx = true;
+            total_non_tx_steps = total_non_tx_steps.saturating_add(seg.statements.len() as i32);
+        }
+    }
+    let execution_mode = if has_non_tx {
+        ExecutionMode::NonTransactional
+    } else {
+        ExecutionMode::Transactional
+    };
+
     // 5. Insert pending ledger row. Generate a fresh run_id.
     let run_id = generate_run_id(ctx, &runner_ctx.version).await?;
     let ledger_row = LedgerRow {
@@ -1014,23 +1077,6 @@ async fn apply_plan_inner(
     // plan" (legit `relpages = None`) from "typo / mis-quoted
     // identifier" (hard `TargetTableNotFound`).
     let add_table_set = collect_add_table_targets(plan);
-
-    // B-2: expand `<EACH_LEAF_TABLE>` placeholders inside any
-    // partitioned-flip segment. Each partitioned label tells us the
-    // parent table; we walk `pg_inherits` for that parent at apply
-    // time, sort leaves by `regclass::text`, and rewrite the segment
-    // statements to carry one concrete-leaf statement per leaf.
-    //
-    // Why apply time: partitioned descriptors only know the
-    // partition strategy (Hash/Range), not the leaf names — those
-    // can be created and dropped between compose and apply. Looking
-    // them up at apply gives the runner the live truth.
-    //
-    // Determinism: leaves ordered by `regclass::text` so re-running
-    // the same flip against the same DB emits the same statement
-    // sequence.
-    let plan_owned = expand_partition_leaf_placeholders(ctx, plan).await?;
-    let plan = &plan_owned;
 
     for (seg_idx, segment) in plan.segments.iter().enumerate() {
         match segment.kind {
@@ -2962,6 +3008,165 @@ fn scan_alter_table_targets(sql: &str) -> Vec<String> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
+fn segment_kind_name(kind: SegmentKind) -> &'static str {
+    match kind {
+        SegmentKind::Transactional => "transactional",
+        SegmentKind::NonTransactional => "non-transactional",
+        SegmentKind::MetadataOnly => "metadata-only",
+    }
+}
+
+fn preflight_segment_sql_execution_compatibility(plan: &MigrationPlan) -> Result<(), RunnerError> {
+    for (segment_index, segment) in plan.segments.iter().enumerate() {
+        if segment.kind == SegmentKind::MetadataOnly {
+            continue;
+        }
+        for statement in &segment.statements {
+            if let Some(problem) =
+                classify_segment_sql_execution_mode_problem(segment.kind, &statement.up)
+            {
+                return Err(RunnerError::SegmentSqlExecutionModeConflict {
+                    segment_index,
+                    segment_kind: segment.kind,
+                    statement_label: statement.label.clone(),
+                    problem,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn classify_segment_sql_execution_mode_problem(
+    segment_kind: SegmentKind,
+    sql: &str,
+) -> Option<SegmentSqlExecutionModeProblem> {
+    let bytes = sql.as_bytes();
+    let mut idx = 0usize;
+    let first = next_sql_leading_keyword(bytes, &mut idx)?;
+    let second = next_sql_leading_keyword(bytes, &mut idx);
+    let third = next_sql_leading_keyword(bytes, &mut idx);
+    let fourth = next_sql_leading_keyword(bytes, &mut idx);
+
+    if token_eq(first, "BEGIN") {
+        return Some(SegmentSqlExecutionModeProblem::TransactionControl { keyword: "BEGIN" });
+    }
+    if token_eq(first, "START") && second.is_some_and(|tok| token_eq(tok, "TRANSACTION")) {
+        return Some(SegmentSqlExecutionModeProblem::TransactionControl {
+            keyword: "START TRANSACTION",
+        });
+    }
+    if token_eq(first, "COMMIT") {
+        return Some(SegmentSqlExecutionModeProblem::TransactionControl { keyword: "COMMIT" });
+    }
+    if token_eq(first, "ROLLBACK") {
+        return Some(SegmentSqlExecutionModeProblem::TransactionControl {
+            keyword: "ROLLBACK",
+        });
+    }
+    if token_eq(first, "SAVEPOINT") {
+        return Some(SegmentSqlExecutionModeProblem::TransactionControl {
+            keyword: "SAVEPOINT",
+        });
+    }
+    if token_eq(first, "RELEASE") && second.is_some_and(|tok| token_eq(tok, "SAVEPOINT")) {
+        return Some(SegmentSqlExecutionModeProblem::TransactionControl {
+            keyword: "RELEASE SAVEPOINT",
+        });
+    }
+
+    if segment_kind != SegmentKind::Transactional {
+        return None;
+    }
+
+    if token_eq(first, "CREATE")
+        && second.is_some_and(|tok| token_eq(tok, "INDEX"))
+        && third.is_some_and(|tok| token_eq(tok, "CONCURRENTLY"))
+    {
+        return Some(SegmentSqlExecutionModeProblem::RequiresNonTransactional {
+            statement_shape: "CREATE INDEX CONCURRENTLY",
+        });
+    }
+    if token_eq(first, "CREATE")
+        && second.is_some_and(|tok| token_eq(tok, "UNIQUE"))
+        && third.is_some_and(|tok| token_eq(tok, "INDEX"))
+        && fourth.is_some_and(|tok| token_eq(tok, "CONCURRENTLY"))
+    {
+        return Some(SegmentSqlExecutionModeProblem::RequiresNonTransactional {
+            statement_shape: "CREATE UNIQUE INDEX CONCURRENTLY",
+        });
+    }
+    if token_eq(first, "DROP")
+        && second.is_some_and(|tok| token_eq(tok, "INDEX"))
+        && third.is_some_and(|tok| token_eq(tok, "CONCURRENTLY"))
+    {
+        return Some(SegmentSqlExecutionModeProblem::RequiresNonTransactional {
+            statement_shape: "DROP INDEX CONCURRENTLY",
+        });
+    }
+
+    None
+}
+
+fn next_sql_leading_keyword<'a>(bytes: &'a [u8], idx: &mut usize) -> Option<&'a [u8]> {
+    skip_sql_leading_ws_and_comments(bytes, idx);
+    if *idx >= bytes.len() || !is_sql_ident_start(bytes[*idx]) {
+        return None;
+    }
+    let start = *idx;
+    *idx += 1;
+    while *idx < bytes.len() && is_sql_ident_continue(bytes[*idx]) {
+        *idx += 1;
+    }
+    Some(&bytes[start..*idx])
+}
+
+fn skip_sql_leading_ws_and_comments(bytes: &[u8], idx: &mut usize) {
+    loop {
+        while *idx < bytes.len() && bytes[*idx].is_ascii_whitespace() {
+            *idx += 1;
+        }
+        if *idx + 1 < bytes.len() && bytes[*idx] == b'-' && bytes[*idx + 1] == b'-' {
+            *idx += 2;
+            while *idx < bytes.len() && bytes[*idx] != b'\n' {
+                *idx += 1;
+            }
+            continue;
+        }
+        if *idx + 1 < bytes.len() && bytes[*idx] == b'/' && bytes[*idx + 1] == b'*' {
+            *idx += 2;
+            let mut depth = 1usize;
+            while *idx < bytes.len() && depth > 0 {
+                if *idx + 1 < bytes.len() && bytes[*idx] == b'/' && bytes[*idx + 1] == b'*' {
+                    depth += 1;
+                    *idx += 2;
+                    continue;
+                }
+                if *idx + 1 < bytes.len() && bytes[*idx] == b'*' && bytes[*idx + 1] == b'/' {
+                    depth -= 1;
+                    *idx += 2;
+                    continue;
+                }
+                *idx += 1;
+            }
+            continue;
+        }
+        return;
+    }
+}
+
+fn is_sql_ident_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_'
+}
+
+fn is_sql_ident_continue(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn token_eq(token: &[u8], expected: &str) -> bool {
+    token.eq_ignore_ascii_case(expected.as_bytes())
+}
+
 /// Compute the `up`-side checksum across every segment's statements.
 /// Concatenates each statement's `up` SQL with `\n` separators in
 /// segment-then-statement order. Mirrors the runner_ctx pre-compute
@@ -3875,6 +4080,17 @@ mod tests {
         }
     }
 
+    fn single_segment_plan(kind: SegmentKind, label: &str, up: &str) -> MigrationPlan {
+        MigrationPlan {
+            bucket: bucket("main", ""),
+            classification: Classification::Additive,
+            segments: vec![Segment {
+                kind,
+                statements: vec![op(label, up)],
+            }],
+        }
+    }
+
     fn runner_ctx_for_audit_with_snapshot_path(
         plan: &MigrationPlan,
         audit_pool: Option<deadpool_postgres::Pool>,
@@ -4204,6 +4420,153 @@ mod tests {
         };
         let set = collect_add_table_targets(&plan);
         assert!(set.is_empty());
+    }
+
+    // ── segment SQL execution-mode preflight (#286) ─────────────────────
+
+    #[test]
+    fn segment_sql_preflight_rejects_concurrent_index_in_transactional_segment() {
+        let plan = single_segment_plan(
+            SegmentKind::Transactional,
+            "AddIndex users_email_idx",
+            "CREATE INDEX CONCURRENTLY users_email_idx ON users (email);",
+        );
+
+        let err = preflight_segment_sql_execution_compatibility(&plan).expect_err("must reject");
+        match err {
+            RunnerError::SegmentSqlExecutionModeConflict {
+                segment_index,
+                segment_kind,
+                statement_label,
+                problem,
+            } => {
+                assert_eq!(segment_index, 0);
+                assert_eq!(segment_kind, SegmentKind::Transactional);
+                assert_eq!(statement_label, "AddIndex users_email_idx");
+                assert_eq!(
+                    problem,
+                    SegmentSqlExecutionModeProblem::RequiresNonTransactional {
+                        statement_shape: "CREATE INDEX CONCURRENTLY",
+                    }
+                );
+            }
+            other => panic!("expected SegmentSqlExecutionModeConflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn segment_sql_preflight_rejects_comment_separated_concurrent_index_keywords() {
+        let plan = single_segment_plan(
+            SegmentKind::Transactional,
+            "AddIndex users_email_idx",
+            "CREATE /* split */ UNIQUE INDEX /* still split */ CONCURRENTLY \
+             users_email_idx ON users (email);",
+        );
+
+        let err = preflight_segment_sql_execution_compatibility(&plan).expect_err("must reject");
+        match err {
+            RunnerError::SegmentSqlExecutionModeConflict {
+                segment_index,
+                segment_kind,
+                statement_label,
+                problem,
+            } => {
+                assert_eq!(segment_index, 0);
+                assert_eq!(segment_kind, SegmentKind::Transactional);
+                assert_eq!(statement_label, "AddIndex users_email_idx");
+                assert_eq!(
+                    problem,
+                    SegmentSqlExecutionModeProblem::RequiresNonTransactional {
+                        statement_shape: "CREATE UNIQUE INDEX CONCURRENTLY",
+                    }
+                );
+            }
+            other => panic!("expected SegmentSqlExecutionModeConflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn segment_sql_preflight_rejects_begin_in_transactional_segment() {
+        let plan = single_segment_plan(SegmentKind::Transactional, "manual begin", "BEGIN;");
+
+        let err = preflight_segment_sql_execution_compatibility(&plan).expect_err("must reject");
+        match err {
+            RunnerError::SegmentSqlExecutionModeConflict {
+                segment_index,
+                segment_kind,
+                statement_label,
+                problem,
+            } => {
+                assert_eq!(segment_index, 0);
+                assert_eq!(segment_kind, SegmentKind::Transactional);
+                assert_eq!(statement_label, "manual begin");
+                assert_eq!(
+                    problem,
+                    SegmentSqlExecutionModeProblem::TransactionControl { keyword: "BEGIN" }
+                );
+            }
+            other => panic!("expected SegmentSqlExecutionModeConflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn segment_sql_preflight_rejects_savepoint_in_non_transactional_segment() {
+        let plan = single_segment_plan(
+            SegmentKind::NonTransactional,
+            "manual savepoint",
+            "SAVEPOINT retry_guard;",
+        );
+
+        let err = preflight_segment_sql_execution_compatibility(&plan).expect_err("must reject");
+        match err {
+            RunnerError::SegmentSqlExecutionModeConflict {
+                segment_index,
+                segment_kind,
+                statement_label,
+                problem,
+            } => {
+                assert_eq!(segment_index, 0);
+                assert_eq!(segment_kind, SegmentKind::NonTransactional);
+                assert_eq!(statement_label, "manual savepoint");
+                assert_eq!(
+                    problem,
+                    SegmentSqlExecutionModeProblem::TransactionControl {
+                        keyword: "SAVEPOINT",
+                    }
+                );
+            }
+            other => panic!("expected SegmentSqlExecutionModeConflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn segment_sql_preflight_allows_set_constraints_in_transactional_segment() {
+        let plan = single_segment_plan(
+            SegmentKind::Transactional,
+            "defer constraints",
+            "SET CONSTRAINTS ALL DEFERRED;",
+        );
+
+        preflight_segment_sql_execution_compatibility(&plan).expect("set constraints allowed");
+    }
+
+    #[test]
+    fn segment_sql_preflight_ignores_function_body_begin_commit_tokens() {
+        let plan = single_segment_plan(
+            SegmentKind::Transactional,
+            "install function",
+            "-- leading comment mentioning BEGIN\n\
+             CREATE OR REPLACE FUNCTION public.bump_counter()\n\
+             RETURNS trigger AS $body$\n\
+             BEGIN\n\
+                 NEW.counter := COALESCE(NEW.counter, 0) + 1;\n\
+                 RETURN NEW;\n\
+             END;\n\
+             $body$ LANGUAGE plpgsql;",
+        );
+
+        preflight_segment_sql_execution_compatibility(&plan)
+            .expect("function body BEGIN/END must not trip preflight");
     }
 
     // ── is_unique_violation classifier ───────────────────────────────────
