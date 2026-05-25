@@ -413,7 +413,12 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // 6. {Model}Filter — runtime struct carrying `Vec<FilterClause>` with one
     //    setter per user field. Separate codegen path from `{Model}Fields`;
     //    see `filter::expand`'s module docs for the typed-vs-erased rationale.
-    let filter = filter::expand(&struct_item, &model_attrs, &field_attrs);
+    let filter = filter::expand(
+        &struct_item,
+        &model_attrs,
+        &field_attrs,
+        &portable_field_info,
+    );
 
     // 7. {Model}Related — typed relation-path constructors. Inspects field
     //    types directly via `detect_relation`; emits a ZST with one method

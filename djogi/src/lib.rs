@@ -326,8 +326,9 @@ pub mod __private {
     /// - `__make_djogi_field` — the macro constructor PR3 will route every
     ///   generated `{Model}Fields` accessor through.
     pub mod query {
+        pub use crate::query::condition::{FilterValue, LookupOp};
         pub use crate::query::field::djogi_field_macro_support::__make_djogi_field;
-        pub use crate::query::filter::clauses_into_condition;
+        pub use crate::query::filter::{FilterClauseParts, clauses_into_condition, clauses_into_q};
         pub use crate::query::portable::{PortablePredicateError, SqlEmitContext};
         pub use crate::query::q::{IntoQ, Q};
 

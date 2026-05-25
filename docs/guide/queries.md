@@ -368,24 +368,35 @@ let rows = Post::objects()
 `Lookup<V>` variants: `Eq`, `Neq`, `Gt`, `Gte`, `Lt`, `Lte`, `In(Vec<V>)`,
 `NotIn(Vec<V>)`, `IsNull`, `IsNotNull`, `Contains(String)`,
 `StartsWith(String)`, `EndsWith(String)`, `Between(V, V)`,
-`Regex(String)`. `Contains` / `StartsWith` / `EndsWith` map to the
-case-insensitive `ILIKE` operators, matching the closure API's default.
-`Regex(String)` routes to the Postgres `~` operator (case-sensitive
-POSIX regex, server-side — see the closure-API `.regex` notes above
-for the Postgres-feature framing). `IRegex(String)` routes to `~*`
-(case-insensitive POSIX regex), matching the closure API's `.iregex`.
+`Regex(String)`, `IRegex(String)`. `Contains` / `StartsWith` / `EndsWith`
+map to the case-insensitive `ILIKE` operators, matching the closure API's
+default. `Regex(String)` routes to the Postgres `~` operator
+(case-sensitive POSIX regex, server-side — see the closure-API `.regex`
+notes above for the Postgres-feature framing). `IRegex(String)` routes to
+the Postgres `~*` operator (case-insensitive POSIX regex, server-side —
+same Postgres-feature framing as `Regex`; see the closure-API `.iregex`
+notes above).
 
 `Lookup` is `#[non_exhaustive]` — new variants are added as needed without
 a breaking change.
 
-`filter_struct` produces a structurally equivalent condition tree to the
-same set of lookups expressed as `.filter(|f| ...)` — an integration
-test asserts row-set parity between the two paths.
+`filter_struct` preserves the same database result semantics as the same set
+of lookups expressed as `.filter(|f| ...)`. For cache and refresh admission,
+generated filters keep their stored `FilterClause` vector as the single source
+of truth and lazily reconstruct portable Q leaves for conservative
+bool/string equality and membership clauses. Unsupported fields, wrapped or
+optional bool/string fields, value-shape mismatches, JSONB, spatial, FTS,
+regex, and string pattern lookups such as `Contains` / `StartsWith` /
+`EndsWith` stay on the SQL-only `Q::Condition` fallback path.
+
+Cache and refresh filtering remain all-or-nothing: if a generated filter mixes
+portable clauses with any fallback clause, the whole query is rejected by the
+portable pushdown gate and runs through the normal database path.
 
 Empty filters (`PostFilter::new()` with no setters) short-circuit:
-`filter_struct(empty)` is a no-op. Single-clause filters unwrap to a
-plain leaf rather than a one-element `And` — the SQL emitter renders
-`col = $1` without redundant parentheses.
+`filter_struct(empty)` is a no-op. Single portable clauses remain one Q leaf;
+single fallback clauses unwrap to a plain SQL condition rather than a
+one-element `And`.
 
 ---
 

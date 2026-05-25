@@ -36,9 +36,13 @@
 //! 3. **Dynamic SQL assemblers** — search/export jobs that stitch a query
 //!    from a config file or a feature flag.
 //!
-//! Both paths produce the same `Condition` tree and the same SQL — an
-//! integration test in `tests/integration/phase2_queryset.rs` asserts
-//! row-count parity between the two surfaces.
+//! Both paths preserve the same **query result semantics**, but they do
+//! not always materialize the same internal predicate tree: closure
+//! filters build typed portable predicates directly, while
+//! `{Model}Filter` stores erased [`FilterClause`] values and lazily
+//! reconstructs portable `Q` leaves only for owner-approved portable
+//! cases (`bool`/`String` Eq/Neq/In/NotIn). Everything else
+//! conservatively falls back to `Q::Condition`, preserving SQL behavior.
 //!
 //! # How (user surface)
 //!
@@ -63,8 +67,10 @@
 //! [`QuerySet::filter_struct`]: crate::query::QuerySet::filter_struct
 //! [`Condition::And`]: crate::query::Condition::And
 
+use crate::model::Model;
 use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
 use crate::query::field::IntoFilterValue;
+use crate::query::q::{CompoundOp, Q};
 
 /// User-facing lookup constructor — one variant per operator the
 /// programmatic filter API exposes.
@@ -117,11 +123,22 @@ pub enum Lookup<V> {
     /// `value` is a Postgres POSIX regex pattern, evaluated entirely
     /// server-side. Djogi does not link a Rust regex engine — this
     /// variant exists because the match itself is a Postgres feature
-    /// (the `~` operator). Use the closure API's `.iregex` for the
-    /// case-insensitive variant; the programmatic builder does not
-    /// currently expose a `Lookup::IRegex` because no caller has needed
-    /// the runtime-decided form. Adding it is non-breaking when needed.
+    /// (the `~` operator). See [`Lookup::IRegex`] for the
+    /// case-insensitive counterpart.
     Regex(String),
+    /// Postgres POSIX case-insensitive regex match — `column ~* value`.
+    ///
+    /// Routes to the same operator as
+    /// [`FieldRef::iregex`](crate::query::field::FieldRef::iregex);
+    /// `value` is a Postgres POSIX regex pattern, evaluated entirely
+    /// server-side via the `~*` operator. Djogi does not link a Rust
+    /// regex engine — the match runs on the database. See
+    /// [`Lookup::Regex`] for the case-sensitive counterpart.
+    ///
+    /// **SQL-only.** This variant does not lift into a Sassi portable
+    /// predicate (which would require a Rust regex engine); it stays on
+    /// the djogi side as a `Q::Condition` leaf.
+    IRegex(String),
 }
 
 impl<V: IntoFilterValue> Lookup<V> {
@@ -155,9 +172,9 @@ impl<V: IntoFilterValue> Lookup<V> {
     /// `ctx.raw_execute` / `ctx.raw_scalar` escape hatch.
     ///
     /// `Regex` maps to [`LookupOp::Regex`] — the case-sensitive POSIX
-    /// operator (`~`). The closure API exposes `.iregex` for the
-    /// case-insensitive counterpart. The `#[non_exhaustive]` marker allows
-    /// `Lookup::IRegex` to be added without a breaking change.
+    /// operator (`~`). `IRegex` maps to [`LookupOp::IRegex`] — the
+    /// case-insensitive POSIX operator (`~*`). Both are SQL-only and
+    /// stay on the djogi side as `Q::Condition` leaves.
     pub(crate) fn into_op_value(self) -> (LookupOp, FilterValue) {
         match self {
             Lookup::Eq(v) => (LookupOp::Eq, v.into_filter_value()),
@@ -187,6 +204,7 @@ impl<V: IntoFilterValue> Lookup<V> {
                 ),
             ),
             Lookup::Regex(s) => (LookupOp::Regex, FilterValue::String(s)),
+            Lookup::IRegex(s) => (LookupOp::IRegex, FilterValue::String(s)),
         }
     }
 }
@@ -229,6 +247,28 @@ pub struct FilterClause {
     pub(crate) value: FilterValue,
 }
 
+/// Consumed [`FilterClause`] parts for macro-generated clause-to-`Q` mapping.
+///
+/// This is hidden implementation surface: generated `{Model}Filter`
+/// `IntoQ` impls need to inspect the erased column/op/value tuple after
+/// consuming the clause, but external callers still cannot construct a
+/// `FilterClause` except through [`FilterClause::from_lookup`].
+#[doc(hidden)]
+pub struct FilterClauseParts {
+    pub column: &'static str,
+    pub op: LookupOp,
+    pub value: FilterValue,
+}
+
+impl FilterClauseParts {
+    /// Fall back to the legacy condition leaf for clauses that cannot be
+    /// safely reconstructed as portable `Q` leaves.
+    #[doc(hidden)]
+    pub fn into_condition(self) -> Condition {
+        Condition::Leaf(Leaf::new(self.column, self.op, self.value))
+    }
+}
+
 impl FilterClause {
     /// Project a `Lookup<V>` into a type-erased `FilterClause`.
     ///
@@ -258,6 +298,17 @@ impl FilterClause {
     /// [`QuerySet::filter_struct`]: crate::query::QuerySet::filter_struct
     pub fn into_condition(self) -> Condition {
         Condition::Leaf(Leaf::new(self.column, self.op, self.value))
+    }
+
+    /// Consume this clause into inspectable parts for macro-generated
+    /// lazy conversion to `Q<T>`.
+    #[doc(hidden)]
+    pub fn into_parts(self) -> FilterClauseParts {
+        FilterClauseParts {
+            column: self.column,
+            op: self.op,
+            value: self.value,
+        }
     }
 }
 
@@ -338,6 +389,35 @@ pub fn clauses_into_condition(clauses: Vec<FilterClause>) -> Condition {
                 .map(FilterClause::into_condition)
                 .collect(),
         ),
+    }
+}
+
+/// Fold consumed clauses into `Q<M>`, delegating leaf reconstruction to
+/// macro-generated model-aware code.
+///
+/// Empty filters are the portable true identity. Single clauses return the
+/// mapped leaf directly. Multi-clause filters preserve setter order under an
+/// explicit `AND` compound node rather than routing through the legacy
+/// `Condition` path.
+#[doc(hidden)]
+pub fn clauses_into_q<M, F>(clauses: Vec<FilterClause>, mut map: F) -> Q<M>
+where
+    M: Model,
+    F: FnMut(FilterClause) -> Q<M>,
+{
+    match clauses.len() {
+        0 => Q::always_true(),
+        1 => {
+            let clause = clauses
+                .into_iter()
+                .next()
+                .expect("len == 1 branch guarantees one element");
+            map(clause)
+        }
+        _ => Q::Compound {
+            op: CompoundOp::And,
+            parts: clauses.into_iter().map(map).collect(),
+        },
     }
 }
 
@@ -458,6 +538,25 @@ mod tests {
         // Documented mapping: plain `Regex` is case-sensitive (`~`), not `~*`.
         let clause = FilterClause::from_lookup("slug", Lookup::<String>::Regex("^foo".to_string()));
         assert_eq!(clause.op, LookupOp::Regex);
+    }
+
+    #[test]
+    fn lookup_iregex_projects_to_iregex_op_and_string_value() {
+        // `Lookup::IRegex` maps to `LookupOp::IRegex` (Postgres `~*` —
+        // case-insensitive POSIX regex). The pattern string is passed
+        // verbatim as `FilterValue::String`; no Rust regex engine is
+        // linked — the match runs server-side.
+        let (op, value) = Lookup::<String>::IRegex("^foo".to_string()).into_op_value();
+        assert_eq!(op, LookupOp::IRegex);
+        assert!(matches!(value, FilterValue::String(ref s) if s == "^foo"));
+
+        // Also verify via the FilterClause funnel that the op/column round-trip
+        // is stable — this is the path the macro-emitted setter uses.
+        let clause =
+            FilterClause::from_lookup("slug", Lookup::<String>::IRegex("^foo".to_string()));
+        assert_eq!(clause.column, "slug");
+        assert_eq!(clause.op, LookupOp::IRegex);
+        assert!(matches!(clause.value, FilterValue::String(ref s) if s == "^foo"));
     }
 
     #[test]
