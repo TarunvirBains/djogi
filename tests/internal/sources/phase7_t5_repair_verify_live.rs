@@ -196,6 +196,57 @@ async fn advisory_lock_count(ctx: &mut djogi::DjogiContext, lock_key: i64) -> i6
     .expect("pg_locks query")
 }
 
+async fn index_exists(ctx: &mut djogi::DjogiContext, index_name: &str) -> bool {
+    ctx.raw_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = $1 AND relkind = 'i')",
+        &[&index_name],
+    )
+    .await
+    .expect("index exists")
+}
+
+async fn index_count(ctx: &mut djogi::DjogiContext, index_name: &str) -> i64 {
+    ctx.raw_scalar(
+        "SELECT COUNT(*)::bigint FROM pg_class WHERE relname = $1 AND relkind = 'i'",
+        &[&index_name],
+    )
+    .await
+    .expect("index count")
+}
+
+async fn install_progress_ack_failure_trigger(
+    ctx: &mut djogi::DjogiContext,
+    fail_on_applied_steps: i32,
+) {
+    let function_sql = format!(
+        "CREATE OR REPLACE FUNCTION djogi_test_fail_progress_ack() \
+         RETURNS trigger AS $$ \
+         BEGIN \
+             IF OLD.status = NEW.status \
+                AND OLD.applied_steps_count IS DISTINCT FROM NEW.applied_steps_count \
+                AND NEW.applied_steps_count = {fail_on_applied_steps} THEN \
+                 RAISE EXCEPTION 'djogi test injected progress ack failure at step %', \
+                     NEW.applied_steps_count; \
+             END IF; \
+             RETURN NEW; \
+         END; \
+         $$ LANGUAGE plpgsql"
+    );
+    ctx.raw_ddl(&function_sql)
+        .await
+        .expect("create progress-ack failure function");
+    ctx.raw_ddl("DROP TRIGGER IF EXISTS djogi_test_fail_progress_ack ON djogi_schema_migrations")
+        .await
+        .expect("drop prior progress-ack failure trigger");
+    ctx.raw_ddl(
+        "CREATE TRIGGER djogi_test_fail_progress_ack \
+         BEFORE UPDATE ON djogi_schema_migrations \
+         FOR EACH ROW EXECUTE FUNCTION djogi_test_fail_progress_ack()",
+    )
+    .await
+    .expect("create progress-ack failure trigger");
+}
+
 async fn wait_for_advisory_lock(ctx: &mut djogi::DjogiContext, lock_key: i64) {
     for _ in 0..80 {
         if advisory_lock_count(ctx, lock_key).await > 0 {
@@ -2594,6 +2645,141 @@ async fn repair_resume_partial_apply_resumes_remaining_steps(mut ctx: djogi::Djo
         .raw_ddl("DROP INDEX IF EXISTS t5_b10_resume_b_idx")
         .await;
     let _ = ctx.raw_ddl("DROP TABLE IF EXISTS t5_b10_resume").await;
+}
+
+#[djogi::djogi_test]
+async fn repair_resume_progress_ack_failure_blocks_duplicate_rerun(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    let snapshot_path = temp_path("resume-ack");
+    let initial_snapshot = empty_snapshot();
+    djogi::migrate::save_snapshot(&initial_snapshot, &snapshot_path).expect("seed snapshot");
+
+    let plan = MigrationPlan {
+        bucket: BucketKey {
+            database: "main".to_string(),
+            app: "".to_string(),
+        },
+        classification: Classification::Additive,
+        segments: vec![
+            Segment {
+                kind: SegmentKind::Transactional,
+                statements: vec![op(
+                    "AddTable t5_resume_ack",
+                    "CREATE TABLE \"t5_resume_ack\" (\"id\" BIGINT, \"e\" TEXT)",
+                    "DROP TABLE \"t5_resume_ack\"",
+                )],
+            },
+            Segment {
+                kind: SegmentKind::NonTransactional,
+                statements: vec![
+                    op(
+                        "AddIndex t5_resume_ack_e_idx",
+                        "CREATE INDEX CONCURRENTLY \"t5_resume_ack_e_idx\" \
+                         ON \"t5_resume_ack\" (\"e\")",
+                        "DROP INDEX CONCURRENTLY \"t5_resume_ack_e_idx\"",
+                    ),
+                    op(
+                        "AddIndex t5_resume_ack_missing_idx",
+                        "CREATE INDEX CONCURRENTLY \"t5_resume_ack_missing_idx\" \
+                         ON \"t5_resume_ack\" (\"missing\")",
+                        "DROP INDEX CONCURRENTLY \"t5_resume_ack_missing_idx\"",
+                    ),
+                ],
+            },
+        ],
+    };
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260524000101__resume_ack_failure",
+        Some(initial_snapshot),
+        Some(snapshot_path.clone()),
+    );
+
+    let err = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect_err("partial apply must fail before resume");
+    assert!(
+        matches!(err, RunnerError::NonTransactionalSegmentFailed { .. }),
+        "got {err:?}"
+    );
+
+    ctx.raw_ddl("ALTER TABLE \"t5_resume_ack\" ADD COLUMN \"missing\" TEXT")
+        .await
+        .expect("add missing column so resume step can succeed");
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+    install_progress_ack_failure_trigger(&mut ctx, 2).await;
+
+    repair_resume_partial_apply(
+        &mut ctx,
+        &_guard,
+        &runner_ctx.version,
+        &plan,
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    .expect_err("progress ack failure must abort resume");
+
+    let status: String = ctx
+        .raw_scalar(
+            "SELECT status::text FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("status after injected resume failure");
+    assert_ne!(
+        status, "applied",
+        "resume must not finalise an ambiguous post-DDL step"
+    );
+
+    let applied_steps: i32 = ctx
+        .raw_scalar(
+            "SELECT applied_steps_count FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("applied_steps after injected resume failure");
+    assert_eq!(
+        applied_steps, 1,
+        "acked progress must remain at the pre-resume durable boundary"
+    );
+
+    let note: Option<String> = ctx
+        .raw_scalar(
+            "SELECT partial_apply_note FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("note after injected resume failure");
+    let note = note.expect("resume claim note must be recorded");
+    assert!(
+        note.contains("non-tx progress claim"),
+        "note must preserve the claimed-step marker: {note}"
+    );
+
+    assert!(
+        index_exists(&mut ctx, "t5_resume_ack_missing_idx").await,
+        "the committed resumed step must still exist"
+    );
+
+    repair_resume_partial_apply(
+        &mut ctx,
+        &_guard,
+        &runner_ctx.version,
+        &plan,
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    .expect_err("ambiguous claim must block duplicate rerun");
+
+    assert_eq!(
+        index_count(&mut ctx, "t5_resume_ack_missing_idx").await,
+        1,
+        "resume must not silently rerun an already-committed step"
+    );
+    assert!(
+        !snapshot_path.exists(),
+        "snapshot file must not move forward while the row is ambiguous"
+    );
 }
 
 #[djogi::djogi_test]

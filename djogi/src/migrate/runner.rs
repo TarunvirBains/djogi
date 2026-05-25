@@ -254,6 +254,18 @@ pub enum RunnerError {
         source: DjogiError,
     },
 
+    /// A non-transactional statement committed successfully, but the
+    /// runner failed to durably acknowledge the step boundary on the
+    /// ledger. The row is left with a structured claim note so repair
+    /// resume refuses to replay the ambiguous step automatically.
+    NonTransactionalProgressAckFailed {
+        segment_index: usize,
+        step_index: usize,
+        statement_label: String,
+        applied_steps_count: i32,
+        source: DjogiError,
+    },
+
     /// Failed to load `Djogi.toml` for the relpages-probe config.
     ConfigLoadFailed { source: figment::Error },
 
@@ -587,6 +599,20 @@ impl std::fmt::Display for RunnerError {
                 "non-transactional segment {segment_index} step {step_index} `{statement_label}` \
                  failed after {applied_steps_count} successful step(s): {source}",
             ),
+            RunnerError::NonTransactionalProgressAckFailed {
+                segment_index,
+                step_index,
+                statement_label,
+                applied_steps_count,
+                source,
+            } => write!(
+                f,
+                "non-transactional segment {segment_index} step {} `{statement_label}` \
+                 committed, but the runner failed to durably acknowledge \
+                 applied_steps_count={applied_steps_count}; the row now carries a \
+                 non-tx progress claim and must be reconciled before resume: {source}",
+                step_index + 1,
+            ),
             RunnerError::ConfigLoadFailed { source } => {
                 write!(f, "failed to load Djogi.toml: {source}")
             }
@@ -706,6 +732,7 @@ impl std::error::Error for RunnerError {
             RunnerError::SegmentSqlExecutionModeConflict { .. } => None,
             RunnerError::TransactionalSegmentFailed { source, .. } => Some(source),
             RunnerError::NonTransactionalSegmentFailed { source, .. } => Some(source),
+            RunnerError::NonTransactionalProgressAckFailed { source, .. } => Some(source),
             RunnerError::ConfigLoadFailed { source } => Some(source),
             RunnerError::SnapshotPersistFailed { source, .. } => Some(source),
             RunnerError::BaselineProjectionFailed { source } => Some(source.as_ref()),
@@ -1001,6 +1028,7 @@ async fn apply_plan_inner(
         runner_ctx.out_of_order_policy.override_reason(),
         conflicting_peer.as_ref(),
     );
+    let durable_non_tx_note = initial_note.clone();
 
     // B-2: expand `<EACH_LEAF_TABLE>` placeholders inside any
     // partitioned-flip segment before any runner-owned writes. This
@@ -1103,8 +1131,11 @@ async fn apply_plan_inner(
                     ctx,
                     segment,
                     seg_idx,
+                    &runner_ctx.version,
                     ledger_id,
                     applied_non_tx_steps,
+                    total_non_tx_steps,
+                    durable_non_tx_note.as_deref(),
                 )
                 .await
                 {
@@ -2400,8 +2431,11 @@ async fn run_transactional_segment(
 }
 
 /// Run every statement in a non-transactional segment with autocommit.
-/// After each successful step, update `applied_steps_count` so
-/// crash-recovery (T5 `repair`) can resume from the next step.
+/// Before each step, durably claim the boundary in
+/// `partial_apply_note`; after the SQL commits, durably acknowledge
+/// the new `applied_steps_count`. If the post-DDL ack fails, the
+/// claim note remains in place so repair resume refuses to re-run the
+/// ambiguous step automatically.
 ///
 /// Returns the number of steps completed within this segment so the
 /// outer runner can update its running tally of cross-segment progress.
@@ -2409,11 +2443,30 @@ async fn run_non_transactional_segment(
     ctx: &mut DjogiContext,
     segment: &Segment,
     segment_index: usize,
+    version: &str,
     ledger_id: i64,
     prior_steps_completed: i32,
+    total_non_tx_steps: i32,
+    stable_note: Option<&str>,
 ) -> Result<i32, RunnerError> {
     let mut completed: i32 = 0;
     for (step_idx, stmt) in segment.statements.iter().enumerate() {
+        let claimed_step = prior_steps_completed
+            .saturating_add(completed)
+            .saturating_add(1);
+        let claim_note = ledger::format_non_tx_progress_claim(
+            stable_note,
+            claimed_step,
+            Some(total_non_tx_steps),
+            segment_index,
+            &stmt.label,
+        );
+        ledger::claim_non_tx_progress(ctx, ledger_id, &claim_note)
+            .await
+            .map_err(|e| RunnerError::LedgerWriteFailed {
+                version: version.to_string(),
+                source: e,
+            })?;
         if let Err(e) = ctx.raw_ddl(&stmt.up).await {
             let total_so_far = prior_steps_completed.saturating_add(completed);
             let note = format!(
@@ -2436,17 +2489,15 @@ async fn run_non_transactional_segment(
         }
         completed = completed.saturating_add(1);
         let total_so_far = prior_steps_completed.saturating_add(completed);
-        // Best-effort progress update. Failure here does not abort
-        // the segment — the SQL already ran; recording it is a
-        // bookkeeping concern.
-        if let Err(e) = ledger::update_progress(ctx, ledger_id, total_so_far).await {
-            tracing::warn!(
-                ledger_id,
-                applied_steps = total_so_far,
-                error = ?e,
-                "ledger progress update failed; SQL already applied",
-            );
-        }
+        ledger::ack_non_tx_progress(ctx, ledger_id, total_so_far, stable_note)
+            .await
+            .map_err(|e| RunnerError::NonTransactionalProgressAckFailed {
+                segment_index,
+                step_index: step_idx,
+                statement_label: stmt.label.clone(),
+                applied_steps_count: total_so_far,
+                source: e,
+            })?;
     }
     Ok(completed)
 }
