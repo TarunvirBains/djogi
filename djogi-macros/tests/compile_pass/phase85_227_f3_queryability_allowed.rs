@@ -71,4 +71,7 @@ fn main() {
     let _eq: Q<User> = ssn.eq("123-45-6789".to_string());
     let _asc: OrderExpr = ssn.asc();
     let _desc: OrderExpr = ssn.desc();
+
+    let _qs: djogi::query::VisageQuerySet<UserPublic> =
+        UserPublic::filter(|f| f.ssn().eq("123-45-6789".to_string()));
 }

@@ -5464,18 +5464,25 @@ impl Condition {
 /// The field `fk_column` is the owning side's FK column (e.g.
 /// `"author_id"`), and `peer_fields` is the path-threaded peer `Fields`
 /// handle returned by the macro's traversal accessor.
+///
+/// Ordinary peer-field traversal stays on [`map_filter`](Self::map_filter),
+/// which preserves the legacy [`Condition`] return shape. When the peer
+/// closure yields a broader query predicate (`Q<M>`, a codec-gated
+/// `PresentationFieldRef::eq(...)`, or any other
+/// [`IntoQ`](crate::query::IntoQ) payload), use
+/// [`map_predicate`](Self::map_predicate) instead.
 pub struct OptionalRelationRef<V> {
     fk_column: &'static str,
     peer_fields: V,
 }
 
 impl<V> OptionalRelationRef<V> {
-    /// Compose a predicate that applies to the peer only when the FK is
-    /// non-NULL.
+    /// Compose a legacy-`Condition` predicate that applies to the peer
+    /// only when the FK is non-NULL.
     ///
     /// The `f` closure receives the peer `Fields` handle by value (it's
-    /// `Copy` on the macro-emitted shape) and must return a `Condition`.
-    /// The returned `Condition` is equivalent to
+    /// `Copy` on the macro-emitted shape) and returns a legacy
+    /// [`Condition`]. The returned predicate is equivalent to
     /// `Condition::and(fk IS NOT NULL, f(peer_fields))`.
     ///
     /// # Consuming `self`
@@ -5497,6 +5504,36 @@ impl<V> OptionalRelationRef<V> {
             FilterValue::Null,
         ));
         Condition::and(not_null, inner)
+    }
+
+    /// Compose a root-typed query predicate that applies to the peer
+    /// only when the FK is non-NULL.
+    ///
+    /// This is the generalized sibling of [`map_filter`](Self::map_filter):
+    /// the inner closure may return any
+    /// [`IntoQ`](crate::query::IntoQ) payload over the owning root model.
+    /// Use this when a peer accessor is codec-gated and therefore returns
+    /// `Q<M>` directly (for example
+    /// `PresentationFieldRef::eq(...) -> Q<RootModel>`), or when you want to
+    /// compose a mixed [`Predicate`](crate::query::Predicate) tree in the
+    /// closure.
+    ///
+    /// The returned `Q<M>` is equivalent to
+    /// `Q::Condition(fk IS NOT NULL) & f(peer_fields).into_q()`.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn map_predicate<M, F, P>(self, f: F) -> crate::query::Q<M>
+    where
+        M: Model,
+        F: FnOnce(V) -> P,
+        P: crate::query::IntoQ<M>,
+    {
+        let inner = f(self.peer_fields).into_q();
+        let not_null = crate::query::Q::Condition(Condition::Leaf(Leaf::new(
+            self.fk_column,
+            LookupOp::IsNotNull,
+            FilterValue::Null,
+        )));
+        not_null & inner
     }
 
     /// Emit a standalone `fk_column IS NULL` predicate. Use from a

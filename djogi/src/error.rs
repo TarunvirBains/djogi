@@ -47,6 +47,27 @@
 use std::borrow::Cow;
 use thiserror::Error;
 
+fn presentation_startup_error_summary(
+    errors: &[crate::presentation::PresentationStartupError],
+) -> String {
+    if errors.is_empty() {
+        return "no individual codec startup errors were collected".to_owned();
+    }
+
+    errors
+        .iter()
+        .enumerate()
+        .map(|(idx, error)| {
+            let msg = error.to_string();
+            let msg = msg
+                .strip_prefix("presentation codec startup: ")
+                .unwrap_or(msg.as_str());
+            format!("{}. {msg}", idx + 1)
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// Public wrapper for database-driver failures surfaced through Djogi.
 ///
 /// Djogi stores the real `tokio_postgres::Error` when one exists, but also
@@ -1024,9 +1045,14 @@ pub enum DjogiError {
     /// Classified as **terminal** by the framework — a codec with a missing
     /// or invalid key cannot serve traffic until the key is provided. The
     /// fix is an environment-variable or configuration change, not a retry.
+    ///
+    /// `Display` includes the total count plus a concise summary of each
+    /// failing usage so operator logs can point directly at the actionable
+    /// `(model, field, scope, codec)` entry without requiring `Debug`.
     #[error(
-        "presentation codec startup validation failed ({} error(s))",
-        .0.len()
+        "presentation codec startup validation failed ({} error(s)): {}",
+        .0.len(),
+        crate::error::presentation_startup_error_summary(&.0)
     )]
     PresentationStartup(Vec<crate::presentation::PresentationStartupError>),
 }
@@ -1338,6 +1364,35 @@ mod tests {
         assert!(
             DjogiError::PresentationStartup(vec![]).is_terminal(),
             "PresentationStartup must be terminal — missing startup prerequisites need operator action"
+        );
+        let presentation_startup_msg = DjogiError::PresentationStartup(vec![
+            crate::presentation::PresentationStartupError::MissingEnvVar {
+                name: "DJOGI_PRESENTATION_HMAC_KEY",
+            },
+            crate::presentation::PresentationStartupError::Usage {
+                model: "User",
+                field: "email",
+                scope: "public",
+                codec_path: "djogi::presentation::builtins::HmacSha256HexString",
+                source: Box::new(
+                    crate::presentation::PresentationStartupError::MissingEnvVar {
+                        name: "DJOGI_PRESENTATION_HMAC_KEY",
+                    },
+                ),
+            },
+        ])
+        .to_string();
+        assert!(
+            presentation_startup_msg.contains("2 error(s)"),
+            "PresentationStartup display must include the error count: {presentation_startup_msg}"
+        );
+        assert!(
+            presentation_startup_msg.contains("missing env var `DJOGI_PRESENTATION_HMAC_KEY`"),
+            "PresentationStartup display must include the actionable inner error: {presentation_startup_msg}"
+        );
+        assert!(
+            presentation_startup_msg.contains("User.email scope `public` codec `djogi::presentation::builtins::HmacSha256HexString` failed"),
+            "PresentationStartup display must include the usage context: {presentation_startup_msg}"
         );
         assert!(
             DjogiError::PoolTimeout { phase: "wait" }.is_transient(),

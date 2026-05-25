@@ -1008,9 +1008,13 @@ In tests (with `hmac-codec` enabled), use the helper:
 ```rust
 #[tokio::test]
 async fn test_with_hmac() {
-    djogi::testing::install_presentation_hmac_key_for_testing(
-        "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
-    );
+    // SAFETY: the surrounding test harness must keep process-wide env access
+    // quiescent while the helper mutates DJOGI_PRESENTATION_HMAC_KEY.
+    unsafe {
+        djogi::testing::install_presentation_hmac_key_for_testing(
+            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        );
+    }
     let pool = DjogiPool::connect(url).await?;
     // ...
 }

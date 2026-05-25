@@ -286,7 +286,7 @@ HMAC presentation codecs are optional and gated behind the crate feature
 
 - `djogi::presentation::builtins::HmacSha256HexString`
 - `djogi::presentation::builtins::HmacSha256HexOptionString`
-- `djogi::testing::install_presentation_hmac_key_for_testing`
+- `djogi::testing::install_presentation_hmac_key_for_testing` (`#[doc(hidden)]`, `unsafe`)
 
 When `hmac-codec` is disabled, those symbols are unavailable and no HMAC-key
 startup requirement exists for presentation codecs.
@@ -343,9 +343,13 @@ Then run `djogi::presentation::validate_startup_inventory()` (or a pool connect 
 same binary after installing/removing `DJOGI_PRESENTATION_HMAC_KEY` as needed for the
 assertion.
 
-**Testing (`hmac-codec` enabled):** use
-`djogi::testing::install_presentation_hmac_key_for_testing("aabbcc...")` to
-install a test key before calling `DjogiPool::connect`. The helper validates
+**Testing (`hmac-codec` enabled):** use the doc-hidden `unsafe`
+`djogi::testing::install_presentation_hmac_key_for_testing("aabbcc...")`
+helper only from a window where no other code in the process is concurrently
+reading or writing environment variables, or otherwise satisfies the
+platform-specific stronger requirement for env mutation. A mutex that only
+serializes `DJOGI_PRESENTATION_HMAC_KEY` is not enough by itself. Wrap the
+call in `unsafe` before calling `DjogiPool::connect`. The helper validates
 that the key is exactly 64 lowercase hex characters and sets the environment
 variable.
 

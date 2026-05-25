@@ -234,6 +234,10 @@ let public_users: Vec<UserPublic> = UserPublic::filter(|u| u.display_name.eq("Ad
 //    WHERE display_name = $1
 ```
 
+The `filter` closure may return any Djogi predicate type implementing
+`IntoQ<SourceModel>`: ordinary field conditions, mixed predicate wrappers,
+or codec-gated `Q<_>` values.
+
 Non-exposed columns (e.g. `email`, `password_hash` in the `User`
 example above) never appear in the emitted SQL. This is the headline
 performance win — visages stop being only an output shape and start
@@ -268,6 +272,11 @@ traverse through `OptionalRelationRef::map_filter`, which emits an
 VehiclePublic::filter(|v| v.optional_owner().map_filter(|o| o.display_name().eq("Ada".to_string())))
 // Emits: WHERE optional_owner_id IS NOT NULL AND optional_owner.display_name = $1
 ```
+
+When the peer accessor is codec-governed and the inner closure returns a
+root-typed `Q<_>` instead of a raw `Condition`, use
+`OptionalRelationRef::map_predicate` to get the same guard with the broader
+predicate surface.
 
 **Reverse-FK and M2M boundaries hold at the SQL level too.** From
 a peer visage, the reverse accessor returns a SELECT-narrowed
@@ -366,4 +375,3 @@ The following remain non-goals for the visage layer:
 - **JSONB subfield visages** — per-subfield masking of `Jsonb<T>`
   fields is not supported.
 - **Admin UI / export UI** consuming visage metadata.
-

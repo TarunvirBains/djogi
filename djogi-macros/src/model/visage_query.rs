@@ -242,23 +242,28 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
                 ::djogi::query::VisageQuerySet::<#visage_ident>::new_for_visage(
                     <#source as ::djogi::prelude::Model>::table_name(),
                     #projection_list_lit,
-                    ::djogi::query::internal::Condition::True,
                 )
             }
 
             /// Build a [`VisageQuerySet`] over the source model's table
             /// with this visage's narrowed column projection, AND-ing
-            /// the closure's returned condition onto the queryset's root.
+            /// the closure's returned predicate onto the queryset's root.
+            ///
+            /// The closure may return any
+            /// [`IntoQ<Source>`](::djogi::query::IntoQ) payload: a legacy
+            /// `Condition`, a portable or mixed predicate wrapper, or a
+            /// pre-built `Q<Source>`.
             ///
             /// See also: [`QuerySet::filter`](::djogi::query::QuerySet::filter)
             ///
             /// [`VisageQuerySet`]: ::djogi::query::VisageQuerySet
             #[must_use = "querysets are lazy — dropping one silently omits the query"]
-            pub fn filter<__DjogiF>(
+            pub fn filter<__DjogiF, __DjogiP>(
                 predicate: __DjogiF,
             ) -> ::djogi::query::VisageQuerySet<#visage_ident>
             where
-                __DjogiF: ::core::ops::FnOnce(#fields_ident) -> ::djogi::query::internal::Condition,
+                __DjogiF: ::core::ops::FnOnce(#fields_ident) -> __DjogiP,
+                __DjogiP: ::djogi::query::IntoQ<#source>,
             {
                 let __cond = predicate(<#fields_ident as ::core::default::Default>::default());
                 Self::__new().filter(__cond)
@@ -293,7 +298,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
 
             /// Internal seam — build a [`VisageQuerySet`] over the source
             /// model's table with this visage's narrowed column projection
-            /// and the supplied `Condition` as the queryset's root.
+            /// and the supplied predicate as the queryset's root.
             ///
             /// Used by macro-emitted reverse-FK and M2M visage accessors.
             /// The visage's baked-in `columns` slice ensures the emitted
@@ -306,9 +311,12 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
             /// [`VisageQuerySet`]: ::djogi::query::VisageQuerySet
             #[doc(hidden)]
             #[must_use = "querysets are lazy — dropping one silently omits the query"]
-            pub fn __filter_with_initial_condition(
-                cond: ::djogi::query::internal::Condition,
-            ) -> ::djogi::query::VisageQuerySet<#visage_ident> {
+            pub fn __filter_with_initial_condition<__DjogiP>(
+                cond: __DjogiP,
+            ) -> ::djogi::query::VisageQuerySet<#visage_ident>
+            where
+                __DjogiP: ::djogi::query::IntoQ<#source>,
+            {
                 Self::__new().filter(cond)
             }
         }

@@ -7,13 +7,20 @@
 //! prefix through traversal chains:
 //!
 //! ```ignore
-//! pub struct UserPublicFields { pub __djogi_path: Option<&'static str> }
+//! pub struct UserPublicFields<RootModel = User> {
+//!     pub __djogi_path: Option<&'static str>,
+//!     pub __djogi_root: PhantomData<fn() -> RootModel>,
+//! }
 //! ```
 //!
-//! - Root construction: `UserPublicFields::default()` sets `__djogi_path = None`.
+//! - Root construction: `UserPublicFields::default()` sets `__djogi_path = None`
+//!   and defaults `RootModel = User`.
 //! - Traversal construction: `UserPublicFields::with_path("owner")` sets
 //!   `__djogi_path = Some("owner")` so the peer's scalar accessors produce
 //!   `FieldRef`s whose column path is `"owner.{column}"`.
+//! - Traversal typing: `UserPublicFields<Post>` means "the peer visage fields
+//!   for `User`, but predicates built from them still target the owning
+//!   `Post` root model."
 //!
 //! Accessors are `&self` methods so the path state is available inside every call:
 //!
@@ -43,11 +50,12 @@
 //!
 //! Required FKs (non-`Option`) keep the plain `PeerFields` return type.
 //!
-//! # `FieldRef<Model, V>` over `FieldRef<Visage, V>`
+//! # `FieldRef<RootModel, V>` over `FieldRef<Visage, V>`
 //!
 //! Visages do not impl `Model` (they are projections, not tables). Accessors
-//! are typed on the **source model** — e.g. `FieldRef<User, String>` — and
-//! the visage ↔ model pairing is tracked separately via `DjogiVisageOf<M>`.
+//! are typed on the **owning root model** — e.g. `UserPublicFields<Post>::name()`
+//! yields `FieldRef<Post, String>` — and the visage ↔ source-model pairing
+//! is tracked separately via `DjogiVisageOf<M>`.
 //!
 //! # Non-exposed fields are absent by construction
 //!
@@ -59,7 +67,8 @@
 
 use crate::model::attrs::PkStrategy;
 use crate::model::visage_ctx::{
-    ScopeMembership, VisageEmitContext, classify_field_for_scope, peer_traversal_fields_path,
+    ScopeMembership, VisageEmitContext, classify_field_for_scope, is_full_peer_for,
+    peer_traversal_fields_path,
 };
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -69,6 +78,7 @@ use syn::Ident;
 /// `DjogiVisageOf<SourceModel>` impl for a single visage.
 pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
     let source = ctx.source;
+    let root_ident = format_ident!("RootModel");
     let visage_ident = &ctx.visage_ident;
     let scope = ctx.scope;
     let struct_item = ctx.struct_item;
@@ -107,19 +117,19 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
     let mut accessors: Vec<TokenStream> = Vec::new();
 
     accessors.push(emit_scalar_accessor(
-        source,
+        &root_ident,
         &format_ident!("id"),
         "id",
         &id_ty,
     ));
     accessors.push(emit_scalar_accessor(
-        source,
+        &root_ident,
         &format_ident!("created_at"),
         "created_at",
         &quote! { ::djogi::types::DateTime },
     ));
     accessors.push(emit_scalar_accessor(
-        source,
+        &root_ident,
         &format_ident!("updated_at"),
         "updated_at",
         &quote! { ::djogi::types::DateTime },
@@ -154,10 +164,14 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
                 let fty_ts = quote! { #fty };
                 if let Some(codec_ty) = lookup_per_scope_codec(attrs, scope) {
                     accessors.push(emit_presentation_scalar_accessor(
-                        source, fname, &column, codec_ty, &fty_ts,
+                        &root_ident,
+                        fname,
+                        &column,
+                        codec_ty,
+                        &fty_ts,
                     ));
                 } else {
-                    accessors.push(emit_scalar_accessor(source, fname, &column, &fty_ts));
+                    accessors.push(emit_scalar_accessor(&root_ident, fname, &column, &fty_ts));
                 }
             }
 
@@ -177,6 +191,9 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
                 // path-aware on its own. `peer_traversal_fields_path`
                 // resolves the right shape from the relation field.
                 let pfp = peer_traversal_fields_path(field, exposure);
+                let full_peer = crate::model::attrs::detect_relation(&field.ty)
+                    .map(|info| is_full_peer_for(exposure, &info))
+                    .unwrap_or(false);
 
                 // The SQL-alias path emitted into the peer's `Fields` is
                 // the FK column name itself. For `department:
@@ -187,20 +204,39 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
                     let doc = format!(
                         "Optional-relation accessor for `{column}` — returns an \
                          [`OptionalRelationRef`](::djogi::query::OptionalRelationRef) \
-                         over the peer visage's `Fields`. Compose a closure against the \
-                         peer with `.map_filter(|p| …)`; the emitted SQL guards on \
+                         over the peer visage's `Fields`. Compose an ordinary \
+                         FieldRef-based closure against the peer with \
+                         `.map_filter(|p| …)`; when the inner closure yields a broader \
+                         query predicate (`Q<RootModel>`, codec-gated \
+                         `PresentationFieldRef::eq(...)`, etc.), use \
+                         `.map_predicate(|p| …)` instead. Both routes guard on \
                          `{column} IS NOT NULL` before applying the inner predicate."
                     );
-                    accessors.push(quote! {
-                        #[doc = #doc]
-                        #[inline]
-                        pub fn #fname(&self) -> ::djogi::query::OptionalRelationRef<#pfp> {
-                            ::djogi::query::field::optional_relation_support::__make_optional_relation_ref(
-                                #column,
-                                <#pfp>::with_path(#column),
-                            )
-                        }
-                    });
+                    if full_peer {
+                        accessors.push(quote! {
+                            #[doc = #doc]
+                            #[inline]
+                            pub fn #fname(&self) -> ::djogi::query::OptionalRelationRef<#pfp> {
+                                ::djogi::query::field::optional_relation_support::__make_optional_relation_ref(
+                                    #column,
+                                    <#pfp>::with_path(#column),
+                                )
+                            }
+                        });
+                    } else {
+                        accessors.push(quote! {
+                            #[doc = #doc]
+                            #[inline]
+                            pub fn #fname(
+                                &self,
+                            ) -> ::djogi::query::OptionalRelationRef<#pfp<#root_ident>> {
+                                ::djogi::query::field::optional_relation_support::__make_optional_relation_ref(
+                                    #column,
+                                    <#pfp<#root_ident>>::with_path(#column),
+                                )
+                            }
+                        });
+                    }
                 } else {
                     let doc = format!(
                         "Required-relation accessor for `{column}` — returns the peer \
@@ -208,13 +244,23 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
                          Chain a scalar accessor on the return value to compose a traversal \
                          leaf (`FieldRef` whose column path is `{column}.<peer_col>`)."
                     );
-                    accessors.push(quote! {
-                        #[doc = #doc]
-                        #[inline]
-                        pub fn #fname(&self) -> #pfp {
-                            <#pfp>::with_path(#column)
-                        }
-                    });
+                    if full_peer {
+                        accessors.push(quote! {
+                            #[doc = #doc]
+                            #[inline]
+                            pub fn #fname(&self) -> #pfp {
+                                <#pfp>::with_path(#column)
+                            }
+                        });
+                    } else {
+                        accessors.push(quote! {
+                            #[doc = #doc]
+                            #[inline]
+                            pub fn #fname(&self) -> #pfp<#root_ident> {
+                                <#pfp<#root_ident>>::with_path(#column)
+                            }
+                        });
+                    }
                 }
             }
         }
@@ -231,27 +277,35 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
          inherent method per exposed column; non-exposed fields are \
          absent by construction. Carries an optional SQL-alias path \
          (`__djogi_path`) so traversal chains (`a.department().name()`) \
-         compose into dot-qualified column names at emission time. \
+         compose into dot-qualified column names at emission time. The \
+         public `RootModel = {source}` generic tracks which owning queryset / \
+         filter root the emitted predicates target as traversal crosses into \
+         peer visages. \
          See `DjogiVisageOf<{source}>` for the visage ↔ model seal."
     );
 
     quote! {
         #[doc = #fields_doc]
-        #[derive(Debug, Clone, Copy, Default)]
-        pub struct #fields_ident {
+        #[derive(Debug, Clone, Copy)]
+        pub struct #fields_ident<#root_ident = #source> {
             // `pub` for cross-crate macro emission; use `with_path` from
             // hand-written code.
             #[doc(hidden)]
             pub __djogi_path: ::core::option::Option<&'static str>,
+            #[doc(hidden)]
+            pub __djogi_root: ::core::marker::PhantomData<fn() -> #root_ident>,
         }
 
-        impl #fields_ident {
+        impl<#root_ident> #fields_ident<#root_ident> {
             /// Construct a root-scope `Fields` handle with no SQL-alias path.
             /// Equivalent to the `Default` impl.
             #[doc(hidden)]
             #[inline]
             pub const fn new() -> Self {
-                Self { __djogi_path: ::core::option::Option::None }
+                Self {
+                    __djogi_path: ::core::option::Option::None,
+                    __djogi_root: ::core::marker::PhantomData,
+                }
             }
 
             /// Construct a traversal-scope `Fields` handle threaded with
@@ -261,10 +315,34 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
             #[doc(hidden)]
             #[inline]
             pub const fn with_path(path: &'static str) -> Self {
-                Self { __djogi_path: ::core::option::Option::Some(path) }
+                Self {
+                    __djogi_path: ::core::option::Option::Some(path),
+                    __djogi_root: ::core::marker::PhantomData,
+                }
             }
+        }
 
+        impl<#root_ident: ::djogi::prelude::Model> #fields_ident<#root_ident> {
             #(#accessors)*
+        }
+
+        impl #fields_ident {
+            /// Construct a root-scope `Fields` handle targeting the source
+            /// model directly.
+            ///
+            /// This inherent method preserves the pre-generic
+            /// `{Visage}Fields::default()` call shape for root-scope code.
+            #[inline]
+            pub fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        impl<#root_ident> ::core::default::Default for #fields_ident<#root_ident> {
+            #[inline]
+            fn default() -> Self {
+                Self::new()
+            }
         }
 
         #[doc = #filter_doc]
@@ -290,22 +368,23 @@ fn lookup_per_scope_codec<'a>(
 /// Emit a scalar `FieldRef` accessor that routes through the merged
 /// `__make_field_ref` helper (with optional path prefix).
 fn emit_scalar_accessor(
-    source: &Ident,
+    root: &Ident,
     fname: &Ident,
     column: &str,
     ty: &TokenStream,
 ) -> TokenStream {
     let doc = format!(
         "Typed handle for the `{column}` column (visage-scoped). Returns a \
-         [`FieldRef`](::djogi::query::FieldRef) bound to the source model. \
+         [`FieldRef`](::djogi::query::FieldRef) bound to the owning \
+         `RootModel`. \
          Absent on visage-scope Fields types where the field is not exposed — \
          see the `expose(...)` annotation on the source struct."
     );
     quote! {
         #[doc = #doc]
         #[inline]
-        pub fn #fname(&self) -> ::djogi::query::FieldRef<#source, #ty> {
-            ::djogi::query::field::__macro_support::__make_field_ref::<#source, #ty>(
+        pub fn #fname(&self) -> ::djogi::query::FieldRef<#root, #ty> {
+            ::djogi::query::field::__macro_support::__make_field_ref::<#root, #ty>(
                 self.__djogi_path,
                 #column,
             )
@@ -316,7 +395,7 @@ fn emit_scalar_accessor(
 /// Emit a scalar accessor wrapped in `PresentationFieldRef` so the query /
 /// ordering surface is gated by the selected presentation codec traits.
 fn emit_presentation_scalar_accessor(
-    source: &Ident,
+    root: &Ident,
     fname: &Ident,
     column: &str,
     codec: &syn::Path,
@@ -326,7 +405,7 @@ fn emit_presentation_scalar_accessor(
         "Typed handle for the `{column}` column (visage-scoped) governed by its \
          per-scope presentation codec. Returns a \
          [`PresentationFieldRef`](::djogi::presentation::query::PresentationFieldRef) \
-         bound to the source model and selected codec. Predicate / ordering \
+         bound to the owning `RootModel` and selected codec. Predicate / ordering \
          methods are available only when that codec implements the matching \
          presentation query traits."
     );
@@ -335,9 +414,9 @@ fn emit_presentation_scalar_accessor(
         #[inline]
         pub fn #fname(
             &self,
-        ) -> ::djogi::presentation::query::PresentationFieldRef<#source, #codec, #ty> {
-            ::djogi::presentation::query::PresentationFieldRef::<#source, #codec, #ty>::__new_crate_private(
-                ::djogi::query::field::__macro_support::__make_field_ref::<#source, #ty>(
+        ) -> ::djogi::presentation::query::PresentationFieldRef<#root, #codec, #ty> {
+            ::djogi::presentation::query::PresentationFieldRef::<#root, #codec, #ty>::__new_crate_private(
+                ::djogi::query::field::__macro_support::__make_field_ref::<#root, #ty>(
                     self.__djogi_path,
                     #column,
                 )

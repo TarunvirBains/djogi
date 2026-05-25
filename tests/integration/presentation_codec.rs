@@ -53,9 +53,9 @@
 //! 5. **`validate_startup_inventory()` returns `Err` when the HMAC key is
 //!    missing** — the freestanding validator surfaces the same error as the pool
 //!    connection path. *(feature `hmac-codec` only)*
-//! 6. **Test-key install before pool connect** *(feature `hmac-codec` only)* — the testing helper
-//!    `djogi::testing::install_presentation_hmac_key_for_testing` installs a
-//!    64-hex-char key and allows `DjogiPool::connect` to succeed; a
+//! 6. **Test-key install before pool connect** *(feature `hmac-codec` only)* — the doc-hidden,
+//!    unsafe testing helper `djogi::testing::install_presentation_hmac_key_for_testing`
+//!    installs a 64-hex-char key and allows `DjogiPool::connect` to succeed; a
 //!    `UserWithCodec::create` / fetch round-trip then works end-to-end.
 
 use djogi::prelude::*;
@@ -68,10 +68,12 @@ use djogi::presentation::{
 //
 // The startup-validation tests temporarily remove
 // `DJOGI_PRESENTATION_HMAC_KEY` from the process environment. Any two
-// tests running concurrently that touch the same env var will see each
-// other's mutations. This static async mutex serialises every test that calls
-// `std::env::remove_var` / `std::env::set_var` so the process state is
-// predictable regardless of test-thread scheduling.
+// tests running concurrently that touch environment state can see each
+// other's mutations. This static async mutex keeps those test windows from
+// overlapping, but it does not by itself make `std::env::remove_var` /
+// `std::env::set_var` safe; each unsafe block still relies on the broader
+// invariant that no concurrent environment reads or writes happen
+// process-wide (or that the platform's stronger rule is otherwise met).
 // ─────────────────────────────────────────────────────────────────────────────
 
 static ENV_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -162,6 +164,31 @@ pub struct UserWithCodec {
         )
     )]
     pub display_name: String,
+}
+
+/// Model used to assert end-to-end predicate composition through a
+/// presentation-gated field in `VisageQuerySet::filter`.
+///
+/// `Identity` is queryable (`PredicateAndOrder`): the public visage field
+/// accessor emits `PresentationFieldRef<..., Identity, String>`, and
+/// `.eq(...)` returns `Q<Model>`. This fixture proves the visage queryset
+/// entry path accepts that `Q<Model>` substrate directly.
+#[model(table = "gh227_queryable_identity_users")]
+#[derive(Debug, Clone)]
+pub struct UserWithQueryableIdentityCodec {
+    #[field(
+        expose(public),
+        protected(
+            sensitivity = "pii",
+            rationale = "GH #227 P1 coverage: queryable presentation predicate entry",
+            per_scope = {
+                public = {
+                    presentation_codec = djogi::presentation::builtins::Identity
+                }
+            }
+        )
+    )]
+    pub email: String,
 }
 
 /// Model whose field uses `HmacSha256HexString` as a `try_presentation_codec`.
@@ -278,8 +305,9 @@ async fn pool_connect_fails_without_hmac_key() {
     // Save the current value so we can restore it after the test.
     let saved = std::env::var("DJOGI_PRESENTATION_HMAC_KEY").ok();
 
-    // SAFETY: guarded by ENV_MUTEX held above; no concurrent readers of
-    // DJOGI_PRESENTATION_HMAC_KEY in this test binary during this window.
+    // SAFETY: this test keeps the process environment quiescent while the
+    // mutation window is open, so the broader std::env::remove_var invariant
+    // is satisfied (not just key-local serialization).
     #[allow(unsafe_code)]
     unsafe {
         std::env::remove_var("DJOGI_PRESENTATION_HMAC_KEY");
@@ -289,7 +317,8 @@ async fn pool_connect_fails_without_hmac_key() {
 
     // Restore before any assertion so a test failure cannot leave other
     // tests running without the key.
-    // SAFETY: same ENV_MUTEX guard; no concurrent env readers.
+    // SAFETY: same quiescent-process-env window as above; the restore call
+    // also sees no concurrent env reads or writes process-wide.
     #[allow(unsafe_code)]
     match &saved {
         Some(v) => unsafe { std::env::set_var("DJOGI_PRESENTATION_HMAC_KEY", v) },
@@ -387,7 +416,8 @@ async fn validate_startup_inventory_errs_without_hmac_key() {
 
     let saved = std::env::var("DJOGI_PRESENTATION_HMAC_KEY").ok();
 
-    // SAFETY: guarded by ENV_MUTEX held above.
+    // SAFETY: the surrounding harness keeps process-wide env access
+    // quiescent while this mutation runs, which is the actual std::env invariant.
     #[allow(unsafe_code)]
     unsafe {
         std::env::remove_var("DJOGI_PRESENTATION_HMAC_KEY");
@@ -396,7 +426,7 @@ async fn validate_startup_inventory_errs_without_hmac_key() {
     let result = djogi::presentation::validate_startup_inventory();
 
     // Restore before asserting.
-    // SAFETY: same ENV_MUTEX guard; no concurrent env readers.
+    // SAFETY: same quiescent-process-env window as above.
     #[allow(unsafe_code)]
     match &saved {
         Some(v) => unsafe { std::env::set_var("DJOGI_PRESENTATION_HMAC_KEY", v) },
@@ -419,7 +449,8 @@ async fn validate_startup_inventory_allows_missing_hmac_key_when_hmac_codec_disa
 
     let saved = std::env::var("DJOGI_PRESENTATION_HMAC_KEY").ok();
 
-    // SAFETY: guarded by ENV_MUTEX held above.
+    // SAFETY: the surrounding harness keeps process-wide env access
+    // quiescent while this mutation runs, which is the actual std::env invariant.
     #[allow(unsafe_code)]
     unsafe {
         std::env::remove_var("DJOGI_PRESENTATION_HMAC_KEY");
@@ -428,7 +459,7 @@ async fn validate_startup_inventory_allows_missing_hmac_key_when_hmac_codec_disa
     let result = djogi::presentation::validate_startup_inventory();
 
     // Restore before asserting.
-    // SAFETY: same ENV_MUTEX guard; no concurrent env readers.
+    // SAFETY: same quiescent-process-env window as above.
     #[allow(unsafe_code)]
     match &saved {
         Some(v) => unsafe { std::env::set_var("DJOGI_PRESENTATION_HMAC_KEY", v) },
@@ -527,6 +558,39 @@ async fn visage_queryset_fetch_applies_presentation_codec(mut ctx: DjogiContext)
     );
 }
 
+#[djogi::djogi_test(sync_models = [UserWithQueryableIdentityCodec])]
+async fn visage_queryset_filter_accepts_presentation_q_predicate(mut ctx: DjogiContext) {
+    let match_row = UserWithQueryableIdentityCodec::create(
+        &mut ctx,
+        UserWithQueryableIdentityCodec {
+            email: "query-surface@example.com".to_string(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create queryable identity user");
+
+    let _other_row = UserWithQueryableIdentityCodec::create(
+        &mut ctx,
+        UserWithQueryableIdentityCodec {
+            email: "other@example.com".to_string(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create non-matching queryable identity user");
+
+    let public = UserWithQueryableIdentityCodecPublic::filter(|f| {
+        f.email().eq("query-surface@example.com".to_string())
+    })
+    .fetch_one(&mut ctx)
+    .await
+    .expect("visage filter over presentation Q predicate must resolve one row");
+
+    assert_eq!(public.id, match_row.id);
+    assert_eq!(public.email, "query-surface@example.com");
+}
+
 #[djogi::djogi_test(sync_models = [UserWithFailingFetchCodec])]
 async fn visage_queryset_fetch_maps_try_codec_errors(mut ctx: DjogiContext) {
     let user = UserWithFailingFetchCodec::create(
@@ -608,6 +672,8 @@ async fn test_key_installed_before_pool_connect() {
 
     impl Drop for RestorePresentationKey {
         fn drop(&mut self) {
+            // SAFETY: `_restore_key` drops before `_guard`, so this runs while
+            // the test still holds the broader process-wide env exclusion.
             #[allow(unsafe_code)]
             unsafe {
                 match &self.0 {
@@ -622,6 +688,8 @@ async fn test_key_installed_before_pool_connect() {
     let _guard = ENV_MUTEX.lock().await;
     let _restore_key = RestorePresentationKey(std::env::var("DJOGI_PRESENTATION_HMAC_KEY").ok());
 
+    // SAFETY: `_guard` is held, and the test harness keeps process-wide env
+    // access quiescent for the duration of this mutation window.
     #[allow(unsafe_code)]
     unsafe {
         std::env::remove_var("DJOGI_PRESENTATION_HMAC_KEY");
@@ -637,9 +705,15 @@ async fn test_key_installed_before_pool_connect() {
 
     // Install the 64-hex-char test HMAC key before the manual harness creates
     // its pool. This is the invariant under test.
-    djogi::testing::install_presentation_hmac_key_for_testing(
-        "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
-    );
+    // SAFETY: `_guard` is held and the surrounding harness preserves the
+    // broader no-concurrent-process-wide-env-access invariant required by
+    // std::env::set_var/remove_var (not just key-local serialization).
+    #[allow(unsafe_code)]
+    unsafe {
+        djogi::testing::install_presentation_hmac_key_for_testing(
+            "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+        );
+    }
 
     let (cleanup, mut ctx) = djogi::testing::setup_test_db()
         .await

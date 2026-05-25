@@ -59,7 +59,12 @@
 //! in the djogi runtime dep-graph: tokio-postgres, heeranjid, uuid). Only call
 //! its functions from test code — the runtime overhead of importing this module
 //! in production is negligible, but its entry points are meaningless outside
-//! tests.
+//! tests. The HMAC installer helper below is additionally gated on
+//! `hmac-codec` and is `unsafe` because it mutates process-global
+//! environment state; callers must ensure no concurrent environment
+//! reads or writes occur process-wide while it runs (or otherwise satisfy
+//! the platform-specific stronger requirement). A mutex for only
+//! `DJOGI_PRESENTATION_HMAC_KEY` is not sufficient by itself.
 
 #![allow(clippy::disallowed_methods)]
 
@@ -1237,9 +1242,11 @@ pub async fn install_accounts_balance_increment_trigger_for_test(
 ///
 /// Sets `DJOGI_PRESENTATION_HMAC_KEY` to the given hex string and calls
 /// [`validate_startup_inventory`](crate::presentation::validate_startup_inventory)
-/// to prime the key cache. Call this under a mutex guard (the test's own
-/// `ENV_MUTEX` or equivalent) before constructing a `DjogiPool` in tests
-/// that use HMAC presentation codecs.
+/// to prime the key cache. Call this only from a harness that also keeps
+/// concurrent environment reads and writes quiescent process-wide (or
+/// otherwise satisfies the platform-specific stronger requirement); a
+/// mutex that only serializes `DJOGI_PRESENTATION_HMAC_KEY` is not enough
+/// by itself.
 ///
 /// # Panics
 ///
@@ -1247,16 +1254,19 @@ pub async fn install_accounts_balance_increment_trigger_for_test(
 /// non-hex characters, etc.). This is intentional: a malformed test key
 /// is a test bug, not a runtime condition the caller should handle.
 ///
-/// # Safety note
+/// # Safety
 ///
-/// The `set_var` call is in an `unsafe` block. The caller is responsible for
-/// holding an exclusive mutex over the environment while this function runs
-/// and for the duration of the test's pool construction.
+/// The `set_var` call is in an `unsafe` block because the process
+/// environment is shared global state. Callers must ensure there are no
+/// concurrent environment reads or writes process-wide while this function
+/// runs (or otherwise satisfy the platform-specific stronger requirement);
+/// a mutex for only `DJOGI_PRESENTATION_HMAC_KEY` is not sufficient by
+/// itself.
 #[cfg(feature = "hmac-codec")]
 #[doc(hidden)]
-pub fn install_presentation_hmac_key_for_testing(key: &str) {
-    // SAFETY: caller holds ENV_MUTEX (or an equivalent serialising mutex)
-    // so no other thread reads DJOGI_PRESENTATION_HMAC_KEY concurrently.
+pub unsafe fn install_presentation_hmac_key_for_testing(key: &str) {
+    // SAFETY: caller has ensured the process-wide env-mutation invariant
+    // required by std::env::set_var, not just key-local serialization.
     #[allow(unsafe_code)]
     unsafe {
         std::env::set_var("DJOGI_PRESENTATION_HMAC_KEY", key);
