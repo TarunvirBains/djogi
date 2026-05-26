@@ -198,11 +198,11 @@ fn find_non_transactional_statement_shape_in_sql(sql: &str) -> Option<&'static s
             idx = skip_double_quoted(bytes, idx + 1);
             continue;
         }
-        if bytes[idx] == b'$' {
-            if let Some(end) = skip_dollar_quoted(bytes, idx) {
-                idx = end;
-                continue;
-            }
+        if bytes[idx] == b'$'
+            && let Some(end) = skip_dollar_quoted(bytes, idx)
+        {
+            idx = end;
+            continue;
         }
         if bytes[idx] == b';' {
             if let Some(shape) = classify_non_transactional_statement_shape(&sql[stmt_start..idx]) {

@@ -76,13 +76,13 @@ Every applied migration writes a row to `djogi_schema_migrations` (one ledger pe
 | `version` | The `V<ts>__<slug>` identifier from the filename |
 | `app_label` | Bucket scoping — empty string for `_global_` |
 | `applied_at_rank` | Monotonic ordinal — historical apply order |
-| `checksum_up` / `checksum_down` | `V1:<sha256-hex>` content hash |
+| `checksum_up` / `checksum_down` | `V1:<sha256-hex>` hash of canonical operation SQL fragments |
 | `description` | Human-readable summary |
 | `success` | `bool` — `false` means partial apply (see Repair) |
 | `partial_apply_note` | Operator note when `success = false` or attune `--record` |
 | `applied_at` | Wall-clock timestamp |
 
-The `V1:<sha256-hex>` checksum prefix is intentional: future hash algorithms can coexist (`V2:...`) without ambiguity. Drift between disk SQL and the ledger checksum is detected at apply time and refuses without `repair`.
+The `V1:<sha256-hex>` checksum prefix is intentional: future hash algorithms can coexist (`V2:...`) without ambiguity. For Djogi-composed migrations, headers and label comments are outside the checksum domain; `checksum_down = NULL` means there is no real rollback SQL beyond comment placeholders. Operation SQL drift between disk and the ledger is detected at apply/reset time and refuses without `repair` or an explicit reset drift override.
 
 ## CLI commands
 

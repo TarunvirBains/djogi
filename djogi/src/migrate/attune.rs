@@ -109,6 +109,10 @@ use super::ledger::{
 };
 use super::naming::{down_filename, up_filename};
 use super::projection::BucketKey;
+use super::replay_plan::committed_replay_plan_filename;
+use super::reset::{
+    ResetSqlSide, compute_committed_down_sql_checksum, compute_committed_sql_checksum,
+};
 use super::schema::SNAPSHOT_FORMAT_VERSION;
 use super::target::bucket_dir;
 
@@ -1238,7 +1242,7 @@ async fn insert_recorded_row(
         path: up_path.to_path_buf(),
         source: e,
     })?;
-    let checksum_up = compute_checksum([up_sql.as_str()]);
+    let checksum_up = compute_committed_sql_checksum(&up_sql, ResetSqlSide::Up);
     // Try to read the down file too — the version's down checksum is
     // best-effort. Missing down is fine; record a None so the row
     // still inserts.
@@ -1248,7 +1252,7 @@ async fn insert_recorded_row(
     let checksum_down = down_path
         .as_ref()
         .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|down_sql| compute_checksum([down_sql.as_str()]));
+        .and_then(|down_sql| compute_committed_down_sql_checksum(&down_sql));
     let _ = SHA256_HEX_LEN; // use the constant import for documentation; checksum_up enforces shape.
 
     let timestamp = time::OffsetDateTime::now_utc()
@@ -1376,6 +1380,7 @@ async fn run_squash(
             }
         })?;
     }
+    delete_replay_plan_sidecar_if_exists(&dir, from)?;
 
     delete_subsumed(ctx, &dir, &to_squash, from, &bucket, &mut entries).await?;
     refresh_retained_row(
@@ -1453,6 +1458,15 @@ fn locate_squash_target<'a>(
     }
 }
 
+fn delete_replay_plan_sidecar_if_exists(dir: &Path, version: &str) -> Result<(), AttuneError> {
+    let path = dir.join(committed_replay_plan_filename(version));
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(AttuneError::SqlDeleteFailed { path, source: e }),
+    }
+}
+
 /// Read every up file in `to_squash`, concatenate the bodies wrapped
 /// with `-- begin <version>` / `-- end <version>` markers, and collect
 /// the matching per-version down-side segments (best-effort: missing
@@ -1511,6 +1525,7 @@ async fn delete_subsumed(
                 source: e,
             })?;
         }
+        delete_replay_plan_sidecar_if_exists(dir, version)?;
         ctx.execute(
             "DELETE FROM djogi_schema_migrations WHERE version = $1 AND app_label = $2",
             &[version, &bucket.app],
@@ -1531,8 +1546,9 @@ async fn delete_subsumed(
 /// file content. Without this, every subsequent verify or apply path
 /// would surface drift authored by squash itself.
 ///
-/// `combined_down` is `None` when no per-version down files existed;
-/// the row's `checksum_down` is set to `NULL` in that case.
+/// `combined_down` is `None` when no per-version down files existed
+/// or the retained down file is comment-only; the row's
+/// `checksum_down` is set to `NULL` in that case.
 async fn refresh_retained_row(
     ctx: &mut DjogiContext,
     from: &str,
@@ -1541,7 +1557,7 @@ async fn refresh_retained_row(
     combined_down: Option<&str>,
 ) -> Result<(), AttuneError> {
     let new_checksum_up = compute_checksum([combined_up]);
-    let new_checksum_down = combined_down.map(|s| compute_checksum([s]));
+    let new_checksum_down = combined_down.and_then(compute_committed_down_sql_checksum);
     let prior_description: Option<String> = ctx
         .query_one(
             "SELECT description FROM djogi_schema_migrations \
@@ -1918,6 +1934,25 @@ mod tests {
         let versions = scanned.get(&bucket).expect("billing bucket");
         assert_eq!(versions.len(), 1, "down + readme must be ignored");
         assert!(versions.contains_key("V20260425010203__init"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn squash_sidecar_cleanup_removes_committed_replay_plan() {
+        let root = temp_root("squash_sidecar_cleanup");
+        let version = "V20260425010203__init";
+        let dir = root.join("migrations/main/billing");
+        fs::create_dir_all(&dir).unwrap();
+        let sidecar = dir.join(committed_replay_plan_filename(version));
+        fs::write(&sidecar, "{}").unwrap();
+
+        delete_replay_plan_sidecar_if_exists(&dir, version).expect("delete sidecar");
+        assert!(
+            !sidecar.exists(),
+            "squash must not leave stale replay manifests beside rewritten SQL"
+        );
+        delete_replay_plan_sidecar_if_exists(&dir, version).expect("missing sidecar is ok");
+
         let _ = fs::remove_dir_all(&root);
     }
 

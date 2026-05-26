@@ -543,11 +543,11 @@ pub struct PendingPlan {
     /// Snapshot at the model state — embedded so build.rs can do the
     /// three-way match without re-projecting the inventory.
     pub model_snapshot: AppliedSchema,
-    /// Up-side SQL checksum — `V1:<sha256-hex>`.
+    /// Up-side canonical operation-fragment checksum — `V1:<sha256-hex>`.
     pub checksum_up: String,
-    /// Down-side SQL checksum — `None` when every operation's down is
-    /// a SQL-comment placeholder (every drop is lossy → no real
-    /// rollback).
+    /// Down-side canonical operation-fragment checksum — `None` when
+    /// every operation's down is a SQL-comment placeholder (every
+    /// drop is lossy → no real rollback).
     pub checksum_down: Option<String>,
     /// Compose timestamp (RFC 3339 UTC, second precision).
     pub composed_at: String,

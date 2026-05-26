@@ -1130,12 +1130,14 @@ async fn apply_plan_inner(
                 match run_non_transactional_segment(
                     ctx,
                     segment,
-                    seg_idx,
-                    &runner_ctx.version,
-                    ledger_id,
-                    applied_non_tx_steps,
-                    total_non_tx_steps,
-                    durable_non_tx_note.as_deref(),
+                    NonTransactionalSegmentRun {
+                        segment_index: seg_idx,
+                        version: &runner_ctx.version,
+                        ledger_id,
+                        prior_steps_completed: applied_non_tx_steps,
+                        total_non_tx_steps,
+                        stable_note: durable_non_tx_note.as_deref(),
+                    },
                 )
                 .await
                 {
@@ -2439,48 +2441,53 @@ async fn run_transactional_segment(
 ///
 /// Returns the number of steps completed within this segment so the
 /// outer runner can update its running tally of cross-segment progress.
-async fn run_non_transactional_segment(
-    ctx: &mut DjogiContext,
-    segment: &Segment,
+struct NonTransactionalSegmentRun<'a> {
     segment_index: usize,
-    version: &str,
+    version: &'a str,
     ledger_id: i64,
     prior_steps_completed: i32,
     total_non_tx_steps: i32,
-    stable_note: Option<&str>,
+    stable_note: Option<&'a str>,
+}
+
+async fn run_non_transactional_segment(
+    ctx: &mut DjogiContext,
+    segment: &Segment,
+    run: NonTransactionalSegmentRun<'_>,
 ) -> Result<i32, RunnerError> {
     let mut completed: i32 = 0;
     for (step_idx, stmt) in segment.statements.iter().enumerate() {
-        let claimed_step = prior_steps_completed
+        let claimed_step = run
+            .prior_steps_completed
             .saturating_add(completed)
             .saturating_add(1);
         let claim_note = ledger::format_non_tx_progress_claim(
-            stable_note,
+            run.stable_note,
             claimed_step,
-            Some(total_non_tx_steps),
-            segment_index,
+            Some(run.total_non_tx_steps),
+            run.segment_index,
             &stmt.label,
         );
-        ledger::claim_non_tx_progress(ctx, ledger_id, &claim_note)
+        ledger::claim_non_tx_progress(ctx, run.ledger_id, &claim_note)
             .await
             .map_err(|e| RunnerError::LedgerWriteFailed {
-                version: version.to_string(),
+                version: run.version.to_string(),
                 source: e,
             })?;
         if let Err(e) = ctx.raw_ddl(&stmt.up).await {
-            let total_so_far = prior_steps_completed.saturating_add(completed);
+            let total_so_far = run.prior_steps_completed.saturating_add(completed);
             let note = format!(
                 "non-tx step {step} of segment {seg} failed: {label} — {e}",
                 step = step_idx + 1,
-                seg = segment_index,
+                seg = run.segment_index,
                 label = stmt.label,
             );
             // Best-effort partial-state record. If the ledger update
             // itself fails, we still surface the original step
             // failure — the partial-state record is forensic only.
-            let _ = ledger::mark_partial(ctx, ledger_id, total_so_far, &note).await;
+            let _ = ledger::mark_partial(ctx, run.ledger_id, total_so_far, &note).await;
             return Err(RunnerError::NonTransactionalSegmentFailed {
-                segment_index,
+                segment_index: run.segment_index,
                 step_index: step_idx,
                 statement_label: stmt.label.clone(),
                 applied_steps_count: total_so_far,
@@ -2488,11 +2495,11 @@ async fn run_non_transactional_segment(
             });
         }
         completed = completed.saturating_add(1);
-        let total_so_far = prior_steps_completed.saturating_add(completed);
-        ledger::ack_non_tx_progress(ctx, ledger_id, total_so_far, stable_note)
+        let total_so_far = run.prior_steps_completed.saturating_add(completed);
+        ledger::ack_non_tx_progress(ctx, run.ledger_id, total_so_far, run.stable_note)
             .await
             .map_err(|e| RunnerError::NonTransactionalProgressAckFailed {
-                segment_index,
+                segment_index: run.segment_index,
                 step_index: step_idx,
                 statement_label: stmt.label.clone(),
                 applied_steps_count: total_so_far,
@@ -3067,6 +3074,7 @@ fn segment_kind_name(kind: SegmentKind) -> &'static str {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn preflight_segment_sql_execution_compatibility(plan: &MigrationPlan) -> Result<(), RunnerError> {
     for (segment_index, segment) in plan.segments.iter().enumerate() {
         if segment.kind == SegmentKind::MetadataOnly {
