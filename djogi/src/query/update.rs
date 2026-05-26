@@ -25,10 +25,10 @@
 //! - **Retry** an UPDATE without re-running the filter closure. `UpdateStmt`
 //!   is `Clone` because [`QuerySet`] is `Clone`; cloning the statement is
 //!   exactly as cheap as cloning the underlying queryset.
-//! - **Branch on short-circuit**: callers that want to know "did I skip the
-//!   DB round-trip?" can inspect `qs.is_empty()` / `assignments.is_empty()`
-//!   themselves before calling `.execute(...)`. The default path still
-//!   short-circuits on both conditions inside [`UpdateStmt::execute`].
+//! - **Branch on short-circuit**: callers that already know a mutation is
+//!   inert can avoid constructing it; otherwise mutation terminals run
+//!   `validate_mutation_read_tail(...)` first (mirroring `insert_select.rs`),
+//!   then short-circuit on pure `none()` / empty assignments.
 //!
 //! # Constructor-only invariant on `UpdateAssignment`
 //!
@@ -57,13 +57,15 @@
 //! across a bulk update reach for the raw escape hatch — same as any
 //! other ORM layer that makes auditing hard to bypass.
 //!
-//! # `is_empty` short-circuit
+//! # Mutation validation + `is_empty` short-circuit
 //!
-//! Both terminals honour the `TASK6:empty_contract`: a queryset derived
-//! from [`QuerySet::none`] (or an empty assignment list, for `update`)
-//! returns `Ok(0)` without issuing any SQL. The grep marker lives on the
-//! `is_empty` field in `queryset.rs` — if that field's shape ever
-//! changes, every terminal that honours it surfaces through the marker.
+//! UPDATE/DELETE terminals validate unsupported read-tail state first (same
+//! contract as `insert_select.rs`), then honour `TASK6:empty_contract`.
+//! A pure [`QuerySet::none`]-derived queryset (or a pure empty assignment
+//! list, for UPDATE) still returns `Ok(0)` / empty output without issuing
+//! SQL. The grep marker lives on the `is_empty` field in `queryset.rs` —
+//! if that field's shape ever changes, every terminal that honours it
+//! surfaces through the marker.
 //!
 //! [`build_update`]: crate::query::sql::build_update
 //! [`FieldRef`]: crate::query::field::FieldRef
@@ -74,10 +76,14 @@ use crate::DjogiError;
 use crate::context::DjogiContext;
 use crate::model::Model;
 use crate::pg::accumulator::as_params;
+use crate::pg::decode::{FromJoinedPgRow, FromPgRow};
 use crate::query::condition::FilterValue;
 use crate::query::field::{FieldRef, IntoFilterValue};
 use crate::query::queryset::QuerySet;
-use crate::query::sql::{build_delete, build_update};
+use crate::query::returning::ReturningPair;
+use crate::query::sql::{
+    build_delete, build_delete_returning, build_update, build_update_returning_pairs,
+};
 use crate::query::terminal::auto_set_tenant;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -214,6 +220,103 @@ impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
     pub fn set_expr(self, expr: crate::expr::Expr<V>) -> UpdateAssignment {
         UpdateAssignment::new_expr(self.column(), expr.node)
     }
+
+    /// Build a column-to-column copy assignment: `SET self = other`.
+    ///
+    /// Sugar for `self.set_expr(other.as_expr())`. Both sides must be
+    /// refs on the same model `M` with matching value type `V` — the
+    /// type system enforces this at compile time. Both `self` and
+    /// `other` are taken by value because [`FieldRef`] is `Copy`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Reset each account's working_balance to its confirmed_balance.
+    /// Account::objects()
+    ///     .filter(|f| f.needs_reset().eq(true))
+    ///     .update(|f| f.working_balance().set_field(f.confirmed_balance()))
+    ///     .execute(&mut ctx).await?;
+    /// ```
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn set_field(self, other: FieldRef<M, V>) -> UpdateAssignment {
+        UpdateAssignment::new_expr(self.column(), other.as_expr().node)
+    }
+}
+
+/// Numeric-column arithmetic assignments — `increment(amount)` and
+/// `decrement(amount)` emit `SET col = col + $n` and `SET col = col - $n`
+/// respectively.
+///
+/// The `V: Numeric` bound is the same sealed trait that gates
+/// [`crate::expr::Expr<V>`] arithmetic (`+`, `-`, `*`, `/`). Djogi's
+/// [`crate::expr::arithmetic::Numeric`] is sealed to the framework-blessed
+/// numeric types: `i16`, `i32`, `i64`, `f32`, `f64`, and
+/// `time::Duration`. Calling `increment` / `decrement` on a non-numeric
+/// field type is a compile error.
+///
+/// The additional `Into<crate::expr::Expr<V>>` bound lets
+/// [`crate::expr::Expr::literal`] wrap `amount` into the expression IR;
+/// every `Numeric` type has a matching `From<V> for Expr<V>` impl so
+/// this bound is always satisfied alongside `Numeric`.
+///
+/// # Examples
+///
+/// ```ignore
+/// use djogi::prelude::*;
+///
+/// // Increment a post's view count by 1.
+/// Post::objects()
+///     .filter(|f| f.id().eq(post_id))
+///     .update(|f| f.view_count().increment(1i32))
+///     .execute(&mut ctx).await?;
+///
+/// // Deduct a withdrawal amount from an account balance.
+/// Account::objects()
+///     .filter(|f| f.id().eq(account_id))
+///     .update(|f| f.balance().decrement(withdrawal_amount))
+///     .execute(&mut ctx).await?;
+/// ```
+impl<M: Model, V> FieldRef<M, V>
+where
+    V: IntoFilterValue + crate::expr::arithmetic::Numeric + Into<crate::expr::Expr<V>>,
+{
+    /// Build `SET col = col + amount` — emits `col = col + $n` in SQL.
+    ///
+    /// `amount` is bound as a positional parameter (`$n`), not inlined.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn increment(self, amount: V) -> UpdateAssignment {
+        let expr = self.as_expr() + crate::expr::Expr::literal(amount);
+        UpdateAssignment::new_expr(self.column(), expr.node)
+    }
+
+    /// Build `SET col = col - amount` — emits `col = col - $n` in SQL.
+    ///
+    /// `amount` is bound as a positional parameter (`$n`), not inlined.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn decrement(self, amount: V) -> UpdateAssignment {
+        let expr = self.as_expr() - crate::expr::Expr::literal(amount);
+        UpdateAssignment::new_expr(self.column(), expr.node)
+    }
+}
+
+impl<M: Model> FieldRef<M, crate::Interval> {
+    /// Build `SET col = col + amount` — emits `col = col + $n` in SQL.
+    ///
+    /// `amount` is bound as a positional parameter (`$n`), not inlined.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn increment(self, amount: crate::Interval) -> UpdateAssignment {
+        let expr = self.as_expr() + crate::expr::Expr::literal(amount);
+        UpdateAssignment::new_expr(self.column(), expr.node)
+    }
+
+    /// Build `SET col = col - amount` — emits `col = col - $n` in SQL.
+    ///
+    /// `amount` is bound as a positional parameter (`$n`), not inlined.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn decrement(self, amount: crate::Interval) -> UpdateAssignment {
+        let expr = self.as_expr() - crate::expr::Expr::literal(amount);
+        UpdateAssignment::new_expr(self.column(), expr.node)
+    }
 }
 
 /// Closure-return shape for [`QuerySet::update`]. The closure can return
@@ -290,6 +393,9 @@ impl<T: Model> std::fmt::Debug for UpdateStmt<T> {
 impl<T: Model> UpdateStmt<T> {
     /// Run the accumulated UPDATE and return the affected row count.
     ///
+    /// Validation for unsupported queryset read-tail state runs first, then
+    /// inert paths short-circuit.
+    ///
     /// Short-circuits to `Ok(0)` when either:
     /// - The underlying queryset is `QuerySet::none()`-derived
     ///   (`is_empty()` is `true`), or
@@ -314,8 +420,11 @@ impl<T: Model> UpdateStmt<T> {
         T: 'ctx,
     {
         async move {
-            // TASK6:empty_contract — structural-none queryset OR empty
-            // assignment list: return `Ok(0)` without touching the DB.
+            self.qs.validate_mutation_read_tail("update")?;
+            // TASK6:empty_contract — runs AFTER validation (see
+            // insert_select.rs validate-then-short-circuit contract):
+            // structural-none queryset OR empty assignment list returns
+            // `Ok(0)` without touching the DB.
             //
             // The assignment-list branch is load-bearing: a closure that
             // produces `vec![]` would otherwise lead to
@@ -331,21 +440,93 @@ impl<T: Model> UpdateStmt<T> {
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows_affected = ctx.execute(&sql, &params).await?;
-            // TODO(8δ T7.5 follow-up): bulk-update cache invalidation.
-            // The safe path (Option B — opt-in `with_cache_invalidation()`
-            // builder) requires adding an `invalidate: bool` flag to
-            // `UpdateStmt`, switching the SQL to `UPDATE ... RETURNING id`
-            // when set, and enqueuing one `on_commit` callback per touched
-            // row id. Deferred because the current `execute` path uses
-            // `ctx.execute` (row-count only), and changing to `RETURNING id`
-            // changes the SQL shape in a way that needs design review to
-            // ensure no existing call site breaks. The single-row
-            // `Model::save` and `Model::delete` paths are the primary cache
-            // invalidation surface; bulk-update invalidation is a follow-up.
-            // The no-op test placeholder (bulk_update_invalidation_deferred_to_followup)
-            // in phase8_t7_5_cache_invalidation.rs has been removed; bulk-update
-            // invalidation will be tested when Option B is implemented.
             Ok(rows_affected)
+        }
+    }
+
+    /// Run the accumulated UPDATE and return a before/after snapshot pair for
+    /// every affected row.
+    ///
+    /// Uses PostgreSQL 18 `RETURNING WITH (OLD AS __djogi_old, NEW AS
+    /// __djogi_new)` to retrieve both row images in a single round-trip. The
+    /// rows are decoded using [`FromJoinedPgRow`] with the `"__djogi_old__"`
+    /// and `"__djogi_new__"` prefixes.
+    ///
+    /// # Short-circuits
+    ///
+    /// Validation for unsupported queryset read-tail state runs first, then
+    /// inert paths short-circuit.
+    ///
+    /// Returns `Ok(Vec::new())` without issuing any SQL when:
+    /// - The underlying queryset is `QuerySet::none()`-derived.
+    /// - The assignment list is empty (an UPDATE with an empty SET list is a
+    ///   Postgres syntax error).
+    ///
+    /// # Warning — unbounded materialization
+    ///
+    /// This method loads **one `ReturningPair<T>` per affected row** into memory.
+    /// On large tables or unfiltered updates this can exhaust available memory.
+    /// Narrow the queryset with `.filter(...)` before calling
+    /// `execute_returning_pairs`, or process rows in application-level chunks
+    /// using multiple filtered update passes.
+    ///
+    /// # Protected fields
+    ///
+    /// Both `old` and `new` contain full model values, including
+    /// `#[field(protected(...))]` fields. Field-level redaction is presently
+    /// not implemented. Log or persist pairs with care.
+    ///
+    /// # PostgreSQL 18 only
+    ///
+    /// Djogi has a hard PostgreSQL 18 floor. No fallback or polyfill is
+    /// provided for older PostgreSQL versions.
+    ///
+    /// # Hooks, outbox, and cache invalidation
+    ///
+    /// Lifecycle hooks are **not** run for this bulk path:
+    /// `before_save`/`after_save` do not fire per row.
+    ///
+    /// For `#[model(events)]` models, this method emits one `Save` outbox row
+    /// per returned `pair.new` payload using a batched insert path.
+    ///
+    /// Cache invalidation is enqueued per returned row with
+    /// `InvalidationReason::OnSave` via `ctx.on_commit`, matching single-row
+    /// save/update-returning semantics.
+    pub fn execute_returning_pairs<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Vec<ReturningPair<T>>, DjogiError>> + Send + 'ctx
+    where
+        T: FromPgRow + FromJoinedPgRow + 'ctx,
+    {
+        async move {
+            self.qs
+                .validate_mutation_read_tail("execute_returning_pairs")?;
+            // TASK6:empty_contract — runs AFTER validation (see
+            // insert_select.rs validate-then-short-circuit contract):
+            // structural-none queryset OR empty assignment list returns an
+            // empty vector without touching the DB.
+            if self.qs.is_empty() || self.assignments.is_empty() {
+                return Ok(Vec::new());
+            }
+            auto_set_tenant::<T>(ctx).await?;
+            let acc = build_update_returning_pairs(&self.qs, &self.assignments)
+                .map_err(crate::DjogiError::from)?;
+            let (sql, binds) = acc.into_parts();
+            let params = as_params(&binds);
+            let rows = ctx.query_all(&sql, &params).await?;
+            let mut pairs = Vec::with_capacity(rows.len());
+            for row in &rows {
+                let old = T::from_joined_pg_row(row, "__djogi_old__")?;
+                let new = T::from_joined_pg_row(row, "__djogi_new__")?;
+                pairs.push(ReturningPair { old, new });
+            }
+            let outbox_rows: Vec<&T> = pairs.iter().map(|pair| &pair.new).collect();
+            <T as Model>::__djogi_emit_save_outbox_batch(ctx, &outbox_rows).await?;
+            for pair in &pairs {
+                <T as Model>::__djogi_enqueue_on_save_cache_invalidation(ctx, &pair.new)?;
+            }
+            Ok(pairs)
         }
     }
 }
@@ -401,6 +582,9 @@ impl<T: Model> QuerySet<T> {
     /// builder/terminal split, so this method is a terminal directly —
     /// same shape as [`QuerySet::fetch_all`] / [`QuerySet::count`].
     ///
+    /// Validation for unsupported queryset read-tail state runs first, then
+    /// inert paths short-circuit.
+    ///
     /// Short-circuits to `Ok(0)` for `QuerySet::none()`-derived
     /// querysets (the `TASK6:empty_contract`). A DELETE with no WHERE
     /// clause (an unfiltered queryset) is still a real DELETE — it
@@ -423,7 +607,10 @@ impl<T: Model> QuerySet<T> {
         T: 'ctx,
     {
         async move {
-            // TASK6:empty_contract — structural-none queryset: no SQL.
+            self.validate_mutation_read_tail("delete")?;
+            // TASK6:empty_contract — runs AFTER validation (see
+            // insert_select.rs validate-then-short-circuit contract):
+            // structural-none queryset returns `Ok(0)` with no SQL.
             if self.is_empty() {
                 return Ok(0);
             }
@@ -433,6 +620,70 @@ impl<T: Model> QuerySet<T> {
             let params = as_params(&binds);
             let rows_affected = ctx.execute(&sql, &params).await?;
             Ok(rows_affected)
+        }
+    }
+
+    /// Run `DELETE FROM <table> [WHERE ...]` and return the deleted rows as
+    /// typed model instances.
+    ///
+    /// Uses PostgreSQL 18 `RETURNING WITH (OLD AS __djogi_old)` to retrieve the
+    /// pre-delete row snapshot for every deleted row. The rows are decoded using
+    /// [`FromJoinedPgRow`] with the `"__djogi_old__"` prefix.
+    ///
+    /// DELETE has no `NEW` side — the returned `Vec<T>` contains only old-row
+    /// snapshots. For UPDATE old/new pairs see
+    /// [`UpdateStmt::execute_returning_pairs`].
+    ///
+    /// # Short-circuit
+    ///
+    /// Validation for unsupported queryset read-tail state runs first, then
+    /// inert paths short-circuit.
+    ///
+    /// Returns `Ok(Vec::new())` for `QuerySet::none()`-derived querysets
+    /// without issuing any SQL.
+    ///
+    /// # Warning — unbounded materialization
+    ///
+    /// This method loads **one `T` per deleted row** into memory. On large
+    /// tables or unfiltered deletes this can exhaust available memory. Narrow
+    /// the queryset with `.filter(...)` or process rows in application-level
+    /// chunks.
+    ///
+    /// # Protected fields
+    ///
+    /// The returned snapshots contain full model values, including
+    /// `#[field(protected(...))]` fields. Field-level redaction is presently
+    /// not implemented.
+    ///
+    /// # PostgreSQL 18 only
+    ///
+    /// Djogi has a hard PostgreSQL 18 floor. No fallback or polyfill is
+    /// provided for older PostgreSQL versions.
+    pub fn delete_returning<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Vec<T>, DjogiError>> + Send + 'ctx
+    where
+        T: FromPgRow + FromJoinedPgRow + 'ctx,
+    {
+        async move {
+            self.validate_mutation_read_tail("delete_returning")?;
+            // TASK6:empty_contract — runs AFTER validation (see
+            // insert_select.rs validate-then-short-circuit contract):
+            // structural-none queryset returns empty output with no SQL.
+            if self.is_empty() {
+                return Ok(Vec::new());
+            }
+            auto_set_tenant::<T>(ctx).await?;
+            let acc = build_delete_returning(&self).map_err(crate::DjogiError::from)?;
+            let (sql, binds) = acc.into_parts();
+            let params = as_params(&binds);
+            let rows = ctx.query_all(&sql, &params).await?;
+            let mut deleted = Vec::with_capacity(rows.len());
+            for row in &rows {
+                deleted.push(T::from_joined_pg_row(row, "__djogi_old__")?);
+            }
+            Ok(deleted)
         }
     }
 }
@@ -558,5 +809,34 @@ mod tests {
         let cloned = stmt.clone();
         assert_eq!(cloned.assignments.len(), 1);
         assert_eq!(cloned.assignments[0].column(), "view_count");
+    }
+
+    #[test]
+    fn set_field_builds_expr_assignment() {
+        // set_field(other) — wraps `other.as_expr().node` so the
+        // variant is Expr, not Literal. The SQL emitter renders
+        // `target_col = source_col` (no bind slot for a column ref).
+        let target: FieldRef<Fake, i64> = FieldRef::new("balance");
+        let source: FieldRef<Fake, i64> = FieldRef::new("overdraft_limit");
+        let a = target.set_field(source);
+        assert_eq!(a.column(), "balance");
+        assert!(
+            matches!(a.value(), AssignmentValue::Expr(_)),
+            "set_field must produce an Expr assignment, not a Literal"
+        );
+    }
+
+    #[test]
+    fn increment_builds_add_expr_assignment() {
+        // increment(n) — column + literal. The variant must be Expr
+        // (the Add node wraps both the field-ref node and the literal
+        // node) so the emitter renders `balance = balance + $n`.
+        let f: FieldRef<Fake, i64> = FieldRef::new("balance");
+        let a = f.increment(10i64);
+        assert_eq!(a.column(), "balance");
+        assert!(
+            matches!(a.value(), AssignmentValue::Expr(_)),
+            "increment must produce an Expr assignment"
+        );
     }
 }

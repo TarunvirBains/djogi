@@ -47,6 +47,27 @@
 use std::borrow::Cow;
 use thiserror::Error;
 
+fn presentation_startup_error_summary(
+    errors: &[crate::presentation::PresentationStartupError],
+) -> String {
+    if errors.is_empty() {
+        return "no individual codec startup errors were collected".to_owned();
+    }
+
+    errors
+        .iter()
+        .enumerate()
+        .map(|(idx, error)| {
+            let msg = error.to_string();
+            let msg = msg
+                .strip_prefix("presentation codec startup: ")
+                .unwrap_or(msg.as_str());
+            format!("{}. {msg}", idx + 1)
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// Public wrapper for database-driver failures surfaced through Djogi.
 ///
 /// Djogi stores the real `tokio_postgres::Error` when one exists, but also
@@ -337,10 +358,14 @@ pub enum DjogiError {
     Serde(#[from] serde_json::Error),
 
     /// Visage projection failure — raised when a `TryFrom<&Model>` impl on
-    /// a generated visage cannot convert the row. Today's sole trigger is
+    /// a generated visage cannot convert the row.
+    ///
+    /// Known triggers include
     /// [`VisageError::UnresolvedRelation`](crate::visage::VisageError), raised
     /// when a relation-nesting visage is projected from a model whose
-    /// relation fields were not `prefetch()`-ed or `select_related()`-ed.
+    /// relation fields were not `prefetch()`-ed or `select_related()`-ed,
+    /// and [`VisageError::PresentationCodec`](crate::visage::VisageError)
+    /// from fallible protected-field presentation codecs.
     ///
     /// Phase 7-Zero-2 T9 introduces this variant so the visage-scoped
     /// reverse-FK / M2M accessors can flow a fallible peer-visage conversion
@@ -460,6 +485,60 @@ pub enum DjogiError {
     #[error("QuerySet::stream requires an active transaction — wrap the call in atomic()")]
     StreamOutsideTransaction,
 
+    /// A transaction-backed [`crate::DjogiContext`] was marked unsafe to
+    /// continue after a nested `atomic()` future was dropped before the
+    /// framework could run savepoint cleanup.
+    ///
+    /// Rust `Drop` cannot await `ROLLBACK TO SAVEPOINT` / `RELEASE
+    /// SAVEPOINT`, so the safe contract is fail-closed: framework-owned
+    /// operations reject further work, `commit` rolls the outer transaction
+    /// back instead of committing it, and the caller must retry the outer unit
+    /// of work from a fresh transaction.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] — retrying
+    /// against the same poisoned context cannot make the transaction safe to
+    /// commit.
+    #[error(
+        "transaction is poisoned ({reason}): a nested atomic future was dropped before \
+         savepoint cleanup could run; the transaction is unsafe to commit, roll it back \
+         and retry the outer unit of work"
+    )]
+    #[non_exhaustive]
+    TransactionPoisoned {
+        /// Static reason tag naming the poison source.
+        reason: &'static str,
+    },
+
+    /// A transaction-backed raw SQL call attempted a session-scoped statement
+    /// that `atomic()` cannot safely scrub on commit/rollback.
+    ///
+    /// This variant is used by the raw SQL bypass harness to reject
+    /// session-level control statements such as plain `SET`, `RESET`,
+    /// `LISTEN`, `UNLISTEN`, `PREPARE`, `DEALLOCATE`, and `DISCARD` when the
+    /// context is already inside an `atomic()` transaction. Those statements
+    /// either outlive the surrounding transaction entirely or invite callers
+    /// to assume rollback will clean them up when Postgres semantics say
+    /// otherwise.
+    ///
+    /// `statement` is the canonical top-level keyword (`"SET"`, `"RESET"`,
+    /// etc.) that triggered the refusal. The fix is structural: use a
+    /// transaction-local form such as `SET LOCAL` / `SET CONSTRAINTS` /
+    /// `SET TRANSACTION`, or run the session-scoped statement on a pool-backed
+    /// context outside the transaction.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// retrying the same closure against the same SQL will fail the same way.
+    #[error(
+        "raw SQL statement {statement} is not allowed inside an atomic() transaction; \
+         use a transaction-local form (`SET LOCAL`, `SET CONSTRAINTS`, `SET TRANSACTION`) \
+         or run the session-scoped statement on a pool-backed context"
+    )]
+    #[non_exhaustive]
+    SessionStatementDisallowedInTransaction {
+        /// Canonical top-level statement keyword that triggered the refusal.
+        statement: &'static str,
+    },
+
     /// An aggregate's DISTINCT modifier combination is not supported by
     /// Postgres syntax or by Djogi's current IR.
     ///
@@ -532,15 +611,17 @@ pub enum DjogiError {
     /// timeouts as retryable rather than dead-lettering them as
     /// permanent business failures.
     ///
-    /// Note that the framework's `retry_on_conflict` helper today
-    /// retries on every transient classification, which would mean
-    /// retrying pool timeouts immediately and likely tripping the
-    /// timeout again. Callers that wrap their work in
-    /// `retry_on_conflict` and want a different policy for
-    /// `PoolTimeout` should match on it explicitly and add their own
-    /// backoff. This is an honest classification — `PoolTimeout`
-    /// genuinely is transient — paired with caller-side policy where
-    /// finer-grained behaviour matters.
+    /// Note that djogi exposes two retry helpers with different
+    /// policy: [`crate::transaction::retry_on_conflict`] retries
+    /// immediately, while
+    /// [`crate::transaction::retry_on_conflict_with_backoff`]
+    /// sleeps between transient failures using
+    /// [`crate::transaction::TransactionRetryBackoff`]. Pool
+    /// saturation usually belongs on the backoff path, not the
+    /// immediate-retry path. Callers that need a bespoke policy can
+    /// still match on `PoolTimeout` explicitly, and the backoff policy
+    /// can include/exclude `PoolTimeout` retries via
+    /// `with_retryable_error_classes(...)`.
     #[error("pool timeout ({phase})")]
     #[non_exhaustive]
     PoolTimeout {
@@ -1027,6 +1108,39 @@ pub enum DjogiError {
     #[error("merge statement on `{table}` is invalid: {reason}")]
     #[non_exhaustive]
     MergeNoBranches { table: &'static str, reason: String },
+
+    /// One or more presentation codecs failed startup validation.
+    ///
+    /// Returned by
+    /// [`validate_startup_inventory`](crate::presentation::validate_startup_inventory)
+    /// when any [`PresentationCodecUsage`](crate::presentation::inventory::PresentationCodecUsage)
+    /// entry's `validate_startup` hook returns an error.
+    ///
+    /// This variant is the conversion target for pool-construction callers
+    /// (`DjogiPool::connect`, `DjogiPool::from_database_config`,
+    /// `DjogiPoolBuilder::build`) that call `validate_startup_inventory`
+    /// before accepting traffic. Stage 3 of GH #227 wires those callers.
+    ///
+    /// The inner `Vec` carries one
+    /// [`PresentationStartupError`](crate::presentation::PresentationStartupError)
+    /// per failing codec usage. Each entry names the `(model, field, scope,
+    /// codec)` quadruple and the underlying error so operators can identify
+    /// every misconfigured codec in one pass rather than discovering failures
+    /// one at a time.
+    ///
+    /// Classified as **terminal** by the framework — a codec with a missing
+    /// or invalid key cannot serve traffic until the key is provided. The
+    /// fix is an environment-variable or configuration change, not a retry.
+    ///
+    /// `Display` includes the total count plus a concise summary of each
+    /// failing usage so operator logs can point directly at the actionable
+    /// `(model, field, scope, codec)` entry without requiring `Debug`.
+    #[error(
+        "presentation codec startup validation failed ({} error(s)): {}",
+        .0.len(),
+        crate::error::presentation_startup_error_summary(&.0)
+    )]
+    PresentationStartup(Vec<crate::presentation::PresentationStartupError>),
 }
 
 /// Bridge: convert `tokio_postgres::Error` into `DjogiError`.
@@ -1128,6 +1242,8 @@ impl DjogiError {
     /// | [`MissingIdempotencyKey`](Self::MissingIdempotencyKey) | terminal |
     /// | [`GoneAggregate`](Self::GoneAggregate) | terminal |
     /// | [`StreamOutsideTransaction`](Self::StreamOutsideTransaction) | terminal |
+    /// | [`TransactionPoisoned`](Self::TransactionPoisoned) | terminal |
+    /// | [`SessionStatementDisallowedInTransaction`](Self::SessionStatementDisallowedInTransaction) | terminal |
     /// | [`PoolTimeout`](Self::PoolTimeout) | transient |
     /// | [`SetRoleOutsideTransaction`](Self::SetRoleOutsideTransaction) | terminal |
     /// | [`InvalidRoleName`](Self::InvalidRoleName) | terminal |
@@ -1325,12 +1441,61 @@ mod tests {
             "GoneAggregate must be terminal — retry cannot resurrect a deleted aggregate"
         );
         assert!(
+            DjogiError::Visage(crate::visage::VisageError::UnresolvedRelation {
+                model: "M",
+                field: "f",
+                scope: "public"
+            })
+            .is_terminal(),
+            "Visage conversion failures must be terminal unless explicitly reclassified"
+        );
+        assert!(
+            DjogiError::PresentationStartup(vec![]).is_terminal(),
+            "PresentationStartup must be terminal — missing startup prerequisites need operator action"
+        );
+        let presentation_startup_msg = DjogiError::PresentationStartup(vec![
+            crate::presentation::PresentationStartupError::MissingEnvVar {
+                name: "DJOGI_PRESENTATION_HMAC_KEY",
+            },
+            crate::presentation::PresentationStartupError::Usage {
+                model: "User",
+                field: "email",
+                scope: "public",
+                codec_path: "djogi::presentation::builtins::HmacSha256HexString",
+                source: Box::new(
+                    crate::presentation::PresentationStartupError::MissingEnvVar {
+                        name: "DJOGI_PRESENTATION_HMAC_KEY",
+                    },
+                ),
+            },
+        ])
+        .to_string();
+        assert!(
+            presentation_startup_msg.contains("2 error(s)"),
+            "PresentationStartup display must include the error count: {presentation_startup_msg}"
+        );
+        assert!(
+            presentation_startup_msg.contains("missing env var `DJOGI_PRESENTATION_HMAC_KEY`"),
+            "PresentationStartup display must include the actionable inner error: {presentation_startup_msg}"
+        );
+        assert!(
+            presentation_startup_msg.contains("User.email scope `public` codec `djogi::presentation::builtins::HmacSha256HexString` failed"),
+            "PresentationStartup display must include the usage context: {presentation_startup_msg}"
+        );
+        assert!(
             DjogiError::PoolTimeout { phase: "wait" }.is_transient(),
             "PoolTimeout must be transient — saturation is a retry-with-backoff condition"
         );
         assert!(
             !DjogiError::PoolTimeout { phase: "wait" }.is_terminal(),
             "PoolTimeout must NOT be terminal — generic retry helpers must not dead-letter it"
+        );
+        assert!(
+            DjogiError::TransactionPoisoned {
+                reason: "nested atomic future dropped before savepoint cleanup"
+            }
+            .is_terminal(),
+            "TransactionPoisoned must be terminal — retry cannot clean the same context"
         );
         assert!(
             DjogiError::SetRoleOutsideTransaction.is_terminal(),
@@ -1452,6 +1617,39 @@ mod tests {
         assert!(
             msg.contains("REPEATABLE READ"),
             "expected requested isolation level in message, got: {msg}"
+        );
+    }
+
+    /// Phase 8.5 #281 — a nested atomic cancellation poisons the parent
+    /// transaction. The only safe next step is rollback and retry from a fresh
+    /// outer transaction, so generic retry classifiers must not treat the same
+    /// context as reusable.
+    #[test]
+    fn transaction_poisoned_is_terminal() {
+        let err = DjogiError::TransactionPoisoned {
+            reason: "nested atomic future dropped before savepoint cleanup",
+        };
+        assert!(err.is_terminal(), "TransactionPoisoned must be terminal");
+        assert!(
+            !err.is_transient(),
+            "TransactionPoisoned must not be transient"
+        );
+    }
+
+    /// Phase 8.5 #282 — refusing a session-scoped raw statement inside an
+    /// existing transaction is a caller-structure error, not a transient
+    /// runtime failure. Retrying the same closure against the same SQL will
+    /// fail the same way.
+    #[test]
+    fn session_statement_disallowed_in_transaction_is_terminal() {
+        let err = DjogiError::SessionStatementDisallowedInTransaction { statement: "SET" };
+        assert!(
+            err.is_terminal(),
+            "SessionStatementDisallowedInTransaction must be terminal"
+        );
+        assert!(
+            !err.is_transient(),
+            "SessionStatementDisallowedInTransaction must not be transient"
         );
     }
 

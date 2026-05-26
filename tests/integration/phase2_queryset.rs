@@ -1,6 +1,7 @@
 // Phase 2 QuerySet integration tests.
 
 use djogi::prelude::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Separate table name (`posts_p2`) so this integration test can share a DB
 // with `phase1_model.rs` without DDL collisions.
@@ -19,6 +20,134 @@ pub struct Post {
     /// `NULL` for the four `seed_posts` rows; individual tests backfill
     /// it (or seed an additional NULL-bearing row) as needed.
     pub score: Option<i32>,
+}
+
+#[model(table = "phase2_returning_pair_long_aliases", pk = HeerId)]
+#[derive(Debug, Clone)]
+pub struct ReturningPairLongAliasBulk {
+    // 50 chars: below Postgres boundary when prefixed.
+    pub xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx: i32,
+    // 52 chars: boundary +1 when prefixed with "__djogi_old." / "__djogi_new.".
+    pub xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxa: i32,
+    // 52 chars, same first 51 chars as previous field to model truncation
+    // collision pressure in legacy alias projection styles.
+    pub xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxb: i32,
+}
+
+#[model(table = "phase2_bulk_outbox_evt_row", pk = HeerId, events)]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BulkOutboxEvtRow {
+    pub tag: String,
+    pub score: i32,
+}
+
+#[model(table = "phase2_bulk_outbox_no_evt_row", pk = HeerId)]
+#[derive(Debug, Clone)]
+pub struct BulkOutboxNoEvtRow {
+    pub score: i32,
+}
+
+#[model(table = "phase2_bulk_hooks_row", pk = HeerId, hooks)]
+#[derive(Debug, Clone)]
+pub struct BulkHooksRow {
+    pub score: i32,
+}
+
+static BULK_BEFORE_SAVE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static BULK_AFTER_SAVE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+impl djogi::hooks::ModelHooks for BulkHooksRow {
+    async fn before_save(
+        &mut self,
+        _ctx: &mut djogi::DjogiContext,
+    ) -> Result<(), djogi::DjogiError> {
+        BULK_BEFORE_SAVE_CALLS.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn after_save(&self, _ctx: &mut djogi::DjogiContext) -> Result<(), djogi::DjogiError> {
+        BULK_AFTER_SAVE_CALLS.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+async fn seed_returning_pair_long_alias_bulk_rows(
+    ctx: &mut djogi::DjogiContext,
+) -> Result<Vec<ReturningPairLongAliasBulk>, DjogiError> {
+    let mut rows = Vec::new();
+    for (a, b, c) in [(1, 11, 21), (2, 12, 22), (3, 13, 23)] {
+        rows.push(
+            ReturningPairLongAliasBulk::create(
+                ctx,
+                ReturningPairLongAliasBulk {
+                    xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx: a,
+                    xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxa: b,
+                    xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxb: c,
+                    ..Default::default()
+                },
+            )
+            .await?,
+        );
+    }
+    Ok(rows)
+}
+
+async fn seed_bulk_outbox_evt_rows(
+    ctx: &mut djogi::DjogiContext,
+) -> Result<Vec<BulkOutboxEvtRow>, DjogiError> {
+    let mut rows = Vec::new();
+    for i in 0..3 {
+        rows.push(
+            BulkOutboxEvtRow::create(
+                ctx,
+                BulkOutboxEvtRow {
+                    tag: format!("evt-{i}"),
+                    score: 10 + i,
+                    ..Default::default()
+                },
+            )
+            .await?,
+        );
+    }
+    Ok(rows)
+}
+
+async fn seed_bulk_outbox_no_evt_rows(
+    ctx: &mut djogi::DjogiContext,
+) -> Result<Vec<BulkOutboxNoEvtRow>, DjogiError> {
+    let mut rows = Vec::new();
+    for i in 0..2 {
+        rows.push(
+            BulkOutboxNoEvtRow::create(
+                ctx,
+                BulkOutboxNoEvtRow {
+                    score: 10 + i,
+                    ..Default::default()
+                },
+            )
+            .await?,
+        );
+    }
+    Ok(rows)
+}
+
+async fn seed_bulk_hooks_rows(
+    ctx: &mut djogi::DjogiContext,
+) -> Result<Vec<BulkHooksRow>, DjogiError> {
+    let mut rows = Vec::new();
+    for i in 0..3 {
+        rows.push(
+            BulkHooksRow::create(
+                ctx,
+                BulkHooksRow {
+                    score: 100 + i,
+                    ..Default::default()
+                },
+            )
+            .await?,
+        );
+    }
+    Ok(rows)
 }
 
 // ── Task 5: lazy builder compile surface ──────────────────────────────────
@@ -423,6 +552,33 @@ async fn bulk_update_none_short_circuits(mut ctx: djogi::DjogiContext) {
 }
 
 #[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_update_none_with_limit_is_rejected_with_validation_error(
+    mut ctx: djogi::DjogiContext,
+) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .none()
+        .limit(1)
+        .update(|f| f.view_count().set(0i32))
+        .execute(&mut ctx)
+        .await
+        .expect_err("none().limit(1).update() must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("limit"),
+                "validation should mention limit: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "rejected update must not mutate any row");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
 async fn bulk_delete_removes_rows_and_returns_count(mut ctx: djogi::DjogiContext) {
     seed_posts(&mut ctx).await;
 
@@ -442,6 +598,43 @@ async fn bulk_delete_removes_rows_and_returns_count(mut ctx: djogi::DjogiContext
         .await
         .unwrap();
     assert_eq!(gamma_left, 0);
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_delete_none_short_circuits(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    let n = Post::objects().none().delete(&mut ctx).await.unwrap();
+    assert_eq!(n, 0, "none().delete() must short-circuit to Ok(0)");
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "none().delete() must not remove rows");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_delete_none_with_limit_is_rejected_with_validation_error(
+    mut ctx: djogi::DjogiContext,
+) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .none()
+        .limit(1)
+        .delete(&mut ctx)
+        .await
+        .expect_err("none().limit(1).delete() must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("limit"),
+                "validation should mention limit: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "rejected delete must not remove rows");
 }
 
 #[djogi::djogi_test(sync_models = [Post])]
@@ -701,13 +894,12 @@ async fn order_by_nulls_first_renders(mut ctx: djogi::DjogiContext) {
     );
 }
 
-/// `filter(...).update(|_| vec![])` must short-circuit to `Ok(0)`.
+/// `update(|_| vec![])` must short-circuit to `Ok(0)`.
 #[djogi::djogi_test(sync_models = [Post])]
 async fn bulk_update_empty_assignments_short_circuits(mut ctx: djogi::DjogiContext) {
     seed_posts(&mut ctx).await;
 
     let n = Post::objects()
-        .filter(|f| f.published().eq(true))
         .update(|_| Vec::<djogi::UpdateAssignment>::new())
         .execute(&mut ctx)
         .await
@@ -735,5 +927,619 @@ async fn bulk_update_empty_assignments_short_circuits(mut ctx: djogi::DjogiConte
             .count(),
         4,
         "updated_at must still equal created_at — no UPDATE fired"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_update_empty_assignments_with_limit_is_rejected_with_validation_error(
+    mut ctx: djogi::DjogiContext,
+) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .limit(1)
+        .update(|_| Vec::<djogi::UpdateAssignment>::new())
+        .execute(&mut ctx)
+        .await
+        .expect_err("limit + empty assignments on bulk update must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("limit"),
+                "validation should mention limit: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "rejected update must not mutate any row");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_update_limit_is_rejected_with_validation_error(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .limit(1)
+        .update(|f| f.view_count().set(999i32))
+        .execute(&mut ctx)
+        .await
+        .expect_err("limit on bulk update must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("limit"),
+                "validation should mention limit: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let bumped = Post::objects()
+        .filter(|f| f.view_count().eq(999i32))
+        .count(&mut ctx)
+        .await
+        .unwrap();
+    assert_eq!(bumped, 0, "rejected update must not mutate any row");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_update_order_by_is_rejected_with_validation_error(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .order_by(|f| f.title().asc())
+        .update(|f| f.view_count().set(999i32))
+        .execute(&mut ctx)
+        .await
+        .expect_err("explicit order_by on bulk update must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("order_by"),
+                "validation should mention order_by: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let bumped = Post::objects()
+        .filter(|f| f.view_count().eq(999i32))
+        .count(&mut ctx)
+        .await
+        .unwrap();
+    assert_eq!(bumped, 0, "rejected update must not mutate any row");
+}
+
+// ── Phase 8.5 djogi#180 — PG18 OLD/NEW bulk RETURNING integration tests ──
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn execute_returning_pairs_returns_old_and_new_for_each_row(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    // Update only the three published rows.
+    let pairs = Post::objects()
+        .filter(|f| f.published().eq(true))
+        .update(|f| f.view_count().set(999i32))
+        .execute_returning_pairs(&mut ctx)
+        .await
+        .expect("execute_returning_pairs should succeed");
+
+    assert_eq!(pairs.len(), 3, "expected one pair per affected row");
+
+    for pair in &pairs {
+        // id and created_at must not change across an update.
+        assert_eq!(pair.old.id, pair.new.id, "id must be stable");
+        assert_eq!(
+            pair.old.created_at, pair.new.created_at,
+            "created_at must be stable"
+        );
+        // The old side reflects the seeded view_count values (not 999).
+        assert_ne!(
+            pair.old.view_count, 999,
+            "old view_count must be the pre-update seeded value"
+        );
+        // The new side reflects the new value.
+        assert_eq!(pair.new.view_count, 999, "new view_count must be 999");
+        // updated_at must not regress.
+        assert!(
+            pair.new.updated_at >= pair.old.updated_at,
+            "new.updated_at must not be before old.updated_at"
+        );
+    }
+}
+
+#[djogi::djogi_test(sync_models = [ReturningPairLongAliasBulk])]
+async fn execute_returning_pairs_handles_boundary_and_collision_oriented_aliases(
+    mut ctx: djogi::DjogiContext,
+) {
+    assert_eq!(
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx".len(),
+        50,
+        "first long column name should be 50 chars"
+    );
+    assert_eq!(
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxa".len(),
+        52,
+        "second long column name should be 52 chars"
+    );
+    assert_eq!(
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxb".len(),
+        52,
+        "third long column name should be 52 chars"
+    );
+
+    let _rows = seed_returning_pair_long_alias_bulk_rows(&mut ctx)
+        .await
+        .expect("seed rows with long aliased fields");
+
+    let pairs = ReturningPairLongAliasBulk::objects()
+        .update(|f| {
+            f.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxa()
+                .set(999i32)
+        })
+        .execute_returning_pairs(&mut ctx)
+        .await
+        .expect("execute_returning_pairs should decode long-field aliases");
+
+    assert_eq!(pairs.len(), 3, "expected one pair per updated row");
+
+    for pair in &pairs {
+        assert_eq!(pair.old.id, pair.new.id);
+        assert_eq!(pair.old.created_at, pair.new.created_at);
+        assert_eq!(
+            pair.new
+                .xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxa,
+            999,
+            "updated long field should reflect new value"
+        );
+        assert_ne!(
+            pair.old
+                .xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxa,
+            pair.new
+                .xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxa,
+            "old/new value for updated field must differ"
+        );
+        assert_eq!(
+            pair.old.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,
+            pair.new.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,
+            "untouched fields should still preserve per-row identity"
+        );
+        assert_eq!(
+            pair.old
+                .xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxb,
+            pair.new
+                .xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxb,
+            "untouched fields should still preserve per-row identity"
+        );
+    }
+
+    let mut pairs_by_initial = pairs;
+    pairs_by_initial
+        .sort_by_key(|pair| pair.old.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx);
+    assert_eq!(
+        pairs_by_initial[0]
+            .old
+            .xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,
+        1,
+        "boundary fixture order assertion"
+    );
+    assert_eq!(
+        pairs_by_initial[0]
+            .old
+            .xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxa,
+        11,
+        "first pair should come from seeded row 11/21"
+    );
+    assert_eq!(
+        pairs_by_initial[0]
+            .old
+            .xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxb,
+        21,
+        "first pair should come from seeded row 11/21"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [BulkOutboxEvtRow])]
+async fn execute_returning_pairs_events_model_emits_save_outbox_per_pair(
+    mut ctx: djogi::DjogiContext,
+) {
+    let rows = seed_bulk_outbox_evt_rows(&mut ctx)
+        .await
+        .expect("seed bulk outbox events rows");
+
+    djogi::testing::clear_outbox_for_test(&mut ctx, "phase2_bulk_outbox_evt_row_outbox")
+        .await
+        .expect("clear outbox rows");
+
+    let pairs = BulkOutboxEvtRow::objects()
+        .update(|f| f.score().set(42i32))
+        .execute_returning_pairs(&mut ctx)
+        .await
+        .expect("execute_returning_pairs should emit save outbox rows");
+
+    assert_eq!(pairs.len(), rows.len(), "one pair per updated row");
+
+    let outbox_rows =
+        djogi::testing::outbox_rows_for_test(&mut ctx, "phase2_bulk_outbox_evt_row_outbox")
+            .await
+            .expect("read phase2_bulk_outbox_evt_row_outbox rows");
+
+    assert_eq!(
+        outbox_rows.len(),
+        rows.len(),
+        "one outbox row per updated row"
+    );
+
+    for outbox_row in outbox_rows {
+        assert_eq!(
+            outbox_row.action, "save",
+            "bulk save must emit save action rows"
+        );
+
+        let pair = pairs
+            .iter()
+            .find(|pair| pair.new.id.to_string() == outbox_row.row_id)
+            .expect("outbox row id should match a returned pair");
+        let payload = outbox_row
+            .payload
+            .as_object()
+            .expect("outbox payload must be object");
+        assert_eq!(
+            payload["tag"],
+            serde_json::Value::String(pair.new.tag.clone())
+        );
+        assert_eq!(payload["score"], serde_json::Value::from(pair.new.score));
+    }
+}
+
+#[djogi::djogi_test(sync_models = [BulkOutboxNoEvtRow])]
+async fn execute_returning_pairs_non_events_model_does_not_require_outbox_plumbing(
+    mut ctx: djogi::DjogiContext,
+) {
+    let rows = seed_bulk_outbox_no_evt_rows(&mut ctx)
+        .await
+        .expect("seed non-events rows");
+
+    let pairs = BulkOutboxNoEvtRow::objects()
+        .update(|f| f.score().set(99i32))
+        .execute_returning_pairs(&mut ctx)
+        .await
+        .expect("non-events bulk execute_returning_pairs should succeed");
+
+    assert_eq!(pairs.len(), rows.len(), "one pair per updated row");
+    assert!(
+        pairs.iter().all(|pair| pair.new.score == 99),
+        "all returned pairs must have updated score"
+    );
+    assert!(
+        !BulkOutboxNoEvtRow::descriptor().has_outbox,
+        "non-events model must not have outbox"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [BulkHooksRow])]
+async fn execute_returning_pairs_does_not_dispatch_lifecycle_hooks(mut ctx: djogi::DjogiContext) {
+    BULK_BEFORE_SAVE_CALLS.store(0, Ordering::SeqCst);
+    BULK_AFTER_SAVE_CALLS.store(0, Ordering::SeqCst);
+
+    let rows = seed_bulk_hooks_rows(&mut ctx)
+        .await
+        .expect("seed hook-enabled rows");
+
+    let pairs = BulkHooksRow::objects()
+        .update(|f| f.score().set(777i32))
+        .execute_returning_pairs(&mut ctx)
+        .await
+        .expect("bulk execute_returning_pairs should succeed");
+
+    assert_eq!(pairs.len(), rows.len(), "one pair per updated row");
+    assert_eq!(
+        BULK_BEFORE_SAVE_CALLS.load(Ordering::SeqCst),
+        0,
+        "bulk execute_returning_pairs must not run before_save hooks"
+    );
+    assert_eq!(
+        BULK_AFTER_SAVE_CALLS.load(Ordering::SeqCst),
+        0,
+        "bulk execute_returning_pairs must not run after_save hooks"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn execute_returning_pairs_none_queryset_returns_empty(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    let pairs = Post::objects()
+        .none()
+        .update(|f| f.view_count().set(0i32))
+        .execute_returning_pairs(&mut ctx)
+        .await
+        .expect("execute_returning_pairs on none() should return empty");
+
+    assert!(pairs.is_empty(), "none() queryset must return empty pairs");
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "none() must not remove rows");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn execute_returning_pairs_none_with_limit_is_rejected_with_validation_error(
+    mut ctx: djogi::DjogiContext,
+) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .none()
+        .limit(1)
+        .update(|f| f.view_count().set(0i32))
+        .execute_returning_pairs(&mut ctx)
+        .await
+        .expect_err("none().limit(1).execute_returning_pairs() must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("limit"),
+                "validation should mention limit: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "rejected update must not mutate any row");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn execute_returning_pairs_empty_assignments_returns_empty(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    let pairs = Post::objects()
+        .update(|_| Vec::<djogi::UpdateAssignment>::new())
+        .execute_returning_pairs(&mut ctx)
+        .await
+        .expect("empty assignments should return empty pairs");
+
+    assert!(
+        pairs.is_empty(),
+        "empty assignment list must return empty pairs without SQL"
+    );
+
+    let rows = Post::objects()
+        .order_by(|f| f.view_count().asc())
+        .fetch_all(&mut ctx)
+        .await
+        .unwrap();
+    let views: Vec<i32> = rows.iter().map(|p| p.view_count).collect();
+    assert_eq!(
+        views,
+        vec![25, 50, 100, 200],
+        "empty assignments must preserve seeded view_count values"
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.updated_at == row.created_at)
+            .count(),
+        4,
+        "empty assignments must not change updated_at"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn execute_returning_pairs_empty_assignments_with_limit_is_rejected_with_validation_error(
+    mut ctx: djogi::DjogiContext,
+) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .limit(1)
+        .update(|_| Vec::<djogi::UpdateAssignment>::new())
+        .execute_returning_pairs(&mut ctx)
+        .await
+        .expect_err("limit + empty assignments on execute_returning_pairs must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("limit"),
+                "validation should mention limit: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "rejected update must not mutate any row");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn execute_returning_pairs_limit_is_rejected_with_validation_error(
+    mut ctx: djogi::DjogiContext,
+) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .limit(1)
+        .update(|f| f.view_count().set(777i32))
+        .execute_returning_pairs(&mut ctx)
+        .await
+        .expect_err("limit on execute_returning_pairs must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("limit"),
+                "validation should mention limit: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let bumped = Post::objects()
+        .filter(|f| f.view_count().eq(777i32))
+        .count(&mut ctx)
+        .await
+        .unwrap();
+    assert_eq!(bumped, 0, "rejected update must not mutate any row");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_delete_returning_returns_deleted_rows(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    // Delete only unpublished rows (just "gamma").
+    let deleted = Post::objects()
+        .filter(|f| f.published().eq(false))
+        .delete_returning(&mut ctx)
+        .await
+        .expect("delete_returning should succeed");
+
+    assert_eq!(deleted.len(), 1, "expected 1 deleted row");
+    assert_eq!(deleted[0].title, "gamma");
+    assert!(!deleted[0].published);
+
+    // Confirm the rows are actually gone.
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 3, "3 published rows should remain");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_delete_returning_none_queryset_returns_empty(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    let deleted = Post::objects()
+        .none()
+        .delete_returning(&mut ctx)
+        .await
+        .expect("delete_returning on none() should return empty");
+
+    assert!(deleted.is_empty(), "none() delete_returning must be empty");
+
+    // No rows deleted.
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "none() delete_returning must not remove rows");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_delete_returning_none_with_limit_is_rejected_with_validation_error(
+    mut ctx: djogi::DjogiContext,
+) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .none()
+        .limit(1)
+        .delete_returning(&mut ctx)
+        .await
+        .expect_err("none().limit(1).delete_returning() must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("limit"),
+                "validation should mention limit: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(
+        remaining, 4,
+        "rejected delete_returning must not remove rows"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_delete_returning_preserves_snapshot_values(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    // Delete all rows and verify the returned snapshots match the seeded data.
+    let mut deleted = Post::objects()
+        .delete_returning(&mut ctx)
+        .await
+        .expect("delete_returning all rows should succeed");
+
+    assert_eq!(deleted.len(), 4, "all 4 rows should be returned");
+
+    // Sort by title for deterministic comparison.
+    deleted.sort_by(|a, b| a.title.cmp(&b.title));
+    let titles: Vec<&str> = deleted.iter().map(|p| p.title.as_str()).collect();
+    assert_eq!(titles, ["alpha", "beta", "delta", "gamma"]);
+
+    // Table should be empty.
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 0, "all rows should be deleted");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_delete_limit_is_rejected_with_validation_error(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .limit(1)
+        .delete(&mut ctx)
+        .await
+        .expect_err("limit on bulk delete must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("limit"),
+                "validation should mention limit: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "rejected delete must not remove rows");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_delete_order_by_is_rejected_with_validation_error(mut ctx: djogi::DjogiContext) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .order_by(|f| f.title().asc())
+        .delete(&mut ctx)
+        .await
+        .expect_err("explicit order_by on bulk delete must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("order_by"),
+                "validation should mention order_by: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(remaining, 4, "rejected delete must not remove rows");
+}
+
+#[djogi::djogi_test(sync_models = [Post])]
+async fn bulk_delete_returning_limit_is_rejected_with_validation_error(
+    mut ctx: djogi::DjogiContext,
+) {
+    seed_posts(&mut ctx).await;
+
+    let err = Post::objects()
+        .limit(1)
+        .delete_returning(&mut ctx)
+        .await
+        .expect_err("limit on delete_returning must be rejected");
+    match err {
+        DjogiError::Validation(msg) => {
+            assert!(
+                msg.contains("limit"),
+                "validation should mention limit: {msg}"
+            );
+        }
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let remaining = Post::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(
+        remaining, 4,
+        "rejected delete_returning must not remove rows"
     );
 }

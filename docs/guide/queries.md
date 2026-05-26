@@ -7,7 +7,8 @@ filters, ordering, distinct mode, and pagination without touching the
 database; only terminal methods (`fetch_all`, `count`, `update`, …) emit
 SQL and execute it against a `&mut DjogiContext`.
 
-This is a reference guide to `QuerySet<T>`, Djogi's lazy typed query builder.
+`QuerySet<T>` is designed for production workloads. Raw SQL remains available
+as an escape hatch for query shapes the typed API doesn't yet cover.
 
 ---
 
@@ -367,24 +368,35 @@ let rows = Post::objects()
 `Lookup<V>` variants: `Eq`, `Neq`, `Gt`, `Gte`, `Lt`, `Lte`, `In(Vec<V>)`,
 `NotIn(Vec<V>)`, `IsNull`, `IsNotNull`, `Contains(String)`,
 `StartsWith(String)`, `EndsWith(String)`, `Between(V, V)`,
-`Regex(String)`. `Contains` / `StartsWith` / `EndsWith` map to the
-case-insensitive `ILIKE` operators, matching the closure API's default.
-`Regex(String)` routes to the Postgres `~` operator (case-sensitive
-POSIX regex, server-side); `IRegex(String)` routes to the Postgres `~*`
-operator (case-insensitive POSIX regex, server-side — matching the closure
-API's `.iregex` method).
+`Regex(String)`, `IRegex(String)`. `Contains` / `StartsWith` / `EndsWith`
+map to the case-insensitive `ILIKE` operators, matching the closure API's
+default. `Regex(String)` routes to the Postgres `~` operator
+(case-sensitive POSIX regex, server-side — see the closure-API `.regex`
+notes above for the Postgres-feature framing). `IRegex(String)` routes to
+the Postgres `~*` operator (case-insensitive POSIX regex, server-side —
+same Postgres-feature framing as `Regex`; see the closure-API `.iregex`
+notes above).
 
-`Lookup` is `#[non_exhaustive]`, allowing new variants to be added without
-breaking change.
+`Lookup` is `#[non_exhaustive]` — new variants are added as needed without
+a breaking change.
 
-`filter_struct` produces a structurally equivalent condition tree to the
-same set of lookups expressed as `.filter(|f| ...)` — an integration
-test asserts row-set parity between the two paths.
+`filter_struct` preserves the same database result semantics as the same set
+of lookups expressed as `.filter(|f| ...)`. For cache and refresh admission,
+generated filters keep their stored `FilterClause` vector as the single source
+of truth and lazily reconstruct portable Q leaves for conservative
+bool/string equality and membership clauses. Unsupported fields, wrapped or
+optional bool/string fields, value-shape mismatches, JSONB, spatial, FTS,
+regex, and string pattern lookups such as `Contains` / `StartsWith` /
+`EndsWith` stay on the SQL-only `Q::Condition` fallback path.
+
+Cache and refresh filtering remain all-or-nothing: if a generated filter mixes
+portable clauses with any fallback clause, the whole query is rejected by the
+portable pushdown gate and runs through the normal database path.
 
 Empty filters (`PostFilter::new()` with no setters) short-circuit:
-`filter_struct(empty)` is a no-op. Single-clause filters unwrap to a
-plain leaf rather than a one-element `And` — the SQL emitter renders
-`col = $1` without redundant parentheses.
+`filter_struct(empty)` is a no-op. Single portable clauses remain one Q leaf;
+single fallback clauses unwrap to a plain SQL condition rather than a
+one-element `And`.
 
 ---
 
@@ -418,8 +430,54 @@ Empty-assignment short-circuit: `filter(...).update(|_| vec![])` returns
 `Ok(0)` without issuing SQL. An `UPDATE ... SET` with no assignments is
 a Postgres syntax error, so the short-circuit is load-bearing.
 
-Expression-backed SET (`col = col + 1`, `col = NOW()`,
-`col = other_col`) is available via `FieldRef::set_expr` and `set_field`.
+#### Expression-backed SET
+
+Three convenience forms avoid writing out the full `set_expr(field.as_expr() + ...)` pattern:
+
+**`field.set_expr(Expr<V>)`** — full expression IR:
+
+```rust
+// col = col + 1 (explicit IR form)
+Post::objects()
+    .filter(|f| f.id().eq(post_id))
+    .update(|f| f.view_count().set_expr(
+        f.view_count().as_expr() + Expr::literal(1i32)
+    ))
+    .execute(&mut ctx).await?;
+```
+
+**`field.set_field(other)`** — column-to-column copy (`SET self = other`):
+
+```rust
+// Reset working_balance to confirmed_balance on reconciliation.
+Account::objects()
+    .filter(|f| f.needs_reset().eq(true))
+    .update(|f| f.working_balance().set_field(f.confirmed_balance()))
+    .execute(&mut ctx).await?;
+```
+
+**`field.increment(amount)` / `field.decrement(amount)`** — numeric add/subtract:
+
+```rust
+// Atomically bump the view counter.
+Post::objects()
+    .filter(|f| f.id().eq(post_id))
+    .update(|f| f.view_count().increment(1i32))
+    .execute(&mut ctx).await?;
+
+// Deduct a withdrawal from the account balance.
+Account::objects()
+    .filter(|f| f.id().eq(account_id))
+    .update(|f| f.balance().decrement(withdrawal_amount))
+    .execute(&mut ctx).await?;
+```
+
+`increment` and `decrement` are restricted to Djogi-blessed numeric types (`i16`,
+`i32`, `i64`, `f32`, `f64`, `time::Duration`) — calling them on a `String` or
+`bool` column is a compile error.
+
+For SQL the expression builder cannot express, reach for the raw escape hatch
+described below.
 
 ### `delete(&mut ctx)`
 
@@ -435,6 +493,158 @@ let n = Post::objects()
 pending struct — there's no payload to carry across a split). An
 unfiltered queryset deletes every row in the table; "wipe this table"
 DDL-style reaches for `TRUNCATE` via `ctx.raw_execute`.
+
+### Mutation guard
+
+Bulk update and delete reject queryset state that is only meaningful for
+reads. These restrictions are validated **before** any SQL is issued and
+**before** the `none()` / empty-assignment short-circuits, so decorated
+inert paths are rejected rather than silently succeeding.
+
+| Rejected modifier | Validation message contains |
+|---|---|
+| `limit(n)` | `"limit"` |
+| `offset(n)` | `"offset"` |
+| `distinct()` / `distinct_on(...)` | `"distinct"` |
+| Row locks (`.select_for_update()`, etc.) | `"row locks"` |
+| Explicit `.order_by(...)` | `"order_by"` |
+| `.prefetch(...)` registrations | `"prefetch"` |
+| `.select_related(...)` registrations | `"select_related"` |
+
+Examples:
+
+```rust
+// Rejected: limit is incompatible with bulk mutation.
+Post::objects()
+    .limit(1)
+    .update(|f| f.published().set(false))
+    .execute(&mut ctx)
+    .await
+// Err(DjogiError::Validation("update() does not support queryset read-tail modifiers (limit); ..."))
+
+// Rejected: inert paths still validate — none() does not bypass the guard.
+Post::objects()
+    .none()
+    .limit(1)
+    .delete(&mut ctx)
+    .await
+// Err(DjogiError::Validation("delete() does not support queryset read-tail modifiers (limit); ..."))
+
+// Ok — pure none(), no read-tail state.
+Post::objects()
+    .none()
+    .delete(&mut ctx)
+    .await
+// Ok(0) — short-circuits cleanly; no SQL issued.
+```
+
+Model-default ordering seeded by `QuerySet::new()` is not treated as an
+explicit `.order_by(...)` — only a user call to `.order_by(...)` trips the
+guard.
+
+---
+
+## PG18 OLD/NEW RETURNING
+
+PostgreSQL 18 added `OLD`/`NEW` aliases in `RETURNING` clauses, exposing
+both the pre- and post-DML row in a single round-trip. Djogi exposes this
+through four additive APIs.
+
+### `Model::update_returning_pair(self, ctx)`
+
+Returns a `ReturningPair<T>` with both the before and after row images for
+a single-row UPDATE:
+
+```rust
+// update_returning_pair consumes self — the caller's instance is stale
+// after the update, and ownership transfer enforces this at the type level.
+let mut post: Post = Post::get(&mut ctx, id).await?;
+post.title = "New Title".into();
+post.view_count += 1;
+
+let pair = post.update_returning_pair(&mut ctx).await?;
+// pair.old — state before the UPDATE.
+// pair.new — state after the UPDATE; continue working with this.
+assert!(pair.new.updated_at >= pair.old.updated_at);
+```
+
+Use `save()` when you want in-place rehydration and do not need the old
+row. Use `update_returning_pair` when you need both snapshots (e.g. for
+audit logs, event sourcing, or change detection).
+
+### `UpdateStmt::execute_returning_pairs(ctx)`
+
+Bulk UPDATE with per-row before/after pairs:
+
+```rust
+let pairs: Vec<ReturningPair<Post>> = Post::objects()
+    .filter(|f| f.published().eq(true))
+    .update(|f| f.view_count().set(999i32))
+    .execute_returning_pairs(&mut ctx)
+    .await?;
+
+for pair in &pairs {
+    println!("id={} old={} new={}", pair.new.id, pair.old.view_count, pair.new.view_count);
+}
+```
+
+> **Warning — unbounded materialization.** `execute_returning_pairs` loads
+> one `ReturningPair<T>` per affected row. On large tables this can exhaust
+> available memory. Apply `.filter(...)` to narrow the queryset, or chunk
+> updates at the application level.
+
+Short-circuits: `none()` querysets and empty assignment lists return
+`Ok(Vec::new())` without issuing SQL.
+
+`execute_returning_pairs` applies the same mutation guard as `execute` —
+`limit`, `offset`, `distinct`, row locks, `prefetch`, `select_related`, and
+explicit `order_by` are rejected with `DjogiError::Validation` before any SQL or
+short-circuit evaluation.
+
+### `Model::delete_returning(self, ctx)`
+
+Consuming single-row DELETE that returns the pre-delete DB snapshot:
+
+```rust
+let deleted: Post = post.delete_returning(&mut ctx).await?;
+// deleted contains the row's state as it was in the DB at deletion time,
+// including any BEFORE DELETE trigger effects.
+emit_tombstone_event(&deleted).await;
+```
+
+### `QuerySet::delete_returning(ctx)`
+
+Bulk DELETE returning one snapshot per deleted row:
+
+```rust
+let deleted_rows: Vec<Post> = Post::objects()
+    .filter(|f| f.published().eq(false))
+    .delete_returning(&mut ctx)
+    .await?;
+```
+
+> **Warning — unbounded materialization.** Applies the same as
+> `execute_returning_pairs` — narrow with `.filter(...)` first.
+
+Short-circuits: `none()` querysets return `Ok(Vec::new())` without SQL.
+
+`delete_returning` applies the same mutation guard as `delete` — `limit`,
+`offset`, `distinct`, row locks, `prefetch`, `select_related`, and explicit
+`order_by` are rejected with `DjogiError::Validation` before any SQL or
+short-circuit evaluation.
+
+### Notes
+
+- **PG18 only.** Djogi has a hard PostgreSQL 18 floor; no polyfill exists.
+- **INSERT** — `create()` already returns the DB post-image; the `OLD` side
+  is normally NULL for a simple INSERT. No pair type is needed or provided.
+- **MERGE** — MERGE result hydration is not supported.
+- **Protected fields.** Both sides of `ReturningPair<T>` expose full model
+  values including `#[field(protected(...))]` fields. Field-level redaction
+  is not implemented — log or persist pairs with care.
+- **Outbox.** The `Save` outbox payload for `update_returning_pair` is the
+  DB post-image (`pair.new`) — the same single-payload schema as `save()`.
+  No diff-shaped outbox envelope is emitted.
 
 ---
 
@@ -519,7 +729,7 @@ carries an expression-form term Postgres rejects on set-operation `ORDER
 BY` — for example, `order_by_distance(...)` (which lowers to
 `ST_Distance(...)`). Postgres's grammar restricts set-operation outer `ORDER
 BY` to column names or position numbers. Per-arm spatial ordering is still
-legal; combined-result spatial ordering is not supported today.
+legal; combined-result spatial ordering is not supported.
 
 ### Nested composition
 
@@ -627,19 +837,42 @@ a programming error does not hide behind a silent `Ok(0)`.
   `.for_share_skip_locked()` row locks —
   `SELECT ... FOR UPDATE` (or `... FOR SHARE`) inside INSERT SELECT is
   valid Postgres semantics (locking source rows for the archival
-  duration), but the v0.1.0 surface does not compose row locks with
-  INSERT SELECT. Drop the lock call before `.insert_into(...)`.
+  duration), but row locks are not supported inside INSERT SELECT. Drop the lock call before `.insert_into(...)`.
 - `.distinct()` / `.distinct_on(...)` — deduplication inside INSERT SELECT
   is also valid Postgres, but `DISTINCT ON` requires the deduplication
   columns to appear first in `ORDER BY` and in the SELECT projection —
   neither of which the closure-built mapping guarantees. All non-default
-  distinct modes are rejected in v0.1.0.
+  distinct modes are rejected.
 
 ### Return value and RETURNING
 
-The terminal returns the affected row count (`u64`). `RETURNING` for
-INSERT SELECT is not in v0.1.0 — follow up with a SELECT on the target
-when you need the inserted rows back.
+**`.execute(&mut ctx)`** returns the affected row count (`u64`).
+
+**`.execute_returning(&mut ctx)`** runs the same INSERT...SELECT but appends
+`RETURNING *`, decodes each returned row via the target model's [`FromPgRow`]
+impl, and returns `Vec<T>`:
+
+```rust
+let inserted: Vec<OrderArchive> = CompletedOrder::objects()
+    .filter(|f| f.completed_at().lt(cutoff))
+    .insert_into::<OrderArchive, _, _>(|target, source| vec![
+        target.order_id().copy_from(source.id().as_insert_source()),
+        target.title().copy_from(source.title().as_insert_source()),
+    ])
+    .execute_returning(&mut ctx)
+    .await?;
+```
+
+`execute_returning` does **not** fire `before_save` / `after_save` hooks or
+enqueue outbox events — INSERT...SELECT is a bulk operation and per-row hooks
+would be prohibitively expensive. Adopters who need per-row side effects should
+use the returned `Vec<T>` to drive a subsequent hook loop or re-query the target
+table.
+
+**Warning — unbounded materialisation.** `execute_returning` loads one `T` per
+inserted row into memory. For large copy operations, prefer `.execute(...)` for
+the count and then query the target table with a filter on the known ID range or
+a `created_at` window.
 
 ---
 
@@ -650,7 +883,7 @@ threads, biological pedigrees — Djogi exposes a typed recursive query
 surface that emits a Postgres `WITH RECURSIVE ... SELECT * FROM ...`
 CTE under the hood. No raw SQL, no `JUSTIFICATION` bypass.
 
-Djogi exposes two layers for recursive queries:
+The typed surface has two layers:
 
 ### Tree-edge sugar — `Model::tree_descendants` / `Model::tree_ancestors`
 
@@ -770,7 +1003,7 @@ against a third table." Wright F kinship over a materialised pedigree
 closure is the canonical example. Djogi exposes a typed pair-tuple
 substrate so adopters write these queries without raw SQL.
 
-Djogi exposes a typed pair-tuple substrate rooted at
+The typed surface is rooted at
 `QuerySet::self_pairs()`:
 
 ```rust
@@ -828,9 +1061,9 @@ Surface notes:
 Composite scores that mix pair-aggregate output with Rust-side state
 (score from kinship × Rust-side overlap × Rust-side age product) land
 their final ranking in Rust; the typed pair-tuple `qualify(...)` window
-surface accepts column references only on its
-`partition_by_pair` / `order_by_pair_desc` methods, not arbitrary
-`Expr<f64>` derived from external state.
+surface accepts column references only on its `partition_by_pair` /
+`order_by_pair_desc` methods, not arbitrary `Expr<f64>` derived from
+external state.
 
 ### Pair-side spatial overlap — `PairAreaOverlapRatio<L, R>`
 
@@ -856,7 +1089,7 @@ The annotation emits
 `COALESCE(ST_Area(ST_Intersection(l.col::geometry, r.col::geometry)::geography), 0)::float8
  / NULLIF(ST_Area(l.col::geography), 0)::float8` per pair. The ratio is
 left-normalised and asymmetric — see the
-[spatial guide's pair-side section](./spatial.md#pair-side-territory-overlap-phase-85-99)
+[spatial guide's pair-side section](./spatial.md#pair-side-territory-overlap)
 for the full SQL shape, NULL/disjoint/degenerate semantics, and the
 column-type rules.
 
@@ -867,7 +1100,8 @@ column-type rules.
 Repeat-read query patterns (request handlers re-reading the same row
 across endpoints, periodic scoring jobs re-evaluating the same
 candidate set) amortise the DB round-trip by binding a queryset to a
-`Punnu<T>` L1 identity-map pool. Use the `.cache(&pool)?` modifier:
+`Punnu<T>` L1 identity-map pool. Djogi's typed surface for this
+exposes the `.cache(&pool)?` modifier:
 
 ```rust
 use djogi::prelude::*;
@@ -914,7 +1148,7 @@ Surface contract:
   visible to the caller.
 - `Punnu::insert` is invalidated automatically when `Model::create`,
   `Model::save`, or `Model::delete` runs through djogi's hook
-  machinery (cluster 8δ T7.5). Adopters do not maintain a manual
+  machinery. Adopters do not maintain a manual
   write-through.
 
 For adopters who need to inspect whether a queryset is

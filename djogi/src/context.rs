@@ -86,6 +86,22 @@ type OnCommitCallback = Box<
         + Send,
 >;
 
+pub(crate) const NESTED_ATOMIC_CANCELLED_POISON_REASON: &str =
+    "nested atomic future dropped before savepoint cleanup";
+
+#[derive(Clone, Copy, Debug)]
+struct TransactionPoison {
+    reason: &'static str,
+}
+
+impl TransactionPoison {
+    fn into_error(self) -> DjogiError {
+        DjogiError::TransactionPoisoned {
+            reason: self.reason,
+        }
+    }
+}
+
 /// The execution context for all CRUD operations.
 ///
 /// Carries either a pooled handle or an active transaction + savepoint tracking.
@@ -102,6 +118,11 @@ pub struct DjogiContext {
     /// Each callback is a boxed async closure that returns `Result<(), DjogiError>`.
     /// Errors are logged but do not fail the commit (Q9 resolution).
     on_commit: Vec<OnCommitCallback>,
+
+    /// Private fail-closed state for transaction-backed contexts whose nested
+    /// savepoint cleanup could not be awaited because the nested `atomic()`
+    /// future was dropped.
+    transaction_poisoned: Option<TransactionPoison>,
 
     /// Whether [`set_tenant`](Self::set_tenant) has been called on this context.
     ///
@@ -158,6 +179,7 @@ pub struct DjogiContext {
 /// actual GUC state after a savepoint rollback reverts the inner
 /// `SET LOCAL`. Phase 5.5 phase-boundary fixup (Codex stop-gate review
 /// of the full `phase-5-5-auth` branch).
+#[derive(Clone)]
 #[doc(hidden)]
 pub struct AuthStateSnapshot {
     pub(crate) auth: Option<AuthContext>,
@@ -220,6 +242,7 @@ impl DjogiContext {
             inner,
             savepoint_depth: 0,
             on_commit: Vec::new(),
+            transaction_poisoned: None,
             tenant_set: false,
             auth: None,
             tenant_scope_suppressed: false,
@@ -315,6 +338,33 @@ impl DjogiContext {
     /// on pool-vs-transaction at the database boundary.
     pub(crate) fn inner_mut(&mut self) -> &mut ContextInner {
         &mut self.inner
+    }
+
+    pub(crate) fn poison_transaction(&mut self, reason: &'static str) {
+        debug_assert!(
+            matches!(&self.inner, ContextInner::Transaction(_)),
+            "transaction poison only applies to transaction-backed contexts",
+        );
+        self.transaction_poisoned = Some(TransactionPoison { reason });
+    }
+
+    pub(crate) fn transaction_poison_error(&self) -> Option<DjogiError> {
+        self.transaction_poisoned.map(TransactionPoison::into_error)
+    }
+
+    pub(crate) fn is_transaction_poisoned(&self) -> bool {
+        self.transaction_poisoned.is_some()
+    }
+
+    fn clear_transaction_poison(&mut self) {
+        self.transaction_poisoned = None;
+    }
+
+    fn reject_if_transaction_poisoned(&self) -> Result<(), DjogiError> {
+        match self.transaction_poison_error() {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
     }
 
     /// Public-but-hidden mutable accessor used by `#[derive(Model)]`-generated
@@ -414,6 +464,16 @@ impl DjogiContext {
         }
     }
 
+    /// Macro-safe auth snapshot shim.
+    ///
+    /// Macro-emitted code in downstream crates cannot call
+    /// crate-private methods, so this hidden public wrapper exposes the
+    /// same snapshot used by nested `atomic()` rollback.
+    #[doc(hidden)]
+    pub fn __snapshot_auth_state_for_macros(&self) -> AuthStateSnapshot {
+        self.snapshot_auth_state()
+    }
+
     /// Restore auth-related state captured by
     /// [`Self::snapshot_auth_state`]. Called by the nested `atomic()`
     /// path on rollback paths (closure returned Err, or panicked) so
@@ -424,6 +484,29 @@ impl DjogiContext {
         self.applied_tenant_id = snapshot.applied_tenant_id;
         self.tenant_set = snapshot.tenant_set;
         self.tenant_scope_suppressed = snapshot.tenant_scope_suppressed;
+    }
+
+    /// Macro-safe auth restore shim.
+    ///
+    /// This restores both the transaction-scoped tenant GUC and the
+    /// in-memory auth trackers to match the supplied snapshot.
+    #[doc(hidden)]
+    pub async fn __restore_auth_state_for_macros(
+        &mut self,
+        snapshot: AuthStateSnapshot,
+    ) -> Result<(), DjogiError> {
+        match snapshot.applied_tenant_id.as_deref() {
+            Some(tenant_id) => {
+                self.set_tenant(tenant_id).await?;
+            }
+            None => {
+                if self.applied_tenant_id.is_some() {
+                    self.clear_tenant().await?;
+                }
+            }
+        }
+        self.restore_auth_state(snapshot);
+        Ok(())
     }
 
     // -------------------------------------------------------------------------
@@ -608,6 +691,7 @@ impl DjogiContext {
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Vec<Row>, DjogiError> {
+        self.reject_if_transaction_poisoned()?;
         match &mut self.inner {
             ContextInner::Pool(pool) => {
                 let mut guard = PoolConnGuard::checkout(pool).await?;
@@ -628,6 +712,7 @@ impl DjogiContext {
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Option<Row>, DjogiError> {
+        self.reject_if_transaction_poisoned()?;
         match &mut self.inner {
             ContextInner::Pool(pool) => {
                 let mut guard = PoolConnGuard::checkout(pool).await?;
@@ -649,6 +734,7 @@ impl DjogiContext {
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Row, DjogiError> {
+        self.reject_if_transaction_poisoned()?;
         match &mut self.inner {
             ContextInner::Pool(pool) => {
                 let mut guard = PoolConnGuard::checkout(pool).await?;
@@ -669,6 +755,7 @@ impl DjogiContext {
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<u64, DjogiError> {
+        self.reject_if_transaction_poisoned()?;
         match &mut self.inner {
             ContextInner::Pool(pool) => {
                 let mut guard = PoolConnGuard::checkout(pool).await?;
@@ -688,6 +775,7 @@ impl DjogiContext {
     /// for the dirty-by-default lifecycle.
     #[allow(dead_code)] // Used by PgConnection directly in transaction.rs; may be wired up in T5.
     pub(crate) async fn batch_execute(&mut self, sql: &str) -> Result<(), DjogiError> {
+        self.reject_if_transaction_poisoned()?;
         match &mut self.inner {
             ContextInner::Pool(pool) => {
                 let mut guard = PoolConnGuard::checkout(pool).await?;
@@ -724,6 +812,7 @@ impl DjogiContext {
     where
         F: FnOnce(Vec<Row>) -> Result<T, DjogiError>,
     {
+        self.reject_if_transaction_poisoned()?;
         match &mut self.inner {
             ContextInner::Pool(pool) => {
                 let mut guard = PoolConnGuard::checkout(pool).await?;
@@ -755,6 +844,7 @@ impl DjogiContext {
     where
         F: FnOnce(Option<Row>) -> Result<T, DjogiError>,
     {
+        self.reject_if_transaction_poisoned()?;
         match &mut self.inner {
             ContextInner::Pool(pool) => {
                 let mut guard = PoolConnGuard::checkout(pool).await?;
@@ -791,17 +881,43 @@ impl DjogiContext {
     /// If the underlying commit fails, the callbacks are dropped without
     /// running (the transaction did not commit, so post-commit side effects
     /// are inappropriate).
-    pub async fn commit(self) -> Result<(), DjogiError> {
-        let DjogiContext {
-            inner, on_commit, ..
-        } = self;
+    pub async fn commit(mut self) -> Result<(), DjogiError> {
+        if let Some(poison_err) = self.transaction_poison_error() {
+            if let Err(rb_err) = self.rollback_in_place().await {
+                tracing::error!(
+                    error = ?rb_err,
+                    "DjogiContext::commit: rollback of poisoned transaction failed; detaching connection",
+                );
+                self.detach_transaction_connection();
+            }
+            return Err(poison_err);
+        }
 
-        match inner {
+        self.commit_in_place().await
+    }
+
+    /// Commit the underlying transaction without consuming the context.
+    ///
+    /// Crate-private so `transaction::atomic` can keep its dirty-drop
+    /// guard armed across the awaited COMMIT and callback-drain lifecycle.
+    pub(crate) async fn commit_in_place(&mut self) -> Result<(), DjogiError> {
+        if let Some(poison_err) = self.transaction_poison_error() {
+            if let Err(rb_err) = self.rollback_in_place().await {
+                tracing::error!(
+                    error = ?rb_err,
+                    "DjogiContext::commit_in_place: rollback of poisoned transaction failed",
+                );
+            }
+            return Err(poison_err);
+        }
+
+        match &mut self.inner {
             ContextInner::Pool(_) => Err(DjogiError::Db(DbError::other(
                 "DjogiContext::commit called on a pool-backed context",
             ))),
-            ContextInner::Transaction(mut conn) => {
+            ContextInner::Transaction(conn) => {
                 conn.batch_execute("COMMIT").await?;
+                let on_commit = std::mem::take(&mut self.on_commit);
                 drain_on_commit(on_commit).await;
                 Ok(())
             }
@@ -821,18 +937,47 @@ impl DjogiContext {
     /// only make sense against a successful commit; rollback explicitly
     /// throws them away.
     pub async fn rollback(mut self) -> Result<(), DjogiError> {
+        match self.rollback_in_place().await {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.detach_transaction_connection();
+                Err(err)
+            }
+        }
+    }
+
+    /// Roll back the underlying transaction without consuming the context.
+    ///
+    /// Crate-private so `transaction::atomic` can keep owning the
+    /// transaction context until rollback is known clean.
+    pub(crate) async fn rollback_in_place(&mut self) -> Result<(), DjogiError> {
         // Discard queued callbacks first — on a rollback path they must
         // not fire regardless of whether the rollback itself succeeds.
         self.on_commit.clear();
 
-        match self.inner {
+        let result = match &mut self.inner {
             ContextInner::Pool(_) => Err(DjogiError::Db(DbError::other(
                 "DjogiContext::rollback called on a pool-backed context",
             ))),
-            ContextInner::Transaction(mut conn) => {
+            ContextInner::Transaction(conn) => {
                 conn.batch_execute("ROLLBACK").await?;
                 Ok(())
             }
+        };
+
+        if result.is_ok() {
+            self.clear_transaction_poison();
+        }
+
+        result
+    }
+
+    /// Consume a transaction-backed context and close its physical
+    /// connection instead of returning it to the pool.
+    pub(crate) fn detach_transaction_connection(self) {
+        let DjogiContext { inner, .. } = self;
+        if let ContextInner::Transaction(conn) = inner {
+            conn.detach();
         }
     }
 
@@ -1842,6 +1987,7 @@ impl DjogiContext {
             // already a `track_caller`-warned silent-drop. Starting
             // empty keeps the contract clean.
             on_commit: Vec::new(),
+            transaction_poisoned: None,
             tenant_set: false,
             auth: self.auth.clone(),
             tenant_scope_suppressed: self.tenant_scope_suppressed,

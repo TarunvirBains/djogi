@@ -227,19 +227,27 @@ pub struct QuerySet<T: Model> {
     /// Ordering expressions in emission order. `order_by` appends; it does
     /// not replace.
     pub(crate) ordering: Vec<OrderExpr>,
+    /// `true` when user code explicitly called [`QuerySet::order_by`].
+    ///
+    /// `QuerySet::new()` may seed `ordering` from
+    /// [`Model::default_order_by`], especially for proxy models.
+    /// Mutating terminals should reject only *explicit* `order_by(...)`
+    /// tails, not model-default ordering.
+    pub(crate) has_explicit_ordering: bool,
     /// DISTINCT mode — see [`DistinctMode`].
     pub(crate) distinct: DistinctMode,
     /// SQL `LIMIT` — `None` means no limit. `i64` to match Postgres.
     pub(crate) limit: Option<i64>,
     /// SQL `OFFSET` — `None` means no offset. `i64` to match Postgres.
     pub(crate) offset: Option<i64>,
-    // EMPTY CONTRACT: every terminal method — `fetch_all`, `fetch_one`,
-    // `count`, `exists`, `first`, `update`, `delete` — MUST check
-    // `self.is_empty` first and return the empty result (empty `Vec`,
-    // `None`, `0`, `false`, `0 rows affected`, etc.) WITHOUT issuing any
-    // SQL. This is the whole point of `QuerySet::none()` — it lets
-    // authorization / feature-flag branches short-circuit the DB round-
-    // trip without a special-cased `if` on the caller's side.
+    // EMPTY CONTRACT: terminal methods return the empty result (`Vec::new`,
+    // `None`, `0`, `false`, etc.) WITHOUT issuing SQL when `self.is_empty`
+    // is `true`. For mutation terminals (`update`/`delete` families), this
+    // short-circuit runs AFTER unsupported-state validation, matching the
+    // validate-then-short-circuit contract in `insert_select.rs`.
+    // This is the point of `QuerySet::none()` — authorization / feature-flag
+    // branches can short-circuit the DB round-trip without a special-cased
+    // `if` at the call site.
     //
     // Grep marker: TASK6:empty_contract
     //
@@ -557,6 +565,7 @@ impl<T: Model> Clone for QuerySet<T> {
         QuerySet {
             condition: self.condition.clone(),
             ordering: self.ordering.clone(),
+            has_explicit_ordering: self.has_explicit_ordering,
             distinct: self.distinct.clone(),
             limit: self.limit,
             offset: self.offset,
@@ -730,6 +739,7 @@ impl<T: Model> QuerySet<T> {
         QuerySet {
             condition,
             ordering,
+            has_explicit_ordering: false,
             distinct: DistinctMode::None,
             limit: None,
             offset: None,
@@ -743,6 +753,44 @@ impl<T: Model> QuerySet<T> {
             // to `Some(_)`.
             cache_target: None,
             _model: PhantomData,
+        }
+    }
+
+    /// Performs an `INNER JOIN LATERAL` against the provided `inner` queryset.
+    ///
+    /// Returns a [`LateralQuerySet`] that evaluates to `(L, R)` tuples.
+    /// Parent rows (`L`) are dropped from the result if the `inner`
+    /// queryset returns no rows for that parent.
+    ///
+    /// Inside `inner`, you can use `OuterRef::as_lateral_outer_expr()` to
+    /// refer to columns from this outer queryset.
+    pub fn join_lateral<R: Model>(
+        self,
+        inner: QuerySet<R>,
+    ) -> crate::query::lateral::LateralQuerySet<T, R, crate::query::lateral::InnerLateral> {
+        crate::query::lateral::LateralQuerySet {
+            outer: self,
+            inner,
+            _mode: std::marker::PhantomData,
+        }
+    }
+
+    /// Performs a `LEFT JOIN LATERAL` against the provided `inner` queryset.
+    ///
+    /// Returns a [`LateralQuerySet`] that evaluates to `(L, Option<R>)` tuples.
+    /// Parent rows (`L`) are preserved with `None` if the `inner`
+    /// queryset returns no rows for that parent.
+    ///
+    /// Inside `inner`, you can use `OuterRef::as_lateral_outer_expr()` to
+    /// refer to columns from this outer queryset.
+    pub fn left_join_lateral<R: Model>(
+        self,
+        inner: QuerySet<R>,
+    ) -> crate::query::lateral::LateralQuerySet<T, R, crate::query::lateral::LeftLateral> {
+        crate::query::lateral::LateralQuerySet {
+            outer: self,
+            inner,
+            _mode: std::marker::PhantomData,
         }
     }
 
@@ -902,26 +950,22 @@ impl<T: Model> QuerySet<T> {
     /// `sassi::BasicPredicate<T>` is deliberately excluded: it can pair a
     /// forged SQL column name with an unrelated Rust extractor.
     ///
-    /// Legacy `Condition` and `{Model}Filter` inputs still produce
-    /// character-for-character SQL parity with the pre-Cluster-8γ
-    /// `Condition`-substrate `filter_struct`; portable inputs now stay in the
-    /// trusted `Q::Portable` path so cache pushdown can distinguish them.
+    /// Legacy `Condition` inputs still produce character-for-character SQL
+    /// parity with the pre-Cluster-8γ `Condition` substrate. `{Model}Filter`
+    /// inputs keep `FilterClause` as their single source of truth and lazily
+    /// reconstruct portable Q leaves for conservative bool/string equality and
+    /// membership clauses; unsupported fields, wrapped/optional shapes, value
+    /// mismatches, and SQL-only operators fall back to `Q::Condition`.
     ///
-    /// Empty `{Model}Filter` bodies short-circuit — no AND-ing, no
-    /// vacuous `TRUE` sub-tree. Single-clause filters unwrap to a
-    /// plain `Condition::Leaf` inside `Q::Condition(_)` so the SQL
-    /// emitter renders `col = $1` rather than `(col = $1)`. Both
-    /// shapes are preserved by routing through the existing
-    /// `clauses_into_condition` helper inside the macro-emitted
-    /// `IntoQ<#model>` impl.
+    /// Empty `{Model}Filter` bodies short-circuit — no AND-ing, no vacuous
+    /// `TRUE` sub-tree. Single portable clauses remain a single Q leaf; single
+    /// fallback clauses remain a plain `Condition::Leaf` inside
+    /// `Q::Condition(_)`, so SQL emission avoids redundant parentheses.
     ///
-    /// This is the closure-free sibling of [`QuerySet::filter`] — the
-    /// two paths produce structurally equivalent condition trees for
-    /// the same set of lookups, and the SQL emitter treats them
-    /// identically. Use this method from shell bindings, admin UIs,
-    /// any dynamic assembler that can't write a `|f|` closure at
-    /// compile time, and any new caller composing a `Q<T>` directly
-    /// through the public algebra.
+    /// This is the closure-free sibling of [`QuerySet::filter`]. Use this
+    /// method from shell bindings, admin UIs, any dynamic assembler that can't
+    /// write a `|f|` closure at compile time, and any new caller composing a
+    /// `Q<T>` directly through the public algebra.
     ///
     /// ```ignore
     /// // ModelFilter — closure-free
@@ -1013,6 +1057,7 @@ impl<T: Model> QuerySet<T> {
         F: FnOnce(T::Fields) -> O,
         O: Into<Vec<OrderExpr>>,
     {
+        self.has_explicit_ordering = true;
         let exprs: Vec<OrderExpr> = f(T::Fields::default()).into();
         // Django-style append: library code can add tiebreakers without
         // clobbering the caller's primary ordering. NOT SeaORM-style
@@ -1022,6 +1067,50 @@ impl<T: Model> QuerySet<T> {
         // `reorder_by` method rather than mutating this one.
         self.ordering.extend(exprs);
         self
+    }
+
+    /// Reject SELECT-only read-tail modifiers on mutating terminals.
+    ///
+    /// Bulk UPDATE / DELETE currently emit only `WHERE` state; allowing
+    /// `limit`, `offset`, `distinct`, row locks, explicit `order_by`,
+    /// `prefetch`, `select_related`, or `cache_target` would silently
+    /// ignore caller intent.
+    pub(crate) fn validate_mutation_read_tail(
+        &self,
+        terminal: &str,
+    ) -> Result<(), crate::DjogiError> {
+        let mut rejected: Vec<&'static str> = Vec::new();
+        if self.limit.is_some() {
+            rejected.push("limit");
+        }
+        if self.offset.is_some() {
+            rejected.push("offset");
+        }
+        if !matches!(self.distinct, DistinctMode::None) {
+            rejected.push("distinct");
+        }
+        if self.lock != crate::query::lock::LockMode::None {
+            rejected.push("row locks");
+        }
+        if self.has_explicit_ordering {
+            rejected.push("order_by");
+        }
+        if !self.prefetch_paths.is_empty() {
+            rejected.push("prefetch");
+        }
+        if !self.select_related_paths.is_empty() {
+            rejected.push("select_related");
+        }
+        if self.cache_target.is_some() {
+            rejected.push("cache_target");
+        }
+        if rejected.is_empty() {
+            return Ok(());
+        }
+        let rejected = rejected.join(", ");
+        Err(crate::DjogiError::Validation(format!(
+            "{terminal}() does not support queryset read-tail modifiers ({rejected}); remove them before calling {terminal}()"
+        )))
     }
 
     /// Apply SQL `LIMIT n`. Replaces any prior `limit` value.
@@ -2556,12 +2645,12 @@ impl<T: crate::model::Model> QuerySet<T> {
     /// `Q::Ilike`, `Q::JsonbPath`, `Q::Regex`, `Q::Expression`,
     /// `Q::Array`, `Q::Condition`.
     ///
-    /// `Q::Condition` covers legacy SQL-only payloads and macro-generated
-    /// `{Model}Filter` inputs — those routes intentionally preserve the
-    /// legacy `Condition` tree for SQL parity. Direct `Q<T>`,
-    /// `PortablePredicate<T>`, and ordinary generated field-accessor closure
-    /// filters stay reducible; a fresh `QuerySet::new()` (no filters) starts
-    /// as `Q::Portable(True)` and is reducible.
+    /// `Q::Condition` covers SQL-only payloads, including generated
+    /// `{Model}Filter` clauses that fall outside the conservative portable
+    /// mapping. Direct `Q<T>`, `PortablePredicate<T>`, ordinary generated
+    /// field-accessor closure filters, and portable generated filter clauses
+    /// stay reducible; a fresh `QuerySet::new()` (no filters) starts as
+    /// `Q::Portable(True)` and is reducible.
     ///
     /// # When to use this
     ///
@@ -2807,6 +2896,8 @@ where
 mod tests {
     use super::*;
     use crate::descriptor::ModelDescriptor;
+    use crate::pg::decode::{FromJoinedPgRow, FromPgRow};
+    use crate::relation::{RelationKind, RelationPath};
 
     // Minimal `Model` impl for builder-shape tests. Mirrors the `Fake` model
     // used in `query::field`'s unit tests — keeps QuerySet builder tests in
@@ -3078,6 +3169,7 @@ mod tests {
     /// A proxy-shaped model. The hand-rolled impl overrides
     /// `default_filter_condition` and `default_order_by`; everything
     /// else mirrors `Fake`'s `unreachable!()` body.
+    #[derive(Clone)]
     struct FakeProxy;
     impl crate::model::__sealed::Sealed for FakeProxy {}
     #[allow(clippy::manual_async_fn)]
@@ -3138,6 +3230,35 @@ mod tests {
         ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx
         {
             async { unreachable!() }
+        }
+    }
+
+    impl crate::types::Cacheable for FakeProxy {
+        type Id = i64;
+        type Fields = ();
+
+        fn id(&self) -> Self::Id {
+            0
+        }
+
+        fn fields() -> Self::Fields {}
+    }
+
+    impl FromPgRow for FakeProxy {
+        const COLUMNS: &'static [&'static str] = &[];
+        const COLUMN_LIST: &'static str = "";
+
+        fn from_pg_row(_row: &tokio_postgres::Row) -> Result<Self, crate::DjogiError> {
+            unreachable!("not called in QuerySet unit tests")
+        }
+    }
+
+    impl FromJoinedPgRow for FakeProxy {
+        fn from_joined_pg_row(
+            _row: &tokio_postgres::Row,
+            _prefix: &str,
+        ) -> Result<Self, crate::DjogiError> {
+            unreachable!("not called in QuerySet unit tests")
         }
     }
 
@@ -3222,6 +3343,120 @@ mod tests {
             crate::query::OrderExpr::Column { column, .. } => assert_eq!(*column, "id"),
             #[allow(unreachable_patterns)]
             other => panic!("expected Column, got {other:?}"),
+        }
+    }
+
+    /// Mutation read-tail guard must allow model/proxy default ordering.
+    /// Default ordering is seeded by `QuerySet::new()` and should not be
+    /// treated as an explicit user-specified `order_by`.
+    #[test]
+    fn mutation_guard_allows_proxy_default_ordering() {
+        let qs: QuerySet<FakeProxy> = QuerySet::new();
+        assert!(
+            qs.validate_mutation_read_tail("delete").is_ok(),
+            "proxy default ordering must not trip mutation guard"
+        );
+    }
+
+    /// Calling `.order_by(...)` marks ordering as explicit and must trip
+    /// mutation guard, even when proxy default ordering is also present.
+    #[test]
+    fn mutation_guard_rejects_explicit_order_by() {
+        let user_order = crate::query::OrderExpr::__from_macro_column(
+            "id",
+            crate::query::Direction::Asc,
+            crate::query::NullsOrder::Default,
+        );
+        let qs: QuerySet<FakeProxy> = QuerySet::<FakeProxy>::new().order_by(|_| user_order);
+        let err = qs
+            .validate_mutation_read_tail("delete")
+            .expect_err("explicit order_by should be rejected for mutation terminals");
+        match err {
+            crate::DjogiError::Validation(msg) => {
+                assert!(
+                    msg.contains("order_by"),
+                    "validation should mention order_by, got: {msg}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mutation_guard_rejects_other_read_tail_modifiers() {
+        for (qs, expected) in [
+            (QuerySet::<Fake>::new().offset(10), "offset"),
+            (QuerySet::<Fake>::new().distinct(), "distinct"),
+            (QuerySet::<Fake>::new().select_for_update(), "row locks"),
+        ] {
+            let err = qs
+                .validate_mutation_read_tail("delete")
+                .expect_err("read-tail modifier should be rejected for mutation terminals");
+            match err {
+                crate::DjogiError::Validation(msg) => {
+                    assert!(
+                        msg.contains(expected),
+                        "validation should mention {expected}, got: {msg}"
+                    );
+                }
+                other => panic!("expected Validation, got {other:?}"),
+            }
+        }
+    }
+
+    fn fake_relation_path() -> RelationPath<Fake, FakeProxy> {
+        RelationPath::new("proxy_id", "fake_proxy", RelationKind::ForeignKey)
+    }
+
+    #[test]
+    fn mutation_guard_rejects_prefetch_paths() {
+        let qs: QuerySet<Fake> = QuerySet::new().prefetch(fake_relation_path());
+        let err = qs
+            .validate_mutation_read_tail("delete")
+            .expect_err("prefetch should be rejected for mutation terminals");
+        match err {
+            crate::DjogiError::Validation(msg) => {
+                assert!(
+                    msg.contains("prefetch"),
+                    "validation should mention prefetch, got: {msg}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mutation_guard_rejects_select_related_paths() {
+        let qs: QuerySet<Fake> = QuerySet::new().select_related(fake_relation_path());
+        let err = qs
+            .validate_mutation_read_tail("update")
+            .expect_err("select_related should be rejected for mutation terminals");
+        match err {
+            crate::DjogiError::Validation(msg) => {
+                assert!(
+                    msg.contains("select_related"),
+                    "validation should mention select_related, got: {msg}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mutation_guard_rejects_cache_target() {
+        let punnu = crate::cache::Punnu::<FakeProxy>::builder().build();
+        let qs: QuerySet<FakeProxy> = QuerySet::new().bind_cache_for_test(punnu);
+        let err = qs
+            .validate_mutation_read_tail("delete")
+            .expect_err("cache_target should be rejected for mutation terminals");
+        match err {
+            crate::DjogiError::Validation(msg) => {
+                assert!(
+                    msg.contains("cache_target"),
+                    "validation should mention cache_target, got: {msg}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
         }
     }
 
@@ -3718,13 +3953,12 @@ mod tests {
         );
     }
 
-    /// `Q::Condition(...)` is always Unreducible. After PR3 the ordinary
-    /// `.filter(|f| f.col().eq(...))` closure returns a portable predicate
-    /// and produces `Q::Portable`, but `.filter_struct(...)` (model-filter
-    /// builder) and any closure that hand-rolls a raw `Condition` still
-    /// route through `Q::Condition(_)` for SQL parity. This test pins the
-    /// SQL-only `Q::Condition` arm: the legacy escape hatch returns `None`
-    /// from `into_basic_predicate`.
+    /// `Q::Condition(...)` is always Unreducible. Ordinary
+    /// `.filter(|f| f.col().eq(...))` closures and portable generated
+    /// `{Model}Filter` clauses produce `Q::Portable`, but SQL-only generated
+    /// filter clauses and any closure that hand-rolls a raw `Condition` still
+    /// route through `Q::Condition(_)`. This test pins that SQL-only escape
+    /// hatch.
     #[test]
     fn into_basic_predicate_legacy_condition_refuses() {
         use crate::query::condition::{FilterValue, Leaf};

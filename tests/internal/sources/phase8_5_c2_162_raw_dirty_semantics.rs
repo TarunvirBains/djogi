@@ -21,6 +21,7 @@ use std::time::Duration;
 use djogi::DjogiError;
 use djogi::pg::pool::DjogiPool;
 use djogi::testing::{TestDbCleanup, setup_test_db, teardown_test_db};
+use djogi::transaction::atomic;
 use tokio::sync::{Mutex, MutexGuard};
 // `RawAccessExt` is brought into scope by the
 // `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute on the
@@ -234,6 +235,199 @@ async fn pool_raw_scalar_detaches_on_post_query_decode_err() {
          physical connection is closed; pool.size should drop back to 0, \
          got: {status:?}"
     );
+
+    teardown_test_db(cleanup).await;
+}
+
+/// Pool-backed raw SQL keeps the pre-#282 contract: session-scoped statements
+/// still execute on the clean path. The new refusal only applies to
+/// transaction-backed contexts where `atomic()` would otherwise invite callers
+/// to assume rollback can scrub session state.
+#[tokio::test]
+async fn pool_raw_execute_still_allows_session_scoped_set() {
+    let _lock = test_lock().await;
+    let (cleanup, url) = provision_test_db().await;
+
+    let pool = DjogiPool::builder(&url)
+        .max_size(2)
+        .build()
+        .await
+        .expect("pool builds");
+
+    let mut ctx = djogi::DjogiContext::from_pool(pool);
+    ctx.raw_execute("SET application_name = 'djogi_282_pool_allowed'", &[])
+        .await
+        .expect("pool-backed raw_execute should preserve the existing session-statement contract");
+
+    teardown_test_db(cleanup).await;
+}
+
+/// Transaction-backed raw SQL must now reject plain session-level `SET`
+/// even when the SQL is preceded by comments or mixed-case keywords.
+#[tokio::test]
+async fn transaction_raw_execute_rejects_plain_set_after_comments() {
+    let _lock = test_lock().await;
+    let (cleanup, url) = provision_test_db().await;
+
+    let pool = DjogiPool::builder(&url)
+        .max_size(2)
+        .build()
+        .await
+        .expect("pool builds");
+
+    let mut ctx = djogi::DjogiContext::from_pool(pool);
+    atomic(&mut ctx, |tx| {
+        Box::pin(async move {
+            let err = tx
+                .raw_execute(
+                    "/* leading comment ; */ -- line comment\n sEt search_path = public",
+                    &[],
+                )
+                .await
+                .expect_err("plain SET inside atomic() must be refused before SQL reaches Postgres");
+            match err {
+                DjogiError::SessionStatementDisallowedInTransaction { statement, .. } => {
+                    assert_eq!(statement, "SET");
+                }
+                other => panic!("expected SessionStatementDisallowedInTransaction(SET), got: {other:?}"),
+            }
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+    .expect("classifier refusal should not poison the outer transaction");
+
+    teardown_test_db(cleanup).await;
+}
+
+/// `SET LOCAL`, `SET CONSTRAINTS`, and `SET TRANSACTION` are the explicit
+/// allow-list under #282. They are transaction-scoped and therefore safe to
+/// execute inside `atomic()`.
+#[tokio::test]
+async fn transaction_raw_execute_allows_transaction_scoped_set_forms() {
+    let _lock = test_lock().await;
+    let (cleanup, url) = provision_test_db().await;
+
+    let pool = DjogiPool::builder(&url)
+        .max_size(2)
+        .build()
+        .await
+        .expect("pool builds");
+
+    let mut ctx = djogi::DjogiContext::from_pool(pool);
+
+    atomic(&mut ctx, |tx| {
+        Box::pin(async move {
+            tx.raw_execute("SET LOCAL statement_timeout = '5s'", &[])
+                .await
+                .expect("SET LOCAL must remain allowed");
+            tx.raw_execute("SET CONSTRAINTS ALL IMMEDIATE", &[])
+                .await
+                .expect("SET CONSTRAINTS must remain allowed");
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+    .expect("transaction-scoped SET forms must succeed");
+
+    atomic(&mut ctx, |tx| {
+        Box::pin(async move {
+            tx.raw_execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED", &[])
+                .await
+                .expect("SET TRANSACTION must remain allowed when it is the first statement");
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+    .expect("SET TRANSACTION must succeed in a fresh transaction");
+
+    teardown_test_db(cleanup).await;
+}
+
+/// `raw_ddl` may contain multiple top-level statements, comments, quoted
+/// strings, and dollar-quoted bodies. The #282 scanner must inspect each real
+/// statement without naively splitting on every `;`.
+#[tokio::test]
+async fn transaction_raw_ddl_rejects_session_statement_after_dollar_quoted_body() {
+    let _lock = test_lock().await;
+    let (cleanup, url) = provision_test_db().await;
+
+    let pool = DjogiPool::builder(&url)
+        .max_size(2)
+        .build()
+        .await
+        .expect("pool builds");
+
+    let mut ctx = djogi::DjogiContext::from_pool(pool);
+    atomic(&mut ctx, |tx| {
+        Box::pin(async move {
+            let err = tx
+                .raw_ddl(
+                    r#"
+                        DO $body$
+                        BEGIN
+                            PERFORM '; still inside the body';
+                            PERFORM $$nested ; dollar quote$$;
+                        END
+                        $body$;
+                        /* the next top-level statement is the one that matters */
+                        SET search_path = public;
+                    "#,
+                )
+                .await
+                .expect_err("raw_ddl must reject session-scoped statements inside atomic()");
+            match err {
+                DjogiError::SessionStatementDisallowedInTransaction { statement, .. } => {
+                    assert_eq!(statement, "SET");
+                }
+                other => panic!("expected SessionStatementDisallowedInTransaction(SET), got: {other:?}"),
+            }
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+    .expect("preflight refusal should not poison the outer transaction");
+
+    teardown_test_db(cleanup).await;
+}
+
+/// A safe `raw_ddl` batch with internal semicolons in a dollar-quoted body
+/// must still execute. This is the positive pin against a naive `split(';')`
+/// classifier.
+#[tokio::test]
+async fn transaction_raw_ddl_allows_safe_batch_with_dollar_quoted_body() {
+    let _lock = test_lock().await;
+    let (cleanup, url) = provision_test_db().await;
+
+    let pool = DjogiPool::builder(&url)
+        .max_size(2)
+        .build()
+        .await
+        .expect("pool builds");
+
+    let mut ctx = djogi::DjogiContext::from_pool(pool);
+    atomic(&mut ctx, |tx| {
+        Box::pin(async move {
+            tx.raw_ddl(
+                r#"
+                    DO $body$
+                    BEGIN
+                        PERFORM '; safe body';
+                    END
+                    $body$;
+                    CREATE TEMP TABLE djogi_282_safe_batch (value integer NOT NULL);
+                "#,
+            )
+            .await
+            .expect("safe raw_ddl batch should execute inside atomic()");
+            tx.raw_execute("INSERT INTO djogi_282_safe_batch (value) VALUES (1)", &[])
+                .await
+                .expect("table created by safe batch should be usable");
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+    .expect("safe raw_ddl batch must commit");
 
     teardown_test_db(cleanup).await;
 }

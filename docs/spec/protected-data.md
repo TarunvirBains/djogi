@@ -6,10 +6,6 @@ Djogi needs a way to describe sensitive fields mechanically and to attach storag
 
 This spec defines the descriptor-level primitives for protected data. It does **not** define full governance execution or legal workflow behavior.
 
-> **Status:** Descriptor-side primitives shipped in Phase 7.5. Runtime
-> activation (codec encode/decode on CRUD, lifecycle execution,
-> redaction-aware audit logs) is staged across Phase 8 and the
-> governance/observability phases that follow.
 
 ---
 
@@ -24,8 +20,7 @@ This spec defines the descriptor-level primitives for protected data. It does **
 
 ## Minimal Public Surface
 
-Phase 7.5 stabilizes the descriptor-facing primitives via a single
-grouped attribute. Five named keys live inside `protected(...)`, and
+Field protection is declared via a single grouped attribute. Five named keys live inside `protected(...)`, and
 `sensitivity` is **mandatory**:
 
 ```rust
@@ -73,10 +68,7 @@ struct.
   capability tied to a later phase that gives the macro full
   descriptor-pass visibility.
 - **(e) `codec = "..."` must name a value in the framework's
-  compile-time codec registry.** Phase 7.5 ships an empty registry —
-  every codec string is rejected at expansion time with
-  `unregistered codec ID 'X'. Valid codec IDs in this build of
-  Djogi: (none).` The registry will be populated in future phases;
+  compile-time codec registry.** The registry is populated with built-in codecs;
   **codecs ship with the framework, not adopter code.**
 
 ### Field annotation vocabulary
@@ -92,7 +84,7 @@ struct.
 - **`rationale = "..."`** — free text. Required when sensitivity is
   above `"none"` (see rule (c)).
 
-- **`redaction = "..."`** — named redaction policy. Phase 7.5 ships:
+- **`redaction = "..."`** — named redaction policy:
   - `"none"` — default.
   - `"hash_id"` — hash to opaque identifier; PK-shaped types only
     (rule (d)).
@@ -100,17 +92,13 @@ struct.
   - `"drop"` — omit the field entirely from redacted renderings.
 
 - **`codec = "..."`** — codec identifier; resolved against the
-  compile-time registry. Phase 7.5 registry is empty (rule (e)).
+  compile-time registry.
 
-- **`retention = "..."`** — closed enum of retention/lifecycle labels.
-  Phase 7.5 ships:
+- **`retention = "..."`** — closed enum of retention/lifecycle labels:
   - `"transient"` — short-lived data.
   - `"standard"` — default retention.
   - `"extended"` — longer-than-default retention.
   - `"archival"` — long-term archival storage.
-
-  Future labels (e.g. `legal_hold`, `anonymize`) are spec amendments,
-  not adopter extensions.
 
 ### Visage-scope axis
 
@@ -156,16 +144,11 @@ For now, every adopter-visible rationale comes from
 
 ### Runtime expectations
 
-- CRUD writes apply the codec on persistence (Phase 8+).
-- Row loading applies the codec on decode (Phase 8+).
+- CRUD writes apply the codec on persistence.
+- Row loading applies the codec on decode.
 - Generated visages, admin defaults, audit-log diff renderers, and
   export bundles all read from the same `ProtectedFieldMetadata`
   source of truth.
-
-The first shipping version does not need a large codec ecosystem. It
-only needs one stable contract for how codecs are declared and
-discovered — the `FieldCodec` trait + the compile-time registry that
-landed in Phase 7.5.
 
 ---
 
@@ -226,15 +209,149 @@ The codec contract belongs in Djogi because:
 
 Field codecs are a data-layer concern, not an HTTP or UI concern.
 
-The compile-time registry (Phase 7.5 T4) provides the lookup the macro
+The compile-time registry provides the lookup the macro
 uses at expansion time to validate `protected(codec = "<id>")`. The
 registry is keyed by the codec identifier string and resolved through
 the `FieldCodec` trait. **The registry is closed: codecs ship with
-the framework, not adopter code.** Phase 7.5 ships the registry empty
-(rule (e) above) — every `codec = "..."` declaration is rejected at
-expansion time. Future framework phases will populate the registry
-with the canonical codec set; adopters who need a custom transform in
-the meantime work around it at the application layer.
+the framework, not adopter code.**
+
+---
+
+## Per-Scope Presentation Codecs
+
+### Syntax and Scope Coverage
+
+Presentation codecs allow field values to be transformed differently depending on the visage scope they appear in. Declare them inside the `per_scope` block within `protected(...)`:
+
+```rust
+#[field(
+    expose(public, support),
+    protected(
+        sensitivity = "pii",
+        rationale = "...",
+        per_scope = {
+            public = {
+                presentation_codec = djogi::presentation::builtins::MaskString
+            }
+        }
+    )
+)]
+pub email: String,
+```
+
+Each entry in `per_scope` maps a scope name to a codec configuration. A scope that is omitted from `per_scope` receives the field's storage type unchanged in that scope's generated visage.
+
+Example: if `email` is `expose(public, support)` with only `per_scope = { public = {...} }`, then:
+
+- `UserPublic::email` has the codec's output type
+- `UserSupport::email` is `String` (the storage type)
+
+### `presentation_codec` vs `try_presentation_codec`
+
+Two keys control whether codec application is infallible or fallible:
+
+- **`presentation_codec = Type`** — the codec application is infallible. The generated visage
+  for that scope implements `From<&Model>`.
+- **`try_presentation_codec = Type`** — the codec application may fail. If any field in a scope
+  uses `try_presentation_codec`, the generated visage for that scope implements
+  `TryFrom<&Model>` instead of `From<&Model>`.
+
+### Output Type in Generated Visages
+
+When a field carries a codec, the field's type in the generated visage is not the storage type
+but the codec's associated output type:
+
+```rust
+<CodecType as djogi::presentation::PresentationCodecInfo<StorageType>>::Output
+```
+
+This contract is verified at compile time. The macro emits the associated type directly, not
+the storage type.
+
+### Identity Queryability Footgun
+
+`djogi::presentation::builtins::Identity` is intentionally permissive:
+`QUERYABILITY = PredicateAndOrder`. Treat it as an explicit plaintext opt-in.
+
+If a sensitive field is exposed in a user-facing scope and uses `Identity`,
+the generated accessor grants direct predicate/order access on the storage
+value through visage query helpers. For PII fields, prefer `MaskString`,
+`MaskOptionString`, or HMAC codecs unless plaintext queryability is an
+explicitly reviewed requirement.
+
+### HMAC Key Requirement and Startup Validation
+
+HMAC presentation codecs are optional and gated behind the crate feature
+`hmac-codec`:
+
+- `djogi::presentation::builtins::HmacSha256HexString`
+- `djogi::presentation::builtins::HmacSha256HexOptionString`
+- `djogi::testing::install_presentation_hmac_key_for_testing` (`#[doc(hidden)]`, `unsafe`)
+
+When `hmac-codec` is disabled, those symbols are unavailable and no HMAC-key
+startup requirement exists for presentation codecs.
+
+When `hmac-codec` is enabled, models that use either HMAC codec require
+`DJOGI_PRESENTATION_HMAC_KEY` at startup.
+
+The key must be exactly 64 lowercase hexadecimal characters, which encodes 32 bytes (256 bits)
+of entropy for HMAC operations.
+
+`validate_startup_inventory()` invokes each linked codec's
+`PresentationCodecInfo::validate_startup()`; only keyed codecs that implement
+HMAC validation fail on missing/invalid `DJOGI_PRESENTATION_HMAC_KEY`.
+
+**Pool startup behavior:** `DjogiPool::connect(&database_url)` runs
+`validate_startup_inventory()` and returns `Err(DjogiError::PresentationStartup(..))` for
+startup validation failures.
+
+**Freestanding validation:** `djogi::presentation::validate_startup_inventory()` performs the
+same inventory check without requiring a pool.
+
+**Linked inventory behavior:** both `DjogiPool::connect` and
+`validate_startup_inventory()` only validate `PresentationCodecUsage` records that are
+linked into the running binary. A binary that links no `#[model]` declarations with
+`per_scope` blocks can still return `Ok(())` even when `DJOGI_PRESENTATION_HMAC_KEY`
+is missing.
+
+**Test harness pattern:** to exercise startup-failure tests in a unit or integration
+binary, include (or link) a model that actually emits a keyed `PresentationCodecUsage`
+entry, for example:
+
+```rust
+// In the test binary's module path, define:
+#[model(table = "startup_inventory_harness")]
+#[derive(Debug, Clone)]
+struct PresentationStartupHarness {
+    #[field(
+        expose(public),
+        protected(
+            sensitivity = "pii",
+            rationale = "Harness uses keyed codec for startup validation coverage",
+            per_scope = {
+                public = {
+                    try_presentation_codec = djogi::presentation::builtins::HmacSha256HexString
+                }
+            }
+        )
+    )]
+    pub email: String,
+}
+```
+
+Then run `djogi::presentation::validate_startup_inventory()` (or a pool connect path) in the
+same binary after installing/removing `DJOGI_PRESENTATION_HMAC_KEY` as needed for the
+assertion.
+
+**Testing (`hmac-codec` enabled):** use the doc-hidden `unsafe`
+`djogi::testing::install_presentation_hmac_key_for_testing("aabbcc...")`
+helper only from a window where no other code in the process is concurrently
+reading or writing environment variables, or otherwise satisfies the
+platform-specific stronger requirement for env mutation. A mutex that only
+serializes `DJOGI_PRESENTATION_HMAC_KEY` is not enough by itself. Wrap the
+call in `unsafe` before calling `DjogiPool::connect`. The helper validates
+that the key is exactly 64 lowercase hex characters and sets the environment
+variable.
 
 ---
 

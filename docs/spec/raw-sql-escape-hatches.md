@@ -295,8 +295,29 @@ explicitly — it is covered by the dirty-by-default lifecycle.
 The dirty-by-default guard fires on `Err` / panic / cancellation paths
 only. On the **clean-exit path**, session state mutated by an `Ok` raw
 call still leaves the connection non-default when it returns to the
-pool. Adopters who run session-state-affecting raw SQL must wrap the
-call in `djogi::transaction::atomic(...)` **and** either:
+pool.
+
+When the context is already transaction-backed, Djogi now refuses the most
+dangerous session-scoped statement heads before SQL reaches Postgres. The
+preflight applies to `raw_query`, `raw_rows`, `raw_fetch_one`,
+`raw_scalar`, `raw_execute`, and `raw_ddl`, and returns
+`DjogiError::SessionStatementDisallowedInTransaction { statement }` for:
+
+- plain `SET`
+- `RESET`
+- `DISCARD`
+- `LISTEN`
+- `UNLISTEN`
+- `PREPARE`
+- `DEALLOCATE`
+
+`SET LOCAL ...`, `SET CONSTRAINTS ...`, and `SET TRANSACTION ...` remain
+allowed. For `raw_ddl`, the preflight scans real top-level statements while
+respecting comments, quoted strings, and dollar-quoted bodies; empty or
+trivia-only batches pass through.
+
+Adopters who run session-state-affecting raw SQL on the clean path must wrap
+the call in `djogi::transaction::atomic(...)` **and** either:
 
 - use a TRANSACTION-LOCAL form so a `COMMIT` or `ROLLBACK` clears the
   state automatically — `SET LOCAL key = value` instead of `SET key =
@@ -332,20 +353,20 @@ Two worked examples:
 Adopters must choose transaction-local forms or run explicit reset on
 every non-cancel exit for the contract to hold.
 
-#### `atomic()` cancellation caveat
+#### `atomic()` cancellation and nested poison
 
-`atomic()` issues `ROLLBACK` on the closure's `Err` and panic paths. It
-does NOT issue `ROLLBACK` when the entire `atomic()` future is dropped
-mid-execution (e.g. wrapping an `atomic` call in `tokio::time::timeout` and
-having the timeout fire before the closure resolves). In that case the
-transaction-backed `DjogiContext` drops without async cleanup and the
-underlying connection returns to the pool with the transaction still open.
+Top-level `atomic()` cancellation no longer recycles an open transaction.
+If the `atomic()` future is dropped mid-execution (for example by
+`tokio::time::timeout`), Djogi's dirty-drop guard detaches the physical
+connection instead of returning a still-open transaction to the pool.
 
-This is a pre-existing transaction-scope hazard tracked separately from
-djogi#162. It is not introduced by the pool-path guard described above,
-but adopters relying on `atomic()` as a session-state isolation mechanism
-should avoid wrapping it in cancellation primitives until the gap is
-closed.
+Nested cancellation remains fail-closed rather than auto-healed. If a nested
+`atomic()` future is dropped before savepoint cleanup can run, the outer
+transaction is marked poisoned. Framework-owned helpers then reject further
+work with `DjogiError::TransactionPoisoned`, and `commit` rolls the outer
+transaction back instead of committing it. In that state `raw_conn()` also
+returns `None`, so raw callers cannot keep tunneling through a poisoned
+transaction handle.
 
 Cursors, `COPY` streams, and other multi-round-trip protocol operations
 should go through `RawPoolAccessExt::raw_with_client`. Its `WithClientGuard`

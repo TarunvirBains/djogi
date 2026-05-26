@@ -419,6 +419,38 @@ pub struct ModelAttrs {
     /// safely and deterministically.
     pub tablespace: Option<String>,
 
+    /// Custom visage scopes from `#[model(visage_scopes(name = Suffix, ...))]`
+    /// — GH #227 Stage 4.
+    ///
+    /// Each entry is `(scope_key, struct_suffix)` — e.g. `("support",
+    /// "Support")` generates `{Model}Support` alongside the four built-in
+    /// scope visages (`Public` / `SelfView` / `Admin` / `Export`). The
+    /// scope key is the lowercase identifier the adopter uses inside
+    /// `#[field(expose(...))]`; the struct suffix is the PascalCase suffix
+    /// appended to the model ident to form the generated visage struct
+    /// name.
+    ///
+    /// Validated at parse time:
+    ///
+    /// - Scope keys must NOT collide with [`ExposeSpec::BUILTIN_SCOPES`]
+    ///   (`public` / `self_view` / `admin` / `export`) — shadowing a
+    ///   built-in scope would produce two visage structs with the same
+    ///   name.
+    /// - Scope keys must satisfy the standard Djogi identifier grammar
+    ///   (ASCII letter or underscore start, alphanumerics / underscores
+    ///   after, ≤ 63 bytes) — per [`feedback_no_regex_in_djogi`], spelled
+    ///   out byte-level.
+    /// - Struct suffix idents must start with an uppercase ASCII letter
+    ///   (matching the built-in `Public` / `SelfView` casing convention).
+    /// - Scope keys must be unique within the same `visage_scopes(...)`
+    ///   block.
+    ///
+    /// Empty when no `visage_scopes(...)` block is present. The visage
+    /// emitter chains this Vec onto its built-in `SCOPES` table and
+    /// emits one generated visage struct per resulting `(key, suffix)`
+    /// pair.
+    pub visage_scopes: Vec<(String, String)>,
+
     /// `#[model(strict_ids)]` — Phase 8.5 djogi#189.
     ///
     /// When `true`, the macro propagates the opt-in strict structural
@@ -753,6 +785,12 @@ impl ModelAttrs {
         let mut table_comment: Option<String> = Option::None;
         let mut storage_params: Option<String> = Option::None;
         let mut tablespace: Option<String> = Option::None;
+        // GH #227 Stage 4 — `#[model(visage_scopes(name = Suffix, ...))]`.
+        // Accumulator + duplicate-block detection. Each entry is
+        // `(scope_key, struct_suffix)`; the visage emitter chains this
+        // Vec onto its built-in `SCOPES` table.
+        let mut visage_scopes: Vec<(String, String)> = Vec::new();
+        let mut seen_visage_scopes = false;
         let mut proxy_for: Option<syn::Ident> = Option::None;
         let mut proxy_default_order: Vec<(syn::Ident, crate::model::proxy::OrderDir)> = Vec::new();
         let mut seen_proxy_default_order = false;
@@ -1151,7 +1189,7 @@ impl ModelAttrs {
                                  `storage_params`, `tablespace`, \
                                  `no_default`, `through`, `events`, `hooks`, `auditable`, \
                                  `soft_deletable`, `strict_ids`, `proxy_for`, `default_order`, \
-                                 or `default_filter`",
+                                 `default_filter`, or `visage_scopes`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -1167,6 +1205,23 @@ impl ModelAttrs {
                         ));
                     }
                     fts = Some(FtsSpec::parse_from_list(list)?);
+                }
+                // `visage_scopes(name = Suffix, ...)` — GH #227 Stage 4.
+                // Paren-delimited list of `scope_ident = SuffixIdent`
+                // entries. Each pair adds one custom scope to the
+                // visage emitter's iteration set (alongside the four
+                // built-ins). The dedicated parse helper handles
+                // grammar / duplicate / shadow-builtin / identifier
+                // validation so the dispatch arm here stays compact.
+                Meta::List(list) if list.path.is_ident("visage_scopes") => {
+                    if seen_visage_scopes {
+                        return Err(syn::Error::new_spanned(
+                            &list.path,
+                            "duplicate `visage_scopes` key in #[model(...)]",
+                        ));
+                    }
+                    seen_visage_scopes = true;
+                    visage_scopes = parse_visage_scopes_list(list)?;
                 }
                 // `indexes(index(...), unique(...), ...)` — Phase 7-Zero v3 T3.
                 // Full model-level grammar lives in `crate::model::indexes`;
@@ -1465,6 +1520,8 @@ impl ModelAttrs {
             // Phase 8.5 Cluster 2 (djogi#189) — opt-in strict HeerId /
             // RanjId structural CHECK propagation flag.
             strict_ids,
+            // GH #227 Stage 4 — custom visage scopes.
+            visage_scopes,
         })
     }
 }
@@ -2153,7 +2210,16 @@ impl ExposeSpec {
         matches!(name, "none" | "internal")
     }
 
-    fn is_builtin_scope(name: &str) -> bool {
+    /// `true` when `name` matches one of [`Self::BUILTIN_SCOPES`].
+    ///
+    /// Used by the visage emitter at expand time to validate that every
+    /// user-declared `expose(scope)` either matches a built-in scope or
+    /// matches a custom scope declared via
+    /// `#[model(visage_scopes(name = Suffix))]`. The pre-Stage-4 use
+    /// inside `parse_entries` was removed because custom scopes are not
+    /// in scope at field-parse time; the check moved to the emitter
+    /// where the full `ModelAttrs` is available.
+    pub(crate) fn is_builtin_scope(name: &str) -> bool {
         Self::BUILTIN_SCOPES.contains(&name)
     }
 
@@ -2226,12 +2292,33 @@ impl ExposeSpec {
                 continue;
             }
 
-            if !Self::is_builtin_scope(&scope_name) {
+            // GH #227 Stage 4 — custom-scope names declared via
+            // `#[model(visage_scopes(name = Suffix, ...))]` are not in
+            // scope at field-attribute-parse time (the model attributes
+            // have not been fully read by the time darling invokes
+            // `FromMeta` for the field). Defer the membership check to
+            // the visage emitter, which has the full `ModelAttrs` and
+            // can validate `scope_name in BUILTIN_SCOPES ∪ visage_scopes`.
+            // The byte-level identifier grammar still runs here so
+            // typos / illegal characters surface at parse time with a
+            // span-precise diagnostic.
+            let scope_bytes = scope_name.as_bytes();
+            let ident_ok = !scope_bytes.is_empty()
+                && scope_bytes.len() <= 63
+                && (scope_bytes[0].is_ascii_alphabetic() || scope_bytes[0] == b'_')
+                && scope_bytes
+                    .iter()
+                    .skip(1)
+                    .all(|b| b.is_ascii_alphanumeric() || *b == b'_');
+            if !ident_ok {
                 return Err(syn::Error::new_spanned(
                     &scope_ident,
                     format!(
-                        "unknown scope `{scope_name}`; expected one of: \
-                         public, self_view, admin, export, none, internal"
+                        "scope key `{scope_name}` must be a plain ASCII identifier \
+                         (letter or underscore first byte, alphanumerics / \
+                         underscores after, ≤ 63 bytes). Built-in scopes are \
+                         `public`, `self_view`, `admin`, `export`; custom scopes \
+                         are declared via `#[model(visage_scopes(name = Suffix))]`."
                     ),
                 ));
             }
@@ -2790,6 +2877,48 @@ impl FieldAttrs {
             }
         }
 
+        // Validate `#[field(max_length = N)]`.
+        //
+        // Postgres enforces:
+        // - `VARCHAR(0)` is invalid (`length for type varchar must be at least 1`);
+        // - `VARCHAR(N)` is bounded above by 10_485_760 (same as the
+        //   protocol row-size cap).
+        //
+        // The attribute is also only meaningful on `String` fields.
+        // Any non-String type gets the explicit compile-time error instead of
+        // being silently retained as metadata.
+        if let Some(max_length) = attrs.max_length {
+            let span = find_named_int_lit_span(field, "max_length").unwrap_or_else(|| field.span());
+            if max_length == 0 {
+                return Err(syn::Error::new(
+                    span,
+                    "`#[field(max_length = 0)]` is invalid — Postgres requires \
+                     `VARCHAR(N)` where N >= 1 (received N = 0)",
+                ));
+            }
+            if max_length > 10_485_760 {
+                return Err(syn::Error::new(
+                    span,
+                    format!(
+                        "`#[field(max_length = {max_length})]` is invalid — Postgres caps `VARCHAR` at \
+                         10_485_760 (received N = {max_length})"
+                    ),
+                ));
+            }
+
+            let (inner_ty, _nullable) = unwrap_schema_type(&attrs.ty);
+            if rust_type_to_sql(&inner_ty) != Some("TEXT") {
+                return Err(syn::Error::new(
+                    span,
+                    format!(
+                        "`#[field(max_length = {max_length})]` is only valid on `String` fields. \
+                         `String` columns emit `VARCHAR(N)`; non-String fields ignore the length \
+                         contract at runtime and must not use this attribute"
+                    ),
+                ));
+            }
+        }
+
         // Walk raw `#[field(expose(...))]` attrs — darling's declarative
         // derive cannot destructure the two-form `expose(scope)` vs
         // `expose(scope = "Peer")` grammar, so we recover the tokens
@@ -3237,6 +3366,136 @@ fn parse_index_method(s: &str, span: proc_macro2::Span) -> syn::Result<()> {
     }
 }
 
+/// Parse `#[model(visage_scopes(name = Suffix, ...))]` — GH #227 Stage 4.
+///
+/// Returns the parsed `(scope_key, struct_suffix)` pairs in source order.
+/// Validation rules (all enforced here so the diagnostic anchors at the
+/// offending ident):
+///
+/// 1. Scope keys must not shadow [`ExposeSpec::BUILTIN_SCOPES`]. Shadowing
+///    a built-in would attempt to emit two visage structs with the same
+///    `{Model}{Suffix}` name (or with different suffixes for the same
+///    scope), which contradicts the single-visage-per-scope invariant.
+/// 2. Scope keys follow the standard Djogi identifier grammar (ASCII
+///    letter / underscore start, alphanumerics / underscores after,
+///    ≤ 63 bytes) per `feedback_no_regex_in_djogi`.
+/// 3. Struct suffix idents must start with an uppercase ASCII letter so
+///    `{Model}{Suffix}` mirrors the `{Model}Public` casing convention.
+/// 4. Scope keys must be unique within the same `visage_scopes(...)`
+///    block — the second occurrence is rejected with a span-precise
+///    diagnostic anchored at the duplicate ident.
+fn parse_visage_scopes_list(list: &syn::MetaList) -> syn::Result<Vec<(String, String)>> {
+    let entries: Punctuated<Meta, Token![,]> =
+        list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+
+    let mut out: Vec<(String, String)> = Vec::new();
+    for meta in &entries {
+        let Meta::NameValue(MetaNameValue {
+            path,
+            value: Expr::Path(expr_path),
+            ..
+        }) = meta
+        else {
+            return Err(syn::Error::new(
+                meta.span(),
+                "every `visage_scopes(...)` entry must be \
+                 `scope_ident = SuffixIdent`",
+            ));
+        };
+
+        let Some(scope_ident) = path.get_ident() else {
+            return Err(syn::Error::new(
+                path.span(),
+                "`visage_scopes(...)` scope key must be a single-segment ident",
+            ));
+        };
+        let scope_name = scope_ident.to_string();
+
+        // Rule (1): shadowing built-in scopes is rejected. The built-in
+        // visage emitter unconditionally emits `{Model}Public` etc.; an
+        // adopter cannot replace those via `visage_scopes(...)`.
+        if crate::model::attrs::ExposeSpec::BUILTIN_SCOPES.contains(&scope_name.as_str()) {
+            return Err(syn::Error::new(
+                scope_ident.span(),
+                format!(
+                    "`visage_scopes(...)` scope `{scope_name}` collides with a built-in \
+                     scope. The four built-in scopes (public, self_view, admin, export) \
+                     are emitted automatically — `visage_scopes(...)` is for declaring \
+                     ADDITIONAL custom scopes only.",
+                ),
+            ));
+        }
+
+        // Rule (2): byte-level identifier grammar — no regex per
+        // `feedback_no_regex_in_djogi`. Spelled out: ASCII letter or
+        // underscore first byte, alphanumerics / underscores after,
+        // ≤ 63 bytes (Postgres unquoted-identifier cap mirrored for
+        // consistency with the rest of the macro's identifier rules).
+        let bytes = scope_name.as_bytes();
+        let ident_ok = !bytes.is_empty()
+            && bytes.len() <= 63
+            && (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+            && bytes
+                .iter()
+                .skip(1)
+                .all(|b| b.is_ascii_alphanumeric() || *b == b'_');
+        if !ident_ok {
+            return Err(syn::Error::new(
+                scope_ident.span(),
+                format!(
+                    "`visage_scopes(...)` scope key `{scope_name}` must be a plain \
+                     ASCII identifier — letter or underscore first byte, \
+                     alphanumerics / underscores after, at most 63 bytes",
+                ),
+            ));
+        }
+
+        // Rule (4): duplicate scope keys are rejected. The diagnostic
+        // anchors at the second occurrence so the underline points at
+        // the offending ident rather than the whole `visage_scopes(...)`
+        // block.
+        if out.iter().any(|(k, _)| k == &scope_name) {
+            return Err(syn::Error::new(
+                scope_ident.span(),
+                format!("`visage_scopes(...)` scope key `{scope_name}` declared twice",),
+            ));
+        }
+
+        // Right-hand side: a path expression naming the struct suffix
+        // ident — e.g. `Support` in `support = Support`. Must be a
+        // single-segment ident whose first byte is an uppercase ASCII
+        // letter so `{Model}{Suffix}` reads naturally.
+        let Some(suffix_ident) = expr_path.path.get_ident() else {
+            return Err(syn::Error::new(
+                expr_path.path.span(),
+                "`visage_scopes(...)` struct suffix must be a single-segment ident",
+            ));
+        };
+        let suffix_name = suffix_ident.to_string();
+        let suffix_bytes = suffix_name.as_bytes();
+        let suffix_ok = !suffix_bytes.is_empty()
+            && suffix_bytes[0].is_ascii_uppercase()
+            && suffix_bytes
+                .iter()
+                .skip(1)
+                .all(|b| b.is_ascii_alphanumeric() || *b == b'_');
+        if !suffix_ok {
+            return Err(syn::Error::new(
+                suffix_ident.span(),
+                format!(
+                    "`visage_scopes(...)` struct suffix `{suffix_name}` must start \
+                     with an uppercase ASCII letter (matching the `Public` / \
+                     `SelfView` casing convention)",
+                ),
+            ));
+        }
+
+        out.push((scope_name, suffix_name));
+    }
+
+    Ok(out)
+}
+
 /// `true` when `ty` is a bare HeerId / RanjId family scalar (any of the
 /// six type names from `HeerId` / `HeerIdDesc` / `HeerIdRecencyBiased` /
 /// `RanjId` / `RanjIdDesc` / `RanjIdRecencyBiased`, in bare / `djogi::*`
@@ -3407,6 +3666,40 @@ fn find_named_str_lit_span(field: &syn::Field, key: &str) -> Option<proc_macro2:
                 value:
                     Expr::Lit(ExprLit {
                         lit: lit @ Lit::Str(_),
+                        ..
+                    }),
+                ..
+            }) = meta
+                && path.is_ident(key)
+            {
+                return Some(lit.span());
+            }
+        }
+    }
+    None
+}
+
+/// Walk `#[field(...)]` attrs and return the span of the integer literal
+/// paired with `key = <integer>`. Used by post-parse validators to
+/// produce span-precise errors that underline the offending literal
+/// rather than the whole field.
+///
+/// Mirrors [`find_named_str_lit_span`] but matches integer literals
+/// (`Lit::Int`) instead of string literals (`Lit::Str`).
+fn find_named_int_lit_span(field: &syn::Field, key: &str) -> Option<proc_macro2::Span> {
+    for attr in &field.attrs {
+        if !attr.path().is_ident("field") {
+            continue;
+        }
+        let metas = attr
+            .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            .ok()?;
+        for meta in &metas {
+            if let Meta::NameValue(MetaNameValue {
+                path,
+                value:
+                    Expr::Lit(ExprLit {
+                        lit: lit @ Lit::Int(_),
                         ..
                     }),
                 ..

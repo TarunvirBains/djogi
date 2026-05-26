@@ -412,6 +412,57 @@ async fn interval_bulk_update_sets_duration(mut ctx: djogi::DjogiContext) {
 }
 
 #[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
+async fn interval_bulk_update_increments_and_decrements_duration(mut ctx: djogi::DjogiContext) {
+    let row = Phase85C4212IntervalRow::create(
+        &mut ctx,
+        Phase85C4212IntervalRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            duration: Interval::days_only(10),
+            maybe_duration: None,
+            label: "bulk-update-arithmetic-target".into(),
+        },
+    )
+    .await
+    .expect("create row for bulk interval arithmetic update");
+
+    let incremented = Phase85C4212IntervalRow::objects()
+        .filter(|f| f.id().eq(row.id))
+        .update(|f| f.duration().increment(Interval::days_only(4)))
+        .execute(&mut ctx)
+        .await
+        .expect("interval increment update must execute");
+    assert_eq!(incremented, 1, "exactly one row should be incremented");
+
+    let current = Phase85C4212IntervalRow::get(&mut ctx, row.id)
+        .await
+        .expect("re-fetch after interval increment");
+    assert_eq!(
+        current.duration,
+        Interval::days_only(14),
+        "duration must reflect interval increment"
+    );
+
+    let decremented = Phase85C4212IntervalRow::objects()
+        .filter(|f| f.id().eq(row.id))
+        .update(|f| f.duration().decrement(Interval::days_only(2)))
+        .execute(&mut ctx)
+        .await
+        .expect("interval decrement update must execute");
+    assert_eq!(decremented, 1, "exactly one row should be decremented");
+
+    let updated = Phase85C4212IntervalRow::get(&mut ctx, row.id)
+        .await
+        .expect("re-fetch after interval decrement");
+    assert_eq!(
+        updated.duration,
+        Interval::days_only(12),
+        "duration must reflect interval decrement"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
 async fn interval_sql_eq_linearizes_months_and_days(mut ctx: djogi::DjogiContext) {
     // This test pins the deliberate divergence between Rust structural
     // `PartialEq` on `Interval` and Postgres SQL `=` on INTERVAL columns.

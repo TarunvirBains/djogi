@@ -91,6 +91,7 @@ Vehicle::objects()
 
 `QuerySet<T>` compiles its `Condition` tree into SQL via Djogi's own internal `ConditionBuilder`, which writes through `pg::accumulator::SqlAccumulator` — a thin owned-strings + bound-values pair handed to `tokio_postgres::Client::query` at terminal time. The framework does not depend on any third-party query-building crate; this layer is owned entirely by Djogi.
 
+The typed `ConditionBuilder` shape is built on `tokio-postgres + deadpool-postgres + postgres-types`, not a third-party query-builder crate.
 
 | Layer | What it does |
 |---|---|
@@ -164,11 +165,88 @@ Contract:
   (`prefetch`, `select_related`, `cache`, a non-default `LockMode`, or
   a non-default `DistinctMode`).
 
-Related framework gaps not covered by this surface:
+`VALUES` inline relations as join sources and `MERGE INTO ... USING ...` are presently not supported by this surface.
 
-- Set operations (`UNION` / `INTERSECT` / `EXCEPT`) — djogi#101.
-- `RETURNING` for INSERT...SELECT — follow-up issue; current terminal
-  returns the affected row count only.
+### 5.7a PG18 OLD/NEW RETURNING
+
+PostgreSQL 18 added `OLD`/`NEW` aliases in `RETURNING` clauses for `UPDATE` and `DELETE`. Djogi exposes this through:
+
+- `Model::update_returning_pair(self, ctx) -> Result<ReturningPair<Self>>` — consuming update that returns both pre- and post-update row snapshots in a single round-trip.
+- `UpdateStmt::execute_returning_pairs(ctx) -> Result<Vec<ReturningPair<T>>>` — bulk update returning one pair per affected row.
+- `Model::delete_returning(self, ctx) -> Result<Self>` — consuming delete that returns the pre-delete DB snapshot.
+- `QuerySet::delete_returning(ctx) -> Result<Vec<T>>` — bulk delete returning one snapshot per deleted row.
+
+`ReturningPair<T>` has `pub old: T` and `pub new: T`. Both are non-null, fully-typed model instances decoded from the database using `FromJoinedPgRow` with the reserved `__djogi_old__` / `__djogi_new__` prefixes.
+
+**PG18 only.** No fallback or polyfill is provided. Djogi already has a hard PG18 floor.
+
+**Bulk memory warning.** `execute_returning_pairs` and `QuerySet::delete_returning` materialize one value per affected row. Apply `.filter(...)` to narrow the queryset before calling these terminals on large tables.
+
+**INSERT** — `create` already returns the DB post-image; no pair type is needed. PG `OLD` is normally NULL for a simple INSERT.
+
+**MERGE** — MERGE result hydration is presently not supported. `ReturningPair<T>` is intentionally non-optional to preserve UPDATE ergonomics.
+
+### 5.7b VALUES Inline-Relation Joins
+
+`InlineValues<Row>` holds a typed `Vec<Row>` of tuple data computed in Rust.
+`QuerySet<T>::join_values` / `left_join_values` join it against the model
+table with a structured, typed `ON` predicate via `FieldRef::eq_values` /
+`DjogiField::eq_values`. `QuerySet<T>::cross_join_values` is the explicit
+cartesian-product sibling when no `ON` predicate is desired.
+
+SQL shape:
+
+```sql
+SELECT
+    __djogi_m.<col>  AS <col>, ...,       -- T's COLUMN_LIST
+    <alias>.<vcol_0> AS __djogi_values_0, -- projected values cols
+    ...
+FROM <table> AS __djogi_m
+INNER JOIN (VALUES
+    ($1::BIGINT, $2::DOUBLE PRECISION),   -- first row: per-column casts
+    ($3, $4)                              -- subsequent rows: bare
+) AS <alias>(<vcol_0>, ...)
+  ON __djogi_m.<model_col> = <alias>.<vcol_0>
+[WHERE __djogi_m.<filter_col> op $n]
+[ORDER BY ...] [LIMIT $n] [OFFSET $n]
+```
+
+Key design properties:
+
+- No implicit `ON TRUE` / cartesian join.  The predicate is always explicit
+  on `join_values` / `left_join_values`; explicit cartesian products use
+  `cross_join_values`.
+- All row data binds through `SqlAccumulator::push_bind`; alias and column
+  identifiers are validated with `check_user_supplied_ident` at construction.
+- First-row placeholders are cast (`$1::BIGINT`) so Postgres can infer column
+  types even for otherwise ambiguous NULL rows.
+- Empty `InlineValues` short-circuits on inner join (no DB round-trip) and
+  returns typed NULLs for the values side on left join.
+- Unsupported left-queryset state (`prefetch`, `select_related`, `cache`,
+  row locks, non-default `distinct`) returns `DjogiError::Validation`.
+- `left_join_values` uses a framework-owned presence sentinel column to
+  distinguish "no match" from "matched row with nullable columns". Result
+  shape is pair-based: multiple matching VALUES rows produce multiple
+  `(T, Option<Row>)` pairs for the same left row.
+- Tuple rows arity 1–6.  Supported scalars: standard integers (incl. widened
+  `i8/u8/u16/u32/u64`), floats, `bool`, `Decimal`, `Uuid`, `HeerId`,
+  `HeerIdDesc`, `RanjId`, `RanjIdDesc`, `DateTime`, `Date`, `Time`,
+  `PrimitiveDateTime`, `Interval`, `Vec<u8>`, and `Option<T>` for each.
+
+Entry points:
+
+- `join_values(...) -> Vec<(T, Row)>` — INNER JOIN against the inline relation.
+- `left_join_values(...) -> Vec<(T, Option<Row>)>` — LEFT JOIN; unmatched rows
+  decode as `None`.
+- `cross_join_values(...) -> Vec<(T, Row)>` — explicit cartesian join with no
+  `ON` predicate.
+
+Adoption note: very large client-side value lists should be loaded into a
+temporary/staging table instead of sent as `VALUES`; Postgres planning cost
+grows with `VALUES` size.  Keep per-query VALUES under ~1 000 rows as a rule
+of thumb.  The framework rejects lists where `rows × arity > 65 535`
+(Postgres parameter ceiling) and also rejects terminals whose extra filter /
+pagination binds would push the final query above that ceiling.
 
 ### 5.8 Typed MERGE INTO
 
@@ -218,7 +296,8 @@ Contract:
 
 The query API is expected to support efficient Postgres forms for the workload shapes Djogi targets. That means:
 
-- expression-backed filtering and updates are part of the query API via `set_expr` and `set_field`
+- expression-backed filtering and updates via typed `Expr<V>` handles are
+  part of the framework
 - aggregation, subqueries, locking, and typed result shaping are part of normal ORM work, not exceptional edge cases
 - explicit eager loading must keep query counts understandable and avoid hidden N+1 behavior
 - large-result evaluation must eventually support streaming/chunking rather than requiring full materialization

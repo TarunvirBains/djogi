@@ -858,6 +858,41 @@ impl<M: Model, V: IntoFilterValue> DjogiField<M, V> {
     pub fn set_expr(self, expr: crate::expr::Expr<V>) -> crate::query::update::UpdateAssignment {
         self.sql.set_expr(expr)
     }
+
+    /// Copy from another field in the same query scope — sugar for
+    /// `self.set_field(other.into_sql_field())`.
+    ///
+    /// `other` follows Djogi's sealed SQL-field conversion path so
+    /// callers can pass any supported SQL-handle type (`FieldRef`
+    /// or `DjogiField`) without manually extracting raw handles.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn set_field<T>(self, other: T) -> crate::query::update::UpdateAssignment
+    where
+        T: IntoSqlField<M, V>,
+    {
+        self.sql.set_field(other.into_sql_field())
+    }
+}
+
+impl<M: Model, V> DjogiField<M, V>
+where
+    V: IntoFilterValue + crate::expr::arithmetic::Numeric + Into<crate::expr::Expr<V>>,
+{
+    /// Forwarded arithmetic assignment: `SET col = col + amount`.
+    ///
+    /// See [`FieldRef::increment`] for semantics.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn increment(self, amount: V) -> crate::query::update::UpdateAssignment {
+        self.sql.increment(amount)
+    }
+
+    /// Forwarded arithmetic assignment: `SET col = col - amount`.
+    ///
+    /// See [`FieldRef::decrement`] for semantics.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn decrement(self, amount: V) -> crate::query::update::UpdateAssignment {
+        self.sql.decrement(amount)
+    }
 }
 
 // Phase 8.5 Cluster 4B (djogi#106) — INSERT...SELECT column mapping.
@@ -1340,6 +1375,22 @@ where
 // advertised as Punnu-evaluable portable predicates.
 
 impl<M: Model> DjogiField<M, crate::Interval> {
+    /// Forwarded arithmetic assignment: `SET col = col + amount`.
+    ///
+    /// See [`FieldRef::increment`] for semantics.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn increment(self, amount: crate::Interval) -> crate::query::update::UpdateAssignment {
+        self.sql.increment(amount)
+    }
+
+    /// Forwarded arithmetic assignment: `SET col = col - amount`.
+    ///
+    /// See [`FieldRef::decrement`] for semantics.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn decrement(self, amount: crate::Interval) -> crate::query::update::UpdateAssignment {
+        self.sql.decrement(amount)
+    }
+
     /// `interval_column = value` using PostgreSQL `INTERVAL` equality.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn eq(self, value: crate::Interval) -> Condition {
@@ -5413,18 +5464,25 @@ impl Condition {
 /// The field `fk_column` is the owning side's FK column (e.g.
 /// `"author_id"`), and `peer_fields` is the path-threaded peer `Fields`
 /// handle returned by the macro's traversal accessor.
+///
+/// Ordinary peer-field traversal stays on [`map_filter`](Self::map_filter),
+/// which preserves the legacy [`Condition`] return shape. When the peer
+/// closure yields a broader query predicate (`Q<M>`, a codec-gated
+/// `PresentationFieldRef::eq(...)`, or any other
+/// [`IntoQ`](crate::query::IntoQ) payload), use
+/// [`map_predicate`](Self::map_predicate) instead.
 pub struct OptionalRelationRef<V> {
     fk_column: &'static str,
     peer_fields: V,
 }
 
 impl<V> OptionalRelationRef<V> {
-    /// Compose a predicate that applies to the peer only when the FK is
-    /// non-NULL.
+    /// Compose a legacy-`Condition` predicate that applies to the peer
+    /// only when the FK is non-NULL.
     ///
     /// The `f` closure receives the peer `Fields` handle by value (it's
-    /// `Copy` on the macro-emitted shape) and must return a `Condition`.
-    /// The returned `Condition` is equivalent to
+    /// `Copy` on the macro-emitted shape) and returns a legacy
+    /// [`Condition`]. The returned predicate is equivalent to
     /// `Condition::and(fk IS NOT NULL, f(peer_fields))`.
     ///
     /// # Consuming `self`
@@ -5446,6 +5504,36 @@ impl<V> OptionalRelationRef<V> {
             FilterValue::Null,
         ));
         Condition::and(not_null, inner)
+    }
+
+    /// Compose a root-typed query predicate that applies to the peer
+    /// only when the FK is non-NULL.
+    ///
+    /// This is the generalized sibling of [`map_filter`](Self::map_filter):
+    /// the inner closure may return any
+    /// [`IntoQ`](crate::query::IntoQ) payload over the owning root model.
+    /// Use this when a peer accessor is codec-gated and therefore returns
+    /// `Q<M>` directly (for example
+    /// `PresentationFieldRef::eq(...) -> Q<RootModel>`), or when you want to
+    /// compose a mixed [`Predicate`](crate::query::Predicate) tree in the
+    /// closure.
+    ///
+    /// The returned `Q<M>` is equivalent to
+    /// `Q::Condition(fk IS NOT NULL) & f(peer_fields).into_q()`.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn map_predicate<M, F, P>(self, f: F) -> crate::query::Q<M>
+    where
+        M: Model,
+        F: FnOnce(V) -> P,
+        P: crate::query::IntoQ<M>,
+    {
+        let inner = f(self.peer_fields).into_q();
+        let not_null = crate::query::Q::Condition(Condition::Leaf(Leaf::new(
+            self.fk_column,
+            LookupOp::IsNotNull,
+            FilterValue::Null,
+        )));
+        not_null & inner
     }
 
     /// Emit a standalone `fk_column IS NULL` predicate. Use from a

@@ -9,6 +9,12 @@ on:
 env:
   CARGO_TERM_COLOR: always
   DATABASE_URL: postgres://djogi:djogi@localhost:5432/djogi_test
+  # Required by the `presentation_codec` integration test binary, which links
+  # `UserWithHmac` — a model whose `HmacSha256HexString` codec calls
+  # `validate_startup()` and checks this env var before any pool can open.
+  # This is the conventional 64-lowercase-hex-char test key documented in
+  # `tests/integration/presentation_codec.rs`; it is not a production secret.
+  DJOGI_PRESENTATION_HMAC_KEY: aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899
 
 # dorny/paths-filter needs pull-requests:read to call GitHub's listFiles API.
 # Without this, fork/contributor PRs (and first-party PRs under default-
@@ -123,7 +129,7 @@ jobs:
         run: cargo xtask check-secrets
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --features spatial,outbox,notify,testing -- -D warnings
+        run: cargo clippy --workspace --all-targets --features spatial,outbox,notify,testing,hmac-codec -- -D warnings
 
       # cargo-deny only runs when dependencies actually change. The license
       # / advisory check is deterministic given the lockfile, so re-running
@@ -227,6 +233,13 @@ jobs:
           --test raw_stream_with_fetch_size_pin
           --test raw_pool_access_pin
           -- --test-threads=1
+
+      - name: Presentation codec HMAC feature gate
+        # `presentation_codec` always runs in the workspace default-feature lane,
+        # but HMAC-specific assertions are gated behind `feature = "hmac-codec"`.
+        # Run the target once with that feature enabled so keyed-codec startup
+        # and round-trip behavior stay covered in CI.
+        run: cargo test -p djogi --features hmac-codec --test presentation_codec -- --test-threads=1
 
   # MSRV gate — verifies the code still compiles on the toolchain
   # declared in `workspace.package.rust-version`. The main `check`

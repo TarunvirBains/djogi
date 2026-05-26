@@ -371,6 +371,32 @@ async fn prefetch_fk_loads_related_without_n_plus_one(mut ctx: djogi::DjogiConte
     assert_eq!(toyota_owner.name, "Alice");
 }
 
+#[djogi::djogi_test(sync_models = [Owner, FuelType, Vehicle])]
+async fn prefetch_on_bulk_delete_is_rejected(mut ctx: djogi::DjogiContext) {
+    let owner = seed_owner(&mut ctx, "DeleteGuard").await;
+    let _ = seed_vehicle_with_owner(&mut ctx, "Toyota", &owner, None).await;
+    let _ = seed_vehicle_with_owner(&mut ctx, "Honda", &owner, None).await;
+
+    let err = Vehicle::objects()
+        .prefetch(VehicleRelated::owner())
+        .delete(&mut ctx)
+        .await
+        .expect_err("prefetch on bulk delete must be rejected");
+    match err {
+        DjogiError::Validation(msg) => assert!(
+            msg.contains("prefetch"),
+            "validation should mention prefetch: {msg}"
+        ),
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let remaining = Vehicle::objects().count(&mut ctx).await.unwrap();
+    assert_eq!(
+        remaining, 2,
+        "rejected prefetch delete must not remove rows"
+    );
+}
+
 /// Nullable FK path: vehicle has no `fuel_type_id`. Prefetching the
 /// `fuel_type` relation on this row must return `None` (not panic, not
 /// error) — the LEFT JOIN miss is the documented null-safe behaviour.
@@ -550,6 +576,35 @@ async fn select_related_fk_emits_join_and_populates(mut ctx: djogi::DjogiContext
         .expect("owner join must materialise for a non-null FK");
     assert_eq!(joined_owner.id, owner.id);
     assert_eq!(joined_owner.name, "Alice");
+}
+
+#[djogi::djogi_test(sync_models = [Owner, FuelType, Vehicle])]
+async fn select_related_on_bulk_update_is_rejected(mut ctx: djogi::DjogiContext) {
+    let owner = seed_owner(&mut ctx, "UpdateGuard").await;
+    let _ = seed_vehicle_with_owner(&mut ctx, "Toyota", &owner, None).await;
+
+    let err = Vehicle::objects()
+        .select_related(VehicleRelated::owner())
+        .update(|f| f.make().set("mutated".to_string()))
+        .execute(&mut ctx)
+        .await
+        .expect_err("select_related on bulk update must be rejected");
+    match err {
+        DjogiError::Validation(msg) => assert!(
+            msg.contains("select_related"),
+            "validation should mention select_related: {msg}"
+        ),
+        other => panic!("expected DjogiError::Validation, got {other:?}"),
+    }
+
+    let vehicle = Vehicle::objects()
+        .fetch_one(&mut ctx)
+        .await
+        .expect("seeded vehicle should remain");
+    assert_eq!(
+        vehicle.make, "Toyota",
+        "rejected select_related update must not mutate rows"
+    );
 }
 
 /// Nullable-FK branch: `fuel_type_id` is `NULL`. The LEFT JOIN miss must

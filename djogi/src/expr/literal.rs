@@ -162,6 +162,12 @@ impl From<time::Duration> for crate::expr::Expr<time::Duration> {
     }
 }
 
+impl From<crate::Interval> for crate::expr::Expr<crate::Interval> {
+    fn from(v: crate::Interval) -> Self {
+        Self::from_literal(FilterValue::Interval(v))
+    }
+}
+
 /// Convert a `time::Duration` to microseconds as `i64`, saturating at the
 /// boundaries of `i64` range rather than wrapping.
 ///

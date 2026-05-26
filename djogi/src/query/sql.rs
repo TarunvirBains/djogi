@@ -35,7 +35,7 @@
 
 use crate::model::Model;
 use crate::pg::accumulator::SqlAccumulator;
-use crate::pg::decode::FromPgRow;
+use crate::pg::decode::{FromPgRow, joined_alias_for_prefix};
 use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
 use crate::query::portable::{PortablePredicateError, SqlEmitContext};
 use crate::query::q::{ArrayPredicate, CompoundOp, Q};
@@ -1198,6 +1198,21 @@ fn push_where<T: Model>(
     push_where_qualified(acc, qs, None)
 }
 
+/// Lowest-level WHERE helper — caller supplies the full SQL emission
+/// context, including joined-table qualification and any optional
+/// lateral scope metadata.
+pub(crate) fn push_where_with_ctx<T: Model>(
+    acc: &mut SqlAccumulator,
+    qs: &QuerySet<T>,
+    ctx: SqlEmitContext,
+) -> Result<(), PortablePredicateError> {
+    if q_is_vacuously_true(&qs.condition) {
+        return Ok(());
+    }
+    acc.push_sql(" WHERE ");
+    emit_q::<T>(acc, &qs.condition, ctx)
+}
+
 /// Qualification-aware variant of [`push_where`]. When `parent_table`
 /// is `Some(table)`, every bare column reference in the emitted `WHERE`
 /// clause is prefixed as `{table}.{column}` so Postgres does not raise
@@ -1214,15 +1229,11 @@ fn push_where_qualified<T: Model>(
     qs: &QuerySet<T>,
     parent_table: Option<&'static str>,
 ) -> Result<(), PortablePredicateError> {
-    if q_is_vacuously_true(&qs.condition) {
-        return Ok(());
-    }
-    acc.push_sql(" WHERE ");
     let ctx = match parent_table {
         Some(t) => SqlEmitContext::joined(t),
         None => SqlEmitContext::root(),
     };
-    emit_q::<T>(acc, &qs.condition, ctx)
+    push_where_with_ctx(acc, qs, ctx)
 }
 
 /// Shared tail emitted by SELECT variants: `ORDER BY ...`, `LIMIT $n`,
@@ -1242,17 +1253,15 @@ fn push_tail<T: Model>(
     push_tail_qualified(acc, qs, None)
 }
 
-/// Qualification-aware variant of [`push_tail`]. `parent_table` threads
-/// through to both the `WHERE` helper and the ordering emission so
-/// `ORDER BY id` on a joined query renders as `ORDER BY {table}.id`.
-/// `LIMIT` / `OFFSET` need no qualification — they carry no column
-/// references.
-fn push_tail_qualified<T: Model>(
+/// Lowest-level tail helper — caller supplies the full SQL emission
+/// context, including joined-table qualification and any optional
+/// lateral scope metadata.
+pub(crate) fn push_tail_with_ctx<T: Model>(
     acc: &mut SqlAccumulator,
     qs: &QuerySet<T>,
-    parent_table: Option<&'static str>,
+    ctx: SqlEmitContext,
 ) -> Result<(), PortablePredicateError> {
-    push_where_qualified(acc, qs, parent_table)?;
+    push_where_with_ctx(acc, qs, ctx)?;
 
     if !qs.ordering.is_empty() {
         acc.push_sql(" ORDER BY ");
@@ -1263,7 +1272,7 @@ fn push_tail_qualified<T: Model>(
             // Delegate to OrderExpr::emit — it handles both Column and
             // (when the spatial feature is on) SpatialDistance variants.
             // The table_qualifier threads through for select_related joins.
-            o.emit(acc, parent_table);
+            o.emit(acc, ctx.parent_table());
         }
     }
 
@@ -1282,6 +1291,23 @@ fn push_tail_qualified<T: Model>(
     // lock builders.
     qs.lock.push_tail(acc);
     Ok(())
+}
+
+/// Qualification-aware variant of [`push_tail`]. `parent_table` threads
+/// through to both the `WHERE` helper and the ordering emission so
+/// `ORDER BY id` on a joined query renders as `ORDER BY {table}.id`.
+/// `LIMIT` / `OFFSET` need no qualification — they carry no column
+/// references.
+pub(crate) fn push_tail_qualified<T: Model>(
+    acc: &mut SqlAccumulator,
+    qs: &QuerySet<T>,
+    parent_table: Option<&'static str>,
+) -> Result<(), PortablePredicateError> {
+    let ctx = match parent_table {
+        Some(t) => SqlEmitContext::joined(t),
+        None => SqlEmitContext::root(),
+    };
+    push_tail_with_ctx(acc, qs, ctx)
 }
 
 /// Emit the shared HAVING / ORDER BY / LIMIT / OFFSET tail for grouped-aggregate
@@ -2608,6 +2634,108 @@ pub(crate) fn build_merge<S: Model + FromPgRow, T: Model>(
     Ok(acc)
 }
 
+// ── Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING helpers ──────────────────
+
+/// Append the `RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)`
+/// clause and the fully-aliased column projection for both sides to `acc`.
+///
+/// The table aliases (`__djogi_old` / `__djogi_new`) use Djogi's reserved
+/// namespace. Column aliases are short ordinals (`o0`, `o1`, ... and
+/// `n0`, `n1`, ...) so projection aliases stay safely below the 63-byte
+/// identifier limit while preserving a stable positional mapping.
+///
+/// Column names come from `T::COLUMNS`, which are macro-validated `&'static str`
+/// identifiers; `push_sql` is safe here because no user data flows in.
+///
+/// Called by [`build_update_returning_pairs`] and [`build_delete_returning`].
+fn push_old_new_returning_projection<T: FromPgRow>(acc: &mut SqlAccumulator, include_new: bool) {
+    if include_new {
+        acc.push_sql(" RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)");
+    } else {
+        acc.push_sql(" RETURNING WITH (OLD AS __djogi_old)");
+    }
+    // Old-side columns: __djogi_old.<col> AS "o{idx}".
+    let mut first = true;
+    for (idx, col) in T::COLUMNS.iter().enumerate() {
+        if first {
+            acc.push_sql(" ");
+            first = false;
+        } else {
+            acc.push_sql(", ");
+        }
+        acc.push_sql("__djogi_old.");
+        acc.push_sql(col);
+        let old_alias = joined_alias_for_prefix("__djogi_old__", idx, col);
+        acc.push_sql(" AS \"");
+        acc.push_sql(&old_alias);
+        acc.push_sql("\"");
+    }
+    if include_new {
+        // New-side columns: __djogi_new.<col> AS "n{idx}".
+        for (idx, col) in T::COLUMNS.iter().enumerate() {
+            acc.push_sql(", __djogi_new.");
+            acc.push_sql(col);
+            let new_alias = joined_alias_for_prefix("__djogi_new__", idx, col);
+            acc.push_sql(" AS \"");
+            acc.push_sql(&new_alias);
+            acc.push_sql("\"");
+        }
+    }
+}
+
+/// Build `UPDATE <table> SET ... RETURNING WITH (OLD AS __djogi_old, NEW AS
+/// __djogi_new) __djogi_old.<col> AS "o{idx}", ...,
+/// __djogi_new.<col> AS "n{idx}", ...`.
+///
+/// This is the bulk-returning variant of [`build_update`]; the WHERE clause and
+/// SET assignments are identical. The RETURNING projection appends the full
+/// column list for both the pre-update (`OLD`) and post-update (`NEW`) row
+/// images using short ordinal aliases (`o{idx}` / `n{idx}`) to avoid
+/// PostgreSQL identifier truncation.
+///
+/// Callers must guarantee `assignments` is non-empty — the same contract as
+/// [`build_update`]. The callers in [`crate::query::update::UpdateStmt::execute_returning_pairs`]
+/// short-circuit on an empty assignment list before reaching this emitter.
+///
+/// # SQL injection guarantee
+///
+/// All column names come from `T::COLUMNS` (macro-validated `&'static str`).
+/// All values flow through `push_bind` via the shared [`build_update`] path.
+/// The `__djogi_old` / `__djogi_new` table aliases are framework-internal
+/// `&'static str` literals.
+pub(crate) fn build_update_returning_pairs<T>(
+    qs: &QuerySet<T>,
+    assignments: &[crate::query::update::UpdateAssignment],
+) -> Result<SqlAccumulator, PortablePredicateError>
+where
+    T: Model + FromPgRow,
+{
+    let mut acc = build_update(qs, assignments)?;
+    push_old_new_returning_projection::<T>(&mut acc, true);
+    Ok(acc)
+}
+
+/// Build `DELETE FROM <table> [WHERE ...] RETURNING WITH (OLD AS __djogi_old)
+/// __djogi_old.<col> AS "o{idx}", ...`.
+///
+/// The DELETE variant only has an `OLD` side — `NEW` is semantically absent for
+/// deleted rows. The projection aliases use the same short `o{idx}` pattern as
+/// the UPDATE variant so the `FromJoinedPgRow` path is identical
+/// (`from_joined_pg_row(row, "__djogi_old__")`).
+///
+/// Callers must guarantee the queryset is not `QuerySet::none()`-derived before
+/// reaching this emitter — same contract as [`build_delete`].
+pub(crate) fn build_delete_returning<T>(
+    qs: &QuerySet<T>,
+) -> Result<SqlAccumulator, PortablePredicateError>
+where
+    T: Model + FromPgRow,
+{
+    let mut acc = build_delete(qs)?;
+    push_old_new_returning_projection::<T>(&mut acc, false);
+    Ok(acc)
+}
+
 /// Build `INSERT INTO <target> (cols...) SELECT exprs... FROM <source>
 /// [WHERE ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]`.
 ///
@@ -2718,6 +2846,30 @@ pub(crate) fn build_insert_select<S: Model, T: Model>(
     acc.push_sql(" FROM ");
     acc.push_sql(S::table_name());
     push_tail(&mut acc, qs)?;
+    Ok(acc)
+}
+
+/// Build `INSERT INTO target (cols...) SELECT exprs... FROM source [WHERE ...] RETURNING <column_list>`.
+///
+/// Identical to [`build_insert_select`] but appends ` RETURNING <column_list>` so the
+/// caller can decode the inserted rows via [`crate::pg::decode::FromPgRow`].
+///
+/// This uses the model's canonical projection (`T::COLUMN_LIST`) rather than
+/// physical `*`, so insert-select returning remains stable when table order and
+/// model decode order differ.
+///
+/// # Errors
+///
+/// Returns the same [`PortablePredicateError`] variants as
+/// [`build_insert_select`] — the additional SQL token is always trusted
+/// (`T::COLUMN_LIST` is crate-owned static SQL text).
+pub(crate) fn build_insert_select_returning<S: Model, T: Model + FromPgRow>(
+    qs: &QuerySet<S>,
+    columns: &[crate::query::insert_select::InsertSelectColumn<S, T>],
+) -> Result<SqlAccumulator, PortablePredicateError> {
+    let mut acc = build_insert_select::<S, T>(qs, columns)?;
+    acc.push_sql(" RETURNING ");
+    acc.push_sql(<T as FromPgRow>::COLUMN_LIST);
     Ok(acc)
 }
 
@@ -2884,6 +3036,16 @@ mod tests {
         const COLUMNS: &'static [&'static str] = &["id"];
         const COLUMN_LIST: &'static str = "id";
         fn from_pg_row(_row: &tokio_postgres::Row) -> Result<Self, crate::DjogiError> {
+            unreachable!("SQL-text unit tests do not exercise row decode")
+        }
+    }
+
+    // Stub `FromJoinedPgRow` for Fake — required by the #180 returning builders.
+    impl crate::pg::decode::FromJoinedPgRow for Fake {
+        fn from_joined_pg_row(
+            _row: &tokio_postgres::Row,
+            _prefix: &str,
+        ) -> Result<Self, crate::DjogiError> {
             unreachable!("SQL-text unit tests do not exercise row decode")
         }
     }
@@ -4501,5 +4663,145 @@ mod tests {
             !sql.contains("LEFT JOIN"),
             "geohash path should not emit LEFT JOIN, got: {sql}"
         );
+    }
+
+    // ── djogi#180 — PG18 OLD/NEW RETURNING builder unit tests ────────────────
+
+    fn build_update_returning_pairs<T: Model + FromPgRow + crate::pg::decode::FromJoinedPgRow>(
+        qs: &QuerySet<T>,
+        assignments: &[crate::query::update::UpdateAssignment],
+    ) -> SqlAccumulator {
+        super::build_update_returning_pairs(qs, assignments)
+            .expect("update_returning_pairs should build successfully")
+    }
+
+    fn build_delete_returning<T: Model + FromPgRow + crate::pg::decode::FromJoinedPgRow>(
+        qs: &QuerySet<T>,
+    ) -> SqlAccumulator {
+        super::build_delete_returning(qs).expect("build_delete_returning should build successfully")
+    }
+
+    #[test]
+    fn update_returning_pairs_emits_returning_with_old_and_new_clause() {
+        let f: crate::query::field::FieldRef<Fake, i32> =
+            crate::query::field::FieldRef::new("view_count");
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let stmt = qs.update(|_| f.set(999i32));
+        let acc = build_update_returning_pairs(&stmt.qs, &stmt.assignments);
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)"),
+            "expected RETURNING WITH clause, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn update_returning_pairs_includes_old_id_alias() {
+        let f: crate::query::field::FieldRef<Fake, i32> =
+            crate::query::field::FieldRef::new("view_count");
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let stmt = qs.update(|_| f.set(999i32));
+        let acc = build_update_returning_pairs(&stmt.qs, &stmt.assignments);
+        let sql = acc.sql();
+
+        assert!(sql.contains("\"o0\""), "expected o0 alias, got: {sql}");
+    }
+
+    #[test]
+    fn update_returning_pairs_includes_new_id_alias() {
+        let f: crate::query::field::FieldRef<Fake, i32> =
+            crate::query::field::FieldRef::new("view_count");
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let stmt = qs.update(|_| f.set(999i32));
+        let acc = build_update_returning_pairs(&stmt.qs, &stmt.assignments);
+        let sql = acc.sql();
+
+        assert!(sql.contains("\"n0\""), "expected n0 alias, got: {sql}");
+    }
+
+    #[test]
+    fn update_returning_pairs_bind_order_assignments_before_filter() {
+        // Assignments must fill bind slots before the WHERE filter binds.
+        // Fake has no WHERE filter here so there is only the assignment bind ($1).
+        let f: crate::query::field::FieldRef<Fake, i32> =
+            crate::query::field::FieldRef::new("view_count");
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let stmt = qs.update(|_| f.set(999i32));
+        let acc = build_update_returning_pairs(&stmt.qs, &stmt.assignments);
+        let sql = acc.sql();
+        // The assignment bind $1 is inside the SET clause, before RETURNING.
+        let returning_pos = sql.find("RETURNING").expect("should contain RETURNING");
+        let bind_pos = sql.find("$1").expect("should contain $1");
+        assert!(
+            bind_pos < returning_pos,
+            "bind slot $1 should appear before RETURNING clause, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn delete_returning_emits_returning_with_old_clause() {
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let acc = build_delete_returning(&qs);
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("RETURNING WITH (OLD AS __djogi_old)"),
+            "expected DELETE RETURNING WITH OLD clause, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn delete_returning_includes_old_id_alias() {
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let acc = build_delete_returning(&qs);
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("\"o0\""),
+            "expected o0 alias in DELETE returning, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn delete_returning_does_not_include_new_projection() {
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let acc = build_delete_returning(&qs);
+        let sql = acc.sql();
+
+        assert!(
+            !sql.contains("__djogi_new"),
+            "DELETE returning must not include new projection, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn update_returning_pairs_projection_includes_both_sides_shape() {
+        // Verify the OLD/NEW projection shape by looking at the SQL generated by
+        // build_update_returning_pairs (no suffix helper needed — test the actual
+        // public builder).
+        let f: crate::query::field::FieldRef<Fake, i32> =
+            crate::query::field::FieldRef::new("view_count");
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let stmt = qs.update(|_| f.set(0i32));
+        let acc = build_update_returning_pairs(&stmt.qs, &stmt.assignments);
+        let sql = acc.sql();
+
+        // Both sides must be present.
+        assert!(sql.contains("OLD AS __djogi_old"), "{sql}");
+        assert!(sql.contains("NEW AS __djogi_new"), "{sql}");
+        assert!(sql.contains("\"o0\""), "{sql}");
+        assert!(sql.contains("\"n0\""), "{sql}");
+    }
+
+    #[test]
+    fn delete_returning_projection_is_old_only_shape() {
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let acc = build_delete_returning(&qs);
+        let sql = acc.sql();
+
+        assert!(sql.contains("OLD AS __djogi_old"), "{sql}");
+        assert!(!sql.contains("NEW"), "{sql}");
+        assert!(sql.contains("\"o0\""), "{sql}");
     }
 }

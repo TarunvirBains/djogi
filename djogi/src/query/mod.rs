@@ -56,6 +56,7 @@ pub mod insert_select;
 // `query::joined` for the design rationale, SQL emission shape, and
 // entry points.
 pub mod joined;
+pub mod lateral;
 pub(crate) mod lock;
 // Phase 8.5 Issue #178 — typed `MERGE INTO ... USING` query surface.
 pub mod merge;
@@ -101,10 +102,16 @@ pub mod row_aggregate_terminal;
 pub mod set_op;
 #[cfg(feature = "spatial")]
 pub mod spatial_grouping;
+// Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING result type.
+// `ReturningPair<T>` is the public before/after snapshot for UPDATE returning.
+// No PG17 fallback; Djogi already has a hard PG18 floor.
+pub mod returning;
 pub(crate) mod sql;
 pub mod stream;
 pub mod terminal;
 pub mod update;
+// Phase 8.5 djogi#103 — typed VALUES inline-relation join surface.
+pub mod values;
 pub mod visage_queryset;
 
 pub use aggregate::AggregateQuery;
@@ -157,6 +164,7 @@ pub use joined::{
     PairOrderExpr, PairSide, PairWindowExt,
 };
 // Phase 8.5 Issue #178 — typed MERGE re-exports.
+pub use lateral::{InnerLateral, LateralQuerySet, LeftLateral};
 pub use merge::{
     IntoMergeInsertColumns, IntoMergeOn, IntoMergeUpdates, IntoMergeWhenCondition, MergeAction,
     MergeBranch, MergeCounts, MergeInsertColumn, MergeMatchKind, MergeOnEq, MergeStmt,
@@ -215,7 +223,21 @@ pub use sassi::BasicPredicate;
 #[cfg(feature = "spatial")]
 pub use spatial_grouping::{ClusterId, ClusterRadius, GeohashKey, GeohashPrecision, RegionKey};
 pub use stream::{ModelCursorStream, RawCursorStream};
+// Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING result type.
+pub use returning::ReturningPair;
 pub use update::{IntoAssignments, UpdateAssignment, UpdateStmt};
+// Phase 8.5 djogi#103 — typed VALUES join surface.
+// `InlineValues`, the three queryset types, and the supporting traits are the
+// user-facing names.  `ValuesScalar` / `ValuesRow` / `IntoValuesColumns` are
+// sealed but must be re-exported so trait-method dispatch (`eq_values`,
+// `col0`, …) resolves in downstream crates.  `ValuesFields` and
+// `ValuesFieldRef` must be nameable as closure parameter / return types when
+// adopters write helpers that accept an `ON` predicate directly.
+// `CrossValuesJoinedQuerySet` (GH #299) is the unconditional Cartesian join.
+pub use values::{
+    CrossValuesJoinedQuerySet, InlineValues, IntoValuesColumns, LeftValuesJoinedQuerySet,
+    ValuesFieldRef, ValuesFields, ValuesJoinedQuerySet, ValuesOn, ValuesRow, ValuesScalar,
+};
 pub use visage_queryset::VisageQuerySet;
 
 /// Raw Condition-AST surface — not peer public API with `Condition`.

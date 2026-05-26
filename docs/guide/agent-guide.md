@@ -11,17 +11,8 @@ the `#[model]` proc macro derives ORM methods, `FromPgRow` deserialization,
 and inventory registration. Your job is to work within that derivation chain
 — not around it.
 
-> **Current scope:** v0.1.0 ships models + CRUD + descriptor,
-> `QuerySet<T>` + filters + bulk update/delete, relations
-> (`ForeignKey<T>`, `OneToOneField<T>`, prefetch / `select_related`,
-> reverse accessors, explicit-through M2M), transactions + outbox,
-> typed JSONB / arrays / enums / spatial / FTS, RLS via `tenant_key`,
-> visages, the apps subsystem, and a descriptor-driven migration
-> system with `djogi migrations compose / status / attune` plus
-> `djogi db reset / seed`. The Rhai shell and admin console (Maahi)
-> remain on the roadmap. This guide covers what actually
-> ships today. Planned features are
-> documented in [the roadmap](../roadmap/index.md).
+> The Rhai shell and admin console (Maahi) are not available.
+> Planned features are documented in [the roadmap](../roadmap/index.md).
 
 ---
 
@@ -57,7 +48,7 @@ pub struct Post {
 These three fields are real struct fields after expansion. You must use
 `..Default::default()` when constructing a value for `create()`.
 
-**Phase 1 attribute reference:**
+**Attribute reference:**
 
 | Attribute | Example | Effect |
 |---|---|---|
@@ -207,7 +198,7 @@ mandatory — it brings the sealed `RawAccessExt` trait into scope for the
 decorated item. Without it, `ctx.raw_*` does not resolve. The adjacent
 `// JUSTIFICATION (djogi#<n>): ...` comment names the typed-surface gap
 the bypass is filling and is enforced under `tests/` by
-`cargo xtask check-justifications` (GH #133). All three methods take
+`cargo xtask check-justifications`. All three methods take
 `&mut DjogiContext`; the same call site works against a pool-backed
 context or a transaction-backed one.
 
@@ -286,7 +277,7 @@ foreign key reference — HeerId carries type safety.
 **Step 1: Identify the table name and PK type.**
 
 Default PK is `HeerIdRecencyBiased` (64-bit BIGINT via `heerid_next_desc()`,
-reverse-chronological sort order; Phase 7-Zero-2 T2). Use
+reverse-chronological sort order). Use
 `pk = HeerId` for ascending BIGINT, `pk = RanjId` for UUIDv8 PKs,
 or `pk = Serial` for small reference tables (lookup codes, status
 types) where a simple autoincrement is appropriate.
@@ -379,9 +370,8 @@ apply via the library API (`djogi::migrate::apply_plan`). Use
 reconciliation; it does not execute migration SQL. See
 [the migrations guide](./migrations.md) for the full compose/status/attune
 contract; the CLI dispatchers for `apply` / `rollback` / `fake` /
-`baseline` / `verify` / `repair` are deferred to a Phase 7 follow-up, so
-library callers reach for the public `djogi::migrate` entry points
-directly in the interim.
+`baseline` / `verify` / `repair` are not available; library
+callers use the public `djogi::migrate` entry points directly.
 
 In tests, just add the field to the struct — the next `#[djogi::djogi_test(
 sync_models = [Subscription])]` run projects the updated descriptor into
@@ -397,7 +387,7 @@ descriptor diff is structurally indistinguishable from a drop-and-add.
 ## 6. Running Integration Tests
 
 ```bash
-# Run all Phase 1 integration tests
+# Run integration tests
 cargo test -p djogi --test phase1_model -- --test-threads=1
 
 # Run a specific test
@@ -455,6 +445,8 @@ query code.
   `queryset.update(|_| vec![]).execute(&mut ctx)` returns `Ok(0)` without
   issuing SQL — an `UPDATE ... SET` with no assignments would otherwise
   be a Postgres syntax error. Same for the `.none().update(...)` path.
+
+- **Mutation guard — `update(...).execute(...)`, `execute_returning_pairs(...)`, `delete(...)`, and `delete_returning(...)` reject queryset state that is only meaningful for reads.** The rejected public states are `limit`, `offset`, `distinct`, row locks, explicit `order_by`, `prefetch`, and `select_related` — each surfaces as `DjogiError::Validation` before SQL is issued. The guard runs before the `none()` and empty-assignment short-circuits, so `.none().limit(1).delete()` is rejected (not `Ok(0)`). Explicit `.order_by(...)` is rejected; model-default ordering is not.
 
 - **`updated_at = now()` is stamped on every bulk update.** The SQL
   emitter always appends `updated_at = now()` to the SET list, even

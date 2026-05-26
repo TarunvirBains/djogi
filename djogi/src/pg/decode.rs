@@ -139,6 +139,21 @@ pub trait FromJoinedPgRow: Sized {
     fn from_joined_pg_row(row: &Row, prefix: &str) -> Result<Self, DjogiError>;
 }
 
+/// Map a logical joined-field index to the SQL projection column name.
+///
+/// Most joined projections use `"{prefix}{field_name}"` naming.
+/// For OLD/NEW pair returning, Djogi emits compact aliases (`o0`, `o1`, `n0`,
+/// `n1`, ...) and keeps runtime decoding stable across PostgreSQL identifier
+/// truncation boundaries.
+#[doc(hidden)]
+pub fn joined_alias_for_prefix(prefix: &str, idx: usize, col_name: &str) -> String {
+    match prefix {
+        "__djogi_old__" => format!("o{idx}"),
+        "__djogi_new__" => format!("n{idx}"),
+        _ => format!("{prefix}{col_name}"),
+    }
+}
+
 /// Decode a column at a positional index, with a debug-build name
 /// guard and a column-name-tagged error.
 ///
@@ -514,7 +529,7 @@ pub fn decode_opt_u64_from_decimal_by_name(
 
 #[cfg(test)]
 mod tests {
-    use super::{decimal_to_u64, map_derived_decode_failure};
+    use super::{decimal_to_u64, joined_alias_for_prefix, map_derived_decode_failure};
     use crate::{DjogiError, VisageError};
     use rust_decimal::Decimal;
     use std::fmt;
@@ -646,5 +661,15 @@ mod tests {
     fn decimal_to_u64_accepts_positive_integer() {
         let dec = Decimal::from_str("42").unwrap();
         assert_eq!(decimal_to_u64(dec, "col").unwrap(), 42u64);
+    }
+
+    #[test]
+    fn joined_alias_for_prefix_maps_old_and_new_ordinals() {
+        assert_eq!(joined_alias_for_prefix("__djogi_old__", 7, "title"), "o7");
+        assert_eq!(joined_alias_for_prefix("__djogi_new__", 7, "title"), "n7");
+        assert_eq!(
+            joined_alias_for_prefix("rel_owner_id.", 7, "title"),
+            "rel_owner_id.title"
+        );
     }
 }

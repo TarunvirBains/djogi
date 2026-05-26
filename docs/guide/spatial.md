@@ -658,7 +658,7 @@ needed.
 
 ---
 
-## Pair-side territory overlap (Phase 8.5 #99)
+## Pair-side territory overlap
 
 `Expr::area_of_intersection(&a, &b)` above takes two `Polygon` *values* —
 EWKB blobs known at query-build time — and binds them as `bytea` literals.

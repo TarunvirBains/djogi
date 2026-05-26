@@ -81,7 +81,12 @@ fn build_runtime(label: &str) -> Result<tokio::runtime::Runtime, ExitCode> {
 /// `maintenance_database` defaults to `"postgres"` — the conventional
 /// administrative DB present on every cluster — when the operator
 /// supplies nothing more specific.
-pub fn reset_cmd(yes: bool, maintenance_database: String, workspace: Option<PathBuf>) -> ExitCode {
+pub fn reset_cmd(
+    yes: bool,
+    allow_checksum_drift_reset: bool,
+    maintenance_database: String,
+    workspace: Option<PathBuf>,
+) -> ExitCode {
     let workspace = resolve_workspace(workspace);
     let config = match DjogiConfig::load_from_workspace(&workspace) {
         Ok(c) => c,
@@ -115,8 +120,16 @@ pub fn reset_cmd(yes: bool, maintenance_database: String, workspace: Option<Path
         Err(code) => return code,
     };
 
-    let exit = runtime
-        .block_on(async { run_reset(&workspace, &config, &maintenance_database, confirmed).await });
+    let exit = runtime.block_on(async {
+        run_reset(
+            &workspace,
+            &config,
+            &maintenance_database,
+            confirmed,
+            allow_checksum_drift_reset,
+        )
+        .await
+    });
     ExitCode::from(exit as u8)
 }
 
@@ -143,6 +156,7 @@ async fn run_reset(
     config: &DjogiConfig,
     maintenance_database: &str,
     confirmed: bool,
+    allow_checksum_drift_reset: bool,
 ) -> i32 {
     let audit_pool = resolve_audit_pool_best_effort(config).await;
     let req = ResetRequest {
@@ -150,6 +164,7 @@ async fn run_reset(
         database_url: &config.database.url,
         profile: &config.profile,
         confirmed,
+        allow_checksum_drift_reset,
         maintenance_database,
         migrate_config: djogi::config::MigrateConfig {
             concurrent_warn_relpages: config.migrate.concurrent_warn_relpages,
@@ -693,7 +708,7 @@ mod tests {
 
         // `yes = true` skips the interactive prompt; we expect the
         // localhost gate to refuse and exit code 2.
-        let exit = reset_cmd(true, "postgres".to_string(), Some(work.clone()));
+        let exit = reset_cmd(true, false, "postgres".to_string(), Some(work.clone()));
         assert_eq!(exit, ExitCode::from(2), "remote URL must hit refusal exit");
 
         match prior {
@@ -716,7 +731,7 @@ mod tests {
         let prior = std::env::var("DATABASE_URL").ok();
         unsafe { std::env::remove_var("DATABASE_URL") };
 
-        let exit = reset_cmd(true, "postgres".to_string(), Some(work.clone()));
+        let exit = reset_cmd(true, false, "postgres".to_string(), Some(work.clone()));
         assert_eq!(exit, ExitCode::from(2), "production must refuse");
 
         match prior {

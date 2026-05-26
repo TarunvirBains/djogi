@@ -76,13 +76,13 @@ Every applied migration writes a row to `djogi_schema_migrations` (one ledger pe
 | `version` | The `V<ts>__<slug>` identifier from the filename |
 | `app_label` | Bucket scoping — empty string for `_global_` |
 | `applied_at_rank` | Monotonic ordinal — historical apply order |
-| `checksum_up` / `checksum_down` | `V1:<sha256-hex>` content hash |
+| `checksum_up` / `checksum_down` | `V1:<sha256-hex>` hash of canonical operation SQL fragments |
 | `description` | Human-readable summary |
 | `success` | `bool` — `false` means partial apply (see Repair) |
 | `partial_apply_note` | Operator note when `success = false` or attune `--record` |
 | `applied_at` | Wall-clock timestamp |
 
-The `V1:<sha256-hex>` checksum prefix is intentional: future hash algorithms can coexist (`V2:...`) without ambiguity. Drift between disk SQL and the ledger checksum is detected at apply time and refuses without `repair`.
+The `V1:<sha256-hex>` checksum prefix is intentional: future hash algorithms can coexist (`V2:...`) without ambiguity. For Djogi-composed migrations, headers and label comments are outside the checksum domain; `checksum_down = NULL` means there is no real rollback SQL beyond comment placeholders. Operation SQL drift between disk and the ledger is detected at apply/reset time and refuses without `repair` or an explicit reset drift override.
 
 ## CLI commands
 
@@ -211,7 +211,7 @@ The policy lives in `RunnerCtx::out_of_order_policy` and defaults from `Djogi.to
 ## `djogi db reset`
 
 ```
-djogi db reset --yes [--maintenance-database <name>]
+djogi db reset --yes [--allow-checksum-drift-reset] [--maintenance-database <name>]
 ```
 
 Drops, recreates, and replays every committed migration against the application database. **Triple-gated**:
@@ -226,6 +226,8 @@ Only the application database is touched. Logging databases (`crud_log`, `event_
 
 URL paths are percent-decoded and validated against the strict Postgres-identifier grammar before splicing into DDL — defence-in-depth against URL-injection.
 
+Before `DROP DATABASE`, reset compares the live ledger's recorded migration checksums against the current committed migration files. Edited `up.sql`, edited `down.sql` (when the ledger carries a down checksum), missing historical files, or historical baseline rows whose checksums cannot be compared to file bytes all refuse with exit code `2` before any destructive step. `--allow-checksum-drift-reset` is the explicit operator override for that refusal path.
+
 Exit codes: `0` success, `1` runtime error, `2` gate refusal.
 
 ## `djogi db seed`
@@ -234,7 +236,7 @@ Exit codes: `0` success, `1` runtime error, `2` gate refusal.
 djogi db seed [--database <name>] [--allow-non-localhost]
 ```
 
-Runs operator-authored SQL seed files in `seeds/<database>/*.sql` alphabetically. Idempotent — re-runs skip seeds whose `V1:<sha256>` checksum matches the `djogi_seed_runs` ledger; refuses on checksum drift.
+Runs operator-authored SQL seed files in `seeds/<database>/*.sql` alphabetically. The runner pins one session, takes a per-database advisory lock, records a claim-first `djogi_seed_runs` row before each seed body executes, and then finalises that row to `applied` or `failed`. Re-runs skip seeds whose `V1:<sha256>` checksum already matches an `applied` row, refuse on checksum drift, and also refuse on stale `running` claims or prior `failed` claims so non-idempotent seed SQL is never silently replayed.
 
 `--database <name>` selects BOTH the seed directory and the connection target. The CLI splices `<name>` into the application URL's path component so seeds always land on the matching DB; a malformed application URL refuses with exit code `1`.
 

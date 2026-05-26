@@ -84,6 +84,7 @@ pub mod pg;
 // umbrella dispatches add more newtypes alongside without reshaping
 // the public surface.
 pub mod pg_types;
+pub mod presentation;
 pub mod primary_key;
 pub mod query;
 pub mod range;
@@ -164,7 +165,8 @@ pub mod __private {
             FromJoinedPgRow, FromPgRow, decode_at, decode_derived_at, decode_narrowed,
             decode_narrowed_by_name, decode_narrowed_opt, decode_narrowed_opt_by_name,
             decode_opt_u64_from_decimal, decode_opt_u64_from_decimal_by_name,
-            decode_u64_from_decimal, decode_u64_from_decimal_by_name, try_get_scalar,
+            decode_u64_from_decimal, decode_u64_from_decimal_by_name, joined_alias_for_prefix,
+            try_get_scalar,
         };
         pub use ::postgres_types::{FromSql, ToSql, Type as PgType};
         pub use ::tokio_postgres::Row as PgRow;
@@ -324,8 +326,9 @@ pub mod __private {
     /// - `__make_djogi_field` — the macro constructor PR3 will route every
     ///   generated `{Model}Fields` accessor through.
     pub mod query {
+        pub use crate::query::condition::{FilterValue, LookupOp};
         pub use crate::query::field::djogi_field_macro_support::__make_djogi_field;
-        pub use crate::query::filter::clauses_into_condition;
+        pub use crate::query::filter::{FilterClauseParts, clauses_into_condition, clauses_into_q};
         pub use crate::query::portable::{PortablePredicateError, SqlEmitContext};
         pub use crate::query::q::{IntoQ, Q};
 
@@ -459,14 +462,14 @@ pub use fts_query::FtsFieldRef;
 // never reaches for `Condition` directly.
 pub use query::{
     AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
-    ClosureModel, ConditionExt, DjogiPortableEq, FieldRef, FilterClause, InsertSelectColumn,
-    InsertSelectSource, InsertSelectStmt, IntoAggregateTuple, IntoFieldFilterValue,
-    IntoFilterValue, IntoInsertColumns, IntoPortableFieldValue, IntoSetOpArm,
-    JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, Lookup, MaterializeClosureOptions,
-    MaterializeClosureReport, MergeCounts, MergeStmt, ModelCursorStream, ModelFilter, OrderExpr,
-    PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt, PortableQuerySet, Q, QuerySet,
-    RawCursorStream, RecursiveDirection, RecursiveQuerySet, SetOpKind, SetOpQuerySet,
-    UpdateAssignment, UpdateStmt, VisageQuerySet,
+    ClosureModel, ConditionExt, DjogiPortableEq, FieldRef, FilterClause, InnerLateral,
+    InsertSelectColumn, InsertSelectSource, InsertSelectStmt, IntoAggregateTuple,
+    IntoFieldFilterValue, IntoFilterValue, IntoInsertColumns, IntoPortableFieldValue, IntoSetOpArm,
+    JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, LateralQuerySet, LeftLateral,
+    Lookup, MaterializeClosureOptions, MaterializeClosureReport, MergeCounts, MergeStmt,
+    ModelCursorStream, ModelFilter, OrderExpr, PairClosureKinshipSum, PairOrderExpr, PairSide,
+    PairWindowExt, PortableQuerySet, Q, QuerySet, RawCursorStream, RecursiveDirection,
+    RecursiveQuerySet, SetOpKind, SetOpQuerySet, UpdateAssignment, UpdateStmt, VisageQuerySet,
 };
 pub use relation::{
     ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
@@ -601,21 +604,73 @@ pub mod prelude {
         UnknownFieldExt,
     };
     pub use crate::model::Model;
+    // DjogiPool is the adopter-facing pool handle. It belongs in the prelude
+    // because pool construction (`DjogiPool::connect`, `DjogiPoolBuilder`) is
+    // the framework entry point — adopters spell it without a full path.
     pub use crate::pg::decode::FromPgRow;
     #[doc(hidden)]
     pub use crate::pg::decode::{FromJoinedPgRow, try_get_scalar};
+    pub use crate::pg::pool::DjogiPool;
     // Cluster 8γ Stage 2 (T6.9b): `Condition` retired from the
     // prelude. Adopter code composes through `Q<T>` (in this list);
     // legacy `Condition` callers reach `djogi::query::internal::Condition`.
     pub use crate::query::{
-        AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
-        ClosureModel, ConditionExt, DjogiPortableEq, FieldRef, FilterClause, InsertSelectColumn,
-        InsertSelectSource, InsertSelectStmt, IntoAggregateTuple, IntoFieldFilterValue,
-        IntoFilterValue, IntoInsertColumns, IntoPortableFieldValue, IntoSetOpArm,
-        JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, Lookup,
-        MaterializeClosureOptions, MaterializeClosureReport, MergeCounts, MergeStmt, ModelFilter,
-        OrderExpr, PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt, PortableQuerySet,
-        Q, QuerySet, RecursiveDirection, RecursiveQuerySet, SetOpKind, SetOpQuerySet,
+        AggregateQuery,
+        AnnotatedQuerySet,
+        ArrayPredicate,
+        BasicPredicate,
+        CachedPortableQuerySet,
+        ClosureModel,
+        ConditionExt,
+        // Phase 8.5 djogi#103 + GH#299 — VALUES join (inner, left, cross).
+        CrossValuesJoinedQuerySet,
+        DjogiPortableEq,
+        FieldRef,
+        FilterClause,
+        InlineValues,
+        InsertSelectColumn,
+        InsertSelectSource,
+        InsertSelectStmt,
+        IntoAggregateTuple,
+        IntoFieldFilterValue,
+        IntoFilterValue,
+        IntoInsertColumns,
+        IntoPortableFieldValue,
+        IntoSetOpArm,
+        IntoValuesColumns,
+        JoinedAnnotatedQuerySet,
+        JoinedAnnotatedRow,
+        JoinedQuerySet,
+        LeftValuesJoinedQuerySet,
+        Lookup,
+        MaterializeClosureOptions,
+        MaterializeClosureReport,
+        MergeCounts,
+        MergeStmt,
+        ModelFilter,
+        OrderExpr,
+        PairClosureKinshipSum,
+        PairOrderExpr,
+        PairSide,
+        PairWindowExt,
+        PortableQuerySet,
+        Q,
+        QuerySet,
+        RecursiveDirection,
+        RecursiveQuerySet,
+        // Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING result type.
+        // `ReturningPair<T>` carries both the before- and after-UPDATE row
+        // snapshots; used by `Model::update_returning_pair` and
+        // `UpdateStmt::execute_returning_pairs`.
+        ReturningPair,
+        SetOpKind,
+        SetOpQuerySet,
+        ValuesFieldRef,
+        ValuesFields,
+        ValuesJoinedQuerySet,
+        ValuesOn,
+        ValuesRow,
+        ValuesScalar,
         VisageQuerySet,
     };
     // `atomic` / `atomic_with` / `retry_on_conflict` /

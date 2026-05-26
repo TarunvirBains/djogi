@@ -36,7 +36,7 @@ use std::time::Duration;
 
 use djogi::config::MigrateConfig;
 use djogi::migrate::{
-    AppliedSchema, BucketKey, Classification, MigrationPlan, RunnerCtx, RunnerError,
+    AppliedSchema, BucketKey, Classification, LedgerStatus, MigrationPlan, RunnerCtx, RunnerError,
     SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind, WorkspaceGuard, acquire_workspace_lock,
     advisory_lock_key, apply_plan, bootstrap_ledger, compute_checksum, load_snapshot,
 };
@@ -90,6 +90,48 @@ fn op(label: &str, up: &str, down: &str) -> djogi::migrate::OperationSql {
         down: down.to_string(),
         lossy: None,
     }
+}
+
+async fn index_exists(ctx: &mut djogi::DjogiContext, index_name: &str) -> bool {
+    ctx.raw_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = $1 AND relkind = 'i')",
+        &[&index_name],
+    )
+    .await
+    .expect("index exists")
+}
+
+async fn install_progress_ack_failure_trigger(
+    ctx: &mut djogi::DjogiContext,
+    fail_on_applied_steps: i32,
+) {
+    let function_sql = format!(
+        "CREATE OR REPLACE FUNCTION djogi_test_fail_progress_ack() \
+         RETURNS trigger AS $$ \
+         BEGIN \
+             IF OLD.status = NEW.status \
+                AND OLD.applied_steps_count IS DISTINCT FROM NEW.applied_steps_count \
+                AND NEW.applied_steps_count = {fail_on_applied_steps} THEN \
+                 RAISE EXCEPTION 'djogi test injected progress ack failure at step %', \
+                     NEW.applied_steps_count; \
+             END IF; \
+             RETURN NEW; \
+         END; \
+         $$ LANGUAGE plpgsql"
+    );
+    ctx.raw_ddl(&function_sql)
+        .await
+        .expect("create progress-ack failure function");
+    ctx.raw_ddl("DROP TRIGGER IF EXISTS djogi_test_fail_progress_ack ON djogi_schema_migrations")
+        .await
+        .expect("drop prior progress-ack failure trigger");
+    ctx.raw_ddl(
+        "CREATE TRIGGER djogi_test_fail_progress_ack \
+         BEFORE UPDATE ON djogi_schema_migrations \
+         FOR EACH ROW EXECUTE FUNCTION djogi_test_fail_progress_ack()",
+    )
+    .await
+    .expect("create progress-ack failure trigger");
 }
 
 fn transactional_plan(stmts: Vec<djogi::migrate::OperationSql>) -> MigrationPlan {
@@ -480,6 +522,106 @@ async fn split_apply_non_tx_failure_records_partial_state(mut ctx: djogi::DjogiC
     assert!(
         !snapshot_path.exists(),
         "snapshot file must NOT be written on partial failure"
+    );
+}
+
+#[djogi::djogi_test]
+async fn split_apply_progress_ack_failure_blocks_duplicate_resume(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    let snapshot_path = temp_snapshot_path();
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+    install_progress_ack_failure_trigger(&mut ctx, 1).await;
+
+    let plan = split_plan(
+        vec![op(
+            "AddTable t4_split_ack",
+            "CREATE TABLE \"t4_split_ack\" (\"id\" BIGINT, \"email\" TEXT, \"name\" TEXT)",
+            "DROP TABLE \"t4_split_ack\"",
+        )],
+        vec![
+            op(
+                "AddIndex t4_split_ack_email_idx",
+                "CREATE INDEX CONCURRENTLY \"t4_split_ack_email_idx\" \
+                 ON \"t4_split_ack\" (\"email\")",
+                "DROP INDEX CONCURRENTLY \"t4_split_ack_email_idx\"",
+            ),
+            op(
+                "AddIndex t4_split_ack_name_idx",
+                "CREATE INDEX CONCURRENTLY \"t4_split_ack_name_idx\" \
+                 ON \"t4_split_ack\" (\"name\")",
+                "DROP INDEX CONCURRENTLY \"t4_split_ack_name_idx\"",
+            ),
+        ],
+    );
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260524000100__split_ack_failure",
+        Some(empty_snapshot()),
+        Some(snapshot_path.clone()),
+        MigrateConfig::default(),
+    );
+
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect_err("progress ack failure must abort the apply");
+
+    let status: String = ctx
+        .raw_scalar(
+            "SELECT status::text FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("status after injected failure");
+    assert_ne!(
+        status, "applied",
+        "progress ack failure must leave a non-terminal ledger row"
+    );
+
+    let applied_steps: i32 = ctx
+        .raw_scalar(
+            "SELECT applied_steps_count FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("applied_steps after injected failure");
+    assert_eq!(
+        applied_steps, 0,
+        "acked progress must stay at the last durable boundary"
+    );
+
+    let note: Option<String> = ctx
+        .raw_scalar(
+            "SELECT partial_apply_note FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("note after injected failure");
+    let note = note.expect("progress claim note must be recorded");
+    assert!(
+        note.contains("non-tx progress claim"),
+        "note must preserve the claimed-step marker: {note}"
+    );
+
+    assert!(
+        index_exists(&mut ctx, "t4_split_ack_email_idx").await,
+        "the committed first step must still exist"
+    );
+    assert!(
+        !index_exists(&mut ctx, "t4_split_ack_name_idx").await,
+        "the second step must not run after the first ack failure"
+    );
+
+    let rerun_err = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect_err("duplicate apply must be blocked by the non-terminal row");
+    assert!(
+        matches!(rerun_err, RunnerError::VersionCollisionNonTerminal { .. }),
+        "got {rerun_err:?}"
+    );
+
+    assert!(
+        !snapshot_path.exists(),
+        "snapshot file must not be written on an ambiguous non-tx boundary"
     );
 }
 
@@ -954,6 +1096,7 @@ async fn duplicate_version_surfaces_typed_error(mut ctx: djogi::DjogiContext) {
         RunnerError::VersionAlreadyApplied {
             version,
             applied_at,
+            ..
         } => {
             assert_eq!(version, "V20260425000012__duplicate");
             // The first apply finalised the row to `applied`, which the
@@ -977,10 +1120,89 @@ async fn duplicate_version_surfaces_typed_error(mut ctx: djogi::DjogiContext) {
             "SELECT EXISTS (SELECT 1 FROM pg_class \
              WHERE relname = 't4_dup' AND relkind = 'r')",
             &[],
+    )
+    .await
+    .expect("exists check");
+    assert!(exists, "DROP TABLE from second plan must NOT have run");
+}
+
+// ── Duplicate-version surface as VersionCollisionNonTerminal (live PG) ───
+
+#[djogi::djogi_test]
+async fn duplicate_version_surfaces_non_terminal_collision_statuses(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+
+    // Seed one row per non-terminal status and ensure apply_plan reports the
+    // blocking row's actual status/run_id instead of collapsing it to "applied".
+    for (expected_version, seed_status, expected_run_id) in [
+        (
+            "V20260425000013__pending",
+            LedgerStatus::Pending,
+            13i64,
+        ),
+        ("V20260425000014__failed", LedgerStatus::Failed, 14i64),
+        (
+            "V20260425000015__rolled_back",
+            LedgerStatus::RolledBack,
+            15i64,
+        ),
+    ] {
+        let plan = transactional_plan(vec![op(
+            "AddTable t4_dup_non_terminal",
+            "CREATE TABLE \"t4_dup_non_terminal\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"t4_dup_non_terminal\"",
+        )]);
+        let runner_ctx = make_runner_ctx(
+            &plan,
+            expected_version,
+            None,
+            None,
+            MigrateConfig::default(),
+        );
+        let version = runner_ctx.version.clone();
+        let status = seed_status.as_db_str().to_string();
+        let snapshot_version = SNAPSHOT_FORMAT_VERSION.to_string();
+        ctx.raw_execute(
+            "INSERT INTO djogi_schema_migrations \
+             (version, description, checksum_up, execution_mode, status, \
+              run_id, snapshot_version, app_label) \
+             VALUES ($1, $2, $3, 'transactional', $4, $5, $6, '')",
+            &[
+                &version,
+                &runner_ctx.description,
+                &runner_ctx.checksum_up,
+                &status,
+                &expected_run_id,
+                &snapshot_version,
+            ],
         )
         .await
-        .expect("exists check");
-    assert!(exists, "DROP TABLE from second plan must NOT have run");
+        .expect("seed ledger row");
+
+        let err = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+            .await
+            .expect_err("second apply must fail");
+        let msg = err.to_string();
+        match err {
+            RunnerError::VersionCollisionNonTerminal {
+                version,
+                status,
+                run_id,
+                ..
+            } => {
+                assert_eq!(version, expected_version);
+                assert_eq!(status, seed_status);
+                assert_eq!(run_id, expected_run_id);
+            }
+            other => panic!("expected VersionCollisionNonTerminal, got {other:?}"),
+        }
+
+        if seed_status == LedgerStatus::RolledBack {
+            assert!(msg.contains("rolled-back rows are historical and are not repair targets"));
+            assert!(!msg.contains("follow the repair flow"));
+        }
+    }
 }
 
 // ── Advisory-lock key determinism (live PG smoke) ─────────────────────────

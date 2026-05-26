@@ -56,6 +56,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bypass-attribute-only path
   (`#[deliberately_bypass_convention_with_raw_sql]` +
   `ctx.raw_execute(...)`) for cross-table archival / migration shapes.
+- **Per-scope presentation codecs** (closes djogi#227). Declare
+  `#[field(protected(sensitivity = "...", rationale = "...",
+  per_scope = { scope = { presentation_codec = C } ... }))]` to
+  transform field values when projecting to visage scopes. Infallible
+  codecs (`presentation_codec = C`) generate `From<&Model>`; fallible
+  codecs (`try_presentation_codec = C`) generate `TryFrom<&Model>`.
+  Built-in codecs — `Identity` (no-op), `MaskString` /
+  `MaskOptionString` (mask to `[REDACTED]`), `HmacSha256HexString` /
+  `HmacSha256HexOptionString` (HMAC-SHA256 hash) — cover common
+  sensitive-data patterns. HMAC codecs require the `hmac-codec`
+  feature flag and `DJOGI_PRESENTATION_HMAC_KEY` (64 lowercase hex characters) set
+  before pool connect; `validate_startup_inventory()` is called
+  automatically and surfaces any codec startup failures as
+  `DjogiError::PresentationStartup`. Custom visage scopes beyond the four
+  built-ins (`Public`, `SelfView`, `Admin`, `Export`) are declared
+  via `#[model(visage_scopes(name = Suffix))]`. Test helper:
+  `djogi::testing::install_presentation_hmac_key_for_testing(key)`.
+  `DjogiPool` is now in `djogi::prelude`.
 
 ## [0.1.0] - 2026-XX-XX
 

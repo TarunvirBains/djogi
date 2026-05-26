@@ -37,7 +37,7 @@
 use proc_macro2::Span;
 use quote::quote;
 use syn::{
-    Expr, ExprLit, Lit, Meta, MetaNameValue, Token, punctuated::Punctuated, spanned::Spanned,
+    Expr, ExprLit, Lit, Meta, MetaNameValue, Stmt, Token, punctuated::Punctuated, spanned::Spanned,
 };
 
 /// Sorted const slice of every codec ID that the macro recognises at
@@ -220,6 +220,45 @@ impl DefaultVolatilityLit {
     }
 }
 
+/// Per-scope presentation-codec declaration parsed from
+/// `protected(per_scope = { scope = { presentation_codec = Path } })` —
+/// GH #227 Stage 4.
+///
+/// One entry exists per scope key declared inside a `per_scope = { ... }`
+/// block. `fallible = false` selects the infallible
+/// `PresentationCodec<Input>` dispatch path; `fallible = true` selects the
+/// fallible `TryPresentationCodec<Input>` path (which surfaces
+/// `VisageError::PresentationCodec` from the visage's `TryFrom<&Model>`
+/// impl). The two are mutually exclusive within a single scope block —
+/// declaring both `presentation_codec` and `try_presentation_codec` on
+/// the same scope is rejected at parse time.
+///
+/// Presentation codecs are runtime-only metadata: they do NOT flow into
+/// `ProtectedFieldMetadata` or any other migration-differ surface, so
+/// changing a codec is never a schema event. The macro lowers per-scope
+/// codecs into visage codegen + `inventory::submit!` records consumed by
+/// startup validation.
+#[derive(Debug, Clone)]
+pub struct PerScopeCodecEntry {
+    /// Scope key (e.g. `"public"`, `"self_view"`, or a custom scope
+    /// declared via `#[model(visage_scopes(...))]`).
+    pub scope: String,
+    /// Span of the scope ident literal in the user's source, used to
+    /// anchor downstream diagnostics (e.g. "scope `support` is not in
+    /// `visage_scopes(...)`") at the offending key rather than the
+    /// whole `per_scope = { ... }` block.
+    pub scope_span: Span,
+    /// Rust type path of the codec — typically
+    /// `djogi::presentation::builtins::MaskString` or an adopter type.
+    /// Routed verbatim into the emitted projection code, so the path
+    /// must resolve at the use site.
+    pub codec_type: syn::Path,
+    /// `true` when the entry was declared as `try_presentation_codec`
+    /// (selects `TryPresentationCodec<Input>` dispatch); `false` for
+    /// `presentation_codec` (selects `PresentationCodec<Input>`).
+    pub fallible: bool,
+}
+
 /// Parsed `#[field(protected(...))]` annotation.
 ///
 /// `sensitivity` is mandatory (the protected attribute is meaningless
@@ -246,6 +285,18 @@ pub struct ProtectedSpec {
     /// alongside `sensitivity = "none"` is still a contradiction, even
     /// though the resulting value matches the default.
     pub retention_span: Option<Span>,
+    /// Per-scope presentation codec entries parsed from
+    /// `per_scope = { scope = { (try_)?presentation_codec = Path } }` —
+    /// GH #227 Stage 4. Empty when the user did not write a `per_scope`
+    /// block. Source order is preserved so downstream emission is
+    /// deterministic.
+    pub per_scope: Vec<PerScopeCodecEntry>,
+    /// `Some(span)` when the user wrote a `per_scope = { ... }` block
+    /// — the span anchors rule (a) "sensitivity = none cannot be
+    /// combined with any other knob" so the diagnostic points at the
+    /// `per_scope` key rather than the unrelated keys (rationale /
+    /// redaction / codec / retention).
+    pub per_scope_span: Option<Span>,
     /// Span of the entire `protected(...)` list — used as the fallback
     /// span when an error references the attribute as a whole rather
     /// than a single key.
@@ -257,6 +308,14 @@ impl ProtectedSpec {
     /// for the descriptor literal. The codec / rationale fields lower
     /// to their literal forms; absent values use the matching `None` /
     /// neutral defaults declared on the descriptor.
+    ///
+    /// The [`Self::per_scope`] field is intentionally NOT lowered into
+    /// the descriptor — presentation codecs are runtime-only metadata
+    /// (consumed by visage codegen + `inventory` startup validation)
+    /// and do not influence SQL DDL. Including them in the migration
+    /// differ's descriptor surface would erroneously trigger schema-
+    /// drift warnings when an adopter swaps codecs; the visage emitter
+    /// reads `per_scope` directly off the `ProtectedSpec`.
     pub fn to_tokens(&self) -> proc_macro2::TokenStream {
         let sensitivity = self.sensitivity.ident_tokens();
         let redaction = self.redaction.ident_tokens();
@@ -358,8 +417,33 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
     let mut redaction: Option<(RedactionLit, Span)> = None;
     let mut codec: Option<(String, Span)> = None;
     let mut retention: Option<(RetentionLit, Span)> = None;
+    let mut per_scope: Vec<PerScopeCodecEntry> = Vec::new();
+    let mut per_scope_span: Option<Span> = None;
 
     for meta in &entries {
+        // GH #227 Stage 4 — `per_scope = { scope = { codec_key = Path } }`
+        // arrives as `Meta::NameValue { value: Expr::Block { ... } }`, which
+        // does NOT match the string-literal let-else below. Handle it first
+        // so the generic "every entry must be `key = \"value\"`" rejection
+        // does not swallow this shape with a misleading diagnostic.
+        if let Meta::NameValue(MetaNameValue {
+            path,
+            value: Expr::Block(expr_block),
+            ..
+        }) = meta
+            && path.is_ident("per_scope")
+        {
+            if per_scope_span.is_some() {
+                return Err(syn::Error::new(
+                    path.span(),
+                    "`per_scope` declared twice in the same `protected(...)`",
+                ));
+            }
+            per_scope_span = Some(path.span());
+            per_scope = parse_per_scope_block(&expr_block.block)?;
+            continue;
+        }
+
         let Meta::NameValue(MetaNameValue {
             path,
             value:
@@ -374,7 +458,7 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
                 meta.span(),
                 "every `protected(...)` entry must be `key = \"value\"` with a \
                  string literal; supported keys are `sensitivity`, `rationale`, \
-                 `redaction`, `codec`, `retention`",
+                 `redaction`, `codec`, `retention`, `per_scope`",
             ));
         };
         let Some(key) = path.get_ident().map(|i| i.to_string()) else {
@@ -431,12 +515,27 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
                 }
                 retention = Some((RetentionLit::parse(&value, lit_span)?, lit_span));
             }
+            "per_scope" => {
+                // `per_scope` requires the `{ ... }` block-expression
+                // form (handled above). Reach this arm only when the
+                // user wrote `per_scope = "<string>"` or similar —
+                // surface a dedicated diagnostic instead of the
+                // generic unknown-key error so the migration message
+                // is actionable.
+                return Err(syn::Error::new(
+                    path.span(),
+                    "`per_scope` requires a `{ scope = { presentation_codec = Path } }` \
+                     block expression, not a string literal. See GH #227 — the \
+                     per-scope codec grammar uses a nested block to declare scope \
+                     entries.",
+                ));
+            }
             other => {
                 return Err(syn::Error::new(
                     path.span(),
                     format!(
                         "unknown `protected` key `{other}`; expected one of: \
-                         sensitivity, rationale, redaction, codec, retention",
+                         sensitivity, rationale, redaction, codec, retention, per_scope",
                     ),
                 ));
             }
@@ -465,7 +564,212 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
             .map(|(r, _)| *r)
             .unwrap_or(RetentionLit::Standard),
         retention_span: retention.as_ref().map(|(_, sp)| *sp),
+        per_scope,
+        per_scope_span,
         list_span,
+    })
+}
+
+/// Parse the `{ scope = { codec_key = Path } }` block that follows
+/// `per_scope = ` inside a `protected(...)` annotation — GH #227 Stage 4.
+///
+/// The block arrives as `syn::Block` whose statements are each an
+/// assignment expression: `scope_ident = { codec_key = codec_path }`.
+/// Each statement is parsed into one [`PerScopeCodecEntry`]; duplicate
+/// scope keys are rejected here so the diagnostic anchors at the second
+/// occurrence rather than waiting for the visage emitter to see a
+/// duplicate.
+///
+/// Grammar (one statement):
+///
+/// ```text
+/// scope_ident = {
+///     (presentation_codec | try_presentation_codec) = SomeCodec::Path,
+/// }
+/// ```
+///
+/// Both `presentation_codec` (infallible) and `try_presentation_codec`
+/// (fallible) are accepted; declaring both inside the same scope block
+/// is rejected so the emitter does not have to disambiguate. The codec
+/// path is captured verbatim and routed through the visage emitter; the
+/// emitter validates that the path resolves to a type implementing
+/// `PresentationCodec<FieldTy>` / `TryPresentationCodec<FieldTy>` via
+/// trait bounds in the generated init expression.
+fn parse_per_scope_block(block: &syn::Block) -> syn::Result<Vec<PerScopeCodecEntry>> {
+    let mut entries: Vec<PerScopeCodecEntry> = Vec::new();
+    for stmt in &block.stmts {
+        // Each statement must be an expression statement carrying an
+        // assignment expression (no `;` needed inside the user's block —
+        // syn lowers both shapes to `Stmt::Expr(..., None)`).
+        let outer_expr = match stmt {
+            Stmt::Expr(expr, _) => expr,
+            other => {
+                return Err(syn::Error::new(
+                    other.span(),
+                    "every `per_scope = { ... }` statement must be a \
+                     `scope_ident = { codec_key = Path }` assignment expression",
+                ));
+            }
+        };
+
+        let Expr::Assign(outer_assign) = outer_expr else {
+            return Err(syn::Error::new(
+                outer_expr.span(),
+                "every `per_scope = { ... }` entry must be a \
+                 `scope_ident = { codec_key = Path }` assignment expression",
+            ));
+        };
+
+        // Left-hand side: `scope_ident`. Must be a bare ident path so
+        // downstream emission can stash the scope key verbatim.
+        let Expr::Path(scope_path_expr) = outer_assign.left.as_ref() else {
+            return Err(syn::Error::new(
+                outer_assign.left.span(),
+                "`per_scope` entries must start with a bare scope ident — \
+                 write `support = { ... }`, not a path / literal / etc.",
+            ));
+        };
+        let Some(scope_ident) = scope_path_expr.path.get_ident() else {
+            return Err(syn::Error::new(
+                scope_path_expr.path.span(),
+                "`per_scope` scope name must be a single-segment ident",
+            ));
+        };
+        let scope_name = scope_ident.to_string();
+        let scope_span = scope_ident.span();
+
+        if entries.iter().any(|e| e.scope == scope_name) {
+            return Err(syn::Error::new(
+                scope_span,
+                format!(
+                    "scope `{scope_name}` declared twice inside the same \
+                     `per_scope = {{ ... }}` block",
+                ),
+            ));
+        }
+
+        // Right-hand side: an inner block `{ codec_key = Path }`.
+        let Expr::Block(inner_block_expr) = outer_assign.right.as_ref() else {
+            return Err(syn::Error::new(
+                outer_assign.right.span(),
+                "`per_scope` entry value must be a `{ codec_key = Path }` \
+                 block expression",
+            ));
+        };
+
+        let entry = parse_per_scope_inner_block(&inner_block_expr.block, scope_name, scope_span)?;
+        entries.push(entry);
+    }
+
+    Ok(entries)
+}
+
+/// Parse the inner `{ presentation_codec = Path }` block for a single
+/// scope entry inside `per_scope = { ... }`.
+///
+/// Accepts exactly one of `presentation_codec` or `try_presentation_codec`.
+/// Declaring both keys within the same inner block is rejected; future
+/// extensions (e.g. a queryability-override key) slot in alongside these
+/// two without reshaping the per-scope grammar.
+fn parse_per_scope_inner_block(
+    inner_block: &syn::Block,
+    scope_name: String,
+    scope_span: Span,
+) -> syn::Result<PerScopeCodecEntry> {
+    let mut codec_decl: Option<(syn::Path, bool, Span)> = None;
+    for stmt in &inner_block.stmts {
+        let inner_expr = match stmt {
+            Stmt::Expr(expr, _) => expr,
+            other => {
+                return Err(syn::Error::new(
+                    other.span(),
+                    "every per-scope codec entry must be a \
+                     `(try_)?presentation_codec = Path` assignment expression",
+                ));
+            }
+        };
+        let Expr::Assign(inner_assign) = inner_expr else {
+            return Err(syn::Error::new(
+                inner_expr.span(),
+                "every per-scope codec entry must be a \
+                 `(try_)?presentation_codec = Path` assignment expression",
+            ));
+        };
+        let Expr::Path(key_path_expr) = inner_assign.left.as_ref() else {
+            return Err(syn::Error::new(
+                inner_assign.left.span(),
+                "per-scope codec key must be `presentation_codec` or \
+                 `try_presentation_codec`",
+            ));
+        };
+        let Some(key_ident) = key_path_expr.path.get_ident() else {
+            return Err(syn::Error::new(
+                key_path_expr.path.span(),
+                "per-scope codec key must be a single-segment ident — \
+                 `presentation_codec` or `try_presentation_codec`",
+            ));
+        };
+        let key_name = key_ident.to_string();
+        let fallible = match key_name.as_str() {
+            "presentation_codec" => false,
+            "try_presentation_codec" => true,
+            other => {
+                return Err(syn::Error::new(
+                    key_ident.span(),
+                    format!(
+                        "unknown per-scope codec key `{other}`; expected \
+                         `presentation_codec` (infallible) or \
+                         `try_presentation_codec` (fallible)",
+                    ),
+                ));
+            }
+        };
+
+        let Expr::Path(codec_path_expr) = inner_assign.right.as_ref() else {
+            return Err(syn::Error::new(
+                inner_assign.right.span(),
+                "per-scope codec value must be a Rust type path — \
+                 e.g. `djogi::presentation::builtins::MaskString`",
+            ));
+        };
+        let codec_path = codec_path_expr.path.clone();
+
+        if let Some((_, prev_fallible, prev_span)) = codec_decl {
+            let prev_key = if prev_fallible {
+                "try_presentation_codec"
+            } else {
+                "presentation_codec"
+            };
+            let _ = prev_span;
+            return Err(syn::Error::new(
+                key_ident.span(),
+                format!(
+                    "scope `{scope_name}` already declared `{prev_key}`; \
+                     each scope block accepts exactly one codec key",
+                ),
+            ));
+        }
+        codec_decl = Some((codec_path, fallible, key_ident.span()));
+    }
+
+    let Some((codec_type, fallible, _)) = codec_decl else {
+        return Err(syn::Error::new(
+            scope_span,
+            format!(
+                "scope `{scope_name}` declares no codec; write \
+                 `{scope_name} = {{ presentation_codec = SomeCodec }}` \
+                 (infallible) or \
+                 `{scope_name} = {{ try_presentation_codec = SomeCodec }}` \
+                 (fallible)",
+            ),
+        ));
+    };
+
+    Ok(PerScopeCodecEntry {
+        scope: scope_name,
+        scope_span,
+        codec_type,
+        fallible,
     })
 }
 
@@ -488,14 +792,15 @@ pub fn validate(spec: &ProtectedSpec, field: &syn::Field) -> syn::Result<()> {
             .rationale_span
             .or(spec.redaction_span)
             .or(spec.codec_span)
-            .or(spec.retention_span);
+            .or(spec.retention_span)
+            .or(spec.per_scope_span);
         if let Some(span) = first_extra_span {
             return Err(syn::Error::new(
                 span,
                 "`sensitivity = \"none\"` cannot be combined with other \
                  protected-field metadata (rationale / redaction / codec / \
-                 retention). Either drop the `protected(...)` attribute \
-                 entirely or set `sensitivity` higher.",
+                 retention / per_scope). Either drop the `protected(...)` \
+                 attribute entirely or set `sensitivity` higher.",
             ));
         }
     }
@@ -941,5 +1246,201 @@ mod tests {
         assert!(imm.contains("DefaultVolatility :: Immutable"));
         assert!(stb.contains("DefaultVolatility :: Stable"));
         assert!(vol.contains("DefaultVolatility :: Volatile"));
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // GH #227 Stage 4 — `per_scope = { ... }` presentation-codec block
+    // parser tests.
+    //
+    // The visage codegen pass consumes [`ProtectedSpec::per_scope`]
+    // directly off the field's parsed spec; these tests cover the
+    // attribute-parse surface only (no expanded codegen).
+    // ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn per_scope_single_infallible_codec_parses() {
+        let f = field(quote! {
+            #[field(protected(
+                sensitivity = "pii",
+                rationale = "GH #227 — codec parser smoke test",
+                per_scope = {
+                    public = {
+                        presentation_codec = djogi::presentation::builtins::MaskString
+                    }
+                }
+            ))]
+            pub email: String,
+        });
+        let spec = parse_from_field(&f).expect("parse").expect("present");
+        assert_eq!(spec.per_scope.len(), 1, "exactly one scope entry");
+        let entry = &spec.per_scope[0];
+        assert_eq!(entry.scope, "public");
+        assert!(!entry.fallible, "presentation_codec is infallible");
+        // Codec path renders into the same token-string the visage
+        // emitter consumes — assert on the segment join rather than
+        // the raw `quote!` whitespace.
+        let codec_str = entry
+            .codec_type
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::");
+        assert_eq!(codec_str, "djogi::presentation::builtins::MaskString");
+        // The per_scope_span is populated, so rule (a) anchors at this
+        // key when combined with `sensitivity = "none"`.
+        assert!(spec.per_scope_span.is_some());
+    }
+
+    #[test]
+    fn per_scope_try_presentation_codec_marks_fallible() {
+        let f = field(quote! {
+            #[field(protected(
+                sensitivity = "pii",
+                rationale = "GH #227 — fallible codec smoke test",
+                per_scope = {
+                    public = {
+                        try_presentation_codec = djogi::presentation::builtins::MaskString
+                    }
+                }
+            ))]
+            pub phone: String,
+        });
+        let spec = parse_from_field(&f).expect("parse").expect("present");
+        assert_eq!(spec.per_scope.len(), 1);
+        assert_eq!(spec.per_scope[0].scope, "public");
+        assert!(
+            spec.per_scope[0].fallible,
+            "try_presentation_codec selects the fallible dispatch"
+        );
+    }
+
+    #[test]
+    fn per_scope_rejects_unknown_codec_key() {
+        let f = field(quote! {
+            #[field(protected(
+                sensitivity = "pii",
+                rationale = "GH #227 — unknown codec key",
+                per_scope = {
+                    public = {
+                        encrypted = djogi::presentation::builtins::MaskString
+                    }
+                }
+            ))]
+            pub email: String,
+        });
+        let err = parse_from_field(&f).expect_err("unknown codec key");
+        let msg = err.to_string();
+        assert!(msg.contains("encrypted"), "got: {msg}");
+        assert!(msg.contains("presentation_codec"), "got: {msg}");
+        assert!(msg.contains("try_presentation_codec"), "got: {msg}");
+    }
+
+    #[test]
+    fn per_scope_rejects_duplicate_scope() {
+        // Two entries for the same `public` scope inside one
+        // per_scope block — the second must surface as a parse-time
+        // error so the diagnostic anchors at the duplicate ident.
+        //
+        // The `per_scope = { ... }` body parses as a Rust block, so
+        // statements separate via `;` (not `,`); the trailing entry
+        // omits the separator.
+        let f = field(quote! {
+            #[field(protected(
+                sensitivity = "pii",
+                rationale = "GH #227 — duplicate scope",
+                per_scope = {
+                    public = {
+                        presentation_codec = djogi::presentation::builtins::MaskString
+                    };
+                    public = {
+                        try_presentation_codec = djogi::presentation::builtins::MaskString
+                    }
+                }
+            ))]
+            pub email: String,
+        });
+        let err = parse_from_field(&f).expect_err("duplicate scope");
+        let msg = err.to_string();
+        assert!(msg.contains("public"), "got: {msg}");
+        assert!(msg.contains("declared twice"), "got: {msg}");
+    }
+
+    #[test]
+    fn per_scope_rejects_both_codec_keys_in_same_scope_block() {
+        // Same `;`-separator convention applies inside the inner
+        // codec block — the user writes the second key after a
+        // semicolon to express "and also try_presentation_codec".
+        let f = field(quote! {
+            #[field(protected(
+                sensitivity = "pii",
+                rationale = "GH #227 — both codec keys",
+                per_scope = {
+                    public = {
+                        presentation_codec = djogi::presentation::builtins::MaskString;
+                        try_presentation_codec = djogi::presentation::builtins::MaskString
+                    }
+                }
+            ))]
+            pub email: String,
+        });
+        let err = parse_from_field(&f).expect_err("both codec keys");
+        let msg = err.to_string();
+        assert!(msg.contains("public"), "got: {msg}");
+    }
+
+    #[test]
+    fn rule_a_rejects_per_scope_alongside_sensitivity_none() {
+        // The per_scope key carries its own span; rule (a) must pick
+        // it up alongside the other "extra knob" spans so the
+        // diagnostic anchors at the offending block.
+        let f = field(quote! {
+            #[field(protected(
+                sensitivity = "none",
+                per_scope = {
+                    public = {
+                        presentation_codec = djogi::presentation::builtins::MaskString
+                    }
+                }
+            ))]
+            pub email: String,
+        });
+        let spec = parse_from_field(&f).expect("parse").expect("present");
+        assert!(spec.per_scope_span.is_some());
+        let err = validate(&spec, &f).expect_err("rule (a) per_scope");
+        let msg = err.to_string();
+        assert!(msg.contains("cannot be combined"), "got: {msg}");
+        assert!(msg.contains("per_scope"), "got: {msg}");
+    }
+
+    #[test]
+    fn per_scope_to_tokens_does_not_emit_into_descriptor() {
+        // Presentation codecs are runtime-only metadata — they must
+        // not flow into `ProtectedFieldMetadata`. Assert the emitted
+        // token stream does NOT mention `per_scope` / codec paths so
+        // the migration differ stays isolated from runtime codec
+        // changes.
+        let f = field(quote! {
+            #[field(protected(
+                sensitivity = "pii",
+                rationale = "GH #227 — descriptor isolation",
+                per_scope = {
+                    public = {
+                        presentation_codec = djogi::presentation::builtins::MaskString
+                    }
+                }
+            ))]
+            pub email: String,
+        });
+        let spec = parse_from_field(&f).expect("parse").expect("present");
+        let tokens = spec.to_tokens().to_string();
+        assert!(
+            !tokens.contains("per_scope"),
+            "per_scope must not leak into ProtectedFieldMetadata; got: {tokens}"
+        );
+        assert!(
+            !tokens.contains("MaskString"),
+            "codec path must not leak into ProtectedFieldMetadata; got: {tokens}"
+        );
     }
 }

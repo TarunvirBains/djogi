@@ -146,16 +146,16 @@ help: the trait `djogi::__private::postgres_types::FromSql<'_>` is not implement
               Box<[T]>
               Box<str>
               HashMap<std::string::String, Option<std::string::String>, S>
+              HmacSha256Hex
               IpAddr
-              MirJzSON
-            and 38 others
+            and 39 others
 note: required by a bound in `djogi::pg::decode::decode_at`
-   --> djogi/src/pg/decode.rs:163:8
+   --> djogi/src/pg/decode.rs:178:8
     |
-161 | pub fn decode_at<'a, T>(row: &'a Row, idx: usize, name: &'static str) -> Result<T, DjogiError>
+176 | pub fn decode_at<'a, T>(row: &'a Row, idx: usize, name: &'static str) -> Result<T, DjogiError>
     |        --------- required by a bound in this function
-162 | where
-163 |     T: FromSql<'a>,
+177 | where
+178 |     T: FromSql<'a>,
     |        ^^^^^^^^^^^ required by this bound in `decode_at`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -181,9 +181,9 @@ help: the trait `djogi::__private::postgres_types::FromSql<'_>` is not implement
               Box<[T]>
               Box<str>
               HashMap<std::string::String, Option<std::string::String>, S>
+              HmacSha256Hex
               IpAddr
-              MirJzSON
-            and 38 others
+            and 39 others
 note: required by a bound in `djogi::__private::tokio_postgres::row::Row::try_get`
    --> $CARGO/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-postgres-0.7.17/src/row.rs:161:12
     |
@@ -252,16 +252,16 @@ help: the trait `djogi::__private::postgres_types::FromSql<'_>` is not implement
               Box<[T]>
               Box<str>
               HashMap<std::string::String, Option<std::string::String>, S>
+              HmacSha256Hex
               IpAddr
-              MirJzSON
-            and 38 others
+            and 39 others
 note: required by a bound in `djogi::pg::decode::decode_at`
-   --> djogi/src/pg/decode.rs:163:8
+   --> djogi/src/pg/decode.rs:178:8
     |
-161 | pub fn decode_at<'a, T>(row: &'a Row, idx: usize, name: &'static str) -> Result<T, DjogiError>
+176 | pub fn decode_at<'a, T>(row: &'a Row, idx: usize, name: &'static str) -> Result<T, DjogiError>
     |        --------- required by a bound in this function
-162 | where
-163 |     T: FromSql<'a>,
+177 | where
+178 |     T: FromSql<'a>,
     |        ^^^^^^^^^^^ required by this bound in `decode_at`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -287,9 +287,9 @@ help: the trait `djogi::__private::postgres_types::FromSql<'_>` is not implement
               Box<[T]>
               Box<str>
               HashMap<std::string::String, Option<std::string::String>, S>
+              HmacSha256Hex
               IpAddr
-              MirJzSON
-            and 38 others
+            and 39 others
 note: required by a bound in `djogi::__private::tokio_postgres::row::Row::try_get`
    --> $CARGO/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-postgres-0.7.17/src/row.rs:161:12
     |

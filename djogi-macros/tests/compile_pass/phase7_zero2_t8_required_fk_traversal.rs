@@ -54,4 +54,5 @@ fn main() {
     // means rustc resolved every method on the chain — that is the
     // compile-pass gate T8 needs.
     let _traversed: Condition = traversal_composes(&fields);
+
 }

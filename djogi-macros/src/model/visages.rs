@@ -39,8 +39,9 @@
 //! `::djogi::*` so users never depend on `serde` / `time` / `heeranjid`
 //! directly.
 
-use crate::model::attrs::{FieldAttrs, ModelAttrs, PkStrategy, detect_relation};
+use crate::model::attrs::{ExposeSpec, FieldAttrs, ModelAttrs, PkStrategy, detect_relation};
 use crate::model::derived::{DerivedAttr, FallibilityShape, detect_fallibility_shape};
+use crate::model::protected::PerScopeCodecEntry;
 use crate::model::visage_ctx::{
     ScopeMembership, VisageEmitContext, classify_field_for_scope, is_full_peer_for,
 };
@@ -66,13 +67,39 @@ pub fn expand(
 
     let n_framework = model_attrs.framework_field_count();
 
-    let visages: Vec<TokenStream> = SCOPES
+    // GH #227 Stage 4 — expand-time scope-validation pass.
+    //
+    // `ExposeSpec::parse_entries` accepts any identifier-shaped scope key
+    // (the membership check is deferred to here because field-attribute
+    // parsing happens before model-attribute parsing). Now that the full
+    // `ModelAttrs` is available, walk every user field's parsed
+    // `expose(...)` declarations and reject any scope key that is not in
+    // `BUILTIN_SCOPES ∪ visage_scopes`. The diagnostic carries the
+    // model's full visage-scope universe so the adopter sees both the
+    // built-ins and the custom set in one error.
+    if let Err(e) = validate_field_scope_membership(struct_item, model_attrs, field_attrs) {
+        return e.to_compile_error();
+    }
+
+    // Concrete iteration set — built-in scopes first (preserving the
+    // canonical Public / SelfView / Admin / Export order downstream code
+    // depends on), then custom scopes in declaration order. The visage
+    // emitter treats both classes uniformly; the only externally visible
+    // distinction is whether the generated struct ident comes from the
+    // built-in `SCOPES` table or from `model_attrs.visage_scopes`.
+    let all_scopes: Vec<(String, String)> = SCOPES
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .chain(model_attrs.visage_scopes.iter().cloned())
+        .collect();
+
+    let visages: Vec<TokenStream> = all_scopes
         .iter()
         .map(|(scope, suffix)| {
             let ctx = VisageEmitContext {
                 source: source_name,
                 visage_ident: format_ident!("{source_name}{suffix}"),
-                scope,
+                scope: scope.as_str(),
                 struct_item,
                 field_attrs,
                 model_attrs,
@@ -86,6 +113,221 @@ pub fn expand(
     quote! {
         #(#visages)*
     }
+}
+
+/// Walk every user field's parsed `expose(...)` declarations and confirm
+/// each declared scope key is either a built-in or appears in
+/// `model_attrs.visage_scopes` — GH #227 Stage 4.
+///
+/// Field-attribute parsing (`ExposeSpec::parse_entries`) is intentionally
+/// permissive because the model-level `visage_scopes(...)` block may
+/// follow the field declarations in source order, and darling invokes
+/// `FromMeta` before the macro has parsed the model attributes. The
+/// emit-time check below catches every typo / missing-scope case the
+/// parser deferred.
+fn validate_field_scope_membership(
+    struct_item: &ItemStruct,
+    model_attrs: &ModelAttrs,
+    field_attrs: &[FieldAttrs],
+) -> syn::Result<()> {
+    let n_framework = model_attrs.framework_field_count();
+    let user_field_pairs: Vec<_> = struct_item
+        .fields
+        .iter()
+        .skip(n_framework)
+        .zip(field_attrs.iter())
+        .collect();
+
+    let custom_scope_keys: Vec<&str> = model_attrs
+        .visage_scopes
+        .iter()
+        .map(|(k, _)| k.as_str())
+        .collect();
+
+    for (field, attrs) in &user_field_pairs {
+        for scope_name in attrs.expose.scalar_scopes.iter() {
+            if !ExposeSpec::is_builtin_scope(scope_name)
+                && !custom_scope_keys.contains(&scope_name.as_str())
+            {
+                return Err(unknown_scope_error(field, scope_name, &custom_scope_keys));
+            }
+        }
+        for scope_name in attrs.expose.relation_scopes.keys() {
+            if !ExposeSpec::is_builtin_scope(scope_name)
+                && !custom_scope_keys.contains(&scope_name.as_str())
+            {
+                return Err(unknown_scope_error(field, scope_name, &custom_scope_keys));
+            }
+        }
+
+        if let Some(spec) = attrs.protected.as_ref() {
+            // GH #227 Cluster A F2 — `per_scope` codecs are scalar-only.
+            // Relation fields already project through `expose(scope ->
+            // Peer)` and the visage emitter never routes embedded peers
+            // through presentation codecs. Reject the entire `per_scope`
+            // block up front so adopters get a direct, field-local
+            // diagnostic instead of a silently ignored declaration.
+            if !spec.per_scope.is_empty() && detect_relation(&field.ty).is_some() {
+                let field_name = field
+                    .ident
+                    .as_ref()
+                    .expect("named-field structs only")
+                    .to_string();
+                return Err(syn::Error::new(
+                    spec.per_scope_span.unwrap_or(spec.list_span),
+                    format!(
+                        "field `{field_name}` is a relation field, so \
+                         `protected(per_scope = {{ ... }})` is not allowed here. \
+                         Presentation codecs are scalar-only and must be attached \
+                         to fields exposed with `expose(scope)`, not \
+                         `expose(scope -> Peer)` relation embeds.",
+                    ),
+                ));
+            }
+
+            for entry in &spec.per_scope {
+                if !ExposeSpec::is_builtin_scope(&entry.scope)
+                    && !custom_scope_keys.contains(&entry.scope.as_str())
+                {
+                    let custom_part = if custom_scope_keys.is_empty() {
+                        "no custom scopes declared on this model".to_string()
+                    } else {
+                        format!(
+                            "custom scopes on this model: {}",
+                            custom_scope_keys.join(", "),
+                        )
+                    };
+                    return Err(syn::Error::new(
+                        entry.scope_span,
+                        format!(
+                            "scope `{}` referenced inside `protected(per_scope = {{ ... }})` \
+                             is not a known visage scope. Built-in scopes: public, self_view, \
+                             admin, export. {}. Declare additional scopes via \
+                             `#[model(visage_scopes(name = Suffix))]` on the model.",
+                            entry.scope, custom_part,
+                        ),
+                    ));
+                }
+
+                // GH #227 Cluster A F1 — every `per_scope` entry must
+                // target a scope the field itself exposes. Without this
+                // cross-check, a codec declaration for a non-exposed
+                // scope compiles but is dead: the visage emitter never
+                // consults it because the field is absent from that
+                // scope's generated visage.
+                if !attrs.expose.scalar_scopes.contains(&entry.scope) {
+                    let field_name = field
+                        .ident
+                        .as_ref()
+                        .expect("named-field structs only")
+                        .to_string();
+                    let mut scalar_scope_names: Vec<&str> = attrs
+                        .expose
+                        .scalar_scopes
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect();
+                    scalar_scope_names.sort_unstable();
+                    let exposed_scopes = if attrs.expose.scalar_scopes.is_empty() {
+                        "this field is not exposed in any scalar visage scope".to_string()
+                    } else {
+                        format!(
+                            "scalar expose scopes on this field: {}",
+                            scalar_scope_names.join(", "),
+                        )
+                    };
+                    return Err(syn::Error::new(
+                        entry.scope_span,
+                        format!(
+                            "scope `{}` referenced inside `protected(per_scope = {{ ... }})` \
+                             is not exposed on field `{field_name}`. `per_scope` entries must \
+                             match the field's scalar `#[field(expose(...))]` scopes; \
+                             {exposed_scopes}. Add `expose({})` to this field or remove the \
+                             codec entry for that scope.",
+                            entry.scope, entry.scope,
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn unknown_scope_error(
+    field: &syn::Field,
+    scope_name: &str,
+    custom_scope_keys: &[&str],
+) -> syn::Error {
+    let custom_part = if custom_scope_keys.is_empty() {
+        "no custom scopes declared on this model".to_string()
+    } else {
+        format!(
+            "custom scopes on this model: {}",
+            custom_scope_keys.join(", "),
+        )
+    };
+    syn::Error::new_spanned(
+        field,
+        format!(
+            "unknown scope `{scope_name}` in `#[field(expose(...))]`. \
+             Built-in scopes: public, self_view, admin, export. \
+             {custom_part}. Declare additional scopes via \
+             `#[model(visage_scopes(name = Suffix))]` on the model.",
+        ),
+    )
+}
+
+/// Emit `::std::any::type_name::<CodecTy>()` for a codec type path.
+///
+/// Used in non-const runtime code paths (e.g. `VisageError`) where the
+/// compiler can evaluate the fully resolved type identity at runtime.
+fn codec_runtime_type_name_tokens(path: &syn::Path) -> TokenStream {
+    quote! { ::std::any::type_name::<#path>() }
+}
+
+/// Emit a const-safe codec identity string for inventory submission.
+///
+/// GH #227 Cluster A NC5: the old segment-join strategy lost fidelity
+/// for single-segment imported paths (`MaskString`). The ideal fix is
+/// `type_name::<CodecTy>()`, but this toolchain does not yet permit it
+/// in the `inventory::submit!` static initializer. Use the next-best
+/// const-safe identity:
+///
+/// - multi-segment paths keep their canonical `a::b::c` spelling;
+/// - single-segment paths are prefixed with the model module's
+///   `module_path!()` so the resulting string identifies the resolved
+///   local binding unambiguously within the adopter crate.
+fn codec_inventory_identity_tokens(path: &syn::Path) -> TokenStream {
+    if path.segments.len() == 1 {
+        quote! { ::std::concat!(::std::module_path!(), "::", ::std::stringify!(#path)) }
+    } else {
+        let joined = path
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::");
+        quote! { #joined }
+    }
+}
+
+/// Look up the per-scope presentation codec entry (if any) for the
+/// current scope on a field carrying `protected(per_scope = { ... })`.
+///
+/// Returns `Some` only when the field has a parsed `ProtectedSpec` whose
+/// `per_scope` Vec contains an entry whose `scope` matches the emitter's
+/// current scope. Otherwise returns `None`, signalling the scalar
+/// fast-path (no codec dispatch).
+fn lookup_per_scope_codec<'a>(
+    attrs: &'a FieldAttrs,
+    scope: &str,
+) -> Option<&'a PerScopeCodecEntry> {
+    attrs
+        .protected
+        .as_ref()
+        .and_then(|spec| spec.per_scope.iter().find(|e| e.scope == scope))
 }
 
 fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
@@ -125,6 +367,18 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
     let mut user_fields: Vec<TokenStream> = Vec::new();
     let mut user_inits: Vec<TokenStream> = Vec::new();
     let mut has_relation_entry = false;
+    // GH #227 Stage 4 — track whether ANY user field in this scope
+    // routes through a `try_presentation_codec` codec. A fallible codec
+    // anywhere flips the visage's conversion impl from
+    // `From<&Source>` to `TryFrom<&Source, Error = VisageError>` so
+    // `?` propagation reaches the boxed codec error.
+    let mut has_try_codec = false;
+    // GH #227 Stage 4 — accumulator for `inventory::submit!` blocks
+    // emitted alongside the struct + impl. Each scalar field with a
+    // per-scope codec contributes one submission; relation-form fields
+    // skip this path entirely (codecs apply to leaf scalar columns,
+    // not to embedded peer values).
+    let mut codec_inventory_submissions: Vec<TokenStream> = Vec::new();
 
     let user_field_pairs: Vec<_> = struct_item
         .fields
@@ -165,12 +419,85 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
                 return syn::Error::new_spanned(field, msg).to_compile_error();
             }
 
-            // Scalar form on scalar field — happy path.
+            // Scalar form on scalar field — happy path. GH #227 Stage 4
+            // splits this into two sub-paths:
+            //
+            // - **No codec** (the existing case): field type and init
+            //   pass through unchanged.
+            // - **Per-scope codec present**: the field type becomes the
+            //   codec's associated `Output` type, and the init dispatches
+            //   through `PresentationCodec::present` (infallible) or
+            //   `TryPresentationCodec::try_present` + `?` propagation
+            //   mapped to `VisageError::PresentationCodec` (fallible).
+            //   The dispatch routes through the trait so adopters can
+            //   define new codecs without changing the macro.
             ScopeMembership::Scalar => {
-                user_fields.push(quote! { pub #fname: #fty, });
-                user_inits.push(quote! {
-                    #fname: ::std::clone::Clone::clone(&src.#fname),
-                });
+                if let Some(entry) = lookup_per_scope_codec(attrs, scope) {
+                    let codec_ty = &entry.codec_type;
+                    let fname_str = fname.to_string();
+                    let scope_str = scope.to_string();
+                    let codec_type_name_for_err = codec_runtime_type_name_tokens(codec_ty);
+                    let codec_type_name_for_inventory = codec_inventory_identity_tokens(codec_ty);
+
+                    // Field type: route through `PresentationCodecInfo<Input>::Output`
+                    // so any change to a codec's output type flows through to the
+                    // visage struct without a separate annotation site.
+                    user_fields.push(quote! {
+                        pub #fname: <#codec_ty as ::djogi::presentation::PresentationCodecInfo<#fty>>::Output,
+                    });
+
+                    // Init: infallible vs fallible dispatch. The fallible
+                    // arm maps the codec's error type into
+                    // `VisageError::PresentationCodec` by boxing the
+                    // source error — the trait bounds the runtime exposes
+                    // (`std::error::Error + Send + Sync + 'static`) make
+                    // the `Box::new` coercion direct.
+                    if entry.fallible {
+                        has_try_codec = true;
+                        user_inits.push(quote! {
+                            #fname: <#codec_ty as ::djogi::presentation::TryPresentationCodec<#fty>>::try_present(&src.#fname)
+                                .map_err(|__djogi_codec_err| ::djogi::VisageError::PresentationCodec {
+                                    model: #source_name_str,
+                                    field: #fname_str,
+                                    scope: #scope_str,
+                                    codec: #codec_type_name_for_err,
+                                    source: ::std::boxed::Box::new(__djogi_codec_err),
+                                })?,
+                        });
+                    } else {
+                        user_inits.push(quote! {
+                            #fname: <#codec_ty as ::djogi::presentation::PresentationCodec<#fty>>::present(&src.#fname),
+                        });
+                    }
+
+                    // Inventory submission for this `(model, field, scope,
+                    // codec)` usage. The `validate_startup` function
+                    // pointer routes through the codec's trait const so
+                    // adding new codecs requires zero changes to the
+                    // submission shape.
+                    let fallible_lit = entry.fallible;
+                    codec_inventory_submissions.push(quote! {
+                        ::djogi::__private::inventory::submit! {
+                            ::djogi::presentation::inventory::PresentationCodecUsage::const_new(
+                                #source_name_str,
+                                #fname_str,
+                                #scope_str,
+                                #codec_type_name_for_inventory,
+                                #fallible_lit,
+                                || ::std::any::type_name::<#fty>(),
+                                || ::std::any::type_name::<
+                                    <#codec_ty as ::djogi::presentation::PresentationCodecInfo<#fty>>::Output
+                                >(),
+                                <#codec_ty as ::djogi::presentation::PresentationCodecInfo<#fty>>::validate_startup,
+                            )
+                        }
+                    });
+                } else {
+                    user_fields.push(quote! { pub #fname: #fty, });
+                    user_inits.push(quote! {
+                        #fname: ::std::clone::Clone::clone(&src.#fname),
+                    });
+                }
             }
 
             // Relation form on relation field — optional relations emit
@@ -362,7 +689,12 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
     //   the TryFrom branch; the relation-nesting trigger is
     //   unchanged. A scalar `From` is unsound when any of the
     //   per-field init expressions may fail.
-    let needs_try_from = has_relation_entry || any_fallible;
+    // GH #227 Stage 4 — a fallible presentation codec is the third
+    // trigger for the `TryFrom` branch alongside relation-nesting and
+    // derived-fallibility. Any one of the three forces the visage's
+    // conversion impl to surface `Result<Self, VisageError>` so `?`
+    // propagation reaches the boxed codec error path.
+    let needs_try_from = has_relation_entry || any_fallible || has_try_codec;
     let conv_impl = if needs_try_from {
         quote! {
             impl ::std::convert::TryFrom<&#source> for #proj_name {
@@ -434,6 +766,14 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
         #parity_impl
 
         #visage_descriptor
+
+        // GH #227 Stage 4 — `inventory::submit!` per
+        // `(model, field, scope, codec)` usage. Emitted AFTER the
+        // struct + impl block so the `inventory::submit!` macro sits
+        // at item scope (where it must live) rather than inside the
+        // struct's brace group. Empty when this scope has no
+        // per-scope codec entries.
+        #(#codec_inventory_submissions)*
     }
 }
 
@@ -892,4 +1232,44 @@ fn framework_field_inits(model_attrs: &ModelAttrs) -> Vec<TokenStream> {
     out.push(quote! { created_at: src.created_at, });
     out.push(quote! { updated_at: src.updated_at, });
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{codec_inventory_identity_tokens, codec_runtime_type_name_tokens};
+
+    #[test]
+    fn codec_runtime_type_name_tokens_use_runtime_type_identity() {
+        let codec_path: syn::Path = syn::parse_str("MaskString").expect("parse path");
+        let tokens = codec_runtime_type_name_tokens(&codec_path).to_string();
+        assert!(
+            tokens.contains("type_name :: < MaskString > ()"),
+            "expected runtime type_name emission, got: {tokens}"
+        );
+    }
+
+    #[test]
+    fn codec_inventory_identity_tokens_prefix_single_segment_paths_with_module_path() {
+        let codec_path: syn::Path = syn::parse_str("MaskString").expect("parse path");
+        let tokens = codec_inventory_identity_tokens(&codec_path).to_string();
+        assert!(
+            tokens.contains("concat !"),
+            "expected concat-based const identity, got: {tokens}"
+        );
+        assert!(
+            tokens.contains("module_path ! ()"),
+            "expected module_path prefix, got: {tokens}"
+        );
+    }
+
+    #[test]
+    fn codec_inventory_identity_tokens_preserve_multi_segment_paths() {
+        let codec_path: syn::Path =
+            syn::parse_str("djogi::presentation::builtins::MaskString").expect("parse path");
+        let tokens = codec_inventory_identity_tokens(&codec_path).to_string();
+        assert!(
+            tokens.contains("\"djogi::presentation::builtins::MaskString\""),
+            "expected canonical literal identity, got: {tokens}"
+        );
+    }
 }

@@ -4,8 +4,7 @@
 //! It composes through Rust's standard bitwise operators (`&` / `|`
 //! / `^` / `!`, desugaring to AND / OR / XOR / NOT) and carries
 //! Djogi-trusted [`PortablePredicate<T>`] leaves for Rust-evaluable
-//! predicates (Phase 8eta PR2b — replaces the pre-PR2b
-//! `Q::Basic(BasicPredicate<T>)` raw-Sassi ingress).
+//! predicates.
 //!
 //! # Variant grammar
 //!
@@ -110,20 +109,15 @@
 //! `phase8_lookup_op_regex_lifted_to_basic_predicate.rs` (T6.10) locks
 //! the rule at the type level.
 //!
-//! # Phase 8eta PR2b — `Q::Portable` substrate flip
+//! # Portable provenance
 //!
-//! Pre-PR2b, `Q::Basic(BasicPredicate<T>)` accepted any raw
-//! `sassi::BasicPredicate<T>` constructed by downstream code. Raw Sassi
-//! predicates can pair forged column names with unrelated extractor
-//! closures (`Field::new("col_a", |x| &x.col_b)`), so trusting them at
-//! Djogi cache or SQL boundaries would let SQL emission target a
-//! different column from in-memory Punnu evaluation. PR2b replaces the
-//! variant with `Q::Portable(PortablePredicate<T>)`, where
-//! `PortablePredicate` carries a [`crate::query::field::DjogiFieldProvenance`]
+//! `Q::Portable(PortablePredicate<T>)` carries a [`crate::query::field::DjogiFieldProvenance`]
 //! marker constructible only by Djogi-owned `DjogiField` /
-//! `DjogiPresentField` predicate methods. Public conversion impls for
-//! raw `BasicPredicate<T>` (`From<BasicPredicate<T>> for Q<T>` and
-//! `IntoQ<T> for BasicPredicate<T>`) are removed in the same slice.
+//! `DjogiPresentField` predicate methods. This ensures trusted provenance:
+//! raw Sassi predicates can pair forged column names with unrelated extractor
+//! closures (`Field::new("col_a", |x| &x.col_b)`), which would let SQL
+//! emission target a different column from in-memory Punnu evaluation. The
+//! [`PortablePredicate`] wrapper prevents this at the type level.
 
 use crate::model::Model;
 use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
@@ -164,9 +158,8 @@ use std::ops::{BitAnd, BitOr, BitXor, Not};
 #[non_exhaustive]
 pub enum Q<T: Model> {
     /// Rust-evaluable predicates carried in a trusted-provenance Djogi
-    /// wrapper around `sassi::BasicPredicate<T>`. Phase 8eta PR2b
-    /// replaces the pre-flip `Q::Basic(BasicPredicate<T>)` variant: the
-    /// wrapper's [`crate::query::field::DjogiFieldProvenance`] marker is
+    /// wrapper around `sassi::BasicPredicate<T>`. The wrapper's
+    /// [`crate::query::field::DjogiFieldProvenance`] marker is
     /// constructible only by Djogi-owned root field methods, so SQL
     /// emission and Punnu cache evaluation cannot diverge through forged
     /// column / extractor pairs. `PortablePredicate::True` / `False`
@@ -196,10 +189,9 @@ pub enum Q<T: Model> {
     /// (T6.10) locks the rule at the type level.
     Regex(FieldRef<T, String>, String, /* case_sensitive */ bool),
 
-    /// Escape hatch for typed-expression predicates (Phase 4 Task
-    /// 3a). Subsumes FTS (`ExprNode::TsMatch`) and spatial
-    /// (`ExprNode::Spatial(SpatialExpr::…)`) — see module docs for
-    /// the design choice.
+    /// Escape hatch for typed-expression predicates. Subsumes FTS
+    /// (`ExprNode::TsMatch`) and spatial (`ExprNode::Spatial(SpatialExpr::…)`)
+    /// — see module docs for the design choice.
     Expression(crate::expr::Expr<bool>),
 
     /// Array operators — `@>`, `<@`, `&&` over Postgres array
@@ -208,12 +200,11 @@ pub enum Q<T: Model> {
 
     /// SQL-side escape hatch carrying a legacy [`Condition`] tree.
     ///
-    /// During the Cluster 8γ Stage 2 substrate flip (T6.9), every
-    /// callsite that previously assigned a `Condition` to
+    /// Every callsite that assigns a `Condition` to
     /// `QuerySet<T>::condition` lifts the value through this variant.
     /// The lowering bridge ([`q_to_condition`]) unwraps it as the
-    /// identity, so the SQL emitter sees the **same** `Condition` tree
-    /// it would have seen pre-flip — character-for-character SQL
+    /// identity, so the SQL emitter sees the same `Condition` tree the
+    /// legacy closure-based path produced — character-for-character SQL
     /// parity is preserved by construction.
     ///
     /// Adopters do not normally construct this variant by hand. It
@@ -223,9 +214,8 @@ pub enum Q<T: Model> {
     ///   closure API (which returns `Condition` from `FieldRef::eq` /
     ///   `gt` / `ilike` / etc.) keeps compiling unchanged.
     /// - The [`crate::query::filter::ModelFilter`] programmatic
-    ///   builder bridges into `Q<T>` by folding its clauses through
-    ///   the existing `clauses_into_condition` helper and wrapping
-    ///   the result as `Q::Condition(_)`.
+    ///   builder uses this variant for clauses that cannot be safely
+    ///   reconstructed as portable Q leaves.
     /// - Sister clusters (8β `default_filter_condition`, etc.) that
     ///   still produce `Condition` can compose with `Q<T>` without a
     ///   parallel rewrite.
@@ -271,13 +261,11 @@ pub enum Q<T: Model> {
 // Manual `Clone` for `Q<T>` — the derived `#[derive(Clone)]` would
 // impose `T: Clone` because `BasicPredicate<T>` (carried inside
 // `PortablePredicate<T>`) and other payloads use generic types
-// indirectly. Sassi's PR1 manual `BasicPredicate<T>: Clone` does not
-// require `T: Clone`; PR2a's `PortablePredicate<T>: Clone` and PR2b's
-// manual `Q<T>::Clone` carry that property up to the queryset surface
-// so `QuerySet::clone` works for any `T: Model` regardless of whether
+// indirectly. The manual implementation avoids this bound, so
+// `QuerySet::clone` works for any `T: Model` regardless of whether
 // the model derives `Clone`.
 //
-// Phase 8eta PR2b — explicit per-payload audit:
+// Per-payload audit:
 //
 // - `Q::Portable(PortablePredicate<T>)` clones via PortablePredicate's
 //   manual `Clone` (no `T: Clone` bound).
@@ -287,8 +275,8 @@ pub enum Q<T: Model> {
 // - `Q::Regex(FieldRef, String, bool)` — same shape as `Ilike`.
 // - `Q::Expression(Expr<bool>)` — `Expr<bool>: Clone`; the inner
 //   `ExprNode` is `Clone` via shallow `Box`/`Vec` clones. `SubqueryNode`
-//   payloads carry an `Arc<dyn SubqueryPredicateEmitter>` after PR2b's
-//   storage rewrite, so the model parameter never reaches a clone bound.
+//   payloads carry an `Arc<dyn SubqueryPredicateEmitter>`, so the
+//   model parameter never reaches a clone bound.
 // - `Q::Array(ArrayPredicate<T>)` — `Clone` via `PhantomData<fn() -> T>`
 //   plus owned leaf values; no `T: Clone` propagation.
 // - `Q::Condition(Condition)` — `Condition: Clone` unconditionally.
@@ -321,10 +309,9 @@ impl<T: Model> Clone for Q<T> {
 // Manual `Debug` for `Q<T>` — a derived `#[derive(Debug)]` would impose
 // `T: Debug` because `PortablePredicate<T>` / `BasicPredicate<T>` /
 // `ArrayPredicate<T>` all carry the type parameter through their
-// payload graphs. Phase 8eta PR2b's queryset Debug impl no longer
-// lowers through `q_to_condition_ref`, so this manual walker is the
-// only place portable field predicates print their `(field_name, op)`
-// shape without forcing every model to derive `Debug`.
+// payload graphs. This manual walker is the only place portable field
+// predicates print their `(field_name, op)` shape without forcing every
+// model to derive `Debug`.
 impl<T: Model> std::fmt::Debug for Q<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -399,7 +386,7 @@ pub enum ArrayPredicate<T: Model> {
     Overlap(crate::array::ArrayOverlapLeaf, std::marker::PhantomData<T>),
 }
 
-// Phase 8eta PR2b — manual `Clone` / `Debug` for `ArrayPredicate<T>`.
+// Manual `Clone` / `Debug` for `ArrayPredicate<T>`.
 // The derived versions impose `T: Clone` / `T: Debug` via the
 // `PhantomData<T>` carriers, which would propagate virally through
 // `Q<T>: Clone` / `Q<T>: Debug` and force every model to derive both.
@@ -488,12 +475,12 @@ impl<T: Model> From<crate::array::ArrayOverlapLeaf> for Q<T> {
 // enforcement of v3 §T6 Codex review's "no `Into<Condition>` ambiguity"
 // rule.
 //
-// Phase 8eta PR2b — the impl set is now:
+// The impl set:
 //
 // 1. `Q<T>` — identity. `filter_struct(my_q)` is the canonical caller.
 // 2. `Condition` — legacy bridge for closure-side `f.col.eq(v)` callers
 //    that still produce `Condition`. Wraps as `Q::Condition(_)` so the
-//    SQL emitter sees the same tree the pre-flip path produced.
+//    SQL emitter sees the same tree the legacy path produced.
 // 3. `PortablePredicate<T>` — Djogi-trusted Rust-evaluable predicate
 //    wrapper. Lifts to `Q::Portable(_)` so portable predicates flow
 //    through `QuerySet::filter` / `filter_struct` without requiring the
@@ -506,14 +493,15 @@ impl<T: Model> From<crate::array::ArrayOverlapLeaf> for Q<T> {
 //    `filter_expr` call.
 // 6. The `{Model}Filter` programmatic builder — emitted by the
 //    `#[derive(Model)]` macro alongside the existing `ModelFilter`
-//    impl. The bridge folds `into_clauses()` through the existing
-//    `clauses_into_condition` helper and lifts the result via
-//    `Q::Condition(_)`. SQL parity with the pre-T6.9 `Condition`
-//    substrate is exact because the lowering bridge round-trips the
-//    `Condition` as the identity (see `q_to_condition` for the contract).
+//    impl. The bridge consumes the stored `FilterClause` vector and
+//    lazily reconstructs portable Q leaves for the conservative cases
+//    the macro can prove from model metadata. Unsupported fields,
+//    wrapped/optional shapes, value mismatches, and SQL-only operators
+//    fall back to `Q::Condition(_)`, so SQL behavior remains the
+//    compatibility floor without storing parallel predicate state.
 //
-// Pre-PR2b `IntoQ<T> for sassi::BasicPredicate<T>` and
-// `From<sassi::BasicPredicate<T>> for Q<T>` are deliberately removed:
+// `IntoQ<T> for sassi::BasicPredicate<T>` and
+// `From<sassi::BasicPredicate<T>> for Q<T>` are deliberately not exposed:
 // raw Sassi predicates can pair forged column names with unrelated
 // extractor closures (`Field::new("col_a", |x| &x.col_b)`), so trusting
 // them at Djogi cache boundaries would let SQL emission and Punnu
@@ -560,14 +548,14 @@ impl<T: Model> IntoQ<T> for Q<T> {
     }
 }
 
-// Phase 8eta PR2b — sealed `IntoQ<T> for Condition`.
+// Sealed `IntoQ<T> for Condition`.
 //
 // Lets the legacy closure-side filter API (`f.col.eq(v)` returning
 // `Condition`) compose through the generalised `QuerySet::filter` /
 // `filter_struct` signatures (`P: IntoQ<T>`). Wrapping as
 // `Q::Condition(_)` preserves the SQL-parity contract: the lowering
 // bridge round-trips `Q::Condition(_)` as the identity, so the SQL
-// emitter sees the same `Condition` tree the pre-flip path produced.
+// emitter sees the same `Condition` tree the closure-based path produced.
 //
 // The `Condition` type is locally owned by Djogi (`crate::query::condition`),
 // so this impl satisfies Rust's orphan rules without reaching for the
@@ -580,7 +568,7 @@ impl<T: Model> IntoQ<T> for Condition {
     }
 }
 
-// Phase 8eta PR2b — sealed `IntoQ<T> for Expr<bool>`.
+// Sealed `IntoQ<T> for Expr<bool>`.
 //
 // Keeps explicit-PG spatial expression predicates such as
 // `f.location().explicit_pg_predicate().bounded_by(...)` and
@@ -588,7 +576,7 @@ impl<T: Model> IntoQ<T> for Condition {
 // on the ordinary `QuerySet::filter` path: the typed `Expr<bool>` lifts
 // into `Q::Expression(_)`, the SQL emitter renders it through
 // `expr::sql::emit_expr`, and `.try_portable()` / `.cache(...)` /
-// `.refresh_into(...)` reject `Q::Expression(_)` as cache-invalid (PR4).
+// `.refresh_into(...)` reject `Q::Expression(_)` as cache-invalid.
 //
 // Sealed: `Expr<bool>` is local to Djogi (`crate::expr::Expr`), so the
 // impl satisfies orphan rules without exposing the seal trait.
@@ -603,11 +591,10 @@ impl<T: Model> IntoQ<T> for crate::expr::Expr<bool> {
 // ── Macro-emitted `IntoQ<T>` for `{Model}Filter` ────────────────────────────
 //
 // The `#[derive(Model)]` macro emits an `IntoQ<#model_ty>` impl for
-// each `{Model}Filter` it generates. The impl folds `into_clauses()`
-// through `crate::query::filter::clauses_into_condition` and wraps the
-// result as `Q::Condition(_)`. Character-for-character SQL parity with
-// the pre-T6.9 `Condition` substrate is preserved because
-// `q_to_condition` round-trips `Q::Condition(_)` as the identity.
+// each `{Model}Filter` it generates. The impl keeps the filter's
+// `FilterClause` vector as the single source of truth, reconstructs
+// conservative portable leaves lazily, and uses `Q::Condition(_)` as
+// the fallback for SQL-only clauses.
 //
 // The seal extension lives in `crate::__private::__seal_into_q_for_model_filter`
 // so adopter crates cannot impl `IntoQ<T>` for arbitrary types — only
@@ -620,29 +607,25 @@ impl<T: Model> Q<T> {
     /// Vacuous-truth identity — wraps a trusted-provenance Djogi
     /// [`PortablePredicate::always_true`] so unfiltered querysets stay
     /// SQL-emittable and Punnu-portable through the same wrapper as
-    /// every other portable predicate. Phase 8eta PR2b swaps the
-    /// pre-flip `Q::Basic(BasicPredicate::True)` body to
-    /// `Q::Portable(PortablePredicate::always_true())`.
+    /// every other portable predicate.
     pub fn always_true() -> Self {
         Q::Portable(PortablePredicate::always_true())
     }
 
     /// Vacuous-falsehood identity — `Q::Portable(PortablePredicate::always_false())`.
-    /// Used by `QuerySet::none()` after Phase 8eta PR4 makes the
-    /// portable boundary explicit.
+    /// Used by `QuerySet::none()`.
     pub fn always_false() -> Self {
         Q::Portable(PortablePredicate::always_false())
     }
 }
 
-// Phase 8eta PR2b — `From<sassi::BasicPredicate<T>> for Q<T>` is
-// deliberately removed. Raw Sassi predicates carry attacker-controlled
-// column names + arbitrary extractor closures, which would let SQL
-// emission and Punnu evaluation diverge through the cache boundary.
-// Djogi-trusted predicates flow through the typed root field surface
-// (`DjogiField::eq(...) -> PortablePredicate<T>`) and from there into
-// `Q<T>` via `IntoQ<T> for PortablePredicate<T>` (defined in
-// `query::predicate`).
+// `From<sassi::BasicPredicate<T>> for Q<T>` is not exposed.
+// Raw Sassi predicates carry attacker-controlled column names +
+// arbitrary extractor closures, which would let SQL emission and Punnu
+// evaluation diverge through the cache boundary. Djogi-trusted predicates
+// flow through the typed root field surface (`DjogiField::eq(...) ->
+// PortablePredicate<T>`) and from there into `Q<T>` via `IntoQ<T> for
+// PortablePredicate<T>` (defined in `query::predicate`).
 
 // `BitAnd` / `BitOr` / `BitXor` / `Not` impls — std already marks the
 // trait methods `#[must_use]` (their result is the only meaningful
@@ -772,16 +755,13 @@ where
     }
 }
 
-// ── `Q<T> → Condition` lowering bridge (legacy-only after PR2b) ──────────────
+// ── `Q<T> → Condition` lowering bridge (legacy-only) ───────────────────────
 //
-// Phase 8eta PR2b retires this bridge from production SQL emission.
-// `query::sql::emit_q` walks `&Q<T>` directly, calling
-// `query::portable::emit_portable_predicate` for `Q::Portable` leaves
-// (which dispatches through `Model::__djogi_emit_field_predicate`).
-// The bridge below lives on as an opt-in helper for legacy callers and
-// tests that still inspect the lowered `Condition` shape; PR2c audits
-// remaining callers and documents which sites are explicitly legacy
-// while the production path remains direct.
+// Production SQL emission uses `query::sql::emit_q` to walk `&Q<T>` directly,
+// calling `query::portable::emit_portable_predicate` for `Q::Portable` leaves
+// (which dispatches through `Model::__djogi_emit_field_predicate`). The bridge
+// below lives on as an opt-in helper for legacy callers and tests that still
+// inspect the lowered `Condition` shape.
 //
 // **Important caveat.** The `BasicPredicate::Field(_)` arm of the
 // `q_to_condition` walker still panics (see `basic_predicate_to_condition`
@@ -795,14 +775,13 @@ where
 // keep working through the bridge; tests that need to inspect a Field
 // leaf must drive SQL emission through the direct walker instead.
 
-/// Lower a [`Q<T>`] into the legacy [`Condition`] tree consumed by the
-/// SQL emitter.
+/// Lower a [`Q<T>`] into the legacy [`Condition`] tree.
 ///
-/// **Phase 8eta PR2b — legacy-only.** The production SQL path uses
-/// `query::sql::emit_q` to walk `&Q<T>` directly without ever building
-/// a `Condition` tree from a portable predicate. This helper survives
-/// for legacy callers that still inspect the lowered shape (queryset
-/// reducer, a handful of unit tests that pre-date the direct walker).
+/// **Legacy-only.** The production SQL path uses `query::sql::emit_q` to
+/// walk `&Q<T>` directly without ever building a `Condition` tree from a
+/// portable predicate. This helper survives for legacy callers that still
+/// inspect the lowered shape (queryset reducer, a handful of unit tests
+/// that pre-date the direct walker).
 ///
 /// # XOR general form
 ///
@@ -978,12 +957,11 @@ fn xor_to_condition_basic<T: Model>(a: BasicPredicate<T>, b: BasicPredicate<T>) 
 
 // ── Reference-borrowing lowering — `&Q<T> -> Condition` (legacy-only) ────────
 //
-// Phase 8eta PR2b makes the production SQL path direct: `emit_q` walks
-// `&Q<T>` and emits `Q::Portable` leaves through the model hook
-// (`Model::__djogi_emit_field_predicate`) without ever building a
-// `Condition` shadow tree. The reference walker below is preserved as a
-// legacy helper for unit tests that still inspect the lowered
-// `Condition` shape; PR2c audits remaining callers.
+// Production SQL emission uses direct Q walking: `emit_q` walks `&Q<T>` and
+// emits `Q::Portable` leaves through the model hook
+// (`Model::__djogi_emit_field_predicate`) without ever building a `Condition`
+// shadow tree. The reference walker below is preserved as a legacy helper for
+// unit tests that still inspect the lowered `Condition` shape.
 //
 // The `BasicPredicate::Field(_)` arm panics through
 // `basic_predicate_ref_to_condition` (Sassi's `FieldPredicate::new` is
@@ -1112,14 +1090,9 @@ mod tests {
     // `Fields = ()` tuple is enough; `Q::Portable` / `Q::Ilike` etc.
     // only need `M: Model`, not a populated field accessor surface.
     //
-    // Phase 8eta PR2b: the manual `Q<T>: Clone` and `PortablePredicate<T>:
-    // Clone` impls do NOT propagate `T: Clone`, so `TestModel` no longer
-    // needs to derive `Clone` for the algebra tests. `Debug` is similarly
-    // not required — `Q<T>` and `PortablePredicate<T>` carry manual
-    // `Debug` impls that stop at the structural-variant tag without
-    // touching `T`. Both bounds are kept here so older test bodies that
-    // print `Q<T>` payloads through `format!("{:?}", ...)` keep working
-    // without churn.
+    // The manual `Q<T>: Clone` and `PortablePredicate<T>: Clone` impls do
+    // NOT propagate `T: Clone`, so `TestModel` derives `Clone` and `Debug`
+    // for backwards compatibility with test bodies that print `Q<T>` payloads.
     #[derive(Clone, Debug)]
     struct TestModel;
 
@@ -1168,13 +1141,11 @@ mod tests {
         }
     }
 
-    // Phase 8eta PR2b: helpers for the algebra tests below. All `Q<T>`
-    // construction in tests now goes through `Q::Portable(_)` with a
-    // `PortablePredicate<T>` payload, since `Q::Basic` and the public
-    // `From<BasicPredicate<T>> for Q<T>` impl have been retired in this
-    // slice. `PortablePredicate::always_true` / `always_false` are
-    // crate-private constructors that mint trusted-provenance vacuous
-    // wrappers without going through the `DjogiField` surface.
+    // Helpers for the algebra tests below. All `Q<T>` construction in tests
+    // goes through `Q::Portable(_)` with a `PortablePredicate<T>` payload.
+    // `PortablePredicate::always_true` / `always_false` are crate-private
+    // constructors that mint trusted-provenance vacuous wrappers without
+    // going through the `DjogiField` surface.
     fn portable_true<T: Model>() -> Q<T> {
         Q::Portable(PortablePredicate::<T>::always_true())
     }
@@ -1184,8 +1155,7 @@ mod tests {
     }
 
     /// `Q::Portable` constructs from a `PortablePredicate<T>` — the
-    /// load-bearing path for the §660 split after Phase 8eta PR2b's
-    /// raw-`BasicPredicate<T>` ingress removal.
+    /// load-bearing path for the §660 split.
     #[test]
     fn q_skeleton_constructs_portable_variant() {
         let q: Q<TestModel> = portable_true();
@@ -1201,10 +1171,9 @@ mod tests {
         assert!(matches!(q, Q::Portable(_)));
     }
 
-    /// `Clone` and `Debug` sanity check on the manual impls. Phase 8eta
-    /// PR2b removes the derived versions because they would impose
-    /// `T: Clone` / `T: Debug` virally; the manual walkers cover every
-    /// payload without that bound.
+    /// `Clone` and `Debug` sanity check on the manual impls. The derived
+    /// versions would impose `T: Clone` / `T: Debug` virally; the manual
+    /// walkers cover every payload without that bound.
     #[test]
     fn q_skeleton_is_clone_and_debug() {
         let q: Q<TestModel> = portable_true();
@@ -1212,7 +1181,7 @@ mod tests {
     }
 
     /// Convenience constructor — `Q::always_true()` produces a trusted
-    /// portable-true wrapper after the PR2b flip.
+    /// portable-true wrapper.
     #[test]
     fn q_always_true_is_portable_true() {
         let q: Q<TestModel> = Q::always_true();

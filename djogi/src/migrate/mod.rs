@@ -70,6 +70,7 @@ pub mod pk_flip;
 pub mod policy;
 pub mod projection;
 pub mod repair;
+pub mod replay_plan;
 pub mod reset;
 pub mod runner;
 pub mod schema;
@@ -137,7 +138,8 @@ pub use repair::{
     repair_snapshot_rebuild,
 };
 pub use reset::{
-    ReplayedMigration, ResetError, ResetRefusal, ResetReport, ResetRequest, reset_app_database,
+    ReplayedMigration, ResetError, ResetRefusal, ResetReport, ResetRequest, ResetSqlSide,
+    reset_app_database,
 };
 pub use runner::{
     LossyRollbackPolicy, RollbackError, RollbackReport, RunReport, RunnerCtx, RunnerError,

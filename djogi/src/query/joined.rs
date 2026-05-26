@@ -1342,7 +1342,7 @@ fn push_joined_group_by_if_needed<L, R, A>(
     acc.push_sql(r_pk);
 }
 
-fn push_aliased_columns<M: Model + crate::pg::decode::FromPgRow>(
+pub(crate) fn push_aliased_columns<M: Model + crate::pg::decode::FromPgRow>(
     acc: &mut SqlAccumulator,
     side: PairSide,
     is_first_block: bool,

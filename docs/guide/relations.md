@@ -8,7 +8,7 @@ syntax, and no implicit many-to-many junction table. If a relation touches
 the database, the `.fetch(...)` / `.prefetch(...)` / `.select_related(...)`
 verb makes that visible at the call site.
 
-This document is a Phase 3 reference. For generated CRUD, model attributes,
+For generated CRUD, model attributes,
 and field types, see the [models guide](./models.md); for the `QuerySet`
 builder consumed below, see the [queries guide](./queries.md); for roadmap
 features (`GenericForeignKey`, typed `IN` on FK PK sets, multi-hop prefetch),
@@ -87,8 +87,7 @@ match vehicle.owner_id.resolved() {
 ### `on_delete` behaviour
 
 Only valid on `ForeignKey<T>` / `OneToOneField<T>` fields. Recorded in
-`FieldDescriptor::on_delete`; consumed by the migration DDL emitter
-(Phase 7).
+`FieldDescriptor::on_delete`; consumed by the migration DDL emitter.
 
 | Value | SQL |
 |---|---|
@@ -128,7 +127,7 @@ impl VehicleRelated {
 
 `prefetch` — stitched rows come back via `fetch_all_prefetched`, not
 `fetch_all`. The plain `.fetch_all(&mut ctx)` terminal ignores any
-registered prefetch paths (so Phase 2 call sites stay source-stable);
+registered prefetch paths (call sites that don't use prefetch remain unaffected);
 reach for the `_prefetched` terminal when you want the stitched output:
 
 ```rust
@@ -153,9 +152,15 @@ let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
 // LEFT JOIN owners ON vehicles.owner_id = owners.id
 ```
 
-Phase 3 supports **single-hop** prefetch / select_related. Chained multi-hop
+**Single-hop** prefetch / select_related is supported. Chained multi-hop
 (`.prefetch(VehicleRelated::owner().then(OwnerRelated::address()))`)
 is on the roadmap — see [relations roadmap][relations-roadmap].
+
+`.prefetch(...)` and `.select_related(...)` registrations are rejected by all
+bulk mutation terminals (`delete`, `update(...).execute(...)`, `delete_returning`,
+`execute_returning_pairs`) with `DjogiError::Validation` — prefetch stitching
+and join projection are read-only operations. Use filter / exclude conditions to
+select the rows a mutation should affect.
 
 [relations-roadmap]: ../roadmap/relations.md
 
@@ -261,7 +266,7 @@ let profile: Option<Profile> = user.profile(&mut ctx).await?;
 Each reverse-relation macro emits a per-relation trait
 `{Receiver}{Method-pascal}ReverseRelation` plus its impl on the
 receiver type (the trait-based shape lifts the cross-crate coherence
-constraint described in GH issue #39). Two reverse macros that would
+coherence constraint). Two reverse macros that would
 produce the same accessor name on the same source model emit the same
 trait twice and trip rustc's `E0428` / `E0119` errors:
 
@@ -351,7 +356,7 @@ Each invocation emits one direction. The macro generates:
 | Item | Shape |
 |---|---|
 | `impl ManyToMany<Target> for Source` | Supplies `Through`, `RELATION`, `this_fk()`, `that_fk()`, and typed bodies for `related` / `add_related` / `remove_related` |
-| `pub trait {Source}{Relation-pascal}ManyToManyRelation` + `impl … for Source` | Stamps out the per-relation accessor as a trait method named after `relation`. `person.groups(&mut ctx)` delegates to `<Self as ManyToMany<Group>>::related(self, &mut ctx)`. Trait-based emission lifts the cross-crate coherence constraint described in GH issue #39 — the same shape used by the reverse macros. |
+| `pub trait {Source}{Relation-pascal}ManyToManyRelation` + `impl … for Source` | Stamps out the per-relation accessor as a trait method named after `relation`. `person.groups(&mut ctx)` delegates to `<Self as ManyToMany<Group>>::related(self, &mut ctx)`. Trait-based emission lifts the cross-crate coherence constraint — the same shape used by the reverse macros. |
 | `inventory::submit!(ReverseRelationMarker::new_via_macro_support(...))` | Registers the relation for collision detection and admin enumeration |
 | `const _: () = { … }` const-assert block | Validates `relation`, `this_fk`, `that_fk` against the user-supplied identifier grammar at codegen time, including the reserved `__djogi_*` prefix |
 
@@ -478,18 +483,9 @@ each relation declaration instead of triaging from a downstream ambiguity
 error.
 
 The validator tolerates **identical duplicate markers** (same kind /
-target / via) so future registry-merge consumers don't false-positive
+target / via) so registry-merge consumers don't false-positive
 on a harmless overlap; only disagreements on `kind`, `target`, or
 `via` are flagged.
-
-### Roadmap: view struct
-
-A future iteration will optionally emit a `{Source}{Relation}View` struct
-that combines through-row and target-row fields into one flattened shape
-— useful when callers want both sides of the junction without two
-round trips. It depends on the `__DJOGI_FIELD_NAMES` descriptor
-infrastructure extension and lands after Phase 4's expression layer. In
-Phase 3 the two-query `Vec<Target>` shape above is the supported path.
 
 ---
 

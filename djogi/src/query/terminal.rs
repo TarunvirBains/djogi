@@ -71,7 +71,7 @@
 #![allow(clippy::manual_async_fn)]
 
 use crate::DjogiError;
-use crate::context::{ContextInner, DjogiContext};
+use crate::context::DjogiContext;
 use crate::model::Model;
 use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::{FromJoinedPgRow, FromPgRow, try_get_scalar};
@@ -485,13 +485,7 @@ where
             let acc = build_select_joined(&self).map_err(DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
-            let rows: Vec<tokio_postgres::Row> = match ctx.inner_mut() {
-                ContextInner::Pool(pool) => {
-                    let mut conn = pool.get().await?;
-                    conn.query(&sql, &params).await?
-                }
-                ContextInner::Transaction(conn) => conn.query(&sql, &params).await?,
-            };
+            let rows: Vec<tokio_postgres::Row> = ctx.query_all(&sql, &params).await?;
 
             // Decode each row into a JoinedRow<T> carrying any joined
             // children. `apply_select_related` is pure CPU work — no

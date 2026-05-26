@@ -94,14 +94,21 @@ use crate::context::DjogiContext;
 use crate::error::{DbError, DjogiError};
 use crate::pg::pool::DjogiPool;
 
+use super::compose::{
+    DATE_ARRAY_HELPER_PRELUDE, NUMERIC_ARRAY_HELPER_PRELUDE, TSTZ_ARRAY_HELPER_PRELUDE,
+    date_array_helper_operation, numeric_array_helper_operation, tstz_array_helper_operation,
+};
 use super::ledger::compute_checksum;
 use super::naming::{down_filename, up_filename};
 use super::policy::{OutOfOrderPolicy, is_localhost_connection};
 use super::projection::BucketKey;
+use super::replay_plan::{
+    ReplayPlanLoadStatus, find_non_transactional_statement_shape, load_committed_replay_plan,
+};
 use super::runner::{RunnerCtx, apply_plan};
 use super::segment::{MigrationPlan, Segment, SegmentKind};
 use super::sql::OperationSql;
-use super::target::migrations_root;
+use super::target::{app_dirname, bucket_dir, migrations_root};
 
 // ── Public types ──────────────────────────────────────────────────────────
 
@@ -122,6 +129,11 @@ pub struct ResetRequest<'a> {
     /// caller has otherwise confirmed). The default is `false`; the
     /// runner refuses without it.
     pub confirmed: bool,
+    /// `true` when the operator explicitly accepts replaying
+    /// drifted on-disk SQL after the parity preflight reports that
+    /// the current files no longer match the live ledger. Default:
+    /// `false` — drift refuses before `DROP DATABASE`.
+    pub allow_checksum_drift_reset: bool,
     /// Maintenance database name. Defaults to `"postgres"` when
     /// the caller has nothing more specific (the conventional
     /// administrative DB present on every cluster).
@@ -176,6 +188,69 @@ pub struct ReplayedMigration {
     pub bucket: BucketKey,
     /// Version id — `V<ts>__<slug>`.
     pub version: String,
+}
+
+/// Which file side a checksum-parity issue concerns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetSqlSide {
+    Up,
+    Down,
+}
+
+impl ResetSqlSide {
+    const fn as_str(self) -> &'static str {
+        match self {
+            ResetSqlSide::Up => "up",
+            ResetSqlSide::Down => "down",
+        }
+    }
+}
+
+/// Why checksum parity could not be satisfied for one historical row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetChecksumParityProblem {
+    Drift,
+    MissingFile,
+    UnsupportedBaseline,
+}
+
+/// One checksum-parity issue found before the destructive reset step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResetChecksumParityIssue {
+    /// Bucket whose current on-disk SQL no longer matches the live ledger.
+    pub bucket: BucketKey,
+    /// Migration version carrying the mismatch.
+    pub version: String,
+    /// Whether the issue concerns `up.sql` or `down.sql`.
+    pub sql_side: ResetSqlSide,
+    /// Checksum recorded on the live ledger before reset.
+    pub ledger_checksum: String,
+    /// Checksum computed from the current on-disk file, or `None`
+    /// when the expected file is missing.
+    pub on_disk_checksum: Option<String>,
+    /// Why the parity preflight refused this historical row.
+    pub problem: ResetChecksumParityProblem,
+}
+
+/// Why reset cannot prove faithful replay semantics from the committed
+/// migration artifacts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetReplaySemanticsProblem {
+    MissingReplayPlan,
+    InvalidReplayPlan,
+}
+
+/// One replay-semantics issue found before the destructive reset step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResetReplaySemanticsIssue {
+    /// Bucket carrying the affected migration.
+    pub bucket: BucketKey,
+    /// Migration version that cannot be replayed safely from disk.
+    pub version: String,
+    /// Statement class that requires non-transactional replay semantics.
+    pub statement_shape: String,
+    /// Why reset could not recover a committed replay plan.
+    pub problem: ResetReplaySemanticsProblem,
 }
 
 /// Errors surfaced by [`reset_app_database`].
@@ -258,6 +333,17 @@ pub enum ResetRefusal {
     ProductionProfile { profile: String },
     /// The caller did not supply explicit confirmation.
     NotConfirmed,
+    /// The live ledger's checksums do not match the current on-disk
+    /// migration files. Reset refuses before `DROP DATABASE` unless
+    /// the operator explicitly overrides the drift gate.
+    ChecksumParity {
+        issues: Vec<ResetChecksumParityIssue>,
+    },
+    /// Reset cannot prove faithful replay semantics for at least one
+    /// committed migration before the destructive drop/recreate.
+    ReplaySemantics {
+        issues: Vec<ResetReplaySemanticsIssue>,
+    },
 }
 
 impl std::fmt::Display for ResetError {
@@ -342,6 +428,33 @@ impl std::fmt::Display for ResetRefusal {
                  ResetRequest::confirmed = true) to acknowledge that the entire \
                  application database will be dropped",
             ),
+            ResetRefusal::ChecksumParity { issues } => {
+                let rendered = issues
+                    .iter()
+                    .map(render_checksum_parity_issue)
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                write!(
+                    f,
+                    "db reset checksum parity preflight found drift against the live ledger: \
+                     {rendered}; refusing destructive drop / recreate unless you pass \
+                     `--allow-checksum-drift-reset` (or set \
+                     `ResetRequest::allow_checksum_drift_reset = true`)"
+                )
+            }
+            ResetRefusal::ReplaySemantics { issues } => {
+                let rendered = issues
+                    .iter()
+                    .map(render_replay_semantics_issue)
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                write!(
+                    f,
+                    "db reset cannot prove faithful replay semantics for at least one committed \
+                     migration: {rendered}; refusing destructive drop / recreate until the migration \
+                     has a committed replay manifest or is replay-safe as a single transactional plan"
+                )
+            }
         }
     }
 }
@@ -453,13 +566,21 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
     //    empty map — which re-opened the U-4 hazard for transient
     //    failures (the empty map masquerades as "fresh DB with no
     //    history" and the destructive drop / recreate runs anyway).
-    let historical_order = match capture_historical_apply_order(req.database_url).await {
-        Ok(map) => map,
-        Err(HistoricalCaptureError::LedgerMissing) => BTreeMap::new(),
+    let historical_entries = match capture_historical_replay_entries(req.database_url).await {
+        Ok(entries) => entries,
+        Err(HistoricalCaptureError::LedgerMissing) => Vec::new(),
         Err(HistoricalCaptureError::Transient(e)) => {
             return Err(ResetError::HistoricalOrderCaptureFailed { source: e });
         }
     };
+    preflight_reset_checksum_parity(
+        req.workspace_root,
+        &database,
+        &historical_entries,
+        req.allow_checksum_drift_reset,
+    )?;
+    preflight_reset_replay_semantics(req.workspace_root, &database)?;
+    let historical_order = build_historical_order(&historical_entries);
 
     // 5. Drop + recreate the application database via the maintenance
     //    connection. A fresh tokio_postgres client is opened just for
@@ -538,6 +659,15 @@ enum HistoricalCaptureError {
     Transient(DjogiError),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HistoricalReplayEntry {
+    bucket: BucketKey,
+    version: String,
+    status: String,
+    checksum_up: String,
+    checksum_down: Option<String>,
+}
+
 /// Codex umbrella U-4 + round-2 U-6 — capture the historical apply
 /// order from the live ledger before the drop.
 ///
@@ -557,10 +687,27 @@ enum HistoricalCaptureError {
 /// Only `Applied` / `Faked` / `Baseline` rows participate — `Pending`,
 /// `Failed`, `RolledBack` do not represent migrations whose effect
 /// the live DB carries forward.
+#[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 async fn capture_historical_apply_order(
     database_url: &str,
 ) -> Result<BTreeMap<(BucketKey, String), u64>, HistoricalCaptureError> {
+    let entries = capture_historical_replay_entries(database_url).await?;
+    Ok(build_historical_order(&entries))
+}
+
+fn build_historical_order(entries: &[HistoricalReplayEntry]) -> BTreeMap<(BucketKey, String), u64> {
+    entries
+        .iter()
+        .enumerate()
+        .map(|(rank, entry)| ((entry.bucket.clone(), entry.version.clone()), rank as u64))
+        .collect()
+}
+
+#[allow(clippy::disallowed_methods)]
+async fn capture_historical_replay_entries(
+    database_url: &str,
+) -> Result<Vec<HistoricalReplayEntry>, HistoricalCaptureError> {
     let (client, conn) = tokio_postgres::connect(database_url, NoTls)
         .await
         .map_err(|e| {
@@ -620,7 +767,7 @@ async fn capture_historical_apply_order(
 
     let rows = client
         .query(
-            "SELECT version, app_label, status \
+            "SELECT version, app_label, status, checksum_up, checksum_down \
              FROM djogi_schema_migrations \
              WHERE status IN ('applied', 'faked', 'baseline') \
              ORDER BY applied_at ASC, id ASC",
@@ -633,7 +780,7 @@ async fn capture_historical_apply_order(
             ))))
         })?;
 
-    let mut out: BTreeMap<(BucketKey, String), u64> = BTreeMap::new();
+    let mut out: Vec<HistoricalReplayEntry> = Vec::with_capacity(rows.len());
     for (rank, row) in rows.iter().enumerate() {
         let version: String = row.try_get("version").map_err(|e| {
             HistoricalCaptureError::Transient(DjogiError::Db(DbError::other(format!(
@@ -645,15 +792,275 @@ async fn capture_historical_apply_order(
                 "decoding ledger app_label column failed at rank {rank}: {e}"
             ))))
         })?;
-        let bucket = BucketKey {
-            database: database.clone(),
-            app: app_label,
-        };
-        out.insert((bucket, version), rank as u64);
+        let status: String = row.try_get("status").map_err(|e| {
+            HistoricalCaptureError::Transient(DjogiError::Db(DbError::other(format!(
+                "decoding ledger status column failed at rank {rank}: {e}"
+            ))))
+        })?;
+        let checksum_up: String = row.try_get("checksum_up").map_err(|e| {
+            HistoricalCaptureError::Transient(DjogiError::Db(DbError::other(format!(
+                "decoding ledger checksum_up column failed at rank {rank}: {e}"
+            ))))
+        })?;
+        let checksum_down: Option<String> = row.try_get("checksum_down").map_err(|e| {
+            HistoricalCaptureError::Transient(DjogiError::Db(DbError::other(format!(
+                "decoding ledger checksum_down column failed at rank {rank}: {e}"
+            ))))
+        })?;
+        out.push(HistoricalReplayEntry {
+            bucket: BucketKey {
+                database: database.clone(),
+                app: app_label,
+            },
+            version,
+            status,
+            checksum_up,
+            checksum_down,
+        });
     }
     drop(client);
     let _ = driver.await;
     Ok(out)
+}
+
+fn preflight_reset_checksum_parity(
+    workspace_root: &Path,
+    database: &str,
+    historical_entries: &[HistoricalReplayEntry],
+    allow_checksum_drift_reset: bool,
+) -> Result<(), ResetError> {
+    let issues = collect_checksum_parity_issues(workspace_root, database, historical_entries)?;
+    if issues.is_empty() || allow_checksum_drift_reset {
+        return Ok(());
+    }
+    Err(ResetError::Refused(ResetRefusal::ChecksumParity { issues }))
+}
+
+fn collect_checksum_parity_issues(
+    workspace_root: &Path,
+    database: &str,
+    historical_entries: &[HistoricalReplayEntry],
+) -> Result<Vec<ResetChecksumParityIssue>, ResetError> {
+    let on_disk = super::target::scan_filesystem_with_files(workspace_root, Some(database))
+        .map_err(|err| ResetError::MigrationScanFailed {
+            path: migrations_root(workspace_root).join(database),
+            source: err,
+        })?;
+    let mut issues = Vec::new();
+
+    for entry in historical_entries {
+        if entry.status == "baseline" {
+            issues.push(ResetChecksumParityIssue {
+                bucket: entry.bucket.clone(),
+                version: entry.version.clone(),
+                sql_side: ResetSqlSide::Up,
+                ledger_checksum: entry.checksum_up.clone(),
+                on_disk_checksum: None,
+                problem: ResetChecksumParityProblem::UnsupportedBaseline,
+            });
+            continue;
+        }
+
+        let up_path = on_disk
+            .get(&entry.bucket)
+            .and_then(|versions| versions.get(&entry.version))
+            .cloned()
+            .unwrap_or_else(|| {
+                bucket_dir(workspace_root, &entry.bucket).join(up_filename(&entry.version))
+            });
+        push_checksum_issue_if_needed(
+            &mut issues,
+            entry,
+            ResetSqlSide::Up,
+            &entry.checksum_up,
+            &up_path,
+        )?;
+
+        if let Some(ledger_checksum_down) = entry.checksum_down.as_deref() {
+            let down_path =
+                bucket_dir(workspace_root, &entry.bucket).join(down_filename(&entry.version));
+            push_checksum_issue_if_needed(
+                &mut issues,
+                entry,
+                ResetSqlSide::Down,
+                ledger_checksum_down,
+                &down_path,
+            )?;
+        }
+    }
+
+    Ok(issues)
+}
+
+fn push_checksum_issue_if_needed(
+    issues: &mut Vec<ResetChecksumParityIssue>,
+    entry: &HistoricalReplayEntry,
+    sql_side: ResetSqlSide,
+    ledger_checksum: &str,
+    path: &Path,
+) -> Result<(), ResetError> {
+    let on_disk_sql = match fs::read_to_string(path) {
+        Ok(sql) => sql,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            issues.push(ResetChecksumParityIssue {
+                bucket: entry.bucket.clone(),
+                version: entry.version.clone(),
+                sql_side,
+                ledger_checksum: ledger_checksum.to_string(),
+                on_disk_checksum: None,
+                problem: ResetChecksumParityProblem::MissingFile,
+            });
+            return Ok(());
+        }
+        Err(e) => {
+            return Err(ResetError::SqlReadFailed {
+                path: path.to_path_buf(),
+                source: e,
+            });
+        }
+    };
+    let on_disk_checksum = compute_committed_sql_checksum(&on_disk_sql, sql_side);
+    if on_disk_checksum != ledger_checksum {
+        issues.push(ResetChecksumParityIssue {
+            bucket: entry.bucket.clone(),
+            version: entry.version.clone(),
+            sql_side,
+            ledger_checksum: ledger_checksum.to_string(),
+            on_disk_checksum: Some(on_disk_checksum),
+            problem: ResetChecksumParityProblem::Drift,
+        });
+    }
+    Ok(())
+}
+
+fn render_checksum_parity_issue(issue: &ResetChecksumParityIssue) -> String {
+    let version_path = format!(
+        "{}/{}/{}",
+        issue.bucket.database,
+        app_dirname(&issue.bucket.app),
+        issue.version
+    );
+    match issue.problem {
+        ResetChecksumParityProblem::Drift => format!(
+            "{version_path} {} checksum drift: ledger `{}` vs on-disk `{}`",
+            issue.sql_side.as_str(),
+            issue.ledger_checksum,
+            issue.on_disk_checksum.as_deref().unwrap_or("<missing>")
+        ),
+        ResetChecksumParityProblem::MissingFile => format!(
+            "{version_path} {} file missing: ledger checksum `{}` has no on-disk peer",
+            issue.sql_side.as_str(),
+            issue.ledger_checksum
+        ),
+        ResetChecksumParityProblem::UnsupportedBaseline => format!(
+            "{version_path} baseline checksum `{}` cannot be compared to migration file bytes; \
+             db reset cannot establish safe parity for a baseline row",
+            issue.ledger_checksum
+        ),
+    }
+}
+
+fn preflight_reset_replay_semantics(
+    workspace_root: &Path,
+    database: &str,
+) -> Result<(), ResetError> {
+    let buckets = scan_committed_migrations(workspace_root, database)?;
+    let mut issues = Vec::new();
+
+    for (bucket, versions) in &buckets {
+        for version in versions {
+            let replay_sql = read_replay_sql_files(workspace_root, bucket, version)?;
+            let plan_status =
+                replay_plan_status_for_reset(workspace_root, bucket, version, &replay_sql);
+            if let Some(issue) =
+                replay_semantics_issue_for_plan_status(bucket, version, &replay_sql, &plan_status)
+            {
+                issues.push(issue);
+            }
+        }
+    }
+
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(ResetError::Refused(ResetRefusal::ReplaySemantics {
+            issues,
+        }))
+    }
+}
+
+fn replay_plan_status_for_reset(
+    workspace_root: &Path,
+    bucket: &BucketKey,
+    version: &str,
+    replay_sql: &ReplaySqlFiles,
+) -> ReplayPlanLoadStatus {
+    load_committed_replay_plan(
+        workspace_root,
+        bucket,
+        version,
+        &replay_sql.checksum_up,
+        replay_sql.checksum_down.as_deref(),
+    )
+}
+
+fn load_reset_replay_plan(
+    workspace_root: &Path,
+    bucket: &BucketKey,
+    version: &str,
+    replay_sql: &ReplaySqlFiles,
+) -> Result<Option<MigrationPlan>, ResetError> {
+    let plan_status = replay_plan_status_for_reset(workspace_root, bucket, version, replay_sql);
+    if let Some(issue) =
+        replay_semantics_issue_for_plan_status(bucket, version, replay_sql, &plan_status)
+    {
+        return Err(ResetError::Refused(ResetRefusal::ReplaySemantics {
+            issues: vec![issue],
+        }));
+    }
+    match plan_status {
+        ReplayPlanLoadStatus::Loaded(plan) => Ok(Some(plan)),
+        ReplayPlanLoadStatus::Missing | ReplayPlanLoadStatus::Invalid(_) => Ok(None),
+    }
+}
+
+fn replay_semantics_issue_for_plan_status(
+    bucket: &BucketKey,
+    version: &str,
+    replay_sql: &ReplaySqlFiles,
+    plan_status: &ReplayPlanLoadStatus,
+) -> Option<ResetReplaySemanticsIssue> {
+    let statement_shape = find_non_transactional_statement_shape(&replay_sql.up_sql)?;
+    let problem = match plan_status {
+        ReplayPlanLoadStatus::Loaded(_) => return None,
+        ReplayPlanLoadStatus::Missing => ResetReplaySemanticsProblem::MissingReplayPlan,
+        ReplayPlanLoadStatus::Invalid(_) => ResetReplaySemanticsProblem::InvalidReplayPlan,
+    };
+    Some(ResetReplaySemanticsIssue {
+        bucket: bucket.clone(),
+        version: version.to_string(),
+        statement_shape: statement_shape.to_string(),
+        problem,
+    })
+}
+
+fn render_replay_semantics_issue(issue: &ResetReplaySemanticsIssue) -> String {
+    let version_path = format!(
+        "{}/{}/{}",
+        issue.bucket.database,
+        app_dirname(&issue.bucket.app),
+        issue.version
+    );
+    match issue.problem {
+        ResetReplaySemanticsProblem::MissingReplayPlan => format!(
+            "{version_path} contains `{}` but has no committed replay manifest",
+            issue.statement_shape
+        ),
+        ResetReplaySemanticsProblem::InvalidReplayPlan => format!(
+            "{version_path} contains `{}` but its committed replay manifest is missing or stale",
+            issue.statement_shape
+        ),
+    }
 }
 
 /// Codex umbrella U-4 — given the on-disk bucket map and the captured
@@ -778,16 +1185,178 @@ fn scan_committed_migrations(
         .collect())
 }
 
-/// Read one migration's up SQL, build a single-statement
-/// transactional [`MigrationPlan`], and apply it through the runner.
+struct ReplaySqlFiles {
+    up_sql: String,
+    down_sql: String,
+    checksum_up: String,
+    checksum_down: Option<String>,
+}
+
+pub(crate) fn compute_committed_sql_checksum(sql: &str, side: ResetSqlSide) -> String {
+    canonical_composed_sql_fragments(sql, side)
+        .map(|fragments| compute_checksum(fragments.iter().map(String::as_str)))
+        .unwrap_or_else(|| compute_checksum([sql]))
+}
+
+pub(crate) fn compute_committed_down_sql_checksum(sql: &str) -> Option<String> {
+    if let Some(fragments) = canonical_composed_sql_fragments(sql, ResetSqlSide::Down) {
+        if fragments.iter().all(|fragment| fragment.starts_with("--")) {
+            None
+        } else {
+            Some(compute_checksum(fragments.iter().map(String::as_str)))
+        }
+    } else if is_comment_only_sql(sql) {
+        None
+    } else {
+        Some(compute_checksum([sql]))
+    }
+}
+
+fn is_comment_only_sql(sql: &str) -> bool {
+    sql.lines()
+        .map(str::trim_start)
+        .filter(|line| !line.trim().is_empty())
+        .all(|line| line.starts_with("--"))
+}
+
+fn canonical_composed_sql_fragments(sql: &str, side: ResetSqlSide) -> Option<Vec<String>> {
+    let expected_header = match side {
+        ResetSqlSide::Up => "-- Djogi composed migration — up\n",
+        ResetSqlSide::Down => "-- Djogi composed migration — down\n",
+    };
+    if !sql.starts_with(expected_header) {
+        return None;
+    }
+
+    let (_, mut body) =
+        sql.split_once("-- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\n")?;
+
+    let mut fragments = Vec::new();
+    let helper_pairs: [(&str, String); 3] = match side {
+        ResetSqlSide::Up => [
+            (
+                NUMERIC_ARRAY_HELPER_PRELUDE,
+                NUMERIC_ARRAY_HELPER_PRELUDE.to_string(),
+            ),
+            (
+                DATE_ARRAY_HELPER_PRELUDE,
+                DATE_ARRAY_HELPER_PRELUDE.to_string(),
+            ),
+            (
+                TSTZ_ARRAY_HELPER_PRELUDE,
+                TSTZ_ARRAY_HELPER_PRELUDE.to_string(),
+            ),
+        ],
+        ResetSqlSide::Down => [
+            (
+                NUMERIC_ARRAY_HELPER_PRELUDE,
+                numeric_array_helper_operation().down,
+            ),
+            (
+                DATE_ARRAY_HELPER_PRELUDE,
+                date_array_helper_operation().down,
+            ),
+            (
+                TSTZ_ARRAY_HELPER_PRELUDE,
+                tstz_array_helper_operation().down,
+            ),
+        ],
+    };
+    for (rendered_prelude, checksum_fragment) in helper_pairs {
+        if let Some(rest) = body.strip_prefix(rendered_prelude) {
+            fragments.push(checksum_fragment);
+            body = rest.strip_prefix('\n').unwrap_or(rest);
+        }
+    }
+
+    let mut operation_fragments = parse_composed_operation_fragments(body, side)?;
+    if side == ResetSqlSide::Down {
+        operation_fragments.reverse();
+    }
+    fragments.extend(operation_fragments);
+    Some(fragments)
+}
+
+fn parse_composed_operation_fragments(body: &str, side: ResetSqlSide) -> Option<Vec<String>> {
+    let mut rest = body.trim_end_matches('\n');
+    let mut fragments = Vec::new();
+    if rest.trim().is_empty() {
+        return Some(fragments);
+    }
+
+    loop {
+        let after_label = rest.strip_prefix("-- ")?;
+        let (_, after_label) = after_label.split_once('\n')?;
+        let (fragment, next) = match after_label.find("\n\n-- ") {
+            Some(next_label) => (
+                &after_label[..next_label],
+                Some(&after_label[next_label + 2..]),
+            ),
+            None => (after_label, None),
+        };
+        let fragment = if side == ResetSqlSide::Down {
+            fragment
+                .lines()
+                .filter(|line| !line.starts_with("-- LOSSY:"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            fragment.to_string()
+        };
+        fragments.push(fragment);
+        match next {
+            Some(next_rest) => rest = next_rest,
+            None => break,
+        }
+    }
+    Some(fragments)
+}
+
+fn read_replay_sql_files(
+    workspace_root: &Path,
+    bucket: &BucketKey,
+    version: &str,
+) -> Result<ReplaySqlFiles, ResetError> {
+    let bucket_dir = super::target::bucket_dir(workspace_root, bucket);
+    let up_path = bucket_dir.join(up_filename(version));
+    let down_path = bucket_dir.join(down_filename(version));
+
+    let up_sql = fs::read_to_string(&up_path).map_err(|e| ResetError::SqlReadFailed {
+        path: up_path.clone(),
+        source: e,
+    })?;
+    let checksum_up = compute_committed_sql_checksum(&up_sql, ResetSqlSide::Up);
+
+    let (down_sql, checksum_down) = match fs::read_to_string(&down_path) {
+        Ok(sql) => {
+            let checksum_down = compute_committed_down_sql_checksum(&sql);
+            (sql, checksum_down)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
+        Err(e) => {
+            return Err(ResetError::SqlReadFailed {
+                path: down_path,
+                source: e,
+            });
+        }
+    };
+
+    Ok(ReplaySqlFiles {
+        up_sql,
+        down_sql,
+        checksum_up,
+        checksum_down,
+    })
+}
+
+/// Read one migration's committed SQL and apply it through the runner.
 ///
-/// The replayed plan is a single transactional segment because db
-/// reset operates against a fresh database — there are no concurrent
-/// writers so the relpages probe + non-transactional split machinery
-/// is unnecessary. We trust the on-disk SQL byte-for-byte; the runner
-/// still computes its own checksum and verifies it matches what we
-/// pre-supplied, so an unexpected file edit during replay surfaces
-/// as a typed error.
+/// Manifest-backed migrations replay the committed segment plan so
+/// non-transactional statements keep their original execution shape.
+/// Legacy migrations without a manifest fall back to a single
+/// transactional segment. In both paths, the runner receives the same
+/// canonical operation-fragment checksum domain that compose records
+/// in the ledger.
 async fn replay_one_migration(
     ctx: &mut DjogiContext,
     workspace_root: &Path,
@@ -797,49 +1366,29 @@ async fn replay_one_migration(
     guard: &super::guard::WorkspaceGuard,
     audit_pool: Option<&deadpool_postgres::Pool>,
 ) -> Result<(), ResetError> {
-    let bucket_dir = super::target::bucket_dir(workspace_root, bucket);
-    let up_path = bucket_dir.join(up_filename(version));
-    let down_path = bucket_dir.join(down_filename(version));
+    let replay_sql = read_replay_sql_files(workspace_root, bucket, version)?;
 
-    let up_sql = fs::read_to_string(&up_path).map_err(|e| ResetError::SqlReadFailed {
-        path: up_path.clone(),
-        source: e,
-    })?;
-    // Down side may not exist for some baseline migrations; treat
-    // absence as an empty-string placeholder so the plan still
-    // compiles. The replay path itself only runs the up side.
-    let down_sql = match fs::read_to_string(&down_path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => {
-            return Err(ResetError::SqlReadFailed {
-                path: down_path,
-                source: e,
-            });
-        }
-    };
-
-    let plan = MigrationPlan {
-        bucket: bucket.clone(),
-        classification: super::diff::Classification::Additive,
-        segments: vec![Segment {
-            kind: SegmentKind::Transactional,
-            statements: vec![OperationSql {
-                label: format!("replay {version}"),
-                up: up_sql.clone(),
-                down: down_sql,
-                lossy: None,
+    let plan = load_reset_replay_plan(workspace_root, bucket, version, &replay_sql)?
+        .unwrap_or_else(|| MigrationPlan {
+            bucket: bucket.clone(),
+            classification: super::diff::Classification::Additive,
+            segments: vec![Segment {
+                kind: SegmentKind::Transactional,
+                statements: vec![OperationSql {
+                    label: format!("replay {version}"),
+                    up: replay_sql.up_sql.clone(),
+                    down: replay_sql.down_sql.clone(),
+                    lossy: None,
+                }],
             }],
-        }],
-    };
-    let checksum_up = compute_checksum([up_sql.as_str()]);
+        });
 
     let runner_ctx = RunnerCtx {
         bucket: bucket.clone(),
         version: version.to_string(),
         description: format!("db reset replay of {version}"),
-        checksum_up,
-        checksum_down: None,
+        checksum_up: replay_sql.checksum_up,
+        checksum_down: replay_sql.checksum_down,
         snapshot: None,
         snapshot_path: None,
         // `MigrateConfig` does not derive `Clone` (the type carries
@@ -1107,6 +1656,7 @@ mod tests {
             database_url: url,
             profile,
             confirmed,
+            allow_checksum_drift_reset: false,
             maintenance_database: "postgres",
             migrate_config: MigrateConfig::default(),
             // Gate / URL / replay tests do not assert audit-row
@@ -1336,6 +1886,7 @@ mod tests {
             database_url: "postgres://localhost/main",
             profile: "development",
             confirmed: true,
+            allow_checksum_drift_reset: false,
             maintenance_database: "'; DROP DATABASE main; --",
             migrate_config: MigrateConfig::default(),
             audit_pool: None,
@@ -1454,6 +2005,815 @@ mod tests {
         let scanned = scan_committed_migrations(&work, "main").unwrap();
         assert!(scanned.is_empty());
         let _ = fs::remove_dir_all(&work);
+    }
+
+    fn historical_entry(
+        database: &str,
+        app: &str,
+        version: &str,
+        checksum_up: &str,
+        checksum_down: Option<&str>,
+    ) -> HistoricalReplayEntry {
+        HistoricalReplayEntry {
+            bucket: bk(database, app),
+            version: version.to_string(),
+            status: "applied".to_string(),
+            checksum_up: checksum_up.to_string(),
+            checksum_down: checksum_down.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn u275_preflight_checksum_parity_refuses_when_up_sql_drifted() {
+        let work = temp_root("u275_up_drift");
+        let bucket = bk("main", "");
+        let version = "V20260301000000__widgets";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
+        )
+        .unwrap();
+
+        let err = preflight_reset_checksum_parity(
+            &work,
+            "main",
+            &[historical_entry(
+                "main",
+                "",
+                version,
+                &compute_checksum(["CREATE TABLE widgets (id BIGINT);"]),
+                None,
+            )],
+            false,
+        )
+        .expect_err("edited up SQL must refuse before destructive reset");
+
+        match err {
+            ResetError::Refused(ResetRefusal::ChecksumParity { issues }) => {
+                assert_eq!(issues.len(), 1, "expected one drift issue");
+                assert_eq!(issues[0].bucket, bucket);
+                assert_eq!(issues[0].version, version);
+                assert_eq!(issues[0].sql_side, ResetSqlSide::Up);
+                assert_eq!(issues[0].problem, ResetChecksumParityProblem::Drift);
+                assert_eq!(
+                    issues[0].ledger_checksum,
+                    compute_checksum(["CREATE TABLE widgets (id BIGINT);"])
+                );
+                assert_eq!(
+                    issues[0].on_disk_checksum.as_deref(),
+                    Some(
+                        compute_checksum(["CREATE TABLE widgets (id BIGINT PRIMARY KEY);"])
+                            .as_str()
+                    )
+                );
+            }
+            other => panic!("expected checksum-parity refusal, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u275_preflight_checksum_parity_refuses_when_down_sql_drifted() {
+        let work = temp_root("u275_down_drift");
+        let bucket = bk("main", "");
+        let version = "V20260301000001__widgets";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
+        )
+        .unwrap();
+        fs::write(
+            bucket_dir.join(down_filename(version)),
+            "DROP TABLE widgets;",
+        )
+        .unwrap();
+
+        let err = preflight_reset_checksum_parity(
+            &work,
+            "main",
+            &[historical_entry(
+                "main",
+                "",
+                version,
+                &compute_checksum(["CREATE TABLE widgets (id BIGINT PRIMARY KEY);"]),
+                Some(&compute_checksum(["DROP TABLE widgets CASCADE;"])),
+            )],
+            false,
+        )
+        .expect_err("edited down SQL must refuse before destructive reset");
+
+        match err {
+            ResetError::Refused(ResetRefusal::ChecksumParity { issues }) => {
+                assert_eq!(issues.len(), 1, "expected one drift issue");
+                assert_eq!(issues[0].bucket, bucket);
+                assert_eq!(issues[0].version, version);
+                assert_eq!(issues[0].sql_side, ResetSqlSide::Down);
+                assert_eq!(issues[0].problem, ResetChecksumParityProblem::Drift);
+                assert_eq!(
+                    issues[0].ledger_checksum,
+                    compute_checksum(["DROP TABLE widgets CASCADE;"])
+                );
+                assert_eq!(
+                    issues[0].on_disk_checksum.as_deref(),
+                    Some(compute_checksum(["DROP TABLE widgets;"]).as_str())
+                );
+            }
+            other => panic!("expected checksum-parity refusal, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u275_preflight_checksum_parity_refuses_when_historical_file_is_missing() {
+        let work = temp_root("u275_missing_file");
+        let err = preflight_reset_checksum_parity(
+            &work,
+            "main",
+            &[historical_entry(
+                "main",
+                "",
+                "V20260301000002__widgets",
+                &compute_checksum(["CREATE TABLE widgets (id BIGINT PRIMARY KEY);"]),
+                None,
+            )],
+            false,
+        )
+        .expect_err("missing historical files must refuse before destructive reset");
+
+        match err {
+            ResetError::Refused(ResetRefusal::ChecksumParity { issues }) => {
+                assert_eq!(issues.len(), 1, "expected one missing-file issue");
+                assert_eq!(issues[0].version, "V20260301000002__widgets");
+                assert_eq!(issues[0].sql_side, ResetSqlSide::Up);
+                assert_eq!(issues[0].problem, ResetChecksumParityProblem::MissingFile);
+                assert!(
+                    issues[0].on_disk_checksum.is_none(),
+                    "missing file should not claim an on-disk checksum"
+                );
+            }
+            other => panic!("expected checksum-parity refusal, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u275_preflight_checksum_parity_override_allows_drift() {
+        let work = temp_root("u275_override");
+        let bucket = bk("main", "");
+        let version = "V20260301000003__widgets";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
+        )
+        .unwrap();
+
+        preflight_reset_checksum_parity(
+            &work,
+            "main",
+            &[historical_entry(
+                "main",
+                "",
+                version,
+                &compute_checksum(["CREATE TABLE widgets (id BIGINT);"]),
+                None,
+            )],
+            true,
+        )
+        .expect("explicit override should bypass checksum-parity refusal");
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u275_preflight_checksum_parity_refuses_when_down_file_is_missing() {
+        let work = temp_root("u275_missing_down");
+        let bucket = bk("main", "");
+        let version = "V20260301000003__widgets";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
+        )
+        .unwrap();
+
+        let err = preflight_reset_checksum_parity(
+            &work,
+            "main",
+            &[historical_entry(
+                "main",
+                "",
+                version,
+                &compute_checksum(["CREATE TABLE widgets (id BIGINT PRIMARY KEY);"]),
+                Some(&compute_checksum(["DROP TABLE widgets;"])),
+            )],
+            false,
+        )
+        .expect_err("missing down SQL must refuse before destructive reset");
+
+        match err {
+            ResetError::Refused(ResetRefusal::ChecksumParity { issues }) => {
+                assert_eq!(issues.len(), 1, "expected one missing-file issue");
+                assert_eq!(issues[0].version, version);
+                assert_eq!(issues[0].sql_side, ResetSqlSide::Down);
+                assert_eq!(issues[0].problem, ResetChecksumParityProblem::MissingFile);
+                assert!(issues[0].on_disk_checksum.is_none());
+            }
+            other => panic!("expected checksum-parity refusal, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    fn composed_up_sql(version: &str, body: &str) -> String {
+        format!(
+            "-- Djogi composed migration — up\n\
+             -- Version: {version}\n\
+             -- Bucket:  main/_global_\n\
+             -- Classification: Additive\n\
+             -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\n\
+             -- AddTable widgets\n\
+             {body}\n\n"
+        )
+    }
+
+    fn composed_down_sql(version: &str, body: &str) -> String {
+        format!(
+            "-- Djogi composed migration — down\n\
+             -- Version: {version}\n\
+             -- Bucket:  main/_global_\n\
+             -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\n\
+             -- DropTable widgets\n\
+             {body}\n\n"
+        )
+    }
+
+    #[test]
+    fn u275_preflight_checksum_parity_accepts_composed_sql_headers() {
+        let work = temp_root("u275_composed_headers");
+        let bucket = bk("main", "");
+        let version = "V20260301000012__widgets";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            composed_up_sql(version, "CREATE TABLE widgets (id BIGINT PRIMARY KEY);"),
+        )
+        .unwrap();
+        fs::write(
+            bucket_dir.join(down_filename(version)),
+            composed_down_sql(version, "DROP TABLE widgets;"),
+        )
+        .unwrap();
+
+        preflight_reset_checksum_parity(
+            &work,
+            "main",
+            &[historical_entry(
+                "main",
+                "",
+                version,
+                &compute_checksum(["CREATE TABLE widgets (id BIGINT PRIMARY KEY);"]),
+                Some(&compute_checksum(["DROP TABLE widgets;"])),
+            )],
+            false,
+        )
+        .expect("composed comments and labels must not count as checksum drift");
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u275_preflight_checksum_parity_refuses_edited_composed_operation_sql() {
+        let work = temp_root("u275_composed_operation_drift");
+        let bucket = bk("main", "");
+        let version = "V20260301000013__widgets";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            composed_up_sql(version, "CREATE TABLE widgets (id BIGINT PRIMARY KEY);"),
+        )
+        .unwrap();
+
+        let err = preflight_reset_checksum_parity(
+            &work,
+            "main",
+            &[historical_entry(
+                "main",
+                "",
+                version,
+                &compute_checksum(["CREATE TABLE widgets (id BIGINT);"]),
+                None,
+            )],
+            false,
+        )
+        .expect_err("operation SQL drift inside composed file must refuse");
+
+        match err {
+            ResetError::Refused(ResetRefusal::ChecksumParity { issues }) => {
+                assert_eq!(issues.len(), 1);
+                assert_eq!(issues[0].problem, ResetChecksumParityProblem::Drift);
+                assert_eq!(
+                    issues[0].on_disk_checksum.as_deref(),
+                    Some(
+                        compute_checksum(["CREATE TABLE widgets (id BIGINT PRIMARY KEY);"])
+                            .as_str()
+                    )
+                );
+            }
+            other => panic!("expected checksum-parity refusal, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u275_preflight_checksum_parity_refuses_when_baseline_row_cannot_be_compared() {
+        let work = temp_root("u275_baseline");
+        let bucket = bk("main", "");
+        let version = "V20260301000004__widgets";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
+        )
+        .unwrap();
+
+        let err = preflight_reset_checksum_parity(
+            &work,
+            "main",
+            &[HistoricalReplayEntry {
+                bucket,
+                version: version.to_string(),
+                status: "baseline".to_string(),
+                checksum_up: "V1:baseline-projection".to_string(),
+                checksum_down: None,
+            }],
+            false,
+        )
+        .expect_err("baseline rows must refuse when reset cannot establish file parity");
+
+        match err {
+            ResetError::Refused(ResetRefusal::ChecksumParity { issues }) => {
+                assert_eq!(issues.len(), 1, "expected one baseline issue");
+                assert_eq!(issues[0].version, version);
+                assert_eq!(
+                    issues[0].problem,
+                    ResetChecksumParityProblem::UnsupportedBaseline
+                );
+                assert!(issues[0].on_disk_checksum.is_none());
+            }
+            other => panic!("expected checksum-parity refusal, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u275_replay_sql_checksums_include_down_when_down_file_exists() {
+        let work = temp_root("u275_replay_checksums");
+        let bucket = bk("main", "");
+        let version = "V20260301000005__widgets";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
+        )
+        .unwrap();
+        fs::write(
+            bucket_dir.join(down_filename(version)),
+            "DROP TABLE widgets;",
+        )
+        .unwrap();
+
+        let replay_sql =
+            read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
+        assert_eq!(
+            replay_sql.checksum_up,
+            compute_checksum(["CREATE TABLE widgets (id BIGINT PRIMARY KEY);"])
+        );
+        assert_eq!(
+            replay_sql.checksum_down.as_deref(),
+            Some(compute_checksum(["DROP TABLE widgets;"]).as_str()),
+            "reset replay must preserve checksum_down so later resets still enforce down-side parity"
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u275_replay_sql_checksums_treat_comment_only_down_as_none() {
+        let work = temp_root("u275_comment_only_down");
+        let bucket = bk("main", "");
+        let version = "V20260301000016__phase_zero_like";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            "CREATE SCHEMA IF NOT EXISTS heeranjid;",
+        )
+        .unwrap();
+        fs::write(
+            bucket_dir.join(down_filename(version)),
+            "-- no meaningful rollback\n-- framework bootstrap is dependency-only\n",
+        )
+        .unwrap();
+
+        let replay_sql =
+            read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
+        assert!(
+            replay_sql.checksum_down.is_none(),
+            "comment-only down files must preserve the no-real-rollback null sentinel"
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u276_preflight_replay_semantics_refuses_non_transactional_sql_without_manifest() {
+        let work = temp_root("u276_missing_manifest");
+        let bucket = bk("main", "");
+        let version = "V20260301000006__widgets";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            "-- AddTable widgets\n\
+             CREATE TABLE widgets (id BIGINT PRIMARY KEY);\n\n\
+             -- AddIndex widgets_id_idx\n\
+             CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\n",
+        )
+        .unwrap();
+        fs::write(
+            bucket_dir.join(down_filename(version)),
+            "DROP INDEX CONCURRENTLY widgets_id_idx;\nDROP TABLE widgets;\n",
+        )
+        .unwrap();
+
+        let err = preflight_reset_replay_semantics(&work, "main")
+            .expect_err("legacy file-only concurrent index replay must refuse before drop");
+
+        match err {
+            ResetError::Refused(ResetRefusal::ReplaySemantics { issues }) => {
+                assert_eq!(issues.len(), 1, "expected one replay-semantics issue");
+                assert_eq!(issues[0].bucket, bucket);
+                assert_eq!(issues[0].version, version);
+                assert_eq!(
+                    issues[0].problem,
+                    ResetReplaySemanticsProblem::MissingReplayPlan
+                );
+                assert_eq!(issues[0].statement_shape, "CREATE INDEX CONCURRENTLY");
+            }
+            other => panic!("expected replay-semantics refusal, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    fn assert_single_replay_semantics_issue(
+        err: ResetError,
+        expected_bucket: &BucketKey,
+        expected_version: &str,
+        expected_problem: ResetReplaySemanticsProblem,
+        expected_shape: &str,
+    ) {
+        match err {
+            ResetError::Refused(ResetRefusal::ReplaySemantics { issues }) => {
+                assert_eq!(issues.len(), 1, "expected one replay-semantics issue");
+                assert_eq!(issues[0].bucket, *expected_bucket);
+                assert_eq!(issues[0].version, expected_version);
+                assert_eq!(issues[0].problem, expected_problem);
+                assert_eq!(issues[0].statement_shape, expected_shape);
+            }
+            other => panic!("expected replay-semantics refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn u276_preflight_replay_semantics_refuses_call_backfill_without_manifest() {
+        let work = temp_root("u276_missing_manifest_call");
+        let bucket = bk("main", "");
+        let version = "V20260301000008__pk_flip_call";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            "CALL heeranjid_bulk_backfill('widgets', 'id', 'id_desc', 'heer', 10000);\n",
+        )
+        .unwrap();
+        fs::write(bucket_dir.join(down_filename(version)), "SELECT 1;\n").unwrap();
+
+        let err = preflight_reset_replay_semantics(&work, "main")
+            .expect_err("CALL backfill replay without manifest must refuse before drop");
+        assert_single_replay_semantics_issue(
+            err,
+            &bucket,
+            version,
+            ResetReplaySemanticsProblem::MissingReplayPlan,
+            "CALL heeranjid_bulk_backfill",
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u276_preflight_replay_semantics_refuses_do_backfill_without_manifest() {
+        let work = temp_root("u276_missing_manifest_do");
+        let bucket = bk("main", "");
+        let version = "V20260301000009__pk_flip_do";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            "DO $$\n\
+             BEGIN\n\
+                 COMMIT;\n\
+             END\n\
+             $$;\n",
+        )
+        .unwrap();
+        fs::write(bucket_dir.join(down_filename(version)), "SELECT 1;\n").unwrap();
+
+        let err = preflight_reset_replay_semantics(&work, "main")
+            .expect_err("DO backfill replay without manifest must refuse before drop");
+        assert_single_replay_semantics_issue(
+            err,
+            &bucket,
+            version,
+            ResetReplaySemanticsProblem::MissingReplayPlan,
+            "DO block with COMMIT",
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u276_preflight_replay_semantics_refuses_partitioned_placeholder_without_manifest() {
+        let work = temp_root("u276_missing_manifest_partitioned");
+        let bucket = bk("main", "");
+        let version = "V20260301000010__pk_flip_partitioned";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            "CREATE UNIQUE INDEX events_partition_key_id_desc_idx\n  \
+             ON ONLY events (partition_key, id_desc);\n\
+             -- Per leaf: CREATE UNIQUE INDEX CONCURRENTLY <leaf>_partition_key_id_desc_idx\n\
+             --             ON <leaf> (partition_key, id_desc);\n\
+             -- Then ALTER INDEX events_partition_key_id_desc_idx ATTACH PARTITION\n\
+             --             <leaf>_partition_key_id_desc_idx;\n",
+        )
+        .unwrap();
+        fs::write(
+            bucket_dir.join(down_filename(version)),
+            "DROP INDEX IF EXISTS events_partition_key_id_desc_idx;\n",
+        )
+        .unwrap();
+
+        let err = preflight_reset_replay_semantics(&work, "main")
+            .expect_err("partitioned placeholder replay without manifest must refuse before drop");
+        assert_single_replay_semantics_issue(
+            err,
+            &bucket,
+            version,
+            ResetReplaySemanticsProblem::MissingReplayPlan,
+            "PARTITIONED CONCURRENTLY placeholder",
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u276_load_reset_replay_plan_refuses_invalid_call_manifest() {
+        let work = temp_root("u276_invalid_manifest_call");
+        let bucket = bk("main", "");
+        let version = "V20260301000011__pk_flip_call_invalid";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+        let up_sql = "CALL heeranjid_bulk_backfill('widgets', 'id', 'id_desc', 'heer', 10000);\n";
+        fs::write(bucket_dir.join(up_filename(version)), up_sql).unwrap();
+        fs::write(bucket_dir.join(down_filename(version)), "SELECT 1;\n").unwrap();
+        fs::write(
+            bucket_dir.join(format!("{version}.plan.json")),
+            "{\n  \"format_version\": \"1\",\n  \"checksum_up\": \"V1:stale\",\n  \"checksum_down\": null,\n  \"classification\": { \"kind\": \"additive\" },\n  \"segments\": []\n}\n",
+        )
+        .unwrap();
+
+        let replay_sql =
+            read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
+        let err = load_reset_replay_plan(&work, &bucket, version, &replay_sql)
+            .expect_err("invalid non-transactional replay manifest must refuse");
+        assert_single_replay_semantics_issue(
+            err,
+            &bucket,
+            version,
+            ResetReplaySemanticsProblem::InvalidReplayPlan,
+            "CALL heeranjid_bulk_backfill",
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u276_load_reset_replay_plan_preserves_committed_segment_kinds() {
+        let work = temp_root("u276_manifest_roundtrip");
+        let bucket = bk("main", "");
+        let version = "V20260301000007__widgets";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+
+        let up_sql = "-- AddTable widgets\n\
+             CREATE TABLE widgets (id BIGINT PRIMARY KEY);\n\n\
+             -- AddIndex widgets_id_idx\n\
+             CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\n";
+        let down_sql = "DROP INDEX CONCURRENTLY widgets_id_idx;\nDROP TABLE widgets;\n";
+        fs::write(bucket_dir.join(up_filename(version)), up_sql).unwrap();
+        fs::write(bucket_dir.join(down_filename(version)), down_sql).unwrap();
+        fs::write(
+            bucket_dir.join(format!("{version}.plan.json")),
+            format!(
+                "{{\n  \"format_version\": \"1\",\n  \"checksum_up\": \"{}\",\n  \"checksum_down\": \"{}\",\n  \"classification\": {{ \"kind\": \"additive\" }},\n  \"segments\": [\n    {{\n      \"kind\": \"transactional\",\n      \"statements\": [\n        {{ \"label\": \"AddTable widgets\", \"up\": \"CREATE TABLE widgets (id BIGINT PRIMARY KEY);\" }}\n      ]\n    }},\n    {{\n      \"kind\": \"non_transactional\",\n      \"statements\": [\n        {{ \"label\": \"AddIndex widgets_id_idx\", \"up\": \"CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\" }}\n      ]\n    }}\n  ]\n}}\n",
+                compute_checksum([up_sql]),
+                compute_checksum([down_sql]),
+            ),
+        )
+        .unwrap();
+
+        let replay_sql =
+            read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
+        let plan = load_reset_replay_plan(&work, &bucket, version, &replay_sql)
+            .expect("manifest should load")
+            .expect("manifest should produce a replay plan");
+
+        assert_eq!(plan.bucket, bucket);
+        assert_eq!(
+            plan.classification,
+            crate::migrate::Classification::Additive
+        );
+        assert_eq!(plan.segments.len(), 2);
+        assert_eq!(plan.segments[0].kind, SegmentKind::Transactional);
+        assert_eq!(plan.segments[0].statements[0].label, "AddTable widgets");
+        assert_eq!(plan.segments[1].kind, SegmentKind::NonTransactional);
+        assert_eq!(
+            plan.segments[1].statements[0].label,
+            "AddIndex widgets_id_idx"
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u276_load_reset_replay_plan_accepts_composed_sql_operation_checksums() {
+        let work = temp_root("u276_manifest_composed_checksum");
+        let bucket = bk("main", "");
+        let version = "V20260301000014__widgets";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            composed_up_sql(
+                version,
+                "CREATE TABLE widgets (id BIGINT PRIMARY KEY);\n\n\
+                 -- AddIndex widgets_id_idx\n\
+                 CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            bucket_dir.join(down_filename(version)),
+            composed_down_sql(
+                version,
+                "DROP INDEX CONCURRENTLY widgets_id_idx;\nDROP TABLE widgets;",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            bucket_dir.join(format!("{version}.plan.json")),
+            format!(
+                "{{\n  \"format_version\": \"1\",\n  \"checksum_up\": \"{}\",\n  \"checksum_down\": \"{}\",\n  \"classification\": {{ \"kind\": \"additive\" }},\n  \"segments\": [\n    {{\n      \"kind\": \"transactional\",\n      \"statements\": [\n        {{ \"label\": \"AddTable widgets\", \"up\": \"CREATE TABLE widgets (id BIGINT PRIMARY KEY);\" }}\n      ]\n    }},\n    {{\n      \"kind\": \"non_transactional\",\n      \"statements\": [\n        {{ \"label\": \"AddIndex widgets_id_idx\", \"up\": \"CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\" }}\n      ]\n    }}\n  ]\n}}\n",
+                compute_checksum([
+                    "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
+                    "CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);"
+                ]),
+                compute_checksum(["DROP INDEX CONCURRENTLY widgets_id_idx;\nDROP TABLE widgets;"]),
+            ),
+        )
+        .unwrap();
+
+        let replay_sql =
+            read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
+        assert_eq!(
+            replay_sql.checksum_up,
+            compute_checksum([
+                "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
+                "CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);"
+            ])
+        );
+        let plan = load_reset_replay_plan(&work, &bucket, version, &replay_sql)
+            .expect("manifest should load")
+            .expect("manifest should produce a replay plan");
+        assert_eq!(plan.segments.len(), 2);
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u276_load_reset_replay_plan_accepts_composed_comment_only_down_manifest() {
+        let work = temp_root("u276_manifest_comment_only_down");
+        let bucket = bk("main", "");
+        let version = "V20260301000015__widgets";
+        let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
+
+        fs::write(
+            bucket_dir.join(up_filename(version)),
+            composed_up_sql(version, "CREATE TABLE widgets (id BIGINT PRIMARY KEY);"),
+        )
+        .unwrap();
+        fs::write(
+            bucket_dir.join(down_filename(version)),
+            composed_down_sql(
+                version,
+                "-- no-op rollback placeholder: lossy operation requires manual rollback",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            bucket_dir.join(format!("{version}.plan.json")),
+            format!(
+                "{{\n  \"format_version\": \"1\",\n  \"checksum_up\": \"{}\",\n  \"checksum_down\": null,\n  \"classification\": {{ \"kind\": \"lossy\" }},\n  \"segments\": [\n    {{\n      \"kind\": \"transactional\",\n      \"statements\": [\n        {{ \"label\": \"AddTable widgets\", \"up\": \"CREATE TABLE widgets (id BIGINT PRIMARY KEY);\" }}\n      ]\n    }}\n  ]\n}}\n",
+                compute_checksum(["CREATE TABLE widgets (id BIGINT PRIMARY KEY);"]),
+            ),
+        )
+        .unwrap();
+
+        let replay_sql =
+            read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
+        assert!(
+            replay_sql.checksum_down.is_none(),
+            "composed comment-only down files must preserve compose's checksum_down = null"
+        );
+        let plan = load_reset_replay_plan(&work, &bucket, version, &replay_sql)
+            .expect("manifest should load")
+            .expect("manifest should produce a replay plan");
+        assert_eq!(plan.segments.len(), 1);
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn u275_checksum_parity_refusal_display_names_bucket_version_and_checksums() {
+        let refusal = ResetRefusal::ChecksumParity {
+            issues: vec![
+                ResetChecksumParityIssue {
+                    bucket: bk("main", ""),
+                    version: "V20260301000004__widgets".to_string(),
+                    sql_side: ResetSqlSide::Up,
+                    ledger_checksum: "V1:ledger".to_string(),
+                    on_disk_checksum: Some("V1:disk".to_string()),
+                    problem: ResetChecksumParityProblem::Drift,
+                },
+                ResetChecksumParityIssue {
+                    bucket: bk("main", "billing"),
+                    version: "V20260301000005__billing".to_string(),
+                    sql_side: ResetSqlSide::Down,
+                    ledger_checksum: "V1:down-ledger".to_string(),
+                    on_disk_checksum: None,
+                    problem: ResetChecksumParityProblem::MissingFile,
+                },
+            ],
+        };
+
+        let rendered = refusal.to_string();
+        assert!(
+            rendered.contains("main/_global_/V20260301000004__widgets"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("main/billing/V20260301000005__billing"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("V1:ledger"), "{rendered}");
+        assert!(rendered.contains("V1:disk"), "{rendered}");
+        assert!(rendered.contains("V1:down-ledger"), "{rendered}");
+        assert!(
+            rendered.contains("--allow-checksum-drift-reset")
+                || rendered.contains("allow_checksum_drift_reset"),
+            "{rendered}"
+        );
     }
 
     // ── Codex umbrella U-4: historical-order replay plan ────────────────
