@@ -113,13 +113,9 @@ Field semantics:
 - A leading UTF-8 BOM (`EF BB BF`) is stripped on load; it is never emitted on write.
 - **Bump policy.** Additive fields marked `#[serde(default)]` do not require a `format_version` bump — older snapshots load cleanly because the default supplies the missing value, and no unrecognised field name appears on the wire. Renames, removals, and variant reshapes require a bump because there is no defaulting bridge across those changes.
 
-If a non-transactional migration fails partway through, the snapshot remains unchanged. Partial state is represented by the ledger and the local failure marker file, not by writing an intermediate snapshot.
+If a non-transactional migration fails partway through, the snapshot remains unchanged. The runner then makes a best-effort failure-path ledger update that records the partial state in `djogi_schema_migrations`: the row is marked `failed`, `applied_steps_count` records how many steps committed before the failure, and `partial_apply_note` names the failing step and error. Because that bookkeeping write happens on the failure path, operators must treat it as best-effort recovery metadata rather than a stronger guarantee; if the update itself fails, the row may remain pending or partially updated, but the snapshot still does not move forward.
 
-Failure marker protocol:
-
-- file path: `migrations/.migration_failure.json`
-- written only after partial non-transactional failure
-- blocks further planning/apply until resolved by `migrations repair`
+The same `version` stays occupied in the ledger until repair resolves the row in place, so another apply of the same version still collides on the unique `version` constraint. Use `djogi migrations status` to inspect the row, then resolve it with `repair_partial_apply` or, when the row is still resumable, `repair_resume_partial_apply`.
 
 ### 10.4 Generated SQL Contract
 
@@ -847,8 +843,11 @@ Non-transactional migrations:
 
 - pending row commits before DDL begins
 - each committed step increments `applied_steps_count`
-- partial failure writes `.migration_failure.json`
-- further apply/rollback work is blocked until `repair`
+- on the failure path, the runner makes a best-effort ledger update that marks the row `failed` and records the step/error details in `partial_apply_note`
+- the snapshot remains unchanged on failure
+- `djogi migrations status` is the operator-facing view of the row while it is failed or pending
+- `repair_partial_apply` resolves the row in place to a terminal status, and `repair_resume_partial_apply` resumes a still-resumable failure from `applied_steps_count + 1`
+- further apply work for the same `version` still collides on the unique constraint until the row is repaired in place
 
 Rollback semantics:
 

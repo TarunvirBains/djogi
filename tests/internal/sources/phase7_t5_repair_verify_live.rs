@@ -23,13 +23,14 @@ use std::time::Duration;
 
 use djogi::config::MigrateConfig;
 use djogi::migrate::{
-    AppliedSchema, BucketKey, Classification, LossyRollbackKind, LossyRollbackPolicy,
-    LossyRollbackWarning, MigrationPlan, OperationSql, PartialApplyResolution, RepairConfirmation,
-    RepairError, RollbackError, RunnerCtx, RunnerError, SNAPSHOT_FORMAT_VERSION, Segment,
-    SegmentKind, VerifySeverity, WorkspaceGuard, acquire_workspace_lock, advisory_lock_key,
-    apply_plan, baseline_plan, bootstrap_ledger, compute_checksum, fake_apply_plan,
-    repair_checksum_drift, repair_partial_apply, repair_resume_partial_apply,
-    repair_snapshot_rebuild, rollback_plan, verify,
+    AppliedSchema, BucketKey, Classification, LedgerStatus, LossyRollbackKind,
+    LossyRollbackPolicy, LossyRollbackWarning, MigrationPlan, OperationSql,
+    PartialApplyResolution, RepairConfirmation, RepairError, RollbackError, RunnerCtx,
+    RunnerError, SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind, VerifySeverity,
+    WorkspaceGuard, acquire_workspace_lock, advisory_lock_key, apply_plan, baseline_plan,
+    bootstrap_ledger, compute_checksum, fake_apply_plan, repair_checksum_drift,
+    repair_partial_apply, repair_resume_partial_apply, repair_snapshot_rebuild, rollback_plan,
+    verify,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -102,6 +103,55 @@ fn transactional_plan_for_app(app: &str, stmts: Vec<OperationSql>) -> MigrationP
             kind: SegmentKind::Transactional,
             statements: stmts,
         }],
+    }
+}
+
+async fn seed_duplicate_version_row(
+    ctx: &mut djogi::DjogiContext,
+    runner_ctx: &RunnerCtx,
+    execution_mode: &str,
+    status: LedgerStatus,
+    run_id: i64,
+    with_applied_at: bool,
+) {
+    let status = status.as_db_str().to_string();
+    let snapshot_version = SNAPSHOT_FORMAT_VERSION.to_string();
+    if with_applied_at {
+        ctx.raw_execute(
+            "INSERT INTO djogi_schema_migrations \
+             (version, description, checksum_up, execution_mode, status, \
+              run_id, applied_at, snapshot_version, app_label) \
+             VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, '')",
+            &[
+                &runner_ctx.version,
+                &runner_ctx.description,
+                &runner_ctx.checksum_up,
+                &execution_mode,
+                &status,
+                &run_id,
+                &snapshot_version,
+            ],
+        )
+        .await
+        .expect("seed duplicate ledger row");
+    } else {
+        ctx.raw_execute(
+            "INSERT INTO djogi_schema_migrations \
+             (version, description, checksum_up, execution_mode, status, \
+              run_id, snapshot_version, app_label) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, '')",
+            &[
+                &runner_ctx.version,
+                &runner_ctx.description,
+                &runner_ctx.checksum_up,
+                &execution_mode,
+                &status,
+                &run_id,
+                &snapshot_version,
+            ],
+        )
+        .await
+        .expect("seed duplicate ledger row");
     }
 }
 
@@ -503,6 +553,90 @@ async fn fake_apply_persists_snapshot(mut ctx: djogi::DjogiContext) {
     let _ = std::fs::remove_file(&snapshot_path);
 }
 
+#[djogi::djogi_test]
+async fn fake_apply_duplicate_version_faked_row_surfaces_typed_error(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+    let plan = transactional_plan(vec![op(
+        "AddTable t5_fake_dup_terminal",
+        "CREATE TABLE \"t5_fake_dup_terminal\" (\"id\" BIGINT)",
+        "DROP TABLE \"t5_fake_dup_terminal\"",
+    )]);
+    let runner_ctx = make_runner_ctx(&plan, "V20260425010006__fake_dup_terminal", None, None);
+    seed_duplicate_version_row(
+        &mut ctx,
+        &runner_ctx,
+        "transactional",
+        LedgerStatus::Faked,
+        6006,
+        true,
+    )
+    .await;
+
+    let err = fake_apply_plan(
+        &mut ctx,
+        &plan,
+        &runner_ctx,
+        &_guard,
+        "already reconciled by operator",
+    )
+    .await
+    .expect_err("duplicate fake-apply must fail");
+    match err {
+        RunnerError::VersionAlreadyApplied {
+            version,
+            applied_at,
+            ..
+        } => {
+            assert_eq!(version, runner_ctx.version);
+            assert!(applied_at.is_some(), "terminal collision should surface applied_at");
+        }
+        other => panic!("expected VersionAlreadyApplied, got {other:?}"),
+    }
+}
+
+#[djogi::djogi_test]
+async fn fake_apply_duplicate_version_failed_row_surfaces_non_terminal_collision(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+    let plan = transactional_plan(vec![op(
+        "AddTable t5_fake_dup_failed",
+        "CREATE TABLE \"t5_fake_dup_failed\" (\"id\" BIGINT)",
+        "DROP TABLE \"t5_fake_dup_failed\"",
+    )]);
+    let runner_ctx = make_runner_ctx(&plan, "V20260425010007__fake_dup_failed", None, None);
+    seed_duplicate_version_row(
+        &mut ctx,
+        &runner_ctx,
+        "transactional",
+        LedgerStatus::Failed,
+        6007,
+        false,
+    )
+    .await;
+
+    let err = fake_apply_plan(&mut ctx, &plan, &runner_ctx, &_guard, "still failed")
+        .await
+        .expect_err("duplicate fake-apply must fail");
+    match err {
+        RunnerError::VersionCollisionNonTerminal {
+            version,
+            status,
+            run_id,
+            ..
+        } => {
+            assert_eq!(version, runner_ctx.version);
+            assert_eq!(status, LedgerStatus::Failed);
+            assert_eq!(run_id, 6007);
+        }
+        other => panic!("expected VersionCollisionNonTerminal, got {other:?}"),
+    }
+}
+
 // ── Baseline ──────────────────────────────────────────────────────────────
 
 #[djogi::djogi_test]
@@ -546,6 +680,90 @@ async fn baseline_records_baseline_row(mut ctx: djogi::DjogiContext) {
         .await
         .expect("description");
     assert!(description.starts_with("<baseline>"), "desc: {description}");
+}
+
+#[djogi::djogi_test]
+async fn baseline_duplicate_version_baseline_row_surfaces_typed_error(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+    let bucket = BucketKey {
+        database: "main".to_string(),
+        app: "".to_string(),
+    };
+    let plan = transactional_plan(vec![op("AddTable noop", "SELECT 1", "SELECT 1")]);
+    let runner_ctx = make_runner_ctx(&plan, "V20260425010008__baseline_dup", None, None);
+    seed_duplicate_version_row(
+        &mut ctx,
+        &runner_ctx,
+        "transactional",
+        LedgerStatus::Baseline,
+        6008,
+        true,
+    )
+    .await;
+
+    let err = baseline_plan(
+        &mut ctx,
+        &bucket,
+        &runner_ctx,
+        &_guard,
+        "already established from live schema",
+    )
+    .await
+    .expect_err("duplicate baseline must fail");
+    match err {
+        RunnerError::VersionAlreadyApplied {
+            version,
+            applied_at,
+            ..
+        } => {
+            assert_eq!(version, runner_ctx.version);
+            assert!(applied_at.is_some(), "terminal collision should surface applied_at");
+        }
+        other => panic!("expected VersionAlreadyApplied, got {other:?}"),
+    }
+}
+
+#[djogi::djogi_test]
+async fn baseline_duplicate_version_failed_row_surfaces_non_terminal_collision(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+    let bucket = BucketKey {
+        database: "main".to_string(),
+        app: "".to_string(),
+    };
+    let plan = transactional_plan(vec![op("AddTable noop", "SELECT 1", "SELECT 1")]);
+    let runner_ctx = make_runner_ctx(&plan, "V20260425010009__baseline_dup_failed", None, None);
+    seed_duplicate_version_row(
+        &mut ctx,
+        &runner_ctx,
+        "non_transactional",
+        LedgerStatus::Failed,
+        6009,
+        false,
+    )
+    .await;
+
+    let err = baseline_plan(&mut ctx, &bucket, &runner_ctx, &_guard, "still failed")
+        .await
+        .expect_err("duplicate baseline must fail");
+    match err {
+        RunnerError::VersionCollisionNonTerminal {
+            version,
+            status,
+            run_id,
+            ..
+        } => {
+            assert_eq!(version, runner_ctx.version);
+            assert_eq!(status, LedgerStatus::Failed);
+            assert_eq!(run_id, 6009);
+        }
+        other => panic!("expected VersionCollisionNonTerminal, got {other:?}"),
+    }
 }
 
 // ── Verify: clean DB ──────────────────────────────────────────────────────
@@ -761,6 +979,20 @@ async fn repair_checksum_drift_rejects_invalid_checksum(mut ctx: djogi::DjogiCon
 #[djogi::djogi_test]
 async fn repair_partial_apply_marks_rolled_back(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
+    let snapshot_path = temp_path("partial-snap");
+    let initial_snapshot = empty_snapshot();
+    djogi::migrate::save_snapshot(&initial_snapshot, &snapshot_path).expect("seed snapshot");
+    assert!(
+        snapshot_path.exists(),
+        "seed snapshot must exist before apply"
+    );
+    let snapshot_bytes_before = std::fs::read(&snapshot_path).expect("read snapshot before");
+    let marker_path = std::path::Path::new("migrations/.migration_failure.json");
+    assert!(
+        !marker_path.exists(),
+        "legacy migration failure marker must not exist before apply"
+    );
+
     // Force a partial apply: build a split plan where the second
     // non-tx step is invalid SQL.
     let plan = MigrationPlan {
@@ -797,8 +1029,89 @@ async fn repair_partial_apply_marks_rolled_back(mut ctx: djogi::DjogiContext) {
             },
         ],
     };
-    let runner_ctx = make_runner_ctx(&plan, "V20260425010011__partial", None, None);
-    let _ = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard).await;
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260425010011__partial",
+        Some(initial_snapshot),
+        Some(snapshot_path.clone()),
+    );
+    let err = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect_err("partial apply must fail");
+    match err {
+        RunnerError::NonTransactionalSegmentFailed {
+            segment_index,
+            step_index,
+            statement_label,
+            applied_steps_count,
+            ..
+        } => {
+            assert_eq!(segment_index, 1);
+            assert_eq!(step_index, 1);
+            assert_eq!(statement_label, "AddIndex t5_partial_missing_idx");
+            assert_eq!(applied_steps_count, 1);
+        }
+        other => panic!("expected NonTransactionalSegmentFailed, got {other:?}"),
+    }
+
+    let status: String = ctx
+        .raw_scalar(
+            "SELECT status::text FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("status before repair");
+    assert_eq!(status, "failed");
+
+    let applied_steps_count: i32 = ctx
+        .raw_scalar(
+            "SELECT applied_steps_count FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("applied_steps_count before repair");
+    assert_eq!(applied_steps_count, 1);
+
+    let total_steps: Option<i32> = ctx
+        .raw_scalar(
+            "SELECT total_steps FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("total_steps before repair");
+    assert_eq!(total_steps, Some(2));
+
+    let partial_apply_note: Option<String> = ctx
+        .raw_scalar(
+            "SELECT partial_apply_note FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("partial_apply_note before repair");
+    let partial_apply_note = partial_apply_note.expect("partial_apply_note must be recorded");
+    assert!(
+        partial_apply_note.contains("non-tx step 2 of segment 1 failed"),
+        "partial apply note should name the failing step"
+    );
+    assert!(
+        partial_apply_note.contains("AddIndex t5_partial_missing_idx"),
+        "partial apply note should name the failing statement"
+    );
+    assert!(
+        partial_apply_note.contains("missing_idx") || partial_apply_note.contains("missing_col"),
+        "partial apply note should include the missing target diagnostics"
+    );
+
+    let snapshot_bytes_after_failure =
+        std::fs::read(&snapshot_path).expect("read snapshot after failure");
+    assert_eq!(
+        snapshot_bytes_after_failure, snapshot_bytes_before,
+        "snapshot must remain unchanged after partial apply failure"
+    );
+    assert!(
+        !marker_path.exists(),
+        "legacy migration failure marker must not be created by apply"
+    );
 
     // Status is `failed`. Repair flips it to `rolled_back`.
     let report = repair_partial_apply(
@@ -826,6 +1139,19 @@ async fn repair_partial_apply_marks_rolled_back(mut ctx: djogi::DjogiContext) {
         .await
         .expect("status");
     assert_eq!(status, "rolled_back");
+
+    let snapshot_bytes_after_repair =
+        std::fs::read(&snapshot_path).expect("read snapshot after repair");
+    assert_eq!(
+        snapshot_bytes_after_repair, snapshot_bytes_before,
+        "repair must not rewrite the snapshot"
+    );
+    assert!(
+        !marker_path.exists(),
+        "repair must not create or consult a migration failure marker"
+    );
+
+    let _ = std::fs::remove_file(&snapshot_path);
 }
 
 #[djogi::djogi_test]
