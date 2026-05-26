@@ -113,10 +113,10 @@ fn reject_transaction_session_statement(
     if let Some(err) = ctx.transaction_poison_error() {
         return Err(err);
     }
-    if ctx.conn().is_some() {
-        if let Some(statement) = classify_transaction_session_statement(sql) {
-            return Err(DjogiError::SessionStatementDisallowedInTransaction { statement });
-        }
+    if ctx.conn().is_some()
+        && let Some(statement) = classify_transaction_session_statement(sql)
+    {
+        return Err(DjogiError::SessionStatementDisallowedInTransaction { statement });
     }
     Ok(())
 }
@@ -128,10 +128,10 @@ fn reject_transaction_session_statement_batch(
     if let Some(err) = ctx.transaction_poison_error() {
         return Err(err);
     }
-    if ctx.conn().is_some() {
-        if let Some(statement) = classify_raw_ddl_transaction_session_statement(sql) {
-            return Err(DjogiError::SessionStatementDisallowedInTransaction { statement });
-        }
+    if ctx.conn().is_some()
+        && let Some(statement) = classify_raw_ddl_transaction_session_statement(sql)
+    {
+        return Err(DjogiError::SessionStatementDisallowedInTransaction { statement });
     }
     Ok(())
 }
@@ -153,20 +153,16 @@ fn classify_transaction_session_statement(sql: &str) -> Option<&'static str> {
         };
     }
 
-    for statement in [
+    [
         "RESET",
         "DISCARD",
         "LISTEN",
         "UNLISTEN",
         "PREPARE",
         "DEALLOCATE",
-    ] {
-        if keyword.eq_ignore_ascii_case(statement) {
-            return Some(statement);
-        }
-    }
-
-    None
+    ]
+    .into_iter()
+    .find(|statement| keyword.eq_ignore_ascii_case(statement))
 }
 
 fn classify_raw_ddl_transaction_session_statement(sql: &str) -> Option<&'static str> {

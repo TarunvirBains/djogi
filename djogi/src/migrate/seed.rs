@@ -286,6 +286,7 @@ impl SeedLedgerStatus {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn from_db_str(value: &str) -> Result<Self, SeedError> {
         match value {
             "running" => Ok(Self::Running),
@@ -821,6 +822,7 @@ async fn try_acquire_seed_run_lock(
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn handle_seed_unlock(
     result: Result<SeedReport, SeedError>,
     released: bool,
