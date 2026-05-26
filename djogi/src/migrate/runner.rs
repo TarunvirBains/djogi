@@ -426,6 +426,15 @@ pub enum RunnerError {
         /// The bucket whose advisory lock could not be confirmed as released.
         bucket: BucketKey,
     },
+
+    /// Strict replay expansion refused: partitioned parent has zero leaves.
+    /// In apply mode this falls back to a no-op comment; in replay-strict
+    /// mode (rollback/repair) we refuse because replaying a shorter stream
+    /// would silently miss leaf work that the ledger already counted.
+    PartitionExpansionNoLeaves {
+        parent: String,
+        statement_label: String,
+    },
 }
 
 impl std::fmt::Display for RunnerError {
@@ -716,6 +725,14 @@ impl std::fmt::Display for RunnerError {
                  inspect the ledger row to determine the actual applied state.",
                 db = bucket.database,
                 app = bucket.app,
+            ),
+            RunnerError::PartitionExpansionNoLeaves {
+                parent,
+                statement_label,
+            } => write!(
+                f,
+                "partition expansion for `{statement_label}` refused: \
+                 partitioned parent `{parent}` has 0 leaves in replay-strict mode",
             ),
         }
     }
@@ -1026,7 +1043,8 @@ async fn apply_plan_inner(
     // produces the concrete SQL the runner will actually execute, so
     // every downstream preflight and step-count calculation works on
     // the real statement list.
-    let plan_owned = expand_partition_leaf_placeholders(ctx, plan).await?;
+    let plan_owned =
+        materialize_execution_plan(ctx, plan, PartitionExpansionMode::ApplyLenient).await?;
     let plan = &plan_owned;
 
     preflight_segment_sql_execution_compatibility(plan)?;
@@ -3648,6 +3666,33 @@ fn collect_add_table_targets(plan: &MigrationPlan) -> BTreeSet<String> {
 
 // ── B-2: partition leaf-placeholder expansion ─────────────────────────────
 
+/// Controls how empty-leaf partitions are handled during expansion.
+///
+/// **ApplyLenient** (default for `apply_plan`): preserves the current
+/// empty-leaf no-op fallback, emitting a comment-only statement so the
+/// segment completes without error. The operator sees the diagnostic and
+/// can attach partitions before retrying.
+///
+/// **ReplayStrict** (rollback / repair): refuses zero leaves because
+/// replaying a shorter stream would silently miss leaf work that the
+/// ledger already counted. Returns `RunnerError::PartitionExpansionNoLeaves`
+/// so the caller can abort or handle the discrepancy explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PartitionExpansionMode {
+    ApplyLenient,
+    ReplayStrict,
+}
+
+/// Public-facing helper wrapping [`expand_partition_leaf_placeholders`].
+/// Materializes partition leaf placeholders according to the given mode.
+pub(crate) async fn materialize_execution_plan(
+    ctx: &mut DjogiContext,
+    plan: &MigrationPlan,
+    mode: PartitionExpansionMode,
+) -> Result<MigrationPlan, RunnerError> {
+    expand_partition_leaf_placeholders(ctx, plan, mode).await
+}
+
 /// Walk every segment and expand the `<EACH_LEAF_TABLE>` placeholder
 /// inside any partitioned-flip statement into one concrete-leaf
 /// statement per leaf, sorted by `regclass::text` for determinism.
@@ -3671,14 +3716,17 @@ fn collect_add_table_targets(plan: &MigrationPlan) -> BTreeSet<String> {
 /// `writeln!` macro.
 ///
 /// **Failure modes.** If `pg_inherits` returns no leaves for a
-/// declared partitioned parent, expansion produces a single comment
-/// line so the segment SQL surfaces the empty-leaves state cleanly
-/// rather than running an `<EACH_LEAF_TABLE>` literal that would
-/// fail with `undefined_table`. Operator's job is to attach
-/// partitions before retrying.
+/// declared partitioned parent, behavior depends on [`PartitionExpansionMode`]:
+/// - ApplyLenient: produces a single comment line so the segment SQL
+///   surfaces the empty-leaves state cleanly rather than running an
+///   `<EACH_LEAF_TABLE>` literal that would fail with `undefined_table`.
+///   Operator's job is to attach partitions before retrying.
+/// - ReplayStrict: refuses zero leaves because rollback/repair must not
+///   silently replay a shorter stream. Returns [`RunnerError::PartitionExpansionNoLeaves`].
 async fn expand_partition_leaf_placeholders(
     ctx: &mut DjogiContext,
     plan: &MigrationPlan,
+    mode: PartitionExpansionMode,
 ) -> Result<MigrationPlan, RunnerError> {
     // Cache leaves per parent so multiple statements pointing at the
     // same partitioned parent share one query.
@@ -3697,7 +3745,7 @@ async fn expand_partition_leaf_placeholders(
                         leaves_cache.insert(parent.clone(), leaves);
                     }
                     let leaves = leaves_cache.get(&parent).expect("just inserted");
-                    new_stmts.extend(expand_partition_statement(&stmt, &parent, leaves));
+                    new_stmts.extend(expand_partition_statement(&stmt, &parent, leaves, mode)?);
                 }
                 None => new_stmts.push(stmt),
             }
@@ -3801,19 +3849,23 @@ fn expand_partition_statement(
     stmt: &OperationSql,
     parent: &str,
     leaves: &[String],
-) -> Vec<OperationSql> {
+    mode: PartitionExpansionMode,
+) -> Result<Vec<OperationSql>, RunnerError> {
     if leaves.is_empty() {
-        // Empty-leaves edge: surface the state but DO NOT issue the
-        // literal `<EACH_LEAF_TABLE>` SQL. The runner emits a comment
-        // line that internal batch execution accepts harmlessly.
-        return vec![OperationSql {
-            label: format!("{} (no leaves)", stmt.label),
-            up: format!(
-                "-- pg_inherits returned 0 leaves for partitioned parent {parent}; nothing to expand"
-            ),
-            down: stmt.down.clone(),
-            lossy: stmt.lossy.clone(),
-        }];
+        return match mode {
+            PartitionExpansionMode::ApplyLenient => Ok(vec![OperationSql {
+                label: format!("{} (no leaves)", stmt.label),
+                up: format!(
+                    "-- pg_inherits returned 0 leaves for partitioned parent {parent}; nothing to expand"
+                ),
+                down: stmt.down.clone(),
+                lossy: stmt.lossy.clone(),
+            }]),
+            PartitionExpansionMode::ReplayStrict => Err(RunnerError::PartitionExpansionNoLeaves {
+                parent: parent.to_string(),
+                statement_label: stmt.label.clone(),
+            }),
+        };
     }
 
     let mut out: Vec<OperationSql> = Vec::with_capacity(leaves.len());
@@ -3845,7 +3897,7 @@ fn expand_partition_statement(
                 lossy: stmt.lossy.clone(),
             });
         }
-        return out;
+        return Ok(out);
     }
 
     if stmt.label.starts_with("PkFlipPartitionedIndex ") {
@@ -3902,7 +3954,7 @@ fn expand_partition_statement(
                 lossy: None,
             });
         }
-        return out;
+        return Ok(out);
     }
 
     if stmt.label.starts_with("PkFlipPartitionedSelfFkIndex ") {
@@ -3954,13 +4006,13 @@ fn expand_partition_statement(
                 lossy: None,
             });
         }
-        return out;
+        return Ok(out);
     }
 
     // Unknown partitioned label — pass through unchanged. Defensive:
     // future emitters that add new `PkFlipPartitioned…` labels keep
     // working without forcing this fn to learn about them.
-    vec![stmt.clone()]
+    Ok(vec![stmt.clone()])
 }
 
 /// Strip a single trailing `;` (with optional trailing whitespace).
@@ -5375,7 +5427,7 @@ mod tests {
             label: "PkFlipPartitionedIndex events_p".to_string(),
             up: "CREATE UNIQUE INDEX events_p_ts_id_desc_idx ON ONLY events_p (ts, id_desc);\n\
                  -- Per leaf: CREATE UNIQUE INDEX CONCURRENTLY <leaf>_ts_id_desc_idx\n"
-               .to_string(),
+                .to_string(),
             down: "DROP INDEX IF EXISTS events_p_ts_id_desc_idx;".to_string(),
             lossy: None,
         };
@@ -5388,8 +5440,14 @@ mod tests {
         )
         .expect("strict replay expansion with leaves");
 
-        assert_eq!(expanded[0].label, "PkFlipPartitionedIndex events_p (parent-level)");
-        assert_eq!(expanded[0].down, "DROP INDEX IF EXISTS events_p_ts_id_desc_idx;");
+        assert_eq!(
+            expanded[0].label,
+            "PkFlipPartitionedIndex events_p (parent-level)"
+        );
+        assert_eq!(
+            expanded[0].down,
+            "DROP INDEX IF EXISTS events_p_ts_id_desc_idx;"
+        );
         assert!(
             expanded.iter().any(|s| {
                 s.label == "PkFlipPartitionedIndex events_p leaf=events_p_a (concurrent)"
