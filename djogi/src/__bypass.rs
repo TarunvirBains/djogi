@@ -66,6 +66,18 @@
 //! Transaction-local forms remain allowed: `SET LOCAL ...`,
 //! `SET CONSTRAINTS ...`, and `SET TRANSACTION ...`.
 //!
+//! Transaction-control statements are also rejected with
+//! [`crate::DjogiError::RawTransactionControlDisallowedInTransaction`] to
+//! prevent callers from bypassing framework bookkeeping (on_commit callback
+//! drain, rollback cleanup, savepoint depth synchronization):
+//!
+//! - `BEGIN` / `START TRANSACTION`
+//! - `COMMIT`
+//! - `ROLLBACK` (including `ROLLBACK TO savepoint`)
+//! - `END` / `ABORT`
+//! - `SAVEPOINT`
+//! - `RELEASE SAVEPOINT` / bare `RELEASE`
+//!
 //! The refusal is intentionally conservative:
 //!
 //! - it applies only to transaction-backed raw entrypoints
@@ -301,8 +313,8 @@ fn classify_transaction_control_statement(sql: &str) -> Option<&'static str> {
     }
 
     if first.eq_ignore_ascii_case("ROLLBACK") {
-        let third = parse_keyword(sql, after_first);
-        return match third {
+        let second = parse_keyword(sql, after_first);
+        return match second {
             Some((w, _))
                 if w.eq_ignore_ascii_case("WORK") || w.eq_ignore_ascii_case("TRANSACTION") =>
             {
@@ -775,8 +787,10 @@ pub trait RawAccessExtBase: sealed::Sealed {
     /// When the context is already transaction-backed, Djogi preflights each
     /// top-level statement in the batch and rejects session-scoped statement
     /// heads (`SET`, `RESET`, `DISCARD`, `LISTEN`, `UNLISTEN`, `PREPARE`,
-    /// `DEALLOCATE`) with
-    /// [`DjogiError::SessionStatementDisallowedInTransaction`] before SQL
+    /// `DEALLOCATE`) with [`DjogiError::SessionStatementDisallowedInTransaction`]
+    /// and transaction-control statements (`BEGIN`, `COMMIT`, `ROLLBACK`,
+    /// `END`, `ABORT`, `SAVEPOINT`, `RELEASE`) with
+    /// [`DjogiError::RawTransactionControlDisallowedInTransaction`] before SQL
     /// reaches Postgres. The scanner respects comments, string literals, and
     /// dollar-quoted bodies; it is not a naive `split(';')`.
     /// Tests that need to set up tables MUST use
@@ -1389,6 +1403,22 @@ mod tests {
         assert_eq!(
             classify_transaction_control_statement("ROLLBACK TRANSACTION"),
             Some("ROLLBACK")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("COMMIT WORK"),
+            Some("COMMIT")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("COMMIT TRANSACTION"),
+            Some("COMMIT")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("END WORK"),
+            Some("END")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("END TRANSACTION"),
+            Some("END")
         );
     }
 
