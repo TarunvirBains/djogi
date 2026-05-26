@@ -122,6 +122,16 @@ enum DemoCmd {
         #[arg(long, value_enum, default_value_t = Format::Json)]
         format: Format,
     },
+
+    /// Join a process-local score list to Elephant rows using VALUES.
+    /// Demonstrates djogi#103 typed inline-relation join.
+    ValuesScores {
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Output format. `json` (default), `markdown`.
+        #[arg(long, value_enum, default_value_t = Format::Json)]
+        format: Format,
+    },
 }
 
 #[allow(clippy::disallowed_methods)]
@@ -214,6 +224,9 @@ async fn main() -> Result<()> {
             }
             DemoCmd::MatingPairs { out, format } => {
                 demos::mating_pairs::run(&mut ctx, format, out.as_deref()).await?
+            }
+            DemoCmd::ValuesScores { out, format } => {
+                demos::values_scores::run(&mut ctx, format, out.as_deref()).await?
             }
         },
     }

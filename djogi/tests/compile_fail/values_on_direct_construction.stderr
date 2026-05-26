@@ -1,0 +1,15 @@
+error[E0223]: ambiguous associated type
+  --> $DIR/values_on_direct_construction.rs:13:34
+   |
+13 |     let _bad: ValuesOn<Animal> = ValuesOn::Eq {
+   |                                  ^^^^^^^^^^^^
+   |
+help: if there were a trait named `Example` with associated type `Eq` implemented for `djogi::query::ValuesOn<_>`, you could use the fully-qualified path
+   |
+13 -     let _bad: ValuesOn<Animal> = ValuesOn::Eq {
+13 +     let _bad: ValuesOn<Animal> = <djogi::query::ValuesOn<_> as Example>::Eq {
+   |
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0223`.

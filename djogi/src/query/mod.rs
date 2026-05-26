@@ -108,6 +108,8 @@ pub(crate) mod sql;
 pub mod stream;
 pub mod terminal;
 pub mod update;
+// Phase 8.5 djogi#103 — typed VALUES inline-relation join surface.
+pub mod values;
 pub mod visage_queryset;
 
 pub use aggregate::AggregateQuery;
@@ -216,6 +218,18 @@ pub use stream::{ModelCursorStream, RawCursorStream};
 // Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING result type.
 pub use returning::ReturningPair;
 pub use update::{IntoAssignments, UpdateAssignment, UpdateStmt};
+// Phase 8.5 djogi#103 — typed VALUES join surface.
+// `InlineValues`, the three queryset types, and the supporting traits are the
+// user-facing names.  `ValuesScalar` / `ValuesRow` / `IntoValuesColumns` are
+// sealed but must be re-exported so trait-method dispatch (`eq_values`,
+// `col0`, …) resolves in downstream crates.  `ValuesFields` and
+// `ValuesFieldRef` must be nameable as closure parameter / return types when
+// adopters write helpers that accept an `ON` predicate directly.
+// `CrossValuesJoinedQuerySet` (GH #299) is the unconditional Cartesian join.
+pub use values::{
+    CrossValuesJoinedQuerySet, InlineValues, IntoValuesColumns, LeftValuesJoinedQuerySet,
+    ValuesFieldRef, ValuesFields, ValuesJoinedQuerySet, ValuesOn, ValuesRow, ValuesScalar,
+};
 pub use visage_queryset::VisageQuerySet;
 
 /// Raw Condition-AST surface — not peer public API with `Condition`.

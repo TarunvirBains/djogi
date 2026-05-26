@@ -1,0 +1,20 @@
+error[E0308]: mismatched types
+   --> $DIR/values_join_wrong_column_arity.rs:12:9
+    |
+  9 |     let _: InlineValues<(i64, f64)> = InlineValues::new(
+    |                                       ----------------- arguments to this function are incorrect
+...
+ 12 |         ("a", "b", "c"),  // ← wrong arity: three names for a two-column row
+    |         ^^^^^^^^^^^^^^^ expected a tuple with 2 elements, found one with 3 elements
+    |
+    = note: expected tuple `(&'static str, &'static str)`
+               found tuple `(&'static str, &'static str, &'static str)`
+note: associated function defined here
+   --> djogi/src/query/values.rs:847:12
+    |
+847 |     pub fn new(rows: Vec<Row>, alias: &str, columns: Row::Columns) -> Result<Self, DjogiError> {
+    |            ^^^
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0308`.

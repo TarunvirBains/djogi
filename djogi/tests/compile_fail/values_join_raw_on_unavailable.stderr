@@ -1,0 +1,22 @@
+error[E0277]: expected a `FnOnce(AnimalFields, ValuesFields<(i64, f64)>)` closure, found `&str`
+    --> $DIR/values_join_raw_on_unavailable.rs:20:55
+     |
+  20 |     let _bad = Animal::objects().join_values(weights, "w.animal_id = animals.id");
+     |                                  -----------          ^^^^^^^^^^^^^^^^^^^^^^^^^^ expected an `FnOnce(AnimalFields, ValuesFields<(i64, f64)>)` closure, found `&str`
+     |                                  |
+     |                                  required by a bound introduced by this call
+     |
+     = help: the trait `Fn(AnimalFields, ValuesFields<(i64, f64)>)` is not implemented for `str`
+     = note: required for `&str` to implement `FnOnce(AnimalFields, ValuesFields<(i64, f64)>)`
+note: required by a bound in `values::<impl QuerySet<T>>::join_values`
+    --> djogi/src/query/values.rs:1015:12
+     |
+1008 |     pub fn join_values<Row, F>(
+     |            ----------- required by a bound in this associated function
+...
+1015 |         F: FnOnce(T::Fields, ValuesFields<Row>) -> ValuesOn<T>,
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `values::<impl QuerySet<T>>::join_values`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0277`.
