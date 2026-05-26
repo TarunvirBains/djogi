@@ -1945,28 +1945,28 @@ mod tests {
         fs::create_dir_all(&main_global).unwrap();
         fs::create_dir_all(&main_billing).unwrap();
         fs::write(
-            main_global.join("V20260301000000__init.sql"),
+            main_global.join("V20260301000000__init.sdjql"),
             "-- up\nCREATE TABLE foo (id BIGINT PRIMARY KEY);",
         )
         .unwrap();
         fs::write(
-            main_global.join("V20260301000000__init.down.sql"),
+            main_global.join("V20260301000000__init.down.sdjql"),
             "-- down\nDROP TABLE foo;",
         )
         .unwrap();
         fs::write(
-            main_global.join("V20260201000000__earlier.sql"),
+            main_global.join("V20260201000000__earlier.sdjql"),
             "-- up\nCREATE TABLE bar (id BIGINT PRIMARY KEY);",
         )
         .unwrap();
         fs::write(
-            main_billing.join("V20260401000000__widgets.sql"),
+            main_billing.join("V20260401000000__widgets.sdjql"),
             "-- up\nCREATE TABLE widgets (id BIGINT PRIMARY KEY);",
         )
         .unwrap();
         // Hand-written `seed.sql` (no `V` prefix) should be skipped.
         fs::write(main_global.join("seed.sql"), "-- not a migration").unwrap();
-        // The schema_snapshot.json should be skipped (no `.sql`
+        // The schema_snapshot.json should be skipped (no `.sdjql`
         // suffix).
         fs::write(main_global.join("schema_snapshot.json"), "{}").unwrap();
 
@@ -3076,5 +3076,68 @@ mod tests {
             ],
             "interleaved cross-bucket apply order must be preserved"
         );
+    }
+
+    #[test]
+    fn reset_discovers_sdjql_migration_files() {
+        let root = temp_root("sdjql-discovery");
+        let bucket = super::super::target::bucket_dir(&root, &bk("main", "myapp"));
+        fs::create_dir_all(&bucket).unwrap();
+
+        fs::write(
+            bucket.join("V20260501000000__new.sdjql"),
+            "-- Djogi composed migration — up\n-- Version: V20260501000000__new\n\
+             -- Bucket:  main/myapp\n-- Classification: Additive\n--\n\
+             -- Apply via `djogi migrations apply`, not psql...\n-- DO NOT EDIT...\n\nCREATE TABLE items (id bigint PRIMARY KEY);\n"
+        ).unwrap();
+        fs::write(
+            bucket.join("V20260501000000__new.down.sdjql"),
+            "-- Djogi composed migration — down\n-- Version: V20260501000000__new\n\
+             -- Bucket:  main/myapp\n-- DO NOT EDIT...\n\nDROP TABLE items;\n",
+        )
+        .unwrap();
+
+        let scanned =
+            super::super::target::scan_filesystem_with_files(&root, Some("main")).unwrap();
+        let bk_main = bk("main", "myapp");
+        assert!(
+            scanned.contains_key(&bk_main),
+            "scanner must discover .sdjql files"
+        );
+        assert_eq!(
+            scanned[&bk_main].len(),
+            1,
+            "should find exactly one up-side file"
+        );
+        assert!(scanned[&bk_main].contains_key("V20260501000000__new"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reset_rejects_legacy_sql_migration_files() {
+        let root = temp_root("legacy-sql-reject");
+        let bucket = super::super::target::bucket_dir(&root, &bk("main", "myapp"));
+        fs::create_dir_all(&bucket).unwrap();
+
+        fs::write(
+            bucket.join("V20260301000000__legacy.sql"),
+            "-- Djogi composed migration — up\n-- Version: V20260301000000__legacy\n\
+             CREATE TABLE users (id bigint PRIMARY KEY);\n",
+        )
+        .unwrap();
+
+        let result = super::super::target::scan_filesystem_with_files(&root, Some("main"));
+        assert!(
+            result.is_err(),
+            "reset must reject legacy .sql schema migration files"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("V20260301000000__legacy.sql") || err.contains("legacy"),
+            "error must mention the legacy file: {err}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }
