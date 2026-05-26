@@ -431,3 +431,279 @@ async fn transaction_raw_ddl_allows_safe_batch_with_dollar_quoted_body() {
 
     teardown_test_db(cleanup).await;
 }
+
+// ============================================================================
+// djogi#306 — transaction-control statement refusal tests.
+// ============================================================================
+
+/// #306 — COMMIT hidden behind comments and whitespace must still be
+/// refused by the transaction-control classifier.
+#[tokio::test]
+async fn transaction_raw_execute_refuses_commit_after_leading_comments() {
+    let _lock = test_lock().await;
+    let (cleanup, url) = provision_test_db().await;
+
+    let pool = DjogiPool::builder(&url)
+        .max_size(2)
+        .build()
+        .await
+        .expect("pool builds");
+
+    let mut ctx = djogi::DjogiContext::from_pool(pool);
+
+    atomic(&mut ctx, |tx| {
+        Box::pin(async move {
+            let err = tx.raw_execute(
+                "  -- committing the transaction\nCOMMIT",
+                &[],
+            )
+            .await
+            .expect_err("raw_execute inside atomic() must refuse COMMIT after comments");
+            match err {
+                DjogiError::RawTransactionControlDisallowedInTransaction { statement, .. } => {
+                    assert_eq!(statement, "COMMIT");
+                }
+                other => panic!("expected RawTransactionControlDisallowedInTransaction(COMMIT), got: {other:?}"),
+            }
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+    .expect("transaction-control refusal should not poison the outer transaction");
+
+    teardown_test_db(cleanup).await;
+}
+
+/// #306 — Transaction-control alias forms (START TRANSACTION, END, ABORT)
+/// must be refused with the correct statement label.
+#[tokio::test]
+async fn transaction_raw_execute_refuses_start_tx_end_abort_aliases() {
+    let _lock = test_lock().await;
+    let (cleanup, url) = provision_test_db().await;
+
+    let pool = DjogiPool::builder(&url)
+        .max_size(2)
+        .build()
+        .await
+        .expect("pool builds");
+
+    let mut ctx = djogi::DjogiContext::from_pool(pool);
+
+    for (sql, expected_label) in [
+        ("START TRANSACTION", "START TRANSACTION"),
+        ("END", "END"),
+        ("ABORT", "ABORT"),
+    ] {
+        let sql = sql;
+        let expected_label = expected_label;
+        atomic(&mut ctx, |tx| {
+            Box::pin(async move {
+                let err = tx.raw_execute(sql, &[])
+                    .await
+                    .expect_err("raw_execute inside atomic() must refuse transaction-control");
+                match err {
+                    DjogiError::RawTransactionControlDisallowedInTransaction { statement, .. } => {
+                        assert_eq!(statement, expected_label);
+                    }
+                    other => panic!("expected RawTransactionControlDisallowedInTransaction({expected_label}), got: {other:?}"),
+                }
+                Ok::<_, DjogiError>(())
+            })
+        })
+        .await
+        .expect("transaction-control refusal should not poison the outer transaction");
+    }
+
+    teardown_test_db(cleanup).await;
+}
+
+/// #306 — SAVEPOINT refusal must not poison the transaction context,
+/// allowing subsequent raw calls to succeed in the same atomic() block.
+#[tokio::test]
+async fn transaction_raw_execute_refuses_savepoint_without_poisoning() {
+    let _lock = test_lock().await;
+    let (cleanup, url) = provision_test_db().await;
+
+    let pool = DjogiPool::builder(&url)
+        .max_size(2)
+        .build()
+        .await
+        .expect("pool builds");
+
+    let mut ctx = djogi::DjogiContext::from_pool(pool);
+
+    atomic(&mut ctx, |tx| {
+        Box::pin(async move {
+            // SAVEPOINT is refused
+            let err = tx.raw_execute("SAVEPOINT my_sp", &[])
+                .await
+                .expect_err("SAVEPOINT must be refused inside atomic()");
+            match err {
+                DjogiError::RawTransactionControlDisallowedInTransaction { statement, .. } => {
+                    assert_eq!(statement, "SAVEPOINT");
+                }
+                other => panic!("expected RawTransactionControlDisallowedInTransaction(SAVEPOINT), got: {other:?}"),
+            }
+
+            // Subsequent safe call must still work — context is not poisoned
+            tx.raw_execute(
+                "CREATE TEMP TABLE IF NOT EXISTS djogi_306_savepoint_test (id integer)",
+                &[],
+            )
+            .await
+            .expect("safe raw_execute must succeed after SAVEPOINT refusal");
+
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+    .expect("SAVEPOINT refusal must not poison the outer transaction");
+
+    teardown_test_db(cleanup).await;
+}
+
+/// #306 REQ-306-5 — Poisoned context must return TransactionPoisoned
+/// before any raw-SQL refusal check, preserving poison precedence.
+#[tokio::test]
+async fn transaction_raw_execute_returns_poison_before_transaction_control_refusal() {
+    let _lock = test_lock().await;
+    let (cleanup, url) = provision_test_db().await;
+
+    let pool = DjogiPool::builder(&url)
+        .max_size(2)
+        .build()
+        .await
+        .expect("pool builds");
+
+    let mut ctx = djogi::DjogiContext::from_pool(pool);
+
+    // Poison the outer transaction by dropping a nested atomic() via timeout.
+    // The NestedAtomicCancellationGuard fires on drop and calls
+    // poison_transaction(NESTED_ATOMIC_CANCELLED_POISON_REASON).
+    let _outer = atomic(&mut ctx, |tx| {
+        Box::pin(async move {
+            let _nested_result = tokio::time::timeout(
+                Duration::from_millis(10),
+                atomic(&mut *tx, |_inner_tx| {
+                    Box::pin(async move {
+                        // Intentionally sleep past the timeout so the nested
+                        // atomic future is dropped, triggering the cancel guard.
+                        tokio::time::sleep(Duration::from_secs(999)).await;
+                        Ok::<_, DjogiError>(())
+                    })
+                }),
+            )
+            .await;
+            // _nested_result is Err (timeout) — parent tx is now poisoned
+
+            // Attempt a transaction-control statement — should get poison error,
+            // not the classifier refusal. Poison takes precedence over classifier
+            // per reject_transaction_backed_sql() ordering (poison check first).
+            let err = (&mut *tx).raw_execute("COMMIT", &[])
+                .await
+                .expect_err("raw_execute on poisoned context must fail");
+            match err {
+                DjogiError::TransactionPoisoned { .. } => {
+                    // Expected — poison takes precedence over classifier
+                }
+                other => panic!("expected TransactionPoisoned, got: {other:?}"),
+            }
+
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await;
+    // The outer atomic() itself may return Err(TransactionPoisoned) because
+    // we poisoned it — that's expected behavior.
+
+    teardown_test_db(cleanup).await;
+}
+
+/// #306 — Dollar-quoted bodies containing "COMMIT" are safe (not scanned),
+/// but a real top-level COMMIT after the body must be refused.
+#[tokio::test]
+async fn transaction_raw_ddl_refuses_commit_after_dollar_quoted_body() {
+    let _lock = test_lock().await;
+    let (cleanup, url) = provision_test_db().await;
+
+    let pool = DjogiPool::builder(&url)
+        .max_size(2)
+        .build()
+        .await
+        .expect("pool builds");
+
+    let mut ctx = djogi::DjogiContext::from_pool(pool);
+
+    atomic(&mut ctx, |tx| {
+        Box::pin(async move {
+            let err = tx.raw_ddl(
+                r#"
+                    DO $body$
+                    BEGIN
+                        PERFORM 'COMMIT';  -- safe: inside dollar quote
+                    END
+                    $body$;
+                    COMMIT;  -- top-level: must be refused
+                "#,
+            )
+            .await
+            .expect_err("raw_ddl inside atomic() must refuse top-level COMMIT after dollar-quoted body");
+            match err {
+                DjogiError::RawTransactionControlDisallowedInTransaction { statement, .. } => {
+                    assert_eq!(statement, "COMMIT");
+                }
+                other => panic!("expected RawTransactionControlDisallowedInTransaction(COMMIT), got: {other:?}"),
+            }
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+    .expect("transaction-control refusal should not poison the outer transaction");
+
+    teardown_test_db(cleanup).await;
+}
+
+/// #306 REQ-306-7 — Pool-backed raw SQL (outside atomic()) is not guarded;
+/// manual transaction control via raw_ddl must remain available.
+#[tokio::test]
+async fn pool_raw_ddl_still_allows_manual_transaction_control() {
+    let _lock = test_lock().await;
+    let (cleanup, url) = provision_test_db().await;
+
+    let pool = DjogiPool::builder(&url)
+        .max_size(2)
+        .build()
+        .await
+        .expect("pool builds");
+
+    // Pool-backed context (not inside atomic()) — no transaction guard
+    let mut ctx = djogi::DjogiContext::from_pool(pool);
+
+    ctx.raw_ddl(
+        "BEGIN; \
+         CREATE TABLE djogi_306_pool_manual_tx (id integer); \
+         COMMIT;",
+    )
+    .await
+    .expect("pool-backed raw_ddl with manual transaction control must succeed");
+
+    // Verify the table was actually created by querying system catalog
+    let rows = ctx.raw_rows(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'djogi_306_pool_manual_tx')",
+        &[],
+    )
+    .await
+    .expect("query for pool-created table must succeed");
+
+    assert_eq!(rows.len(), 1);
+    let table_exists: bool = rows[0].try_get(0)
+        .expect("boolean column should decode from row");
+    assert!(table_exists, "djogi_306_pool_manual_tx table should exist after raw_ddl with manual transaction control");
+
+    // Clean up the test table to avoid polluting other tests
+    ctx.raw_execute("DROP TABLE djogi_306_pool_manual_tx", &[])
+        .await
+        .ok();
+
+    teardown_test_db(cleanup).await;
+}
