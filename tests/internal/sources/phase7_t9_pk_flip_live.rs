@@ -3725,3 +3725,107 @@ async fn flip_partitioned_parent_partial_apply_resume_uses_expanded_leaf_steps(
         .expect("leaf b index attachment");
     assert!(leaf_b_attached, "resume must run leaf B create + attach");
 }
+
+// ── T5 / #317 — partitioned parent rollback uses expanded leaf down SQL
+
+/// Check if an index with the given name exists in pg_class.
+async fn index_exists_by_name(ctx: &mut djogi::DjogiContext, index_name: &str) -> bool {
+    ctx.raw_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = $1 AND relkind = 'i')",
+        &[&index_name],
+    )
+    .await
+    .expect("index exists check")
+}
+
+#[djogi::djogi_test]
+async fn flip_partitioned_parent_rollback_uses_expanded_leaf_down_sql(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+
+    // Create partitioned parent with 2 leaf partitions.
+    ctx.raw_ddl(
+        "CREATE TABLE rb_rollback_events (\
+         id BIGINT NOT NULL DEFAULT generate_id(), \
+         ts TIMESTAMPTZ NOT NULL, \
+         PRIMARY KEY (ts, id)) \
+         PARTITION BY RANGE (ts)",
+    )
+    .await
+    .expect("partitioned parent");
+    ctx.raw_ddl(
+        "CREATE TABLE rb_rollback_events_a PARTITION OF rb_rollback_events \
+         FOR VALUES FROM ('2026-01-01') TO ('2026-04-01')",
+    )
+    .await
+    .expect("leaf a");
+    ctx.raw_ddl(
+        "CREATE TABLE rb_rollback_events_b PARTITION OF rb_rollback_events \
+         FOR VALUES FROM ('2026-04-01') TO ('2026-07-01')",
+    )
+    .await
+    .expect("leaf b");
+
+    // Migration plan: create unique index on parent with per-leaf expansion.
+    let mut plan = MigrationPlan {
+        bucket: bucket(),
+        classification: Classification::Additive,
+        segments: vec![Segment {
+            kind: SegmentKind::NonTransactional,
+            statements: vec![OperationSql {
+                label: "PkFlipPartitionedIndex rb_rollback_events".to_string(),
+                up: "CREATE UNIQUE INDEX rb_rollback_events_ts_id_desc_idx ON ONLY rb_rollback_events (ts, id);\n\
+                     -- Per leaf: CREATE UNIQUE INDEX CONCURRENTLY <leaf>_ts_id_desc_idx\n\
+                     --             ON <leaf> (ts, id);\n\
+                     -- Then ALTER INDEX rb_rollback_events_ts_id_desc_idx ATTACH PARTITION\n\
+                     --             <leaf>_ts_id_desc_idx;"
+                    .to_string(),
+                down: "DROP INDEX IF EXISTS rb_rollback_events_ts_id_desc_idx;".to_string(),
+                lossy: None,
+            }],
+        }],
+    };
+    let runner_ctx = make_runner_ctx(&plan, "V20260526031703__partition_rollback");
+
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply partitioned index plan");
+
+    // Verify leaf indexes exist after apply.
+    assert!(
+        index_exists_by_name(&mut ctx, "rb_rollback_events_a_ts_id_desc_idx").await,
+        "leaf A index exists after apply",
+    );
+    assert!(
+        index_exists_by_name(&mut ctx, "rb_rollback_events_b_ts_id_desc_idx").await,
+        "leaf B index exists after apply",
+    );
+
+    // Clear the down SQL in the plan — rollback must use expanded
+    // leaf down SQL from materialized plan, not the original plan's
+    // cleared down field.
+    plan.segments[0].statements[0].down.clear();
+
+    rollback_plan(
+        &mut ctx,
+        &plan,
+        &runner_ctx,
+        &_guard,
+        LossyRollbackPolicy::Refuse,
+        None,
+    )
+    .await
+    .expect("rollback must use expanded leaf down SQL");
+
+    // Verify both leaf indexes were dropped by rollback.
+    assert!(
+        !index_exists_by_name(&mut ctx, "rb_rollback_events_a_ts_id_desc_idx").await,
+        "rollback must drop leaf A via expanded down SQL",
+    );
+    assert!(
+        !index_exists_by_name(&mut ctx, "rb_rollback_events_b_ts_id_desc_idx").await,
+        "rollback must drop leaf B via expanded down SQL",
+    );
+}
