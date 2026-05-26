@@ -539,6 +539,39 @@ pub enum DjogiError {
         statement: &'static str,
     },
 
+    /// A transaction-backed raw SQL call attempted to issue transaction-control
+    /// SQL through the raw escape hatch instead of using Djogi's transaction
+    /// lifecycle methods.
+    ///
+    /// This variant is used by the raw SQL bypass harness (#306) to reject
+    /// transaction-control statements such as `BEGIN`, `START TRANSACTION`,
+    /// `COMMIT`, `ROLLBACK`, `END`, `ABORT`, `SAVEPOINT`, `RELEASE [SAVEPOINT]`,
+    /// and `ROLLBACK [WORK|TRANSACTION] TO [SAVEPOINT]` when the context is
+    /// already inside an `atomic()` transaction. Those statements bypass
+    /// framework bookkeeping: raw COMMIT skips `on_commit` callback drain,
+    /// raw ROLLBACK skips rollback cleanup and callback discard, and raw
+    /// savepoint control desynchronizes `savepoint_depth`.
+    ///
+    /// `statement` is the canonical top-level transaction-control keyword
+    /// (`"BEGIN"`, `"COMMIT"`, etc.) that triggered the refusal. The fix is
+    /// structural: use Djogi's `atomic()` / `commit()` / `rollback()` API, or
+    /// run the transaction-control SQL on a pool-backed context outside any
+    /// `atomic()` scope.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// retrying the same closure against the same SQL will fail the same way.
+    #[error(
+        "raw transaction-control statement {statement} is not allowed on a \
+         transaction-backed DjogiContext; use djogi's transaction API so COMMIT \
+         drains on_commit callbacks, ROLLBACK clears framework state, and savepoint \
+         depth stays synchronized"
+    )]
+    #[non_exhaustive]
+    RawTransactionControlDisallowedInTransaction {
+        /// Canonical top-level transaction-control statement that triggered refusal.
+        statement: &'static str,
+    },
+
     /// An aggregate's DISTINCT modifier combination is not supported by
     /// Postgres syntax or by Djogi's current IR.
     ///
@@ -1280,6 +1313,7 @@ impl DjogiError {
     /// | [`StreamOutsideTransaction`](Self::StreamOutsideTransaction) | terminal |
     /// | [`TransactionPoisoned`](Self::TransactionPoisoned) | terminal |
     /// | [`SessionStatementDisallowedInTransaction`](Self::SessionStatementDisallowedInTransaction) | terminal |
+    /// | [`RawTransactionControlDisallowedInTransaction`](Self::RawTransactionControlDisallowedInTransaction) | terminal |
     /// | [`PoolTimeout`](Self::PoolTimeout) | transient |
     /// | [`SetRoleOutsideTransaction`](Self::SetRoleOutsideTransaction) | terminal |
     /// | [`InvalidRoleName`](Self::InvalidRoleName) | terminal |
@@ -1581,6 +1615,13 @@ mod tests {
             DjogiError::unsupported_postgres_version(17, 4, 18).is_terminal(),
             "UnsupportedPostgresVersion must be terminal — version mismatch cannot be resolved by retrying"
         );
+        assert!(
+            DjogiError::RawTransactionControlDisallowedInTransaction {
+                statement: "COMMIT"
+            }
+            .is_terminal(),
+            "RawTransactionControlDisallowedInTransaction must be terminal"
+        );
     }
 
     /// Phase 8ε T9.1 — `SetRoleOutsideTransaction` is a misuse signal,
@@ -1691,6 +1732,35 @@ mod tests {
         assert!(
             !err.is_transient(),
             "SessionStatementDisallowedInTransaction must not be transient"
+        );
+    }
+
+    /// Issue #306 — refusing a transaction-control raw statement inside an
+    /// existing transaction is a caller-structure error. Raw COMMIT bypasses
+    /// on_commit drain; raw ROLLBACK bypasses rollback cleanup and callback
+    /// discard; raw savepoint control desynchronizes savepoint_depth.
+    #[test]
+    fn raw_transaction_control_disallowed_in_transaction_is_terminal() {
+        let err = DjogiError::RawTransactionControlDisallowedInTransaction {
+            statement: "COMMIT",
+        };
+        assert!(
+            err.is_terminal(),
+            "RawTransactionControlDisallowedInTransaction must be terminal"
+        );
+        assert!(
+            !err.is_transient(),
+            "RawTransactionControlDisallowedInTransaction must not be transient"
+        );
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("COMMIT"),
+            "display must name the refused statement, got: {msg}"
+        );
+        assert!(
+            msg.contains("transaction-backed"),
+            "display must explain this is about transaction-backed contexts, got: {msg}"
         );
     }
 
