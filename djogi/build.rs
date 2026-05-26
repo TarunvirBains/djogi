@@ -455,7 +455,7 @@ fn json_equiv_inner(a: &JsonValue, b: &JsonValue) -> bool {
 
 /// Outcome 2 wording includes the pending migration's filename and
 /// version. We dig into the parsed pending JSON to recover `version`,
-/// then derive `<version>.sql` (the up-side filename per
+/// then derive `<version>.sdjql` (the up-side filename per
 /// `naming::up_filename`). On malformed pending JSON, fall back to
 /// placeholders so the build never panics over bad data.
 fn format_outcome2(bucket: &(String, String), pending_full: Option<&JsonValue>) -> String {
@@ -464,12 +464,14 @@ fn format_outcome2(bucket: &(String, String), pending_full: Option<&JsonValue>) 
             if let JsonValue::Object(map) = v
                 && let Some(JsonValue::String(version)) = map.get("version")
             {
-                Some((format!("{version}.sql"), version.clone()))
+                // Extension must match naming::MIGRATION_FILE_EXT and
+                // build_match::format_warning_outcome2 byte-for-byte.
+                Some((format!("{version}.sdjql"), version.clone()))
             } else {
                 None
             }
         })
-        .unwrap_or_else(|| ("<unknown>.sql".to_string(), "<unknown>".to_string()));
+        .unwrap_or_else(|| ("<unknown>.sdjql".to_string(), "<unknown>".to_string()));
     format!(
         "composed migration not yet applied: {filename} (version {version}; bucket {database}/{app})",
         database = bucket.0,

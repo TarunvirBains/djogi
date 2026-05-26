@@ -54,6 +54,7 @@
 
 use std::collections::BTreeMap;
 
+use super::naming::MIGRATION_FILE_EXT;
 use super::projection::BucketKey;
 use super::schema::AppliedSchema;
 use super::target::FilesystemBucket;
@@ -349,15 +350,18 @@ pub fn classify_filesystem_drift(
 /// per v3 §6 amendment).
 ///
 /// `pending_version` carries the pending migration's version ID
-/// (e.g. `"V20260425010203__add_widgets"`); the `.sql` filename is
+/// (e.g. `"V20260425010203__add_widgets"`); the `.sdjql` filename is
 /// derived by appending the up-side suffix. Callers that don't have
 /// the version pass `None` and the message uses the placeholder
 /// `<unknown>` for filename and version — production code paths
 /// always supply a real version.
 pub fn format_warning_outcome2(bucket: &BucketKey, pending_version: Option<&str>) -> String {
     let (filename, version) = match pending_version {
-        Some(v) => (format!("{v}.sql"), v.to_string()),
-        None => ("<unknown>.sql".to_string(), "<unknown>".to_string()),
+        Some(v) => (format!("{v}{ext}", ext = MIGRATION_FILE_EXT), v.to_string()),
+        None => (
+            "<unknown>".to_string() + MIGRATION_FILE_EXT,
+            "<unknown>".to_string(),
+        ),
     };
     format!(
         "composed migration not yet applied: {filename} (version {version}; bucket {database}/{app})",
@@ -478,14 +482,14 @@ mod tests {
         assert_eq!(diag.kind, DriftKind::Outcome2ComposedNotApplied);
         assert_eq!(
             diag.text,
-            "composed migration not yet applied: <unknown>.sql (version <unknown>; bucket main/_global_)"
+            "composed migration not yet applied: <unknown>.sdjql (version <unknown>; bucket main/_global_)"
         );
     }
 
     #[test]
     fn outcome2_composed_not_applied_with_pending_version() {
         // Codex B-8: when a real pending version is threaded through,
-        // the message names both the SQL filename AND the version ID
+        // the message names both the migration filename AND the version ID
         // alongside the bucket. Production build.rs / status callers
         // always supply this.
         let m = drifted_schema();
@@ -502,8 +506,8 @@ mod tests {
         assert_eq!(diag.kind, DriftKind::Outcome2ComposedNotApplied);
         assert_eq!(
             diag.text,
-            "composed migration not yet applied: V20260425010203__add_widgets.sql \
-             (version V20260425010203__add_widgets; bucket main/_global_)"
+            "composed migration not yet applied: V20260425010203__add_widgets.sdjql \
+              (version V20260425010203__add_widgets; bucket main/_global_)"
         );
     }
 
