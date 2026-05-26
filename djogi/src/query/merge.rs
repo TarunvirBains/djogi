@@ -455,7 +455,9 @@ fn check_not_matched_insert_value<S: Model, T: Model>(
     table: &'static str,
 ) -> Result<(), DjogiError> {
     match value {
-        MergeValue::TargetExpr(node, _) => check_source_only_predicate(node, table),
+        MergeValue::TargetExpr(node, _) => {
+            check_source_only_expr(node, table, "NOT MATCHED branch insert value")
+        }
         MergeValue::SourceField(_, _) | MergeValue::Literal(_, _) => Ok(()),
     }
 }
@@ -501,13 +503,18 @@ fn check_target_only_predicate(node: &ExprNode, table: &'static str) -> Result<(
 }
 
 fn check_source_only_predicate(node: &ExprNode, table: &'static str) -> Result<(), DjogiError> {
+    check_source_only_expr(node, table, "NOT MATCHED branch condition")
+}
+
+fn check_source_only_expr(
+    node: &ExprNode,
+    table: &'static str,
+    context: &'static str,
+) -> Result<(), DjogiError> {
     match node {
         ExprNode::Field { column } => Err(DjogiError::MergeBranchInvalid {
             table,
-            reason: format!(
-                "NOT MATCHED branch condition cannot reference target field `{}`",
-                column
-            ),
+            reason: format!("{context} cannot reference target field `{column}`"),
         }),
         ExprNode::OuterRefColumn {
             table: alias,
@@ -516,10 +523,7 @@ fn check_source_only_predicate(node: &ExprNode, table: &'static str) -> Result<(
             if *alias != SRC_ALIAS {
                 return Err(DjogiError::MergeBranchInvalid {
                     table,
-                    reason: format!(
-                        "NOT MATCHED branch condition cannot reference target field `{}`",
-                        column
-                    ),
+                    reason: format!("{context} cannot reference target field `{column}`"),
                 });
             }
             Ok(())
@@ -531,17 +535,17 @@ fn check_source_only_predicate(node: &ExprNode, table: &'static str) -> Result<(
         | ExprNode::Div(l, r)
         | ExprNode::And(l, r)
         | ExprNode::Or(l, r) => {
-            check_source_only_predicate(l, table)?;
-            check_source_only_predicate(r, table)
+            check_source_only_expr(l, table, context)?;
+            check_source_only_expr(r, table, context)
         }
-        ExprNode::Not(e) => check_source_only_predicate(e, table),
+        ExprNode::Not(e) => check_source_only_expr(e, table, context),
         ExprNode::Cmp { lhs, rhs, .. } => {
-            check_source_only_predicate(lhs, table)?;
-            check_source_only_predicate(rhs, table)
+            check_source_only_expr(lhs, table, context)?;
+            check_source_only_expr(rhs, table, context)
         }
         _ => Err(DjogiError::MergeBranchInvalid {
             table,
-            reason: "NOT MATCHED branch condition uses an unsupported expression shape".to_string(),
+            reason: format!("{context} uses an unsupported expression shape"),
         }),
     }
 }
@@ -672,7 +676,7 @@ impl<S: Model, T: Model> MergeWhenCondition<S, T> {
     }
 }
 
-impl<S: Model + FromPgRow, T: Model> std::ops::Not for MergeWhenCondition<S, T> {
+impl<S: Model, T: Model> std::ops::Not for MergeWhenCondition<S, T> {
     type Output = Self;
 
     fn not(self) -> Self::Output {
@@ -1186,6 +1190,9 @@ mod tests {
             branch.condition.is_some(),
             "update_changed must not degrade to unconditional MATCHED UPDATE"
         );
+
+        let acc = build_merge(&stmt.source, &stmt.on, &stmt.branches, None).unwrap();
+        assert!(acc.sql().contains("WHEN MATCHED AND $1 THEN UPDATE SET"));
     }
 
     #[test]
