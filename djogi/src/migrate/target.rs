@@ -22,8 +22,8 @@
 //! ├── migrations/                              committed; git submodule
 //! │   ├── main/
 //! │   │   ├── billing/
-//! │   │   │   ├── V20260425010203__add_invoices.sql
-//! │   │   │   ├── V20260425010203__add_invoices.down.sql
+//! │   │   │   ├── V20260425010203__add_invoices.sdjql
+//! │   │   │   ├── V20260425010203__add_invoices.down.sdjql
 //! │   │   │   └── schema_snapshot.json
 //! │   │   └── _global_/                        synthetic bucket
 //! │   │       └── …
@@ -54,11 +54,12 @@
 //! underscore, followed by ASCII alphanumerics or underscores, up to
 //! 63 bytes — implemented byte-by-byte without any regex engine.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use super::naming::{MIGRATION_DOWN_SUFFIX, MIGRATION_FILE_EXT};
 use super::projection::BucketKey;
 
 /// Default committed-migrations directory name. T6 hard-codes this so
@@ -252,7 +253,7 @@ fn scan_filesystem_filtered(
     Ok(out)
 }
 
-/// Walk every up-side `.sql` file under `migrations/<database>/<app>/`
+/// Walk every up-side `.sdjql` file under `migrations/<database>/<app>/`
 /// and return per-bucket `version → path` maps.
 ///
 /// `database_filter`:
@@ -260,7 +261,7 @@ fn scan_filesystem_filtered(
 /// - `None` — every bucket discovered by [`scan_filesystem`] is included.
 ///
 /// Filtering rules (shared by every consumer of this helper):
-/// - Down-side files (suffix `.down.sql`) are skipped — the up-side
+/// - Down-side files (suffix `.down.sdjql`) are skipped — the up-side
 ///   filename is the canonical version identifier.
 /// - Files whose stem does not match the `V<14-digit>__<slug>` /
 ///   `V<14-digit>` grammar (per [`recover_version_from_stem`]) are
@@ -268,6 +269,12 @@ fn scan_filesystem_filtered(
 /// - Buckets containing zero up-side migrations are absent from the
 ///   returned map (the per-bucket inner map is only created on first
 ///   insert).
+///
+/// **Legacy rejection.** Schema migration files with a `.sql` extension
+/// (up or down side) are rejected with `io::ErrorKind::InvalidData` and
+/// a diagnostic naming the file and version. Duplicate same-version
+/// artifacts (e.g., `V1__x.sql` + `V1__x.sdjql`) produce a duplicate
+/// diagnostic before single-file legacy rejection.
 ///
 /// Returns `io::Error` directly so each caller can wrap it in a
 /// crate-local error variant (`AttuneError::FilesystemScanFailed`,
@@ -293,31 +300,84 @@ pub fn scan_filesystem_with_files(
             Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
             Err(err) => return Err(err),
         };
+        // Collect all V-prefixed candidates per bucket first, classifying
+        // by recovered version. This allows us to detect duplicate same-version
+        // artifacts (e.g., V1__x.sql + V1__x.sdjql) before reporting a
+        // single-file legacy rejection.
+        let mut version_candidates: HashMap<String, Vec<PathBuf>> = HashMap::new();
+
         for entry in entries {
             let entry = entry?;
             let Some(name) = entry.file_name().to_str().map(str::to_string) else {
                 continue;
             };
-            if !name.starts_with('V') || !name.ends_with(".sql") {
+            if !name.starts_with('V') {
                 continue;
             }
-            if name.contains(".down.") {
+            // Skip down side for current extension.
+            if name.ends_with(MIGRATION_DOWN_SUFFIX) {
                 continue;
             }
-            let stem = &name[..name.len() - 4];
+            // Reject legacy down side explicitly with diagnostic.
+            if name.ends_with(".down.sql") {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("legacy schema migration down file rejected: {name}"),
+                ));
+            }
+            // Classify extension: .sdjql (current) or .sql (legacy).
+            let ext = if name.ends_with(MIGRATION_FILE_EXT) {
+                MIGRATION_FILE_EXT
+            } else if name.ends_with(".sql") {
+                ".sql"
+            } else {
+                continue; // not a migration file
+            };
+            let stem = &name[..name.len() - ext.len()];
             let Some(version) = recover_version_from_stem(stem) else {
                 continue;
             };
+            version_candidates
+                .entry(version)
+                .or_default()
+                .push(entry.path());
+        }
+
+        // Check for duplicates first (before legacy rejection), so that
+        // V...__x.sql + V...__x.sdjql always produces the duplicate
+        // diagnostic rather than a misleading single-file error.
+        for (version, paths) in &version_candidates {
+            if paths.len() > 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("duplicate schema migration version {version}: {paths:?}"),
+                ));
+            }
+        }
+
+        // Insert into output, rejecting any remaining legacy .sql files.
+        for (version, paths) in &version_candidates {
+            let path = &paths[0]; // safe: we checked for duplicates above
+            if path.extension().and_then(|e| e.to_str()) == Some("sql") {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "legacy schema migration file rejected for {version}: {:?}; \
+                         schema migrations must use .sdjql",
+                        path
+                    ),
+                ));
+            }
             out.entry(bucket.clone())
                 .or_default()
-                .insert(version, entry.path());
+                .insert(version.clone(), path.clone());
         }
     }
     Ok(out)
 }
 
 /// Recover the canonical version ID from a filename stem (the part
-/// before `.sql`). The stem looks like `V20260425010203__add_users`;
+/// before the extension). The stem looks like `V20260425010203__add_users`;
 /// the version is `V20260425010203__add_users` itself when the slug
 /// is canonical, but for tests / edge cases we accept the bare prefix
 /// `V20260425010203` too.
@@ -550,5 +610,80 @@ mod tests {
     #[test]
     fn recover_version_rejects_v_then_letters() {
         assert!(recover_version_from_stem("Vinit").is_none());
+    }
+
+    #[test]
+    fn scan_filesystem_accepts_sdjql_extension() {
+        let root = temp_root("sdjql-accept");
+        let bucket = root.join("migrations/main/myapp");
+        fs::create_dir_all(&bucket).unwrap();
+        fs::write(bucket.join("V20260425010203__test.sdjql"), "SELECT 1;").unwrap();
+        fs::write(bucket.join("V20260425010203__test.down.sdjql"), "SELECT 1;").unwrap();
+
+        let result = scan_filesystem_with_files(&root, None).unwrap();
+        let bk = BucketKey {
+            database: "main".to_string(),
+            app: "myapp".to_string(),
+        };
+        assert!(result.contains_key(&bk), "scanner must find .sdjql files");
+        assert_eq!(result[&bk].len(), 1); // up only, down is skipped
+    }
+
+    #[test]
+    fn scan_filesystem_rejects_legacy_sql_schema_migration_files() {
+        let root = temp_root("legacy-sql-reject");
+        let bucket = root.join("migrations/main/myapp");
+        fs::create_dir_all(&bucket).unwrap();
+        fs::write(bucket.join("V20260425010203__legacy.sql"), "SELECT 1;").unwrap();
+
+        let result = scan_filesystem_with_files(&root, None);
+        assert!(
+            result.is_err(),
+            "scanner must reject .sql schema migration files"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("legacy") || err.contains("V20260425010203__legacy.sql"),
+            "error must mention legacy format or filename: {err}"
+        );
+    }
+
+    #[test]
+    fn scan_filesystem_detects_duplicate_same_version_artifacts() {
+        let root = temp_root("duplicate-detect");
+        let bucket = root.join("migrations/main/myapp");
+        fs::create_dir_all(&bucket).unwrap();
+        // Same version, different extensions — invalid state
+        fs::write(bucket.join("V20260425010203__test.sql"), "SELECT 1;").unwrap();
+        fs::write(bucket.join("V20260425010203__test.sdjql"), "SELECT 1;").unwrap();
+
+        let result = scan_filesystem_with_files(&root, None);
+        assert!(
+            result.is_err(),
+            "scanner must detect duplicate recovered-key artifacts"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("V20260425010203__test") && err.contains("duplicate"),
+            "error must mention version and duplicates: {err}"
+        );
+    }
+
+    #[test]
+    fn scan_filesystem_skips_down_side_for_sdjql() {
+        let root = temp_root("skip-down-sdjql");
+        let bucket = root.join("migrations/main/myapp");
+        fs::create_dir_all(&bucket).unwrap();
+        fs::write(bucket.join("V20260425010203__a.sdjql"), "SELECT 1;").unwrap();
+        fs::write(bucket.join("V20260425010203__a.down.sdjql"), "SELECT 1;").unwrap();
+        fs::write(bucket.join("V20260425010204__b.sdjql"), "SELECT 1;").unwrap();
+        fs::write(bucket.join("V20260425010204__b.down.sdjql"), "SELECT 1;").unwrap();
+
+        let result = scan_filesystem_with_files(&root, None).unwrap();
+        let bk = BucketKey {
+            database: "main".to_string(),
+            app: "myapp".to_string(),
+        };
+        assert_eq!(result[&bk].len(), 2); // two up files, no down files
     }
 }
