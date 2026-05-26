@@ -30,8 +30,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum TopCommand {
-    /// Apply pending migrations.
-    Migrate,
     /// Launch interactive Rhai shell.
     Shell,
     /// Database management.
@@ -428,10 +426,6 @@ enum MigrationsCommand {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        TopCommand::Migrate => {
-            eprintln!("djogi migrate: not yet implemented");
-            ExitCode::from(0)
-        }
         TopCommand::Shell => {
             eprintln!("djogi shell: not yet implemented");
             ExitCode::from(0)
@@ -576,7 +570,7 @@ mod tests {
 
     use clap::Parser as _;
 
-    use super::{Cli, DbCommand, TopCommand, parse_threshold_vacuum};
+    use super::{Cli, DbCommand, MigrationsCommand, TopCommand, parse_threshold_vacuum};
 
     #[test]
     fn parse_threshold_vacuum_accepts_valid_values() {
@@ -642,6 +636,28 @@ mod tests {
                 );
             }
             _ => panic!("expected db reset command"),
+        }
+    }
+
+    #[test]
+    fn top_level_migrate_is_not_registered() {
+        let result = Cli::try_parse_from(["djogi", "migrate"]);
+        match result {
+            Err(e) => assert_eq!(e.kind(), clap::error::ErrorKind::InvalidSubcommand),
+            Ok(_) => panic!("expected 'migrate' to be rejected as unknown subcommand"),
+        }
+    }
+
+    #[test]
+    fn canonical_migrations_status_still_parses() {
+        let cli = Cli::try_parse_from(["djogi", "migrations", "status"])
+            .expect("canonical migrations status should parse");
+
+        match cli.command {
+            TopCommand::Migrations {
+                command: MigrationsCommand::Status { .. },
+            } => {}
+            _ => panic!("expected migrations status command"),
         }
     }
 }
