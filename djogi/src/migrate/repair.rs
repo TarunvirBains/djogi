@@ -76,7 +76,10 @@ use super::ledger::{
     load_full_row_by_version, validate_checksum_format,
 };
 use super::projection::BucketKey;
-use super::runner::{acquire_advisory_lock, advisory_lock_key, release_advisory_lock};
+use super::runner::{
+    PartitionExpansionMode, RunnerError, acquire_advisory_lock, advisory_lock_key,
+    materialize_execution_plan, release_advisory_lock,
+};
 use super::segment::{MigrationPlan, SegmentKind};
 use super::snapshot::{SnapshotError, save_snapshot};
 
@@ -331,6 +334,33 @@ pub enum RepairError {
         /// The underlying pool or connection error.
         source: DjogiError,
     },
+
+    /// **#317** — Repair resume ledger total steps do not match the
+    /// replay plan shape. The materialized execution plan has a
+    /// different count of non-transactional statements than the
+    /// ledger row recorded from the original apply. Replaying would
+    /// either over-count or under-count, so the repair refuses.
+    ///
+    /// Note: `version` is `String` to match the existing RepairError
+    /// convention (all other variants use `version: String`).
+    ResumePlanShapeMismatch {
+        version: String,
+        ledger_total_steps: usize,
+        replay_total_steps: usize,
+    },
+
+    /// **#317** — Finalization guard: total successful steps does not
+    /// equal the materialized plan's non-transactional statement count.
+    /// After all replay steps complete, this invariant must hold; a
+    /// mismatch indicates the replay loop diverged from the plan.
+    ///
+    /// Note: `version` is `String` to match the existing RepairError
+    /// convention (all other variants use `version: String`).
+    ReplayPlanShapeMismatch {
+        version: String,
+        expected_step_count: usize,
+        actual_step_count: usize,
+    },
 }
 
 impl std::fmt::Display for RepairError {
@@ -469,6 +499,27 @@ impl std::fmt::Display for RepairError {
                 f,
                 "D274 repair failed to check out a pinned Postgres session from the \
                  pool before the repair operation began (GH #274): {source}",
+            ),
+            RepairError::ResumePlanShapeMismatch {
+                version,
+                ledger_total_steps,
+                replay_total_steps,
+            } => write!(
+                f,
+                "D317 repair resume on version {version}: plan shape mismatch — \
+                 ledger total_steps={ledger_total_steps}, \
+                 expanded replay non-transactional statements={replay_total_steps}; \
+                 refusing to replay a divergent plan (GH #317)",
+            ),
+            RepairError::ReplayPlanShapeMismatch {
+                version,
+                expected_step_count,
+                actual_step_count,
+            } => write!(
+                f,
+                "D317 repair replay finalization on version {version}: \
+                 completed {actual_step_count} step(s) but the materialized plan \
+                 expected {expected_step_count}; plan shape invariant violated (GH #317)",
             ),
         }
     }
@@ -1029,13 +1080,58 @@ async fn repair_resume_body(
     // take the row's BIGINT id. Look it up once.
     let ledger_id = lookup_ledger_id_by_version(ctx, &row.version).await?;
 
-    // Walk the non-transactional segments in plan order, skipping
-    // the first `applied_steps_count` statements globally.
+    // **#317 REQ-11/REQ-12**: Materialize execution plan via strict
+    // partition expansion before any step replay begins. This expands
+    // `<EACH_LEAF_TABLE>` placeholders into concrete leaf statements,
+    // so the replay walks the same expanded stream the original apply
+    // executed. Refuses zero-leaf partitions (REQ-13).
+    let materialized_plan =
+        materialize_execution_plan(ctx, plan, PartitionExpansionMode::ReplayStrict)
+            .await
+            .map_err(|e| match e {
+                RunnerError::PartitionExpansionNoLeaves { .. } => {
+                    // Map to ResumePlanShapeMismatch since a zero-leaf parent
+                    // during replay means the plan shape has changed from when
+                    // it was originally applied (the ledger counted leaves that
+                    // no longer exist).
+                    RepairError::ResumePlanShapeMismatch {
+                        version: row.version.clone(),
+                        ledger_total_steps: total as usize,
+                        replay_total_steps: 0,
+                    }
+                }
+                other => RepairError::LedgerIo {
+                    source: DjogiError::Db(crate::error::DbError::other(format!(
+                        "materialize_execution_plan failed: {other}"
+                    ))),
+                },
+            })?;
+
+    // Count total non-transactional statements in the materialized plan.
+    let replay_total_steps: usize = materialized_plan
+        .segments
+        .iter()
+        .filter(|s| s.kind == SegmentKind::NonTransactional)
+        .map(|s| s.statements.len())
+        .sum();
+
+    // **#317 REQ-12**: Compare ledger total steps vs materialized plan
+    // total steps BEFORE replay loop; reject on mismatch.
+    if total as usize != replay_total_steps {
+        return Err(RepairError::ResumePlanShapeMismatch {
+            version: row.version.clone(),
+            ledger_total_steps: total as usize,
+            replay_total_steps,
+        });
+    }
+
+    // Walk the non-transactional segments in materialized plan order,
+    // skipping the first `applied_steps_count` statements globally.
     let mut remaining_to_skip = row.applied_steps_count as usize;
     let mut applied = row.applied_steps_count;
     let mut actions: Vec<String> = Vec::new();
 
-    for (seg_idx, segment) in plan.segments.iter().enumerate() {
+    for (seg_idx, segment) in materialized_plan.segments.iter().enumerate() {
         if segment.kind != SegmentKind::NonTransactional {
             continue;
         }
@@ -1089,6 +1185,18 @@ async fn repair_resume_body(
                 label = stmt.label,
             ));
         }
+    }
+
+    // **#317 REQ-14**: Finalization guard — after all steps complete
+    // successfully, verify total successful steps equals materialized
+    // plan total. A mismatch means the replay loop diverged from the
+    // expected plan shape.
+    if applied as usize != replay_total_steps {
+        return Err(RepairError::ReplayPlanShapeMismatch {
+            version: row.version.clone(),
+            expected_step_count: replay_total_steps,
+            actual_step_count: applied as usize,
+        });
     }
 
     // Full success — finalise to applied.
