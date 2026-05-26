@@ -236,7 +236,7 @@ Exit codes: `0` success, `1` runtime error, `2` gate refusal.
 djogi db seed [--database <name>] [--allow-non-localhost]
 ```
 
-Runs operator-authored SQL seed files in `seeds/<database>/*.sql` alphabetically. Idempotent — re-runs skip seeds whose `V1:<sha256>` checksum matches the `djogi_seed_runs` ledger; refuses on checksum drift.
+Runs operator-authored SQL seed files in `seeds/<database>/*.sql` alphabetically. The runner pins one session, takes a per-database advisory lock, records a claim-first `djogi_seed_runs` row before each seed body executes, and then finalises that row to `applied` or `failed`. Re-runs skip seeds whose `V1:<sha256>` checksum already matches an `applied` row, refuse on checksum drift, and also refuse on stale `running` claims or prior `failed` claims so non-idempotent seed SQL is never silently replayed.
 
 `--database <name>` selects BOTH the seed directory and the connection target. The CLI splices `<name>` into the application URL's path component so seeds always land on the matching DB; a malformed application URL refuses with exit code `1`.
 

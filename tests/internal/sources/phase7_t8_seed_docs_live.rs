@@ -56,6 +56,39 @@ async fn current_database(ctx: &mut djogi::DjogiContext) -> String {
         .expect("current_database")
 }
 
+fn peer_ctx(ctx: &djogi::DjogiContext) -> djogi::DjogiContext {
+    let pool = ctx
+        .share_pool()
+        .expect("djogi_test context should be pool-backed");
+    djogi::DjogiContext::from_pool(pool)
+}
+
+async fn install_seed_finalize_failure_trigger(ctx: &mut djogi::DjogiContext) {
+    ctx.raw_ddl(
+        "CREATE OR REPLACE FUNCTION djogi_test_fail_seed_finalize() \
+         RETURNS trigger AS $$ \
+         BEGIN \
+             IF OLD.status = 'running' AND NEW.status = 'applied' THEN \
+                 RAISE EXCEPTION 'djogi test injected seed finalize failure'; \
+             END IF; \
+             RETURN NEW; \
+         END; \
+         $$ LANGUAGE plpgsql",
+    )
+    .await
+    .expect("create finalize failure function");
+    ctx.raw_ddl("DROP TRIGGER IF EXISTS djogi_test_fail_seed_finalize ON djogi_seed_runs")
+        .await
+        .expect("drop finalize failure trigger");
+    ctx.raw_ddl(
+        "CREATE TRIGGER djogi_test_fail_seed_finalize \
+         BEFORE UPDATE ON djogi_seed_runs \
+         FOR EACH ROW EXECUTE FUNCTION djogi_test_fail_seed_finalize()",
+    )
+    .await
+    .expect("create finalize failure trigger");
+}
+
 // ── Seed runner: happy path + idempotency ─────────────────────────────────
 
 #[djogi::djogi_test]
@@ -249,6 +282,270 @@ async fn seed_runner_refuses_remote_url_without_override(mut ctx: djogi::DjogiCo
     .await
     .expect("override must allow run to proceed");
     assert!(report.entries.is_empty(), "no seeds present in workspace");
+    let _ = fs::remove_dir_all(&work);
+}
+
+#[djogi::djogi_test]
+async fn seed_runner_rejects_concurrent_first_run(mut ctx: djogi::DjogiContext) {
+    let work = temp_workspace("seed_concurrent");
+    let database = current_database(&mut ctx).await;
+    let seeds_dir = work.join("seeds").join(&database);
+    fs::create_dir_all(&seeds_dir).unwrap();
+
+    ctx.raw_ddl("CREATE TABLE t8_seed_concurrent (id BIGINT NOT NULL)")
+        .await
+        .expect("create target table");
+    fs::write(
+        seeds_dir.join("01_non_idempotent.sql"),
+        "SELECT pg_sleep(0.25);\n\
+         INSERT INTO t8_seed_concurrent (id) VALUES (1);\n",
+    )
+    .unwrap();
+
+    let mut first_ctx = peer_ctx(&ctx);
+    let mut second_ctx = peer_ctx(&ctx);
+    let work_for_first = work.clone();
+    let database_for_first = database.clone();
+    let first = tokio::spawn(async move {
+        run_seeds(
+            &mut first_ctx,
+            &work_for_first,
+            &database_for_first,
+            "postgres://localhost/main",
+            false,
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let second = run_seeds(
+        &mut second_ctx,
+        &work,
+        &database,
+        "postgres://localhost/main",
+        false,
+    )
+    .await;
+    let first = first.await.expect("join first runner");
+
+    assert!(first.is_ok(), "first runner must succeed: {first:?}");
+    match second.expect_err("second runner must see the in-progress lock") {
+        SeedError::RunAlreadyInProgress { database: db } => assert_eq!(db, database),
+        other => panic!("expected RunAlreadyInProgress, got {other:?}"),
+    }
+
+    let count: i64 = ctx
+        .raw_scalar("SELECT COUNT(*)::bigint FROM t8_seed_concurrent", &[])
+        .await
+        .expect("count seeded rows");
+    assert_eq!(
+        count, 1,
+        "the non-idempotent seed body must execute exactly once under contention"
+    );
+    let _ = fs::remove_dir_all(&work);
+}
+
+#[djogi::djogi_test]
+async fn seed_runner_leaves_stale_claim_on_finalize_failure(mut ctx: djogi::DjogiContext) {
+    let work = temp_workspace("seed_stale_claim");
+    let database = current_database(&mut ctx).await;
+    let seeds_dir = work.join("seeds").join(&database);
+    fs::create_dir_all(&seeds_dir).unwrap();
+
+    ctx.raw_ddl("CREATE TABLE t8_seed_stale_claim (id BIGINT NOT NULL)")
+        .await
+        .expect("create target table");
+    fs::write(
+        seeds_dir.join("01_finalize_gap.sql"),
+        "INSERT INTO t8_seed_stale_claim (id) VALUES (1);\n",
+    )
+    .unwrap();
+
+    djogi::migrate::bootstrap_seed_ledger(&mut ctx)
+        .await
+        .expect("bootstrap seed ledger");
+    install_seed_finalize_failure_trigger(&mut ctx).await;
+
+    let err = run_seeds(
+        &mut ctx,
+        &work,
+        &database,
+        "postgres://localhost/main",
+        false,
+    )
+    .await
+    .expect_err("finalize failure must surface");
+    assert!(
+        matches!(err, SeedError::LedgerWrite { .. }),
+        "expected LedgerWrite from the injected finalize failure, got {err:?}"
+    );
+
+    let seeded_rows: i64 = ctx
+        .raw_scalar("SELECT COUNT(*)::bigint FROM t8_seed_stale_claim", &[])
+        .await
+        .expect("count seeded rows");
+    assert_eq!(seeded_rows, 1, "seed SQL must have committed before finalize failed");
+
+    let status: String = ctx
+        .raw_scalar(
+            "SELECT status FROM djogi_seed_runs WHERE seed_name = '01_finalize_gap'",
+            &[],
+        )
+        .await
+        .expect("seed ledger status");
+    assert_eq!(status, "running", "claim row must stay running after the gap");
+
+    let rerun = run_seeds(
+        &mut ctx,
+        &work,
+        &database,
+        "postgres://localhost/main",
+        false,
+    )
+    .await
+    .expect_err("stale running claim must block rerun");
+    match rerun {
+        SeedError::StaleClaim {
+            seed_name,
+            checksum_up,
+        } => {
+            assert_eq!(seed_name, "01_finalize_gap");
+            assert!(checksum_up.starts_with("V1:"));
+        }
+        other => panic!("expected StaleClaim, got {other:?}"),
+    }
+
+    let rerun_count: i64 = ctx
+        .raw_scalar("SELECT COUNT(*)::bigint FROM t8_seed_stale_claim", &[])
+        .await
+        .expect("count seeded rows after stale claim rerun");
+    assert_eq!(rerun_count, 1, "stale claim must prevent silent re-execution");
+    let _ = fs::remove_dir_all(&work);
+}
+
+#[djogi::djogi_test]
+async fn seed_runner_marks_failed_claim_and_refuses_retry(mut ctx: djogi::DjogiContext) {
+    let work = temp_workspace("seed_failed_claim");
+    let database = current_database(&mut ctx).await;
+    let seeds_dir = work.join("seeds").join(&database);
+    fs::create_dir_all(&seeds_dir).unwrap();
+
+    fs::write(
+        seeds_dir.join("01_broken.sql"),
+        "INSERT INTO t8_seed_missing_target (id) VALUES (1);\n",
+    )
+    .unwrap();
+
+    let err = run_seeds(
+        &mut ctx,
+        &work,
+        &database,
+        "postgres://localhost/main",
+        false,
+    )
+    .await
+    .expect_err("broken seed must fail");
+    assert!(matches!(err, SeedError::ApplyFailed { .. }), "got {err:?}");
+
+    let status: String = ctx
+        .raw_scalar(
+            "SELECT status FROM djogi_seed_runs WHERE seed_name = '01_broken'",
+            &[],
+        )
+        .await
+        .expect("seed ledger status");
+    assert_eq!(status, "failed");
+
+    let rerun = run_seeds(
+        &mut ctx,
+        &work,
+        &database,
+        "postgres://localhost/main",
+        false,
+    )
+    .await
+    .expect_err("failed claim must block rerun");
+    match rerun {
+        SeedError::FailedClaim {
+            seed_name,
+            failure_note,
+        } => {
+            assert_eq!(seed_name, "01_broken");
+            let failure_note = failure_note.expect("failure note must be recorded");
+            assert!(failure_note.contains("seed apply failed"));
+        }
+        other => panic!("expected FailedClaim, got {other:?}"),
+    }
+
+    let _ = fs::remove_dir_all(&work);
+}
+
+#[djogi::djogi_test]
+async fn seed_runner_explicit_transaction_failure_surfaces_failed_claim_on_rerun(
+    mut ctx: djogi::DjogiContext,
+) {
+    let work = temp_workspace("seed_explicit_tx_failed_claim");
+    let database = current_database(&mut ctx).await;
+    let seeds_dir = work.join("seeds").join(&database);
+    fs::create_dir_all(&seeds_dir).unwrap();
+
+    fs::write(
+        seeds_dir.join("01_explicit_tx_broken.sql"),
+        "BEGIN;\n\
+         CREATE TABLE t8_seed_explicit_tx_probe (id BIGINT PRIMARY KEY);\n\
+         INSERT INTO t8_seed_missing_target (id) VALUES (1);\n\
+         COMMIT;\n",
+    )
+    .unwrap();
+
+    let err = run_seeds(
+        &mut ctx,
+        &work,
+        &database,
+        "postgres://localhost/main",
+        false,
+    )
+    .await
+    .expect_err("explicit transaction seed must fail");
+    assert!(matches!(err, SeedError::ApplyFailed { .. }), "got {err:?}");
+
+    let admin_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+    let per_test_url =
+        derive_per_database_url(&admin_url, &database).expect("derive per-test database URL");
+    let observer_pool = djogi::pg::pool::DjogiPool::connect(&per_test_url)
+        .await
+        .expect("connect observer pool");
+    let mut observer_ctx = djogi::DjogiContext::from_pool(observer_pool);
+
+    let status: String = observer_ctx
+        .raw_scalar(
+            "SELECT status FROM djogi_seed_runs WHERE seed_name = '01_explicit_tx_broken'",
+            &[],
+        )
+        .await
+        .expect("seed ledger status");
+    assert_eq!(status, "failed", "explicit-transaction failure must persist failed");
+
+    let rerun = run_seeds(
+        &mut observer_ctx,
+        &work,
+        &database,
+        "postgres://localhost/main",
+        false,
+    )
+    .await
+    .expect_err("failed claim must block rerun");
+    match rerun {
+        SeedError::FailedClaim {
+            seed_name,
+            failure_note,
+        } => {
+            assert_eq!(seed_name, "01_explicit_tx_broken");
+            let failure_note = failure_note.expect("failure note must be recorded");
+            assert!(failure_note.contains("seed apply failed"));
+        }
+        other => panic!("expected FailedClaim, got {other:?}"),
+    }
+
     let _ = fs::remove_dir_all(&work);
 }
 
