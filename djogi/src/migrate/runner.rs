@@ -56,7 +56,7 @@ use std::time::Instant;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
-use crate::__bypass::RawAccessExt as _;
+use crate::__bypass::guarded_batch_execute;
 use crate::config::MigrateConfig;
 use crate::context::DjogiContext;
 use crate::error::{DbError, DjogiError};
@@ -1137,6 +1137,7 @@ async fn apply_plan_inner(
                         prior_steps_completed: applied_non_tx_steps,
                         total_non_tx_steps,
                         stable_note: durable_non_tx_note.as_deref(),
+                        runner_ctx,
                     },
                 )
                 .await
@@ -1848,7 +1849,7 @@ async fn rollback_inner(
     // Phase a — non-transactional segments, in reverse plan order.
     for (rev_idx, segment) in plan.segments.iter().enumerate().rev() {
         if segment.kind == SegmentKind::NonTransactional {
-            rollback_non_transactional_segment(ctx, segment, rev_idx).await?;
+            rollback_non_transactional_segment(ctx, segment, rev_idx, runner_ctx).await?;
             non_transactional_undone += 1;
         }
     }
@@ -1862,7 +1863,7 @@ async fn rollback_inner(
         .iter()
         .any(|s| s.kind == SegmentKind::Transactional);
     if has_transactional {
-        ctx.raw_ddl("BEGIN")
+        ctx.batch_execute("BEGIN")
             .await
             .map_err(|e| RollbackError::DownStatementFailed {
                 segment_index: usize::MAX,
@@ -1878,10 +1879,10 @@ async fn rollback_inner(
                 if stmt.down.is_empty() {
                     continue;
                 }
-                if let Err(e) = ctx.raw_ddl(&stmt.down).await {
+                if let Err(e) = execute_runner_statement(ctx, &stmt.down, runner_ctx).await {
                     // Best-effort ROLLBACK of the whole compound tx —
                     // surface the original error verbatim.
-                    let _ = ctx.raw_ddl("ROLLBACK").await;
+                    let _ = ctx.batch_execute("ROLLBACK").await;
                     return Err(RollbackError::DownStatementFailed {
                         segment_index: rev_idx,
                         statement_label: stmt.label.clone(),
@@ -1892,7 +1893,7 @@ async fn rollback_inner(
             transactional_undone += 1;
         }
 
-        ctx.raw_ddl("COMMIT")
+        ctx.batch_execute("COMMIT")
             .await
             .map_err(|e| RollbackError::DownStatementFailed {
                 segment_index: usize::MAX,
@@ -1964,12 +1965,13 @@ async fn rollback_non_transactional_segment(
     ctx: &mut DjogiContext,
     segment: &Segment,
     segment_index: usize,
+    runner_ctx: &RunnerCtx,
 ) -> Result<(), RollbackError> {
     for stmt in segment.statements.iter().rev() {
         if stmt.down.is_empty() {
             continue;
         }
-        if let Err(e) = ctx.raw_ddl(&stmt.down).await {
+        if let Err(e) = execute_runner_statement(ctx, &stmt.down, runner_ctx).await {
             return Err(RollbackError::DownStatementFailed {
                 segment_index,
                 statement_label: stmt.label.clone(),
@@ -2337,6 +2339,22 @@ async fn load_ledger_row_for_version(
 
 // ── Segment dispatch helpers ──────────────────────────────────────────────
 
+async fn execute_runner_statement(
+    ctx: &mut DjogiContext,
+    sql: &str,
+    runner_ctx: &RunnerCtx,
+) -> Result<(), DjogiError> {
+    // The generated phase-zero bootstrap seeds Djogi-owned session
+    // GUCs before HeerId exists. Keep the carve-out bound to that
+    // canonical framework migration; adopter migrations still route
+    // through the session-statement guard.
+    if runner_ctx.version == super::bootstrap::PHASE_ZERO_VERSION {
+        ctx.batch_execute(sql).await
+    } else {
+        guarded_batch_execute(ctx, sql).await
+    }
+}
+
 /// Run every statement inside a transactional segment within a
 /// single Postgres transaction. On any error, ROLLBACK and surface
 /// the failing statement label.
@@ -2400,7 +2418,7 @@ async fn run_transactional_segment(
         }
     }
 
-    ctx.raw_ddl("BEGIN")
+    ctx.batch_execute("BEGIN")
         .await
         .map_err(|e| RunnerError::TransactionalSegmentFailed {
             segment_index,
@@ -2409,10 +2427,10 @@ async fn run_transactional_segment(
         })?;
 
     for stmt in &segment.statements {
-        if let Err(e) = ctx.raw_ddl(&stmt.up).await {
+        if let Err(e) = execute_runner_statement(ctx, &stmt.up, runner_ctx).await {
             // Best-effort rollback — surface the original error
             // regardless of whether the rollback succeeds.
-            let _ = ctx.raw_ddl("ROLLBACK").await;
+            let _ = ctx.batch_execute("ROLLBACK").await;
             return Err(RunnerError::TransactionalSegmentFailed {
                 segment_index,
                 statement_label: stmt.label.clone(),
@@ -2421,7 +2439,7 @@ async fn run_transactional_segment(
         }
     }
 
-    ctx.raw_ddl("COMMIT")
+    ctx.batch_execute("COMMIT")
         .await
         .map_err(|e| RunnerError::TransactionalSegmentFailed {
             segment_index,
@@ -2448,6 +2466,7 @@ struct NonTransactionalSegmentRun<'a> {
     prior_steps_completed: i32,
     total_non_tx_steps: i32,
     stable_note: Option<&'a str>,
+    runner_ctx: &'a RunnerCtx,
 }
 
 async fn run_non_transactional_segment(
@@ -2474,7 +2493,7 @@ async fn run_non_transactional_segment(
                 version: run.version.to_string(),
                 source: e,
             })?;
-        if let Err(e) = ctx.raw_ddl(&stmt.up).await {
+        if let Err(e) = execute_runner_statement(ctx, &stmt.up, run.runner_ctx).await {
             let total_so_far = run.prior_steps_completed.saturating_add(completed);
             let note = format!(
                 "non-tx step {step} of segment {seg} failed: {label} — {e}",
@@ -3731,7 +3750,7 @@ fn expand_partition_statement(
     if leaves.is_empty() {
         // Empty-leaves edge: surface the state but DO NOT issue the
         // literal `<EACH_LEAF_TABLE>` SQL. The runner emits a comment
-        // line that `raw_ddl` accepts harmlessly.
+        // line that internal batch execution accepts harmlessly.
         return vec![OperationSql {
             label: format!("{} (no leaves)", stmt.label),
             up: format!(
@@ -3752,8 +3771,8 @@ fn expand_partition_statement(
         // internal COMMIT would fire `2D000`).
         for leaf in leaves {
             let body = stmt.up.replace("<EACH_LEAF_TABLE>", leaf);
-            // Strip any trailing semicolon — runner_ctx dispatches via
-            // raw_ddl which accepts a single statement.
+            // Strip any trailing semicolon; runner_ctx dispatches this
+            // through the internal single-statement batch path.
             let body = strip_trailing_semicolon(&body);
             // Prefer just the CALL line for the per-leaf statement so
             // the procedure runs cleanly without the multi-line
@@ -3890,7 +3909,7 @@ fn expand_partition_statement(
 }
 
 /// Strip a single trailing `;` (with optional trailing whitespace).
-/// The runner's `raw_ddl` accepts statements with or without a
+/// The runner's internal batch path accepts statements with or without a
 /// terminator, but stripping keeps the per-leaf record tidy.
 fn strip_trailing_semicolon(s: &str) -> String {
     let trimmed = s.trim_end();

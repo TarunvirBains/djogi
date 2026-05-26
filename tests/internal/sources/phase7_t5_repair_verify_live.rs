@@ -2653,6 +2653,7 @@ async fn repair_resume_progress_ack_failure_blocks_duplicate_rerun(mut ctx: djog
     let snapshot_path = temp_path("resume-ack");
     let initial_snapshot = empty_snapshot();
     djogi::migrate::save_snapshot(&initial_snapshot, &snapshot_path).expect("seed snapshot");
+    let snapshot_bytes_before = std::fs::read(&snapshot_path).expect("read seeded snapshot");
 
     let plan = MigrationPlan {
         bucket: BucketKey {
@@ -2776,10 +2777,13 @@ async fn repair_resume_progress_ack_failure_blocks_duplicate_rerun(mut ctx: djog
         1,
         "resume must not silently rerun an already-committed step"
     );
-    assert!(
-        !snapshot_path.exists(),
-        "snapshot file must not move forward while the row is ambiguous"
+    let snapshot_bytes_after =
+        std::fs::read(&snapshot_path).expect("read snapshot after ambiguous resume");
+    assert_eq!(
+        snapshot_bytes_after, snapshot_bytes_before,
+        "snapshot bytes must not move forward while the row is ambiguous"
     );
+    let _ = std::fs::remove_file(&snapshot_path);
 }
 
 #[djogi::djogi_test]

@@ -217,8 +217,8 @@ pub(crate) fn build_segments(group: &PkTypeFlipGroup) -> Result<Vec<Segment>, Pk
     // Segment 2 — backfill (non-transactional). Each backfill is its
     // own `CALL`; the procedure manages internal commits per batch.
     // Emit ONE OperationSql per CALL / VALIDATE statement so the
-    // runner runs each via single-statement `raw_ddl` — the
-    // procedure's internal `COMMIT`s would otherwise raise
+    // runner dispatches each through the internal single-statement
+    // batch path; the procedure's internal `COMMIT`s would otherwise raise
     // `invalid transaction termination` when wrapped in the implicit
     // simple-query batch transaction.
     segments.push(Segment {
@@ -390,8 +390,8 @@ pub(crate) fn build_segments_multi(
     // Stage 2 — backfill (non-transactional). Each member's
     // backfill statements are emitted as their own OperationSql
     // entries; concatenate the per-member lists in alphabetical
-    // order. The runner runs each statement via single-statement
-    // raw_ddl — see the matching note on `build_segments`.
+    // order. The runner dispatches each statement through the internal
+    // single-statement batch path; see the matching note on `build_segments`.
     let mut backfill_stmts: Vec<OperationSql> = Vec::new();
     for g in groups {
         backfill_stmts.extend(emit_backfill_statements(g));
@@ -1437,8 +1437,8 @@ fn emit_backfill_and_verification(group: &PkTypeFlipGroup) -> OperationSql {
 }
 
 /// Emit one [`OperationSql`] per backfill statement (CALL or
-/// hand-rolled DO block) so the runner can dispatch each via
-/// single-statement `raw_ddl`. Without this split the simple-query
+/// hand-rolled DO block) so the runner can dispatch each through the
+/// internal single-statement batch path. Without this split the simple-query
 /// protocol wraps multiple statements in an implicit transaction;
 /// the procedure's internal `COMMIT` then fires `2D000 invalid
 /// transaction termination` per the playbook's "must not be wrapped
@@ -1585,8 +1585,8 @@ fn emit_backfill_body(
 ///
 /// The DO block carries its own COMMITs because LOOP-with-COMMIT in
 /// PL/pgSQL is allowed only inside procedures or DO blocks at the
-/// top level. The runner dispatches this block via `raw_ddl` outside
-/// any explicit BEGIN, identical to the CALL path.
+/// top level. The runner dispatches this block through the internal batch
+/// path outside any explicit BEGIN, identical to the CALL path.
 fn emit_reverse_backfill(
     table: &str,
     src_col: &str,
@@ -2802,7 +2802,7 @@ fn emit_partitioned_preparation(
 /// step so the runner's transactional-segment short-circuit picks it up
 /// and halts on count > 0 via [`super::runner::RunnerError::PkFlipVerificationFailed`].
 /// Bundling the SELECT into the backfill step would route it through
-/// `raw_ddl` and discard the count silently (B-7).
+/// the non-returning internal batch path and discard the count silently (B-7).
 fn emit_partitioned_backfill_only(
     group: &PkTypeFlipGroup,
     _part: &super::diff::PkFlipPartitionedMeta,

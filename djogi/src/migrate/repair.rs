@@ -66,7 +66,7 @@
 
 use std::path::PathBuf;
 
-use crate::__bypass::RawAccessExt as _;
+use crate::__bypass::guarded_batch_execute;
 use crate::context::DjogiContext;
 use crate::error::DjogiError;
 
@@ -923,7 +923,8 @@ async fn repair_partial_apply_pinned(
 ///   nothing to resume.
 ///
 /// **What it runs.** The non-transactional segment(s) in plan order.
-/// Each statement is executed via `ctx.raw_ddl(...)` (auto-commit).
+/// Each statement is executed via Djogi's internal batch executor
+/// (auto-commit).
 /// Resume now shares the runner's crash-safe claim/ack protocol:
 /// before a step runs, the ledger row records a structured in-flight
 /// claim in `partial_apply_note`; only after the SQL commits does the
@@ -1074,7 +1075,7 @@ async fn repair_resume_body(
                 .await
                 .map_err(|e| RepairError::LedgerIo { source: e })?;
             // Run the statement.
-            if let Err(e) = ctx.raw_ddl(&stmt.up).await {
+            if let Err(e) = guarded_batch_execute(ctx, &stmt.up).await {
                 // Best-effort: record the new partial state before
                 // returning. The advisory lock is released by
                 // repair_resume_pinned after this function returns.

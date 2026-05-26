@@ -113,6 +113,15 @@ pub(crate) enum ExprNode {
     /// semantics are Postgres's; Djogi does not inject a guard.
     Div(Box<ExprNode>, Box<ExprNode>),
 
+    /// `lhs AND rhs` — boolean logical AND.
+    And(Box<ExprNode>, Box<ExprNode>),
+
+    /// `lhs OR rhs` — boolean logical OR.
+    Or(Box<ExprNode>, Box<ExprNode>),
+
+    /// `NOT expr` — boolean logical NOT.
+    Not(Box<ExprNode>),
+
     /// `lhs <op> rhs` — comparison producing an `Expr<bool>` at the
     /// typed-wrapper layer. See [`CmpOp`] for the operator set.
     Cmp {
@@ -1284,4 +1293,8 @@ pub(crate) enum CmpOp {
     Lt,
     /// `lhs <= rhs`
     Lte,
+    /// `lhs IS DISTINCT FROM rhs`
+    IsDistinctFrom,
+    /// `lhs IS NOT DISTINCT FROM rhs`
+    IsNotDistinctFrom,
 }

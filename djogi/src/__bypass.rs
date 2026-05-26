@@ -136,6 +136,14 @@ fn reject_transaction_session_statement_batch(
     Ok(())
 }
 
+pub(crate) async fn guarded_batch_execute(
+    ctx: &mut DjogiContext,
+    sql: &str,
+) -> Result<(), DjogiError> {
+    reject_transaction_session_statement_batch(ctx, sql)?;
+    ctx.batch_execute(sql).await
+}
+
 fn classify_transaction_session_statement(sql: &str) -> Option<&'static str> {
     let (keyword, next_idx) = parse_keyword(sql, 0)?;
 
@@ -177,7 +185,7 @@ fn classify_raw_ddl_transaction_session_statement(sql: &str) -> Option<&'static 
 
     while idx < bytes.len() {
         if let Some(delimiter) = dollar_quote.as_deref() {
-            if sql[idx..].starts_with(delimiter) {
+            if bytes[idx..].starts_with(delimiter.as_bytes()) {
                 idx += delimiter.len();
                 dollar_quote = None;
             } else {
@@ -1086,6 +1094,21 @@ mod tests {
     }
 
     #[test]
+    fn classify_raw_ddl_transaction_session_statement_handles_utf8_inside_dollar_quote() {
+        let sql = r#"
+            DO $body$
+            BEGIN
+                -- Unicode comment inside the body: bootstrap — extensions
+                PERFORM 1;
+            END
+            $body$;
+            CREATE TEMP TABLE djogi_282_classifier_utf8_ok (value integer);
+        "#;
+
+        assert_eq!(classify_raw_ddl_transaction_session_statement(sql), None);
+    }
+
+    #[test]
     fn classify_raw_ddl_transaction_session_statement_allows_trivia_only_and_safe_batches() {
         assert_eq!(
             classify_raw_ddl_transaction_session_statement(
@@ -1103,5 +1126,18 @@ mod tests {
             CREATE TEMP TABLE djogi_282_classifier_ok (value integer);
         "#;
         assert_eq!(classify_raw_ddl_transaction_session_statement(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_transaction_session_statement_rejects_session_set_in_batch() {
+        let sql = r#"
+            CREATE TEMP TABLE djogi_282_classifier_set_rejected (value integer);
+            SET statement_timeout = '1ms';
+        "#;
+
+        assert_eq!(
+            classify_raw_ddl_transaction_session_statement(sql),
+            Some("SET")
+        );
     }
 }

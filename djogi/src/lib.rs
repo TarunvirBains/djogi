@@ -466,10 +466,10 @@ pub use query::{
     InsertSelectColumn, InsertSelectSource, InsertSelectStmt, IntoAggregateTuple,
     IntoFieldFilterValue, IntoFilterValue, IntoInsertColumns, IntoPortableFieldValue, IntoSetOpArm,
     JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, LateralQuerySet, LeftLateral,
-    Lookup, MaterializeClosureOptions, MaterializeClosureReport, ModelCursorStream, ModelFilter,
-    OrderExpr, PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt, PortableQuerySet, Q,
-    QuerySet, RawCursorStream, RecursiveDirection, RecursiveQuerySet, SetOpKind, SetOpQuerySet,
-    UpdateAssignment, UpdateStmt, VisageQuerySet,
+    Lookup, MaterializeClosureOptions, MaterializeClosureReport, MergeCounts, MergeStmt,
+    ModelCursorStream, ModelFilter, OrderExpr, PairClosureKinshipSum, PairOrderExpr, PairSide,
+    PairWindowExt, PortableQuerySet, Q, QuerySet, RawCursorStream, RecursiveDirection,
+    RecursiveQuerySet, SetOpKind, SetOpQuerySet, UpdateAssignment, UpdateStmt, VisageQuerySet,
 };
 pub use relation::{
     ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
@@ -645,6 +645,8 @@ pub mod prelude {
         Lookup,
         MaterializeClosureOptions,
         MaterializeClosureReport,
+        MergeCounts,
+        MergeStmt,
         ModelFilter,
         OrderExpr,
         PairClosureKinshipSum,

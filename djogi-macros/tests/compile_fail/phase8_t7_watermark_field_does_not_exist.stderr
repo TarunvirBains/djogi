@@ -19,12 +19,12 @@ help: the trait `Cacheable` is not implemented for `WatermarkMissingRow`
  39 | pub struct WatermarkMissingRow {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `DjogiContext::punnu`
-   --> djogi/src/context.rs:518:12
+   --> djogi/src/context.rs:568:12
     |
-516 |     pub fn punnu<T>(&self) -> Option<Arc<sassi::Punnu<T>>>
+566 |     pub fn punnu<T>(&self) -> Option<Arc<sassi::Punnu<T>>>
     |            ----- required by a bound in this associated function
-517 |     where
-518 |         T: crate::types::Cacheable + 'static,
+567 |     where
+568 |         T: crate::types::Cacheable + 'static,
     |            ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `DjogiContext::punnu`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 

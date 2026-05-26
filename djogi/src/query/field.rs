@@ -652,8 +652,8 @@ where
 /// database queries but rejected by cache/refresh boundaries — see the
 /// `ExplicitPgPredicateField` docs for the rationale and routing.
 pub struct DjogiField<M: Model, V> {
-    portable: sassi::Field<M, V>,
-    sql: FieldRef<M, V>,
+    pub(crate) portable: sassi::Field<M, V>,
+    pub(crate) sql: FieldRef<M, V>,
     /// Memory-side extractor — `fn(&M) -> &V` function pointer captured by
     /// the model macro at `#[model]` expansion time. Duplicates the same
     /// pointer that lives inside `portable` (Sassi keeps that field

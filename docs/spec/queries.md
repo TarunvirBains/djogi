@@ -165,7 +165,9 @@ Contract:
   (`prefetch`, `select_related`, `cache`, a non-default `LockMode`, or
   a non-default `DistinctMode`).
 
-`VALUES` inline relations as join sources and `MERGE INTO ... USING ...` are presently not supported by this surface.
+`VALUES` inline relations as join sources are presently not supported by this
+surface. For `MERGE INTO ... USING ...`, use the typed MERGE surface described
+in [5.8 Typed MERGE INTO](#58-typed-merge-into).
 
 ### 5.7a PG18 OLD/NEW RETURNING
 
@@ -248,7 +250,56 @@ of thumb.  The framework rejects lists where `rows × arity > 65 535`
 (Postgres parameter ceiling) and also rejects terminals whose extra filter /
 pagination binds would push the final query above that ceiling.
 
-### 5.8 Performance Contract
+### 5.8 Typed MERGE INTO
+
+Adopter shape — perform upserts, "update if changed" guards, or soft-deletions
+using a single statement that synchronizes a source relation into a target table:
+
+```rust
+use djogi::prelude::*;
+
+source_qs.merge_into::<Target, _, _>(|target, source| {
+    target.external_id().merge_on_eq(source.external_id())
+})
+.when_matched_and_update(Some(
+    Target::fields().payload().is_distinct_from_source(Source::fields().payload())
+), vec![
+    Target::fields().payload().merge_copy_from(Source::fields().payload()),
+])
+.when_not_matched_then_insert(None, vec![
+    Target::fields().external_id().merge_insert_from(Source::fields().external_id()),
+    Target::fields().payload().merge_insert_from(Source::fields().payload()),
+])
+.execute(&mut ctx).await?;
+```
+
+Contract:
+
+- The entry point `merge_into` receives a closure `(T::Fields, S::Fields)` and
+  returns one or more join conditions via `target.col().merge_on_eq(source.col())`.
+- `WHEN MATCHED [AND condition] THEN UPDATE SET ...` allows updating the matched
+  target row using source values, literal values, or target-field expressions.
+- `WHEN NOT MATCHED [BY TARGET] [AND condition] THEN INSERT (...) VALUES (...)`
+  allows inserting a new row when the source row has no target counterpart.
+  Conditions on this branch are source-only; use source-side condition builders
+  such as `Source::fields().payload().merge_source_eq_value("new")`.
+- `WHEN MATCHED [AND condition] THEN DELETE` removes the target row.
+- `WHEN NOT MATCHED BY SOURCE [AND condition] THEN [UPDATE | DELETE]` allows
+  acting on target rows that have no source counterpart. PostgreSQL introduced
+  this `BY SOURCE` form in 17; Djogi's supported PostgreSQL floor remains 18.
+- **Auto-stamping**: `UPDATE` actions automatically append `updated_at = now()`.
+- **Validations**:
+  - Rejects `source.none()` (structural empty) by default if `BY SOURCE` branches
+    exist to prevent unintentional broad updates.
+  - `BY SOURCE` predicates are constrained to target-only fields (use
+    `merge_target_*` builders such as `merge_target_eq_value(true)`).
+  - Rejects source state that cannot be safely represented (`prefetch`,
+    `select_related`, `cache`, `lock`, `distinct`).
+  - Rejects manual assignment to `updated_at` and duplicate target columns.
+- **Convenience**: `when_matched_update_changed(updates)` automatically builds
+  an `IS DISTINCT FROM` condition for the mapped columns.
+
+### 5.9 Performance Contract
 
 The query API is expected to support efficient Postgres forms for the workload shapes Djogi targets. That means:
 

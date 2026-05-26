@@ -211,14 +211,21 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             Ok(())
         }
         // Recurse into compound expression nodes.
-        ExprNode::Add(l, r) | ExprNode::Sub(l, r) | ExprNode::Mul(l, r) | ExprNode::Div(l, r) => {
+        ExprNode::Add(l, r)
+        | ExprNode::Sub(l, r)
+        | ExprNode::Mul(l, r)
+        | ExprNode::Div(l, r)
+        | ExprNode::And(l, r)
+        | ExprNode::Or(l, r) => {
             check_aggregate_legality(l)?;
             check_aggregate_legality(r)
         }
+        ExprNode::Not(expr) => check_aggregate_legality(expr),
         ExprNode::Cmp { lhs, rhs, .. } => {
             check_aggregate_legality(lhs)?;
             check_aggregate_legality(rhs)
         }
+
         ExprNode::Case { arms, otherwise } => {
             for (cond, val) in arms {
                 check_aggregate_legality(cond)?;
@@ -325,6 +332,17 @@ pub(crate) fn emit_expr(
         ExprNode::Div(lhs, rhs) => {
             emit_arith(acc, lhs, " / ", rhs, ctx)?;
         }
+        ExprNode::And(lhs, rhs) => {
+            emit_arith(acc, lhs, " AND ", rhs, ctx)?;
+        }
+        ExprNode::Or(lhs, rhs) => {
+            emit_arith(acc, lhs, " OR ", rhs, ctx)?;
+        }
+        ExprNode::Not(expr) => {
+            acc.push_sql("NOT (");
+            emit_expr(acc, expr, ctx)?;
+            acc.push_sql(")");
+        }
         ExprNode::Cmp { op, lhs, rhs } => {
             emit_expr(acc, lhs, ctx)?;
             acc.push_sql(match op {
@@ -334,6 +352,8 @@ pub(crate) fn emit_expr(
                 CmpOp::Gte => " >= ",
                 CmpOp::Lt => " < ",
                 CmpOp::Lte => " <= ",
+                CmpOp::IsDistinctFrom => " IS DISTINCT FROM ",
+                CmpOp::IsNotDistinctFrom => " IS NOT DISTINCT FROM ",
             });
             emit_expr(acc, rhs, ctx)?;
         }
@@ -1607,8 +1627,8 @@ fn emit_subquery(
     Ok(())
 }
 
-/// Emit an arithmetic binary node with parens around any arithmetic
-/// sub-expression.
+/// Emit a binary node with parens around nested arithmetic or boolean
+/// sub-expressions.
 ///
 /// SQL precedence binds `*` / `/` tighter than `+` / `-`, so a
 /// Rust-built tree like `Mul(Add(a, b), c)` would silently re-parse as
@@ -1617,7 +1637,7 @@ fn emit_subquery(
 /// the user wrote. The outer arm still picks up its own operator
 /// between the two wrapped sides.
 ///
-/// Non-arithmetic operands (field refs, literals, comparisons,
+/// Non-compound operands (field refs, literals, comparisons,
 /// aggregates) don't need wrapping — they're already single tokens or
 /// already self-parenthesised — so the wrap is gated on the sub-node's
 /// discriminant.
@@ -1628,19 +1648,24 @@ fn emit_arith(
     rhs: &ExprNode,
     ctx: SqlEmitContext,
 ) -> Result<(), PortablePredicateError> {
-    emit_wrapped_if_arith(acc, lhs, ctx)?;
+    emit_wrapped_if_compound(acc, lhs, ctx)?;
     acc.push_sql(op);
-    emit_wrapped_if_arith(acc, rhs, ctx)?;
+    emit_wrapped_if_compound(acc, rhs, ctx)?;
     Ok(())
 }
 
-fn emit_wrapped_if_arith(
+fn emit_wrapped_if_compound(
     acc: &mut SqlAccumulator,
     node: &ExprNode,
     ctx: SqlEmitContext,
 ) -> Result<(), PortablePredicateError> {
     match node {
-        ExprNode::Add(..) | ExprNode::Sub(..) | ExprNode::Mul(..) | ExprNode::Div(..) => {
+        ExprNode::Add(..)
+        | ExprNode::Sub(..)
+        | ExprNode::Mul(..)
+        | ExprNode::Div(..)
+        | ExprNode::And(..)
+        | ExprNode::Or(..) => {
             acc.push_sql("(");
             emit_expr(acc, node, ctx)?;
             acc.push_sql(")");

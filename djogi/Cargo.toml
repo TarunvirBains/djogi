@@ -869,6 +869,14 @@ name = "phase8_5_c4b_insert_select"
 path = "../tests/integration/phase8_5_c4b_insert_select.rs"
 harness = true
 
+# Phase 8.5 issue #178 — typed MERGE INTO live coverage.
+# Pins basic upsert, BY SOURCE actions, convenience update-changed logic,
+# and validation rejections against a real database.
+[[test]]
+name = "phase8_5_c4b_merge"
+path = "../tests/integration/phase8_5_c4b_merge.rs"
+harness = true
+
 [[test]]
 name = "phase8_5_c4b_values_join_live"
 path = "../tests/integration/phase8_5_c4b_values_join_live.rs"

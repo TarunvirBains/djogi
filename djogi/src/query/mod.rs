@@ -58,6 +58,8 @@ pub mod insert_select;
 pub mod joined;
 pub mod lateral;
 pub(crate) mod lock;
+// Phase 8.5 Issue #178 — typed `MERGE INTO ... USING` query surface.
+pub mod merge;
 // Phase 8.5 djogi#195 — `MirJzSON` JSON predicate builders.
 //
 // Wraps Sassi's `JSahibONFieldRef` / `JSahibONOptionFieldRef` /
@@ -161,7 +163,14 @@ pub use joined::{
     JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, PairClosureKinshipSum,
     PairOrderExpr, PairSide, PairWindowExt,
 };
+// Phase 8.5 Issue #178 — typed MERGE re-exports.
 pub use lateral::{InnerLateral, LateralQuerySet, LeftLateral};
+pub use merge::{
+    IntoMergeInsertColumns, IntoMergeOn, IntoMergeTargetExpr, IntoMergeUpdates,
+    IntoMergeWhenCondition, MergeAction, MergeBranch, MergeCounts, MergeInsertColumn,
+    MergeMatchKind, MergeOnEq, MergeStmt, MergeTargetExpr, MergeUpdateAssignment,
+    MergeWhenCondition,
+};
 // `PairAreaOverlapRatio<L, R>` ships only with the `spatial` feature
 // flag enabled: its constructor's `SpatialColumnValue` bound and the
 // `crate::geo::*` types its SQL emitter references are themselves
