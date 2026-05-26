@@ -6,7 +6,7 @@
 //!
 //! - `compose` writes the Phase 0 up SQL, down SQL, and pending JSON
 //!   files at the canonical
-//!   `migrations/<db>/_global_/V00000000000000__phase_zero_bootstrap.sql`
+//!   `migrations/<db>/_global_/V00000000000000__phase_zero_bootstrap.sdjql`
 //!   path on first invocation.
 //! - The composed up SQL contains the HeeRanjID install, every
 //!   declared extension's `CREATE EXTENSION IF NOT EXISTS`, and the
@@ -144,8 +144,8 @@ fn compose_auto_emits_phase_zero_with_postgis_dependency_on_first_run() {
 
     // On disk: SQL pair + pending JSON at the canonical paths.
     let phase_zero_dir = work.join("migrations").join("main").join("_global_");
-    let up_path = phase_zero_dir.join(format!("{PHASE_ZERO_VERSION}.sql"));
-    let down_path = phase_zero_dir.join(format!("{PHASE_ZERO_VERSION}.down.sql"));
+    let up_path = phase_zero_dir.join(format!("{PHASE_ZERO_VERSION}.sdjql"));
+    let down_path = phase_zero_dir.join(format!("{PHASE_ZERO_VERSION}.down.sdjql"));
     let pending_path = work
         .join("target")
         .join("djogi_pending")
