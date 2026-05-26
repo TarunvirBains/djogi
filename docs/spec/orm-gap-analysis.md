@@ -404,7 +404,7 @@ Benefits:
 | **Migration dependencies** | Cross-app ordering via FK references | Djogi: migrations are app-scoped. Cross-app FKs create ordering dependencies. Track in `schema_snapshot.json`. |
 | **Merge migrations** | When two branches add migrations, create a merge node | Detect conflicting migration numbers and prompt for merge |
 | **Dry run** | `--dry-run` shows SQL without writing | Already in spec. Confirm it works for both auto-generated and manual migrations. |
-| **SQL collection** | `sqlmigrate` command shows SQL for a migration | Add `djogi migrate show 0005` to display SQL without running |
+| **SQL collection** | `sqlmigrate` command shows SQL for a migration | Add `djogi migrations show 0005` to display SQL without running |
 
 #### Where Djogi Can Do Better
 
@@ -412,7 +412,7 @@ Benefits:
 |---|---|
 | Migrations are Python files with operation objects — heavy, hard to review | Djogi: **plain SQL files**. Readable, editable, reviewable. No framework-specific format. |
 | Django's autodetector is ~2000 lines of Python running 27 detection steps | Djogi: **build-time Rust code** comparing typed `ModelDescriptor` structs. Faster, more reliable, no runtime reflection. |
-| Squashing is complex (replacement graph, partial application detection) | Djogi: **SQL files can be manually concatenated**. Or provide `djogi migrate squash 0001..0010` that merges SQL files. Simpler than Django's replacement system. |
+| Squashing is complex (replacement graph, partial application detection) | Djogi: **SQL files can be manually concatenated**. Or provide `djogi migrations squash 0001..0010` that merges SQL files. Simpler than Django's replacement system. |
 | `RunPython` data migrations can't be represented as SQL | Djogi: data migrations are **Rhai scripts** or **raw SQL** — both are inspectable, no opaque Python. |
 | Django must support 4+ database backends in migrations | Djogi: **Postgres-only SQL**. No backend abstraction. Generated SQL uses Postgres-specific features directly (transactional DDL, `IF NOT EXISTS`, `CONCURRENTLY`, etc.) |
 | Django's `fake_initial` uses runtime introspection to detect existing tables | Djogi: can use Postgres `information_schema` queries at migrate time for the same purpose, more reliably. |
@@ -514,7 +514,7 @@ Earlier draft analysis recommended HTMX + Askama over Dioxus for the admin rende
 - [ ] Admin console: Maahi (Dioxus full-stack via `djogi-maahi`) — see Phase 10
 - [ ] Migration: `CREATE INDEX CONCURRENTLY` support
 - [ ] Migration: merge migration support
-- [ ] Migration: `djogi migrate show` (display SQL)
+- [ ] Migration: `djogi migrations show` (display SQL)
 - [ ] Migration: squash support
 
 ### Tier 3 — Nice to Have

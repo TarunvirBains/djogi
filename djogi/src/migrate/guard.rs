@@ -7,7 +7,7 @@
 //! single `LOCK_EX` advisory file lock on
 //! `<workspace-root>/.djogi-migrations-lock`. The lock serialises
 //! concurrent invocations of the migration tooling so two operators
-//! running `djogi migrate` simultaneously cannot race on the same
+//! running the migration tooling simultaneously cannot race on the same
 //! `migrations/` tree or shared `target/djogi_pending/` staging area.
 //! T4 owns the primitive; T5 (`repair`) and T6 (`compose` /
 //! `apply` orchestration) consume it.
