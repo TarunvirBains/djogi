@@ -165,7 +165,9 @@ Contract:
   (`prefetch`, `select_related`, `cache`, a non-default `LockMode`, or
   a non-default `DistinctMode`).
 
-`VALUES` inline relations as join sources and `MERGE INTO ... USING ...` are presently not supported by this surface.
+`VALUES` inline relations as join sources are presently not supported by this
+surface. For `MERGE INTO ... USING ...`, use the typed MERGE surface described
+in [5.8 Typed MERGE INTO](#58-typed-merge-into).
 
 ### 5.7a PG18 OLD/NEW RETURNING
 

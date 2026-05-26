@@ -3730,7 +3730,7 @@ fn expand_partition_statement(
     if leaves.is_empty() {
         // Empty-leaves edge: surface the state but DO NOT issue the
         // literal `<EACH_LEAF_TABLE>` SQL. The runner emits a comment
-        // line that `raw_ddl` accepts harmlessly.
+        // line that internal batch execution accepts harmlessly.
         return vec![OperationSql {
             label: format!("{} (no leaves)", stmt.label),
             up: format!(
@@ -3751,8 +3751,8 @@ fn expand_partition_statement(
         // internal COMMIT would fire `2D000`).
         for leaf in leaves {
             let body = stmt.up.replace("<EACH_LEAF_TABLE>", leaf);
-            // Strip any trailing semicolon — runner_ctx dispatches via
-            // raw_ddl which accepts a single statement.
+            // Strip any trailing semicolon; runner_ctx dispatches this
+            // through the internal single-statement batch path.
             let body = strip_trailing_semicolon(&body);
             // Prefer just the CALL line for the per-leaf statement so
             // the procedure runs cleanly without the multi-line
@@ -3889,7 +3889,7 @@ fn expand_partition_statement(
 }
 
 /// Strip a single trailing `;` (with optional trailing whitespace).
-/// The runner's `raw_ddl` accepts statements with or without a
+/// The runner's internal batch path accepts statements with or without a
 /// terminator, but stripping keeps the per-leaf record tidy.
 fn strip_trailing_semicolon(s: &str) -> String {
     let trimmed = s.trim_end();

@@ -61,7 +61,6 @@
 //!   djogi#101.
 //! - **`LATERAL` joins** — tracked in djogi#102.
 //! - **`VALUES` inline relations as join sources** — tracked in djogi#103.
-//! - **`MERGE INTO ... USING ...`** — tracked in djogi#178.
 //! - **PG18 `OLD` / `NEW` in `RETURNING`** — tracked in djogi#180.
 //! - **`RETURNING` for INSERT...SELECT** — use
 //!   [`InsertSelectStmt::execute_returning`] to receive every inserted
