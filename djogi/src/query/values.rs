@@ -1,4 +1,4 @@
-//! Typed `VALUES` inline-relation join source — djogi issue #103.
+//! Typed `VALUES` inline-relation join source.
 //!
 //! # What
 //!
@@ -659,14 +659,16 @@ impl<
 
 // ── ValuesOn — structured ON predicate ───────────────────────────────────────
 
-/// A type-safe ON predicate for a VALUES join.
+/// An opaque, type-safe ON predicate for a VALUES join.
 ///
 /// Constructed by [`FieldRef::eq_values`] and composed with `&`.
 /// Only equality predicates are supported in v0.1.
 ///
 /// There is intentionally no raw-SQL constructor.  Any future bypass must
 /// follow Djogi's explicit bypass culture.
-pub enum ValuesOn<T: Model> {
+pub struct ValuesOn<T: Model>(ValuesOnKind<T>);
+
+enum ValuesOnKind<T: Model> {
     /// `__djogi_m.<model_col> = <alias>.<values_col_name>`
     Eq {
         /// Model column (from `FieldRef::column()` — a `&'static str`).
@@ -677,25 +679,48 @@ pub enum ValuesOn<T: Model> {
         _phantom: PhantomData<fn() -> T>,
     },
     /// Conjunction (`lhs AND rhs`).
-    And(Box<ValuesOn<T>>, Box<ValuesOn<T>>),
+    And(Box<ValuesOnKind<T>>, Box<ValuesOnKind<T>>),
+}
+
+impl<T: Model> ValuesOn<T> {
+    fn eq(model_col: &'static str, values_col_idx: usize) -> Self {
+        Self(ValuesOnKind::Eq {
+            model_col,
+            values_col_idx,
+            _phantom: PhantomData,
+        })
+    }
 }
 
 impl<T: Model> std::ops::BitAnd for ValuesOn<T> {
     type Output = ValuesOn<T>;
     fn bitand(self, rhs: ValuesOn<T>) -> ValuesOn<T> {
-        ValuesOn::And(Box::new(self), Box::new(rhs))
+        ValuesOn(ValuesOnKind::And(Box::new(self.0), Box::new(rhs.0)))
     }
 }
 
 impl<T: Model> std::fmt::Debug for ValuesOn<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ValuesOn::Eq {
-                model_col,
-                values_col_idx,
-                ..
-            } => write!(f, "ValuesOn::Eq({model_col} = col{values_col_idx})"),
-            ValuesOn::And(l, r) => write!(f, "ValuesOn::And({l:?}, {r:?})"),
+        fmt_values_on_kind(&self.0, f)
+    }
+}
+
+fn fmt_values_on_kind<T: Model>(
+    on: &ValuesOnKind<T>,
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    match on {
+        ValuesOnKind::Eq {
+            model_col,
+            values_col_idx,
+            ..
+        } => write!(f, "ValuesOn::Eq({model_col} = col{values_col_idx})"),
+        ValuesOnKind::And(l, r) => {
+            write!(f, "ValuesOn::And(")?;
+            fmt_values_on_kind(l, f)?;
+            write!(f, ", ")?;
+            fmt_values_on_kind(r, f)?;
+            write!(f, ")")
         }
     }
 }
@@ -713,21 +738,21 @@ impl<M: Model, V: ValuesScalar> crate::query::field::FieldRef<M, V> {
     ///
     /// Both sides must share the same Rust type `V`; comparing a
     /// `FieldRef<T, i64>` to a `ValuesFieldRef<f64>` is a compile error.
+    ///
+    /// The model field must resolve to a root-table column. Relation-path
+    /// fields such as `animal.department().name()` are rejected when the
+    /// terminal executes because VALUES joins do not synthesize the extra
+    /// relation aliases that such paths require.
     pub fn eq_values(self, rhs: ValuesFieldRef<V>) -> ValuesOn<M> {
-        ValuesOn::Eq {
-            model_col: self.column(),
-            values_col_idx: rhs.col_idx,
-            _phantom: PhantomData,
-        }
+        ValuesOn::eq(self.column(), rhs.col_idx)
     }
 }
 
 /// Extend `DjogiField<M, V>` with `eq_values` when `V: ValuesScalar`.
 ///
-/// Phase 8eta PR3 changed the macro to emit `DjogiField<M, V>` as the root
-/// field accessor type (wrapping `FieldRef`).  Both the legacy `FieldRef`
-/// path (unit tests, pre-PR3 code) and the `DjogiField` path (macro-emitted
-/// `{Model}Fields` closures) must work so adopters can write:
+/// Djogi's generated field-accessor closures yield `DjogiField<M, V>`
+/// (wrapping `FieldRef`). Both the direct `FieldRef` path and the
+/// `DjogiField` path must support `eq_values`, so adopters can write:
 ///
 /// ```ignore
 /// Animal::objects().join_values(weights, |a, v| {
@@ -740,6 +765,8 @@ impl<M: Model, V: ValuesScalar> crate::query::field::DjogiField<M, V> {
     ///
     /// Both sides must share the same Rust type `V`.  Comparing a
     /// `DjogiField<T, i64>` to a `ValuesFieldRef<f64>` is a compile error.
+    /// Root-table columns are supported; relation-path fields are rejected
+    /// when the terminal executes for the same reason as [`FieldRef::eq_values`].
     ///
     /// ```ignore
     /// .join_values(weights, |animal, v| {
@@ -1110,6 +1137,28 @@ fn validate_total_bind_count(
     Ok(acc)
 }
 
+fn validate_values_on<T: Model>(on: &ValuesOn<T>, site: &str) -> Result<(), DjogiError> {
+    validate_values_on_kind(&on.0, site)
+}
+
+fn validate_values_on_kind<T: Model>(on: &ValuesOnKind<T>, site: &str) -> Result<(), DjogiError> {
+    match on {
+        ValuesOnKind::Eq { model_col, .. } => {
+            if model_col.contains('.') {
+                return Err(DjogiError::Validation(format!(
+                    "{site}: VALUES join predicates only support root-model columns; \
+                     relation-path field `{model_col}` is not supported in `.eq_values(...)`."
+                )));
+            }
+            Ok(())
+        }
+        ValuesOnKind::And(l, r) => {
+            validate_values_on_kind(l, site)?;
+            validate_values_on_kind(r, site)
+        }
+    }
+}
+
 // ── SQL builders ─────────────────────────────────────────────────────────────
 
 /// Build the full SELECT SQL for an INNER VALUES join.
@@ -1157,8 +1206,8 @@ where
 
 /// Build SELECT SQL for a LEFT JOIN where the values side is empty.
 ///
-/// Per the owner decision, uses a **typed zero-row relation** subquery rather
-/// than inlining `NULL::TYPE` directly in the SELECT list.  Postgres can
+/// Uses a **typed zero-row relation** subquery rather than inlining
+/// `NULL::TYPE` directly in the SELECT list. Postgres can
 /// fully type-check and plan the query from the subquery column types, and
 /// the ON predicate is preserved so the join shape is structurally identical
 /// to the non-empty path.
@@ -1293,6 +1342,27 @@ where
     push_inner_join_values(&vqs.values, &vqs.on, &mut acc);
     push_qualified_where(&mut acc, &vqs.left)?;
     acc.push_sql(")");
+    Ok(acc)
+}
+
+/// Build EXISTS for a LEFT VALUES join.
+///
+/// Existence depends only on whether the left queryset yields any rows. A
+/// left join always produces at least one `(T, Option<Row>)` pair per left
+/// row, so the VALUES payload and ON predicate do not affect this terminal.
+pub(crate) fn build_left_values_join_exists<T, Row>(
+    vqs: &LeftValuesJoinedQuerySet<T, Row>,
+) -> Result<SqlAccumulator, PortablePredicateError>
+where
+    T: Model + FromPgRow,
+    Row: ValuesRow,
+{
+    let mut acc = SqlAccumulator::new("SELECT EXISTS(SELECT 1 FROM ");
+    acc.push_sql(T::table_name());
+    acc.push_sql(" AS ");
+    acc.push_sql(MODEL_ALIAS);
+    push_qualified_where(&mut acc, &vqs.left)?;
+    acc.push_sql(" LIMIT 1)");
     Ok(acc)
 }
 
@@ -1498,8 +1568,16 @@ fn push_on_predicate<T: Model, Row: ValuesRow>(
     values: &InlineValues<Row>,
     acc: &mut SqlAccumulator,
 ) {
+    push_on_predicate_kind(&on.0, values, acc);
+}
+
+fn push_on_predicate_kind<T: Model, Row: ValuesRow>(
+    on: &ValuesOnKind<T>,
+    values: &InlineValues<Row>,
+    acc: &mut SqlAccumulator,
+) {
     match on {
-        ValuesOn::Eq {
+        ValuesOnKind::Eq {
             model_col,
             values_col_idx,
             ..
@@ -1512,11 +1590,11 @@ fn push_on_predicate<T: Model, Row: ValuesRow>(
             acc.push_sql(".");
             acc.push_sql(values.columns[*values_col_idx]);
         }
-        ValuesOn::And(l, r) => {
+        ValuesOnKind::And(l, r) => {
             acc.push_sql("(");
-            push_on_predicate(l, values, acc);
+            push_on_predicate_kind(l, values, acc);
             acc.push_sql(" AND ");
-            push_on_predicate(r, values, acc);
+            push_on_predicate_kind(r, values, acc);
             acc.push_sql(")");
         }
     }
@@ -1609,6 +1687,7 @@ where
     {
         async move {
             validate_left_qs(&self.left, "join_values::fetch_all")?;
+            validate_values_on(&self.on, "join_values::fetch_all")?;
             if self.left.is_empty() || self.values.is_empty() {
                 return Ok(vec![]);
             }
@@ -1638,6 +1717,7 @@ where
     {
         async move {
             validate_left_qs(&self.left, "join_values::first")?;
+            validate_values_on(&self.on, "join_values::first")?;
             if self.left.is_empty() || self.values.is_empty() {
                 return Ok(None);
             }
@@ -1669,6 +1749,7 @@ where
     {
         async move {
             validate_left_qs(&self.left, "join_values::fetch_one")?;
+            validate_values_on(&self.on, "join_values::fetch_one")?;
             if self.left.is_empty() || self.values.is_empty() {
                 return Err(DjogiError::not_found(T::table_name()));
             }
@@ -1701,6 +1782,7 @@ where
     {
         async move {
             validate_left_qs(&self.left, "join_values::count")?;
+            validate_values_on(&self.on, "join_values::count")?;
             if self.left.is_empty() || self.values.is_empty() {
                 return Ok(0);
             }
@@ -1728,6 +1810,7 @@ where
     {
         async move {
             validate_left_qs(&self.left, "join_values::exists")?;
+            validate_values_on(&self.on, "join_values::exists")?;
             if self.left.is_empty() || self.values.is_empty() {
                 return Ok(false);
             }
@@ -1766,6 +1849,7 @@ where
     {
         async move {
             validate_left_qs(&self.left, "left_join_values::fetch_all")?;
+            validate_values_on(&self.on, "left_join_values::fetch_all")?;
             if self.left.is_empty() {
                 return Ok(vec![]);
             }
@@ -1801,6 +1885,7 @@ where
     {
         async move {
             validate_left_qs(&self.left, "left_join_values::first")?;
+            validate_values_on(&self.on, "left_join_values::first")?;
             if self.left.is_empty() {
                 return Ok(None);
             }
@@ -1838,6 +1923,7 @@ where
     {
         async move {
             validate_left_qs(&self.left, "left_join_values::fetch_one")?;
+            validate_values_on(&self.on, "left_join_values::fetch_one")?;
             if self.left.is_empty() {
                 return Err(DjogiError::not_found(T::table_name()));
             }
@@ -1880,6 +1966,7 @@ where
     {
         async move {
             validate_left_qs(&self.left, "left_join_values::count")?;
+            validate_values_on(&self.on, "left_join_values::count")?;
             if self.left.is_empty() {
                 return Ok(0);
             }
@@ -1907,21 +1994,23 @@ where
     {
         async move {
             validate_left_qs(&self.left, "left_join_values::exists")?;
+            validate_values_on(&self.on, "left_join_values::exists")?;
             if self.left.is_empty() {
                 return Ok(false);
             }
             crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
             let (sql, binds) = validate_total_bind_count(
-                build_left_values_join_count(&self).map_err(DjogiError::from)?,
+                build_left_values_join_exists(&self).map_err(DjogiError::from)?,
                 "left_join_values::exists",
             )?
             .into_parts();
             let params = as_params(&binds);
-            let row = ctx.query_one(&sql, &params).await?;
-            let n: i64 = row
-                .try_get::<_, i64>(0)
+            let exists = ctx
+                .query_one(&sql, &params)
+                .await?
+                .try_get::<_, bool>(0)
                 .map_err(|e| DjogiError::Decode(format!("left_join_values exists: {e}")))?;
-            Ok(n > 0)
+            Ok(exists)
         }
     }
 }
@@ -2257,6 +2346,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn values_on_rejects_relation_path_model_columns() {
+        let err = validate_values_on(
+            &(ValuesOn::<Stub>::eq("id", 0) & ValuesOn::<Stub>::eq("department.name", 1)),
+            "join_values::fetch_all",
+        )
+        .unwrap_err();
+        let DjogiError::Validation(msg) = err else {
+            panic!("expected Validation")
+        };
+        assert!(msg.contains("department.name"), "got: {msg}");
+        assert!(msg.contains("root-model columns"), "got: {msg}");
+    }
+
     // ── SQL shape ─────────────────────────────────────────────────────────────
 
     fn stub_qs() -> QuerySet<Stub> {
@@ -2268,11 +2371,7 @@ mod tests {
         ValuesJoinedQuerySet {
             left: stub_qs(),
             values,
-            on: ValuesOn::Eq {
-                model_col: "id",
-                values_col_idx: 0,
-                _phantom: PhantomData,
-            },
+            on: ValuesOn::eq("id", 0),
         }
     }
 
@@ -2302,11 +2401,7 @@ mod tests {
         let vqs = ValuesJoinedQuerySet {
             left: stub_qs(),
             values,
-            on: ValuesOn::Eq {
-                model_col: "id",
-                values_col_idx: 0,
-                _phantom: PhantomData,
-            },
+            on: ValuesOn::eq("id", 0),
         };
         let acc = build_values_join_select(&vqs).unwrap();
         let s = acc.sql().to_owned();
@@ -2330,11 +2425,7 @@ mod tests {
         let vqs = ValuesJoinedQuerySet {
             left: qs,
             values,
-            on: ValuesOn::Eq {
-                model_col: "id",
-                values_col_idx: 0,
-                _phantom: PhantomData,
-            },
+            on: ValuesOn::eq("id", 0),
         };
         let acc = build_values_join_select(&vqs).unwrap();
         let s = acc.sql().to_owned();
@@ -2353,11 +2444,7 @@ mod tests {
         let vqs = ValuesJoinedQuerySet {
             left: qs,
             values,
-            on: ValuesOn::Eq {
-                model_col: "id",
-                values_col_idx: 0,
-                _phantom: PhantomData,
-            },
+            on: ValuesOn::eq("id", 0),
         };
         let err = match validate_total_bind_count(
             build_values_join_select(&vqs).unwrap(),
@@ -2393,15 +2480,7 @@ mod tests {
         let vqs = ValuesJoinedQuerySet {
             left: stub_qs(),
             values,
-            on: ValuesOn::Eq {
-                model_col: "id",
-                values_col_idx: 0,
-                _phantom: PhantomData,
-            } & ValuesOn::Eq {
-                model_col: "score",
-                values_col_idx: 1,
-                _phantom: PhantomData,
-            },
+            on: ValuesOn::eq("id", 0) & ValuesOn::eq("score", 1),
         };
         let acc = build_values_join_select(&vqs).unwrap();
         let s = acc.sql().to_owned();
@@ -2541,6 +2620,39 @@ mod tests {
     }
 
     #[test]
+    fn left_join_exists_sql_uses_left_queryset_only() {
+        use crate::query::condition::{Condition, FilterValue, Leaf};
+        let values = InlineValues::new(
+            vec![(99_i64, 1.0_f64), (100_i64, 2.0_f64)],
+            "w",
+            ("aid", "sc"),
+        )
+        .unwrap();
+        let qs = stub_qs().filter(|_| Condition::Leaf(Leaf::eq_raw("id", FilterValue::I64(42))));
+        let vqs = LeftValuesJoinedQuerySet {
+            left: qs,
+            values,
+            on: ValuesOn::eq("id", 0),
+        };
+        let acc = build_left_values_join_exists(&vqs).unwrap();
+        let s = acc.sql().to_owned();
+        assert!(
+            s.starts_with("SELECT EXISTS"),
+            "exists must use SELECT EXISTS; sql = {s}"
+        );
+        assert!(!s.contains("COUNT(*)"), "exists must not count; sql = {s}");
+        assert!(
+            !s.contains("LEFT JOIN"),
+            "exists must not join values; sql = {s}"
+        );
+        assert!(
+            !s.contains("(VALUES"),
+            "exists must not bind values rows; sql = {s}"
+        );
+        assert_eq!(acc.bind_count(), 1, "only WHERE bind expected; sql = {s}");
+    }
+
+    #[test]
     fn left_join_empty_values_sql_uses_typed_zero_row_relation_join() {
         // Owner decision: empty InlineValues on a left join must use a typed
         // zero-row relation shape — a LEFT JOIN against a subquery that returns
@@ -2551,11 +2663,7 @@ mod tests {
         let vqs = LeftValuesJoinedQuerySet {
             left: stub_qs(),
             values,
-            on: ValuesOn::Eq {
-                model_col: "id",
-                values_col_idx: 0,
-                _phantom: PhantomData,
-            },
+            on: ValuesOn::eq("id", 0),
         };
         let acc = build_left_values_join_empty_select(&vqs).unwrap();
         let s = acc.sql().to_owned();

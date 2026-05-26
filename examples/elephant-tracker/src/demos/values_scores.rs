@@ -2,7 +2,7 @@
 //!
 //! ## What this demonstrates
 //!
-//! Uses [`InlineValues`] to join a `Vec<(HeerIdDesc, f64)>` score list computed
+//! Uses [`InlineValues`] to join a `Vec<(djogi::HeerId, f64)>` score list computed
 //! in Rust against the `Elephant` model table using a typed `ON` predicate.
 //! No raw SQL is used anywhere in the join or decode path.
 //!

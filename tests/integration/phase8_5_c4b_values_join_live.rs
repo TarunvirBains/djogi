@@ -1,4 +1,4 @@
-// Phase 8.5 djogi#103 — typed VALUES inline-relation join live tests.
+// Live tests for typed VALUES inline-relation joins.
 //
 // Exercises the full `InlineValues` / `ValuesJoinedQuerySet` /
 // `LeftValuesJoinedQuerySet` surface against a real Postgres.
@@ -510,6 +510,24 @@ async fn left_join_values_empty_values_count_equals_filtered_left_rows(mut ctx: 
         .expect("count");
 
     assert_eq!(count, 1, "one active animal");
+}
+
+/// Left join `exists()` depends on the left queryset, not on whether VALUES matches.
+#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+async fn left_join_values_exists_true_when_left_row_has_no_match(mut ctx: DjogiContext) {
+    let animals = seed(&mut ctx, &[("elephant", true, 10), ("lion", true, 20)]).await;
+
+    let weights: InlineValues<(HeerIdDesc, f64)> =
+        InlineValues::new(vec![(animals[1].id, 0.5)], "w", ("animal_id", "score")).expect("valid");
+
+    let exists = Phase85C4bValuesAnimal::objects()
+        .filter(|f| f.name().eq("elephant"))
+        .left_join_values(weights, |a, v| a.id().eq_values(v.col0()))
+        .exists(&mut ctx)
+        .await
+        .expect("exists");
+
+    assert!(exists, "left row should exist even without a VALUES match");
 }
 
 /// Left join `none()` queryset → empty result.

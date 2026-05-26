@@ -5,9 +5,9 @@ error[E0061]: this method takes 1 argument but 2 arguments were supplied
      |                                  ^^^^^^^^^^^^^^^^^         -------------------------------------------------- unexpected argument $TYPEID of type `{closure@$DIR/values_cross_join_incompatible_state.rs:27:60: 27:107}`
      |
 note: method defined here
-    --> djogi/src/query/values.rs:1038:12
+    --> djogi/src/query/values.rs:1071:12
      |
-1038 |     pub fn cross_join_values<Row>(
+1071 |     pub fn cross_join_values<Row>(
      |            ^^^^^^^^^^^^^^^^^
 help: remove the extra argument
      |

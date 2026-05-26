@@ -186,7 +186,7 @@ PostgreSQL 18 added `OLD`/`NEW` aliases in `RETURNING` clauses for `UPDATE` and 
 
 **MERGE** — MERGE result hydration is presently not supported. `ReturningPair<T>` is intentionally non-optional to preserve UPDATE ergonomics.
 
-### 5.7b VALUES Inline-Relation Joins — djogi#103
+### 5.7b VALUES Inline-Relation Joins
 
 `InlineValues<Row>` holds a typed `Vec<Row>` of tuple data computed in Rust.
 `QuerySet<T>::join_values` / `left_join_values` join it against the model
