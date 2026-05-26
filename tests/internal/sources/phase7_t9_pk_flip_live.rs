@@ -35,12 +35,13 @@ use std::time::Duration;
 use djogi::config::MigrateConfig;
 use djogi::migrate::schema::PkKindSchema;
 use djogi::migrate::{
-    AppliedSchema, BucketKey, Classification, ColumnSchema, ForeignKeySchema, MigrationPlan,
-    OnDeleteSchema, OperationSql, PkFlipChild, PkFlipDirection, PkFlipFamily, PkTypeFlipGroup,
-    PrimaryKeySchema, RelationKindSchema, RunnerCtx, RunnerError, SNAPSHOT_FORMAT_VERSION,
-    TableSchema, WorkspaceGuard, acquire_workspace_lock, apply_plan, bootstrap_ledger,
-    compute_checksum, diff_bucket_maps, lower_pk_flip_group as lower_pk_flip_group_checked,
-    plan_delta,
+    AppliedSchema, BucketKey, Classification, ColumnSchema, ForeignKeySchema, LossyRollbackPolicy,
+    MigrationPlan, OnDeleteSchema, OperationSql, PkFlipChild, PkFlipDirection, PkFlipFamily,
+    PkTypeFlipGroup, PrimaryKeySchema, RepairConfirmation, RepairError, RelationKindSchema,
+    RunnerCtx, RunnerError, SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind, TableSchema,
+    WorkspaceGuard, acquire_workspace_lock, apply_plan, bootstrap_ledger, compute_checksum,
+    diff_bucket_maps, lower_pk_flip_group as lower_pk_flip_group_checked, plan_delta,
+    repair_resume_partial_apply, rollback_plan,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -3601,4 +3602,126 @@ fn diff_bucket_maps_rejects_partitioned_cross_flipping_cluster() {
         }
         other => panic!("unexpected error: {other:?}"),
     }
+}
+
+// ── T3 / #317 — partitioned parent partial-apply resume uses expanded leaf steps
+
+#[djogi::djogi_test]
+async fn flip_partitioned_parent_partial_apply_resume_uses_expanded_leaf_steps(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+
+    ctx.raw_ddl(
+        "CREATE TABLE resume_events (\
+         id BIGINT NOT NULL, \
+         id_desc BIGINT NOT NULL, \
+         ts TIMESTAMPTZ NOT NULL, \
+         PRIMARY KEY (ts, id)) \
+         PARTITION BY RANGE (ts)",
+    )
+    .await
+    .expect("partitioned parent");
+    ctx.raw_ddl(
+        "CREATE TABLE resume_events_a PARTITION OF resume_events \
+         FOR VALUES FROM ('2026-01-01') TO ('2026-04-01')",
+    )
+    .await
+    .expect("leaf a");
+    ctx.raw_ddl(
+        "CREATE TABLE resume_events_b PARTITION OF resume_events \
+         FOR VALUES FROM ('2026-04-01') TO ('2026-07-01')",
+    )
+    .await
+    .expect("leaf b");
+
+    let plan = MigrationPlan {
+        bucket: bucket(),
+        classification: Classification::Additive,
+        segments: vec![Segment {
+            kind: SegmentKind::NonTransactional,
+            statements: vec![OperationSql {
+                label: "PkFlipPartitionedIndex resume_events".to_string(),
+                up: "CREATE UNIQUE INDEX resume_events_ts_id_desc_idx ON ONLY resume_events (ts, id_desc);\n\
+                     -- Per leaf: CREATE UNIQUE INDEX CONCURRENTLY <leaf>_ts_id_desc_idx\n\
+                     --             ON <leaf> (ts, id_desc);\n\
+                     -- Then ALTER INDEX resume_events_ts_id_desc_idx ATTACH PARTITION\n\
+                     --             <leaf>_ts_id_desc_idx;"
+                    .to_string(),
+                down: "DROP INDEX IF EXISTS resume_events_ts_id_desc_idx;".to_string(),
+                lossy: None,
+            }],
+        }],
+    };
+    let runner_ctx = make_runner_ctx(&plan, "V20260526031702__partition_resume");
+
+    ctx.raw_ddl("CREATE UNIQUE INDEX resume_events_ts_id_desc_idx ON ONLY resume_events (ts, id_desc)")
+        .await
+        .expect("manual parent index");
+    ctx.raw_ddl("CREATE UNIQUE INDEX resume_events_a_ts_id_desc_idx ON resume_events_a (ts, id_desc)")
+        .await
+        .expect("manual leaf a index");
+    ctx.raw_ddl(
+        "ALTER INDEX resume_events_ts_id_desc_idx ATTACH PARTITION resume_events_a_ts_id_desc_idx",
+    )
+    .await
+    .expect("manual attach leaf a");
+
+    let run_id: i64 = 31702;
+    ctx.raw_execute(
+        "INSERT INTO djogi_schema_migrations \
+         (version, description, checksum_up, execution_mode, status, \
+          applied_steps_count, total_steps, run_id, snapshot_version, app_label) \
+         VALUES ($1, $2, $3, 'non_transactional', 'failed', \
+                 3, 5, $4, '1', '')",
+        &[
+            &runner_ctx.version,
+            &runner_ctx.description,
+            &runner_ctx.checksum_up,
+            &run_id,
+        ],
+    )
+    .await
+    .expect("seed partial partition row");
+
+    let report = repair_resume_partial_apply(
+        &mut ctx,
+        &_guard,
+        &runner_ctx.version,
+        &plan,
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    .expect("resume remaining expanded leaf steps");
+
+    assert!(
+        report
+            .actions_taken
+            .iter()
+            .any(|a| a.contains("resume_events_b_ts_id_desc_idx")),
+        "resume actions must include leaf B concrete index: {:?}",
+        report.actions_taken,
+    );
+
+    let applied_steps: i32 = ctx
+        .raw_scalar(
+            "SELECT applied_steps_count FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("applied steps");
+    assert_eq!(applied_steps, 5);
+
+    let leaf_b_attached: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (\
+             SELECT 1 FROM pg_inherits \
+             WHERE inhparent = 'resume_events_ts_id_desc_idx'::regclass \
+               AND inhrelid = 'resume_events_b_ts_id_desc_idx'::regclass)",
+            &[],
+        )
+        .await
+        .expect("leaf b index attachment");
+    assert!(leaf_b_attached, "resume must run leaf B create + attach");
 }

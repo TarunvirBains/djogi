@@ -1588,4 +1588,19 @@ mod tests {
             other => panic!("expected BucketAppMismatch, got {other:?}"),
         }
     }
+
+    // ── ResumePlanShapeMismatch display (T3 / #317) ─────────────────────
+
+    #[test]
+    fn repair_error_resume_plan_shape_mismatch_display_names_counts() {
+        let e = RepairError::ResumePlanShapeMismatch {
+            version: "V20260526031700__shape".to_string(),
+            ledger_total_steps: 5,
+            replay_total_steps: 1,
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("V20260526031700__shape"));
+        assert!(msg.contains("ledger total_steps=5"));
+        assert!(msg.contains("expanded replay non-transactional statements=1"));
+    }
 }
