@@ -166,9 +166,10 @@ pub use joined::{
 // Phase 8.5 Issue #178 — typed MERGE re-exports.
 pub use lateral::{InnerLateral, LateralQuerySet, LeftLateral};
 pub use merge::{
-    IntoMergeInsertColumns, IntoMergeOn, IntoMergeUpdates, IntoMergeWhenCondition, MergeAction,
-    MergeBranch, MergeCounts, MergeInsertColumn, MergeMatchKind, MergeOnEq, MergeStmt,
-    MergeUpdateAssignment, MergeWhenCondition,
+    IntoMergeInsertColumns, IntoMergeOn, IntoMergeTargetExpr, IntoMergeUpdates,
+    IntoMergeWhenCondition, MergeAction, MergeBranch, MergeCounts, MergeInsertColumn,
+    MergeMatchKind, MergeOnEq, MergeStmt, MergeTargetExpr, MergeUpdateAssignment,
+    MergeWhenCondition,
 };
 // `PairAreaOverlapRatio<L, R>` ships only with the `spatial` feature
 // flag enabled: its constructor's `SpatialColumnValue` bound and the

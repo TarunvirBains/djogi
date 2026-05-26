@@ -8,6 +8,8 @@
 //! order is `<S, T>`). The reversed type does not satisfy that trait
 //! bound — the type system rejects the mapping.
 use djogi::prelude::*;
+use djogi::cache::Cacheable;
+use djogi::query::MergeWhenCondition;
 
 #[model(table = "merge_wrong_side_sources", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
@@ -28,6 +30,8 @@ fn main() {
         })
         .when_matched_and_update(None::<MergeWhenCondition<WrongSideSource, WrongSideTarget>>, vec![
             // Reversed: target field from source, source field from target.
-            source.label().merge_copy_from(target.label())
+            WrongSideSource::fields()
+                .label()
+                .merge_copy_from(WrongSideTarget::fields().label())
         ]);
 }

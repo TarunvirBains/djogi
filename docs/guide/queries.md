@@ -1194,12 +1194,14 @@ use djogi::prelude::*;
 source_qs.merge_into::<Target, _, _>(|target, source| {
     target.external_id().merge_on_eq(source.external_id())
 })
-.when_matched_and_update(Some(target.payload().is_distinct_from_source(source.payload())), vec![
-    target.payload().merge_copy_from(source.payload()),
+.when_matched_and_update(Some(
+    Target::fields().payload().is_distinct_from_source(Source::fields().payload())
+), vec![
+    Target::fields().payload().merge_copy_from(Source::fields().payload()),
 ])
 .when_not_matched_then_insert(None, vec![
-    target.external_id().merge_insert_from(source.external_id()),
-    target.payload().merge_insert_from(source.payload()),
+    Target::fields().external_id().merge_insert_from(Source::fields().external_id()),
+    Target::fields().payload().merge_insert_from(Source::fields().payload()),
 ])
 .execute(&mut ctx).await?;
 ```
@@ -1212,8 +1214,8 @@ Djogi provides a convenience helper that automatically builds an
 
 ```rust
 .when_matched_update_changed(vec![
-    target.field_a().merge_copy_from(source.field_a()),
-    target.field_b().merge_copy_from(source.field_b()),
+    Target::fields().field_a().merge_copy_from(Source::fields().field_a()),
+    Target::fields().field_b().merge_copy_from(Source::fields().field_b()),
 ])
 // Emits: WHEN MATCHED AND (tgt.field_a IS DISTINCT FROM src.field_a OR tgt.field_b IS DISTINCT FROM src.field_b)
 ```

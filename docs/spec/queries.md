@@ -259,12 +259,14 @@ use djogi::prelude::*;
 source_qs.merge_into::<Target, _, _>(|target, source| {
     target.external_id().merge_on_eq(source.external_id())
 })
-.when_matched_and_update(Some(target.payload().is_distinct_from_source(source.payload())), vec![
-    target.payload().merge_copy_from(source.payload()),
+.when_matched_and_update(Some(
+    Target::fields().payload().is_distinct_from_source(Source::fields().payload())
+), vec![
+    Target::fields().payload().merge_copy_from(Source::fields().payload()),
 ])
 .when_not_matched_then_insert(None, vec![
-    target.external_id().merge_insert_from(source.external_id()),
-    target.payload().merge_insert_from(source.payload()),
+    Target::fields().external_id().merge_insert_from(Source::fields().external_id()),
+    Target::fields().payload().merge_insert_from(Source::fields().payload()),
 ])
 .execute(&mut ctx).await?;
 ```
@@ -274,7 +276,7 @@ Contract:
 - The entry point `merge_into` receives a closure `(T::Fields, S::Fields)` and
   returns one or more join conditions via `target.col().merge_on_eq(source.col())`.
 - `WHEN MATCHED [AND condition] THEN UPDATE SET ...` allows updating the matched
-  target row using source values, literal values, or target-side expressions.
+  target row using source values, literal values, or target-field expressions.
 - `WHEN NOT MATCHED [BY TARGET] [AND condition] THEN INSERT (...) VALUES (...)`
   allows inserting a new row when the source row has no target counterpart.
 - `WHEN MATCHED [AND condition] THEN DELETE` removes the target row.

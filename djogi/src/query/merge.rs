@@ -366,6 +366,11 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
             {
                 check_target_only_predicate(&cond.node, target_table)?;
             }
+            if branch.match_kind == MergeMatchKind::NotMatchedByTarget
+                && let Some(cond) = &branch.condition
+            {
+                check_source_only_predicate(&cond.node, target_table)?;
+            }
 
             // Action validations.
             match &branch.action {
@@ -391,6 +396,9 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
                                 ),
                             });
                         }
+                        if branch.match_kind == MergeMatchKind::NotMatchedBySource {
+                            check_by_source_update_value(&update.value, target_table)?;
+                        }
                     }
                 }
                 MergeAction::Insert(columns) => {
@@ -406,6 +414,9 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
                                 ),
                             });
                         }
+                        if branch.match_kind == MergeMatchKind::NotMatchedByTarget {
+                            check_not_matched_insert_value(&col.value, target_table)?;
+                        }
                     }
                 }
                 MergeAction::Delete => {}
@@ -416,6 +427,33 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
         }
 
         Ok(())
+    }
+}
+
+fn check_by_source_update_value<S: Model, T: Model>(
+    value: &MergeValue<S, T>,
+    table: &'static str,
+) -> Result<(), DjogiError> {
+    match value {
+        MergeValue::SourceField(column, _) => Err(DjogiError::MergeBranchInvalid {
+            table,
+            reason: format!(
+                "BY SOURCE branch update cannot reference source field `{}`",
+                column
+            ),
+        }),
+        MergeValue::TargetExpr(node, _) => check_target_only_predicate(node, table),
+        MergeValue::Literal(_, _) => Ok(()),
+    }
+}
+
+fn check_not_matched_insert_value<S: Model, T: Model>(
+    value: &MergeValue<S, T>,
+    table: &'static str,
+) -> Result<(), DjogiError> {
+    match value {
+        MergeValue::TargetExpr(node, _) => check_source_only_predicate(node, table),
+        MergeValue::SourceField(_, _) | MergeValue::Literal(_, _) => Ok(()),
     }
 }
 
@@ -455,6 +493,52 @@ fn check_target_only_predicate(node: &ExprNode, table: &'static str) -> Result<(
         _ => Err(DjogiError::MergeBranchInvalid {
             table,
             reason: "BY SOURCE branch condition uses an unsupported expression shape".to_string(),
+        }),
+    }
+}
+
+fn check_source_only_predicate(node: &ExprNode, table: &'static str) -> Result<(), DjogiError> {
+    match node {
+        ExprNode::Field { column } => Err(DjogiError::MergeBranchInvalid {
+            table,
+            reason: format!(
+                "NOT MATCHED branch condition cannot reference target field `{}`",
+                column
+            ),
+        }),
+        ExprNode::OuterRefColumn {
+            table: alias,
+            column,
+        } => {
+            if *alias != SRC_ALIAS {
+                return Err(DjogiError::MergeBranchInvalid {
+                    table,
+                    reason: format!(
+                        "NOT MATCHED branch condition cannot reference target field `{}`",
+                        column
+                    ),
+                });
+            }
+            Ok(())
+        }
+        ExprNode::Literal(_) => Ok(()),
+        ExprNode::Add(l, r)
+        | ExprNode::Sub(l, r)
+        | ExprNode::Mul(l, r)
+        | ExprNode::Div(l, r)
+        | ExprNode::And(l, r)
+        | ExprNode::Or(l, r) => {
+            check_source_only_predicate(l, table)?;
+            check_source_only_predicate(r, table)
+        }
+        ExprNode::Not(e) => check_source_only_predicate(e, table),
+        ExprNode::Cmp { lhs, rhs, .. } => {
+            check_source_only_predicate(lhs, table)?;
+            check_source_only_predicate(rhs, table)
+        }
+        _ => Err(DjogiError::MergeBranchInvalid {
+            table,
+            reason: "NOT MATCHED branch condition uses an unsupported expression shape".to_string(),
         }),
     }
 }
@@ -646,6 +730,55 @@ impl<S: Model, T: Model> std::fmt::Debug for MergeInsertColumn<S, T> {
     }
 }
 
+pub struct MergeTargetExpr<T: Model, V> {
+    pub(crate) node: ExprNode,
+    pub(crate) _marker: PhantomData<(T, V)>,
+}
+
+impl<T: Model, V> Clone for MergeTargetExpr<T, V> {
+    fn clone(&self) -> Self {
+        Self {
+            node: self.node.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T: Model, V> std::fmt::Debug for MergeTargetExpr<T, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MergeTargetExpr")
+            .field("node", &self.node)
+            .finish()
+    }
+}
+
+pub trait IntoMergeTargetExpr<T: Model, V> {
+    fn into_merge_target_expr(self) -> MergeTargetExpr<T, V>;
+}
+
+impl<T: Model, V> IntoMergeTargetExpr<T, V> for MergeTargetExpr<T, V> {
+    fn into_merge_target_expr(self) -> MergeTargetExpr<T, V> {
+        self
+    }
+}
+
+impl<T: Model, V> IntoMergeTargetExpr<T, V> for FieldRef<T, V> {
+    fn into_merge_target_expr(self) -> MergeTargetExpr<T, V> {
+        MergeTargetExpr {
+            node: ExprNode::Field {
+                column: self.column(),
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T: Model, V> IntoMergeTargetExpr<T, V> for DjogiField<T, V> {
+    fn into_merge_target_expr(self) -> MergeTargetExpr<T, V> {
+        self.sql.into_merge_target_expr()
+    }
+}
+
 pub(crate) enum MergeValue<S: Model, T: Model> {
     Literal(crate::query::condition::FilterValue, PhantomData<(S, T)>),
     SourceField(&'static str, PhantomData<(S, T)>),
@@ -785,9 +918,9 @@ impl<T: Model, V> FieldRef<T, V> {
     /// Bind this target column to an expression for a `MERGE` update action.
     pub fn merge_set_expr<S: Model, E>(self, value: E) -> MergeUpdateAssignment<S, T>
     where
-        E: Into<crate::expr::Expr<V>>,
+        E: IntoMergeTargetExpr<T, V>,
     {
-        let expr = value.into();
+        let expr = value.into_merge_target_expr();
         MergeUpdateAssignment {
             target_col: self.column(),
             value: MergeValue::TargetExpr(expr.node, PhantomData),
@@ -798,9 +931,9 @@ impl<T: Model, V> FieldRef<T, V> {
     /// Bind this target column to an expression for a `MERGE` insert action.
     pub fn merge_insert_expr<S: Model, E>(self, value: E) -> MergeInsertColumn<S, T>
     where
-        E: Into<crate::expr::Expr<V>>,
+        E: IntoMergeTargetExpr<T, V>,
     {
-        let expr = value.into();
+        let expr = value.into_merge_target_expr();
         MergeInsertColumn {
             target_col: self.column(),
             value: MergeValue::TargetExpr(expr.node, PhantomData),
@@ -861,14 +994,14 @@ impl<T: Model, V> DjogiField<T, V> {
 
     pub fn merge_set_expr<S: Model, E>(self, value: E) -> MergeUpdateAssignment<S, T>
     where
-        E: Into<crate::expr::Expr<V>>,
+        E: IntoMergeTargetExpr<T, V>,
     {
         self.sql.merge_set_expr(value)
     }
 
     pub fn merge_insert_expr<S: Model, E>(self, value: E) -> MergeInsertColumn<S, T>
     where
-        E: Into<crate::expr::Expr<V>>,
+        E: IntoMergeTargetExpr<T, V>,
     {
         self.sql.merge_insert_expr(value)
     }
@@ -1115,5 +1248,76 @@ mod tests {
         if let Err(DjogiError::MergeBranchInvalid { reason, .. }) = res {
             assert!(reason.contains("BY SOURCE branch condition cannot reference source field"));
         }
+    }
+
+    #[test]
+    fn merge_validation_rejects_by_source_update_copy_from_source() {
+        let source: QuerySet<Fake> = QuerySet::new();
+        let stmt = source
+            .merge_into::<Fake, _, _>(|tgt, src| tgt.id().merge_on_eq(src.id()))
+            .when_not_matched_by_source_then_update(
+                None::<MergeWhenCondition<Fake, Fake>>,
+                Fake::fields()
+                    .payload()
+                    .merge_copy_from(Fake::fields().payload()),
+            );
+
+        let res = stmt.validate();
+        assert!(matches!(res, Err(DjogiError::MergeBranchInvalid { .. })));
+        if let Err(DjogiError::MergeBranchInvalid { reason, .. }) = res {
+            assert!(reason.contains("BY SOURCE branch update cannot reference source field"));
+        }
+    }
+
+    #[test]
+    fn merge_validation_rejects_not_matched_target_condition_with_target_ref() {
+        let source: QuerySet<Fake> = QuerySet::new();
+        let stmt = source
+            .merge_into::<Fake, _, _>(|tgt, src| tgt.id().merge_on_eq(src.id()))
+            .when_not_matched_then_insert(
+                Some(
+                    Fake::fields()
+                        .payload()
+                        .is_distinct_from_source(Fake::fields().payload()),
+                ),
+                Fake::fields()
+                    .payload()
+                    .merge_insert_from(Fake::fields().payload()),
+            );
+
+        let res = stmt.validate();
+        assert!(matches!(res, Err(DjogiError::MergeBranchInvalid { .. })));
+        if let Err(DjogiError::MergeBranchInvalid { reason, .. }) = res {
+            assert!(reason.contains("NOT MATCHED branch condition cannot reference target field"));
+        }
+    }
+
+    #[test]
+    fn merge_boolean_predicates_preserve_tree_grouping() {
+        let source: QuerySet<Fake> = QuerySet::new();
+        let condition = Fake::fields()
+            .id()
+            .is_distinct_from_source(Fake::fields().id())
+            .and(
+                Fake::fields()
+                    .payload()
+                    .is_distinct_from_source(Fake::fields().payload())
+                    .or(Fake::fields()
+                        .id()
+                        .is_distinct_from_source(Fake::fields().id())),
+            );
+        let stmt = source
+            .merge_into::<Fake, _, _>(|tgt, src| tgt.id().merge_on_eq(src.id()))
+            .when_matched_and_delete(Some(condition));
+
+        let acc = build_merge(&stmt.source, &stmt.on, &stmt.branches, None).unwrap();
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains(
+                "WHEN MATCHED AND tgt.id IS DISTINCT FROM __djogi_src.id AND (tgt.payload IS DISTINCT FROM __djogi_src.payload OR tgt.id IS DISTINCT FROM __djogi_src.id) THEN DELETE"
+            ),
+            "SQL did not preserve nested OR grouping: {sql}"
+        );
     }
 }
