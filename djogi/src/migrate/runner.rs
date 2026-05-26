@@ -56,7 +56,6 @@ use std::time::Instant;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
-use crate::__bypass::RawAccessExt as _;
 use crate::config::MigrateConfig;
 use crate::context::DjogiContext;
 use crate::error::{DbError, DjogiError};
@@ -1862,7 +1861,7 @@ async fn rollback_inner(
         .iter()
         .any(|s| s.kind == SegmentKind::Transactional);
     if has_transactional {
-        ctx.raw_ddl("BEGIN")
+        ctx.batch_execute("BEGIN")
             .await
             .map_err(|e| RollbackError::DownStatementFailed {
                 segment_index: usize::MAX,
@@ -1878,10 +1877,10 @@ async fn rollback_inner(
                 if stmt.down.is_empty() {
                     continue;
                 }
-                if let Err(e) = ctx.raw_ddl(&stmt.down).await {
+                if let Err(e) = ctx.batch_execute(&stmt.down).await {
                     // Best-effort ROLLBACK of the whole compound tx —
                     // surface the original error verbatim.
-                    let _ = ctx.raw_ddl("ROLLBACK").await;
+                    let _ = ctx.batch_execute("ROLLBACK").await;
                     return Err(RollbackError::DownStatementFailed {
                         segment_index: rev_idx,
                         statement_label: stmt.label.clone(),
@@ -1892,7 +1891,7 @@ async fn rollback_inner(
             transactional_undone += 1;
         }
 
-        ctx.raw_ddl("COMMIT")
+        ctx.batch_execute("COMMIT")
             .await
             .map_err(|e| RollbackError::DownStatementFailed {
                 segment_index: usize::MAX,
@@ -1969,7 +1968,7 @@ async fn rollback_non_transactional_segment(
         if stmt.down.is_empty() {
             continue;
         }
-        if let Err(e) = ctx.raw_ddl(&stmt.down).await {
+        if let Err(e) = ctx.batch_execute(&stmt.down).await {
             return Err(RollbackError::DownStatementFailed {
                 segment_index,
                 statement_label: stmt.label.clone(),
@@ -2400,7 +2399,7 @@ async fn run_transactional_segment(
         }
     }
 
-    ctx.raw_ddl("BEGIN")
+    ctx.batch_execute("BEGIN")
         .await
         .map_err(|e| RunnerError::TransactionalSegmentFailed {
             segment_index,
@@ -2409,10 +2408,10 @@ async fn run_transactional_segment(
         })?;
 
     for stmt in &segment.statements {
-        if let Err(e) = ctx.raw_ddl(&stmt.up).await {
+        if let Err(e) = ctx.batch_execute(&stmt.up).await {
             // Best-effort rollback — surface the original error
             // regardless of whether the rollback succeeds.
-            let _ = ctx.raw_ddl("ROLLBACK").await;
+            let _ = ctx.batch_execute("ROLLBACK").await;
             return Err(RunnerError::TransactionalSegmentFailed {
                 segment_index,
                 statement_label: stmt.label.clone(),
@@ -2421,7 +2420,7 @@ async fn run_transactional_segment(
         }
     }
 
-    ctx.raw_ddl("COMMIT")
+    ctx.batch_execute("COMMIT")
         .await
         .map_err(|e| RunnerError::TransactionalSegmentFailed {
             segment_index,
@@ -2474,7 +2473,7 @@ async fn run_non_transactional_segment(
                 version: run.version.to_string(),
                 source: e,
             })?;
-        if let Err(e) = ctx.raw_ddl(&stmt.up).await {
+        if let Err(e) = ctx.batch_execute(&stmt.up).await {
             let total_so_far = run.prior_steps_completed.saturating_add(completed);
             let note = format!(
                 "non-tx step {step} of segment {seg} failed: {label} — {e}",

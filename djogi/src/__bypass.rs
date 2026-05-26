@@ -177,7 +177,7 @@ fn classify_raw_ddl_transaction_session_statement(sql: &str) -> Option<&'static 
 
     while idx < bytes.len() {
         if let Some(delimiter) = dollar_quote.as_deref() {
-            if sql[idx..].starts_with(delimiter) {
+            if bytes[idx..].starts_with(delimiter.as_bytes()) {
                 idx += delimiter.len();
                 dollar_quote = None;
             } else {
@@ -1083,6 +1083,21 @@ mod tests {
             classify_raw_ddl_transaction_session_statement(sql),
             Some("LISTEN")
         );
+    }
+
+    #[test]
+    fn classify_raw_ddl_transaction_session_statement_handles_utf8_inside_dollar_quote() {
+        let sql = r#"
+            DO $body$
+            BEGIN
+                -- Unicode comment inside the body: bootstrap — extensions
+                PERFORM 1;
+            END
+            $body$;
+            CREATE TEMP TABLE djogi_282_classifier_utf8_ok (value integer);
+        "#;
+
+        assert_eq!(classify_raw_ddl_transaction_session_statement(sql), None);
     }
 
     #[test]
