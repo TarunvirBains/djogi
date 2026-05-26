@@ -106,22 +106,19 @@ use crate::{DbError, DjogiError};
 use postgres_types::{FromSql, ToSql};
 use tokio_postgres::Row;
 
-fn reject_transaction_session_statement(
-    ctx: &mut DjogiContext,
-    sql: &str,
-) -> Result<(), DjogiError> {
+fn reject_transaction_backed_sql(ctx: &mut DjogiContext, sql: &str) -> Result<(), DjogiError> {
     if let Some(err) = ctx.transaction_poison_error() {
         return Err(err);
     }
     if ctx.conn().is_some()
-        && let Some(statement) = classify_transaction_session_statement(sql)
+        && let Some(refusal) = classify_transaction_backed_refusal(sql)
     {
-        return Err(DjogiError::SessionStatementDisallowedInTransaction { statement });
+        return Err(refusal.into_error());
     }
     Ok(())
 }
 
-fn reject_transaction_session_statement_batch(
+fn reject_transaction_backed_sql_batch(
     ctx: &mut DjogiContext,
     sql: &str,
 ) -> Result<(), DjogiError> {
@@ -129,9 +126,9 @@ fn reject_transaction_session_statement_batch(
         return Err(err);
     }
     if ctx.conn().is_some()
-        && let Some(statement) = classify_raw_ddl_transaction_session_statement(sql)
+        && let Some(refusal) = classify_raw_ddl_transaction_backed_refusal(sql)
     {
-        return Err(DjogiError::SessionStatementDisallowedInTransaction { statement });
+        return Err(refusal.into_error());
     }
     Ok(())
 }
@@ -140,7 +137,7 @@ pub(crate) async fn guarded_batch_execute(
     ctx: &mut DjogiContext,
     sql: &str,
 ) -> Result<(), DjogiError> {
-    reject_transaction_session_statement_batch(ctx, sql)?;
+    reject_transaction_backed_sql_batch(ctx, sql)?;
     ctx.batch_execute(sql).await
 }
 
@@ -173,6 +170,7 @@ fn classify_transaction_session_statement(sql: &str) -> Option<&'static str> {
     .find(|statement| keyword.eq_ignore_ascii_case(statement))
 }
 
+#[allow(dead_code)] // Retained by existing regression tests; superseded in production by classify_raw_ddl_transaction_backed_refusal.
 fn classify_raw_ddl_transaction_session_statement(sql: &str) -> Option<&'static str> {
     let bytes = sql.as_bytes();
     let mut statement_start = 0usize;
@@ -284,6 +282,195 @@ fn classify_raw_ddl_transaction_session_statement(sql: &str) -> Option<&'static 
     }
 
     classify_transaction_session_statement(&sql[statement_start..])
+}
+
+// ---------------------------------------------------------------------------
+// Transaction-control statement classifier (#306 T3).
+// ---------------------------------------------------------------------------
+
+fn classify_transaction_control_statement(sql: &str) -> Option<&'static str> {
+    let (first, after_first) = parse_keyword(sql, 0)?;
+
+    if first.eq_ignore_ascii_case("START") {
+        return match parse_keyword(sql, after_first) {
+            Some((second, _)) if second.eq_ignore_ascii_case("TRANSACTION") => {
+                Some("START TRANSACTION")
+            }
+            _ => None,
+        };
+    }
+
+    if first.eq_ignore_ascii_case("ROLLBACK") {
+        let third = parse_keyword(sql, after_first);
+        return match third {
+            Some((w, _))
+                if w.eq_ignore_ascii_case("WORK") || w.eq_ignore_ascii_case("TRANSACTION") =>
+            {
+                // ROLLBACK WORK / ROLLBACK TRANSACTION (plain rollback)
+                // and ROLLBACK WORK TO sp / ROLLBACK TRANSACTION TO sp
+                Some("ROLLBACK")
+            }
+            Some((w, _)) if w.eq_ignore_ascii_case("TO") => Some("ROLLBACK"),
+            _ => Some("ROLLBACK"),
+        };
+    }
+
+    if first.eq_ignore_ascii_case("RELEASE") {
+        // Bare RELEASE or RELEASE SAVEPOINT — both are transaction control.
+        return Some("RELEASE");
+    }
+
+    ["BEGIN", "COMMIT", "END", "ABORT", "SAVEPOINT"]
+        .into_iter()
+        .find(|s| first.eq_ignore_ascii_case(s))
+}
+
+// ---------------------------------------------------------------------------
+// Unified refusal enum (#306 T3).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum TransactionBackedRawSqlRefusal {
+    SessionStatement(&'static str),
+    TransactionControl(&'static str),
+}
+
+impl TransactionBackedRawSqlRefusal {
+    pub(crate) fn into_error(self) -> DjogiError {
+        match self {
+            Self::SessionStatement(s) => {
+                DjogiError::SessionStatementDisallowedInTransaction { statement: s }
+            }
+            Self::TransactionControl(s) => {
+                DjogiError::RawTransactionControlDisallowedInTransaction { statement: s }
+            }
+        }
+    }
+}
+
+fn classify_transaction_backed_refusal(sql: &str) -> Option<TransactionBackedRawSqlRefusal> {
+    if let Some(s) = classify_transaction_control_statement(sql) {
+        return Some(TransactionBackedRawSqlRefusal::TransactionControl(s));
+    }
+    if let Some(s) = classify_transaction_session_statement(sql) {
+        return Some(TransactionBackedRawSqlRefusal::SessionStatement(s));
+    }
+    None
+}
+
+fn classify_raw_ddl_transaction_backed_refusal(
+    sql: &str,
+) -> Option<TransactionBackedRawSqlRefusal> {
+    let bytes = sql.as_bytes();
+    let mut statement_start = 0usize;
+    let mut idx = 0usize;
+    let mut block_comment_depth = 0usize;
+    let mut in_line_comment = false;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut dollar_quote: Option<String> = None;
+
+    while idx < bytes.len() {
+        if let Some(delimiter) = dollar_quote.as_deref() {
+            if bytes[idx..].starts_with(delimiter.as_bytes()) {
+                idx += delimiter.len();
+                dollar_quote = None;
+            } else {
+                idx += 1;
+            }
+            continue;
+        }
+
+        if in_line_comment {
+            if bytes[idx] == b'\n' {
+                in_line_comment = false;
+            }
+            idx += 1;
+            continue;
+        }
+
+        if block_comment_depth > 0 {
+            if bytes.get(idx) == Some(&b'/') && bytes.get(idx + 1) == Some(&b'*') {
+                block_comment_depth += 1;
+                idx += 2;
+            } else if bytes.get(idx) == Some(&b'*') && bytes.get(idx + 1) == Some(&b'/') {
+                block_comment_depth -= 1;
+                idx += 2;
+            } else {
+                idx += 1;
+            }
+            continue;
+        }
+
+        if in_single_quote {
+            if bytes[idx] == b'\'' {
+                if bytes.get(idx + 1) == Some(&b'\'') {
+                    idx += 2;
+                } else {
+                    in_single_quote = false;
+                    idx += 1;
+                }
+            } else {
+                idx += 1;
+            }
+            continue;
+        }
+
+        if in_double_quote {
+            if bytes[idx] == b'"' {
+                if bytes.get(idx + 1) == Some(&b'"') {
+                    idx += 2;
+                } else {
+                    in_double_quote = false;
+                    idx += 1;
+                }
+            } else {
+                idx += 1;
+            }
+            continue;
+        }
+
+        match bytes[idx] {
+            b';' => {
+                if let Some(refusal) =
+                    classify_transaction_backed_refusal(&sql[statement_start..idx])
+                {
+                    return Some(refusal);
+                }
+                statement_start = idx + 1;
+                idx += 1;
+            }
+            b'\'' => {
+                in_single_quote = true;
+                idx += 1;
+            }
+            b'"' => {
+                in_double_quote = true;
+                idx += 1;
+            }
+            b'-' if bytes.get(idx + 1) == Some(&b'-') => {
+                in_line_comment = true;
+                idx += 2;
+            }
+            b'/' if bytes.get(idx + 1) == Some(&b'*') => {
+                block_comment_depth = 1;
+                idx += 2;
+            }
+            b'$' => {
+                if let Some(end_idx) = parse_dollar_quote_delimiter_end(sql, idx) {
+                    dollar_quote = Some(sql[idx..end_idx].to_owned());
+                    idx = end_idx;
+                } else {
+                    idx += 1;
+                }
+            }
+            _ => {
+                idx += 1;
+            }
+        }
+    }
+
+    classify_transaction_backed_refusal(&sql[statement_start..])
 }
 
 fn parse_keyword(sql: &str, start_idx: usize) -> Option<(&str, usize)> {
@@ -720,7 +907,7 @@ impl RawAccessExt for DjogiContext {
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Vec<T>, DjogiError> {
-        reject_transaction_session_statement(self, sql)?;
+        reject_transaction_backed_sql(self, sql)?;
         // Route through `query_all_with` so the per-row `FromPgRow::from_pg_row`
         // decode runs inside the `PoolConnGuard`'s lifetime. A decode failure
         // here would otherwise leave the pool with a possibly poisoned
@@ -737,7 +924,7 @@ impl RawAccessExt for DjogiContext {
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Vec<Row>, DjogiError> {
-        reject_transaction_session_statement(self, sql)?;
+        reject_transaction_backed_sql(self, sql)?;
         // No post-query decode — the existing `query_all` guard already
         // covers the only Err/cancel exit shape.
         self.__query_all_for_macros(sql, params).await
@@ -748,7 +935,7 @@ impl RawAccessExt for DjogiContext {
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<T, DjogiError> {
-        reject_transaction_session_statement(self, sql)?;
+        reject_transaction_backed_sql(self, sql)?;
         // Decode runs inside the guard's lifetime via `query_opt_with`. The
         // `not_found` branch is also reported as `Err`, so the guard's
         // `committed` flag stays `false` and a no-row response still
@@ -771,7 +958,7 @@ impl RawAccessExt for DjogiContext {
     where
         T: for<'row> FromSql<'row> + Send + 'static,
     {
-        reject_transaction_session_statement(self, sql)?;
+        reject_transaction_backed_sql(self, sql)?;
         // `try_get_scalar` is the decode step that can fail on a row that
         // the underlying SQL produced successfully — e.g.
         // `SELECT set_config('application_name', '...', false)` returns
@@ -791,12 +978,12 @@ impl RawAccessExt for DjogiContext {
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<u64, DjogiError> {
-        reject_transaction_session_statement(self, sql)?;
+        reject_transaction_backed_sql(self, sql)?;
         self.__execute_for_macros(sql, params).await
     }
 
     async fn raw_ddl(&mut self, sql: &str) -> Result<(), DjogiError> {
-        reject_transaction_session_statement_batch(self, sql)?;
+        reject_transaction_backed_sql_batch(self, sql)?;
         self.batch_execute(sql).await
     }
 
@@ -1029,8 +1216,11 @@ async fn _raw_stream_with_fetch_size_trait_canary<'ctx>(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_raw_ddl_transaction_session_statement, classify_transaction_session_statement,
+        TransactionBackedRawSqlRefusal, classify_raw_ddl_transaction_backed_refusal,
+        classify_raw_ddl_transaction_session_statement, classify_transaction_backed_refusal,
+        classify_transaction_control_statement, classify_transaction_session_statement,
     };
+    use crate::DjogiError;
 
     #[test]
     fn classify_transaction_session_statement_rejects_plain_set_after_leading_comments() {
@@ -1138,6 +1328,269 @@ mod tests {
         assert_eq!(
             classify_raw_ddl_transaction_session_statement(sql),
             Some("SET")
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Transaction control statement classification (#306 T3).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn classify_transaction_control_statement_detects_all_nine_forms() {
+        assert_eq!(
+            classify_transaction_control_statement("BEGIN"),
+            Some("BEGIN")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("START TRANSACTION"),
+            Some("START TRANSACTION")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("COMMIT"),
+            Some("COMMIT")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("ROLLBACK"),
+            Some("ROLLBACK")
+        );
+        assert_eq!(classify_transaction_control_statement("END"), Some("END"));
+        assert_eq!(
+            classify_transaction_control_statement("ABORT"),
+            Some("ABORT")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("SAVEPOINT my_sp"),
+            Some("SAVEPOINT")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("RELEASE SAVEPOINT my_sp"),
+            Some("RELEASE")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("RELEASE"),
+            Some("RELEASE")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("ROLLBACK TO my_sp"),
+            Some("ROLLBACK")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("ROLLBACK WORK TO my_sp"),
+            Some("ROLLBACK")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("ROLLBACK TRANSACTION TO my_sp"),
+            Some("ROLLBACK")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("ROLLBACK WORK"),
+            Some("ROLLBACK")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("ROLLBACK TRANSACTION"),
+            Some("ROLLBACK")
+        );
+    }
+
+    #[test]
+    fn classify_transaction_control_statement_is_case_insensitive() {
+        for sql in ["commit", "CoMmIt", "COMMIT"] {
+            assert_eq!(
+                classify_transaction_control_statement(sql),
+                Some("COMMIT"),
+                "expected COMMIT for {sql:?}"
+            );
+        }
+        for sql in ["begin", "BeGiN", "BEGIN"] {
+            assert_eq!(
+                classify_transaction_control_statement(sql),
+                Some("BEGIN"),
+                "expected BEGIN for {sql:?}"
+            );
+        }
+        for sql in [
+            "start transaction",
+            "START TRANSACTION",
+            "Start Transaction",
+        ] {
+            assert_eq!(
+                classify_transaction_control_statement(sql),
+                Some("START TRANSACTION"),
+                "expected START TRANSACTION for {sql:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_transaction_control_statement_handles_leading_trivia() {
+        assert_eq!(
+            classify_transaction_control_statement("  COMMIT"),
+            Some("COMMIT")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("  \n  \t  rollback"),
+            Some("ROLLBACK")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("-- line comment\nCOMMIT"),
+            Some("COMMIT")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("/* block */ BEGIN"),
+            Some("BEGIN")
+        );
+    }
+
+    #[test]
+    fn classify_transaction_control_statement_returns_none_for_non_transaction_sql() {
+        for sql in [
+            "SELECT 1",
+            "INSERT INTO users (name) VALUES ('test')",
+            "UPDATE posts SET title = 'x'",
+            "DELETE FROM comments WHERE id = 1",
+            "CREATE TABLE foo (id bigint)",
+            "SET LOCAL statement_timeout = '5s'",
+            "SET CONSTRAINTS ALL IMMEDIATE",
+            "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+        ] {
+            assert_eq!(
+                classify_transaction_control_statement(sql),
+                None,
+                "expected None for non-transaction SQL: {sql:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_transaction_backed_refusal_prioritizes_transaction_control_over_session() {
+        // COMMIT is transaction control, not session — should be TransactionControl
+        let refusal = classify_transaction_backed_refusal("COMMIT").expect("expected refusal");
+        match refusal {
+            TransactionBackedRawSqlRefusal::TransactionControl(s) => {
+                assert_eq!(s, "COMMIT");
+            }
+            _ => panic!("expected TransactionControl(COMMIT), got {:?}", refusal),
+        }
+    }
+
+    #[test]
+    fn classify_transaction_backed_refusal_wraps_session_statements() {
+        let refusal = classify_transaction_backed_refusal("RESET ALL").expect("expected refusal");
+        match refusal {
+            TransactionBackedRawSqlRefusal::SessionStatement(s) => {
+                assert_eq!(s, "RESET");
+            }
+            _ => panic!("expected SessionStatement(RESET), got {:?}", refusal),
+        }
+    }
+
+    #[test]
+    fn classify_transaction_backed_refusal_into_error_produces_correct_variant() {
+        let refusal = classify_transaction_backed_refusal("COMMIT").expect("expected refusal");
+        let err = refusal.into_error();
+        // Verify the error variant by matching on it
+        match err {
+            DjogiError::RawTransactionControlDisallowedInTransaction { statement } => {
+                assert_eq!(statement, "COMMIT");
+            }
+            _ => panic!(
+                "expected RawTransactionControlDisallowedInTransaction, got {:?}",
+                err
+            ),
+        }
+
+        let refusal = classify_transaction_backed_refusal("LISTEN foo").expect("expected refusal");
+        let err = refusal.into_error();
+        match err {
+            DjogiError::SessionStatementDisallowedInTransaction { statement } => {
+                assert_eq!(statement, "LISTEN");
+            }
+            _ => panic!(
+                "expected SessionStatementDisallowedInTransaction, got {:?}",
+                err
+            ),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Batch scanner tests for unified refusal (#306 T3).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn classify_raw_ddl_batch_ignores_transaction_keywords_in_dollar_quoted_body() {
+        let sql = r#"
+            DO $body$
+            BEGIN
+                PERFORM 'COMMIT should be ignored here';
+                PERFORM $$nested ROLLBACK$$;
+            END
+            $body$;
+            SELECT 1;
+        "#;
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_detects_transaction_control_after_safe_ddl() {
+        let sql = r#"
+            CREATE TEMP TABLE foo (value integer);
+            COMMIT;
+        "#;
+        match classify_raw_ddl_transaction_backed_refusal(sql) {
+            Some(TransactionBackedRawSqlRefusal::TransactionControl(s)) => {
+                assert_eq!(s, "COMMIT");
+            }
+            _ => panic!("expected TransactionControl(COMMIT)"),
+        }
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_detects_session_statement_after_safe_ddl() {
+        let sql = r#"
+            CREATE TEMP TABLE foo (value integer);
+            RESET ALL;
+        "#;
+        match classify_raw_ddl_transaction_backed_refusal(sql) {
+            Some(TransactionBackedRawSqlRefusal::SessionStatement(s)) => {
+                assert_eq!(s, "RESET");
+            }
+            _ => panic!("expected SessionStatement(RESET)"),
+        }
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_allows_trivia_only_and_safe_batches() {
+        assert_eq!(
+            classify_raw_ddl_transaction_backed_refusal(
+                " /* nothing here */ \n -- still nothing\n"
+            ),
+            None
+        );
+
+        let sql = r#"
+            DO $body$
+            BEGIN
+                PERFORM '; safe body';
+            END
+            $body$;
+            CREATE TEMP TABLE djogi_306_classifier_ok (value integer);
+        "#;
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_transaction_control_statement_start_without_transaction_is_none() {
+        // "START" alone is not transaction control — requires "TRANSACTION" as second word
+        assert_eq!(classify_transaction_control_statement("START"), None);
+        assert_eq!(classify_transaction_control_statement("START ALL"), None);
+    }
+
+    #[test]
+    fn classify_transaction_backed_refusal_returns_none_for_safe_sql() {
+        assert_eq!(classify_transaction_backed_refusal("SELECT 1"), None);
+        assert_eq!(
+            classify_transaction_backed_refusal("INSERT INTO t VALUES (1)"),
+            None
         );
     }
 }

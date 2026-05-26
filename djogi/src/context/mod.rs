@@ -411,6 +411,7 @@ impl DjogiContext {
     /// Return true when this context owns an active transaction connection.
     ///
     /// Used by the raw SQL bypass harness (#306) to decide whether to
+    #[allow(dead_code)] // Used by raw SQL bypass preflight guards (#306 T4)
     /// apply transaction-control refusal checks. A pool-backed context
     /// always returns false; a transaction-backed context always returns
     /// true regardless of poison state.
