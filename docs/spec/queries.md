@@ -281,6 +281,8 @@ Contract:
   target row using source values, literal values, or target-field expressions.
 - `WHEN NOT MATCHED [BY TARGET] [AND condition] THEN INSERT (...) VALUES (...)`
   allows inserting a new row when the source row has no target counterpart.
+  Conditions on this branch are source-only; use source-side condition builders
+  such as `Source::fields().payload().merge_source_eq_value("new")`.
 - `WHEN MATCHED [AND condition] THEN DELETE` removes the target row.
 - `WHEN NOT MATCHED BY SOURCE [AND condition] THEN [UPDATE | DELETE]` allows
   acting on target rows that have no source counterpart. PostgreSQL introduced
@@ -289,8 +291,8 @@ Contract:
 - **Validations**:
   - Rejects `source.none()` (structural empty) by default if `BY SOURCE` branches
     exist to prevent unintentional broad updates.
-  - `BY SOURCE` predicates are constrained to target-only fields (enforced at
-    runtime by the emitter).
+  - `BY SOURCE` predicates are constrained to target-only fields (use
+    `merge_target_*` builders such as `merge_target_eq_value(true)`).
   - Rejects source state that cannot be safely represented (`prefetch`,
     `select_related`, `cache`, `lock`, `distinct`).
   - Rejects manual assignment to `updated_at` and duplicate target columns.

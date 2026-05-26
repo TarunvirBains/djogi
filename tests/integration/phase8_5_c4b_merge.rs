@@ -155,6 +155,98 @@ async fn merge_delete_missing_source_rows(mut ctx: djogi::DjogiContext) {
     assert!(alpha_exists, "alpha should still exist");
 }
 
+#[djogi::djogi_test(sync_models = [MergeSource, MergeTarget])]
+async fn merge_by_source_condition_scopes_target_rows(mut ctx: djogi::DjogiContext) {
+    seed_target(&mut ctx, "alpha", "v1").await;
+    seed_target(&mut ctx, "gamma", "v1").await;
+    seed_target(&mut ctx, "delta", "v1").await;
+    seed_source(&mut ctx, "alpha", "v1").await;
+
+    let counts = MergeSource::objects()
+        .merge_into::<MergeTarget, _, _>(|target, source| {
+            target.external_id().merge_on_eq(source.external_id())
+        })
+        .when_not_matched_by_source_then_update(
+            Some(
+                MergeTarget::fields()
+                    .external_id()
+                    .merge_target_eq_value::<MergeSource, _>("gamma"),
+            ),
+            MergeTarget::fields().active().merge_set(false),
+        )
+        .execute(&mut ctx)
+        .await
+        .unwrap();
+
+    assert_eq!(counts.total_affected, 1);
+
+    let gamma = MergeTarget::objects()
+        .filter(|f| f.external_id().eq("gamma"))
+        .fetch_one(&mut ctx)
+        .await
+        .unwrap();
+    let delta = MergeTarget::objects()
+        .filter(|f| f.external_id().eq("delta"))
+        .fetch_one(&mut ctx)
+        .await
+        .unwrap();
+
+    assert!(
+        !gamma.active,
+        "gamma should be scoped by the BY SOURCE condition"
+    );
+    assert!(
+        delta.active,
+        "delta should not be affected by the scoped condition"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [MergeSource, MergeTarget])]
+async fn merge_not_matched_condition_scopes_source_rows(mut ctx: djogi::DjogiContext) {
+    seed_source(&mut ctx, "beta", "new").await;
+    seed_source(&mut ctx, "gamma", "skip").await;
+
+    let counts = MergeSource::objects()
+        .merge_into::<MergeTarget, _, _>(|target, source| {
+            target.external_id().merge_on_eq(source.external_id())
+        })
+        .when_not_matched_then_insert(
+            Some(
+                MergeSource::fields()
+                    .payload()
+                    .merge_source_eq_value::<MergeTarget, _>("new"),
+            ),
+            vec![
+                MergeTarget::fields()
+                    .external_id()
+                    .merge_insert_from(MergeSource::fields().external_id()),
+                MergeTarget::fields()
+                    .payload()
+                    .merge_insert_from(MergeSource::fields().payload()),
+                MergeTarget::fields().active().merge_insert_value(true),
+            ],
+        )
+        .execute(&mut ctx)
+        .await
+        .unwrap();
+
+    assert_eq!(counts.total_affected, 1);
+    assert!(
+        MergeTarget::objects()
+            .filter(|f| f.external_id().eq("beta"))
+            .exists(&mut ctx)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !MergeTarget::objects()
+            .filter(|f| f.external_id().eq("gamma"))
+            .exists(&mut ctx)
+            .await
+            .unwrap()
+    );
+}
+
 // ── Update if Changed ────────────────────────────────────────────────────
 
 #[djogi::djogi_test(sync_models = [MergeSource, MergeTarget])]

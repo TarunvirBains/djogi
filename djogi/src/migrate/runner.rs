@@ -56,6 +56,7 @@ use std::time::Instant;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
+use crate::__bypass::guarded_batch_execute;
 use crate::config::MigrateConfig;
 use crate::context::DjogiContext;
 use crate::error::{DbError, DjogiError};
@@ -1877,7 +1878,7 @@ async fn rollback_inner(
                 if stmt.down.is_empty() {
                     continue;
                 }
-                if let Err(e) = ctx.batch_execute(&stmt.down).await {
+                if let Err(e) = guarded_batch_execute(ctx, &stmt.down).await {
                     // Best-effort ROLLBACK of the whole compound tx —
                     // surface the original error verbatim.
                     let _ = ctx.batch_execute("ROLLBACK").await;
@@ -1968,7 +1969,7 @@ async fn rollback_non_transactional_segment(
         if stmt.down.is_empty() {
             continue;
         }
-        if let Err(e) = ctx.batch_execute(&stmt.down).await {
+        if let Err(e) = guarded_batch_execute(ctx, &stmt.down).await {
             return Err(RollbackError::DownStatementFailed {
                 segment_index,
                 statement_label: stmt.label.clone(),
@@ -2408,7 +2409,7 @@ async fn run_transactional_segment(
         })?;
 
     for stmt in &segment.statements {
-        if let Err(e) = ctx.batch_execute(&stmt.up).await {
+        if let Err(e) = guarded_batch_execute(ctx, &stmt.up).await {
             // Best-effort rollback — surface the original error
             // regardless of whether the rollback succeeds.
             let _ = ctx.batch_execute("ROLLBACK").await;
@@ -2473,7 +2474,7 @@ async fn run_non_transactional_segment(
                 version: run.version.to_string(),
                 source: e,
             })?;
-        if let Err(e) = ctx.batch_execute(&stmt.up).await {
+        if let Err(e) = guarded_batch_execute(ctx, &stmt.up).await {
             let total_so_far = run.prior_steps_completed.saturating_add(completed);
             let note = format!(
                 "non-tx step {step} of segment {seg} failed: {label} — {e}",

@@ -36,11 +36,11 @@
 
 use crate::DjogiError;
 use crate::context::DjogiContext;
-use crate::expr::node::ExprNode;
+use crate::expr::node::{CmpOp, ExprNode};
 use crate::model::Model;
 use crate::pg::accumulator::as_params;
 use crate::pg::decode::FromPgRow;
-use crate::query::field::{DjogiField, FieldRef};
+use crate::query::field::{DjogiField, FieldRef, IntoFieldFilterValue};
 use crate::query::queryset::QuerySet;
 use crate::query::sql::build_merge;
 use crate::query::terminal::auto_set_tenant;
@@ -759,6 +759,28 @@ impl<T: Model, V> std::fmt::Debug for MergeTargetExpr<T, V> {
     }
 }
 
+pub struct MergeSourceExpr<S: Model, V> {
+    pub(crate) node: ExprNode,
+    pub(crate) _marker: PhantomData<(S, V)>,
+}
+
+impl<S: Model, V> Clone for MergeSourceExpr<S, V> {
+    fn clone(&self) -> Self {
+        Self {
+            node: self.node.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S: Model, V> std::fmt::Debug for MergeSourceExpr<S, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MergeSourceExpr")
+            .field("node", &self.node)
+            .finish()
+    }
+}
+
 pub trait IntoMergeTargetExpr<T: Model, V> {
     fn into_merge_target_expr(self) -> MergeTargetExpr<T, V>;
 }
@@ -783,6 +805,34 @@ impl<T: Model, V> IntoMergeTargetExpr<T, V> for FieldRef<T, V> {
 impl<T: Model, V> IntoMergeTargetExpr<T, V> for DjogiField<T, V> {
     fn into_merge_target_expr(self) -> MergeTargetExpr<T, V> {
         self.sql.into_merge_target_expr()
+    }
+}
+
+pub trait IntoMergeSourceExpr<S: Model, V> {
+    fn into_merge_source_expr(self) -> MergeSourceExpr<S, V>;
+}
+
+impl<S: Model, V> IntoMergeSourceExpr<S, V> for MergeSourceExpr<S, V> {
+    fn into_merge_source_expr(self) -> MergeSourceExpr<S, V> {
+        self
+    }
+}
+
+impl<S: Model, V> IntoMergeSourceExpr<S, V> for FieldRef<S, V> {
+    fn into_merge_source_expr(self) -> MergeSourceExpr<S, V> {
+        MergeSourceExpr {
+            node: ExprNode::OuterRefColumn {
+                table: SRC_ALIAS,
+                column: self.column(),
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S: Model, V> IntoMergeSourceExpr<S, V> for DjogiField<S, V> {
+    fn into_merge_source_expr(self) -> MergeSourceExpr<S, V> {
+        self.sql.into_merge_source_expr()
     }
 }
 
@@ -870,6 +920,39 @@ impl<S: Model, T: Model> IntoMergeOn<S, T> for Vec<MergeOnEq<S, T>> {
     }
 }
 
+fn merge_condition<S: Model, T: Model>(
+    lhs: ExprNode,
+    op: CmpOp,
+    rhs: ExprNode,
+) -> MergeWhenCondition<S, T> {
+    MergeWhenCondition {
+        node: ExprNode::Cmp {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        },
+        _marker: PhantomData,
+    }
+}
+
+fn target_field_node(column: &'static str) -> ExprNode {
+    ExprNode::Field { column }
+}
+
+fn source_field_node(column: &'static str) -> ExprNode {
+    ExprNode::OuterRefColumn {
+        table: SRC_ALIAS,
+        column,
+    }
+}
+
+fn literal_node<V, P>(value: P) -> ExprNode
+where
+    P: IntoFieldFilterValue<V>,
+{
+    ExprNode::Literal(value.into_field_filter_value())
+}
+
 impl<T: Model, V> FieldRef<T, V> {
     /// Bind this target column to a source column for the `MERGE ... ON` clause.
     pub fn merge_on_eq<S: Model>(self, source: FieldRef<S, V>) -> MergeOnEq<S, T> {
@@ -953,19 +1036,233 @@ impl<T: Model, V> FieldRef<T, V> {
         self,
         source: FieldRef<S, V>,
     ) -> MergeWhenCondition<S, T> {
-        MergeWhenCondition {
-            node: ExprNode::Cmp {
-                op: crate::expr::node::CmpOp::IsDistinctFrom,
-                lhs: Box::new(ExprNode::Field {
-                    column: self.column(),
-                }),
-                rhs: Box::new(ExprNode::OuterRefColumn {
-                    table: SRC_ALIAS,
-                    column: source.column(),
-                }),
-            },
-            _marker: PhantomData,
-        }
+        merge_condition(
+            target_field_node(self.column()),
+            CmpOp::IsDistinctFrom,
+            source_field_node(source.column()),
+        )
+    }
+
+    /// Target-only `tgt.col = rhs` condition for `WHEN NOT MATCHED BY SOURCE`.
+    pub fn merge_target_eq<S: Model, R>(self, rhs: R) -> MergeWhenCondition<S, T>
+    where
+        R: IntoMergeTargetExpr<T, V>,
+    {
+        merge_condition(
+            target_field_node(self.column()),
+            CmpOp::Eq,
+            rhs.into_merge_target_expr().node,
+        )
+    }
+
+    /// Target-only `tgt.col = value` condition for `WHEN NOT MATCHED BY SOURCE`.
+    pub fn merge_target_eq_value<S: Model, P>(self, value: P) -> MergeWhenCondition<S, T>
+    where
+        P: IntoFieldFilterValue<V>,
+    {
+        merge_condition(
+            target_field_node(self.column()),
+            CmpOp::Eq,
+            literal_node::<V, P>(value),
+        )
+    }
+
+    /// Target-only `tgt.col <> rhs` condition for `WHEN NOT MATCHED BY SOURCE`.
+    pub fn merge_target_neq<S: Model, R>(self, rhs: R) -> MergeWhenCondition<S, T>
+    where
+        R: IntoMergeTargetExpr<T, V>,
+    {
+        merge_condition(
+            target_field_node(self.column()),
+            CmpOp::Neq,
+            rhs.into_merge_target_expr().node,
+        )
+    }
+
+    /// Target-only `tgt.col > rhs` condition for `WHEN NOT MATCHED BY SOURCE`.
+    pub fn merge_target_gt<S: Model, R>(self, rhs: R) -> MergeWhenCondition<S, T>
+    where
+        R: IntoMergeTargetExpr<T, V>,
+    {
+        merge_condition(
+            target_field_node(self.column()),
+            CmpOp::Gt,
+            rhs.into_merge_target_expr().node,
+        )
+    }
+
+    /// Target-only `tgt.col >= rhs` condition for `WHEN NOT MATCHED BY SOURCE`.
+    pub fn merge_target_gte<S: Model, R>(self, rhs: R) -> MergeWhenCondition<S, T>
+    where
+        R: IntoMergeTargetExpr<T, V>,
+    {
+        merge_condition(
+            target_field_node(self.column()),
+            CmpOp::Gte,
+            rhs.into_merge_target_expr().node,
+        )
+    }
+
+    /// Target-only `tgt.col < rhs` condition for `WHEN NOT MATCHED BY SOURCE`.
+    pub fn merge_target_lt<S: Model, R>(self, rhs: R) -> MergeWhenCondition<S, T>
+    where
+        R: IntoMergeTargetExpr<T, V>,
+    {
+        merge_condition(
+            target_field_node(self.column()),
+            CmpOp::Lt,
+            rhs.into_merge_target_expr().node,
+        )
+    }
+
+    /// Target-only `tgt.col <= rhs` condition for `WHEN NOT MATCHED BY SOURCE`.
+    pub fn merge_target_lte<S: Model, R>(self, rhs: R) -> MergeWhenCondition<S, T>
+    where
+        R: IntoMergeTargetExpr<T, V>,
+    {
+        merge_condition(
+            target_field_node(self.column()),
+            CmpOp::Lte,
+            rhs.into_merge_target_expr().node,
+        )
+    }
+
+    /// Target-only `tgt.col IS DISTINCT FROM rhs` condition for `WHEN NOT MATCHED BY SOURCE`.
+    pub fn merge_target_is_distinct_from<S: Model, R>(self, rhs: R) -> MergeWhenCondition<S, T>
+    where
+        R: IntoMergeTargetExpr<T, V>,
+    {
+        merge_condition(
+            target_field_node(self.column()),
+            CmpOp::IsDistinctFrom,
+            rhs.into_merge_target_expr().node,
+        )
+    }
+
+    /// Target-only `tgt.col IS NOT DISTINCT FROM rhs` condition for `WHEN NOT MATCHED BY SOURCE`.
+    pub fn merge_target_is_not_distinct_from<S: Model, R>(self, rhs: R) -> MergeWhenCondition<S, T>
+    where
+        R: IntoMergeTargetExpr<T, V>,
+    {
+        merge_condition(
+            target_field_node(self.column()),
+            CmpOp::IsNotDistinctFrom,
+            rhs.into_merge_target_expr().node,
+        )
+    }
+
+    /// Source-only `__djogi_src.col = rhs` condition for `WHEN NOT MATCHED [BY TARGET]`.
+    pub fn merge_source_eq<Target: Model, R>(self, rhs: R) -> MergeWhenCondition<T, Target>
+    where
+        R: IntoMergeSourceExpr<T, V>,
+    {
+        merge_condition(
+            source_field_node(self.column()),
+            CmpOp::Eq,
+            rhs.into_merge_source_expr().node,
+        )
+    }
+
+    /// Source-only `__djogi_src.col = value` condition for `WHEN NOT MATCHED [BY TARGET]`.
+    pub fn merge_source_eq_value<Target: Model, P>(self, value: P) -> MergeWhenCondition<T, Target>
+    where
+        P: IntoFieldFilterValue<V>,
+    {
+        merge_condition(
+            source_field_node(self.column()),
+            CmpOp::Eq,
+            literal_node::<V, P>(value),
+        )
+    }
+
+    /// Source-only `__djogi_src.col <> rhs` condition for `WHEN NOT MATCHED [BY TARGET]`.
+    pub fn merge_source_neq<Target: Model, R>(self, rhs: R) -> MergeWhenCondition<T, Target>
+    where
+        R: IntoMergeSourceExpr<T, V>,
+    {
+        merge_condition(
+            source_field_node(self.column()),
+            CmpOp::Neq,
+            rhs.into_merge_source_expr().node,
+        )
+    }
+
+    /// Source-only `__djogi_src.col > rhs` condition for `WHEN NOT MATCHED [BY TARGET]`.
+    pub fn merge_source_gt<Target: Model, R>(self, rhs: R) -> MergeWhenCondition<T, Target>
+    where
+        R: IntoMergeSourceExpr<T, V>,
+    {
+        merge_condition(
+            source_field_node(self.column()),
+            CmpOp::Gt,
+            rhs.into_merge_source_expr().node,
+        )
+    }
+
+    /// Source-only `__djogi_src.col >= rhs` condition for `WHEN NOT MATCHED [BY TARGET]`.
+    pub fn merge_source_gte<Target: Model, R>(self, rhs: R) -> MergeWhenCondition<T, Target>
+    where
+        R: IntoMergeSourceExpr<T, V>,
+    {
+        merge_condition(
+            source_field_node(self.column()),
+            CmpOp::Gte,
+            rhs.into_merge_source_expr().node,
+        )
+    }
+
+    /// Source-only `__djogi_src.col < rhs` condition for `WHEN NOT MATCHED [BY TARGET]`.
+    pub fn merge_source_lt<Target: Model, R>(self, rhs: R) -> MergeWhenCondition<T, Target>
+    where
+        R: IntoMergeSourceExpr<T, V>,
+    {
+        merge_condition(
+            source_field_node(self.column()),
+            CmpOp::Lt,
+            rhs.into_merge_source_expr().node,
+        )
+    }
+
+    /// Source-only `__djogi_src.col <= rhs` condition for `WHEN NOT MATCHED [BY TARGET]`.
+    pub fn merge_source_lte<Target: Model, R>(self, rhs: R) -> MergeWhenCondition<T, Target>
+    where
+        R: IntoMergeSourceExpr<T, V>,
+    {
+        merge_condition(
+            source_field_node(self.column()),
+            CmpOp::Lte,
+            rhs.into_merge_source_expr().node,
+        )
+    }
+
+    /// Source-only `__djogi_src.col IS DISTINCT FROM rhs` condition for `WHEN NOT MATCHED [BY TARGET]`.
+    pub fn merge_source_is_distinct_from<Target: Model, R>(
+        self,
+        rhs: R,
+    ) -> MergeWhenCondition<T, Target>
+    where
+        R: IntoMergeSourceExpr<T, V>,
+    {
+        merge_condition(
+            source_field_node(self.column()),
+            CmpOp::IsDistinctFrom,
+            rhs.into_merge_source_expr().node,
+        )
+    }
+
+    /// Source-only `__djogi_src.col IS NOT DISTINCT FROM rhs` condition for `WHEN NOT MATCHED [BY TARGET]`.
+    pub fn merge_source_is_not_distinct_from<Target: Model, R>(
+        self,
+        rhs: R,
+    ) -> MergeWhenCondition<T, Target>
+    where
+        R: IntoMergeSourceExpr<T, V>,
+    {
+        merge_condition(
+            source_field_node(self.column()),
+            CmpOp::IsNotDistinctFrom,
+            rhs.into_merge_source_expr().node,
+        )
     }
 }
 
@@ -1018,6 +1315,138 @@ impl<T: Model, V> DjogiField<T, V> {
         source: DjogiField<S, V>,
     ) -> MergeWhenCondition<S, T> {
         self.sql.is_distinct_from_source(source.sql)
+    }
+
+    pub fn merge_target_eq<S: Model, R>(self, rhs: R) -> MergeWhenCondition<S, T>
+    where
+        R: IntoMergeTargetExpr<T, V>,
+    {
+        self.sql.merge_target_eq(rhs)
+    }
+
+    pub fn merge_target_eq_value<S: Model, P>(self, value: P) -> MergeWhenCondition<S, T>
+    where
+        P: IntoFieldFilterValue<V>,
+    {
+        self.sql.merge_target_eq_value(value)
+    }
+
+    pub fn merge_target_neq<S: Model, R>(self, rhs: R) -> MergeWhenCondition<S, T>
+    where
+        R: IntoMergeTargetExpr<T, V>,
+    {
+        self.sql.merge_target_neq(rhs)
+    }
+
+    pub fn merge_target_gt<S: Model, R>(self, rhs: R) -> MergeWhenCondition<S, T>
+    where
+        R: IntoMergeTargetExpr<T, V>,
+    {
+        self.sql.merge_target_gt(rhs)
+    }
+
+    pub fn merge_target_gte<S: Model, R>(self, rhs: R) -> MergeWhenCondition<S, T>
+    where
+        R: IntoMergeTargetExpr<T, V>,
+    {
+        self.sql.merge_target_gte(rhs)
+    }
+
+    pub fn merge_target_lt<S: Model, R>(self, rhs: R) -> MergeWhenCondition<S, T>
+    where
+        R: IntoMergeTargetExpr<T, V>,
+    {
+        self.sql.merge_target_lt(rhs)
+    }
+
+    pub fn merge_target_lte<S: Model, R>(self, rhs: R) -> MergeWhenCondition<S, T>
+    where
+        R: IntoMergeTargetExpr<T, V>,
+    {
+        self.sql.merge_target_lte(rhs)
+    }
+
+    pub fn merge_target_is_distinct_from<S: Model, R>(self, rhs: R) -> MergeWhenCondition<S, T>
+    where
+        R: IntoMergeTargetExpr<T, V>,
+    {
+        self.sql.merge_target_is_distinct_from(rhs)
+    }
+
+    pub fn merge_target_is_not_distinct_from<S: Model, R>(self, rhs: R) -> MergeWhenCondition<S, T>
+    where
+        R: IntoMergeTargetExpr<T, V>,
+    {
+        self.sql.merge_target_is_not_distinct_from(rhs)
+    }
+
+    pub fn merge_source_eq<Target: Model, R>(self, rhs: R) -> MergeWhenCondition<T, Target>
+    where
+        R: IntoMergeSourceExpr<T, V>,
+    {
+        self.sql.merge_source_eq(rhs)
+    }
+
+    pub fn merge_source_eq_value<Target: Model, P>(self, value: P) -> MergeWhenCondition<T, Target>
+    where
+        P: IntoFieldFilterValue<V>,
+    {
+        self.sql.merge_source_eq_value(value)
+    }
+
+    pub fn merge_source_neq<Target: Model, R>(self, rhs: R) -> MergeWhenCondition<T, Target>
+    where
+        R: IntoMergeSourceExpr<T, V>,
+    {
+        self.sql.merge_source_neq(rhs)
+    }
+
+    pub fn merge_source_gt<Target: Model, R>(self, rhs: R) -> MergeWhenCondition<T, Target>
+    where
+        R: IntoMergeSourceExpr<T, V>,
+    {
+        self.sql.merge_source_gt(rhs)
+    }
+
+    pub fn merge_source_gte<Target: Model, R>(self, rhs: R) -> MergeWhenCondition<T, Target>
+    where
+        R: IntoMergeSourceExpr<T, V>,
+    {
+        self.sql.merge_source_gte(rhs)
+    }
+
+    pub fn merge_source_lt<Target: Model, R>(self, rhs: R) -> MergeWhenCondition<T, Target>
+    where
+        R: IntoMergeSourceExpr<T, V>,
+    {
+        self.sql.merge_source_lt(rhs)
+    }
+
+    pub fn merge_source_lte<Target: Model, R>(self, rhs: R) -> MergeWhenCondition<T, Target>
+    where
+        R: IntoMergeSourceExpr<T, V>,
+    {
+        self.sql.merge_source_lte(rhs)
+    }
+
+    pub fn merge_source_is_distinct_from<Target: Model, R>(
+        self,
+        rhs: R,
+    ) -> MergeWhenCondition<T, Target>
+    where
+        R: IntoMergeSourceExpr<T, V>,
+    {
+        self.sql.merge_source_is_distinct_from(rhs)
+    }
+
+    pub fn merge_source_is_not_distinct_from<Target: Model, R>(
+        self,
+        rhs: R,
+    ) -> MergeWhenCondition<T, Target>
+    where
+        R: IntoMergeSourceExpr<T, V>,
+    {
+        self.sql.merge_source_is_not_distinct_from(rhs)
     }
 }
 
@@ -1277,6 +1706,49 @@ mod tests {
         if let Err(DjogiError::MergeBranchInvalid { reason, .. }) = res {
             assert!(reason.contains("BY SOURCE branch update cannot reference source field"));
         }
+    }
+
+    #[test]
+    fn merge_by_source_accepts_target_only_condition() {
+        let source: QuerySet<Fake> = QuerySet::new();
+        let stmt = source
+            .merge_into::<Fake, _, _>(|tgt, src| tgt.id().merge_on_eq(src.id()))
+            .when_not_matched_by_source_then_delete(Some(
+                Fake::fields()
+                    .payload()
+                    .merge_target_eq_value::<Fake, _>("stale"),
+            ));
+
+        stmt.validate().unwrap();
+        let acc = build_merge(&stmt.source, &stmt.on, &stmt.branches, None).unwrap();
+        assert!(
+            acc.sql()
+                .contains("WHEN NOT MATCHED BY SOURCE AND tgt.payload = $1 THEN DELETE")
+        );
+    }
+
+    #[test]
+    fn merge_not_matched_accepts_source_only_condition() {
+        let source: QuerySet<Fake> = QuerySet::new();
+        let stmt = source
+            .merge_into::<Fake, _, _>(|tgt, src| tgt.id().merge_on_eq(src.id()))
+            .when_not_matched_then_insert(
+                Some(
+                    Fake::fields()
+                        .payload()
+                        .merge_source_eq_value::<Fake, _>("new"),
+                ),
+                Fake::fields()
+                    .payload()
+                    .merge_insert_from(Fake::fields().payload()),
+            );
+
+        stmt.validate().unwrap();
+        let acc = build_merge(&stmt.source, &stmt.on, &stmt.branches, None).unwrap();
+        assert!(
+            acc.sql()
+                .contains("WHEN NOT MATCHED AND __djogi_src.payload = $1 THEN INSERT")
+        );
     }
 
     #[test]

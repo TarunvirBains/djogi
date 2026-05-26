@@ -1233,8 +1233,14 @@ safety invariants on the `MERGE` surface:
    will return an error. This prevents accidentally deleting your entire target
    table because the source happened to be empty.
 2. **Target-only predicates for BY SOURCE**: Branches that act on missing source
-   rows cannot reference source fields in their conditions.
-3. **Auto-stamping**: All `UPDATE` actions in a `MERGE` automatically append
+   rows cannot reference source fields in their conditions. Use target-side
+   builders such as `Target::fields().active().merge_target_eq_value(true)` to
+   scope soft-delete or sync actions.
+3. **Source-only predicates for inserts**: `WHEN NOT MATCHED [BY TARGET]`
+   conditions cannot reference target fields. Use source-side builders such as
+   `Source::fields().payload().merge_source_eq_value("new")` when only some
+   missing source rows should be inserted.
+4. **Auto-stamping**: All `UPDATE` actions in a `MERGE` automatically append
    `updated_at = now()` to the set list, maintaining Djogi's audit integrity.
-4. **Source State**: The source queryset must not carry state that is incompatible
+5. **Source State**: The source queryset must not carry state that is incompatible
    with a `USING` subquery (e.g., prefetch, cache, or locks).

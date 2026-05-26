@@ -136,6 +136,14 @@ fn reject_transaction_session_statement_batch(
     Ok(())
 }
 
+pub(crate) async fn guarded_batch_execute(
+    ctx: &mut DjogiContext,
+    sql: &str,
+) -> Result<(), DjogiError> {
+    reject_transaction_session_statement_batch(ctx, sql)?;
+    ctx.batch_execute(sql).await
+}
+
 fn classify_transaction_session_statement(sql: &str) -> Option<&'static str> {
     let (keyword, next_idx) = parse_keyword(sql, 0)?;
 
@@ -1118,5 +1126,18 @@ mod tests {
             CREATE TEMP TABLE djogi_282_classifier_ok (value integer);
         "#;
         assert_eq!(classify_raw_ddl_transaction_session_statement(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_transaction_session_statement_rejects_session_set_in_batch() {
+        let sql = r#"
+            CREATE TEMP TABLE djogi_282_classifier_set_rejected (value integer);
+            SET statement_timeout = '1ms';
+        "#;
+
+        assert_eq!(
+            classify_raw_ddl_transaction_session_statement(sql),
+            Some("SET")
+        );
     }
 }

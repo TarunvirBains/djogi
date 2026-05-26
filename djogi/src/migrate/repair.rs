@@ -66,6 +66,7 @@
 
 use std::path::PathBuf;
 
+use crate::__bypass::guarded_batch_execute;
 use crate::context::DjogiContext;
 use crate::error::DjogiError;
 
@@ -1074,7 +1075,7 @@ async fn repair_resume_body(
                 .await
                 .map_err(|e| RepairError::LedgerIo { source: e })?;
             // Run the statement.
-            if let Err(e) = ctx.batch_execute(&stmt.up).await {
+            if let Err(e) = guarded_batch_execute(ctx, &stmt.up).await {
                 // Best-effort: record the new partial state before
                 // returning. The advisory lock is released by
                 // repair_resume_pinned after this function returns.
