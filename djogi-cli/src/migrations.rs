@@ -816,9 +816,9 @@ mod tests {
         let mut up_path: Option<PathBuf> = None;
         for entry in fs::read_dir(&billing_dir).unwrap().flatten() {
             let n = entry.file_name().to_string_lossy().to_string();
-            // Up file pattern: starts with "V", ends with ".sql", does
+            // Up file pattern: starts with "V", ends with ".sdjql", does
             // NOT contain ".down.".
-            if n.starts_with('V') && n.ends_with(".sql") && !n.contains(".down.") {
+            if n.starts_with('V') && n.ends_with(".sdjql") && !n.contains(".down.") {
                 up_path = Some(entry.path());
                 break;
             }
@@ -911,15 +911,15 @@ mod tests {
                 source: std::io::Error::other("disk full"),
             },
             AttuneError::SqlReadFailed {
-                path: PathBuf::from("/tmp/x.sql"),
+                path: PathBuf::from("/tmp/x.sdjql"),
                 source: std::io::Error::other("permission denied"),
             },
             AttuneError::SqlWriteFailed {
-                path: PathBuf::from("/tmp/x.sql"),
+                path: PathBuf::from("/tmp/x.sdjql"),
                 source: std::io::Error::other("read-only fs"),
             },
             AttuneError::SqlDeleteFailed {
-                path: PathBuf::from("/tmp/x.sql"),
+                path: PathBuf::from("/tmp/x.sdjql"),
                 source: std::io::Error::other("not found"),
             },
             AttuneError::GitPublishFailed {
