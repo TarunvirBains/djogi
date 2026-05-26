@@ -1137,6 +1137,7 @@ async fn apply_plan_inner(
                         prior_steps_completed: applied_non_tx_steps,
                         total_non_tx_steps,
                         stable_note: durable_non_tx_note.as_deref(),
+                        runner_ctx,
                     },
                 )
                 .await
@@ -1848,7 +1849,7 @@ async fn rollback_inner(
     // Phase a — non-transactional segments, in reverse plan order.
     for (rev_idx, segment) in plan.segments.iter().enumerate().rev() {
         if segment.kind == SegmentKind::NonTransactional {
-            rollback_non_transactional_segment(ctx, segment, rev_idx).await?;
+            rollback_non_transactional_segment(ctx, segment, rev_idx, runner_ctx).await?;
             non_transactional_undone += 1;
         }
     }
@@ -1878,7 +1879,7 @@ async fn rollback_inner(
                 if stmt.down.is_empty() {
                     continue;
                 }
-                if let Err(e) = guarded_batch_execute(ctx, &stmt.down).await {
+                if let Err(e) = execute_runner_statement(ctx, &stmt.down, runner_ctx).await {
                     // Best-effort ROLLBACK of the whole compound tx —
                     // surface the original error verbatim.
                     let _ = ctx.batch_execute("ROLLBACK").await;
@@ -1964,12 +1965,13 @@ async fn rollback_non_transactional_segment(
     ctx: &mut DjogiContext,
     segment: &Segment,
     segment_index: usize,
+    runner_ctx: &RunnerCtx,
 ) -> Result<(), RollbackError> {
     for stmt in segment.statements.iter().rev() {
         if stmt.down.is_empty() {
             continue;
         }
-        if let Err(e) = guarded_batch_execute(ctx, &stmt.down).await {
+        if let Err(e) = execute_runner_statement(ctx, &stmt.down, runner_ctx).await {
             return Err(RollbackError::DownStatementFailed {
                 segment_index,
                 statement_label: stmt.label.clone(),
@@ -2337,6 +2339,22 @@ async fn load_ledger_row_for_version(
 
 // ── Segment dispatch helpers ──────────────────────────────────────────────
 
+async fn execute_runner_statement(
+    ctx: &mut DjogiContext,
+    sql: &str,
+    runner_ctx: &RunnerCtx,
+) -> Result<(), DjogiError> {
+    // The generated phase-zero bootstrap seeds Djogi-owned session
+    // GUCs before HeerId exists. Keep the carve-out bound to that
+    // canonical framework migration; adopter migrations still route
+    // through the session-statement guard.
+    if runner_ctx.version == super::bootstrap::PHASE_ZERO_VERSION {
+        ctx.batch_execute(sql).await
+    } else {
+        guarded_batch_execute(ctx, sql).await
+    }
+}
+
 /// Run every statement inside a transactional segment within a
 /// single Postgres transaction. On any error, ROLLBACK and surface
 /// the failing statement label.
@@ -2409,7 +2427,7 @@ async fn run_transactional_segment(
         })?;
 
     for stmt in &segment.statements {
-        if let Err(e) = guarded_batch_execute(ctx, &stmt.up).await {
+        if let Err(e) = execute_runner_statement(ctx, &stmt.up, runner_ctx).await {
             // Best-effort rollback — surface the original error
             // regardless of whether the rollback succeeds.
             let _ = ctx.batch_execute("ROLLBACK").await;
@@ -2448,6 +2466,7 @@ struct NonTransactionalSegmentRun<'a> {
     prior_steps_completed: i32,
     total_non_tx_steps: i32,
     stable_note: Option<&'a str>,
+    runner_ctx: &'a RunnerCtx,
 }
 
 async fn run_non_transactional_segment(
@@ -2474,7 +2493,7 @@ async fn run_non_transactional_segment(
                 version: run.version.to_string(),
                 source: e,
             })?;
-        if let Err(e) = guarded_batch_execute(ctx, &stmt.up).await {
+        if let Err(e) = execute_runner_statement(ctx, &stmt.up, run.runner_ctx).await {
             let total_so_far = run.prior_steps_completed.saturating_add(completed);
             let note = format!(
                 "non-tx step {step} of segment {seg} failed: {label} — {e}",
