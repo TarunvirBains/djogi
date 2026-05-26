@@ -1705,7 +1705,46 @@ pub async fn rollback_plan(
     rollback_plan_pinned(&mut pinned, plan, runner_ctx, lossy_policy, prior_snapshot).await
 }
 
+/// Determine whether lossy rollback is permitted for the given plan.
+///
+/// Scans all statements in the plan for lossy markers and enforces
+/// the policy. Returns the operator-supplied reason string (if any)
+/// when lossy operations are present but allowed, or None if no
+/// lossy operations exist. Refuses with [`RollbackError`] when
+/// lossy operations are present and the policy is `Refuse`.
+///
+/// This operates against the materialized replay plan (partition-expanded),
+/// not the original unexpanded plan, so per-leaf lossy markers are properly
+/// detected (GH #317).
+fn rollback_lossy_allow_reason(
+    plan: &MigrationPlan,
+    lossy_policy: &LossyRollbackPolicy,
+) -> Result<Option<String>, RollbackError> {
+    let lossy_ops: Vec<(String, LossyRollbackKind)> = plan
+        .segments
+        .iter()
+        .flat_map(|s| s.statements.iter())
+        .filter_map(|stmt| stmt.lossy.as_ref().map(|w| (stmt.label.clone(), w.kind)))
+        .collect();
+
+    match (lossy_policy, lossy_ops.is_empty()) {
+        (_, true) => Ok(None),
+        (LossyRollbackPolicy::Refuse, false) => Err(RollbackError::LossyRollbackRefused {
+            offending_labels: lossy_ops.iter().map(|(label, _)| label.clone()).collect(),
+            kinds: lossy_ops.iter().map(|(_, kind)| *kind).collect(),
+        }),
+        (LossyRollbackPolicy::Allow { reason }, false) => Ok(Some(reason.clone())),
+    }
+}
+
 /// Internal rollback path that runs on an already-pinned context.
+///
+/// Materializes the strict replay plan inside the advisory lock before
+/// scanning lossy markers or executing down SQL. Partition-expanded
+/// statements are rematerialized from the same execution stream used
+/// by apply; rollback replays reverse down SQL against the expanded
+/// stream, ensuring per-leaf lossy markers are properly detected
+/// (GH #317).
 async fn rollback_plan_pinned(
     ctx: &mut PinnedCtx<'_>,
     plan: &MigrationPlan,
@@ -1719,30 +1758,7 @@ async fn rollback_plan_pinned(
         .await
         .map_err(|e| RollbackError::Runner(RunnerError::LedgerBootstrapFailed { source: e }))?;
 
-    // 2. Pre-walk: collect every lossy operation from the plan. This is
-    //    pure plan-data computation — no DB access — so it can run
-    //    before the advisory lock. The `LossyRollbackRefused` early
-    //    return here avoids acquiring the lock unnecessarily.
-    let lossy_ops: Vec<(String, LossyRollbackKind)> = plan
-        .segments
-        .iter()
-        .flat_map(|s| s.statements.iter())
-        .filter_map(|stmt| stmt.lossy.as_ref().map(|w| (stmt.label.clone(), w.kind)))
-        .collect();
-    let allow_reason = match (&lossy_policy, lossy_ops.is_empty()) {
-        (_, true) => None,
-        (LossyRollbackPolicy::Refuse, false) => {
-            let labels = lossy_ops.iter().map(|(l, _)| l.clone()).collect();
-            let kinds = lossy_ops.iter().map(|(_, k)| *k).collect();
-            return Err(RollbackError::LossyRollbackRefused {
-                offending_labels: labels,
-                kinds,
-            });
-        }
-        (LossyRollbackPolicy::Allow { reason }, false) => Some(reason.clone()),
-    };
-
-    // 3. Acquire the per-bucket advisory lock BEFORE loading the ledger
+    // 2. Acquire the per-bucket advisory lock BEFORE loading the ledger
     //    row. Moving the row read inside the lock eliminates the TOCTOU
     //    window between the status check and the down-SQL mutations
     //    (GH #274).
@@ -1751,7 +1767,7 @@ async fn rollback_plan_pinned(
         .await
         .map_err(RollbackError::Runner)?;
 
-    // 4. Confirm the row exists and is in a rollbackable status — inside
+    // 3. Confirm the row exists and is in a rollbackable status — inside
     //    the lock so the status read is atomic with the subsequent write.
     let row_result = load_ledger_row_for_version(ctx, &runner_ctx.version)
         .await
@@ -1777,7 +1793,7 @@ async fn rollback_plan_pinned(
             });
         }
     };
-    // 4a. Verify the ledger row belongs to the same logical app bucket
+    // 3a. Verify the ledger row belongs to the same logical app bucket
     //     that owns the advisory lock. An operator-constructed or stale
     //     MigrationPlan whose bucket.app differs from the row's
     //     app_label would mutate the row while holding a lock for the
@@ -1802,7 +1818,30 @@ async fn rollback_plan_pinned(
         });
     }
 
-    let result = rollback_inner(ctx, plan, runner_ctx, prior_snapshot, allow_reason).await;
+    // 5. Materialize strict replay plan inside advisory lock. Partition-expanded
+    //    statements are rematerialized from the same execution stream used by apply;
+    //    rollback replays reverse down SQL against the expanded stream. Lossy
+    //    scanning operates on the materialized plan, not the original unexpanded
+    //    plan, so per-leaf lossy markers are properly detected (GH #317).
+    let replay_plan =
+        match materialize_execution_plan(ctx, plan, PartitionExpansionMode::ReplayStrict).await {
+            Ok(p) => p,
+            Err(e) => {
+                let _released = release_advisory_lock(ctx, lock_key).await;
+                return Err(RollbackError::Runner(e));
+            }
+        };
+
+    // 5a. Lossy scanning against the materialized (expanded) plan.
+    let allow_reason = match rollback_lossy_allow_reason(&replay_plan, &lossy_policy) {
+        Ok(r) => r,
+        Err(e) => {
+            let _released = release_advisory_lock(ctx, lock_key).await;
+            return Err(e);
+        }
+    };
+
+    let result = rollback_inner(ctx, &replay_plan, runner_ctx, prior_snapshot, allow_reason).await;
 
     let released = release_advisory_lock(ctx, lock_key).await;
 

@@ -37,7 +37,7 @@ use djogi::migrate::schema::PkKindSchema;
 use djogi::migrate::{
     AppliedSchema, BucketKey, Classification, ColumnSchema, ForeignKeySchema, LossyRollbackPolicy,
     MigrationPlan, OnDeleteSchema, OperationSql, PkFlipChild, PkFlipDirection, PkFlipFamily,
-    PkTypeFlipGroup, PrimaryKeySchema, RepairConfirmation, RepairError, RelationKindSchema,
+    PkTypeFlipGroup, PrimaryKeySchema, RepairConfirmation, RelationKindSchema,
     RunnerCtx, RunnerError, SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind, TableSchema,
     WorkspaceGuard, acquire_workspace_lock, apply_plan, bootstrap_ledger, compute_checksum,
     diff_bucket_maps, lower_pk_flip_group as lower_pk_flip_group_checked, plan_delta,
