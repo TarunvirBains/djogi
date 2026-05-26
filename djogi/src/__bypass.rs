@@ -1,138 +1,20 @@
 //! Deliberate raw SQL escape hatches — djogi's `unsafe`-equivalent.
 //!
-//! Raw SQL in djogi is treated culturally the way `unsafe` is in Rust: not
-//! banned, but always conscious. This module is public so adopter crates and
-//! workspace examples can opt in consciously, but the module itself is
-//! `#[doc(hidden)]` (declared at the crate root) and the traits inside are
-//! sealed. The supported way to bring these traits into scope is the
-//! `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute plus an
-//! attached `// JUSTIFICATION ...` comment; `cargo xtask check-justifications`
-//! enforces that convention under `tests/`.
+//! Raw SQL in djogi is not banned, but it is intentionally loud. This module
+//! is public only so adopters, pin tests, and sibling workspace crates can opt
+//! in consciously; it is hidden from rustdoc and its traits are sealed. The
+//! supported unlock is `#[djogi::deliberately_bypass_convention_with_raw_sql]`
+//! plus an adjacent `// JUSTIFICATION ...` comment. Under `tests/`, `cargo
+//! xtask check-justifications` enforces that convention.
 //!
-//! The seal prevents downstream crates from implementing these traits for their
-//! own types. The only purpose of the traits is to move djogi-owned raw SQL
-//! methods off the ordinary inherent API surface while preserving an explicit
-//! opt-in path for pin tests, internal substrate, and truly exceptional adopter
-//! needs.
-//!
-//! # Connection lifecycle — dirty-by-default
-//!
-//! The pool-backed raw methods on
-//! [`RawAccessExt`](RawAccessExtBase) (`raw_query`, `raw_rows`,
-//! `raw_fetch_one`, `raw_scalar`, `raw_execute`, `raw_ddl`) acquire a
-//! pooled connection through [`crate::context::DjogiContext`]'s execution
-//! helpers, which wrap each checkout in a dirty-by-default guard:
-//!
-//! - **Clean exit (`Ok`).** The connection returns to the pool the
-//!   normal way; the next checkout reuses it.
-//! - **Dirty exit (`Err`, panic, future cancellation).** The connection
-//!   is detached via `deadpool_postgres::Object::take` and dropped
-//!   immediately, closing the underlying `tokio_postgres::Client` and
-//!   socket. The pool will create a fresh physical connection on the
-//!   next demand. The trade-off is one extra physical connection per
-//!   dirty exit, paid for the guarantee that a poisoned session
-//!   (open transaction, uncommitted `SET ROLE`, `SET search_path`,
-//!   advisory lock, half-finished `COPY` stream) cannot leak to the
-//!   next checkout.
-//!
-//! This is the same lifecycle [`crate::pg::pool::DjogiPool::with_client`]
-//! enforces via its `WithClientGuard`. It is required because Djogi runs
-//! its pools with `deadpool_postgres::RecyclingMethod::Fast`, which only
-//! checks `is_closed()` on return — it does **not** issue `ROLLBACK`,
-//! `RESET ALL`, or `DISCARD ALL`.
-//!
-//! ## Post-query decode covered by the guard
-//!
-//! Raw SQL that succeeds server-side but produces a row the framework
-//! cannot decode (e.g. `raw_scalar::<i32>("SELECT
-//! set_config('application_name','poisoned',false)")` — the SQL ran,
-//! the session GUC mutated, and `try_get_scalar` then fails because
-//! the returned text is not an `i32`) is itself a dirty exit.
-//! `raw_query`, `raw_fetch_one`, and `raw_scalar` route through
-//! [`DjogiContext::query_all_with`](crate::context::DjogiContext) /
-//! [`query_opt_with`](crate::context::DjogiContext) so the `FromPgRow` /
-//! `try_get_scalar` decode runs **inside** the `PoolConnGuard`'s
-//! lifetime. A decode failure flips the guard's `Result` to `Err`, so
-//! `Drop` detaches the connection. `raw_execute`, `raw_ddl`, and
-//! `raw_rows` have no post-query decode step — their existing pool
-//! guard already covers the only Err/cancel exit shapes.
-//!
-//! ## Adopter contract
-//!
-//! Even with the dirty-by-default guard, raw SQL that mutates session
-//! state (`SET ROLE`, `SET search_path`, session-scoped
-//! `pg_advisory_lock`, `LISTEN`/`UNLISTEN`, prepared-statement creation
-//! outside the cache, etc.) on the **clean-exit path** still leaves the
-//! connection in a non-default state when it returns to the pool. The
-//! dirty-by-default guard fires on `Err`, panic, and future cancellation
-//! only — not on `Ok`.
-//!
-//! For session-state-affecting raw SQL, wrap the call in
-//! [`crate::transaction::atomic`] **and** either:
-//!
-//! - use a TRANSACTION-LOCAL form so `COMMIT` or `ROLLBACK` clears the
-//!   state automatically — `SET LOCAL key = value` instead of `SET key
-//!   = value`, `set_config(name, value, true)` instead of
-//!   `set_config(name, value, false)`, `pg_advisory_xact_lock(…)`
-//!   instead of `pg_advisory_lock(…)`, etc.; or
-//! - explicitly reset / unlock / `UNLISTEN` / `DEALLOCATE` the
-//!   session-level mutation on **every non-cancel exit** of the closure
-//!   — before returning `Ok`, in every error branch, and in any panic
-//!   recovery. `atomic()` will NOT do this cleanup for you on Err/panic;
-//!   see the next paragraph.
-//!
-//! **`atomic()` is a transaction guard, not a session-state reset
-//! guard.** Its `ROLLBACK` path on Err/panic only unwinds
-//! TRANSACTION-SCOPED state (row writes, sequence allocations, `SET
-//! LOCAL`, `set_config(_, _, true)`, `pg_advisory_xact_lock`).
-//! SESSION-scoped state survives both clean `COMMIT` and `ROLLBACK` —
-//! session advisory locks explicitly ignore transaction rollback per
-//! Postgres semantics, plain `SET` / `SET ROLE` / `SET search_path` are
-//! reset by `ROLLBACK` only when the SAME transaction issued them, and
-//! `LISTEN` / prepared statements bypass transactional rollback
-//! entirely. A `SET search_path = 'audit'` inside an `atomic()` closure
-//! that returns `Ok` commits but the new `search_path` survives
-//! `COMMIT` and rides the connection back to the pool; a
-//! `pg_advisory_lock(...)` acquired inside `atomic()` that subsequently
-//! returns `Err` is NOT released by `ROLLBACK` and the lock leaks.
-//! Adopters must choose transaction-local forms or run explicit reset
-//! on every non-cancel exit for the contract to hold.
-//!
-//! **`atomic()` cancellation caveat.** `atomic()` issues `ROLLBACK` on
-//! the closure's `Err` and panic paths. It does NOT issue `ROLLBACK`
-//! when the entire `atomic()` future is dropped mid-execution (e.g.
-//! `tokio::time::timeout(..., atomic(&pool, |tx| async { ... }))`
-//! firing the timeout before the closure resolves). In that case the
-//! transaction-backed `DjogiContext` drops without async cleanup and
-//! the underlying connection returns to the pool with the transaction
-//! still open. This is a pre-existing transaction-scope hazard tracked
-//! separately from djogi#162; it is not introduced by the pool-path
-//! guard this module describes, but adopters relying on `atomic()` as
-//! a session-state isolation mechanism should avoid wrapping it in
-//! cancellation primitives until that gap is closed.
-//!
-//! Cursors, `COPY` streams, and other multi-round-trip protocol
-//! operations should run through
-//! [`RawPoolAccessExt::raw_with_client`](RawPoolAccessExtBase) — the
-//! `WithClientGuard` there bounds the protocol exchange to a single
-//! checkout and applies the same dirty-detach on dirty exit.
-//!
-//! Tracking issue: [djogi#162](https://github.com/TarunvirBains/djogi/issues/162).
-//! See also [`docs/spec/raw-sql-escape-hatches.md`](https://github.com/TarunvirBains/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md)
-//! for the full contract.
-//! # Reaching the raw API
-//!
-//! Adopter code reaches these traits only through the bypass attribute, not
-//! through `use djogi::__bypass::*;` at the import site. The attribute brings
-//! the trait methods into scope on the `DjogiContext` / `DjogiPool` value
-//! inside the decorated item:
+//! Adopter code reaches these methods through the bypass attribute, not by
+//! importing `djogi::__bypass::*` directly:
 //!
 //! ```ignore
 //! use djogi::prelude::*;
 //!
 //! #[djogi::deliberately_bypass_convention_with_raw_sql]
-//! // JUSTIFICATION (djogi#234): citext column needs case-insensitive
-//! // equality; QuerySet doesn't expose LOWER(col) equality yet.
+//! // JUSTIFICATION (djogi#234): typed surface lacks recursive CTE support.
 //! async fn count_users_ci(ctx: &mut DjogiContext, name: &str) -> djogi::Result<i64> {
 //!     ctx.raw_scalar(
 //!         "SELECT COUNT(*) FROM users WHERE LOWER(name) = LOWER($1)",
@@ -141,148 +23,79 @@
 //! }
 //! ```
 //!
-//! # Cross-references
+//! # Pool-backed lifecycle
 //!
-//! - **Specification** — [Raw SQL escape hatches](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md)
-//!   for the full contract, the JUSTIFICATION convention, the pin-test
-//!   carve-out, and the "no ergonomic raw SQL" decision.
-//! - **Pool-level escape hatch** — see [`RawPoolAccessExtBase::raw_with_client`]
-//!   when binary protocol, `COPY`, or `CREATE EXTENSION` requires bypassing
-//!   the per-statement `tokio_postgres::Statement` cache.
-//! # Connection lifecycle — dirty-by-default
+//! Pool-backed raw methods (`raw_query`, `raw_rows`, `raw_fetch_one`,
+//! `raw_scalar`, `raw_execute`, `raw_ddl`) route through the same
+//! dirty-by-default pool guards as
+//! [`crate::pg::pool::DjogiPool::with_client`]:
 //!
-//! The pool-backed raw methods on
-//! [`RawAccessExt`](RawAccessExtBase) (`raw_query`, `raw_rows`,
-//! `raw_fetch_one`, `raw_scalar`, `raw_execute`, `raw_ddl`) acquire a
-//! pooled connection through [`crate::context::DjogiContext`]'s execution
-//! helpers, which wrap each checkout in a dirty-by-default guard:
+//! - `Ok` returns the connection to the pool normally.
+//! - `Err`, panic, future cancellation, and post-query decode failure detach
+//!   the connection instead of recycling it.
 //!
-//! - **Clean exit (`Ok`).** The connection returns to the pool the
-//!   normal way; the next checkout reuses it.
-//! - **Dirty exit (`Err`, panic, future cancellation).** The connection
-//!   is detached via `deadpool_postgres::Object::take` and dropped
-//!   immediately, closing the underlying `tokio_postgres::Client` and
-//!   socket. The pool will create a fresh physical connection on the
-//!   next demand. The trade-off is one extra physical connection per
-//!   dirty exit, paid for the guarantee that a poisoned session
-//!   (open transaction, uncommitted `SET ROLE`, `SET search_path`,
-//!   advisory lock, half-finished `COPY` stream) cannot leak to the
-//!   next checkout.
+//! This is required because Djogi uses
+//! `deadpool_postgres::RecyclingMethod::Fast`, which only checks
+//! `is_closed()` on return; it does **not** issue `ROLLBACK`, `RESET ALL`, or
+//! `DISCARD ALL`. The extra detach cost on dirty exits is what prevents a
+//! poisoned session from leaking to the next checkout.
 //!
-//! This is the same lifecycle [`crate::pg::pool::DjogiPool::with_client`]
-//! enforces via its `WithClientGuard`. It is required because Djogi runs
-//! its pools with `deadpool_postgres::RecyclingMethod::Fast`, which only
-//! checks `is_closed()` on return — it does **not** issue `ROLLBACK`,
-//! `RESET ALL`, or `DISCARD ALL`.
+//! Even with that guard, a session-state mutation that returns `Ok` on a
+//! pool-backed context still leaves the session non-default on the clean path.
+//! If the caller deliberately runs session-scoped raw SQL outside a
+//! transaction, they still own the cleanup contract.
 //!
-//! ## Post-query decode covered by the guard
+//! # Transaction-backed contract
 //!
-//! Raw SQL that succeeds server-side but produces a row the framework
-//! cannot decode (e.g. `raw_scalar::<i32>("SELECT
-//! set_config('application_name','poisoned',false)")` — the SQL ran,
-//! the session GUC mutated, and `try_get_scalar` then fails because
-//! the returned text is not an `i32`) is itself a dirty exit.
-//! `raw_query`, `raw_fetch_one`, and `raw_scalar` route through
-//! [`DjogiContext::query_all_with`](crate::context::DjogiContext) /
-//! [`query_opt_with`](crate::context::DjogiContext) so the `FromPgRow` /
-//! `try_get_scalar` decode runs **inside** the `PoolConnGuard`'s
-//! lifetime. A decode failure flips the guard's `Result` to `Err`, so
-//! `Drop` detaches the connection. `raw_execute`, `raw_ddl`, and
-//! `raw_rows` have no post-query decode step — their existing pool
-//! guard already covers the only Err/cancel exit shapes.
+//! When the context is already inside [`crate::transaction::atomic`], djogi no
+//! longer treats session-scoped raw SQL as "caller cleans it up later". The
+//! bypass layer preflights transaction-backed `raw_query`, `raw_rows`,
+//! `raw_fetch_one`, `raw_scalar`, `raw_execute`, and `raw_ddl` and rejects
+//! these statement heads with
+//! [`crate::DjogiError::SessionStatementDisallowedInTransaction`] before SQL
+//! reaches Postgres:
 //!
-//! ## Adopter contract
+//! - plain `SET`
+//! - `RESET`
+//! - `DISCARD`
+//! - `LISTEN`
+//! - `UNLISTEN`
+//! - `PREPARE`
+//! - `DEALLOCATE`
 //!
-//! Even with the dirty-by-default guard, raw SQL that mutates session
-//! state (`SET ROLE`, `SET search_path`, session-scoped
-//! `pg_advisory_lock`, `LISTEN`/`UNLISTEN`, prepared-statement creation
-//! outside the cache, etc.) on the **clean-exit path** still leaves the
-//! connection in a non-default state when it returns to the pool. The
-//! dirty-by-default guard fires on `Err`, panic, and future cancellation
-//! only — not on `Ok`.
+//! Transaction-local forms remain allowed: `SET LOCAL ...`,
+//! `SET CONSTRAINTS ...`, and `SET TRANSACTION ...`.
 //!
-//! For session-state-affecting raw SQL, wrap the call in
-//! [`crate::transaction::atomic`] **and** either:
+//! The refusal is intentionally conservative:
 //!
-//! - use a TRANSACTION-LOCAL form so `COMMIT` or `ROLLBACK` clears the
-//!   state automatically — `SET LOCAL key = value` instead of `SET key
-//!   = value`, `set_config(name, value, true)` instead of
-//!   `set_config(name, value, false)`, `pg_advisory_xact_lock(…)`
-//!   instead of `pg_advisory_lock(…)`, etc.; or
-//! - explicitly reset / unlock / `UNLISTEN` / `DEALLOCATE` the
-//!   session-level mutation on **every non-cancel exit** of the closure
-//!   — before returning `Ok`, in every error branch, and in any panic
-//!   recovery. `atomic()` will NOT do this cleanup for you on Err/panic;
-//!   see the next paragraph.
+//! - it applies only to transaction-backed raw entrypoints
+//! - empty/trivia-only SQL passes through unchanged
+//! - `raw_ddl` scans real top-level statements, respecting line comments,
+//!   block comments, quoted strings, and dollar-quoted bodies
+//! - `raw_stream` / `raw_stream_with_fetch_size` keep their existing
+//!   transaction-required contract and do not run this classifier
 //!
-//! **`atomic()` is a transaction guard, not a session-state reset
-//! guard.** Its `ROLLBACK` path on Err/panic only unwinds
-//! TRANSACTION-SCOPED state (row writes, sequence allocations, `SET
-//! LOCAL`, `set_config(_, _, true)`, `pg_advisory_xact_lock`).
-//! SESSION-scoped state survives both clean `COMMIT` and `ROLLBACK` —
-//! session advisory locks explicitly ignore transaction rollback per
-//! Postgres semantics, plain `SET` / `SET ROLE` / `SET search_path` are
-//! reset by `ROLLBACK` only when the SAME transaction issued them, and
-//! `LISTEN` / prepared statements bypass transactional rollback
-//! entirely. A `SET search_path = 'audit'` inside an `atomic()` closure
-//! that returns `Ok` commits but the new `search_path` survives
-//! `COMMIT` and rides the connection back to the pool; a
-//! `pg_advisory_lock(...)` acquired inside `atomic()` that subsequently
-//! returns `Err` is NOT released by `ROLLBACK` and the lock leaks.
-//! Adopters must choose transaction-local forms or run explicit reset
-//! on every non-cancel exit for the contract to hold.
+//! # Cancellation and poison
 //!
-//! **`atomic()` cancellation caveat.** `atomic()` issues `ROLLBACK` on
-//! the closure's `Err` and panic paths. It does NOT issue `ROLLBACK`
-//! when the entire `atomic()` future is dropped mid-execution (e.g.
-//! `tokio::time::timeout(..., atomic(&pool, |tx| async { ... }))`
-//! firing the timeout before the closure resolves). In that case the
-//! transaction-backed `DjogiContext` drops without async cleanup and
-//! the underlying connection returns to the pool with the transaction
-//! still open. This is a pre-existing transaction-scope hazard tracked
-//! separately from djogi#162; it is not introduced by the pool-path
-//! guard this module describes, but adopters relying on `atomic()` as
-//! a session-state isolation mechanism should avoid wrapping it in
-//! cancellation primitives until that gap is closed.
+//! Top-level `atomic()` cancellation no longer recycles an open transaction:
+//! the dirty-drop guard detaches the connection on cancellation before it can
+//! leak back to the pool.
 //!
-//! Cursors, `COPY` streams, and other multi-round-trip protocol
-//! operations should run through
-//! [`RawPoolAccessExt::raw_with_client`](RawPoolAccessExtBase) — the
-//! `WithClientGuard` there bounds the protocol exchange to a single
-//! checkout and applies the same dirty-detach on dirty exit.
+//! Nested `atomic()` cancellation remains fail-closed. If a nested future is
+//! dropped before savepoint cleanup runs, the outer transaction is poisoned,
+//! framework-owned work rejects further use, and `commit` rolls back instead
+//! of committing. `raw_conn()` therefore returns `None` both for pool-backed
+//! contexts and for poisoned transaction-backed contexts.
 //!
-//! Tracking issue: [djogi#162](https://github.com/TarunvirBains/djogi/issues/162).
-//! See also [`docs/spec/raw-sql-escape-hatches.md`](https://github.com/TarunvirBains/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md)
-//! for the full contract.
-//! # Reaching the raw API
+//! Cursors, `COPY`, binary-protocol helpers, and other multi-round-trip driver
+//! work should go through [`RawPoolAccessExt::raw_with_client`], which bounds
+//! the protocol exchange to one checkout and applies the same dirty-detach
+//! policy on dirty exit.
 //!
-//! Adopter code reaches these traits only through the bypass attribute, not
-//! through `use djogi::__bypass::*;` at the import site. The attribute brings
-//! the trait methods into scope on the `DjogiContext` / `DjogiPool` value
-//! inside the decorated item:
+//! Cross-references:
 //!
-//! ```ignore
-//! use djogi::prelude::*;
-//!
-//! #[djogi::deliberately_bypass_convention_with_raw_sql]
-//! // JUSTIFICATION (djogi#234): citext column needs case-insensitive
-//! // equality; QuerySet doesn't expose LOWER(col) equality yet.
-//! async fn count_users_ci(ctx: &mut DjogiContext, name: &str) -> djogi::Result<i64> {
-//!     ctx.raw_scalar(
-//!         "SELECT COUNT(*) FROM users WHERE LOWER(name) = LOWER($1)",
-//!         &[&name],
-//!     ).await
-//! }
-//! ```
-//!
-//! # Cross-references
-//!
-//! - **Specification** — [Raw SQL escape hatches](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md)
-//!   for the full contract, the JUSTIFICATION convention, the pin-test
-//!   carve-out, and the "no ergonomic raw SQL" decision.
-//! - **Pool-level escape hatch** — see [`RawPoolAccessExtBase::raw_with_client`]
-//!   when binary protocol, `COPY`, or `CREATE EXTENSION` requires bypassing
-//!   the per-statement `tokio_postgres::Statement` cache.
+//! - [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md)
+//! - [`RawPoolAccessExtBase::raw_with_client`]
 
 use crate::context::DjogiContext;
 use crate::pg::connection::PgConnection;
@@ -292,6 +105,252 @@ use crate::query::stream::{DEFAULT_FETCH_SIZE, RawCursorStream, build_raw_stream
 use crate::{DbError, DjogiError};
 use postgres_types::{FromSql, ToSql};
 use tokio_postgres::Row;
+
+fn reject_transaction_session_statement(
+    ctx: &mut DjogiContext,
+    sql: &str,
+) -> Result<(), DjogiError> {
+    if let Some(err) = ctx.transaction_poison_error() {
+        return Err(err);
+    }
+    if ctx.conn().is_some() {
+        if let Some(statement) = classify_transaction_session_statement(sql) {
+            return Err(DjogiError::SessionStatementDisallowedInTransaction { statement });
+        }
+    }
+    Ok(())
+}
+
+fn reject_transaction_session_statement_batch(
+    ctx: &mut DjogiContext,
+    sql: &str,
+) -> Result<(), DjogiError> {
+    if let Some(err) = ctx.transaction_poison_error() {
+        return Err(err);
+    }
+    if ctx.conn().is_some() {
+        if let Some(statement) = classify_raw_ddl_transaction_session_statement(sql) {
+            return Err(DjogiError::SessionStatementDisallowedInTransaction { statement });
+        }
+    }
+    Ok(())
+}
+
+fn classify_transaction_session_statement(sql: &str) -> Option<&'static str> {
+    let (keyword, next_idx) = parse_keyword(sql, 0)?;
+
+    if keyword.eq_ignore_ascii_case("SET") {
+        let second = parse_keyword(sql, next_idx).map(|(word, _)| word);
+        return match second {
+            Some(word)
+                if word.eq_ignore_ascii_case("LOCAL")
+                    || word.eq_ignore_ascii_case("CONSTRAINTS")
+                    || word.eq_ignore_ascii_case("TRANSACTION") =>
+            {
+                None
+            }
+            _ => Some("SET"),
+        };
+    }
+
+    for statement in [
+        "RESET",
+        "DISCARD",
+        "LISTEN",
+        "UNLISTEN",
+        "PREPARE",
+        "DEALLOCATE",
+    ] {
+        if keyword.eq_ignore_ascii_case(statement) {
+            return Some(statement);
+        }
+    }
+
+    None
+}
+
+fn classify_raw_ddl_transaction_session_statement(sql: &str) -> Option<&'static str> {
+    let bytes = sql.as_bytes();
+    let mut statement_start = 0usize;
+    let mut idx = 0usize;
+    let mut block_comment_depth = 0usize;
+    let mut in_line_comment = false;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut dollar_quote: Option<String> = None;
+
+    while idx < bytes.len() {
+        if let Some(delimiter) = dollar_quote.as_deref() {
+            if sql[idx..].starts_with(delimiter) {
+                idx += delimiter.len();
+                dollar_quote = None;
+            } else {
+                idx += 1;
+            }
+            continue;
+        }
+
+        if in_line_comment {
+            if bytes[idx] == b'\n' {
+                in_line_comment = false;
+            }
+            idx += 1;
+            continue;
+        }
+
+        if block_comment_depth > 0 {
+            if bytes.get(idx) == Some(&b'/') && bytes.get(idx + 1) == Some(&b'*') {
+                block_comment_depth += 1;
+                idx += 2;
+            } else if bytes.get(idx) == Some(&b'*') && bytes.get(idx + 1) == Some(&b'/') {
+                block_comment_depth -= 1;
+                idx += 2;
+            } else {
+                idx += 1;
+            }
+            continue;
+        }
+
+        if in_single_quote {
+            if bytes[idx] == b'\'' {
+                if bytes.get(idx + 1) == Some(&b'\'') {
+                    idx += 2;
+                } else {
+                    in_single_quote = false;
+                    idx += 1;
+                }
+            } else {
+                idx += 1;
+            }
+            continue;
+        }
+
+        if in_double_quote {
+            if bytes[idx] == b'"' {
+                if bytes.get(idx + 1) == Some(&b'"') {
+                    idx += 2;
+                } else {
+                    in_double_quote = false;
+                    idx += 1;
+                }
+            } else {
+                idx += 1;
+            }
+            continue;
+        }
+
+        match bytes[idx] {
+            b';' => {
+                if let Some(statement) =
+                    classify_transaction_session_statement(&sql[statement_start..idx])
+                {
+                    return Some(statement);
+                }
+                statement_start = idx + 1;
+                idx += 1;
+            }
+            b'\'' => {
+                in_single_quote = true;
+                idx += 1;
+            }
+            b'"' => {
+                in_double_quote = true;
+                idx += 1;
+            }
+            b'-' if bytes.get(idx + 1) == Some(&b'-') => {
+                in_line_comment = true;
+                idx += 2;
+            }
+            b'/' if bytes.get(idx + 1) == Some(&b'*') => {
+                block_comment_depth = 1;
+                idx += 2;
+            }
+            b'$' => {
+                if let Some(end_idx) = parse_dollar_quote_delimiter_end(sql, idx) {
+                    dollar_quote = Some(sql[idx..end_idx].to_owned());
+                    idx = end_idx;
+                } else {
+                    idx += 1;
+                }
+            }
+            _ => {
+                idx += 1;
+            }
+        }
+    }
+
+    classify_transaction_session_statement(&sql[statement_start..])
+}
+
+fn parse_keyword(sql: &str, start_idx: usize) -> Option<(&str, usize)> {
+    let bytes = sql.as_bytes();
+    let mut idx = skip_sql_trivia(sql, start_idx);
+    if idx >= bytes.len() || !bytes[idx].is_ascii_alphabetic() {
+        return None;
+    }
+    let start = idx;
+    idx += 1;
+    while idx < bytes.len() && (bytes[idx].is_ascii_alphanumeric() || bytes[idx] == b'_') {
+        idx += 1;
+    }
+    Some((&sql[start..idx], idx))
+}
+
+fn skip_sql_trivia(sql: &str, start_idx: usize) -> usize {
+    let bytes = sql.as_bytes();
+    let mut idx = start_idx;
+
+    loop {
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+
+        if bytes.get(idx) == Some(&b'-') && bytes.get(idx + 1) == Some(&b'-') {
+            idx += 2;
+            while idx < bytes.len() && bytes[idx] != b'\n' {
+                idx += 1;
+            }
+            continue;
+        }
+
+        if bytes.get(idx) == Some(&b'/') && bytes.get(idx + 1) == Some(&b'*') {
+            idx += 2;
+            let mut depth = 1usize;
+            while idx < bytes.len() && depth > 0 {
+                if bytes.get(idx) == Some(&b'/') && bytes.get(idx + 1) == Some(&b'*') {
+                    depth += 1;
+                    idx += 2;
+                } else if bytes.get(idx) == Some(&b'*') && bytes.get(idx + 1) == Some(&b'/') {
+                    depth -= 1;
+                    idx += 2;
+                } else {
+                    idx += 1;
+                }
+            }
+            continue;
+        }
+
+        return idx;
+    }
+}
+
+fn parse_dollar_quote_delimiter_end(sql: &str, start_idx: usize) -> Option<usize> {
+    let bytes = sql.as_bytes();
+    if bytes.get(start_idx) != Some(&b'$') {
+        return None;
+    }
+
+    let mut idx = start_idx + 1;
+    while idx < bytes.len() {
+        match bytes[idx] {
+            b'$' => return Some(idx + 1),
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' => idx += 1,
+            _ => return None,
+        }
+    }
+
+    None
+}
 
 mod sealed {
     pub trait Sealed {}
@@ -522,6 +581,13 @@ pub trait RawAccessExtBase: sealed::Sealed {
     /// `raw_ddl` is `batch_execute(sql)` under a friendlier name — it
     /// carries the same blast radius as [`raw_execute`](RawAccessExtBase::raw_execute)
     /// and intentionally does not project through the migration substrate.
+    /// When the context is already transaction-backed, Djogi preflights each
+    /// top-level statement in the batch and rejects session-scoped statement
+    /// heads (`SET`, `RESET`, `DISCARD`, `LISTEN`, `UNLISTEN`, `PREPARE`,
+    /// `DEALLOCATE`) with
+    /// [`DjogiError::SessionStatementDisallowedInTransaction`] before SQL
+    /// reaches Postgres. The scanner respects comments, string literals, and
+    /// dollar-quoted bodies; it is not a naive `split(';')`.
     /// Tests that need to set up tables MUST use
     /// `#[djogi::djogi_test(sync_models = [...])]` instead — `sync_models`
     /// projects through the descriptor / `pk_default_sql` pipeline so
@@ -650,6 +716,7 @@ impl RawAccessExt for DjogiContext {
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Vec<T>, DjogiError> {
+        reject_transaction_session_statement(self, sql)?;
         // Route through `query_all_with` so the per-row `FromPgRow::from_pg_row`
         // decode runs inside the `PoolConnGuard`'s lifetime. A decode failure
         // here would otherwise leave the pool with a possibly poisoned
@@ -666,6 +733,7 @@ impl RawAccessExt for DjogiContext {
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Vec<Row>, DjogiError> {
+        reject_transaction_session_statement(self, sql)?;
         // No post-query decode — the existing `query_all` guard already
         // covers the only Err/cancel exit shape.
         self.__query_all_for_macros(sql, params).await
@@ -676,6 +744,7 @@ impl RawAccessExt for DjogiContext {
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<T, DjogiError> {
+        reject_transaction_session_statement(self, sql)?;
         // Decode runs inside the guard's lifetime via `query_opt_with`. The
         // `not_found` branch is also reported as `Err`, so the guard's
         // `committed` flag stays `false` and a no-row response still
@@ -698,6 +767,7 @@ impl RawAccessExt for DjogiContext {
     where
         T: for<'row> FromSql<'row> + Send + 'static,
     {
+        reject_transaction_session_statement(self, sql)?;
         // `try_get_scalar` is the decode step that can fail on a row that
         // the underlying SQL produced successfully — e.g.
         // `SELECT set_config('application_name', '...', false)` returns
@@ -717,10 +787,12 @@ impl RawAccessExt for DjogiContext {
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<u64, DjogiError> {
+        reject_transaction_session_statement(self, sql)?;
         self.__execute_for_macros(sql, params).await
     }
 
     async fn raw_ddl(&mut self, sql: &str) -> Result<(), DjogiError> {
+        reject_transaction_session_statement_batch(self, sql)?;
         self.batch_execute(sql).await
     }
 
@@ -792,9 +864,11 @@ pub trait RawPoolAccessExtBase: sealed::Sealed {
     /// the [Raw SQL escape hatches spec](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
     ///
     /// Returns `None` when the context is pool-backed — there is no
-    /// long-lived connection to borrow. Use for connection-state inspection
-    /// (savepoint depth, in-progress transaction state) when an adopter-side
-    /// helper needs to branch on the inner state. Prefer
+    /// long-lived connection to borrow — and also when a transaction-backed
+    /// context has been poisoned by a nested `atomic()` cancellation. Use for
+    /// connection-state inspection (savepoint depth, in-progress transaction
+    /// state) when an adopter-side helper needs to branch on the inner state.
+    /// Prefer
     /// [`DjogiContext::savepoint_depth`](crate::DjogiContext::savepoint_depth)
     /// and the typed transaction substrate for ordinary use.
     ///
@@ -879,7 +953,11 @@ impl RawPoolAccessExt for DjogiContext {
     }
 
     fn raw_conn(&mut self) -> Option<&mut PgConnection> {
-        self.conn()
+        if self.is_transaction_poisoned() {
+            None
+        } else {
+            self.conn()
+        }
     }
 
     fn raw_with_client<F, R>(
@@ -942,4 +1020,92 @@ async fn _raw_stream_with_fetch_size_trait_canary<'ctx>(
 ) -> Result<RawCursorStream<'ctx>, DjogiError> {
     let params: &[&(dyn ToSql + Sync)] = &[];
     <DjogiContext as RawAccessExt>::raw_stream_with_fetch_size(ctx, "SELECT 1", params, 1).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        classify_raw_ddl_transaction_session_statement, classify_transaction_session_statement,
+    };
+
+    #[test]
+    fn classify_transaction_session_statement_rejects_plain_set_after_leading_comments() {
+        let sql = "  /* prelude ; */ -- line comment\n  sEt search_path = public";
+        assert_eq!(classify_transaction_session_statement(sql), Some("SET"));
+    }
+
+    #[test]
+    fn classify_transaction_session_statement_allows_transaction_local_set_forms() {
+        assert_eq!(
+            classify_transaction_session_statement("SET LOCAL statement_timeout = '5s'"),
+            None
+        );
+        assert_eq!(
+            classify_transaction_session_statement("SET CONSTRAINTS ALL IMMEDIATE"),
+            None
+        );
+        assert_eq!(
+            classify_transaction_session_statement(
+                "SET TRANSACTION ISOLATION LEVEL READ COMMITTED"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn classify_transaction_session_statement_rejects_other_session_statement_heads() {
+        for (sql, expected) in [
+            ("RESET ALL", "RESET"),
+            ("discard all", "DISCARD"),
+            ("LISTEN djogi_updates", "LISTEN"),
+            ("unlisten *", "UNLISTEN"),
+            ("PREPARE x AS SELECT 1", "PREPARE"),
+            ("deallocate all", "DEALLOCATE"),
+        ] {
+            assert_eq!(
+                classify_transaction_session_statement(sql),
+                Some(expected),
+                "expected {expected} to be rejected for {sql:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_raw_ddl_transaction_session_statement_ignores_semicolons_inside_bodies() {
+        let sql = r#"
+            DO $body$
+            BEGIN
+                PERFORM '; still inside the body';
+                PERFORM $$nested ; dollar quote$$;
+            END
+            $body$;
+            /* scanner must only inspect the real next statement */
+            LISTEN djogi_updates;
+        "#;
+
+        assert_eq!(
+            classify_raw_ddl_transaction_session_statement(sql),
+            Some("LISTEN")
+        );
+    }
+
+    #[test]
+    fn classify_raw_ddl_transaction_session_statement_allows_trivia_only_and_safe_batches() {
+        assert_eq!(
+            classify_raw_ddl_transaction_session_statement(
+                " /* nothing here */ \n -- still nothing\n"
+            ),
+            None
+        );
+
+        let sql = r#"
+            DO $body$
+            BEGIN
+                PERFORM '; safe body';
+            END
+            $body$;
+            CREATE TEMP TABLE djogi_282_classifier_ok (value integer);
+        "#;
+        assert_eq!(classify_raw_ddl_transaction_session_statement(sql), None);
+    }
 }
