@@ -189,6 +189,13 @@ pub const CHECKSUM_PREFIX: &str = "V1:";
 /// `CHECKSUM_PREFIX.len() + SHA256_HEX_LEN`.
 pub const CHECKSUM_LEN: usize = 3 + SHA256_HEX_LEN;
 
+/// Prefix for a structured `partial_apply_note` that records an
+/// in-flight non-transactional step claim. The claim exists so a
+/// crash or post-DDL ledger failure cannot silently re-run the next
+/// step: repair resume detects the prefix and refuses automatic
+/// replay until an operator reconciles the ambiguous boundary.
+pub(crate) const NON_TX_PROGRESS_CLAIM_PREFIX: &str = "non-tx progress claim:";
+
 /// Lifecycle status enum — mirrors the database CHECK constraint.
 ///
 /// Ordering of variants matches the database CHECK list; do not
@@ -313,6 +320,43 @@ pub struct LedgerRow {
     /// App label this migration belongs to. Empty string for the
     /// synthetic global bucket.
     pub app_label: String,
+}
+
+/// Build the machine-detectable note written immediately before a
+/// non-transactional step runs. `step_ordinal` is 1-based across the
+/// whole migration (not just within the segment).
+pub(crate) fn format_non_tx_progress_claim(
+    prior_note: Option<&str>,
+    step_ordinal: i32,
+    total_steps: Option<i32>,
+    segment_index: usize,
+    statement_label: &str,
+) -> String {
+    let mut note = match total_steps {
+        Some(total) => format!(
+            "{NON_TX_PROGRESS_CLAIM_PREFIX} step {step_ordinal} of {total} \
+             `{statement_label}` in segment {} is/was in flight; automatic resume \
+             is blocked until an operator reconciles whether that step committed",
+            segment_index + 1,
+        ),
+        None => format!(
+            "{NON_TX_PROGRESS_CLAIM_PREFIX} step {step_ordinal} `{statement_label}` \
+             in segment {} is/was in flight; automatic resume is blocked until an \
+             operator reconciles whether that step committed",
+            segment_index + 1,
+        ),
+    };
+    if let Some(prior) = prior_note.filter(|note| !note.is_empty()) {
+        note.push_str("\nprior note: ");
+        note.push_str(prior);
+    }
+    note
+}
+
+/// True when `partial_apply_note` currently carries an outstanding
+/// non-transactional progress claim.
+pub(crate) fn note_has_non_tx_progress_claim(note: Option<&str>) -> bool {
+    note.is_some_and(|value| value.starts_with(NON_TX_PROGRESS_CLAIM_PREFIX))
 }
 
 /// Compute a `V1:<sha256-hex>` checksum over a sequence of SQL
@@ -716,6 +760,21 @@ pub async fn mark_failed(
     Ok(())
 }
 
+/// Record the next non-transactional step as claimed but not yet
+/// durably acknowledged. The existing `applied_steps_count` remains
+/// untouched until the post-DDL ack succeeds.
+pub async fn claim_non_tx_progress(
+    ctx: &mut DjogiContext,
+    ledger_id: i64,
+    note: &str,
+) -> Result<(), DjogiError> {
+    let sql = "UPDATE djogi_schema_migrations \
+               SET partial_apply_note = $2 \
+               WHERE id = $1";
+    ctx.execute(sql, &[&ledger_id, &note]).await?;
+    Ok(())
+}
+
 /// Update a ledger row mid-apply with the latest non-transactional
 /// step count. Used after each non-tx step completes — the runner
 /// can then resume from `applied_steps_count` if the process crashes
@@ -729,6 +788,24 @@ pub async fn update_progress(
                SET applied_steps_count = $2 \
                WHERE id = $1";
     ctx.execute(sql, &[&ledger_id, &applied_steps_count])
+        .await?;
+    Ok(())
+}
+
+/// Acknowledge a previously claimed non-transactional step by
+/// advancing `applied_steps_count` and restoring the durable
+/// background note (or clearing the claim entirely).
+pub async fn ack_non_tx_progress(
+    ctx: &mut DjogiContext,
+    ledger_id: i64,
+    applied_steps_count: i32,
+    restored_note: Option<&str>,
+) -> Result<(), DjogiError> {
+    let sql = "UPDATE djogi_schema_migrations \
+               SET applied_steps_count = $2, \
+                   partial_apply_note = $3 \
+               WHERE id = $1";
+    ctx.execute(sql, &[&ledger_id, &applied_steps_count, &restored_note])
         .await?;
     Ok(())
 }
@@ -1085,5 +1162,28 @@ mod tests {
     fn checksum_constants_are_consistent() {
         assert_eq!(CHECKSUM_LEN, CHECKSUM_PREFIX.len() + SHA256_HEX_LEN);
         assert_eq!(SHA256_HEX_LEN, 64);
+    }
+
+    #[test]
+    fn non_tx_progress_claim_note_round_trips_through_prefix_detector() {
+        let note = format_non_tx_progress_claim(
+            Some("out-of-order apply: peer V20260524__older"),
+            2,
+            Some(3),
+            1,
+            "AddIndex widgets_name_idx",
+        );
+        assert!(note_has_non_tx_progress_claim(Some(&note)));
+        assert!(note.contains("step 2 of 3"));
+        assert!(note.contains("AddIndex widgets_name_idx"));
+        assert!(note.contains("prior note: out-of-order apply"));
+    }
+
+    #[test]
+    fn non_tx_progress_claim_detector_ignores_regular_partial_notes() {
+        assert!(!note_has_non_tx_progress_claim(None));
+        assert!(!note_has_non_tx_progress_claim(Some(
+            "non-tx step 2 of segment 1 failed: AddIndex widgets_name_idx"
+        )));
     }
 }

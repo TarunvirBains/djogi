@@ -116,6 +116,7 @@ djogi migrations attune --squash --from V<ts> --apply --publish   # squash and p
 # Database (dev only — triple-gated) — registered today (T8)
 djogi db reset                         # drop → recreate → replay; refuses without --yes / interactive y
 djogi db reset --yes                   # non-interactive — typical for CI
+djogi db reset --yes --allow-checksum-drift-reset # explicit override when ledger/file parity drift is known and accepted
 djogi db seed                          # run seeds/<database>/*.sql files; idempotent via djogi_seed_runs ledger
 djogi db seed --database crud_log      # operator-supplied database — splices into URL path for routing
 djogi db seed --allow-non-localhost    # opt in to remote DBs (CI integration suites)
@@ -153,7 +154,7 @@ happened" without distinguishing the two cases. `1` is reserved for
 "we tried; something broke" so CI can retry. Subcommands document
 the matrix in their `--help` output.
 
-`db reset` hard-errors unless all three guards pass: `DATABASE_URL` resolves to localhost (per the byte-level libpq + URL parser shared with `attune --squash`), `Djogi.toml::profile != "production"`, and the operator supplies explicit confirmation (either `--yes` on the command line or types `yes` at the interactive prompt). Logging databases (`crud_log`, `event_log`) are NEVER touched by `db reset`.
+`db reset` hard-errors unless all three guards pass: `DATABASE_URL` resolves to localhost (per the byte-level libpq + URL parser shared with `attune --squash`), `Djogi.toml::profile != "production"`, and the operator supplies explicit confirmation (either `--yes` on the command line or types `yes` at the interactive prompt). After those guards, reset still runs a non-destructive checksum-parity preflight against the live ledger before `DROP DATABASE`: edited migration files, missing historical files, or baseline rows whose checksums cannot be compared to file bytes refuse with exit code `2` unless `--allow-checksum-drift-reset` is passed. Logging databases (`crud_log`, `event_log`) are NEVER touched by `db reset`.
 
 `db seed` uses `--database <name>` to select BOTH the seed directory (`seeds/<name>/`) and the connection target. The CLI splices `<name>` into `database.url`'s path component (via `djogi::migrate::derive_per_database_url`) so seeds always run against the matching DB; a malformed application URL refuses with exit code 1 rather than falling back to the application database. Per-database routing is the linchpin of the three-database architecture (`url` / `crud_log_url` / `event_log_url`) — until config exposes per-DB URL fields directly, the splice gives operators a deterministic route to every cluster database from a single application URL.
 

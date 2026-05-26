@@ -272,6 +272,7 @@ async fn db_reset_with_audit_pool_writes_djogi_ddl_audit_rows() {
         workspace_root: &work,
         profile: "test",
         confirmed: true,
+        allow_checksum_drift_reset: false,
         migrate_config: MigrateConfig::default(),
         audit_pool: Some(audit_pool),
     };
@@ -379,6 +380,7 @@ async fn db_reset_without_audit_pool_leaves_audit_table_absent() {
         workspace_root: &work,
         profile: "test",
         confirmed: true,
+        allow_checksum_drift_reset: false,
         migrate_config: MigrateConfig::default(),
         audit_pool: None,
     };

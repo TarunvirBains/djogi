@@ -261,6 +261,25 @@ pub enum RepairError {
         source: DjogiError,
     },
 
+    /// The ledger row already carries an outstanding non-transactional
+    /// progress claim, meaning the next step may have committed without
+    /// its `applied_steps_count` acknowledgement being durably written.
+    /// Automatic resume is refused to avoid silently re-running that
+    /// ambiguous step.
+    ResumeBlockedByNonTxProgressClaim { version: String, note: String },
+
+    /// A resumed non-transactional statement committed successfully, but
+    /// the repair path failed to durably acknowledge the new
+    /// `applied_steps_count`. The claim note is left in place so later
+    /// resume attempts refuse automatic replay.
+    ResumeProgressAckFailed {
+        version: String,
+        step_index: usize,
+        statement_label: String,
+        applied_steps_count: i32,
+        source: DjogiError,
+    },
+
     /// `repair_snapshot_rebuild` projected the live database and
     /// found that the supplied / rebuilt snapshot does not match
     /// what the live catalog would write. Surfaces the offending
@@ -397,6 +416,27 @@ impl std::fmt::Display for RepairError {
                 "repair_resume_partial_apply on `{version}`: step {step_index} `{statement_label}` \
                  failed after {applied_steps_count} successful step(s): {source}",
             ),
+            RepairError::ResumeBlockedByNonTxProgressClaim { version, note } => write!(
+                f,
+                "repair_resume_partial_apply on `{version}` refused: the ledger row carries an \
+                 outstanding non-tx progress claim, so the next step may already have \
+                 committed. Reconcile the row with `repair_partial_apply` or manual \
+                 inspection before resuming. Current note: {note}",
+            ),
+            RepairError::ResumeProgressAckFailed {
+                version,
+                step_index,
+                statement_label,
+                applied_steps_count,
+                source,
+            } => write!(
+                f,
+                "repair_resume_partial_apply on `{version}`: step {} `{statement_label}` \
+                 committed, but the ledger failed to durably acknowledge \
+                 applied_steps_count={applied_steps_count}; the claim note was preserved and \
+                 automatic resume is now blocked: {source}",
+                step_index + 1,
+            ),
             RepairError::SuppliedSnapshotDiverges { differences } => write!(
                 f,
                 "repair_snapshot_rebuild: supplied / rebuilt snapshot diverges from \
@@ -440,6 +480,7 @@ impl std::error::Error for RepairError {
             RepairError::LedgerIo { source } => Some(source),
             RepairError::SnapshotIo { source, .. } => Some(source),
             RepairError::ResumeStepFailed { source, .. } => Some(source),
+            RepairError::ResumeProgressAckFailed { source, .. } => Some(source),
             RepairError::AdvisoryLockQueryFailed { source, .. } => Some(source),
             RepairError::PinnedSessionCheckoutFailed { source } => Some(source),
             _ => None,
@@ -883,9 +924,13 @@ async fn repair_partial_apply_pinned(
 ///
 /// **What it runs.** The non-transactional segment(s) in plan order.
 /// Each statement is executed via `ctx.raw_ddl(...)` (auto-commit).
-/// After each successful step, `applied_steps_count` is incremented
-/// in the ledger so a second crash can resume from the new
-/// position. On full success, the row is finalised to
+/// Resume now shares the runner's crash-safe claim/ack protocol:
+/// before a step runs, the ledger row records a structured in-flight
+/// claim in `partial_apply_note`; only after the SQL commits does the
+/// repair path acknowledge the new `applied_steps_count`. If the ack
+/// write fails, the claim note remains in place and future automatic
+/// resumes are refused until an operator reconciles the ambiguous
+/// boundary. On full success, the row is finalised to
 /// `status = 'applied'`.
 pub async fn repair_resume_partial_apply(
     ctx: &mut DjogiContext,
@@ -973,6 +1018,12 @@ async fn repair_resume_body(
             attempted: PartialApplyResolution::MarkApplied,
         });
     }
+    if ledger::note_has_non_tx_progress_claim(row.partial_apply_note.as_deref()) {
+        return Err(RepairError::ResumeBlockedByNonTxProgressClaim {
+            version: version.to_string(),
+            note: row.partial_apply_note.clone().unwrap_or_default(),
+        });
+    }
 
     let total = match row.total_steps {
         Some(t) => t,
@@ -1011,6 +1062,17 @@ async fn repair_resume_body(
                 remaining_to_skip -= 1;
                 continue;
             }
+            let claimed_step = applied.saturating_add(1);
+            let claim_note = ledger::format_non_tx_progress_claim(
+                row.partial_apply_note.as_deref(),
+                claimed_step,
+                row.total_steps,
+                seg_idx,
+                &stmt.label,
+            );
+            ledger::claim_non_tx_progress(ctx, ledger_id, &claim_note)
+                .await
+                .map_err(|e| RepairError::LedgerIo { source: e })?;
             // Run the statement.
             if let Err(e) = ctx.raw_ddl(&stmt.up).await {
                 // Best-effort: record the new partial state before
@@ -1031,15 +1093,15 @@ async fn repair_resume_body(
                 });
             }
             applied = applied.saturating_add(1);
-            // Update progress so a second crash sees the right resume point.
-            if let Err(e) = ledger::update_progress(ctx, ledger_id, applied).await {
-                tracing::warn!(
-                    version = row.version.as_str(),
-                    applied,
-                    error = ?e,
-                    "ledger progress update failed during resume; SQL already applied",
-                );
-            }
+            ledger::ack_non_tx_progress(ctx, ledger_id, applied, row.partial_apply_note.as_deref())
+                .await
+                .map_err(|e| RepairError::ResumeProgressAckFailed {
+                    version: row.version.clone(),
+                    step_index: claimed_step.saturating_sub(1) as usize,
+                    statement_label: stmt.label.clone(),
+                    applied_steps_count: applied,
+                    source: e,
+                })?;
             actions.push(format!(
                 "resumed step {applied} of {total}: {label}",
                 label = stmt.label,

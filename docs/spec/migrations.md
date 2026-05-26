@@ -762,9 +762,10 @@ CREATE INDEX djogi_schema_migrations_run_id_idx
 Checksum contract:
 
 - algorithm: SHA-256
-- input: SQL file bytes after BOM stripping and line-ending normalization to `\n`
+- input: canonical operation SQL fragments in runner order; Djogi-composed file headers, labels, and explanatory comments are not part of the checksum domain
 - storage format: `V1:` + 64 lowercase hex chars
-- `checksum_up` and `checksum_down` hash SQL content only, not filename/version/description
+- `checksum_up` and `checksum_down` hash executable migration SQL content only, not filename/version/description
+- `checksum_down = NULL` is the canonical no-real-rollback sentinel used when every down fragment is only a SQL comment placeholder
 
 Advisory lock contract:
 
@@ -790,6 +791,7 @@ djogi migrations attune <target> --apply --record
 djogi migrations attune --record-ledger --apply
 djogi migrations attune --squash --from V<ts> --apply
 djogi db reset --yes
+djogi db reset --yes --allow-checksum-drift-reset
 djogi db seed
 djogi db seed --database crud_log
 djogi docs

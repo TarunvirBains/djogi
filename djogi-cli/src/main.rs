@@ -229,6 +229,12 @@ enum DbCommand {
         /// that call `db reset` between tests).
         #[arg(long, default_value_t = false)]
         yes: bool,
+        /// Permit `db reset` to continue even when the live ledger's
+        /// checksums no longer match the current on-disk migration
+        /// files. Without this flag, checksum drift refuses before
+        /// the destructive drop / recreate step.
+        #[arg(long, default_value_t = false)]
+        allow_checksum_drift_reset: bool,
         /// Maintenance database to connect to for the `DROP DATABASE`
         /// then `CREATE DATABASE` round-trip. Defaults to `postgres`,
         /// the conventional administrative DB present on every
@@ -433,9 +439,15 @@ fn main() -> ExitCode {
         TopCommand::Db { command } => match command {
             DbCommand::Reset {
                 yes,
+                allow_checksum_drift_reset,
                 maintenance_database,
                 workspace,
-            } => db::reset_cmd(yes, maintenance_database, workspace),
+            } => db::reset_cmd(
+                yes,
+                allow_checksum_drift_reset,
+                maintenance_database,
+                workspace,
+            ),
             DbCommand::Seed {
                 database,
                 allow_non_localhost,
@@ -562,7 +574,9 @@ mod tests {
     //! contract that nonsense input fails at parse time rather than
     //! silently producing a recommendation engine that "never fires."
 
-    use super::parse_threshold_vacuum;
+    use clap::Parser as _;
+
+    use super::{Cli, DbCommand, TopCommand, parse_threshold_vacuum};
 
     #[test]
     fn parse_threshold_vacuum_accepts_valid_values() {
@@ -599,5 +613,35 @@ mod tests {
 
         // Garbage — propagates the underlying ParseFloatError message.
         assert!(parse_threshold_vacuum("not-a-number").is_err());
+    }
+
+    #[test]
+    fn db_reset_parses_allow_checksum_drift_reset_flag() {
+        let cli = Cli::try_parse_from([
+            "djogi",
+            "db",
+            "reset",
+            "--yes",
+            "--allow-checksum-drift-reset",
+        ])
+        .expect("flag should parse");
+
+        match cli.command {
+            TopCommand::Db {
+                command:
+                    DbCommand::Reset {
+                        yes,
+                        allow_checksum_drift_reset,
+                        ..
+                    },
+            } => {
+                assert!(yes, "--yes should parse through");
+                assert!(
+                    allow_checksum_drift_reset,
+                    "checksum-drift override flag should parse through"
+                );
+            }
+            _ => panic!("expected db reset command"),
+        }
     }
 }
