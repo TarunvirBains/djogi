@@ -5368,4 +5368,88 @@ mod tests {
             "note should contain override reason: {note}"
         );
     }
+
+    #[test]
+    fn expand_partition_statement_partitioned_index_preserves_leaf_drop_down_sql() {
+        let stmt = OperationSql {
+            label: "PkFlipPartitionedIndex events_p".to_string(),
+            up: "CREATE UNIQUE INDEX events_p_ts_id_desc_idx ON ONLY events_p (ts, id_desc);\n\
+                 -- Per leaf: CREATE UNIQUE INDEX CONCURRENTLY <leaf>_ts_id_desc_idx\n"
+               .to_string(),
+            down: "DROP INDEX IF EXISTS events_p_ts_id_desc_idx;".to_string(),
+            lossy: None,
+        };
+
+        let expanded = expand_partition_statement(
+            &stmt,
+            "events_p",
+            &["events_p_a".to_string(), "events_p_b".to_string()],
+            PartitionExpansionMode::ReplayStrict,
+        )
+        .expect("strict replay expansion with leaves");
+
+        assert_eq!(expanded[0].label, "PkFlipPartitionedIndex events_p (parent-level)");
+        assert_eq!(expanded[0].down, "DROP INDEX IF EXISTS events_p_ts_id_desc_idx;");
+        assert!(
+            expanded.iter().any(|s| {
+                s.label == "PkFlipPartitionedIndex events_p leaf=events_p_a (concurrent)"
+                    && s.down == "DROP INDEX IF EXISTS events_p_a_ts_id_desc_idx"
+            }),
+            "leaf A concurrent statement must carry concrete DROP INDEX down SQL: {expanded:?}",
+        );
+        assert!(
+            expanded.iter().any(|s| {
+                s.label == "PkFlipPartitionedIndex events_p leaf=events_p_b (concurrent)"
+                    && s.down == "DROP INDEX IF EXISTS events_p_b_ts_id_desc_idx"
+            }),
+            "leaf B concurrent statement must carry concrete DROP INDEX down SQL: {expanded:?}",
+        );
+        assert!(
+            expanded
+                .iter()
+                .filter(|s| s.label.contains("(attach)"))
+                .all(|s| s.down.is_empty()),
+            "attach statements remain forward-only; leaf drops live on concurrent statements",
+        );
+    }
+
+    #[test]
+    fn expand_partition_leaf_placeholders_replay_mode_refuses_empty_leaves() {
+        let stmt = OperationSql {
+            label: "PkFlipPartitionedIndex events_p".to_string(),
+            up: "CREATE UNIQUE INDEX events_p_ts_id_desc_idx ON ONLY events_p (ts, id_desc);"
+                .to_string(),
+            down: "DROP INDEX IF EXISTS events_p_ts_id_desc_idx;".to_string(),
+            lossy: None,
+        };
+
+        let err = expand_partition_statement(
+            &stmt,
+            "events_p",
+            &[],
+            PartitionExpansionMode::ReplayStrict,
+        )
+        .expect_err("strict replay must not replace a partition expansion with a no-op comment");
+
+        match err {
+            RunnerError::PartitionExpansionNoLeaves {
+                parent,
+                statement_label,
+            } => {
+                assert_eq!(parent, "events_p");
+                assert_eq!(statement_label, "PkFlipPartitionedIndex events_p");
+            }
+            other => panic!("expected PartitionExpansionNoLeaves, got {other:?}"),
+        }
+
+        let lenient = expand_partition_statement(
+            &stmt,
+            "events_p",
+            &[],
+            PartitionExpansionMode::ApplyLenient,
+        )
+        .expect("apply mode keeps the existing empty-leaf fallback");
+        assert_eq!(lenient.len(), 1);
+        assert!(lenient[0].up.contains("pg_inherits returned 0 leaves"));
+    }
 }
