@@ -408,6 +408,16 @@ impl DjogiContext {
         self.transaction_poisoned.is_some()
     }
 
+    /// Return true when this context owns an active transaction connection.
+    ///
+    /// Used by the raw SQL bypass harness (#306) to decide whether to
+    /// apply transaction-control refusal checks. A pool-backed context
+    /// always returns false; a transaction-backed context always returns
+    /// true regardless of poison state.
+    pub(crate) fn is_transaction_backed(&self) -> bool {
+        matches!(&self.inner, ContextInner::Transaction(_))
+    }
+
     fn clear_transaction_poison(&mut self) {
         self.transaction_poisoned = None;
     }
