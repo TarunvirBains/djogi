@@ -410,11 +410,10 @@ impl DjogiContext {
 
     /// Return true when this context owns an active transaction connection.
     ///
-    /// Used by the raw SQL bypass harness (#306) to decide whether to
-    #[allow(dead_code)] // Used by raw SQL bypass preflight guards (#306 T4)
-    /// apply transaction-control refusal checks. A pool-backed context
-    /// always returns false; a transaction-backed context always returns
-    /// true regardless of poison state.
+    /// Currently unused by the bypass harness (which uses `conn().is_some()`),
+    /// but available for future integration layers that need a cheap check
+    /// without taking a mutable reference.
+    #[allow(dead_code)] // Available for future use; bypass harness uses conn().is_some()
     pub(crate) fn is_transaction_backed(&self) -> bool {
         matches!(&self.inner, ContextInner::Transaction(_))
     }

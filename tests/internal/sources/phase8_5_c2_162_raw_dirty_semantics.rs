@@ -494,8 +494,6 @@ async fn transaction_raw_execute_refuses_start_tx_end_abort_aliases() {
         ("END", "END"),
         ("ABORT", "ABORT"),
     ] {
-        let sql = sql;
-        let expected_label = expected_label;
         atomic(&mut ctx, |tx| {
             Box::pin(async move {
                 let err = tx.raw_execute(sql, &[])
@@ -599,7 +597,7 @@ async fn transaction_raw_execute_returns_poison_before_transaction_control_refus
             // Attempt a transaction-control statement — should get poison error,
             // not the classifier refusal. Poison takes precedence over classifier
             // per reject_transaction_backed_sql() ordering (poison check first).
-            let err = (&mut *tx).raw_execute("COMMIT", &[])
+            let err = tx.raw_execute("COMMIT", &[])
                 .await
                 .expect_err("raw_execute on poisoned context must fail");
             match err {
