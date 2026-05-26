@@ -1168,9 +1168,9 @@ must carry `#[djogi::deliberately_bypass_convention_with_raw_sql]` and an
 adjacent `// JUSTIFICATION ...` comment. See [Models §Rule 3][models-raw]
 for the raw-query surface.
 
-The raw path sits next to the typed one — a query that starts as
-`QuerySet` can pick up a raw tail when a feature isn't shipped yet,
-without migrating the entire call site.
+The raw path sits next to the typed one: when a query needs SQL that the typed
+surface cannot express cleanly, the call site can use a narrow raw tail without
+migrating the surrounding code away from `QuerySet`.
 
 ---
 
@@ -1217,7 +1217,10 @@ Djogi provides a convenience helper that automatically builds an
     Target::fields().field_a().merge_copy_from(Source::fields().field_a()),
     Target::fields().field_b().merge_copy_from(Source::fields().field_b()),
 ])
-// Emits: WHEN MATCHED AND (tgt.field_a IS DISTINCT FROM src.field_a OR tgt.field_b IS DISTINCT FROM src.field_b)
+// Emits: WHEN MATCHED AND (
+//   tgt.field_a IS DISTINCT FROM __djogi_src.field_a OR
+//   tgt.field_b IS DISTINCT FROM __djogi_src.field_b
+// )
 ```
 
 ### Validations & Safety

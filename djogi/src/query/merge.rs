@@ -1,6 +1,7 @@
 //! Typed `MERGE INTO ... USING ...` query surface.
 //!
-//! PostgreSQL 18+ only.
+//! Djogi targets PostgreSQL 18+; the `WHEN NOT MATCHED BY SOURCE` form is
+//! available in PostgreSQL 17 and later.
 //!
 //! # What
 //!
@@ -20,14 +21,16 @@
 //! source_qs.merge_into::<Target, _, _>(|target, source| {
 //!     target.external_id().merge_on_eq(source.external_id())
 //! })
-//! .when_matched_and_update(Some(target.payload().is_distinct_from_source(source.payload())), vec![
-//!     target.payload().merge_copy_from(source.payload()),
+//! .when_matched_and_update(Some(
+//!     Target::fields().payload().is_distinct_from_source(Source::fields().payload())
+//! ), vec![
+//!     Target::fields().payload().merge_copy_from(Source::fields().payload()),
 //! ])
 //! .when_not_matched_then_insert(None, vec![
-//!     target.external_id().merge_insert_from(source.external_id()),
-//!     target.payload().merge_insert_from(source.payload()),
+//!     Target::fields().external_id().merge_insert_from(Source::fields().external_id()),
+//!     Target::fields().payload().merge_insert_from(Source::fields().payload()),
 //! ])
-//! .execute(&ctx)
+//! .execute(&mut ctx)
 //! .await?;
 //! ```
 
@@ -167,7 +170,7 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
         self
     }
 
-    /// Convenience for `WHEN MATCHED AND (target.col IS DISTINCT FROM source.col OR ...) THEN UPDATE SET ...`.
+    /// Convenience for `WHEN MATCHED AND (tgt.col IS DISTINCT FROM __djogi_src.col OR ...) THEN UPDATE SET ...`.
     ///
     /// Automatically builds a condition that only updates rows where at least one of the
     /// mapped columns has changed. Only columns mapped with `merge_copy_from` are
@@ -941,7 +944,7 @@ impl<T: Model, V> FieldRef<T, V> {
         }
     }
 
-    /// `target.col IS DISTINCT FROM source.col` condition for `WHEN MATCHED AND ...`.
+    /// `tgt.col IS DISTINCT FROM __djogi_src.col` condition for `WHEN MATCHED AND ...`.
     pub fn is_distinct_from_source<S: Model>(
         self,
         source: FieldRef<S, V>,
