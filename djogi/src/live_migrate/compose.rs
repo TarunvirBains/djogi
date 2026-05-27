@@ -181,8 +181,37 @@ pub async fn compose_live_plans(
 /// [`ExtractResult::NotBackfillChunked`] if no matching step exists,
 /// or [`ExtractResult::Malformed`] if the step's parameters cannot be
 /// decoded into the expected shape.
-pub fn extract_backfill_params(_steps: &[crate::live_migrate::plan::Step]) -> ExtractResult {
-    todo!("extract_backfill_params: Stage 2A stub — implementation in later stage")
+pub fn extract_backfill_params(steps: &[crate::live_migrate::plan::Step]) -> ExtractResult {
+    use crate::live_migrate::plan::{StepKind, StepParameters};
+
+    for step in steps {
+        if step.kind == StepKind::BackfillChunked {
+            match &step.parameters {
+                StepParameters::BackfillChunked {
+                    table,
+                    predicate_template,
+                    chunk_size,
+                } => {
+                    return ExtractResult::Params {
+                        table: table.clone(),
+                        filter: predicate_template.clone(),
+                        // TODO: StepParameters::BackfillChunked doesn't have a
+                        // columns field yet. Populate when the plan schema
+                        // gains per-column granularity (djogi#332).
+                        columns: Vec::new(),
+                        batch_size: *chunk_size as i64,
+                    };
+                }
+                _ => {
+                    return ExtractResult::Malformed(format!(
+                        "step kind is BackfillChunked but parameters are {:?}",
+                        step.parameters.kind()
+                    ));
+                }
+            }
+        }
+    }
+    ExtractResult::NotBackfillChunked
 }
 
 /// Verify that no live plan is currently active in the given bucket.
@@ -239,9 +268,7 @@ pub fn build_skeleton_plan(
 ) -> crate::live_migrate::plan::LivePlan {
     use crate::live_migrate::plan::PlanClassification;
 
-    let plan_id_val: crate::types::HeerId = plan_id
-        .parse()
-        .unwrap_or(crate::types::HeerId::ZERO);
+    let plan_id_val: crate::types::HeerId = plan_id.parse().unwrap_or(crate::types::HeerId::ZERO);
 
     let plan_classification: PlanClassification =
         Option::<PlanClassification>::from(classification)
@@ -405,5 +432,114 @@ mod tests {
             vec![dummy_step(0)],
         );
         assert_eq!(plan.header.plan_id.as_i64(), 42);
+    }
+
+    // ── extract_backfill_params tests ────────────────────────────────────
+
+    fn backfill_step(ordinal: u32) -> Step {
+        Step {
+            kind: StepKind::BackfillChunked,
+            ordinal,
+            parameters: StepParameters::BackfillChunked {
+                table: "vehicles".to_string(),
+                predicate_template: "old_status IS NULL".to_string(),
+                chunk_size: 500,
+            },
+        }
+    }
+
+    #[test]
+    fn extract_backfill_params_empty_steps_returns_not_backfill() {
+        let steps: Vec<Step> = vec![];
+        assert_eq!(
+            extract_backfill_params(&steps),
+            ExtractResult::NotBackfillChunked,
+        );
+    }
+
+    #[test]
+    fn extract_backfill_params_no_backfill_step_returns_not_backfill() {
+        let steps = vec![dummy_step(0), dummy_step(1)];
+        assert_eq!(
+            extract_backfill_params(&steps),
+            ExtractResult::NotBackfillChunked,
+        );
+    }
+
+    #[test]
+    fn extract_backfill_params_extracts_correct_params() {
+        let steps = vec![dummy_step(0), backfill_step(1), dummy_step(2)];
+        let result = extract_backfill_params(&steps);
+        assert_eq!(
+            result,
+            ExtractResult::Params {
+                table: "vehicles".to_string(),
+                filter: "old_status IS NULL".to_string(),
+                columns: Vec::<String>::new(),
+                batch_size: 500,
+            },
+        );
+    }
+
+    #[test]
+    fn extract_backfill_params_batch_size_cast_from_u32_to_i64() {
+        let step = Step {
+            kind: StepKind::BackfillChunked,
+            ordinal: 0,
+            parameters: StepParameters::BackfillChunked {
+                table: "t".to_string(),
+                predicate_template: "1=1".to_string(),
+                chunk_size: u32::MAX,
+            },
+        };
+        let result = extract_backfill_params(&[step]);
+        assert_eq!(
+            result,
+            ExtractResult::Params {
+                table: "t".to_string(),
+                filter: "1=1".to_string(),
+                columns: Vec::<String>::new(),
+                batch_size: i64::from(u32::MAX),
+            },
+        );
+    }
+
+    #[test]
+    fn extract_backfill_params_kind_mismatch_returns_malformed() {
+        // Step has kind = BackfillChunked but parameters are ExpandSchema.
+        let step = Step {
+            kind: StepKind::BackfillChunked,
+            ordinal: 0,
+            parameters: StepParameters::ExpandSchema {
+                sql_segments: vec!["ALTER TABLE foo ADD COLUMN bar INT".to_string()],
+            },
+        };
+        match extract_backfill_params(&[step]) {
+            ExtractResult::Malformed(diag) => {
+                assert!(
+                    diag.contains("BackfillChunked"),
+                    "diagnostic should mention BackfillChunked: {diag}",
+                );
+            }
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_backfill_params_first_step_is_backfill() {
+        let steps = vec![backfill_step(0), dummy_step(1)];
+        assert!(matches!(
+            extract_backfill_params(&steps),
+            ExtractResult::Params { .. }
+        ));
+    }
+
+    #[test]
+    fn extract_backfill_params_last_step_is_backfill() {
+        let steps = vec![dummy_step(0), backfill_step(1)];
+        assert!(matches!(
+            extract_backfill_params(&steps),
+            ExtractResult::Params { .. }
+        ));
     }
 }
