@@ -232,7 +232,7 @@ impl std::error::Error for BootstrapError {
 /// **Why this function** rather than calling
 /// `heeranjid::postgres_schema::install_schema` etc. directly: the
 /// auto-emit path needs the SQL as a `String` to write into the
-/// `<workspace>/migrations/<db>/<app>/V00000000000000__phase_zero_bootstrap.sql`
+/// `<workspace>/migrations/<db>/<app>/V00000000000000__phase_zero_bootstrap.sdjql`
 /// file. The runtime test-harness path also benefits — a single
 /// composed blob means one `batch_execute` call with one round-trip,
 /// instead of four.
@@ -396,7 +396,7 @@ pub(crate) fn compose_node_seed(database: &str, node_id: i32) -> Result<String, 
 ///
 /// Consumers:
 /// - `migrations compose` writes this to
-///   `<workspace>/migrations/<db>/<app>/V00000000000000__phase_zero_bootstrap.sql`
+///   `<workspace>/migrations/<db>/<app>/V00000000000000__phase_zero_bootstrap.sdjql`
 ///   and tracks it in the ledger like any other migration.
 /// - The test harness `setup_test_db_with_extensions` runs this
 ///   directly via [`run_phase_zero`] before applying pending
@@ -602,7 +602,7 @@ impl From<BootstrapError> for AutoEmitError {
 ///
 /// **When this fires.** A database is considered "missing Phase 0"
 /// when the file
-/// `<workspace>/migrations/<database>/_global_/V00000000000000__phase_zero_bootstrap.sql`
+/// `<workspace>/migrations/<database>/_global_/V00000000000000__phase_zero_bootstrap.sdjql`
 /// does not exist. Once it exists, subsequent compose runs leave it
 /// untouched (idempotent — running compose twice never re-emits).
 ///
@@ -684,7 +684,7 @@ pub fn ensure_phase_zero_emitted(
 
         // All three artifacts must be present for the emit to be
         // considered complete. Checking only `up_path` would skip
-        // re-emission on a partial write (e.g. crash after up.sql but
+        // re-emission on a partial write (e.g. crash after up.sdjql but
         // before pending.json), leaving a stale disk state forever.
         if up_path.exists() && down_path.exists() && pending_path.exists() {
             continue;

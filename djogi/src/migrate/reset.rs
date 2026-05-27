@@ -221,7 +221,7 @@ pub struct ResetChecksumParityIssue {
     pub bucket: BucketKey,
     /// Migration version carrying the mismatch.
     pub version: String,
-    /// Whether the issue concerns `up.sql` or `down.sql`.
+    /// Whether the issue concerns `up.sdjql` or `down.sdjql`.
     pub sql_side: ResetSqlSide,
     /// Checksum recorded on the live ledger before reset.
     pub ledger_checksum: String,
@@ -1168,7 +1168,7 @@ async fn drop_and_create_database(maintenance_url: &str, database: &str) -> Resu
 /// migration lists are version-sorted (lexical = chronological per
 /// the [`super::naming`] convention).
 ///
-/// Files matching the down-side suffix (`.down.sql`) are skipped —
+/// Files matching the down-side suffix (`.down.sdjql`) are skipped —
 /// the up-side filename serves as the canonical version identifier.
 fn scan_committed_migrations(
     workspace_root: &Path,

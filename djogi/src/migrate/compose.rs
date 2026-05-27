@@ -4,8 +4,8 @@
 //! snapshot into one new pair of files per drifted bucket:
 //!
 //! 1. The committed migration SQL pair under
-//!    `migrations/<database>/<app>/<version>.sql` (up) +
-//!    `<version>.down.sql` (down).
+//!    `migrations/<database>/<app>/<version>.sdjql` (up) +
+//!    `<version>.down.sdjql` (down).
 //! 2. The pending JSON at
 //!    `target/djogi_pending/<database>/<app>.json` recording the
 //!    composed delta + checksum (build.rs reads it as the second leg
@@ -475,7 +475,7 @@ pub struct ComposeReport {
     /// One entry per database that received a Phase 0 bootstrap
     /// migration during this compose run. Track 0 (sub-step 0.3)
     /// wired auto-emit so any database whose
-    /// `migrations/<db>/_global_/V00000000000000__phase_zero_bootstrap.sql`
+    /// `migrations/<db>/_global_/V00000000000000__phase_zero_bootstrap.sdjql`
     /// is missing receives one before the delta-based work runs.
     /// Empty when every database already had Phase 0 on disk.
     pub emitted_phase_zero: Vec<super::bootstrap::EmittedPhaseZero>,
