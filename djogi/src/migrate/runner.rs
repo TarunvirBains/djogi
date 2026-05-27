@@ -2081,10 +2081,57 @@ async fn fake_apply_inner(
         });
     }
 
+    // Out-of-order detection — fake-apply respects the same policy
+    // gate as real apply. A faked row with a suppressed out_of_order_flag
+    // would misrepresent the version-ordering state in the ledger.
+    let conflicting_peer = find_higher_applied_version(ctx, &plan.bucket, &runner_ctx.version)
+        .await
+        .map_err(|e| RunnerError::LedgerQueryFailed {
+            query_label: "out_of_order_check",
+            source: e,
+        })?;
+    let is_out_of_order = conflicting_peer.is_some();
+    if is_out_of_order && !runner_ctx.out_of_order_policy.allows() {
+        let (conflicting_version, conflicting_applied_at) =
+            conflicting_peer.unwrap_or_else(|| (String::new(), None));
+        return Err(RunnerError::OutOfOrderRejected {
+            version: runner_ctx.version.clone(),
+            conflicting_version,
+            conflicting_applied_at,
+        });
+    }
+    if is_out_of_order {
+        let (conflicting_version, applied_at) = conflicting_peer
+            .as_ref()
+            .map(|(v, ts)| (v.as_str(), ts.as_deref()))
+            .unwrap_or(("", None));
+        tracing::warn!(
+            bucket_database = %plan.bucket.database,
+            bucket_app = %plan.bucket.app,
+            version = %runner_ctx.version,
+            conflicting_version,
+            conflicting_applied_at = applied_at.unwrap_or("<unknown>"),
+            policy = ?runner_ctx.out_of_order_policy,
+            "out-of-order fake-apply allowed by policy",
+        );
+    }
+
     let timestamp = OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "<unknown timestamp>".to_string());
-    let note = format!("faked at {timestamp}; reason: {reason}");
+    let fake_note = format!("faked at {timestamp}; reason: {reason}");
+    // Compose the out-of-order portion using the same function as
+    // apply_plan_inner. The fake-apply reason comes first (primary
+    // operation); the out-of-order annotation is supplementary context.
+    let ooo_note = compose_initial_note(
+        is_out_of_order,
+        runner_ctx.out_of_order_policy.override_reason(),
+        conflicting_peer.as_ref(),
+    );
+    let note = match ooo_note {
+        Some(note_str) => format!("{fake_note}; {note_str}"),
+        None => fake_note,
+    };
     let run_id = generate_run_id(ctx, &runner_ctx.version).await?;
     // `insert_pending` binds `row.status.as_db_str()` directly, so
     // constructing the row with `LedgerStatus::Faked` writes the
@@ -2100,7 +2147,7 @@ async fn fake_apply_inner(
         execution_mode: ExecutionMode::Transactional,
         status: LedgerStatus::Faked,
         execution_time_ms: 0,
-        out_of_order_flag: false,
+        out_of_order_flag: is_out_of_order,
         applied_steps_count: 0,
         total_steps: None,
         partial_apply_note: Some(note.clone()),
@@ -2122,7 +2169,15 @@ async fn fake_apply_inner(
         }
     };
 
-    // Snapshot moves forward, when supplied.
+    // Snapshot moves forward when supplied. The write ordering is:
+    //   a. W1: ledger row committed as terminal `faked` (already done above).
+    //   b. W3: persist snapshot to disk.
+    //
+    // If (b) fails, the ledger row is `faked` but the snapshot is stale or
+    // missing. Recovery: run `djogi migrations compose` (or `attune`) to
+    // regenerate the snapshot from the descriptor inventory. The ledger row
+    // does not need repair — it correctly records that the migration was
+    // faked. See #326 Amendment 3 (W3a/W3b/W3c crash states).
     if let (Some(snapshot), Some(path)) = (&runner_ctx.snapshot, &runner_ctx.snapshot_path) {
         save_snapshot(snapshot, path).map_err(|e| RunnerError::SnapshotPersistFailed {
             path: path.clone(),
