@@ -426,6 +426,18 @@ reach for the raw escape hatch below.
 The returned count is `u64` — `tokio_postgres::Client::execute`'s
 rows-affected return value passed through unchanged.
 
+For macro-backed models with a registered Punnu, bulk updates executed inside
+a transaction-backed context collect affected primary keys internally and
+enqueue one cache invalidation callback via `ctx.on_commit(...)`. Warmed Punnu
+entries are evicted after the surrounding transaction commits and are preserved
+when the transaction rolls back.
+
+The public return type remains `u64`; primary-key collection is an internal
+implementation detail. Pool-backed `.execute(&mut ctx)` calls keep the fast
+row-count path and do not perform rollback-aware bulk cache invalidation. Wrap
+the bulk update in `djogi::transaction::atomic(...)` when cache invalidation
+must be coordinated with commit/rollback behavior.
+
 Empty-assignment short-circuit: `filter(...).update(|_| vec![])` returns
 `Ok(0)` without issuing SQL. An `UPDATE ... SET` with no assignments is
 a Postgres syntax error, so the short-circuit is load-bearing.

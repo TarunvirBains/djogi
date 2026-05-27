@@ -413,6 +413,17 @@ impl<T: Model> UpdateStmt<T> {
     /// `CommandTag::rows_affected()`. Postgres' UPDATE rowcount is
     /// non-negative by definition, so there is no sign conversion at
     /// the call site.
+    ///
+    /// # Cache invalidation
+    ///
+    /// For macro-backed models with a registered Punnu, transaction-backed bulk
+    /// updates collect affected primary keys internally with `UPDATE ... RETURNING
+    /// <pk>` and enqueue one `on_commit` invalidation callback. Warmed entries are
+    /// evicted after commit and preserved after rollback.
+    ///
+    /// The public return type remains `u64`. Pool-backed contexts keep the
+    /// existing row-count fast path; wrap the call in `atomic(...)` when bulk cache
+    /// invalidation must be commit/rollback-aware.
     pub fn execute<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -513,9 +524,10 @@ impl<T: Model> UpdateStmt<T> {
     /// For `#[model(events)]` models, this method emits one `Save` outbox row
     /// per returned `pair.new` payload using a batched insert path.
     ///
-    /// Cache invalidation is enqueued per returned row with
-    /// `InvalidationReason::OnSave` via `ctx.on_commit`, matching single-row
-    /// save/update-returning semantics.
+    /// Cache invalidation is enqueued once per bulk statement with
+    /// `InvalidationReason::OnSave` via `ctx.on_commit`, invalidating every
+    /// returned `pair.new` primary key after commit and preserving warmed entries
+    /// after rollback.
     pub fn execute_returning_pairs<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
