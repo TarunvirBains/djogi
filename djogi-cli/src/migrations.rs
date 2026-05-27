@@ -923,10 +923,22 @@ async fn apply_one_pending(
         }
         LedgerState::PendingOrPartial(existing_status) => {
             // Pending or partial state from a previous interrupted run.
-            // If it's Failed, delete and retry; otherwise refuse.
-            if existing_status == LedgerStatus::Failed {
+            // Failed and RolledBack are non-terminal stale rows that block
+            // re-apply — delete them and proceed. Pending rows require
+            // explicit operator resolution.
+            if existing_status == LedgerStatus::Failed
+                || existing_status == LedgerStatus::RolledBack
+            {
+                // Both Failed and RolledBack rows are non-terminal stale rows
+                // that block re-apply. delete_failed_ledger_row is a status-
+                // agnostic DELETE by version; the name reflects the original
+                // crash-recovery use case but the operation applies equally to
+                // rolled-back rows.
                 if let Err(e) = delete_failed_ledger_row(ctx, &pending.version).await {
-                    return ApplyResult::Refused(format!("clean failed ledger row: {e}"));
+                    return ApplyResult::Refused(format!(
+                        "clean {} ledger row: {e}",
+                        existing_status.as_db_str()
+                    ));
                 }
             } else {
                 return ApplyResult::Refused(format!(
@@ -1005,11 +1017,10 @@ async fn check_ledger_state(ctx: &mut djogi::context::DjogiContext, version: &st
     match existing {
         None => LedgerState::NotPresent,
         Some(row) => match row.status {
-            LedgerStatus::Applied
-            | LedgerStatus::Baseline
-            | LedgerStatus::Faked
-            | LedgerStatus::RolledBack => LedgerState::AlreadyApplied,
-            LedgerStatus::Pending | LedgerStatus::Failed => {
+            LedgerStatus::Applied | LedgerStatus::Baseline | LedgerStatus::Faked => {
+                LedgerState::AlreadyApplied
+            }
+            LedgerStatus::Pending | LedgerStatus::Failed | LedgerStatus::RolledBack => {
                 LedgerState::PendingOrPartial(row.status)
             }
         },
