@@ -13,7 +13,7 @@
 //!    through this module twice yields the same version ID.
 //!
 //! 2. **Filename slugs.** The on-disk migration file is
-//!    `<version>__<slug>.sql` (up side) and `<version>__<slug>.down.sql`
+//!    `<version>__<slug>.sdjql` (up side) and `<version>__<slug>.down.sdjql`
 //!    (down side). The slug is sanitised down to a strict identifier
 //!    grammar so tooling — file globbing, `git diff`, commit messages —
 //!    never has to worry about whitespace, punctuation, or non-ASCII
@@ -58,6 +58,22 @@ use time::OffsetDateTime;
 /// limit). Operators occasionally pass long migration descriptions;
 /// we keep the prefix-plus-slug fits-in-one-filename invariant.
 pub const MAX_SLUG_LEN: usize = 63;
+
+/// File extension for composed migration SQL files.
+///
+/// `.sdjql` — a framework-specific extension that discourages rote manual
+/// execution via `psql`. AI agents pattern-match on `.sql`; using a custom
+/// extension breaks that chain. The scanner (`scan_filesystem_with_files`)
+/// rejects legacy schema migration `.sql` artifacts with a diagnostic; seed SQL
+/// files remain `.sql` and are handled by the seed subsystem.
+pub const MIGRATION_FILE_EXT: &str = ".sdjql";
+
+/// Byte length of [`MIGRATION_FILE_EXT`] including the leading dot.
+/// Used by stem extraction to avoid magic numbers.
+pub const MIGRATION_FILE_EXT_LEN: usize = MIGRATION_FILE_EXT.len();
+
+/// Suffix for the down-side extension (`.down.sdjql`).
+pub(crate) const MIGRATION_DOWN_SUFFIX: &str = ".down.sdjql";
 
 /// Prefix used to make a slug identifier-safe when its first byte
 /// would otherwise be a digit. Two letters so the result still fits
@@ -169,18 +185,18 @@ pub fn version_id(prefix: &str, slug: &str) -> String {
     s
 }
 
-/// Filename for the up-side SQL — `<version>.sql`.
+/// Filename for the up-side migration — `<version>.sdjql`.
 ///
 /// The version is already `V<ts>__<slug>`; we deliberately keep the up
-/// file name flat (no `.up.sql`) so the most common artifact reads
-/// like a normal SQL file. The down side gets the explicit suffix.
+/// file name flat (no `.up.sdjql`) so the most common artifact reads
+/// like a normal migration file. The down side gets the explicit suffix.
 pub fn up_filename(version: &str) -> String {
-    format!("{version}.sql")
+    format!("{version}{ext}", ext = MIGRATION_FILE_EXT)
 }
 
-/// Filename for the down-side SQL — `<version>.down.sql`.
+/// Filename for the down-side migration — `<version>.down.sdjql`.
 pub fn down_filename(version: &str) -> String {
-    format!("{version}.down.sql")
+    format!("{version}{suffix}", suffix = MIGRATION_DOWN_SUFFIX)
 }
 
 /// Filename for the per-app pending JSON — `<app>.json`.
@@ -321,8 +337,36 @@ mod tests {
     #[test]
     fn up_and_down_filenames() {
         let v = "V20260425010203__add_users";
-        assert_eq!(up_filename(v), "V20260425010203__add_users.sql");
-        assert_eq!(down_filename(v), "V20260425010203__add_users.down.sql",);
+        assert_eq!(up_filename(v), "V20260425010203__add_users.sdjql");
+        assert_eq!(down_filename(v), "V20260425010203__add_users.down.sdjql",);
+    }
+
+    #[test]
+    fn migration_file_ext_constant_has_expected_value() {
+        assert_eq!(MIGRATION_FILE_EXT, ".sdjql");
+        assert_eq!(MIGRATION_FILE_EXT_LEN, 6); // includes dot
+    }
+
+    #[test]
+    fn up_filename_uses_sdjql_extension() {
+        let v = "V20260425010203__add_users";
+        assert_eq!(up_filename(v), "V20260425010203__add_users.sdjql");
+    }
+
+    #[test]
+    fn down_filename_uses_down_sdjql_extension() {
+        let v = "V20260425010203__add_users";
+        assert_eq!(down_filename(v), "V20260425010203__add_users.down.sdjql");
+    }
+
+    #[test]
+    fn down_side_contains_dot_down_marker() {
+        let v = "V20260425010203__add_users";
+        let down = down_filename(v);
+        assert!(
+            down.contains(".down."),
+            "down filename must contain .down. marker: {down}"
+        );
     }
 
     #[test]

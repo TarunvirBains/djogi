@@ -519,14 +519,14 @@ Filenames are `V<YYYYMMDDHHMMSS>__<slug>.sql` plus `.down.sql`. Every Phase 7 pa
 ### 7d: CLI
 
 - [x] `djogi migrations compose` — compose pending up/down SQL pairs from descriptor drift
-- [ ] `djogi migrations apply` — deferred CLI dispatcher for applying pending migrations; library callers use `djogi::migrate::apply_plan`
+- [x] `djogi migrations apply` — apply pending migrations (also available via `djogi::migrate::apply_plan` library entry point)
 - [ ] `djogi migrations rollback` — deferred CLI dispatcher for rolling back the last applied migration for one target
 - [x] `djogi migrations status` — show file / snapshot / ledger / live-DB state for one target
 - [ ] `djogi migrations verify` — deferred CLI dispatcher for snapshot, history, and live-DB verification
 - [ ] `djogi migrations repair` — deferred CLI dispatcher for repairing failed or partially applied target-local migration state
 - [ ] `djogi migrations baseline` — deferred CLI dispatcher for marking an existing schema as adopted without replay
 - [x] `djogi migrations attune` — `--record` / `--squash --from <ver>` with `--publish`; localhost + dev-profile gates on squash
-- [ ] `djogi migrations apply --fake` — deferred CLI dispatcher for marking a migration applied without running it
+- [ ] `djogi migrations apply --fake` — deferred CLI flag for marking a migration applied without running it; library callers use `djogi::migrate::fake_apply_plan`
 - [ ] `djogi db reset` — deferred convenience wrapper around drop + recreate + migration apply (triple-gated: localhost + non-production profile + explicit `--yes`)
 - [x] `djogi db seed` — run `seeds/<database>/*.sql` files; `djogi_seed_runs` ledger; checksum-drift refusal; `--allow-non-localhost` opt-in
 - [x] `djogi docs` — render Markdown reference pages from `inventory::iter::<ModelDescriptor>()` to `target/djogi-docs/<app>/<Model>.md`

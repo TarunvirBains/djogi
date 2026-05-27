@@ -4,8 +4,8 @@
 //! snapshot into one new pair of files per drifted bucket:
 //!
 //! 1. The committed migration SQL pair under
-//!    `migrations/<database>/<app>/<version>.sql` (up) +
-//!    `<version>.down.sql` (down).
+//!    `migrations/<database>/<app>/<version>.sdjql` (up) +
+//!    `<version>.down.sdjql` (down).
 //! 2. The pending JSON at
 //!    `target/djogi_pending/<database>/<app>.json` recording the
 //!    composed delta + checksum (build.rs reads it as the second leg
@@ -475,7 +475,7 @@ pub struct ComposeReport {
     /// One entry per database that received a Phase 0 bootstrap
     /// migration during this compose run. Track 0 (sub-step 0.3)
     /// wired auto-emit so any database whose
-    /// `migrations/<db>/_global_/V00000000000000__phase_zero_bootstrap.sql`
+    /// `migrations/<db>/_global_/V00000000000000__phase_zero_bootstrap.sdjql`
     /// is missing receives one before the delta-based work runs.
     /// Empty when every database already had Phase 0 on disk.
     pub emitted_phase_zero: Vec<super::bootstrap::EmittedPhaseZero>,
@@ -1438,6 +1438,13 @@ fn compose_up_text(version: &str, delta: &SchemaDelta, lowered: &[OperationSql])
         "-- Classification: {classification:?}\n",
         classification = delta.classification,
     ));
+    out.push_str("--\n");
+    out.push_str("-- Apply via `djogi migrations apply`, not psql. This file is a review\n");
+    out.push_str("-- artifact and replay source. Manual execution bypasses ledger recording,\n");
+    out.push_str("-- checksum verification, advisory locking, and snapshot advancement.\n");
+    out.push_str("-- Direct execution is only appropriate for debugging, audit transparency,\n");
+    out.push_str("-- or explicit operator override.\n");
+    out.push_str("--\n");
     out.push_str("-- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\n");
     if requires_numeric_array_helper(lowered) {
         out.push_str(NUMERIC_ARRAY_HELPER_PRELUDE);
@@ -1470,6 +1477,13 @@ fn compose_down_text(version: &str, delta: &SchemaDelta, lowered: &[OperationSql
         database = delta.bucket.database,
         app = super::target::app_dirname(&delta.bucket.app),
     ));
+    out.push_str("--\n");
+    out.push_str("-- Apply via `djogi migrations apply`, not psql. This file is a review\n");
+    out.push_str("-- artifact and replay source. Manual execution bypasses ledger recording,\n");
+    out.push_str("-- checksum verification, advisory locking, and snapshot advancement.\n");
+    out.push_str("-- Direct execution is only appropriate for debugging, audit transparency,\n");
+    out.push_str("-- or explicit operator override.\n");
+    out.push_str("--\n");
     out.push_str("-- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\n");
     if requires_numeric_array_helper(lowered) {
         out.push_str(NUMERIC_ARRAY_HELPER_PRELUDE);
@@ -2786,7 +2800,7 @@ mod tests {
         // artifact so the post-rename folder existence is verifiable.
         let old_dir = bucket_dir(&work, &old_bucket);
         fs::create_dir_all(&old_dir).unwrap();
-        fs::write(old_dir.join("V20260101010101__init.sql"), "-- init").unwrap();
+        fs::write(old_dir.join("V20260101010101__init.sdjql"), "-- init").unwrap();
         // Save the snapshot at the old bucket (Codex B-1's CLI side
         // reads this; the lib-side test passes it through `snapshots`).
         let mut snapshots = BTreeMap::new();
@@ -2848,7 +2862,7 @@ mod tests {
             "old bucket dir must have been renamed away"
         );
         // The pre-existing artifact was moved over.
-        assert!(new_dir.join("V20260101010101__init.sql").exists());
+        assert!(new_dir.join("V20260101010101__init.sdjql").exists());
         // 5. Codex round-2 B-9: the up SQL must NOT carry a DROP
         // TABLE for `widgets` — the table isn't being dropped, just
         // re-labelled at the app boundary.
@@ -3597,8 +3611,8 @@ mod tests {
         // Both directories contain a file of the SAME name with
         // DIFFERENT content — a collision the prior merge loop would
         // silently swallow.
-        fs::write(old_dir.join("V20260101010101__init.sql"), "from-old").unwrap();
-        fs::write(new_dir.join("V20260101010101__init.sql"), "from-new").unwrap();
+        fs::write(old_dir.join("V20260101010101__init.sdjql"), "from-old").unwrap();
+        fs::write(new_dir.join("V20260101010101__init.sdjql"), "from-new").unwrap();
         let mut snapshots = BTreeMap::new();
         snapshots.insert(old_bucket.clone(), snapshot_with_widgets(&old_bucket));
         let mut models = BTreeMap::new();
@@ -3633,18 +3647,18 @@ mod tests {
             ComposeError::FolderRenameTargetCollision {
                 offending_entry, ..
             } => {
-                assert_eq!(offending_entry, "V20260101010101__init.sql");
+                assert_eq!(offending_entry, "V20260101010101__init.sdjql");
             }
             other => panic!("wrong variant: {other:?}"),
         }
         // The pre-existing files are left untouched (no partial
         // merge state).
         assert_eq!(
-            fs::read_to_string(old_dir.join("V20260101010101__init.sql")).unwrap(),
+            fs::read_to_string(old_dir.join("V20260101010101__init.sdjql")).unwrap(),
             "from-old"
         );
         assert_eq!(
-            fs::read_to_string(new_dir.join("V20260101010101__init.sql")).unwrap(),
+            fs::read_to_string(new_dir.join("V20260101010101__init.sdjql")).unwrap(),
             "from-new"
         );
         let _ = fs::remove_dir_all(&work);
@@ -3745,9 +3759,9 @@ mod tests {
             // second would fail mid-loop — which is the scenario we
             // want to make unreachable. Today the pre-flight inspects
             // every entry up-front and refuses fail-fast.
-            fs::write(old_dir.join("V20260101010101__a.sql"), "movable").unwrap();
-            fs::write(old_dir.join("V20260101010102__b.sql"), "from-old").unwrap();
-            fs::write(new_dir.join("V20260101010102__b.sql"), "from-new").unwrap();
+            fs::write(old_dir.join("V20260101010101__a.sdjql"), "movable").unwrap();
+            fs::write(old_dir.join("V20260101010102__b.sdjql"), "from-old").unwrap();
+            fs::write(new_dir.join("V20260101010102__b.sdjql"), "from-new").unwrap();
             let mut snapshots = BTreeMap::new();
             snapshots.insert(old_bucket.clone(), snapshot_with_widgets(&old_bucket));
             let mut models = BTreeMap::new();
@@ -3776,7 +3790,7 @@ mod tests {
                 ComposeError::FolderRenameTargetCollision {
                     offending_entry, ..
                 } => {
-                    assert_eq!(offending_entry, "V20260101010102__b.sql");
+                    assert_eq!(offending_entry, "V20260101010102__b.sdjql");
                 }
                 other => panic!("wrong variant (file-vs-file): {other:?}"),
             }
@@ -3787,12 +3801,12 @@ mod tests {
             // assertion would fail because the first entry would have
             // been moved before the second hit the rollback path.
             assert!(
-                old_dir.join("V20260101010101__a.sql").exists(),
+                old_dir.join("V20260101010101__a.sdjql").exists(),
                 "movable entry must remain under OLD — pre-flight \
                  must pre-empt the entire merge loop"
             );
             assert!(
-                !new_dir.join("V20260101010101__a.sql").exists(),
+                !new_dir.join("V20260101010101__a.sdjql").exists(),
                 "movable entry must NOT have been promoted into NEW"
             );
             let _ = fs::remove_dir_all(&work);
@@ -3818,14 +3832,14 @@ mod tests {
             let new_dir = bucket_dir(&work, &new_bucket);
             fs::create_dir_all(&old_dir).unwrap();
             fs::create_dir_all(&new_dir).unwrap();
-            // OLD has a file at `V20260101010101__init.sql`. NEW has
+            // OLD has a file at `V20260101010101__init.sdjql`. NEW has
             // a DIRECTORY at the same path. Without the pre-flight,
             // `fs::rename(<file>, <existing-dir>)` would fail
             // mid-loop with EISDIR.
-            fs::write(old_dir.join("V20260101010101__init.sql"), "movable").unwrap();
-            fs::create_dir_all(new_dir.join("V20260101010101__init.sql")).unwrap();
+            fs::write(old_dir.join("V20260101010101__init.sdjql"), "movable").unwrap();
+            fs::create_dir_all(new_dir.join("V20260101010101__init.sdjql")).unwrap();
             fs::write(
-                new_dir.join("V20260101010101__init.sql").join("sentinel"),
+                new_dir.join("V20260101010101__init.sdjql").join("sentinel"),
                 b"keep",
             )
             .unwrap();
@@ -3857,7 +3871,7 @@ mod tests {
                 ComposeError::FolderRenameTargetCollision {
                     offending_entry, ..
                 } => {
-                    assert_eq!(offending_entry, "V20260101010101__init.sql");
+                    assert_eq!(offending_entry, "V20260101010101__init.sdjql");
                 }
                 other => panic!("wrong variant (file-vs-dir): {other:?}"),
             }
@@ -3865,7 +3879,7 @@ mod tests {
             // rollback never ran because pre-flight pre-empted it.
             assert!(
                 new_dir
-                    .join("V20260101010101__init.sql")
+                    .join("V20260101010101__init.sdjql")
                     .join("sentinel")
                     .exists(),
                 "blocking directory's contents must be preserved"
@@ -4474,6 +4488,71 @@ mod tests {
         assert!(
             !prelude.contains("pg_catalog.unnest(values)"),
             "Helper body must not reference the rejected `values` argument: {prelude}"
+        );
+    }
+
+    #[test]
+    fn compose_up_header_contains_apply_via_cli_warning() {
+        let version = "V20260425010203__add_users";
+        let bucket = BucketKey {
+            database: "main".to_string(),
+            app: "myapp".to_string(),
+        };
+        let delta = SchemaDelta {
+            bucket,
+            operations: vec![],
+            classification: Classification::Additive,
+        };
+        let lowered: Vec<OperationSql> = vec![];
+        let text = compose_up_text(version, &delta, &lowered);
+
+        assert!(
+            text.contains("Apply via `djogi migrations apply`"),
+            "up header must contain apply-via-CLI warning: {text}"
+        );
+        assert!(
+            text.contains("not psql"),
+            "up header must name psql as the bypass path: {text}"
+        );
+        assert!(
+            text.contains("ledger recording"),
+            "up header must mention ledger: {text}"
+        );
+        assert!(
+            text.contains("-- DO NOT EDIT"),
+            "up header must still contain DO NOT EDIT line: {text}"
+        );
+        // Warning must appear BEFORE DO NOT EDIT
+        let apply_pos = text.find("Apply via `djogi migrations apply`").unwrap();
+        let dont_edit_pos = text.find("-- DO NOT EDIT").unwrap();
+        assert!(
+            apply_pos < dont_edit_pos,
+            "apply warning ({apply_pos}) must precede DO NOT EDIT ({dont_edit_pos})"
+        );
+    }
+
+    #[test]
+    fn compose_down_header_contains_apply_via_cli_warning() {
+        let version = "V20260425010203__add_users";
+        let bucket = BucketKey {
+            database: "main".to_string(),
+            app: "myapp".to_string(),
+        };
+        let delta = SchemaDelta {
+            bucket,
+            operations: vec![],
+            classification: Classification::Additive,
+        };
+        let lowered: Vec<OperationSql> = vec![];
+        let text = compose_down_text(version, &delta, &lowered);
+
+        assert!(
+            text.contains("Apply via `djogi migrations apply`"),
+            "down header must contain apply-via-CLI warning: {text}"
+        );
+        assert!(
+            text.contains("-- DO NOT EDIT"),
+            "down header must still contain DO NOT EDIT line: {text}"
         );
     }
 

@@ -1167,3 +1167,12 @@ harness = true
 name = "presentation_codec"
 path = "../tests/integration/presentation_codec.rs"
 harness = true
+
+# Issue #327 — PostgreSQL version preflight integration test.
+# Exercises `check_postgres_version` against the live dev database
+# to verify PG 18+ round-trip: pool construction, SHOW query, parse,
+# version comparison, and report field consistency.
+[[test]]
+name = "preflight_version_gate"
+path = "../tests/integration/preflight_version_gate.rs"
+harness = true

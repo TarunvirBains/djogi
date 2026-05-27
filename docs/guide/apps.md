@@ -151,8 +151,8 @@ migrations/
 ├── main/
 │   ├── vehicles/
 │   │   ├── schema_snapshot.json
-│   │   ├── 0001_initial_up.sql
-│   │   └── 0001_initial_down.sql
+│   │   ├── V20260301000000__initial.sdjql
+│   │   └── V20260301000000__initial.down.sdjql
 │   └── billing/
 │       └── ...
 ├── crud_log/

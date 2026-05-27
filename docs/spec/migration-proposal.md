@@ -220,7 +220,8 @@ This proposal replaces them with noun-grouped verbs throughout. The shipped CLI 
 | `djogi migrations compose --name <slug>` | Override auto-generated migration description |
 | `djogi migrations status` | Show pending and applied migration state |
 | `djogi migrations attune` | Reconcile migration history state through the shipped attune workflow |
-| Planned target verbs | `apply`, `rollback`, `verify`, `repair`, and `baseline` remain deferred CLI surfaces; use `djogi::migrate` library APIs today |
+| Shipped target verb | `apply` ships as `djogi migrations apply` |
+| Deferred target verbs | `rollback`, `verify`, `repair`, and `baseline` remain deferred CLI surfaces; use `djogi::migrate` library APIs today |
 | `djogi migrations help [<subcommand>]` | Print help for the group or a specific subcommand |
 | `djogi migrations` (no subcommand) | Equivalent to `help` — prints subcommand list + common workflows |
 
@@ -669,7 +670,7 @@ CREATE TABLE vehicles (
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-$ # deferred CLI sketch: djogi migrations apply
+$ djogi migrations apply
 Acquiring advisory lock 4994068948568834898...ok
 Applying 0001_initial...ok (34ms)
 Snapshot updated: migrations/schema_snapshot.json
@@ -705,7 +706,7 @@ $ cat migrations/0002_add_vehicle_horsepower_up.sql
 
 ALTER TABLE vehicles ADD COLUMN horsepower INTEGER NOT NULL DEFAULT 0;
 
-$ # deferred CLI sketch: djogi migrations apply
+$ djogi migrations apply
 Acquiring advisory lock...ok
 run_id: 7823456789012345678
 Applying 0002_add_vehicle_horsepower...ok (12ms)
@@ -766,7 +767,7 @@ $ cat migrations/0004_add_vehicles_make_idx_up.sql
 
 CREATE INDEX CONCURRENTLY vehicles_make_idx ON vehicles (make);
 
-$ # deferred CLI sketch: djogi migrations apply
+$ djogi migrations apply
 Acquiring advisory lock...ok
 run_id: 7823456789012345679
 Applying 0004_add_vehicles_make_idx (non-transactional)...
@@ -783,7 +784,7 @@ The ledger row for this migration has `execution_mode = 'non_transactional'`, `t
 Scenario: a non-transactional migration with two steps; step 2 fails.
 
 ```
-$ # deferred CLI sketch: djogi migrations apply
+$ djogi migrations apply
 Acquiring advisory lock...ok
 run_id: 7823456789012345680
 Applying 0005_add_two_indexes (non-transactional)...
@@ -800,7 +801,7 @@ Wrote: migrations/.migration_failure.json
 ```
 
 ```
-$ # deferred CLI sketch: djogi migrations apply
+$ djogi migrations apply
 error: migration failure marker present — resolve before applying
   = help: run the `djogi::migrate::repair_*` library helper until the deferred repair CLI lands
 
@@ -847,7 +848,7 @@ UPDATE djogi_schema_migrations
     SET app_label = 'fleet'
     WHERE app_label = 'vehicles';
 
-$ # deferred CLI sketch: djogi migrations apply
+$ djogi migrations apply
 Applying fleet/0002_rename_app_from_vehicles...ok
 
 $ # After apply: remove #[app(renamed_from = "vehicles")] from the macro.
@@ -881,7 +882,7 @@ $ cat migrations/orders/0003_move_shipment_from_fleet_up.sql
 
 SELECT 1; -- marker
 
-$ # deferred CLI sketch: djogi migrations apply
+$ djogi migrations apply
 Applying orders/0003_move_shipment_from_fleet...ok (marker migration)
 
 $ # Remove #[model(moved_from_app = "fleet")] after apply.

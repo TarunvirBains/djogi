@@ -158,6 +158,29 @@ async fn run_reset(
     confirmed: bool,
     allow_checksum_drift_reset: bool,
 ) -> i32 {
+    // Version preflight — verify PostgreSQL >= 18 on the target cluster
+    // before any destructive work.
+    //
+    // Connect to the MAINTENANCE database, not the application database,
+    // because db reset drops the application database — it may not exist
+    // at preflight time. Both databases are on the same cluster and
+    // share the same server_version_num.
+    let maintenance_url =
+        djogi::migrate::replace_db_in_url(&config.database.url, maintenance_database);
+    let preflight_url = maintenance_url.as_deref().unwrap_or(&config.database.url);
+    let preflight_pool = match djogi::pg::pool::DjogiPool::connect(preflight_url).await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("djogi db reset: support boundary: connect to maintenance DB: {e}");
+            return 1;
+        }
+    };
+    if let Err(e) = djogi::pg::preflight::check_postgres_version(&preflight_pool).await {
+        crate::print_support_boundary_error("db reset", &e);
+        return 2;
+    }
+    drop(preflight_pool);
+
     let audit_pool = resolve_audit_pool_best_effort(config).await;
     let req = ResetRequest {
         workspace_root: workspace,
@@ -385,6 +408,10 @@ async fn run_seed(
             return 1;
         }
     };
+    if let Err(e) = djogi::pg::preflight::check_postgres_version(&pool).await {
+        crate::print_support_boundary_error("db seed", &e);
+        return 2;
+    }
     let mut ctx = djogi::context::DjogiContext::from_pool(pool);
 
     match run_seeds(

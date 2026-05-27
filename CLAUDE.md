@@ -71,6 +71,10 @@ cargo xtask check-secrets --staged
 cargo xtask check-secrets --stdin < draft.md
 
 # CLI (Phase 7 + later phases)
+djogi migrations apply               # apply pending migrations (canonical spelling)
+djogi migrations apply --fake \      # fake-apply for existing-DB adoption
+  --reason "schema pre-exists"
+djogi migrate apply                  # alias for djogi migrations apply
 djogi migrations compose             # generate up/down SQL pair from descriptor drift
 djogi migrations status              # show ledger / snapshot / live-DB state
 djogi migrations attune              # reconcile disk / ledger / live DB
@@ -213,7 +217,7 @@ xtask validator are the enforcement. See [`docs/spec/raw-sql-escape-hatches.md`]
 - Diffs against `migrations/schema_snapshot.json`
 - Generates migration SQL pairs if drift detected; emits compiler warning (not error)
 
-`migrations/` is a git submodule — managed by CI, not by the developer directly. `schema_snapshot.json` is updated only on successful runs of the library apply path (`djogi::migrate::apply_plan`; the `djogi migrations apply` CLI dispatcher is deferred). The runner persists the snapshot atomically after every transactional segment commits and the ledger row reaches `applied`.
+`migrations/` is a git submodule — managed by CI, not by the developer directly. `schema_snapshot.json` is updated only on successful runs of `djogi migrations apply` (or the library entry point `djogi::migrate::apply_plan`). The runner persists the snapshot atomically after every transactional segment commits and the ledger row reaches `applied`.
 
 ### Three-Database Architecture
 

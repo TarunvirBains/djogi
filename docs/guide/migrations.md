@@ -11,13 +11,13 @@ pub struct User {
 }
 ```
 
-Add `pub bio: Option<String>` to the struct, run `cargo build`, and the build emits a drift warning. Run `djogi migrations compose --name add_user_bio` to generate `migrations/main/auth/V<timestamp>__add_user_bio.sql` (and `.down.sql`). Review the SQL in your PR. Apply via the public `djogi::migrate::apply_plan` library API. `attune` records, squashes, and publishes reviewed migration state; it does not execute migration SQL.
+Add `pub bio: Option<String>` to the struct, run `cargo build`, and the build emits a drift warning. Run `djogi migrations compose --name add_user_bio` to generate `migrations/main/auth/V<timestamp>__add_user_bio.sdjql` (and `.down.sdjql`). Review the SQL in your PR. Apply via the public `djogi::migrate::apply_plan` library API. `attune` records, squashes, and publishes reviewed migration state; it does not execute migration SQL.
 
 The system enforces three separate truths:
 
 1. **Desired schema** — derived from `#[model]` descriptors at build time.
 2. **Applied schema** — recorded in `migrations/<database>/<app>/schema_snapshot.json` after each successful apply.
-3. **Operational history** — `.sql` files on disk + the `djogi_schema_migrations` ledger table.
+3. **Operational history** — `.sdjql` files on disk + the `djogi_schema_migrations` ledger table.
 
 Drift between any two surfaces is a typed diagnostic, not a silent recovery.
 
@@ -26,7 +26,7 @@ Drift between any two surfaces is a typed diagnostic, not a silent recovery.
 ```
 edit #[model]   →   cargo build (drift warning)   →   djogi migrations compose
                                                          ↓
-                                              review V<ts>__name.sql + .down.sql
+                                              review V<ts>__name.sdjql + .down.sdjql
                                                          ↓
                                                    commit + open PR
                                                          ↓
@@ -45,12 +45,12 @@ The compose step is operator-driven. Reviewers see the SQL diff in the PR; nobod
 migrations/                        ← git submodule
 ├── main/                          ← database name
 │   ├── _global_/                  ← models with no #[model(app = ...)]
-│   │   ├── V20260301000000__init.sql
-│   │   ├── V20260301000000__init.down.sql
+│   │   ├── V20260301000000__init.sdjql
+│   │   ├── V20260301000000__init.down.sdjql
 │   │   └── schema_snapshot.json
 │   ├── auth/
-│   │   ├── V20260315120000__add_user_bio.sql
-│   │   ├── V20260315120000__add_user_bio.down.sql
+│   │   ├── V20260315120000__add_user_bio.sdjql
+│   │   ├── V20260315120000__add_user_bio.down.sdjql
 │   │   └── schema_snapshot.json
 │   └── billing/
 │       └── ...
@@ -61,7 +61,7 @@ migrations/                        ← git submodule
 ```
 
 - One directory per `(database, app)` bucket. Cross-database FKs are rejected at projection time.
-- Filename grammar: `V<14-digit timestamp>__<slug>.sql` (up) plus `.down.sql` (reverse).
+- Filename grammar: `V<14-digit timestamp>__<slug>.sdjql` (up) plus `.down.sdjql` (reverse).
 - `_global_` is the synthetic bucket for models without an explicit `#[model(app = ...)]`.
 - `schema_snapshot.json` is the per-bucket applied-state side-car. The runner persists it atomically after every transactional segment commits and the ledger row reaches `applied`.
 
@@ -98,7 +98,7 @@ Composes a new migration from descriptor diff against the last committed snapsho
 - `--allow-destructive` — required when the diff produces drops or touches a tombstoned app. Without this flag, destructive deltas refuse with a structural error.
 - `--force-overwrite` — discards hand-edits to existing migration files (D013 override). The byte-equality check that gates this flag is purely structural — the deterministic emitter produces identical bytes on identical inputs, so any manual edit shows up as a difference.
 
-Output: `V<timestamp>__<slug>.sql` + `.down.sql` per affected bucket, plus a per-bucket `target/djogi_pending/<database>/<app>.json` staging file.
+Output: `V<timestamp>__<slug>.sdjql` + `.down.sdjql` per affected bucket, plus a per-bucket `target/djogi_pending/<database>/<app>.json` staging file.
 
 ### `djogi migrations status`
 
@@ -140,7 +140,7 @@ Exit codes: `0` on success, `1` on runtime error (config / network / SQL / git),
 
 ## Library APIs
 
-The CLI dispatchers for `apply` / `rollback` / `fake` / `baseline` / `repair` / `verify` are deferred to a Phase 7 follow-up. Until then, library callers use the public entry points directly:
+The `apply` command ships as `djogi migrations apply`. The `rollback` / `fake` / `baseline` / `repair` / `verify` CLI dispatchers are deferred to a Phase 7 follow-up; library callers use the public entry points directly:
 
 ```rust
 use djogi::migrate::{
@@ -163,6 +163,10 @@ use djogi::migrate::repair::{
 | `repair_*` | Four typed repair flows: checksum drift, partial-apply cleanup, resume after interrupted apply, snapshot rebuild from ledger. |
 
 All apply paths require a `WorkspaceGuard` — a typed witness that the caller holds the workspace file lock. The lock prevents two concurrent CLI invocations from racing on the same `migrations/` tree.
+
+**Out-of-order policy enforcement:** `fake_apply_plan` enforces the same out-of-order policy gate as `apply_plan`. A faked row with a suppressed `out_of_order_flag` would misrepresent the version-ordering state. If the policy is `Reject`, fake-apply on an out-of-order version is rejected.
+
+**Snapshot failure recovery:** If `fake_apply_plan` reports a snapshot persistence error, the migration was successfully recorded in the ledger as `faked`. Run `djogi migrations compose` to regenerate the snapshot from the descriptor inventory.
 
 ## Classifications
 
@@ -208,6 +212,17 @@ Operators sometimes apply migrations in a different order than they were compose
 
 The policy lives in `RunnerCtx::out_of_order_policy` and defaults from `Djogi.toml::profile`.
 
+## RolledBack Recovery
+
+After a migration is rolled back, the ledger row has status `rolled_back`. This is a non-terminal status — the DDL effects are gone from the database, but the audit trail remains.
+
+To re-apply a rolled-back migration, run `djogi migrations apply` again. The runner:
+1. Detects the existing `rolled_back` row for the version
+2. Deletes the stale row
+3. Re-applies the migration SQL and creates a new `applied` ledger row
+
+This preserves the original version-to-schema-operation binding without requiring the operator to invent a new version string.
+
 ## `djogi db reset`
 
 ```
@@ -226,7 +241,7 @@ Only the application database is touched. Logging databases (`crud_log`, `event_
 
 URL paths are percent-decoded and validated against the strict Postgres-identifier grammar before splicing into DDL — defence-in-depth against URL-injection.
 
-Before `DROP DATABASE`, reset compares the live ledger's recorded migration checksums against the current committed migration files. Edited `up.sql`, edited `down.sql` (when the ledger carries a down checksum), missing historical files, or historical baseline rows whose checksums cannot be compared to file bytes all refuse with exit code `2` before any destructive step. `--allow-checksum-drift-reset` is the explicit operator override for that refusal path.
+Before `DROP DATABASE`, reset compares the live ledger's recorded migration checksums against the current committed migration files. Edited up-side `.sdjql`, edited down-side `.down.sdjql` (when the ledger carries a down checksum), missing historical files, or historical baseline rows whose checksums cannot be compared to file bytes all refuse with exit code `2` before any destructive step. `--allow-checksum-drift-reset` is the explicit operator override for that refusal path.
 
 Exit codes: `0` success, `1` runtime error, `2` gate refusal.
 
@@ -277,7 +292,7 @@ For multi-database tests, `setup_test_db()` / `teardown_test_db()` are also expo
 
 Three intentional escape hatches sit alongside the descriptor-driven flow:
 
-1. **Author-edited `.sql`.** The compose flow generates SQL files; nothing prevents an operator from editing them before commit. The byte-equality check at compose time catches accidental edits when re-composing the same delta. For deliberate edits (e.g. backfill UPDATE inside an additive migration), pass `--force-overwrite` on the next compose. The deterministic emitter still re-emits the structural baseline, so an author-supplied `UPDATE` is preserved only if it lives in a separate file or in the migration body alongside the descriptor-generated DDL.
+1. **Author-edited `.sdjql`.** The compose flow generates SQL files; nothing prevents an operator from editing them before commit. The byte-equality check at compose time catches accidental edits when re-composing the same delta. For deliberate edits (e.g. backfill UPDATE inside an additive migration), pass `--force-overwrite` on the next compose. The deterministic emitter still re-emits the structural baseline, so an author-supplied `UPDATE` is preserved only if it lives in a separate file or in the migration body alongside the descriptor-generated DDL.
 
 2. **`fake_apply_plan` / `attune --record-ledger`.** Insert ledger rows for migrations applied out-of-band. Used after a manual `psql` recovery: the SQL has already run, the ledger needs to catch up.
 

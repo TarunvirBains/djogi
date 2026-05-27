@@ -656,6 +656,12 @@ pub async fn run(
             url: url.clone(),
             message: e.to_string(),
         })?;
+    djogi::pg::preflight::check_postgres_version(&pool)
+        .await
+        .map_err(|e| AnalyzeError::Pool {
+            url: url.clone(),
+            message: format!("support boundary: {e}"),
+        })?;
 
     // Step 3 — fetch + recommend.
     let mut health = fetch_table_health(&pool).await?;

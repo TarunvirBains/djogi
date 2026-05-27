@@ -121,8 +121,7 @@ Pending migrations (2):
     + CREATE TABLE tags (3 columns)
       id BIGINT PK, name VARCHAR(100), slug VARCHAR(100)
 
-When the deferred apply dispatcher ships, it will consume this plan. Today,
-call the public `djogi::migrate::apply_plan` library API to apply migration
+Use `djogi migrations apply` (or the library entry point `djogi::migrate::apply_plan`) to apply migration
 plans.
 ```
 

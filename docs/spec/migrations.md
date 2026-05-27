@@ -803,7 +803,7 @@ djogi docs
 # config / snapshot / plan / ledger plumbing the CLI dispatch needs around
 # them. Adopters who need these flows ahead of the CLI registration can wire
 # the library APIs directly today.
-# deferred CLI sketch: djogi migrations apply
+# shipped CLI: djogi migrations apply
 # deferred CLI sketch: djogi migrations apply --fake 0005_add_vehicle_horsepower
 # deferred CLI sketch: djogi migrations rollback
 # deferred CLI sketch: djogi migrations verify
@@ -851,6 +851,12 @@ Non-transactional migrations:
 - `repair_partial_apply` resolves the row in place to a terminal status, and `repair_resume_partial_apply` resumes a still-resumable failure from `applied_steps_count + 1`
 - further apply work for the same `version` still collides on the unique constraint until the row is repaired in place
 
+RolledBack recovery:
+
+- `RolledBack` is a non-terminal status (alongside `Pending` and `Failed`)
+- After a rollback, re-running `djogi migrations apply` deletes the stale RolledBack ledger row and re-applies the migration with a new Applied row
+- This preserves the version-to-schema-operation binding without requiring the operator to invent a new version string
+
 Rollback semantics:
 
 - rollback order is reverse ledger insertion order (`id` descending), not version-string order
@@ -862,6 +868,12 @@ Adoption flows:
 - `apply --fake <version>` records a specific migration as present without running SQL
 - both set `applied_at = now()`
 - both are explicit operator actions
+
+Fake-apply out-of-order policy:
+
+- `--fake` enforces the same out-of-order policy gate as real apply (Decision 2)
+- If CI/prod policy is `Reject`, fake-apply on an out-of-order version is rejected with exit code 1
+- The ledger row records `out_of_order_flag = true` when the policy allows it, and the `partial_apply_note` includes the out-of-order peer information
 
 ### 10.9 Verification and Out-of-Order Policy
 

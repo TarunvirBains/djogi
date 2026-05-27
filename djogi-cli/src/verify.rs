@@ -256,6 +256,11 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
         }
     };
 
+    // Version preflight on the audit DB cluster.
+    if let Err(e) = djogi::pg::preflight::check_postgres_version(&pool.1).await {
+        return Err(VerifyError::Config(format!("support boundary: {e}")));
+    }
+
     // Step 6 — verify each snapshot. Track only whether any bucket
     // mismatched; the per-bucket diagnostics print to stderr/stdout
     // inline (deterministic order is `buckets` iteration order, set

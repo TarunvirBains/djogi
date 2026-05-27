@@ -14,9 +14,249 @@ use std::process::ExitCode;
 use djogi::apps::AppRegistry;
 use djogi::migrate::{
     AppLifecycle, AttuneError, AttuneMode, AttuneRequest, ComposeError, ComposeRequest,
-    GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME, acquire_workspace_lock, attune, compose,
-    project_from_inventory,
+    GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME, PendingPlan, RunnerCtx, RunnerError,
+    acquire_workspace_lock, apply_plan, attune, compose, fake_apply_plan, project_from_inventory,
 };
+
+// Re-export for the apply command's ledger state machine.
+use djogi::migrate::LedgerStatus;
+
+// ── Replay plan deserialization ──────────────────────────────────────────
+
+/// Local mirror of `StoredReplayPlan` (pub(crate) in the library).
+///
+/// The committed replay plan JSON written by `compose` at
+/// `migrations/<database>/<app>/<version>.plan.json`. This struct
+/// allows the CLI to parse it and construct a proper [`MigrationPlan`]
+/// with correct segment structure and checksums.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct CliReplayPlan {
+    format_version: String,
+    checksum_up: String,
+    checksum_down: Option<String>,
+    classification: CliClassification,
+    segments: Vec<CliReplaySegment>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum CliClassification {
+    NoOp,
+    Additive,
+    Reversible,
+    Destructive,
+    Lossy,
+    Unsupported {
+        reason: String,
+    },
+    PkTypeFlip {
+        co_destructive: bool,
+        co_lossy: bool,
+    },
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct CliReplaySegment {
+    kind: CliSegmentKind,
+    statements: Vec<CliReplayStatement>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CliSegmentKind {
+    Transactional,
+    NonTransactional,
+    MetadataOnly,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct CliReplayStatement {
+    label: String,
+    up: String,
+}
+
+/// Expected format version for the committed replay plan JSON.
+const CLI_REPLAY_PLAN_FORMAT_VERSION: &str = "1";
+
+/// Load the committed replay plan from disk and convert to a
+/// [`djogi::migrate::MigrationPlan`]. Returns `(plan, checksum_up, checksum_down)`.
+///
+/// Falls back to reading the up/down SQL files and constructing a
+/// single-segment transactional plan when the replay plan JSON is
+/// absent or invalid. This mirrors the reset.rs fallback path.
+fn load_replay_plan_from_disk(
+    workspace: &Path,
+    bucket: &djogi::migrate::BucketKey,
+    version: &str,
+    pending_checksum_up: &str,
+    pending_checksum_down: Option<&str>,
+) -> Result<(djogi::migrate::MigrationPlan, String, Option<String>), ApplyReplayPlanError> {
+    // Try to load the committed replay plan JSON first.
+    let bucket_dir = djogi::migrate::bucket_dir(workspace, bucket);
+    let replay_plan_path = bucket_dir.join(format!("{version}.plan.json"));
+
+    if let Ok(bytes) = std::fs::read(&replay_plan_path) {
+        let stored: CliReplayPlan = match serde_json::from_slice(&bytes) {
+            Ok(s) => s,
+            Err(e) => {
+                return Err(ApplyReplayPlanError::Parse {
+                    path: replay_plan_path.clone(),
+                    source: e.to_string(),
+                });
+            }
+        };
+
+        if stored.format_version != CLI_REPLAY_PLAN_FORMAT_VERSION {
+            return Err(ApplyReplayPlanError::FormatVersion {
+                found: stored.format_version,
+                path: replay_plan_path.clone(),
+            });
+        }
+
+        // Verify checksums match the pending plan.
+        if stored.checksum_up != pending_checksum_up
+            || stored.checksum_down.as_deref() != pending_checksum_down
+        {
+            return Err(ApplyReplayPlanError::ChecksumMismatch);
+        }
+
+        let plan = djogi::migrate::MigrationPlan {
+            bucket: bucket.clone(),
+            classification: stored.classification.into(),
+            segments: stored
+                .segments
+                .into_iter()
+                .map(|seg| djogi::migrate::Segment {
+                    kind: seg.kind.into(),
+                    statements: seg
+                        .statements
+                        .into_iter()
+                        .map(|stmt| djogi::migrate::OperationSql {
+                            label: stmt.label,
+                            up: stmt.up,
+                            down: String::new(),
+                            lossy: None,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        };
+
+        return Ok((plan, stored.checksum_up, stored.checksum_down));
+    }
+
+    // Fallback: read SQL files and construct single-segment plan.
+    let up_filename = djogi::migrate::up_filename(version);
+    let down_filename = djogi::migrate::down_filename(version);
+    let up_path = bucket_dir.join(&up_filename);
+    let down_path = bucket_dir.join(&down_filename);
+
+    let up_sql = std::fs::read_to_string(&up_path).map_err(|e| ApplyReplayPlanError::SqlRead {
+        path: up_path.clone(),
+        source: e.to_string(),
+    })?;
+
+    let down_sql = match std::fs::read_to_string(&down_path) {
+        Ok(sql) => sql,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(ApplyReplayPlanError::SqlRead {
+                path: down_path.clone(),
+                source: e.to_string(),
+            });
+        }
+    };
+
+    // Compute checksum for the single-segment fallback. The runner
+    // recomputes from the plan's SQL fragments and verifies against
+    // what we provide in RunnerCtx, so they must match.
+    let computed_checksum_up = djogi::migrate::compute_checksum([&up_sql]);
+
+    // Build a single-transactional-segment plan. This is correct for
+    // most migrations — only CONCURRENTLY indexes require non-tx
+    // segments, and those always have a replay plan JSON.
+    let plan = djogi::migrate::MigrationPlan {
+        bucket: bucket.clone(),
+        classification: djogi::migrate::Classification::Additive,
+        segments: vec![djogi::migrate::Segment {
+            kind: djogi::migrate::SegmentKind::Transactional,
+            statements: vec![djogi::migrate::OperationSql {
+                label: format!("replay {version}"),
+                up: up_sql,
+                down: down_sql,
+                lossy: None,
+            }],
+        }],
+    };
+
+    Ok((plan, computed_checksum_up, None))
+}
+
+/// Errors from [`load_replay_plan_from_disk`].
+#[derive(Debug)]
+enum ApplyReplayPlanError {
+    Parse { path: PathBuf, source: String },
+    FormatVersion { found: String, path: PathBuf },
+    ChecksumMismatch,
+    SqlRead { path: PathBuf, source: String },
+}
+
+impl std::fmt::Display for ApplyReplayPlanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parse { path, source } => {
+                write!(f, "parse replay plan {}: {source}", path.display())
+            }
+            Self::FormatVersion { found, path } => write!(
+                f,
+                "replay plan format version mismatch in {}: expected {}, found {}",
+                path.display(),
+                CLI_REPLAY_PLAN_FORMAT_VERSION,
+                found
+            ),
+            Self::ChecksumMismatch => {
+                write!(f, "checksum mismatch between pending JSON and replay plan")
+            }
+            Self::SqlRead { path, source } => {
+                write!(f, "read SQL file {}: {source}", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for ApplyReplayPlanError {}
+
+// ── Type conversions from CLI-local types to library types ────────────────
+
+impl From<CliSegmentKind> for djogi::migrate::SegmentKind {
+    fn from(kind: CliSegmentKind) -> Self {
+        match kind {
+            CliSegmentKind::Transactional => Self::Transactional,
+            CliSegmentKind::NonTransactional => Self::NonTransactional,
+            CliSegmentKind::MetadataOnly => Self::MetadataOnly,
+        }
+    }
+}
+
+impl From<CliClassification> for djogi::migrate::Classification {
+    fn from(classification: CliClassification) -> Self {
+        match classification {
+            CliClassification::NoOp => Self::NoOp,
+            CliClassification::Additive => Self::Additive,
+            CliClassification::Reversible => Self::Reversible,
+            CliClassification::Destructive => Self::Destructive,
+            CliClassification::Lossy => Self::Lossy,
+            CliClassification::Unsupported { reason } => Self::Unsupported { reason },
+            CliClassification::PkTypeFlip {
+                co_destructive,
+                co_lossy,
+            } => Self::PkTypeFlip {
+                co_destructive,
+                co_lossy,
+            },
+        }
+    }
+}
 
 /// Resolve the workspace root from the `--workspace` flag. When the
 /// flag is absent we use the current working directory — the typical
@@ -362,7 +602,464 @@ async fn build_status_context(url: &str) -> Result<djogi::context::DjogiContext,
     let pool = djogi::pg::pool::DjogiPool::connect(url)
         .await
         .map_err(|e| e.to_string())?;
+    djogi::pg::preflight::check_postgres_version(&pool)
+        .await
+        .map_err(|e| format!("support boundary: {e}"))?;
     Ok(djogi::context::DjogiContext::from_pool(pool))
+}
+
+/// `djogi migrations apply` entry point.
+///
+/// Discovers pending JSON files under `target/djogi_pending/`, loads the
+/// committed replay plan for each, and drives [`djogi::migrate::apply_plan`]
+/// through the library runner with full crash recovery via the ledger state
+/// machine.
+pub fn apply_cmd(workspace: Option<PathBuf>, fake: bool, reason: Option<String>) -> ExitCode {
+    let workspace = resolve_workspace(workspace);
+
+    // Validate --fake / --reason pairing before doing any expensive work.
+    let mode = if fake {
+        match reason {
+            Some(r) if !r.trim().is_empty() => FakeMode::Fake { reason: r },
+            Some(_) => {
+                eprintln!(
+                    "djogi migrations apply --fake: --reason must not be empty; \
+                     supply a non-empty reason why these migrations are being \
+                     faked (e.g. 'schema pre-exists from prior tooling')"
+                );
+                return ExitCode::from(2);
+            }
+            None => {
+                eprintln!(
+                    "djogi migrations apply --fake: --reason is required; \
+                     supply a reason why these migrations are being faked \
+                     (e.g. 'schema pre-exists from prior tooling'). \
+                     This is recorded in the ledger audit trail."
+                );
+                return ExitCode::from(2);
+            }
+        }
+    } else {
+        FakeMode::Real
+    };
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("djogi migrations apply: tokio runtime: {e}");
+            return ExitCode::from(1);
+        }
+    };
+
+    let exit = runtime.block_on(async { run_apply(&workspace, &mode).await });
+    ExitCode::from(exit as u8)
+}
+
+/// Controls whether `apply_one_pending` executes SQL or records a
+/// fake-apply row in the ledger.
+#[derive(Debug, Clone)]
+enum FakeMode {
+    /// Execute DDL via `apply_plan`. Normal migration apply.
+    Real,
+    /// Skip DDL; record `status = 'faked'` via `fake_apply_plan`.
+    Fake { reason: String },
+}
+
+/// Async body of [`apply_cmd`]. Returns the desired exit code.
+async fn run_apply(workspace: &Path, mode: &FakeMode) -> i32 {
+    use djogi::config::DjogiConfig;
+
+    let action_verb = match mode {
+        FakeMode::Real => "apply",
+        FakeMode::Fake { .. } => "fake-apply",
+    };
+    let progress_verb = match mode {
+        FakeMode::Real => "applying",
+        FakeMode::Fake { .. } => "faking",
+    };
+
+    // 1. Load config.
+    let config = match DjogiConfig::load_from_workspace(workspace) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("djogi migrations {action_verb}: config load: {e}");
+            return 2;
+        }
+    };
+
+    // 2. Build pool and check PG version preflight.
+    let pool = match djogi::pg::pool::DjogiPool::connect(&config.database.url).await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("djogi migrations {action_verb}: pool connect: {e}");
+            return 1;
+        }
+    };
+    if let Err(e) = djogi::pg::preflight::check_postgres_version(&pool).await {
+        crate::print_support_boundary_error("migrations apply", &e);
+        return 2;
+    }
+
+    // 3. Discover pending JSONs.
+    let pending_files = discover_pending_plans(workspace);
+    if pending_files.is_empty() {
+        println!("No pending migrations to {action_verb}.");
+        return 0;
+    }
+
+    // 4. Acquire workspace lock.
+    let lock_path = workspace.join(LOCK_FILE_NAME);
+    let guard = match acquire_workspace_lock(&lock_path, GUARD_DEFAULT_TIMEOUT) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("djogi migrations {action_verb}: workspace lock: {e}");
+            return 1;
+        }
+    };
+
+    // 5. Build audit pool (optional — silently skipped if unavailable).
+    let audit_pool = match djogi::migrate::resolve_audit_url(&config) {
+        Ok(url) => djogi::migrate::build_audit_pool(&url).await.ok(),
+        Err(_) => None,
+    };
+
+    // 6. Build context from pool (not pinned yet — apply_plan pins internally).
+    let mut ctx = djogi::context::DjogiContext::from_pool(pool);
+
+    // 7. Apply each pending migration in order.
+    for (pending_path, bucket_database, app_label) in &pending_files {
+        println!("  {progress_verb} {bucket_database}/{app_label}...");
+        let result = apply_one_pending(
+            &mut ctx,
+            workspace,
+            pending_path,
+            bucket_database.clone(),
+            app_label.clone(),
+            &config,
+            &guard,
+            audit_pool.as_ref(),
+            mode,
+        )
+        .await;
+
+        match result {
+            ApplyResult::Ok => match mode {
+                FakeMode::Real => {
+                    println!("Applied: {bucket_database}/{app_label}");
+                }
+                FakeMode::Fake { .. } => {
+                    println!(
+                        "  faked {bucket_database}/{app_label}: \
+                             recorded in ledger with status = 'faked' (no SQL executed)"
+                    );
+                }
+            },
+            ApplyResult::Skipped(reason) => {
+                println!("Skipped {bucket_database}/{app_label}: {reason}");
+            }
+            ApplyResult::Refused(reason) => {
+                eprintln!(
+                    "djogi migrations apply: refused {bucket_database}/{app_label}: {reason}"
+                );
+                return 2;
+            }
+            ApplyResult::RunnerError(e) => {
+                eprintln!(
+                    "djogi migrations apply: runner error on {bucket_database}/{app_label}: {e}"
+                );
+                return runner_error_exit_code(&e);
+            }
+        }
+    }
+
+    let summary_verb = match mode {
+        FakeMode::Real => "applied",
+        FakeMode::Fake { .. } => "faked",
+    };
+    println!("{summary_verb} {} migration(s).", pending_files.len());
+    0
+}
+
+/// Outcome of applying a single pending migration.
+#[derive(Debug)]
+enum ApplyResult {
+    /// Migration applied successfully.
+    Ok,
+    /// Migration skipped (already applied or no-op).
+    Skipped(String),
+    /// User-facing refusal — exit code 2.
+    Refused(String),
+    /// Runner error — exit code 1.
+    RunnerError(RunnerError),
+}
+
+/// Scan `target/djogi_pending/` for pending JSON files.
+///
+/// Returns a list of `(path, database, app)` tuples sorted by file
+/// name so the apply order is deterministic. Each path points to a
+/// valid JSON file that was discovered on disk.
+fn discover_pending_plans(workspace: &Path) -> Vec<(PathBuf, String, String)> {
+    let pending_root = djogi::migrate::pending_root(workspace);
+    let mut out = Vec::new();
+
+    let Ok(db_entries) = std::fs::read_dir(&pending_root) else {
+        return out;
+    };
+
+    for db_entry in db_entries.flatten() {
+        let db_name = match db_entry.file_name().to_str().map(str::to_string) {
+            Some(n) => n,
+            None => continue,
+        };
+        if db_name.starts_with('.') {
+            continue;
+        }
+
+        let db_dir = db_entry.path();
+        if !db_dir.is_dir() {
+            continue;
+        }
+
+        let Ok(app_entries) = std::fs::read_dir(&db_dir) else {
+            continue;
+        };
+
+        for app_entry in app_entries.flatten() {
+            let path = app_entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let filename = match path.file_name().and_then(|f| f.to_str()) {
+                Some(f) => f,
+                None => continue,
+            };
+            // Filter: must be a .json file, not the special _global_.json
+            // pattern which is handled correctly by the naming function.
+            if !filename.ends_with(".json") {
+                continue;
+            }
+            // Extract app label from filename by stripping .json extension.
+            // The pending JSON filename is `<app>.json` or `_global_.json`.
+            let app_label = if let Some(stripped) = filename.strip_suffix(".json") {
+                stripped.to_string()
+            } else {
+                continue;
+            };
+
+            out.push((path, db_name.clone(), app_label));
+        }
+    }
+
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Apply a single pending migration.
+///
+/// Loads the pending JSON to recover bucket and version, checks the
+/// ledger state machine for crash recovery, loads the committed replay
+/// plan (or falls back to a single-segment plan from the SQL file), and
+/// drives [`djogi::migrate::apply_plan`].
+///
+/// Uses the bypass attribute because deleting failed ledger rows requires
+/// raw SQL that is not exposed through the public typed API.
+// apply_one_pending carries 9 arguments because it sits at the bridge
+// between the CLI dispatch (workspace, path, bucket info) and the
+// library runner (config, guard, audit pool, mode). Folding these into a
+// struct would push the same fields onto the caller and add churn for
+// no clarity gain — the pattern matches compose_with_inputs and attune.
+#[allow(clippy::too_many_arguments)]
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (PIN): apply_one_pending needs to delete stale failed
+// ledger rows via `DELETE FROM djogi_schema_migrations WHERE version = $1`.
+// The public API has no delete operation — `select_all_ledger_rows` is read-only and
+// `insert_pending` is write-only. This is the minimal raw SQL surface
+// required for crash recovery.
+async fn apply_one_pending(
+    ctx: &mut djogi::context::DjogiContext,
+    workspace: &Path,
+    pending_path: &Path,
+    bucket_database: String,
+    app_label: String,
+    config: &djogi::config::DjogiConfig,
+    guard: &djogi::migrate::WorkspaceGuard,
+    audit_pool: Option<&deadpool_postgres::Pool>,
+    mode: &FakeMode,
+) -> ApplyResult {
+    // 1. Parse pending JSON to get bucket + version + checksums.
+    let pending_bytes = match std::fs::read(pending_path) {
+        Ok(b) => b,
+        Err(e) => {
+            return ApplyResult::Refused(format!("read pending JSON: {e}"));
+        }
+    };
+    let pending: PendingPlan = match serde_json::from_slice(&pending_bytes) {
+        Ok(p) => p,
+        Err(e) => {
+            return ApplyResult::Refused(format!("parse pending JSON: {e}"));
+        }
+    };
+
+    // Resolve bucket key from pending plan fields. The `_global_` app
+    // maps to empty string (synthetic global bucket).
+    let resolved_app = if app_label == "_global_" {
+        String::new()
+    } else {
+        app_label.clone()
+    };
+    let bucket = djogi::migrate::BucketKey {
+        database: bucket_database,
+        app: resolved_app,
+    };
+
+    // 2. Check ledger state machine for this version.
+    match check_ledger_state(ctx, &pending.version).await {
+        LedgerState::NotPresent => {} /* normal path */
+        LedgerState::AlreadyApplied => {
+            return ApplyResult::Skipped("already applied".to_string());
+        }
+        LedgerState::PendingOrPartial(existing_status) => {
+            // Pending or partial state from a previous interrupted run.
+            // Failed and RolledBack are non-terminal stale rows that block
+            // re-apply — delete them and proceed. Pending rows require
+            // explicit operator resolution.
+            if existing_status == LedgerStatus::Failed
+                || existing_status == LedgerStatus::RolledBack
+            {
+                // Both Failed and RolledBack rows are non-terminal stale rows
+                // that block re-apply. delete_failed_ledger_row is a status-
+                // agnostic DELETE by version; the name reflects the original
+                // crash-recovery use case but the operation applies equally to
+                // rolled-back rows.
+                if let Err(e) = delete_failed_ledger_row(ctx, &pending.version).await {
+                    return ApplyResult::Refused(format!(
+                        "clean {} ledger row: {e}",
+                        existing_status.as_db_str()
+                    ));
+                }
+            } else {
+                return ApplyResult::Refused(format!(
+                    "version already in {} state — resolve before re-applying",
+                    existing_status.as_db_str()
+                ));
+            }
+        }
+    }
+
+    // 3. Load committed replay plan (or fall back to single-segment).
+    let (plan, checksum_up, checksum_down) = match load_replay_plan_from_disk(
+        workspace,
+        &bucket,
+        &pending.version,
+        &pending.checksum_up,
+        pending.checksum_down.as_deref(),
+    ) {
+        Ok(result) => result,
+        Err(e) => {
+            return ApplyResult::Refused(format!("load replay plan: {e}"));
+        }
+    };
+
+    // 4. Construct RunnerCtx.
+    let runner_ctx = RunnerCtx {
+        bucket: bucket.clone(),
+        version: pending.version.clone(),
+        description: pending.slug.clone(),
+        checksum_up,
+        checksum_down,
+        snapshot: Some(pending.model_snapshot.clone()),
+        snapshot_path: Some(reconstruct_snapshot_path(workspace, &bucket)),
+        // MigrateConfig does not derive Clone; construct from fields.
+        config: djogi::config::MigrateConfig {
+            concurrent_warn_relpages: config.migrate.concurrent_warn_relpages,
+            strict_concurrent_warnings: config.migrate.strict_concurrent_warnings,
+            pk_flip_long_tx_threshold_secs: config.migrate.pk_flip_long_tx_threshold_secs,
+            pk_flip_join_table_option: config.migrate.pk_flip_join_table_option,
+        },
+        out_of_order_policy: djogi::migrate::OutOfOrderPolicy::default_for_config(config),
+        audit_pool: audit_pool.cloned(),
+    };
+
+    // 5. Apply (or fake-apply) the plan through the library runner.
+    let runner_result = match mode {
+        FakeMode::Real => apply_plan(ctx, &plan, &runner_ctx, guard).await,
+        FakeMode::Fake { reason } => fake_apply_plan(ctx, &plan, &runner_ctx, guard, reason).await,
+    };
+    match runner_result {
+        Ok(_) => ApplyResult::Ok,
+        Err(e) => ApplyResult::RunnerError(e),
+    }
+}
+
+/// Ledger state for a given migration version.
+#[derive(Debug)]
+enum LedgerState {
+    /// No row exists — first apply.
+    NotPresent,
+    /// Row exists and is in terminal applied state.
+    AlreadyApplied,
+    /// Row exists in a non-terminal state with the specific status.
+    PendingOrPartial(LedgerStatus),
+}
+
+/// Check the ledger for an existing row matching `version`.
+async fn check_ledger_state(ctx: &mut djogi::context::DjogiContext, version: &str) -> LedgerState {
+    let Ok(rows) = djogi::migrate::select_all_ledger_rows(ctx).await else {
+        // Ledger table might not exist yet — treat as NotPresent so
+        // the runner can bootstrap it.
+        return LedgerState::NotPresent;
+    };
+
+    let existing = rows.iter().find(|r| r.version == version);
+    match existing {
+        None => LedgerState::NotPresent,
+        Some(row) => match row.status {
+            LedgerStatus::Applied | LedgerStatus::Baseline | LedgerStatus::Faked => {
+                LedgerState::AlreadyApplied
+            }
+            LedgerStatus::Pending | LedgerStatus::Failed | LedgerStatus::RolledBack => {
+                LedgerState::PendingOrPartial(row.status)
+            }
+        },
+    }
+}
+
+/// Map a [`RunnerError`] to an exit code.
+///
+/// All runner errors map to exit code 1 (apply failure). Exit code 2
+/// is reserved for user-facing refusals that happen before the runner
+/// is invoked.
+fn runner_error_exit_code(_error: &RunnerError) -> i32 {
+    1
+}
+
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (PIN): delete_failed_ledger_row removes a stale Failed
+// row so the migration can be retried. The public API has no delete
+// operation for ledger rows — only select_all_ledger_rows and insert_pending
+// are exposed. This DELETE is the minimal raw SQL required for crash recovery.
+async fn delete_failed_ledger_row(
+    ctx: &mut djogi::context::DjogiContext,
+    version: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ctx.raw_execute(
+        "DELETE FROM djogi_schema_migrations WHERE version = $1",
+        &[&version],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Reconstruct the snapshot path for a bucket: `migrations/<database>/<app>/schema_snapshot.json`.
+fn reconstruct_snapshot_path(workspace: &Path, bucket: &djogi::migrate::BucketKey) -> PathBuf {
+    let migrations_root = djogi::migrate::migrations_root(workspace);
+    migrations_root
+        .join(&bucket.database)
+        .join(djogi::migrate::app_dirname(&bucket.app))
+        .join("schema_snapshot.json")
 }
 
 /// `djogi migrations attune` entry point.
@@ -816,9 +1513,9 @@ mod tests {
         let mut up_path: Option<PathBuf> = None;
         for entry in fs::read_dir(&billing_dir).unwrap().flatten() {
             let n = entry.file_name().to_string_lossy().to_string();
-            // Up file pattern: starts with "V", ends with ".sql", does
+            // Up file pattern: starts with "V", ends with ".sdjql", does
             // NOT contain ".down.".
-            if n.starts_with('V') && n.ends_with(".sql") && !n.contains(".down.") {
+            if n.starts_with('V') && n.ends_with(".sdjql") && !n.contains(".down.") {
                 up_path = Some(entry.path());
                 break;
             }
@@ -911,15 +1608,15 @@ mod tests {
                 source: std::io::Error::other("disk full"),
             },
             AttuneError::SqlReadFailed {
-                path: PathBuf::from("/tmp/x.sql"),
+                path: PathBuf::from("/tmp/x.sdjql"),
                 source: std::io::Error::other("permission denied"),
             },
             AttuneError::SqlWriteFailed {
-                path: PathBuf::from("/tmp/x.sql"),
+                path: PathBuf::from("/tmp/x.sdjql"),
                 source: std::io::Error::other("read-only fs"),
             },
             AttuneError::SqlDeleteFailed {
-                path: PathBuf::from("/tmp/x.sql"),
+                path: PathBuf::from("/tmp/x.sdjql"),
                 source: std::io::Error::other("not found"),
             },
             AttuneError::GitPublishFailed {
@@ -934,5 +1631,71 @@ mod tests {
                 "runtime variant must map to exit 1: {err}"
             );
         }
+    }
+
+    // ── REQ-326: --fake / --reason validation tests ─────────────────────
+
+    /// REQ-326-5: --fake without --reason must exit with code 2.
+    #[test]
+    fn fake_without_reason_exits_code_2() {
+        let result = apply_cmd(
+            Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
+            true,
+            None,
+        );
+        assert_eq!(
+            result,
+            ExitCode::from(2),
+            "--fake without --reason must exit 2"
+        );
+    }
+
+    /// REQ-326-5: --fake with blank reason must exit with code 2.
+    #[test]
+    fn fake_with_empty_reason_exits_code_2() {
+        let result = apply_cmd(
+            Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
+            true,
+            Some(String::new()),
+        );
+        assert_eq!(
+            result,
+            ExitCode::from(2),
+            "--fake with empty reason must exit 2"
+        );
+    }
+
+    /// REQ-326-5: --fake with whitespace-only reason must exit with code 2.
+    #[test]
+    fn fake_with_whitespace_reason_exits_code_2() {
+        let result = apply_cmd(
+            Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
+            true,
+            Some("   ".to_string()),
+        );
+        assert_eq!(
+            result,
+            ExitCode::from(2),
+            "--fake with whitespace reason must exit 2"
+        );
+    }
+
+    /// --reason without --fake is accepted (silently ignored).
+    #[test]
+    fn reason_without_fake_is_accepted() {
+        // This should NOT exit 2; it will proceed to config load which
+        // may fail on nonexistent workspace, but the --reason flag itself
+        // is accepted. We verify the function does not early-exit with code 2.
+        let result = apply_cmd(
+            Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
+            false, // NOT fake
+            Some("test reason".to_string()),
+        );
+        // Should be 1 (config error) not 2 (refusal)
+        assert_ne!(
+            result,
+            ExitCode::from(2),
+            "--reason without --fake should not refuse"
+        );
     }
 }

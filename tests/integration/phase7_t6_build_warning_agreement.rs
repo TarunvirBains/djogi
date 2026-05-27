@@ -38,7 +38,7 @@ fn outcome2_wording_matches_build_rs() {
     let lib = djogi::migrate::build_match::format_warning_outcome2(&bucket, None);
     assert_eq!(
         lib,
-        "composed migration not yet applied: <unknown>.sql (version <unknown>; bucket main/billing)"
+        "composed migration not yet applied: <unknown>.sdjql (version <unknown>; bucket main/billing)"
     );
     let with_version = djogi::migrate::build_match::format_warning_outcome2(
         &bucket,
@@ -46,7 +46,7 @@ fn outcome2_wording_matches_build_rs() {
     );
     assert_eq!(
         with_version,
-        "composed migration not yet applied: V20260425010203__add_invoices.sql \
+        "composed migration not yet applied: V20260425010203__add_invoices.sdjql \
          (version V20260425010203__add_invoices; bucket main/billing)"
     );
     let text = build_rs_text();
@@ -231,8 +231,8 @@ fn b6_suppression_only_mutes_outcome3() {
     // global → `_global_` via `app_dirname`).
     assert_eq!(
         outcome2.text,
-        "composed migration not yet applied: <unknown>.sql \
-         (version <unknown>; bucket main/_global_)"
+        "composed migration not yet applied: <unknown>.sdjql \
+          (version <unknown>; bucket main/_global_)"
     );
 
     // Outcome 3 — drift, no pending.
@@ -312,8 +312,8 @@ fn b6_suppression_only_mutes_outcome3() {
     // with the explicit pending version threaded through.
     assert_eq!(
         emitted[0],
-        "composed migration not yet applied: V20260425010203__b.sql \
-         (version V20260425010203__b; bucket main/beta)"
+        "composed migration not yet applied: V20260425010203__b.sdjql \
+          (version V20260425010203__b; bucket main/beta)"
     );
 
     // Confirm the wording functions still round-trip the frozen

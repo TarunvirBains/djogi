@@ -525,6 +525,9 @@ async fn connect(database_url: &str) -> Result<DjogiContext, LiveCmdError> {
     let pool = DjogiPool::connect(database_url)
         .await
         .map_err(|e| LiveCmdError::Runtime(format!("connect: {e}")))?;
+    djogi::pg::preflight::check_postgres_version(&pool)
+        .await
+        .map_err(|e| LiveCmdError::Runtime(format!("support boundary: {e}")))?;
     Ok(DjogiContext::from_pool(pool))
 }
 

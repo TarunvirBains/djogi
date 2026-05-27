@@ -97,17 +97,14 @@ djogi migrations attune --record-ledger --apply            # insert ledger rows 
 djogi migrations attune --squash --from V<ts> --apply      # dev-only local squash of migration history
 djogi migrations attune --squash --from V<ts> --apply --publish   # squash and push the rewritten submodule
 
-# Migrations — Phase-7-deferred (library APIs ship today; CLI dispatch lands later)
+# Migrations — shipped CLI + deferred verbs (library APIs available for all)
 # The library entry points (`apply_plan`, `rollback_plan`, `verify`, `repair_*`,
-# `baseline_plan`) are public and exercised by the integration test suite. The
-# matching `djogi migrations <subcommand>` CLI dispatch is deferred to a Phase 7
-# follow-up: the dispatch needs config-loading, snapshot-loading, plan-construction,
-# ledger-context plumbing, and a `MigrationPlan` builder that walks the workspace
-# — non-trivial wiring that is out of scope for T8's "documentation + db reset
-# + db seed" surface. Tracking the deferral as Phase 7 follow-up T9; the library
-# APIs are stable and adopters can wire them directly until then.
-# djogi migrations apply                 # apply pending migrations, update snapshot
-# djogi migrations apply --fake 0005     # mark applied without running SQL
+# `baseline_plan`) are public and exercised by the integration test suite.
+# `apply` ships as a CLI command; `rollback / fake / baseline / verify / repair`
+# CLI dispatchers are deferred to a Phase 7 follow-up; library callers reach those
+# runners via the public `djogi::migrate` entry points until the CLI lands.
+djogi migrations apply                 # apply pending migrations, update snapshot
+# deferred CLI sketch: djogi migrations apply --fake 0005     # mark applied without running SQL
 # djogi migrations rollback              # roll back last migration, rewind snapshot
 # deferred CLI sketch: djogi migrations verify                # compare snapshot expectations to the live DB
 # deferred CLI sketch: djogi migrations repair                # resolve partial apply or rebuild snapshot state

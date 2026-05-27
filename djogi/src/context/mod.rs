@@ -77,6 +77,15 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio_postgres::Row;
 
+mod pinned_ctx;
+
+/// Re-export of [`pinned_ctx::PinnedCtx`] so lock functions in other
+/// crate modules can name the type in signatures. The variants are
+/// `pub(crate)` (Rust does not support independent variant visibility —
+/// they inherit the enum's visibility). Construction is restricted to
+/// this module tree by convention and code review (GH #331 Finality F-331-1).
+pub(crate) use pinned_ctx::PinnedCtx;
+
 /// Type alias for an async callback that fires after commit.
 ///
 /// Represents a boxed closure that returns an async result. Used for the on-commit
@@ -329,6 +338,45 @@ impl DjogiContext {
         match &mut self.inner {
             ContextInner::Pool(_) => None,
             ContextInner::Transaction(conn) => Some(conn),
+        }
+    }
+
+    /// Returns `true` if this context is backed by a connection pool
+    /// (acquires a new connection per operation), `false` if it is
+    /// transaction-backed (all operations share the same connection).
+    ///
+    /// Used by advisory lock functions as a runtime guard that the caller
+    /// went through [`pin_for_migration`](Self::pin_for_migration) before
+    /// acquiring session-level locks (GH #331 [H-331-1]).
+    pub fn is_pool_backed(&self) -> bool {
+        matches!(&self.inner, ContextInner::Pool(_))
+    }
+
+    /// Pin this context to a single physical Postgres session for the
+    /// duration of a migration operation window.
+    ///
+    /// **Why:** Session-level advisory locks (`pg_try_advisory_lock`) are
+    /// bound to the physical backend that issued them. If pool checkout
+    /// silently swaps the backend between lock acquisition and subsequent
+    /// DDL/ledger/unlock operations, the lock provides no mutual exclusion.
+    ///
+    /// - **Pool-backed context**: checks out one connection from the pool
+    ///   and wraps it in a new `DjogiContext::from_connection(conn)`. The
+    ///   returned [`PinnedCtx`] holds the owned context; dropping it returns
+    ///   the connection to the pool, implicitly releasing any advisory lock.
+    /// - **Transaction-backed context**: already pinned to one connection;
+    ///   returns a borrowed [`PinnedCtx`] referencing `self`.
+    ///
+    /// Callers MUST hold the returned `PinnedCtx` for the entire operation
+    /// window (lock acquire → DDL/ledger → lock release). See GH #274 / #331.
+    #[allow(dead_code)] // GH #331: unused until advisory-lock integration lands
+    pub(crate) async fn pin_for_migration(&mut self) -> Result<PinnedCtx<'_>, DjogiError> {
+        match &self.inner {
+            ContextInner::Pool(pool) => {
+                let conn = pool.get().await?;
+                Ok(PinnedCtx::Owned(DjogiContext::from_connection(conn)))
+            }
+            ContextInner::Transaction(_) => Ok(PinnedCtx::Borrowed(self)),
         }
     }
 

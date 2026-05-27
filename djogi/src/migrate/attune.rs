@@ -1917,10 +1917,14 @@ mod tests {
         let dir = root.join("migrations/main/billing");
         fs::create_dir_all(&dir).unwrap();
         // Up file.
-        fs::write(dir.join("V20260425010203__init.sql"), "CREATE TABLE foo();").unwrap();
+        fs::write(
+            dir.join("V20260425010203__init.sdjql"),
+            "CREATE TABLE foo();",
+        )
+        .unwrap();
         // Down file.
         fs::write(
-            dir.join("V20260425010203__init.down.sql"),
+            dir.join("V20260425010203__init.down.sdjql"),
             "DROP TABLE foo;",
         )
         .unwrap();
@@ -1962,12 +1966,12 @@ mod tests {
         fs::create_dir_all(root.join("migrations/main/billing")).unwrap();
         fs::create_dir_all(root.join("migrations/main/_global_")).unwrap();
         fs::write(
-            root.join("migrations/main/billing/V20260101000001__init.sql"),
+            root.join("migrations/main/billing/V20260101000001__init.sdjql"),
             "",
         )
         .unwrap();
         fs::write(
-            root.join("migrations/main/_global_/V20260101000002__init.sql"),
+            root.join("migrations/main/_global_/V20260101000002__init.sdjql"),
             "",
         )
         .unwrap();

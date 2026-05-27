@@ -21,6 +21,16 @@ mod migrations;
 mod schema;
 mod verify;
 
+/// Print a support-boundary preflight error to stderr.
+///
+/// Used by every CLI entry point that runs `check_postgres_version`.
+/// The "support boundary" prefix distinguishes infrastructure refusals
+/// (wrong PG version, missing extension) from policy refusals (localhost
+/// gate, production profile) and runtime failures (SQL error, network).
+pub fn print_support_boundary_error(subcommand: &str, err: &dyn std::fmt::Display) {
+    eprintln!("djogi {subcommand}: support boundary: {err}");
+}
+
 #[derive(Parser)]
 #[command(name = "djogi", about = "Djogi framework CLI")]
 struct Cli {
@@ -42,9 +52,19 @@ enum TopCommand {
         #[command(subcommand)]
         command: MigrationsCommand,
     },
+    /// Compatibility alias for `djogi migrations`. See
+    /// `djogi migrations --help` for the full command tree.
+    /// Currently only `apply` is supported as an alias:
+    /// `djogi migrate apply` delegates to `djogi migrations apply`.
+    Migrate {
+        #[command(subcommand)]
+        command: MigrateCommand,
+    },
     /// Phase 7.5 live-migration operator surface — drives expand →
     /// backfill → flip → contract sequences for `ExpandContract`-
     /// classified deltas.
+    ///
+    /// Requires PostgreSQL 18 or later.
     Live {
         #[command(subcommand)]
         command: live::LiveCmd,
@@ -67,6 +87,9 @@ enum TopCommand {
     /// Cluster 8ε T9.6 — read-only HMAC cross-check of every
     /// `migrations/<target>/<app>/schema_snapshot.json` against the
     /// audit DB's `djogi_ddl_audit` ledger.
+    ///
+    /// Requires PostgreSQL 18 or later — exits with code 2 if the
+    /// server is below the minimum.
     ///
     /// Exit codes: `0` when every snapshot reports `OK` or `Skipped`
     /// (audit table absent or no audit row yet), `1` on any mismatch
@@ -103,6 +126,9 @@ enum TopCommand {
     /// Postgres tables. Queries `pg_stat_user_tables` (and, when
     /// installed, `pg_partman`) and recommends vacuum / partition
     /// actions per the precedence laid out in [`analyze::Recommendation`].
+    ///
+    /// Requires PostgreSQL 18 or later — exits with code 2 if the
+    /// server is below the minimum.
     ///
     /// **Read-only.** Analyze issues only `SELECT` against system
     /// catalogues; it never writes.
@@ -218,9 +244,12 @@ enum DbCommand {
     /// prompt. Logging databases (`crud_log`, `event_log`) are NOT
     /// touched.
     ///
+    /// Requires PostgreSQL 18 or later — exits with code 2 if the
+    /// server is below the minimum.
+    ///
     /// Exit codes: 0 on success, 1 on error (config / network / SQL
     /// / replay), 2 on gate refusal (not localhost, production
-    /// profile, missing `--yes`).
+    /// profile, missing `--yes`, below PG 18).
     Reset {
         /// Skip the interactive y/N prompt and proceed. Required for
         /// non-interactive invocations (e.g. CI integration suites
@@ -249,6 +278,9 @@ enum DbCommand {
     /// matches the `djogi_seed_runs` ledger; refuses on checksum
     /// drift. Localhost-gated by default.
     ///
+    /// Requires PostgreSQL 18 or later — exits with code 2 if the
+    /// server is below the minimum.
+    ///
     /// `--database <name>` selects BOTH the seed directory and the
     /// connection target. The CLI splices `<name>` into
     /// `database.url`'s path component so seeds always land on the
@@ -257,7 +289,7 @@ enum DbCommand {
     ///
     /// Exit codes: 0 on success, 1 on error (config / network / SQL
     /// / checksum drift / malformed URL), 2 on gate refusal
-    /// (non-localhost without `--allow-non-localhost`).
+    /// (non-localhost without `--allow-non-localhost`, below PG 18).
     Seed {
         /// Database name whose seeds directory should be run. The
         /// runner walks `seeds/<database>/*.sql` in alphabetical
@@ -280,9 +312,12 @@ enum DbCommand {
     /// non-production profile, explicit `--yes` (waived under
     /// `--dry-run`).
     ///
+    /// Requires PostgreSQL 18 or later — exits with code 2 if the
+    /// server is below the minimum.
+    ///
     /// Exit codes: 0 on success, 1 on error (config / connect / SQL),
     /// 2 on gate refusal (non-localhost, production profile, missing
-    /// `--yes` without `--dry-run`).
+    /// `--yes` without `--dry-run`, below PG 18).
     CleanupTestDbs {
         /// List candidates without dropping. Skips the `--yes`
         /// confirmation gate because no destructive side effect
@@ -308,6 +343,28 @@ enum DbCommand {
         /// Workspace root override.
         #[arg(long)]
         workspace: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MigrateCommand {
+    /// Alias for `djogi migrations apply`. See
+    /// `djogi migrations apply --help` for full documentation.
+    ///
+    /// Record pending migrations as applied in the ledger, optionally
+    /// without executing their SQL (`--fake`).
+    ///
+    /// See `djogi migrations apply --help` for crash-recovery behavior,
+    /// including already-faked reruns and snapshot rebuilds.
+    Apply {
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+
+        #[arg(long, default_value_t = false)]
+        fake: bool,
+
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 
@@ -342,6 +399,8 @@ enum MigrationsCommand {
     },
     /// Print the current state of the migration ledger, grouped by
     /// app. Read-only — does not acquire the workspace lock.
+    ///
+    /// Requires PostgreSQL 18 or later.
     Status {
         /// Workspace root override (only used when reading
         /// `Djogi.toml`).
@@ -358,8 +417,12 @@ enum MigrationsCommand {
     /// into a single migration (localhost + dev_mode + dev profile +
     /// DJOGI_ENV gates).
     ///
+    /// Requires PostgreSQL 18 or later — exits with code 2 if the
+    /// server is below the minimum.
+    ///
     /// Exit codes: 0 on success, 1 on runtime error (config / network
-    /// / SQL / git), 2 on refusal (gate failure or arg validation).
+    /// / SQL / git), 2 on refusal (gate failure, arg validation,
+    /// below PG 18).
     Attune {
         /// Optional Git target to attune the local migration history
         /// to — a local or remote commit / tag / branch. When
@@ -420,6 +483,58 @@ enum MigrationsCommand {
         /// Workspace root override.
         #[arg(long)]
         workspace: Option<PathBuf>,
+    },
+    /// Apply all pending migrations in ledger order. This is the canonical spelling;
+    /// `djogi migrate apply` is a compatibility alias.
+    ///
+    /// **Transaction semantics** are per-segment: transactional
+    /// segments roll back on error; non-transactional segments
+    /// autocommit and may leave partial progress.
+    ///
+    /// **On crash** or unexpected termination, re-run
+    /// `djogi migrations apply`. For partial non-transactional
+    /// progress, use `djogi migrations repair resume-partial`.
+    ///
+    /// **Existing-database adoption:** use `--fake` to mark pending
+    /// migrations as applied without executing their SQL. This is for
+    /// databases whose schema already exists (from a prior tool, manual
+    /// DDL, or restored backup). Use `djogi migrations verify` or
+    /// manual inspection to confirm the schema matches the target state
+    /// before faking. The `--fake` flag respects the same out-of-order
+    /// policy as real apply; if CI/prod policy is `Reject`, fake-apply
+    /// on an out-of-order version is also rejected.
+    ///
+    /// For previewing pending work without executing it, use
+    /// `djogi migrations status`.
+    ///
+    /// If the command is interrupted after recording a ledger row with
+    /// a terminal status (`applied`, `faked`, `baseline`), re-running
+    /// reports `VersionAlreadyApplied` (exit 2). For non-terminal
+    /// statuses (`failed`, `rolled_back`), the stale row is removed and
+    /// re-apply proceeds automatically. If the snapshot is missing or
+    /// stale, reconcile it with `djogi migrations attune` or
+    /// `repair snapshot-rebuild`.
+    Apply {
+        /// Workspace root override. Defaults to the current working
+        /// directory.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+
+        /// Record pending migrations as applied without executing
+        /// their SQL. For existing-database adoption only. Requires
+        /// `--reason`. Subject to the same out-of-order policy as real
+        /// apply; if CI/prod policy is `Reject`, fake-apply on an
+        /// out-of-order version is also rejected.
+        #[arg(long, default_value_t = false)]
+        fake: bool,
+
+        /// Reason for faking these migrations. Required when `--fake`
+        /// is set. Persisted to the ledger's audit trail so future
+        /// inspections can understand why this version was recorded
+        /// without SQL execution. Has no effect on normal (non-fake)
+        /// apply.
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 
@@ -557,6 +672,18 @@ fn main() -> ExitCode {
                 app.as_deref(),
                 workspace,
             ),
+            MigrationsCommand::Apply {
+                workspace,
+                fake,
+                reason,
+            } => migrations::apply_cmd(workspace, fake, reason),
+        },
+        TopCommand::Migrate { command } => match command {
+            MigrateCommand::Apply {
+                workspace,
+                fake,
+                reason,
+            } => migrations::apply_cmd(workspace, fake, reason),
         },
     }
 }
@@ -570,7 +697,9 @@ mod tests {
 
     use clap::Parser as _;
 
-    use super::{Cli, DbCommand, MigrationsCommand, TopCommand, parse_threshold_vacuum};
+    use super::{
+        Cli, DbCommand, MigrateCommand, MigrationsCommand, TopCommand, parse_threshold_vacuum,
+    };
 
     #[test]
     fn parse_threshold_vacuum_accepts_valid_values() {
@@ -640,11 +769,28 @@ mod tests {
     }
 
     #[test]
-    fn top_level_migrate_is_not_registered() {
-        let result = Cli::try_parse_from(["djogi", "migrate"]);
-        match result {
-            Err(e) => assert_eq!(e.kind(), clap::error::ErrorKind::InvalidSubcommand),
-            Ok(_) => panic!("expected 'migrate' to be rejected as unknown subcommand"),
+    fn migrate_apply_alias_parses() {
+        let cli = Cli::try_parse_from(["djogi", "migrate", "apply"])
+            .expect("migrate apply should parse as alias");
+
+        match cli.command {
+            TopCommand::Migrate {
+                command: MigrateCommand::Apply { .. },
+            } => {}
+            _ => panic!("expected migrate apply command"),
+        }
+    }
+
+    #[test]
+    fn canonical_migrations_apply_parses() {
+        let cli = Cli::try_parse_from(["djogi", "migrations", "apply"])
+            .expect("canonical migrations apply should parse");
+
+        match cli.command {
+            TopCommand::Migrations {
+                command: MigrationsCommand::Apply { .. },
+            } => {}
+            _ => panic!("expected migrations apply command"),
         }
     }
 
