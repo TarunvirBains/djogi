@@ -1141,6 +1141,23 @@ pub enum DjogiError {
         crate::error::presentation_startup_error_summary(&.0)
     )]
     PresentationStartup(Vec<crate::presentation::PresentationStartupError>),
+
+    /// Connected PostgreSQL server version is below Djogi's minimum supported
+    /// version. Raised by [`check_postgres_version`](crate::pg::preflight::check_postgres_version)
+    /// preflight when the detected major version is less than 18.
+    ///
+    /// `detected_major` and `detected_minor` are the actual server version components.
+    /// `minimum_major` is Djogi's minimum supported major version (always 18).
+    #[error(
+        "PostgreSQL {detected_major}.{detected_minor} is below the minimum supported \
+         version {minimum_major}. Upgrade to PostgreSQL {minimum_major} or later"
+    )]
+    #[non_exhaustive]
+    UnsupportedPostgresVersion {
+        detected_major: u32,
+        detected_minor: u32,
+        minimum_major: u32,
+    },
 }
 
 /// Bridge: convert `tokio_postgres::Error` into `DjogiError`.
@@ -1221,6 +1238,25 @@ impl DjogiError {
         DjogiError::GoneAggregate { model, id, reason }
     }
 
+    /// Construct an `UnsupportedPostgresVersion` error with the detected
+    /// server version and the framework's minimum supported major version.
+    ///
+    /// Mirror of the other constructors — exists so that cross-crate callers
+    /// (the `pg::preflight` module, CLI entry points) can produce this variant
+    /// despite `#[non_exhaustive]` blocking struct-expression construction
+    /// outside this crate.
+    pub fn unsupported_postgres_version(
+        detected_major: u32,
+        detected_minor: u32,
+        minimum_major: u32,
+    ) -> Self {
+        DjogiError::UnsupportedPostgresVersion {
+            detected_major,
+            detected_minor,
+            minimum_major,
+        }
+    }
+
     /// Classify this error as **transient** (retrying the closure
     /// may succeed) or **terminal** (retrying will not help).
     ///
@@ -1256,6 +1292,7 @@ impl DjogiError {
     /// | [`OrphanDeferrabilitySpec`](Self::OrphanDeferrabilitySpec) | terminal |
     /// | [`DuplicateConstraintName`](Self::DuplicateConstraintName) | terminal |
     /// | [`ConcurrentReadsRequirePoolContext`](Self::ConcurrentReadsRequirePoolContext) | terminal |
+    /// | [`UnsupportedPostgresVersion`](Self::UnsupportedPostgresVersion) | terminal |
     ///
     /// The Db row reflects the existing `is_lock_error`
     /// classifier: Postgres SQLSTATEs `40001` (serialization
@@ -1540,6 +1577,10 @@ mod tests {
             .is_terminal(),
             "MergeNoBranches must be terminal"
         );
+        assert!(
+            DjogiError::unsupported_postgres_version(17, 4, 18).is_terminal(),
+            "UnsupportedPostgresVersion must be terminal — version mismatch cannot be resolved by retrying"
+        );
     }
 
     /// Phase 8ε T9.1 — `SetRoleOutsideTransaction` is a misuse signal,
@@ -1810,6 +1851,51 @@ mod tests {
         assert!(
             msg.contains("long_table_long_column_fkey"),
             "expected colliding constraint name in message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn unsupported_postgres_version_is_terminal() {
+        let err = DjogiError::unsupported_postgres_version(16, 4, 18);
+        assert!(
+            err.is_terminal(),
+            "UnsupportedPostgresVersion must be terminal"
+        );
+        assert!(
+            !err.is_transient(),
+            "UnsupportedPostgresVersion must not be transient"
+        );
+    }
+
+    #[test]
+    fn unsupported_postgres_version_displays_versions_and_upgrade() {
+        let err = DjogiError::unsupported_postgres_version(16, 4, 18);
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("16.4"),
+            "Display must name detected version, got: {msg}"
+        );
+        assert!(
+            msg.contains("18"),
+            "Display must name minimum version, got: {msg}"
+        );
+        assert!(
+            msg.contains("upgrade") || msg.contains("Upgrade"),
+            "Display must suggest upgrade, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn unsupported_postgres_version_error_is_clear() {
+        let err = DjogiError::unsupported_postgres_version(17, 0, 18);
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("PostgreSQL"),
+            "Display must mention PostgreSQL, got: {msg}"
+        );
+        assert!(
+            msg.contains("minimum") || msg.contains("below"),
+            "Display must indicate minimum requirement, got: {msg}"
         );
     }
 }
