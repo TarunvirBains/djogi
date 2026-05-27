@@ -16,6 +16,7 @@ use super::DjogiContext;
 /// [`DjogiContext::pin_for_migration`](super::DjogiContext::pin_for_migration)
 /// constructs these variants (GH #331 Finality F-331-1).
 #[allow(clippy::large_enum_variant)]
+#[allow(dead_code)] // GH #331: unused until advisory-lock integration lands
 pub(crate) enum PinnedCtx<'a> {
     /// Pool-backed context: a fresh connection was checked out and
     /// wrapped in a new `DjogiContext`. Dropping this variant

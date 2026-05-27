@@ -369,6 +369,7 @@ impl DjogiContext {
     ///
     /// Callers MUST hold the returned `PinnedCtx` for the entire operation
     /// window (lock acquire → DDL/ledger → lock release). See GH #274 / #331.
+    #[allow(dead_code)] // GH #331: unused until advisory-lock integration lands
     pub(crate) async fn pin_for_migration(&mut self) -> Result<PinnedCtx<'_>, DjogiError> {
         match &self.inner {
             ContextInner::Pool(pool) => {
