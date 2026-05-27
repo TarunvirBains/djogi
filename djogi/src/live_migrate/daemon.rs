@@ -71,7 +71,7 @@
 use std::time::Duration;
 
 use crate::__bypass::RawAccessExt as _;
-use crate::context::DjogiContext;
+use crate::context::{DjogiContext, PinnedCtx};
 use crate::error::{DbError, DjogiError};
 use crate::live_migrate::backfill::BackfillError;
 
@@ -483,8 +483,11 @@ async fn drive_candidate(
     config: &DaemonConfig,
     candidate: &DaemonCandidate,
 ) -> Result<(), DaemonError> {
+    // GH #274 / #331: pin one physical session for the entire lock
+    // + drive window so the advisory lock stays on the same connection.
+    let mut pinned = ctx.pin_for_migration().await?;
     let lock_key = candidate.plan_id;
-    if !try_acquire_advisory_lock(ctx, lock_key).await? {
+    if !try_acquire_advisory_lock(&mut pinned, lock_key).await? {
         // Another daemon owns the lock for this plan — leave it alone
         // on this iteration; we'll re-check on the next poll.
         tracing::debug!(
@@ -494,8 +497,13 @@ async fn drive_candidate(
         return Ok(());
     }
     // From here on, every exit path must release the advisory lock.
-    let result = drive_under_lock(ctx, config, candidate).await;
-    release_advisory_lock(ctx, lock_key).await;
+    let result = drive_under_lock(&mut pinned, config, candidate).await;
+    release_advisory_lock(&mut pinned, lock_key).await;
+
+    // Lock released — mark clean so the connection returns to the pool.
+    if result.is_ok() {
+        pinned.mark_clean();
+    }
     result
 }
 
@@ -504,7 +512,7 @@ async fn drive_candidate(
 /// advisory-lock invariant is locally provable: the lock is released
 /// by the caller regardless of the inner `Result`.
 async fn drive_under_lock(
-    ctx: &mut DjogiContext,
+    ctx: &mut PinnedCtx<'_>,
     config: &DaemonConfig,
     candidate: &DaemonCandidate,
 ) -> Result<(), DaemonError> {
@@ -593,9 +601,16 @@ async fn resume_backfill_for_candidate(
 /// `Ok(false)` when another holder owns it, and `Err` on a query
 /// failure.
 async fn try_acquire_advisory_lock(
-    ctx: &mut DjogiContext,
+    ctx: &mut PinnedCtx<'_>,
     lock_key: i64,
 ) -> Result<bool, DaemonError> {
+    assert!(
+        !ctx.is_pool_backed(),
+        "daemon advisory lock called on a pool-backed context — \
+         the lock would be acquired on an arbitrary pool connection \
+         and subsequent operations would run on different connections. \
+         Callers must use ctx.pin_for_migration() first (GH #274 / #331).",
+    );
     let row = ctx
         .raw_rows("SELECT pg_try_advisory_lock($1)", &[&lock_key])
         .await?;
@@ -614,7 +629,12 @@ async fn try_acquire_advisory_lock(
 /// surfacing — the session-scoped advisory lock auto-releases on
 /// connection close anyway, so a failed unlock has bounded blast
 /// radius.
-async fn release_advisory_lock(ctx: &mut DjogiContext, lock_key: i64) {
+async fn release_advisory_lock(ctx: &mut PinnedCtx<'_>, lock_key: i64) {
+    assert!(
+        !ctx.is_pool_backed(),
+        "daemon advisory unlock called on a pool-backed context — \
+         session-pinning correctness failure (GH #274 / #331).",
+    );
     if let Err(e) = ctx
         .raw_execute("SELECT pg_advisory_unlock($1)", &[&lock_key])
         .await
