@@ -518,3 +518,289 @@ async fn bulk_execute_returning_pairs_invalidates_on_commit(ctx: djogi::DjogiCon
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Test 6 — plain bulk `execute` enqueues on_commit invalidation for warmed
+// Punnu rows and drains on commit.
+//
+// REQ-304-2: Bulk update via `.execute()` in a transaction-backed context
+// should collect affected IDs using `UPDATE ... RETURNING id` and enqueue
+// one bulk `on_commit` invalidation callback. After the atomic commits,
+// all warmed Punnu entries for the affected rows must be gone.
+// ---------------------------------------------------------------------------
+
+#[djogi::djogi_test(sync_models = [InvalRow])]
+async fn bulk_update_execute_invalidates_on_commit(ctx: djogi::DjogiContext) {
+    let pool = ctx
+        .share_pool()
+        .expect("djogi_test context must be pool-backed");
+
+    // Seed rows.
+    let created_rows = atomic(&pool, |tx| {
+        Box::pin(async move {
+            let mut rows = Vec::new();
+            for i in 0..3 {
+                rows.push(
+                    InvalRow::create(
+                        tx,
+                        InvalRow {
+                            note: format!("bulk-execute-{i}"),
+                            ..Default::default()
+                        },
+                    )
+                    .await?,
+                );
+            }
+            Ok::<_, DjogiError>(rows)
+        })
+    })
+    .await
+    .expect("bulk seed should succeed");
+
+    let row_ids: Vec<_> = created_rows.iter().map(|row| row.id).collect();
+    let captured_punnu: Arc<Mutex<Option<Arc<djogi::cache::Punnu<InvalRow>>>>> =
+        Arc::new(Mutex::new(None));
+
+    {
+        let captured_punnu = captured_punnu.clone();
+        let row_ids = row_ids.clone();
+        atomic(&pool, |tx| {
+            let captured_punnu = captured_punnu.clone();
+            let row_ids = row_ids.clone();
+            Box::pin(async move {
+                // Pre-insert stale cached entries for each row.
+                if let Some(punnu) = tx.punnu::<InvalRow>() {
+                    *captured_punnu.lock().unwrap() = Some(punnu.clone());
+                    for id in &row_ids {
+                        punnu
+                            .insert(InvalRow {
+                                id: *id,
+                                note: "stale-pre-bulk-execute".into(),
+                                ..Default::default()
+                            })
+                            .await
+                            .expect("Punnu::insert should succeed");
+                    }
+                }
+
+                // Bulk update via plain `.execute()` — no returning pairs.
+                let affected = InvalRow::objects()
+                    .update(|f| f.note().set("bulk-execute-updated".to_string()))
+                    .execute(tx)
+                    .await?;
+                assert_eq!(
+                    affected,
+                    row_ids.len() as u64,
+                    "plain bulk execute should update every seeded row"
+                );
+
+                Ok::<_, DjogiError>(())
+            })
+        })
+        .await
+        .expect("bulk execute should succeed");
+    }
+
+    // After commit: all warmed Punnu entries must be invalidated.
+    let punnu = captured_punnu
+        .lock()
+        .unwrap()
+        .take()
+        .expect("Punnu Arc must have been captured inside the closure");
+
+    for id in row_ids {
+        assert!(
+            punnu.get(&id).is_none(),
+            "Punnu entry for each bulk-updated row must be gone after commit; \
+             plain execute in a transaction-backed context collects affected IDs \
+             via UPDATE ... RETURNING id and enqueues one on_commit invalidation"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 7 — rollback drops the on_commit hook from plain bulk `execute`;
+// warmed Punnu entries survive.
+//
+// REQ-304-3: When a transaction containing a plain bulk `.execute()` is
+// rolled back, the on_commit callbacks queued inside are discarded and
+// the Punnu entries remain cached (never invalidated).
+// ---------------------------------------------------------------------------
+
+#[djogi::djogi_test(sync_models = [InvalRow])]
+async fn bulk_update_execute_does_not_invalidate_on_rollback(ctx: djogi::DjogiContext) {
+    let pool = ctx
+        .share_pool()
+        .expect("djogi_test context must be pool-backed");
+
+    // Seed rows.
+    let created_rows = atomic(&pool, |tx| {
+        Box::pin(async move {
+            let mut rows = Vec::new();
+            for i in 0..3 {
+                rows.push(
+                    InvalRow::create(
+                        tx,
+                        InvalRow {
+                            note: format!("rollback-{i}"),
+                            ..Default::default()
+                        },
+                    )
+                    .await?,
+                );
+            }
+            Ok::<_, DjogiError>(rows)
+        })
+    })
+    .await
+    .expect("bulk seed should succeed");
+
+    let row_ids: Vec<_> = created_rows.iter().map(|row| row.id).collect();
+    let captured_punnu: Arc<Mutex<Option<Arc<djogi::cache::Punnu<InvalRow>>>>> =
+        Arc::new(Mutex::new(None));
+
+    {
+        let captured_punnu = captured_punnu.clone();
+        let row_ids = row_ids.clone();
+        let _ = atomic(&pool, |tx| {
+            let captured_punnu = captured_punnu.clone();
+            Box::pin(async move {
+                // Pre-insert stale cached entries.
+                if let Some(punnu) = tx.punnu::<InvalRow>() {
+                    *captured_punnu.lock().unwrap() = Some(punnu.clone());
+                    for id in &row_ids {
+                        punnu
+                            .insert(InvalRow {
+                                id: *id,
+                                note: "stale".into(),
+                                ..Default::default()
+                            })
+                            .await
+                            .expect("Punnu::insert should succeed");
+                    }
+                }
+
+                // Bulk update via plain `.execute()`.
+                InvalRow::objects()
+                    .update(|f| f.note().set("rolled-back".to_string()))
+                    .execute(tx)
+                    .await?;
+
+                // Force rollback.
+                Err::<(), _>(DjogiError::not_found("forced rollback for test"))
+            })
+        })
+        .await;
+        // Ignore the Err — rollback is the intent.
+    }
+
+    // After rollback: on_commit queue discarded, Punnu entries survive.
+    let punnu = captured_punnu
+        .lock()
+        .unwrap()
+        .take()
+        .expect("Punnu Arc must have been captured inside the closure");
+
+    for id in row_ids {
+        assert!(
+            punnu.get(&id).is_some(),
+            "Punnu entry under row_id must still be present after rollback — \
+             on_commit callbacks queued inside a rolled-back atomic are discarded; \
+             a None here would mean the invalidation fired despite rollback"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 8 — rollback drops the on_commit hook from `execute_returning_pairs`;
+// warmed Punnu entries survive.
+//
+// REQ-304-4: When a transaction containing bulk `.execute_returning_pairs()`
+// is rolled back, the per-row on_commit callbacks queued inside are discarded
+// and the Punnu entries remain cached (never invalidated).
+// ---------------------------------------------------------------------------
+
+#[djogi::djogi_test(sync_models = [InvalRow])]
+async fn bulk_execute_returning_pairs_does_not_invalidate_on_rollback(ctx: djogi::DjogiContext) {
+    let pool = ctx
+        .share_pool()
+        .expect("djogi_test context must be pool-backed");
+
+    // Seed rows.
+    let created_rows = atomic(&pool, |tx| {
+        Box::pin(async move {
+            let mut rows = Vec::new();
+            for i in 0..3 {
+                rows.push(
+                    InvalRow::create(
+                        tx,
+                        InvalRow {
+                            note: format!("returning-pairs-rb-{i}"),
+                            ..Default::default()
+                        },
+                    )
+                    .await?,
+                );
+            }
+            Ok::<_, DjogiError>(rows)
+        })
+    })
+    .await
+    .expect("bulk seed should succeed");
+
+    let row_ids: Vec<_> = created_rows.iter().map(|row| row.id).collect();
+    let captured_punnu: Arc<Mutex<Option<Arc<djogi::cache::Punnu<InvalRow>>>>> =
+        Arc::new(Mutex::new(None));
+
+    {
+        let captured_punnu = captured_punnu.clone();
+        let row_ids = row_ids.clone();
+        let _ = atomic(&pool, |tx| {
+            let captured_punnu = captured_punnu.clone();
+            Box::pin(async move {
+                // Pre-insert stale cached entries.
+                if let Some(punnu) = tx.punnu::<InvalRow>() {
+                    *captured_punnu.lock().unwrap() = Some(punnu.clone());
+                    for id in &row_ids {
+                        punnu
+                            .insert(InvalRow {
+                                id: *id,
+                                note: "stale".into(),
+                                ..Default::default()
+                            })
+                            .await
+                            .expect("Punnu::insert should succeed");
+                    }
+                }
+
+                // Bulk update via returning pairs.
+                let _pairs = InvalRow::objects()
+                    .update(|f| f.note().set("rolled-back-returning".to_string()))
+                    .execute_returning_pairs(tx)
+                    .await?;
+
+                // Force rollback.
+                Err::<(), _>(DjogiError::not_found("forced rollback for test"))
+            })
+        })
+        .await;
+        // Ignore the Err — rollback is the intent.
+    }
+
+    // After rollback: on_commit queue discarded, Punnu entries survive.
+    let punnu = captured_punnu
+        .lock()
+        .unwrap()
+        .take()
+        .expect("Punnu Arc must have been captured inside the closure");
+
+    for id in row_ids {
+        assert!(
+            punnu.get(&id).is_some(),
+            "Punnu entry under row_id must still be present after rollback — \
+             execute_returning_pairs enqueues per-row OnSave invalidation via \
+             on_commit, but a rolled-back atomic discards those callbacks; \
+             a None here would mean the invalidation fired despite rollback"
+        );
+    }
+}

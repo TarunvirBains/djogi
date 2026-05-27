@@ -4804,4 +4804,54 @@ mod tests {
         assert!(!sql.contains("NEW"), "{sql}");
         assert!(sql.contains("\"o0\""), "{sql}");
     }
+
+    // ── REQ-304: bulk update cache invalidation — SQL emission tests ────────
+
+    fn build_update_returning_ids<T: Model + FromPgRow>(
+        qs: &QuerySet<T>,
+        assignments: &[crate::query::update::UpdateAssignment],
+    ) -> SqlAccumulator {
+        super::build_update_returning_ids(qs, assignments)
+            .expect("update_returning_ids should build successfully")
+    }
+
+    #[test]
+    fn update_returning_ids_emits_returning_pk_clause() {
+        // REQ-304-7a: The emitted SQL must contain `RETURNING id` so the
+        // caller can collect affected row IDs for bulk cache invalidation.
+        let f: crate::query::field::FieldRef<Fake, i32> =
+            crate::query::field::FieldRef::new("view_count");
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let stmt = qs.update(|_| f.set(999i32));
+        let acc = build_update_returning_ids(&stmt.qs, &stmt.assignments);
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("RETURNING id"),
+            "expected RETURNING id clause for bulk update cache invalidation, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn update_returning_ids_bind_order_assignments_before_filter() {
+        // REQ-304-7b: Assignment binds must fill slots before WHERE filter
+        // binds, matching the existing build_update discipline. This ensures
+        // the RETURNING clause receives the correct positional parameters.
+        let f: crate::query::field::FieldRef<Fake, i32> =
+            crate::query::field::FieldRef::new("view_count");
+        let qs: QuerySet<Fake> = QuerySet::new()
+            .filter(|_| Condition::Leaf(Leaf::eq_raw("published", FilterValue::Bool(true))));
+        let stmt = qs.update(|_| f.set(999i32));
+        let acc = build_update_returning_ids(&stmt.qs, &stmt.assignments);
+        let sql = acc.sql();
+
+        // $1 (assignment) must appear before $2 (filter).
+        let set_pos = sql.find("SET").expect("should contain SET");
+        let where_pos = sql.find("WHERE").expect("should contain WHERE");
+        let returning_pos = sql.find("RETURNING").expect("should contain RETURNING");
+        assert!(
+            set_pos < where_pos && where_pos < returning_pos,
+            "expected SET ... WHERE ... RETURNING order, got: {sql}"
+        );
+    }
 }
