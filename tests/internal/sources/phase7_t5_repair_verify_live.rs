@@ -3797,3 +3797,86 @@ async fn rollback_rejects_wrong_bucket_app_and_releases_lock(mut ctx: djogi::Djo
          after BucketAppMismatch rejection (GH #274 hardening)",
     );
 }
+
+// ── #331 Session-pinning regression test: repair ────────────────────────
+// Exercises the exact regression scenario: repair_checksum_drift on a
+// pool-backed context must pin one physical session for the full operation.
+
+#[djogi::djogi_test]
+async fn repair_checksum_drift_pool_backed_context_pins_session(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+
+    assert!(
+        ctx.is_pool_backed(),
+        "must be pool-backed for this regression test",
+    );
+
+    // Set up a migration in Applied state with a known checksum.
+    let plan = transactional_plan_for_app(
+        "t5_331_repair_pin",
+        vec![op(
+            "AddTable t5_331_repair_pin",
+            "CREATE TABLE \"t5_331_repair_pin\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"t5_331_repair_pin\"",
+        )],
+    );
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260526000010__331_repair_pin",
+        None,
+        None,
+    );
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+
+    // [REQ-331-11] Record backend PID before repair
+    let pid_before: i32 = ctx
+        .raw_scalar("SELECT pg_backend_pid()", &[])
+        .await
+        .expect("pg_backend_pid before repair_checksum_drift");
+
+    // Tamper with the checksum to create drift, then repair.
+    let tampered_checksum = "tampered_for_test_331_repair";
+    ctx.raw_execute(
+        "UPDATE djogi_schema_migrations \
+         SET checksum_up = $1 \
+         WHERE version = $2",
+        &[&tampered_checksum, &runner_ctx.version],
+    )
+    .await
+    .expect("tamper checksum");
+
+    let repair_result = repair_checksum_drift(
+        &mut ctx,
+        &_guard,
+        &plan.bucket,
+        &runner_ctx.version,
+        tampered_checksum,
+        None,
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await;
+    assert!(repair_result.is_ok(), "repair must succeed: {:?}", repair_result);
+
+    // [REQ-331-11] Record backend PID after repair
+    let pid_after: i32 = ctx
+        .raw_scalar("SELECT pg_backend_pid()", &[])
+        .await
+        .expect("pg_backend_pid after repair_checksum_drift");
+
+    tracing::debug!(pid_before, pid_after, "repair outer PIDs (may differ)");
+
+    // Verify no advisory locks remain held
+    let lock_key = advisory_lock_key(&plan.bucket);
+    let still_held = advisory_lock_count(&mut ctx, lock_key).await;
+    assert_eq!(
+        still_held,
+        0,
+        "advisory lock for bucket={}/{} (key=0x{:016x}) must be released \
+         after repair_checksum_drift on pool-backed context (GH #331)",
+        plan.bucket.database, plan.bucket.app, lock_key,
+    );
+}
