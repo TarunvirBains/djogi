@@ -6,7 +6,7 @@
 
 use crate::context::DjogiContext;
 use crate::live_migrate::compose::StepResult;
-use crate::live_migrate::plan::{LivePlan, Step};
+use crate::live_migrate::plan::{LivePlan, Step, StepKind};
 
 // ── ExecutorError ────────────────────────────────────────────────────────
 
@@ -58,10 +58,63 @@ pub struct ExecutionContext<'a> {
 /// [`StepResult::Partial`] if a backfill was interrupted,
 /// or [`StepResult::Paused`] if an operator gate was reached.
 pub async fn run_plan(
-    _ctx: &mut DjogiContext,
-    _plan_path: std::path::PathBuf,
+    ctx: &mut DjogiContext,
+    plan_path: std::path::PathBuf,
 ) -> Result<StepResult, ExecutorError> {
-    todo!("run_plan: Stage 3B implementation pending")
+    // 1. Load plan from disk
+    let plan = crate::live_migrate::plan_file::read_plan(&plan_path)?;
+
+    // 2. Check for active plan conflicts in the same bucket
+    let bucket = format!("{}:{}", plan.header.target_database, plan.header.app_label);
+    crate::live_migrate::compose::check_no_active_plan(ctx, &bucket)
+        .await
+        .map_err(|e| ExecutorError::AlreadyCompleted(e.to_string()))?;
+
+    // 3. Execute each step sequentially
+    let mut last_result = StepResult::Completed;
+
+    for step in &plan.steps {
+        let exec = ExecutionContext {
+            ctx,
+            plan: &plan,
+            current_step: step,
+            step_ordinal: step.ordinal,
+        };
+
+        match execute_step(exec).await {
+            Ok(result) => {
+                last_result = result;
+
+                // If paused at an operator gate, stop execution
+                if matches!(last_result, StepResult::Paused) {
+                    return Ok(StepResult::Paused);
+                }
+
+                // If partial backfill, stop and return progress
+                if matches!(last_result, StepResult::Partial { .. }) {
+                    return Ok(last_result);
+                }
+            }
+            Err(e) => {
+                // Record failure in ledger
+                let error_msg = e.to_string();
+                super::state::record_failure(
+                    ctx,
+                    plan.header.plan_id,
+                    &plan.header.target_database,
+                    &plan.header.app_label,
+                    error_msg,
+                    false, // not retriable by default
+                )
+                .await
+                .map_err(ExecutorError::Db)?;
+
+                return Err(e);
+            }
+        }
+    }
+
+    Ok(last_result)
 }
 
 /// Execute a single step based on its kind.
@@ -69,8 +122,25 @@ pub async fn run_plan(
 /// Dispatches to the appropriate handler for each [`StepKind`].
 /// Non-destructive steps execute immediately; destructive or gated
 /// steps may return early with [`StepResult::Paused`].
-pub async fn execute_step(_exec: ExecutionContext<'_>) -> Result<StepResult, ExecutorError> {
-    todo!("execute_step: Stage 3C implementation pending")
+pub async fn execute_step(exec: ExecutionContext<'_>) -> Result<StepResult, ExecutorError> {
+    match exec.current_step.kind {
+        // DDL steps — expand, finalize, cleanup
+        StepKind::ExpandSchema
+        | StepKind::FinalizeConstraints
+        | StepKind::CleanupLegacyState
+        | StepKind::RunReversibleSchemaOp => execute_ddl_step(exec).await,
+
+        // Backfill step — chunked data migration
+        StepKind::BackfillChunked => execute_backfill_step(exec).await,
+
+        // Compatibility window — no-op marker (hooks registered elsewhere)
+        StepKind::BeginCompatibilityWindow => Ok(StepResult::Completed),
+
+        // Operator gates — pause and wait for explicit resume
+        StepKind::ValidateBackfill | StepKind::CutoverReads | StepKind::CutoverWrites => {
+            handle_operator_gate(exec).await
+        }
+    }
 }
 
 /// Execute a chunked backfill step.
