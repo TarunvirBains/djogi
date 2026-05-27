@@ -708,7 +708,11 @@ async fn run_seeds_pinned(
 
     let result = run_seeds_inner(ctx, workspace_root, database).await;
     let released = release_advisory_lock(ctx, lock_key).await;
-    handle_seed_unlock(result, released, database, lock_key)
+    let result = handle_seed_unlock(result, released, database, lock_key);
+    if result.is_ok() {
+        ctx.mark_clean();
+    }
+    result
 }
 
 async fn run_seeds_inner(

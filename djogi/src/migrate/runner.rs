@@ -922,7 +922,11 @@ async fn apply_plan_pinned(
     // lock was not held on this session (GH #274/#280).
     let released = release_advisory_lock(ctx, lock_key).await;
 
-    handle_release_result(result, released, &plan.bucket, lock_key)
+    let result = handle_release_result(result, released, &plan.bucket, lock_key);
+    if result.is_ok() {
+        ctx.mark_clean();
+    }
+    result
 }
 
 /// Core apply logic. Called from `apply_plan_pinned` after the advisory
@@ -1786,7 +1790,10 @@ async fn rollback_plan_pinned(
 
     // Mirror handle_release_result for the RollbackError type.
     match (result, released) {
-        (Ok(r), true) => Ok(r),
+        (Ok(r), true) => {
+            ctx.mark_clean();
+            Ok(r)
+        }
         (Ok(_), false) => Err(RollbackError::Runner(
             RunnerError::AdvisoryUnlockReturnedFalse {
                 key: lock_key,
@@ -2032,7 +2039,11 @@ async fn fake_apply_pinned(
 
     let result = fake_apply_inner(ctx, plan, runner_ctx, reason).await;
     let released = release_advisory_lock(ctx, lock_key).await;
-    handle_release_result(result, released, &plan.bucket, lock_key)
+    let result = handle_release_result(result, released, &plan.bucket, lock_key);
+    if result.is_ok() {
+        ctx.mark_clean();
+    }
+    result
 }
 
 async fn fake_apply_inner(
@@ -2236,7 +2247,11 @@ async fn baseline_pinned(
 
     let result = baseline_inner(ctx, bucket, runner_ctx, reason).await;
     let released = release_advisory_lock(ctx, lock_key).await;
-    handle_release_result(result, released, bucket, lock_key)
+    let result = handle_release_result(result, released, bucket, lock_key);
+    if result.is_ok() {
+        ctx.mark_clean();
+    }
+    result
 }
 
 async fn baseline_inner(

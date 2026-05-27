@@ -682,6 +682,9 @@ async fn repair_checksum_drift_pinned(
     let released = release_advisory_lock(ctx, lock_key).await;
     handle_repair_release(mutation_result, released, lock_key)?;
 
+    // Migration succeeded — mark clean so the connection returns to the pool.
+    ctx.mark_clean();
+
     let mut actions = vec![format!(
         "checksum_up of `{version}` updated from {before_up} to {new_checksum_up}"
     )];
@@ -840,6 +843,9 @@ async fn repair_partial_apply_pinned(
     let released = release_advisory_lock(ctx, lock_key).await;
     handle_repair_release(mutation_result, released, lock_key)?;
 
+    // Migration succeeded — mark clean so the connection returns to the pool.
+    ctx.mark_clean();
+
     Ok(RepairReport {
         actions_taken: vec![format!(
             "partial-apply repair of `{version}`: status {old} -> {new}; \
@@ -955,7 +961,11 @@ async fn repair_resume_pinned(
     let result = repair_resume_body(ctx, version, plan, bucket).await;
 
     let released = release_advisory_lock(ctx, lock_key).await;
-    handle_repair_release(result, released, lock_key)
+    let result = handle_repair_release(result, released, lock_key);
+    if result.is_ok() {
+        ctx.mark_clean();
+    }
+    result
 }
 
 /// Body of the resume-partial-apply logic, called inside the advisory lock.
@@ -1233,6 +1243,9 @@ async fn repair_snapshot_rebuild_pinned(
     // Surface advisory-lock release failure before the filesystem write.
     // The projected value is only available if the DB query succeeded.
     let projected = handle_repair_release(projected, released, lock_key)?;
+
+    // Lock released successfully — mark clean so the connection returns to the pool.
+    ctx.mark_clean();
 
     save_snapshot(&projected, snapshot_path).map_err(|e| RepairError::SnapshotIo {
         path: snapshot_path.to_path_buf(),

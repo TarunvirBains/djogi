@@ -499,6 +499,11 @@ async fn drive_candidate(
     // From here on, every exit path must release the advisory lock.
     let result = drive_under_lock(&mut pinned, config, candidate).await;
     release_advisory_lock(&mut pinned, lock_key).await;
+
+    // Lock released — mark clean so the connection returns to the pool.
+    if result.is_ok() {
+        pinned.mark_clean();
+    }
     result
 }
 
