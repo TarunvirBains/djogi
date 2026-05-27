@@ -511,7 +511,7 @@ impl std::fmt::Display for RunnerError {
                         "use `djogi migrations status` to inspect it, then `repair_resume_partial_apply` if it is still resumable or `repair_partial_apply` otherwise"
                     }
                     LedgerStatus::RolledBack => {
-                        "use `djogi migrations status` to inspect it; rolled-back rows are historical and are not repair targets"
+                        "use `djogi migrations status` to inspect it; re-running `djogi migrations apply` will remove the rolled-back row and re-apply the migration"
                     }
                     LedgerStatus::Applied | LedgerStatus::Baseline | LedgerStatus::Faked => {
                         unreachable!(
