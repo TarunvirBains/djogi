@@ -1,20 +1,14 @@
-//! Live-plan composition — type stubs for the compose pipeline.
+//! Live-plan composition — helper functions and unit tests.
 //!
 //! This module defines the public entry points and data types used to
 //! generate live-migration plan files from schema descriptor drift.
-//! The compose pipeline diffs registered [`crate::model::ModelDescriptor`]
+//! The compose pipeline diffs registered [`crate::descriptor::ModelDescriptor`]
 //! instances against the persisted [`schema_snapshot.json`], classifies
 //! each delta, and emits one or more plan files under
 //! `migrations/<target_database>/live/`.
-//!
-//! # Stage 2A — type stubs only
-//!
-//! All public functions below carry `todo!()` bodies. Implementation
-//! logic lands in subsequent stages; this file exists so the module
-//! is addressable from mod.rs and downstream imports resolve during
-//! incremental development.
 
-use crate::error::DbError;
+use crate::DjogiError;
+use crate::context::DjogiContext;
 use crate::live_migrate::plan_file::PlanFileError;
 
 // ── ComposeError ───────────────────────────────────────────────────────
@@ -53,12 +47,12 @@ pub enum ComposeError {
     /// failed. Should not occur with well-formed plans; surfaced for
     /// completeness.
     #[error(transparent)]
-    Serialize(#[from] PlanFileError),
+    Serialize(PlanFileError),
 
     /// Database access error while checking for active plans or
     /// reading ledger state during compose.
     #[error(transparent)]
-    Db(#[from] DbError),
+    Db(DjogiError),
 }
 
 // ── ExtractResult ──────────────────────────────────────────────────────
@@ -170,8 +164,8 @@ pub enum StepResult {
 /// via [`ComposeError`] on diff failure, classification refusal, or
 /// I/O issues.
 pub async fn compose_live_plans(
-    _ctx: &crate::DjogiContext,
-    _descriptors: Vec<crate::model::ModelDescriptor>,
+    _ctx: &DjogiContext,
+    _descriptors: Vec<crate::descriptor::ModelDescriptor>,
     _snapshot_path: std::path::PathBuf,
     _meta: ComposeMeta,
 ) -> Result<ComposeReport, ComposeError> {
@@ -194,37 +188,222 @@ pub fn extract_backfill_params(_steps: &[crate::live_migrate::plan::Step]) -> Ex
 /// Verify that no live plan is currently active in the given bucket.
 ///
 /// The bucket is identified by a single string key derived from the
-/// `(target_database, app_label)` pair. If an active (non-terminal)
-/// plan row exists, returns [`ComposeError::ActivePlanExists`] to
-/// prevent concurrent live-plan execution on the same schema.
+/// `(target_database, app_label)` pair. Format: `"target_db:app_label"`.
+/// If the bucket contains no colon, it is treated as an app_label with
+/// target_database defaulting to `"main"`.
+///
+/// If an active (non-terminal) plan row exists, returns
+/// [`ComposeError::ActivePlanExists`] to prevent concurrent live-plan
+/// execution on the same schema.
 pub async fn check_no_active_plan(
-    _ctx: &crate::DjogiContext,
-    _bucket: &str,
+    ctx: &mut DjogiContext,
+    bucket: &str,
 ) -> Result<(), ComposeError> {
-    todo!("check_no_active_plan: Stage 2A stub — implementation in later stage")
+    let (target_db, app_label) = match bucket.split_once(':') {
+        Some((db, label)) => (db.to_string(), label.to_string()),
+        None => ("main".to_string(), bucket.to_string()),
+    };
+
+    let sql = "SELECT 1 FROM djogi_live_plans \
+                WHERE target_database = $1 AND app_label = $2 \
+                  AND status IN ('pending', 'running', 'paused')";
+    let exists = ctx
+        .query_opt(sql, &[&target_db, &app_label])
+        .await
+        .map_err(ComposeError::Db)?
+        .is_some();
+
+    if exists {
+        return Err(ComposeError::ActivePlanExists);
+    }
+    Ok(())
 }
 
 /// Construct a minimal [`LivePlan`] skeleton from the supplied fields.
 ///
 /// Populates the header with the given `plan_id`, `slug`, and
-/// `classification`. The step list is used verbatim. Timestamps and
-/// originating-migration metadata are left at default values; the
-/// caller is responsible for filling them before persisting.
+/// `classification`. The step list is used verbatim. Originating-migration
+/// metadata is left at default values; the caller is responsible for
+/// filling them before persisting.
+///
+/// # Panics
+///
+/// Panics if `classification` is [`crate::migrate::OnlineSafetyClassification::FastLockDestructiveGuarded`],
+/// which does not route through the live-plan pipeline and should never
+/// reach this function.
 pub fn build_skeleton_plan(
-    _plan_id: String,
-    _slug: String,
-    _classification: crate::migrate::OnlineSafetyClassification,
-    _steps: Vec<crate::live_migrate::plan::Step>,
+    plan_id: String,
+    slug: String,
+    classification: crate::migrate::OnlineSafetyClassification,
+    steps: Vec<crate::live_migrate::plan::Step>,
 ) -> crate::live_migrate::plan::LivePlan {
-    todo!("build_skeleton_plan: Stage 2A stub — implementation in later stage")
+    use crate::live_migrate::plan::PlanClassification;
+
+    let plan_id_val: crate::types::HeerId = plan_id
+        .parse()
+        .unwrap_or_else(|_| crate::types::HeerId::ZERO);
+
+    let plan_classification: PlanClassification =
+        Option::<PlanClassification>::from(classification)
+            .expect("FastLockDestructiveGuarded does not route through live-plan pipeline");
+
+    crate::live_migrate::plan::LivePlan {
+        header: crate::live_migrate::plan::PlanHeader {
+            plan_id: plan_id_val,
+            slug,
+            classification: plan_classification,
+            originating_migration: String::new(),
+            target_database: String::new(),
+            app_label: String::new(),
+        },
+        steps,
+    }
 }
 
 /// Sanitise an app label for use in file paths and database columns.
 ///
-/// Replaces any byte that is not an ASCII letter, ASCII digit, or
-/// underscore with an underscore. Truncates the result to 63 bytes
-/// (Postgres's NAMEDATALEN limit). Returns the empty string if input
-/// was empty or became empty after sanitisation.
-pub fn sanitize_app_label(_label: &str) -> String {
-    todo!("sanitize_app_label: Stage 2A stub — implementation in later stage")
+/// Replaces non-alphanumeric characters (except ASCII hyphen and
+/// underscore) with underscores. Collapses consecutive underscores to
+/// one. Strips leading and trailing underscores or hyphens. Lowercases
+/// the result. Truncates to 63 bytes (Postgres NAMEDATALEN limit).
+/// Returns the empty string if input was empty or became empty after
+/// sanitisation.
+pub fn sanitize_app_label(label: &str) -> String {
+    if label.is_empty() {
+        return String::new();
+    }
+
+    // Replace non-alphanumeric (except hyphen, underscore) with underscore.
+    let replaced: String = label
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    // Collapse multiple consecutive underscores to one.
+    let collapsed: String =
+        replaced
+            .chars()
+            .fold(String::with_capacity(replaced.len()), |mut acc, c| {
+                if c == '_' && acc.ends_with('_') {
+                    acc
+                } else {
+                    acc.push(c);
+                    acc
+                }
+            });
+
+    // Strip leading/trailing underscores or hyphens.
+    let trimmed = collapsed.trim_matches(|c: char| c == '_' || c == '-');
+
+    // Lowercase and truncate to 63 bytes.
+    let lowercased = trimmed.to_lowercase();
+
+    if lowercased.len() > 63 {
+        // Safe: all characters are ASCII after sanitisation, so byte
+        // boundaries align with character boundaries.
+        let truncated = &lowercased[..63];
+        truncated.to_string()
+    } else {
+        lowercased
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::live_migrate::plan::{Step, StepKind, StepParameters};
+
+    // ── sanitize_app_label tests ───────────────────────────────────────
+
+    #[test]
+    fn sanitize_normal_input_preserved() {
+        assert_eq!(sanitize_app_label("my_app"), "my_app");
+    }
+
+    #[test]
+    fn sanitize_special_chars_replaced_with_underscore() {
+        assert_eq!(sanitize_app_label("my@app#name"), "my_app_name");
+    }
+
+    #[test]
+    fn sanitize_empty_input_returns_empty() {
+        assert_eq!(sanitize_app_label(""), "");
+    }
+
+    #[test]
+    fn sanitize_max_length_truncates_to_63_bytes() {
+        let long = "a".repeat(100);
+        assert_eq!(sanitize_app_label(&long), "a".repeat(63));
+    }
+
+    #[test]
+    fn sanitize_leading_separators_stripped() {
+        assert_eq!(sanitize_app_label("__-my_app"), "my_app");
+    }
+
+    #[test]
+    fn sanitize_trailing_separators_stripped() {
+        assert_eq!(sanitize_app_label("my_app_-__"), "my_app");
+    }
+
+    #[test]
+    fn sanitize_multiple_underscores_collapsed() {
+        assert_eq!(sanitize_app_label("a___b"), "a_b");
+    }
+
+    #[test]
+    fn sanitize_lowercase_applied() {
+        assert_eq!(sanitize_app_label("MyApp"), "myapp");
+    }
+
+    #[test]
+    fn sanitize_hyphens_preserved_in_middle() {
+        assert_eq!(sanitize_app_label("my-app_name"), "my-app_name");
+    }
+
+    #[test]
+    fn sanitize_only_special_chars_returns_empty() {
+        assert_eq!(sanitize_app_label("@#$%^&*()"), "");
+    }
+
+    // ── build_skeleton_plan tests ──────────────────────────────────────
+
+    fn dummy_step(ordinal: u32) -> Step {
+        Step {
+            kind: StepKind::ExpandSchema,
+            ordinal,
+            parameters: StepParameters::ExpandSchema {
+                sql_segments: vec!["ALTER TABLE foo ADD COLUMN bar INT".to_string()],
+            },
+        }
+    }
+
+    #[test]
+    fn build_skeleton_plan_constructs_valid_plan() {
+        let plan = build_skeleton_plan(
+            "123".to_string(),
+            "add_bar_column".to_string(),
+            crate::migrate::OnlineSafetyClassification::ExpandContract,
+            vec![dummy_step(0), dummy_step(1), dummy_step(2)],
+        );
+        assert_eq!(plan.header.slug, "add_bar_column");
+        assert_eq!(plan.steps.len(), 3);
+    }
+
+    #[test]
+    fn build_skeleton_plan_parses_plan_id_from_string() {
+        let plan = build_skeleton_plan(
+            "42".to_string(),
+            "test_slug".to_string(),
+            crate::migrate::OnlineSafetyClassification::ExpandContract,
+            vec![dummy_step(0)],
+        );
+        assert_eq!(plan.header.plan_id.as_i64(), 42);
+    }
 }
