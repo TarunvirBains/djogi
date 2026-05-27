@@ -67,15 +67,16 @@ CREATE TABLE IF NOT EXISTS djogi_live_plans (
     slug                  TEXT NOT NULL,
     plan_file_checksum    VARCHAR(68) NOT NULL,
     classification        TEXT NOT NULL
-                              CHECK (classification IN (
-                                  'online_safe', 'expand_contract', 'offline_only'
-                              )),
+                               CHECK (classification IN (
+                                   'online_safe', 'expand_contract', 'offline_only'
+                               )),
     status                TEXT NOT NULL DEFAULT 'pending'
-                              CHECK (status IN (
-                                  'pending', 'running', 'paused',
-                                  'validating', 'cutover', 'finalizing',
-                                  'complete', 'abandoned', 'failed'
-                              )),
+                               CHECK (status IN (
+                                   'pending', 'running', 'paused',
+                                   'validating', 'cutover', 'finalizing',
+                                   'complete', 'abandoned', 'failed',
+                                   'failed_retriable', 'failed_terminal'
+                               )),
     current_step          TEXT,
     current_step_index    INTEGER NOT NULL DEFAULT 0,
     backfill_rows_done    BIGINT NOT NULL DEFAULT 0,
@@ -86,7 +87,8 @@ CREATE TABLE IF NOT EXISTS djogi_live_plans (
     last_error            TEXT,
     originating_migration TEXT NOT NULL,
     target_database       TEXT NOT NULL DEFAULT 'main',
-    app_label             TEXT NOT NULL DEFAULT ''
+    app_label             TEXT NOT NULL DEFAULT '',
+    daemon_session_token  TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS djogi_live_plans_bucket_plan_id_uidx
     ON djogi_live_plans (target_database, app_label, plan_id);
@@ -96,6 +98,8 @@ ALTER TABLE djogi_live_plans
     ADD COLUMN IF NOT EXISTS claimed_by_host TEXT;
 ALTER TABLE djogi_live_plans
     ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
+ALTER TABLE djogi_live_plans
+    ADD COLUMN IF NOT EXISTS daemon_session_token TEXT;
 "#;
 
 // ── PlanStatus ────────────────────────────────────────────────────────
@@ -104,8 +108,10 @@ ALTER TABLE djogi_live_plans
 /// constraint on `djogi_live_plans.status` byte-for-byte.
 ///
 /// State transitions are operator-driven via T10's CLI; the runner
-/// never auto-advances past an operator gate. `Failed` and `Abandoned`
-/// are terminal — the runner refuses to advance past them.
+/// never auto-advances past an operator gate. `Failed`,
+/// `FailedTerminal`, and `Abandoned` are terminal — the runner refuses
+/// to advance past them. `FailedRetriable` indicates a transient
+/// failure that the daemon resume engine may automatically retry.
 ///
 /// `#[non_exhaustive]` so future statuses (e.g. a `Quiesced` variant
 /// for the daemon-mode pause-and-claim path) can land without breaking
@@ -143,6 +149,15 @@ pub enum PlanStatus {
     /// pending operator intervention (resume after manual fix, or
     /// abandon).
     Failed,
+    /// A step failed with a transient error that the daemon resume
+    /// engine may automatically retry on the next poll cycle. The
+    /// runner sets this status and persists the error message so the
+    /// operator can diagnose the root cause if retries exhaust.
+    FailedRetriable,
+    /// A step failed with an irrecoverable error (e.g. a schema
+    /// constraint violation or data corruption). No automatic retry
+    /// is attempted; operator intervention is required. Terminal.
+    FailedTerminal,
 }
 
 /// Single source of truth for `(PlanStatus, db-string)` pairs.
@@ -166,6 +181,8 @@ const PLAN_STATUS_LABELS: &[(PlanStatus, &str)] = &[
     (PlanStatus::Complete, "complete"),
     (PlanStatus::Abandoned, "abandoned"),
     (PlanStatus::Failed, "failed"),
+    (PlanStatus::FailedRetriable, "failed_retriable"),
+    (PlanStatus::FailedTerminal, "failed_terminal"),
 ];
 
 /// Compile-time exhaustiveness witness. Adding a `PlanStatus` variant
@@ -186,6 +203,8 @@ const _PLAN_STATUS_DRIFT_GUARD: () = {
             PlanStatus::Complete => 6,
             PlanStatus::Abandoned => 7,
             PlanStatus::Failed => 8,
+            PlanStatus::FailedRetriable => 9,
+            PlanStatus::FailedTerminal => 10,
         }
     }
     // Force the exhaustive match to be evaluated at const-eval time;
@@ -200,7 +219,7 @@ impl PlanStatus {
     /// appears verbatim.
     ///
     /// Single source of truth: [`PLAN_STATUS_LABELS`]. Linear scan
-    /// over a 9-element slice is microsecond-cheap and the
+    /// over an 11-element slice is microsecond-cheap and the
     /// drift-guard block above ensures every variant has a row.
     pub fn as_db_str(self) -> &'static str {
         PLAN_STATUS_LABELS
@@ -254,6 +273,11 @@ pub struct LivePlanRow {
     pub originating_migration: String,
     pub target_database: String,
     pub app_label: String,
+    /// Opaque token identifying the daemon session that last claimed
+    /// or modified this row. Used by the resume engine to detect
+    /// stale claims and coordinate cross-instance recovery. Set by
+    /// [`record_failure`] and the daemon's claim/update path.
+    pub daemon_session_token: Option<String>,
 }
 
 // ── CRUD helpers ──────────────────────────────────────────────────────
@@ -275,11 +299,12 @@ pub async fn install(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
 /// rollback semantics.
 pub async fn insert_row(ctx: &mut DjogiContext, row: &LivePlanRow) -> Result<(), DjogiError> {
     let sql = "INSERT INTO djogi_live_plans \
-               (plan_id, slug, plan_file_checksum, classification, status, \
-                current_step, current_step_index, backfill_rows_done, \
-                backfill_rows_total, started_at, last_progress_at, completed_at, \
-                last_error, originating_migration, target_database, app_label) \
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)";
+                (plan_id, slug, plan_file_checksum, classification, status, \
+                 current_step, current_step_index, backfill_rows_done, \
+                 backfill_rows_total, started_at, last_progress_at, completed_at, \
+                 last_error, originating_migration, target_database, app_label, \
+                 daemon_session_token) \
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)";
     let plan_id = row.plan_id.as_i64();
     let classification = row.classification.as_db_str();
     let status = row.status.as_db_str();
@@ -302,6 +327,7 @@ pub async fn insert_row(ctx: &mut DjogiContext, row: &LivePlanRow) -> Result<(),
             &row.originating_migration,
             &row.target_database,
             &row.app_label,
+            &row.daemon_session_token,
         ],
     )
     .await?;
@@ -317,11 +343,12 @@ pub async fn fetch_row_by_id(
     app_label: &str,
 ) -> Result<Option<LivePlanRow>, DjogiError> {
     let sql = "SELECT plan_id, slug, plan_file_checksum, classification, status, \
-               current_step, current_step_index, backfill_rows_done, \
-               backfill_rows_total, started_at, last_progress_at, completed_at, \
-               last_error, originating_migration, target_database, app_label \
-               FROM djogi_live_plans \
-               WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
+                current_step, current_step_index, backfill_rows_done, \
+                backfill_rows_total, started_at, last_progress_at, completed_at, \
+                last_error, originating_migration, target_database, app_label, \
+                daemon_session_token \
+                FROM djogi_live_plans \
+                WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
     let plan_id_i64 = plan_id.as_i64();
     let row_opt = ctx
         .query_opt(sql, &[&target_database, &app_label, &plan_id_i64])
@@ -333,7 +360,7 @@ pub async fn fetch_row_by_id(
     Ok(Some(parsed))
 }
 
-/// Parse a 16-column row from the SELECT in [`fetch_row_by_id`] into a
+/// Parse a 17-column row from the SELECT in [`fetch_row_by_id`] into a
 /// [`LivePlanRow`]. Column order matches the SELECT exactly.
 fn row_to_live_plan_row(row: &tokio_postgres::Row) -> Result<LivePlanRow, DjogiError> {
     let plan_id_i64: i64 = row.try_get(0)?;
@@ -364,6 +391,7 @@ fn row_to_live_plan_row(row: &tokio_postgres::Row) -> Result<LivePlanRow, DjogiE
     let originating_migration: String = row.try_get(13)?;
     let target_database: String = row.try_get(14)?;
     let app_label: String = row.try_get(15)?;
+    let daemon_session_token: Option<String> = row.try_get(16)?;
     Ok(LivePlanRow {
         plan_id,
         slug,
@@ -381,6 +409,7 @@ fn row_to_live_plan_row(row: &tokio_postgres::Row) -> Result<LivePlanRow, DjogiE
         originating_migration,
         target_database,
         app_label,
+        daemon_session_token,
     })
 }
 
@@ -396,8 +425,8 @@ pub async fn update_progress(
     rows_done: i64,
 ) -> Result<(), DjogiError> {
     let sql = "UPDATE djogi_live_plans \
-               SET backfill_rows_done = $4, last_progress_at = now() \
-               WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
+                SET backfill_rows_done = $4, last_progress_at = now() \
+                WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
     let plan_id_i64 = plan_id.as_i64();
     ctx.execute(
         sql,
@@ -424,8 +453,8 @@ pub async fn update_step_index(
     new_step_label: Option<&str>,
 ) -> Result<(), DjogiError> {
     let sql = "UPDATE djogi_live_plans \
-               SET current_step_index = $4, current_step = $5 \
-               WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
+                SET current_step_index = $4, current_step = $5 \
+                WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
     let plan_id_i64 = plan_id.as_i64();
     ctx.execute(
         sql,
@@ -454,8 +483,8 @@ pub async fn stamp_completed_at(
     app_label: &str,
 ) -> Result<(), DjogiError> {
     let sql = "UPDATE djogi_live_plans \
-               SET completed_at = now() \
-               WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
+                SET completed_at = now() \
+                WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
     let plan_id_i64 = plan_id.as_i64();
     ctx.execute(sql, &[&target_database, &app_label, &plan_id_i64])
         .await?;
@@ -475,13 +504,71 @@ pub async fn update_status(
     new_status: PlanStatus,
 ) -> Result<(), DjogiError> {
     let sql = "UPDATE djogi_live_plans \
-               SET status = $4 \
-               WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
+                SET status = $4 \
+                WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
     let plan_id_i64 = plan_id.as_i64();
     let status = new_status.as_db_str();
     ctx.execute(sql, &[&target_database, &app_label, &plan_id_i64, &status])
         .await?;
     Ok(())
+}
+
+/// Atomic status + error update. Sets both `status` and `last_error`
+/// in a single UPDATE so the row is never observed in an inconsistent
+/// (new-status-with-stale-error or old-status-with-new-error) state by
+/// concurrent readers. Uses positional parameters correctly ($1, $2, $3).
+pub async fn update_status_with_error(
+    ctx: &mut DjogiContext,
+    plan_id: HeerId,
+    target_database: &str,
+    app_label: &str,
+    status: PlanStatus,
+    error_msg: String,
+) -> Result<(), DjogiError> {
+    let sql = "UPDATE djogi_live_plans \
+                SET status = $4, last_error = $5 \
+                WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
+    let plan_id_i64 = plan_id.as_i64();
+    let status_str = status.as_db_str();
+    ctx.execute(
+        sql,
+        &[
+            &target_database,
+            &app_label,
+            &plan_id_i64,
+            &status_str,
+            &error_msg,
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Record a terminal or retriable failure on a plan row.
+///
+/// If `retriable` is `true`, the status transitions to
+/// [`PlanStatus::FailedRetriable`] — the daemon resume engine may
+/// automatically retry on the next poll cycle. If `retriable` is
+/// `false`, the status transitions to [`PlanStatus::FailedTerminal`]
+/// and no automatic retry is attempted; operator intervention is
+/// required.
+///
+/// Uses [`update_status_with_error`] internally so both the status and
+/// error message are persisted atomically in a single UPDATE.
+pub async fn record_failure(
+    ctx: &mut DjogiContext,
+    plan_id: HeerId,
+    target_database: &str,
+    app_label: &str,
+    error_msg: String,
+    retriable: bool,
+) -> Result<(), DjogiError> {
+    let status = if retriable {
+        PlanStatus::FailedRetriable
+    } else {
+        PlanStatus::FailedTerminal
+    };
+    update_status_with_error(ctx, plan_id, target_database, app_label, status, error_msg).await
 }
 
 #[cfg(test)]
@@ -504,6 +591,8 @@ mod tests {
             (PlanStatus::Complete, "complete"),
             (PlanStatus::Abandoned, "abandoned"),
             (PlanStatus::Failed, "failed"),
+            (PlanStatus::FailedRetriable, "failed_retriable"),
+            (PlanStatus::FailedTerminal, "failed_terminal"),
         ];
         for (variant, expected) in pairs {
             assert_eq!(variant.as_db_str(), expected);
@@ -539,6 +628,8 @@ mod tests {
             PlanStatus::Complete,
             PlanStatus::Abandoned,
             PlanStatus::Failed,
+            PlanStatus::FailedRetriable,
+            PlanStatus::FailedTerminal,
         ];
         assert_eq!(
             PLAN_STATUS_LABELS.len(),

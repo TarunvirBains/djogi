@@ -627,7 +627,7 @@ async fn lookup_plan_row(
     let sql = "SELECT plan_id, slug, plan_file_checksum, classification, status, \
                current_step, current_step_index, backfill_rows_done, \
                backfill_rows_total, started_at, last_progress_at, completed_at, \
-               last_error, originating_migration, target_database, app_label \
+               last_error, originating_migration, target_database, app_label, daemon_session_token \
                FROM djogi_live_plans WHERE plan_id = $1";
     let plan_id_i64 = plan_id.as_i64();
     let row_opt = ctx
@@ -714,6 +714,11 @@ fn parse_live_plan_row(row: &tokio_postgres::Row) -> Result<state::LivePlanRow, 
     let app_label: String = row
         .try_get(15)
         .map_err(|e| DjogiError::Db(DbError::other(format!("app_label read failed: {e}"))))?;
+    let daemon_session_token: Option<String> = row.try_get(16).map_err(|e| {
+        DjogiError::Db(DbError::other(format!(
+            "daemon_session_token read failed: {e}"
+        )))
+    })?;
     Ok(state::LivePlanRow {
         plan_id,
         slug,
@@ -731,6 +736,7 @@ fn parse_live_plan_row(row: &tokio_postgres::Row) -> Result<state::LivePlanRow, 
         originating_migration,
         target_database,
         app_label,
+        daemon_session_token,
     })
 }
 

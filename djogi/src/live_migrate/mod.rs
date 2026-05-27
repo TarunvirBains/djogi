@@ -84,7 +84,7 @@ pub use plan::{
 pub use plan_file::{
     PlanFileError, compute_checksum, plan_path, read_plan, verify_checksum, write_plan,
 };
-pub use state::{INSTALL_SQL, LivePlanRow, PlanStatus};
+pub use state::{INSTALL_SQL, LivePlanRow, PlanStatus, record_failure, update_status_with_error};
 
 /// Logging-profile axis read from `Djogi.toml`'s `[logging] profile`
 /// at compose time and threaded into [`ClassifyContext`].
