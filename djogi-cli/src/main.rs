@@ -500,16 +500,20 @@ enum MigrationsCommand {
     /// databases whose schema already exists (from a prior tool, manual
     /// DDL, or restored backup). Use `djogi migrations verify` or
     /// manual inspection to confirm the schema matches the target state
-    /// before faking.
+    /// before faking. The `--fake` flag respects the same out-of-order
+    /// policy as real apply; if CI/prod policy is `Reject`, fake-apply
+    /// on an out-of-order version is also rejected.
     ///
     /// For previewing pending work without executing it, use
     /// `djogi migrations status`.
     ///
-    /// If `--fake` is interrupted after recording the ledger row,
-    /// re-running reports `VersionAlreadyApplied` (exit 2). If the
-    /// snapshot is missing or stale, reconcile it with
-    /// `djogi migrations attune` or `repair snapshot-rebuild` before
-    /// removing stale pending artifacts.
+    /// If the command is interrupted after recording a ledger row with
+    /// a terminal status (`applied`, `faked`, `baseline`), re-running
+    /// reports `VersionAlreadyApplied` (exit 2). For non-terminal
+    /// statuses (`failed`, `rolled_back`), the stale row is removed and
+    /// re-apply proceeds automatically. If the snapshot is missing or
+    /// stale, reconcile it with `djogi migrations attune` or
+    /// `repair snapshot-rebuild`.
     Apply {
         /// Workspace root override. Defaults to the current working
         /// directory.
@@ -518,7 +522,9 @@ enum MigrationsCommand {
 
         /// Record pending migrations as applied without executing
         /// their SQL. For existing-database adoption only. Requires
-        /// `--reason`.
+        /// `--reason`. Subject to the same out-of-order policy as real
+        /// apply; if CI/prod policy is `Reject`, fake-apply on an
+        /// out-of-order version is also rejected.
         #[arg(long, default_value_t = false)]
         fake: bool,
 

@@ -164,6 +164,10 @@ use djogi::migrate::repair::{
 
 All apply paths require a `WorkspaceGuard` — a typed witness that the caller holds the workspace file lock. The lock prevents two concurrent CLI invocations from racing on the same `migrations/` tree.
 
+**Out-of-order policy enforcement:** `fake_apply_plan` enforces the same out-of-order policy gate as `apply_plan`. A faked row with a suppressed `out_of_order_flag` would misrepresent the version-ordering state. If the policy is `Reject`, fake-apply on an out-of-order version is rejected.
+
+**Snapshot failure recovery:** If `fake_apply_plan` reports a snapshot persistence error, the migration was successfully recorded in the ledger as `faked`. Run `djogi migrations compose` to regenerate the snapshot from the descriptor inventory.
+
 ## Classifications
 
 Every `SchemaDelta` carries a `Classification` that determines runner behaviour:
@@ -207,6 +211,17 @@ Operators sometimes apply migrations in a different order than they were compose
 | `Allow` | Silent. Manual override only. |
 
 The policy lives in `RunnerCtx::out_of_order_policy` and defaults from `Djogi.toml::profile`.
+
+## RolledBack Recovery
+
+After a migration is rolled back, the ledger row has status `rolled_back`. This is a non-terminal status — the DDL effects are gone from the database, but the audit trail remains.
+
+To re-apply a rolled-back migration, run `djogi migrations apply` again. The runner:
+1. Detects the existing `rolled_back` row for the version
+2. Deletes the stale row
+3. Re-applies the migration SQL and creates a new `applied` ledger row
+
+This preserves the original version-to-schema-operation binding without requiring the operator to invent a new version string.
 
 ## `djogi db reset`
 
