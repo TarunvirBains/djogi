@@ -574,6 +574,30 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
         Ok(())
     }
 
+    /// Framework-internal gate for deciding whether a bulk row-count update
+    /// should collect affected primary keys for cache invalidation.
+    ///
+    /// Default is false so hand-written/internal `Model` impls keep the existing
+    /// row-count fast path.
+    #[doc(hidden)]
+    fn __djogi_should_collect_bulk_update_ids(ctx: &DjogiContext) -> bool {
+        let _ = ctx;
+        false
+    }
+
+    /// Framework-internal cache invalidation hook for bulk save-style writes.
+    ///
+    /// Default is a hidden no-op so generic bulk terminals do not impose public
+    /// cache trait bounds on all `Model` implementors.
+    #[doc(hidden)]
+    fn __djogi_enqueue_bulk_on_save_cache_invalidation(
+        ctx: &mut DjogiContext,
+        ids: Vec<Self::Pk>,
+    ) -> Result<(), DjogiError> {
+        let _ = (ctx, ids);
+        Ok(())
+    }
+
     /// Walk **every** self-FK edge declared on this model upward —
     /// the multi-edge sibling of [`Model::tree_ancestors`]. Phase
     /// 8-Zero Cluster B3 (T13a).

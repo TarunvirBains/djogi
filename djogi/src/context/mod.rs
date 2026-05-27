@@ -440,6 +440,14 @@ impl DjogiContext {
         &mut self.inner
     }
 
+    /// Check whether this context is backed by a transaction.
+    /// Used by macro-generated bulk cache invalidation hooks to decide
+    /// whether to collect affected primary keys for deferred invalidation.
+    #[doc(hidden)]
+    pub fn __djogi_is_transaction_backed_for_macros(&self) -> bool {
+        matches!(&self.inner, ContextInner::Transaction(_))
+    }
+
     // -------------------------------------------------------------------------
     // Public-but-hidden execution helpers for macro-generated code.
     //

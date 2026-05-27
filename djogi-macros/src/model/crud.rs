@@ -282,6 +282,48 @@ pub fn expand(
         }
     };
 
+    let emit_bulk_on_save_cache_invalidation_override = quote! {
+        fn __djogi_should_collect_bulk_update_ids(
+            ctx: &::djogi::context::DjogiContext,
+        ) -> bool {
+            ctx.__djogi_is_transaction_backed_for_macros()
+                && ctx.punnu::<Self>().is_some()
+        }
+
+        fn __djogi_enqueue_bulk_on_save_cache_invalidation(
+            ctx: &mut ::djogi::context::DjogiContext,
+            ids: ::std::vec::Vec<Self::Pk>,
+        ) -> ::std::result::Result<(), ::djogi::DjogiError> {
+            if ids.is_empty() {
+                return ::std::result::Result::Ok(());
+            }
+
+            if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
+                ctx.on_commit(move || async move {
+                    for __id_for_cache in ids {
+                        if let ::std::result::Result::Err(__e) = __punnu
+                            .invalidate(
+                                &__id_for_cache,
+                                ::djogi::cache::InvalidationReason::OnSave,
+                            )
+                            .await
+                        {
+                            ::djogi::__private::tracing::warn!(
+                                target: "djogi::cache",
+                                error = ?__e,
+                                model = ::std::any::type_name::<Self>(),
+                                "Punnu::invalidate L2 backend failed during on_commit drain",
+                            );
+                        }
+                    }
+                    ::std::result::Result::Ok(())
+                });
+            }
+
+            ::std::result::Result::Ok(())
+        }
+    };
+
     let name = &struct_item.ident;
     let fields_name = format_ident!("{}Fields", name);
     let (impl_generics, ty_generics, where_clause) = struct_item.generics.split_for_impl();
@@ -3605,6 +3647,8 @@ pub fn expand(
             #emit_outbox_returning_save_override
             // Shared save-style on_commit cache invalidation hook.
             #emit_on_save_cache_invalidation_override
+            // Bulk save-style on_commit cache invalidation hook.
+            #emit_bulk_on_save_cache_invalidation_override
 
             // Cluster 8δ T8.6 — soft-deletable tombstone signal.
             // Emitted only for `#[model(soft_deletable)]` models; non-soft-deletable
