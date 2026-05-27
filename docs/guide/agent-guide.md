@@ -310,7 +310,7 @@ write `CREATE TABLE` by hand.
 
 - In **production code**, change the struct, rebuild (`cargo build` emits a
   drift warning), then run `djogi migrations compose --name
-  add_subscriptions` to generate a reviewable `V<ts>__add_subscriptions.sql`
+  add_subscriptions` to generate a reviewable `V<ts>__add_subscriptions.sdjql`
   pair under `migrations/<database>/<app>/`. Library callers apply via
   `djogi::migrate::apply_plan`; see [the migrations guide](./migrations.md).
 - In **tests**, list the model in `sync_models = [...]` on the
@@ -363,7 +363,7 @@ pub struct Subscription {
 `cargo build` re-runs the proc macro, updates `target/djogi_models.json`,
 and `build.rs` emits a `cargo:warning=` drift line. Run
 `djogi migrations compose --name add_subscription_notes` to write
-`V<ts>__add_subscription_notes.sql` + `.down.sql` into the appropriate
+`V<ts>__add_subscription_notes.sdjql` + `.down.sdjql` into the appropriate
 `migrations/<database>/<app>/` bucket — review the SQL in your PR, then
 apply via the library API (`djogi::migrate::apply_plan`). Use
 `djogi migrations attune` only for migration-history ledger/disk

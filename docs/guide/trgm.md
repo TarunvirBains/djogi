@@ -271,7 +271,7 @@ IndexSpec {
 A trgm-using app produces **two** distinct migration files on the first
 compose:
 
-1. **`migrations/<database>/0000_phase_zero.sql`** — the Phase 0 bootstrap
+1. **`migrations/<database>/V00000000000000__phase_zero_bootstrap.sdjql`** — the Phase 0 bootstrap
    migration. Djogi auto-emits this file (and re-emits when the descriptor's
    extension dependencies change) so adopters never hand-author the
    extension install. It contains the HeeRanjID schema plus every
@@ -284,10 +284,10 @@ compose:
    ```
 
    See `djogi/src/migrate/bootstrap.rs` for the composition logic and
-   `migrations/<database>/0000_phase_zero.sql` in your repo for the
+   `migrations/<database>/V00000000000000__phase_zero_bootstrap.sdjql` in your repo for the
    committed file.
 
-2. **`migrations/<database>/<NNNN>_<name>.sql`** — the per-app migration
+2. **`migrations/<database>/V<ts>__slug.sdjql`** — the per-app migration
    that introduces the trgm index. The emitter renders index DDL with
    lowercase method name and quoted identifiers (compatible with the
    uppercase / unquoted form Postgres accepts; the quoting is structural
