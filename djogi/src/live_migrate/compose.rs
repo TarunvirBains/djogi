@@ -241,7 +241,7 @@ pub fn build_skeleton_plan(
 
     let plan_id_val: crate::types::HeerId = plan_id
         .parse()
-        .unwrap_or_else(|_| crate::types::HeerId::ZERO);
+        .unwrap_or(crate::types::HeerId::ZERO);
 
     let plan_classification: PlanClassification =
         Option::<PlanClassification>::from(classification)
