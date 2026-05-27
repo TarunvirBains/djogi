@@ -671,7 +671,9 @@ mod tests {
 
     use clap::Parser as _;
 
-    use super::{Cli, DbCommand, MigrateCommand, MigrationsCommand, TopCommand, parse_threshold_vacuum};
+    use super::{
+        Cli, DbCommand, MigrateCommand, MigrationsCommand, TopCommand, parse_threshold_vacuum,
+    };
 
     #[test]
     fn parse_threshold_vacuum_accepts_valid_values() {
