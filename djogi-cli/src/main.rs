@@ -52,6 +52,14 @@ enum TopCommand {
         #[command(subcommand)]
         command: MigrationsCommand,
     },
+    /// Compatibility alias for `djogi migrations`. See
+    /// `djogi migrations --help` for the full command tree.
+    /// Currently only `apply` is supported as an alias:
+    /// `djogi migrate apply` delegates to `djogi migrations apply`.
+    Migrate {
+        #[command(subcommand)]
+        command: MigrateCommand,
+    },
     /// Phase 7.5 live-migration operator surface — drives expand →
     /// backfill → flip → contract sequences for `ExpandContract`-
     /// classified deltas.
@@ -339,6 +347,33 @@ enum DbCommand {
 }
 
 #[derive(Subcommand)]
+enum MigrateCommand {
+    /// Compatibility alias for `djogi migrations apply`. See
+    /// `djogi migrations apply --help` for full documentation.
+    ///
+    /// Transaction semantics are per-segment: transactional
+    /// segments roll back on error; non-transactional segments
+    /// autocommit and may leave partial progress. On any failure,
+    /// the command exits with code 1 (runtime error) or 2 (refusal).
+    /// The migration ledger records partial progress for recovery.
+    ///
+    /// On crash or unexpected termination, re-run
+    /// `djogi migrations apply`. For partial non-transactional
+    /// progress, use `djogi migrations repair resume-partial`.
+    ///
+    /// Requires PostgreSQL 18 or later — exits with code 2 if the
+    /// server is below the minimum.
+    ///
+    /// Exit codes: 0 on success, 1 on runtime error, 2 on refusal.
+    Apply {
+        /// Workspace root override. Defaults to the current working
+        /// directory.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
 enum MigrationsCommand {
     /// Compose a new migration from descriptor inventory + last
     /// snapshot.
@@ -451,6 +486,35 @@ enum MigrationsCommand {
         #[arg(long)]
         app: Option<String>,
         /// Workspace root override.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Apply all pending migrations in ledger order.
+    ///
+    /// Canonical spelling: `djogi migrations apply`.
+    /// Compatibility alias: `djogi migrate apply`.
+    ///
+    /// Transaction semantics are per-segment, not per-migration:
+    /// transactional segments wrap in BEGIN/COMMIT with best-effort
+    /// ROLLBACK on error; non-transactional segments execute with
+    /// autocommit and may leave partial progress. On any failure,
+    /// the command exits with code 1 (runtime error) or 2 (refusal).
+    /// The migration ledger records partial progress for recovery.
+    ///
+    /// On crash or unexpected termination, re-run
+    /// `djogi migrations apply`. For partial non-transactional
+    /// progress, use `djogi migrations repair resume-partial`.
+    ///
+    /// Requires PostgreSQL 18 or later — exits with code 2 if the
+    /// server is below the minimum.
+    ///
+    /// Exit codes: 0 on success (all pending migrations applied),
+    /// 1 on runtime error (config / connect / SQL), 2 on refusal
+    /// (lock timeout, advisory lock failure, checksum mismatch,
+    /// out-of-order, PG version below 18).
+    Apply {
+        /// Workspace root override. Defaults to the current working
+        /// directory.
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
@@ -590,6 +654,10 @@ fn main() -> ExitCode {
                 app.as_deref(),
                 workspace,
             ),
+            MigrationsCommand::Apply { workspace } => migrations::apply_cmd(workspace),
+        },
+        TopCommand::Migrate { command } => match command {
+            MigrateCommand::Apply { workspace } => migrations::apply_cmd(workspace),
         },
     }
 }
@@ -603,7 +671,7 @@ mod tests {
 
     use clap::Parser as _;
 
-    use super::{Cli, DbCommand, MigrationsCommand, TopCommand, parse_threshold_vacuum};
+    use super::{Cli, DbCommand, MigrateCommand, MigrationsCommand, TopCommand, parse_threshold_vacuum};
 
     #[test]
     fn parse_threshold_vacuum_accepts_valid_values() {
@@ -673,11 +741,28 @@ mod tests {
     }
 
     #[test]
-    fn top_level_migrate_is_not_registered() {
-        let result = Cli::try_parse_from(["djogi", "migrate"]);
-        match result {
-            Err(e) => assert_eq!(e.kind(), clap::error::ErrorKind::InvalidSubcommand),
-            Ok(_) => panic!("expected 'migrate' to be rejected as unknown subcommand"),
+    fn migrate_apply_alias_parses() {
+        let cli = Cli::try_parse_from(["djogi", "migrate", "apply"])
+            .expect("migrate apply should parse as alias");
+
+        match cli.command {
+            TopCommand::Migrate {
+                command: MigrateCommand::Apply { .. },
+            } => {}
+            _ => panic!("expected migrate apply command"),
+        }
+    }
+
+    #[test]
+    fn canonical_migrations_apply_parses() {
+        let cli = Cli::try_parse_from(["djogi", "migrations", "apply"])
+            .expect("canonical migrations apply should parse");
+
+        match cli.command {
+            TopCommand::Migrations {
+                command: MigrationsCommand::Apply { .. },
+            } => {}
+            _ => panic!("expected migrations apply command"),
         }
     }
 
