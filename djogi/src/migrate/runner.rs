@@ -5086,7 +5086,7 @@ mod tests {
             "INSERT INTO djogi_schema_migrations \
              (version, description, checksum_up, status, run_id, \
               snapshot_version, app_label) \
-             VALUES ($1, 'b1 test', 'V1:0000000000000000000000000000000000000000000000000000000000000000', \
+             VALUES ($1, 'b1 test', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
                      'rolled_back', 99, '1.0', '')",
             &[&version],
         )
@@ -5128,7 +5128,7 @@ mod tests {
             "INSERT INTO djogi_schema_migrations \
              (version, description, checksum_up, status, run_id, \
               snapshot_version, app_label) \
-             VALUES ($1, 'b1 pending guard', 'V1:0000000000000000000000000000000000000000000000000000000000000000', \
+             VALUES ($1, 'b1 pending guard', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
                      'pending', 98, '1.0', '')",
             &[&version],
         )
@@ -5167,7 +5167,7 @@ mod tests {
             "INSERT INTO djogi_schema_migrations \
              (version, description, checksum_up, status, run_id, \
               snapshot_version, app_label) \
-             VALUES ($1, 'c1 higher peer', 'V1:0000000000000000000000000000000000000000000000000000000000000000', \
+             VALUES ($1, 'c1 higher peer', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
                      'applied', 97, '1.0', '')",
             &[&higher_version],
         )
@@ -5186,7 +5186,7 @@ mod tests {
             bucket: plan.bucket.clone(),
             version: "V20260526000000__c1_lower_version".to_string(),
             description: "c1 lower test".to_string(),
-            checksum_up: "V1:0000000000000000000000000000000000000000000000000000000000000000"
+            checksum_up: "V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                 .to_string(),
             checksum_down: None,
             snapshot: None,
@@ -5222,7 +5222,7 @@ mod tests {
             "INSERT INTO djogi_schema_migrations \
              (version, description, checksum_up, status, run_id, \
               snapshot_version, app_label) \
-             VALUES ($1, 'c1 higher peer 2', 'V1:0000000000000000000000000000000000000000000000000000000000000000', \
+             VALUES ($1, 'c1 higher peer 2', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
                      'applied', 96, '1.0', '')",
             &[&higher_version],
         )
@@ -5241,7 +5241,7 @@ mod tests {
             bucket: plan.bucket.clone(),
             version: "V20260526000001__c1_lower_version2".to_string(),
             description: "c1 lower test 2".to_string(),
-            checksum_up: "V1:0000000000000000000000000000000000000000000000000000000000000000"
+            checksum_up: "V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                 .to_string(),
             checksum_down: None,
             snapshot: None,
@@ -5294,7 +5294,7 @@ mod tests {
             "INSERT INTO djogi_schema_migrations \
              (version, description, checksum_up, status, run_id, \
               snapshot_version, app_label) \
-             VALUES ($1, 'c1 higher peer 3', 'V1:0000000000000000000000000000000000000000000000000000000000000000', \
+             VALUES ($1, 'c1 higher peer 3', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
                      'applied', 95, '1.0', '')",
             &[&higher_version],
         )
@@ -5313,7 +5313,7 @@ mod tests {
             bucket: plan.bucket.clone(),
             version: "V20260526000002__c1_lower_version3".to_string(),
             description: "c1 lower test 3".to_string(),
-            checksum_up: "V1:0000000000000000000000000000000000000000000000000000000000000000"
+            checksum_up: "V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                 .to_string(),
             checksum_down: None,
             snapshot: None,
