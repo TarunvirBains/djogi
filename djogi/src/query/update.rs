@@ -76,13 +76,14 @@ use crate::DjogiError;
 use crate::context::DjogiContext;
 use crate::model::Model;
 use crate::pg::accumulator::as_params;
-use crate::pg::decode::{FromJoinedPgRow, FromPgRow};
+use crate::pg::decode::{FromJoinedPgRow, FromPgRow, decode_at};
 use crate::query::condition::FilterValue;
 use crate::query::field::{FieldRef, IntoFilterValue};
 use crate::query::queryset::QuerySet;
 use crate::query::returning::ReturningPair;
 use crate::query::sql::{
-    build_delete, build_delete_returning, build_update, build_update_returning_pairs,
+    build_delete, build_delete_returning, build_update, build_update_returning_ids,
+    build_update_returning_pairs,
 };
 use crate::query::terminal::auto_set_tenant;
 use std::future::Future;
@@ -436,11 +437,34 @@ impl<T: Model> UpdateStmt<T> {
                 return Ok(0);
             }
             auto_set_tenant::<T>(ctx).await?;
-            let acc = build_update(&self.qs, &self.assignments).map_err(crate::DjogiError::from)?;
-            let (sql, binds) = acc.into_parts();
-            let params = as_params(&binds);
-            let rows_affected = ctx.execute(&sql, &params).await?;
-            Ok(rows_affected)
+            if T::__djogi_should_collect_bulk_update_ids(ctx) {
+                // Transaction-backed + Punnu registered: collect affected IDs for deferred invalidation.
+                let acc = build_update_returning_ids(&self.qs, &self.assignments)
+                    .map_err(crate::DjogiError::from)?;
+                let pk_column = T::descriptor().pk_column().expect(
+                    "Model implementations with CRUD support must expose a primary-key column",
+                );
+                let (sql, binds) = acc.into_parts();
+                let params = as_params(&binds);
+                let rows = ctx.query_all(&sql, &params).await?;
+
+                let mut ids = Vec::with_capacity(rows.len());
+                for row in &rows {
+                    ids.push(decode_at::<T::Pk>(row, 0, pk_column)?);
+                }
+
+                let rows_affected = ids.len() as u64;
+                <T as Model>::__djogi_enqueue_bulk_on_save_cache_invalidation(ctx, ids)?;
+                Ok(rows_affected)
+            } else {
+                // Pool-backed or no Punnu: keep the existing fast row-count path.
+                let acc =
+                    build_update(&self.qs, &self.assignments).map_err(crate::DjogiError::from)?;
+                let (sql, binds) = acc.into_parts();
+                let params = as_params(&binds);
+                let rows_affected = ctx.execute(&sql, &params).await?;
+                Ok(rows_affected)
+            }
         }
     }
 
@@ -523,9 +547,11 @@ impl<T: Model> UpdateStmt<T> {
             }
             let outbox_rows: Vec<&T> = pairs.iter().map(|pair| &pair.new).collect();
             <T as Model>::__djogi_emit_save_outbox_batch(ctx, &outbox_rows).await?;
-            for pair in &pairs {
-                <T as Model>::__djogi_enqueue_on_save_cache_invalidation(ctx, &pair.new)?;
-            }
+            let cache_ids: Vec<T::Pk> = pairs
+                .iter()
+                .map(|pair| pair.new.pk_value().clone())
+                .collect();
+            <T as Model>::__djogi_enqueue_bulk_on_save_cache_invalidation(ctx, cache_ids)?;
             Ok(pairs)
         }
     }
