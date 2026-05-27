@@ -385,7 +385,7 @@ Benefits:
 - Build-time drift detection via `build.rs`
 - Auto-generation of up/down SQL pairs
 - Schema snapshot (`schema_snapshot.json`) as source of truth
-- library `djogi::migrate::apply_plan` to apply; the `djogi migrations apply` CLI dispatcher is deferred
+- `djogi migrations apply` CLI dispatcher (also available as library `djogi::migrate::apply_plan`)
 - `--allow-destructive` for DROP operations
 - `--fake` for marking applied without running
 - Rollback (last migration)

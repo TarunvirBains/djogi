@@ -79,7 +79,7 @@ ALTER POLICY invoices_tenant_isolation ON invoices
     TO djogi_app;  -- policy applies to djogi_app role only
 ```
 
-Descriptor-driven migration plans include this SQL when they detect a model with `tenant_key`; library callers apply the plan via `djogi::migrate::apply_plan`, while apply-style CLI dispatchers are deferred.
+Descriptor-driven migration plans include this SQL when they detect a model with `tenant_key`; apply the plan with `djogi migrations apply` or the library entry point `djogi::migrate::apply_plan`.
 
 ---
 

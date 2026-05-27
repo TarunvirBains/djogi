@@ -803,7 +803,7 @@ djogi docs
 # config / snapshot / plan / ledger plumbing the CLI dispatch needs around
 # them. Adopters who need these flows ahead of the CLI registration can wire
 # the library APIs directly today.
-# deferred CLI sketch: djogi migrations apply
+# shipped CLI: djogi migrations apply
 # deferred CLI sketch: djogi migrations apply --fake 0005_add_vehicle_horsepower
 # deferred CLI sketch: djogi migrations rollback
 # deferred CLI sketch: djogi migrations verify

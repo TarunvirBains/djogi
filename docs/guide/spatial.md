@@ -69,10 +69,9 @@ djogi = { version = "...", features = ["spatial"] }
   ```
 
   If your application role does not have `CREATE EXTENSION` privileges, a
-  database administrator must install it. When the migration that introduces a
-  spatial index is applied via `djogi::migrate::apply_plan` (the public
-  library entry point; the `apply` CLI dispatcher is deferred to a Phase 7
-  follow-up), the runner reads the `extension_dependency` metadata on the
+ database administrator must install it. When the migration that introduces a
+   spatial index is applied (via `djogi migrations apply` or the library entry
+   point `djogi::migrate::apply_plan`), the runner reads the `extension_dependency` metadata on the
   index and surfaces a clear error if PostGIS is absent.
 
 ---
