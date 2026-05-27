@@ -165,11 +165,97 @@ pub enum StepResult {
 /// I/O issues.
 pub async fn compose_live_plans(
     _ctx: &DjogiContext,
-    _descriptors: Vec<crate::descriptor::ModelDescriptor>,
-    _snapshot_path: std::path::PathBuf,
-    _meta: ComposeMeta,
+    descriptors: Vec<crate::descriptor::ModelDescriptor>,
+    snapshot_path: std::path::PathBuf,
+    meta: ComposeMeta,
 ) -> Result<ComposeReport, ComposeError> {
-    todo!("compose_live_plans: Stage 2A stub — implementation in later stage")
+    use std::collections::BTreeMap;
+
+    // 1. Load the existing snapshot from disk
+    let snapshot = crate::migrate::snapshot::load_snapshot(&snapshot_path)
+        .map_err(|e| ComposeError::Diff(e.to_string()))?;
+
+    // 2. Project current descriptors into bucket map
+    let after_map = crate::migrate::projection::project_from_iters(
+        descriptors.iter(),
+        std::iter::empty::<&crate::descriptor::EnumDescriptor>(),
+        std::iter::empty::<&crate::apps::AppDescriptor>(),
+        meta.originating_migration.clone(),
+    )
+    .map_err(|e| ComposeError::Diff(e.to_string()))?;
+
+    // 3. Build "before" bucket map from snapshot
+    let bucket_key = crate::migrate::projection::BucketKey {
+        database: meta.target_database.clone(),
+        app: meta.app_label.clone(),
+    };
+    let mut before_map = BTreeMap::new();
+    before_map.insert(bucket_key, snapshot);
+
+    // 4. Diff bucket maps to find schema deltas
+    let deltas = crate::migrate::diff::diff_bucket_maps(&before_map, &after_map)
+        .map_err(|e| ComposeError::Diff(e.to_string()))?;
+
+    // 5. Classification context with defaults
+    use crate::migrate::schema::OnlineSafetyClassification;
+    let inbound_fk_counts: std::collections::BTreeMap<String, u32> =
+        std::collections::BTreeMap::new();
+    let volatility_overrides: std::collections::BTreeMap<
+        (String, String),
+        crate::descriptor::DefaultVolatility,
+    > = std::collections::BTreeMap::new();
+    let ctx = crate::live_migrate::classify::ClassifyContext::application_default(
+        &inbound_fk_counts,
+        &volatility_overrides,
+    );
+
+    // 6. Filter deltas to ExpandContract (live-plan eligible)
+    let mut report = ComposeReport::default();
+
+    for delta in deltas {
+        let classified = crate::live_migrate::classify::classify_delta(&delta.operations, &ctx);
+
+        // Check if any operation classifies as ExpandContract
+        let has_expand_contract = classified.iter().any(|(_, classification)| {
+            matches!(classification, OnlineSafetyClassification::ExpandContract)
+        });
+
+        if !has_expand_contract {
+            continue;
+        }
+
+        // Build live plan for this delta
+        // Use timestamp-based HeerId generation (node_id=0, sequence=0 as placeholder)
+        let plan_id = crate::types::HeerId::new(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            0, // node_id placeholder
+            0, // sequence placeholder
+        )
+        .unwrap_or(crate::types::HeerId::ZERO);
+
+        let slug = format!("live_{}", meta.app_label);
+
+        let plan = build_skeleton_plan(
+            plan_id.to_string(),
+            slug.clone(),
+            OnlineSafetyClassification::ExpandContract,
+            Vec::new(), // Steps populated by executor in Stage 3
+        );
+
+        // Write plan file to disk
+        let migrations_root = meta.workspace_root.join("migrations");
+        let path = crate::live_migrate::plan_file::write_plan(&migrations_root, &plan)
+            .map_err(ComposeError::Serialize)?;
+
+        report.plans_composed += 1;
+        report.plan_file_paths.push(path);
+        report.plan_ids.push(plan_id.to_string());
+    }
+
+    Ok(report)
 }
 
 /// Inspect a plan's step list and extract backfill parameters if a
