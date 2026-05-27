@@ -4776,7 +4776,7 @@ mod tests {
             ),
             (
                 LedgerStatus::RolledBack,
-                "rolled-back rows are historical and are not repair targets",
+                "re-running `djogi migrations apply` will remove the rolled-back row and re-apply the migration",
             ),
         ] {
             let e = RunnerError::VersionCollisionNonTerminal {
@@ -5066,5 +5066,306 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(cleanup_path);
+    }
+
+    // ── B-1: RolledBack re-apply path ──────────────────────────────────────
+
+    #[djogi::deliberately_bypass_convention_with_raw_sql]
+    // JUSTIFICATION (PIN): Insert a RolledBack row to test the
+    // classify_duplicate_version_collision function's handling of
+    // non-terminal statuses. The public API has no insert_rolledback.
+    #[djogi_test]
+    async fn b1_rolledback_is_non_terminal_collision_class(mut ctx: DjogiContext) {
+        // Verify that classify_duplicate_version_collision treats
+        // RolledBack as non-terminal (VersionCollisionNonTerminal),
+        // consistent with Decision 1 and the CLI's PendingOrPartial path.
+        let version = "V20260526000001__b1_rolledback_test";
+
+        ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
+        ctx.raw_execute(
+            "INSERT INTO djogi_schema_migrations \
+             (version, description, checksum_up, status, run_id, \
+              snapshot_version, app_label) \
+             VALUES ($1, 'b1 test', 'V1:0000000000000000000000000000000000000000000000000000000000000000', \
+                     'rolled_back', 99, '1.0', '')",
+            &[&version],
+        )
+        .await
+        .expect("insert RolledBack row");
+
+        // Attempt to classify via the runner's collision path
+        let result = classify_duplicate_version_collision(&mut ctx, version).await;
+        match result {
+            RunnerError::VersionCollisionNonTerminal { ref status, .. } => {
+                assert!(
+                    matches!(status, LedgerStatus::RolledBack),
+                    "RolledBack should produce VersionCollisionNonTerminal, got {:?}",
+                    status
+                );
+            }
+            RunnerError::VersionAlreadyApplied { .. } => {
+                panic!("RolledBack must NOT produce VersionAlreadyApplied (Decision 1)");
+            }
+            other => {
+                panic!("unexpected error: {other:?}");
+            }
+        }
+    }
+
+    // ── B-1 regression guard: Pending status refusal ───────────────────────
+
+    #[djogi::deliberately_bypass_convention_with_raw_sql]
+    // JUSTIFICATION (PIN): Insert a Pending row to verify the
+    // classify_duplicate_version_collision function distinguishes
+    // Pending from Failed/RolledBack. The public API has no
+    // insert_pending_row helper for test fixtures.
+    #[djogi_test]
+    async fn b1_regression_pending_row_not_auto_deleted(mut ctx: DjogiContext) {
+        let version = "V20260526000002__b1_pending_guard";
+
+        ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
+        ctx.raw_execute(
+            "INSERT INTO djogi_schema_migrations \
+             (version, description, checksum_up, status, run_id, \
+              snapshot_version, app_label) \
+             VALUES ($1, 'b1 pending guard', 'V1:0000000000000000000000000000000000000000000000000000000000000000', \
+                     'pending', 98, '1.0', '')",
+            &[&version],
+        )
+        .await
+        .expect("insert Pending row");
+
+        let result = classify_duplicate_version_collision(&mut ctx, version).await;
+        match result {
+            RunnerError::VersionCollisionNonTerminal { ref status, .. } => {
+                assert!(
+                    matches!(status, LedgerStatus::Pending),
+                    "Pending should produce VersionCollisionNonTerminal, got {:?}",
+                    status
+                );
+            }
+            RunnerError::VersionAlreadyApplied { .. } => {
+                panic!("Pending must NOT produce VersionAlreadyApplied");
+            }
+            other => {
+                panic!("unexpected error: {other:?}");
+            }
+        }
+    }
+
+    // ── C-1: fake_apply_inner out-of-order enforcement ────────────────────
+
+    #[djogi::deliberately_bypass_convention_with_raw_sql]
+    // JUSTIFICATION (PIN): Insert an Applied row to simulate an
+    // existing higher version for the out-of-order detection test.
+    #[djogi_test]
+    async fn c1_fake_apply_rejects_ooo_with_reject_policy(mut ctx: DjogiContext) {
+        let higher_version = "V20260527000000__c1_higher_peer";
+
+        ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
+        ctx.raw_execute(
+            "INSERT INTO djogi_schema_migrations \
+             (version, description, checksum_up, status, run_id, \
+              snapshot_version, app_label) \
+             VALUES ($1, 'c1 higher peer', 'V1:0000000000000000000000000000000000000000000000000000000000000000', \
+                     'applied', 97, '1.0', '')",
+            &[&higher_version],
+        )
+        .await
+        .expect("insert higher applied row");
+
+        let plan = MigrationPlan {
+            bucket: bucket("main", ""),
+            classification: Classification::Additive,
+            segments: vec![Segment {
+                kind: SegmentKind::Transactional,
+                statements: vec![],
+            }],
+        };
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260526000000__c1_lower_version".to_string(),
+            description: "c1 lower test".to_string(),
+            checksum_up: "V1:0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: None,
+            config: MigrateConfig {
+                concurrent_warn_relpages: 5000,
+                strict_concurrent_warnings: false,
+                pk_flip_long_tx_threshold_secs: 30,
+                pk_flip_join_table_option: Default::default(),
+            },
+            out_of_order_policy: crate::migrate::OutOfOrderPolicy::Reject,
+            audit_pool: None,
+        };
+
+        let guard = acquire_test_workspace_guard();
+        let result = fake_apply_plan(&mut ctx, &plan, &runner_ctx, &guard, "test reason").await;
+
+        assert!(
+            matches!(result, Err(RunnerError::OutOfOrderRejected { .. })),
+            "fake-apply with Reject policy and higher peer should return OutOfOrderRejected, got: {result:?}"
+        );
+    }
+
+    #[djogi::deliberately_bypass_convention_with_raw_sql]
+    // JUSTIFICATION (PIN): Insert an Applied row for OOO detection test
+    // and read ledger row to verify out_of_order_flag.
+    #[djogi_test]
+    async fn c1_fake_apply_allows_ooo_with_diagnostic_and_sets_flag(mut ctx: DjogiContext) {
+        let higher_version = "V20260527000001__c1_higher_peer2";
+
+        ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
+        ctx.raw_execute(
+            "INSERT INTO djogi_schema_migrations \
+             (version, description, checksum_up, status, run_id, \
+              snapshot_version, app_label) \
+             VALUES ($1, 'c1 higher peer 2', 'V1:0000000000000000000000000000000000000000000000000000000000000000', \
+                     'applied', 96, '1.0', '')",
+            &[&higher_version],
+        )
+        .await
+        .expect("insert higher applied row");
+
+        let plan = MigrationPlan {
+            bucket: bucket("main", ""),
+            classification: Classification::Additive,
+            segments: vec![Segment {
+                kind: SegmentKind::Transactional,
+                statements: vec![],
+            }],
+        };
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260526000001__c1_lower_version2".to_string(),
+            description: "c1 lower test 2".to_string(),
+            checksum_up: "V1:0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: None,
+            config: MigrateConfig {
+                concurrent_warn_relpages: 5000,
+                strict_concurrent_warnings: false,
+                pk_flip_long_tx_threshold_secs: 30,
+                pk_flip_join_table_option: Default::default(),
+            },
+            out_of_order_policy: crate::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+        };
+
+        let guard = acquire_test_workspace_guard();
+        let result = fake_apply_plan(&mut ctx, &plan, &runner_ctx, &guard, "test reason").await;
+
+        assert!(
+            result.is_ok(),
+            "fake-apply with AllowWithDiagnostic should succeed: {result:?}"
+        );
+
+        // Verify the ledger row has out_of_order_flag = true
+        let rows = ctx
+            .query_all(
+                "SELECT out_of_order_flag FROM djogi_schema_migrations \
+                 WHERE version = 'V20260526000001__c1_lower_version2'",
+                &[],
+            )
+            .await
+            .expect("query ledger");
+
+        assert!(rows.len() == 1, "ledger row should exist");
+        let ooo_flag: bool = rows[0].try_get(0).expect("get out_of_order_flag");
+        assert!(
+            ooo_flag,
+            "out_of_order_flag should be true for OOO fake-apply"
+        );
+    }
+
+    #[djogi::deliberately_bypass_convention_with_raw_sql]
+    // JUSTIFICATION (PIN): Insert an Applied row for OOO note test
+    // and read ledger row to verify note format.
+    #[djogi_test]
+    async fn c1_fake_apply_ooo_note_contains_override_reason(mut ctx: DjogiContext) {
+        let higher_version = "V20260527000002__c1_higher_peer3";
+
+        ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
+        ctx.raw_execute(
+            "INSERT INTO djogi_schema_migrations \
+             (version, description, checksum_up, status, run_id, \
+              snapshot_version, app_label) \
+             VALUES ($1, 'c1 higher peer 3', 'V1:0000000000000000000000000000000000000000000000000000000000000000', \
+                     'applied', 95, '1.0', '')",
+            &[&higher_version],
+        )
+        .await
+        .expect("insert higher applied row");
+
+        let plan = MigrationPlan {
+            bucket: bucket("main", ""),
+            classification: Classification::Additive,
+            segments: vec![Segment {
+                kind: SegmentKind::Transactional,
+                statements: vec![],
+            }],
+        };
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260526000002__c1_lower_version3".to_string(),
+            description: "c1 lower test 3".to_string(),
+            checksum_up: "V1:0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: None,
+            config: MigrateConfig {
+                concurrent_warn_relpages: 5000,
+                strict_concurrent_warnings: false,
+                pk_flip_long_tx_threshold_secs: 30,
+                pk_flip_join_table_option: Default::default(),
+            },
+            out_of_order_policy: crate::migrate::OutOfOrderPolicy::AllowExplicit {
+                override_reason: "merge window".to_string(),
+            },
+            audit_pool: None,
+        };
+
+        let guard = acquire_test_workspace_guard();
+        let result =
+            fake_apply_plan(&mut ctx, &plan, &runner_ctx, &guard, "schema pre-exists").await;
+
+        assert!(
+            result.is_ok(),
+            "fake-apply with AllowExplicit should succeed: {result:?}"
+        );
+
+        // Verify the partial_apply_note contains both the reason and override
+        let rows = ctx
+            .query_all(
+                "SELECT partial_apply_note FROM djogi_schema_migrations \
+                 WHERE version = 'V20260526000002__c1_lower_version3'",
+                &[],
+            )
+            .await
+            .expect("query ledger");
+
+        assert!(rows.len() == 1, "ledger row should exist");
+        let note: String = rows[0].try_get(0).expect("get partial_apply_note");
+        assert!(
+            note.contains("faked at"),
+            "note should contain 'faked at': {note}"
+        );
+        assert!(
+            note.contains("reason: schema pre-exists"),
+            "note should contain fake reason: {note}"
+        );
+        assert!(
+            note.contains("out-of-order apply"),
+            "note should contain out-of-order annotation: {note}"
+        );
+        assert!(
+            note.contains("override: merge window"),
+            "note should contain override reason: {note}"
+        );
     }
 }
