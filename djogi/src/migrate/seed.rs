@@ -35,7 +35,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::__bypass::RawAccessExt as _;
-use crate::context::DjogiContext;
+use crate::context::{DjogiContext, PinnedCtx};
 use crate::error::DjogiError;
 
 use super::ledger::compute_checksum;
@@ -672,35 +672,22 @@ pub async fn run_seeds(
     database_url: &str,
     allow_non_localhost: bool,
 ) -> Result<SeedReport, SeedError> {
-    let pool_opt = ctx.pool().cloned();
-    if let Some(pool) = pool_opt {
-        let conn = pool
-            .get()
-            .await
-            .map_err(|e| SeedError::PinnedSessionCheckoutFailed { source: e })?;
-        let mut pinned = DjogiContext::from_connection(conn);
-        run_seeds_pinned(
-            &mut pinned,
-            workspace_root,
-            database,
-            database_url,
-            allow_non_localhost,
-        )
+    let mut pinned = ctx
+        .pin_for_migration()
         .await
-    } else {
-        run_seeds_pinned(
-            ctx,
-            workspace_root,
-            database,
-            database_url,
-            allow_non_localhost,
-        )
-        .await
-    }
+        .map_err(|e| SeedError::PinnedSessionCheckoutFailed { source: e })?;
+    run_seeds_pinned(
+        &mut pinned,
+        workspace_root,
+        database,
+        database_url,
+        allow_non_localhost,
+    )
+    .await
 }
 
 async fn run_seeds_pinned(
-    ctx: &mut DjogiContext,
+    ctx: &mut PinnedCtx<'_>,
     workspace_root: &Path,
     database: &str,
     database_url: &str,
@@ -798,10 +785,17 @@ async fn run_seeds_inner(
 }
 
 async fn try_acquire_seed_run_lock(
-    ctx: &mut DjogiContext,
+    ctx: &mut PinnedCtx<'_>,
     database: &str,
     key: i64,
 ) -> Result<(), SeedError> {
+    assert!(
+        !ctx.is_pool_backed(),
+        "seed-run advisory lock called on a pool-backed context — \
+         the lock would be acquired on an arbitrary pool connection \
+         and subsequent operations would run on different connections. \
+         Callers must use ctx.pin_for_migration() first (GH #274 / #331).",
+    );
     let row = ctx
         .query_one("SELECT pg_try_advisory_lock($1)", &[&key])
         .await
