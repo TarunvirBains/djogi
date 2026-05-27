@@ -2715,6 +2715,32 @@ where
     Ok(acc)
 }
 
+/// Build `UPDATE <table> SET ... [WHERE ...] RETURNING <pk_column>`.
+///
+/// Issue #304 Stage 2 — bulk update cache invalidation SQL builder.
+/// Emits the same UPDATE statement as [`build_update`] but appends a
+/// `RETURNING <pk_column>` clause so the caller can collect the primary-
+/// key IDs of every affected row for targeted cache eviction.
+///
+/// The PK column name comes from `T::descriptor().pk_column()`, which is
+/// a macro-baked `&'static str` — safe for direct `push_sql` insertion.
+/// All value binding follows the same [`build_update`] path, so assignment
+/// binds fill slots before WHERE filter binds in the positional parameter
+/// sequence.
+#[allow(dead_code)]
+pub(crate) fn build_update_returning_ids<T: Model>(
+    qs: &QuerySet<T>,
+    assignments: &[crate::query::update::UpdateAssignment],
+) -> Result<SqlAccumulator, PortablePredicateError> {
+    let mut acc = build_update(qs, assignments)?;
+    let pk_column = T::descriptor()
+        .pk_column()
+        .expect("Model implementations with CRUD support must expose a primary-key column");
+    acc.push_sql(" RETURNING ");
+    acc.push_sql(pk_column);
+    Ok(acc)
+}
+
 /// Build `DELETE FROM <table> [WHERE ...] RETURNING WITH (OLD AS __djogi_old)
 /// __djogi_old.<col> AS "o{idx}", ...`.
 ///
@@ -2973,9 +2999,38 @@ mod tests {
     //! remain independent of `#[model]` macro expansion.
 
     use super::*;
-    use crate::descriptor::ModelDescriptor;
+    use crate::descriptor::{ModelDescriptor, PkType};
     use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
     use crate::query::queryset::QuerySet;
+
+    // REQ-304: minimal descriptor for Fake model — provides pk_column() = Some("id")
+    // so that build_update_returning_ids can resolve the primary key column name.
+    static FAKE_DESCRIPTOR: ModelDescriptor = ModelDescriptor {
+        type_name: "Fake",
+        table_name: "fakes",
+        pk_type: PkType::HeerIdDesc,
+        fields: &[],
+        partition_by: None,
+        has_outbox: false,
+        idempotency_key: None,
+        tenant_key: None,
+        cache_ttl: None,
+        rationale: None,
+        indexes: &[],
+        is_through: false,
+        fts: None,
+        app: None,
+        moved_from_app: None,
+        renamed_from: None,
+        exclusion_constraints: &[],
+        tree_edge: None,
+        proxy_for: None,
+        default_filter_sql: None,
+        computed_fields: &[],
+        table_comment: None,
+        storage_params: None,
+        tablespace: None,
+    };
 
     struct Fake;
     impl crate::model::__sealed::Sealed for Fake {}
@@ -2990,7 +3045,7 @@ mod tests {
             unreachable!()
         }
         fn descriptor() -> &'static ModelDescriptor {
-            unreachable!()
+            &FAKE_DESCRIPTOR
         }
         fn get(
             _ctx: &mut crate::context::DjogiContext,
@@ -3766,9 +3821,7 @@ mod tests {
     // Postgres integration tests stay readable — a shape regression
     // surfaces here, not in a one-line 42702 failure down the stack.
 
-    use crate::descriptor::{
-        FieldDescriptor, FieldSqlType, PkType, field_descriptor, model_descriptor,
-    };
+    use crate::descriptor::{FieldDescriptor, FieldSqlType, field_descriptor, model_descriptor};
     use crate::relation::select_related::ErasedSelectRelated;
 
     // Minimal static descriptor for a joined child. Column layout is a
