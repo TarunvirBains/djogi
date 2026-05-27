@@ -227,8 +227,8 @@ mod tests {
             (140000, 14, 0),
             (100000, 10, 0),
         ] {
-            let err = evaluate_version(num)
-                .expect_err(&format!("version_num {num} should be rejected"));
+            let err =
+                evaluate_version(num).expect_err(&format!("version_num {num} should be rejected"));
             let msg = err.to_string();
             match err {
                 DjogiError::UnsupportedPostgresVersion {
@@ -253,17 +253,14 @@ mod tests {
                         "display must suggest upgrade for {num}, got: {msg}"
                     );
                 }
-                other => panic!(
-                    "expected UnsupportedPostgresVersion for {num}, got: {other:?}"
-                ),
+                other => panic!("expected UnsupportedPostgresVersion for {num}, got: {other:?}"),
             }
         }
     }
 
     #[test]
     fn evaluate_version_at_minimum_returns_report() {
-        let report = evaluate_version(180000)
-            .expect("PG 18.0 should be accepted");
+        let report = evaluate_version(180000).expect("PG 18.0 should be accepted");
         assert_eq!(report.major, 18);
         assert_eq!(report.minor, 0);
         assert_eq!(report.server_version_num, 180000);

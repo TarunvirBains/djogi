@@ -362,8 +362,28 @@ async fn build_status_context(url: &str) -> Result<djogi::context::DjogiContext,
     let pool = djogi::pg::pool::DjogiPool::connect(url)
         .await
         .map_err(|e| e.to_string())?;
+    djogi::pg::preflight::check_postgres_version(&pool)
+        .await
+        .map_err(|e| format!("support boundary: {e}"))?;
     Ok(djogi::context::DjogiContext::from_pool(pool))
 }
+
+// #327 INTEGRATION REQUIRED — DO NOT REMOVE WITHOUT WIRING THE PREFLIGHT.
+//
+// When `apply_cmd` / `run_apply` is added by issue #325, add:
+//   if let Err(e) = djogi::pg::preflight::check_postgres_version(&pool).await {
+//       crate::print_support_boundary_error("migrations apply", &e);
+//       return 2;
+//   }
+// immediately after pool construction in `run_apply`, before
+// `DjogiContext::from_pool`. Then remove this entire block.
+#[cfg(not(feature = "__apply_cmd_preflight_wired"))]
+compile_error!(
+    "#327 sentinel: the `migrations apply` path (issue #325) must call \
+     `djogi::pg::preflight::check_postgres_version` before any DB side effect. \
+     Wire the call then remove this block. Do not define the feature flag; \
+     remove the block instead."
+);
 
 /// `djogi migrations attune` entry point.
 ///

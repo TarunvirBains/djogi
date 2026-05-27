@@ -1579,7 +1579,7 @@ fn is_valid_pg_identifier(name: &str) -> bool {
 /// can reuse the same splice — `db seed --database <name>` derives
 /// the per-database connection URL from the application URL by
 /// replacing the path component in place.
-pub(crate) fn replace_db_in_url(url: &str, new_db: &str) -> Option<String> {
+pub fn replace_db_in_url(url: &str, new_db: &str) -> Option<String> {
     let body = url
         .strip_prefix("postgres://")
         .or_else(|| url.strip_prefix("postgresql://"))?;

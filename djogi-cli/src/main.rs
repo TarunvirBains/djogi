@@ -21,6 +21,16 @@ mod migrations;
 mod schema;
 mod verify;
 
+/// Print a support-boundary preflight error to stderr.
+///
+/// Used by every CLI entry point that runs `check_postgres_version`.
+/// The "support boundary" prefix distinguishes infrastructure refusals
+/// (wrong PG version, missing extension) from policy refusals (localhost
+/// gate, production profile) and runtime failures (SQL error, network).
+pub fn print_support_boundary_error(subcommand: &str, err: &dyn std::fmt::Display) {
+    eprintln!("djogi {subcommand}: support boundary: {err}");
+}
+
 #[derive(Parser)]
 #[command(name = "djogi", about = "Djogi framework CLI")]
 struct Cli {
