@@ -3,10 +3,10 @@
 # CLI Roadmap — current binary is `djogi`
 
 > **Status: PARTIALLY SHIPPED.** Phase 7 ships
-> `djogi migrations compose / status / attune` and `djogi db reset / seed`
-> plus `djogi docs`. The `apply / rollback / fake / baseline / repair /
-> verify` dispatchers are deferred to a Phase 7 follow-up — adopters who
-> need them today call the public library entry points directly. The
+> `djogi migrations apply` (with `--fake` / `--reason`), `compose`, `status`,
+> and `attune`, plus `djogi db reset / seed` and `djogi docs`. The `rollback`,
+> `baseline`, `verify`, and `repair` CLI dispatchers are deferred; adopters
+> needing them today call the public library entry points directly. The
 > authoritative current CLI surface lives in
 > [`docs/guide/migrations.md`](../guide/migrations.md). This roadmap
 > document is preserved as design history.
@@ -23,49 +23,25 @@ All subcommands run from the project root (the directory containing `Djogi.toml`
 
 ## Migration Commands
 
-### Deferred: `djogi migrations apply` (historical `djogi migrations apply` design)
+### `djogi migrations apply`
 
-Applies all pending migration files to the database, then updates `migrations/schema_snapshot.json` to reflect the new DB state.
+Applies all pending migration files to the database in ledger order, then updates `migrations/schema_snapshot.json` to reflect the new DB state. Also available as `djogi migrate apply`.
 
 ```bash
 djogi migrations apply
+djogi migrations apply --fake --reason "schema pre-exists from prior tooling"
 ```
-
-**What it does:**
-
-1. Reads all `.sql` files in the `migrations/` directory
-2. Checks which migrations have already been applied (tracked in `_sqlx_migrations`)
-3. Applies pending migrations in order, inside individual transactions
-4. On success, updates `schema_snapshot.json` to the new version
-5. Writes a DDL audit entry to the event log database
-
-**Example output:**
-
-```
-Applying 0001_create_posts... done
-Applying 0002_add_posts_view_count... done
-Applying 0003_create_comments... done
-
-3 migrations applied. Schema at version 0003.
-Schema snapshot updated.
-```
-
-If a migration fails, the transaction is rolled back, the snapshot is not updated, and the error is printed with the failing SQL highlighted.
 
 **Flags:**
 
 | Flag | Description |
 |---|---|
-| `--fake N` | Mark migration N as applied without running its SQL (use when manually applying migrations outside Djogi) |
-| `--dry-run` | Show what would be applied without executing |
-| `--database-url URL` | Override `DATABASE_URL` for this invocation |
+| `--fake` | Mark pending migrations as applied without executing their SQL. For existing-database adoption only. Requires `--reason`. Respects out-of-order policy gates. |
+| `--reason TEXT` | Required when `--fake` is set. Persisted to the ledger audit trail. |
 
-```bash
-# deferred: djogi migrations apply --dry-run
-# deferred: djogi migrations apply --fake 0003
-```
+> **Warning:** `--fake` bypasses the migration runner entirely. Use it only when you have applied the SQL by other means (direct `psql`, cloud console, etc.) and need to bring the tracking table in sync. Verify the live schema matches the target state with `djogi migrations verify` or manual inspection before faking.
 
-> **Warning:** `--fake` bypasses the migration runner entirely. Use it only when you have applied the SQL by other means (direct `psql`, cloud console, etc.) and need to bring the tracking table in sync. Misuse can leave the snapshot and actual DB state out of sync.
+**Exit codes:** `0` on success, `1` on runtime error (config / network / SQL), `2` on refusal (policy gate failure or argument validation).
 
 ---
 

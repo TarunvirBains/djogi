@@ -526,7 +526,7 @@ Filenames are `V<YYYYMMDDHHMMSS>__<slug>.sql` plus `.down.sql`. Every Phase 7 pa
 - [ ] `djogi migrations repair` — deferred CLI dispatcher for repairing failed or partially applied target-local migration state
 - [ ] `djogi migrations baseline` — deferred CLI dispatcher for marking an existing schema as adopted without replay
 - [x] `djogi migrations attune` — `--record` / `--squash --from <ver>` with `--publish`; localhost + dev-profile gates on squash
-- [ ] `djogi migrations apply --fake` — deferred CLI flag for marking a migration applied without running it; library callers use `djogi::migrate::fake_apply_plan`
+- [x] `djogi migrations apply --fake` — shipped as boolean flag on `apply` command, requires `--reason` argument; library callers use `djogi::migrate::fake_apply_plan`
 - [ ] `djogi db reset` — deferred convenience wrapper around drop + recreate + migration apply (triple-gated: localhost + non-production profile + explicit `--yes`)
 - [x] `djogi db seed` — run `seeds/<database>/*.sql` files; `djogi_seed_runs` ledger; checksum-drift refusal; `--allow-non-localhost` opt-in
 - [x] `djogi docs` — render Markdown reference pages from `inventory::iter::<ModelDescriptor>()` to `target/djogi-docs/<app>/<Model>.md`

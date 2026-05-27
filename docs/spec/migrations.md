@@ -804,7 +804,7 @@ djogi docs
 # them. Adopters who need these flows ahead of the CLI registration can wire
 # the library APIs directly today.
 # shipped CLI: djogi migrations apply
-# deferred CLI sketch: djogi migrations apply --fake 0005_add_vehicle_horsepower
+djogi migrations apply --fake --reason "existing schema"  # mark applied without running SQL
 # deferred CLI sketch: djogi migrations rollback
 # deferred CLI sketch: djogi migrations verify
 # deferred CLI sketch: djogi migrations repair
