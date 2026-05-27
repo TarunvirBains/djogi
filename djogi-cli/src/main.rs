@@ -55,6 +55,8 @@ enum TopCommand {
     /// Phase 7.5 live-migration operator surface — drives expand →
     /// backfill → flip → contract sequences for `ExpandContract`-
     /// classified deltas.
+    ///
+    /// Requires PostgreSQL 18 or later.
     Live {
         #[command(subcommand)]
         command: live::LiveCmd,
@@ -77,6 +79,9 @@ enum TopCommand {
     /// Cluster 8ε T9.6 — read-only HMAC cross-check of every
     /// `migrations/<target>/<app>/schema_snapshot.json` against the
     /// audit DB's `djogi_ddl_audit` ledger.
+    ///
+    /// Requires PostgreSQL 18 or later — exits with code 2 if the
+    /// server is below the minimum.
     ///
     /// Exit codes: `0` when every snapshot reports `OK` or `Skipped`
     /// (audit table absent or no audit row yet), `1` on any mismatch
@@ -113,6 +118,9 @@ enum TopCommand {
     /// Postgres tables. Queries `pg_stat_user_tables` (and, when
     /// installed, `pg_partman`) and recommends vacuum / partition
     /// actions per the precedence laid out in [`analyze::Recommendation`].
+    ///
+    /// Requires PostgreSQL 18 or later — exits with code 2 if the
+    /// server is below the minimum.
     ///
     /// **Read-only.** Analyze issues only `SELECT` against system
     /// catalogues; it never writes.
@@ -228,9 +236,12 @@ enum DbCommand {
     /// prompt. Logging databases (`crud_log`, `event_log`) are NOT
     /// touched.
     ///
+    /// Requires PostgreSQL 18 or later — exits with code 2 if the
+    /// server is below the minimum.
+    ///
     /// Exit codes: 0 on success, 1 on error (config / network / SQL
     /// / replay), 2 on gate refusal (not localhost, production
-    /// profile, missing `--yes`).
+    /// profile, missing `--yes`, below PG 18).
     Reset {
         /// Skip the interactive y/N prompt and proceed. Required for
         /// non-interactive invocations (e.g. CI integration suites
@@ -259,6 +270,9 @@ enum DbCommand {
     /// matches the `djogi_seed_runs` ledger; refuses on checksum
     /// drift. Localhost-gated by default.
     ///
+    /// Requires PostgreSQL 18 or later — exits with code 2 if the
+    /// server is below the minimum.
+    ///
     /// `--database <name>` selects BOTH the seed directory and the
     /// connection target. The CLI splices `<name>` into
     /// `database.url`'s path component so seeds always land on the
@@ -267,7 +281,7 @@ enum DbCommand {
     ///
     /// Exit codes: 0 on success, 1 on error (config / network / SQL
     /// / checksum drift / malformed URL), 2 on gate refusal
-    /// (non-localhost without `--allow-non-localhost`).
+    /// (non-localhost without `--allow-non-localhost`, below PG 18).
     Seed {
         /// Database name whose seeds directory should be run. The
         /// runner walks `seeds/<database>/*.sql` in alphabetical
@@ -290,9 +304,12 @@ enum DbCommand {
     /// non-production profile, explicit `--yes` (waived under
     /// `--dry-run`).
     ///
+    /// Requires PostgreSQL 18 or later — exits with code 2 if the
+    /// server is below the minimum.
+    ///
     /// Exit codes: 0 on success, 1 on error (config / connect / SQL),
     /// 2 on gate refusal (non-localhost, production profile, missing
-    /// `--yes` without `--dry-run`).
+    /// `--yes` without `--dry-run`, below PG 18).
     CleanupTestDbs {
         /// List candidates without dropping. Skips the `--yes`
         /// confirmation gate because no destructive side effect
@@ -352,6 +369,8 @@ enum MigrationsCommand {
     },
     /// Print the current state of the migration ledger, grouped by
     /// app. Read-only — does not acquire the workspace lock.
+    ///
+    /// Requires PostgreSQL 18 or later.
     Status {
         /// Workspace root override (only used when reading
         /// `Djogi.toml`).
@@ -368,8 +387,12 @@ enum MigrationsCommand {
     /// into a single migration (localhost + dev_mode + dev profile +
     /// DJOGI_ENV gates).
     ///
+    /// Requires PostgreSQL 18 or later — exits with code 2 if the
+    /// server is below the minimum.
+    ///
     /// Exit codes: 0 on success, 1 on runtime error (config / network
-    /// / SQL / git), 2 on refusal (gate failure or arg validation).
+    /// / SQL / git), 2 on refusal (gate failure, arg validation,
+    /// below PG 18).
     Attune {
         /// Optional Git target to attune the local migration history
         /// to — a local or remote commit / tag / branch. When
