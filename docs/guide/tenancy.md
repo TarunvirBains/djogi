@@ -25,7 +25,7 @@ adds them.
 - Djogi's descriptor-driven migration flow includes the tenant RLS policy for
   the model. Use `djogi migrations compose` for generated migration
    plans and `djogi migrations apply` to run them (or the public
-   `djogi::migrate` library APIs when applying from code). The `rollback`, `baseline`, and `repair` CLI dispatchers are deferred; `apply --fake` ships as a flag on the apply command; hand-written RLS
+   `djogi::migrate` library APIs when applying from code). The `rollback`, `baseline`, and `repair` CLI dispatchers are deferred; `apply --fake` ships as a flag on the apply command. Hand-written RLS
   SQL is an escape hatch, not the default path. The emitted policy is equivalent
   to:
   ```sql
