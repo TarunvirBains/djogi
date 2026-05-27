@@ -72,6 +72,8 @@ cargo xtask check-secrets --stdin < draft.md
 
 # CLI (Phase 7 + later phases)
 djogi migrations apply               # apply pending migrations (canonical spelling)
+djogi migrations apply --fake \      # fake-apply for existing-DB adoption
+  --reason "schema pre-exists"
 djogi migrate apply                  # alias for djogi migrations apply
 djogi migrations compose             # generate up/down SQL pair from descriptor drift
 djogi migrations status              # show ledger / snapshot / live-DB state

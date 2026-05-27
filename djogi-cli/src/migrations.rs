@@ -15,7 +15,7 @@ use djogi::apps::AppRegistry;
 use djogi::migrate::{
     AppLifecycle, AttuneError, AttuneMode, AttuneRequest, ComposeError, ComposeRequest,
     GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME, PendingPlan, RunnerCtx, RunnerError,
-    acquire_workspace_lock, attune, compose, project_from_inventory,
+    acquire_workspace_lock, apply_plan, attune, compose, fake_apply_plan, project_from_inventory,
 };
 
 // Re-export for the apply command's ledger state machine.
@@ -614,8 +614,34 @@ async fn build_status_context(url: &str) -> Result<djogi::context::DjogiContext,
 /// committed replay plan for each, and drives [`djogi::migrate::apply_plan`]
 /// through the library runner with full crash recovery via the ledger state
 /// machine.
-pub fn apply_cmd(workspace: Option<PathBuf>) -> ExitCode {
+pub fn apply_cmd(workspace: Option<PathBuf>, fake: bool, reason: Option<String>) -> ExitCode {
     let workspace = resolve_workspace(workspace);
+
+    // Validate --fake / --reason pairing before doing any expensive work.
+    let mode = if fake {
+        match reason {
+            Some(r) if !r.trim().is_empty() => FakeMode::Fake { reason: r },
+            Some(_) => {
+                eprintln!(
+                    "djogi migrations apply --fake: --reason must not be empty; \
+                     supply a non-empty reason why these migrations are being \
+                     faked (e.g. 'schema pre-exists from prior tooling')"
+                );
+                return ExitCode::from(2);
+            }
+            None => {
+                eprintln!(
+                    "djogi migrations apply --fake: --reason is required; \
+                     supply a reason why these migrations are being faked \
+                     (e.g. 'schema pre-exists from prior tooling'). \
+                     This is recorded in the ledger audit trail."
+                );
+                return ExitCode::from(2);
+            }
+        }
+    } else {
+        FakeMode::Real
+    };
 
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -628,19 +654,38 @@ pub fn apply_cmd(workspace: Option<PathBuf>) -> ExitCode {
         }
     };
 
-    let exit = runtime.block_on(async { run_apply(&workspace).await });
+    let exit = runtime.block_on(async { run_apply(&workspace, &mode).await });
     ExitCode::from(exit as u8)
 }
 
+/// Controls whether `apply_one_pending` executes SQL or records a
+/// fake-apply row in the ledger.
+#[derive(Debug, Clone)]
+enum FakeMode {
+    /// Execute DDL via `apply_plan`. Normal migration apply.
+    Real,
+    /// Skip DDL; record `status = 'faked'` via `fake_apply_plan`.
+    Fake { reason: String },
+}
+
 /// Async body of [`apply_cmd`]. Returns the desired exit code.
-async fn run_apply(workspace: &Path) -> i32 {
+async fn run_apply(workspace: &Path, mode: &FakeMode) -> i32 {
     use djogi::config::DjogiConfig;
+
+    let action_verb = match mode {
+        FakeMode::Real => "apply",
+        FakeMode::Fake { .. } => "fake-apply",
+    };
+    let progress_verb = match mode {
+        FakeMode::Real => "applying",
+        FakeMode::Fake { .. } => "faking",
+    };
 
     // 1. Load config.
     let config = match DjogiConfig::load_from_workspace(workspace) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("djogi migrations apply: config load: {e}");
+            eprintln!("djogi migrations {action_verb}: config load: {e}");
             return 2;
         }
     };
@@ -649,7 +694,7 @@ async fn run_apply(workspace: &Path) -> i32 {
     let pool = match djogi::pg::pool::DjogiPool::connect(&config.database.url).await {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("djogi migrations apply: pool connect: {e}");
+            eprintln!("djogi migrations {action_verb}: pool connect: {e}");
             return 1;
         }
     };
@@ -661,7 +706,7 @@ async fn run_apply(workspace: &Path) -> i32 {
     // 3. Discover pending JSONs.
     let pending_files = discover_pending_plans(workspace);
     if pending_files.is_empty() {
-        println!("No pending migrations to apply.");
+        println!("No pending migrations to {action_verb}.");
         return 0;
     }
 
@@ -670,7 +715,7 @@ async fn run_apply(workspace: &Path) -> i32 {
     let guard = match acquire_workspace_lock(&lock_path, GUARD_DEFAULT_TIMEOUT) {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("djogi migrations apply: workspace lock: {e}");
+            eprintln!("djogi migrations {action_verb}: workspace lock: {e}");
             return 1;
         }
     };
@@ -686,6 +731,7 @@ async fn run_apply(workspace: &Path) -> i32 {
 
     // 7. Apply each pending migration in order.
     for (pending_path, bucket_database, app_label) in &pending_files {
+        println!("  {progress_verb} {bucket_database}/{app_label}...");
         let result = apply_one_pending(
             &mut ctx,
             workspace,
@@ -695,13 +741,22 @@ async fn run_apply(workspace: &Path) -> i32 {
             &config,
             &guard,
             audit_pool.as_ref(),
+            mode,
         )
         .await;
 
         match result {
-            ApplyResult::Ok => {
-                println!("Applied: {bucket_database}/{app_label}");
-            }
+            ApplyResult::Ok => match mode {
+                FakeMode::Real => {
+                    println!("Applied: {bucket_database}/{app_label}");
+                }
+                FakeMode::Fake { .. } => {
+                    println!(
+                        "  faked {bucket_database}/{app_label}: \
+                             recorded in ledger with status = 'faked' (no SQL executed)"
+                    );
+                }
+            },
             ApplyResult::Skipped(reason) => {
                 println!("Skipped {bucket_database}/{app_label}: {reason}");
             }
@@ -720,7 +775,11 @@ async fn run_apply(workspace: &Path) -> i32 {
         }
     }
 
-    println!("Applied {} migration(s).", pending_files.len());
+    let summary_verb = match mode {
+        FakeMode::Real => "applied",
+        FakeMode::Fake { .. } => "faked",
+    };
+    println!("{summary_verb} {} migration(s).", pending_files.len());
     0
 }
 
@@ -807,9 +866,9 @@ fn discover_pending_plans(workspace: &Path) -> Vec<(PathBuf, String, String)> {
 ///
 /// Uses the bypass attribute because deleting failed ledger rows requires
 /// raw SQL that is not exposed through the public typed API.
-// apply_one_pending carries 8 arguments because it sits at the bridge
+// apply_one_pending carries 9 arguments because it sits at the bridge
 // between the CLI dispatch (workspace, path, bucket info) and the
-// library runner (config, guard, audit pool). Folding these into a
+// library runner (config, guard, audit pool, mode). Folding these into a
 // struct would push the same fields onto the caller and add churn for
 // no clarity gain — the pattern matches compose_with_inputs and attune.
 #[allow(clippy::too_many_arguments)]
@@ -828,6 +887,7 @@ async fn apply_one_pending(
     config: &djogi::config::DjogiConfig,
     guard: &djogi::migrate::WorkspaceGuard,
     audit_pool: Option<&deadpool_postgres::Pool>,
+    mode: &FakeMode,
 ) -> ApplyResult {
     // 1. Parse pending JSON to get bucket + version + checksums.
     let pending_bytes = match std::fs::read(pending_path) {
@@ -911,8 +971,12 @@ async fn apply_one_pending(
         audit_pool: audit_pool.cloned(),
     };
 
-    // 5. Apply the plan through the library runner.
-    match djogi::migrate::apply_plan(ctx, &plan, &runner_ctx, guard).await {
+    // 5. Apply (or fake-apply) the plan through the library runner.
+    let runner_result = match mode {
+        FakeMode::Real => apply_plan(ctx, &plan, &runner_ctx, guard).await,
+        FakeMode::Fake { reason } => fake_apply_plan(ctx, &plan, &runner_ctx, guard, reason).await,
+    };
+    match runner_result {
         Ok(_) => ApplyResult::Ok,
         Err(e) => ApplyResult::RunnerError(e),
     }
@@ -1556,5 +1620,71 @@ mod tests {
                 "runtime variant must map to exit 1: {err}"
             );
         }
+    }
+
+    // ── REQ-326: --fake / --reason validation tests ─────────────────────
+
+    /// REQ-326-5: --fake without --reason must exit with code 2.
+    #[test]
+    fn fake_without_reason_exits_code_2() {
+        let result = apply_cmd(
+            Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
+            true,
+            None,
+        );
+        assert_eq!(
+            result,
+            ExitCode::from(2),
+            "--fake without --reason must exit 2"
+        );
+    }
+
+    /// REQ-326-5: --fake with blank reason must exit with code 2.
+    #[test]
+    fn fake_with_empty_reason_exits_code_2() {
+        let result = apply_cmd(
+            Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
+            true,
+            Some(String::new()),
+        );
+        assert_eq!(
+            result,
+            ExitCode::from(2),
+            "--fake with empty reason must exit 2"
+        );
+    }
+
+    /// REQ-326-5: --fake with whitespace-only reason must exit with code 2.
+    #[test]
+    fn fake_with_whitespace_reason_exits_code_2() {
+        let result = apply_cmd(
+            Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
+            true,
+            Some("   ".to_string()),
+        );
+        assert_eq!(
+            result,
+            ExitCode::from(2),
+            "--fake with whitespace reason must exit 2"
+        );
+    }
+
+    /// --reason without --fake is accepted (silently ignored).
+    #[test]
+    fn reason_without_fake_is_accepted() {
+        // This should NOT exit 2; it will proceed to config load which
+        // may fail on nonexistent workspace, but the --reason flag itself
+        // is accepted. We verify the function does not early-exit with code 2.
+        let result = apply_cmd(
+            Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
+            false, // NOT fake
+            Some("test reason".to_string()),
+        );
+        // Should be 1 (config error) not 2 (refusal)
+        assert_ne!(
+            result,
+            ExitCode::from(2),
+            "--reason without --fake should not refuse"
+        );
     }
 }

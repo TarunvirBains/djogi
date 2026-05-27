@@ -348,28 +348,23 @@ enum DbCommand {
 
 #[derive(Subcommand)]
 enum MigrateCommand {
-    /// Compatibility alias for `djogi migrations apply`. See
+    /// Alias for `djogi migrations apply`. See
     /// `djogi migrations apply --help` for full documentation.
     ///
-    /// Transaction semantics are per-segment: transactional
-    /// segments roll back on error; non-transactional segments
-    /// autocommit and may leave partial progress. On any failure,
-    /// the command exits with code 1 (runtime error) or 2 (refusal).
-    /// The migration ledger records partial progress for recovery.
+    /// Record pending migrations as applied in the ledger, optionally
+    /// without executing their SQL (`--fake`).
     ///
-    /// On crash or unexpected termination, re-run
-    /// `djogi migrations apply`. For partial non-transactional
-    /// progress, use `djogi migrations repair resume-partial`.
-    ///
-    /// Requires PostgreSQL 18 or later — exits with code 2 if the
-    /// server is below the minimum.
-    ///
-    /// Exit codes: 0 on success, 1 on runtime error, 2 on refusal.
+    /// See `djogi migrations apply --help` for crash-recovery behavior,
+    /// including already-faked reruns and snapshot rebuilds.
     Apply {
-        /// Workspace root override. Defaults to the current working
-        /// directory.
         #[arg(long)]
         workspace: Option<PathBuf>,
+
+        #[arg(long, default_value_t = false)]
+        fake: bool,
+
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 
@@ -489,34 +484,51 @@ enum MigrationsCommand {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
-    /// Apply all pending migrations in ledger order.
+    /// Apply all pending migrations in ledger order. This is the canonical spelling;
+    /// `djogi migrate apply` is a compatibility alias.
     ///
-    /// Canonical spelling: `djogi migrations apply`.
-    /// Compatibility alias: `djogi migrate apply`.
+    /// **Transaction semantics** are per-segment: transactional
+    /// segments roll back on error; non-transactional segments
+    /// autocommit and may leave partial progress.
     ///
-    /// Transaction semantics are per-segment, not per-migration:
-    /// transactional segments wrap in BEGIN/COMMIT with best-effort
-    /// ROLLBACK on error; non-transactional segments execute with
-    /// autocommit and may leave partial progress. On any failure,
-    /// the command exits with code 1 (runtime error) or 2 (refusal).
-    /// The migration ledger records partial progress for recovery.
-    ///
-    /// On crash or unexpected termination, re-run
+    /// **On crash** or unexpected termination, re-run
     /// `djogi migrations apply`. For partial non-transactional
     /// progress, use `djogi migrations repair resume-partial`.
     ///
-    /// Requires PostgreSQL 18 or later — exits with code 2 if the
-    /// server is below the minimum.
+    /// **Existing-database adoption:** use `--fake` to mark pending
+    /// migrations as applied without executing their SQL. This is for
+    /// databases whose schema already exists (from a prior tool, manual
+    /// DDL, or restored backup). Use `djogi migrations verify` or
+    /// manual inspection to confirm the schema matches the target state
+    /// before faking.
     ///
-    /// Exit codes: 0 on success (all pending migrations applied),
-    /// 1 on runtime error (config / connect / SQL), 2 on refusal
-    /// (lock timeout, advisory lock failure, checksum mismatch,
-    /// out-of-order, PG version below 18).
+    /// For previewing pending work without executing it, use
+    /// `djogi migrations status`.
+    ///
+    /// If `--fake` is interrupted after recording the ledger row,
+    /// re-running reports `VersionAlreadyApplied` (exit 2). If the
+    /// snapshot is missing or stale, reconcile it with
+    /// `djogi migrations attune` or `repair snapshot-rebuild` before
+    /// removing stale pending artifacts.
     Apply {
         /// Workspace root override. Defaults to the current working
         /// directory.
         #[arg(long)]
         workspace: Option<PathBuf>,
+
+        /// Record pending migrations as applied without executing
+        /// their SQL. For existing-database adoption only. Requires
+        /// `--reason`.
+        #[arg(long, default_value_t = false)]
+        fake: bool,
+
+        /// Reason for faking these migrations. Required when `--fake`
+        /// is set. Persisted to the ledger's audit trail so future
+        /// inspections can understand why this version was recorded
+        /// without SQL execution. Has no effect on normal (non-fake)
+        /// apply.
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 
@@ -654,10 +666,18 @@ fn main() -> ExitCode {
                 app.as_deref(),
                 workspace,
             ),
-            MigrationsCommand::Apply { workspace } => migrations::apply_cmd(workspace),
+            MigrationsCommand::Apply {
+                workspace,
+                fake,
+                reason,
+            } => migrations::apply_cmd(workspace, fake, reason),
         },
         TopCommand::Migrate { command } => match command {
-            MigrateCommand::Apply { workspace } => migrations::apply_cmd(workspace),
+            MigrateCommand::Apply {
+                workspace,
+                fake,
+                reason,
+            } => migrations::apply_cmd(workspace, fake, reason),
         },
     }
 }
