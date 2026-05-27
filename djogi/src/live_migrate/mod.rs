@@ -65,6 +65,7 @@ pub mod backfill;
 pub mod classify;
 pub mod compose;
 pub mod daemon;
+pub mod executor;
 pub mod hooks;
 pub mod patterns;
 pub mod plan;
@@ -78,6 +79,7 @@ pub use compose::{
     check_no_active_plan, sanitize_app_label,
 };
 pub use daemon::{DaemonConfig, DaemonError, run_daemon};
+pub use executor::{ExecutionContext, ExecutorError, execute_step, run_plan};
 pub use hooks::{
     ActiveHooks, DualReadHook, DualWriteHook, HookError, active_hooks_at_step,
     side_effects_suppressed,
