@@ -233,7 +233,7 @@ impl From<DbError> for DaemonError {
 /// The query is documented as a constant so tests can assert its
 /// shape without reaching into private internals.
 const CANDIDATE_QUERY_SQL: &str = "\
-SELECT plan_id, target_database, app_label, current_step \
+SELECT plan_id, target_database, app_label, slug, current_step \
 FROM djogi_live_plans \
 WHERE status = 'running' \
   AND current_step IN ('backfill_chunked', 'validate_backfill') \
@@ -427,6 +427,7 @@ struct DaemonCandidate {
     plan_id: i64,
     target_database: String,
     app_label: String,
+    slug: String,
     current_step: String,
 }
 
@@ -459,7 +460,12 @@ async fn read_candidates(
                 "candidate row decode app_label: {e}"
             )))
         })?;
-        let current_step: Option<String> = row.try_get(3).map_err(|e| {
+        let slug: String = row.try_get(3).map_err(|e| {
+            DjogiError::Db(DbError::other(format!(
+                "candidate row decode slug: {e}"
+            )))
+        })?;
+        let current_step: Option<String> = row.try_get(4).map_err(|e| {
             DjogiError::Db(DbError::other(format!(
                 "candidate row decode current_step: {e}"
             )))
@@ -474,6 +480,7 @@ async fn read_candidates(
             plan_id,
             target_database,
             app_label,
+            slug,
             current_step,
         });
     }
@@ -599,7 +606,7 @@ async fn resume_backfill_for_candidate(
     })?;
 
     // 2. Resolve plan file path from workspace + ledger row
-    let slug = &candidate.current_step; // slug is the current step name
+    let slug = &candidate.slug;
     let path = crate::live_migrate::plan_file::plan_path(
         &daemon_cfg.workspace_root.join("migrations"),
         &candidate.target_database,
