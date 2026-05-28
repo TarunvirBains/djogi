@@ -140,7 +140,7 @@ Exit codes: `0` on success, `1` on runtime error (config / network / SQL / git),
 
 ## Library APIs
 
-The `apply` command ships as `djogi migrations apply`. The `rollback` / `fake` / `baseline` / `repair` / `verify` CLI dispatchers are deferred to a Phase 7 follow-up; library callers use the public entry points directly:
+The `apply` command ships as `djogi migrations apply` (with `--fake` / `--reason` flags for existing-database adoption). The `rollback` / `baseline` / `repair` / `verify` CLI dispatchers are deferred; library callers use the public entry points directly:
 
 ```rust
 use djogi::migrate::{
