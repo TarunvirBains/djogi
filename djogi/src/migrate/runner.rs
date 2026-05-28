@@ -58,7 +58,7 @@ use time::OffsetDateTime;
 
 use crate::__bypass::guarded_batch_execute;
 use crate::config::MigrateConfig;
-use crate::context::DjogiContext;
+use crate::context::{DjogiContext, PinnedCtx};
 use crate::error::{DbError, DjogiError};
 use crate::types::HeerId;
 
@@ -885,27 +885,14 @@ pub async fn apply_plan(
     runner_ctx: &RunnerCtx,
     _guard: &WorkspaceGuard,
 ) -> Result<RunReport, RunnerError> {
-    // GH #274 — pin one physical Postgres session for the entire
-    // operation window so the advisory lock, DDL, ledger writes,
-    // and lock release all run on the same backend.
-    //
-    // Pool-backed contexts: check out one connection and wrap it in
-    // a DjogiContext::from_connection so every subsequent query in
-    // this call goes to that single backend.
-    //
-    // Transaction-backed contexts: already pinned to one connection;
-    // pass through unchanged.
-    let pool_opt = ctx.pool().cloned();
-    if let Some(pool) = pool_opt {
-        let conn = pool
-            .get()
-            .await
-            .map_err(|e| RunnerError::PinnedSessionCheckoutFailed { source: e })?;
-        let mut pinned = DjogiContext::from_connection(conn);
-        apply_plan_pinned(&mut pinned, plan, runner_ctx).await
-    } else {
-        apply_plan_pinned(ctx, plan, runner_ctx).await
-    }
+    // GH #274 / #331 — pin one physical Postgres session for the
+    // entire operation window so the advisory lock, DDL, ledger
+    // writes, and lock release all run on the same backend.
+    let mut pinned = ctx
+        .pin_for_migration()
+        .await
+        .map_err(|e| RunnerError::PinnedSessionCheckoutFailed { source: e })?;
+    apply_plan_pinned(&mut pinned, plan, runner_ctx).await
 }
 
 /// Internal apply path that runs on an already-pinned context.
@@ -915,7 +902,7 @@ pub async fn apply_plan(
 /// lock, DDL, ledger writes, and unlock — run on the same physical
 /// Postgres session.
 async fn apply_plan_pinned(
-    ctx: &mut DjogiContext,
+    ctx: &mut PinnedCtx<'_>,
     plan: &MigrationPlan,
     runner_ctx: &RunnerCtx,
 ) -> Result<RunReport, RunnerError> {
@@ -935,7 +922,11 @@ async fn apply_plan_pinned(
     // lock was not held on this session (GH #274/#280).
     let released = release_advisory_lock(ctx, lock_key).await;
 
-    handle_release_result(result, released, &plan.bucket, lock_key)
+    let result = handle_release_result(result, released, &plan.bucket, lock_key);
+    if result.is_ok() {
+        ctx.mark_clean();
+    }
+    result
 }
 
 /// Core apply logic. Called from `apply_plan_pinned` after the advisory
@@ -1688,23 +1679,17 @@ pub async fn rollback_plan(
         return Err(RollbackError::PriorSnapshotMissing);
     }
 
-    // GH #274 — pin one physical Postgres session for the entire
-    // rollback window (same contract as apply_plan).
-    let pool_opt = ctx.pool().cloned();
-    if let Some(pool) = pool_opt {
-        let conn = pool.get().await.map_err(|e| {
-            RollbackError::Runner(RunnerError::PinnedSessionCheckoutFailed { source: e })
-        })?;
-        let mut pinned = DjogiContext::from_connection(conn);
-        rollback_plan_pinned(&mut pinned, plan, runner_ctx, lossy_policy, prior_snapshot).await
-    } else {
-        rollback_plan_pinned(ctx, plan, runner_ctx, lossy_policy, prior_snapshot).await
-    }
+    // GH #274 / #331 — pin one physical Postgres session for the
+    // entire rollback window (same contract as apply_plan).
+    let mut pinned = ctx.pin_for_migration().await.map_err(|e| {
+        RollbackError::Runner(RunnerError::PinnedSessionCheckoutFailed { source: e })
+    })?;
+    rollback_plan_pinned(&mut pinned, plan, runner_ctx, lossy_policy, prior_snapshot).await
 }
 
 /// Internal rollback path that runs on an already-pinned context.
 async fn rollback_plan_pinned(
-    ctx: &mut DjogiContext,
+    ctx: &mut PinnedCtx<'_>,
     plan: &MigrationPlan,
     runner_ctx: &RunnerCtx,
     lossy_policy: LossyRollbackPolicy,
@@ -1805,7 +1790,10 @@ async fn rollback_plan_pinned(
 
     // Mirror handle_release_result for the RollbackError type.
     match (result, released) {
-        (Ok(r), true) => Ok(r),
+        (Ok(r), true) => {
+            ctx.mark_clean();
+            Ok(r)
+        }
         (Ok(_), false) => Err(RollbackError::Runner(
             RunnerError::AdvisoryUnlockReturnedFalse {
                 key: lock_key,
@@ -2025,23 +2013,17 @@ pub async fn fake_apply_plan(
     _guard: &WorkspaceGuard,
     reason: &str,
 ) -> Result<RunReport, RunnerError> {
-    // GH #274 — pin one physical Postgres session (same contract as apply_plan).
-    let pool_opt = ctx.pool().cloned();
-    if let Some(pool) = pool_opt {
-        let conn = pool
-            .get()
-            .await
-            .map_err(|e| RunnerError::PinnedSessionCheckoutFailed { source: e })?;
-        let mut pinned = DjogiContext::from_connection(conn);
-        fake_apply_pinned(&mut pinned, plan, runner_ctx, reason).await
-    } else {
-        fake_apply_pinned(ctx, plan, runner_ctx, reason).await
-    }
+    // GH #274 / #331 — pin one physical Postgres session (same contract as apply_plan).
+    let mut pinned = ctx
+        .pin_for_migration()
+        .await
+        .map_err(|e| RunnerError::PinnedSessionCheckoutFailed { source: e })?;
+    fake_apply_pinned(&mut pinned, plan, runner_ctx, reason).await
 }
 
 /// Internal fake-apply path that runs on an already-pinned context.
 async fn fake_apply_pinned(
-    ctx: &mut DjogiContext,
+    ctx: &mut PinnedCtx<'_>,
     plan: &MigrationPlan,
     runner_ctx: &RunnerCtx,
     reason: &str,
@@ -2057,7 +2039,11 @@ async fn fake_apply_pinned(
 
     let result = fake_apply_inner(ctx, plan, runner_ctx, reason).await;
     let released = release_advisory_lock(ctx, lock_key).await;
-    handle_release_result(result, released, &plan.bucket, lock_key)
+    let result = handle_release_result(result, released, &plan.bucket, lock_key);
+    if result.is_ok() {
+        ctx.mark_clean();
+    }
+    result
 }
 
 async fn fake_apply_inner(
@@ -2237,23 +2223,17 @@ pub async fn baseline_plan(
         return Err(RunnerError::BaselineSnapshotShouldNotBeProvided);
     }
 
-    // GH #274 — pin one physical Postgres session (same contract as apply_plan).
-    let pool_opt = ctx.pool().cloned();
-    if let Some(pool) = pool_opt {
-        let conn = pool
-            .get()
-            .await
-            .map_err(|e| RunnerError::PinnedSessionCheckoutFailed { source: e })?;
-        let mut pinned = DjogiContext::from_connection(conn);
-        baseline_pinned(&mut pinned, bucket, runner_ctx, reason).await
-    } else {
-        baseline_pinned(ctx, bucket, runner_ctx, reason).await
-    }
+    // GH #274 / #331 — pin one physical Postgres session (same contract as apply_plan).
+    let mut pinned = ctx
+        .pin_for_migration()
+        .await
+        .map_err(|e| RunnerError::PinnedSessionCheckoutFailed { source: e })?;
+    baseline_pinned(&mut pinned, bucket, runner_ctx, reason).await
 }
 
 /// Internal baseline path that runs on an already-pinned context.
 async fn baseline_pinned(
-    ctx: &mut DjogiContext,
+    ctx: &mut PinnedCtx<'_>,
     bucket: &BucketKey,
     runner_ctx: &RunnerCtx,
     reason: &str,
@@ -2267,7 +2247,11 @@ async fn baseline_pinned(
 
     let result = baseline_inner(ctx, bucket, runner_ctx, reason).await;
     let released = release_advisory_lock(ctx, lock_key).await;
-    handle_release_result(result, released, bucket, lock_key)
+    let result = handle_release_result(result, released, bucket, lock_key);
+    if result.is_ok() {
+        ctx.mark_clean();
+    }
+    result
 }
 
 async fn baseline_inner(
@@ -2631,10 +2615,19 @@ pub fn advisory_lock_key(bucket: &BucketKey) -> i64 {
 /// entry points in `migrate::repair` enforce this by pinning a
 /// connection from the pool before calling here.
 pub(crate) async fn acquire_advisory_lock(
-    ctx: &mut DjogiContext,
+    ctx: &mut PinnedCtx<'_>,
     bucket: &BucketKey,
     key: i64,
 ) -> Result<(), RunnerError> {
+    // GH #331 [H-331-1] — hard assert in ALL build profiles.
+    assert!(
+        !ctx.is_pool_backed(),
+        "acquire_advisory_lock called on a pool-backed context — \
+         the advisory lock would be acquired on an arbitrary pool \
+         connection and subsequent operations would run on different \
+         connections. Callers must use ctx.pin_for_migration() first \
+         (GH #274 / #331).",
+    );
     const MAX_ATTEMPTS: u32 = 600; // 600 * 50 ms = 30 s
     const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
     for attempt in 0..MAX_ATTEMPTS {
@@ -2693,7 +2686,14 @@ pub(crate) async fn acquire_advisory_lock(
 /// succeeded but this returns `false`, surface
 /// [`RunnerError::AdvisoryUnlockReturnedFalse`]; if both errored,
 /// log this result and return the original error.
-pub(crate) async fn release_advisory_lock(ctx: &mut DjogiContext, key: i64) -> bool {
+pub(crate) async fn release_advisory_lock(ctx: &mut PinnedCtx<'_>, key: i64) -> bool {
+    assert!(
+        !ctx.is_pool_backed(),
+        "release_advisory_lock called on a pool-backed context — \
+         the unlock would run on a different connection than the one \
+         that holds the lock. Callers must use ctx.pin_for_migration() \
+         first (GH #274 / #331).",
+    );
     let row = match ctx
         .query_one("SELECT pg_advisory_unlock($1)", &[&key])
         .await

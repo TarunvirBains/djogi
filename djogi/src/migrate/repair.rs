@@ -67,7 +67,7 @@
 use std::path::PathBuf;
 
 use crate::__bypass::guarded_batch_execute;
-use crate::context::DjogiContext;
+use crate::context::{DjogiContext, PinnedCtx};
 use crate::error::DjogiError;
 
 use super::guard::WorkspaceGuard;
@@ -496,7 +496,7 @@ impl std::error::Error for RepairError {
 /// variants into their `RepairError` counterparts so callers can use
 /// the repair error type uniformly.
 async fn acquire_advisory_lock_repair(
-    ctx: &mut DjogiContext,
+    ctx: &mut PinnedCtx<'_>,
     bucket: &BucketKey,
     key: i64,
 ) -> Result<(), RepairError> {
@@ -619,34 +619,19 @@ pub async fn repair_checksum_drift(
     // helper to eliminate the TOCTOU window between the row read and
     // the checksum UPDATE.
     let lock_key = advisory_lock_key(bucket);
-
-    let pool_opt = ctx.pool().cloned();
-    if let Some(pool) = pool_opt {
-        let conn = pool
-            .get()
-            .await
-            .map_err(|e| RepairError::PinnedSessionCheckoutFailed { source: e })?;
-        let mut pinned = DjogiContext::from_connection(conn);
-        repair_checksum_drift_pinned(
-            &mut pinned,
-            version,
-            new_checksum_up,
-            new_checksum_down,
-            bucket,
-            lock_key,
-        )
+    let mut pinned = ctx
+        .pin_for_migration()
         .await
-    } else {
-        repair_checksum_drift_pinned(
-            ctx,
-            version,
-            new_checksum_up,
-            new_checksum_down,
-            bucket,
-            lock_key,
-        )
-        .await
-    }
+        .map_err(|e| RepairError::PinnedSessionCheckoutFailed { source: e })?;
+    repair_checksum_drift_pinned(
+        &mut pinned,
+        version,
+        new_checksum_up,
+        new_checksum_down,
+        bucket,
+        lock_key,
+    )
+    .await
 }
 
 /// Core checksum-drift repair on an already-pinned context.
@@ -655,7 +640,7 @@ pub async fn repair_checksum_drift(
 /// the TOCTOU race between reading `checksum_up` / `checksum_down` and
 /// writing the updated values (GH #274).
 async fn repair_checksum_drift_pinned(
-    ctx: &mut DjogiContext,
+    ctx: &mut PinnedCtx<'_>,
     version: &str,
     new_checksum_up: &str,
     new_checksum_down: Option<&str>,
@@ -696,6 +681,9 @@ async fn repair_checksum_drift_pinned(
 
     let released = release_advisory_lock(ctx, lock_key).await;
     handle_repair_release(mutation_result, released, lock_key)?;
+
+    // Migration succeeded — mark clean so the connection returns to the pool.
+    ctx.mark_clean();
 
     let mut actions = vec![format!(
         "checksum_up of `{version}` updated from {before_up} to {new_checksum_up}"
@@ -783,18 +771,11 @@ pub async fn repair_partial_apply(
     // check both happen INSIDE the lock in the pinned helper to prevent
     // TOCTOU races between reading the row and mutating it.
     let lock_key = advisory_lock_key(bucket);
-
-    let pool_opt = ctx.pool().cloned();
-    if let Some(pool) = pool_opt {
-        let conn = pool
-            .get()
-            .await
-            .map_err(|e| RepairError::PinnedSessionCheckoutFailed { source: e })?;
-        let mut pinned = DjogiContext::from_connection(conn);
-        repair_partial_apply_pinned(&mut pinned, version, resolution, note, bucket, lock_key).await
-    } else {
-        repair_partial_apply_pinned(ctx, version, resolution, note, bucket, lock_key).await
-    }
+    let mut pinned = ctx
+        .pin_for_migration()
+        .await
+        .map_err(|e| RepairError::PinnedSessionCheckoutFailed { source: e })?;
+    repair_partial_apply_pinned(&mut pinned, version, resolution, note, bucket, lock_key).await
 }
 
 /// Core partial-apply repair on an already-pinned context.
@@ -803,7 +784,7 @@ pub async fn repair_partial_apply(
 /// window to eliminate the TOCTOU race between the status read and the
 /// status UPDATE (GH #274).
 async fn repair_partial_apply_pinned(
-    ctx: &mut DjogiContext,
+    ctx: &mut PinnedCtx<'_>,
     version: &str,
     resolution: PartialApplyResolution,
     note: &str,
@@ -861,6 +842,9 @@ async fn repair_partial_apply_pinned(
 
     let released = release_advisory_lock(ctx, lock_key).await;
     handle_repair_release(mutation_result, released, lock_key)?;
+
+    // Migration succeeded — mark clean so the connection returns to the pool.
+    ctx.mark_clean();
 
     Ok(RepairReport {
         actions_taken: vec![format!(
@@ -948,18 +932,11 @@ pub async fn repair_resume_partial_apply(
     // and mutations run INSIDE the advisory lock in repair_resume_pinned
     // so the entire resume window is atomic from the lock's perspective.
     let lock_key = advisory_lock_key(&plan.bucket);
-
-    let pool_opt = ctx.pool().cloned();
-    if let Some(pool) = pool_opt {
-        let conn = pool
-            .get()
-            .await
-            .map_err(|e| RepairError::PinnedSessionCheckoutFailed { source: e })?;
-        let mut pinned = DjogiContext::from_connection(conn);
-        repair_resume_pinned(&mut pinned, version, plan, &plan.bucket, lock_key).await
-    } else {
-        repair_resume_pinned(ctx, version, plan, &plan.bucket, lock_key).await
-    }
+    let mut pinned = ctx
+        .pin_for_migration()
+        .await
+        .map_err(|e| RepairError::PinnedSessionCheckoutFailed { source: e })?;
+    repair_resume_pinned(&mut pinned, version, plan, &plan.bucket, lock_key).await
 }
 
 /// Core resume-partial-apply logic on an already-pinned context.
@@ -970,7 +947,7 @@ pub async fn repair_resume_partial_apply(
 /// the outer reconcile rather than through scattered early-return calls
 /// (GH #274).
 async fn repair_resume_pinned(
-    ctx: &mut DjogiContext,
+    ctx: &mut PinnedCtx<'_>,
     version: &str,
     plan: &MigrationPlan,
     bucket: &BucketKey,
@@ -984,7 +961,11 @@ async fn repair_resume_pinned(
     let result = repair_resume_body(ctx, version, plan, bucket).await;
 
     let released = release_advisory_lock(ctx, lock_key).await;
-    handle_repair_release(result, released, lock_key)
+    let result = handle_repair_release(result, released, lock_key);
+    if result.is_ok() {
+        ctx.mark_clean();
+    }
+    result
 }
 
 /// Body of the resume-partial-apply logic, called inside the advisory lock.
@@ -1207,23 +1188,16 @@ pub async fn repair_snapshot_rebuild(
 
     // GH #274: pin one physical session and acquire advisory lock.
     let lock_key = advisory_lock_key(bucket);
-
-    let pool_opt = ctx.pool().cloned();
-    if let Some(pool) = pool_opt {
-        let conn = pool
-            .get()
-            .await
-            .map_err(|e| RepairError::PinnedSessionCheckoutFailed { source: e })?;
-        let mut pinned = DjogiContext::from_connection(conn);
-        repair_snapshot_rebuild_pinned(&mut pinned, bucket, snapshot_path, lock_key).await
-    } else {
-        repair_snapshot_rebuild_pinned(ctx, bucket, snapshot_path, lock_key).await
-    }
+    let mut pinned = ctx
+        .pin_for_migration()
+        .await
+        .map_err(|e| RepairError::PinnedSessionCheckoutFailed { source: e })?;
+    repair_snapshot_rebuild_pinned(&mut pinned, bucket, snapshot_path, lock_key).await
 }
 
 /// Core snapshot-rebuild logic on an already-pinned context.
 async fn repair_snapshot_rebuild_pinned(
-    ctx: &mut DjogiContext,
+    ctx: &mut PinnedCtx<'_>,
     bucket: &BucketKey,
     snapshot_path: &std::path::Path,
     lock_key: i64,
@@ -1269,6 +1243,9 @@ async fn repair_snapshot_rebuild_pinned(
     // Surface advisory-lock release failure before the filesystem write.
     // The projected value is only available if the DB query succeeded.
     let projected = handle_repair_release(projected, released, lock_key)?;
+
+    // Lock released successfully — mark clean so the connection returns to the pool.
+    ctx.mark_clean();
 
     save_snapshot(&projected, snapshot_path).map_err(|e| RepairError::SnapshotIo {
         path: snapshot_path.to_path_buf(),

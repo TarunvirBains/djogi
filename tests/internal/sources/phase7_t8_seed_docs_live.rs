@@ -883,3 +883,85 @@ async fn u_partial_db_seed_routes_to_other_database_live(mut ctx: djogi::DjogiCo
 
     let _ = fs::remove_dir_all(&work);
 }
+
+// ── #331 Session-pinning regression test: run_seeds ─────────────────────
+// Exercises the exact regression scenario: run_seeds on a pool-backed
+// context must pin one physical session for the full operation window.
+
+#[djogi::djogi_test]
+async fn run_seeds_pool_backed_context_pins_session(mut ctx: djogi::DjogiContext) {
+    assert!(ctx.is_pool_backed(), "must be pool-backed for this regression test");
+
+    // Create a minimal seed fixture for this test.
+    let db_name = current_database(&mut ctx).await;
+    let seed_dir = temp_workspace(&format!("331_seed_pin_{}", db_name));
+    let seed_file = seed_dir.join("001_test_331.sql");
+    fs::write(
+        &seed_file,
+        "-- #331 seed regression test\nSELECT 1;\n",
+    )
+    .expect("write seed file");
+
+    // [REQ-331-12] Record backend PID before run_seeds
+    let pid_before: i32 = ctx
+        .raw_scalar("SELECT pg_backend_pid()", &[])
+        .await
+        .expect("pg_backend_pid before run_seeds");
+
+    // Run seeds against the fixture directory — must succeed without
+    // AdvisoryUnlockReturnedFalse.
+    let seed_result = run_seeds(
+        &mut ctx,
+        &seed_dir,
+        &db_name,
+        "postgres://localhost/main",
+        false,
+    )
+    .await;
+    match &seed_result {
+        Ok(_) => {}
+        Err(SeedError::AdvisoryUnlockReturnedFalse { database: db, key }) => {
+            panic!(
+                "AdvisoryUnlockReturnedFalse (db={}, key=0x{key:016x}): pool-backed \
+                 context failed to pin for seed advisory lock (GH #331)",
+                db
+            );
+        }
+        Err(other) => panic!("unexpected error from run_seeds: {other:?}"),
+    }
+
+    // [REQ-331-12] Record backend PID after run_seeds
+    let pid_after: i32 = ctx
+        .raw_scalar("SELECT pg_backend_pid()", &[])
+        .await
+        .expect("pg_backend_pid after run_seeds");
+
+    tracing::debug!(pid_before, pid_after, "seed outer PIDs (may differ)");
+
+    // Verify no advisory locks remain held on the seed lock key.
+    // The seed runner uses bucket { database: <db_name>, app: "__djogi_seed_run__" }
+    let lock_bucket = djogi::migrate::BucketKey {
+        database: db_name.clone(),
+        app: "__djogi_seed_run__".to_string(),
+    };
+    let lock_key = djogi::migrate::advisory_lock_key(&lock_bucket);
+    let still_held: i64 = ctx
+        .raw_scalar(
+            "SELECT COUNT(*) FROM pg_locks \
+             WHERE locktype = 'advisory' \
+               AND classid = (($1::bigint >> 32) & 4294967295)::oid \
+               AND objid   = ($1::bigint & 4294967295)::oid \
+               AND mode    = 'ExclusiveLock'",
+            &[&lock_key],
+        )
+        .await
+        .expect("pg_locks query");
+
+    assert_eq!(
+        still_held,
+        0,
+        "advisory lock for seed run bucket={}/{} (key=0x{lock_key:016x}) \
+         must be released after run_seeds on pool-backed context (GH #331)",
+        lock_bucket.database, lock_bucket.app,
+    );
+}

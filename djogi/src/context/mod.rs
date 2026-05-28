@@ -79,6 +79,8 @@ use tokio_postgres::Row;
 
 mod pinned_ctx;
 
+#[allow(unused_imports)] // Used by migration runner after GH #331 integration
+pub(crate) use pinned_ctx::OwnedPinnedCtx;
 /// Re-export of [`pinned_ctx::PinnedCtx`] so lock functions in other
 /// crate modules can name the type in signatures. The variants are
 /// `pub(crate)` (Rust does not support independent variant visibility —
@@ -374,7 +376,9 @@ impl DjogiContext {
         match &self.inner {
             ContextInner::Pool(pool) => {
                 let conn = pool.get().await?;
-                Ok(PinnedCtx::Owned(DjogiContext::from_connection(conn)))
+                Ok(PinnedCtx::Owned(pinned_ctx::OwnedPinnedCtx::new(
+                    DjogiContext::from_connection(conn),
+                )))
             }
             ContextInner::Transaction(_) => Ok(PinnedCtx::Borrowed(self)),
         }
@@ -1026,6 +1030,15 @@ impl DjogiContext {
         let DjogiContext { inner, .. } = self;
         if let ContextInner::Transaction(conn) = inner {
             conn.detach();
+        }
+    }
+
+    /// Detach the underlying transaction connection from the pool without
+    /// consuming the context. Used by [`pinned_ctx::OwnedPinnedCtx`] which
+    /// only has `&mut self` in its `Drop` impl.
+    pub(crate) fn detach_transaction_connection_mut(&mut self) {
+        if let Some(conn) = self.conn() {
+            conn.detach_mut();
         }
     }
 

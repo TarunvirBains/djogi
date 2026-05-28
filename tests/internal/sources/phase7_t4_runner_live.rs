@@ -36,9 +36,10 @@ use std::time::Duration;
 
 use djogi::config::MigrateConfig;
 use djogi::migrate::{
-    AppliedSchema, BucketKey, Classification, LedgerStatus, MigrationPlan, RunnerCtx, RunnerError,
-    SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind, WorkspaceGuard, acquire_workspace_lock,
-    advisory_lock_key, apply_plan, bootstrap_ledger, compute_checksum, load_snapshot,
+    AppliedSchema, BucketKey, Classification, LedgerStatus, LossyRollbackPolicy, MigrationPlan,
+    RunnerCtx, RunnerError, SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind, WorkspaceGuard,
+    acquire_workspace_lock, advisory_lock_key, apply_plan, bootstrap_ledger, compute_checksum,
+    load_snapshot, rollback_plan,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -1344,4 +1345,211 @@ async fn advisory_unlock_false_variant_exists_and_is_not_triggered_on_clean_appl
     }
 
     assert!(result.is_ok());
+}
+
+// ── #331 Session-pinning regression test ──────────────────────────────
+// Exercises the exact regression scenario: apply_plan on a pool-backed
+// context must pin one physical session for the full operation window.
+
+#[djogi::djogi_test]
+async fn apply_plan_pool_backed_context_pins_session_for_advisory_lock(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+
+    assert!(
+        ctx.is_pool_backed(),
+        "#[djogi_test] must provide a pool-backed context for this test",
+    );
+
+    // [REQ-331-11] Record outer context's backend PID before apply
+    let pid_before: i32 = ctx
+        .raw_scalar("SELECT pg_backend_pid()", &[])
+        .await
+        .expect("pg_backend_pid before apply_plan");
+
+    let plan = transactional_plan(vec![op(
+        "AddTable t4_331_pool_pin",
+        "CREATE TABLE \"t4_331_pool_pin\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"t4_331_pool_pin\"",
+    )]);
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260526000001__331_pool_pin",
+        None,
+        None,
+        MigrateConfig::default(),
+    );
+
+    let result = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard).await;
+
+    match &result {
+        Ok(_) => {}
+        Err(RunnerError::AdvisoryUnlockReturnedFalse { key, .. }) => {
+            panic!(
+                "AdvisoryUnlockReturnedFalse (key=0x{key:016x}): pool-backed \
+                 context failed to pin for advisory lock (GH #331)",
+            );
+        }
+        Err(other) => panic!("unexpected error: {other:?}"),
+    }
+
+    // [REQ-331-11] Record backend PID after apply
+    let pid_after: i32 = ctx
+        .raw_scalar("SELECT pg_backend_pid()", &[])
+        .await
+        .expect("pg_backend_pid after apply_plan");
+
+    tracing::debug!(pid_before, pid_after, "outer context backend PIDs (may differ)");
+
+    // pg_locks must show zero advisory locks for this key cluster-wide
+    let lock_key = advisory_lock_key(&plan.bucket);
+    let still_held: i64 = ctx
+        .raw_scalar(
+            "SELECT COUNT(*) \
+             FROM pg_locks \
+             WHERE locktype = 'advisory' \
+               AND classid = (($1::bigint >> 32) & 4294967295)::oid \
+               AND objid   = ($1::bigint & 4294967295)::oid \
+               AND mode    = 'ExclusiveLock'",
+            &[&lock_key],
+        )
+        .await
+        .expect("pg_locks query");
+
+    assert_eq!(
+        still_held,
+        0,
+        "advisory lock for bucket={}/{} (key=0x{:016x}) must be released after \
+         apply_plan on pool-backed context; {} backend(s) still hold it — \
+         pin_for_migration regression (GH #331)",
+        plan.bucket.database,
+        plan.bucket.app,
+        lock_key,
+        still_held,
+    );
+}
+
+// ── #331 Rollback path: pool-backed session pinning for advisory lock ──
+
+#[djogi::djogi_test]
+async fn rollback_plan_pool_backed_context_pins_session_for_advisory_lock(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+
+    assert!(ctx.is_pool_backed(), "must be pool-backed");
+
+    // Apply first so there's something to roll back
+    let plan = transactional_plan(vec![op(
+        "AddTable t4_331_rollback_pin",
+        "CREATE TABLE \"t4_331_rollback_pin\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"t4_331_rollback_pin\"",
+    )]);
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260526000002__331_rollback_pin",
+        None,
+        None,
+        MigrateConfig::default(),
+    );
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+
+    // [REQ-331-11] PID before rollback
+    let pid_before: i32 = ctx
+        .raw_scalar("SELECT pg_backend_pid()", &[])
+        .await
+        .expect("pg_backend_pid before rollback_plan");
+
+    let rollback_result = rollback_plan(
+        &mut ctx,
+        &plan,
+        &runner_ctx,
+        &_guard,
+        LossyRollbackPolicy::Refuse,
+        None,
+    )
+    .await;
+
+    assert!(rollback_result.is_ok(), "rollback must succeed: {:?}", rollback_result);
+
+    // [REQ-331-11] PID after rollback
+    let pid_after: i32 = ctx
+        .raw_scalar("SELECT pg_backend_pid()", &[])
+        .await
+        .expect("pg_backend_pid after rollback_plan");
+
+    tracing::debug!(pid_before, pid_after, "rollback outer PIDs (may differ)");
+
+    // pg_locks must show zero advisory locks
+    let lock_key = advisory_lock_key(&plan.bucket);
+    let still_held: i64 = ctx
+        .raw_scalar(
+            "SELECT COUNT(*) FROM pg_locks \
+             WHERE locktype = 'advisory' \
+               AND classid = (($1::bigint >> 32) & 4294967295)::oid \
+               AND objid   = ($1::bigint & 4294967295)::oid \
+               AND mode    = 'ExclusiveLock'",
+            &[&lock_key],
+        )
+        .await
+        .expect("pg_locks query");
+
+    assert_eq!(still_held, 0, "advisory lock must be released after rollback on pool-backed context (GH #331)");
+}
+
+// ── #331 Early-error lock release via session drop ────────────────────
+// Verifies that when apply_plan errors after acquiring the advisory lock
+// but before releasing it, the PinnedCtx drops and the session closes,
+// implicitly releasing the lock.
+
+#[djogi::djogi_test]
+async fn apply_plan_early_error_releases_lock_via_session_drop(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+
+    assert!(ctx.is_pool_backed(), "must be pool-backed");
+
+    // Plan with invalid SQL that fails during DDL execution (after lock acquire)
+    let plan = transactional_plan(vec![op(
+        "AddTable t4_331_early_error",
+        "CREATE TABLE \"t4_331_early_error\" (\"id\" INVALID_TYPE PRIMARY KEY)",
+        "DROP TABLE \"t4_331_early_error\"",
+    )]);
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260526000003__331_early_error",
+        None,
+        None,
+        MigrateConfig::default(),
+    );
+
+    // This will fail during DDL execution — after lock acquire, before release
+    let result = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard).await;
+    assert!(result.is_err(), "apply_plan must error for this test to be meaningful");
+
+    // PinnedCtx has been dropped — session closed — lock should be implicitly released
+    let lock_key = advisory_lock_key(&plan.bucket);
+    let still_held: i64 = ctx
+        .raw_scalar(
+            "SELECT COUNT(*) FROM pg_locks \
+             WHERE locktype = 'advisory' \
+               AND classid = (($1::bigint >> 32) & 4294967295)::oid \
+               AND objid   = ($1::bigint & 4294967295)::oid \
+               AND mode    = 'ExclusiveLock'",
+            &[&lock_key],
+        )
+        .await
+        .expect("pg_locks query");
+
+    assert_eq!(
+        still_held,
+        0,
+        "advisory lock (key=0x{:016x}) must be released via session drop \
+         after early error in apply_plan body (GH #331)",
+        lock_key,
+    );
 }

@@ -57,7 +57,8 @@ use tokio_postgres::{Row, Statement};
 /// automatically. See the module-level docs for the full cache lifecycle.
 pub struct PgConnection {
     /// The deadpool-managed connection object. Returned to the pool on drop.
-    obj: Object,
+    /// `None` after [`Self::detach`] or [`Self::detach_mut`] has been called.
+    obj: Option<Object>,
 }
 
 #[allow(clippy::disallowed_methods)]
@@ -67,7 +68,7 @@ impl PgConnection {
     /// No per-checkout cache is allocated — statement caching is delegated to
     /// the `StatementCache` embedded in the underlying `ClientWrapper`.
     pub fn new(obj: Object) -> Self {
-        PgConnection { obj }
+        PgConnection { obj: Some(obj) }
     }
 
     /// Detach this connection from its pool instead of returning it.
@@ -83,9 +84,32 @@ impl PgConnection {
     /// rationale (deadpool's `RecyclingMethod::Fast` would otherwise leak a
     /// poisoned session to the next checkout).
     pub(crate) fn detach(self) {
-        // `_client_wrapper` drops at end of scope, closing the underlying
-        // connection.
-        let _client_wrapper = Object::take(self.obj);
+        if let Some(obj) = self.obj {
+            // `_client_wrapper` drops at end of scope, closing the underlying
+            // connection.
+            let _client_wrapper = Object::take(obj);
+        }
+    }
+
+    /// Detach this connection from its pool without consuming `self`.
+    ///
+    /// Extracts the `Object`, removes it from the pool's tracker via
+    /// `Object::take`, and drops the underlying connection. The struct is left
+    /// in a vacant state (`obj: None`). Subsequent method calls will panic.
+    ///
+    /// Used by [`crate::context::pinned_ctx::OwnedPinnedCtx`] which only has
+    /// `&mut self` in its `Drop` impl (GH #331).
+    pub(crate) fn detach_mut(&mut self) {
+        if let Some(obj) = std::mem::take(&mut self.obj) {
+            // `_client_wrapper` drops at end of scope, closing the underlying
+            // connection and removing it from the pool's tracker.
+            let _client_wrapper = Object::take(obj);
+        }
+    }
+
+    /// Inner helper to get a mutable reference to the wrapped `Object`.
+    fn obj_mut(&mut self) -> &mut Object {
+        self.obj.as_mut().expect("PgConnection used after detach")
     }
 
     /// Prepare `sql` if not already cached; return a clone of the statement.
@@ -95,7 +119,7 @@ impl PgConnection {
     /// round-trip. The cache entry lives for the lifetime of the underlying
     /// connection, surviving across pool checkouts of the same `ClientWrapper`.
     pub async fn prepare_cached(&mut self, sql: &str) -> Result<Statement, DjogiError> {
-        self.obj
+        self.obj_mut()
             .prepare_cached(sql)
             .await
             .map_err(|e| DjogiError::Db(DbError::other(e.to_string())))
@@ -106,7 +130,10 @@ impl PgConnection {
     /// and `ROLLBACK TO SAVEPOINT sp_n`. These control commands never carry
     /// user-supplied values so the simple query protocol is appropriate.
     pub async fn batch_execute(&mut self, sql: &str) -> Result<(), DjogiError> {
-        self.obj.batch_execute(sql).await.map_err(pg_err_to_djogi)
+        self.obj_mut()
+            .batch_execute(sql)
+            .await
+            .map_err(pg_err_to_djogi)
     }
 
     /// Execute a parameterised query and return all rows.
@@ -119,7 +146,10 @@ impl PgConnection {
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Vec<Row>, DjogiError> {
         let stmt = self.prepare_cached(sql).await?;
-        self.obj.query(&stmt, params).await.map_err(pg_err_to_djogi)
+        self.obj_mut()
+            .query(&stmt, params)
+            .await
+            .map_err(pg_err_to_djogi)
     }
 
     /// Execute a parameterised query and return the first row, if any.
@@ -129,7 +159,7 @@ impl PgConnection {
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Option<Row>, DjogiError> {
         let stmt = self.prepare_cached(sql).await?;
-        self.obj
+        self.obj_mut()
             .query_opt(&stmt, params)
             .await
             .map_err(pg_err_to_djogi)
@@ -143,7 +173,7 @@ impl PgConnection {
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Row, DjogiError> {
         let stmt = self.prepare_cached(sql).await?;
-        self.obj
+        self.obj_mut()
             .query_one(&stmt, params)
             .await
             .map_err(pg_err_to_djogi)
@@ -157,7 +187,7 @@ impl PgConnection {
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<u64, DjogiError> {
         let stmt = self.prepare_cached(sql).await?;
-        self.obj
+        self.obj_mut()
             .execute(&stmt, params)
             .await
             .map_err(pg_err_to_djogi)
