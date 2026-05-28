@@ -69,6 +69,7 @@
 //! [`PlanStatus::Paused`]: crate::live_migrate::state::PlanStatus::Paused
 
 use std::time::Duration;
+use std::path::PathBuf;
 
 use crate::__bypass::RawAccessExt as _;
 use crate::context::{DjogiContext, PinnedCtx};
@@ -114,6 +115,8 @@ pub struct DaemonConfig {
     /// `db reset` and `db cleanup-test-dbs` use so the same rules
     /// govern every long-running destructive surface.
     pub profile: String,
+    /// Workspace root for resolving plan file paths.
+    pub workspace_root: PathBuf,
 }
 
 impl DaemonConfig {
@@ -137,6 +140,7 @@ impl DaemonConfig {
             host: hostname_or_unknown(),
             pid: i64::from(std::process::id()),
             profile: "development".to_string(),
+            workspace_root: std::path::PathBuf::from("."),
         }
     }
 }
@@ -533,7 +537,7 @@ async fn drive_under_lock(
     // the gate query still parses against the live database. Operator
     // promotion past the gate stays with `live run`.
     let outcome = match candidate.current_step.as_str() {
-        "backfill_chunked" => resume_backfill_for_candidate(ctx, candidate).await,
+        "backfill_chunked" => resume_backfill_for_candidate(ctx, candidate, config).await,
         "validate_backfill" => {
             tracing::debug!(
                 plan_id = candidate.plan_id,
@@ -577,29 +581,87 @@ async fn drive_under_lock(
 /// and returns; this function is the seam the engine wires into when
 /// it lands.
 async fn resume_backfill_for_candidate(
-    _ctx: &mut DjogiContext,
+    ctx: &mut DjogiContext,
     candidate: &DaemonCandidate,
+    daemon_cfg: &DaemonConfig,
 ) -> Result<(), DaemonError> {
-    // The plan-file-driven resume engine (read plan, extract chunk
-    // parameters, call resume_backfill) lands alongside the `live
-    // resume` engine in T11+. Until then, the daemon claims the row,
-    // logs the candidate, and exits the per-plan path cleanly. The
-    // claim + advisory-lock coordination still fires — this function
-    // is the seam the engine plugs into.
+    use crate::types::HeerId;
+    use crate::live_migrate::{
+        backfill::resume_backfill, compose::extract_backfill_params, plan_file::read_plan,
+    };
+
+    // 1. Convert plan_id (i64) to HeerId
+    let plan_id = HeerId::from_i64(candidate.plan_id).map_err(|e| {
+        DaemonError::Database(DjogiError::Db(DbError::other(format!(
+            "invalid plan_id {}: {}",
+            candidate.plan_id, e
+        ))))
+    })?;
+
+    // 2. Resolve plan file path from workspace + ledger row
+    let slug = &candidate.current_step; // slug is the current step name
+    let path = crate::live_migrate::plan_file::plan_path(
+        &daemon_cfg.workspace_root.join("migrations"),
+        &candidate.target_database,
+        plan_id,
+        slug,
+    );
+
+    // 3. Read plan from disk
+    let plan = read_plan(&path).map_err(|e| {
+        DaemonError::Database(DjogiError::Db(DbError::other(format!(
+            "failed to read plan file {}: {}",
+            path.display(),
+            e
+        ))))
+    })?;
+
+    // 4. Extract backfill parameters from plan steps
+    let extract_result = extract_backfill_params(&plan.steps);
+    let (table, predicate_template, chunk_size) = match extract_result {
+        super::compose::ExtractResult::Params {
+            table,
+            filter,
+            batch_size,
+            ..
+        } => (table, filter, batch_size as u32),
+        super::compose::ExtractResult::NotBackfillChunked => {
+            return Err(DaemonError::Database(DjogiError::Db(DbError::other(
+                "plan has no BackfillChunked step to resume",
+            ))));
+        }
+        super::compose::ExtractResult::Malformed(reason) => {
+            return Err(DaemonError::Database(DjogiError::Db(DbError::other(format!(
+                "malformed backfill step: {}",
+                reason
+            )))));
+        }
+    };
+
+    // 5. Execute the backfill resume
+    let chunks = resume_backfill(
+        ctx,
+        plan_id,
+        &table,
+        &predicate_template,
+        chunk_size,
+        true, // emit events
+    )
+    .await
+    .map_err(|e| match e {
+        BackfillError::Database(db_err) => DaemonError::Database(db_err),
+        other => DaemonError::Backfill(other),
+    })?;
+
     tracing::info!(
-        plan_id = candidate.plan_id,
+        plan_id = %plan_id,
         target_database = %candidate.target_database,
         app_label = %candidate.app_label,
-        "live-migrate daemon: claimed backfill_chunked candidate; \
-         resume engine wires in alongside CLI live-resume executor",
+        chunks_processed = chunks.len(),
+        "live-migrate daemon: backfill completed successfully",
     );
     Ok(())
 }
-
-/// Try to acquire the per-plan advisory lock via
-/// `pg_try_advisory_lock(bigint)`. Returns `Ok(true)` on success,
-/// `Ok(false)` when another holder owns it, and `Err` on a query
-/// failure.
 async fn try_acquire_advisory_lock(
     ctx: &mut PinnedCtx<'_>,
     lock_key: i64,
@@ -715,6 +777,7 @@ mod tests {
             host: "test-host".to_string(),
             pid: 12345,
             profile: "development".to_string(),
+            workspace_root: std::path::PathBuf::from("."),
         }
     }
 

@@ -1088,6 +1088,7 @@ async fn daemon_cmd(
         host: hostname_for_claim(),
         pid: i64::from(std::process::id()),
         profile: config.profile.clone(),
+        workspace_root: workspace.to_path_buf(),
     };
     let mut ctx = connect(&config.database.url).await?;
     match run_daemon(&mut ctx, cfg).await {
