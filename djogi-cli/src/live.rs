@@ -768,7 +768,7 @@ async fn run_cmd(
     // exit-code unit tests; the production wiring lands with the
     // executor.
     // Execute the plan via the live-plan engine
-    match djogi::live_migrate::executor::run_plan(&mut ctx, path).await {
+    match djogi::live_migrate::executor::run_plan(&mut ctx, path, 0, false).await {
         Ok(result) => {
             match result {
                 StepResult::Completed => {
@@ -810,7 +810,8 @@ async fn resume_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32
     verify_checksum(&path, &row.plan_file_checksum)?;
     let _plan = read_plan(&path)?;
     // Resume execution from current step
-    match djogi::live_migrate::executor::run_plan(&mut ctx, path).await {
+    let start_idx = u32::try_from(row.current_step_index).unwrap_or(0);
+    match djogi::live_migrate::executor::run_plan(&mut ctx, path, start_idx, true).await {
         Ok(result) => {
             match result {
                 StepResult::Completed => {
@@ -927,7 +928,8 @@ async fn finalize_cmd(
     verify_checksum(&path, &row.plan_file_checksum)?;
     let _plan = read_plan(&path)?;
     // Resume execution from current step
-    match djogi::live_migrate::executor::run_plan(&mut ctx, path).await {
+    let start_idx = u32::try_from(row.current_step_index).unwrap_or(0);
+    match djogi::live_migrate::executor::run_plan(&mut ctx, path, start_idx, true).await {
         Ok(result) => {
             match result {
                 StepResult::Completed => {

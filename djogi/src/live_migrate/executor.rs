@@ -44,6 +44,7 @@ pub struct ExecutionContext<'a> {
     pub plan: &'a LivePlan,
     pub current_step: &'a Step,
     pub step_ordinal: u32,
+    pub is_resume: bool,
 }
 
 // ── Public functions ─────────────────────────────────────────────────────
@@ -60,6 +61,8 @@ pub struct ExecutionContext<'a> {
 pub async fn run_plan(
     ctx: &mut DjogiContext,
     plan_path: std::path::PathBuf,
+    start_index: u32,
+    is_resume: bool,
 ) -> Result<StepResult, ExecutorError> {
     // 1. Load plan from disk
     let plan = crate::live_migrate::plan_file::read_plan(&plan_path)?;
@@ -73,12 +76,16 @@ pub async fn run_plan(
     // 3. Execute each step sequentially
     let mut last_result = StepResult::Completed;
 
-    for step in &plan.steps {
+    for (idx, step) in plan.steps.iter().enumerate() {
+        if (idx as u32) < start_index {
+            continue; // Skip already-completed steps on resume
+        }
         let exec = ExecutionContext {
             ctx,
             plan: &plan,
             current_step: step,
             step_ordinal: step.ordinal,
+            is_resume,
         };
 
         match execute_step(exec).await {
@@ -154,7 +161,7 @@ pub async fn execute_step(exec: ExecutionContext<'_>) -> Result<StepResult, Exec
 pub async fn execute_backfill_step(
     exec: ExecutionContext<'_>,
 ) -> Result<StepResult, ExecutorError> {
-    use crate::live_migrate::backfill::{BackfillError, execute_backfill};
+    use crate::live_migrate::backfill::{BackfillError, execute_backfill, resume_backfill};
     use crate::live_migrate::plan::StepParameters;
 
     let StepParameters::BackfillChunked {
@@ -172,15 +179,27 @@ pub async fn execute_backfill_step(
         });
     };
 
-    let _chunks = execute_backfill(
-        exec.ctx,
-        exec.plan.header.plan_id,
-        table,
-        predicate_template,
-        *chunk_size,
-        false, // emit_events — suppression default per module docs
-    )
-    .await
+    let _chunks = if exec.is_resume {
+        resume_backfill(
+            exec.ctx,
+            exec.plan.header.plan_id,
+            table,
+            predicate_template,
+            *chunk_size,
+            false, // emit_events — suppression default per module docs
+        )
+        .await
+    } else {
+        execute_backfill(
+            exec.ctx,
+            exec.plan.header.plan_id,
+            table,
+            predicate_template,
+            *chunk_size,
+            false, // emit_events — suppression default per module docs
+        )
+        .await
+    }
     .map_err(|e| match e {
         BackfillError::Database(db_err) => ExecutorError::Db(db_err),
         other => ExecutorError::StepFailed {
