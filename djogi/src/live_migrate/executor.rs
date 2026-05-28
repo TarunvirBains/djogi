@@ -154,6 +154,7 @@ pub async fn execute_step(exec: ExecutionContext<'_>) -> Result<StepResult, Exec
 pub async fn execute_backfill_step(
     exec: ExecutionContext<'_>,
 ) -> Result<StepResult, ExecutorError> {
+    use crate::live_migrate::backfill::{BackfillError, execute_backfill};
     use crate::live_migrate::plan::StepParameters;
 
     let StepParameters::BackfillChunked {
@@ -171,19 +172,24 @@ pub async fn execute_backfill_step(
         });
     };
 
-    // TODO: Implement chunked backfill loop.
-    // For now, return Partial to signal work is in progress.
-    // The real implementation will:
-    // 1. Build chunk predicate from template + table + chunk_size
-    // 2. Loop: SELECT FOR UPDATE SKIP LOCKED → UPDATE → commit
-    // 3. Track rows_done/rows_total for progress reporting
-    // 4. On interruption, return Partial with current counters
-    let _ = (table, predicate_template, chunk_size);
+    let _chunks = execute_backfill(
+        exec.ctx,
+        exec.plan.header.plan_id,
+        table,
+        predicate_template,
+        *chunk_size,
+        false, // emit_events — suppression default per module docs
+    )
+    .await
+    .map_err(|e| match e {
+        BackfillError::Database(db_err) => ExecutorError::Db(db_err),
+        other => ExecutorError::StepFailed {
+            ordinal: exec.step_ordinal,
+            reason: other.to_string(),
+        },
+    })?;
 
-    Ok(StepResult::Partial {
-        rows_done: 0,
-        rows_total: 0, // Unknown until COUNT query runs
-    })
+    Ok(StepResult::Completed)
 }
 
 /// Execute a DDL step (ExpandSchema, FinalizeConstraints, etc.).
@@ -202,11 +208,8 @@ pub async fn execute_ddl_step(exec: ExecutionContext<'_>) -> Result<StepResult, 
         _ => {
             return Err(ExecutorError::StepFailed {
                 ordinal: exec.step_ordinal,
-                reason: format!(
-                    "expected DDL parameters, got {:?}",
-                    exec.current_step.kind
-                ),
-            })
+                reason: format!("expected DDL parameters, got {:?}", exec.current_step.kind),
+            });
         }
     };
 
