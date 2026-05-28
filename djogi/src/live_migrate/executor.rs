@@ -213,15 +213,19 @@ pub async fn execute_ddl_step(exec: ExecutionContext<'_>) -> Result<StepResult, 
         }
     };
 
-    // Execute each segment within a transaction
-    for segment in &sql_segments {
-        exec.ctx
-            .execute(segment, &[])
-            .await
-            .map_err(ExecutorError::Db)?;
-    }
-
-    Ok(StepResult::Completed)
+    // Execute all segments within a single transaction. On failure,
+    // the entire step rolls back so no partial DDL is committed.
+    crate::transaction::atomic(exec.ctx, |tx_ctx| {
+        let segments = sql_segments.clone();
+        Box::pin(async move {
+            for segment in &segments {
+                tx_ctx.execute(segment, &[]).await?;
+            }
+            Ok::<_, crate::DjogiError>(StepResult::Completed)
+        })
+    })
+    .await
+    .map_err(ExecutorError::Db)
 }
 
 /// Handle an operator gate step (ValidateBackfill, CutoverReads, CutoverWrites).
