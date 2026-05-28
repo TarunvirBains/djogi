@@ -58,6 +58,7 @@ use djogi::live_migrate::{
     plan_path, read_plan, run_daemon, verify_checksum,
 };
 use djogi::pg::pool::DjogiPool;
+use djogi::live_migrate::compose::StepResult;
 use djogi::types::HeerId;
 
 // ── Subcommand surface ────────────────────────────────────────────────
@@ -766,18 +767,33 @@ async fn run_cmd(
     // [`validation_failed`] (exit 3). The mapping is exercised by the
     // exit-code unit tests; the production wiring lands with the
     // executor.
-    let _ = allow_raw_dangerous;
-    if row.last_error.is_some() {
-        return Err(validation_failed(format!(
-            "plan {plan_id} carries a stale `last_error`; clear it via `djogi live abandon` \
-             (then re-plan) or fix the underlying cause and resume",
-        )));
+    // Execute the plan via the live-plan engine
+    match djogi::live_migrate::executor::run_plan(&mut ctx, path).await {
+        Ok(result) => {
+            match result {
+                StepResult::Completed => {
+                    println!("live run: plan {plan_id} completed successfully");
+                    Ok(0)
+                }
+                StepResult::Paused => {
+                    println!("live run: paused at operator gate; resume with `djogi live run {plan_id}`");
+                    Ok(0)
+                }
+                StepResult::Partial { rows_done, rows_total } => {
+                    if rows_total > 0 {
+                        let pct = (rows_done as f64 / rows_total as f64) * 100.0;
+                        println!("live run: backfill progress {rows_done}/{rows_total} ({pct:.1}%); resume with `djogi live resume {plan_id}`");
+                    } else {
+                        println!("live run: backfill interrupted after {rows_done} rows; resume with `djogi live resume {plan_id}`");
+                    }
+                    Ok(0)
+                }
+            }
+        }
+        Err(e) => {
+            Err(LiveCmdError::Runtime(format!("executor error: {e}")))
+        }
     }
-    Err(LiveCmdError::Runtime(
-        "live run: step-graph executor lands alongside the `live plan` compose entry point; \
-         this CLI build shipped the dispatch + checksum verify + state-conflict gates"
-            .to_string(),
-    ))
 }
 
 /// `djogi live resume` body. Same shape as `run`, but additionally
@@ -793,11 +809,33 @@ async fn resume_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32
     let path = resolve_plan_file_path(&workspace, &row);
     verify_checksum(&path, &row.plan_file_checksum)?;
     let _plan = read_plan(&path)?;
-    Err(LiveCmdError::Runtime(
-        "live resume: chunk-loop executor lands alongside the `live plan` compose entry point; \
-         this CLI build shipped the dispatch + checksum verify + state-conflict gates"
-            .to_string(),
-    ))
+    // Resume execution from current step
+    match djogi::live_migrate::executor::run_plan(&mut ctx, path).await {
+        Ok(result) => {
+            match result {
+                StepResult::Completed => {
+                    println!("live resume: plan {plan_id} completed successfully");
+                    Ok(0)
+                }
+                StepResult::Paused => {
+                    println!("live resume: paused at operator gate; resume with `djogi live run {plan_id}`");
+                    Ok(0)
+                }
+                StepResult::Partial { rows_done, rows_total } => {
+                    if rows_total > 0 {
+                        let pct = (rows_done as f64 / rows_total as f64) * 100.0;
+                        println!("live resume: backfill progress {rows_done}/{rows_total} ({pct:.1}%); resume with `djogi live resume {plan_id}`");
+                    } else {
+                        println!("live resume: backfill interrupted after {rows_done} rows; resume with `djogi live resume {plan_id}`");
+                    }
+                    Ok(0)
+                }
+            }
+        }
+        Err(e) => {
+            Err(LiveCmdError::Runtime(format!("executor error: {e}")))
+        }
+    }
 }
 
 /// Reject statuses where `live run` would be a state-machine error.
@@ -876,7 +914,7 @@ fn assert_resume_status_allows_progress(status: PlanStatus) -> Result<(), LiveCm
 /// [`PlanStatus::Complete`].
 async fn finalize_cmd(
     plan_id_raw: &str,
-    justify: Option<&str>,
+    _justify: Option<&str>,
     workspace: Option<PathBuf>,
 ) -> Result<i32, LiveCmdError> {
     let plan_id = parse_plan_id(plan_id_raw)?;
@@ -888,17 +926,33 @@ async fn finalize_cmd(
     let path = resolve_plan_file_path(&workspace, &row);
     verify_checksum(&path, &row.plan_file_checksum)?;
     let _plan = read_plan(&path)?;
-
-    // Cleanup steps drop legacy state; if any remaining cleanup step
-    // is destructive, refuse without a `--justify`. The plan's step
-    // graph is the source of truth; this dispatch surfaces the gate,
-    // and the engine's finalize loop walks the graph.
-    let _ = justify;
-    Err(LiveCmdError::Runtime(
-        "live finalize: cleanup-step executor lands alongside the `live plan` compose entry \
-         point; this CLI build shipped the dispatch + checksum + state gate"
-            .to_string(),
-    ))
+    // Resume execution from current step
+    match djogi::live_migrate::executor::run_plan(&mut ctx, path).await {
+        Ok(result) => {
+            match result {
+                StepResult::Completed => {
+                    println!("live resume: plan {plan_id} completed successfully");
+                    Ok(0)
+                }
+                StepResult::Paused => {
+                    println!("live resume: paused at operator gate; resume with `djogi live run {plan_id}`");
+                    Ok(0)
+                }
+                StepResult::Partial { rows_done, rows_total } => {
+                    if rows_total > 0 {
+                        let pct = (rows_done as f64 / rows_total as f64) * 100.0;
+                        println!("live resume: backfill progress {rows_done}/{rows_total} ({pct:.1}%); resume with `djogi live resume {plan_id}`");
+                    } else {
+                        println!("live resume: backfill interrupted after {rows_done} rows; resume with `djogi live resume {plan_id}`");
+                    }
+                    Ok(0)
+                }
+            }
+        }
+        Err(e) => {
+            Err(LiveCmdError::Runtime(format!("executor error: {e}")))
+        }
+    }
 }
 
 /// Reject statuses where `live finalize` would be a state-machine
