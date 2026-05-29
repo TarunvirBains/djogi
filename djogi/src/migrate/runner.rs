@@ -3970,7 +3970,7 @@ fn expand_partition_statement(
         for leaf in leaves {
             let leaf_idx = format!(
                 "{leaf}_{pkey}_id{suffix}_idx",
-                leaf = strip_schema_prefix(leaf),
+                leaf = leaf,
                 pkey = part_col,
                 suffix = suffix,
             );
@@ -4022,7 +4022,7 @@ fn expand_partition_statement(
         for leaf in leaves {
             let leaf_idx = format!(
                 "{leaf}_{col}{suffix}_idx",
-                leaf = strip_schema_prefix(leaf),
+                leaf = leaf,
                 col = col,
                 suffix = suffix,
             );
@@ -4214,14 +4214,6 @@ fn recover_self_fk_column(parent_stmt: &str) -> (String, String) {
         return (col.to_string(), "_desc".to_string());
     }
     ("col".to_string(), "_desc".to_string())
-}
-
-/// Strip a `schema.` prefix from a regclass-rendered name. Postgres
-/// `regclass::text` qualifies a name only when the schema is not on
-/// the search path; we pick the unqualified leaf name for the
-/// per-leaf index name suffix to keep names short.
-fn strip_schema_prefix(name: &str) -> &str {
-    name.rsplit('.').next().unwrap_or(name)
 }
 
 #[cfg(test)]
@@ -5514,6 +5506,62 @@ mod tests {
                 .all(|s| s.down.is_empty()),
             "attach statements remain forward-only; leaf drops live on concurrent statements",
         );
+    }
+
+    #[test]
+    fn expand_partition_statement_schema_qualified_leaf_in_drop_down_sql() {
+        /*
+         * When lookup_partition_leaves returns schema-qualified names
+         * (e.g., "myschema.events_p_a"), the per-leaf index name in both
+         * CREATE and DROP must be fully qualified. Regression test for GH #357.
+         */
+        let parent = "myschema.events_p";
+        let leaves = vec![
+            "myschema.events_p_a".to_string(),
+            "myschema.events_p_b".to_string(),
+        ];
+
+        let plan = OperationSql {
+            label: format!("PkFlipPartitionedIndex {parent}"),
+            up: format!(
+                "CREATE UNIQUE INDEX CONCURRENTLY {parent}_ts_id_desc_idx ON {parent} (ts, id DESC)"
+            ),
+            down: format!("DROP INDEX IF EXISTS {parent}_ts_id_desc_idx"),
+            lossy: None,
+        };
+
+        let expanded = expand_partition_statement(
+            &plan,
+            parent,
+            &leaves,
+            PartitionExpansionMode::ApplyLenient,
+        )
+        .expect("partition expansion should succeed");
+
+        assert_eq!(expanded.len(), 5);
+
+        // Per-leaf DROP must use fully qualified index name
+        for entry in &expanded {
+            if entry.down.starts_with("DROP INDEX IF EXISTS") {
+                let idx_name = entry.down.trim_start_matches("DROP INDEX IF EXISTS ");
+                assert!(
+                    idx_name.starts_with("myschema.events_p_"),
+                    "DROP INDEX must be fully qualified, got: {}",
+                    idx_name
+                );
+            }
+        }
+
+        // ATTACH PARTITION must use fully qualified index name
+        for entry in &expanded {
+            if entry.up.contains("ATTACH PARTITION") {
+                assert!(
+                    entry.up.contains("ATTACH PARTITION myschema.events_p_"),
+                    "ATTACH PARTITION must be fully qualified: {}",
+                    entry.up
+                );
+            }
+        }
     }
 
     #[test]
