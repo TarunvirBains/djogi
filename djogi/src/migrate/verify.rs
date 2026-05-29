@@ -2664,6 +2664,7 @@ mod tests {
             run_id: 0,
             snapshot_version: super::super::schema::SNAPSHOT_FORMAT_VERSION.to_string(),
             app_label: app.to_string(),
+            leaf_identity: None,
         }
     }
 
