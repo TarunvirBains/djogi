@@ -806,7 +806,7 @@ djogi docs
 # shipped CLI: djogi migrations apply
 djogi migrations apply --fake --reason "existing schema"  # mark applied without running SQL
 # deferred CLI sketch: djogi migrations rollback
-# deferred CLI sketch: djogi migrations verify
+djogi migrations verify                # compare snapshot expectations to the live DB
 # deferred CLI sketch: djogi migrations repair
 # deferred CLI sketch: djogi migrations repair --rebuild-snapshot
 # deferred CLI sketch: djogi migrations baseline 0001_initial
@@ -877,12 +877,11 @@ Fake-apply out-of-order policy:
 
 ### 10.9 Verification and Out-of-Order Policy
 
-Verification is a first-class concern of the engine; the
-`migrations verify` CLI subcommand is **deferred post-Phase-7** (per
-§7.4 of this spec). The library entry point is available today as
-[`djogi::migrate::verify`](../../djogi/src/migrate/verify.rs), and
-adopters can drive it directly or via the `djogi::migrate::repair_*`
-helpers until the CLI dispatch lands.
+Verification is a first-class concern of the engine; `djogi migrations verify` is
+the primary path for snapshot/ledger/live-DB verification. The library entry
+points [`djogi::migrate::verify`](../../djogi/src/migrate/verify.rs) and
+[`djogi::migrate::verify_with_policy`](../../djogi/src/migrate/verify.rs)
+remain available for programmatic callers.
 
 The verification path compares snapshot/ledger expectations against
 the live database catalog and is used for:
