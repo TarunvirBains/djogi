@@ -1043,7 +1043,7 @@ async fn apply_plan_inner(
     // produces the concrete SQL the runner will actually execute, so
     // every downstream preflight and step-count calculation works on
     // the real statement list.
-    let plan_owned =
+    let (plan_owned, leaves_cache) =
         materialize_execution_plan(ctx, plan, PartitionExpansionMode::ApplyLenient).await?;
     let plan = &plan_owned;
 
@@ -1089,7 +1089,7 @@ async fn apply_plan_inner(
         run_id,
         snapshot_version: SNAPSHOT_FORMAT_VERSION.to_string(),
         app_label: plan.bucket.app.clone(),
-        leaf_identity: None,
+        leaf_identity: serialize_leaf_identity(&leaves_cache),
     };
     let ledger_id = match ledger::insert_pending(ctx, &ledger_row).await {
         Ok(id) => id,
@@ -1827,9 +1827,9 @@ async fn rollback_plan_pinned(
     //    rollback replays reverse down SQL against the expanded stream. Lossy
     //    scanning operates on the materialized plan, not the original unexpanded
     //    plan, so per-leaf lossy markers are properly detected (GH #317).
-    let replay_plan =
+    let (replay_plan, _leaves_cache_rollback) =
         match materialize_execution_plan(ctx, plan, PartitionExpansionMode::ReplayStrict).await {
-            Ok(p) => p,
+            Ok((p, cache)) => (p, cache),
             Err(e) => {
                 let _released = release_advisory_lock(ctx, lock_key).await;
                 return Err(RollbackError::Runner(e));
@@ -3734,8 +3734,33 @@ pub(crate) async fn materialize_execution_plan(
     ctx: &mut DjogiContext,
     plan: &MigrationPlan,
     mode: PartitionExpansionMode,
-) -> Result<MigrationPlan, RunnerError> {
+) -> Result<
+    (
+        MigrationPlan,
+        std::collections::HashMap<String, Vec<String>>,
+    ),
+    RunnerError,
+> {
     expand_partition_leaf_placeholders(ctx, plan, mode).await
+}
+
+/// Serialize a parent-to-leaves map into the compact `leaf_identity`
+/// format stored in the ledger. Parents sorted alphabetically; leaves
+/// already sorted by `regclass::text`. Newline-delimited
+/// `parent:leaf1,leaf2` entries.
+fn serialize_leaf_identity(
+    leaves_cache: &std::collections::HashMap<String, Vec<String>>,
+) -> Option<String> {
+    let mut entries: Vec<_> = leaves_cache
+        .iter()
+        .map(|(parent, leaves)| format!("{}:{}", parent, leaves.join(",")))
+        .collect();
+    entries.sort();
+    if entries.is_empty() {
+        None
+    } else {
+        Some(entries.join("\n"))
+    }
 }
 
 /// Walk every segment and expand the `<EACH_LEAF_TABLE>` placeholder
@@ -3772,7 +3797,13 @@ async fn expand_partition_leaf_placeholders(
     ctx: &mut DjogiContext,
     plan: &MigrationPlan,
     mode: PartitionExpansionMode,
-) -> Result<MigrationPlan, RunnerError> {
+) -> Result<
+    (
+        MigrationPlan,
+        std::collections::HashMap<String, Vec<String>>,
+    ),
+    RunnerError,
+> {
     // Cache leaves per parent so multiple statements pointing at the
     // same partitioned parent share one query.
     let mut leaves_cache: std::collections::HashMap<String, Vec<String>> =
@@ -3797,7 +3828,7 @@ async fn expand_partition_leaf_placeholders(
         }
         segment.statements = new_stmts;
     }
-    Ok(new_plan)
+    Ok((new_plan, leaves_cache))
 }
 
 /// Recover the partitioned parent name from a `PkFlipPartitioned…`

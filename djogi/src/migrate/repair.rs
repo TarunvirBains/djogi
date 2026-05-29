@@ -1085,7 +1085,7 @@ async fn repair_resume_body(
     // `<EACH_LEAF_TABLE>` placeholders into concrete leaf statements,
     // so the replay walks the same expanded stream the original apply
     // executed. Refuses zero-leaf partitions (REQ-13).
-    let materialized_plan =
+    let (materialized_plan, _leaves_cache_repair) =
         materialize_execution_plan(ctx, plan, PartitionExpansionMode::ReplayStrict)
             .await
             .map_err(|e| match e {
