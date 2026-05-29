@@ -2,10 +2,10 @@
 
 # CLI Roadmap — current binary is `djogi`
 
-> **Status: PARTIALLY SHIPPED.** Phase 7 ships
+> **Status: MOSTLY SHIPPED.** Phase 7 ships
 > `djogi migrations apply` (with `--fake` / `--reason`), `compose`, `status`,
-> and `attune`, plus `djogi db reset / seed` and `djogi docs`. The `rollback`,
-> `baseline`, `verify`, and `repair` CLI dispatchers are deferred; adopters
+> `attune`, and `verify`, plus `djogi db reset / seed` and `djogi docs`. The
+> `rollback`, `baseline`, and `repair` CLI dispatchers are deferred; adopters
 > needing them today call the public library entry points directly. The
 > authoritative current CLI surface lives in
 > [`docs/guide/migrations.md`](../guide/migrations.md). This roadmap
@@ -128,10 +128,12 @@ djogi migrations compose --name "backfill_nulls"  # custom migration name
 
 ### `djogi verify`
 
-Verifies repository/package state through the shipped top-level `djogi verify` command. Migration-specific live-DB verification remains a deferred `djogi migrations verify` dispatcher; use `djogi::migrate::verify` from library code until that CLI lands.
+Verifies repository/package state through the shipped top-level `djogi verify` command. For migration-specific live-DB verification, use `djogi migrations verify` (shipped) which compares `schema_snapshot.json` against the live DB and reports diagnostics. The `--strict` flag promotes out-of-order diagnostics from Warning to Error.
 
 ```bash
 djogi verify
+djogi migrations verify
+djogi migrations verify --strict
 ```
 
 **Example output (valid):**
