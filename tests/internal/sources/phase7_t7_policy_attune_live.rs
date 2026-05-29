@@ -683,7 +683,7 @@ async fn attune_diff_only_does_not_mutate(mut ctx: djogi::DjogiContext) {
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
     std::fs::create_dir_all(&bucket_dir).unwrap();
     std::fs::write(
-        bucket_dir.join("V20260101000001__init.sql"),
+        bucket_dir.join("V20260101000001__init.sdjql"),
         "CREATE TABLE foo();",
     )
     .unwrap();
@@ -739,7 +739,7 @@ async fn attune_record_inserts_row_without_running_sql(mut ctx: djogi::DjogiCont
     // The SQL would create a table; if attune executes it, the table
     // would exist after.
     std::fs::write(
-        bucket_dir.join("V20260101000002__record.sql"),
+        bucket_dir.join("V20260101000002__record.sdjql"),
         "CREATE TABLE t7_attune_must_not_run_this_table(id INT);",
     )
     .unwrap();
@@ -999,7 +999,7 @@ async fn attune_squash_refuses_on_missing_from_version(mut ctx: djogi::DjogiCont
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
     std::fs::create_dir_all(&bucket_dir).unwrap();
     std::fs::write(
-        bucket_dir.join("V20260201000000__seed.sql"),
+        bucket_dir.join("V20260201000000__seed.sdjql"),
         "CREATE TABLE foo();",
     )
     .unwrap();
@@ -1044,32 +1044,32 @@ async fn attune_squash_collapses_local_files(mut ctx: djogi::DjogiContext) {
 
     // Three migrations on disk.
     std::fs::write(
-        bucket_dir.join("V20260101000000__init.sql"),
+        bucket_dir.join("V20260101000000__init.sdjql"),
         "CREATE TABLE foo();",
     )
     .unwrap();
     std::fs::write(
-        bucket_dir.join("V20260101000000__init.down.sql"),
+        bucket_dir.join("V20260101000000__init.down.sdjql"),
         "DROP TABLE foo;",
     )
     .unwrap();
     std::fs::write(
-        bucket_dir.join("V20260201000000__add_bar.sql"),
+        bucket_dir.join("V20260201000000__add_bar.sdjql"),
         "ALTER TABLE foo ADD COLUMN bar TEXT;",
     )
     .unwrap();
     std::fs::write(
-        bucket_dir.join("V20260201000000__add_bar.down.sql"),
+        bucket_dir.join("V20260201000000__add_bar.down.sdjql"),
         "ALTER TABLE foo DROP COLUMN bar;",
     )
     .unwrap();
     std::fs::write(
-        bucket_dir.join("V20260301000000__add_baz.sql"),
+        bucket_dir.join("V20260301000000__add_baz.sdjql"),
         "ALTER TABLE foo ADD COLUMN baz TEXT;",
     )
     .unwrap();
     std::fs::write(
-        bucket_dir.join("V20260301000000__add_baz.down.sql"),
+        bucket_dir.join("V20260301000000__add_baz.down.sdjql"),
         "ALTER TABLE foo DROP COLUMN baz;",
     )
     .unwrap();
@@ -1128,22 +1128,22 @@ async fn attune_squash_collapses_local_files(mut ctx: djogi::DjogiContext) {
 
     // The two later up files must be GONE.
     assert!(
-        !bucket_dir.join("V20260201000000__add_bar.sql").exists(),
+        !bucket_dir.join("V20260201000000__add_bar.sdjql").exists(),
         "later up file must be deleted"
     );
     assert!(
-        !bucket_dir.join("V20260301000000__add_baz.sql").exists(),
+        !bucket_dir.join("V20260301000000__add_baz.sdjql").exists(),
         "later up file must be deleted"
     );
     // Their down files too.
     assert!(
         !bucket_dir
-            .join("V20260201000000__add_bar.down.sql")
+            .join("V20260201000000__add_bar.down.sdjql")
             .exists()
     );
     // The squash target file must still exist and contain ALL the
     // collapsed up SQL.
-    let squashed = std::fs::read_to_string(bucket_dir.join("V20260101000000__init.sql"))
+    let squashed = std::fs::read_to_string(bucket_dir.join("V20260101000000__init.sdjql"))
         .expect("squashed up file");
     assert!(squashed.contains("CREATE TABLE foo()"));
     assert!(squashed.contains("ADD COLUMN bar"));
@@ -1165,7 +1165,7 @@ async fn attune_squash_collapses_local_files(mut ctx: djogi::DjogiContext) {
     // must describe the POST-squash file content, not the pre-squash
     // content. Recompute the checksum against the freshly-written
     // squashed file's bytes and confirm parity.
-    let post_up_sql = std::fs::read_to_string(bucket_dir.join("V20260101000000__init.sql"))
+    let post_up_sql = std::fs::read_to_string(bucket_dir.join("V20260101000000__init.sdjql"))
         .expect("squashed up file (B-4 read)");
     let expected_checksum = djogi::migrate::compute_checksum([post_up_sql.as_str()]);
     let actual_checksum: String = ctx
@@ -1299,7 +1299,7 @@ async fn attune_record_filters_disk_scan_by_active_database(mut ctx: djogi::Djog
     let active_dir = work.join(format!("migrations/{active_db}/users"));
     std::fs::create_dir_all(&active_dir).unwrap();
     std::fs::write(
-        active_dir.join("V20260101000001__active.sql"),
+        active_dir.join("V20260101000001__active.sdjql"),
         "CREATE TABLE t7_b2_active(id INT);",
     )
     .unwrap();
@@ -1307,7 +1307,7 @@ async fn attune_record_filters_disk_scan_by_active_database(mut ctx: djogi::Djog
     let other_dir = work.join("migrations/other_database_b2/billing");
     std::fs::create_dir_all(&other_dir).unwrap();
     std::fs::write(
-        other_dir.join("V20260101000002__other.sql"),
+        other_dir.join("V20260101000002__other.sdjql"),
         "CREATE TABLE t7_b2_other(id INT);",
     )
     .unwrap();
@@ -1382,8 +1382,8 @@ async fn attune_squash_refuses_ambiguous_from_across_buckets(mut ctx: djogi::Djo
     // the pre-B-5 implementation into squashing both).
     let shared_version = "V20260101000000__shared";
     for dir in [&users_dir, &billing_dir] {
-        std::fs::write(dir.join(format!("{shared_version}.sql")), "-- shared seed").unwrap();
-        std::fs::write(dir.join("V20260601000000__later.sql"), "-- later").unwrap();
+        std::fs::write(dir.join(format!("{shared_version}.sdjql")), "-- shared seed").unwrap();
+        std::fs::write(dir.join("V20260601000000__later.sdjql"), "-- later").unwrap();
     }
 
     djogi::migrate::bootstrap_ledger(&mut ctx)
@@ -1437,22 +1437,22 @@ async fn attune_squash_with_app_filter_only_collapses_target_bucket(mut ctx: djo
     std::fs::create_dir_all(&billing_dir).unwrap();
 
     std::fs::write(
-        users_dir.join("V20260101000000__users_init.sql"),
+        users_dir.join("V20260101000000__users_init.sdjql"),
         "CREATE TABLE u_init();",
     )
     .unwrap();
     std::fs::write(
-        users_dir.join("V20260201000000__users_later.sql"),
+        users_dir.join("V20260201000000__users_later.sdjql"),
         "ALTER TABLE u_init ADD COLUMN x INT;",
     )
     .unwrap();
     std::fs::write(
-        billing_dir.join("V20260301000000__billing_init.sql"),
+        billing_dir.join("V20260301000000__billing_init.sdjql"),
         "CREATE TABLE b_init();",
     )
     .unwrap();
     std::fs::write(
-        billing_dir.join("V20260401000000__billing_later.sql"),
+        billing_dir.join("V20260401000000__billing_later.sdjql"),
         "ALTER TABLE b_init ADD COLUMN y INT;",
     )
     .unwrap();
@@ -1483,19 +1483,19 @@ async fn attune_squash_with_app_filter_only_collapses_target_bucket(mut ctx: djo
 
     // Users later file collapsed.
     assert!(
-        !users_dir.join("V20260201000000__users_later.sql").exists(),
+        !users_dir.join("V20260201000000__users_later.sdjql").exists(),
         "users-later must be deleted"
     );
     // Billing files untouched.
     assert!(
         billing_dir
-            .join("V20260301000000__billing_init.sql")
+            .join("V20260301000000__billing_init.sdjql")
             .exists(),
         "billing-init must remain"
     );
     assert!(
         billing_dir
-            .join("V20260401000000__billing_later.sql")
+            .join("V20260401000000__billing_later.sdjql")
             .exists(),
         "billing-later must remain"
     );
@@ -1546,17 +1546,17 @@ async fn attune_squash_with_publish_pushes_to_remote_origin(mut ctx: djogi::Djog
 
     // Three SQL files so squash has work to do.
     std::fs::write(
-        bucket_dir.join("V20260101000000__init.sql"),
+        bucket_dir.join("V20260101000000__init.sdjql"),
         "CREATE TABLE foo();",
     )
     .unwrap();
     std::fs::write(
-        bucket_dir.join("V20260201000000__add_bar.sql"),
+        bucket_dir.join("V20260201000000__add_bar.sdjql"),
         "ALTER TABLE foo ADD COLUMN bar TEXT;",
     )
     .unwrap();
     std::fs::write(
-        bucket_dir.join("V20260301000000__add_baz.sql"),
+        bucket_dir.join("V20260301000000__add_baz.sdjql"),
         "ALTER TABLE foo ADD COLUMN baz TEXT;",
     )
     .unwrap();
@@ -1905,7 +1905,7 @@ fn init_parent_with_migrations_submodule(work: &std::path::Path, db: &str) -> St
     let bucket_dir = migrations_root.join(db).join("_global_");
     std::fs::create_dir_all(&bucket_dir).unwrap();
     std::fs::write(
-        bucket_dir.join("V20260101000000__init.sql"),
+        bucket_dir.join("V20260101000000__init.sdjql"),
         "CREATE TABLE u1_target_widget (id BIGINT PRIMARY KEY);",
     )
     .unwrap();
@@ -2047,7 +2047,7 @@ async fn u1_attune_record_without_apply_is_dry_run(mut ctx: djogi::DjogiContext)
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
     std::fs::create_dir_all(&bucket_dir).unwrap();
     std::fs::write(
-        bucket_dir.join("V20260101000003__dry_run.sql"),
+        bucket_dir.join("V20260101000003__dry_run.sdjql"),
         "CREATE TABLE u1_dry_table(id INT);",
     )
     .unwrap();
@@ -2116,7 +2116,7 @@ async fn u1_attune_record_with_apply_mutates_ledger(mut ctx: djogi::DjogiContext
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
     std::fs::create_dir_all(&bucket_dir).unwrap();
     std::fs::write(
-        bucket_dir.join("V20260101000004__apply.sql"),
+        bucket_dir.join("V20260101000004__apply.sdjql"),
         "CREATE TABLE u1_apply_table(id INT);",
     )
     .unwrap();
@@ -2171,7 +2171,7 @@ async fn u1_attune_record_apply_updates_parent_submodule_pointer(mut ctx: djogi:
     // pointer. Append a second SQL file then commit.
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
     std::fs::write(
-        bucket_dir.join("V20260201000000__second.sql"),
+        bucket_dir.join("V20260201000000__second.sdjql"),
         "CREATE TABLE u1_second(id INT);",
     )
     .unwrap();
@@ -2336,7 +2336,7 @@ async fn u5_attune_record_dry_run_does_not_bootstrap_ledger(mut ctx: djogi::Djog
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
     std::fs::create_dir_all(&bucket_dir).unwrap();
     std::fs::write(
-        bucket_dir.join("V20260501000000__u5_dry.sql"),
+        bucket_dir.join("V20260501000000__u5_dry.sdjql"),
         "CREATE TABLE u5_dry_table(id INT);",
     )
     .unwrap();
@@ -2413,7 +2413,7 @@ async fn u5_attune_record_apply_does_bootstrap_ledger(mut ctx: djogi::DjogiConte
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
     std::fs::create_dir_all(&bucket_dir).unwrap();
     std::fs::write(
-        bucket_dir.join("V20260501000001__u5_apply.sql"),
+        bucket_dir.join("V20260501000001__u5_apply.sdjql"),
         "CREATE TABLE u5_apply_table(id INT);",
     )
     .unwrap();
@@ -2478,7 +2478,7 @@ async fn u5_attune_squash_dry_run_does_not_bootstrap_ledger(mut ctx: djogi::Djog
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
     std::fs::create_dir_all(&bucket_dir).unwrap();
     std::fs::write(
-        bucket_dir.join("V20260501000002__u5_squash_dry.sql"),
+        bucket_dir.join("V20260501000002__u5_squash_dry.sdjql"),
         "CREATE TABLE u5_squash_dry(id INT);",
     )
     .unwrap();
@@ -2578,7 +2578,7 @@ async fn u7_attune_squash_implies_recording_without_explicit_flag(mut ctx: djogi
     // "wrote the same SHA back").
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
     std::fs::write(
-        bucket_dir.join("V20260201000000__u7_second.sql"),
+        bucket_dir.join("V20260201000000__u7_second.sdjql"),
         "CREATE TABLE u7_second(id INT);",
     )
     .unwrap();
