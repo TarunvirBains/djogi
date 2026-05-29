@@ -1132,8 +1132,7 @@ async fn repair_resume_body(
     // If topology changed since original apply (partition added/dropped), refuse
     // to proceed rather than replaying against a different set of leaves.
     if let Some(ref stored_identity) = row.leaf_identity {
-        let current_identity = serialize_leaf_identity(&leaves_cache_repair)
-            .unwrap_or_default();
+        let current_identity = serialize_leaf_identity(&leaves_cache_repair).unwrap_or_default();
         if current_identity != *stored_identity {
             return Err(RepairError::LeafIdentityMismatch {
                 version: row.version.clone(),
@@ -1753,10 +1752,10 @@ mod tests {
     fn repair_leaf_identity_mismatch_display() {
         let err = RepairError::LeafIdentityMismatch {
             version: "001_create_users".to_string(),
-            stored_leaf_identity:
-                "public.users:public.users_p2024_01,public.users_p2024_02\n".to_string(),
-            current_leaf_identity:
-                "public.users:public.users_p2024_01,public.users_p2024_03\n".to_string(),
+            stored_leaf_identity: "public.users:public.users_p2024_01,public.users_p2024_02\n"
+                .to_string(),
+            current_leaf_identity: "public.users:public.users_p2024_01,public.users_p2024_03\n"
+                .to_string(),
         };
         let msg = format!("{}", err);
         assert!(msg.contains("[D610]"));

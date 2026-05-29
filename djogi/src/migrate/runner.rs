@@ -5680,10 +5680,10 @@ mod tests {
     fn rollback_leaf_identity_mismatch_display() {
         let err = RollbackError::LeafIdentityMismatch {
             version: "001_create_users".to_string(),
-            stored_leaf_identity:
-                "public.users:public.users_p2024_01,public.users_p2024_02\n".to_string(),
-            current_leaf_identity:
-                "public.users:public.users_p2024_01,public.users_p2024_03\n".to_string(),
+            stored_leaf_identity: "public.users:public.users_p2024_01,public.users_p2024_02\n"
+                .to_string(),
+            current_leaf_identity: "public.users:public.users_p2024_01,public.users_p2024_03\n"
+                .to_string(),
         };
         let msg = format!("{}", err);
         assert!(msg.contains("[D620]"));
