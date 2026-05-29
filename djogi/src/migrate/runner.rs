@@ -1716,6 +1716,9 @@ pub async fn rollback_plan(
 /// This operates against the materialized replay plan (partition-expanded),
 /// not the original unexpanded plan, so per-leaf lossy markers are properly
 /// detected (GH #317).
+// RollbackError is a large enum by design; this sync helper returns it by
+// value and needs the suppression. Same rationale as handle_release_result.
+#[allow(clippy::result_large_err)]
 fn rollback_lossy_allow_reason(
     plan: &MigrationPlan,
     lossy_policy: &LossyRollbackPolicy,
@@ -3884,6 +3887,9 @@ async fn lookup_partition_leaves(
 /// statement immediately after each leaf's CONCURRENTLY index build
 /// so the partitioned parent's UNIQUE index becomes valid as soon as
 /// the last leaf attaches.
+// RunnerError is a large enum by design; this sync helper returns it by
+// value and needs the suppression. Same rationale as handle_release_result.
+#[allow(clippy::result_large_err)]
 fn expand_partition_statement(
     stmt: &OperationSql,
     parent: &str,
