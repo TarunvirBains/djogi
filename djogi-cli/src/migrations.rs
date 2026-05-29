@@ -13,9 +13,10 @@ use std::process::ExitCode;
 
 use djogi::apps::AppRegistry;
 use djogi::migrate::{
-    AppLifecycle, AttuneError, AttuneMode, AttuneRequest, ComposeError, ComposeRequest,
-    GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME, PendingPlan, RunnerCtx, RunnerError,
-    acquire_workspace_lock, apply_plan, attune, compose, fake_apply_plan, project_from_inventory,
+    AppLifecycle, AttuneError, AttuneMode, AttuneRequest, BucketKey, ComposeError, ComposeRequest,
+    GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME, PendingPlan, RunnerCtx, RunnerError, SnapshotError,
+    VerifyReport, VerifySeverity, acquire_workspace_lock, apply_plan, attune, compose,
+    fake_apply_plan, load_snapshot, project_from_inventory, snapshot_path,
 };
 
 // Re-export for the apply command's ledger state machine.
@@ -1284,6 +1285,219 @@ fn attune_error_exit_code(err: &AttuneError) -> i32 {
         | AttuneError::GitTargetResolveFailed { .. }
         | AttuneError::GitFetchFailed { .. }
         | AttuneError::GitUpdateSubmodulePointerFailed { .. } => 1,
+    }
+}
+
+/// `djogi migrations verify` entry point.
+///
+/// Read-only — does not acquire the workspace lock. Reads the live
+/// Postgres catalog via [`djogi::context::DjogiContext`] and compares
+/// against the projected schema from the descriptor inventory.
+///
+/// Exit codes: 0 on success (no error-level diagnostics), 1 on runtime
+/// error (config / network / SQL / projection), 2 on refusal
+/// (below PG 18).
+pub fn verify_cmd(workspace: Option<PathBuf>, strict: bool) -> ExitCode {
+    let workspace = resolve_workspace(workspace);
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("djogi migrations verify: tokio runtime: {e}");
+            return ExitCode::from(1);
+        }
+    };
+
+    let exit = runtime.block_on(async { run_verify(&workspace, strict).await });
+    ExitCode::from(exit as u8)
+}
+
+/// Async body of [`verify_cmd`]. Returns the desired exit code.
+async fn run_verify(workspace: &Path, strict: bool) -> i32 {
+    use djogi::config::DjogiConfig;
+
+    // 1. Load config from workspace
+    let config = match DjogiConfig::load_from_workspace(workspace) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("djogi migrations verify: config load: {e}");
+            return 1;
+        }
+    };
+
+    // 2. Build context with PG version check
+    let mut ctx = match build_status_context(&config.database.url).await {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            eprintln!("djogi migrations verify: pool: {e}");
+            return 1;
+        }
+    };
+
+    // 3. Project schema from descriptor inventory
+    let models = match project_from_inventory() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("djogi migrations verify: projection error: {e}");
+            return 1;
+        }
+    };
+
+    if models.is_empty() {
+        println!("No registered apps found for verification.");
+        return 0;
+    }
+
+    // Policy configuration for --strict flag
+    let policy = djogi::config::PolicyConfig {
+        strict_out_of_order: strict,
+    };
+
+    let mut exit_code = 0;
+    for bucket in models.keys() {
+        let snap_path = snapshot_path(workspace, bucket);
+        let snapshot = match load_snapshot(&snap_path) {
+            Ok(s) => s,
+            Err(SnapshotError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                let _bd = if bucket.app.is_empty() {
+                    "_global_"
+                } else {
+                    &bucket.app
+                };
+                println!("No snapshot found for bucket {}/{}", bucket.database, _bd);
+                continue;
+            }
+            Err(e) => {
+                let _bd = if bucket.app.is_empty() {
+                    "_global_"
+                } else {
+                    &bucket.app
+                };
+                eprintln!(
+                    "djogi migrations verify: load snapshot for {}/{}: {e}",
+                    bucket.database, _bd
+                );
+                exit_code = 1;
+                continue;
+            }
+        };
+
+        let report = if policy.strict_out_of_order {
+            djogi::migrate::verify_with_policy(&mut ctx, &snapshot, &policy).await
+        } else {
+            djogi::migrate::verify(&mut ctx, &snapshot).await
+        };
+        let report = match report {
+            Ok(r) => r,
+            Err(e) => {
+                let _bd = if bucket.app.is_empty() {
+                    "_global_"
+                } else {
+                    &bucket.app
+                };
+                eprintln!(
+                    "djogi migrations verify: run for {}/{}: {e}",
+                    bucket.database, _bd
+                );
+                exit_code = 1;
+                continue;
+            }
+        };
+
+        render_verify_report(&report, bucket);
+        if report.has_errors() {
+            exit_code = 1;
+        }
+    }
+
+    exit_code
+}
+
+/// Render a [`VerifyReport`] to stdout.
+///
+/// Format: one line per diagnostic with severity prefix, code, location,
+/// and message. Summary line at the end. Output is deterministic
+/// because `report.diagnostics` is already sorted by `(code, location)`.
+fn render_verify_report(report: &VerifyReport, bucket: &BucketKey) {
+    let app_display = if bucket.app.is_empty() {
+        "_global_"
+    } else {
+        &bucket.app
+    };
+    println!(
+        "djogi migrations verify — {}/{}",
+        bucket.database, app_display
+    );
+    println!("──────────────────────────────────────────");
+
+    match (
+        &report.latest_applied_version,
+        report.applied_count,
+        report.unfinished_count,
+    ) {
+        (Some(version), applied, 0) => {
+            println!("Ledger: {applied} applied, latest {version}");
+        }
+        (Some(version), applied, unfinished) => {
+            println!("Ledger: {applied} applied, {unfinished} unfinished, latest {version}");
+        }
+        (None, 0, 0) => {
+            println!("Ledger: empty (no migrations applied yet)");
+        }
+        _ => {}
+    }
+    println!();
+
+    if report.diagnostics.is_empty() {
+        println!("No drift detected. Schema is consistent.");
+    } else {
+        for d in &report.diagnostics {
+            let severity = match d.severity {
+                VerifySeverity::Info => "INFO",
+                VerifySeverity::Warning => "WARN",
+                VerifySeverity::Error => "ERROR",
+            };
+            let location = d.location.as_deref().unwrap_or("-");
+            println!(
+                "[{severity}] {code} ({loc}): {msg}",
+                severity = severity,
+                code = d.code,
+                loc = location,
+                msg = d.message
+            );
+        }
+    }
+
+    let errors = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == VerifySeverity::Error)
+        .count();
+    let warnings = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == VerifySeverity::Warning)
+        .count();
+    let infos = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == VerifySeverity::Info)
+        .count();
+
+    if errors > 0 {
+        println!();
+        println!("Result: FAILED ({errors} error(s), {warnings} warning(s), {infos} info(s))");
+    } else if warnings > 0 {
+        println!();
+        println!("Result: PASSED with warnings ({warnings} warning(s), {infos} info(s))");
+    } else {
+        println!();
+        println!("Result: PASSED ({} info(s))", infos);
     }
 }
 
