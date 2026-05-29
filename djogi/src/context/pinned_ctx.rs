@@ -143,7 +143,6 @@ mod tests {
     /// checkouts return the SAME PID — the connection WAS recycled).
     /// **Expected result AFTER fix:** PASS (different PIDs prove detachment).
     #[tokio::test]
-    #[ignore] // Requires live Postgres via DATABASE_URL
     async fn cancellation_drop_detaches_connection_from_pool() {
         // Skip gracefully when no database is configured.
         let database_url = std::env::var("DATABASE_URL").unwrap_or_default();
