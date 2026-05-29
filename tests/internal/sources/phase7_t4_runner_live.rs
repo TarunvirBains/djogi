@@ -1200,8 +1200,10 @@ async fn duplicate_version_surfaces_non_terminal_collision_statuses(mut ctx: djo
         }
 
         if seed_status == LedgerStatus::RolledBack {
-            assert!(msg.contains("rolled-back rows are historical and are not repair targets"));
-            assert!(!msg.contains("follow the repair flow"));
+            // RolledBack rows are not repair targets; the message tells the
+            // operator to re-run `apply`, not to use the repair flow.
+            assert!(msg.contains("re-running `djogi migrations apply` will remove the rolled-back row"));
+            assert!(!msg.contains("repair_partial_apply"));
         }
     }
 }
