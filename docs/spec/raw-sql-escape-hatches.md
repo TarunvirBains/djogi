@@ -316,6 +316,25 @@ allowed. For `raw_ddl`, the preflight scans real top-level statements while
 respecting comments, quoted strings, and dollar-quoted bodies; empty or
 trivia-only batches pass through.
 
+Transaction-control statements are also refused with
+`DjogiError::RawTransactionControlDisallowedInTransaction { statement }`:
+
+- `BEGIN` / `START TRANSACTION`
+- `COMMIT` / `COMMIT WORK` / `COMMIT TRANSACTION`
+- `ROLLBACK` (plain, `WORK`, `TRANSACTION`, and `TO savepoint`)
+- `END` / `ABORT` / `END WORK` / `END TRANSACTION`
+- `SAVEPOINT`
+- `RELEASE SAVEPOINT` / bare `RELEASE`
+
+These are refused because they bypass framework bookkeeping: on_commit
+callback drain, rollback cleanup, and savepoint depth synchronization.
+Attempting to nest, end, or checkpoint a transaction from inside raw SQL
+would leave Djogi's internal state inconsistent with the actual connection
+state, potentially causing silent data loss or phantom errors on the next
+checkout. The `raw_stream` / `raw_stream_with_fetch_size` entrypoints
+already require an active transaction and do not run this classifier —
+their cursor-based protocol is inherently transaction-bound.
+
 Adopters who run session-state-affecting raw SQL on the clean path must wrap
 the call in `djogi::transaction::atomic(...)` **and** either:
 

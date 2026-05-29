@@ -408,6 +408,16 @@ impl DjogiContext {
         self.transaction_poisoned.is_some()
     }
 
+    /// Return true when this context owns an active transaction connection.
+    ///
+    /// Currently unused by the bypass harness (which uses `conn().is_some()`),
+    /// but available for future integration layers that need a cheap check
+    /// without taking a mutable reference.
+    #[allow(dead_code)] // Available for future use; bypass harness uses conn().is_some()
+    pub(crate) fn is_transaction_backed(&self) -> bool {
+        matches!(&self.inner, ContextInner::Transaction(_))
+    }
+
     fn clear_transaction_poison(&mut self) {
         self.transaction_poisoned = None;
     }
