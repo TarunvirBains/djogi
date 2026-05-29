@@ -1912,4 +1912,58 @@ mod tests {
             "--reason without --fake should not refuse"
         );
     }
+
+    #[test]
+    fn render_verify_report_clean_output() {
+        use djogi::migrate::{BucketKey, VerifyReport, VerifySeverity};
+
+        let report = VerifyReport {
+            diagnostics: vec![],
+            latest_applied_version: Some("001_initial".to_string()),
+            applied_count: 3,
+            unfinished_count: 0,
+        };
+        let bucket = BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+
+        // Just verify it doesn't panic and runs cleanly.
+        // The output goes to stdout which we can't easily capture in a unit test,
+        // but the function being called proves the types are correct and
+        // the render logic compiles against the library types.
+        render_verify_report(&report, &bucket);
+    }
+
+    #[test]
+    fn render_verify_report_with_errors() {
+        use djogi::migrate::{BucketKey, VerifyDiagnostic, VerifyReport, VerifySeverity};
+
+        let report = VerifyReport {
+            diagnostics: vec![
+                VerifyDiagnostic {
+                    code: "D601".to_string(),
+                    severity: VerifySeverity::Error,
+                    message: "Snapshot table missing from live DB".to_string(),
+                    location: Some("users".to_string()),
+                },
+                VerifyDiagnostic {
+                    code: "D611".to_string(),
+                    severity: VerifySeverity::Warning,
+                    message: "Live index not present in snapshot".to_string(),
+                    location: Some("idx_posts_created".to_string()),
+                },
+            ],
+            latest_applied_version: Some("V20260501000000__add_users".to_string()),
+            applied_count: 2,
+            unfinished_count: 0,
+        };
+        let bucket = BucketKey {
+            database: "main".to_string(),
+            app: "myapp".to_string(),
+        };
+
+        assert!(report.has_errors());
+        render_verify_report(&report, &bucket);
+    }
 }

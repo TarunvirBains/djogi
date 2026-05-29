@@ -718,6 +718,8 @@ mod tests {
 
     use clap::Parser as _;
 
+    use std::path::PathBuf;
+
     use super::{
         Cli, DbCommand, MigrateCommand, MigrationsCommand, TopCommand, parse_threshold_vacuum,
     };
@@ -825,6 +827,58 @@ mod tests {
                 command: MigrationsCommand::Status { .. },
             } => {}
             _ => panic!("expected migrations status command"),
+        }
+    }
+
+    #[test]
+    fn migrations_verify_parses_with_defaults() {
+        let cli = Cli::try_parse_from(["djogi", "migrations", "verify"])
+            .expect("migrations verify should parse with no flags");
+
+        match cli.command {
+            TopCommand::Migrations {
+                command: MigrationsCommand::Verify { workspace, strict },
+            } => {
+                assert!(workspace.is_none());
+                assert!(!strict);
+            }
+            _ => panic!("expected migrations verify command"),
+        }
+    }
+
+    #[test]
+    fn migrations_verify_parses_with_strict() {
+        let cli = Cli::try_parse_from(["djogi", "migrations", "verify", "--strict"])
+            .expect("migrations verify --strict should parse");
+
+        match cli.command {
+            TopCommand::Migrations {
+                command: MigrationsCommand::Verify { strict, .. },
+            } => {
+                assert!(strict);
+            }
+            _ => panic!("expected migrations verify command"),
+        }
+    }
+
+    #[test]
+    fn migrations_verify_parses_with_workspace() {
+        let cli = Cli::try_parse_from([
+            "djogi",
+            "migrations",
+            "verify",
+            "--workspace",
+            "/custom/path",
+        ])
+        .expect("migrations verify --workspace should parse");
+
+        match cli.command {
+            TopCommand::Migrations {
+                command: MigrationsCommand::Verify { workspace, .. },
+            } => {
+                assert_eq!(workspace, Some(PathBuf::from("/custom/path")));
+            }
+            _ => panic!("expected migrations verify command"),
         }
     }
 }
