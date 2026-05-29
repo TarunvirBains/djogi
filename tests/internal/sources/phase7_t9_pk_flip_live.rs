@@ -3772,7 +3772,7 @@ async fn flip_partitioned_parent_rollback_uses_expanded_leaf_down_sql(
     .expect("leaf b");
 
     // Migration plan: create unique index on parent with per-leaf expansion.
-    let mut plan = MigrationPlan {
+    let plan = MigrationPlan {
         bucket: bucket(),
         classification: Classification::Additive,
         segments: vec![Segment {
