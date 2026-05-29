@@ -78,7 +78,7 @@ use super::ledger::{
 use super::projection::BucketKey;
 use super::runner::{
     PartitionExpansionMode, RunnerError, acquire_advisory_lock, advisory_lock_key,
-    materialize_execution_plan, release_advisory_lock,
+    materialize_execution_plan, release_advisory_lock, serialize_leaf_identity,
 };
 use super::segment::{MigrationPlan, SegmentKind};
 use super::snapshot::{SnapshotError, save_snapshot};
@@ -240,6 +240,19 @@ pub enum RepairError {
         version: String,
         ledger_checksum: String,
         plan_checksum: String,
+    },
+
+    /// **#356** — The freshly materialized leaf identity for this migration
+    /// does not match the value stored in the ledger. The partition topology
+    /// has changed since the original apply, so replaying against different
+    /// leaves would be unsafe.
+    LeafIdentityMismatch {
+        /// Migration version being repaired.
+        version: String,
+        /// Leaf identity stored in the ledger row from the original apply.
+        stored_leaf_identity: String,
+        /// Leaf identity recomputed from the current live partition topology.
+        current_leaf_identity: String,
     },
 
     /// `repair_resume_partial_apply` was called on a row that has no
@@ -520,6 +533,14 @@ impl std::fmt::Display for RepairError {
                 "D317 repair replay finalization on version {version}: \
                  completed {actual_step_count} step(s) but the materialized plan \
                  expected {expected_step_count}; plan shape invariant violated (GH #317)",
+            ),
+            RepairError::LeafIdentityMismatch {
+                version,
+                stored_leaf_identity: _,
+                current_leaf_identity: _,
+            } => write!(
+                f,
+                "[D610] repair refused: partition leaf identity mismatch for `{version}`",
             ),
         }
     }
@@ -1085,7 +1106,7 @@ async fn repair_resume_body(
     // `<EACH_LEAF_TABLE>` placeholders into concrete leaf statements,
     // so the replay walks the same expanded stream the original apply
     // executed. Refuses zero-leaf partitions (REQ-13).
-    let (materialized_plan, _leaves_cache_repair) =
+    let (materialized_plan, leaves_cache_repair) =
         materialize_execution_plan(ctx, plan, PartitionExpansionMode::ReplayStrict)
             .await
             .map_err(|e| match e {
@@ -1106,6 +1127,21 @@ async fn repair_resume_body(
                     ))),
                 },
             })?;
+
+    // #356: Compare stored leaf identity against freshly materialized leaves.
+    // If topology changed since original apply (partition added/dropped), refuse
+    // to proceed rather than replaying against a different set of leaves.
+    if let Some(ref stored_identity) = row.leaf_identity {
+        let current_identity = serialize_leaf_identity(&leaves_cache_repair)
+            .unwrap_or_default();
+        if current_identity != *stored_identity {
+            return Err(RepairError::LeafIdentityMismatch {
+                version: row.version.clone(),
+                stored_leaf_identity: stored_identity.clone(),
+                current_leaf_identity: current_identity,
+            });
+        }
+    }
 
     // Count total non-transactional statements in the materialized plan.
     let replay_total_steps: usize = materialized_plan
@@ -1711,5 +1747,21 @@ mod tests {
         assert!(msg.contains("V20260526031700__shape"));
         assert!(msg.contains("ledger total_steps=5"));
         assert!(msg.contains("expanded replay non-transactional statements=1"));
+    }
+
+    #[test]
+    fn repair_leaf_identity_mismatch_display() {
+        let err = RepairError::LeafIdentityMismatch {
+            version: "001_create_users".to_string(),
+            stored_leaf_identity:
+                "public.users:public.users_p2024_01,public.users_p2024_02\n".to_string(),
+            current_leaf_identity:
+                "public.users:public.users_p2024_01,public.users_p2024_03\n".to_string(),
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("[D610]"));
+        assert!(msg.contains("repair refused"));
+        assert!(msg.contains("partition leaf identity mismatch"));
+        assert!(msg.contains("001_create_users"));
     }
 }
