@@ -3880,3 +3880,96 @@ async fn repair_checksum_drift_pool_backed_context_pins_session(
         plan.bucket.database, plan.bucket.app, lock_key,
     );
 }
+
+// ── T3 / #317 — repair refuses when replay stream is shorter than total_steps
+
+#[djogi::djogi_test]
+async fn repair_resume_partial_apply_refuses_when_replay_stream_is_shorter_than_total_steps(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+
+    ctx.raw_ddl("DROP TABLE IF EXISTS t5_replay_short")
+        .await
+        .expect("clean");
+    ctx.raw_ddl("CREATE TABLE \"t5_replay_short\" (\"id\" BIGINT, \"a\" TEXT)")
+        .await
+        .expect("create table");
+
+    let plan = MigrationPlan {
+        bucket: BucketKey {
+            database: "main".to_string(),
+            app: "".to_string(),
+        },
+        classification: Classification::Additive,
+        segments: vec![Segment {
+            kind: SegmentKind::NonTransactional,
+            statements: vec![op(
+                "AddIndex t5_replay_short_a_idx",
+                "CREATE INDEX \"t5_replay_short_a_idx\" ON \"t5_replay_short\" (\"a\")",
+                "DROP INDEX \"t5_replay_short_a_idx\"",
+            )],
+        }],
+    };
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260526031701__resume_shorter",
+        None,
+        None,
+    );
+
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+    let run_id: i64 = 31701;
+    ctx.raw_execute(
+        "INSERT INTO djogi_schema_migrations \
+         (version, description, checksum_up, execution_mode, status, \
+          applied_steps_count, total_steps, run_id, snapshot_version, app_label) \
+         VALUES ($1, $2, $3, 'non_transactional', 'failed', \
+                 0, 2, $4, '1', '')",
+        &[
+            &runner_ctx.version,
+            &runner_ctx.description,
+            &runner_ctx.checksum_up,
+            &run_id,
+        ],
+    )
+    .await
+    .expect("seed failed row");
+
+    let err = repair_resume_partial_apply(
+        &mut ctx,
+        &_guard,
+        &runner_ctx.version,
+        &plan,
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    .expect_err("short replay stream must not finalize");
+
+    match err {
+        RepairError::ResumePlanShapeMismatch {
+            version,
+            ledger_total_steps,
+            replay_total_steps,
+        } => {
+            assert_eq!(version, runner_ctx.version);
+            assert_eq!(ledger_total_steps, 2);
+            assert_eq!(replay_total_steps, 1);
+        }
+        other => panic!("expected ResumePlanShapeMismatch, got {other:?}"),
+    }
+
+    let status: String = ctx
+        .raw_scalar(
+            "SELECT status::text FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("status");
+    assert_eq!(status, "failed");
+
+    assert!(
+        !index_exists(&mut ctx, "t5_replay_short_a_idx").await,
+        "repair must refuse before running the shorter replay stream",
+    );
+}

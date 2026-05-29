@@ -426,6 +426,15 @@ pub enum RunnerError {
         /// The bucket whose advisory lock could not be confirmed as released.
         bucket: BucketKey,
     },
+
+    /// Strict replay expansion refused: partitioned parent has zero leaves.
+    /// In apply mode this falls back to a no-op comment; in replay-strict
+    /// mode (rollback/repair) we refuse because replaying a shorter stream
+    /// would silently miss leaf work that the ledger already counted.
+    PartitionExpansionNoLeaves {
+        parent: String,
+        statement_label: String,
+    },
 }
 
 impl std::fmt::Display for RunnerError {
@@ -716,6 +725,14 @@ impl std::fmt::Display for RunnerError {
                  inspect the ledger row to determine the actual applied state.",
                 db = bucket.database,
                 app = bucket.app,
+            ),
+            RunnerError::PartitionExpansionNoLeaves {
+                parent,
+                statement_label,
+            } => write!(
+                f,
+                "partition expansion for `{statement_label}` refused: \
+                 partitioned parent `{parent}` has 0 leaves in replay-strict mode",
             ),
         }
     }
@@ -1026,7 +1043,8 @@ async fn apply_plan_inner(
     // produces the concrete SQL the runner will actually execute, so
     // every downstream preflight and step-count calculation works on
     // the real statement list.
-    let plan_owned = expand_partition_leaf_placeholders(ctx, plan).await?;
+    let plan_owned =
+        materialize_execution_plan(ctx, plan, PartitionExpansionMode::ApplyLenient).await?;
     let plan = &plan_owned;
 
     preflight_segment_sql_execution_compatibility(plan)?;
@@ -1687,7 +1705,49 @@ pub async fn rollback_plan(
     rollback_plan_pinned(&mut pinned, plan, runner_ctx, lossy_policy, prior_snapshot).await
 }
 
+/// Determine whether lossy rollback is permitted for the given plan.
+///
+/// Scans all statements in the plan for lossy markers and enforces
+/// the policy. Returns the operator-supplied reason string (if any)
+/// when lossy operations are present but allowed, or None if no
+/// lossy operations exist. Refuses with [`RollbackError`] when
+/// lossy operations are present and the policy is `Refuse`.
+///
+/// This operates against the materialized replay plan (partition-expanded),
+/// not the original unexpanded plan, so per-leaf lossy markers are properly
+/// detected (GH #317).
+// RollbackError is a large enum by design; this sync helper returns it by
+// value and needs the suppression. Same rationale as handle_release_result.
+#[allow(clippy::result_large_err)]
+fn rollback_lossy_allow_reason(
+    plan: &MigrationPlan,
+    lossy_policy: &LossyRollbackPolicy,
+) -> Result<Option<String>, RollbackError> {
+    let lossy_ops: Vec<(String, LossyRollbackKind)> = plan
+        .segments
+        .iter()
+        .flat_map(|s| s.statements.iter())
+        .filter_map(|stmt| stmt.lossy.as_ref().map(|w| (stmt.label.clone(), w.kind)))
+        .collect();
+
+    match (lossy_policy, lossy_ops.is_empty()) {
+        (_, true) => Ok(None),
+        (LossyRollbackPolicy::Refuse, false) => Err(RollbackError::LossyRollbackRefused {
+            offending_labels: lossy_ops.iter().map(|(label, _)| label.clone()).collect(),
+            kinds: lossy_ops.iter().map(|(_, kind)| *kind).collect(),
+        }),
+        (LossyRollbackPolicy::Allow { reason }, false) => Ok(Some(reason.clone())),
+    }
+}
+
 /// Internal rollback path that runs on an already-pinned context.
+///
+/// Materializes the strict replay plan inside the advisory lock before
+/// scanning lossy markers or executing down SQL. Partition-expanded
+/// statements are rematerialized from the same execution stream used
+/// by apply; rollback replays reverse down SQL against the expanded
+/// stream, ensuring per-leaf lossy markers are properly detected
+/// (GH #317).
 async fn rollback_plan_pinned(
     ctx: &mut PinnedCtx<'_>,
     plan: &MigrationPlan,
@@ -1701,30 +1761,7 @@ async fn rollback_plan_pinned(
         .await
         .map_err(|e| RollbackError::Runner(RunnerError::LedgerBootstrapFailed { source: e }))?;
 
-    // 2. Pre-walk: collect every lossy operation from the plan. This is
-    //    pure plan-data computation — no DB access — so it can run
-    //    before the advisory lock. The `LossyRollbackRefused` early
-    //    return here avoids acquiring the lock unnecessarily.
-    let lossy_ops: Vec<(String, LossyRollbackKind)> = plan
-        .segments
-        .iter()
-        .flat_map(|s| s.statements.iter())
-        .filter_map(|stmt| stmt.lossy.as_ref().map(|w| (stmt.label.clone(), w.kind)))
-        .collect();
-    let allow_reason = match (&lossy_policy, lossy_ops.is_empty()) {
-        (_, true) => None,
-        (LossyRollbackPolicy::Refuse, false) => {
-            let labels = lossy_ops.iter().map(|(l, _)| l.clone()).collect();
-            let kinds = lossy_ops.iter().map(|(_, k)| *k).collect();
-            return Err(RollbackError::LossyRollbackRefused {
-                offending_labels: labels,
-                kinds,
-            });
-        }
-        (LossyRollbackPolicy::Allow { reason }, false) => Some(reason.clone()),
-    };
-
-    // 3. Acquire the per-bucket advisory lock BEFORE loading the ledger
+    // 2. Acquire the per-bucket advisory lock BEFORE loading the ledger
     //    row. Moving the row read inside the lock eliminates the TOCTOU
     //    window between the status check and the down-SQL mutations
     //    (GH #274).
@@ -1733,7 +1770,7 @@ async fn rollback_plan_pinned(
         .await
         .map_err(RollbackError::Runner)?;
 
-    // 4. Confirm the row exists and is in a rollbackable status — inside
+    // 3. Confirm the row exists and is in a rollbackable status — inside
     //    the lock so the status read is atomic with the subsequent write.
     let row_result = load_ledger_row_for_version(ctx, &runner_ctx.version)
         .await
@@ -1759,7 +1796,7 @@ async fn rollback_plan_pinned(
             });
         }
     };
-    // 4a. Verify the ledger row belongs to the same logical app bucket
+    // 3a. Verify the ledger row belongs to the same logical app bucket
     //     that owns the advisory lock. An operator-constructed or stale
     //     MigrationPlan whose bucket.app differs from the row's
     //     app_label would mutate the row while holding a lock for the
@@ -1784,7 +1821,30 @@ async fn rollback_plan_pinned(
         });
     }
 
-    let result = rollback_inner(ctx, plan, runner_ctx, prior_snapshot, allow_reason).await;
+    // 5. Materialize strict replay plan inside advisory lock. Partition-expanded
+    //    statements are rematerialized from the same execution stream used by apply;
+    //    rollback replays reverse down SQL against the expanded stream. Lossy
+    //    scanning operates on the materialized plan, not the original unexpanded
+    //    plan, so per-leaf lossy markers are properly detected (GH #317).
+    let replay_plan =
+        match materialize_execution_plan(ctx, plan, PartitionExpansionMode::ReplayStrict).await {
+            Ok(p) => p,
+            Err(e) => {
+                let _released = release_advisory_lock(ctx, lock_key).await;
+                return Err(RollbackError::Runner(e));
+            }
+        };
+
+    // 5a. Lossy scanning against the materialized (expanded) plan.
+    let allow_reason = match rollback_lossy_allow_reason(&replay_plan, &lossy_policy) {
+        Ok(r) => r,
+        Err(e) => {
+            let _released = release_advisory_lock(ctx, lock_key).await;
+            return Err(e);
+        }
+    };
+
+    let result = rollback_inner(ctx, &replay_plan, runner_ctx, prior_snapshot, allow_reason).await;
 
     let released = release_advisory_lock(ctx, lock_key).await;
 
@@ -3648,6 +3708,33 @@ fn collect_add_table_targets(plan: &MigrationPlan) -> BTreeSet<String> {
 
 // ── B-2: partition leaf-placeholder expansion ─────────────────────────────
 
+/// Controls how empty-leaf partitions are handled during expansion.
+///
+/// **ApplyLenient** (default for `apply_plan`): preserves the current
+/// empty-leaf no-op fallback, emitting a comment-only statement so the
+/// segment completes without error. The operator sees the diagnostic and
+/// can attach partitions before retrying.
+///
+/// **ReplayStrict** (rollback / repair): refuses zero leaves because
+/// replaying a shorter stream would silently miss leaf work that the
+/// ledger already counted. Returns `RunnerError::PartitionExpansionNoLeaves`
+/// so the caller can abort or handle the discrepancy explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PartitionExpansionMode {
+    ApplyLenient,
+    ReplayStrict,
+}
+
+/// Public-facing helper wrapping [`expand_partition_leaf_placeholders`].
+/// Materializes partition leaf placeholders according to the given mode.
+pub(crate) async fn materialize_execution_plan(
+    ctx: &mut DjogiContext,
+    plan: &MigrationPlan,
+    mode: PartitionExpansionMode,
+) -> Result<MigrationPlan, RunnerError> {
+    expand_partition_leaf_placeholders(ctx, plan, mode).await
+}
+
 /// Walk every segment and expand the `<EACH_LEAF_TABLE>` placeholder
 /// inside any partitioned-flip statement into one concrete-leaf
 /// statement per leaf, sorted by `regclass::text` for determinism.
@@ -3671,14 +3758,17 @@ fn collect_add_table_targets(plan: &MigrationPlan) -> BTreeSet<String> {
 /// `writeln!` macro.
 ///
 /// **Failure modes.** If `pg_inherits` returns no leaves for a
-/// declared partitioned parent, expansion produces a single comment
-/// line so the segment SQL surfaces the empty-leaves state cleanly
-/// rather than running an `<EACH_LEAF_TABLE>` literal that would
-/// fail with `undefined_table`. Operator's job is to attach
-/// partitions before retrying.
+/// declared partitioned parent, behavior depends on [`PartitionExpansionMode`]:
+/// - ApplyLenient: produces a single comment line so the segment SQL
+///   surfaces the empty-leaves state cleanly rather than running an
+///   `<EACH_LEAF_TABLE>` literal that would fail with `undefined_table`.
+///   Operator's job is to attach partitions before retrying.
+/// - ReplayStrict: refuses zero leaves because rollback/repair must not
+///   silently replay a shorter stream. Returns [`RunnerError::PartitionExpansionNoLeaves`].
 async fn expand_partition_leaf_placeholders(
     ctx: &mut DjogiContext,
     plan: &MigrationPlan,
+    mode: PartitionExpansionMode,
 ) -> Result<MigrationPlan, RunnerError> {
     // Cache leaves per parent so multiple statements pointing at the
     // same partitioned parent share one query.
@@ -3697,7 +3787,7 @@ async fn expand_partition_leaf_placeholders(
                         leaves_cache.insert(parent.clone(), leaves);
                     }
                     let leaves = leaves_cache.get(&parent).expect("just inserted");
-                    new_stmts.extend(expand_partition_statement(&stmt, &parent, leaves));
+                    new_stmts.extend(expand_partition_statement(&stmt, &parent, leaves, mode)?);
                 }
                 None => new_stmts.push(stmt),
             }
@@ -3797,23 +3887,30 @@ async fn lookup_partition_leaves(
 /// statement immediately after each leaf's CONCURRENTLY index build
 /// so the partitioned parent's UNIQUE index becomes valid as soon as
 /// the last leaf attaches.
+// RunnerError is a large enum by design; this sync helper returns it by
+// value and needs the suppression. Same rationale as handle_release_result.
+#[allow(clippy::result_large_err)]
 fn expand_partition_statement(
     stmt: &OperationSql,
     parent: &str,
     leaves: &[String],
-) -> Vec<OperationSql> {
+    mode: PartitionExpansionMode,
+) -> Result<Vec<OperationSql>, RunnerError> {
     if leaves.is_empty() {
-        // Empty-leaves edge: surface the state but DO NOT issue the
-        // literal `<EACH_LEAF_TABLE>` SQL. The runner emits a comment
-        // line that internal batch execution accepts harmlessly.
-        return vec![OperationSql {
-            label: format!("{} (no leaves)", stmt.label),
-            up: format!(
-                "-- pg_inherits returned 0 leaves for partitioned parent {parent}; nothing to expand"
-            ),
-            down: stmt.down.clone(),
-            lossy: stmt.lossy.clone(),
-        }];
+        return match mode {
+            PartitionExpansionMode::ApplyLenient => Ok(vec![OperationSql {
+                label: format!("{} (no leaves)", stmt.label),
+                up: format!(
+                    "-- pg_inherits returned 0 leaves for partitioned parent {parent}; nothing to expand"
+                ),
+                down: stmt.down.clone(),
+                lossy: stmt.lossy.clone(),
+            }]),
+            PartitionExpansionMode::ReplayStrict => Err(RunnerError::PartitionExpansionNoLeaves {
+                parent: parent.to_string(),
+                statement_label: stmt.label.clone(),
+            }),
+        };
     }
 
     let mut out: Vec<OperationSql> = Vec::with_capacity(leaves.len());
@@ -3845,7 +3942,7 @@ fn expand_partition_statement(
                 lossy: stmt.lossy.clone(),
             });
         }
-        return out;
+        return Ok(out);
     }
 
     if stmt.label.starts_with("PkFlipPartitionedIndex ") {
@@ -3902,7 +3999,7 @@ fn expand_partition_statement(
                 lossy: None,
             });
         }
-        return out;
+        return Ok(out);
     }
 
     if stmt.label.starts_with("PkFlipPartitionedSelfFkIndex ") {
@@ -3954,13 +4051,13 @@ fn expand_partition_statement(
                 lossy: None,
             });
         }
-        return out;
+        return Ok(out);
     }
 
     // Unknown partitioned label — pass through unchanged. Defensive:
     // future emitters that add new `PkFlipPartitioned…` labels keep
     // working without forcing this fn to learn about them.
-    vec![stmt.clone()]
+    Ok(vec![stmt.clone()])
 }
 
 /// Strip a single trailing `;` (with optional trailing whitespace).
@@ -5367,5 +5464,95 @@ mod tests {
             note.contains("override: merge window"),
             "note should contain override reason: {note}"
         );
+    }
+
+    #[test]
+    fn expand_partition_statement_partitioned_index_preserves_leaf_drop_down_sql() {
+        let stmt = OperationSql {
+            label: "PkFlipPartitionedIndex events_p".to_string(),
+            up: "CREATE UNIQUE INDEX events_p_ts_id_desc_idx ON ONLY events_p (ts, id_desc);\n\
+                 -- Per leaf: CREATE UNIQUE INDEX CONCURRENTLY <leaf>_ts_id_desc_idx\n"
+                .to_string(),
+            down: "DROP INDEX IF EXISTS events_p_ts_id_desc_idx;".to_string(),
+            lossy: None,
+        };
+
+        let expanded = expand_partition_statement(
+            &stmt,
+            "events_p",
+            &["events_p_a".to_string(), "events_p_b".to_string()],
+            PartitionExpansionMode::ReplayStrict,
+        )
+        .expect("strict replay expansion with leaves");
+
+        assert_eq!(
+            expanded[0].label,
+            "PkFlipPartitionedIndex events_p (parent-level)"
+        );
+        assert_eq!(
+            expanded[0].down,
+            "DROP INDEX IF EXISTS events_p_ts_id_desc_idx;"
+        );
+        assert!(
+            expanded.iter().any(|s| {
+                s.label == "PkFlipPartitionedIndex events_p leaf=events_p_a (concurrent)"
+                    && s.down == "DROP INDEX IF EXISTS events_p_a_ts_id_desc_idx"
+            }),
+            "leaf A concurrent statement must carry concrete DROP INDEX down SQL: {expanded:?}",
+        );
+        assert!(
+            expanded.iter().any(|s| {
+                s.label == "PkFlipPartitionedIndex events_p leaf=events_p_b (concurrent)"
+                    && s.down == "DROP INDEX IF EXISTS events_p_b_ts_id_desc_idx"
+            }),
+            "leaf B concurrent statement must carry concrete DROP INDEX down SQL: {expanded:?}",
+        );
+        assert!(
+            expanded
+                .iter()
+                .filter(|s| s.label.contains("(attach)"))
+                .all(|s| s.down.is_empty()),
+            "attach statements remain forward-only; leaf drops live on concurrent statements",
+        );
+    }
+
+    #[test]
+    fn expand_partition_leaf_placeholders_replay_mode_refuses_empty_leaves() {
+        let stmt = OperationSql {
+            label: "PkFlipPartitionedIndex events_p".to_string(),
+            up: "CREATE UNIQUE INDEX events_p_ts_id_desc_idx ON ONLY events_p (ts, id_desc);"
+                .to_string(),
+            down: "DROP INDEX IF EXISTS events_p_ts_id_desc_idx;".to_string(),
+            lossy: None,
+        };
+
+        let err = expand_partition_statement(
+            &stmt,
+            "events_p",
+            &[],
+            PartitionExpansionMode::ReplayStrict,
+        )
+        .expect_err("strict replay must not replace a partition expansion with a no-op comment");
+
+        match err {
+            RunnerError::PartitionExpansionNoLeaves {
+                parent,
+                statement_label,
+            } => {
+                assert_eq!(parent, "events_p");
+                assert_eq!(statement_label, "PkFlipPartitionedIndex events_p");
+            }
+            other => panic!("expected PartitionExpansionNoLeaves, got {other:?}"),
+        }
+
+        let lenient = expand_partition_statement(
+            &stmt,
+            "events_p",
+            &[],
+            PartitionExpansionMode::ApplyLenient,
+        )
+        .expect("apply mode keeps the existing empty-leaf fallback");
+        assert_eq!(lenient.len(), 1);
+        assert!(lenient[0].up.contains("pg_inherits returned 0 leaves"));
     }
 }
