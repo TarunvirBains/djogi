@@ -1,11 +1,11 @@
-error[E0599]: no function or associated item named `wrong_method` found for struct `VehicleRelated` in the current scope
+error[E0599]: no associated function or constant named `wrong_method` found for struct `VehicleRelated` in the current scope
   --> $DIR/bad_relation_path.rs:18:57
    |
 10 | #[model(table = "vehicles_badrp", no_default)]
-   | ---------------------------------------------- function or associated item `wrong_method` not found for this struct
+   | ---------------------------------------------- associated function or constant `wrong_method` not found for this struct
 ...
 18 |     let _ = Vehicle::objects().prefetch(VehicleRelated::wrong_method());
-   |                                                         ^^^^^^^^^^^^ function or associated item not found in `VehicleRelated`
+   |                                                         ^^^^^^^^^^^^ associated function or constant not found in `VehicleRelated`
    |
 help: there is a method `on_red` with a similar name
    |

@@ -5,7 +5,6 @@ error[E0277]: can't compare `Site` with `Site`
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no implementation for `Site == Site`
    |
    = help: the trait `PartialEq` is not implemented for `Site`
-   = help: see issue $TYPEID
    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 help: consider annotating `Site` with `#[derive(PartialEq)]`
    |

@@ -8,7 +8,7 @@ error[E0308]: mismatched types
     |         ^^^^^^^^^^^^^^^ expected a tuple with 2 elements, found one with 3 elements
     |
     = note: expected tuple `(&'static str, &'static str)`
-               found tuple `(&'static str, &'static str, &'static str)`
+               found tuple `(&'static str, &'static str, &str)`
 note: associated function defined here
    --> djogi/src/query/values.rs:847:12
     |
