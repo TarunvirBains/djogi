@@ -4053,10 +4053,19 @@ fn expand_partition_statement(
                 pkey = part_col,
                 suffix = suffix,
             );
+            // Down SQL: drop the parent index first (CASCADE removes any
+            // attached leaf partitions), then drop the leaf itself as a
+            // no-op cleanup for the partial-apply case where the leaf was
+            // created concurrently but never attached. Both statements use
+            // IF EXISTS so they are safe to re-execute in subsequent reverse
+            // steps after the parent was already dropped.
             out.push(OperationSql {
                 label: format!("PkFlipPartitionedIndex {parent} leaf={leaf} (concurrent)"),
                 up: create_concurrent,
-                down: format!("DROP INDEX IF EXISTS {leaf_idx}"),
+                down: format!(
+                    "DROP INDEX IF EXISTS {parent_index_name}; \
+                     DROP INDEX IF EXISTS {leaf_idx}",
+                ),
                 lossy: None,
             });
             let attach = format!(
