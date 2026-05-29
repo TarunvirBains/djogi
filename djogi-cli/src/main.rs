@@ -407,6 +407,24 @@ enum MigrationsCommand {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
+    /// Compare live database catalog against the schema snapshot.
+    /// Read-only — does not acquire the workspace lock or execute DDL.
+    ///
+    /// Exits 0 if no error-level diagnostics are found. Exits 1 on
+    /// runtime errors (config / pool / SQL). Exits 2 if the Postgres
+    /// server is below version 18.
+    ///
+    /// Use `--strict` to upgrade out-of-order migration warnings (D622)
+    /// to errors, causing verify to exit non-zero when the ledger
+    /// contains out-of-order applied rows.
+    Verify {
+        /// Workspace root override (only used when reading `Djogi.toml`).
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+        /// Upgrade D622 out-of-order diagnostics from Warning to Error.
+        #[arg(long, default_value_t = false)]
+        strict: bool,
+    },
     /// Reconcile local migration history with the ledger. Default
     /// mode is a read-only diff between the on-disk SQL files and
     /// the ledger. Attune is read-only by default — pass `--apply`
@@ -649,6 +667,9 @@ fn main() -> ExitCode {
                 workspace,
             } => migrations::compose_cmd(&name, allow_destructive, force_overwrite, workspace),
             MigrationsCommand::Status { workspace } => migrations::status_cmd(workspace),
+            MigrationsCommand::Verify { workspace, strict } => {
+                migrations::verify_cmd(workspace, strict)
+            }
             MigrationsCommand::Attune {
                 target,
                 apply,
