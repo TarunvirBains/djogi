@@ -1570,6 +1570,18 @@ pub enum RollbackError {
     /// The runner was asked to revert the snapshot to a prior version
     /// but no `prior_snapshot` was supplied.
     PriorSnapshotMissing,
+    /// **#356** — The freshly materialized leaf identity for this migration
+    /// does not match the value stored in the ledger. The partition topology
+    /// has changed since the original apply, so rolling back against different
+    /// leaves would be unsafe.
+    LeafIdentityMismatch {
+        /// Migration version being rolled back.
+        version: String,
+        /// Leaf identity stored in the ledger row from the original apply.
+        stored_leaf_identity: String,
+        /// Leaf identity recomputed from the current live partition topology.
+        current_leaf_identity: String,
+    },
     /// I/O failure persisting the prior snapshot back to disk.
     SnapshotPersistFailed {
         path: PathBuf,
@@ -1630,6 +1642,14 @@ impl std::fmt::Display for RollbackError {
                     path.display()
                 )
             }
+            RollbackError::LeafIdentityMismatch {
+                version,
+                stored_leaf_identity: _,
+                current_leaf_identity: _,
+            } => write!(
+                f,
+                "[D620] rollback refused: partition leaf identity mismatch for `{version}`",
+            ),
         }
     }
 }
@@ -1827,7 +1847,7 @@ async fn rollback_plan_pinned(
     //    rollback replays reverse down SQL against the expanded stream. Lossy
     //    scanning operates on the materialized plan, not the original unexpanded
     //    plan, so per-leaf lossy markers are properly detected (GH #317).
-    let (replay_plan, _leaves_cache_rollback) =
+    let (replay_plan, leaves_cache_rollback) =
         match materialize_execution_plan(ctx, plan, PartitionExpansionMode::ReplayStrict).await {
             Ok((p, cache)) => (p, cache),
             Err(e) => {
@@ -1835,6 +1855,24 @@ async fn rollback_plan_pinned(
                 return Err(RollbackError::Runner(e));
             }
         };
+
+    // #356: Compare stored leaf identity against freshly materialized leaves.
+    let current_rollback_identity =
+        serialize_leaf_identity(&leaves_cache_rollback).unwrap_or_default();
+    let rollback_leaf_mismatch = if let Some(ref stored_identity) = row.leaf_identity {
+        current_rollback_identity != *stored_identity
+    } else {
+        false
+    };
+    if rollback_leaf_mismatch {
+        let e = RollbackError::LeafIdentityMismatch {
+            version: runner_ctx.version.clone(),
+            stored_leaf_identity: row.leaf_identity.clone().unwrap(),
+            current_leaf_identity: current_rollback_identity,
+        };
+        let _released = release_advisory_lock(ctx, lock_key).await;
+        return Err(e);
+    }
 
     // 5a. Lossy scanning against the materialized (expanded) plan.
     let allow_reason = match rollback_lossy_allow_reason(&replay_plan, &lossy_policy) {
@@ -3748,7 +3786,7 @@ pub(crate) async fn materialize_execution_plan(
 /// format stored in the ledger. Parents sorted alphabetically; leaves
 /// already sorted by `regclass::text`. Newline-delimited
 /// `parent:leaf1,leaf2` entries.
-fn serialize_leaf_identity(
+pub(crate) fn serialize_leaf_identity(
     leaves_cache: &std::collections::HashMap<String, Vec<String>>,
 ) -> Option<String> {
     let mut entries: Vec<_> = leaves_cache
@@ -5636,5 +5674,21 @@ mod tests {
         .expect("apply mode keeps the existing empty-leaf fallback");
         assert_eq!(lenient.len(), 1);
         assert!(lenient[0].up.contains("pg_inherits returned 0 leaves"));
+    }
+
+    #[test]
+    fn rollback_leaf_identity_mismatch_display() {
+        let err = RollbackError::LeafIdentityMismatch {
+            version: "001_create_users".to_string(),
+            stored_leaf_identity:
+                "public.users:public.users_p2024_01,public.users_p2024_02\n".to_string(),
+            current_leaf_identity:
+                "public.users:public.users_p2024_01,public.users_p2024_03\n".to_string(),
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("[D620]"));
+        assert!(msg.contains("rollback refused"));
+        assert!(msg.contains("partition leaf identity mismatch"));
+        assert!(msg.contains("001_create_users"));
     }
 }
