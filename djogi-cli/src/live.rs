@@ -202,10 +202,6 @@ pub enum LiveCmdError {
     #[error("classification refused: {0}")]
     ClassificationRefused(String),
 
-    /// A validation gate failed — the gate query returned an
-    /// unexpected count / shape. Maps to exit code 3.
-    #[error("validation checkpoint failed: {0}")]
-    ValidationFailed(String),
 
     /// Plan-file checksum drift detected. Maps to exit code 4.
     #[error("plan file checksum drift: {0}")]
@@ -241,7 +237,6 @@ impl LiveCmdError {
             | LiveCmdError::MalformedPlanId(_)
             | LiveCmdError::PlanNotFound(_) => 1,
             LiveCmdError::ClassificationRefused(_) => 2,
-            LiveCmdError::ValidationFailed(_) => 3,
             LiveCmdError::ChecksumDrift(_) => 4,
             LiveCmdError::StateConflict(_) => 5,
         }
@@ -644,14 +639,6 @@ pub fn refuse_offline_only(reason: impl Into<String>) -> LiveCmdError {
     LiveCmdError::ClassificationRefused(reason.into())
 }
 
-/// Surface a validation gate failure (exit code 3). Hoisted into a
-/// free function for the same reason as [`refuse_offline_only`] —
-/// the gate-query loop in T11+ uses this helper directly so the exit-
-/// code mapping never drifts from the v3 §3 table.
-pub fn validation_failed(reason: impl Into<String>) -> LiveCmdError {
-    LiveCmdError::ValidationFailed(reason.into())
-}
-
 // ── live show ─────────────────────────────────────────────────────────
 
 /// `djogi live show` body. Resolves the plan row, reads + checksum-
@@ -723,9 +710,9 @@ async fn show_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32, 
 
 // ── live run / resume ─────────────────────────────────────────────────
 
-/// `djogi live run` body. Walks the step graph from
-/// `current_step_index` forward, executing non-gate steps and pausing
-/// at the first operator gate. Refuses destructive steps without
+/// `djogi live run` body. Executes all steps in the plan starting
+/// from step 0. Pauses at the first OperatorGate step and records
+/// progress via checkpoint(). Refuses destructive steps without
 /// `--allow-destructive --justify "<reason>"`.
 async fn run_cmd(
     plan_id_raw: &str,
@@ -763,10 +750,6 @@ async fn run_cmd(
     // gate pause / promote, transactional progress writes) is the
     // engine's job and lands in the same follow-up.
     //
-    // Future gate failure path: the engine surfaces a failed gate via
-    // [`validation_failed`] (exit 3). The mapping is exercised by the
-    // exit-code unit tests; the production wiring lands with the
-    // executor.
     // Execute the plan via the live-plan engine
     match djogi::live_migrate::executor::run_plan(&mut ctx, path, 0, false).await {
         Ok(result) => {
@@ -933,19 +916,19 @@ async fn finalize_cmd(
         Ok(result) => {
             match result {
                 StepResult::Completed => {
-                    println!("live resume: plan {plan_id} completed successfully");
+                    println!("live finalize: plan {plan_id} completed successfully");
                     Ok(0)
                 }
                 StepResult::Paused => {
-                    println!("live resume: paused at operator gate; resume with `djogi live run {plan_id}`");
+                    println!("live finalize: paused at operator gate; resume with `djogi live run {plan_id}`");
                     Ok(0)
                 }
                 StepResult::Partial { rows_done, rows_total } => {
                     if rows_total > 0 {
                         let pct = (rows_done as f64 / rows_total as f64) * 100.0;
-                        println!("live resume: backfill progress {rows_done}/{rows_total} ({pct:.1}%); resume with `djogi live resume {plan_id}`");
+                        println!("live finalize: backfill progress {rows_done}/{rows_total} ({pct:.1}%); resume with `djogi live finalize {plan_id}`");
                     } else {
-                        println!("live resume: backfill interrupted after {rows_done} rows; resume with `djogi live resume {plan_id}`");
+                        println!("live finalize: backfill interrupted after {rows_done} rows; resume with `djogi live finalize {plan_id}`");
                     }
                     Ok(0)
                 }
@@ -1602,15 +1585,6 @@ mod tests {
             2,
         );
     }
-
-    #[test]
-    fn exit_code_validation_failed_maps_to_three() {
-        assert_eq!(
-            LiveCmdError::ValidationFailed("count > 0".to_string()).exit_code(),
-            3,
-        );
-    }
-
     #[test]
     fn exit_code_checksum_drift_maps_to_four() {
         assert_eq!(
