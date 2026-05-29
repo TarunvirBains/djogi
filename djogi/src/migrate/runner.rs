@@ -5572,26 +5572,32 @@ mod tests {
             expanded[0].down,
             "DROP INDEX IF EXISTS events_p_ts_id_desc_idx;"
         );
+        // Leaf concurrent down: parent drop first (CASCADE for attached leaves),
+        // then leaf drop (cleanup for unattached/partial-apply case).
         assert!(
             expanded.iter().any(|s| {
                 s.label == "PkFlipPartitionedIndex events_p leaf=events_p_a (concurrent)"
-                    && s.down == "DROP INDEX IF EXISTS events_p_a_ts_id_desc_idx"
+                    && s.down
+                        == "DROP INDEX IF EXISTS events_p_ts_id_desc_idx; \
+                            DROP INDEX IF EXISTS events_p_a_ts_id_desc_idx"
             }),
-            "leaf A concurrent statement must carry concrete DROP INDEX down SQL: {expanded:?}",
+            "leaf A concurrent must drop parent then leaf: {expanded:?}",
         );
         assert!(
             expanded.iter().any(|s| {
                 s.label == "PkFlipPartitionedIndex events_p leaf=events_p_b (concurrent)"
-                    && s.down == "DROP INDEX IF EXISTS events_p_b_ts_id_desc_idx"
+                    && s.down
+                        == "DROP INDEX IF EXISTS events_p_ts_id_desc_idx; \
+                            DROP INDEX IF EXISTS events_p_b_ts_id_desc_idx"
             }),
-            "leaf B concurrent statement must carry concrete DROP INDEX down SQL: {expanded:?}",
+            "leaf B concurrent must drop parent then leaf: {expanded:?}",
         );
         assert!(
             expanded
                 .iter()
                 .filter(|s| s.label.contains("(attach)"))
                 .all(|s| s.down.is_empty()),
-            "attach statements remain forward-only; leaf drops live on concurrent statements",
+            "attach statements remain forward-only",
         );
     }
 
@@ -5627,14 +5633,16 @@ mod tests {
 
         assert_eq!(expanded.len(), 5);
 
-        // Per-leaf DROP must use fully qualified index name
+        // Per-leaf concurrent down SQL: "DROP INDEX IF EXISTS <parent>; DROP INDEX IF EXISTS <leaf>"
+        // Both index names must be fully schema-qualified.
         for entry in &expanded {
-            if entry.down.starts_with("DROP INDEX IF EXISTS") {
-                let idx_name = entry.down.trim_start_matches("DROP INDEX IF EXISTS ");
+            if entry.label.contains("(concurrent)") {
                 assert!(
-                    idx_name.starts_with("myschema.events_p_"),
-                    "DROP INDEX must be fully qualified, got: {}",
-                    idx_name
+                    entry
+                        .down
+                        .contains("DROP INDEX IF EXISTS myschema.events_p_"),
+                    "leaf concurrent DROP must be fully qualified, got: {}",
+                    entry.down
                 );
             }
         }
