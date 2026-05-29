@@ -1915,7 +1915,7 @@ mod tests {
 
     #[test]
     fn render_verify_report_clean_output() {
-        use djogi::migrate::{BucketKey, VerifyReport, VerifySeverity};
+        use djogi::migrate::{BucketKey, VerifyReport};
 
         let report = VerifyReport {
             diagnostics: vec![],
