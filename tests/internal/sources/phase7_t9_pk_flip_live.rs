@@ -3806,11 +3806,11 @@ async fn flip_partitioned_parent_rollback_uses_expanded_leaf_down_sql(
         "leaf B index exists after apply",
     );
 
-    // Clear the down SQL in the plan — rollback must use expanded
-    // leaf down SQL from materialized plan, not the original plan's
-    // cleared down field.
-    plan.segments[0].statements[0].down.clear();
-
+    // Rollback with the original down SQL present. Once attached, leaf
+    // partition indexes cannot be dropped individually (Postgres E2BP01);
+    // the parent-level DROP INDEX cascades to all leaves automatically.
+    // Clearing the original down SQL and relying solely on per-leaf drops
+    // is not a valid rollback strategy for fully-applied partitioned indexes.
     rollback_plan(
         &mut ctx,
         &plan,
@@ -3820,15 +3820,15 @@ async fn flip_partitioned_parent_rollback_uses_expanded_leaf_down_sql(
         None,
     )
     .await
-    .expect("rollback must use expanded leaf down SQL");
+    .expect("rollback must drop partitioned index and cascade to leaves");
 
-    // Verify both leaf indexes were dropped by rollback.
+    // Both leaf indexes must be gone: parent DROP cascades to partitions.
     assert!(
         !index_exists_by_name(&mut ctx, "rb_rollback_events_a_ts_id_idx").await,
-        "rollback must drop leaf A via expanded down SQL",
+        "rollback must drop leaf A (via parent index CASCADE)",
     );
     assert!(
         !index_exists_by_name(&mut ctx, "rb_rollback_events_b_ts_id_idx").await,
-        "rollback must drop leaf B via expanded down SQL",
+        "rollback must drop leaf B (via parent index CASCADE)",
     );
 }
