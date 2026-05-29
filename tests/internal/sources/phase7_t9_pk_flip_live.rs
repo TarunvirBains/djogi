@@ -3779,13 +3779,13 @@ async fn flip_partitioned_parent_rollback_uses_expanded_leaf_down_sql(
             kind: SegmentKind::NonTransactional,
             statements: vec![OperationSql {
                 label: "PkFlipPartitionedIndex rb_rollback_events".to_string(),
-                up: "CREATE UNIQUE INDEX rb_rollback_events_ts_id_desc_idx ON ONLY rb_rollback_events (ts, id);\n\
-                     -- Per leaf: CREATE UNIQUE INDEX CONCURRENTLY <leaf>_ts_id_desc_idx\n\
+                up: "CREATE UNIQUE INDEX rb_rollback_events_ts_id_idx ON ONLY rb_rollback_events (ts, id);\n\
+                     -- Per leaf: CREATE UNIQUE INDEX CONCURRENTLY <leaf>_ts_id_idx\n\
                      --             ON <leaf> (ts, id);\n\
-                     -- Then ALTER INDEX rb_rollback_events_ts_id_desc_idx ATTACH PARTITION\n\
-                     --             <leaf>_ts_id_desc_idx;"
+                     -- Then ALTER INDEX rb_rollback_events_ts_id_idx ATTACH PARTITION\n\
+                     --             <leaf>_ts_id_idx;"
                     .to_string(),
-                down: "DROP INDEX IF EXISTS rb_rollback_events_ts_id_desc_idx;".to_string(),
+                down: "DROP INDEX IF EXISTS rb_rollback_events_ts_id_idx;".to_string(),
                 lossy: None,
             }],
         }],
@@ -3798,11 +3798,11 @@ async fn flip_partitioned_parent_rollback_uses_expanded_leaf_down_sql(
 
     // Verify leaf indexes exist after apply.
     assert!(
-        index_exists_by_name(&mut ctx, "rb_rollback_events_a_ts_id_desc_idx").await,
+        index_exists_by_name(&mut ctx, "rb_rollback_events_a_ts_id_idx").await,
         "leaf A index exists after apply",
     );
     assert!(
-        index_exists_by_name(&mut ctx, "rb_rollback_events_b_ts_id_desc_idx").await,
+        index_exists_by_name(&mut ctx, "rb_rollback_events_b_ts_id_idx").await,
         "leaf B index exists after apply",
     );
 
@@ -3824,11 +3824,11 @@ async fn flip_partitioned_parent_rollback_uses_expanded_leaf_down_sql(
 
     // Verify both leaf indexes were dropped by rollback.
     assert!(
-        !index_exists_by_name(&mut ctx, "rb_rollback_events_a_ts_id_desc_idx").await,
+        !index_exists_by_name(&mut ctx, "rb_rollback_events_a_ts_id_idx").await,
         "rollback must drop leaf A via expanded down SQL",
     );
     assert!(
-        !index_exists_by_name(&mut ctx, "rb_rollback_events_b_ts_id_desc_idx").await,
+        !index_exists_by_name(&mut ctx, "rb_rollback_events_b_ts_id_idx").await,
         "rollback must drop leaf B via expanded down SQL",
     );
 }
