@@ -457,6 +457,9 @@ impl<T: Model> UpdateStmt<T> {
                 );
                 let (sql, binds) = acc.into_parts();
                 let params = as_params(&binds);
+                // NOTE: loads all affected PKs into memory (unbounded allocation).
+                // Operators with large matched sets should batch updates via
+                // scoped filters. See docs/guide/queries.md for guidance.
                 let rows = ctx.query_all(&sql, &params).await?;
 
                 let mut ids = Vec::with_capacity(rows.len());

@@ -438,6 +438,13 @@ row-count path and do not perform rollback-aware bulk cache invalidation. Wrap
 the bulk update in `djogi::transaction::atomic(...)` when cache invalidation
 must be coordinated with commit/rollback behavior.
 
+> **Memory note — unbounded PK materialization.** When the bulk-update gate fires
+> (transaction-backed context + Punnu registered), `.execute()` issues
+> `UPDATE ... RETURNING id` and loads **all affected primary keys** into memory
+> before returning the row count. For updates touching millions of rows, this
+> allocation is proportional to the matched set. Use a scoped filter or batch the
+> update in smaller `QuerySet` slices when the matched set is unbounded.
+
 Empty-assignment short-circuit: `filter(...).update(|_| vec![])` returns
 `Ok(0)` without issuing SQL. An `UPDATE ... SET` with no assignments is
 a Postgres syntax error, so the short-circuit is load-bearing.
