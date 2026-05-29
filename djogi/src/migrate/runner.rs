@@ -4248,8 +4248,14 @@ fn recover_partition_columns(parent_stmt: &str) -> (String, String) {
     let mut parts = inside.splitn(2, ',');
     let pkey = parts.next().unwrap_or("").trim().to_string();
     let id_col = parts.next().unwrap_or("").trim();
-    let suffix = id_col.strip_prefix("id").unwrap_or("_desc").to_string();
-    if pkey.is_empty() || suffix.is_empty() {
+    // `suffix` is the part after `id` — empty string is valid when the
+    // column is plain `id` (no ordering suffix like `_desc`). Only fall
+    // back when `id_col` does not start with `id` at all (parse failure).
+    let suffix = match id_col.strip_prefix("id") {
+        Some(s) => s.to_string(),
+        None => return ("partition_key".to_string(), "_desc".to_string()),
+    };
+    if pkey.is_empty() {
         return ("partition_key".to_string(), "_desc".to_string());
     }
     (pkey, suffix)

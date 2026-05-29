@@ -3695,12 +3695,15 @@ async fn flip_partitioned_parent_partial_apply_resume_uses_expanded_leaf_steps(
     .await
     .expect("resume remaining expanded leaf steps");
 
+    // The action string records the step label (e.g. "leaf=resume_events_b
+    // (concurrent)"), not the concrete index name. The DB query below at
+    // `leaf_b_attached` verifies the index was actually created and attached.
     assert!(
         report
             .actions_taken
             .iter()
-            .any(|a| a.contains("resume_events_b_ts_id_desc_idx")),
-        "resume actions must include leaf B concrete index: {:?}",
+            .any(|a| a.contains("leaf=resume_events_b")),
+        "resume actions must include leaf B step: {:?}",
         report.actions_taken,
     );
 
