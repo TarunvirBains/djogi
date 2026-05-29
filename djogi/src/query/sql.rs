@@ -2727,7 +2727,6 @@ where
 /// All value binding follows the same [`build_update`] path, so assignment
 /// binds fill slots before WHERE filter binds in the positional parameter
 /// sequence.
-#[allow(dead_code)]
 pub(crate) fn build_update_returning_ids<T: Model>(
     qs: &QuerySet<T>,
     assignments: &[crate::query::update::UpdateAssignment],
