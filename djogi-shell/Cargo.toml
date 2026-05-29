@@ -12,6 +12,9 @@ documentation = "https://docs.rs/djogi-shell"
 readme = "../ReadMe.MD"
 keywords = ["djogi", "rhai", "shell", "repl", "orm"]
 categories = ["command-line-utilities", "database"]
+# Phase 9 (Rhai shell) is deferred in v0.1.0-alpha.0; not part of the alpha
+# shipped surface. See CLAUDE.md Phase 9 note. Remove once Phase 9 ships.
+publish = false
 
 [dependencies]
 djogi.workspace = true
