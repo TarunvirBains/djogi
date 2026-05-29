@@ -1627,6 +1627,7 @@ mod tests {
             run_id: 0,
             snapshot_version: "1".to_string(),
             app_label: app_label.to_string(),
+            leaf_identity: None,
         }
     }
 

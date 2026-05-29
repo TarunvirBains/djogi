@@ -1275,6 +1275,7 @@ async fn insert_recorded_row(
         run_id: 0, // Records are not tied to a runner invocation.
         snapshot_version: SNAPSHOT_FORMAT_VERSION.to_string(),
         app_label: bucket.app.clone(),
+        leaf_identity: None,
     };
     let ledger_id = ledger::insert_pending(ctx, &row)
         .await

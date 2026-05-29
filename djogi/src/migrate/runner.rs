@@ -1089,6 +1089,7 @@ async fn apply_plan_inner(
         run_id,
         snapshot_version: SNAPSHOT_FORMAT_VERSION.to_string(),
         app_label: plan.bucket.app.clone(),
+        leaf_identity: None,
     };
     let ledger_id = match ledger::insert_pending(ctx, &ledger_row).await {
         Ok(id) => id,
@@ -2200,6 +2201,7 @@ async fn fake_apply_inner(
         run_id,
         snapshot_version: SNAPSHOT_FORMAT_VERSION.to_string(),
         app_label: plan.bucket.app.clone(),
+        leaf_identity: None,
     };
 
     let ledger_id = match ledger::insert_pending(ctx, &row).await {
@@ -2368,6 +2370,7 @@ async fn baseline_inner(
         run_id,
         snapshot_version: SNAPSHOT_FORMAT_VERSION.to_string(),
         app_label: bucket.app.clone(),
+        leaf_identity: None,
     };
     // `insert_pending` binds `row.status.as_db_str()` directly, so
     // constructing the row with `LedgerStatus::Baseline` writes the
