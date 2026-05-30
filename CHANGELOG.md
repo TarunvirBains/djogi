@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.2] - 2026-05-30
+
+### Fixed
+
+- fix(live_migrate): remove misplaced check_no_active_plan guard from run_plan; wire into compose_live_plans (CLASS A)
+- fix(live_migrate): fix pool-vs-connection context confusion in daemon backfill resume; add failure persistence via record_failure (CLASS B)
+- fix(live_migrate): thread allow_destructive/justify into executor; require --justify for finalize; add --allow-destructive/--justify to resume (CLASS C)
+- fix(live_migrate): persist step progress via update_step_index; promote completed plans to Complete; add StepKind::as_db_str (CLASS D)
+
 ## [0.1.0-alpha.1] - 2026-05-30
 
 ### Added
@@ -351,5 +360,7 @@ framework fits their app.
   `phf`-backed `field_codec` registry — wire sensitive columns into the
   live-migration substrate's protected-data audit path.
 
-[Unreleased]: https://github.com/TarunvirBains/djogi/compare/v0.1.0-alpha.0...HEAD
+[Unreleased]: https://github.com/TarunvirBains/djogi/compare/v0.1.0-alpha.2...HEAD
+[0.1.0-alpha.2]: https://github.com/TarunvirBains/djogi/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
+[0.1.0-alpha.1]: https://github.com/TarunvirBains/djogi/compare/v0.1.0-alpha.0...v0.1.0-alpha.1
 [0.1.0-alpha.0]: https://github.com/TarunvirBains/djogi/releases/tag/v0.1.0-alpha.0
