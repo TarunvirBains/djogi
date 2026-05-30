@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.1] - 2026-05-30
+
+### Added
+
+- `djogi migrations verify` CLI subcommand — compares `schema_snapshot.json` against the live database catalog and reports diagnostics. Exits 0 on clean, 1 on drift or runtime error, 2 on unsupported Postgres version. Supports `--strict` to upgrade out-of-order migration warnings (D622) to errors. Read-only; does not acquire the workspace lock.
+- `djogi::migrate::verify_bucket` — new library entry point for bucket-scoped verification. Uses inventory-driven app-label filtering so each `(database, app)` bucket is compared only against its own live tables, not the full `public` catalog.
+
+### Fixed
+
+- `djogi migrations verify` — per-database context routing: each bucket now connects to its own database target (`main`, `crud_log`, `event_log`, or user-defined) rather than always using the app database URL.
+- `djogi migrations verify/status/attune` — exit code 2 (Postgres version below support floor) was incorrectly returned as exit code 1. Now correctly returns exit 2 for PG < 18, consistent with all other migration subcommands.
+- `djogi migrations verify` — missing snapshot for a bucket with declared models now exits 1 with an actionable message; previously returned exit 0 (unverified state read as clean).
+- `djogi migrations verify` — orphaned on-disk snapshots (apps removed from inventory) are now included in the verification pass and surface as D601 drift rather than being silently skipped.
+
 ### Added
 
 - **Typed JSONB path cast dispatch** (closes djogi#161). Added
