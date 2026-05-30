@@ -554,6 +554,128 @@ enum MigrationsCommand {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Operator-confirmed repair flows for ledger drift, partial
+    /// applies, and missing snapshots. Every subcommand requires
+    /// explicit confirmation — invoking the CLI subcommand IS the
+    /// operator acknowledgment.
+    Repair {
+        /// The specific repair operation to perform.
+        #[command(subcommand)]
+        command: RepairSubcommand,
+    },
+}
+
+/// `djogi migrations repair <subcommand>` — the four operator-confirmed
+/// repair flows.
+///
+/// Each variant maps 1:1 onto a `djogi::migrate::repair::*` library
+/// function. Invoking the subcommand IS the operator acknowledgment;
+/// there is no separate `--confirm` flag. Every flow pins one Postgres
+/// session, takes the per-bucket advisory lock, and holds the workspace
+/// file lock for its duration.
+///
+/// Exit codes (shared across all four): `0` success, `1`
+/// runtime/I/O error (retryable), `2` refusal or structural mismatch
+/// (operator must intervene).
+#[derive(Subcommand)]
+pub enum RepairSubcommand {
+    /// Update ledger checksum when migration file content changed
+    /// but the row was already applied.
+    ChecksumDrift {
+        /// Migration version (e.g. `V20260101000000__add_users`).
+        version: String,
+        /// App label for the migration bucket. Defaults to the global
+        /// bucket (empty string) when not specified.
+        #[arg(long)]
+        app: Option<String>,
+        /// Database name. Defaults to `main` if not specified.
+        #[arg(long)]
+        database: Option<String>,
+        /// New `checksum_up` value (SHA-256 hex). If omitted, computed
+        /// from the committed up SQL file.
+        #[arg(long)]
+        checksum_up: Option<String>,
+        /// New `checksum_down` value (SHA-256 hex). If omitted and
+        /// down file exists, computed from committed down SQL file.
+        /// Missing down file is a no-op; other read errors abort.
+        #[arg(long)]
+        checksum_down: Option<String>,
+        /// Workspace root override.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+
+    /// Resolve a partial-apply row by rewriting its status to one of
+    /// `rolled_back`, `faked`, or `applied`. Does NOT execute SQL.
+    PartialApply {
+        /// Migration version to repair.
+        version: String,
+        /// Resolution: `rolled-back`, `faked`, or `applied`.
+        #[arg(value_enum)]
+        resolution: PartialApplyResolutionCli,
+        /// Operator note persisted in the ledger row's
+        /// `partial_apply_note` column.
+        #[arg(long, default_value = "operator resolved partial apply via CLI")]
+        note: String,
+        /// App label (empty string for global bucket).
+        #[arg(long)]
+        app: Option<String>,
+        /// Database name. Defaults to `main` if not specified.
+        #[arg(long)]
+        database: Option<String>,
+        /// Workspace root override.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+
+    /// Resume an interrupted non-transactional apply by re-loading
+    /// the committed replay plan and executing remaining steps.
+    ResumePartial {
+        /// Migration version to resume.
+        version: String,
+        /// App label (empty string for global bucket).
+        #[arg(long)]
+        app: Option<String>,
+        /// Database name. Defaults to `main` if not specified.
+        #[arg(long)]
+        database: Option<String>,
+        /// Workspace root override.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+
+    /// Rebuild the schema snapshot for a bucket by walking the
+    /// ledger and re-projecting from live database state.
+    SnapshotRebuild {
+        /// App label (empty string for global bucket).
+        #[arg(long)]
+        app: Option<String>,
+        /// Database name. Defaults to `main` if not specified.
+        #[arg(long)]
+        database: Option<String>,
+        /// Explicit snapshot path override. If omitted, derived from
+        /// `migrations/<database>/<app>/schema_snapshot.json`.
+        #[arg(long)]
+        snapshot_path: Option<PathBuf>,
+        /// Workspace root override.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+}
+
+/// CLI-side mirror of [`djogi::migrate::PartialApplyResolution`] for the
+/// `repair partial-apply` resolution argument.
+///
+/// This enum exists only so `clap::ValueEnum` can parse
+/// `rolled-back | faked | applied` at the CLI boundary without the
+/// library enum carrying a clap-derive dependency. Conversion to the
+/// canonical [`djogi::migrate::PartialApplyResolution`] happens via the
+/// `From` impl in the `migrations` module.
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum PartialApplyResolutionCli {
+    RolledBack,
+    Faked,
+    Applied,
 }
 
 fn main() -> ExitCode {
@@ -698,6 +820,7 @@ fn main() -> ExitCode {
                 fake,
                 reason,
             } => migrations::apply_cmd(workspace, fake, reason),
+            MigrationsCommand::Repair { command } => migrations::repair_cmd(command),
         },
         TopCommand::Migrate { command } => match command {
             MigrateCommand::Apply {
@@ -721,7 +844,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        Cli, DbCommand, MigrateCommand, MigrationsCommand, TopCommand, parse_threshold_vacuum,
+        Cli, DbCommand, MigrateCommand, MigrationsCommand, PartialApplyResolutionCli,
+        RepairSubcommand, TopCommand, parse_threshold_vacuum,
     };
 
     #[test]
@@ -879,6 +1003,182 @@ mod tests {
                 assert_eq!(workspace, Some(PathBuf::from("/custom/path")));
             }
             _ => panic!("expected migrations verify command"),
+        }
+    }
+
+    // ── repair subcommand argument parsing ─────────────────────────────────
+
+    #[test]
+    fn parse_repair_checksum_drift_accepts_required_args() {
+        let cli = Cli::parse_from([
+            "djogi",
+            "migrations",
+            "repair",
+            "checksum-drift",
+            "V20260101000000__test",
+            "--checksum-up",
+            "V1:aaaa",
+        ]);
+        assert!(matches!(cli.command, TopCommand::Migrations { .. }));
+    }
+
+    #[test]
+    fn parse_repair_checksum_drift_rejects_missing_version() {
+        let result = Cli::try_parse_from(["djogi", "migrations", "repair", "checksum-drift"]);
+        assert!(result.is_err(), "must require version argument");
+    }
+
+    #[test]
+    fn parse_repair_partial_apply_accepts_resolution_values() {
+        for resolution in ["rolled-back", "faked", "applied"] {
+            let cli = Cli::parse_from([
+                "djogi",
+                "migrations",
+                "repair",
+                "partial-apply",
+                "V20260101000000__test",
+                resolution,
+            ]);
+            assert!(
+                matches!(cli.command, TopCommand::Migrations { .. }),
+                "resolution={resolution}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_repair_partial_apply_rejects_invalid_resolution() {
+        let result = Cli::try_parse_from([
+            "djogi",
+            "migrations",
+            "repair",
+            "partial-apply",
+            "V20260101000000__test",
+            "invalid-resolution",
+        ]);
+        assert!(result.is_err(), "must reject unknown resolution");
+    }
+
+    #[test]
+    fn parse_repair_resume_partial_accepts_version() {
+        let cli = Cli::parse_from([
+            "djogi",
+            "migrations",
+            "repair",
+            "resume-partial",
+            "V20260101000000__test",
+        ]);
+        assert!(matches!(cli.command, TopCommand::Migrations { .. }));
+    }
+
+    #[test]
+    fn parse_repair_snapshot_rebuild_accepts_flags() {
+        let cli = Cli::parse_from([
+            "djogi",
+            "migrations",
+            "repair",
+            "snapshot-rebuild",
+            "--app",
+            "myapp",
+        ]);
+        assert!(matches!(cli.command, TopCommand::Migrations { .. }));
+    }
+
+    // Field-binding destructuring tests — one per subcommand that carries
+    // arguments. The outer-shape `matches!(..)` tests above prove the
+    // variant is reached; these prove the named clap fields actually bind
+    // to the supplied values (catching a `#[arg(long)]` typo or a
+    // positional/flag mix-up that an outer-shape assertion would miss).
+
+    #[test]
+    fn parse_repair_checksum_drift_binds_version_and_checksum_up() {
+        let cli = Cli::parse_from([
+            "djogi",
+            "migrations",
+            "repair",
+            "checksum-drift",
+            "V20260101000000__add_users",
+            "--checksum-up",
+            "V1:aaaa",
+        ]);
+        if let TopCommand::Migrations {
+            command: MigrationsCommand::Repair { command },
+        } = cli.command
+        {
+            if let RepairSubcommand::ChecksumDrift {
+                version,
+                checksum_up,
+                ..
+            } = command
+            {
+                assert_eq!(version, "V20260101000000__add_users");
+                assert_eq!(checksum_up.as_deref(), Some("V1:aaaa"));
+            } else {
+                panic!("wrong variant");
+            }
+        } else {
+            panic!("wrong command");
+        }
+    }
+
+    #[test]
+    fn parse_repair_partial_apply_binds_resolution_and_note() {
+        let cli = Cli::parse_from([
+            "djogi",
+            "migrations",
+            "repair",
+            "partial-apply",
+            "V20260101000000__add_users",
+            "rolled-back",
+            "--note",
+            "reverted by hot-fix",
+        ]);
+        if let TopCommand::Migrations {
+            command: MigrationsCommand::Repair { command },
+        } = cli.command
+        {
+            if let RepairSubcommand::PartialApply {
+                version,
+                resolution,
+                note,
+                ..
+            } = command
+            {
+                assert_eq!(version, "V20260101000000__add_users");
+                assert!(matches!(resolution, PartialApplyResolutionCli::RolledBack));
+                assert_eq!(note, "reverted by hot-fix");
+            } else {
+                panic!("wrong variant");
+            }
+        } else {
+            panic!("wrong command");
+        }
+    }
+
+    #[test]
+    fn parse_repair_snapshot_rebuild_binds_app_and_database() {
+        let cli = Cli::parse_from([
+            "djogi",
+            "migrations",
+            "repair",
+            "snapshot-rebuild",
+            "--app",
+            "billing",
+            "--database",
+            "analytics",
+        ]);
+        if let TopCommand::Migrations {
+            command: MigrationsCommand::Repair { command },
+        } = cli.command
+        {
+            if let RepairSubcommand::SnapshotRebuild { app, database, .. } = command {
+                assert_eq!(app.as_deref(), Some("billing"));
+                assert_eq!(database.as_deref(), Some("analytics"));
+            } else {
+                panic!("wrong variant");
+            }
+        } else {
+            panic!("wrong command");
         }
     }
 }

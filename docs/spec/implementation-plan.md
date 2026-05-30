@@ -523,7 +523,7 @@ Filenames are `V<YYYYMMDDHHMMSS>__<slug>.sql` plus `.down.sql`. Every Phase 7 pa
 - [ ] `djogi migrations rollback` — deferred CLI dispatcher for rolling back the last applied migration for one target
 - [x] `djogi migrations status` — show file / snapshot / ledger / live-DB state for one target
 - [x] `djogi migrations verify` — shipped CLI dispatcher (issue #352)
-- [ ] `djogi migrations repair` — deferred CLI dispatcher for repairing failed or partially applied target-local migration state
+- [x] `djogi migrations repair` — shipped CLI dispatcher (issue #353) for repairing failed or partially applied target-local migration state; subcommands `checksum-drift` / `partial-apply` / `resume-partial` / `snapshot-rebuild`
 - [ ] `djogi migrations baseline` — deferred CLI dispatcher for marking an existing schema as adopted without replay
 - [x] `djogi migrations attune` — `--record` / `--squash --from <ver>` with `--publish`; localhost + dev-profile gates on squash
 - [x] `djogi migrations apply --fake` — shipped as boolean flag on `apply` command, requires `--reason` argument; library callers use `djogi::migrate::fake_apply_plan`

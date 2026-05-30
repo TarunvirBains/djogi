@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.4] - 2026-05-30
+
+### Added
+
+- feat(#353): wire `djogi migrations repair` CLI dispatcher — checksum-drift, partial-apply, resume-partial, snapshot-rebuild subcommands
+
+### Fixed
+
+- fix(repair): route all four repair commands to the correct per-database URL (--database flag was ignored for connection; always connected to main app DB)
+- fix(repair): compute_checksum_from_disk now uses canonical fragment-level checksum domain (consistent with compose and reset; strips header and label comments before hashing)
+- fix(repair): expose compute_committed_sql_checksum and compute_committed_down_sql_checksum as public API from djogi::migrate
+- doc(repair): correct --app help text for checksum-drift (defaults to global bucket, not "first registered app")
+
 ## [0.1.0-alpha.3] - 2026-05-30
 
 ### Fixed

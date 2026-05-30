@@ -773,7 +773,7 @@ Advisory lock contract:
 - key derivation: `SHA-256("djogi:advisory_lock:" || database || "\0" || app)`, with the first 8 digest bytes interpreted as a big-endian signed 64-bit integer (Postgres `bigint`)
 - prefix: the `djogi:advisory_lock:` byte prefix scopes the keyspace so adopter-side advisory locks that hash arbitrary identifiers cannot collide with Djogi's keys
 - acquired before reading the pending set for the bucket
-- session-scoped — the design intent is that the holder pins a single session (e.g. a dedicated non-pooled `tokio_postgres::Client`) for the full `apply` / `rollback` / `repair` window so pool reuse cannot silently swap the holder; the current runner acquires the lock through a supplied pool-backed `DjogiContext` and per-operation checkouts are not yet pinned to one session for the migration window — pinning is a release-gate hardening item (track ahead of v0.1.0 publish), not a current runtime guarantee
+- session-scoped — the design intent is that the holder pins a single session (e.g. a dedicated non-pooled `tokio_postgres::Client`) for the full `apply` / `rollback` / `repair` window so pool reuse cannot silently swap the holder; the repair commands pin via `ctx.pin_for_migration()` (one physical session for the full lock + mutation window); the `apply` and `rollback` runners acquire the lock through a pool-backed `DjogiContext` and per-operation checkouts are not yet pinned — pinning for those paths is a release-gate hardening item (track ahead of v0.1.0 publish)
 - released in a finally-equivalent cleanup path
 
 ### 10.8 Apply, Rollback, Repair, and Adoption
@@ -794,6 +794,10 @@ djogi migrations apply
 djogi migrations apply --fake --reason "existing schema"  # mark applied without running SQL
 djogi migrations verify                # compare snapshot expectations to the live DB
 djogi migrations verify --strict       # upgrade out-of-order (D622) to an error
+djogi migrations repair checksum-drift V<ts>__<slug> --checksum-up V1:<hex>  # re-checksum an edited applied row
+djogi migrations repair partial-apply V<ts>__<slug> rolled-back  # resolve a partial-apply ledger row
+djogi migrations repair resume-partial V<ts>__<slug>  # resume an interrupted non-transactional apply
+djogi migrations repair snapshot-rebuild --app <label>  # rebuild a bucket snapshot from ledger + live DB
 djogi db reset --yes
 djogi db reset --yes --allow-checksum-drift-reset
 djogi db seed
@@ -801,14 +805,12 @@ djogi db seed --database crud_log
 djogi docs
 
 # Phase-7-deferred — library APIs ship today; CLI dispatch lands in a follow-up
-# task. The runtime entry points (`rollback_plan`, `repair_*`,
-# `baseline_plan`) are all public and exercised by the integration test
-# suite; the gap is the config / snapshot / plan / ledger plumbing the CLI
-# dispatch needs around them. Adopters who need these flows ahead of the CLI
-# registration can wire the library APIs directly today.
+# task. The runtime entry points (`rollback_plan`, `baseline_plan`) are
+# public and exercised by the integration test suite; the gap is the
+# config / snapshot / plan / ledger plumbing the CLI dispatch needs around
+# them. Adopters who need these flows ahead of the CLI registration can wire
+# the library APIs directly today.
 # deferred CLI sketch: djogi migrations rollback
-# deferred CLI sketch: djogi migrations repair
-# deferred CLI sketch: djogi migrations repair --rebuild-snapshot
 # deferred CLI sketch: djogi migrations baseline 0001_initial
 ```
 

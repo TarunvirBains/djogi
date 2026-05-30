@@ -1192,13 +1192,52 @@ struct ReplaySqlFiles {
     checksum_down: Option<String>,
 }
 
-pub(crate) fn compute_committed_sql_checksum(sql: &str, side: ResetSqlSide) -> String {
+/// Compute the canonical checksum of a committed migration SQL file's
+/// contents, in the same domain compose uses when it records the ledger
+/// `checksum_up` / `checksum_down` values.
+///
+/// # Why this exists
+///
+/// Compose computes checksums over the [`super::OperationSql`] fragments
+/// (`label` + `up` / `down` SQL), NOT over the rendered file that those
+/// fragments are written into. A composed migration file carries a
+/// `-- Djogi composed migration — {up,down}` header, a
+/// `-- DO NOT EDIT …` banner, and per-statement `-- <label>` comment
+/// lines that are absent from the fragment domain. A naive
+/// [`compute_checksum`] over the whole file therefore yields a different
+/// digest than the ledger stores. This helper strips the file framing
+/// (parsing the composed file back into its canonical fragments) so a
+/// recomputed checksum matches what compose persisted — load-bearing for
+/// `djogi migrations repair checksum-drift`, which recomputes from disk
+/// when the operator omits `--checksum-up` / `--checksum-down`.
+///
+/// # Behavior
+///
+/// When `sql` is a recognizable composed file (correct header + banner),
+/// the digest is computed over its canonical fragments for `side`.
+/// Otherwise — a hand-authored or legacy file with no composed framing —
+/// it falls back to the whole-file digest, matching how such files are
+/// checksummed elsewhere.
+pub fn compute_committed_sql_checksum(sql: &str, side: ResetSqlSide) -> String {
     canonical_composed_sql_fragments(sql, side)
         .map(|fragments| compute_checksum(fragments.iter().map(String::as_str)))
         .unwrap_or_else(|| compute_checksum([sql]))
 }
 
-pub(crate) fn compute_committed_down_sql_checksum(sql: &str) -> Option<String> {
+/// Compute the canonical checksum of a committed *down* SQL file, or
+/// `None` when the down side carries no real statements.
+///
+/// Shares the fragment-level domain documented on
+/// [`compute_committed_sql_checksum`]. Returns `None` (matching compose's
+/// `NULL` `checksum_down` sentinel) when the down file is comment-only —
+/// either every composed fragment is a comment, or, for a non-composed
+/// file, every non-blank line is a `--` comment. A down side with at
+/// least one real statement returns `Some(digest)`.
+///
+/// Note this takes file *contents* already read from disk; a missing
+/// down file (which also maps to a `None` / `NULL` down checksum) is the
+/// caller's concern, not handled here.
+pub fn compute_committed_down_sql_checksum(sql: &str) -> Option<String> {
     if let Some(fragments) = canonical_composed_sql_fragments(sql, ResetSqlSide::Down) {
         if fragments.iter().all(|fragment| fragment.starts_with("--")) {
             None
