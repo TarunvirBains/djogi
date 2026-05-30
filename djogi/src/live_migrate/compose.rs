@@ -163,8 +163,14 @@ pub enum StepResult {
 /// Returns a [`ComposeReport`] summarising what was written. Errors
 /// via [`ComposeError`] on diff failure, classification refusal, or
 /// I/O issues.
+///
+/// Refuses with [`ComposeError::ActivePlanExists`] when a non-terminal
+/// plan already owns the `(target_database, app_label)` bucket — the
+/// runtime ledger is the source of truth, and composing a second
+/// concurrent plan would let two plans drive the same schema at once.
+/// The check runs once, before any plan file is written.
 pub async fn compose_live_plans(
-    _ctx: &DjogiContext,
+    ctx: &mut DjogiContext,
     descriptors: Vec<crate::descriptor::ModelDescriptor>,
     snapshot_path: std::path::PathBuf,
     meta: ComposeMeta,
@@ -204,7 +210,7 @@ pub async fn compose_live_plans(
         (String, String),
         crate::descriptor::DefaultVolatility,
     > = std::collections::BTreeMap::new();
-    let ctx = crate::live_migrate::classify::ClassifyContext::application_default(
+    let classify_ctx = crate::live_migrate::classify::ClassifyContext::application_default(
         &inbound_fk_counts,
         &volatility_overrides,
     );
@@ -212,8 +218,18 @@ pub async fn compose_live_plans(
     // 6. Filter deltas to ExpandContract (live-plan eligible)
     let mut report = ComposeReport::default();
 
+    // Refuse to compose a second concurrent live plan in the same
+    // (target_database, app_label) bucket. The runtime ledger is the
+    // source of truth: if a non-terminal plan already owns this bucket,
+    // composing another would let two plans drive the same schema
+    // concurrently. The guard belongs HERE (compose time), not in the
+    // executor (which always finds the plan it is executing).
+    let bucket = format!("{}:{}", meta.target_database, meta.app_label);
+    check_no_active_plan(ctx, &bucket).await?;
+
     for delta in deltas {
-        let classified = crate::live_migrate::classify::classify_delta(&delta.operations, &ctx);
+        let classified =
+            crate::live_migrate::classify::classify_delta(&delta.operations, &classify_ctx);
 
         // Check if any operation classifies as ExpandContract
         let has_expand_contract = classified.iter().any(|(_, classification)| {

@@ -32,6 +32,9 @@ pub enum ExecutorError {
     #[error("step {ordinal} requires operator gate")]
     OperatorGate { ordinal: u32, step_kind: String },
 
+    #[error("plan contains a destructive step but the destructive gate was not satisfied: {0}")]
+    DestructiveGateRefused(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -51,27 +54,58 @@ pub struct ExecutionContext<'a> {
 
 /// Run a live plan from the given path.
 ///
-/// Loads the plan, verifies no active plan conflicts exist, then
-/// executes each step sequentially. Progress is tracked in the
-/// `djogi_live_plans` ledger.
+/// Loads the plan, then executes each step sequentially starting from
+/// `start_index`. Progress is tracked in the `djogi_live_plans` ledger.
+///
+/// Before the step loop, the destructive-step gate is enforced: if the
+/// plan contains any DROP / TRUNCATE-class step (per
+/// [`LivePlan::has_destructive_steps`]), execution is refused with
+/// [`ExecutorError::DestructiveGateRefused`] unless `allow_destructive`
+/// is set AND `justify` carries a non-empty (non-whitespace) reason.
+/// This makes the engine the authoritative enforcement point so no call
+/// path (run / resume / finalize) can execute a destructive step without
+/// the operator opt-in.
 ///
 /// Returns [`StepResult::Completed`] when all steps finish,
 /// [`StepResult::Partial`] if a backfill was interrupted,
-/// or [`StepResult::Paused`] if an operator gate was reached.
+/// or [`StepResult::Paused`] if an operator gate was reached. On natural
+/// completion the ledger row is promoted to
+/// [`super::state::PlanStatus::Complete`] and `completed_at` is stamped.
+///
+/// # Errors
+///
+/// - [`ExecutorError::DestructiveGateRefused`] when the plan has a
+///   destructive step and the gate was not satisfied.
+/// - [`ExecutorError::Db`] when a ledger write fails.
+/// - [`ExecutorError::StepFailed`] / [`ExecutorError::Io`] /
+///   [`ExecutorError::PlanFile`] when a step or the plan file fails.
 pub async fn run_plan(
     ctx: &mut DjogiContext,
     plan_path: std::path::PathBuf,
     start_index: u32,
     is_resume: bool,
+    allow_destructive: bool,
+    justify: Option<&str>,
 ) -> Result<StepResult, ExecutorError> {
     // 1. Load plan from disk
     let plan = crate::live_migrate::plan_file::read_plan(&plan_path)?;
 
-    // 2. Check for active plan conflicts in the same bucket
-    let bucket = format!("{}:{}", plan.header.target_database, plan.header.app_label);
-    crate::live_migrate::compose::check_no_active_plan(ctx, &bucket)
-        .await
-        .map_err(|e| ExecutorError::AlreadyCompleted(e.to_string()))?;
+    // 2. Destructive-step gate. The engine is the authoritative
+    // enforcement point: every call path (run / resume / finalize)
+    // routes through here, so a caller that forgets to pre-flight the
+    // gate (as `finalize` did) still cannot execute a DROP-class step
+    // without an explicit operator override. A justification with only
+    // whitespace is treated as absent.
+    if plan.has_destructive_steps() {
+        let justify_present = justify.map(|s| !s.trim().is_empty()).unwrap_or(false);
+        if !allow_destructive || !justify_present {
+            return Err(ExecutorError::DestructiveGateRefused(
+                "pass --allow-destructive with a non-empty --justify \"<reason>\" \
+                 to execute the plan's DROP / TRUNCATE-class steps"
+                    .to_string(),
+            ));
+        }
+    }
 
     // 3. Execute each step sequentially
     let mut last_result = StepResult::Completed;
@@ -80,6 +114,25 @@ pub async fn run_plan(
         if (idx as u32) < start_index {
             continue; // Skip already-completed steps on resume
         }
+
+        // Persist the step pointer BEFORE executing the step so resume
+        // starts from the in-flight step rather than the beginning. DDL
+        // steps are transactional (rolled back on failure) and backfill
+        // chunks are idempotent by the predicate contract, so re-running
+        // the in-flight step on resume is safe. `current_step` carries
+        // the snake_case label for `live show` / the daemon candidate
+        // filter.
+        super::state::update_step_index(
+            ctx,
+            plan.header.plan_id,
+            &plan.header.target_database,
+            &plan.header.app_label,
+            idx as i32,
+            Some(step.kind.as_db_str()),
+        )
+        .await
+        .map_err(ExecutorError::Db)?;
+
         let exec = ExecutionContext {
             ctx,
             plan: &plan,
@@ -119,6 +172,37 @@ pub async fn run_plan(
                 return Err(e);
             }
         }
+    }
+
+    // Every step executed without pausing at a gate or interrupting a
+    // backfill — the plan is complete. Promote the ledger row to
+    // `Complete` and stamp `completed_at`. These two writes are NOT in a
+    // shared transaction: at this point the runner has nothing to roll
+    // back (all step transactions already committed), so completion is
+    // durable by construction. Stamp the timestamp first, then flip the
+    // status, so a crash between the two leaves a `completed_at` on a
+    // still-`running` row (observably "finished but not yet promoted")
+    // rather than a `Complete` row with a NULL `completed_at` (which
+    // would look like a status-without-evidence corruption to
+    // `live show`).
+    if matches!(last_result, StepResult::Completed) {
+        super::state::stamp_completed_at(
+            ctx,
+            plan.header.plan_id,
+            &plan.header.target_database,
+            &plan.header.app_label,
+        )
+        .await
+        .map_err(ExecutorError::Db)?;
+        super::state::update_status(
+            ctx,
+            plan.header.plan_id,
+            &plan.header.target_database,
+            &plan.header.app_label,
+            super::state::PlanStatus::Complete,
+        )
+        .await
+        .map_err(ExecutorError::Db)?;
     }
 
     Ok(last_result)

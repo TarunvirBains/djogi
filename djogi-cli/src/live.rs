@@ -119,6 +119,15 @@ pub enum LiveCmd {
     /// from the row and resumes at the same step.
     Resume {
         plan_id: String,
+        /// Allow destructive steps to execute on resume. Required when
+        /// the plan contains a DROP / TRUNCATE-class step that the
+        /// resume would reach. Pairs with `--justify`.
+        #[arg(long, default_value_t = false)]
+        allow_destructive: bool,
+        /// Operator justification recorded alongside any destructive
+        /// step. Required when `--allow-destructive` is set.
+        #[arg(long)]
+        justify: Option<String>,
         /// Workspace root override.
         #[arg(long)]
         workspace: Option<PathBuf>,
@@ -303,7 +312,12 @@ async fn run(cmd: LiveCmd) -> Result<i32, LiveCmdError> {
             )
             .await
         }
-        LiveCmd::Resume { plan_id, workspace } => resume_cmd(&plan_id, workspace).await,
+        LiveCmd::Resume {
+            plan_id,
+            allow_destructive,
+            justify,
+            workspace,
+        } => resume_cmd(&plan_id, allow_destructive, justify.as_deref(), workspace).await,
         LiveCmd::Finalize {
             plan_id,
             justify,
@@ -749,8 +763,19 @@ async fn run_cmd(
     // gate pause / promote, transactional progress writes) is the
     // engine's job and lands in the same follow-up.
     //
-    // Execute the plan via the live-plan engine
-    match djogi::live_migrate::executor::run_plan(&mut ctx, path, 0, false).await {
+    // Execute the plan via the live-plan engine. The operator-supplied
+    // `allow_destructive` / `justify` flow through to the engine-side
+    // gate as well as the CLI pre-flight above (belt and suspenders).
+    match djogi::live_migrate::executor::run_plan(
+        &mut ctx,
+        path,
+        0,
+        false,
+        allow_destructive,
+        justify,
+    )
+    .await
+    {
         Ok(result) => match result {
             StepResult::Completed => {
                 println!("live run: plan {plan_id} completed successfully");
@@ -786,7 +811,18 @@ async fn run_cmd(
 /// `djogi live resume` body. Same shape as `run`, but additionally
 /// refuses (exit 5) when the plan is at a validation / cutover /
 /// finalize gate — those need `live run` (or `live finalize`).
-async fn resume_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32, LiveCmdError> {
+///
+/// A resumed plan can reach a destructive cleanup step, so it carries
+/// the same `--allow-destructive` / `--justify` gate as `live run`:
+/// the CLI pre-flight pairs the two flags, and the engine enforces the
+/// destructive gate before executing any DROP-class step.
+async fn resume_cmd(
+    plan_id_raw: &str,
+    allow_destructive: bool,
+    justify: Option<&str>,
+    workspace: Option<PathBuf>,
+) -> Result<i32, LiveCmdError> {
+    require_justify_for_destructive(allow_destructive, justify)?;
     let plan_id = parse_plan_id(plan_id_raw)?;
     let workspace = resolve_workspace(workspace);
     let config = load_config(&workspace)?;
@@ -798,7 +834,16 @@ async fn resume_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32
     let _plan = read_plan(&path)?;
     // Resume execution from current step
     let start_idx = u32::try_from(row.current_step_index).unwrap_or(0);
-    match djogi::live_migrate::executor::run_plan(&mut ctx, path, start_idx, true).await {
+    match djogi::live_migrate::executor::run_plan(
+        &mut ctx,
+        path,
+        start_idx,
+        true,
+        allow_destructive,
+        justify,
+    )
+    .await
+    {
         Ok(result) => match result {
             StepResult::Completed => {
                 println!("live resume: plan {plan_id} completed successfully");
@@ -905,9 +950,14 @@ fn assert_resume_status_allows_progress(status: PlanStatus) -> Result<(), LiveCm
 /// [`StepKind::CleanupLegacyState`](djogi::live_migrate::StepKind::CleanupLegacyState)
 /// step, drops compatibility hooks, and promotes the row to
 /// [`PlanStatus::Complete`].
+///
+/// Requires `--justify "<reason>"`; the cleanup phase is destructive by
+/// nature. The `live finalize` invocation is itself the operator's
+/// destructive opt-in, so it passes `allow_destructive = true` to the
+/// engine but still demands a non-empty justification.
 async fn finalize_cmd(
     plan_id_raw: &str,
-    _justify: Option<&str>,
+    justify: Option<&str>,
     workspace: Option<PathBuf>,
 ) -> Result<i32, LiveCmdError> {
     let plan_id = parse_plan_id(plan_id_raw)?;
@@ -916,12 +966,28 @@ async fn finalize_cmd(
     let mut ctx = connect(&config.database.url).await?;
     let row = fetch_row(&mut ctx, plan_id).await?;
     assert_finalize_status(row.status)?;
+    // `live finalize` runs the contract (cleanup) phase, which is
+    // destructive by nature. Require a justification just as `live run
+    // --allow-destructive` does; treat the finalize invocation itself as
+    // the operator's destructive opt-in.
+    let justify_present = justify.map(|s| !s.trim().is_empty()).unwrap_or(false);
+    if !justify_present {
+        return Err(LiveCmdError::ArgRefused(
+            "live finalize runs destructive cleanup steps; pass \
+             --justify \"<reason>\""
+                .to_string(),
+        ));
+    }
     let path = resolve_plan_file_path(&workspace, &row);
     verify_checksum(&path, &row.plan_file_checksum)?;
     let _plan = read_plan(&path)?;
-    // Resume execution from current step
+    // Resume execution from current step. `live finalize` implies the
+    // destructive opt-in (5th arg `true`); the engine still requires the
+    // non-empty `justify` checked above.
     let start_idx = u32::try_from(row.current_step_index).unwrap_or(0);
-    match djogi::live_migrate::executor::run_plan(&mut ctx, path, start_idx, true).await {
+    match djogi::live_migrate::executor::run_plan(&mut ctx, path, start_idx, true, true, justify)
+        .await
+    {
         Ok(result) => match result {
             StepResult::Completed => {
                 println!("live finalize: plan {plan_id} completed successfully");

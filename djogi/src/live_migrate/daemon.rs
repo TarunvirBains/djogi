@@ -75,6 +75,7 @@ use crate::__bypass::RawAccessExt as _;
 use crate::context::{DjogiContext, PinnedCtx};
 use crate::error::{DbError, DjogiError};
 use crate::live_migrate::backfill::BackfillError;
+use crate::pg::pool::DjogiPool;
 
 // ── Configuration ─────────────────────────────────────────────────────
 
@@ -401,12 +402,23 @@ async fn poll_once(ctx: &mut DjogiContext, config: &DaemonConfig) -> Result<(), 
     if candidates.is_empty() {
         return Ok(());
     }
+    // The daemon's ctx is pool-backed (built via DjogiContext::from_pool
+    // in the CLI). Clone the pool handle ONCE per poll so the backfill
+    // chunk loop runs on a fresh pool-backed context — distinct from the
+    // advisory-lock pinned (connection-backed) context. See CLASS B.
+    let pool = ctx.share_pool().ok_or_else(|| {
+        DaemonError::Database(DjogiError::Db(DbError::other(
+            "daemon poll requires a pool-backed DjogiContext (built via \
+             DjogiContext::from_pool); cannot resume backfills without a pool \
+             to open per-chunk transactions on",
+        )))
+    })?;
     tracing::debug!(
         count = candidates.len(),
         "live-migrate daemon: candidate plans this iteration",
     );
     for candidate in candidates {
-        if let Err(e) = drive_candidate(ctx, config, &candidate).await {
+        if let Err(e) = drive_candidate(ctx, &pool, config, &candidate).await {
             tracing::warn!(
                 plan_id = candidate.plan_id,
                 target_database = %candidate.target_database,
@@ -487,8 +499,14 @@ async fn read_candidates(
 
 /// Try to claim, drive, and release one candidate. Each phase logs
 /// independently so the operator can pinpoint where a plan got stuck.
+///
+/// `pool` is the daemon's shared pool handle (cloned once per poll in
+/// [`poll_once`]). It is threaded down to the backfill resume so the
+/// chunk loop runs on a fresh pool-backed context rather than the
+/// advisory-lock pinned (connection-backed) context. See CLASS B.
 async fn drive_candidate(
     ctx: &mut DjogiContext,
+    pool: &DjogiPool,
     config: &DaemonConfig,
     candidate: &DaemonCandidate,
 ) -> Result<(), DaemonError> {
@@ -506,7 +524,7 @@ async fn drive_candidate(
         return Ok(());
     }
     // From here on, every exit path must release the advisory lock.
-    let result = drive_under_lock(&mut pinned, config, candidate).await;
+    let result = drive_under_lock(&mut pinned, pool, config, candidate).await;
     release_advisory_lock(&mut pinned, lock_key).await;
 
     // Lock released — mark clean so the connection returns to the pool.
@@ -522,6 +540,7 @@ async fn drive_candidate(
 /// by the caller regardless of the inner `Result`.
 async fn drive_under_lock(
     ctx: &mut PinnedCtx<'_>,
+    pool: &DjogiPool,
     config: &DaemonConfig,
     candidate: &DaemonCandidate,
 ) -> Result<(), DaemonError> {
@@ -541,8 +560,14 @@ async fn drive_under_lock(
     // gate query the daemon does NOT advance through — it merely verifies
     // the gate query still parses against the live database. Operator
     // promotion past the gate stays with `live run`.
+    //
+    // The backfill resume runs on `pool` (a fresh pool-backed context),
+    // NOT the pinned `ctx`: each chunk opens its own transaction and
+    // cannot nest inside the advisory-lock connection. The claim /
+    // clear-claim work stays on the pinned `ctx` — single statements
+    // that benefit from running on the locked session.
     let outcome = match candidate.current_step.as_str() {
-        "backfill_chunked" => resume_backfill_for_candidate(ctx, candidate, config).await,
+        "backfill_chunked" => resume_backfill_for_candidate(pool, candidate, config).await,
         "validate_backfill" => {
             tracing::debug!(
                 plan_id = candidate.plan_id,
@@ -580,13 +605,21 @@ async fn drive_under_lock(
 
 /// Drive a `backfill_chunked` candidate via the same
 /// [`crate::live_migrate::backfill::resume_backfill`] entry point the
-/// CLI's `live resume` calls. The CLI today owns the "read plan-file +
-/// extract `(table, predicate_template, chunk_size)`" wiring; the
-/// daemon path lands without that engine in place. Logs the outcome
-/// and returns; this function is the seam the engine wires into when
-/// it lands.
+/// CLI's `live resume` calls.
+///
+/// Runs on a FRESH pool-backed context built from `pool` — NOT the
+/// daemon's advisory-lock pinned (connection-backed) context. The
+/// chunk loop opens its own per-chunk transaction via `atomic(pool, ..)`
+/// and therefore requires a pool to draw connections from; the pinned
+/// connection is reserved for the session-scoped advisory lock. See
+/// CLASS B.
+///
+/// On a backfill failure, records the failure on the plan row via
+/// [`crate::live_migrate::state::record_failure`] (retriable) so the
+/// failure is visible to `live show` and the daemon does not silently
+/// re-attempt the same broken plan every poll cycle with no audit trail.
 async fn resume_backfill_for_candidate(
-    ctx: &mut DjogiContext,
+    pool: &DjogiPool,
     candidate: &DaemonCandidate,
     daemon_cfg: &DaemonConfig,
 ) -> Result<(), DaemonError> {
@@ -595,7 +628,6 @@ async fn resume_backfill_for_candidate(
     };
     use crate::types::HeerId;
 
-    // 1. Convert plan_id (i64) to HeerId
     let plan_id = HeerId::from_i64(candidate.plan_id).map_err(|e| {
         DaemonError::Database(DjogiError::Db(DbError::other(format!(
             "invalid plan_id {}: {}",
@@ -603,7 +635,6 @@ async fn resume_backfill_for_candidate(
         ))))
     })?;
 
-    // 2. Resolve plan file path from workspace + ledger row
     let slug = &candidate.slug;
     let path = crate::live_migrate::plan_file::plan_path(
         &daemon_cfg.workspace_root.join("migrations"),
@@ -612,7 +643,6 @@ async fn resume_backfill_for_candidate(
         slug,
     );
 
-    // 3. Read plan from disk
     let plan = read_plan(&path).map_err(|e| {
         DaemonError::Database(DjogiError::Db(DbError::other(format!(
             "failed to read plan file {}: {}",
@@ -621,7 +651,6 @@ async fn resume_backfill_for_candidate(
         ))))
     })?;
 
-    // 4. Extract backfill parameters from plan steps
     let extract_result = extract_backfill_params(&plan.steps);
     let (table, predicate_template, chunk_size) = match extract_result {
         super::compose::ExtractResult::Params {
@@ -642,29 +671,62 @@ async fn resume_backfill_for_candidate(
         }
     };
 
-    // 5. Execute the backfill resume
-    let chunks = resume_backfill(
-        ctx,
+    // Fresh pool-backed context for the chunk loop. Each chunk opens its
+    // own transaction; this MUST be pool-backed, not the pinned
+    // connection that holds the advisory lock.
+    let mut backfill_ctx = DjogiContext::from_pool(pool.clone());
+
+    let result = resume_backfill(
+        &mut backfill_ctx,
         plan_id,
         &table,
         &predicate_template,
         chunk_size,
         true, // emit events
     )
-    .await
-    .map_err(|e| match e {
-        BackfillError::Database(db_err) => DaemonError::Database(db_err),
-        other => DaemonError::Backfill(other),
-    })?;
+    .await;
 
-    tracing::info!(
-        plan_id = %plan_id,
-        target_database = %candidate.target_database,
-        app_label = %candidate.app_label,
-        chunks_processed = chunks.len(),
-        "live-migrate daemon: backfill completed successfully",
-    );
-    Ok(())
+    match result {
+        Ok(chunks) => {
+            tracing::info!(
+                plan_id = %plan_id,
+                target_database = %candidate.target_database,
+                app_label = %candidate.app_label,
+                chunks_processed = chunks.len(),
+                "live-migrate daemon: backfill completed successfully",
+            );
+            Ok(())
+        }
+        Err(e) => {
+            // Record the failure on the plan row so it is visible to
+            // `live show` and the daemon does not silently re-attempt
+            // indefinitely. Mark retriable: a daemon-mode backfill
+            // failure is typically transient (connection blip, lock
+            // contention); the operator can inspect `last_error` and
+            // abandon if it is terminal. Recording uses the same
+            // pool-backed ctx.
+            let record_outcome = crate::live_migrate::state::record_failure(
+                &mut backfill_ctx,
+                plan_id,
+                &candidate.target_database,
+                &candidate.app_label,
+                format!("daemon backfill resume failed: {e}"),
+                true, // retriable
+            )
+            .await;
+            if let Err(record_err) = record_outcome {
+                tracing::warn!(
+                    plan_id = %plan_id,
+                    error = %record_err,
+                    "live-migrate daemon: failed to record backfill failure on row",
+                );
+            }
+            Err(match e {
+                BackfillError::Database(db_err) => DaemonError::Database(db_err),
+                other => DaemonError::Backfill(other),
+            })
+        }
+    }
 }
 async fn try_acquire_advisory_lock(
     ctx: &mut PinnedCtx<'_>,
