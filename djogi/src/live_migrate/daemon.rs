@@ -68,8 +68,8 @@
 //! [`StepKind::FinalizeConstraints`]: crate::live_migrate::plan::StepKind::FinalizeConstraints
 //! [`PlanStatus::Paused`]: crate::live_migrate::state::PlanStatus::Paused
 
-use std::time::Duration;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::__bypass::RawAccessExt as _;
 use crate::context::{DjogiContext, PinnedCtx};
@@ -461,9 +461,7 @@ async fn read_candidates(
             )))
         })?;
         let slug: String = row.try_get(3).map_err(|e| {
-            DjogiError::Db(DbError::other(format!(
-                "candidate row decode slug: {e}"
-            )))
+            DjogiError::Db(DbError::other(format!("candidate row decode slug: {e}")))
         })?;
         let current_step: Option<String> = row.try_get(4).map_err(|e| {
             DjogiError::Db(DbError::other(format!(
@@ -592,10 +590,10 @@ async fn resume_backfill_for_candidate(
     candidate: &DaemonCandidate,
     daemon_cfg: &DaemonConfig,
 ) -> Result<(), DaemonError> {
-    use crate::types::HeerId;
     use crate::live_migrate::{
         backfill::resume_backfill, compose::extract_backfill_params, plan_file::read_plan,
     };
+    use crate::types::HeerId;
 
     // 1. Convert plan_id (i64) to HeerId
     let plan_id = HeerId::from_i64(candidate.plan_id).map_err(|e| {
@@ -638,10 +636,9 @@ async fn resume_backfill_for_candidate(
             ))));
         }
         super::compose::ExtractResult::Malformed(reason) => {
-            return Err(DaemonError::Database(DjogiError::Db(DbError::other(format!(
-                "malformed backfill step: {}",
-                reason
-            )))));
+            return Err(DaemonError::Database(DjogiError::Db(DbError::other(
+                format!("malformed backfill step: {}", reason),
+            ))));
         }
     };
 

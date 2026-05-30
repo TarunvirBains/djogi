@@ -53,12 +53,12 @@ use clap::Subcommand;
 use djogi::__bypass::RawAccessExt as _;
 use djogi::config::DjogiConfig;
 use djogi::context::DjogiContext;
+use djogi::live_migrate::compose::StepResult;
 use djogi::live_migrate::{
     DaemonConfig, DaemonError, LivePlanRow, PlanFileError, PlanStatus, active_hooks_at_step,
     plan_path, read_plan, run_daemon, verify_checksum,
 };
 use djogi::pg::pool::DjogiPool;
-use djogi::live_migrate::compose::StepResult;
 use djogi::types::HeerId;
 
 // ── Subcommand surface ────────────────────────────────────────────────
@@ -201,7 +201,6 @@ pub enum LiveCmdError {
     /// Maps to exit code 2.
     #[error("classification refused: {0}")]
     ClassificationRefused(String),
-
 
     /// Plan-file checksum drift detected. Maps to exit code 4.
     #[error("plan file checksum drift: {0}")]
@@ -752,30 +751,35 @@ async fn run_cmd(
     //
     // Execute the plan via the live-plan engine
     match djogi::live_migrate::executor::run_plan(&mut ctx, path, 0, false).await {
-        Ok(result) => {
-            match result {
-                StepResult::Completed => {
-                    println!("live run: plan {plan_id} completed successfully");
-                    Ok(0)
-                }
-                StepResult::Paused => {
-                    println!("live run: paused at operator gate; resume with `djogi live run {plan_id}`");
-                    Ok(0)
-                }
-                StepResult::Partial { rows_done, rows_total } => {
-                    if rows_total > 0 {
-                        let pct = (rows_done as f64 / rows_total as f64) * 100.0;
-                        println!("live run: backfill progress {rows_done}/{rows_total} ({pct:.1}%); resume with `djogi live resume {plan_id}`");
-                    } else {
-                        println!("live run: backfill interrupted after {rows_done} rows; resume with `djogi live resume {plan_id}`");
-                    }
-                    Ok(0)
-                }
+        Ok(result) => match result {
+            StepResult::Completed => {
+                println!("live run: plan {plan_id} completed successfully");
+                Ok(0)
             }
-        }
-        Err(e) => {
-            Err(LiveCmdError::Runtime(format!("executor error: {e}")))
-        }
+            StepResult::Paused => {
+                println!(
+                    "live run: paused at operator gate; resume with `djogi live run {plan_id}`"
+                );
+                Ok(0)
+            }
+            StepResult::Partial {
+                rows_done,
+                rows_total,
+            } => {
+                if rows_total > 0 {
+                    let pct = (rows_done as f64 / rows_total as f64) * 100.0;
+                    println!(
+                        "live run: backfill progress {rows_done}/{rows_total} ({pct:.1}%); resume with `djogi live resume {plan_id}`"
+                    );
+                } else {
+                    println!(
+                        "live run: backfill interrupted after {rows_done} rows; resume with `djogi live resume {plan_id}`"
+                    );
+                }
+                Ok(0)
+            }
+        },
+        Err(e) => Err(LiveCmdError::Runtime(format!("executor error: {e}"))),
     }
 }
 
@@ -795,30 +799,35 @@ async fn resume_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32
     // Resume execution from current step
     let start_idx = u32::try_from(row.current_step_index).unwrap_or(0);
     match djogi::live_migrate::executor::run_plan(&mut ctx, path, start_idx, true).await {
-        Ok(result) => {
-            match result {
-                StepResult::Completed => {
-                    println!("live resume: plan {plan_id} completed successfully");
-                    Ok(0)
-                }
-                StepResult::Paused => {
-                    println!("live resume: paused at operator gate; resume with `djogi live run {plan_id}`");
-                    Ok(0)
-                }
-                StepResult::Partial { rows_done, rows_total } => {
-                    if rows_total > 0 {
-                        let pct = (rows_done as f64 / rows_total as f64) * 100.0;
-                        println!("live resume: backfill progress {rows_done}/{rows_total} ({pct:.1}%); resume with `djogi live resume {plan_id}`");
-                    } else {
-                        println!("live resume: backfill interrupted after {rows_done} rows; resume with `djogi live resume {plan_id}`");
-                    }
-                    Ok(0)
-                }
+        Ok(result) => match result {
+            StepResult::Completed => {
+                println!("live resume: plan {plan_id} completed successfully");
+                Ok(0)
             }
-        }
-        Err(e) => {
-            Err(LiveCmdError::Runtime(format!("executor error: {e}")))
-        }
+            StepResult::Paused => {
+                println!(
+                    "live resume: paused at operator gate; resume with `djogi live run {plan_id}`"
+                );
+                Ok(0)
+            }
+            StepResult::Partial {
+                rows_done,
+                rows_total,
+            } => {
+                if rows_total > 0 {
+                    let pct = (rows_done as f64 / rows_total as f64) * 100.0;
+                    println!(
+                        "live resume: backfill progress {rows_done}/{rows_total} ({pct:.1}%); resume with `djogi live resume {plan_id}`"
+                    );
+                } else {
+                    println!(
+                        "live resume: backfill interrupted after {rows_done} rows; resume with `djogi live resume {plan_id}`"
+                    );
+                }
+                Ok(0)
+            }
+        },
+        Err(e) => Err(LiveCmdError::Runtime(format!("executor error: {e}"))),
     }
 }
 
@@ -913,30 +922,35 @@ async fn finalize_cmd(
     // Resume execution from current step
     let start_idx = u32::try_from(row.current_step_index).unwrap_or(0);
     match djogi::live_migrate::executor::run_plan(&mut ctx, path, start_idx, true).await {
-        Ok(result) => {
-            match result {
-                StepResult::Completed => {
-                    println!("live finalize: plan {plan_id} completed successfully");
-                    Ok(0)
-                }
-                StepResult::Paused => {
-                    println!("live finalize: paused at operator gate; resume with `djogi live run {plan_id}`");
-                    Ok(0)
-                }
-                StepResult::Partial { rows_done, rows_total } => {
-                    if rows_total > 0 {
-                        let pct = (rows_done as f64 / rows_total as f64) * 100.0;
-                        println!("live finalize: backfill progress {rows_done}/{rows_total} ({pct:.1}%); resume with `djogi live finalize {plan_id}`");
-                    } else {
-                        println!("live finalize: backfill interrupted after {rows_done} rows; resume with `djogi live finalize {plan_id}`");
-                    }
-                    Ok(0)
-                }
+        Ok(result) => match result {
+            StepResult::Completed => {
+                println!("live finalize: plan {plan_id} completed successfully");
+                Ok(0)
             }
-        }
-        Err(e) => {
-            Err(LiveCmdError::Runtime(format!("executor error: {e}")))
-        }
+            StepResult::Paused => {
+                println!(
+                    "live finalize: paused at operator gate; resume with `djogi live run {plan_id}`"
+                );
+                Ok(0)
+            }
+            StepResult::Partial {
+                rows_done,
+                rows_total,
+            } => {
+                if rows_total > 0 {
+                    let pct = (rows_done as f64 / rows_total as f64) * 100.0;
+                    println!(
+                        "live finalize: backfill progress {rows_done}/{rows_total} ({pct:.1}%); resume with `djogi live finalize {plan_id}`"
+                    );
+                } else {
+                    println!(
+                        "live finalize: backfill interrupted after {rows_done} rows; resume with `djogi live finalize {plan_id}`"
+                    );
+                }
+                Ok(0)
+            }
+        },
+        Err(e) => Err(LiveCmdError::Runtime(format!("executor error: {e}"))),
     }
 }
 
