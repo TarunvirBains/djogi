@@ -86,6 +86,21 @@ djogi docs                           # render Markdown reference pages from desc
 
 After implementation work, run `cargo fmt --all` and `cargo clippy --all-targets --all-features` before handoff when feasible, not just targeted tests.
 
+
+## PR Hygiene
+
+Every PR body **must** include a closing keyword + issue reference for each issue it resolves. GitHub auto-closes issues on merge only when one of these keywords is present in the PR description — not from commit messages, branch names, or titles. This applies to ALL PRs across all projects.
+
+Valid closing keywords: `close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`, `resolved`.
+
+Convention: use `Closes` consistently across all PRs for uniformity.
+
+Format:
+```
+Closes #356
+Closes #357
+```
+
 ## Worktree workflow
 
 When running concurrent careful-coder dispatches across multiple `.worktrees/`

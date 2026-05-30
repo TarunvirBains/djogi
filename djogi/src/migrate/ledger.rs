@@ -26,7 +26,8 @@
 //!     partial_apply_note    TEXT,
 //!     run_id                BIGINT      NOT NULL,
 //!     snapshot_version      TEXT        NOT NULL,
-//!     app_label             TEXT        NOT NULL DEFAULT ''
+//!     app_label             TEXT        NOT NULL DEFAULT '',
+//!     leaf_identity         TEXT
 //! );
 //! ```
 //!
@@ -69,15 +70,15 @@ use crate::error::{DbError, DjogiError};
 
 // ── LedgerRow row conversion ──────────────────────────────────────────────
 
-/// Constant SQL for the 14-column ledger SELECT. Shared between
+/// Constant SQL for the 15-column ledger SELECT. Shared between
 /// [`load_full_row_by_version`] and callers that append their own
 /// WHERE / ORDER BY clauses, keeping the column list in one place.
 pub(crate) const LEDGER_SELECT_COLS: &str = "SELECT version, description, checksum_up, checksum_down, execution_mode, \
      status, execution_time_ms, out_of_order_flag, applied_steps_count, \
-     total_steps, partial_apply_note, run_id, snapshot_version, app_label \
+     total_steps, partial_apply_note, run_id, snapshot_version, app_label, leaf_identity \
      FROM djogi_schema_migrations";
 
-/// Convert a raw `tokio_postgres::Row` (returned by any of the 14-column
+/// Convert a raw `tokio_postgres::Row` (returned by any of the 15-column
 /// ledger queries) into a [`LedgerRow`]. Column order matches
 /// [`LEDGER_SELECT_COLS`] exactly; callers that append a different
 /// SELECT list must NOT use this impl.
@@ -103,6 +104,7 @@ impl TryFrom<&tokio_postgres::Row> for LedgerRow {
         let run_id: i64 = row.try_get(11)?;
         let snapshot_version: String = row.try_get(12)?;
         let app_label: String = row.try_get(13)?;
+        let leaf_identity: Option<String> = row.try_get(14)?;
 
         let execution_mode = match execution_mode_s.as_str() {
             "transactional" => ExecutionMode::Transactional,
@@ -125,6 +127,7 @@ impl TryFrom<&tokio_postgres::Row> for LedgerRow {
             run_id,
             snapshot_version,
             app_label,
+            leaf_identity,
         })
     }
 }
@@ -133,7 +136,7 @@ impl TryFrom<&tokio_postgres::Row> for LedgerRow {
 /// the row is absent (not a hard error — callers that distinguish
 /// "missing" from "DB error" handle both arms). Surfaced as a
 /// `pub(crate)` helper so runner, repair, and verify can share the
-/// 14-column SELECT without duplicating the column list or the
+/// 15-column SELECT without duplicating the column list or the
 /// try_get cascade.
 pub(crate) async fn load_full_row_by_version(
     ctx: &mut DjogiContext,
@@ -174,7 +177,8 @@ CREATE TABLE IF NOT EXISTS djogi_schema_migrations (
     partial_apply_note    TEXT,
     run_id                BIGINT      NOT NULL,
     snapshot_version      TEXT        NOT NULL,
-    app_label             TEXT        NOT NULL DEFAULT ''
+    app_label             TEXT        NOT NULL DEFAULT '',
+    leaf_identity         TEXT
 );
 "#;
 
@@ -320,6 +324,14 @@ pub struct LedgerRow {
     /// App label this migration belongs to. Empty string for the
     /// synthetic global bucket.
     pub app_label: String,
+    /// Partition leaf identity snapshot. Stored as newline-delimited
+    /// `parent:leaf1,leaf2` entries. `None` means no partition-expanded
+    /// segments were materialized (non-partitioned migration, or a row
+    /// seeded via fake-apply / baseline / attune). A partitioned migration
+    /// that applied when the parent had zero attached leaves stores
+    /// `Some("parent:")` — the parent key is present but the leaf list
+    /// is empty.
+    pub leaf_identity: Option<String>,
 }
 
 /// Build the machine-detectable note written immediately before a
@@ -650,7 +662,10 @@ impl std::error::Error for ChecksumMismatch {}
 /// query protocol (DDL statements that the prepare-cache cannot
 /// handle).
 pub async fn bootstrap(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
-    ctx.raw_ddl(LEDGER_TABLE_DDL).await
+    ctx.raw_ddl(LEDGER_TABLE_DDL).await?;
+    ctx.raw_ddl("ALTER TABLE djogi_schema_migrations ADD COLUMN IF NOT EXISTS leaf_identity TEXT")
+        .await?;
+    Ok(())
 }
 
 /// Insert a `pending` ledger row before SQL runs. Returns the row's
@@ -666,8 +681,8 @@ pub async fn insert_pending(ctx: &mut DjogiContext, row: &LedgerRow) -> Result<i
     let sql = "INSERT INTO djogi_schema_migrations \
                (version, description, checksum_up, checksum_down, execution_mode, \
                 status, execution_time_ms, out_of_order_flag, applied_steps_count, \
-                total_steps, partial_apply_note, run_id, snapshot_version, app_label) \
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+                total_steps, partial_apply_note, run_id, snapshot_version, app_label, leaf_identity) \
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
                RETURNING id";
     let exec_mode = row.execution_mode.as_db_str();
     let status = row.status.as_db_str();
@@ -689,6 +704,7 @@ pub async fn insert_pending(ctx: &mut DjogiContext, row: &LedgerRow) -> Result<i
                 &row.run_id,
                 &row.snapshot_version,
                 &row.app_label,
+                &row.leaf_identity,
             ],
         )
         .await?;

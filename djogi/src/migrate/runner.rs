@@ -716,6 +716,8 @@ impl std::fmt::Display for RunnerError {
                 "failed to check out a pinned Postgres session from the pool before \
                  the migration operation began (GH #274): {source}",
             ),
+            // D274 is shared by runner and repair for advisory-lock
+            // correctness failures (GH #274); shared code is intentional.
             RunnerError::AdvisoryUnlockReturnedFalse { key, bucket } => write!(
                 f,
                 "D274 pg_advisory_unlock returned false for bucket database={db} app={app} \
@@ -1043,7 +1045,7 @@ async fn apply_plan_inner(
     // produces the concrete SQL the runner will actually execute, so
     // every downstream preflight and step-count calculation works on
     // the real statement list.
-    let plan_owned =
+    let (plan_owned, leaves_cache) =
         materialize_execution_plan(ctx, plan, PartitionExpansionMode::ApplyLenient).await?;
     let plan = &plan_owned;
 
@@ -1089,6 +1091,7 @@ async fn apply_plan_inner(
         run_id,
         snapshot_version: SNAPSHOT_FORMAT_VERSION.to_string(),
         app_label: plan.bucket.app.clone(),
+        leaf_identity: serialize_leaf_identity(&leaves_cache),
     };
     let ledger_id = match ledger::insert_pending(ctx, &ledger_row).await {
         Ok(id) => id,
@@ -1569,6 +1572,18 @@ pub enum RollbackError {
     /// The runner was asked to revert the snapshot to a prior version
     /// but no `prior_snapshot` was supplied.
     PriorSnapshotMissing,
+    /// **#356** — The freshly materialized leaf identity for this migration
+    /// does not match the value stored in the ledger. The partition topology
+    /// has changed since the original apply, so rolling back against different
+    /// leaves would be unsafe.
+    LeafIdentityMismatch {
+        /// Migration version being rolled back.
+        version: String,
+        /// Leaf identity stored in the ledger row from the original apply.
+        stored_leaf_identity: String,
+        /// Leaf identity recomputed from the current live partition topology.
+        current_leaf_identity: String,
+    },
     /// I/O failure persisting the prior snapshot back to disk.
     SnapshotPersistFailed {
         path: PathBuf,
@@ -1629,6 +1644,14 @@ impl std::fmt::Display for RollbackError {
                     path.display()
                 )
             }
+            RollbackError::LeafIdentityMismatch {
+                version,
+                stored_leaf_identity: _,
+                current_leaf_identity: _,
+            } => write!(
+                f,
+                "[D624] rollback refused: partition leaf identity mismatch for `{version}`",
+            ),
         }
     }
 }
@@ -1821,19 +1844,58 @@ async fn rollback_plan_pinned(
         });
     }
 
-    // 5. Materialize strict replay plan inside advisory lock. Partition-expanded
-    //    statements are rematerialized from the same execution stream used by apply;
-    //    rollback replays reverse down SQL against the expanded stream. Lossy
-    //    scanning operates on the materialized plan, not the original unexpanded
-    //    plan, so per-leaf lossy markers are properly detected (GH #317).
-    let replay_plan =
-        match materialize_execution_plan(ctx, plan, PartitionExpansionMode::ReplayStrict).await {
-            Ok(p) => p,
+    // #366: Pre-strict leaf-identity check — zero-leaf↔non-empty drift.
+    if let Some(ref stored_identity) = row.leaf_identity {
+        let pre_cache = match compute_leaf_identity_cache(ctx, plan).await {
+            Ok(c) => c,
             Err(e) => {
                 let _released = release_advisory_lock(ctx, lock_key).await;
                 return Err(RollbackError::Runner(e));
             }
         };
+        let pre_identity = serialize_leaf_identity(&pre_cache).unwrap_or_default();
+        if pre_identity != *stored_identity {
+            let e = RollbackError::LeafIdentityMismatch {
+                version: runner_ctx.version.clone(),
+                stored_leaf_identity: stored_identity.clone(),
+                current_leaf_identity: pre_identity,
+            };
+            let _released = release_advisory_lock(ctx, lock_key).await;
+            return Err(e);
+        }
+    }
+
+    // 5. Materialize strict replay plan inside advisory lock. Partition-expanded
+    //    statements are rematerialized from the same execution stream used by apply;
+    //    rollback replays reverse down SQL against the expanded stream. Lossy
+    //    scanning operates on the materialized plan, not the original unexpanded
+    //    plan, so per-leaf lossy markers are properly detected (GH #317).
+    let (replay_plan, leaves_cache_rollback) =
+        match materialize_execution_plan(ctx, plan, PartitionExpansionMode::ReplayStrict).await {
+            Ok((p, cache)) => (p, cache),
+            Err(e) => {
+                let _released = release_advisory_lock(ctx, lock_key).await;
+                return Err(RollbackError::Runner(e));
+            }
+        };
+
+    // #356: Compare stored leaf identity against freshly materialized leaves.
+    let current_rollback_identity =
+        serialize_leaf_identity(&leaves_cache_rollback).unwrap_or_default();
+    let rollback_leaf_mismatch = if let Some(ref stored_identity) = row.leaf_identity {
+        current_rollback_identity != *stored_identity
+    } else {
+        false
+    };
+    if rollback_leaf_mismatch {
+        let e = RollbackError::LeafIdentityMismatch {
+            version: runner_ctx.version.clone(),
+            stored_leaf_identity: row.leaf_identity.clone().unwrap(),
+            current_leaf_identity: current_rollback_identity,
+        };
+        let _released = release_advisory_lock(ctx, lock_key).await;
+        return Err(e);
+    }
 
     // 5a. Lossy scanning against the materialized (expanded) plan.
     let allow_reason = match rollback_lossy_allow_reason(&replay_plan, &lossy_policy) {
@@ -2200,6 +2262,7 @@ async fn fake_apply_inner(
         run_id,
         snapshot_version: SNAPSHOT_FORMAT_VERSION.to_string(),
         app_label: plan.bucket.app.clone(),
+        leaf_identity: None,
     };
 
     let ledger_id = match ledger::insert_pending(ctx, &row).await {
@@ -2368,6 +2431,7 @@ async fn baseline_inner(
         run_id,
         snapshot_version: SNAPSHOT_FORMAT_VERSION.to_string(),
         app_label: bucket.app.clone(),
+        leaf_identity: None,
     };
     // `insert_pending` binds `row.status.as_db_str()` directly, so
     // constructing the row with `LedgerStatus::Baseline` writes the
@@ -3731,8 +3795,55 @@ pub(crate) async fn materialize_execution_plan(
     ctx: &mut DjogiContext,
     plan: &MigrationPlan,
     mode: PartitionExpansionMode,
-) -> Result<MigrationPlan, RunnerError> {
+) -> Result<
+    (
+        MigrationPlan,
+        std::collections::HashMap<String, Vec<String>>,
+    ),
+    RunnerError,
+> {
     expand_partition_leaf_placeholders(ctx, plan, mode).await
+}
+
+/// Serialize a parent-to-leaves map into the compact `leaf_identity`
+/// format stored in the ledger. Parents sorted alphabetically; leaves
+/// already sorted by `regclass::text`. Newline-delimited
+/// `parent:leaf1,leaf2` entries.
+pub(crate) fn serialize_leaf_identity(
+    leaves_cache: &std::collections::HashMap<String, Vec<String>>,
+) -> Option<String> {
+    let mut entries: Vec<_> = leaves_cache
+        .iter()
+        .map(|(parent, leaves)| format!("{}:{}", parent, leaves.join(",")))
+        .collect();
+    entries.sort();
+    if entries.is_empty() {
+        None
+    } else {
+        Some(entries.join("\n"))
+    }
+}
+
+/// Compute the current parent-to-leaves cache for `plan` using LENIENT
+/// partition expansion, suitable for a pre-strict leaf-identity check.
+///
+/// **Why lenient.** `apply_plan` records `leaf_identity` from a
+/// `ApplyLenient` expansion (which tolerates zero leaves), so a fresh
+/// lenient cache compares apples-to-apples against the stored value.
+/// Crucially, lenient mode does NOT error on a zero-leaf parent — so a
+/// zero-leaf↔non-empty topology drift surfaces as a *comparison*
+/// mismatch (empty cache → empty serialized identity) rather than the
+/// strict path's [`RunnerError::PartitionExpansionNoLeaves`]. Callers
+/// run this before [`materialize_execution_plan`] with
+/// [`PartitionExpansionMode::ReplayStrict`] so the leaf-identity
+/// mismatch is reported as such instead of a strict zero-leaf refusal.
+pub(crate) async fn compute_leaf_identity_cache(
+    ctx: &mut DjogiContext,
+    plan: &MigrationPlan,
+) -> Result<std::collections::HashMap<String, Vec<String>>, RunnerError> {
+    let (_plan, cache) =
+        expand_partition_leaf_placeholders(ctx, plan, PartitionExpansionMode::ApplyLenient).await?;
+    Ok(cache)
 }
 
 /// Walk every segment and expand the `<EACH_LEAF_TABLE>` placeholder
@@ -3769,7 +3880,13 @@ async fn expand_partition_leaf_placeholders(
     ctx: &mut DjogiContext,
     plan: &MigrationPlan,
     mode: PartitionExpansionMode,
-) -> Result<MigrationPlan, RunnerError> {
+) -> Result<
+    (
+        MigrationPlan,
+        std::collections::HashMap<String, Vec<String>>,
+    ),
+    RunnerError,
+> {
     // Cache leaves per parent so multiple statements pointing at the
     // same partitioned parent share one query.
     let mut leaves_cache: std::collections::HashMap<String, Vec<String>> =
@@ -3794,7 +3911,7 @@ async fn expand_partition_leaf_placeholders(
         }
         segment.statements = new_stmts;
     }
-    Ok(new_plan)
+    Ok((new_plan, leaves_cache))
 }
 
 /// Recover the partitioned parent name from a `PkFlipPartitioned…`
@@ -3968,12 +4085,29 @@ fn expand_partition_statement(
         });
 
         for leaf in leaves {
+            // The CREATE INDEX target index name must be BARE (Postgres
+            // forbids a schema-qualified index name; the index lands in
+            // the leaf's own schema). DROP / ATTACH need the leaf's
+            // schema re-attached.
+            let (leaf_schema, leaf_bare) = split_leaf_schema(leaf);
             let leaf_idx = format!(
-                "{leaf}_{pkey}_id{suffix}_idx",
-                leaf = strip_schema_prefix(leaf),
+                "{leaf_bare}_{pkey}_id{suffix}_idx",
                 pkey = part_col,
-                suffix = suffix,
+                suffix = suffix
             );
+            let leaf_idx_qualified = match leaf_schema {
+                Some(s) => format!("{s}.{leaf_idx}"),
+                None => leaf_idx.clone(),
+            };
+            // The parent index lives in the parent's schema. The current
+            // emitter always produces a bare parent table name, so this
+            // returns `parent_index_name` unchanged in practice — but
+            // using the parent's own schema is correct by design.
+            let (parent_schema, _) = split_leaf_schema(parent);
+            let parent_idx_qualified = match parent_schema {
+                Some(s) => format!("{s}.{parent_index_name}"),
+                None => parent_index_name.clone(),
+            };
             let create_concurrent = format!(
                 "CREATE UNIQUE INDEX CONCURRENTLY {leaf_idx} ON {leaf} ({pkey}, id{suffix})",
                 leaf_idx = leaf_idx,
@@ -3981,16 +4115,23 @@ fn expand_partition_statement(
                 pkey = part_col,
                 suffix = suffix,
             );
+            // Down SQL: drop the parent index first (CASCADE removes any
+            // attached leaf partitions), then drop the leaf itself as a
+            // no-op cleanup for the partial-apply case where the leaf was
+            // created concurrently but never attached. Both statements use
+            // IF EXISTS so they are safe to re-execute in subsequent reverse
+            // steps after the parent was already dropped. Both index names
+            // are schema-qualified for DROP.
             out.push(OperationSql {
                 label: format!("PkFlipPartitionedIndex {parent} leaf={leaf} (concurrent)"),
                 up: create_concurrent,
-                down: format!("DROP INDEX IF EXISTS {leaf_idx}"),
+                down: format!(
+                    "DROP INDEX IF EXISTS {parent_idx_qualified}; DROP INDEX IF EXISTS {leaf_idx_qualified}",
+                ),
                 lossy: None,
             });
             let attach = format!(
-                "ALTER INDEX {parent_index_name} ATTACH PARTITION {leaf_idx}",
-                parent_index_name = parent_index_name,
-                leaf_idx = leaf_idx,
+                "ALTER INDEX {parent_idx_qualified} ATTACH PARTITION {leaf_idx_qualified}",
             );
             out.push(OperationSql {
                 label: format!("PkFlipPartitionedIndex {parent} leaf={leaf} (attach)"),
@@ -4020,12 +4161,19 @@ fn expand_partition_statement(
         });
 
         for leaf in leaves {
-            let leaf_idx = format!(
-                "{leaf}_{col}{suffix}_idx",
-                leaf = strip_schema_prefix(leaf),
-                col = col,
-                suffix = suffix,
-            );
+            // CREATE target index name is bare; DROP / ATTACH re-attach
+            // the leaf's schema. See PkFlipPartitionedIndex above.
+            let (leaf_schema, leaf_bare) = split_leaf_schema(leaf);
+            let leaf_idx = format!("{leaf_bare}_{col}{suffix}_idx", col = col, suffix = suffix);
+            let leaf_idx_qualified = match leaf_schema {
+                Some(s) => format!("{s}.{leaf_idx}"),
+                None => leaf_idx.clone(),
+            };
+            let (parent_schema, _) = split_leaf_schema(parent);
+            let parent_idx_qualified = match parent_schema {
+                Some(s) => format!("{s}.{parent_index_name}"),
+                None => parent_index_name.clone(),
+            };
             let create_concurrent = format!(
                 "CREATE INDEX CONCURRENTLY {leaf_idx} ON {leaf} ({col}{suffix})",
                 leaf_idx = leaf_idx,
@@ -4036,13 +4184,11 @@ fn expand_partition_statement(
             out.push(OperationSql {
                 label: format!("PkFlipPartitionedSelfFkIndex {parent} leaf={leaf} (concurrent)"),
                 up: create_concurrent,
-                down: format!("DROP INDEX IF EXISTS {leaf_idx}"),
+                down: format!("DROP INDEX IF EXISTS {leaf_idx_qualified}"),
                 lossy: None,
             });
             let attach = format!(
-                "ALTER INDEX {parent_index_name} ATTACH PARTITION {leaf_idx}",
-                parent_index_name = parent_index_name,
-                leaf_idx = leaf_idx,
+                "ALTER INDEX {parent_idx_qualified} ATTACH PARTITION {leaf_idx_qualified}",
             );
             out.push(OperationSql {
                 label: format!("PkFlipPartitionedSelfFkIndex {parent} leaf={leaf} (attach)"),
@@ -4066,6 +4212,40 @@ fn expand_partition_statement(
 fn strip_trailing_semicolon(s: &str) -> String {
     let trimmed = s.trim_end();
     trimmed.strip_suffix(';').unwrap_or(trimmed).to_string()
+}
+
+/// Split a (possibly schema-qualified) relation name into its optional
+/// schema prefix and bare relation name. `lookup_partition_leaves`
+/// returns `regclass::text` values that Postgres schema-qualifies when
+/// the leaf is not on `search_path` (`myschema.events_p_a`).
+///
+/// The separator is the LAST unquoted `.`; characters inside a
+/// double-quoted identifier (`"weird.name"`) are skipped so an embedded
+/// dot never splits a quoted segment. Returns `(Some(schema), bare)`
+/// when an unquoted dot is present, else `(None, whole)`.
+///
+/// **Why the split matters.** `CREATE INDEX` forbids a schema-qualified
+/// *index* name (the index lands in the table's schema), whereas
+/// `DROP INDEX` and `ALTER INDEX … ATTACH PARTITION` accept and need the
+/// qualification. Composing the leaf index name from `bare` and then
+/// re-qualifying only for DROP/ATTACH keeps both forms correct.
+///
+/// **No regex.** Byte-level scan tracking quote state; no regex engine.
+fn split_leaf_schema(qualified: &str) -> (Option<&str>, &str) {
+    let bytes = qualified.as_bytes();
+    let mut in_quote = false;
+    let mut sep = None;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'"' => in_quote = !in_quote,
+            b'.' if !in_quote => sep = Some(i),
+            _ => {}
+        }
+    }
+    match sep {
+        Some(i) => (Some(&qualified[..i]), &qualified[i + 1..]),
+        None => (None, qualified),
+    }
 }
 
 /// Pull the FIRST line that contains `CALL heeranjid_bulk_backfill(`
@@ -4132,12 +4312,31 @@ fn recover_parent_index_name(parent_stmt: &str) -> String {
         while i + marker.len() <= bytes.len() {
             if &bytes[i..i + marker.len()] == marker {
                 let start = i + marker.len();
-                let mut j = start;
+                let mut name_start = start;
+                // Skip leading spaces.
+                while name_start < bytes.len() && bytes[name_start] == b' ' {
+                    name_start += 1;
+                }
+                // Skip optional CONCURRENTLY keyword (and any following
+                // spaces). The parent-level emitter writes `ON ONLY` form
+                // without CONCURRENTLY, but the per-leaf statements this
+                // helper may also be handed do carry it — skip so the
+                // captured name is the index, not the keyword.
+                const CONC: &[u8] = b"CONCURRENTLY";
+                if name_start + CONC.len() <= bytes.len()
+                    && &bytes[name_start..name_start + CONC.len()] == CONC
+                {
+                    name_start += CONC.len();
+                    while name_start < bytes.len() && bytes[name_start] == b' ' {
+                        name_start += 1;
+                    }
+                }
+                let mut j = name_start;
                 while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
                     j += 1;
                 }
-                if j > start {
-                    return String::from_utf8_lossy(&bytes[start..j]).into_owned();
+                if j > name_start {
+                    return String::from_utf8_lossy(&bytes[name_start..j]).into_owned();
                 }
                 break;
             }
@@ -4176,8 +4375,14 @@ fn recover_partition_columns(parent_stmt: &str) -> (String, String) {
     let mut parts = inside.splitn(2, ',');
     let pkey = parts.next().unwrap_or("").trim().to_string();
     let id_col = parts.next().unwrap_or("").trim();
-    let suffix = id_col.strip_prefix("id").unwrap_or("_desc").to_string();
-    if pkey.is_empty() || suffix.is_empty() {
+    // `suffix` is the part after `id` — empty string is valid when the
+    // column is plain `id` (no ordering suffix like `_desc`). Only fall
+    // back when `id_col` does not start with `id` at all (parse failure).
+    let suffix = match id_col.strip_prefix("id") {
+        Some(s) => s.to_string(),
+        None => return ("partition_key".to_string(), "_desc".to_string()),
+    };
+    if pkey.is_empty() {
         return ("partition_key".to_string(), "_desc".to_string());
     }
     (pkey, suffix)
@@ -4214,14 +4419,6 @@ fn recover_self_fk_column(parent_stmt: &str) -> (String, String) {
         return (col.to_string(), "_desc".to_string());
     }
     ("col".to_string(), "_desc".to_string())
-}
-
-/// Strip a `schema.` prefix from a regclass-rendered name. Postgres
-/// `regclass::text` qualifies a name only when the schema is not on
-/// the search path; we pick the unqualified leaf name for the
-/// per-leaf index name suffix to keep names short.
-fn strip_schema_prefix(name: &str) -> &str {
-    name.rsplit('.').next().unwrap_or(name)
 }
 
 #[cfg(test)]
@@ -5493,27 +5690,118 @@ mod tests {
             expanded[0].down,
             "DROP INDEX IF EXISTS events_p_ts_id_desc_idx;"
         );
+        // Leaf concurrent down: parent drop first (CASCADE for attached leaves),
+        // then leaf drop (cleanup for unattached/partial-apply case).
         assert!(
             expanded.iter().any(|s| {
                 s.label == "PkFlipPartitionedIndex events_p leaf=events_p_a (concurrent)"
-                    && s.down == "DROP INDEX IF EXISTS events_p_a_ts_id_desc_idx"
+                    && s.down
+                        == "DROP INDEX IF EXISTS events_p_ts_id_desc_idx; \
+                            DROP INDEX IF EXISTS events_p_a_ts_id_desc_idx"
             }),
-            "leaf A concurrent statement must carry concrete DROP INDEX down SQL: {expanded:?}",
+            "leaf A concurrent must drop parent then leaf: {expanded:?}",
         );
         assert!(
             expanded.iter().any(|s| {
                 s.label == "PkFlipPartitionedIndex events_p leaf=events_p_b (concurrent)"
-                    && s.down == "DROP INDEX IF EXISTS events_p_b_ts_id_desc_idx"
+                    && s.down
+                        == "DROP INDEX IF EXISTS events_p_ts_id_desc_idx; \
+                            DROP INDEX IF EXISTS events_p_b_ts_id_desc_idx"
             }),
-            "leaf B concurrent statement must carry concrete DROP INDEX down SQL: {expanded:?}",
+            "leaf B concurrent must drop parent then leaf: {expanded:?}",
         );
         assert!(
             expanded
                 .iter()
                 .filter(|s| s.label.contains("(attach)"))
                 .all(|s| s.down.is_empty()),
-            "attach statements remain forward-only; leaf drops live on concurrent statements",
+            "attach statements remain forward-only",
         );
+    }
+
+    #[test]
+    fn expand_partition_statement_schema_qualified_leaf_in_drop_down_sql() {
+        // When `lookup_partition_leaves` returns schema-qualified names
+        // (e.g. "myschema.events_p_a"), CREATE INDEX must use the BARE
+        // index name (Postgres forbids a schema on the index name), while
+        // DROP INDEX and ATTACH PARTITION must re-qualify with the leaf's
+        // schema. Regression test for GH #357 / #366.
+        //
+        // The parent statement here matches the real emitter format from
+        // pk_flip.rs: bare index name, schema-qualified `ON ONLY` target,
+        // and the underscore column form `id_desc` (not the space form
+        // `id DESC`).
+        let parent = "myschema.events_p";
+        let leaves = vec![
+            "myschema.events_p_a".to_string(),
+            "myschema.events_p_b".to_string(),
+        ];
+
+        let plan = OperationSql {
+            label: format!("PkFlipPartitionedIndex {parent}"),
+            up: "CREATE UNIQUE INDEX events_p_ts_id_desc_idx ON ONLY myschema.events_p (ts, id_desc)"
+                .to_string(),
+            down: "DROP INDEX IF EXISTS myschema.events_p_ts_id_desc_idx".to_string(),
+            lossy: None,
+        };
+
+        let expanded = expand_partition_statement(
+            &plan,
+            parent,
+            &leaves,
+            PartitionExpansionMode::ApplyLenient,
+        )
+        .expect("partition expansion should succeed");
+
+        // parent-level + (concurrent + attach) per leaf = 1 + 2*2 = 5.
+        assert_eq!(expanded.len(), 5);
+
+        // Leaf A concurrent: bare index name, schema-qualified ON target,
+        // `_desc` suffix (no space), both DROP targets schema-qualified.
+        let leaf_a_concurrent = expanded
+            .iter()
+            .find(|s| s.label == "PkFlipPartitionedIndex myschema.events_p leaf=myschema.events_p_a (concurrent)")
+            .expect("leaf A concurrent entry");
+        assert_eq!(
+            leaf_a_concurrent.up,
+            "CREATE UNIQUE INDEX CONCURRENTLY events_p_a_ts_id_desc_idx ON myschema.events_p_a (ts, id_desc)",
+        );
+        assert_eq!(
+            leaf_a_concurrent.down,
+            "DROP INDEX IF EXISTS myschema.events_p_ts_id_desc_idx; DROP INDEX IF EXISTS myschema.events_p_a_ts_id_desc_idx",
+        );
+
+        // Leaf A attach: both index names schema-qualified, no down.
+        let leaf_a_attach = expanded
+            .iter()
+            .find(|s| {
+                s.label
+                    == "PkFlipPartitionedIndex myschema.events_p leaf=myschema.events_p_a (attach)"
+            })
+            .expect("leaf A attach entry");
+        assert_eq!(
+            leaf_a_attach.up,
+            "ALTER INDEX myschema.events_p_ts_id_desc_idx ATTACH PARTITION myschema.events_p_a_ts_id_desc_idx",
+        );
+        assert_eq!(leaf_a_attach.down, "");
+
+        // Invariant locks across every concurrent entry.
+        for entry in expanded.iter().filter(|s| s.label.contains("(concurrent)")) {
+            // The bug being guarded: a schema-qualified index name in the
+            // CREATE INDEX CONCURRENTLY statement (Postgres syntax error).
+            assert!(
+                !entry.up.contains("CONCURRENTLY myschema."),
+                "concurrent up must not have schema in index name: {}",
+                entry.up,
+            );
+            // The other bug: the space column form `id DESC` instead of the
+            // underscore form the emitter actually produces.
+            assert!(
+                !entry.up.contains("id DESC"),
+                "up must not contain space-form 'id DESC': {}",
+                entry.up,
+            );
+        }
     }
 
     #[test]
@@ -5554,5 +5842,21 @@ mod tests {
         .expect("apply mode keeps the existing empty-leaf fallback");
         assert_eq!(lenient.len(), 1);
         assert!(lenient[0].up.contains("pg_inherits returned 0 leaves"));
+    }
+
+    #[test]
+    fn rollback_leaf_identity_mismatch_display() {
+        let err = RollbackError::LeafIdentityMismatch {
+            version: "001_create_users".to_string(),
+            stored_leaf_identity: "public.users:public.users_p2024_01,public.users_p2024_02\n"
+                .to_string(),
+            current_leaf_identity: "public.users:public.users_p2024_01,public.users_p2024_03\n"
+                .to_string(),
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("[D624]"));
+        assert!(msg.contains("rollback refused"));
+        assert!(msg.contains("partition leaf identity mismatch"));
+        assert!(msg.contains("001_create_users"));
     }
 }

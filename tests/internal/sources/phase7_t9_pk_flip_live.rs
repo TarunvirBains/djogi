@@ -3695,12 +3695,15 @@ async fn flip_partitioned_parent_partial_apply_resume_uses_expanded_leaf_steps(
     .await
     .expect("resume remaining expanded leaf steps");
 
+    // The action string records the step label (e.g. "leaf=resume_events_b
+    // (concurrent)"), not the concrete index name. The DB query below at
+    // `leaf_b_attached` verifies the index was actually created and attached.
     assert!(
         report
             .actions_taken
             .iter()
-            .any(|a| a.contains("resume_events_b_ts_id_desc_idx")),
-        "resume actions must include leaf B concrete index: {:?}",
+            .any(|a| a.contains("leaf=resume_events_b")),
+        "resume actions must include leaf B step: {:?}",
         report.actions_taken,
     );
 
@@ -3739,7 +3742,7 @@ async fn index_exists_by_name(ctx: &mut djogi::DjogiContext, index_name: &str) -
 }
 
 #[djogi::djogi_test]
-async fn flip_partitioned_parent_rollback_uses_expanded_leaf_down_sql(
+async fn flip_partitioned_parent_rollback_drops_via_parent_index_cascade(
     mut ctx: djogi::DjogiContext,
 ) {
     let _guard = acquire_test_workspace_guard();
@@ -3769,20 +3772,20 @@ async fn flip_partitioned_parent_rollback_uses_expanded_leaf_down_sql(
     .expect("leaf b");
 
     // Migration plan: create unique index on parent with per-leaf expansion.
-    let mut plan = MigrationPlan {
+    let plan = MigrationPlan {
         bucket: bucket(),
         classification: Classification::Additive,
         segments: vec![Segment {
             kind: SegmentKind::NonTransactional,
             statements: vec![OperationSql {
                 label: "PkFlipPartitionedIndex rb_rollback_events".to_string(),
-                up: "CREATE UNIQUE INDEX rb_rollback_events_ts_id_desc_idx ON ONLY rb_rollback_events (ts, id);\n\
-                     -- Per leaf: CREATE UNIQUE INDEX CONCURRENTLY <leaf>_ts_id_desc_idx\n\
+                up: "CREATE UNIQUE INDEX rb_rollback_events_ts_id_idx ON ONLY rb_rollback_events (ts, id);\n\
+                     -- Per leaf: CREATE UNIQUE INDEX CONCURRENTLY <leaf>_ts_id_idx\n\
                      --             ON <leaf> (ts, id);\n\
-                     -- Then ALTER INDEX rb_rollback_events_ts_id_desc_idx ATTACH PARTITION\n\
-                     --             <leaf>_ts_id_desc_idx;"
+                     -- Then ALTER INDEX rb_rollback_events_ts_id_idx ATTACH PARTITION\n\
+                     --             <leaf>_ts_id_idx;"
                     .to_string(),
-                down: "DROP INDEX IF EXISTS rb_rollback_events_ts_id_desc_idx;".to_string(),
+                down: "DROP INDEX IF EXISTS rb_rollback_events_ts_id_idx;".to_string(),
                 lossy: None,
             }],
         }],
@@ -3795,19 +3798,19 @@ async fn flip_partitioned_parent_rollback_uses_expanded_leaf_down_sql(
 
     // Verify leaf indexes exist after apply.
     assert!(
-        index_exists_by_name(&mut ctx, "rb_rollback_events_a_ts_id_desc_idx").await,
+        index_exists_by_name(&mut ctx, "rb_rollback_events_a_ts_id_idx").await,
         "leaf A index exists after apply",
     );
     assert!(
-        index_exists_by_name(&mut ctx, "rb_rollback_events_b_ts_id_desc_idx").await,
+        index_exists_by_name(&mut ctx, "rb_rollback_events_b_ts_id_idx").await,
         "leaf B index exists after apply",
     );
 
-    // Clear the down SQL in the plan — rollback must use expanded
-    // leaf down SQL from materialized plan, not the original plan's
-    // cleared down field.
-    plan.segments[0].statements[0].down.clear();
-
+    // Rollback with the original down SQL present. Once attached, leaf
+    // partition indexes cannot be dropped individually (Postgres E2BP01);
+    // the parent-level DROP INDEX cascades to all leaves automatically.
+    // Clearing the original down SQL and relying solely on per-leaf drops
+    // is not a valid rollback strategy for fully-applied partitioned indexes.
     rollback_plan(
         &mut ctx,
         &plan,
@@ -3817,15 +3820,342 @@ async fn flip_partitioned_parent_rollback_uses_expanded_leaf_down_sql(
         None,
     )
     .await
-    .expect("rollback must use expanded leaf down SQL");
+    .expect("rollback must drop partitioned index and cascade to leaves");
 
-    // Verify both leaf indexes were dropped by rollback.
+    // Both leaf indexes must be gone: parent DROP cascades to partitions.
     assert!(
-        !index_exists_by_name(&mut ctx, "rb_rollback_events_a_ts_id_desc_idx").await,
-        "rollback must drop leaf A via expanded down SQL",
+        !index_exists_by_name(&mut ctx, "rb_rollback_events_a_ts_id_idx").await,
+        "rollback must drop leaf A (via parent index CASCADE)",
     );
     assert!(
-        !index_exists_by_name(&mut ctx, "rb_rollback_events_b_ts_id_desc_idx").await,
-        "rollback must drop leaf B via expanded down SQL",
+        !index_exists_by_name(&mut ctx, "rb_rollback_events_b_ts_id_idx").await,
+        "rollback must drop leaf B (via parent index CASCADE)",
     );
+}
+
+// ── #366 — leaf-identity drift guards (rollback + repair) ─────────────────
+//
+// These four tests prove the #356 leaf-identity ledger guard fires for BOTH
+// topology-drift shapes, and — critically — that the new pre-strict check
+// (#366 C1/C2) reports the zero-leaf drift as a `LeafIdentityMismatch`
+// rather than the strict-expansion `PartitionExpansionNoLeaves` /
+// `ResumePlanShapeMismatch` it surfaced before the fix.
+
+/// Build the standard one-statement `PkFlipPartitionedIndex` plan for a
+/// partitioned parent. Mirrors the emitter shape exercised by the #317
+/// rollback/resume live tests: bare parent index name, `ON ONLY` target,
+/// underscore `id_desc` column form, plus the per-leaf comment block the
+/// runner expands into concrete CONCURRENTLY + ATTACH statements.
+fn partitioned_index_plan(parent: &str) -> MigrationPlan {
+    MigrationPlan {
+        bucket: bucket(),
+        classification: Classification::Additive,
+        segments: vec![Segment {
+            kind: SegmentKind::NonTransactional,
+            statements: vec![OperationSql {
+                label: format!("PkFlipPartitionedIndex {parent}"),
+                up: format!(
+                    "CREATE UNIQUE INDEX {parent}_ts_id_desc_idx ON ONLY {parent} (ts, id_desc);\n\
+                     -- Per leaf: CREATE UNIQUE INDEX CONCURRENTLY <leaf>_ts_id_desc_idx\n\
+                     --             ON <leaf> (ts, id_desc);\n\
+                     -- Then ALTER INDEX {parent}_ts_id_desc_idx ATTACH PARTITION\n\
+                     --             <leaf>_ts_id_desc_idx;"
+                ),
+                down: format!("DROP INDEX IF EXISTS {parent}_ts_id_desc_idx;"),
+                lossy: None,
+            }],
+        }],
+    }
+}
+
+/// Serialize a leaf-identity ledger value the way `serialize_leaf_identity`
+/// does: newline-delimited `parent:leaf1,leaf2` entries with parents sorted
+/// alphabetically and leaves in `regclass::text` order. The runner helper
+/// is `pub(crate)`, so this integration test reconstructs the documented
+/// storage format directly rather than widening the public surface for a
+/// test-only helper.
+fn leaf_identity_value(parent: &str, leaves: &[&str]) -> String {
+    format!("{parent}:{}", leaves.join(","))
+}
+
+#[djogi::djogi_test]
+async fn rollback_refuses_on_leaf_topology_drift(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+
+    // Parent with two leaves; apply records leaf identity {A, B}.
+    ctx.raw_ddl(
+        "CREATE TABLE td_events (\
+         id BIGINT NOT NULL DEFAULT generate_id(), \
+         id_desc BIGINT NOT NULL, \
+         ts TIMESTAMPTZ NOT NULL, \
+         PRIMARY KEY (ts, id)) \
+         PARTITION BY RANGE (ts)",
+    )
+    .await
+    .expect("partitioned parent");
+    ctx.raw_ddl(
+        "CREATE TABLE td_events_a PARTITION OF td_events \
+         FOR VALUES FROM ('2026-01-01') TO ('2026-04-01')",
+    )
+    .await
+    .expect("leaf a");
+    ctx.raw_ddl(
+        "CREATE TABLE td_events_b PARTITION OF td_events \
+         FOR VALUES FROM ('2026-04-01') TO ('2026-07-01')",
+    )
+    .await
+    .expect("leaf b");
+
+    let plan = partitioned_index_plan("td_events");
+    let runner_ctx = make_runner_ctx(&plan, "V20260530100001__td_rollback_drift");
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply partitioned index plan");
+
+    // Drift the topology: detach leaf B. Stored identity is now stale.
+    ctx.raw_ddl("ALTER TABLE td_events DETACH PARTITION td_events_b")
+        .await
+        .expect("detach leaf b");
+
+    let err = rollback_plan(
+        &mut ctx,
+        &plan,
+        &runner_ctx,
+        &_guard,
+        LossyRollbackPolicy::Refuse,
+        None,
+    )
+    .await
+    .expect_err("rollback must refuse against drifted leaf topology");
+
+    assert!(
+        matches!(err, djogi::migrate::RollbackError::LeafIdentityMismatch { .. }),
+        "expected LeafIdentityMismatch, got {err:?}",
+    );
+    let msg = format!("{err}");
+    assert!(msg.contains("[D624]"), "message must carry D624: {msg}");
+    assert!(
+        msg.contains("V20260530100001__td_rollback_drift"),
+        "message must name the version: {msg}",
+    );
+}
+
+#[djogi::djogi_test]
+async fn repair_refuses_on_leaf_topology_drift(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+
+    ctx.raw_ddl(
+        "CREATE TABLE tr_events (\
+         id BIGINT NOT NULL, \
+         id_desc BIGINT NOT NULL, \
+         ts TIMESTAMPTZ NOT NULL, \
+         PRIMARY KEY (ts, id)) \
+         PARTITION BY RANGE (ts)",
+    )
+    .await
+    .expect("partitioned parent");
+    ctx.raw_ddl(
+        "CREATE TABLE tr_events_a PARTITION OF tr_events \
+         FOR VALUES FROM ('2026-01-01') TO ('2026-04-01')",
+    )
+    .await
+    .expect("leaf a");
+    ctx.raw_ddl(
+        "CREATE TABLE tr_events_b PARTITION OF tr_events \
+         FOR VALUES FROM ('2026-04-01') TO ('2026-07-01')",
+    )
+    .await
+    .expect("leaf b");
+
+    let plan = partitioned_index_plan("tr_events");
+    let runner_ctx = make_runner_ctx(&plan, "V20260530100002__tr_repair_drift");
+
+    // Seed a failed partial-apply row that already counted both leaves
+    // (total_steps = parent-level + 2 per leaf = 5). leaf_identity records
+    // the {A, B} topology at original apply.
+    let stored_identity = leaf_identity_value("tr_events", &["tr_events_a", "tr_events_b"]);
+    let run_id: i64 = 100002;
+    ctx.raw_execute(
+        "INSERT INTO djogi_schema_migrations \
+         (version, description, checksum_up, execution_mode, status, \
+          applied_steps_count, total_steps, run_id, snapshot_version, app_label, leaf_identity) \
+         VALUES ($1, $2, $3, 'non_transactional', 'failed', \
+                 1, 5, $4, '1', '', $5)",
+        &[
+            &runner_ctx.version,
+            &runner_ctx.description,
+            &runner_ctx.checksum_up,
+            &run_id,
+            &stored_identity,
+        ],
+    )
+    .await
+    .expect("seed partial partition row with leaf_identity");
+
+    // Drift the topology: detach leaf B.
+    ctx.raw_ddl("ALTER TABLE tr_events DETACH PARTITION tr_events_b")
+        .await
+        .expect("detach leaf b");
+
+    let err = repair_resume_partial_apply(
+        &mut ctx,
+        &_guard,
+        &runner_ctx.version,
+        &plan,
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    .expect_err("repair must refuse against drifted leaf topology");
+
+    assert!(
+        matches!(err, djogi::migrate::RepairError::LeafIdentityMismatch { .. }),
+        "expected LeafIdentityMismatch, got {err:?}",
+    );
+    let msg = format!("{err}");
+    assert!(msg.contains("[D623]"), "message must carry D623: {msg}");
+}
+
+#[djogi::djogi_test]
+async fn rollback_refuses_on_zero_leaf_drift(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+
+    ctx.raw_ddl(
+        "CREATE TABLE zr_events (\
+         id BIGINT NOT NULL DEFAULT generate_id(), \
+         id_desc BIGINT NOT NULL, \
+         ts TIMESTAMPTZ NOT NULL, \
+         PRIMARY KEY (ts, id)) \
+         PARTITION BY RANGE (ts)",
+    )
+    .await
+    .expect("partitioned parent");
+    ctx.raw_ddl(
+        "CREATE TABLE zr_events_a PARTITION OF zr_events \
+         FOR VALUES FROM ('2026-01-01') TO ('2026-04-01')",
+    )
+    .await
+    .expect("leaf a");
+    ctx.raw_ddl(
+        "CREATE TABLE zr_events_b PARTITION OF zr_events \
+         FOR VALUES FROM ('2026-04-01') TO ('2026-07-01')",
+    )
+    .await
+    .expect("leaf b");
+
+    let plan = partitioned_index_plan("zr_events");
+    let runner_ctx = make_runner_ctx(&plan, "V20260530100003__zr_rollback_zero_leaf");
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply partitioned index plan");
+
+    // Drift to ZERO leaves: detach both. Pre-fix this drove the strict
+    // expansion into PartitionExpansionNoLeaves (surfaced as
+    // RollbackError::Runner) before the leaf-identity comparison ran.
+    // The #366 pre-strict guard must catch it as a LeafIdentityMismatch.
+    ctx.raw_ddl("ALTER TABLE zr_events DETACH PARTITION zr_events_a")
+        .await
+        .expect("detach leaf a");
+    ctx.raw_ddl("ALTER TABLE zr_events DETACH PARTITION zr_events_b")
+        .await
+        .expect("detach leaf b");
+
+    let err = rollback_plan(
+        &mut ctx,
+        &plan,
+        &runner_ctx,
+        &_guard,
+        LossyRollbackPolicy::Refuse,
+        None,
+    )
+    .await
+    .expect_err("rollback must refuse against zero-leaf drift");
+
+    assert!(
+        matches!(err, djogi::migrate::RollbackError::LeafIdentityMismatch { .. }),
+        "zero-leaf drift must surface as LeafIdentityMismatch, not Runner(...): {err:?}",
+    );
+    let msg = format!("{err}");
+    assert!(msg.contains("[D624]"), "message must carry D624: {msg}");
+}
+
+#[djogi::djogi_test]
+async fn repair_refuses_on_zero_leaf_drift(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+
+    ctx.raw_ddl(
+        "CREATE TABLE zp_events (\
+         id BIGINT NOT NULL, \
+         id_desc BIGINT NOT NULL, \
+         ts TIMESTAMPTZ NOT NULL, \
+         PRIMARY KEY (ts, id)) \
+         PARTITION BY RANGE (ts)",
+    )
+    .await
+    .expect("partitioned parent");
+    ctx.raw_ddl(
+        "CREATE TABLE zp_events_a PARTITION OF zp_events \
+         FOR VALUES FROM ('2026-01-01') TO ('2026-04-01')",
+    )
+    .await
+    .expect("leaf a");
+    ctx.raw_ddl(
+        "CREATE TABLE zp_events_b PARTITION OF zp_events \
+         FOR VALUES FROM ('2026-04-01') TO ('2026-07-01')",
+    )
+    .await
+    .expect("leaf b");
+
+    let plan = partitioned_index_plan("zp_events");
+    let runner_ctx = make_runner_ctx(&plan, "V20260530100004__zp_repair_zero_leaf");
+
+    let stored_identity = leaf_identity_value("zp_events", &["zp_events_a", "zp_events_b"]);
+    let run_id: i64 = 100004;
+    ctx.raw_execute(
+        "INSERT INTO djogi_schema_migrations \
+         (version, description, checksum_up, execution_mode, status, \
+          applied_steps_count, total_steps, run_id, snapshot_version, app_label, leaf_identity) \
+         VALUES ($1, $2, $3, 'non_transactional', 'failed', \
+                 1, 5, $4, '1', '', $5)",
+        &[
+            &runner_ctx.version,
+            &runner_ctx.description,
+            &runner_ctx.checksum_up,
+            &run_id,
+            &stored_identity,
+        ],
+    )
+    .await
+    .expect("seed partial partition row with leaf_identity");
+
+    // Drift to ZERO leaves. Pre-fix the strict materialize mapped
+    // PartitionExpansionNoLeaves to ResumePlanShapeMismatch before the
+    // leaf-identity comparison ran. The #366 pre-strict guard must catch
+    // it as LeafIdentityMismatch instead.
+    ctx.raw_ddl("ALTER TABLE zp_events DETACH PARTITION zp_events_a")
+        .await
+        .expect("detach leaf a");
+    ctx.raw_ddl("ALTER TABLE zp_events DETACH PARTITION zp_events_b")
+        .await
+        .expect("detach leaf b");
+
+    let err = repair_resume_partial_apply(
+        &mut ctx,
+        &_guard,
+        &runner_ctx.version,
+        &plan,
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    .expect_err("repair must refuse against zero-leaf drift");
+
+    assert!(
+        matches!(err, djogi::migrate::RepairError::LeafIdentityMismatch { .. }),
+        "zero-leaf drift must surface as LeafIdentityMismatch, not ResumePlanShapeMismatch: {err:?}",
+    );
+    let msg = format!("{err}");
+    assert!(msg.contains("[D623]"), "message must carry D623: {msg}");
 }

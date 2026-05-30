@@ -75,9 +75,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `djogi::testing::install_presentation_hmac_key_for_testing(key)`.
   `DjogiPool` is now in `djogi::prelude`.
 
-## [0.1.0] - 2026-XX-XX
+## [0.1.0-alpha.0] - 2026-05-29
 
-Initial public release. Djogi is a Model-first web framework for Rust: define
+Initial public alpha release. Djogi is a Model-first web framework for Rust: define
 your data schema as Rust structs and the framework derives the surrounding data
 machinery — ORM, migrations, audit trail, shell bindings, JSONB schema handling,
 and (opt-in) an admin console. Djogi is Postgres-only by design and targets
@@ -337,5 +337,5 @@ framework fits their app.
   `phf`-backed `field_codec` registry — wire sensitive columns into the
   live-migration substrate's protected-data audit path.
 
-[Unreleased]: https://github.com/TarunvirBains/djogi/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/TarunvirBains/djogi/releases/tag/v0.1.0
+[Unreleased]: https://github.com/TarunvirBains/djogi/compare/v0.1.0-alpha.0...HEAD
+[0.1.0-alpha.0]: https://github.com/TarunvirBains/djogi/releases/tag/v0.1.0-alpha.0

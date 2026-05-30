@@ -397,7 +397,7 @@ async fn db_reset_refuses_checksum_drift_before_drop() {
     let _ = driver.await;
 
     let phase_zero_path = work.join(format!(
-        "migrations/{virgin_db}/_global_/{PHASE_ZERO_VERSION}.sql"
+        "migrations/{virgin_db}/_global_/{PHASE_ZERO_VERSION}.sdjql"
     ));
     let original_sql = fs::read_to_string(&phase_zero_path).expect("read phase zero SQL");
     fs::write(&phase_zero_path, format!("{original_sql}\n-- checksum drift for #275\n"))

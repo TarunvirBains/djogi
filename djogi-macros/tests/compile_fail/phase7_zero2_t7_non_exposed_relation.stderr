@@ -1,11 +1,11 @@
-error[E0599]: no function or associated item named `department` found for struct `EmpPublicFields<RootModel>` in the current scope
+error[E0599]: no associated function or constant named `department` found for struct `EmpPublicFields<RootModel>` in the current scope
   --> $DIR/phase7_zero2_t7_non_exposed_relation.rs:30:33
    |
 17 | #[model(table = "emps_t7_non_exposed_relation", no_default)]
-   | ------------------------------------------------------------ function or associated item `department` not found for this struct
+   | ------------------------------------------------------------ associated function or constant `department` not found for this struct
 ...
 30 |     let _bad = EmpPublicFields::department();
-   |                                 ^^^^^^^^^^ function or associated item not found in `EmpPublicFields<_>`
+   |                                 ^^^^^^^^^^ associated function or constant not found in `EmpPublicFields<_>`
    |
 note: if you're trying to build a new `EmpPublicFields<_>` consider using one of the following associated functions:
       EmpPublicFields::<RootModel>::new

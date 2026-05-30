@@ -1,11 +1,11 @@
-error[E0599]: no function or associated item named `create` found for struct `Custom` in the current scope
+error[E0599]: no associated function or constant named `create` found for struct `Custom` in the current scope
   --> $DIR/pk_none_has_no_model_impl.rs:29:21
    |
 14 | pub struct Custom {
-   | ----------------- function or associated item `create` not found for this struct
+   | ----------------- associated function or constant `create` not found for this struct
 ...
 29 |     let _ = Custom::create;
-   |                     ^^^^^^ function or associated item not found in `Custom`
+   |                     ^^^^^^ associated function or constant not found in `Custom`
    |
    = help: items from traits can only be used if the trait is implemented and in scope
    = note: the following traits define an item `create`, perhaps you need to implement one of them:

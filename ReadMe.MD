@@ -24,6 +24,8 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 
 ## Status
 
+**Current release:** `v0.1.0-alpha.0` (public alpha; beta remains gated by Phase 8.5)
+
 **Shipped** — usable today:
 
 - **Phase 1** — `#[model]` proc macro, `Model` trait (`get` / `create` / `save` / `delete` / `refresh_from_db`), `ModelDescriptor` + `inventory` registration, typed field + PK injection, and deliberately gated raw-SQL escape hatches. See [the models guide](./docs/guide/models.md).
@@ -50,12 +52,12 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 >
 > **Existing-database adoption:** If your database schema already exists (from a prior tool, manual DDL, or restored backup), use `djogi migrations apply --fake --reason "schema pre-exists from prior tooling"` to mark pending migrations as applied without executing their SQL. The reason is persisted to the ledger audit trail. Verify the live schema matches the target state with `djogi migrations verify` or manual inspection before faking. If `--fake` is interrupted after recording the ledger row, re-running reports `VersionAlreadyApplied` (exit 2). Reconcile a stale snapshot with `djogi migrations attune` or `repair snapshot-rebuild`.
 
-- **Phase 7.5** — Live-migration substrate + protected-data field attributes. `live_migrate::{plan, plan_file, state, classify}` substrate with `OnlineSafetyClassification` enum (`OnlineSafe` / `FastLockDestructiveGuarded` / `ExpandContract` / `OfflineOnly`, `#[non_exhaustive]`); `pg_volatility` introspection module; backfill engine with chunk-loop SQL pattern and plan state tracking; spatial cfg gating. `#[field(protect = "...")]` and related field-level RLS / audit attributes; `ProtectedFieldMetadata` descriptor surface; macro parsing via raw attribute walking. EXCLUSION + stored-generated descriptor extension: `ExclusionConstraintSpec`, `GeneratedColumnSpec`, `ExclusionElement` types; `ColumnSchema.generated`, `TableSchema.exclusion_constraints` snapshot fields with `#[serde(default)]` for back-compat; `SchemaOperation::{AddExclusionConstraint, DropExclusionConstraint}`; classifier routes EXCLUDE-on-populated and stored-generated-add to `OfflineOnly` (Pg18 has no NOT VALID for EXCLUDE); empty-table fast-path; macro cross-attribute validation rejects `generated` + `default` together with span-precise diagnostic. `djogi live` CLI commands are defined (`show/status/run/resume/finalize/abandon` + daemon-mode resume), but are currently stub/deferred and not released as shipped surface in v0.1.0.
+- **Phase 7.5** — Live-migration substrate + protected-data field attributes. `live_migrate::{plan, plan_file, state, classify}` substrate with `OnlineSafetyClassification` enum (`OnlineSafe` / `FastLockDestructiveGuarded` / `ExpandContract` / `OfflineOnly`, `#[non_exhaustive]`); `pg_volatility` introspection module; backfill engine with chunk-loop SQL pattern and plan state tracking; spatial cfg gating. `#[field(protect = "...")]` and related field-level RLS / audit attributes; `ProtectedFieldMetadata` descriptor surface; macro parsing via raw attribute walking. EXCLUSION + stored-generated descriptor extension: `ExclusionConstraintSpec`, `GeneratedColumnSpec`, `ExclusionElement` types; `ColumnSchema.generated`, `TableSchema.exclusion_constraints` snapshot fields with `#[serde(default)]` for back-compat; `SchemaOperation::{AddExclusionConstraint, DropExclusionConstraint}`; classifier routes EXCLUDE-on-populated and stored-generated-add to `OfflineOnly` (Pg18 has no NOT VALID for EXCLUDE); empty-table fast-path; macro cross-attribute validation rejects `generated` + `default` together with span-precise diagnostic. `djogi live` CLI commands are defined (`show/status/run/resume/finalize/abandon` + daemon-mode resume), but are currently stub/deferred and not released as shipped surface in v0.1.0-alpha.0.
 
 **In flight / coming** — partially merged or design-locked, but not release-complete:
 
-- **Phase 8** — 8α–8ζ implementation clusters are on `main`; 8η predicate/cache correctness and Phase 8.5 publish housekeeping remain before the v0.1.0 publish gate. See the [implementation plan](./docs/spec/implementation-plan.md).
-- **Phase 9** — Rhai shell, analyzer, and model-aware operational tooling (**deferred; not in v0.1.0 shipped surface**).
+- **Phase 8** — 8α–8ζ implementation clusters are on `main`; 8η predicate/cache correctness and Phase 8.5 publish housekeeping remain before the beta publish gate. See the [implementation plan](./docs/spec/implementation-plan.md).
+- **Phase 9** — Rhai shell, analyzer, and model-aware operational tooling (**deferred; not in the alpha shipped surface**).
 - Phase 10 — [Maahi](./docs/spec/maahi/index.md) admin console (Dioxus full-stack; visage-scope-driven RBAC; planned opt-in via `djogi = { features = ["admin"] }` once the `djogi-maahi` crate carve-out ships).
 
 ## What Djogi Owns
@@ -68,10 +70,10 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 | Async runtime | Tokio | Uses it; does not configure it |
 | Model ↔ DB mapping | **Djogi** | Proc macro, field types, QuerySet, relations |
 | Migrations | **Djogi** | Differ, generation, snapshot management |
-| Shell tooling | **Djogi** (opt-in) | Rhai REPL and model-aware operational tooling for Phase 9 (deferred in v0.1.0) |
+| Shell tooling | **Djogi** (opt-in) | Rhai REPL and model-aware operational tooling for Phase 9 (deferred in v0.1.0-alpha.0) |
 | CRUD logging | **Djogi** | Audit trail, JSON-aware diffing |
 | JSONB schema fields | **Djogi** | `Jsonb<T>` — typed schemas over JSONB columns |
-| Admin tooling | **Djogi** (planned opt-in) | Phase 10 Maahi operational UI derived from `ModelDescriptor`; not shipped in v0.1.0 |
+| Admin tooling | **Djogi** (planned opt-in) | Phase 10 Maahi operational UI derived from `ModelDescriptor`; not shipped in v0.1.0-alpha.0 |
 
 ## Core Dependencies
 

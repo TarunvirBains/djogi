@@ -3839,7 +3839,10 @@ async fn repair_checksum_drift_pool_backed_context_pins_session(
         .expect("pg_backend_pid before repair_checksum_drift");
 
     // Tamper with the checksum to create drift, then repair.
-    let tampered_checksum = "tampered_for_test_331_repair";
+    // Use a valid-format (but wrong-content) checksum as the tamper value so
+    // the DB row is dirtied without being outright malformed; the repair target
+    // is the freshly computed correct checksum for the migration SQL.
+    let tampered_checksum = compute_checksum(["tampered_for_test_331_repair"]);
     ctx.raw_execute(
         "UPDATE djogi_schema_migrations \
          SET checksum_up = $1 \
@@ -3849,12 +3852,15 @@ async fn repair_checksum_drift_pool_backed_context_pins_session(
     .await
     .expect("tamper checksum");
 
+    // The fresh (correct) checksum is computed from the up SQL.
+    let fresh_checksum =
+        compute_checksum(["CREATE TABLE \"t5_331_repair_pin\" (\"id\" BIGINT PRIMARY KEY)"]);
     let repair_result = repair_checksum_drift(
         &mut ctx,
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
-        tampered_checksum,
+        &fresh_checksum,
         None,
         RepairConfirmation::OperatorAcknowledged,
     )
