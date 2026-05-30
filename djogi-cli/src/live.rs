@@ -53,6 +53,7 @@ use clap::Subcommand;
 use djogi::__bypass::RawAccessExt as _;
 use djogi::config::DjogiConfig;
 use djogi::context::DjogiContext;
+use djogi::live_migrate::compose::StepResult;
 use djogi::live_migrate::{
     DaemonConfig, DaemonError, LivePlanRow, PlanFileError, PlanStatus, active_hooks_at_step,
     plan_path, read_plan, run_daemon, verify_checksum,
@@ -118,6 +119,15 @@ pub enum LiveCmd {
     /// from the row and resumes at the same step.
     Resume {
         plan_id: String,
+        /// Allow destructive steps to execute on resume. Required when
+        /// the plan contains a DROP / TRUNCATE-class step that the
+        /// resume would reach. Pairs with `--justify`.
+        #[arg(long, default_value_t = false)]
+        allow_destructive: bool,
+        /// Operator justification recorded alongside any destructive
+        /// step. Required when `--allow-destructive` is set.
+        #[arg(long)]
+        justify: Option<String>,
         /// Workspace root override.
         #[arg(long)]
         workspace: Option<PathBuf>,
@@ -201,11 +211,6 @@ pub enum LiveCmdError {
     #[error("classification refused: {0}")]
     ClassificationRefused(String),
 
-    /// A validation gate failed — the gate query returned an
-    /// unexpected count / shape. Maps to exit code 3.
-    #[error("validation checkpoint failed: {0}")]
-    ValidationFailed(String),
-
     /// Plan-file checksum drift detected. Maps to exit code 4.
     #[error("plan file checksum drift: {0}")]
     ChecksumDrift(String),
@@ -240,7 +245,6 @@ impl LiveCmdError {
             | LiveCmdError::MalformedPlanId(_)
             | LiveCmdError::PlanNotFound(_) => 1,
             LiveCmdError::ClassificationRefused(_) => 2,
-            LiveCmdError::ValidationFailed(_) => 3,
             LiveCmdError::ChecksumDrift(_) => 4,
             LiveCmdError::StateConflict(_) => 5,
         }
@@ -308,7 +312,12 @@ async fn run(cmd: LiveCmd) -> Result<i32, LiveCmdError> {
             )
             .await
         }
-        LiveCmd::Resume { plan_id, workspace } => resume_cmd(&plan_id, workspace).await,
+        LiveCmd::Resume {
+            plan_id,
+            allow_destructive,
+            justify,
+            workspace,
+        } => resume_cmd(&plan_id, allow_destructive, justify.as_deref(), workspace).await,
         LiveCmd::Finalize {
             plan_id,
             justify,
@@ -643,14 +652,6 @@ pub fn refuse_offline_only(reason: impl Into<String>) -> LiveCmdError {
     LiveCmdError::ClassificationRefused(reason.into())
 }
 
-/// Surface a validation gate failure (exit code 3). Hoisted into a
-/// free function for the same reason as [`refuse_offline_only`] —
-/// the gate-query loop in T11+ uses this helper directly so the exit-
-/// code mapping never drifts from the v3 §3 table.
-pub fn validation_failed(reason: impl Into<String>) -> LiveCmdError {
-    LiveCmdError::ValidationFailed(reason.into())
-}
-
 // ── live show ─────────────────────────────────────────────────────────
 
 /// `djogi live show` body. Resolves the plan row, reads + checksum-
@@ -722,9 +723,9 @@ async fn show_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32, 
 
 // ── live run / resume ─────────────────────────────────────────────────
 
-/// `djogi live run` body. Walks the step graph from
-/// `current_step_index` forward, executing non-gate steps and pausing
-/// at the first operator gate. Refuses destructive steps without
+/// `djogi live run` body. Executes all steps in the plan starting
+/// from step 0. Pauses at the first OperatorGate step and records
+/// progress via checkpoint(). Refuses destructive steps without
 /// `--allow-destructive --justify "<reason>"`.
 async fn run_cmd(
     plan_id_raw: &str,
@@ -762,28 +763,66 @@ async fn run_cmd(
     // gate pause / promote, transactional progress writes) is the
     // engine's job and lands in the same follow-up.
     //
-    // Future gate failure path: the engine surfaces a failed gate via
-    // [`validation_failed`] (exit 3). The mapping is exercised by the
-    // exit-code unit tests; the production wiring lands with the
-    // executor.
-    let _ = allow_raw_dangerous;
-    if row.last_error.is_some() {
-        return Err(validation_failed(format!(
-            "plan {plan_id} carries a stale `last_error`; clear it via `djogi live abandon` \
-             (then re-plan) or fix the underlying cause and resume",
-        )));
+    // Execute the plan via the live-plan engine. The operator-supplied
+    // `allow_destructive` / `justify` flow through to the engine-side
+    // gate as well as the CLI pre-flight above (belt and suspenders).
+    match djogi::live_migrate::executor::run_plan(
+        &mut ctx,
+        path,
+        0,
+        false,
+        allow_destructive,
+        justify,
+    )
+    .await
+    {
+        Ok(result) => match result {
+            StepResult::Completed => {
+                println!("live run: plan {plan_id} completed successfully");
+                Ok(0)
+            }
+            StepResult::Paused => {
+                println!(
+                    "live run: paused at operator gate; resume with `djogi live run {plan_id}`"
+                );
+                Ok(0)
+            }
+            StepResult::Partial {
+                rows_done,
+                rows_total,
+            } => {
+                if rows_total > 0 {
+                    let pct = (rows_done as f64 / rows_total as f64) * 100.0;
+                    println!(
+                        "live run: backfill progress {rows_done}/{rows_total} ({pct:.1}%); resume with `djogi live resume {plan_id}`"
+                    );
+                } else {
+                    println!(
+                        "live run: backfill interrupted after {rows_done} rows; resume with `djogi live resume {plan_id}`"
+                    );
+                }
+                Ok(0)
+            }
+        },
+        Err(e) => Err(LiveCmdError::Runtime(format!("executor error: {e}"))),
     }
-    Err(LiveCmdError::Runtime(
-        "live run: step-graph executor lands alongside the `live plan` compose entry point; \
-         this CLI build shipped the dispatch + checksum verify + state-conflict gates"
-            .to_string(),
-    ))
 }
 
 /// `djogi live resume` body. Same shape as `run`, but additionally
 /// refuses (exit 5) when the plan is at a validation / cutover /
 /// finalize gate — those need `live run` (or `live finalize`).
-async fn resume_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32, LiveCmdError> {
+///
+/// A resumed plan can reach a destructive cleanup step, so it carries
+/// the same `--allow-destructive` / `--justify` gate as `live run`:
+/// the CLI pre-flight pairs the two flags, and the engine enforces the
+/// destructive gate before executing any DROP-class step.
+async fn resume_cmd(
+    plan_id_raw: &str,
+    allow_destructive: bool,
+    justify: Option<&str>,
+    workspace: Option<PathBuf>,
+) -> Result<i32, LiveCmdError> {
+    require_justify_for_destructive(allow_destructive, justify)?;
     let plan_id = parse_plan_id(plan_id_raw)?;
     let workspace = resolve_workspace(workspace);
     let config = load_config(&workspace)?;
@@ -793,11 +832,48 @@ async fn resume_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32
     let path = resolve_plan_file_path(&workspace, &row);
     verify_checksum(&path, &row.plan_file_checksum)?;
     let _plan = read_plan(&path)?;
-    Err(LiveCmdError::Runtime(
-        "live resume: chunk-loop executor lands alongside the `live plan` compose entry point; \
-         this CLI build shipped the dispatch + checksum verify + state-conflict gates"
-            .to_string(),
-    ))
+    // Resume execution from current step
+    let start_idx = u32::try_from(row.current_step_index).unwrap_or(0);
+    match djogi::live_migrate::executor::run_plan(
+        &mut ctx,
+        path,
+        start_idx,
+        true,
+        allow_destructive,
+        justify,
+    )
+    .await
+    {
+        Ok(result) => match result {
+            StepResult::Completed => {
+                println!("live resume: plan {plan_id} completed successfully");
+                Ok(0)
+            }
+            StepResult::Paused => {
+                println!(
+                    "live resume: paused at operator gate; resume with `djogi live run {plan_id}`"
+                );
+                Ok(0)
+            }
+            StepResult::Partial {
+                rows_done,
+                rows_total,
+            } => {
+                if rows_total > 0 {
+                    let pct = (rows_done as f64 / rows_total as f64) * 100.0;
+                    println!(
+                        "live resume: backfill progress {rows_done}/{rows_total} ({pct:.1}%); resume with `djogi live resume {plan_id}`"
+                    );
+                } else {
+                    println!(
+                        "live resume: backfill interrupted after {rows_done} rows; resume with `djogi live resume {plan_id}`"
+                    );
+                }
+                Ok(0)
+            }
+        },
+        Err(e) => Err(LiveCmdError::Runtime(format!("executor error: {e}"))),
+    }
 }
 
 /// Reject statuses where `live run` would be a state-machine error.
@@ -874,6 +950,11 @@ fn assert_resume_status_allows_progress(status: PlanStatus) -> Result<(), LiveCm
 /// [`StepKind::CleanupLegacyState`](djogi::live_migrate::StepKind::CleanupLegacyState)
 /// step, drops compatibility hooks, and promotes the row to
 /// [`PlanStatus::Complete`].
+///
+/// Requires `--justify "<reason>"`; the cleanup phase is destructive by
+/// nature. The `live finalize` invocation is itself the operator's
+/// destructive opt-in, so it passes `allow_destructive = true` to the
+/// engine but still demands a non-empty justification.
 async fn finalize_cmd(
     plan_id_raw: &str,
     justify: Option<&str>,
@@ -885,20 +966,58 @@ async fn finalize_cmd(
     let mut ctx = connect(&config.database.url).await?;
     let row = fetch_row(&mut ctx, plan_id).await?;
     assert_finalize_status(row.status)?;
+    // `live finalize` runs the contract (cleanup) phase, which is
+    // destructive by nature. Require a justification just as `live run
+    // --allow-destructive` does; treat the finalize invocation itself as
+    // the operator's destructive opt-in.
+    let justify_present = justify.map(|s| !s.trim().is_empty()).unwrap_or(false);
+    if !justify_present {
+        return Err(LiveCmdError::ArgRefused(
+            "live finalize runs destructive cleanup steps; pass \
+             --justify \"<reason>\""
+                .to_string(),
+        ));
+    }
     let path = resolve_plan_file_path(&workspace, &row);
     verify_checksum(&path, &row.plan_file_checksum)?;
     let _plan = read_plan(&path)?;
-
-    // Cleanup steps drop legacy state; if any remaining cleanup step
-    // is destructive, refuse without a `--justify`. The plan's step
-    // graph is the source of truth; this dispatch surfaces the gate,
-    // and the engine's finalize loop walks the graph.
-    let _ = justify;
-    Err(LiveCmdError::Runtime(
-        "live finalize: cleanup-step executor lands alongside the `live plan` compose entry \
-         point; this CLI build shipped the dispatch + checksum + state gate"
-            .to_string(),
-    ))
+    // Resume execution from current step. `live finalize` implies the
+    // destructive opt-in (5th arg `true`); the engine still requires the
+    // non-empty `justify` checked above.
+    let start_idx = u32::try_from(row.current_step_index).unwrap_or(0);
+    match djogi::live_migrate::executor::run_plan(&mut ctx, path, start_idx, true, true, justify)
+        .await
+    {
+        Ok(result) => match result {
+            StepResult::Completed => {
+                println!("live finalize: plan {plan_id} completed successfully");
+                Ok(0)
+            }
+            StepResult::Paused => {
+                println!(
+                    "live finalize: paused at operator gate; resume with `djogi live run {plan_id}`"
+                );
+                Ok(0)
+            }
+            StepResult::Partial {
+                rows_done,
+                rows_total,
+            } => {
+                if rows_total > 0 {
+                    let pct = (rows_done as f64 / rows_total as f64) * 100.0;
+                    println!(
+                        "live finalize: backfill progress {rows_done}/{rows_total} ({pct:.1}%); resume with `djogi live finalize {plan_id}`"
+                    );
+                } else {
+                    println!(
+                        "live finalize: backfill interrupted after {rows_done} rows; resume with `djogi live finalize {plan_id}`"
+                    );
+                }
+                Ok(0)
+            }
+        },
+        Err(e) => Err(LiveCmdError::Runtime(format!("executor error: {e}"))),
+    }
 }
 
 /// Reject statuses where `live finalize` would be a state-machine
@@ -1034,6 +1153,7 @@ async fn daemon_cmd(
         host: hostname_for_claim(),
         pid: i64::from(std::process::id()),
         profile: config.profile.clone(),
+        workspace_root: workspace.to_path_buf(),
     };
     let mut ctx = connect(&config.database.url).await?;
     match run_daemon(&mut ctx, cfg).await {
@@ -1545,15 +1665,6 @@ mod tests {
             2,
         );
     }
-
-    #[test]
-    fn exit_code_validation_failed_maps_to_three() {
-        assert_eq!(
-            LiveCmdError::ValidationFailed("count > 0".to_string()).exit_code(),
-            3,
-        );
-    }
-
     #[test]
     fn exit_code_checksum_drift_maps_to_four() {
         assert_eq!(

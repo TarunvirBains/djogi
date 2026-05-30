@@ -94,16 +94,19 @@ pub enum StepKind {
 /// Single source of truth for `(StepKind, snake_case-label)` pairs.
 ///
 /// `StepKind` derives `Serialize` / `Deserialize` with
-/// `#[serde(rename_all = "snake_case")]`, so production
-/// serialisation routes through serde directly. This slice — paired
-/// with the `_STEP_KIND_DRIFT_GUARD` block above and the exhaustive
-/// snapshot test in the `tests` module — pins the canonical label
-/// for every variant so a variant rename in source can't silently
-/// change the persisted plan-file JSON.
+/// `#[serde(rename_all = "snake_case")]`, so plan-file serialisation
+/// routes through serde directly. This slice — paired with the
+/// `_STEP_KIND_DRIFT_GUARD` block below and the exhaustive snapshot
+/// test in the `tests` module — pins the canonical label for every
+/// variant so a variant rename in source can't silently change the
+/// persisted plan-file JSON.
 ///
-/// Test-gated because the production path is serde; the slice exists
-/// purely to anchor the drift-guard test.
-#[cfg(test)]
+/// Also the backing table for [`StepKind::as_db_str`], which the
+/// executor uses to write `djogi_live_plans.current_step` and the
+/// daemon's candidate filter matches against. The labels match the
+/// serde wire form by construction (the drift-guard test enforces it),
+/// so the on-disk JSON and the ledger's `current_step` column stay in
+/// lockstep.
 const STEP_KIND_LABELS: &[(StepKind, &str)] = &[
     (StepKind::ExpandSchema, "expand_schema"),
     (
@@ -140,6 +143,23 @@ const _STEP_KIND_DRIFT_GUARD: () = {
     }
     let _ = check(StepKind::ExpandSchema);
 };
+
+impl StepKind {
+    /// Snake_case label for this step kind — identical to the serde
+    /// `rename_all = "snake_case"` wire form. Written to
+    /// `djogi_live_plans.current_step` by the executor as it advances
+    /// through the step graph, and matched by the daemon's candidate
+    /// filter (`backfill_chunked` / `validate_backfill`).
+    ///
+    /// Single source of truth: [`STEP_KIND_LABELS`]. The compile-time
+    /// `_STEP_KIND_DRIFT_GUARD` block guarantees every variant has a row.
+    pub fn as_db_str(self) -> &'static str {
+        STEP_KIND_LABELS
+            .iter()
+            .find_map(|(v, label)| (*v == self).then_some(*label))
+            .expect("invariant: StepKind variant missing from STEP_KIND_LABELS")
+    }
+}
 
 // ── PlanClassification ────────────────────────────────────────────────
 

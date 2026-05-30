@@ -63,7 +63,9 @@ use crate::migrate::OnlineSafetyClassification;
 
 pub mod backfill;
 pub mod classify;
+pub mod compose;
 pub mod daemon;
+pub mod executor;
 pub mod hooks;
 pub mod patterns;
 pub mod plan;
@@ -72,7 +74,12 @@ pub mod state;
 
 pub use backfill::{BackfillChunk, BackfillError, execute_backfill, resume_backfill};
 pub use classify::{ClassifyContext, TargetDatabase, classify_delta, classify_operation};
+pub use compose::{
+    ComposeError, ComposeMeta, ComposeReport, ExtractResult, StepResult, build_skeleton_plan,
+    check_no_active_plan, sanitize_app_label,
+};
 pub use daemon::{DaemonConfig, DaemonError, run_daemon};
+pub use executor::{ExecutionContext, ExecutorError, execute_step, run_plan};
 pub use hooks::{
     ActiveHooks, DualReadHook, DualWriteHook, HookError, active_hooks_at_step,
     side_effects_suppressed,
@@ -84,7 +91,7 @@ pub use plan::{
 pub use plan_file::{
     PlanFileError, compute_checksum, plan_path, read_plan, verify_checksum, write_plan,
 };
-pub use state::{INSTALL_SQL, LivePlanRow, PlanStatus};
+pub use state::{INSTALL_SQL, LivePlanRow, PlanStatus, record_failure, update_status_with_error};
 
 /// Logging-profile axis read from `Djogi.toml`'s `[logging] profile`
 /// at compose time and threaded into [`ClassifyContext`].

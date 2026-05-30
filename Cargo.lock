@@ -533,7 +533,7 @@ dependencies = [
 
 [[package]]
 name = "djogi"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "argon2",
  "async-trait",
@@ -569,7 +569,7 @@ dependencies = [
 
 [[package]]
 name = "djogi-cli"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "clap",
  "deadpool-postgres",
@@ -586,7 +586,7 @@ dependencies = [
 
 [[package]]
 name = "djogi-macros"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "darling",
  "djogi",
@@ -604,7 +604,7 @@ dependencies = [
 
 [[package]]
 name = "djogi-shell"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "djogi",
  "tokio",

@@ -104,6 +104,7 @@ async fn insert_running_plan(ctx: &mut DjogiContext, plan_id: HeerId) {
         originating_migration: "phase7_5_test_migration".to_string(),
         target_database: "main".to_string(),
         app_label: String::new(),
+        daemon_session_token: None,
     };
     state::insert_row(ctx, &row)
         .await
