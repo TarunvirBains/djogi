@@ -71,7 +71,8 @@
 //! prevent callers from bypassing framework bookkeeping (on_commit callback
 //! drain, rollback cleanup, savepoint depth synchronization):
 //!
-//! - `BEGIN` / `START TRANSACTION`
+//! - `BEGIN` / `START TRANSACTION` (`BEGIN ATOMIC` is excluded — it is a
+//!   compound-statement delimiter, not transaction control)
 //! - `COMMIT`
 //! - `ROLLBACK` (including `ROLLBACK TO savepoint`)
 //! - `END` / `ABORT`
@@ -83,7 +84,8 @@
 //! - it applies only to transaction-backed raw entrypoints
 //! - empty/trivia-only SQL passes through unchanged
 //! - `raw_ddl` scans real top-level statements, respecting line comments,
-//!   block comments, quoted strings, and dollar-quoted bodies
+//!   block comments, quoted strings, dollar-quoted bodies, and
+//!   `BEGIN ATOMIC ... END` compound-statement boundaries
 //! - `raw_stream` / `raw_stream_with_fetch_size` keep their existing
 //!   transaction-required contract and do not run this classifier
 //!
@@ -332,7 +334,21 @@ fn classify_transaction_control_statement(sql: &str) -> Option<&'static str> {
         return Some("RELEASE");
     }
 
-    ["BEGIN", "COMMIT", "END", "ABORT", "SAVEPOINT"]
+    if first.eq_ignore_ascii_case("BEGIN") {
+        return match parse_keyword(sql, after_first) {
+            Some((second, _)) if second.eq_ignore_ascii_case("ATOMIC") => {
+                // BEGIN ATOMIC is a SQL-standard compound-statement delimiter
+                // (used in `LANGUAGE SQL` function bodies), not transaction
+                // control. Postgres treats it differently from bare BEGIN,
+                // which starts a transaction block.
+                None
+            }
+            // Bare BEGIN, BEGIN WORK, BEGIN TRANSACTION are all transaction control.
+            _ => Some("BEGIN"),
+        };
+    }
+
+    ["COMMIT", "END", "ABORT", "SAVEPOINT"]
         .into_iter()
         .find(|s| first.eq_ignore_ascii_case(s))
 }
@@ -381,6 +397,13 @@ fn classify_raw_ddl_transaction_backed_refusal(
     let mut in_single_quote = false;
     let mut in_double_quote = false;
     let mut dollar_quote: Option<String> = None;
+    // Depth of open `BEGIN ATOMIC ... END` compound-statement blocks. Inside
+    // them, semicolons do not split statements and the closing END is not
+    // transaction control.
+    let mut begin_atomic_depth = 0usize;
+    // Depth of open `CASE ... END` expressions inside the current atomic block,
+    // so a CASE's END does not prematurely close the BEGIN ATOMIC block.
+    let mut case_depth = 0usize;
 
     while idx < bytes.len() {
         if let Some(delimiter) = dollar_quote.as_deref() {
@@ -442,6 +465,73 @@ fn classify_raw_ddl_transaction_backed_refusal(
             continue;
         }
 
+        // Track BEGIN ATOMIC ... END compound-statement boundaries. Quote and
+        // comment state is handled above, so this runs only on real, unquoted
+        // SQL text.
+        if begin_atomic_depth > 0 {
+            // CASE ... END is the only bare-END construct that appears unquoted
+            // inside a SQL-standard atomic body (e.g. SELECT CASE WHEN x > 0
+            // THEN 1 ELSE 0 END). Count CASE opens so their END does not
+            // prematurely close the atomic block. A qualified END such as
+            // END IF or END LOOP belongs to PL/pgSQL and only appears inside
+            // dollar-quoted function bodies, which existing dollar-quote
+            // tracking already skips.
+            if let Some(after_case) = match_keyword_at(bytes, idx, "CASE") {
+                case_depth += 1;
+                idx = after_case;
+                continue;
+            }
+
+            // A bare END closes the innermost open CASE first; only when no
+            // CASE is open does it close the BEGIN ATOMIC block itself.
+            if let Some(after_end) = match_keyword_at(bytes, idx, "END") {
+                if case_depth > 0 {
+                    case_depth -= 1;
+                } else {
+                    begin_atomic_depth -= 1;
+                    // Reset CASE depth as the block fully closes so no residual
+                    // imbalance leaks across sequential atomic blocks in one
+                    // batch.
+                    if begin_atomic_depth == 0 {
+                        case_depth = 0;
+                    }
+                }
+                idx = after_end;
+                continue;
+            }
+
+            // A nested BEGIN ATOMIC raises the depth.
+            if let Some(after_begin) = match_keyword_at(bytes, idx, "BEGIN")
+                && let Some(after_atomic) = skip_whitespace_and_match(bytes, after_begin, "ATOMIC")
+            {
+                begin_atomic_depth += 1;
+                idx = after_atomic;
+                continue;
+            }
+
+            // Semicolons inside the block belong to the compound statement —
+            // never split on them.
+            if bytes[idx] == b';' {
+                idx += 1;
+                continue;
+            }
+
+            // Anything else falls through to the match block below so quote and
+            // comment state is entered correctly: a string literal or comment
+            // opened inside the block (a quoted 'END', a block comment, or a
+            // line comment containing END) is skipped without touching depth.
+        }
+
+        // Outside any atomic block, an unquoted BEGIN ATOMIC opens one.
+        if begin_atomic_depth == 0
+            && let Some(after_begin) = match_keyword_at(bytes, idx, "BEGIN")
+            && let Some(after_atomic) = skip_whitespace_and_match(bytes, after_begin, "ATOMIC")
+        {
+            begin_atomic_depth = 1;
+            idx = after_atomic;
+            continue;
+        }
+
         match bytes[idx] {
             b';' => {
                 if let Some(refusal) =
@@ -483,6 +573,53 @@ fn classify_raw_ddl_transaction_backed_refusal(
     }
 
     classify_transaction_backed_refusal(&sql[statement_start..])
+}
+
+/// Checks whether `target` keyword matches in `bytes` at exactly `idx`.
+///
+/// Returns the index just past the keyword on a match, or `None`.
+///
+/// This is O(1): it performs no whitespace or trivia skipping, so it is safe to
+/// call at every byte in the scanner loop without an O(N^2) blow-up on
+/// whitespace-heavy input. Leading and trailing word-boundary checks prevent
+/// matching inside an identifier — `END` inside `dividend`, `BEGIN` inside
+/// `xBEGIN`, or `END` inside `ENDPOINT` are all rejected.
+fn match_keyword_at(bytes: &[u8], idx: usize, target: &str) -> Option<usize> {
+    // Leading boundary: the previous byte must not be an identifier byte.
+    if idx > 0 && (bytes[idx - 1].is_ascii_alphanumeric() || bytes[idx - 1] == b'_') {
+        return None;
+    }
+    let target_len = target.len();
+    if idx + target_len > bytes.len() {
+        return None;
+    }
+    if bytes[idx..idx + target_len].eq_ignore_ascii_case(target.as_bytes()) {
+        // Trailing boundary: the next byte must not be an identifier byte.
+        let end = idx + target_len;
+        if end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+            return None;
+        }
+        Some(end)
+    } else {
+        None
+    }
+}
+
+/// Skips ASCII whitespace starting at `idx`, then checks whether `target`
+/// keyword matches at the first non-whitespace byte.
+///
+/// Returns the index just past the keyword on a match, or `None`.
+///
+/// This is O(N) in the run of whitespace it skips, so it is only safe to call
+/// once per keyword match — never per-byte in the main loop. It backs the
+/// second-keyword peek after a `BEGIN` match (checking for `ATOMIC`), where the
+/// whitespace run is bounded by the spacing between two keywords.
+fn skip_whitespace_and_match(bytes: &[u8], idx: usize, target: &str) -> Option<usize> {
+    let mut i = idx;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    match_keyword_at(bytes, i, target)
 }
 
 fn parse_keyword(sql: &str, start_idx: usize) -> Option<(&str, usize)> {
@@ -788,11 +925,13 @@ pub trait RawAccessExtBase: sealed::Sealed {
     /// top-level statement in the batch and rejects session-scoped statement
     /// heads (`SET`, `RESET`, `DISCARD`, `LISTEN`, `UNLISTEN`, `PREPARE`,
     /// `DEALLOCATE`) with [`DjogiError::SessionStatementDisallowedInTransaction`]
-    /// and transaction-control statements (`BEGIN`, `COMMIT`, `ROLLBACK`,
-    /// `END`, `ABORT`, `SAVEPOINT`, `RELEASE`) with
+    /// and transaction-control statements (`BEGIN` — but not `BEGIN ATOMIC`,
+    /// a compound-statement delimiter — `COMMIT`, `ROLLBACK`, `END`, `ABORT`,
+    /// `SAVEPOINT`, `RELEASE`) with
     /// [`DjogiError::RawTransactionControlDisallowedInTransaction`] before SQL
-    /// reaches Postgres. The scanner respects comments, string literals, and
-    /// dollar-quoted bodies; it is not a naive `split(';')`.
+    /// reaches Postgres. The scanner respects comments, string literals,
+    /// dollar-quoted bodies, and `BEGIN ATOMIC ... END` compound-statement
+    /// boundaries; it is not a naive `split(';')`.
     /// Tests that need to set up tables MUST use
     /// `#[djogi::djogi_test(sync_models = [...])]` instead — `sync_models`
     /// projects through the descriptor / `pk_default_sql` pipeline so
@@ -1621,6 +1760,252 @@ mod tests {
         assert_eq!(
             classify_transaction_backed_refusal("INSERT INTO t VALUES (1)"),
             None
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // BEGIN ATOMIC ... END compound-statement scanning (djogi#364).
+    //
+    // The raw_ddl batch scanner must treat `BEGIN ATOMIC ... END` as a single
+    // compound statement: internal semicolons do not split, and the closing
+    // END is not transaction control. CASE ... END nesting inside the block,
+    // string / comment / quote contexts, and word boundaries must all be
+    // handled without falsely opening or closing a block.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn classify_raw_ddl_batch_begin_atomic_block_allowed() {
+        // BEGIN ATOMIC ... END is valid SQL-standard compound statement syntax.
+        // The scanner must not classify the closing END as transaction control,
+        // nor the head BEGIN as transaction control (BEGIN ATOMIC != bare BEGIN).
+        let sql = "BEGIN ATOMIC SELECT 1; END";
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_create_function_then_atomic_block_allowed() {
+        // Realistic migration shape: CREATE FUNCTION followed by atomic compound.
+        let sql = r#"
+            CREATE FUNCTION f() RETURNS integer AS $$ SELECT 1; END $$ LANGUAGE sql;
+            BEGIN ATOMIC SELECT 2; END;
+            SELECT 3;
+        "#;
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_case_inside_atomic_allowed() {
+        // CASE ... END inside an atomic block must not prematurely close it.
+        let sql = "BEGIN ATOMIC SELECT CASE WHEN x > 0 THEN 'pos' ELSE 'neg' END; END";
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_nested_case_inside_atomic_allowed() {
+        let sql = "BEGIN ATOMIC SELECT CASE WHEN x > 0 THEN CASE WHEN y > 0 THEN 1 ELSE 0 END ELSE -1 END; END";
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_multiple_cases_inside_atomic_allowed() {
+        let sql = "BEGIN ATOMIC SELECT CASE WHEN a THEN 1 END; SELECT CASE WHEN b THEN 2 END; END";
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_case_in_atomic_then_commit_detected() {
+        // Regression: double-counting CASE depth would leave the atomic block
+        // open, swallowing the trailing COMMIT. CASE advances idx (counted
+        // once), so the inner END closes the CASE, the block END closes the
+        // atomic block, and the COMMIT is detected.
+        let sql = "BEGIN ATOMIC SELECT CASE WHEN a THEN 1 END; END; COMMIT";
+        assert!(classify_raw_ddl_transaction_backed_refusal(sql).is_some());
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_atomic_then_commit_detected() {
+        // Transaction control after a (closed) atomic block is still detected.
+        let sql = "BEGIN ATOMIC SELECT 1; END; COMMIT";
+        assert!(classify_raw_ddl_transaction_backed_refusal(sql).is_some());
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_endpoint_inside_atomic_block() {
+        // ENDPOINT must not match the END keyword (trailing word boundary).
+        let sql = "BEGIN ATOMIC SELECT endpoint FROM t; END";
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_nested_begin_atomic_allowed() {
+        // Nested BEGIN ATOMIC blocks exercise depth increment / decrement.
+        let sql = "BEGIN ATOMIC SELECT 1; BEGIN ATOMIC SELECT 2; END; END";
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_begin_atomic_in_line_comment_ignored() {
+        // BEGIN ATOMIC inside a line comment at depth 0 must not open a block;
+        // the top-level END after the comment is genuine transaction control.
+        let sql = "-- BEGIN ATOMIC\nEND;";
+        assert!(classify_raw_ddl_transaction_backed_refusal(sql).is_some());
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_begin_atomic_in_block_comment_ignored() {
+        let sql = "/* BEGIN ATOMIC */ END;";
+        assert!(classify_raw_ddl_transaction_backed_refusal(sql).is_some());
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_begin_atomic_in_single_quote_ignored() {
+        let sql = "SELECT 'BEGIN ATOMIC'; END;";
+        assert!(classify_raw_ddl_transaction_backed_refusal(sql).is_some());
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_begin_atomic_in_double_quote_ignored() {
+        let sql = "\"BEGIN ATOMIC\"; END;";
+        assert!(classify_raw_ddl_transaction_backed_refusal(sql).is_some());
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_begin_atomic_in_dollar_quote_ignored() {
+        let sql = "SELECT $$BEGIN ATOMIC$$; END;";
+        assert!(classify_raw_ddl_transaction_backed_refusal(sql).is_some());
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_create_function_dollar_quoted_atomic_allowed() {
+        // Dollar-quoted CREATE FUNCTION with a BEGIN ATOMIC body (regression
+        // guard: existing dollar-quote tracking already makes the body opaque).
+        let sql = r#"
+            CREATE FUNCTION f() RETURNS integer
+                LANGUAGE SQL
+                AS $$ BEGIN ATOMIC SELECT 1; END $$;
+            SELECT 1;
+        "#;
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_bare_begin_still_rejected() {
+        // Bare BEGIN (not BEGIN ATOMIC) is still transaction control.
+        let sql = "BEGIN; SELECT 1;";
+        assert!(classify_raw_ddl_transaction_backed_refusal(sql).is_some());
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_begin_without_atomic_still_rejected() {
+        // BEGIN WORK is transaction control; END is also transaction control.
+        let sql = "BEGIN WORK; SELECT 1; END;";
+        assert!(classify_raw_ddl_transaction_backed_refusal(sql).is_some());
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_begin_atomic_case_insensitive() {
+        let sql = "begin ATOMIC SELECT 1; end";
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_begin_atomic_keyword_boundary() {
+        // BEGINNATIC is not BEGIN ATOMIC; the trailing END is transaction control.
+        let sql = "BEGINNATIC SELECT 1; END;";
+        assert!(classify_raw_ddl_transaction_backed_refusal(sql).is_some());
+    }
+
+    // --- CLASS B: string / comment / quote contexts inside atomic blocks ---
+
+    #[test]
+    fn classify_raw_ddl_batch_string_inside_atomic_block() {
+        // 'END' in a string literal inside the block must not decrement depth.
+        let sql = "BEGIN ATOMIC SELECT 'END'; END";
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_block_comment_inside_atomic_block() {
+        let sql = "BEGIN ATOMIC /* END */ SELECT 1; END";
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_line_comment_inside_atomic_block() {
+        // The comment's END appears before an internal semicolon. A premature
+        // depth decrement would split there and misclassify — so this shape is
+        // discriminating, not masked.
+        let sql = "BEGIN ATOMIC SELECT 1 -- END\n; END";
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_double_quote_inside_atomic_block() {
+        let sql = r#"BEGIN ATOMIC SELECT "END" FROM t; END"#;
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_dollar_quote_inside_atomic_block() {
+        let sql = "BEGIN ATOMIC SELECT $$END$$ FROM t; END";
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_word_boundary_inside_atomic_block() {
+        // `dividend` ends in `end` but is a single identifier — leading word
+        // boundary prevents a false END match.
+        let sql = "BEGIN ATOMIC UPDATE t SET x = dividend; END";
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_leading_word_boundary() {
+        // xBEGIN is not BEGIN; the block never opens and the top-level END is
+        // genuine transaction control.
+        let sql = "xBEGIN ATOMIC SELECT 1; END;";
+        assert!(classify_raw_ddl_transaction_backed_refusal(sql).is_some());
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_create_function_atomic_body_allowed() {
+        // Canonical unquoted shape: a dollar-quoted CREATE FUNCTION body
+        // followed by a bare BEGIN ATOMIC compound statement.
+        let sql = "CREATE FUNCTION f() RETURNS integer LANGUAGE SQL AS $$ SELECT 1; END $$; BEGIN ATOMIC SELECT 2; END";
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    // --- Classifier two-keyword peek (djogi#364, Step 2c) ---
+
+    #[test]
+    fn classify_transaction_control_statement_begin_atomic_is_none() {
+        assert_eq!(
+            classify_transaction_control_statement("BEGIN ATOMIC SELECT 1"),
+            None
+        );
+        assert_eq!(
+            classify_transaction_control_statement("begin atomic SELECT 1"),
+            None
+        );
+    }
+
+    #[test]
+    fn classify_transaction_control_statement_bare_begin_still_detected() {
+        assert_eq!(
+            classify_transaction_control_statement("BEGIN WORK"),
+            Some("BEGIN")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("BEGIN TRANSACTION"),
+            Some("BEGIN")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("BEGIN;"),
+            Some("BEGIN")
+        );
+        assert_eq!(
+            classify_transaction_control_statement("BEGIN"),
+            Some("BEGIN")
         );
     }
 }
