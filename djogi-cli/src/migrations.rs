@@ -14,13 +14,19 @@ use std::process::ExitCode;
 use djogi::apps::AppRegistry;
 use djogi::migrate::{
     AppLifecycle, AttuneError, AttuneMode, AttuneRequest, BucketKey, ComposeError, ComposeRequest,
-    GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME, PendingPlan, RunnerCtx, RunnerError, SnapshotError,
-    VerifyReport, VerifySeverity, acquire_workspace_lock, apply_plan, attune, compose,
-    fake_apply_plan, load_snapshot, project_from_inventory, snapshot_path,
+    GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME, PartialApplyResolution, PendingPlan, RepairConfirmation,
+    RepairError, RepairReport, RunnerCtx, RunnerError, SnapshotError, VerifyReport, VerifySeverity,
+    acquire_workspace_lock, apply_plan, attune, compose, fake_apply_plan, load_snapshot,
+    project_from_inventory, repair_checksum_drift, repair_partial_apply,
+    repair_resume_partial_apply, repair_snapshot_rebuild, snapshot_path,
 };
 
 // Re-export for the apply command's ledger state machine.
 use djogi::migrate::LedgerStatus;
+
+// CLI-side enums declared at the crate root (`main.rs` is the binary's
+// root module — there is no `mod main`), reached here as `crate::*`.
+use crate::{PartialApplyResolutionCli, RepairSubcommand};
 
 // ── Replay plan deserialization ──────────────────────────────────────────
 
@@ -1726,6 +1732,691 @@ fn render_verify_report(report: &VerifyReport, bucket: &BucketKey) -> Vec<String
     }
 
     lines
+}
+
+// ── repair subcommand dispatch ────────────────────────────────────────────
+
+impl From<PartialApplyResolutionCli> for PartialApplyResolution {
+    fn from(cli: PartialApplyResolutionCli) -> Self {
+        match cli {
+            PartialApplyResolutionCli::RolledBack => Self::MarkRolledBack,
+            PartialApplyResolutionCli::Faked => Self::MarkFaked,
+            PartialApplyResolutionCli::Applied => Self::MarkApplied,
+        }
+    }
+}
+
+/// `djogi migrations repair <subcommand>` entry point.
+///
+/// Routes each subcommand to its glue function. The glue functions own
+/// the runtime / config / pool / lock / report-render lifecycle; this
+/// router only destructures the parsed clap variant.
+pub fn repair_cmd(command: RepairSubcommand) -> ExitCode {
+    match command {
+        RepairSubcommand::ChecksumDrift {
+            version,
+            app,
+            database,
+            checksum_up,
+            checksum_down,
+            workspace,
+        } => repair_checksum_drift_cmd(
+            &version,
+            app.as_deref(),
+            database.as_deref(),
+            checksum_up.as_deref(),
+            checksum_down.as_deref(),
+            workspace,
+        ),
+        RepairSubcommand::PartialApply {
+            version,
+            resolution,
+            note,
+            app,
+            database,
+            workspace,
+        } => repair_partial_apply_cmd(
+            &version,
+            resolution.into(),
+            &note,
+            app.as_deref(),
+            database.as_deref(),
+            workspace,
+        ),
+        RepairSubcommand::ResumePartial {
+            version,
+            app,
+            database,
+            workspace,
+        } => repair_resume_partial_apply_cmd(
+            &version,
+            app.as_deref(),
+            database.as_deref(),
+            workspace,
+        ),
+        RepairSubcommand::SnapshotRebuild {
+            app,
+            database,
+            snapshot_path,
+            workspace,
+        } => repair_snapshot_rebuild_cmd(
+            app.as_deref(),
+            database.as_deref(),
+            snapshot_path.as_deref(),
+            workspace,
+        ),
+    }
+}
+
+/// Render a [`RepairReport`] to stdout. Shared across all four repair
+/// glue functions so the operator sees a consistent action / ledger /
+/// snapshot summary regardless of which repair ran.
+fn render_repair_report(report: &RepairReport) {
+    for action in &report.actions_taken {
+        println!("  {action}");
+    }
+    if !report.ledger_changes.is_empty() {
+        println!("Ledger changes:");
+        for lc in &report.ledger_changes {
+            println!(
+                "  {} | {} | {} -> {}",
+                lc.version, lc.column, lc.before, lc.after,
+            );
+        }
+    }
+    if !report.snapshot_changes.is_empty() {
+        println!("Snapshot changes:");
+        for sc in &report.snapshot_changes {
+            println!("  {} | {}", sc.path.display(), sc.description);
+        }
+    }
+}
+
+/// Map a [`RepairError`] onto the CLI exit-code contract.
+///
+/// `RepairError` is NOT `#[non_exhaustive]`, so this match is
+/// **exhaustive with NO `_ =>` wildcard** by deliberate design: a future
+/// variant breaks compilation here, forcing a conscious exit-code
+/// classification rather than silently bucketing an unclassified error.
+///
+/// Classification rule — when a new variant is added, classify it the
+/// same way:
+/// - **Exit 1 (retryable):** variants wrapping a transient I/O /
+///   connection / pool / SQL failure (a `source: DjogiError`, snapshot
+///   filesystem I/O, or advisory-lock contention). A retry may succeed.
+/// - **Exit 2 (refusal):** structural refusals and ledger-logic guards
+///   that require operator intervention. A blind retry hits the same
+///   refusal.
+fn repair_error_exit_code(err: &RepairError) -> i32 {
+    match err {
+        // ── Exit 1: transient I/O / connection / pool / SQL failures.
+        // These wrap a DjogiError (network, connection, query) or a
+        // filesystem error and may succeed on retry.
+        RepairError::LedgerIo { .. }                  // ledger DB I/O
+        | RepairError::SnapshotIo { .. }              // snapshot filesystem I/O
+        | RepairError::AdvisoryLockFailed { .. }      // lock held by a concurrent runner; retry after it releases
+        | RepairError::AdvisoryLockQueryFailed { .. } // pg_try_advisory_lock query itself errored
+        | RepairError::PinnedSessionCheckoutFailed { .. } // could not check out a pinned session from the pool
+        | RepairError::ResumeStepFailed { .. }        // a replayed statement failed; partial state recorded, retryable
+        | RepairError::ResumeProgressAckFailed { .. } // step committed but the progress ack write failed; retryable
+        => 1,
+
+        // ── Exit 2: refusals and structural / ledger-logic guards.
+        // The operator must investigate and intervene; a blind retry
+        // would hit the same refusal.
+        RepairError::VersionNotFound { .. }
+        | RepairError::InsufficientConfirmation
+        | RepairError::InvalidChecksum { .. }
+        | RepairError::InvalidResolution { .. }
+        | RepairError::BucketAppMismatch { .. }
+        | RepairError::PlanVersionMismatch { .. }
+        | RepairError::PlanChecksumMismatch { .. }
+        | RepairError::LeafIdentityMismatch { .. }
+        | RepairError::NothingToResume { .. }
+        | RepairError::ResumeBlockedByNonTxProgressClaim { .. }
+        | RepairError::SuppliedSnapshotDiverges { .. }
+        | RepairError::AdvisoryUnlockReturnedFalse { .. } // session-pinning correctness failure — not a blind retry
+        | RepairError::ResumePlanShapeMismatch { .. }
+        | RepairError::ReplayPlanShapeMismatch { .. }
+        => 2,
+    }
+}
+
+/// Resolve the database name for bucket construction. Uses the explicit
+/// `--database` flag if provided, otherwise defaults to `"main"` (the
+/// global database name — see [`djogi::apps::AppDescriptor::GLOBAL_DATABASE`]).
+///
+/// `_config` is threaded so this single helper can grow a config-driven
+/// default database (should `DjogiConfig` gain one) without changing
+/// every call site.
+fn resolve_database(database: Option<&str>, _config: &djogi::config::DjogiConfig) -> String {
+    database.unwrap_or("main").to_string()
+}
+
+/// Compute the `V1:`-prefixed checksum of a committed migration SQL file
+/// on disk. `is_up` selects the up vs down file.
+///
+/// Returns the underlying [`std::io::Error`] unchanged (notably
+/// [`std::io::ErrorKind::NotFound`] for a missing down file) so callers
+/// can branch on `e.kind()` — this is load-bearing for the checksum-drift
+/// glue, which treats a missing down file as "no down checksum" while
+/// surfacing every other read error.
+fn compute_checksum_from_disk(
+    workspace: &Path,
+    bucket: &djogi::migrate::BucketKey,
+    version: &str,
+    is_up: bool,
+) -> std::io::Result<String> {
+    let filename = if is_up {
+        djogi::migrate::up_filename(version)
+    } else {
+        djogi::migrate::down_filename(version)
+    };
+    let path = djogi::migrate::bucket_dir(workspace, bucket).join(filename);
+    let sql = std::fs::read_to_string(&path)?;
+    Ok(djogi::migrate::compute_checksum([&sql]))
+}
+
+/// `djogi migrations repair checksum-drift` entry point.
+///
+/// Updates the `checksum_up` / `checksum_down` columns of an
+/// already-applied ledger row after its committed SQL was edited. When
+/// `--checksum-up` / `--checksum-down` are omitted, the checksums are
+/// recomputed from the committed files on disk (a missing down file is a
+/// no-op; any other read error aborts with exit 1).
+pub fn repair_checksum_drift_cmd(
+    version: &str,
+    app: Option<&str>,
+    database: Option<&str>,
+    checksum_up: Option<&str>,
+    checksum_down: Option<&str>,
+    workspace: Option<PathBuf>,
+) -> ExitCode {
+    let workspace = resolve_workspace(workspace);
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("djogi migrations repair checksum-drift: tokio runtime: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let exit = runtime.block_on(async {
+        run_repair_checksum_drift(
+            &workspace,
+            version,
+            app,
+            database,
+            checksum_up,
+            checksum_down,
+        )
+        .await
+    });
+    ExitCode::from(exit as u8)
+}
+
+/// Async body of [`repair_checksum_drift_cmd`]. Returns the desired exit code.
+async fn run_repair_checksum_drift(
+    workspace: &Path,
+    version: &str,
+    app: Option<&str>,
+    database: Option<&str>,
+    checksum_up: Option<&str>,
+    checksum_down: Option<&str>,
+) -> i32 {
+    use djogi::config::DjogiConfig;
+
+    let config = match DjogiConfig::load_from_workspace(workspace) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("djogi migrations repair checksum-drift: config load: {e}");
+            return 1;
+        }
+    };
+
+    let mut ctx = match connect_and_check(&config.database.url).await {
+        ContextOutcome::Ready(ctx) => ctx,
+        ContextOutcome::UnsupportedVersion(e) => {
+            crate::print_support_boundary_error("migrations repair checksum-drift", &e);
+            return 2;
+        }
+        ContextOutcome::RuntimeError(msg) => {
+            eprintln!("djogi migrations repair checksum-drift: pool: {msg}");
+            return 1;
+        }
+    };
+
+    let lock_path = workspace.join(LOCK_FILE_NAME);
+    let guard = match acquire_workspace_lock(&lock_path, GUARD_DEFAULT_TIMEOUT) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("djogi migrations repair checksum-drift: workspace lock: {e}");
+            return 1;
+        }
+    };
+
+    let db_name = resolve_database(database, &config);
+    let app_label = app.unwrap_or("");
+    let bucket = BucketKey {
+        database: db_name,
+        app: app_label.to_string(),
+    };
+
+    let new_checksum_up = match checksum_up {
+        Some(c) => c.to_string(),
+        None => {
+            // Auto-compute from the committed up SQL file on disk. A
+            // missing or unreadable up file is an environment I/O error,
+            // not an operator-facing refusal — exit 1 (same class as the
+            // down file's non-NotFound branch below), so a retry after
+            // the file is restored can succeed.
+            match compute_checksum_from_disk(workspace, &bucket, version, true) {
+                Ok(cs) => cs,
+                Err(e) => {
+                    eprintln!("djogi migrations repair checksum-drift: compute checksum_up: {e}");
+                    return 1;
+                }
+            }
+        }
+    };
+
+    let resolved_checksum_down = match checksum_down {
+        Some(c) => Some(c.to_string()),
+        None => {
+            // Auto-compute from the down file; a missing down file is a
+            // no-op (no down checksum), other read errors surface.
+            match compute_checksum_from_disk(workspace, &bucket, version, false) {
+                Ok(cs) => Some(cs),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => {
+                    eprintln!("djogi migrations repair checksum-drift: read down SQL: {e}");
+                    return 1;
+                }
+            }
+        }
+    };
+
+    match repair_checksum_drift(
+        &mut ctx,
+        &guard,
+        &bucket,
+        version,
+        &new_checksum_up,
+        resolved_checksum_down.as_deref(),
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    {
+        Ok(report) => {
+            render_repair_report(&report);
+            0
+        }
+        Err(e) => {
+            eprintln!("djogi migrations repair checksum-drift: {e}");
+            repair_error_exit_code(&e)
+        }
+    }
+}
+
+/// `djogi migrations repair partial-apply` entry point.
+///
+/// Resolves a partial-apply ledger row by rewriting its status to
+/// `rolled_back`, `faked`, or `applied`. No SQL executes — only the
+/// ledger row is mutated.
+pub fn repair_partial_apply_cmd(
+    version: &str,
+    resolution: PartialApplyResolution,
+    note: &str,
+    app: Option<&str>,
+    database: Option<&str>,
+    workspace: Option<PathBuf>,
+) -> ExitCode {
+    let workspace = resolve_workspace(workspace);
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("djogi migrations repair partial-apply: tokio runtime: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let exit = runtime.block_on(async {
+        run_repair_partial_apply(&workspace, version, resolution, note, app, database).await
+    });
+    ExitCode::from(exit as u8)
+}
+
+/// Async body of [`repair_partial_apply_cmd`]. Returns the desired exit code.
+async fn run_repair_partial_apply(
+    workspace: &Path,
+    version: &str,
+    resolution: PartialApplyResolution,
+    note: &str,
+    app: Option<&str>,
+    database: Option<&str>,
+) -> i32 {
+    use djogi::config::DjogiConfig;
+
+    let config = match DjogiConfig::load_from_workspace(workspace) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("djogi migrations repair partial-apply: config load: {e}");
+            return 1;
+        }
+    };
+
+    let mut ctx = match connect_and_check(&config.database.url).await {
+        ContextOutcome::Ready(ctx) => ctx,
+        ContextOutcome::UnsupportedVersion(e) => {
+            crate::print_support_boundary_error("migrations repair partial-apply", &e);
+            return 2;
+        }
+        ContextOutcome::RuntimeError(msg) => {
+            eprintln!("djogi migrations repair partial-apply: pool: {msg}");
+            return 1;
+        }
+    };
+
+    let lock_path = workspace.join(LOCK_FILE_NAME);
+    let guard = match acquire_workspace_lock(&lock_path, GUARD_DEFAULT_TIMEOUT) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("djogi migrations repair partial-apply: workspace lock: {e}");
+            return 1;
+        }
+    };
+
+    let db_name = resolve_database(database, &config);
+    let app_label = app.unwrap_or("");
+    let bucket = BucketKey {
+        database: db_name,
+        app: app_label.to_string(),
+    };
+
+    match repair_partial_apply(
+        &mut ctx,
+        &guard,
+        &bucket,
+        version,
+        resolution,
+        note,
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    {
+        Ok(report) => {
+            render_repair_report(&report);
+            0
+        }
+        Err(e) => {
+            eprintln!("djogi migrations repair partial-apply: {e}");
+            repair_error_exit_code(&e)
+        }
+    }
+}
+
+/// `djogi migrations repair resume-partial` entry point.
+///
+/// Resumes an interrupted non-transactional apply by loading the
+/// committed `<version>.plan.json` and replaying its remaining steps.
+/// Loads the committed plan directly (no CLI-level checksum pre-gate);
+/// the library validates the plan against the ledger row internally.
+pub fn repair_resume_partial_apply_cmd(
+    version: &str,
+    app: Option<&str>,
+    database: Option<&str>,
+    workspace: Option<PathBuf>,
+) -> ExitCode {
+    let workspace = resolve_workspace(workspace);
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("djogi migrations repair resume-partial: tokio runtime: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let exit = runtime
+        .block_on(async { run_repair_resume_partial(&workspace, version, app, database).await });
+    ExitCode::from(exit as u8)
+}
+
+/// Async body of [`repair_resume_partial_apply_cmd`]. Returns the desired exit code.
+async fn run_repair_resume_partial(
+    workspace: &Path,
+    version: &str,
+    app: Option<&str>,
+    database: Option<&str>,
+) -> i32 {
+    use djogi::config::DjogiConfig;
+
+    let config = match DjogiConfig::load_from_workspace(workspace) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("djogi migrations repair resume-partial: config load: {e}");
+            return 1;
+        }
+    };
+
+    let mut ctx = match connect_and_check(&config.database.url).await {
+        ContextOutcome::Ready(ctx) => ctx,
+        ContextOutcome::UnsupportedVersion(e) => {
+            crate::print_support_boundary_error("migrations repair resume-partial", &e);
+            return 2;
+        }
+        ContextOutcome::RuntimeError(msg) => {
+            eprintln!("djogi migrations repair resume-partial: pool: {msg}");
+            return 1;
+        }
+    };
+
+    let lock_path = workspace.join(LOCK_FILE_NAME);
+    let guard = match acquire_workspace_lock(&lock_path, GUARD_DEFAULT_TIMEOUT) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("djogi migrations repair resume-partial: workspace lock: {e}");
+            return 1;
+        }
+    };
+
+    let db_name = resolve_database(database, &config);
+    let app_label = app.unwrap_or("");
+    let bucket = BucketKey {
+        database: db_name,
+        app: app_label.to_string(),
+    };
+
+    // Load the committed replay plan directly from disk — no CLI-level
+    // checksum pre-gate, because repair_resume_partial_apply validates
+    // plan↔ledger checksums itself. Synthesizing a whole-file checksum
+    // here would not match the per-statement-fragment checksums stored
+    // in the plan JSON.
+    let plan = match load_committed_plan_for_resume(workspace, &bucket, version) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("djogi migrations repair resume-partial: load plan: {e}");
+            return 2;
+        }
+    };
+
+    match repair_resume_partial_apply(
+        &mut ctx,
+        &guard,
+        version,
+        &plan,
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    {
+        Ok(report) => {
+            render_repair_report(&report);
+            0
+        }
+        Err(e) => {
+            eprintln!("djogi migrations repair resume-partial: {e}");
+            repair_error_exit_code(&e)
+        }
+    }
+}
+
+/// Load the committed `<version>.plan.json` for `resume-partial` without
+/// the CLI-level checksum pre-gate.
+///
+/// [`repair_resume_partial_apply`] validates the plan against the ledger
+/// row internally (`PlanVersionMismatch` / `PlanChecksumMismatch`), so
+/// re-gating here with a hand-rolled whole-file checksum would be both
+/// wrong (the plan stores per-statement-fragment checksums) and
+/// redundant. This helper therefore deliberately does NOT reuse
+/// [`load_replay_plan_from_disk`] (a pending-apply helper that DOES
+/// checksum-gate) — it reuses only that function's `CliReplay*`
+/// deserialization + segment-conversion shape.
+///
+/// Returns a human-readable error string on a missing/unparseable plan
+/// file or a format-version mismatch. A missing plan file maps to exit 2
+/// at the call site (the committed plan is a precondition of resume).
+fn load_committed_plan_for_resume(
+    workspace: &Path,
+    bucket: &djogi::migrate::BucketKey,
+    version: &str,
+) -> Result<djogi::migrate::MigrationPlan, String> {
+    let bucket_dir = djogi::migrate::bucket_dir(workspace, bucket);
+    let plan_path = bucket_dir.join(format!("{version}.plan.json"));
+    let bytes = std::fs::read(&plan_path).map_err(|e| format!("{}: {e}", plan_path.display()))?;
+    let stored: CliReplayPlan = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("{}: parse: {e}", plan_path.display()))?;
+    if stored.format_version != CLI_REPLAY_PLAN_FORMAT_VERSION {
+        return Err(format!(
+            "{}: unsupported format version {} (expected {CLI_REPLAY_PLAN_FORMAT_VERSION})",
+            plan_path.display(),
+            stored.format_version,
+        ));
+    }
+    Ok(djogi::migrate::MigrationPlan {
+        bucket: bucket.clone(),
+        classification: stored.classification.into(),
+        segments: stored
+            .segments
+            .into_iter()
+            .map(|seg| djogi::migrate::Segment {
+                kind: seg.kind.into(),
+                statements: seg
+                    .statements
+                    .into_iter()
+                    .map(|stmt| djogi::migrate::OperationSql {
+                        label: stmt.label,
+                        up: stmt.up,
+                        down: String::new(),
+                        lossy: None,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    })
+}
+
+/// `djogi migrations repair snapshot-rebuild` entry point.
+///
+/// Rebuilds a bucket's schema snapshot by walking the ledger and
+/// re-projecting from live database state. When `--snapshot-path` is
+/// omitted, the path is derived from
+/// `migrations/<database>/<app>/schema_snapshot.json`.
+pub fn repair_snapshot_rebuild_cmd(
+    app: Option<&str>,
+    database: Option<&str>,
+    snapshot_path: Option<&Path>,
+    workspace: Option<PathBuf>,
+) -> ExitCode {
+    let workspace = resolve_workspace(workspace);
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("djogi migrations repair snapshot-rebuild: tokio runtime: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let exit = runtime.block_on(async {
+        run_repair_snapshot_rebuild(&workspace, app, database, snapshot_path).await
+    });
+    ExitCode::from(exit as u8)
+}
+
+/// Async body of [`repair_snapshot_rebuild_cmd`]. Returns the desired exit code.
+async fn run_repair_snapshot_rebuild(
+    workspace: &Path,
+    app: Option<&str>,
+    database: Option<&str>,
+    snapshot_path: Option<&Path>,
+) -> i32 {
+    use djogi::config::DjogiConfig;
+
+    let config = match DjogiConfig::load_from_workspace(workspace) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("djogi migrations repair snapshot-rebuild: config load: {e}");
+            return 1;
+        }
+    };
+
+    let mut ctx = match connect_and_check(&config.database.url).await {
+        ContextOutcome::Ready(ctx) => ctx,
+        ContextOutcome::UnsupportedVersion(e) => {
+            crate::print_support_boundary_error("migrations repair snapshot-rebuild", &e);
+            return 2;
+        }
+        ContextOutcome::RuntimeError(msg) => {
+            eprintln!("djogi migrations repair snapshot-rebuild: pool: {msg}");
+            return 1;
+        }
+    };
+
+    let lock_path = workspace.join(LOCK_FILE_NAME);
+    let guard = match acquire_workspace_lock(&lock_path, GUARD_DEFAULT_TIMEOUT) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("djogi migrations repair snapshot-rebuild: workspace lock: {e}");
+            return 1;
+        }
+    };
+
+    let db_name = resolve_database(database, &config);
+    let app_label = app.unwrap_or("");
+    let bucket = BucketKey {
+        database: db_name,
+        app: app_label.to_string(),
+    };
+
+    let snap_path = match snapshot_path {
+        Some(p) => p.to_path_buf(),
+        None => reconstruct_snapshot_path(workspace, &bucket),
+    };
+
+    match repair_snapshot_rebuild(
+        &mut ctx,
+        &guard,
+        &bucket,
+        &snap_path,
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    {
+        Ok(report) => {
+            render_repair_report(&report);
+            0
+        }
+        Err(e) => {
+            eprintln!("djogi migrations repair snapshot-rebuild: {e}");
+            repair_error_exit_code(&e)
+        }
+    }
 }
 
 #[cfg(test)]
