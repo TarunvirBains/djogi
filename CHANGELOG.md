@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3] - 2026-05-30
+
+### Fixed
+
+- fix(bypass): add is_identifier_byte; close $-boundary false-match in match_keyword_at (all 4 call sites: BEGIN open, END close, nested BEGIN, CASE)
+- fix(bypass): extend skip_whitespace_and_match to skip -- and /* */ comments between BEGIN and ATOMIC
+- test(pin): strengthen raw_ddl_begin_atomic_pin assertion; add to CI curated raw-SQL lane
+
 ## [0.1.0-alpha.2] - 2026-05-30
 
 ### Fixed

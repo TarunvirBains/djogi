@@ -248,6 +248,16 @@ name = "raw_ddl_pin"
 path = "../tests/pin/raw_ddl_pin.rs"
 harness = true
 
+# djogi#364 — security backstop pin: Postgres must reject a bare top-level
+# `BEGIN ATOMIC ... COMMIT`. The raw_ddl scanner now lets the BEGIN ATOMIC head
+# through (it is a compound-statement delimiter, not transaction control), so
+# this asserts Postgres rejects the unterminated block before the trailing
+# COMMIT can bypass djogi's transaction-control bookkeeping.
+[[test]]
+name = "raw_ddl_begin_atomic_pin"
+path = "../tests/pin/raw_ddl_begin_atomic_pin.rs"
+harness = true
+
 [[test]]
 name = "raw_stream_pin"
 path = "../tests/pin/raw_stream_pin.rs"

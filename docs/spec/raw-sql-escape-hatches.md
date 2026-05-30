@@ -313,18 +313,30 @@ preflight applies to `raw_query`, `raw_rows`, `raw_fetch_one`,
 
 `SET LOCAL ...`, `SET CONSTRAINTS ...`, and `SET TRANSACTION ...` remain
 allowed. For `raw_ddl`, the preflight scans real top-level statements while
-respecting comments, quoted strings, and dollar-quoted bodies; empty or
-trivia-only batches pass through.
+respecting comments, quoted strings, dollar-quoted bodies, and
+`BEGIN ATOMIC ... END` compound-statement boundaries; empty or trivia-only
+batches pass through.
 
 Transaction-control statements are also refused with
 `DjogiError::RawTransactionControlDisallowedInTransaction { statement }`:
 
-- `BEGIN` / `START TRANSACTION`
+- `BEGIN` / `START TRANSACTION` (but **not** `BEGIN ATOMIC` — see below)
 - `COMMIT` / `COMMIT WORK` / `COMMIT TRANSACTION`
 - `ROLLBACK` (plain, `WORK`, `TRANSACTION`, and `TO savepoint`)
 - `END` / `ABORT` / `END WORK` / `END TRANSACTION`
 - `SAVEPOINT`
 - `RELEASE SAVEPOINT` / bare `RELEASE`
+
+`BEGIN ATOMIC ... END` is **not** refused. It is the SQL-standard
+compound-statement delimiter used in `LANGUAGE SQL` function bodies, not a
+transaction-control statement, so it carries none of the bookkeeping hazards
+described below. The scanner tracks `BEGIN ATOMIC ... END` depth — including
+`CASE ... END` nesting inside the block — so internal semicolons are not split
+and the closing `END` is not misclassified as transaction control. Postgres
+rejects a bare top-level `BEGIN ATOMIC` outside a function body, so a malformed
+unterminated block cannot smuggle a trailing `COMMIT` past this guard (the
+`raw_ddl` pin test asserts that rejection empirically). Bare `BEGIN` — and
+`BEGIN WORK` / `BEGIN TRANSACTION` — remain refused.
 
 These are refused because they bypass framework bookkeeping: on_commit
 callback drain, rollback cleanup, and savepoint depth synchronization.

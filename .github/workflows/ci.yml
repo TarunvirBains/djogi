@@ -229,6 +229,7 @@ jobs:
           --test raw_fetch_one_pin
           --test raw_scalar_pin
           --test raw_ddl_pin
+          --test raw_ddl_begin_atomic_pin
           --test raw_stream_pin
           --test raw_stream_with_fetch_size_pin
           --test raw_pool_access_pin
