@@ -98,15 +98,16 @@ djogi migrations attune --squash --from V<ts> --apply      # dev-only local squa
 djogi migrations attune --squash --from V<ts> --apply --publish   # squash and push the rewritten submodule
 
 # Migrations — shipped CLI + deferred verbs (library APIs available for all)
-# The library entry points (`apply_plan`, `rollback_plan`, `verify`, `repair_*`,
+# The library entry points (`apply_plan`, `rollback_plan`, `repair_*`,
 # `baseline_plan`) are public and exercised by the integration test suite.
-# `apply` ships as a CLI command (with `--fake` / `--reason` flags);
-# `rollback`, `baseline`, `verify`, and `repair` CLI dispatchers are deferred;
+# `apply` and `verify` ship as CLI commands;
+# `rollback`, `baseline`, and `repair` CLI dispatchers are deferred;
 # library callers reach those runners via the public `djogi::migrate` entry points.
 djogi migrations apply                 # apply pending migrations, update snapshot
 djogi migrations apply --fake --reason "existing schema"  # mark applied without running SQL
+djogi migrations verify                # compare snapshot expectations to the live DB
+djogi migrations verify --strict       # promote out-of-order diagnostics to errors
 # djogi migrations rollback              # roll back last migration, rewind snapshot
-# deferred CLI sketch: djogi migrations verify                # compare snapshot expectations to the live DB
 # deferred CLI sketch: djogi migrations repair                # resolve partial apply or rebuild snapshot state
 # deferred CLI sketch: djogi migrations baseline 0001_initial # adopt an existing DB without replaying SQL
 

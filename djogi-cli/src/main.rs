@@ -407,6 +407,24 @@ enum MigrationsCommand {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
+    /// Compare live database catalog against the schema snapshot.
+    /// Read-only — does not acquire the workspace lock or execute DDL.
+    ///
+    /// Exits 0 if no error-level diagnostics are found. Exits 1 on
+    /// runtime errors (config / pool / SQL). Exits 2 if the Postgres
+    /// server is below version 18.
+    ///
+    /// Use `--strict` to upgrade out-of-order migration warnings (D622)
+    /// to errors, causing verify to exit non-zero when the ledger
+    /// contains out-of-order applied rows.
+    Verify {
+        /// Workspace root override (only used when reading `Djogi.toml`).
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+        /// Upgrade D622 out-of-order diagnostics from Warning to Error.
+        #[arg(long, default_value_t = false)]
+        strict: bool,
+    },
     /// Reconcile local migration history with the ledger. Default
     /// mode is a read-only diff between the on-disk SQL files and
     /// the ledger. Attune is read-only by default — pass `--apply`
@@ -649,6 +667,9 @@ fn main() -> ExitCode {
                 workspace,
             } => migrations::compose_cmd(&name, allow_destructive, force_overwrite, workspace),
             MigrationsCommand::Status { workspace } => migrations::status_cmd(workspace),
+            MigrationsCommand::Verify { workspace, strict } => {
+                migrations::verify_cmd(workspace, strict)
+            }
             MigrationsCommand::Attune {
                 target,
                 apply,
@@ -696,6 +717,8 @@ mod tests {
     //! silently producing a recommendation engine that "never fires."
 
     use clap::Parser as _;
+
+    use std::path::PathBuf;
 
     use super::{
         Cli, DbCommand, MigrateCommand, MigrationsCommand, TopCommand, parse_threshold_vacuum,
@@ -804,6 +827,58 @@ mod tests {
                 command: MigrationsCommand::Status { .. },
             } => {}
             _ => panic!("expected migrations status command"),
+        }
+    }
+
+    #[test]
+    fn migrations_verify_parses_with_defaults() {
+        let cli = Cli::try_parse_from(["djogi", "migrations", "verify"])
+            .expect("migrations verify should parse with no flags");
+
+        match cli.command {
+            TopCommand::Migrations {
+                command: MigrationsCommand::Verify { workspace, strict },
+            } => {
+                assert!(workspace.is_none());
+                assert!(!strict);
+            }
+            _ => panic!("expected migrations verify command"),
+        }
+    }
+
+    #[test]
+    fn migrations_verify_parses_with_strict() {
+        let cli = Cli::try_parse_from(["djogi", "migrations", "verify", "--strict"])
+            .expect("migrations verify --strict should parse");
+
+        match cli.command {
+            TopCommand::Migrations {
+                command: MigrationsCommand::Verify { strict, .. },
+            } => {
+                assert!(strict);
+            }
+            _ => panic!("expected migrations verify command"),
+        }
+    }
+
+    #[test]
+    fn migrations_verify_parses_with_workspace() {
+        let cli = Cli::try_parse_from([
+            "djogi",
+            "migrations",
+            "verify",
+            "--workspace",
+            "/custom/path",
+        ])
+        .expect("migrations verify --workspace should parse");
+
+        match cli.command {
+            TopCommand::Migrations {
+                command: MigrationsCommand::Verify { workspace, .. },
+            } => {
+                assert_eq!(workspace, Some(PathBuf::from("/custom/path")));
+            }
+            _ => panic!("expected migrations verify command"),
         }
     }
 }

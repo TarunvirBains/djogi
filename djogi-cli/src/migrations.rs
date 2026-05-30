@@ -13,9 +13,10 @@ use std::process::ExitCode;
 
 use djogi::apps::AppRegistry;
 use djogi::migrate::{
-    AppLifecycle, AttuneError, AttuneMode, AttuneRequest, ComposeError, ComposeRequest,
-    GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME, PendingPlan, RunnerCtx, RunnerError,
-    acquire_workspace_lock, apply_plan, attune, compose, fake_apply_plan, project_from_inventory,
+    AppLifecycle, AttuneError, AttuneMode, AttuneRequest, BucketKey, ComposeError, ComposeRequest,
+    GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME, PendingPlan, RunnerCtx, RunnerError, SnapshotError,
+    VerifyReport, VerifySeverity, acquire_workspace_lock, apply_plan, attune, compose,
+    fake_apply_plan, load_snapshot, project_from_inventory, snapshot_path,
 };
 
 // Re-export for the apply command's ledger state machine.
@@ -561,10 +562,14 @@ async fn run_status(workspace: &Path) -> i32 {
         }
     };
 
-    let mut ctx = match build_status_context(&config.database.url).await {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            eprintln!("djogi migrations status: pool: {e}");
+    let mut ctx = match connect_and_check(&config.database.url).await {
+        ContextOutcome::Ready(ctx) => ctx,
+        ContextOutcome::UnsupportedVersion(e) => {
+            crate::print_support_boundary_error("migrations status", &e);
+            return 2;
+        }
+        ContextOutcome::RuntimeError(msg) => {
+            eprintln!("djogi migrations status: pool: {msg}");
             return 1;
         }
     };
@@ -594,18 +599,105 @@ async fn run_status(workspace: &Path) -> i32 {
     report.exit_code
 }
 
-/// Build a [`djogi::context::DjogiContext`] from a connection URL —
-/// light wrapper so the status path stays readable. Connects via
-/// `DjogiPool::connect` (the public connection-string entry point)
-/// then hands off via the public `DjogiContext::from_pool` API.
-async fn build_status_context(url: &str) -> Result<djogi::context::DjogiContext, String> {
-    let pool = djogi::pg::pool::DjogiPool::connect(url)
-        .await
-        .map_err(|e| e.to_string())?;
-    djogi::pg::preflight::check_postgres_version(&pool)
-        .await
-        .map_err(|e| format!("support boundary: {e}"))?;
-    Ok(djogi::context::DjogiContext::from_pool(pool))
+/// Outcome of [`connect_and_check`] — connecting a pool and running the
+/// Postgres-version preflight, with the support-boundary refusal kept
+/// distinct from ordinary runtime failures.
+///
+/// The three arms drive different exit codes at the call site:
+///
+/// - [`ContextOutcome::Ready`] — pool connected and PG ≥ 18; proceed.
+/// - [`ContextOutcome::UnsupportedVersion`] — PG < 18. The caller renders
+///   the support-boundary message via
+///   [`crate::print_support_boundary_error`] and exits `2` (refusal: the
+///   operator must upgrade Postgres; retrying changes nothing).
+/// - [`ContextOutcome::RuntimeError`] — pool connect failed, the preflight
+///   query errored, or any other non-version `DjogiError`. The caller
+///   prints the message and exits `1` (transient: CI may retry).
+// The `Ready` variant holds a `DjogiContext` (large — it wraps a
+// `DjogiPool`), while the other two variants are small (`DjogiError` /
+// `String`). Boxing `Ready` would add a heap allocation on the success
+// path; this value is constructed and immediately matched at each call
+// site (never stored in a collection), so the wider stack value is a
+// transient one-off, not a per-element penalty. Same trade-off and
+// rationale as `ContextInner` in `djogi::context` (see its
+// `large_enum_variant` allow).
+#[allow(clippy::large_enum_variant)]
+enum ContextOutcome {
+    /// Pool connected and the PG-version preflight passed.
+    Ready(djogi::context::DjogiContext),
+    /// The PG-version preflight refused — server is below the minimum
+    /// supported major version.
+    UnsupportedVersion(djogi::error::DjogiError),
+    /// A runtime failure (connect / preflight / other) — already rendered
+    /// to a string so the call site need not re-match.
+    RuntimeError(String),
+}
+
+/// Connect a pool from `url` and run the Postgres-version preflight,
+/// returning a typed [`ContextOutcome`].
+///
+/// Splits the support-boundary refusal (PG < 18, exit `2`) from runtime
+/// failures (connect / query errors, exit `1`) so each call site can map
+/// the outcome onto the documented exit-code matrix. Connects via the
+/// public `DjogiPool::connect` entry point, then hands the pool to the
+/// public `DjogiContext::from_pool` API once the version check passes.
+async fn connect_and_check(url: &str) -> ContextOutcome {
+    let pool = match djogi::pg::pool::DjogiPool::connect(url).await {
+        Ok(p) => p,
+        Err(e) => return ContextOutcome::RuntimeError(e.to_string()),
+    };
+    match djogi::pg::preflight::check_postgres_version(&pool).await {
+        Ok(_) => ContextOutcome::Ready(djogi::context::DjogiContext::from_pool(pool)),
+        // `DjogiError` is `#[non_exhaustive]`, so the `@`-bound
+        // `UnsupportedPostgresVersion` arm needs the trailing `_` catch-all.
+        Err(e @ djogi::error::DjogiError::UnsupportedPostgresVersion { .. }) => {
+            ContextOutcome::UnsupportedVersion(e)
+        }
+        Err(other) => ContextOutcome::RuntimeError(other.to_string()),
+    }
+}
+
+/// Resolve the connection URL for a single migration-bucket database.
+///
+/// Verify routes each bucket to the pool for its `database` component.
+/// The mapping mirrors Djogi's three-database architecture:
+///
+/// - `"main"` ([`djogi::apps::AppDescriptor::GLOBAL_DATABASE`]) always uses
+///   the app URL verbatim. We do NOT derive it by splicing `"main"` into
+///   the path, because the operator's app URL may carry a path component
+///   that is not literally named `main` (e.g. `…/myapp_prod`); deriving
+///   would target a database that does not exist.
+/// - `"crud_log"` / `"event_log"` prefer the explicit
+///   [`djogi::config::DatabaseConfig::crud_log_url`] /
+///   [`event_log_url`](djogi::config::DatabaseConfig::event_log_url) when
+///   set to a non-empty value, matching how the audit / event pools are
+///   resolved elsewhere.
+/// - Any other database name (and the log databases when their explicit
+///   URL is absent) is derived by splicing the name into the app URL's
+///   path component via [`djogi::migrate::derive_per_database_url`].
+///
+/// Returns `None` when derivation fails (the app URL has no recognisable
+/// path component); the caller surfaces that as a runtime error for the
+/// affected bucket.
+fn resolve_bucket_url(db_config: &djogi::config::DatabaseConfig, database: &str) -> Option<String> {
+    // "main" always uses the app URL verbatim — do NOT derive, as the app
+    // URL may not have a path component named "main".
+    if database == djogi::apps::AppDescriptor::GLOBAL_DATABASE {
+        return Some(db_config.url.clone());
+    }
+    if database == "crud_log"
+        && let Some(u) = db_config.crud_log_url.as_deref()
+        && !u.is_empty()
+    {
+        return Some(u.to_string());
+    }
+    if database == "event_log"
+        && let Some(u) = db_config.event_log_url.as_deref()
+        && !u.is_empty()
+    {
+        return Some(u.to_string());
+    }
+    djogi::migrate::derive_per_database_url(&db_config.url, database)
 }
 
 /// `djogi migrations apply` entry point.
@@ -1171,10 +1263,14 @@ async fn run_attune(
         }
     };
 
-    let mut ctx = match build_status_context(&config.database.url).await {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            eprintln!("djogi migrations attune: pool: {e}");
+    let mut ctx = match connect_and_check(&config.database.url).await {
+        ContextOutcome::Ready(ctx) => ctx,
+        ContextOutcome::UnsupportedVersion(e) => {
+            crate::print_support_boundary_error("migrations attune", &e);
+            return 2;
+        }
+        ContextOutcome::RuntimeError(msg) => {
+            eprintln!("djogi migrations attune: pool: {msg}");
             return 1;
         }
     };
@@ -1285,6 +1381,351 @@ fn attune_error_exit_code(err: &AttuneError) -> i32 {
         | AttuneError::GitFetchFailed { .. }
         | AttuneError::GitUpdateSubmodulePointerFailed { .. } => 1,
     }
+}
+
+/// `djogi migrations verify` entry point.
+///
+/// Read-only — does not acquire the workspace lock. Reads the live
+/// Postgres catalog via [`djogi::context::DjogiContext`] and compares
+/// against the projected schema from the descriptor inventory.
+///
+/// Exit codes: 0 on success (no error-level diagnostics), 1 on runtime
+/// error (config / network / SQL / projection), 2 on refusal
+/// (below PG 18).
+pub fn verify_cmd(workspace: Option<PathBuf>, strict: bool) -> ExitCode {
+    let workspace = resolve_workspace(workspace);
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("djogi migrations verify: tokio runtime: {e}");
+            return ExitCode::from(1);
+        }
+    };
+
+    let exit = runtime.block_on(async { run_verify(&workspace, strict).await });
+    ExitCode::from(exit as u8)
+}
+
+/// Async body of [`verify_cmd`]. Returns the desired exit code.
+///
+/// Verify is multi-database aware: each `(database, app)` bucket is routed
+/// to the pool for its `database` component via [`resolve_bucket_url`], and
+/// the per-database context is connected lazily and cached so a database
+/// with several app buckets connects once. The bucket set is the UNION of
+/// the inventory projection and the on-disk snapshot tree, so an orphaned
+/// snapshot (a removed app's snapshot still on disk) is verified and
+/// surfaces drift rather than being silently skipped (FBB-2 / Class D).
+///
+/// Exit codes:
+/// - `0` — every bucket verified with no error-severity diagnostic.
+/// - `1` — at least one runtime failure (pool / snapshot / verify error)
+///   or at least one bucket reported an error-severity diagnostic.
+/// - `2` — the server is below the minimum supported Postgres version
+///   (a server-global refusal: verify returns immediately).
+async fn run_verify(workspace: &Path, strict: bool) -> i32 {
+    use djogi::config::DjogiConfig;
+
+    // 1. Load config from workspace.
+    let config = match DjogiConfig::load_from_workspace(workspace) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("djogi migrations verify: config load: {e}");
+            return 1;
+        }
+    };
+
+    // 2. Project schema from descriptor inventory.
+    let models = match project_from_inventory() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("djogi migrations verify: projection error: {e}");
+            return 1;
+        }
+    };
+
+    // 3. Build the bucket set as the UNION of the inventory projection and
+    //    the on-disk snapshot tree (FBB-2 / Class D). An orphaned snapshot
+    //    — a removed app whose snapshot still sits on disk — is absent from
+    //    `models` but present on disk; without the union it would never be
+    //    verified and out-of-band drift would go unreported.
+    let mut bucket_set: std::collections::BTreeSet<djogi::migrate::BucketKey> =
+        models.keys().cloned().collect();
+    for bucket in discover_snapshot_buckets_on_disk(workspace) {
+        bucket_set.insert(bucket);
+    }
+    if bucket_set.is_empty() {
+        println!("No registered apps found for verification.");
+        return 0;
+    }
+
+    // 4. Policy configuration for the --strict flag.
+    let policy = djogi::config::PolicyConfig {
+        strict_out_of_order: strict,
+    };
+
+    // 5. Pre-compute the set of databases that have at least one INVENTORY
+    //    bucket with non-empty models. Orphan-only databases (snapshots on
+    //    disk but no registered models) are excluded — `unwrap_or(false)`
+    //    treats a disk-only bucket as model-less. This gates D699 inside
+    //    `verify_bucket`: an orphan-only database has no live tables to
+    //    miss, so D601 is the actionable signal instead.
+    let database_has_models: std::collections::HashSet<String> = bucket_set
+        .iter()
+        .filter(|b| {
+            models
+                .get(*b)
+                .map(|s| !s.models.is_empty())
+                .unwrap_or(false)
+        })
+        .map(|b| b.database.clone())
+        .collect();
+
+    // 6. Per-database context cache + dedup sets. Contexts are connected
+    //    lazily (only for databases that have a bucket needing a live read)
+    //    and reused across that database's app buckets. `seen_ledger_databases`
+    //    ensures the ledger-lifecycle diagnostics (D621/D622/D699) are
+    //    emitted once per database, not once per app bucket.
+    let mut contexts: std::collections::BTreeMap<String, djogi::context::DjogiContext> =
+        std::collections::BTreeMap::new();
+    let mut seen_ledger_databases = std::collections::HashSet::<String>::new();
+    let mut exit_code: i32 = 0;
+
+    // 7. Verify each bucket.
+    for bucket in &bucket_set {
+        // a. Resolve the per-database URL.
+        let Some(url) = resolve_bucket_url(&config.database, &bucket.database) else {
+            let bd = if bucket.app.is_empty() {
+                "_global_"
+            } else {
+                &bucket.app
+            };
+            eprintln!(
+                "djogi migrations verify: cannot derive URL for database '{}' (bucket {}/{}); \
+                 check that config.database.url has a valid path component",
+                bucket.database, bucket.database, bd
+            );
+            exit_code = 1;
+            continue;
+        };
+
+        // b. Connect (lazily, once per distinct database). PG < 18 is a
+        //    server-global refusal — there is no point continuing to other
+        //    buckets, so we return 2 immediately.
+        if !contexts.contains_key(&bucket.database) {
+            match connect_and_check(&url).await {
+                ContextOutcome::Ready(ctx) => {
+                    contexts.insert(bucket.database.clone(), ctx);
+                }
+                ContextOutcome::UnsupportedVersion(e) => {
+                    crate::print_support_boundary_error("migrations verify", &e);
+                    return 2;
+                }
+                ContextOutcome::RuntimeError(msg) => {
+                    eprintln!(
+                        "djogi migrations verify: pool for '{}': {msg}",
+                        bucket.database
+                    );
+                    exit_code = 1;
+                    continue;
+                }
+            }
+        }
+
+        // c. Load the snapshot. A missing snapshot for a bucket that HAS
+        //    registered models is a hard error (exit 1) — the operator must
+        //    record a baseline; a missing snapshot for a model-less bucket
+        //    is informational (BLOCK-4 / Class C).
+        let snap_path = snapshot_path(workspace, bucket);
+        let snapshot = match load_snapshot(&snap_path) {
+            Ok(s) => s,
+            Err(SnapshotError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                let bd = if bucket.app.is_empty() {
+                    "_global_"
+                } else {
+                    &bucket.app
+                };
+                let has_models = models
+                    .get(bucket)
+                    .map(|s| !s.models.is_empty())
+                    .unwrap_or(false);
+                if has_models {
+                    eprintln!(
+                        "djogi migrations verify: {}/{} has registered models but no \
+                         snapshot; run `djogi migrations compose` then \
+                         `djogi migrations apply` to record a baseline",
+                        bucket.database, bd
+                    );
+                    exit_code = 1;
+                } else {
+                    println!("No snapshot found for bucket {}/{}", bucket.database, bd);
+                }
+                continue;
+            }
+            Err(e) => {
+                let bd = if bucket.app.is_empty() {
+                    "_global_"
+                } else {
+                    &bucket.app
+                };
+                eprintln!(
+                    "djogi migrations verify: load snapshot for {}/{}: {e}",
+                    bucket.database, bd
+                );
+                exit_code = 1;
+                continue;
+            }
+        };
+
+        // d. Compute ledger-emission flags. The ledger is shared per
+        //    database; emit its lifecycle diagnostics once per database
+        //    (the first bucket of each database that reaches this point),
+        //    and only for databases that actually have registered models.
+        let db_has_models = database_has_models.contains(&bucket.database);
+        let emit_ledger = db_has_models && seen_ledger_databases.insert(bucket.database.clone());
+
+        // e. Run the bucket-scoped verify against the routed context.
+        let ctx = contexts
+            .get_mut(&bucket.database)
+            .expect("context inserted above");
+        let report = match djogi::migrate::verify_bucket(
+            ctx,
+            bucket,
+            &snapshot,
+            &policy,
+            emit_ledger,
+            db_has_models,
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let bd = if bucket.app.is_empty() {
+                    "_global_"
+                } else {
+                    &bucket.app
+                };
+                eprintln!(
+                    "djogi migrations verify: error for {}/{}: {e}",
+                    bucket.database, bd
+                );
+                exit_code = 1;
+                continue;
+            }
+        };
+
+        // f. Render and fold the bucket's error state into the exit code.
+        for line in render_verify_report(&report, bucket) {
+            println!("{line}");
+        }
+        if report.has_errors() {
+            exit_code = 1;
+        }
+    }
+
+    exit_code
+}
+
+/// Render a [`VerifyReport`] to a vector of output lines.
+///
+/// Format: one line per diagnostic with severity prefix, code, location,
+/// and message. Summary line at the end. Output is deterministic because
+/// `report.diagnostics` is already sorted by `(code, location)`.
+///
+/// Returns the lines instead of printing directly so the rendering is unit-
+/// testable (FBB-1); the caller iterates the returned vector and prints each
+/// line. Blank separator lines are returned as empty strings.
+fn render_verify_report(report: &VerifyReport, bucket: &BucketKey) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+
+    let app_display = if bucket.app.is_empty() {
+        "_global_"
+    } else {
+        &bucket.app
+    };
+    lines.push(format!(
+        "djogi migrations verify — {}/{}",
+        bucket.database, app_display
+    ));
+    lines.push("──────────────────────────────────────────".to_string());
+
+    match (
+        &report.latest_applied_version,
+        report.applied_count,
+        report.unfinished_count,
+    ) {
+        (Some(version), applied, 0) => {
+            lines.push(format!("Ledger: {applied} applied, latest {version}"));
+        }
+        (Some(version), applied, unfinished) => {
+            lines.push(format!(
+                "Ledger: {applied} applied, {unfinished} unfinished, latest {version}"
+            ));
+        }
+        (None, 0, 0) => {
+            lines.push("Ledger: empty (no migrations applied yet)".to_string());
+        }
+        _ => {}
+    }
+    lines.push(String::new());
+
+    if report.diagnostics.is_empty() {
+        lines.push("No drift detected. Schema is consistent.".to_string());
+    } else {
+        for d in &report.diagnostics {
+            let severity = match d.severity {
+                VerifySeverity::Info => "INFO",
+                VerifySeverity::Warning => "WARN",
+                VerifySeverity::Error => "ERROR",
+            };
+            let location = d.location.as_deref().unwrap_or("-");
+            lines.push(format!(
+                "[{severity}] {code} ({loc}): {msg}",
+                severity = severity,
+                code = d.code,
+                loc = location,
+                msg = d.message
+            ));
+        }
+    }
+
+    let errors = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == VerifySeverity::Error)
+        .count();
+    let warnings = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == VerifySeverity::Warning)
+        .count();
+    let infos = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == VerifySeverity::Info)
+        .count();
+
+    if errors > 0 {
+        lines.push(String::new());
+        lines.push(format!(
+            "Result: FAILED ({errors} error(s), {warnings} warning(s), {infos} info(s))"
+        ));
+    } else if warnings > 0 {
+        lines.push(String::new());
+        lines.push(format!(
+            "Result: PASSED with warnings ({warnings} warning(s), {infos} info(s))"
+        ));
+    } else {
+        lines.push(String::new());
+        lines.push(format!("Result: PASSED ({infos} info(s))"));
+    }
+
+    lines
 }
 
 #[cfg(test)]
@@ -1696,6 +2137,348 @@ mod tests {
             result,
             ExitCode::from(2),
             "--reason without --fake should not refuse"
+        );
+    }
+
+    // ── render_verify_report (FBB-1) ─────────────────────────────────────
+    //
+    // `render_verify_report` returns `Vec<String>` so the rendering is
+    // assertable without capturing stdout. Each test pins the exact lines
+    // the operator sees for one report shape.
+
+    /// Build a bucket for render tests.
+    fn render_bucket(database: &str, app: &str) -> djogi::migrate::BucketKey {
+        djogi::migrate::BucketKey {
+            database: database.to_string(),
+            app: app.to_string(),
+        }
+    }
+
+    /// Construct a [`VerifyDiagnostic`] tersely for render tests.
+    fn diag(
+        code: &str,
+        severity: djogi::migrate::VerifySeverity,
+        message: &str,
+        location: Option<&str>,
+    ) -> djogi::migrate::VerifyDiagnostic {
+        djogi::migrate::VerifyDiagnostic {
+            code: code.to_string(),
+            severity,
+            message: message.to_string(),
+            location: location.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn render_verify_report_clean_output() {
+        use djogi::migrate::VerifyReport;
+
+        let report = VerifyReport {
+            diagnostics: vec![],
+            latest_applied_version: Some("001_initial".to_string()),
+            applied_count: 3,
+            unfinished_count: 0,
+        };
+        let bucket = render_bucket("main", "");
+
+        let lines = render_verify_report(&report, &bucket);
+
+        assert!(
+            lines.contains(&"Ledger: 3 applied, latest 001_initial".to_string()),
+            "missing ledger line; got {lines:?}"
+        );
+        assert!(
+            lines.contains(&"No drift detected. Schema is consistent.".to_string()),
+            "missing clean line; got {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("Result: PASSED")),
+            "missing PASSED result; got {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("FAILED")),
+            "clean report must not say FAILED; got {lines:?}"
+        );
+    }
+
+    #[test]
+    fn render_verify_report_with_errors() {
+        use djogi::migrate::{VerifyReport, VerifySeverity};
+
+        // Diagnostics are pre-sorted by `(code, location)` exactly as the
+        // library returns them — render does not re-sort.
+        let report = VerifyReport {
+            diagnostics: vec![
+                diag(
+                    "D601",
+                    VerifySeverity::Error,
+                    "Snapshot table missing from live DB",
+                    Some("users"),
+                ),
+                diag(
+                    "D611",
+                    VerifySeverity::Warning,
+                    "Live index not present in snapshot",
+                    Some("idx_posts_created"),
+                ),
+            ],
+            latest_applied_version: Some("V20260501000000__add_users".to_string()),
+            applied_count: 2,
+            unfinished_count: 0,
+        };
+        let bucket = render_bucket("main", "myapp");
+
+        assert!(report.has_errors());
+        let lines = render_verify_report(&report, &bucket);
+
+        assert!(
+            lines
+                .contains(&"[ERROR] D601 (users): Snapshot table missing from live DB".to_string()),
+            "missing D601 line; got {lines:?}"
+        );
+        assert!(
+            lines.contains(
+                &"[WARN] D611 (idx_posts_created): Live index not present in snapshot".to_string()
+            ),
+            "missing D611 line; got {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("Result: FAILED")),
+            "error report must say FAILED; got {lines:?}"
+        );
+    }
+
+    #[test]
+    fn render_verify_report_header_shows_global_and_named_app() {
+        use djogi::migrate::VerifyReport;
+
+        let report = VerifyReport {
+            diagnostics: vec![],
+            latest_applied_version: None,
+            applied_count: 0,
+            unfinished_count: 0,
+        };
+
+        // Empty app label → `_global_` in the header.
+        let global = render_verify_report(&report, &render_bucket("main", ""));
+        assert_eq!(
+            global.first().map(String::as_str),
+            Some("djogi migrations verify — main/_global_"),
+            "global bucket header; got {global:?}"
+        );
+
+        // Named app → the label verbatim in the header.
+        let named = render_verify_report(&report, &render_bucket("crud_log", "billing"));
+        assert_eq!(
+            named.first().map(String::as_str),
+            Some("djogi migrations verify — crud_log/billing"),
+            "named bucket header; got {named:?}"
+        );
+    }
+
+    #[test]
+    fn render_verify_report_warning_only_passes_with_warnings() {
+        use djogi::migrate::{VerifyReport, VerifySeverity};
+
+        let report = VerifyReport {
+            diagnostics: vec![diag(
+                "D606",
+                VerifySeverity::Warning,
+                "type differs (advisory)",
+                Some("users.age"),
+            )],
+            latest_applied_version: Some("001_initial".to_string()),
+            applied_count: 1,
+            unfinished_count: 0,
+        };
+        let lines = render_verify_report(&report, &render_bucket("main", ""));
+
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("Result: PASSED with warnings")),
+            "warning-only must PASS with warnings; got {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("FAILED")),
+            "warning-only must not say FAILED; got {lines:?}"
+        );
+    }
+
+    #[test]
+    fn render_verify_report_empty_ledger_line() {
+        use djogi::migrate::VerifyReport;
+
+        let report = VerifyReport {
+            diagnostics: vec![],
+            latest_applied_version: None,
+            applied_count: 0,
+            unfinished_count: 0,
+        };
+        let lines = render_verify_report(&report, &render_bucket("main", ""));
+
+        assert!(
+            lines.contains(&"Ledger: empty (no migrations applied yet)".to_string()),
+            "empty ledger line; got {lines:?}"
+        );
+    }
+
+    #[test]
+    fn render_verify_report_unfinished_ledger_line() {
+        use djogi::migrate::VerifyReport;
+
+        let report = VerifyReport {
+            diagnostics: vec![],
+            latest_applied_version: Some("V20260501000000__add_users".to_string()),
+            applied_count: 2,
+            unfinished_count: 1,
+        };
+        let lines = render_verify_report(&report, &render_bucket("main", ""));
+
+        assert!(
+            lines.contains(
+                &"Ledger: 2 applied, 1 unfinished, latest V20260501000000__add_users".to_string()
+            ),
+            "unfinished ledger line; got {lines:?}"
+        );
+    }
+
+    #[test]
+    fn render_verify_report_info_with_no_location_uses_dash() {
+        use djogi::migrate::{VerifyReport, VerifySeverity};
+
+        // An Info diagnostic with `location: None` exercises the
+        // `unwrap_or("-")` path, and the all-info summary line.
+        let report = VerifyReport {
+            diagnostics: vec![diag(
+                "D692",
+                VerifySeverity::Info,
+                "enum type(s) declared; not yet checked",
+                None,
+            )],
+            latest_applied_version: Some("001_initial".to_string()),
+            applied_count: 1,
+            unfinished_count: 0,
+        };
+        let lines = render_verify_report(&report, &render_bucket("main", ""));
+
+        assert!(
+            lines.iter().any(|l| l.contains("(-)")),
+            "location: None must render as (-); got {lines:?}"
+        );
+        assert!(
+            lines.contains(&"Result: PASSED (1 info(s))".to_string()),
+            "all-info summary; got {lines:?}"
+        );
+    }
+
+    // ── resolve_bucket_url (Class A) ─────────────────────────────────────
+
+    fn db_config(
+        url: &str,
+        crud_log_url: Option<&str>,
+        event_log_url: Option<&str>,
+    ) -> djogi::config::DatabaseConfig {
+        djogi::config::DatabaseConfig {
+            url: url.to_string(),
+            crud_log_url: crud_log_url.map(str::to_string),
+            event_log_url: event_log_url.map(str::to_string),
+            max_connections: None,
+            dev_mode: false,
+        }
+    }
+
+    #[test]
+    fn resolve_bucket_url_main_uses_app_url_verbatim() {
+        // "main" must use the app URL verbatim even when the path
+        // component is not literally "main" — deriving would target a
+        // database that does not exist.
+        let cfg = db_config("postgres://user:pass@localhost:5432/myapp_prod", None, None);
+        assert_eq!(
+            resolve_bucket_url(&cfg, "main").as_deref(),
+            Some("postgres://user:pass@localhost:5432/myapp_prod"),
+            "main must return the app URL unchanged"
+        );
+    }
+
+    #[test]
+    fn resolve_bucket_url_crud_log_prefers_explicit_url() {
+        let cfg = db_config(
+            "postgres://localhost/main",
+            Some("postgres://localhost/explicit_crud"),
+            None,
+        );
+        assert_eq!(
+            resolve_bucket_url(&cfg, "crud_log").as_deref(),
+            Some("postgres://localhost/explicit_crud"),
+            "crud_log must prefer the explicit crud_log_url"
+        );
+    }
+
+    #[test]
+    fn resolve_bucket_url_event_log_prefers_explicit_url() {
+        let cfg = db_config(
+            "postgres://localhost/main",
+            None,
+            Some("postgres://localhost/explicit_event"),
+        );
+        assert_eq!(
+            resolve_bucket_url(&cfg, "event_log").as_deref(),
+            Some("postgres://localhost/explicit_event"),
+            "event_log must prefer the explicit event_log_url"
+        );
+    }
+
+    #[test]
+    fn resolve_bucket_url_empty_explicit_log_url_falls_back_to_derived() {
+        // An empty explicit URL is treated as absent — derive from the app
+        // URL's path component instead.
+        let cfg = db_config("postgres://localhost/main", Some(""), Some("   "));
+        // crud_log: empty string → derive.
+        assert_eq!(
+            resolve_bucket_url(&cfg, "crud_log").as_deref(),
+            Some("postgres://localhost/crud_log"),
+            "empty crud_log_url must fall back to derived"
+        );
+        // event_log: whitespace is NOT empty, so it is used verbatim — the
+        // emptiness check is a strict `is_empty`, matching the spec.
+        assert_eq!(
+            resolve_bucket_url(&cfg, "event_log").as_deref(),
+            Some("   "),
+            "non-empty (whitespace) event_log_url is used verbatim"
+        );
+    }
+
+    #[test]
+    fn resolve_bucket_url_other_database_derives_from_app_url() {
+        let cfg = db_config("postgres://user:pass@localhost:5432/main", None, None);
+        assert_eq!(
+            resolve_bucket_url(&cfg, "analytics").as_deref(),
+            Some("postgres://user:pass@localhost:5432/analytics"),
+            "an arbitrary database name derives by path splice"
+        );
+    }
+
+    #[test]
+    fn resolve_bucket_url_pathless_url_returns_none() {
+        // A URL with no recognisable path component cannot be derived.
+        let cfg = db_config("postgres://localhost", None, None);
+        assert_eq!(
+            resolve_bucket_url(&cfg, "crud_log"),
+            None,
+            "pathless URL must yield None for a derived database"
+        );
+    }
+
+    #[test]
+    fn resolve_bucket_url_pathless_url_still_returns_main_verbatim() {
+        // "main" short-circuits before derivation, so even a pathless URL
+        // returns it verbatim — the app pool is the operator's to define.
+        let cfg = db_config("postgres://localhost", None, None);
+        assert_eq!(
+            resolve_bucket_url(&cfg, "main").as_deref(),
+            Some("postgres://localhost"),
+            "main returns the app URL verbatim regardless of path"
         );
     }
 }

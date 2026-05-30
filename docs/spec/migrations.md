@@ -790,6 +790,10 @@ djogi migrations attune <target> --apply
 djogi migrations attune <target> --apply --record
 djogi migrations attune --record-ledger --apply
 djogi migrations attune --squash --from V<ts> --apply
+djogi migrations apply
+djogi migrations apply --fake --reason "existing schema"  # mark applied without running SQL
+djogi migrations verify                # compare snapshot expectations to the live DB
+djogi migrations verify --strict       # upgrade out-of-order (D622) to an error
 djogi db reset --yes
 djogi db reset --yes --allow-checksum-drift-reset
 djogi db seed
@@ -797,16 +801,12 @@ djogi db seed --database crud_log
 djogi docs
 
 # Phase-7-deferred — library APIs ship today; CLI dispatch lands in a follow-up
-# task. The runtime entry points
-# (`apply_plan`, `rollback_plan`, `verify`, `repair_*`, `baseline_plan`) are
-# all public and exercised by the integration test suite; the gap is the
-# config / snapshot / plan / ledger plumbing the CLI dispatch needs around
-# them. Adopters who need these flows ahead of the CLI registration can wire
-# the library APIs directly today.
-# shipped CLI: djogi migrations apply
-djogi migrations apply --fake --reason "existing schema"  # mark applied without running SQL
+# task. The runtime entry points (`rollback_plan`, `repair_*`,
+# `baseline_plan`) are all public and exercised by the integration test
+# suite; the gap is the config / snapshot / plan / ledger plumbing the CLI
+# dispatch needs around them. Adopters who need these flows ahead of the CLI
+# registration can wire the library APIs directly today.
 # deferred CLI sketch: djogi migrations rollback
-# deferred CLI sketch: djogi migrations verify
 # deferred CLI sketch: djogi migrations repair
 # deferred CLI sketch: djogi migrations repair --rebuild-snapshot
 # deferred CLI sketch: djogi migrations baseline 0001_initial
@@ -877,12 +877,11 @@ Fake-apply out-of-order policy:
 
 ### 10.9 Verification and Out-of-Order Policy
 
-Verification is a first-class concern of the engine; the
-`migrations verify` CLI subcommand is **deferred post-Phase-7** (per
-§7.4 of this spec). The library entry point is available today as
-[`djogi::migrate::verify`](../../djogi/src/migrate/verify.rs), and
-adopters can drive it directly or via the `djogi::migrate::repair_*`
-helpers until the CLI dispatch lands.
+Verification is a first-class concern of the engine; `djogi migrations verify` is
+the primary path for snapshot/ledger/live-DB verification. The library entry
+points [`djogi::migrate::verify`](../../djogi/src/migrate/verify.rs) and
+[`djogi::migrate::verify_with_policy`](../../djogi/src/migrate/verify.rs)
+remain available for programmatic callers.
 
 The verification path compares snapshot/ledger expectations against
 the live database catalog and is used for:
@@ -900,6 +899,17 @@ Out-of-order policy:
 - ledger always records `out_of_order_flag = true` when applicable
 
 Out-of-order state is never silent.
+
+#### Verify behavior and exit codes
+
+`djogi migrations verify` exits with:
+- **0** — no error-level diagnostics found across all verified buckets.
+- **1** — a runtime error (config load failure, pool connection failure, snapshot read failure, or at least one error-level diagnostic in a report); see also the full exit-code matrix in the configuration reference.
+- **2** — the connected Postgres server is below the support floor (PG 18). Verify refuses before reading any catalog data.
+
+**Missing snapshot:** A registered bucket (present in the descriptor inventory) that has declared models but no `schema_snapshot.json` on disk is treated as an **unverified** state — there is no recorded baseline to compare the live catalog against. Verify exits 1 and emits a message directing the operator to run `djogi migrations compose` and `djogi migrations apply` to record a baseline. A registered bucket with zero declared models and no snapshot is informational (exit 0) — nothing to verify.
+
+**Orphaned snapshots:** When an app is removed from the descriptor inventory, its `schema_snapshot.json` may remain on disk. Verify includes these orphaned snapshots in its bucket set (unioning the inventory with on-disk discovered buckets) and reports any drift — tables recorded in the snapshot but absent from the live DB surface as D601 errors. The D699 "ledger applied but live DB empty" diagnostic is suppressed for orphan-only databases because D601 is the actionable signal for removed apps.
 
 ### 10.10 Destructive Classification and Composite Scope
 
