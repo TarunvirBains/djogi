@@ -575,18 +575,40 @@ fn classify_raw_ddl_transaction_backed_refusal(
     classify_transaction_backed_refusal(&sql[statement_start..])
 }
 
+/// Returns `true` when `b` can appear *inside* an unquoted PostgreSQL
+/// identifier (i.e. as a non-leading identifier byte), and therefore must be
+/// treated as part of an identifier for keyword-boundary purposes.
+///
+/// Per the PostgreSQL lexical rules, identifier continuation characters are
+/// ASCII letters, ASCII digits, `_`, and `$`. PostgreSQL additionally permits
+/// non-ASCII letters (any byte `> 127` in a UTF-8 source — either the lead
+/// byte or a continuation byte of a multibyte identifier character). Treating
+/// every non-ASCII byte as an identifier byte is the conservative choice for a
+/// byte-level scanner: it guarantees a keyword is never matched at a position
+/// that is actually inside a multibyte identifier character.
+///
+/// This is used for the word-boundary checks around keyword matches, so that
+/// `BEGIN` in `x$begin`, `begin$x`, or a non-ASCII-adjacent identifier is not
+/// mistaken for the standalone `BEGIN` keyword. See djogi#368.
+fn is_identifier_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b > 127
+}
+
 /// Checks whether `target` keyword matches in `bytes` at exactly `idx`.
 ///
 /// Returns the index just past the keyword on a match, or `None`.
 ///
 /// This is O(1): it performs no whitespace or trivia skipping, so it is safe to
 /// call at every byte in the scanner loop without an O(N^2) blow-up on
-/// whitespace-heavy input. Leading and trailing word-boundary checks prevent
-/// matching inside an identifier — `END` inside `dividend`, `BEGIN` inside
-/// `xBEGIN`, or `END` inside `ENDPOINT` are all rejected.
+/// whitespace-heavy input. Leading and trailing word-boundary checks (via
+/// [`is_identifier_byte`]) prevent matching inside an identifier — `END` inside
+/// `dividend`, `BEGIN` inside `xBEGIN`, `END` inside `ENDPOINT`, and (because
+/// PostgreSQL allows `$` and non-ASCII letters in identifiers) `BEGIN` inside
+/// `x$begin` / `begin$x` or alongside a multibyte identifier character are all
+/// rejected. See djogi#368.
 fn match_keyword_at(bytes: &[u8], idx: usize, target: &str) -> Option<usize> {
     // Leading boundary: the previous byte must not be an identifier byte.
-    if idx > 0 && (bytes[idx - 1].is_ascii_alphanumeric() || bytes[idx - 1] == b'_') {
+    if idx > 0 && is_identifier_byte(bytes[idx - 1]) {
         return None;
     }
     let target_len = target.len();
@@ -596,7 +618,7 @@ fn match_keyword_at(bytes: &[u8], idx: usize, target: &str) -> Option<usize> {
     if bytes[idx..idx + target_len].eq_ignore_ascii_case(target.as_bytes()) {
         // Trailing boundary: the next byte must not be an identifier byte.
         let end = idx + target_len;
-        if end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+        if end < bytes.len() && is_identifier_byte(bytes[end]) {
             return None;
         }
         Some(end)
@@ -605,19 +627,54 @@ fn match_keyword_at(bytes: &[u8], idx: usize, target: &str) -> Option<usize> {
     }
 }
 
-/// Skips ASCII whitespace starting at `idx`, then checks whether `target`
-/// keyword matches at the first non-whitespace byte.
+/// Skips SQL trivia (ASCII whitespace, `--` line comments, and nestable
+/// `/* ... */` block comments) starting at `idx`, then checks whether `target`
+/// keyword matches at the first significant byte.
 ///
 /// Returns the index just past the keyword on a match, or `None`.
 ///
-/// This is O(N) in the run of whitespace it skips, so it is only safe to call
+/// This is O(N) in the run of trivia it skips, so it is only safe to call
 /// once per keyword match — never per-byte in the main loop. It backs the
 /// second-keyword peek after a `BEGIN` match (checking for `ATOMIC`), where the
-/// whitespace run is bounded by the spacing between two keywords.
+/// trivia run is bounded by the comment/whitespace between two keywords. The
+/// trivia rules mirror [`skip_sql_trivia`]; `BEGIN /* x */ ATOMIC` and
+/// `BEGIN -- x\nATOMIC` therefore open a compound-statement block as the spec
+/// requires (djogi#368).
 fn skip_whitespace_and_match(bytes: &[u8], idx: usize, target: &str) -> Option<usize> {
     let mut i = idx;
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
+    loop {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+
+        // Line comment: `--` through end of line.
+        if bytes.get(i) == Some(&b'-') && bytes.get(i + 1) == Some(&b'-') {
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+
+        // Block comment: `/* ... */`, nestable to match `skip_sql_trivia`.
+        if bytes.get(i) == Some(&b'/') && bytes.get(i + 1) == Some(&b'*') {
+            i += 2;
+            let mut depth = 1usize;
+            while i < bytes.len() && depth > 0 {
+                if bytes.get(i) == Some(&b'/') && bytes.get(i + 1) == Some(&b'*') {
+                    depth += 1;
+                    i += 2;
+                } else if bytes.get(i) == Some(&b'*') && bytes.get(i + 1) == Some(&b'/') {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        break;
     }
     match_keyword_at(bytes, i, target)
 }
@@ -2007,5 +2064,77 @@ mod tests {
             classify_transaction_control_statement("BEGIN"),
             Some("BEGIN")
         );
+    }
+
+    // --- djogi#368: $ and non-ASCII identifier bytes must not trigger keyword matches ---
+
+    #[test]
+    fn classify_raw_ddl_batch_dollar_suffix_begin_not_atomic_opener() {
+        // Codex BLOCK-1: `x$begin atomic` must NOT open an atomic block. If it did,
+        // the trailing COMMIT would be swallowed as internal and reach Postgres
+        // inside atomic(). The COMMIT must be detected as transaction control.
+        let sql = "CREATE TEMP TABLE t (x integer); SELECT x$begin atomic FROM t; COMMIT;";
+        assert!(
+            classify_raw_ddl_transaction_backed_refusal(sql).is_some(),
+            "trailing COMMIT after a $-suffixed pseudo-BEGIN must still be refused"
+        );
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_dollar_prefix_end_does_not_close_atomic_block() {
+        // END-site mirror (Task A.4): `x$end` inside a real atomic block must NOT
+        // close it. If it closed prematurely, the trailing COMMIT after the real
+        // END would be misclassified or the depth would be corrupted. Here the
+        // genuine COMMIT after the true block END must be detected.
+        let sql = "BEGIN ATOMIC SELECT x$end FROM t; END; COMMIT;";
+        assert!(
+            classify_raw_ddl_transaction_backed_refusal(sql).is_some(),
+            "x$end inside the block must not prematurely close it; trailing COMMIT must be refused"
+        );
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_begin_dollar_suffix_is_plain_identifier() {
+        // Trailing-boundary miss: `begin$x` is a single identifier, not BEGIN.
+        // As a standalone statement head it is not transaction control.
+        let sql = "SELECT begin$x FROM t;";
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_non_ascii_suffix_begin_not_atomic_opener() {
+        // Non-ASCII identifier byte before `begin atomic`: a multibyte identifier
+        // char (here 'é') makes `begin` part of an identifier, so no block opens
+        // and the trailing COMMIT must be refused.
+        let sql = "SELECT café_begin atomic FROM t; COMMIT;";
+        assert!(
+            classify_raw_ddl_transaction_backed_refusal(sql).is_some(),
+            "non-ASCII-adjacent pseudo-BEGIN must not open a block; trailing COMMIT must be refused"
+        );
+    }
+
+    // --- djogi#368: comments between BEGIN and ATOMIC must still open a block ---
+
+    #[test]
+    fn classify_raw_ddl_batch_begin_block_comment_atomic_opens_block() {
+        // BEGIN /* c */ ATOMIC must open a compound-statement block (spec: scanner
+        // respects comments). The internal COMMIT-looking text and the closing END
+        // are then internal, so the batch is allowed.
+        let sql = "BEGIN /* c */ ATOMIC SELECT 1; END";
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_begin_line_comment_atomic_opens_block() {
+        let sql = "BEGIN -- open the body\n ATOMIC SELECT 1; END";
+        assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
+    }
+
+    #[test]
+    fn classify_raw_ddl_batch_begin_comment_atomic_then_commit_detected() {
+        // Once the comment-separated BEGIN ATOMIC opens and closes, a trailing
+        // top-level COMMIT is still detected.
+        let sql = "BEGIN /* c */ ATOMIC SELECT 1; END; COMMIT;";
+        assert!(classify_raw_ddl_transaction_backed_refusal(sql).is_some());
     }
 }
