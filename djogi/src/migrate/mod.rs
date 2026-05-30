@@ -139,7 +139,8 @@ pub use repair::{
 };
 pub use reset::{
     ReplayedMigration, ResetError, ResetRefusal, ResetReport, ResetRequest, ResetSqlSide,
-    replace_db_in_url, reset_app_database,
+    compute_committed_down_sql_checksum, compute_committed_sql_checksum, replace_db_in_url,
+    reset_app_database,
 };
 pub use runner::{
     LossyRollbackPolicy, RollbackError, RollbackReport, RunReport, RunnerCtx, RunnerError,

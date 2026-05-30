@@ -1893,28 +1893,58 @@ fn resolve_database(database: Option<&str>, _config: &djogi::config::DjogiConfig
     database.unwrap_or("main").to_string()
 }
 
-/// Compute the `V1:`-prefixed checksum of a committed migration SQL file
-/// on disk. `is_up` selects the up vs down file.
+/// Compute the `V1:`-prefixed checksum of a committed up SQL file on disk,
+/// using the canonical fragment-level domain (strips the composed-file
+/// header and label comments, matching what compose stores in the ledger).
 ///
-/// Returns the underlying [`std::io::Error`] unchanged (notably
-/// [`std::io::ErrorKind::NotFound`] for a missing down file) so callers
-/// can branch on `e.kind()` — this is load-bearing for the checksum-drift
-/// glue, which treats a missing down file as "no down checksum" while
-/// surfacing every other read error.
-fn compute_checksum_from_disk(
+/// The naive whole-file checksum is WRONG here: compose stores checksums
+/// computed over the [`djogi::migrate::OperationSql`] fragments only,
+/// without the rendered file's `-- Djogi composed migration — up` header
+/// or the per-statement label comment lines. Recomputing over the full
+/// file content would never match the ledger value, so the drift repair
+/// would write a checksum that immediately re-drifts. Delegating to
+/// [`djogi::migrate::compute_committed_sql_checksum`] keeps the CLI's
+/// recompute path in the same domain as compose.
+///
+/// Returns the underlying [`std::io::Error`] unchanged so the caller can
+/// surface a missing/unreadable up file as a retryable I/O error.
+fn compute_checksum_up_from_disk(
     workspace: &Path,
     bucket: &djogi::migrate::BucketKey,
     version: &str,
-    is_up: bool,
 ) -> std::io::Result<String> {
-    let filename = if is_up {
-        djogi::migrate::up_filename(version)
-    } else {
-        djogi::migrate::down_filename(version)
-    };
-    let path = djogi::migrate::bucket_dir(workspace, bucket).join(filename);
+    let path =
+        djogi::migrate::bucket_dir(workspace, bucket).join(djogi::migrate::up_filename(version));
     let sql = std::fs::read_to_string(&path)?;
-    Ok(djogi::migrate::compute_checksum([&sql]))
+    Ok(djogi::migrate::compute_committed_sql_checksum(
+        &sql,
+        djogi::migrate::ResetSqlSide::Up,
+    ))
+}
+
+/// Compute the canonical checksum of a committed down SQL file on disk,
+/// using the same fragment-level domain as compose (see
+/// [`compute_checksum_up_from_disk`] for why the whole-file checksum is
+/// wrong).
+///
+/// Returns `Ok(None)` when the file is absent
+/// ([`std::io::ErrorKind::NotFound`]) or when the file contains only SQL
+/// comments — both map onto compose's `NULL` `checksum_down` sentinel for
+/// comment-only down files. Returns `Err` for any other I/O failure so a
+/// retry after the file is restored can succeed.
+fn compute_checksum_down_from_disk(
+    workspace: &Path,
+    bucket: &djogi::migrate::BucketKey,
+    version: &str,
+) -> std::io::Result<Option<String>> {
+    let path =
+        djogi::migrate::bucket_dir(workspace, bucket).join(djogi::migrate::down_filename(version));
+    let sql = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    Ok(djogi::migrate::compute_committed_down_sql_checksum(&sql))
 }
 
 /// `djogi migrations repair checksum-drift` entry point.
@@ -1976,7 +2006,22 @@ async fn run_repair_checksum_drift(
         }
     };
 
-    let mut ctx = match connect_and_check(&config.database.url).await {
+    // Resolve the per-database URL BEFORE connecting: `--database
+    // crud_log` / `event_log` operate on a different bucket's ledger than
+    // the app DB, so connecting to `config.database.url` first would
+    // silently mutate the wrong database.
+    let db_name = resolve_database(database, &config);
+    let url = match resolve_bucket_url(&config.database, &db_name) {
+        Some(u) => u,
+        None => {
+            eprintln!(
+                "djogi migrations repair checksum-drift: cannot derive a database URL for `{db_name}`"
+            );
+            return 2;
+        }
+    };
+
+    let mut ctx = match connect_and_check(&url).await {
         ContextOutcome::Ready(ctx) => ctx,
         ContextOutcome::UnsupportedVersion(e) => {
             crate::print_support_boundary_error("migrations repair checksum-drift", &e);
@@ -1997,7 +2042,6 @@ async fn run_repair_checksum_drift(
         }
     };
 
-    let db_name = resolve_database(database, &config);
     let app_label = app.unwrap_or("");
     let bucket = BucketKey {
         database: db_name,
@@ -2012,7 +2056,7 @@ async fn run_repair_checksum_drift(
             // not an operator-facing refusal — exit 1 (same class as the
             // down file's non-NotFound branch below), so a retry after
             // the file is restored can succeed.
-            match compute_checksum_from_disk(workspace, &bucket, version, true) {
+            match compute_checksum_up_from_disk(workspace, &bucket, version) {
                 Ok(cs) => cs,
                 Err(e) => {
                     eprintln!("djogi migrations repair checksum-drift: compute checksum_up: {e}");
@@ -2025,11 +2069,12 @@ async fn run_repair_checksum_drift(
     let resolved_checksum_down = match checksum_down {
         Some(c) => Some(c.to_string()),
         None => {
-            // Auto-compute from the down file; a missing down file is a
-            // no-op (no down checksum), other read errors surface.
-            match compute_checksum_from_disk(workspace, &bucket, version, false) {
-                Ok(cs) => Some(cs),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            // Auto-compute from the down file; a missing down file (or a
+            // comment-only down file) is a no-op (no down checksum), other
+            // read errors surface. NotFound is folded into `Ok(None)` by
+            // `compute_checksum_down_from_disk`.
+            match compute_checksum_down_from_disk(workspace, &bucket, version) {
+                Ok(cs_opt) => cs_opt,
                 Err(e) => {
                     eprintln!("djogi migrations repair checksum-drift: read down SQL: {e}");
                     return 1;
@@ -2109,7 +2154,22 @@ async fn run_repair_partial_apply(
         }
     };
 
-    let mut ctx = match connect_and_check(&config.database.url).await {
+    // Resolve the per-database URL BEFORE connecting: `--database
+    // crud_log` / `event_log` operate on a different bucket's ledger than
+    // the app DB, so connecting to `config.database.url` first would
+    // silently mutate the wrong database.
+    let db_name = resolve_database(database, &config);
+    let url = match resolve_bucket_url(&config.database, &db_name) {
+        Some(u) => u,
+        None => {
+            eprintln!(
+                "djogi migrations repair partial-apply: cannot derive a database URL for `{db_name}`"
+            );
+            return 2;
+        }
+    };
+
+    let mut ctx = match connect_and_check(&url).await {
         ContextOutcome::Ready(ctx) => ctx,
         ContextOutcome::UnsupportedVersion(e) => {
             crate::print_support_boundary_error("migrations repair partial-apply", &e);
@@ -2130,7 +2190,6 @@ async fn run_repair_partial_apply(
         }
     };
 
-    let db_name = resolve_database(database, &config);
     let app_label = app.unwrap_or("");
     let bucket = BucketKey {
         database: db_name,
@@ -2204,7 +2263,22 @@ async fn run_repair_resume_partial(
         }
     };
 
-    let mut ctx = match connect_and_check(&config.database.url).await {
+    // Resolve the per-database URL BEFORE connecting: `--database
+    // crud_log` / `event_log` operate on a different bucket's ledger than
+    // the app DB, so connecting to `config.database.url` first would
+    // silently mutate the wrong database.
+    let db_name = resolve_database(database, &config);
+    let url = match resolve_bucket_url(&config.database, &db_name) {
+        Some(u) => u,
+        None => {
+            eprintln!(
+                "djogi migrations repair resume-partial: cannot derive a database URL for `{db_name}`"
+            );
+            return 2;
+        }
+    };
+
+    let mut ctx = match connect_and_check(&url).await {
         ContextOutcome::Ready(ctx) => ctx,
         ContextOutcome::UnsupportedVersion(e) => {
             crate::print_support_boundary_error("migrations repair resume-partial", &e);
@@ -2225,7 +2299,6 @@ async fn run_repair_resume_partial(
         }
     };
 
-    let db_name = resolve_database(database, &config);
     let app_label = app.unwrap_or("");
     let bucket = BucketKey {
         database: db_name,
@@ -2366,7 +2439,22 @@ async fn run_repair_snapshot_rebuild(
         }
     };
 
-    let mut ctx = match connect_and_check(&config.database.url).await {
+    // Resolve the per-database URL BEFORE connecting: `--database
+    // crud_log` / `event_log` operate on a different bucket's ledger than
+    // the app DB, so connecting to `config.database.url` first would
+    // silently rebuild the snapshot from the wrong database.
+    let db_name = resolve_database(database, &config);
+    let url = match resolve_bucket_url(&config.database, &db_name) {
+        Some(u) => u,
+        None => {
+            eprintln!(
+                "djogi migrations repair snapshot-rebuild: cannot derive a database URL for `{db_name}`"
+            );
+            return 2;
+        }
+    };
+
+    let mut ctx = match connect_and_check(&url).await {
         ContextOutcome::Ready(ctx) => ctx,
         ContextOutcome::UnsupportedVersion(e) => {
             crate::print_support_boundary_error("migrations repair snapshot-rebuild", &e);
@@ -2387,7 +2475,6 @@ async fn run_repair_snapshot_rebuild(
         }
     };
 
-    let db_name = resolve_database(database, &config);
     let app_label = app.unwrap_or("");
     let bucket = BucketKey {
         database: db_name,

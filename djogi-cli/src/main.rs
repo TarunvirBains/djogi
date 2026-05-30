@@ -584,8 +584,8 @@ pub enum RepairSubcommand {
     ChecksumDrift {
         /// Migration version (e.g. `V20260101000000__add_users`).
         version: String,
-        /// App label (empty string for global bucket). Defaults to
-        /// the first registered app.
+        /// App label for the migration bucket. Defaults to the global
+        /// bucket (empty string) when not specified.
         #[arg(long)]
         app: Option<String>,
         /// Database name. Defaults to `main` if not specified.
