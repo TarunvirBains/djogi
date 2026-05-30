@@ -140,7 +140,7 @@ Exit codes: `0` on success, `1` on runtime error (config / network / SQL / git),
 
 ## Library APIs
 
-The `apply` command ships as `djogi migrations apply` (with `--fake` / `--reason` flags for existing-database adoption). The `verify` command ships as `djogi migrations verify`. The `rollback`, `baseline`, and `repair` CLI dispatchers are deferred; library callers use the public entry points directly:
+The `apply` command ships as `djogi migrations apply` (with `--fake` / `--reason` flags for existing-database adoption). The `verify` command ships as `djogi migrations verify`. The `repair` family ships as `djogi migrations repair <checksum-drift|partial-apply|resume-partial|snapshot-rebuild>` (see **Repair Commands** below). The `rollback` and `baseline` CLI dispatchers are deferred; library callers use the public entry points directly:
 
 ```rust
 use djogi::migrate::{
@@ -167,6 +167,37 @@ All apply paths require a `WorkspaceGuard` — a typed witness that the caller h
 **Out-of-order policy enforcement:** `fake_apply_plan` enforces the same out-of-order policy gate as `apply_plan`. A faked row with a suppressed `out_of_order_flag` would misrepresent the version-ordering state. If the policy is `Reject`, fake-apply on an out-of-order version is rejected.
 
 **Snapshot failure recovery:** If `fake_apply_plan` reports a snapshot persistence error, the migration was successfully recorded in the ledger as `faked`. Run `djogi migrations compose` to regenerate the snapshot from the descriptor inventory.
+
+## Repair Commands
+
+`djogi migrations repair <subcommand>` exposes the four operator-confirmed
+repair flows from the CLI. Invoking the subcommand IS the operator
+acknowledgment — there is no separate `--confirm` flag. Each command pins one
+Postgres session, takes the per-bucket advisory lock, and holds the workspace
+file lock for its duration. Exit codes: `0` success, `1` runtime/I/O error
+(retryable), `2` refusal or structural mismatch (operator must intervene).
+
+```bash
+# Re-checksum a ledger row after its committed SQL was edited. Omitting
+# --checksum-up / --checksum-down recomputes them from the committed files
+# (a missing down file is a no-op).
+djogi migrations repair checksum-drift V20260101000000__add_users \
+  --checksum-up V1:<hex> --checksum-down V1:<hex>
+
+# Resolve a partial-apply row by rewriting its status. Does NOT execute SQL.
+djogi migrations repair partial-apply V20260101000000__add_users rolled-back \
+  --note "reverted by hot-fix psql script"
+
+# Resume an interrupted non-transactional apply by replaying remaining steps
+# from the committed <version>.plan.json.
+djogi migrations repair resume-partial V20260101000000__add_index_concurrently
+
+# Rebuild a bucket's schema snapshot from the ledger + live database.
+djogi migrations repair snapshot-rebuild --app billing
+```
+
+All four accept `--app` (bucket app label; empty for the global bucket),
+`--database` (defaults to `main`), and `--workspace` (workspace-root override).
 
 ## Classifications
 

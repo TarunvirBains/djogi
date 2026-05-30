@@ -221,7 +221,7 @@ This proposal replaces them with noun-grouped verbs throughout. The shipped CLI 
 | `djogi migrations status` | Show pending and applied migration state |
 | `djogi migrations attune` | Reconcile migration history state through the shipped attune workflow |
 | Shipped target verb | `apply` ships as `djogi migrations apply` |
-| Deferred target verbs | `rollback`, `repair`, and `baseline` remain deferred CLI surfaces; `verify` ships as `djogi migrations verify` |
+| Deferred target verbs | `rollback` and `baseline` remain deferred CLI surfaces; `verify` ships as `djogi migrations verify` and `repair` ships as `djogi migrations repair` |
 | `djogi migrations help [<subcommand>]` | Print help for the group or a specific subcommand |
 | `djogi migrations` (no subcommand) | Equivalent to `help` — prints subcommand list + common workflows |
 
@@ -400,9 +400,10 @@ submodule snapshot, then deletes the pending file) on successful completion; the
 dispatcher is deferred. (OI-04)
 
 **Crash recovery:** If the process is killed between ledger COMMIT and snapshot rename, the DB
-is fully applied but the snapshot is stale. `djogi::migrate::verify` detects the
-discrepancy, and the repair helpers regenerate from the current ledger plus
-source descriptors until the deferred verify/repair CLI dispatchers land. (OI-06)
+is fully applied but the snapshot is stale. `djogi migrations verify` (or
+`djogi::migrate::verify`) detects the discrepancy, and `djogi migrations repair
+snapshot-rebuild` (or the `djogi::migrate::repair_*` helpers) regenerates from
+the current ledger plus source descriptors. (OI-06)
 
 **Snapshot format:** The `schema_snapshot.json` file includes a top-level `format_version: 1`
 field. The runner rejects snapshots with an unknown `format_version`. After a branch merge that
@@ -516,7 +517,7 @@ entry point (explicit invocation, can be rich; CLI dispatcher deferred).
 | D025 | `.djogi-migrations-lock` held by another invocation | `pull`, `apply`, `compose`, `repair` (30s timeout) |
 
 Override path at apply time: `--force-apply` (discouraged; writes an `orphan_handled` audit row).
-Standard reconciliation: call `djogi::migrate::verify`, then the relevant `djogi::migrate::repair_*` helper until the deferred verify/repair CLI dispatchers land.
+Standard reconciliation: run `djogi migrations verify`, then the relevant `djogi migrations repair <subcommand>` (or, from code, `djogi::migrate::verify` and the `djogi::migrate::repair_*` helpers).
 
 The `build.rs` surface emits plain `cargo:warning=djogi: ...` strings only. No spans, no ANSI
 codes — rustc does not expose rich diagnostic APIs from `build.rs` on stable. Rich colored output
@@ -795,7 +796,7 @@ Applying 0005_add_two_indexes (non-transactional)...
 error[M007]: migration 0005_add_two_indexes failed at step 2/2
   = applied_steps_count: 1
   = help: vehicles_vin_idx was created (step 1 committed)
-  = help: run the `djogi::migrate::repair_*` library helper until the deferred repair CLI lands to resolve before applying further migrations
+  = help: run `djogi migrations repair resume-partial 0005_add_two_indexes` to replay the remaining step (or `djogi migrations repair partial-apply` to resolve the row by hand) before applying further migrations
 
 Wrote: migrations/.migration_failure.json
 ```
@@ -803,9 +804,9 @@ Wrote: migrations/.migration_failure.json
 ```
 $ djogi migrations apply
 error: migration failure marker present — resolve before applying
-  = help: run the `djogi::migrate::repair_*` library helper until the deferred repair CLI lands
+  = help: run `djogi migrations repair resume-partial` (or `repair partial-apply`) to resolve
 
-$ # deferred CLI sketch: djogi migrations repair
+$ djogi migrations repair partial-apply 0005_add_two_indexes applied
 Found failure: 0005_add_two_indexes at step 2/2
   Step 1 committed: CREATE INDEX CONCURRENTLY vehicles_vin_idx
 

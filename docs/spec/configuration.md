@@ -100,15 +100,18 @@ djogi migrations attune --squash --from V<ts> --apply --publish   # squash and p
 # Migrations — shipped CLI + deferred verbs (library APIs available for all)
 # The library entry points (`apply_plan`, `rollback_plan`, `repair_*`,
 # `baseline_plan`) are public and exercised by the integration test suite.
-# `apply` and `verify` ship as CLI commands;
-# `rollback`, `baseline`, and `repair` CLI dispatchers are deferred;
+# `apply`, `verify`, and `repair` ship as CLI commands;
+# `rollback` and `baseline` CLI dispatchers are deferred;
 # library callers reach those runners via the public `djogi::migrate` entry points.
 djogi migrations apply                 # apply pending migrations, update snapshot
 djogi migrations apply --fake --reason "existing schema"  # mark applied without running SQL
 djogi migrations verify                # compare snapshot expectations to the live DB
 djogi migrations verify --strict       # promote out-of-order diagnostics to errors
+djogi migrations repair checksum-drift V<ts>__<slug> --checksum-up V1:<hex>  # re-checksum an edited applied row
+djogi migrations repair partial-apply V<ts>__<slug> rolled-back  # resolve a partial-apply ledger row
+djogi migrations repair resume-partial V<ts>__<slug>  # resume an interrupted non-transactional apply
+djogi migrations repair snapshot-rebuild --app <label>  # rebuild a bucket snapshot from ledger + live DB
 # djogi migrations rollback              # roll back last migration, rewind snapshot
-# deferred CLI sketch: djogi migrations repair                # resolve partial apply or rebuild snapshot state
 # deferred CLI sketch: djogi migrations baseline 0001_initial # adopt an existing DB without replaying SQL
 
 # Database (dev only — triple-gated) — registered today (T8)

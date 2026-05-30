@@ -36,7 +36,7 @@ This document maps common app patterns to the earliest Djogi phase at which they
 | Password hashing (Argon2) | 5.5 | `PasswordHash` (feature `auth-argon2`) |
 | Axum integration | 5.5 | `FromRequestParts` (feature `auth-axum`) |
 | Spatial (GeoPoint + ST_DWithin + GIST auto-index) | 6 | PostGIS-backed |
-| Production migrations | 7 | Descriptor differ + `djogi migrations apply`/`compose`/`status`/`attune`/`verify`, and target-scoped ledger/snapshot; repair/baseline CLI dispatchers are deferred |
+| Production migrations | 7 | Descriptor differ + `djogi migrations apply`/`compose`/`status`/`attune`/`verify`/`repair`, and target-scoped ledger/snapshot; baseline CLI dispatcher is deferred |
 | Protected-data metadata + field codecs | 7.5 | `#[field(sensitive, codec)]` |
 | Live-migration planning/classification substrate | 7.5 | Expand/contract classification and backfill planning substrate; operator execution is deferred |
 | Online-safe staged live migrations | Deferred | Not safe to adopt until `djogi live run/resume/finalize` and daemon-mode resume are implemented, tested, and released |
