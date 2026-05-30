@@ -185,5 +185,6 @@ pub use target::{
     snapshot_path,
 };
 pub use verify::{
-    VerifyDiagnostic, VerifyReport, VerifyRunError, VerifySeverity, verify, verify_with_policy,
+    VerifyDiagnostic, VerifyReport, VerifyRunError, VerifySeverity, verify, verify_bucket,
+    verify_with_policy,
 };

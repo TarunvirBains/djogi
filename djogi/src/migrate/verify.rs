@@ -436,6 +436,145 @@ pub async fn verify_with_policy(
     })
 }
 
+/// Run verify scoped to a single `(database, app)` bucket.
+///
+/// Unlike [`verify_with_policy`], which diffs the snapshot against the
+/// whole `public` catalog, this entry point scopes the live projection
+/// to the bucket via inventory-driven `app_label` filtering (the same
+/// approach used by repair and baseline through the internal
+/// `live_schema_for_repair` projection). The caller must pass a context
+/// already routed to the correct database for `bucket.database`.
+///
+/// # Parameters
+///
+/// - `emit_ledger_diagnostics` — the caller passes `true` for the first
+///   bucket of each database target, so the ledger-lifecycle diagnostics
+///   (`D621` ledger-missing, `D622` out-of-order, `D699` schema-dropped)
+///   are emitted once per database rather than once per app bucket. The
+///   `djogi_schema_migrations` ledger is shared per database (every app's
+///   migrations land in the same ledger), so emitting these per app would
+///   duplicate the same finding N times. When `false`, the ledger is still
+///   read to populate the report's summary counts
+///   (`applied_count` / `unfinished_count` / `latest_applied_version`),
+///   but no ledger-lifecycle diagnostic is pushed.
+/// - `database_has_models` — `true` if any inventory bucket for this
+///   database has non-empty models. Gates `D699`: an orphan-only database
+///   (snapshot on disk but no registered models) has no live tables to
+///   miss, so `D601` ("snapshot table missing") is the actionable signal
+///   instead and `D699` would be redundant noise. This replaces
+///   [`verify_with_policy`]'s `!snapshot.models.is_empty()` gate, which is
+///   per-bucket; the database-wide flag is the correct scope because the
+///   ledger and the "zero live tables" condition are both database-wide.
+///
+/// # Errors
+///
+/// Returns [`VerifyRunError`] if any catalog or ledger read fails. A
+/// schema mismatch is *not* an error — it surfaces as an `Error`-severity
+/// diagnostic inside the returned [`VerifyReport`]; use
+/// [`VerifyReport::has_errors`] to detect that case.
+///
+/// # Determinism
+///
+/// `diagnostics` is sorted by `(code, location)`, matching
+/// [`verify_with_policy`].
+pub async fn verify_bucket(
+    ctx: &mut DjogiContext,
+    bucket: &BucketKey,
+    snapshot: &AppliedSchema,
+    policy: &crate::config::PolicyConfig,
+    emit_ledger_diagnostics: bool,
+    database_has_models: bool,
+) -> Result<VerifyReport, VerifyRunError> {
+    let mut diagnostics: Vec<VerifyDiagnostic> = Vec::new();
+
+    // Ledger block — mirrors `verify_with_policy` (read-only probe, no
+    // bootstrap per B-8). The ledger is shared per database, so the
+    // ledger-lifecycle diagnostics (D621/D622/D699) are gated by
+    // `emit_ledger_diagnostics` to fire once per database rather than once
+    // per app bucket. The summary counts are populated in every branch so
+    // the report header is correct for every bucket.
+    let ledger_present = ledger_table_exists(ctx).await?;
+
+    let (applied_count, unfinished_count, latest_applied_version) = if ledger_present {
+        let ledger_rows = read_applied_ledger(ctx).await?;
+        let applied_count = ledger_rows
+            .iter()
+            .filter(|r| r.status == LedgerStatus::Applied)
+            .count();
+        let unfinished_count = ledger_rows
+            .iter()
+            .filter(|r| matches!(r.status, LedgerStatus::Pending | LedgerStatus::Failed))
+            .count();
+        let latest_applied_version = ledger_rows
+            .iter()
+            .rev()
+            .find(|r| r.status == LedgerStatus::Applied)
+            .map(|r| r.version.clone());
+
+        if emit_ledger_diagnostics {
+            // D699: ledger reports applied migrations but the live DB has
+            // zero user tables — the schema was likely dropped out-of-band.
+            // Gated by `database_has_models` (not the per-bucket
+            // `!snapshot.models.is_empty()`): an orphan-only database has no
+            // registered models, so D601 is the actionable signal and D699
+            // would be redundant.
+            let live_for_ledger_check = project_live_schema(ctx).await?;
+            if !ledger_rows.is_empty()
+                && live_for_ledger_check.models.is_empty()
+                && database_has_models
+            {
+                diagnostics.push(VerifyDiagnostic {
+                    code: "D699".to_string(),
+                    severity: VerifySeverity::Error,
+                    message: format!(
+                        "ledger reports {applied_count} applied migration(s) but the \
+                         live database contains zero tables; the schema may have been \
+                         dropped out-of-band",
+                    ),
+                    location: None,
+                });
+            }
+
+            // T7 / D622: surface every ledger row whose `out_of_order_flag`
+            // is set. Severity follows `policy.strict_out_of_order`.
+            emit_out_of_order_diagnostics(&ledger_rows, policy, &mut diagnostics);
+        }
+
+        (applied_count, unfinished_count, latest_applied_version)
+    } else {
+        if emit_ledger_diagnostics {
+            diagnostics.push(VerifyDiagnostic {
+                code: "D621".to_string(),
+                severity: VerifySeverity::Error,
+                message: "ledger table `djogi_schema_migrations` not found — run \
+                          `djogi migrations apply` or `djogi migrations baseline` \
+                          first; verify is read-only and will not bootstrap the ledger"
+                    .to_string(),
+                location: None,
+            });
+        }
+        (0, 0, None)
+    };
+
+    // Bucket-scoped live projection — the only structural difference from
+    // `verify_with_policy`, which projects the whole `public` catalog.
+    let live = live_schema_for_repair(ctx, bucket).await?;
+
+    // Diff tables and indexes against the scoped live schema.
+    diff_tables(snapshot, &live, &mut diagnostics);
+    diff_indexes(snapshot, &live, &mut diagnostics);
+    diff_advisory_fields(snapshot, &mut diagnostics);
+
+    diagnostics.sort_by_key(|d| d.sort_key());
+
+    Ok(VerifyReport {
+        diagnostics,
+        latest_applied_version,
+        applied_count,
+        unfinished_count,
+    })
+}
+
 /// Walk the ledger rows and emit a D622 diagnostic for each row whose
 /// `out_of_order_flag` is set. Severity follows
 /// [`crate::config::PolicyConfig::strict_out_of_order`] — Warning when
