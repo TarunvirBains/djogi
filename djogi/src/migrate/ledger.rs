@@ -325,9 +325,12 @@ pub struct LedgerRow {
     /// synthetic global bucket.
     pub app_label: String,
     /// Partition leaf identity snapshot. Stored as newline-delimited
-    /// `parent:leaf1,leaf2` entries. Present only for migrations that
-    /// materialized at least one partition-expanded segment. Empty
-    /// string or `None` for non-partitioned migrations.
+    /// `parent:leaf1,leaf2` entries. `None` means no partition-expanded
+    /// segments were materialized (non-partitioned migration, or a row
+    /// seeded via fake-apply / baseline / attune). A partitioned migration
+    /// that applied when the parent had zero attached leaves stores
+    /// `Some("parent:")` — the parent key is present but the leaf list
+    /// is empty.
     pub leaf_identity: Option<String>,
 }
 

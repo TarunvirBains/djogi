@@ -74,6 +74,8 @@
 //! | D615 | Error    | Index is on the wrong table. |
 //! | D621 | Error    | Ledger table is missing — run apply / baseline first. |
 //! | D622 | Warning  | Out-of-order migration applied — `out_of_order_flag = TRUE`. Strict mode upgrades to Error. |
+//! | D623 | Error    | Repair refused — partition leaf identity mismatch (topology drift since apply). Emitted by `migrate::repair`. |
+//! | D624 | Error    | Rollback refused — partition leaf identity mismatch (topology drift since apply). Emitted by `migrate::runner`. |
 //! | D690 | Info     | FTS configuration declared but not yet checked. |
 //! | D691 | Info     | Partition strategy declared but not yet checked. |
 //! | D692 | Info     | Enum types declared but not yet checked. |
@@ -83,6 +85,15 @@
 //! Every `D6xx` code is unique. Adding a new code goes at the end of
 //! whichever sub-range matches the topic (60x for table, 61x for index,
 //! 62x for ledger lifecycle, 69x for advisory).
+//!
+//! D623 and D624 are emitted from `migrate::repair` and
+//! `migrate::runner` respectively, embedded in the Display message in
+//! square-bracket form rather than the `VerifyDiagnostic` field-
+//! assignment form that verify.rs uses. The
+//! `d6xx_emit_sites_all_covered_by_registry` scanner only walks
+//! verify.rs for the field-assignment form, so it does not pick up
+//! D623/D624; they are kept unique by their entries in this table and
+//! in the `D6XX_CODE_REGISTRY` const below.
 //!
 //! # Determinism
 //!
@@ -2879,6 +2890,8 @@ mod tests {
         ("D615", "index lives on wrong table"),
         ("D621", "ledger table not found"),
         ("D622", "out-of-order migration applied"),
+        ("D623", "repair refused: leaf identity mismatch"),
+        ("D624", "rollback refused: leaf identity mismatch"),
         ("D690", "FTS not yet checked (info)"),
         ("D691", "partition not yet checked (info)"),
         ("D692", "enums not yet checked (info)"),

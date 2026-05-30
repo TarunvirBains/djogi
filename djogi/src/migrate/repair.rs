@@ -78,7 +78,8 @@ use super::ledger::{
 use super::projection::BucketKey;
 use super::runner::{
     PartitionExpansionMode, RunnerError, acquire_advisory_lock, advisory_lock_key,
-    materialize_execution_plan, release_advisory_lock, serialize_leaf_identity,
+    compute_leaf_identity_cache, materialize_execution_plan, release_advisory_lock,
+    serialize_leaf_identity,
 };
 use super::segment::{MigrationPlan, SegmentKind};
 use super::snapshot::{SnapshotError, save_snapshot};
@@ -540,7 +541,7 @@ impl std::fmt::Display for RepairError {
                 current_leaf_identity: _,
             } => write!(
                 f,
-                "[D610] repair refused: partition leaf identity mismatch for `{version}`",
+                "[D623] repair refused: partition leaf identity mismatch for `{version}`",
             ),
         }
     }
@@ -1100,6 +1101,27 @@ async fn repair_resume_body(
     // The runner CRUD helpers (`update_progress` / `mark_partial`)
     // take the row's BIGINT id. Look it up once.
     let ledger_id = lookup_ledger_id_by_version(ctx, &row.version).await?;
+
+    // #366: Pre-strict leaf-identity check with lenient lookup so a zero-leaf↔non-empty
+    // topology drift surfaces as LeafIdentityMismatch rather than PartitionExpansionNoLeaves.
+    if let Some(ref stored_identity) = row.leaf_identity {
+        let pre_cache =
+            compute_leaf_identity_cache(ctx, plan)
+                .await
+                .map_err(|e| RepairError::LedgerIo {
+                    source: DjogiError::Db(crate::error::DbError::other(format!(
+                        "leaf-identity pre-check failed: {e}"
+                    ))),
+                })?;
+        let pre_identity = serialize_leaf_identity(&pre_cache).unwrap_or_default();
+        if pre_identity != *stored_identity {
+            return Err(RepairError::LeafIdentityMismatch {
+                version: row.version.clone(),
+                stored_leaf_identity: stored_identity.clone(),
+                current_leaf_identity: pre_identity,
+            });
+        }
+    }
 
     // **#317 REQ-11/REQ-12**: Materialize execution plan via strict
     // partition expansion before any step replay begins. This expands
@@ -1758,7 +1780,7 @@ mod tests {
                 .to_string(),
         };
         let msg = format!("{}", err);
-        assert!(msg.contains("[D610]"));
+        assert!(msg.contains("[D623]"));
         assert!(msg.contains("repair refused"));
         assert!(msg.contains("partition leaf identity mismatch"));
         assert!(msg.contains("001_create_users"));
