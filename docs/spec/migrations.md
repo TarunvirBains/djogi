@@ -56,6 +56,8 @@ djogi migrations compose --allow-destructive
 djogi migrations compose --name add_vehicle_horsepower
 ```
 
+`migrations compose` discovers model descriptors via the **link-time `inventory` registry**, which means it only sees models from crates linked into the running binary. An adopter workspace must build an adopter-linked `djogi` binary (see [`docs/guide/adopter-cli.md`](../guide/adopter-cli.md)) that references every crate defining `#[model]` structs. The standalone published `djogi` binary links no adopter model crates and will refuse descriptor-dependent commands with a targeted diagnostic.
+
 Three-way match logic, run per `(target, app)` pair:
 
 1. `djogi_models.json == schema_snapshot.json` for every `(target, app)` pair → silent
