@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.6] - 2026-05-30
+
+### Added
+
+- feat(#369): first-class `Vec<u8>` / BYTEA model field support — `pub bytes: Vec<u8>` and `Option<Vec<u8>>` compile in `#[model]` structs; migration compose emits `BYTEA`
+
+### Fixed
+
+- doc: remove stale BYTEA example from `Custom` variant doc (now has its own first-class variant)
+- test: add `bytea_field_sql_type_displays_as_upper_bytea` display pin test, matching the Inet/Cidr/Macaddr convention
+
 ## [0.1.0-alpha.5] - 2026-05-30
 
 ### Added
