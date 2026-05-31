@@ -814,18 +814,16 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
     //     (the intentional-removal channel). Keys on the bucket's
     //     (database, app) and on "zero projected models", NOT on
     //     snap.registered_apps (DB-global, shared across buckets —
-    //     looping it false-positives, BLOCK 7). The synthetic global
-    //     bucket is guarded uniformly when an app descriptor exists for
-    //     it — un-#[model(app=)] models live there, and a bucket that
-    //     HAD models and now has zero with a registered app is real
-    //     linkage loss (BLOCK 8).
+    //     looping it false-positives (BLOCK 7).
+    //     The synthetic global bucket is guarded uniformly — un-
+    //     #[model(app=)] models live there, and a bucket that HAD
+    //     models and now has zero is a real removal (BLOCK 8).
     //
-    //     The guard only fires when the snapshot bucket has a
-    //     corresponding app in req.apps. If no app descriptor exists for
-    //     the bucket (e.g., app was deregistered entirely without
-    //     tombstone), that's an intentional lifecycle removal, not a
-    //     linkage error. The linkage problem is specifically: "app
-    //     descriptor linked but model crate forgotten."
+    //     Fires for any snapshot bucket with tables whose projection
+    //     has zero models, regardless of whether the app descriptor
+    //     exists in req.apps. The tombstone check provides the
+    //     intentional-removal exemption; if no app exists at all,
+    //     there can't be a tombstone, so the guard fires correctly.
     //
     //     Fires even with --allow-destructive: the generic destructive
     //     gate only covers the default path; this guard's job is the
@@ -837,14 +835,6 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
             .apps
             .iter()
             .filter(|a| a.tombstone)
-            .map(|a| (a.database.as_str(), a.label.as_str()))
-            .collect();
-
-        // Build a set of (database, app) that have registered app
-        // descriptors — the linkage guard only fires for these.
-        let registered: BTreeSet<(&str, &str)> = req
-            .apps
-            .iter()
             .map(|a| (a.database.as_str(), a.label.as_str()))
             .collect();
 
@@ -864,9 +854,6 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
             }
             let database = bucket.database.as_str();
             let app = bucket.app.as_str();
-            if !registered.contains(&(database, app)) {
-                continue; // no app descriptor — intentional lifecycle removal
-            }
             if tombstoned.contains(&(database, app)) {
                 continue; // intentional removal channel
             }
@@ -2407,14 +2394,73 @@ mod tests {
 
     #[test]
     fn destructive_classification_requires_allow_destructive() {
+        // Snapshot has widgets+gadgets, models only have gadgets.
+        // DROP widgets is destructive. Linkage guard passes because
+        // models still project gadgets (non-zero models for bucket).
         let work = temp_workspace("destructive");
         let guard = lock_for(&work);
         let bucket = global_bucket();
-        // Snapshot has widgets, models do not — drop table.
+
+        // Snapshot with two tables: widgets + gadgets
+        let mut snap = snapshot_with_widgets(&bucket);
+        snap.models.insert(
+            "gadgets".to_string(),
+            TableSchema {
+                app: None,
+                columns: vec![id_column_heerid_desc()],
+                exclusion_constraints: Vec::new(),
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["id".to_string()],
+                    kind: PkKindSchema::HeerIdRecencyBiased,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                table: "gadgets".to_string(),
+                table_comment: None,
+                storage_params: None,
+                tablespace: None,
+                tenant_key: None,
+            },
+        );
+
+        // Models only have gadgets (not widgets) -> DROP widgets delta
         let mut models = BTreeMap::new();
-        models.insert(bucket.clone(), empty_snapshot(&bucket));
+        let mut model_snap = snapshot_with_widgets(&bucket);
+        model_snap.models.remove("widgets");
+        model_snap.models.insert(
+            "gadgets".to_string(),
+            TableSchema {
+                app: None,
+                columns: vec![id_column_heerid_desc()],
+                exclusion_constraints: Vec::new(),
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["id".to_string()],
+                    kind: PkKindSchema::HeerIdRecencyBiased,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                table: "gadgets".to_string(),
+                table_comment: None,
+                storage_params: None,
+                tablespace: None,
+                tenant_key: None,
+            },
+        );
+        models.insert(bucket.clone(), model_snap);
+
         let mut snapshots = BTreeMap::new();
-        snapshots.insert(bucket.clone(), snapshot_with_widgets(&bucket));
+        snapshots.insert(bucket.clone(), snap);
+
         let req = ComposeRequest {
             workspace_root: &work,
             models: &models,
@@ -2448,13 +2494,73 @@ mod tests {
 
     #[test]
     fn destructive_with_allow_destructive_writes_files() {
+        // Snapshot has widgets+gadgets, models only have gadgets.
+        // DROP widgets is destructive. Linkage guard passes because
+        // models still project gadgets (non-zero models for bucket).
         let work = temp_workspace("destructive_ok");
         let guard = lock_for(&work);
         let bucket = global_bucket();
+
+        // Snapshot with two tables: widgets + gadgets
+        let mut snap = snapshot_with_widgets(&bucket);
+        snap.models.insert(
+            "gadgets".to_string(),
+            TableSchema {
+                app: None,
+                columns: vec![id_column_heerid_desc()],
+                exclusion_constraints: Vec::new(),
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["id".to_string()],
+                    kind: PkKindSchema::HeerIdRecencyBiased,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                table: "gadgets".to_string(),
+                table_comment: None,
+                storage_params: None,
+                tablespace: None,
+                tenant_key: None,
+            },
+        );
+
+        // Models only have gadgets -> DROP widgets delta (destructive)
         let mut models = BTreeMap::new();
-        models.insert(bucket.clone(), empty_snapshot(&bucket));
+        let mut model_snap = snapshot_with_widgets(&bucket);
+        model_snap.models.remove("widgets");
+        model_snap.models.insert(
+            "gadgets".to_string(),
+            TableSchema {
+                app: None,
+                columns: vec![id_column_heerid_desc()],
+                exclusion_constraints: Vec::new(),
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["id".to_string()],
+                    kind: PkKindSchema::HeerIdRecencyBiased,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                table: "gadgets".to_string(),
+                table_comment: None,
+                storage_params: None,
+                tablespace: None,
+                tenant_key: None,
+            },
+        );
+        models.insert(bucket.clone(), model_snap);
+
         let mut snapshots = BTreeMap::new();
-        snapshots.insert(bucket.clone(), snapshot_with_widgets(&bucket));
+        snapshots.insert(bucket.clone(), snap);
+
         let req = ComposeRequest {
             workspace_root: &work,
             models: &models,
@@ -4911,6 +5017,50 @@ mod tests {
         assert!(
             matches!(err, ComposeError::LinkageDropWithoutModels { ref app_label, .. } if app_label.is_empty()),
             "expected LinkageDropWithoutModels for global bucket, got: {err}"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn linkage_drop_guard_fires_when_app_absent_from_registry() {
+        // Spec compliance: guard keys on zero projected models per bucket,
+        // NOT on app presence in req.apps. If an app was deregistered
+        // without tombstone and its model crate is unlinked, the guard
+        // must fire — the tombstone channel is the only intentional removal.
+        let work = temp_workspace("linkage_absent");
+        let guard = lock_for(&work);
+
+        let orphan_bucket = BucketKey {
+            database: "main".to_string(),
+            app: "orphan".to_string(),
+        };
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(orphan_bucket.clone(), snapshot_with_widgets(&orphan_bucket));
+
+        // Zero projected models — model crate not linked
+        let models: BTreeMap<BucketKey, AppliedSchema> = BTreeMap::new();
+
+        // Orphan app NOT in req.apps at all
+        let apps: Vec<AppLifecycle> = vec![];
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "drop_orphan",
+            allow_destructive: true,
+            force_overwrite: false,
+            now: at(2026, 4, 25, 1, 2, 3),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        let err = compose(req).expect_err("guard must fire even when app absent from req.apps");
+        assert!(
+            matches!(err, ComposeError::LinkageDropWithoutModels { ref app_label, .. } if app_label == "orphan"),
+            "expected LinkageDropWithoutModels for orphan, got: {err}"
         );
         let _ = fs::remove_dir_all(&work);
     }
