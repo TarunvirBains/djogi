@@ -31,7 +31,7 @@ use syn::parse::{Parse, ParseStream};
 
 /// Parse a comma-separated list of type paths.
 ///
-/// Accepts zero or more paths separated by commas. Trailing commas
+/// Accepts one or more paths separated by commas. Trailing commas
 /// are permitted so `djogi_main!(Elephant,)` is valid.
 struct ModelPaths {
     paths: Vec<Path>,
@@ -60,6 +60,17 @@ pub fn djogi_main(input: TokenStream) -> TokenStream {
         Ok(p) => p,
         Err(e) => return e.to_compile_error(),
     };
+
+    if paths.is_empty() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "djogi_main!() requires at least one model type.\
+ \nDjogi models are why an adopter uses djogi. If you have\
+  no #[derive(Model)] types, you do not need this macro —\
+   write your own entry point that calls `djogi_cli::run_from_env()` instead.",
+        )
+        .to_compile_error();
+    }
 
     let refs: Vec<_> = paths
         .iter()
@@ -145,21 +156,18 @@ mod tests {
     }
 
     #[test]
-    fn test_expand_no_models() {
-        // Empty input (no tokens) — still produces a valid main.
+    fn test_expand_empty_is_compile_error() {
+        // Empty input must produce a compile error per plan.md line 72.
         let input: TokenStream = TokenStream::new();
         let out = djogi_main(input);
         let s = out.to_string();
-
-        assert!(s.contains("fn main"), "output should contain 'fn main'");
         assert!(
-            s.contains("djogi_cli :: run_from_env"),
-            "output should call djogi_cli::run_from_env() even with no models"
+            s.contains("compile_error"),
+            "empty djogi_main!() must produce compile_error, got: {s}"
         );
-        // No descriptor references when no models are listed.
         assert!(
-            !s.contains("descriptor"),
-            "output should not contain descriptor refs for empty input, got: {s}"
+            !s.contains("fn main"),
+            "empty input must NOT produce a valid main function, got: {s}"
         );
     }
 
