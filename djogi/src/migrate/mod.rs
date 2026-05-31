@@ -132,7 +132,7 @@ pub use naming::{
 pub use pg_volatility::{Volatility, classify_default_expression};
 pub use pk_flip::{PkFlipError, lower_pk_flip_group};
 pub use policy::{OutOfOrderPolicy, is_localhost_connection};
-pub use projection::{BucketKey, ProjectionError, project_from_inventory};
+pub use projection::{BucketKey, ProjectionError, project_from_inventory, project_from_provider};
 pub use provider::{DescriptorProvider, InventoryDescriptorProvider};
 pub use repair::{
     LedgerChange, PartialApplyResolution, RepairConfirmation, RepairError, RepairReport,

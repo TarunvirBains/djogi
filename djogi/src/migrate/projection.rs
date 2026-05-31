@@ -351,40 +351,45 @@ fn insert_unique<K: Ord, V, E>(
     }
 }
 
-/// Project from a [`DescriptorProvider`] and run the relation-registry
-/// collision gate.
+/// Project the schema graph from an injected [`DescriptorProvider`]
+/// (#370).
 ///
-/// This is the canonical injectable entry point. The default production
-/// path calls this with [`InventoryDescriptorProvider`], which reads
-/// from the compiled-in `inventory` registry. Tests and external tooling
-/// can supply custom providers to inject synthetic descriptor sets without
-/// touching global state.
+/// # What
 ///
-/// The relation-accessor collision gate runs inside this function as
-/// the one deliberate ambient read of the global registry.
+/// The injectable sibling of [`project_from_inventory`]: it sources
+/// models/enums/apps/deferrability from `p` instead of the global
+/// `inventory` registry.
+///
+/// # Why
+///
+/// `djogi-cli`'s descriptor-dependent commands call this with the
+/// provider threaded from `run_with_provider`, so an adopter-linked
+/// binary projects from *its* models. The published standalone binary
+/// passes [`InventoryDescriptorProvider`] and reproduces today's path.
+///
+/// # Pre-projection registry gate
+///
+/// Runs the relation-accessor collision gate
+/// ([`crate::relation::registry::validate_global_relation_accessor_registry`])
+/// before any projection work — exactly as [`project_from_inventory`] does
+/// via `project_from_inventory_with_relation_validator`. The gate validates
+/// the binary's Rust-side relation accessor names; dropping it would be a
+/// silent correctness regression (review FIX_BEFORE_PLAN-1). The gate
+/// operates on link-time-collected [`crate::relation::registry::ReverseRelationMarker`]
+/// statics, not provider data — it is the one deliberate ambient read,
+/// documented as such in the trait boundary (§5.2 of the design spec).
 #[allow(clippy::result_large_err)]
-pub fn project_from_provider<P: DescriptorProvider>(
-    provider: P,
+pub fn project_from_provider(
+    p: &dyn DescriptorProvider,
 ) -> Result<BTreeMap<BucketKey, AppliedSchema>, ProjectionError> {
     crate::relation::registry::validate_global_relation_accessor_registry()
         .map_err(ProjectionError::RelationAccessorCollisions)?;
-
-    let generated_at = rfc3339_now_seconds();
-    let descriptors = provider.descriptors();
-
-    // Flatten all model descriptors from every bucket into a single iterator.
-    let models: Vec<&ModelDescriptor> = descriptors
-        .iter()
-        .flat_map(|(_, models)| models.iter())
-        .copied()
-        .collect();
-
     project_from_iters_with_deferrability(
-        models,
-        inventory::iter::<EnumDescriptor>(),
-        AppRegistry::all().iter(),
-        inventory::iter::<DeferrabilitySpec>(),
-        generated_at,
+        p.models(),
+        p.enums(),
+        p.apps().iter(),
+        p.deferrability_specs(),
+        rfc3339_now_seconds(),
     )
 }
 
@@ -399,7 +404,7 @@ pub fn project_from_provider<P: DescriptorProvider>(
 /// use [`project_from_provider`] directly with a synthetic provider.
 #[allow(clippy::result_large_err)]
 pub fn project_from_inventory() -> Result<BTreeMap<BucketKey, AppliedSchema>, ProjectionError> {
-    project_from_provider(InventoryDescriptorProvider)
+    project_from_provider(&InventoryDescriptorProvider::new())
 }
 
 /// Inner half of [`project_from_inventory`] with the relation-registry
@@ -6411,5 +6416,30 @@ mod tests {
             global.indexes[0].table, "tags",
             "synthetic index must be owned by the `tags` table"
         );
+    }
+
+    #[test]
+    fn project_from_provider_runs_validator_and_projects_empty() {
+        struct EmptyProvider;
+        impl crate::migrate::DescriptorProvider for EmptyProvider {
+            fn models(&self) -> Vec<&'static crate::descriptor::ModelDescriptor> {
+                Vec::new()
+            }
+            fn enums(&self) -> Vec<&'static crate::descriptor::EnumDescriptor> {
+                Vec::new()
+            }
+            fn apps(&self) -> &'static [crate::apps::AppDescriptor] {
+                crate::apps::AppRegistry::all()
+            }
+            fn deferrability_specs(&self) -> Vec<&'static crate::descriptor::DeferrabilitySpec> {
+                Vec::new()
+            }
+        }
+        let out = project_from_provider(&EmptyProvider).expect("clean registry projects");
+        let global = BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+        assert!(out.contains_key(&global), "global bucket always present");
     }
 }
