@@ -104,3 +104,8 @@ harness = true
 name = "adopter_linked_cli"
 path = "tests/internal/adopter_linked_cli.rs"
 harness = true
+
+[[test]]
+name = "descriptor_provider"
+path = "tests/internal/descriptor_provider.rs"
+harness = true
