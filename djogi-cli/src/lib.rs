@@ -782,7 +782,10 @@ pub fn run_with_provider(
 
 // ── Dispatch ──────────────────────────────────────────────────────────────
 
-fn dispatch_command(command: &TopCommand, provider: &dyn djogi::migrate::DescriptorProvider) -> ExitCode {
+fn dispatch_command(
+    command: &TopCommand,
+    provider: &dyn djogi::migrate::DescriptorProvider,
+) -> ExitCode {
     match command {
         TopCommand::Shell => {
             eprintln!("djogi shell: not yet implemented");

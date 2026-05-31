@@ -2962,7 +2962,12 @@ mod tests {
             true,  // allow_destructive — billing's snapshot will produce DROP ops
             false, // force_overwrite
             &empty_models,
-            &[],
+            &[AppLifecycle {
+                label: "billing".to_string(),
+                database: "main".to_string(),
+                renamed_from: None,
+                tombstone: true, // intentional removal channel
+            }],
             now,
             None, // pk_flip_join_table_option — no flip in this test
         );
