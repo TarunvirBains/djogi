@@ -3089,7 +3089,11 @@ mod tests {
             None,
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
         );
-        assert_eq!(result, ExitCode::from(2), "empty --reason must exit 2 before any DB work");
+        assert_eq!(
+            result,
+            ExitCode::from(2),
+            "empty --reason must exit 2 before any DB work"
+        );
     }
 
     #[test]
@@ -3102,7 +3106,11 @@ mod tests {
             None,
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
         );
-        assert_eq!(result, ExitCode::from(2), "whitespace-only --reason must exit 2 before any DB work");
+        assert_eq!(
+            result,
+            ExitCode::from(2),
+            "whitespace-only --reason must exit 2 before any DB work"
+        );
     }
 
     /// surface must map to exit `2` — a blind retry would hit the same
