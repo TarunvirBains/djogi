@@ -111,7 +111,10 @@ pub use diff::{
     PkFlipPartitionedMeta, PkFlipSelfFk, PkTypeFlipGroup, SchemaDelta, SchemaOperation,
     apply_pk_flip_join_table_option, diff_bucket_maps,
 };
-pub use docs::{DocsError, DocsReport, generate_docs, render_inventory, render_model_page};
+pub use docs::{
+    DocsError, DocsReport, generate_docs, generate_docs_with_provider, render_inventory,
+    render_model_page,
+};
 pub use guard::{
     DEFAULT_TIMEOUT as GUARD_DEFAULT_TIMEOUT, GuardError, LOCK_FILE_NAME, WorkspaceGuard,
     acquire as acquire_workspace_lock,
