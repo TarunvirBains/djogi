@@ -519,10 +519,8 @@ fn compose_with_inputs(
             // signals out-of-sync state via exit code.
             ExitCode::from(0)
         }
-        Err(ComposeError::LinkageDropWithoutModels { app_label, .. }) => {
-            eprintln!(
-                "djogi migrations compose: linkage drop without registered models for {app_label}"
-            );
+        Err(ComposeError::LinkageDropWithoutModels { ref text, .. }) => {
+            eprintln!("djogi migrations compose: {text}");
             // Exit 2 — refusal: models must be compiled in before dropping app linkage.
             ExitCode::from(2)
         }

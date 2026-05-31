@@ -99,3 +99,8 @@ harness = true
 name = "phase8_djogi_analyze_recommendations"
 path = "tests/internal/phase8_djogi_analyze_recommendations.rs"
 harness = true
+
+[[test]]
+name = "adopter_linked_cli"
+path = "tests/internal/adopter_linked_cli.rs"
+harness = true
