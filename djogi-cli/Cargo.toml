@@ -69,6 +69,10 @@ serde_json.workspace = true
 # crate (`djogi`) registers models via the same `inventory` crate;
 # the CLI binary must link the same version so the iter resolves.
 inventory.workspace = true
+# Re-exported from djogi-macros so adopters can use
+# `djogi_cli::djogi_main!(…)` and `djogi_cli::link_anchor!(Model)` at
+# the binary entry point to prevent LTO from dropping inventory data.
+djogi-macros.workspace = true
 
 # djogi#119 — the CLI integration tests below import shared helpers
 # from `djogi::testing::cli`, which is gated behind djogi's `testing`

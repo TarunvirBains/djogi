@@ -11,6 +11,10 @@
 //!   a many-to-many relation: the `ManyToMany<Target>` trait impl,
 //!   a named inherent accessor on the source type, and an
 //!   `inventory::submit!` registration record.
+//! - `djogi_main!(…)` — function-like macro generating `fn main()` that
+//!   references model types to prevent LTO linker from dropping inventory data.
+//! - `link_anchor!(ModelType)` — per-crate fallback emitting a `#[used]` static
+//!   that forces a model crate into the linkage graph.
 //!
 //! `#[derive(Model)]` is a no-op stub kept for potential future use.
 
@@ -18,8 +22,10 @@ mod apps;
 mod case;
 mod compose;
 mod djogi_enum;
+mod djogi_main;
 mod ident;
 mod jsonb_schema;
+mod link_anchor;
 mod many_to_many;
 mod model;
 mod primary_key_macro;
@@ -531,4 +537,42 @@ pub fn primary_key(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn trait_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     trait_impl::expand(attr.into(), item.into()).into()
+}
+
+/// Generate a `fn main()` that references model types to prevent the
+/// LTO linker from dropping inventory data, then delegates to
+/// `djogi_cli::run_from_env()`.
+///
+/// Referencing a single descriptor per crate forces ALL inventory from
+/// that crate into the final binary. This macro makes that reference
+/// explicit and auditable at the adopter's binary entry point.
+///
+/// # Usage
+///
+/// ```ignore
+/// djogi::djogi_main!(tracker::Elephant, billing::Invoice);
+/// ```
+#[proc_macro]
+pub fn djogi_main(input: TokenStream) -> TokenStream {
+    djogi_main::djogi_main(input.into()).into()
+}
+
+/// Emit a `#[used]` static that references the given model's
+/// descriptor, forcing the entire crate into the linkage graph even
+/// under aggressive LTO.
+///
+/// Use this per-crate fallback when `djogi_main!` cannot be used
+/// (e.g., the model lives in a library crate without a `main()`).
+/// Call from any `fn main()` or from a module guaranteed to be
+/// linked into the final binary.
+///
+/// # Usage
+///
+/// ```ignore
+/// // In each model crate's lib.rs:
+/// djogi::link_anchor!(MyModel);
+/// ```
+#[proc_macro]
+pub fn link_anchor(input: TokenStream) -> TokenStream {
+    link_anchor::link_anchor(input.into()).into()
 }

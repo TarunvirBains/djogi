@@ -574,6 +574,7 @@ dependencies = [
  "clap",
  "deadpool-postgres",
  "djogi",
+ "djogi-macros",
  "inventory",
  "serde",
  "serde_json",

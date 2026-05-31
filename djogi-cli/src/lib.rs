@@ -28,6 +28,10 @@ pub use crate::migrations::*;
 pub use crate::schema::*;
 pub use crate::verify::*;
 
+// Re-export proc macros so adopters write `djogi_cli::djogi_main!(…)` and
+// `djogi_cli::link_anchor!(Model)` instead of depending on `djogi-macros` directly.
+pub use djogi_macros::{djogi_main, link_anchor};
+
 // Re-export the boundary types so adopters/tests can name them without a
 // direct `djogi` dependency line.
 pub use djogi::migrate::{DescriptorProvider, InventoryDescriptorProvider};
