@@ -3075,6 +3075,36 @@ mod tests {
     // ── issue #354: baseline exit-code mapping ──────────────────────────
 
     /// The refusal-class `RunnerError` variants the baseline path can
+    /// `baseline_cmd` validates the `--reason` guard before any DB
+    /// work. An empty or whitespace-only reason must return exit 2
+    /// without touching the filesystem or network — the guard fires
+    /// on the CLI-owned string before the tokio runtime is even built.
+    #[test]
+    fn baseline_empty_reason_exits_code_2() {
+        let result = baseline_cmd(
+            "V00000000000000__baseline",
+            "description",
+            "",
+            None,
+            None,
+            Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
+        );
+        assert_eq!(result, ExitCode::from(2), "empty --reason must exit 2 before any DB work");
+    }
+
+    #[test]
+    fn baseline_whitespace_reason_exits_code_2() {
+        let result = baseline_cmd(
+            "V00000000000000__baseline",
+            "description",
+            "   ",
+            None,
+            None,
+            Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
+        );
+        assert_eq!(result, ExitCode::from(2), "whitespace-only --reason must exit 2 before any DB work");
+    }
+
     /// surface must map to exit `2` — a blind retry would hit the same
     /// condition, so CI must treat them as "operator must intervene"
     /// rather than retryable. A duplicate baseline version (terminal or
