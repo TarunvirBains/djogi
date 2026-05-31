@@ -74,8 +74,8 @@ impl std::fmt::Display for GeographySubtype {
 /// these directly — they appear in emitted `FieldDescriptor` literals.
 ///
 /// `Custom` exists for scalar types the framework doesn't model natively
-/// (e.g. `BYTEA`, schema-qualified domain names like
-/// `"public.positive_amount"`). For simple unqualified Postgres domains,
+/// (e.g. extension types like `"ltree"`, or schema-qualified domain names
+/// like `"public.positive_amount"`). For simple unqualified Postgres domains,
 /// `#[field(domain = "...")]` emits the dedicated [`Domain`] variant
 /// instead. The migration differ treats `Custom("FOO")` and `Custom("FOO")`
 /// as equal (string compare), so adding support for a new type is
@@ -1028,6 +1028,11 @@ mod tests {
     // `migrate/sql.rs`). These tests pin the Display surface so a future
     // refactor that drops or renames a variant fails at descriptor-level
     // before reaching the live-DB integration gate.
+
+    #[test]
+    fn bytea_field_sql_type_displays_as_upper_bytea() {
+        assert_eq!(format!("{}", FieldSqlType::Bytea), "BYTEA");
+    }
 
     #[test]
     fn inet_field_sql_type_displays_as_upper_inet() {
