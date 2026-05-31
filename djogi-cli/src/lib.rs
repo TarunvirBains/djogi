@@ -29,7 +29,9 @@ pub use crate::schema::*;
 pub use crate::verify::*;
 
 // Re-export proc macros so adopters write `djogi_cli::djogi_main!(…)` and
-// `djogi_cli::link_anchor!(Model)` instead of depending on `djogi-macros` directly.
+// `djogi_cli::link_anchor!()` instead of depending on `djogi-macros` directly.
+// `link_anchor!` takes no arguments — it is a per-crate marker placed once in
+// each model crate's `lib.rs`.
 pub use djogi_macros::{djogi_main, link_anchor};
 
 // Re-export the boundary types so adopters/tests can name them without a
@@ -753,14 +755,30 @@ pub fn run_from_env() -> ExitCode {
     )
 }
 
-/// Run the CLI with explicit argument slice. Useful for testing.
+/// Run the CLI with an explicit argument iterable. Useful for testing and
+/// embedding.
+///
+/// Accepts any `IntoIterator<Item = T>` where `T: Into<OsString> + Clone`,
+/// matching the bound of [`clap::Parser::try_parse_from`]. In practice,
+/// arrays of `&str` (e.g. `["djogi", "migrations", "compose"]`) and
+/// `Vec<String>` both satisfy this bound.
 ///
 /// Falls back to [`djogi::migrate::InventoryDescriptorProvider`] for
 /// descriptors.
-pub fn run_with_args(args: &[String]) -> ExitCode {
+pub fn run_with_args<I, T>(args: I) -> ExitCode
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
     let cli = match Cli::try_parse_from(args) {
         Ok(c) => c,
-        Err(e) => return ExitCode::from((e.exit_code() & 0xFF) as u8),
+        Err(e) => {
+            // Print the clap error / `--help` / `--version` text before
+            // returning, matching `run_from_env`. Without this, parse
+            // errors and `--help` would be silent.
+            let _ = e.print();
+            return ExitCode::from(if e.use_stderr() { 2 } else { 0 });
+        }
     };
     dispatch_command(
         &cli.command,
@@ -768,18 +786,30 @@ pub fn run_with_args(args: &[String]) -> ExitCode {
     )
 }
 
-/// Run the CLI with an explicit [`DescriptorProvider`].
+/// Run the CLI with an explicit argument iterable and a [`DescriptorProvider`].
+///
+/// Accepts any `IntoIterator<Item = T>` where `T: Into<OsString> + Clone`,
+/// matching the bound of [`clap::Parser::try_parse_from`].
 ///
 /// Adopter-linked binaries pass their own provider so descriptor-dependent
 /// commands (`compose`, `verify`, `schema`, `docs`) see the adopter's
 /// models instead of an empty inventory.
-pub fn run_with_provider(
-    args: &[String],
+pub fn run_with_provider<I, T>(
+    args: I,
     provider: &dyn djogi::migrate::DescriptorProvider,
-) -> ExitCode {
+) -> ExitCode
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
     let cli = match Cli::try_parse_from(args) {
         Ok(c) => c,
-        Err(e) => return ExitCode::from((e.exit_code() & 0xFF) as u8),
+        Err(e) => {
+            // Print the clap error / `--help` / `--version` text before
+            // returning, matching `run_from_env`.
+            let _ = e.print();
+            return ExitCode::from(if e.use_stderr() { 2 } else { 0 });
+        }
     };
     dispatch_command(&cli.command, provider)
 }
@@ -974,14 +1004,45 @@ fn dispatch_command(
     }
 }
 
-/// Print a diagnostic when a descriptor-dependent command finds zero
-/// registered models. Exit code 2 signals "operator must intervene"
-/// — the binary was likely linked without an adopter model crate.
+/// Print the §5.6 dual-cause diagnostic when a descriptor-dependent
+/// command (`compose` / `verify` / `schema` / `docs`) resolves zero model
+/// descriptors, and exits the command with code `2` (refusal — the
+/// command refuses because it cannot see the schema it needs).
+///
+/// The message is dual-cause because zero descriptors has two distinct
+/// causes the operator must be able to tell apart:
+///
+/// 1. they ran the *standalone published* `djogi`, which links no
+///    application models (build an adopter-linked `djogi` and run from it;
+///    the standalone binary can still `migrations apply`); or
+/// 2. this *is* their adopter-linked `djogi` but the linker dropped an
+///    unreferenced model crate (ensure every `#[derive(Model)]` crate is
+///    referenced via `link_models` / `djogi_main!`).
+///
+/// The first line is kept verbatim in sync with the troubleshooting
+/// anchor in `docs/guide/adopter-cli.md` ("no djogi models are registered
+/// in this binary") so an operator who searches the message lands on the
+/// guide section that explains it.
+///
+/// `command` is the failing command name (e.g. `"migrations compose"`),
+/// echoed so the operator knows which invocation refused. The single
+/// emitter feeds `compose`, `verify`, `schema`, and `docs`, so one message
+/// covers all four.
 pub(crate) fn print_zero_descriptor_diagnostic(command: &str) {
-    eprintln!(
-        "djogi {}: no models registered — link the binary against a crate that uses #[derive(Model)]",
-        command,
-    );
+    eprintln!("error: no djogi models are registered in this binary (djogi {command}).");
+    eprintln!();
+    eprintln!("Descriptor-dependent commands (compose, verify, schema, docs) require a");
+    eprintln!("djogi binary linked with your model crates.");
+    eprintln!();
+    eprintln!("  • If you ran the standalone published `djogi`: that binary links no");
+    eprintln!("    application models. Build an adopter-linked `djogi` (see the adopter");
+    eprintln!("    CLI guide: docs/guide/adopter-cli.md) and run the command from it.");
+    eprintln!("    The standalone binary can still run `djogi migrations apply` against");
+    eprintln!("    already-composed pending artifacts.");
+    eprintln!();
+    eprintln!("  • If this IS your adopter-linked `djogi`: ensure your bin references");
+    eprintln!("    every crate that defines `#[derive(Model)]` (link_models / djogi_main!),");
+    eprintln!("    or the linker may have dropped an unreferenced model crate.");
 }
 
 #[cfg(test)]

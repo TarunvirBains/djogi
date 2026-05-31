@@ -65,10 +65,7 @@ impl DescriptorProvider for ObservableProvider {
 /// unrecognized commands, before any descriptor provider is consulted.
 #[test]
 fn unknown_subcommand_returns_failure() {
-    let result = djogi_cli::run_with_args(&[
-        String::from("djogi"),
-        String::from("definitely_not_a_real_subcommand"),
-    ]);
+    let result = djogi_cli::run_with_args(["djogi", "definitely_not_a_real_subcommand"]);
     assert_eq!(
         result,
         ExitCode::from(2),
@@ -83,7 +80,7 @@ fn unknown_subcommand_returns_failure() {
 /// is threaded through, confirming the help path is purely structural.
 #[test]
 fn help_flag_returns_success() {
-    let result = djogi_cli::run_with_args(&[String::from("djogi"), String::from("--help")]);
+    let result = djogi_cli::run_with_args(["djogi", "--help"]);
     assert_eq!(result, ExitCode::SUCCESS, "--help should succeed");
 }
 
@@ -97,15 +94,7 @@ fn help_flag_returns_success() {
 #[test]
 fn schema_with_empty_provider_returns_failure_and_consults_provider() {
     let provider = ObservableProvider::new();
-    let result = djogi_cli::run_with_provider(
-        &[
-            String::from("djogi"),
-            String::from("schema"),
-            String::from("--format"),
-            String::from("json"),
-        ],
-        &provider,
-    );
+    let result = djogi_cli::run_with_provider(["djogi", "schema", "--format", "json"], &provider);
 
     // Non-success signals the zero-model diagnostic path.
     assert_eq!(

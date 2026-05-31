@@ -70,14 +70,28 @@ The `djogi_main!` macro expands to a `main` function that:
 
 **Option C — Link anchor (for large workspaces):**
 
-If maintaining the model type list is burdensome, place a `link_anchor!` in each model crate's `lib.rs`:
+If maintaining the model type list is burdensome, place a `link_anchor!` in each model crate's `lib.rs`. It takes no arguments — it is a per-crate marker that emits one `__djogi_link_anchor()` symbol per crate:
 
 ```rust
-// In each model crate's lib.rs:
+// In each model crate's lib.rs, once:
 djogi_cli::link_anchor!();
 ```
 
-Then use the macro without type arguments, or call `link_models()` that references the anchor from each crate. The anchor emits a linker symbol that prevents the crate's inventory statics from being dead-stripped.
+Then write a hand-written `fn main()` that references each model crate's anchor once and calls `djogi_cli::run_from_env()`:
+
+```rust
+// src/bin/djogi.rs
+fn main() -> std::process::ExitCode {
+    // One reference per model crate. Referencing the anchor pulls the
+    // crate's rlib member into the binary, so its #[derive(Model)]
+    // inventory statics survive --gc-sections / LTO.
+    tracker::__djogi_link_anchor();
+    billing::__djogi_link_anchor();
+    djogi_cli::run_from_env()
+}
+```
+
+The anchor is `#[doc(hidden)]` and carries the `#[used]` attribute that prevents the crate's inventory statics from being dead-stripped. As with `link_models` / `djogi_main!`, you must reference **every** crate that defines `#[model]` structs — the anchor only removes the per-model type list, not the per-crate exhaustiveness requirement.
 
 ### Workspace Layout Example
 
@@ -173,9 +187,9 @@ djogi migrations apply
 
 ## 4. Troubleshooting
 
-### "No djogi models are registered in this binary"
+### "no djogi models are registered in this binary"
 
-This diagnostic means a descriptor-dependent command (`compose`, `verify`, `schema`, or `docs`) resolved zero model descriptors. Causes:
+This is the exact first line the CLI prints (`error: no djogi models are registered in this binary (djogi <command>).`) when a descriptor-dependent command (`compose`, `verify`, `schema`, or `docs`) resolves zero model descriptors. The full message names both causes below. Causes:
 
 **You ran the standalone published `djogi` binary.** That binary links no application models. Build an adopter-linked binary (see [Minimal Adopter Setup](#2-minimal-adopter-setup)) and run the command from it. The standalone binary can still run `djogi migrations apply` against already-composed artifacts.
 

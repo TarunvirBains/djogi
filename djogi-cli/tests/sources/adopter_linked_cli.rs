@@ -1,13 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-// Adopter-linked `djogi` CLI integration tests.
+// Adopter-linked `djogi` CLI integration tests (#370, plan Task 9).
 //
-// Verifies that a djogi binary published by an adopter (separate workspace,
-// separate Cargo.lock, real `#[derive(Model)]` structs) behaves identically
-// to the framework's own binary for compose/verify operations, and that
-// dead-stripping of unreferenced model crates is detectable at runtime.
+// Each test builds a fixture `djogi` binary (or the workspace's own
+// standalone `djogi`) and runs it as a subprocess, asserting the
+// descriptor-provider boundary end to end:
+//
+//   * forced fixture (`adopter_app`) links BOTH model crates → all three
+//     models discovered by `schema` AND `compose`;
+//   * unforced fixture (`adopter_app_unforced`) references only `tracker`
+//     → the `billing` crate dead-strips, so `Invoice` is invisible and the
+//     linkage-aware drop guard fires;
+//   * the standalone published `djogi` links zero models → descriptor
+//     commands refuse with the §5.6 dual-cause diagnostic, while `verify`
+//     degrades to snapshot-only when on-disk snapshots exist.
+//
+// Discovery is asserted against the real migration artifacts compose
+// writes — committed up-SQL under `migrations/<db>/<app>/<version>.sdjql`
+// and pending JSON under `target/djogi_pending/` — never a workspace-root
+// `schema_snapshot.json` (compose writes no such file).
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -15,603 +27,625 @@ use djogi::testing::cli::{
     current_database, djogi_binary_path, temp_workspace, write_minimal_djogi_toml,
 };
 
-/// Build the adopter fixture workspace in release mode and return the path to
-/// the `djogi` binary inside it.
-fn build_fixture_bin(fixture_name: &str) -> PathBuf {
-    let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join(fixture_name);
-    assert!(
-        fixture_dir.is_dir(),
-        "fixture directory not found: {:?}",
-        fixture_dir
-    );
+// ── Path resolution ─────────────────────────────────────────────────────────
 
-    let status = Command::new("cargo")
-        .arg("build")
-        .arg("--release")
-        .arg("--manifest-path")
-        .arg(fixture_dir.join("Cargo.toml"))
-        // Adopter fixture is an isolated workspace — unset CARGO_TARGET_DIR
-        // so it builds into its own target/ (not the shared worktree cache).
-        .env_remove("CARGO_TARGET_DIR")
-        .status()
-        .expect("cargo build failed for adopter fixture");
-    assert!(
-        status.success(),
-        "cargo build failed for adopter fixture '{}'",
-        fixture_name
-    );
-
-    fixture_dir.join("target").join("release").join("djogi")
+/// The `djogi-cli` crate root. `CARGO_MANIFEST_DIR` resolves to the
+/// `djogi-cli/` crate directory when this integration test runs (cargo's
+/// standard convention).
+fn cli_crate_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Resolve DATABASE_URL from the environment for test workspace setup.
+/// The djogi workspace root — exactly ONE parent of the crate dir
+/// (`djogi-cli` is a top-level workspace member, so the root is
+/// `CARGO_MANIFEST_DIR/..`).
+fn workspace_root() -> PathBuf {
+    cli_crate_dir()
+        .parent()
+        .expect("djogi-cli has a parent (the workspace root)")
+        .to_path_buf()
+}
+
+// ── Fixture / binary builders ────────────────────────────────────────────────
+
+/// Build the named fixture's `djogi` binary and return its path.
+///
+/// The fixtures are three-crate workspaces under
+/// `djogi-cli/tests/fixtures/<fixture>/`. The `djogi` binary lives in the
+/// `bin` member, so the build targets the workspace manifest with
+/// `--bin djogi`. Artifacts land under the OUTER workspace `target/` (a
+/// dedicated subdir) via `--target-dir`, with `CARGO_TARGET_DIR` cleared so
+/// the parent invocation's env does not leak in. `--locked` keeps the
+/// fixture build deterministic against the committed `Cargo.lock`.
+fn build_fixture_djogi(fixture: &str, target_subdir: &str) -> PathBuf {
+    let manifest = cli_crate_dir()
+        .join("tests/fixtures")
+        .join(fixture)
+        .join("Cargo.toml");
+    assert!(
+        manifest.is_file(),
+        "fixture manifest not found: {}",
+        manifest.display()
+    );
+    let target_dir = workspace_root().join("target").join(target_subdir);
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let status = Command::new(&cargo)
+        .arg("build")
+        // Match the CI release link profile the linkage spike used.
+        .arg("--release")
+        .arg("--locked")
+        .arg("--bin")
+        .arg("djogi")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("--target-dir")
+        .arg(&target_dir)
+        .env_remove("CARGO_TARGET_DIR")
+        .status()
+        .expect("spawn cargo build for fixture");
+    assert!(status.success(), "fixture {fixture} failed to build");
+    target_dir.join("release").join("djogi")
+}
+
+// ── Workspace / output helpers ───────────────────────────────────────────────
+
+/// Make a fresh temp dir and write a minimal `Djogi.toml`. For
+/// `schema` / `compose` (no DB) a dummy URL suffices — neither opens a
+/// Postgres connection.
+fn tempdir_with_djogi_toml() -> PathBuf {
+    let dir = temp_workspace("370-adopter");
+    write_minimal_djogi_toml(&dir, "postgres://localhost/none");
+    dir
+}
+
+/// Run `<bin> schema --format json` in `work`, assert success, return
+/// stdout as a `String`. `schema` reads the linked inventory and needs no
+/// workspace flag — it runs in `work` purely so a `Djogi.toml` is present
+/// for the (unused-by-schema) config surface.
+fn run_schema_json(bin: &Path, work: &Path) -> String {
+    let out = Command::new(bin)
+        .args(["schema", "--format", "json"])
+        .current_dir(work)
+        .output()
+        .expect("run fixture djogi schema");
+    assert!(
+        out.status.success(),
+        "schema exit: {:?}\nstderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Walk `work/migrations/` recursively and concatenate every committed
+/// up-SQL file (`*.sdjql`, excluding `*.down.sdjql`). The fixture models
+/// carry no `#[model(app = …)]`, so they project into the synthetic global
+/// bucket and their `CREATE TABLE`s land under
+/// `migrations/main/_global_/<version>.sdjql`.
+fn read_all_composed_up_sql(work: &Path) -> String {
+    let mut out = String::new();
+    for path in walk_sdjql(&work.join("migrations")) {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if name.ends_with(".down.sdjql") {
+            continue; // up-SQL only
+        }
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            out.push_str(&contents);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Concatenate the contents of every `*.sdjql` (up AND down) under
+/// `work/migrations/` — used to assert no DROP statement was emitted.
+fn read_all_sdjql(work: &Path) -> String {
+    let mut out = String::new();
+    for path in walk_sdjql(&work.join("migrations")) {
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            out.push_str(&contents);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Recursively collect every `*.sdjql` path under `root` (a small explicit
+/// stack walk — `walkdir` is not a dependency). Returns an empty vector
+/// when `root` does not exist.
+fn walk_sdjql(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("sdjql") {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// True when `path` has no directory entries (or does not exist).
+fn dir_is_empty(path: &Path) -> bool {
+    std::fs::read_dir(path)
+        .map(|mut d| d.next().is_none())
+        .unwrap_or(true)
+}
+
+/// Resolve `DATABASE_URL` from the environment for the DB-backed tests.
 fn database_url() -> String {
     std::env::var("DATABASE_URL").expect("DATABASE_URL not set")
 }
 
-/// Write a minimal `AppliedSchema` JSON that registers the billing app with one
-/// table (invoices) so the CLI considers it linked. Returns the path to the
-/// snapshot file inside the temp directory.
-fn write_billing_snapshot_with_table(tmp: &Path) -> PathBuf {
-    let json = serde_json::json!({
-        "format_version": 1,
-        "tables": [
-            {
-                "name": "invoices",
-                "columns": [
-                    {
-                        "name": "id",
-                        "pg_type": "bigint",
-                        "nullable": false,
-                        "default_expr": "heerid_next_desc()"
-                    },
-                    {
-                        "name": "reference",
-                        "pg_type": "text",
-                        "nullable": false
-                    },
-                    {
-                        "name": "created_at",
-                        "pg_type": "timestamp with time zone",
-                        "nullable": false,
-                        "default_expr": "CURRENT_TIMESTAMP"
-                    },
-                    {
-                        "name": "updated_at",
-                        "pg_type": "timestamp with time zone",
-                        "nullable": false,
-                        "default_expr": "CURRENT_TIMESTAMP"
-                    }
-                ],
-                "primary_key": {
-                    "type": "SingleColumn",
-                    "column_name": "id"
-                }
-            }
-        ],
-        "registered_apps": ["billing"]
-    });
-
-    let snapshot_path = tmp.join("schema_snapshot.json");
-    let mut f = std::fs::File::create(&snapshot_path).expect("create schema_snapshot.json");
-    f.write_all(serde_json::to_string_pretty(&json).unwrap().as_bytes())
-        .expect("write schema_snapshot.json");
-    snapshot_path
+/// Replace the database name in a PostgreSQL connection URL while
+/// preserving the scheme, credentials, host, and port. Used to splice the
+/// per-test database name (a bare NAME from `current_database`) into the
+/// harness `DATABASE_URL` so the spawned `djogi` connects to the
+/// provisioned per-test DB rather than treating the bare name as a URL.
+fn splice_database_name(base_url: &str, db_name: &str) -> String {
+    // Postgres URL format: postgres://[user[:password]@]host[:port]/database
+    if let Some(slash_pos) = base_url.rfind('/') {
+        let prefix = &base_url[..slash_pos + 1];
+        return format!("{prefix}{db_name}");
+    }
+    // Fallback: if URL has no slash (malformed), just use base as-is.
+    base_url.to_string()
 }
 
-// ── T-LINK: Multi-model + cross-crate retention ─────────────────────────────
+/// Write a committed `billing`-app snapshot recording one table
+/// (`invoices`) plus `registered_apps: ["billing"]` at the canonical
+/// `migrations/main/billing/schema_snapshot.json` path — exactly where
+/// `compose` reads committed snapshots from. Writing it to the workspace
+/// ROOT (as an earlier driver did) would leave compose blind to it, so the
+/// differ would never compute the DROP and the linkage guard would never
+/// fire.
+///
+/// The snapshot is built from djogi's typed `AppliedSchema` and persisted
+/// via [`djogi::migrate::save_snapshot`], so it stays byte-valid against
+/// the live snapshot format (a hand-written JSON blob would silently rot
+/// when the schema structs evolve).
+fn write_billing_snapshot_with_table(work: &Path) {
+    use djogi::migrate::{
+        AppliedSchema, BucketKey, ColumnSchema, PkKindSchema, PrimaryKeySchema,
+        SNAPSHOT_FORMAT_VERSION, TableSchema,
+    };
+    use std::collections::BTreeMap;
 
-#[test]
-fn t_link_multi_model_cross_crate_retention() {
-    // Build forced fixture binary (references ALL models across both crates).
-    let bin = build_fixture_bin("adopter_app");
+    let bucket = BucketKey {
+        database: "main".to_string(),
+        app: "billing".to_string(),
+    };
 
-    let workspace = temp_workspace("t9-link-forced");
-    write_minimal_djogi_toml(&workspace, &database_url());
+    let id_column = ColumnSchema {
+        check: None,
+        comment: None,
+        default_sql: Some("heerid_next_desc()".to_string()),
+        foreign_key: None,
+        generated: None,
+        identity: None,
+        index_type: None,
+        indexed: false,
+        max_length: None,
+        name: "id".to_string(),
+        nullable: false,
+        on_delete: None,
+        outbox_exclude: false,
+        rationale: None,
+        relation_kind: None,
+        renamed_from: None,
+        sequence_within: None,
+        sql_type: "BIGINT".to_string(),
+        unique: false,
+        type_change_using: None,
+    };
+    let reference_column = ColumnSchema {
+        // A plain TEXT column — no server default, unlike the PK.
+        default_sql: None,
+        name: "reference".to_string(),
+        sql_type: "TEXT".to_string(),
+        ..id_column.clone()
+    };
 
-    let output = Command::new(&bin)
-        .args(["migrations", "compose"])
-        .arg("--workspace")
-        .arg(&workspace)
-        .env("DATABASE_URL", database_url())
-        .output()
-        .expect("failed to execute child process");
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let invoices = TableSchema {
+        app: Some("billing".to_string()),
+        columns: vec![id_column, reference_column],
+        exclusion_constraints: Vec::new(),
+        fts: None,
+        is_through: false,
+        moved_from_app: None,
+        partition: None,
+        primary_key: PrimaryKeySchema {
+            columns: vec!["id".to_string()],
+            kind: PkKindSchema::HeerIdRecencyBiased,
+        },
+        rationale: None,
+        renamed_from: None,
+        rls_enabled: false,
+        storage_params: None,
+        table: "invoices".to_string(),
+        table_comment: None,
+        tablespace: None,
+        tenant_key: None,
+    };
 
-    // Should succeed (exit 0).
-    assert!(
-        output.status.success(),
-        "forced fixture compose should succeed; stderr: {stderr}"
-    );
+    let mut models = BTreeMap::new();
+    models.insert("invoices".to_string(), invoices);
 
-    // Verify the compose plan contains all three tables.
-    let snapshot_path = workspace.join("schema_snapshot.json");
-    let snapshot_json =
-        std::fs::read_to_string(&snapshot_path).unwrap_or_else(|_| String::from("{}"));
-    let snapshot: serde_json::Value =
-        serde_json::from_str(&snapshot_json).expect("parse schema_snapshot.json");
+    let snapshot = AppliedSchema {
+        djogi_version: "0.1.0".to_string(),
+        enums: BTreeMap::new(),
+        format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+        generated_at: "2026-04-25T00:00:00Z".to_string(),
+        indexes: Vec::new(),
+        models,
+        registered_apps: vec!["billing".to_string()],
+    };
 
-    let tables = snapshot.get("tables").expect("tables key in snapshot");
-    let table_names: Vec<&str> = tables
-        .as_array()
-        .expect("tables is array")
-        .iter()
-        .map(|t| t.get("name").expect("table name").as_str().expect("string"))
-        .collect();
-
-    assert!(
-        table_names.contains(&"elephants"),
-        "schema_snapshot.json should contain elephants; got {:?}",
-        table_names
-    );
-    assert!(
-        table_names.contains(&"herds"),
-        "schema_snapshot.json should contain herds; got {:?}",
-        table_names
-    );
-    assert!(
-        table_names.contains(&"invoices"),
-        "schema_snapshot.json should contain invoices (cross-crate); got {:?}",
-        table_names
-    );
-
-    // ── Unforced fixture: billing NOT referenced, must be dead-stripped ──
-    let unforced_bin = build_fixture_bin("adopter_app_unforced");
-
-    let unforced_workspace = temp_workspace("t9-link-unforced");
-    write_minimal_djogi_toml(&unforced_workspace, &database_url());
-
-    let unforced_output = Command::new(&unforced_bin)
-        .args(["migrations", "compose", "--allow-destructive"])
-        .arg("--workspace")
-        .arg(&unforced_workspace)
-        .env("DATABASE_URL", database_url())
-        .output()
-        .expect("failed to execute child process");
-    let unforced_stderr = String::from_utf8_lossy(&unforced_output.stderr).to_string();
-
-    assert!(
-        unforced_output.status.success(),
-        "unforced fixture compose should succeed; stderr: {unforced_stderr}"
-    );
-
-    let unforced_snapshot_path = unforced_workspace.join("schema_snapshot.json");
-    let unforced_snapshot_json =
-        std::fs::read_to_string(&unforced_snapshot_path).unwrap_or_else(|_| String::from("{}"));
-    let unforced_snapshot: serde_json::Value =
-        serde_json::from_str(&unforced_snapshot_json).expect("parse unforced schema_snapshot.json");
-
-    let unforced_tables = unforced_snapshot
-        .get("tables")
-        .expect("tables key in unforced snapshot");
-    let unforced_table_names: Vec<&str> = unforced_tables
-        .as_array()
-        .expect("unforced tables is array")
-        .iter()
-        .map(|t| t.get("name").expect("table name").as_str().expect("string"))
-        .collect();
-
-    assert!(
-        unforced_table_names.contains(&"elephants"),
-        "unforced binary should see tracker::Elephant; got {:?}",
-        unforced_table_names
-    );
-    assert!(
-        unforced_table_names.contains(&"herds"),
-        "unforced binary should see tracker::Herd; got {:?}",
-        unforced_table_names
-    );
-    assert!(
-        !unforced_table_names.contains(&"invoices"),
-        "unforced binary must NOT see billing::Invoice (dead-stripped — core linkage proof); got {:?}",
-        unforced_table_names
-    );
+    let path = djogi::migrate::snapshot_path(work, &bucket);
+    djogi::migrate::save_snapshot(&snapshot, &path).expect("write billing schema_snapshot.json");
 }
 
-// ── T-DROPGUARD: Linkage guard prevents destructive drop ────────────────────
+// ── T-POS: compose + schema discover all models from the provider ────────────
 
 #[test]
-fn t_dropguard_linkage_guard_prevents_destructive_drop() {
-    let bin = build_fixture_bin("adopter_app_unforced");
+fn t_pos_adopter_binary_discovers_all_models() {
+    let bin = build_fixture_djogi("adopter_app", "adopter_app_fixture");
+    let work = tempdir_with_djogi_toml();
 
-    let workspace = temp_workspace("t9-dropguard-unforced");
-    write_minimal_djogi_toml(&workspace, &database_url());
-    write_billing_snapshot_with_table(&workspace);
+    // Discovery via schema (cheapest, no DB).
+    let json = run_schema_json(&bin, &work);
+    assert!(json.contains("elephants"), "Elephant missing: {json}");
+    assert!(json.contains("herds"), "Herd missing: {json}");
+    assert!(json.contains("invoices"), "Invoice missing: {json}");
 
-    let output = Command::new(&bin)
-        .args(["migrations", "compose", "--allow-destructive"])
-        .arg("--workspace")
-        .arg(&workspace)
-        .env("DATABASE_URL", database_url())
+    // Also prove COMPOSE discovers all three (the actual migration path,
+    // not just introspection). compose writes pending JSON + committed SQL
+    // with no DB connection.
+    let compose = Command::new(&bin)
+        .args(["migrations", "compose", "--name", "init"])
+        .current_dir(&work)
         .output()
-        .expect("failed to execute child process");
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        .expect("run fixture djogi compose");
+    assert!(
+        compose.status.success(),
+        "compose exit: {:?}\nstderr: {}",
+        compose.status,
+        String::from_utf8_lossy(&compose.stderr)
+    );
+    assert!(
+        work.join("target/djogi_pending").exists(),
+        "compose must write pending artifacts under target/djogi_pending"
+    );
+    let composed_sql = read_all_composed_up_sql(&work);
+    for table in ["elephants", "herds", "invoices"] {
+        assert!(
+            composed_sql.contains(table),
+            "compose missed {table}:\n{composed_sql}"
+        );
+    }
+}
 
-    // Must refuse with exit 2 (refusal, not a crash).
-    let code = output.status.code().expect("compose exited with signal");
+// ── T-NAME: command-name contract ────────────────────────────────────────────
+
+#[test]
+fn t_name_binary_is_named_djogi_and_surface_matches() {
+    let bin = build_fixture_djogi("adopter_app", "adopter_app_fixture");
     assert_eq!(
-        code, 2,
-        "unforced compose should refuse with exit 2; got {}; stderr: {stderr}",
-        code
+        bin.file_name().expect("fixture bin has a file name"),
+        "djogi",
+        "fixture bin must be named `djogi`, not a project-specific name"
+    );
+    // The surface is `djogi migrations …`, not `cargo djogi` and not a
+    // project-specific command.
+    let out = Command::new(&bin)
+        .args(["migrations", "--help"])
+        .output()
+        .expect("run djogi migrations --help");
+    assert!(
+        out.status.success(),
+        "`djogi migrations --help` must succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let help = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        help.contains("compose"),
+        "migrations surface must expose `compose`: {help}"
+    );
+}
+
+// ── T-LINK: force vs no-force visibility (cross-crate dead-strip) ─────────────
+
+#[test]
+fn t_link_unforced_crate_is_invisible_forced_is_visible() {
+    let forced = build_fixture_djogi("adopter_app", "adopter_app_fixture");
+    let unforced = build_fixture_djogi("adopter_app_unforced", "adopter_app_unforced_fixture");
+    let work = tempdir_with_djogi_toml();
+
+    let forced_json = run_schema_json(&forced, &work);
+    assert!(
+        forced_json.contains("invoices"),
+        "billing forced ⇒ Invoice visible: {forced_json}"
+    );
+    assert!(
+        forced_json.contains("elephants"),
+        "tracker forced ⇒ Elephant visible: {forced_json}"
     );
 
-    // Linkage hint must mention billing.
+    let unforced_json = run_schema_json(&unforced, &work);
+    assert!(
+        unforced_json.contains("elephants"),
+        "tracker is forced in both fixtures ⇒ Elephant visible: {unforced_json}"
+    );
+    // Load-bearing assertion: `billing` is a SEPARATE crate the unforced
+    // bin references nothing from, so the linker drops it whole — the
+    // §5.5 partial-miss hazard. Robust regardless of the intra-crate
+    // sibling-strip question (which the spike settled).
+    assert!(
+        !unforced_json.contains("invoices"),
+        "billing UNFORCED ⇒ Invoice invisible (the §5.5 partial-miss hazard): {unforced_json}"
+    );
+}
+
+// ── T-DROPGUARD: linkage guard fires with --allow-destructive, zero DROPs ─────
+
+#[test]
+fn t_dropguard_unlinked_app_refuses_even_with_allow_destructive() {
+    let unforced = build_fixture_djogi("adopter_app_unforced", "adopter_app_unforced_fixture");
+    let work = tempdir_with_djogi_toml();
+    // Seed a committed snapshot for the `billing` app with one table +
+    // registered_apps. The unforced binary projects ZERO models for
+    // `billing`, so the linkage-aware drop guard must refuse.
+    write_billing_snapshot_with_table(&work);
+
+    let out = Command::new(&unforced)
+        .args([
+            "migrations",
+            "compose",
+            "--allow-destructive",
+            "--name",
+            "drop_billing",
+        ])
+        .current_dir(&work)
+        .output()
+        .expect("run unforced compose");
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "linkage guard must refuse (exit 2) even with --allow-destructive; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no models for it are linked now"),
+        "linkage-specific hint expected: {stderr}"
+    );
     assert!(
         stderr.contains("billing"),
-        "stderr should mention 'billing'; got: {stderr}"
+        "diagnostic must name the unlinked app: {stderr}"
+    );
+
+    // FIX-2: assert ZERO DROP statements were emitted. The guard fires at
+    // compose's step 2b — AFTER Phase-0 auto-emit (step 0) but BEFORE the
+    // differ (step 3). So:
+    //
+    //   * the billing app gets NO migration file at all — its directory
+    //     holds only the seed `schema_snapshot.json`. The DROP-TABLE
+    //     migration the guard prevented is therefore absent;
+    //   * no `*.sdjql` anywhere contains a DROP. The only migration written
+    //     is the Phase-0 bootstrap (comment-only down, no DROP). Because the
+    //     differ never ran, the linked tracker models produced no migration
+    //     either — a successful run WOULD emit a tracker CREATE whose `.down`
+    //     contains `DROP TABLE`, so a guard that leaked past step 3 would
+    //     trip this assertion. That makes the check non-tautological;
+    //   * no billing pending JSON was staged. (Phase-0's own
+    //     `target/djogi_pending/main/_global_.json` legitimately exists —
+    //     Phase-0 emission precedes the guard — so the bare directory's
+    //     existence is NOT a refusal violation; the billing-specific pending
+    //     artifact is.)
+    let billing_dir = work.join("migrations/main/billing");
+    let billing_migrations: Vec<_> = walk_sdjql(&billing_dir);
+    assert!(
+        billing_migrations.is_empty(),
+        "guard must emit no billing migration; found: {billing_migrations:?}"
+    );
+    let all_sql = read_all_sdjql(&work);
+    assert!(
+        !all_sql.to_uppercase().contains("DROP"),
+        "guard must emit no DROP statement (differ never ran); found SQL:\n{all_sql}"
+    );
+    assert!(
+        !work.join("target/djogi_pending/main/billing.json").exists(),
+        "guard refusal must stage no billing pending artifact"
     );
 }
 
-// ── T-POS: Compose discovers all models from provider ───────────────────────
+// ── T-PARITY: schema and compose see the same models (compose output) ────────
 
 #[test]
-fn t_pos_compose_discovers_all_models_from_provider() {
-    // Plan T-POS: compose and schema discover all models from provider
-    // (not just the introspection path). Codex BLOCK 12: compose must
-    // see the same models as schema — if only one reads the provider,
-    // they diverge.
+fn t_parity_schema_and_compose_see_same_models() {
+    // Parity is proven on COMPOSE output, not just schema output — schema
+    // and compose could diverge if only one reads the provider. Run BOTH
+    // and assert the same three tables appear in schema JSON AND in the
+    // composed migration artifacts.
+    let bin = build_fixture_djogi("adopter_app", "adopter_app_fixture");
+    let work = tempdir_with_djogi_toml();
 
-    let bin = build_fixture_bin("adopter_app");
+    // 1. schema sees all three.
+    let schema_json = run_schema_json(&bin, &work);
+    for table in ["elephants", "herds", "invoices"] {
+        assert!(schema_json.contains(table), "schema must see {table}");
+    }
 
-    let workspace = temp_workspace("t9-pos-discovery");
-    write_minimal_djogi_toml(&workspace, &database_url());
-
-    // Run `schema --format json` — proves provider threaded to schema path.
-    let schema_out = Command::new(&bin)
-        .args(["schema", "--format", "json"])
-        .arg("--workspace")
-        .arg(&workspace)
-        .env("DATABASE_URL", database_url())
+    // 2. compose (no DB needed) sees all three. Assert against the actual
+    //    composed artifacts, so a compose path that ignored the provider
+    //    would fail here even if schema passed.
+    let compose = Command::new(&bin)
+        .args(["migrations", "compose", "--name", "init"])
+        .current_dir(&work)
         .output()
-        .expect("failed to execute child process");
-    let schema_stdout = String::from_utf8_lossy(&schema_out.stdout).to_string();
-    let schema_stderr = String::from_utf8_lossy(&schema_out.stderr).to_string();
-
+        .expect("run compose");
     assert!(
-        schema_out.status.success(),
-        "schema should succeed; stderr: {schema_stderr}"
+        compose.status.success(),
+        "compose must succeed: {}",
+        String::from_utf8_lossy(&compose.stderr)
     );
-    assert!(
-        schema_stdout.contains("elephants"),
-        "schema output should contain elephants; got: {schema_stdout}"
-    );
-    assert!(
-        schema_stdout.contains("herds"),
-        "schema output should contain herds"
-    );
-    assert!(
-        schema_stdout.contains("invoices"),
-        "schema output should contain invoices — proves cross-crate provider wiring to schema path"
-    );
-
-    // Run `migrations compose` — proves provider threaded to compose path (codex BLOCK 12).
-    let compose_out = Command::new(&bin)
-        .args(["migrations", "compose", "--name", "test_pos_discovery"])
-        .arg("--workspace")
-        .arg(&workspace)
-        .env("DATABASE_URL", database_url())
-        .output()
-        .expect("failed to execute child process");
-    let compose_stderr = String::from_utf8_lossy(&compose_out.stderr).to_string();
-
-    assert!(
-        compose_out.status.success(),
-        "compose should succeed; stderr: {compose_stderr}"
-    );
-
-    // Compose writes schema_snapshot.json — verify it contains all 3 tables.
-    let snapshot_path = workspace.join("schema_snapshot.json");
-    let snapshot_json =
-        std::fs::read_to_string(&snapshot_path).unwrap_or_else(|_| String::from("{}"));
-    assert!(
-        snapshot_json.contains("elephants"),
-        "compose snapshot should contain elephants"
-    );
-    assert!(
-        snapshot_json.contains("herds"),
-        "compose snapshot should contain herds"
-    );
-    assert!(
-        snapshot_json.contains("invoices"),
-        "compose snapshot should contain invoices — proves cross-crate provider wiring to compose path"
-    );
-}
-
-// ── T-PARITY: Intra-binary schema/compose parity ─────────────────────────────
-
-#[test]
-fn t_parity_schema_and_compose_within_same_binary() {
-    // Plan T-PARITY: schema and compose within the SAME binary see identical
-    // models. They could diverge if only one path reads the provider.
-
-    let bin = build_fixture_bin("adopter_app");
-
-    let workspace = temp_workspace("t9-parity-intra");
-    write_minimal_djogi_toml(&workspace, &database_url());
-
-    // Run `schema --format json` from forced binary.
-    let schema_out = Command::new(&bin)
-        .args(["schema", "--format", "json"])
-        .arg("--workspace")
-        .arg(&workspace)
-        .env("DATABASE_URL", database_url())
-        .output()
-        .expect("failed to execute child process");
-    let schema_stdout = String::from_utf8_lossy(&schema_out.stdout).to_string();
-    let schema_stderr = String::from_utf8_lossy(&schema_out.stderr).to_string();
-
-    assert!(
-        schema_out.status.success(),
-        "schema should succeed; stderr: {schema_stderr}"
-    );
-
-    // Count tables from schema JSON output.
-    let expected_tables = ["elephants", "herds", "invoices"];
-    let schema_table_count = expected_tables
-        .iter()
-        .filter(|t| schema_stdout.contains(*t))
-        .count();
-
-    assert_eq!(
-        schema_table_count, 3,
-        "schema should see all 3 tables; got {}: {}",
-        schema_table_count, schema_stdout
-    );
-
-    // Run `migrations compose` from the SAME forced binary.
-    let compose_out = Command::new(&bin)
-        .args(["migrations", "compose", "--name", "test_parity_compose"])
-        .arg("--workspace")
-        .arg(&workspace)
-        .env("DATABASE_URL", database_url())
-        .output()
-        .expect("failed to execute child process");
-    let compose_stderr = String::from_utf8_lossy(&compose_out.stderr).to_string();
-
-    assert!(
-        compose_out.status.success(),
-        "compose should succeed; stderr: {compose_stderr}"
-    );
-
-    // Compose writes schema_snapshot.json — verify it contains the same 3 tables.
-    let snapshot_path = workspace.join("schema_snapshot.json");
-    let snapshot_json =
-        std::fs::read_to_string(&snapshot_path).unwrap_or_else(|_| String::from("{}"));
-    let compose_table_count = expected_tables
-        .iter()
-        .filter(|t| snapshot_json.contains(*t))
-        .count();
-
-    assert_eq!(
-        schema_table_count, compose_table_count,
-        "schema ({}) and compose ({}) must see identical table count from same binary",
-        schema_table_count, compose_table_count
-    );
-    assert_eq!(
-        compose_table_count, 3,
-        "compose should see all 3 tables from same binary; got {}: {}",
-        compose_table_count, snapshot_json
-    );
-}
-
-// ── T-NAME: Model names appear in verify output ─────────────────────────────
-
-#[test]
-fn t_name_model_names_in_verify_output() {
-    let bin = build_fixture_bin("adopter_app");
-
-    let workspace = temp_workspace("t9-name-verify");
-    write_minimal_djogi_toml(&workspace, &database_url());
-
-    let output = Command::new(&bin)
-        .arg("verify")
-        .arg("--workspace")
-        .arg(&workspace)
-        .env("DATABASE_URL", database_url())
-        .output()
-        .expect("failed to execute child process");
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    assert!(
-        output.status.success(),
-        "verify should succeed; stderr: {stderr}"
-    );
-
-    // Check that model names appear in output.
-    for expected in ["tracker::Elephant", "tracker::Herd", "billing::Invoice"] {
+    let composed_sql = read_all_composed_up_sql(&work);
+    for table in ["elephants", "herds", "invoices"] {
         assert!(
-            stdout.contains(expected),
-            "verify output should contain '{}'; got:\n{}",
-            expected,
-            stdout
+            composed_sql.contains(table),
+            "compose parity: {table} must appear in the composed SQL (== schema). \
+             A compose path that bypassed the provider would miss it.\nSQL:\n{composed_sql}"
         );
     }
 }
 
-// ── T-NOLOGIC: No-djogi binary runs without DB connection ───────────────────
-
-#[test]
-fn t_nologic_no_djogi_binary_runs_without_db() {
-    // Build the no-djogi fixture.
-    let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("no_djogi_app");
-
-    let status = Command::new("cargo")
-        .arg("build")
-        .arg("--release")
-        .arg("--manifest-path")
-        .arg(fixture_dir.join("Cargo.toml"))
-        // Adopter fixture is an isolated workspace — unset CARGO_TARGET_DIR
-        // so it builds into its own target/ (not the shared worktree cache).
-        .env_remove("CARGO_TARGET_DIR")
-        .status()
-        .expect("cargo build failed for no_djogi fixture");
-    assert!(status.success(), "cargo build failed for no_djogi fixture");
-
-    let bin = fixture_dir.join("target").join("release").join("djogi");
-
-    // The no-djogi binary defines its own clap CLI that accepts --database-url
-    // but ignores it. Run verify with an invalid URL — should still succeed.
-    let output = Command::new(&bin)
-        .arg("verify")
-        .arg("--database-url")
-        .arg("postgres://invalid_host_that_does_not_exist_12345/notadb")
-        .output()
-        .expect("failed to execute child process");
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    assert!(
-        output.status.success(),
-        "no-djogi verify should succeed without DB; stderr: {stderr}"
-    );
-
-    // No connection attempts.
-    assert!(
-        !stderr.to_lowercase().contains("connection")
-            && !stderr.to_lowercase().contains("could not connect"),
-        "should not attempt DB connection; stderr: {stderr}",
-    );
-}
-
-// ── T-NOLOGIC-scan: Fixture sources contain no custom migration logic ────────
-
-#[test]
-fn t_nologic_fixture_sources_contain_no_migration_logic() {
-    // Plan T-NOLOGIC: fixture adopter code contains only model definitions + glue,
-    // no custom migration logic. Source code scan proves the fixture is a clean adopter.
-
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let fixtures = [
-        "tests/fixtures/adopter_app/tracker/src/lib.rs",
-        "tests/fixtures/adopter_app/billing/src/lib.rs",
-        "tests/fixtures/adopter_app/bin/src/bin/djogi.rs",
-        "tests/fixtures/adopter_app_unforced/tracker/src/lib.rs",
-        "tests/fixtures/adopter_app_unforced/billing/src/lib.rs",
-        "tests/fixtures/adopter_app_unforced/bin/src/bin/djogi.rs",
-    ];
-
-    for fixture_rel in &fixtures {
-        let path = manifest_dir.join(fixture_rel);
-        if !path.exists() {
-            continue; // skip if path doesn't exist in this build config
-        }
-        let src = std::fs::read_to_string(&path).unwrap_or_default();
-        assert!(
-            !src.contains("project_from")
-                && !src.contains("compose(")
-                && !src.contains("__bypass")
-                && !src.contains("raw_"),
-            "Fixture {} must not contain custom migration logic — \
-             it should only define models + djogi_main! glue",
-            fixture_rel
-        );
-    }
-}
-
-// ── T-NEG-compose: Standalone compose refuses with zero descriptors ──────────
-
-#[test]
-fn t_neg_standalone_compose_refuses_with_exit_2_and_no_artifacts() {
-    // Plan T-NEG-compose: standalone djogi binary refuses compose with zero
-    // descriptors (exit 2). Codex BLOCK 13: the zero-descriptor COMPOSE refusal
-    // was untested at subprocess level.
-
-    let workspace = temp_workspace("t9-neg-compose");
-    write_minimal_djogi_toml(&workspace, &database_url());
-
-    let djogi_bin = djogi_binary_path();
-
-    // Run compose on published djogi binary (zero descriptors).
-    let output = Command::new(&djogi_bin)
-        .args(["migrations", "compose", "--name", "should_refuse"])
-        .arg("--workspace")
-        .arg(&workspace)
-        .env("DATABASE_URL", database_url())
-        .output()
-        .expect("djogi binary should execute");
-
-    assert_eq!(
-        output.status.code(),
-        Some(2),
-        "standalone compose with zero descriptors must refuse exit 2, not succeed or runtime-error"
-    );
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    // Dual-cause diagnostic: mentions "no models" and the command name.
-    assert!(
-        stderr.contains("no models registered") || stderr.contains("zero descriptor"),
-        "stderr should mention zero descriptors: {stderr}"
-    );
-    assert!(
-        stderr.contains("compose") || stderr.contains("migrations"),
-        "stderr should identify the compose context: {stderr}"
-    );
-
-    // No pending artifacts written.
-    let target_pending = workspace.join("target").join("djogi_pending");
-    assert!(
-        !target_pending.exists(),
-        "compose refusal must not write pending artifacts; dir exists at {:?}",
-        target_pending
-    );
-}
-
-// ── T-VERIFY-DEGRADE: Zero-descriptor verify degrades to snapshot-only mode ──
+// ── T-VERIFY-DEGRADE: zero-descriptor verify degrades to snapshot-only ───────
 
 #[djogi::djogi_test]
 async fn t_verify_degrade_snapshot_only_against_valid_db(mut ctx: djogi::DjogiContext) {
-    // The standalone published `djogi` binary links zero models. With an
-    // on-disk snapshot present and a reachable DB, verify must degrade to
-    // snapshot-only mode (NOT refuse with the zero-descriptor diagnostic).
+    // The standalone published `djogi` links zero models. With an on-disk
+    // snapshot present and a reachable DB, verify must (a) NOT emit the
+    // §5.6 dual-cause refusal, and (b) enumerate the bucket FROM the
+    // snapshot and produce concrete per-bucket degrade output — NOT merely
+    // "any non-2 exit" (which would also pass on a config error or a
+    // DB-down failure, making the test hollow).
     let bin = djogi_binary_path();
+    let work = temp_workspace("370-verify-degrade");
 
-    let workspace = temp_workspace("t9-verify-degrade");
+    // Per-test DB URL: splice the provisioned DB NAME into the harness
+    // DATABASE_URL (current_database returns a bare name, not a URL).
+    let db_url = splice_database_name(&database_url(), &current_database(&mut ctx).await);
+    write_minimal_djogi_toml(&work, &db_url);
+    write_billing_snapshot_with_table(&work);
 
-    // Get per-test database URL from the DjogiContext
-    let db_url = current_database(&mut ctx).await;
-    write_minimal_djogi_toml(&workspace, &db_url);
-
-    // Write a billing snapshot (simulating prior state on disk)
-    write_billing_snapshot_with_table(&workspace);
-
-    let output = Command::new(&bin)
+    let out = Command::new(&bin)
         .args(["migrations", "verify"])
-        .current_dir(&workspace)
-        .env("DATABASE_URL", db_url)
+        .current_dir(&work)
+        .env("DATABASE_URL", &db_url)
         .output()
         .expect("run verify");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
 
-    // (a) NOT the zero-descriptor refusal — must degrade, not exit 2.
+    // (a) NOT the zero-descriptor refusal.
     assert_ne!(
-        output.status.code(),
+        out.status.code(),
         Some(2),
-        "verify must degrade, not refuse (exit 2): {stderr}"
+        "verify must degrade, not refuse (exit 2): stdout={stdout} stderr={stderr}"
     );
     assert!(
         !stderr.contains("no djogi models are registered"),
-        "verify must NOT emit zero-descriptor diagnostic when snapshots exist: {stderr}"
+        "verify must NOT emit the zero-descriptor diagnostic when snapshots exist: {stderr}"
     );
-    // (b)+(c) Concrete degrade output: verify ran against the snapshot bucket.
+    // (b)+(c) concrete degrade output: verify enumerated the billing bucket
+    //   from disk and rendered its per-bucket report.
     assert!(
-        stdout.contains("billing") || stdout.contains("verified") || stdout.contains("drift"),
-        "verify must emit concrete per-bucket degrade output for on-disk snapshot: stdout={stdout} stderr={stderr}"
+        stdout.contains("billing") || stdout.contains("drift") || stdout.contains("verified"),
+        "verify must emit concrete per-bucket degrade output for the on-disk snapshot: \
+         stdout={stdout} stderr={stderr}"
     );
 }
 
-// ── T-NOCARGO: Compose works with no Cargo on PATH and no source ────────────
+// ── T-NEG: standalone compose refuses (zero descriptors, before the differ) ──
+
+#[test]
+fn t_neg_standalone_compose_refuses_with_exit_2_and_no_artifacts() {
+    // The standalone published `djogi` links zero models ⇒ compose must
+    // emit the dual-cause diagnostic, exit 2 (before the differ), and write
+    // NO pending artifacts / NO committed migrations.
+    let bin = djogi_binary_path();
+    let work = tempdir_with_djogi_toml(); // no snapshots — neither descriptors nor prior state
+    let out = Command::new(&bin)
+        .args(["migrations", "compose", "--name", "init"])
+        .current_dir(&work)
+        .output()
+        .expect("run standalone compose");
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "zero-descriptor compose must exit 2: stderr {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Dual-cause diagnostic CONTENT (§5.6): names the registration problem,
+    // both standalone-vs-linked scenarios, and the `apply` fallback.
+    assert!(
+        stderr.contains("no djogi models are registered"),
+        "dual-cause diagnostic header expected: {stderr}"
+    );
+    assert!(
+        stderr.contains("standalone") && stderr.contains("apply"),
+        "diagnostic must explain the standalone-vs-linked scenarios and the apply fallback: {stderr}"
+    );
+
+    // Nothing emitted (refused before the differ).
+    assert!(
+        !work.join("target/djogi_pending").exists(),
+        "refusal must write no pending artifacts"
+    );
+    let migrations_dir = work.join("migrations");
+    assert!(
+        !migrations_dir.exists() || dir_is_empty(&migrations_dir),
+        "refusal must write no committed migrations"
+    );
+}
+
+// ── T-NOLOGIC: fixture sources contain only model defs + glue ────────────────
+
+#[test]
+fn t_nologic_fixture_has_no_custom_migration_code() {
+    // The fixture crates contain only model defs + the glue — no compose /
+    // apply reimplementation, no hand-maintained descriptor list. Reads the
+    // SEPARATE crate sources (the separate-crate restructure).
+    let fixtures = cli_crate_dir().join("tests/fixtures/adopter_app");
+    let tracker_src =
+        std::fs::read_to_string(fixtures.join("tracker/src/lib.rs")).expect("read tracker src");
+    let billing_src =
+        std::fs::read_to_string(fixtures.join("billing/src/lib.rs")).expect("read billing src");
+    let bin_src =
+        std::fs::read_to_string(fixtures.join("bin/src/bin/djogi.rs")).expect("read bin src");
+
+    for (name, src) in [
+        ("tracker", &tracker_src),
+        ("billing", &billing_src),
+        ("bin", &bin_src),
+    ] {
+        assert!(
+            !src.contains("project_from"),
+            "{name}: no projection reimpl"
+        );
+        assert!(!src.contains("compose("), "{name}: no compose reimpl");
+        assert!(
+            !src.contains("__bypass") && !src.contains("raw_"),
+            "{name}: no raw_* / bypass (GH #133)"
+        );
+    }
+    // The bin is only the glue: djogi_main! (or link refs) + run_from_env.
+    assert!(
+        bin_src.contains("djogi_main!") || bin_src.contains("run_from_env"),
+        "bin must be glue only: {bin_src}"
+    );
+}
+
+// ── T-NOCARGO: compose works with no Cargo on PATH and no source ─────────────
 
 #[test]
 fn t_nocargo_compose_without_cargo_or_source() {
     // Build the adopter fixture binary (links model crates via inventory).
-    let bin = build_fixture_bin("adopter_app");
+    let bin = build_fixture_djogi("adopter_app", "adopter_app_fixture");
 
     // Copy binary + config to an isolated temp dir (no source code there).
     let runtime_dir = temp_workspace("370-nocargo");
@@ -650,17 +684,15 @@ fn t_nocargo_compose_without_cargo_or_source() {
     );
 }
 
-// ── T-CONTAINER-APPLY: Apply from prebuilt binary (no source, no Cargo) ─────
+// ── T-CONTAINER-APPLY: apply from prebuilt binary (no source, no Cargo) ──────
 
 #[djogi::djogi_test]
 async fn t_container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
     // Derive the per-test DB URL by splicing the test database name into the
     // harness DATABASE_URL.
-    let base_url = database_url();
-    let db_name = current_database(&mut ctx).await;
-    let db_url = splice_database_name(&base_url, &db_name);
+    let db_url = splice_database_name(&database_url(), &current_database(&mut ctx).await);
 
-    let bin = build_fixture_bin("adopter_app");
+    let bin = build_fixture_djogi("adopter_app", "adopter_app_fixture");
     let runtime_dir = temp_workspace("370-container");
     let copied = runtime_dir.join("djogi");
     std::fs::copy(&bin, &copied).unwrap();
@@ -676,7 +708,8 @@ async fn t_container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
     write_minimal_djogi_toml(&runtime_dir, &db_url);
     let empty_path = temp_workspace("370-container-path");
 
-    // Compose writes pending artifacts.
+    // Compose writes pending artifacts (including the Phase-0 bootstrap that
+    // installs heerid_next()).
     let compose_out = Command::new(&copied)
         .args(["migrations", "compose", "--name", "init"])
         .current_dir(&runtime_dir)
@@ -694,6 +727,7 @@ async fn t_container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
         .args(["migrations", "apply"])
         .current_dir(&runtime_dir)
         .env("PATH", &empty_path)
+        .env("DATABASE_URL", &db_url)
         .output()
         .expect("apply");
     assert!(
@@ -708,6 +742,7 @@ async fn t_container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
         .args(["migrations", "status"])
         .current_dir(&runtime_dir)
         .env("PATH", &empty_path)
+        .env("DATABASE_URL", &db_url)
         .output()
         .expect("status");
     assert!(
@@ -722,28 +757,25 @@ async fn t_container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
     );
 }
 
-// ── T-STANDALONE-APPLY: Standalone binary applies pending artifacts ──────────
+// ── T-STANDALONE-APPLY: standalone binary applies pending artifacts ──────────
 
 #[djogi::djogi_test]
 async fn t_standalone_apply_with_pending_artifacts(mut ctx: djogi::DjogiContext) {
     // Use the adopter binary to compose (produces pending artifacts with live
     // descriptors), then use the standalone published djogi (zero descriptors)
     // to apply those artifacts — proving apply needs no live descriptors.
-    let adopter = build_fixture_bin("adopter_app");
+    let adopter = build_fixture_djogi("adopter_app", "adopter_app_fixture");
     let standalone = djogi_binary_path();
 
     let runtime_dir = temp_workspace("370-standalone-apply");
-
-    let base_url = database_url();
-    let db_name = current_database(&mut ctx).await;
-    let db_url = splice_database_name(&base_url, &db_name);
-
+    let db_url = splice_database_name(&database_url(), &current_database(&mut ctx).await);
     write_minimal_djogi_toml(&runtime_dir, &db_url);
 
     // Adopter composes (has live descriptors from linked model crates).
     let compose_out = Command::new(&adopter)
         .args(["migrations", "compose", "--name", "init"])
         .current_dir(&runtime_dir)
+        .env("DATABASE_URL", &db_url)
         .output()
         .expect("adopter compose");
     assert!(
@@ -756,6 +788,7 @@ async fn t_standalone_apply_with_pending_artifacts(mut ctx: djogi::DjogiContext)
     let apply_out = Command::new(&standalone)
         .args(["migrations", "apply"])
         .current_dir(&runtime_dir)
+        .env("DATABASE_URL", &db_url)
         .output()
         .expect("standalone apply");
     assert!(
@@ -763,25 +796,35 @@ async fn t_standalone_apply_with_pending_artifacts(mut ctx: djogi::DjogiContext)
         "standalone apply must succeed: {}",
         String::from_utf8_lossy(&apply_out.stderr)
     );
+
+    // Assert the migration actually landed: run `migrations status` via the
+    // standalone binary (descriptor-free commands work) and confirm the
+    // composed migration is shown as applied, not pending.
+    let status_out = Command::new(&standalone)
+        .args(["migrations", "status"])
+        .current_dir(&runtime_dir)
+        .env("DATABASE_URL", &db_url)
+        .output()
+        .expect("standalone status");
+    assert!(
+        status_out.status.success(),
+        "status must succeed after standalone apply: {}",
+        String::from_utf8_lossy(&status_out.stderr)
+    );
+    let status_text = String::from_utf8_lossy(&status_out.stdout);
+    assert!(
+        status_text.contains("applied") || !status_text.contains("pending"),
+        "ledger must show the composed migration applied after standalone apply: {status_text}"
+    );
 }
 
-/// Replace the database name in a PostgreSQL connection URL while preserving
-/// the scheme, credentials, host, and port. Used to splice the per-test
-/// database name into the harness `DATABASE_URL`.
-fn splice_database_name(base_url: &str, db_name: &str) -> String {
-    // Postgres URL format: postgres://[user[:password]@]host[:port]/database
-    if let Some(slash_pos) = base_url.rfind('/') {
-        let prefix = &base_url[..slash_pos + 1];
-        return format!("{prefix}{db_name}");
-    }
-    // Fallback: if URL has no slash (malformed), just use base as-is.
-    base_url.to_string()
-}
-
-// ── T-FORBID-UNSAFE: Adopter glue compiles under forbid(unsafe_code) ──
+// ── T-FORBID-UNSAFE: adopter glue compiles under forbid(unsafe_code) ─────────
 
 #[test]
 fn t_forbid_unsafe_build_succeeds() {
-    let bin = build_fixture_bin("adopter_forbid_unsafe");
-    assert!(bin.exists(), "forbid_unsafe binary should exist after successful build");
+    let bin = build_fixture_djogi("adopter_forbid_unsafe", "adopter_forbid_unsafe_fixture");
+    assert!(
+        bin.exists(),
+        "forbid_unsafe binary should exist after a successful build"
+    );
 }
