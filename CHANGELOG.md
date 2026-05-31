@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.5] - 2026-05-30
+
+### Added
+
+- feat(#354): wire `djogi migrations baseline` CLI dispatcher — projects live DB schema into a baseline ledger row + snapshot for existing-DB adoption
+
+### Fixed
+
+- fix(baseline): SnapshotPersistFailed maps to exit 2 (post-ledger-insert; retry hits VersionAlreadyApplied)
+- fix(baseline): AdvisoryUnlockReturnedFalse maps to exit 2 (session-pinning correctness, matches repair family)
+- doc(baseline): correct stale baseline description in docs/spec/migrations.md; update exit-code doc in main.rs and migrations.rs
+
 ## [0.1.0-alpha.4] - 2026-05-30
 
 ### Added
