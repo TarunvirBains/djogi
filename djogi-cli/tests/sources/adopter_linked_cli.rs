@@ -33,6 +33,9 @@ fn build_fixture_bin(fixture_name: &str) -> PathBuf {
         .arg("--release")
         .arg("--manifest-path")
         .arg(fixture_dir.join("Cargo.toml"))
+        // Adopter fixture is an isolated workspace — unset CARGO_TARGET_DIR
+        // so it builds into its own target/ (not the shared worktree cache).
+        .env_remove("CARGO_TARGET_DIR")
         .status()
         .expect("cargo build failed for adopter fixture");
     assert!(
@@ -444,6 +447,9 @@ fn t_nologic_no_djogi_binary_runs_without_db() {
         .arg("--release")
         .arg("--manifest-path")
         .arg(fixture_dir.join("Cargo.toml"))
+        // Adopter fixture is an isolated workspace — unset CARGO_TARGET_DIR
+        // so it builds into its own target/ (not the shared worktree cache).
+        .env_remove("CARGO_TARGET_DIR")
         .status()
         .expect("cargo build failed for no_djogi fixture");
     assert!(status.success(), "cargo build failed for no_djogi fixture");
@@ -598,4 +604,176 @@ async fn t_verify_degrade_snapshot_only_against_valid_db(mut ctx: djogi::DjogiCo
         stdout.contains("billing") || stdout.contains("verified") || stdout.contains("drift"),
         "verify must emit concrete per-bucket degrade output for on-disk snapshot: stdout={stdout} stderr={stderr}"
     );
+}
+
+// ── T-NOCARGO: Compose works with no Cargo on PATH and no source ────────────
+
+#[test]
+fn t_nocargo_compose_without_cargo_or_source() {
+    // Build the adopter fixture binary (links model crates via inventory).
+    let bin = build_fixture_bin("adopter_app");
+
+    // Copy binary + config to an isolated temp dir (no source code there).
+    let runtime_dir = temp_workspace("370-nocargo");
+    let copied_bin = runtime_dir.join("djogi");
+    std::fs::copy(&bin, &copied_bin).expect("copy djogi binary");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut perms = std::fs::metadata(&copied_bin).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&copied_bin, perms).unwrap();
+    }
+
+    // Compose needs no DB — a dummy URL is fine.
+    write_minimal_djogi_toml(&runtime_dir, "postgres://localhost/none");
+
+    // Run compose with a PATH that contains NO cargo/toolchain.
+    let empty_path = temp_workspace("370-nocargo-path");
+    let out = Command::new(&copied_bin)
+        .args(["migrations", "compose", "--name", "init"])
+        .current_dir(&runtime_dir)
+        .env("PATH", &empty_path) // no cargo/toolchain reachable
+        .output()
+        .expect("run copied djogi compose");
+
+    assert!(
+        out.status.success(),
+        "compose must work with no cargo on PATH: stderr {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Pending artifacts exist — proof compose produced output without cargo.
+    assert!(
+        runtime_dir.join("target").join("djogi_pending").exists(),
+        "compose wrote pending artifacts"
+    );
+}
+
+// ── T-CONTAINER-APPLY: Apply from prebuilt binary (no source, no Cargo) ─────
+
+#[djogi::djogi_test]
+async fn t_container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
+    // Derive the per-test DB URL by splicing the test database name into the
+    // harness DATABASE_URL.
+    let base_url = database_url();
+    let db_name = current_database(&mut ctx).await;
+    let db_url = splice_database_name(&base_url, &db_name);
+
+    let bin = build_fixture_bin("adopter_app");
+    let runtime_dir = temp_workspace("370-container");
+    let copied = runtime_dir.join("djogi");
+    std::fs::copy(&bin, &copied).unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut perms = std::fs::metadata(&copied).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&copied, perms).unwrap();
+    }
+
+    write_minimal_djogi_toml(&runtime_dir, &db_url);
+    let empty_path = temp_workspace("370-container-path");
+
+    // Compose writes pending artifacts.
+    let compose_out = Command::new(&copied)
+        .args(["migrations", "compose", "--name", "init"])
+        .current_dir(&runtime_dir)
+        .env("PATH", &empty_path)
+        .output()
+        .expect("compose");
+    assert!(
+        compose_out.status.success(),
+        "compose must succeed: {}",
+        String::from_utf8_lossy(&compose_out.stderr)
+    );
+
+    // Apply with no cargo, no source — just binary + config + artifacts + DB.
+    let apply_out = Command::new(&copied)
+        .args(["migrations", "apply"])
+        .current_dir(&runtime_dir)
+        .env("PATH", &empty_path)
+        .output()
+        .expect("apply");
+    assert!(
+        apply_out.status.success(),
+        "apply must succeed: {}",
+        String::from_utf8_lossy(&apply_out.stderr)
+    );
+
+    // Assert the migration landed via `migrations status` (typed CLI surface,
+    // not raw SQL and not re-declaring models in this test crate).
+    let status_out = Command::new(&copied)
+        .args(["migrations", "status"])
+        .current_dir(&runtime_dir)
+        .env("PATH", &empty_path)
+        .output()
+        .expect("status");
+    assert!(
+        status_out.status.success(),
+        "status must succeed: {}",
+        String::from_utf8_lossy(&status_out.stderr)
+    );
+    let status_text = String::from_utf8_lossy(&status_out.stdout);
+    assert!(
+        status_text.contains("applied") || !status_text.contains("pending"),
+        "ledger must show the composed migration applied: {status_text}"
+    );
+}
+
+// ── T-STANDALONE-APPLY: Standalone binary applies pending artifacts ──────────
+
+#[djogi::djogi_test]
+async fn t_standalone_apply_with_pending_artifacts(mut ctx: djogi::DjogiContext) {
+    // Use the adopter binary to compose (produces pending artifacts with live
+    // descriptors), then use the standalone published djogi (zero descriptors)
+    // to apply those artifacts — proving apply needs no live descriptors.
+    let adopter = build_fixture_bin("adopter_app");
+    let standalone = djogi_binary_path();
+
+    let runtime_dir = temp_workspace("370-standalone-apply");
+
+    let base_url = database_url();
+    let db_name = current_database(&mut ctx).await;
+    let db_url = splice_database_name(&base_url, &db_name);
+
+    write_minimal_djogi_toml(&runtime_dir, &db_url);
+
+    // Adopter composes (has live descriptors from linked model crates).
+    let compose_out = Command::new(&adopter)
+        .args(["migrations", "compose", "--name", "init"])
+        .current_dir(&runtime_dir)
+        .output()
+        .expect("adopter compose");
+    assert!(
+        compose_out.status.success(),
+        "adopter compose must succeed: {}",
+        String::from_utf8_lossy(&compose_out.stderr)
+    );
+
+    // Standalone applies (no descriptors — reads pending artifacts only).
+    let apply_out = Command::new(&standalone)
+        .args(["migrations", "apply"])
+        .current_dir(&runtime_dir)
+        .output()
+        .expect("standalone apply");
+    assert!(
+        apply_out.status.success(),
+        "standalone apply must succeed: {}",
+        String::from_utf8_lossy(&apply_out.stderr)
+    );
+}
+
+/// Replace the database name in a PostgreSQL connection URL while preserving
+/// the scheme, credentials, host, and port. Used to splice the per-test
+/// database name into the harness `DATABASE_URL`.
+fn splice_database_name(base_url: &str, db_name: &str) -> String {
+    // Postgres URL format: postgres://[user[:password]@]host[:port]/database
+    if let Some(slash_pos) = base_url.rfind('/') {
+        let prefix = &base_url[..slash_pos + 1];
+        return format!("{prefix}{db_name}");
+    }
+    // Fallback: if URL has no slash (malformed), just use base as-is.
+    base_url.to_string()
 }
