@@ -577,8 +577,9 @@ enum MigrationsCommand {
     /// server is below the minimum.
     ///
     /// Exit codes: 0 on success, 1 on runtime error (config / network /
-    /// SQL / snapshot I/O), 2 on refusal (empty `--reason`, duplicate
-    /// version, below PG 18, or unresolvable database URL).
+    /// SQL / projection failure), 2 on refusal (empty `--reason`, duplicate
+    /// version, unresolvable database URL, snapshot-persist failure after
+    /// ledger insert, session-pinning correctness failure, or below PG 18).
     Baseline {
         /// Version label for the baseline ledger row (e.g.
         /// `V00000000000000__baseline`). Must be unique in the ledger.

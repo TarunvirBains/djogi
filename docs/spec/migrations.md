@@ -865,7 +865,7 @@ Rollback semantics:
 
 Adoption flows:
 
-- `baseline <version>` records all migrations up to a floor as present without running SQL
+- `baseline <version>` projects the live database schema into a single baseline ledger row and snapshot, establishing a starting point for the migration ledger on an existing database
 - `apply --fake <version>` records a specific migration as present without running SQL
 - both set `applied_at = now()`
 - both are explicit operator actions

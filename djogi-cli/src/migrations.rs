@@ -2522,9 +2522,10 @@ async fn run_repair_snapshot_rebuild(
 /// ledger row's `partial_apply_note` for the audit trail. An empty
 /// reason is a refusal (exit 2) caught before any DB work.
 ///
-/// Exit codes: `0` success, `1` runtime error (config / pool / snapshot
-/// I/O), `2` refusal (empty `--reason`, unresolvable database URL,
-/// duplicate version collision, or below PG 18).
+/// Exit codes: `0` success, `1` runtime error (config / pool / projection
+/// failure), `2` refusal (empty `--reason`, unresolvable database URL,
+/// duplicate version collision, snapshot-persist failure after ledger
+/// insert, session-pinning correctness failure, or below PG 18).
 pub fn baseline_cmd(
     version: &str,
     description: &str,
@@ -2713,15 +2714,23 @@ fn baseline_error_exit_code(err: &RunnerError) -> i32 {
         // - AdvisoryUnlockReturnedFalse is a session-pinning correctness
         //   failure (PG returned false for pg_advisory_unlock); it is not
         //   transient — matches the repair family's exit-2 treatment.
+        // - SnapshotPersistFailed in the baseline path is a post-ledger
+        //   failure: baseline_inner inserts the terminal ledger row BEFORE
+        //   writing the snapshot. A retry with the same version therefore
+        //   hits VersionAlreadyApplied (exit 2) before it can write the
+        //   snapshot. Exit 1 (retryable) would give false hope; exit 2
+        //   signals that operator intervention is needed (run
+        //   `repair snapshot-rebuild` or choose a new version).
         RunnerError::VersionAlreadyApplied { .. }
         | RunnerError::VersionCollisionNonTerminal { .. }
         | RunnerError::BaselineSnapshotShouldNotBeProvided
         | RunnerError::AdvisoryUnlockReturnedFalse { .. }
+        | RunnerError::SnapshotPersistFailed { .. }
         | RunnerError::OutOfOrderRejected { .. } => 2,
         // ── Exit 1: everything else (transient I/O / connection / SQL /
-        // projection / snapshot-persist failures). `#[non_exhaustive]`
-        // makes this wildcard mandatory; new transient-shaped variants
-        // inherit the retryable default.
+        // projection failures). `#[non_exhaustive]` makes this wildcard
+        // mandatory; new transient-shaped variants inherit the retryable
+        // default.
         _ => 1,
     }
 }
