@@ -69,10 +69,10 @@ fn unknown_subcommand_returns_failure() {
         String::from("djogi"),
         String::from("definitely_not_a_real_subcommand"),
     ]);
-    assert_ne!(
+    assert_eq!(
         result,
-        ExitCode::SUCCESS,
-        "unknown subcommand should not succeed"
+        ExitCode::from(2),
+        "clap parse error must map to exit 2 (refusal), not exit 1 (runtime error)"
     );
 }
 
@@ -98,15 +98,15 @@ fn help_flag_returns_success() {
 fn schema_with_empty_provider_returns_failure_and_consults_provider() {
     let provider = ObservableProvider::new();
     let result = djogi_cli::run_with_provider(
-        &[String::from("djogi"), String::from("schema")],
+        &[String::from("djogi"), String::from("schema"), String::from("--format"), String::from("json")],
         &provider,
     );
 
     // Non-success signals the zero-model diagnostic path.
-    assert_ne!(
+    assert_eq!(
         result,
-        ExitCode::SUCCESS,
-        "schema with no models should not succeed"
+        ExitCode::from(2),
+        "empty provider must trigger zero-descriptor refusal (exit 2), not runtime error (exit 1)"
     );
 
     // Provider.models() must have been called at least once. Without this
