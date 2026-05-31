@@ -98,7 +98,12 @@ fn help_flag_returns_success() {
 fn schema_with_empty_provider_returns_failure_and_consults_provider() {
     let provider = ObservableProvider::new();
     let result = djogi_cli::run_with_provider(
-        &[String::from("djogi"), String::from("schema"), String::from("--format"), String::from("json")],
+        &[
+            String::from("djogi"),
+            String::from("schema"),
+            String::from("--format"),
+            String::from("json"),
+        ],
         &provider,
     );
 
