@@ -16,8 +16,8 @@ use djogi::migrate::{
     AppLifecycle, AttuneError, AttuneMode, AttuneRequest, BucketKey, ComposeError, ComposeRequest,
     GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME, PartialApplyResolution, PendingPlan, RepairConfirmation,
     RepairError, RepairReport, RunnerCtx, RunnerError, SnapshotError, VerifyReport, VerifySeverity,
-    acquire_workspace_lock, apply_plan, attune, compose, fake_apply_plan, load_snapshot,
-    project_from_inventory, repair_checksum_drift, repair_partial_apply,
+    acquire_workspace_lock, apply_plan, attune, baseline_plan, compose, fake_apply_plan,
+    load_snapshot, project_from_inventory, repair_checksum_drift, repair_partial_apply,
     repair_resume_partial_apply, repair_snapshot_rebuild, snapshot_path,
 };
 
@@ -2506,6 +2506,235 @@ async fn run_repair_snapshot_rebuild(
     }
 }
 
+// ── baseline command ──────────────────────────────────────────────────────
+
+/// `djogi migrations baseline` entry point.
+///
+/// Establishes a baseline ledger row + snapshot for an existing
+/// database adopted under Djogi's migration ledger. The schema already
+/// exists, so `compose` + `apply` cannot run against the populated
+/// database without a starting point; baseline projects the live
+/// catalog into a single `baseline` ledger row (no SQL runs against
+/// user tables) and persists the projected snapshot as the canonical
+/// baseline so future migrations diff against the real DB state.
+///
+/// `--reason` is required and must be non-empty — it is recorded in the
+/// ledger row's `partial_apply_note` for the audit trail. An empty
+/// reason is a refusal (exit 2) caught before any DB work.
+///
+/// Exit codes: `0` success, `1` runtime error (config / pool / projection
+/// failure), `2` refusal (empty `--reason`, unresolvable database URL,
+/// duplicate version collision, snapshot-persist failure after ledger
+/// insert, session-pinning correctness failure, or below PG 18).
+pub fn baseline_cmd(
+    version: &str,
+    description: &str,
+    reason: &str,
+    app: Option<&str>,
+    database: Option<&str>,
+    workspace: Option<PathBuf>,
+) -> ExitCode {
+    // Validate --reason before any expensive work, mirroring the
+    // `apply --fake --reason` empty-reason gate. The library's
+    // baseline_plan does not itself reject an empty reason (it records
+    // whatever string it is handed), so the CLI owns this guard.
+    if reason.trim().is_empty() {
+        eprintln!(
+            "djogi migrations baseline: --reason must not be empty; \
+             supply a non-empty reason why this baseline is being established \
+             (e.g. 'schema pre-exists from prior tooling'). \
+             This is recorded in the ledger audit trail."
+        );
+        return ExitCode::from(2);
+    }
+
+    let workspace = resolve_workspace(workspace);
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("djogi migrations baseline: tokio runtime: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let exit = runtime.block_on(async {
+        run_baseline(&workspace, version, description, reason, app, database).await
+    });
+    ExitCode::from(exit as u8)
+}
+
+/// Async body of [`baseline_cmd`]. Returns the desired exit code.
+///
+/// Resolves the per-database URL BEFORE connecting (a `--database
+/// crud_log` / `event_log` baseline targets a different bucket's ledger
+/// than the app DB), connects + runs the PG-version preflight via
+/// [`connect_and_check`], acquires the workspace file lock, then drives
+/// [`baseline_plan`]. The runner projects the live schema itself and
+/// computes the baseline checksum from that projection, so the
+/// `RunnerCtx` is constructed with `snapshot: None` (B-11 requires the
+/// caller NOT supply a snapshot) and an empty `checksum_up` (the
+/// baseline path never reads it).
+async fn run_baseline(
+    workspace: &Path,
+    version: &str,
+    description: &str,
+    reason: &str,
+    app: Option<&str>,
+    database: Option<&str>,
+) -> i32 {
+    use djogi::config::DjogiConfig;
+
+    let config = match DjogiConfig::load_from_workspace(workspace) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("djogi migrations baseline: config load: {e}");
+            return 1;
+        }
+    };
+
+    // Resolve the per-database URL BEFORE connecting: `--database
+    // crud_log` / `event_log` operate on a different bucket's ledger
+    // than the app DB, so connecting to `config.database.url` first
+    // would silently baseline the wrong database.
+    let db_name = resolve_database(database, &config);
+    let url = match resolve_bucket_url(&config.database, &db_name) {
+        Some(u) => u,
+        None => {
+            eprintln!("djogi migrations baseline: cannot derive a database URL for `{db_name}`");
+            return 2;
+        }
+    };
+
+    let mut ctx = match connect_and_check(&url).await {
+        ContextOutcome::Ready(ctx) => ctx,
+        ContextOutcome::UnsupportedVersion(e) => {
+            crate::print_support_boundary_error("migrations baseline", &e);
+            return 2;
+        }
+        ContextOutcome::RuntimeError(msg) => {
+            eprintln!("djogi migrations baseline: pool: {msg}");
+            return 1;
+        }
+    };
+
+    let lock_path = workspace.join(LOCK_FILE_NAME);
+    let guard = match acquire_workspace_lock(&lock_path, GUARD_DEFAULT_TIMEOUT) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("djogi migrations baseline: workspace lock: {e}");
+            return 1;
+        }
+    };
+
+    let app_label = app.unwrap_or("");
+    let bucket = BucketKey {
+        database: db_name,
+        app: app_label.to_string(),
+    };
+
+    let runner_ctx = RunnerCtx {
+        bucket: bucket.clone(),
+        version: version.to_string(),
+        description: description.to_string(),
+        // baseline_plan computes checksum_up from the live projection;
+        // this field is not read on the baseline code path.
+        checksum_up: String::new(),
+        checksum_down: None,
+        // baseline_plan refuses a caller-supplied snapshot (B-11) — it
+        // projects the live DB itself. Leave this None; the projection
+        // is persisted to `snapshot_path` below.
+        snapshot: None,
+        snapshot_path: Some(reconstruct_snapshot_path(workspace, &bucket)),
+        // MigrateConfig does not derive Clone; construct from fields
+        // (same pattern as apply_one_pending).
+        config: djogi::config::MigrateConfig {
+            concurrent_warn_relpages: config.migrate.concurrent_warn_relpages,
+            strict_concurrent_warnings: config.migrate.strict_concurrent_warnings,
+            pk_flip_long_tx_threshold_secs: config.migrate.pk_flip_long_tx_threshold_secs,
+            pk_flip_join_table_option: config.migrate.pk_flip_join_table_option,
+        },
+        out_of_order_policy: djogi::migrate::OutOfOrderPolicy::default_for_config(&config),
+        audit_pool: match djogi::migrate::resolve_audit_url(&config) {
+            Ok(url) => djogi::migrate::build_audit_pool(&url).await.ok(),
+            Err(_) => None,
+        },
+    };
+
+    match baseline_plan(&mut ctx, &bucket, &runner_ctx, &guard, reason).await {
+        Ok(report) => {
+            println!(
+                "djogi migrations baseline: established baseline `{}` \
+                 (ledger_id={}) in {:.1}s",
+                version,
+                report.ledger_id,
+                report.execution_time_ms as f64 / 1000.0
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("djogi migrations baseline: {e}");
+            baseline_error_exit_code(&e)
+        }
+    }
+}
+
+/// Map a [`RunnerError`] produced by [`baseline_plan`] onto the CLI
+/// exit-code contract.
+///
+/// The flat [`runner_error_exit_code`] (always `1`) is wrong for
+/// baseline: a duplicate-version collision is a refusal the operator
+/// must resolve by choosing a new version, and a blind retry hits the
+/// same collision — that must surface as exit `2`, matching the
+/// `migrations apply` doc-contract ("re-running reports
+/// `VersionAlreadyApplied` (exit 2)") and the `repair` family's
+/// [`repair_error_exit_code`] convention.
+///
+/// `RunnerError` is `#[non_exhaustive]`, so the wildcard arm is
+/// load-bearing: any variant NOT named below defaults to exit `1`
+/// (transient — a retry may succeed). That is the safe default for the
+/// I/O- and connection-shaped variants the baseline path can hit
+/// (projection failure, ledger bootstrap / write / query failure,
+/// snapshot persist failure, pinned-session checkout failure,
+/// advisory-lock contention). Only the genuine refusals are pulled out
+/// into the exit-`2` arm.
+fn baseline_error_exit_code(err: &RunnerError) -> i32 {
+    match err {
+        // ── Exit 2: refusals — the operator must intervene; a blind
+        // retry hits the same condition.
+        //
+        // - A duplicate version (terminal or non-terminal) means the
+        //   chosen baseline version is already taken; pick another.
+        // - A caller-supplied snapshot is a programming error in the
+        //   wiring (the CLI always passes `snapshot: None`), surfaced
+        //   as a structural refusal rather than a retryable fault.
+        // - An out-of-order rejection is a policy refusal identical to
+        //   the apply path's.
+        // - AdvisoryUnlockReturnedFalse is a session-pinning correctness
+        //   failure (PG returned false for pg_advisory_unlock); it is not
+        //   transient — matches the repair family's exit-2 treatment.
+        // - SnapshotPersistFailed in the baseline path is a post-ledger
+        //   failure: baseline_inner inserts the terminal ledger row BEFORE
+        //   writing the snapshot. A retry with the same version therefore
+        //   hits VersionAlreadyApplied (exit 2) before it can write the
+        //   snapshot. Exit 1 (retryable) would give false hope; exit 2
+        //   signals that operator intervention is needed (run
+        //   `repair snapshot-rebuild` or choose a new version).
+        RunnerError::VersionAlreadyApplied { .. }
+        | RunnerError::VersionCollisionNonTerminal { .. }
+        | RunnerError::BaselineSnapshotShouldNotBeProvided
+        | RunnerError::AdvisoryUnlockReturnedFalse { .. }
+        | RunnerError::SnapshotPersistFailed { .. }
+        | RunnerError::OutOfOrderRejected { .. } => 2,
+        // ── Exit 1: everything else (transient I/O / connection / SQL /
+        // projection failures). `#[non_exhaustive]` makes this wildcard
+        // mandatory; new transient-shaped variants inherit the retryable
+        // default.
+        _ => 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2848,6 +3077,124 @@ mod tests {
                 attune_error_exit_code(err),
                 1,
                 "runtime variant must map to exit 1: {err}"
+            );
+        }
+    }
+
+    // ── issue #354: baseline exit-code mapping ──────────────────────────
+
+    /// The refusal-class `RunnerError` variants the baseline path can
+    /// `baseline_cmd` validates the `--reason` guard before any DB
+    /// work. An empty or whitespace-only reason must return exit 2
+    /// without touching the filesystem or network — the guard fires
+    /// on the CLI-owned string before the tokio runtime is even built.
+    #[test]
+    fn baseline_empty_reason_exits_code_2() {
+        let result = baseline_cmd(
+            "V00000000000000__baseline",
+            "description",
+            "",
+            None,
+            None,
+            Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
+        );
+        assert_eq!(
+            result,
+            ExitCode::from(2),
+            "empty --reason must exit 2 before any DB work"
+        );
+    }
+
+    #[test]
+    fn baseline_whitespace_reason_exits_code_2() {
+        let result = baseline_cmd(
+            "V00000000000000__baseline",
+            "description",
+            "   ",
+            None,
+            None,
+            Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
+        );
+        assert_eq!(
+            result,
+            ExitCode::from(2),
+            "whitespace-only --reason must exit 2 before any DB work"
+        );
+    }
+
+    /// surface must map to exit `2` — a blind retry would hit the same
+    /// condition, so CI must treat them as "operator must intervene"
+    /// rather than retryable. A duplicate baseline version (terminal or
+    /// non-terminal), a wiring bug that supplies a snapshot, and an
+    /// out-of-order rejection are all refusals.
+    #[test]
+    fn baseline_refusal_variants_map_to_exit_code_two() {
+        let cases = [
+            RunnerError::VersionAlreadyApplied {
+                version: "V00000000000000__baseline".to_string(),
+                applied_at: None,
+            },
+            RunnerError::VersionCollisionNonTerminal {
+                version: "V00000000000000__baseline".to_string(),
+                status: LedgerStatus::Pending,
+                run_id: 1,
+            },
+            RunnerError::BaselineSnapshotShouldNotBeProvided,
+            RunnerError::AdvisoryUnlockReturnedFalse {
+                bucket: BucketKey {
+                    database: "main".to_string(),
+                    app: String::new(),
+                },
+                key: 0x0102_0304_0506_0708,
+            },
+            RunnerError::OutOfOrderRejected {
+                version: "V00000000000000__baseline".to_string(),
+                conflicting_version: "V20260101000000__later".to_string(),
+                conflicting_applied_at: None,
+            },
+        ];
+        for err in &cases {
+            assert_eq!(
+                baseline_error_exit_code(err),
+                2,
+                "baseline refusal variant must map to exit 2: {err}"
+            );
+        }
+    }
+
+    /// Transient `RunnerError` variants reachable from the baseline path
+    /// must map to exit `1` (retryable). The `#[non_exhaustive]`
+    /// wildcard arm guarantees any unnamed variant also lands on `1`;
+    /// these representative cases pin the projection / ledger / snapshot
+    /// failure shapes the baseline runner can actually emit.
+    #[test]
+    fn baseline_transient_variants_map_to_exit_code_one() {
+        use djogi::error::{DbError, DjogiError};
+        let cases = [
+            RunnerError::LedgerBootstrapFailed {
+                source: DjogiError::Db(DbError::other("create table failed")),
+            },
+            RunnerError::LedgerWriteFailed {
+                version: "V00000000000000__baseline".to_string(),
+                source: DjogiError::Db(DbError::other("insert failed")),
+            },
+            RunnerError::PinnedSessionCheckoutFailed {
+                source: DjogiError::Db(DbError::other("pool exhausted")),
+            },
+            RunnerError::AdvisoryLockFailed {
+                bucket: BucketKey {
+                    database: "main".to_string(),
+                    app: String::new(),
+                },
+                key: 0x0102_0304_0506_0708,
+                attempts: 3,
+            },
+        ];
+        for err in &cases {
+            assert_eq!(
+                baseline_error_exit_code(err),
+                1,
+                "baseline transient variant must map to exit 1: {err}"
             );
         }
     }

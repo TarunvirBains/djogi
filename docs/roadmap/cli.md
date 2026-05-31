@@ -4,9 +4,9 @@
 
 > **Status: MOSTLY SHIPPED.** Phase 7 ships
 > `djogi migrations apply` (with `--fake` / `--reason`), `compose`, `status`,
-> `attune`, `verify`, and `repair`, plus `djogi db reset / seed` and `djogi docs`. The
-> `rollback` and `baseline` CLI dispatchers are deferred; adopters
-> needing them today call the public library entry points directly. The
+> `attune`, `verify`, `repair`, and `baseline`, plus `djogi db reset / seed` and
+> `djogi docs`. The `rollback` CLI dispatcher is deferred; adopters
+> needing it today call the public library entry point directly. The
 > authoritative current CLI surface lives in
 > [`docs/guide/migrations.md`](../guide/migrations.md). This roadmap
 > document is preserved as design history.

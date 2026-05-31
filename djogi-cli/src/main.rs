@@ -563,6 +563,45 @@ enum MigrationsCommand {
         #[command(subcommand)]
         command: RepairSubcommand,
     },
+    /// Project the live database schema into a baseline ledger row and
+    /// snapshot. Use for existing databases being adopted under Djogi's
+    /// migration ledger, where the schema already exists and compose +
+    /// apply cannot run on a populated database without a starting point.
+    ///
+    /// Projects the live catalog into a single `baseline` ledger row
+    /// (no SQL runs against user tables) and writes the projected
+    /// snapshot so future migrations diff against the real DB state.
+    /// Invoking the subcommand IS the operator acknowledgment.
+    ///
+    /// Requires PostgreSQL 18 or later — exits with code 2 if the
+    /// server is below the minimum.
+    ///
+    /// Exit codes: 0 on success, 1 on runtime error (config / network /
+    /// SQL / projection failure), 2 on refusal (empty `--reason`, duplicate
+    /// version, unresolvable database URL, snapshot-persist failure after
+    /// ledger insert, session-pinning correctness failure, or below PG 18).
+    Baseline {
+        /// Version label for the baseline ledger row (e.g.
+        /// `V00000000000000__baseline`). Must be unique in the ledger.
+        version: String,
+        /// One-line description stored in the ledger row.
+        #[arg(long, default_value = "existing database schema baseline")]
+        description: String,
+        /// Required non-empty reason recorded in the baseline note
+        /// (audit trail entry).
+        #[arg(long)]
+        reason: String,
+        /// App label for the migration bucket. Defaults to the global
+        /// bucket (empty string) when not specified.
+        #[arg(long)]
+        app: Option<String>,
+        /// Database name. Defaults to `main` if not specified.
+        #[arg(long)]
+        database: Option<String>,
+        /// Workspace root override.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
 }
 
 /// `djogi migrations repair <subcommand>` — the four operator-confirmed
@@ -821,6 +860,21 @@ fn main() -> ExitCode {
                 reason,
             } => migrations::apply_cmd(workspace, fake, reason),
             MigrationsCommand::Repair { command } => migrations::repair_cmd(command),
+            MigrationsCommand::Baseline {
+                version,
+                description,
+                reason,
+                app,
+                database,
+                workspace,
+            } => migrations::baseline_cmd(
+                &version,
+                &description,
+                &reason,
+                app.as_deref(),
+                database.as_deref(),
+                workspace,
+            ),
         },
         TopCommand::Migrate { command } => match command {
             MigrateCommand::Apply {
@@ -1180,5 +1234,104 @@ mod tests {
         } else {
             panic!("wrong command");
         }
+    }
+
+    // ── baseline subcommand argument parsing ───────────────────────────────
+
+    /// Extract the `MigrationsCommand::Baseline` variant from a parsed
+    /// `Cli`, panicking on any other shape. Used by the baseline
+    /// field-binding tests below so each test reads as a flat sequence
+    /// of field assertions rather than nested `if let`s.
+    fn baseline_command(cli: Cli) -> MigrationsCommand {
+        match cli.command {
+            TopCommand::Migrations {
+                command: command @ MigrationsCommand::Baseline { .. },
+            } => command,
+            _ => panic!("expected migrations baseline command"),
+        }
+    }
+
+    #[test]
+    fn parse_baseline_accepts_required_args() {
+        let cli = Cli::try_parse_from([
+            "djogi",
+            "migrations",
+            "baseline",
+            "V00000000000000__baseline",
+            "--reason",
+            "schema pre-exists from prior tooling",
+        ])
+        .unwrap();
+        let MigrationsCommand::Baseline {
+            version,
+            reason,
+            description,
+            app,
+            database,
+            ..
+        } = baseline_command(cli)
+        else {
+            panic!("expected Baseline");
+        };
+        assert_eq!(version, "V00000000000000__baseline");
+        assert_eq!(reason, "schema pre-exists from prior tooling");
+        assert_eq!(description, "existing database schema baseline");
+        assert!(app.is_none());
+        assert!(database.is_none());
+    }
+
+    #[test]
+    fn parse_baseline_rejects_missing_version() {
+        let result = Cli::try_parse_from(["djogi", "migrations", "baseline", "--reason", "test"]);
+        assert!(
+            result.is_err(),
+            "baseline without version positional should fail"
+        );
+    }
+
+    #[test]
+    fn parse_baseline_rejects_missing_reason() {
+        let result = Cli::try_parse_from([
+            "djogi",
+            "migrations",
+            "baseline",
+            "V00000000000000__baseline",
+        ]);
+        assert!(result.is_err(), "baseline without --reason should fail");
+    }
+
+    #[test]
+    fn parse_baseline_accepts_optional_flags() {
+        let cli = Cli::try_parse_from([
+            "djogi",
+            "migrations",
+            "baseline",
+            "V00000000000000__baseline",
+            "--reason",
+            "existing schema",
+            "--description",
+            "custom description",
+            "--app",
+            "billing",
+            "--database",
+            "crud_log",
+        ])
+        .unwrap();
+        let MigrationsCommand::Baseline {
+            version,
+            reason,
+            description,
+            app,
+            database,
+            ..
+        } = baseline_command(cli)
+        else {
+            panic!("expected Baseline");
+        };
+        assert_eq!(version, "V00000000000000__baseline");
+        assert_eq!(reason, "existing schema");
+        assert_eq!(description, "custom description");
+        assert_eq!(app.as_deref(), Some("billing"));
+        assert_eq!(database.as_deref(), Some("crud_log"));
     }
 }

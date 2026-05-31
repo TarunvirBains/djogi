@@ -140,7 +140,7 @@ Exit codes: `0` on success, `1` on runtime error (config / network / SQL / git),
 
 ## Library APIs
 
-The `apply` command ships as `djogi migrations apply` (with `--fake` / `--reason` flags for existing-database adoption). The `verify` command ships as `djogi migrations verify`. The `repair` family ships as `djogi migrations repair <checksum-drift|partial-apply|resume-partial|snapshot-rebuild>` (see **Repair Commands** below). The `rollback` and `baseline` CLI dispatchers are deferred; library callers use the public entry points directly:
+The `apply` command ships as `djogi migrations apply` (with `--fake` / `--reason` flags for existing-database adoption). The `verify` command ships as `djogi migrations verify`. The `repair` family ships as `djogi migrations repair <checksum-drift|partial-apply|resume-partial|snapshot-rebuild>` (see **Repair Commands** below). The `baseline` command ships as `djogi migrations baseline` (see **Baseline Command** below). The `rollback` CLI dispatcher is deferred; library callers use the public entry point directly:
 
 ```rust
 use djogi::migrate::{
@@ -158,7 +158,7 @@ use djogi::migrate::repair::{
 | `apply_plan(ctx, plan, runner_ctx, guard)` | Acquires advisory lock, inserts pending ledger row, dispatches segments transactionally / non-transactionally per `Classification`, persists snapshot, marks ledger `applied`. |
 | `rollback_plan(ctx, plan, runner_ctx, guard, lossy_policy, prior_snapshot)` | Replays the down-side SQL in reverse segment order, marks ledger row removed, and applies the caller-selected `LossyRollbackPolicy` for ops that cannot be cleanly reversed. |
 | `fake_apply_plan(ctx, plan, runner_ctx, guard, reason)` | Inserts the ledger row WITHOUT executing SQL — for migrations applied out-of-band (e.g. via a hot-fix `psql` script). Equivalent to `attune --record-ledger` for one version, with the operator reason persisted in the ledger note. |
-| `baseline_plan(ctx, bucket, runner_ctx, guard, reason)` | Marks an existing schema as the baseline for a migration bucket — inserts ledger rows for committed migrations without executing them. Used when adopting Djogi against a pre-existing database. |
+| `baseline_plan(ctx, bucket, runner_ctx, guard, reason)` | Projects the bucket's live database catalog into a single `baseline` ledger row (no SQL runs against user tables; `checksum_up` is content-addressed over the projection) and persists that projection as the bucket's canonical snapshot. Used when adopting Djogi against a pre-existing database whose schema already exists. Refuses a caller-supplied `runner_ctx.snapshot` (it always projects fresh, so a stale snapshot cannot poison future diffs). Exposed on the CLI as `djogi migrations baseline`. |
 | `verify(ctx, snapshot)` | Compares live `pg_catalog` shape against the snapshot. Returns a `VerifyReport` with per-diagnostic severity. |
 | `repair_*` | Four typed repair flows: checksum drift, partial-apply cleanup, resume after interrupted apply, snapshot rebuild from ledger. |
 
@@ -198,6 +198,54 @@ djogi migrations repair snapshot-rebuild --app billing
 
 All four accept `--app` (bucket app label; empty for the global bucket),
 `--database` (defaults to `main`), and `--workspace` (workspace-root override).
+
+## Baseline Command
+
+`djogi migrations baseline <version> --reason "<why>"` adopts an existing
+database under Djogi's migration ledger. Use it when the schema already exists
+(from a prior tool, manual DDL, or a restored backup) and `compose` + `apply`
+cannot run against the populated database without a starting point.
+
+```bash
+# Establish a baseline for the global bucket of the main database.
+djogi migrations baseline V00000000000000__baseline \
+  --reason "schema pre-exists from prior tooling"
+
+# Baseline a specific app bucket in a non-default database, with a
+# custom ledger description.
+djogi migrations baseline V00000000000000__baseline \
+  --reason "imported from legacy system" \
+  --description "legacy billing schema" \
+  --app billing --database crud_log
+```
+
+What it does: projects the bucket's **live** Postgres catalog into a single
+ledger row with `status = 'baseline'`, computes `checksum_up` as a
+content-addressed hash of that projection, and persists the projection as the
+bucket's canonical `schema_snapshot.json`. **No SQL runs against user tables** —
+the schema is captured exactly as Postgres currently holds it, and future
+`compose` / `verify` runs diff against that captured snapshot. The command pins
+one Postgres session, takes the per-bucket advisory lock, and holds the
+workspace file lock for its duration. Invoking the command IS the operator
+acknowledgment.
+
+| Argument / flag | Description |
+|---|---|
+| `<version>` | Version label for the baseline ledger row (e.g. `V00000000000000__baseline`). Must be unique in the ledger. |
+| `--reason TEXT` | **Required, non-empty.** Recorded in the ledger row's audit note (`partial_apply_note`). An empty reason is refused (exit 2). |
+| `--description TEXT` | One-line ledger description. Defaults to `existing database schema baseline`. |
+| `--app LABEL` | Bucket app label. Defaults to the global bucket (empty string). |
+| `--database NAME` | Database name. Defaults to `main`. `crud_log` / `event_log` route to their configured per-database URLs. |
+| `--workspace PATH` | Workspace-root override. Defaults to the current working directory. |
+
+Exit codes: `0` success, `1` runtime error (config / pool / snapshot I/O), `2`
+refusal — empty `--reason`, an unresolvable database URL, a duplicate version
+that already carries a ledger row, a session-pinning correctness failure
+(`pg_advisory_unlock` returned false), or a Postgres server below version 18.
+
+> **One baseline per bucket.** A bucket should carry at most one `baseline` row.
+> Re-running `baseline` with a version that already exists in the ledger refuses
+> (exit 2); choose a fresh version string if you genuinely need to re-baseline.
 
 ## Classifications
 
@@ -327,7 +375,7 @@ Three intentional escape hatches sit alongside the descriptor-driven flow:
 
 2. **`fake_apply_plan` / `attune --record-ledger`.** Insert ledger rows for migrations applied out-of-band. Used after a manual `psql` recovery: the SQL has already run, the ledger needs to catch up.
 
-3. **`baseline_plan`.** Mark an existing schema as the baseline when adopting Djogi against a pre-existing database. Inserts ledger rows for every committed migration through a target version without executing them.
+3. **`djogi migrations baseline` / `baseline_plan`.** Project an existing database's live schema into a single `baseline` ledger row + canonical snapshot when adopting Djogi against a pre-existing database. No SQL runs against user tables — the live catalog is captured as-is and becomes the starting point future migrations diff against.
 
 Repair flows (`repair_checksum_drift`, `repair_partial_apply`, `repair_resume_partial_apply`, `repair_snapshot_rebuild`) cover the four scenarios where state has drifted between disk / ledger / snapshot and need explicit operator intervention to converge.
 

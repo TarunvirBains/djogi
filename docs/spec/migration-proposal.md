@@ -221,7 +221,7 @@ This proposal replaces them with noun-grouped verbs throughout. The shipped CLI 
 | `djogi migrations status` | Show pending and applied migration state |
 | `djogi migrations attune` | Reconcile migration history state through the shipped attune workflow |
 | Shipped target verb | `apply` ships as `djogi migrations apply` |
-| Deferred target verbs | `rollback` and `baseline` remain deferred CLI surfaces; `verify` ships as `djogi migrations verify` and `repair` ships as `djogi migrations repair` |
+| Deferred target verbs | `rollback` remains a deferred CLI surface; `verify` ships as `djogi migrations verify`, `repair` ships as `djogi migrations repair`, and `baseline` ships as `djogi migrations baseline` |
 | `djogi migrations help [<subcommand>]` | Print help for the group or a specific subcommand |
 | `djogi migrations` (no subcommand) | Equivalent to `help` — prints subcommand list + common workflows |
 
@@ -898,22 +898,14 @@ Team has an existing Postgres database with tables already matching what Djogi's
 No migration history in the DB yet.
 
 ```
-$ djogi migrations compose
-Generated:
-  migrations/0001_initial_up.sql
-  migrations/0001_initial_down.sql
-  ... (all current schema as a single initial migration)
+$ # Project the live schema into a baseline row + snapshot.
+$ # No compose needed — baseline reads the live catalog directly.
+$ djogi migrations baseline V20260422100000__baseline --reason "existing DB adoption"
+djogi migrations baseline: established baseline `V20260422100000__baseline` (ledger_id=...) in 0.1s
 
-$ # Do NOT apply — the tables already exist.
+$ # Do NOT apply — the tables already exist and are now captured in the snapshot.
 
-$ # deferred CLI sketch: djogi migrations baseline 0001_initial
-Acquiring advisory lock...ok
-Inserting baseline ledger rows for migrations up to 0001_initial...
-  0001_initial: status=baseline, applied_at=2026-04-22T10:00:00Z, applied_by=postgres
-Snapshot set to: 0001_initial
-Advisory lock released.
-
-$ # deferred CLI sketch: djogi migrations verify
+$ djogi migrations verify
 Comparing snapshot against live DB...
   OK: all 4 tables match snapshot
   OK: all 12 columns match snapshot
@@ -921,10 +913,11 @@ Comparing snapshot against live DB...
 Exit 0 — live DB matches snapshot exactly.
 ```
 
-The planned baseline flow uses the same advisory lock as the library apply path. It computes the
-checksum of each migration file and inserts ledger rows with `status = 'baseline'`. The snapshot
-is advanced to the baseline version. Future `migrations compose` and library `apply_plan` invocations
-see a clean starting point and generate only truly new migrations. (R-10, OI-03)
+The baseline flow uses the same advisory lock as the library apply path. It projects the live
+Postgres catalog into a single ledger row with `status = 'baseline'` (no SQL runs against user
+tables), computes `checksum_up` as a content-addressed hash of that projection, and persists the
+projection as the bucket's canonical snapshot. Future `migrations compose` and library `apply_plan`
+invocations see a clean starting point and generate only truly new migrations. (R-10, OI-03)
 
 ### 3.9 Detecting out-of-band DB tampering
 
