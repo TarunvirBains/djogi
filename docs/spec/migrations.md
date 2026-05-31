@@ -58,6 +58,8 @@ djogi migrations compose --name add_vehicle_horsepower
 
 `migrations compose` discovers model descriptors via the **link-time `inventory` registry**, which means it only sees models from crates linked into the running binary. An adopter workspace must build an adopter-linked `djogi` binary (see [`docs/guide/adopter-cli.md`](../guide/adopter-cli.md)) that references every crate defining `#[model]` structs. The standalone published `djogi` binary links no adopter model crates and will refuse descriptor-dependent commands with a targeted diagnostic.
 
+Descriptors are submitted via `inventory::submit!` and collected through the **`DescriptorProvider` trait** boundary — the abstraction that separates framework projection from adopter model registration. The **linkage-aware drop guard** prevents silent data loss: if an app registered in `schema_snapshot.json` has zero models in the current projection (indicating its inventory symbols were not linked), `compose` refuses with a targeted diagnostic even when `--allow-destructive` is set.
+
 Three-way match logic, run per `(target, app)` pair:
 
 1. `djogi_models.json == schema_snapshot.json` for every `(target, app)` pair → silent
