@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "crates/tracker",
+    "crates/billing",
+    "bin_one_ref",
+    "bin_all_ref",
+    "bin_no_ref",
+]
+resolver = "2"
+
+# Build profile: no LTO by default (mirrors CI debug builds).
+# We test release + LTO separately via --release flag.
