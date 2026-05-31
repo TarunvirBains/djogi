@@ -524,7 +524,7 @@ Filenames are `V<YYYYMMDDHHMMSS>__<slug>.sql` plus `.down.sql`. Every Phase 7 pa
 - [x] `djogi migrations status` — show file / snapshot / ledger / live-DB state for one target
 - [x] `djogi migrations verify` — shipped CLI dispatcher (issue #352)
 - [x] `djogi migrations repair` — shipped CLI dispatcher (issue #353) for repairing failed or partially applied target-local migration state; subcommands `checksum-drift` / `partial-apply` / `resume-partial` / `snapshot-rebuild`
-- [ ] `djogi migrations baseline` — deferred CLI dispatcher for marking an existing schema as adopted without replay
+- [x] `djogi migrations baseline` — shipped CLI dispatcher (issue #354) for adopting an existing database: projects the live schema into a single `baseline` ledger row + snapshot without replay; library callers use `djogi::migrate::baseline_plan`
 - [x] `djogi migrations attune` — `--record` / `--squash --from <ver>` with `--publish`; localhost + dev-profile gates on squash
 - [x] `djogi migrations apply --fake` — shipped as boolean flag on `apply` command, requires `--reason` argument; library callers use `djogi::migrate::fake_apply_plan`
 - [ ] `djogi db reset` — deferred convenience wrapper around drop + recreate + migration apply (triple-gated: localhost + non-production profile + explicit `--yes`)

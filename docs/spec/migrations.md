@@ -798,20 +798,19 @@ djogi migrations repair checksum-drift V<ts>__<slug> --checksum-up V1:<hex>  # r
 djogi migrations repair partial-apply V<ts>__<slug> rolled-back  # resolve a partial-apply ledger row
 djogi migrations repair resume-partial V<ts>__<slug>  # resume an interrupted non-transactional apply
 djogi migrations repair snapshot-rebuild --app <label>  # rebuild a bucket snapshot from ledger + live DB
+djogi migrations baseline V<ts>__baseline --reason "existing schema"  # adopt an existing DB — project live schema into a baseline row + snapshot
 djogi db reset --yes
 djogi db reset --yes --allow-checksum-drift-reset
 djogi db seed
 djogi db seed --database crud_log
 djogi docs
 
-# Phase-7-deferred — library APIs ship today; CLI dispatch lands in a follow-up
-# task. The runtime entry points (`rollback_plan`, `baseline_plan`) are
-# public and exercised by the integration test suite; the gap is the
-# config / snapshot / plan / ledger plumbing the CLI dispatch needs around
-# them. Adopters who need these flows ahead of the CLI registration can wire
-# the library APIs directly today.
+# Phase-7-deferred — library API ships today; CLI dispatch lands in a follow-up
+# task. The runtime entry point (`rollback_plan`) is public and exercised by
+# the integration test suite; the gap is the config / snapshot / plan / ledger
+# plumbing the CLI dispatch needs around it. Adopters who need this flow ahead
+# of the CLI registration can wire the library API directly today.
 # deferred CLI sketch: djogi migrations rollback
-# deferred CLI sketch: djogi migrations baseline 0001_initial
 ```
 
 `migrations attune` is the migration-history state-management command.
