@@ -240,7 +240,8 @@ acknowledgment.
 
 Exit codes: `0` success, `1` runtime error (config / pool / snapshot I/O), `2`
 refusal — empty `--reason`, an unresolvable database URL, a duplicate version
-that already carries a ledger row, or a Postgres server below version 18.
+that already carries a ledger row, a session-pinning correctness failure
+(`pg_advisory_unlock` returned false), or a Postgres server below version 18.
 
 > **One baseline per bucket.** A bucket should carry at most one `baseline` row.
 > Re-running `baseline` with a version that already exists in the ledger refuses

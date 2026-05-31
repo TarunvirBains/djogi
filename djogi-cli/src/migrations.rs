@@ -2710,9 +2710,13 @@ fn baseline_error_exit_code(err: &RunnerError) -> i32 {
         //   as a structural refusal rather than a retryable fault.
         // - An out-of-order rejection is a policy refusal identical to
         //   the apply path's.
+        // - AdvisoryUnlockReturnedFalse is a session-pinning correctness
+        //   failure (PG returned false for pg_advisory_unlock); it is not
+        //   transient — matches the repair family's exit-2 treatment.
         RunnerError::VersionAlreadyApplied { .. }
         | RunnerError::VersionCollisionNonTerminal { .. }
         | RunnerError::BaselineSnapshotShouldNotBeProvided
+        | RunnerError::AdvisoryUnlockReturnedFalse { .. }
         | RunnerError::OutOfOrderRejected { .. } => 2,
         // ── Exit 1: everything else (transient I/O / connection / SQL /
         // projection / snapshot-persist failures). `#[non_exhaustive]`
@@ -3089,6 +3093,13 @@ mod tests {
                 run_id: 1,
             },
             RunnerError::BaselineSnapshotShouldNotBeProvided,
+            RunnerError::AdvisoryUnlockReturnedFalse {
+                bucket: BucketKey {
+                    database: "main".to_string(),
+                    app: String::new(),
+                },
+                key: 0x0102_0304_0506_0708,
+            },
             RunnerError::OutOfOrderRejected {
                 version: "V00000000000000__baseline".to_string(),
                 conflicting_version: "V20260101000000__later".to_string(),
