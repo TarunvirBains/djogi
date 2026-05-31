@@ -69,6 +69,7 @@ pub mod pg_volatility;
 pub mod pk_flip;
 pub mod policy;
 pub mod projection;
+pub mod provider;
 pub mod repair;
 pub mod replay_plan;
 pub mod reset;
@@ -132,6 +133,7 @@ pub use pg_volatility::{Volatility, classify_default_expression};
 pub use pk_flip::{PkFlipError, lower_pk_flip_group};
 pub use policy::{OutOfOrderPolicy, is_localhost_connection};
 pub use projection::{BucketKey, ProjectionError, project_from_inventory};
+pub use provider::{DescriptorProvider, InventoryDescriptorProvider};
 pub use repair::{
     LedgerChange, PartialApplyResolution, RepairConfirmation, RepairError, RepairReport,
     SnapshotChange, repair_checksum_drift, repair_partial_apply, repair_resume_partial_apply,

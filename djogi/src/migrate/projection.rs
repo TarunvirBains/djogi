@@ -72,6 +72,7 @@ use crate::descriptor::{
     ModelDescriptor, PartitionSpec, PkType, RustSourceType,
 };
 use crate::fts::FtsDescriptor;
+use crate::migrate::provider::{DescriptorProvider, InventoryDescriptorProvider};
 use crate::relation::{OnDelete, RelationKind};
 
 use super::schema::{
@@ -350,33 +351,55 @@ fn insert_unique<K: Ord, V, E>(
     }
 }
 
-/// Project the global descriptor inventory into per-bucket
-/// [`AppliedSchema`]s.
+/// Project from a [`DescriptorProvider`] and run the relation-registry
+/// collision gate.
 ///
-/// Walks `inventory::iter::<ModelDescriptor>`,
-/// `inventory::iter::<EnumDescriptor>`, and [`AppRegistry::all`] —
-/// the production entry point. Use [`project_from_iters`] when you
-/// need to project from explicit iterables (tests).
+/// This is the canonical injectable entry point. The default production
+/// path calls this with [`InventoryDescriptorProvider`], which reads
+/// from the compiled-in `inventory` registry. Tests and external tooling
+/// can supply custom providers to inject synthetic descriptor sets without
+/// touching global state.
 ///
-/// # Pre-projection registry gate (GH #158)
+/// The relation-accessor collision gate runs inside this function as
+/// the one deliberate ambient read of the global registry.
+#[allow(clippy::result_large_err)]
+pub fn project_from_provider<P: DescriptorProvider>(
+    provider: P,
+) -> Result<BTreeMap<BucketKey, AppliedSchema>, ProjectionError> {
+    crate::relation::registry::validate_global_relation_accessor_registry()
+        .map_err(ProjectionError::RelationAccessorCollisions)?;
+
+    let generated_at = rfc3339_now_seconds();
+    let descriptors = provider.descriptors();
+
+    // Flatten all model descriptors from every bucket into a single iterator.
+    let models: Vec<&ModelDescriptor> = descriptors
+        .iter()
+        .flat_map(|(_, models)| models.iter())
+        .copied()
+        .collect();
+
+    project_from_iters_with_deferrability(
+        models,
+        inventory::iter::<EnumDescriptor>(),
+        AppRegistry::all().iter(),
+        inventory::iter::<DeferrabilitySpec>(),
+        generated_at,
+    )
+}
+
+/// Project from the compiled-in `inventory` registry and run the
+/// relation-accessor collision gate.
 ///
-/// Before producing any snapshot output this entry point invokes
-/// [`crate::relation::registry::validate_global_relation_accessor_registry`]
-/// to catch cross-kind reverse / M2M accessor collisions that rustc
-/// cannot see (the colliding macros emit different trait suffixes —
-/// `…ReverseRelation` vs `…ManyToManyRelation` — so both compile and
-/// the clash only manifests at downstream call sites). A failure is
-/// wrapped into [`ProjectionError::RelationAccessorCollisions`] before
-/// any per-bucket work runs, keeping the diagnostic anchored at the
-/// relation registry metadata rather than at the eventual ambiguity
-/// error.
-/// Custom bootstraps that bypass this entry point can call the
-/// validator directly to retain the same gate.
+/// This delegates to [`project_from_provider`] with
+/// [`InventoryDescriptorProvider`], which reads descriptors via
+/// [`AppRegistry::all`] and the global `inventory::iter` collectors.
+///
+/// Tests and external tooling that need custom descriptor sets should
+/// use [`project_from_provider`] directly with a synthetic provider.
 #[allow(clippy::result_large_err)]
 pub fn project_from_inventory() -> Result<BTreeMap<BucketKey, AppliedSchema>, ProjectionError> {
-    project_from_inventory_with_relation_validator(
-        crate::relation::registry::validate_global_relation_accessor_registry,
-    )
+    project_from_provider(InventoryDescriptorProvider)
 }
 
 /// Inner half of [`project_from_inventory`] with the relation-registry
@@ -395,6 +418,7 @@ pub fn project_from_inventory() -> Result<BTreeMap<BucketKey, AppliedSchema>, Pr
 /// implementation detail; outside callers should keep going through
 /// [`project_from_inventory`].
 #[allow(clippy::result_large_err)]
+#[allow(dead_code)]
 pub(crate) fn project_from_inventory_with_relation_validator<F>(
     validator: F,
 ) -> Result<BTreeMap<BucketKey, AppliedSchema>, ProjectionError>
@@ -445,7 +469,7 @@ where
 }
 
 #[allow(clippy::result_large_err)]
-fn project_from_iters_with_deferrability<'a, M, E, A, D>(
+pub(crate) fn project_from_iters_with_deferrability<'a, M, E, A, D>(
     models: M,
     enums: E,
     apps: A,
