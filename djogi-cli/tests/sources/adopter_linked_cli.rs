@@ -777,3 +777,11 @@ fn splice_database_name(base_url: &str, db_name: &str) -> String {
     // Fallback: if URL has no slash (malformed), just use base as-is.
     base_url.to_string()
 }
+
+// ── T-FORBID-UNSAFE: Adopter glue compiles under forbid(unsafe_code) ──
+
+#[test]
+fn t_forbid_unsafe_build_succeeds() {
+    let bin = build_fixture_bin("adopter_forbid_unsafe");
+    assert!(bin.exists(), "forbid_unsafe binary should exist after successful build");
+}
