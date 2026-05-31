@@ -801,23 +801,21 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
     //    even though the operation is metadata-only.
     let snapshots_for_diff = remap_snapshots_for_renames(req.snapshots, req.apps);
 
-    // 2b. REQ-370-16 — linkage-aware drop guard. Evaluated on the
-    //     POST-REMAP snapshots (snapshots_for_diff) — the exact view the
-    //     differ is about to diff — so renames (already relabeled to
-    //     their NEW key by remap_snapshots_for_renames) carry their
-    //     models forward and never trip the guard (codex plan-review
-    //     BLOCK 9).
+    // 2b. REQ-370-16 — linkage-aware drop guard. Evaluated on the POST-REMAP
+    //     snapshots (snapshots_for_diff) — the exact view the differ is
+    //     about to diff — so renames (already relabeled to their NEW key
+    //     by remap_snapshots_for_renames) carry their models forward and
+    //     never trip the guard.
     //
     //     For every snapshot BUCKET that still describes schema state on
     //     disk but for which the CURRENT projection (req.models) carries
     //     ZERO models, refuse — UNLESS that bucket's app is tombstoned
     //     (the intentional-removal channel). Keys on the bucket's
     //     (database, app) and on "zero projected models", NOT on
-    //     snap.registered_apps (DB-global, shared across buckets —
-    //     looping it false-positives (BLOCK 7).
-    //     The synthetic global bucket is guarded uniformly — un-
-    //     #[model(app=)] models live there, and a bucket that HAD
-    //     models and now has zero is a real removal (BLOCK 8).
+    //     snap.registered_apps (DB-global, shared across buckets — looping
+    //     it would false-positive). The synthetic global bucket is guarded
+    //     uniformly — un-#[model(app=)] models live there, and a bucket
+    //     that HAD models and now has zero is a real removal.
     //
     //     Fires for any snapshot bucket with tables whose projection
     //     has zero models, regardless of whether the app descriptor
@@ -4918,7 +4916,7 @@ mod tests {
 
     #[test]
     fn linkage_drop_guard_does_not_fire_for_renamed_app() {
-        // BLOCK 9: renamed app must NOT fire. Snapshot under OLD key,
+        // Renamed app must NOT fire. Snapshot under OLD key,
         // projection under NEW key, remap moves snapshot to NEW where models exist.
         let work = temp_workspace("linkage_rename");
         let guard = lock_for(&work);
@@ -4964,7 +4962,7 @@ mod tests {
 
         match compose(req) {
             Err(ComposeError::LinkageDropWithoutModels { .. }) => {
-                panic!("renamed app must not trip the linkage guard (BLOCK 9)")
+                panic!("renamed app must not trip the linkage guard")
             }
             _ => {
                 // Any other outcome acceptable — rename should proceed
@@ -4976,7 +4974,7 @@ mod tests {
 
     #[test]
     fn linkage_drop_guard_fires_for_emptied_global_bucket() {
-        // BLOCK 8: synthetic global bucket guarded uniformly when an app
+        // Synthetic global bucket guarded uniformly when an app
         // descriptor exists for it.
         let work = temp_workspace("linkage_global");
         let guard = lock_for(&work);

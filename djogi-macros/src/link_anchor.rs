@@ -95,10 +95,10 @@ mod tests {
             "must emit the anchor fn: {s}"
         );
         // The dead-strip defense is `#[used]` on the anchor static — the
-        // doc + commit claim this, so the test pins it (the prior impl
-        // omitted it; doc-impl drift, codex plan-review pass-2 #2). The
-        // tokenized attribute renders as `# [used]`, so normalize spaces
-        // before matching rather than asserting the source spelling.
+        // doc + commit claim this, so the test pins it. The prior impl
+        // omitted it (a doc-vs-impl drift this test now guards against).
+        // The tokenized attribute renders as `# [used]`, so normalize
+        // spaces before matching rather than asserting the source spelling.
         let collapsed: String = s.split_whitespace().collect();
         assert!(
             collapsed.contains("#[used]"),

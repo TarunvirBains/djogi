@@ -4,7 +4,7 @@
 //! prevent the LTO linker from dropping their crates' inventory data,
 //! then delegates to `djogi_cli::run_from_env()`.
 //!
-//! The linker spike (REQ-370-SPIKE-0) proved that referencing a single
+//! The linker dead-stripping spike proved that referencing a single
 //! descriptor per crate forces ALL inventory from that crate. This macro
 //! makes that reference explicit and auditable at the binary entry point.
 //!
@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn test_expand_empty_is_compile_error() {
-        // Empty input must produce a compile error per plan.md line 72.
+        // Empty input must produce a compile error.
         let input: TokenStream = TokenStream::new();
         let out = djogi_main(input);
         let s = out.to_string();
