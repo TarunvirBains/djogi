@@ -1,59 +1,84 @@
-//! `djogi::link_anchor!(ModelType)` function-like proc macro.
+//! `djogi::link_anchor!()` per-crate linkage anchor (#370, branch b).
 //!
-//! Emits a `#[used]` static that references the given model's
-//! descriptor, forcing the entire crate into the linkage graph even
-//! under aggressive LTO.
+//! When referencing ONE model's `descriptor()` does NOT retain a crate's
+//! sibling models under the CI release profile (`--gc-sections` + multiple
+//! codegen units split sibling `submit!` statics into objects the linker
+//! never pulls), the robust fallback is a single dedicated anchor symbol
+//! per crate. Each model crate invokes `djogi::link_anchor!()` ONCE in its
+//! `lib.rs`; the adopter glue references `<crate>::__djogi_link_anchor()`
+//! once per crate. Referencing that one symbol pulls the crate's rlib
+//! member into the binary, and `inventory`'s registration statics (already
+//! emitted by `#[derive(Model)]`) are collected for the whole linked crate.
 //!
-//! This is the **per-crate fallback** for when `djogi_main!` cannot be
-//! used (e.g., the model lives in a library crate without a `main()`).
-//! Call from any `fn main()` or from a module that is guaranteed to be
-//! linked into the final binary.
+//! Takes NO arguments — it is a per-crate marker, not per-model. A non-empty
+//! invocation is a compile error.
+//!
+//! The expansion contains zero `unsafe` tokens — compatible with
+//! `#![forbid(unsafe_code)]` (category G6).
 //!
 //! # Usage
 //!
 //! ```ignore
-//! // In each model crate's lib.rs:
-//! djogi::link_anchor!(MyModel);
+//! // In each model crate's lib.rs, once:
+//! djogi::link_anchor!();
+//!
+//! // In the adopter's src/bin/djogi.rs, one reference per model crate:
+//! fn main() -> std::process::ExitCode {
+//!     tracker::__djogi_link_anchor();
+//!     billing::__djogi_link_anchor();
+//!     djogi_cli::run_from_env()
+//! }
 //! ```
 
 use proc_macro2::TokenStream;
-use syn::Path;
-use syn::parse::{Parse, ParseStream};
+use quote::quote;
 
-/// Parse a single type path.
-struct SinglePath(Path);
-
-impl Parse for SinglePath {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let path = input.parse::<Path>()?;
-        if !input.is_empty() {
-            return Err(input.error("expected a single type path"));
-        }
-        Ok(SinglePath(path))
-    }
-}
-
-/// Expand `link_anchor!(ModelType)` into a `#[used]` static that
-/// references the model's descriptor to prevent LTO from dropping
-/// the crate from the linkage graph.
+/// Expand `link_anchor!()` — emit one per-crate anchor symbol.
+///
+/// Takes NO arguments (it is a per-crate marker, not per-model — that is
+/// the whole point: ONE invocation covers all of a crate's models). A
+/// non-empty invocation is a compile error.
 pub fn link_anchor(input: TokenStream) -> TokenStream {
-    let SinglePath(model_path) = match syn::parse2::<SinglePath>(input) {
-        Ok(p) => p,
-        Err(e) => return e.to_compile_error(),
-    };
+    if !input.is_empty() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "djogi::link_anchor! takes no arguments — invoke it once per model \
+             crate's lib.rs as `djogi::link_anchor!();`.",
+        )
+        .to_compile_error();
+    }
 
-    quote::quote! {
-        /// Forces the inventory data from this crate into the linkage graph.
-        /// Call from `main()` before any djogi operations to prevent LTO
-        /// from dropping model descriptors.
+    // A single, uniquely-pathed (via the crate root) anchor symbol. The
+    // adopter glue calls `<crate>::__djogi_link_anchor()` once per crate;
+    // that call is the external reference that forces the crate's rlib
+    // member into the binary, and the crate's `inventory` statics (emitted
+    // by #[derive(Model)] with #[used] + a linker section) are then
+    // collected for the whole linked crate.
+    //
+    // `#[used]` lives on the STATIC `__DJOGI_LINK_ANCHOR`, not on the fn —
+    // `#[used]` is a static-only attribute (rustc rejects it on a fn,
+    // E0518), and it is precisely how `inventory` itself defeats
+    // `--gc-sections` (it tags its `static __CTOR` `#[used]`; see
+    // `inventory`'s `__do_submit!`). The static carries the dead-strip
+    // defense; the `pub fn` is the callable surface the adopter references.
+    // The fn returns a reference to the static so the static cannot be
+    // dropped independently of a fn that is kept, and the fn's body forces
+    // the `#[used]` static to participate. No `unsafe` tokens — the static
+    // is a plain `()` (G6 / forbid-unsafe-safe).
+    // `#[doc(hidden)]` — adopters reference it only through the documented
+    // glue, not as public API. `#[inline(never)]` keeps the fn a real
+    // callable symbol the reference cannot be optimized away to nothing
+    // before the crate is pulled.
+    quote! {
+        #[doc(hidden)]
         #[used]
-        pub static __DJOGI_LINK_ANCHOR: unsafe extern "C" fn() = {
-            // Reference prevents dead-code elimination of the descriptor.
-            let _ = <#model_path as ::djogi::Model>::descriptor;
-            #[no_mangle]
-            unsafe extern "C" fn anchor() {}
-            anchor
-        };
+        static __DJOGI_LINK_ANCHOR: () = ();
+
+        #[doc(hidden)]
+        #[inline(never)]
+        pub fn __djogi_link_anchor() -> &'static () {
+            &__DJOGI_LINK_ANCHOR
+        }
     }
 }
 
@@ -62,46 +87,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_expand_single_model() {
-        let input: TokenStream = quote::quote! { MyModel };
-        let out = link_anchor(input);
+    fn empty_input_emits_anchor() {
+        let out = link_anchor(TokenStream::new());
         let s = out.to_string();
-
         assert!(
-            s.contains("__DJOGI_LINK_ANCHOR"),
-            "output should contain the static name, got: {s}"
+            s.contains("__djogi_link_anchor"),
+            "must emit the anchor fn: {s}"
+        );
+        // The dead-strip defense is `#[used]` on the anchor static — the
+        // doc + commit claim this, so the test pins it (the prior impl
+        // omitted it; doc-impl drift, codex plan-review pass-2 #2). The
+        // tokenized attribute renders as `# [used]`, so normalize spaces
+        // before matching rather than asserting the source spelling.
+        let collapsed: String = s.split_whitespace().collect();
+        assert!(
+            collapsed.contains("#[used]"),
+            "anchor must carry #[used] (the --gc-sections dead-strip defense): {s}"
         );
         assert!(
-            s.contains("djogi :: Model"),
-            "output should reference djogi::Model trait"
-        );
-        assert!(
-            s.contains("descriptor"),
-            "output should reference descriptor"
-        );
-        assert!(
-            s.contains("MyModel"),
-            "output should contain the model name"
-        );
-        assert!(
-            s.contains("# [used]"),
-            "output should have #[used] attribute to prevent LTO stripping, got: {s}"
+            !s.contains("unsafe"),
+            "anchor must be unsafe-free (G6 / forbid-unsafe compat): {s}"
         );
     }
 
     #[test]
-    fn test_expand_nested_path() {
-        let input: TokenStream = quote::quote! { foo::bar::Baz };
-        let out = link_anchor(input);
-        let s = out.to_string();
-
+    fn nonempty_input_is_compile_error() {
+        let out = link_anchor(quote! { Foo });
         assert!(
-            s.contains("foo :: bar :: Baz"),
-            "output should preserve the full nested path, got: {s}"
-        );
-        assert!(
-            s.contains("__DJOGI_LINK_ANCHOR"),
-            "output should contain the static name"
+            out.to_string().contains("compile_error"),
+            "args imply compile_error!"
         );
     }
 }

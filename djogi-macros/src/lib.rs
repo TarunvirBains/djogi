@@ -13,7 +13,7 @@
 //!   `inventory::submit!` registration record.
 //! - `djogi_main!(…)` — function-like macro generating `fn main()` that
 //!   references model types to prevent LTO linker from dropping inventory data.
-//! - `link_anchor!(ModelType)` — per-crate fallback emitting a `#[used]` static
+//! - `link_anchor!()` — per-crate fallback emitting a `#[used]` static + callable fn
 //!   that forces a model crate into the linkage graph.
 //!
 //! `#[derive(Model)]` is a no-op stub kept for potential future use.
@@ -557,20 +557,31 @@ pub fn djogi_main(input: TokenStream) -> TokenStream {
     djogi_main::djogi_main(input.into()).into()
 }
 
-/// Emit a `#[used]` static that references the given model's
-/// descriptor, forcing the entire crate into the linkage graph even
-/// under aggressive LTO.
+/// Emit a once-per-crate linkage anchor so an adopter binary can force
+/// link-time retention of THIS crate's `#[derive(Model)]` registrations
+/// without listing every model type (#370, branch b).
 ///
-/// Use this per-crate fallback when `djogi_main!` cannot be used
-/// (e.g., the model lives in a library crate without a `main()`).
-/// Call from any `fn main()` or from a module guaranteed to be
-/// linked into the final binary.
+/// # What
+///
+/// Invoke `djogi::link_anchor!();` exactly once in a model crate's
+/// `lib.rs`. It emits a `#[used]` static (`<crate>::__DJOGI_LINK_ANCHOR`) —
+/// the dead-strip defense — plus a callable `<crate>::__djogi_link_anchor()`
+/// fn (returning `&'static ()`) that the adopter glue references once per
+/// crate. Referencing that fn pulls the crate's rlib member into the binary,
+/// and the crate's `inventory` statics are collected.
 ///
 /// # Usage
 ///
 /// ```ignore
-/// // In each model crate's lib.rs:
-/// djogi::link_anchor!(MyModel);
+/// // In each model crate's lib.rs, once:
+/// djogi::link_anchor!();
+///
+/// // In the adopter's src/bin/djogi.rs, one reference per model crate:
+/// fn main() -> std::process::ExitCode {
+///     tracker::__djogi_link_anchor();
+///     billing::__djogi_link_anchor();
+///     djogi_cli::run_from_env()
+/// }
 /// ```
 #[proc_macro]
 pub fn link_anchor(input: TokenStream) -> TokenStream {

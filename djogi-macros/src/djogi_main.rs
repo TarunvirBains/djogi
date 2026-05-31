@@ -17,10 +17,10 @@
 //! Expands to:
 //!
 //! ```ignore
-//! fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-//!     let _ = <tracker::Elephant as djogi::Model>::descriptor;
-//!     let _ = <billing::Invoice as djogi::Model>::descriptor;
-//!     djogi_cli::run_from_env()
+//! fn main() -> std::process::ExitCode {
+//!     let _ = <tracker::Elephant as ::djogi::model::Model>::descriptor();
+//!     let _ = <billing::Invoice as ::djogi::model::Model>::descriptor();
+//!     ::djogi_cli::run_from_env()
 //! }
 //! ```
 
@@ -67,13 +67,13 @@ pub fn djogi_main(input: TokenStream) -> TokenStream {
             quote! {
                 // Forces `inventory::submit!` from this type's crate into the binary.
                 // Without this reference, LTO/linker may drop the entire crate.
-                let _ = <#path as ::djogi::Model>::descriptor;
+                let _ = <#path as ::djogi::model::Model>::descriptor();
             }
         })
         .collect();
 
     quote! {
-        fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        fn main() -> std::process::ExitCode {
             // Force all model crates into the linkage graph so inventory data survives LTO.
             #(#refs)*
             ::djogi_cli::run_from_env()
@@ -94,8 +94,8 @@ mod tests {
         // Must emit a valid main function.
         assert!(s.contains("fn main"), "output should contain 'fn main'");
         assert!(
-            s.contains("djogi :: Model"),
-            "output should reference djogi::Model trait"
+            s.contains("djogi :: model :: Model"),
+            "output should reference djogi::model::Model trait (not derive macro shadow)"
         );
         assert!(
             s.contains("descriptor"),
@@ -108,6 +108,11 @@ mod tests {
         assert!(
             s.contains("djogi_cli :: run_from_env"),
             "output should call djogi_cli::run_from_env()"
+        );
+        // Return type must match run_from_env() -> ExitCode
+        assert!(
+            s.contains("ExitCode"),
+            "output should return std::process::ExitCode, got: {s}"
         );
     }
 
@@ -132,6 +137,11 @@ mod tests {
             descriptor_count, 2,
             "output should have two descriptor references, got: {s}"
         );
+        // Return type must be ExitCode
+        assert!(
+            s.contains("ExitCode"),
+            "output should return std::process::ExitCode, got: {s}"
+        );
     }
 
     #[test]
@@ -150,6 +160,18 @@ mod tests {
         assert!(
             !s.contains("descriptor"),
             "output should not contain descriptor refs for empty input, got: {s}"
+        );
+    }
+
+    #[test]
+    fn test_no_unsafe_in_output() {
+        // G6 forbid-unsafe compatibility: expansion must contain no unsafe tokens.
+        let input: TokenStream = quote! { tracker::Elephant };
+        let out = djogi_main(input);
+        let s = out.to_string();
+        assert!(
+            !s.contains("unsafe"),
+            "djogi_main! expansion must be unsafe-free for #![forbid(unsafe_code)] compat, got: {s}"
         );
     }
 }
