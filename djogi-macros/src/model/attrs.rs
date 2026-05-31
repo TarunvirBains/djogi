@@ -3924,6 +3924,15 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         | "djogi::RanjIdDesc"
         | "djogi::RanjIdRecencyBiased" => Some("UUID"),
         "serde_json::Value" | "Value" => Some("JSONB"),
+        // djogi#369 — `Vec<u8>` is raw binary (BYTEA), NOT a `SMALLINT[]`
+        // array. This arm sits BEFORE the generic `Vec<T>` array arms so
+        // the byte-vector shape wins: a scalar `u8` field lowers to
+        // `SMALLINT`, but a `Vec<u8>` field is a binary blob, matching
+        // tokio-postgres' native `Vec<u8>` ↔ BYTEA codec. (There is no
+        // `Vec<u8>` array arm below, so without this the type would fall
+        // through to the `DjogiSqlType` field-site bound and fail to
+        // compile.)
+        "Vec<u8>" => Some("BYTEA"),
         "Vec<String>" => Some("TEXT[]"),
         "Vec<i16>" => Some("SMALLINT[]"),
         "Vec<i32>" => Some("INTEGER[]"),
@@ -4976,5 +4985,47 @@ mod tests {
         let input = format!("{snippet} struct _DjogiSnippet;");
         syn::parse_str::<syn::ItemStruct>(&input)
             .expect("gin-unsupported-type snippet must parse as a valid attribute (paren balance)");
+    }
+
+    /// djogi#369 — `Vec<u8>` lowers to `BYTEA`, NOT to a `SMALLINT[]` array.
+    ///
+    /// The byte-vector arm must be reached *before* the generic `Vec<T>`
+    /// array arms in `rust_type_to_sql`. This is the macro-unit regression
+    /// guard for that ordering: it runs without a Postgres connection or a
+    /// `lihaaf` compiler invocation, so a future reorder that let `Vec<u8>`
+    /// fall through to `None` (the `DjogiSqlType` field-site bound) or that
+    /// added a `Vec<u8>` array arm would fail here immediately.
+    #[test]
+    fn vec_u8_lowers_to_bytea() {
+        let ty: syn::Type = parse_quote!(Vec<u8>);
+        assert_eq!(rust_type_to_sql(&ty), Some("BYTEA"));
+    }
+
+    /// djogi#369 — the byte-vector vs scalar-byte distinction must hold:
+    /// a *scalar* `u8` field lowers to `SMALLINT` (widened, with a
+    /// projection-side range CHECK), while a `Vec<u8>` is raw `BYTEA`.
+    /// Pins both sides so a regression that conflated them — e.g. routing
+    /// `Vec<u8>` through the `u8` scalar arm — is caught directly.
+    #[test]
+    fn scalar_u8_lowers_to_smallint_not_bytea() {
+        let scalar: syn::Type = parse_quote!(u8);
+        let vector: syn::Type = parse_quote!(Vec<u8>);
+        assert_eq!(rust_type_to_sql(&scalar), Some("SMALLINT"));
+        assert_eq!(rust_type_to_sql(&vector), Some("BYTEA"));
+        assert_ne!(rust_type_to_sql(&scalar), rust_type_to_sql(&vector));
+    }
+
+    /// djogi#369 — `Option<Vec<u8>>` projects as a nullable `BYTEA` column.
+    ///
+    /// The descriptor emitter strips `Option<…>` via `unwrap_schema_type`
+    /// before calling `rust_type_to_sql`, so the inner `Vec<u8>` must
+    /// resolve to `BYTEA` and the wrapper must mark the column nullable.
+    /// This mirrors the call shape in `model::descriptor` (line ~393).
+    #[test]
+    fn option_vec_u8_strips_to_bytea_and_is_nullable() {
+        let ty: syn::Type = parse_quote!(Option<Vec<u8>>);
+        let (inner, nullable) = unwrap_schema_type(&ty);
+        assert!(nullable, "Option<Vec<u8>> must mark the column nullable");
+        assert_eq!(rust_type_to_sql(&inner), Some("BYTEA"));
     }
 }

@@ -1381,6 +1381,10 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         "NUMERIC" => quote! { ::djogi::FieldSqlType::Numeric },
         "UUID" => quote! { ::djogi::FieldSqlType::Uuid },
         "JSONB" => quote! { ::djogi::FieldSqlType::Jsonb },
+        // djogi#369 — `Vec<u8>` lowers to BYTEA (see `rust_type_to_sql`).
+        // The descriptor variant is unconditional; tokio-postgres' native
+        // `Vec<u8>` codec handles the wire round-trip with no feature flag.
+        "BYTEA" => quote! { ::djogi::FieldSqlType::Bytea },
         "TEXT[]" => quote! { ::djogi::FieldSqlType::TextArray },
         "SMALLINT[]" => quote! { ::djogi::FieldSqlType::SmallIntArray },
         "INTEGER[]" => quote! { ::djogi::FieldSqlType::IntegerArray },
@@ -1830,6 +1834,26 @@ mod tests {
         assert!(
             date.contains("RangeSubtypeKind::Date"),
             "lowercase daterange should map to FieldSqlType::Range subtype Date"
+        );
+    }
+
+    /// djogi#369 — the `"BYTEA"` SQL string (produced by `rust_type_to_sql`
+    /// for a `Vec<u8>` field) must lower to the typed `FieldSqlType::Bytea`
+    /// token, not the `Custom("BYTEA")` fallback. If this arm were dropped,
+    /// the `other =>` tail would emit `FieldSqlType::Custom("BYTEA")`, which
+    /// the migration differ would still compare equal by string but which
+    /// loses the typed-variant guarantee the descriptor surface depends on.
+    #[test]
+    fn test_sql_str_to_tokens_bytea_maps_to_typed_variant() {
+        let normalize = |s: String| s.replace(' ', "");
+        let bytea = normalize(sql_str_to_tokens("BYTEA").to_string());
+        assert!(
+            bytea.contains("FieldSqlType::Bytea"),
+            "\"BYTEA\" should map to the typed FieldSqlType::Bytea variant, got: {bytea}"
+        );
+        assert!(
+            !bytea.contains("Custom"),
+            "\"BYTEA\" must not fall through to FieldSqlType::Custom, got: {bytea}"
         );
     }
 }

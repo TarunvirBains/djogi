@@ -203,7 +203,7 @@ This is the single biggest functional gap in the current Djogi spec. Real applic
 |---|---|---|
 | `DecimalField` | `rust_decimal::Decimal` | Yes — financial data needs exact decimals |
 | `UUIDField` | `uuid::Uuid` (for non-PK use) | Yes — already have RanjId for PKs, but plain UUID fields are common |
-| `BinaryField` | `Vec<u8>` / `&[u8]` | Maybe — Postgres BYTEA |
+| `BinaryField` | `Vec<u8>` | Yes — shipped (djogi#369). `Vec<u8>` / `Option<Vec<u8>>` lower to `BYTEA` / nullable `BYTEA` via tokio-postgres' native codec. `&[u8]` is not a model field type (owned storage only). |
 | `DurationField` | `time::Duration` | Maybe — Postgres INTERVAL |
 | `TextField` vs `CharField` | Often both carry `String`, but they are different schema primitives | Yes — Djogi should preserve `TEXT` vs `VARCHAR(n)` intent in descriptors and migrations |
 | `SlugField`, `EmailField`, `URLField` | Validation wrappers over String | No — use validators, not distinct types. Unnecessary in a typed language. |
