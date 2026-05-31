@@ -102,7 +102,7 @@ fn write_billing_snapshot_with_table(tmp: &Path) -> PathBuf {
 // ── T-LINK: Multi-model + cross-crate retention ─────────────────────────────
 
 #[test]
-fn t_link_multi_model_cross_crete_retention() {
+fn t_link_multi_model_cross_crate_retention() {
     // Build forced fixture binary (references ALL models across both crates).
     let bin = build_fixture_bin("adopter_app");
 
@@ -110,7 +110,7 @@ fn t_link_multi_model_cross_crete_retention() {
     write_minimal_djogi_toml(&workspace, &database_url());
 
     let output = Command::new(&bin)
-        .arg("compose")
+        .args(["migrations", "compose"])
         .arg("--workspace")
         .arg(&workspace)
         .env("DATABASE_URL", database_url())
@@ -154,6 +154,58 @@ fn t_link_multi_model_cross_crete_retention() {
         "schema_snapshot.json should contain invoices (cross-crate); got {:?}",
         table_names
     );
+
+    // ── Unforced fixture: billing NOT referenced, must be dead-stripped ──
+    let unforced_bin = build_fixture_bin("adopter_app_unforced");
+
+    let unforced_workspace = temp_workspace("t9-link-unforced");
+    write_minimal_djogi_toml(&unforced_workspace, &database_url());
+
+    let unforced_output = Command::new(&unforced_bin)
+        .args(["migrations", "compose", "--allow-destructive"])
+        .arg("--workspace")
+        .arg(&unforced_workspace)
+        .env("DATABASE_URL", database_url())
+        .output()
+        .expect("failed to execute child process");
+    let unforced_stderr = String::from_utf8_lossy(&unforced_output.stderr).to_string();
+
+    assert!(
+        unforced_output.status.success(),
+        "unforced fixture compose should succeed; stderr: {unforced_stderr}"
+    );
+
+    let unforced_snapshot_path = unforced_workspace.join("schema_snapshot.json");
+    let unforced_snapshot_json =
+        std::fs::read_to_string(&unforced_snapshot_path).unwrap_or_else(|_| String::from("{}"));
+    let unforced_snapshot: serde_json::Value =
+        serde_json::from_str(&unforced_snapshot_json).expect("parse unforced schema_snapshot.json");
+
+    let unforced_tables = unforced_snapshot
+        .get("tables")
+        .expect("tables key in unforced snapshot");
+    let unforced_table_names: Vec<&str> = unforced_tables
+        .as_array()
+        .expect("unforced tables is array")
+        .iter()
+        .map(|t| t.get("name").expect("table name").as_str().expect("string"))
+        .collect();
+
+    assert!(
+        unforced_table_names.contains(&"elephants"),
+        "unforced binary should see tracker::Elephant; got {:?}",
+        unforced_table_names
+    );
+    assert!(
+        unforced_table_names.contains(&"herds"),
+        "unforced binary should see tracker::Herd; got {:?}",
+        unforced_table_names
+    );
+    assert!(
+        !unforced_table_names.contains(&"invoices"),
+        "unforced binary must NOT see billing::Invoice (dead-stripped — core linkage proof); got {:?}",
+        unforced_table_names
+    );
 }
 
 // ── T-DROPGUARD: Linkage guard prevents destructive drop ────────────────────
@@ -167,8 +219,7 @@ fn t_dropguard_linkage_guard_prevents_destructive_drop() {
     write_billing_snapshot_with_table(&workspace);
 
     let output = Command::new(&bin)
-        .arg("compose")
-        .arg("--allow-destructive")
+        .args(["migrations", "compose", "--allow-destructive"])
         .arg("--workspace")
         .arg(&workspace)
         .env("DATABASE_URL", database_url())
@@ -191,108 +242,155 @@ fn t_dropguard_linkage_guard_prevents_destructive_drop() {
     );
 }
 
-// ── T-POS: Positional line count matches descriptor count ───────────────────
+// ── T-POS: Compose discovers all models from provider ───────────────────────
 
 #[test]
-fn t_pos_positional_line_count_matches_descriptor_count() {
+fn t_pos_compose_discovers_all_models_from_provider() {
+    // Plan T-POS: compose and schema discover all models from provider
+    // (not just the introspection path). Codex BLOCK 12: compose must
+    // see the same models as schema — if only one reads the provider,
+    // they diverge.
+
     let bin = build_fixture_bin("adopter_app");
 
-    let workspace = temp_workspace("t9-pos-verify");
+    let workspace = temp_workspace("t9-pos-discovery");
     write_minimal_djogi_toml(&workspace, &database_url());
 
-    let output = Command::new(&bin)
-        .arg("verify")
+    // Run `schema --format json` — proves provider threaded to schema path.
+    let schema_out = Command::new(&bin)
+        .args(["schema", "--format", "json"])
         .arg("--workspace")
         .arg(&workspace)
         .env("DATABASE_URL", database_url())
         .output()
         .expect("failed to execute child process");
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let schema_stdout = String::from_utf8_lossy(&schema_out.stdout).to_string();
+    let schema_stderr = String::from_utf8_lossy(&schema_out.stderr).to_string();
 
     assert!(
-        output.status.success(),
-        "verify should succeed; stderr: {stderr}"
+        schema_out.status.success(),
+        "schema should succeed; stderr: {schema_stderr}"
     );
-
-    // Three models → three positional lines.
-    let positional_lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with("$")).collect();
-    assert_eq!(
-        positional_lines.len(),
-        3,
-        "expected 3 positional lines, got {}: {:?}",
-        positional_lines.len(),
-        positional_lines
-    );
-
-    // Model count line should say 3.
     assert!(
-        stdout.contains("models registered"),
-        "verify should contain model count; stdout: {stdout}"
+        schema_stdout.contains("elephants"),
+        "schema output should contain elephants; got: {schema_stdout}"
+    );
+    assert!(
+        schema_stdout.contains("herds"),
+        "schema output should contain herds"
+    );
+    assert!(
+        schema_stdout.contains("invoices"),
+        "schema output should contain invoices — proves cross-crate provider wiring to schema path"
+    );
+
+    // Run `migrations compose` — proves provider threaded to compose path (codex BLOCK 12).
+    let compose_out = Command::new(&bin)
+        .args(["migrations", "compose", "--name", "test_pos_discovery"])
+        .arg("--workspace")
+        .arg(&workspace)
+        .env("DATABASE_URL", database_url())
+        .output()
+        .expect("failed to execute child process");
+    let compose_stderr = String::from_utf8_lossy(&compose_out.stderr).to_string();
+
+    assert!(
+        compose_out.status.success(),
+        "compose should succeed; stderr: {compose_stderr}"
+    );
+
+    // Compose writes schema_snapshot.json — verify it contains all 3 tables.
+    let snapshot_path = workspace.join("schema_snapshot.json");
+    let snapshot_json =
+        std::fs::read_to_string(&snapshot_path).unwrap_or_else(|_| String::from("{}"));
+    assert!(
+        snapshot_json.contains("elephants"),
+        "compose snapshot should contain elephants"
+    );
+    assert!(
+        snapshot_json.contains("herds"),
+        "compose snapshot should contain herds"
+    );
+    assert!(
+        snapshot_json.contains("invoices"),
+        "compose snapshot should contain invoices — proves cross-crate provider wiring to compose path"
     );
 }
 
-// ── T-PARITY: SQL parity between djogi and adopter fixture ───────────────────
+// ── T-PARITY: Intra-binary schema/compose parity ─────────────────────────────
 
 #[test]
-fn t_parity_sql_between_djogi_and_adopter() {
-    let fixture_bin = build_fixture_bin("adopter_app");
-    let djogi_bin = djogi_binary_path();
+fn t_parity_schema_and_compose_within_same_binary() {
+    // Plan T-PARITY: schema and compose within the SAME binary see identical
+    // models. They could diverge if only one path reads the provider.
 
-    // Run fixture compose.
-    let workspace_fixture = temp_workspace("t9-parity-fixture");
-    write_minimal_djogi_toml(&workspace_fixture, &database_url());
+    let bin = build_fixture_bin("adopter_app");
 
-    let output_f = Command::new(&fixture_bin)
-        .arg("compose")
+    let workspace = temp_workspace("t9-parity-intra");
+    write_minimal_djogi_toml(&workspace, &database_url());
+
+    // Run `schema --format json` from forced binary.
+    let schema_out = Command::new(&bin)
+        .args(["schema", "--format", "json"])
         .arg("--workspace")
-        .arg(&workspace_fixture)
+        .arg(&workspace)
         .env("DATABASE_URL", database_url())
         .output()
         .expect("failed to execute child process");
-    let f_stdout = String::from_utf8_lossy(&output_f.stdout).to_string();
-    let f_stderr = String::from_utf8_lossy(&output_f.stderr).to_string();
+    let schema_stdout = String::from_utf8_lossy(&schema_out.stdout).to_string();
+    let schema_stderr = String::from_utf8_lossy(&schema_out.stderr).to_string();
 
     assert!(
-        output_f.status.success(),
-        "fixture compose should succeed; stderr: {f_stderr}"
+        schema_out.status.success(),
+        "schema should succeed; stderr: {schema_stderr}"
     );
 
-    // Run djogi binary verify (same models, same descriptors).
-    let workspace_djogi = temp_workspace("t9-parity-djogi");
-    write_minimal_djogi_toml(&workspace_djogi, &database_url());
-
-    let output_d = Command::new(&djogi_bin)
-        .arg("verify")
-        .arg("--workspace")
-        .arg(&workspace_djogi)
-        .env("DATABASE_URL", database_url())
-        .output()
-        .expect("failed to execute child process");
-    let d_stdout = String::from_utf8_lossy(&output_d.stdout).to_string();
-    let d_stderr = String::from_utf8_lossy(&output_d.stderr).to_string();
-
-    assert!(
-        output_d.status.success(),
-        "djogi verify should succeed; stderr: {d_stderr}"
-    );
-
-    // Extract SQL lines (lines starting with -- or containing DDL).
-    let fixture_sql: Vec<&str> = f_stdout
-        .lines()
-        .filter(|l| l.starts_with("--") || l.contains("CREATE TABLE"))
-        .collect();
-    let djogi_sql: Vec<&str> = d_stdout
-        .lines()
-        .filter(|l| l.starts_with("--") || l.contains("CREATE TABLE"))
-        .collect();
+    // Count tables from schema JSON output.
+    let expected_tables = ["elephants", "herds", "invoices"];
+    let schema_table_count = expected_tables
+        .iter()
+        .filter(|t| schema_stdout.contains(*t))
+        .count();
 
     assert_eq!(
-        fixture_sql.len(),
-        djogi_sql.len(),
-        "SQL line count mismatch: fixture {} vs djogi {}",
-        fixture_sql.len(),
-        djogi_sql.len()
+        schema_table_count, 3,
+        "schema should see all 3 tables; got {}: {}",
+        schema_table_count, schema_stdout
+    );
+
+    // Run `migrations compose` from the SAME forced binary.
+    let compose_out = Command::new(&bin)
+        .args(["migrations", "compose", "--name", "test_parity_compose"])
+        .arg("--workspace")
+        .arg(&workspace)
+        .env("DATABASE_URL", database_url())
+        .output()
+        .expect("failed to execute child process");
+    let compose_stderr = String::from_utf8_lossy(&compose_out.stderr).to_string();
+
+    assert!(
+        compose_out.status.success(),
+        "compose should succeed; stderr: {compose_stderr}"
+    );
+
+    // Compose writes schema_snapshot.json — verify it contains the same 3 tables.
+    let snapshot_path = workspace.join("schema_snapshot.json");
+    let snapshot_json =
+        std::fs::read_to_string(&snapshot_path).unwrap_or_else(|_| String::from("{}"));
+    let compose_table_count = expected_tables
+        .iter()
+        .filter(|t| snapshot_json.contains(*t))
+        .count();
+
+    assert_eq!(
+        schema_table_count, compose_table_count,
+        "schema ({}) and compose ({}) must see identical table count from same binary",
+        schema_table_count, compose_table_count
+    );
+    assert_eq!(
+        compose_table_count, 3,
+        "compose should see all 3 tables from same binary; got {}: {}",
+        compose_table_count, snapshot_json
     );
 }
 
@@ -372,6 +470,89 @@ fn t_nologic_no_djogi_binary_runs_without_db() {
         !stderr.to_lowercase().contains("connection")
             && !stderr.to_lowercase().contains("could not connect"),
         "should not attempt DB connection; stderr: {stderr}",
+    );
+}
+
+// ── T-NOLOGIC-scan: Fixture sources contain no custom migration logic ────────
+
+#[test]
+fn t_nologic_fixture_sources_contain_no_migration_logic() {
+    // Plan T-NOLOGIC: fixture adopter code contains only model definitions + glue,
+    // no custom migration logic. Source code scan proves the fixture is a clean adopter.
+
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let fixtures = [
+        "tests/fixtures/adopter_app/tracker/src/lib.rs",
+        "tests/fixtures/adopter_app/billing/src/lib.rs",
+        "tests/fixtures/adopter_app/bin/src/bin/djogi.rs",
+        "tests/fixtures/adopter_app_unforced/tracker/src/lib.rs",
+        "tests/fixtures/adopter_app_unforced/billing/src/lib.rs",
+        "tests/fixtures/adopter_app_unforced/bin/src/bin/djogi.rs",
+    ];
+
+    for fixture_rel in &fixtures {
+        let path = manifest_dir.join(fixture_rel);
+        if !path.exists() {
+            continue; // skip if path doesn't exist in this build config
+        }
+        let src = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            !src.contains("project_from")
+                && !src.contains("compose(")
+                && !src.contains("__bypass")
+                && !src.contains("raw_"),
+            "Fixture {} must not contain custom migration logic — \
+             it should only define models + djogi_main! glue",
+            fixture_rel
+        );
+    }
+}
+
+// ── T-NEG-compose: Standalone compose refuses with zero descriptors ──────────
+
+#[test]
+fn t_neg_standalone_compose_refuses_with_exit_2_and_no_artifacts() {
+    // Plan T-NEG-compose: standalone djogi binary refuses compose with zero
+    // descriptors (exit 2). Codex BLOCK 13: the zero-descriptor COMPOSE refusal
+    // was untested at subprocess level.
+
+    let workspace = temp_workspace("t9-neg-compose");
+    write_minimal_djogi_toml(&workspace, &database_url());
+
+    let djogi_bin = djogi_binary_path();
+
+    // Run compose on published djogi binary (zero descriptors).
+    let output = Command::new(&djogi_bin)
+        .args(["migrations", "compose", "--name", "should_refuse"])
+        .arg("--workspace")
+        .arg(&workspace)
+        .env("DATABASE_URL", database_url())
+        .output()
+        .expect("djogi binary should execute");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "standalone compose with zero descriptors must refuse exit 2, not succeed or runtime-error"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Dual-cause diagnostic: mentions "no models" and the command name.
+    assert!(
+        stderr.contains("no models registered") || stderr.contains("zero descriptor"),
+        "stderr should mention zero descriptors: {stderr}"
+    );
+    assert!(
+        stderr.contains("compose") || stderr.contains("migrations"),
+        "stderr should identify the compose context: {stderr}"
+    );
+
+    // No pending artifacts written.
+    let target_pending = workspace.join("target").join("djogi_pending");
+    assert!(
+        !target_pending.exists(),
+        "compose refusal must not write pending artifacts; dir exists at {:?}",
+        target_pending
     );
 }
 
