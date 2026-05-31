@@ -65,7 +65,7 @@ use djogi::types::HeerId;
 
 /// Operator surface for the live-migration runner. Every subcommand
 /// resolves to an [`ExitCode`] via [`dispatch`].
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Clone, Subcommand)]
 pub enum LiveCmd {
     /// Generate plan file(s) for pending schema deltas classified
     /// `ExpandContract`. Refuses (exit 2) when the delta is

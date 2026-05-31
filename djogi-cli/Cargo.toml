@@ -17,6 +17,9 @@ categories = ["command-line-utilities", "database"]
 name = "djogi"
 path = "src/main.rs"
 
+[lib]
+path = "src/lib.rs"
+
 [dependencies]
 clap.workspace = true
 tokio.workspace = true
