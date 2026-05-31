@@ -74,8 +74,8 @@ impl std::fmt::Display for GeographySubtype {
 /// these directly — they appear in emitted `FieldDescriptor` literals.
 ///
 /// `Custom` exists for scalar types the framework doesn't model natively
-/// (e.g. `BYTEA`, schema-qualified domain names like
-/// `"public.positive_amount"`). For simple unqualified Postgres domains,
+/// (e.g. extension types like `"ltree"`, or schema-qualified domain names
+/// like `"public.positive_amount"`). For simple unqualified Postgres domains,
 /// `#[field(domain = "...")]` emits the dedicated [`Domain`] variant
 /// instead. The migration differ treats `Custom("FOO")` and `Custom("FOO")`
 /// as equal (string compare), so adding support for a new type is
@@ -139,6 +139,20 @@ pub enum FieldSqlType {
     },
     Uuid,
     Jsonb,
+    /// Postgres `BYTEA` — raw variable-length binary data (djogi#369).
+    ///
+    /// Rust source type is `Vec<u8>` (nullable form `Option<Vec<u8>>`).
+    /// `tokio-postgres` ships the native `ToSql`/`FromSql` wire codec for
+    /// `Vec<u8>` ↔ BYTEA, so no third-party crate is pulled in and the
+    /// `FromPgRow` codegen uses the same `row.try_get::<_, Vec<u8>>(...)`
+    /// path as every other built-in scalar.
+    ///
+    /// Always-available — no feature flag. Distinct from `SMALLINT` (the
+    /// lowering for a *scalar* `u8` field): the `Vec<u8>` byte-vector shape
+    /// is recognised ahead of the generic `Vec<T>` array arms in
+    /// `rust_type_to_sql`, so a `Vec<u8>` is treated as raw bytes — not as a
+    /// one-dimensional `SMALLINT[]`.
+    Bytea,
     TextArray,
     IntegerArray,
     BigIntArray,
@@ -426,6 +440,10 @@ impl std::fmt::Display for FieldSqlType {
             }
             FieldSqlType::Uuid => write!(f, "UUID"),
             FieldSqlType::Jsonb => write!(f, "JSONB"),
+            // djogi#369 — BYTEA raw binary column. The wire codec is
+            // tokio-postgres' native `Vec<u8>` impl; the SQL type string is
+            // the bare Postgres `BYTEA` keyword.
+            FieldSqlType::Bytea => write!(f, "BYTEA"),
             FieldSqlType::TextArray => write!(f, "TEXT[]"),
             FieldSqlType::IntegerArray => write!(f, "INTEGER[]"),
             FieldSqlType::BigIntArray => write!(f, "BIGINT[]"),
@@ -1010,6 +1028,11 @@ mod tests {
     // `migrate/sql.rs`). These tests pin the Display surface so a future
     // refactor that drops or renames a variant fails at descriptor-level
     // before reaching the live-DB integration gate.
+
+    #[test]
+    fn bytea_field_sql_type_displays_as_upper_bytea() {
+        assert_eq!(format!("{}", FieldSqlType::Bytea), "BYTEA");
+    }
 
     #[test]
     fn inet_field_sql_type_displays_as_upper_inet() {

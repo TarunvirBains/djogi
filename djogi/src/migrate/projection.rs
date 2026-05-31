@@ -1454,7 +1454,8 @@ fn field_type_check(
             RangeSubtypeKind::Date => Some(range_endpoint_checks(&qcol, date_range_expr)),
         },
         // All other `FieldSqlType` variants (`Text`, `Real`,
-        // `DoublePrecision`, `Boolean`, `Uuid`, `Jsonb`,
+        // `DoublePrecision`, `Boolean`, `Uuid`, `Jsonb`, `Bytea`
+        // (djogi#369 — raw binary has no representable-range constraint),
         // arrays, `Citext`, `Geography`, `Custom`, and every
         // `NumericPrecision { .. }` instance — djogi#188 ships
         // `rust_decimal::Decimal` as bare `Numeric` + structural CHECK,
@@ -4102,6 +4103,9 @@ mod tests {
             FieldSqlType::Numeric,
             FieldSqlType::Uuid,
             FieldSqlType::Jsonb,
+            // djogi#369 — BYTEA carries no representable-range constraint;
+            // raw binary has no Rust-derived CHECK.
+            FieldSqlType::Bytea,
             FieldSqlType::TextArray,
             FieldSqlType::SmallIntArray,
             FieldSqlType::IntegerArray,
