@@ -261,6 +261,26 @@ pub enum ComposeError {
         /// migration` (plus database context).
         text: String,
     },
+    /// REQ-370-16 — a committed snapshot BUCKET `(database, app)` still
+    /// describes tables, but the CURRENT projection has zero models for
+    /// that bucket and the app is not tombstoned. This is the
+    /// linkage-error shape: the app's model crate was probably not linked
+    /// into the running binary, so compose would emit `DROP TABLE` for
+    /// tables that still exist. Evaluated on the POST-rename-remap
+    /// snapshots, so a renamed app (models carried to the new label) does
+    /// NOT trip it. Refuses EVEN with `--allow-destructive`, because the
+    /// generic destructive gate only covers the default path, and the
+    /// dangerous case (drop X on purpose, silently lose unlinked Y)
+    /// bypasses it. Intentional whole-app removal uses `#[app(tombstone)]`.
+    LinkageDropWithoutModels {
+        /// App label whose snapshot bucket has tables but no current
+        /// models (`""` for the synthetic global bucket).
+        app_label: String,
+        /// Database target the bucket belongs to.
+        database: String,
+        /// Pre-formatted linkage-specific diagnostic.
+        text: String,
+    },
     /// The composed delta carries `Classification::Destructive` /
     /// `Classification::Lossy` and the operator did not pass
     /// `--allow-destructive`. Distinct from the tombstone path
@@ -344,6 +364,7 @@ impl std::fmt::Display for ComposeError {
                 "D012: nothing to compose — model state matches snapshot for every bucket"
             ),
             Self::TombstonedAppRequiresAllowDestructive { text, .. } => f.write_str(text),
+            Self::LinkageDropWithoutModels { text, .. } => f.write_str(text),
             Self::DestructiveRequiresAllowDestructive {
                 bucket,
                 classification,
@@ -779,6 +800,93 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
     //    rewrite a rename would always require `--allow-destructive`
     //    even though the operation is metadata-only.
     let snapshots_for_diff = remap_snapshots_for_renames(req.snapshots, req.apps);
+
+    // 2b. REQ-370-16 — linkage-aware drop guard. Evaluated on the
+    //     POST-REMAP snapshots (snapshots_for_diff) — the exact view the
+    //     differ is about to diff — so renames (already relabeled to
+    //     their NEW key by remap_snapshots_for_renames) carry their
+    //     models forward and never trip the guard (codex plan-review
+    //     BLOCK 9).
+    //
+    //     For every snapshot BUCKET that still describes schema state on
+    //     disk but for which the CURRENT projection (req.models) carries
+    //     ZERO models, refuse — UNLESS that bucket's app is tombstoned
+    //     (the intentional-removal channel). Keys on the bucket's
+    //     (database, app) and on "zero projected models", NOT on
+    //     snap.registered_apps (DB-global, shared across buckets —
+    //     looping it false-positives, BLOCK 7). The synthetic global
+    //     bucket is guarded uniformly when an app descriptor exists for
+    //     it — un-#[model(app=)] models live there, and a bucket that
+    //     HAD models and now has zero with a registered app is real
+    //     linkage loss (BLOCK 8).
+    //
+    //     The guard only fires when the snapshot bucket has a
+    //     corresponding app in req.apps. If no app descriptor exists for
+    //     the bucket (e.g., app was deregistered entirely without
+    //     tombstone), that's an intentional lifecycle removal, not a
+    //     linkage error. The linkage problem is specifically: "app
+    //     descriptor linked but model crate forgotten."
+    //
+    //     Fires even with --allow-destructive: the generic destructive
+    //     gate only covers the default path; this guard's job is the
+    //     --allow-destructive residual data-loss path.
+    {
+        use std::collections::BTreeSet;
+
+        let tombstoned: BTreeSet<(&str, &str)> = req
+            .apps
+            .iter()
+            .filter(|a| a.tombstone)
+            .map(|a| (a.database.as_str(), a.label.as_str()))
+            .collect();
+
+        // Build a set of (database, app) that have registered app
+        // descriptors — the linkage guard only fires for these.
+        let registered: BTreeSet<(&str, &str)> = req
+            .apps
+            .iter()
+            .map(|a| (a.database.as_str(), a.label.as_str()))
+            .collect();
+
+        let app_has_models = |database: &str, app: &str| -> bool {
+            let bucket = BucketKey {
+                database: database.to_string(),
+                app: app.to_string(),
+            };
+            req.models
+                .get(&bucket)
+                .is_some_and(|s| !s.models.is_empty())
+        };
+
+        for (bucket, snap) in snapshots_for_diff.iter() {
+            if snap.models.is_empty() {
+                continue; // no tables to drop
+            }
+            let database = bucket.database.as_str();
+            let app = bucket.app.as_str();
+            if !registered.contains(&(database, app)) {
+                continue; // no app descriptor — intentional lifecycle removal
+            }
+            if tombstoned.contains(&(database, app)) {
+                continue; // intentional removal channel
+            }
+            if app_has_models(database, app) {
+                continue; // app still linked + projects models
+            }
+            let display_label = super::target::app_dirname(app);
+            let text = format!(
+                "app \"{display_label}\" was previously registered (database \"{database}\") \
+                 but no models for it are linked now — did you forget to link its crate? \
+                 Refusing to emit DROPs. If this removal is intentional, mark the app \
+                 `#[app(tombstone)]`."
+            );
+            return Err(ComposeError::LinkageDropWithoutModels {
+                app_label: app.to_string(),
+                database: database.to_string(),
+                text,
+            });
+        }
+    }
 
     // 3. Run the differ across the (possibly remapped) bucket map.
     //    B-4r (Codex round-3): the differ now returns Result;
@@ -4593,5 +4701,217 @@ mod tests {
         }
 
         ids
+    }
+
+    // ── REQ-370-16 linkage-aware drop guard tests ────────────────────
+
+    #[test]
+    fn linkage_drop_guard_fires_with_allow_destructive() {
+        // Snapshot bucket (main, "billing") has one table. Projection has zero
+        // models for that bucket. App is NOT tombstoned, NOT renamed.
+        // allow_destructive = true. Guard MUST fire.
+        let work = temp_workspace("linkage_fire");
+        let guard = lock_for(&work);
+
+        let billing_bucket = BucketKey {
+            database: "main".to_string(),
+            app: "billing".to_string(),
+        };
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(
+            billing_bucket.clone(),
+            snapshot_with_widgets(&billing_bucket),
+        );
+
+        // Zero projected models — model crate not linked
+        let models: BTreeMap<BucketKey, AppliedSchema> = BTreeMap::new();
+
+        let apps = vec![AppLifecycle {
+            label: "billing".to_string(),
+            database: "main".to_string(),
+            renamed_from: None,
+            tombstone: false,
+        }];
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "drop_billing",
+            allow_destructive: true,
+            force_overwrite: false,
+            now: at(2026, 4, 25, 1, 2, 3),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        let err =
+            compose(req).expect_err("linkage guard must refuse even with --allow-destructive");
+        assert!(
+            matches!(err, ComposeError::LinkageDropWithoutModels { ref app_label, .. } if app_label == "billing"),
+            "expected LinkageDropWithoutModels for billing, got: {err}"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn linkage_drop_guard_allows_tombstoned_app_removal() {
+        // Same shape as above but tombstone = true. Guard must NOT fire.
+        let work = temp_workspace("linkage_tombstone");
+        let guard = lock_for(&work);
+
+        let billing_bucket = BucketKey {
+            database: "main".to_string(),
+            app: "billing".to_string(),
+        };
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(
+            billing_bucket.clone(),
+            snapshot_with_widgets(&billing_bucket),
+        );
+
+        // Zero projected models
+        let models: BTreeMap<BucketKey, AppliedSchema> = BTreeMap::new();
+
+        let apps = vec![AppLifecycle {
+            label: "billing".to_string(),
+            database: "main".to_string(),
+            renamed_from: None,
+            tombstone: true, // ← intentional removal
+        }];
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "drop_billing_tombstone",
+            allow_destructive: true,
+            force_overwrite: false,
+            now: at(2026, 4, 25, 1, 2, 3),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        match compose(req) {
+            Err(ComposeError::LinkageDropWithoutModels { .. }) => {
+                panic!("tombstoned removal must not trip the linkage guard")
+            }
+            _ => {
+                // Any other outcome acceptable — tombstone path owns this.
+                // The D011 gate may fire first if allow_destructive were false,
+                // or the differ may produce results. We only assert the linkage
+                // guard does NOT fire.
+            }
+        }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn linkage_drop_guard_does_not_fire_for_renamed_app() {
+        // BLOCK 9: renamed app must NOT fire. Snapshot under OLD key,
+        // projection under NEW key, remap moves snapshot to NEW where models exist.
+        let work = temp_workspace("linkage_rename");
+        let guard = lock_for(&work);
+
+        let old_bucket = BucketKey {
+            database: "main".to_string(),
+            app: "accounts".to_string(),
+        };
+        let new_bucket = BucketKey {
+            database: "main".to_string(),
+            app: "ledger".to_string(),
+        };
+
+        // Snapshot has tables under OLD key (before rename)
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(old_bucket.clone(), snapshot_with_widgets(&old_bucket));
+
+        // Models under NEW key — after remap, snapshots_for_diff moves the
+        // old_bucket snapshot to new_bucket. Both sides have models → no guard fire.
+        let mut models = BTreeMap::new();
+        models.insert(new_bucket.clone(), snapshot_with_widgets(&new_bucket));
+
+        let apps = vec![AppLifecycle {
+            label: "ledger".to_string(),
+            database: "main".to_string(),
+            renamed_from: Some("accounts".to_string()),
+            tombstone: false,
+        }];
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "rename_ledger",
+            allow_destructive: true,
+            force_overwrite: false,
+            now: at(2026, 4, 25, 1, 2, 3),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        match compose(req) {
+            Err(ComposeError::LinkageDropWithoutModels { .. }) => {
+                panic!("renamed app must not trip the linkage guard (BLOCK 9)")
+            }
+            _ => {
+                // Any other outcome acceptable — rename should proceed
+                // without triggering the linkage guard.
+            }
+        }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn linkage_drop_guard_fires_for_emptied_global_bucket() {
+        // BLOCK 8: synthetic global bucket guarded uniformly when an app
+        // descriptor exists for it.
+        let work = temp_workspace("linkage_global");
+        let guard = lock_for(&work);
+
+        let global_bucket = BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(global_bucket.clone(), snapshot_with_widgets(&global_bucket));
+
+        // Global bucket now empty — models vanished
+        let models: BTreeMap<BucketKey, AppliedSchema> = BTreeMap::new();
+
+        // App descriptor exists for global bucket (un-#[model(app=)] models)
+        let apps = vec![AppLifecycle {
+            label: String::new(),
+            database: "main".to_string(),
+            renamed_from: None,
+            tombstone: false,
+        }];
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "drop_global",
+            allow_destructive: true,
+            force_overwrite: false,
+            now: at(2026, 4, 25, 1, 2, 3),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        let err = compose(req).expect_err("global bucket guard must fire");
+        assert!(
+            matches!(err, ComposeError::LinkageDropWithoutModels { ref app_label, .. } if app_label.is_empty()),
+            "expected LinkageDropWithoutModels for global bucket, got: {err}"
+        );
+        let _ = fs::remove_dir_all(&work);
     }
 }
