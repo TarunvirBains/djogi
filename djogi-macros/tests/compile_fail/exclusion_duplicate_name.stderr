@@ -1,0 +1,7 @@
+error: duplicate exclusion `name = "no_overlap"` — every EXCLUDE constraint on a model must have a unique name
+  --> $DIR/exclusion_duplicate_name.rs:18:5
+   |
+18 |     exclusion(
+   |     ^^^^^^^^^
+
+error: aborting due to 1 previous error

@@ -1,0 +1,16 @@
+error[E0599]: no method named `left_join_closure_pair` found for struct `djogi::JoinedQuerySet<Animal, Widget>` in the current scope
+  --> $DIR/heterogeneous_closure_pair_rejected.rs:63:10
+   |
+61 |       let _bad: JoinedQuerySet<Animal, Widget> = Animal::objects()
+   |  ________________________________________________-
+62 | |         .cross_join_with(Widget::objects())
+63 | |         .left_join_closure_pair::<AnimalAncestry>();
+   | |         -^^^^^^^^^^^^^^^^^^^^^^ method not found in `djogi::JoinedQuerySet<Animal, Widget>`
+   | |_________|
+   |
+   |
+   = note: the method was found for `djogi::JoinedQuerySet<L, L>`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

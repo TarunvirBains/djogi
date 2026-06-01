@@ -1,4 +1,4 @@
-//! GH #227 Cluster A F1 — `protected(per_scope = { ... })` may only name
+//! GH #227 — `protected(per_scope = { ... })` may only name
 //! scopes that the field itself exposes.
 //!
 //! `email` is exposed only in `public`, so the `admin = { ... }` codec block

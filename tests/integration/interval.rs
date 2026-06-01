@@ -317,7 +317,7 @@ async fn interval_boundary_components_round_trip(mut ctx: djogi::DjogiContext) {
 //
 // These tests pin the `FilterValue::Interval` → `push_bind` and
 // `UpdateAssignment` → `push_bind` paths at SQL-execution level.
-// Compile-fixture coverage (`c4_212_interval_field.rs`) proves the
+// Compile-fixture coverage (`interval_field.rs`) proves the
 // surface type-checks; these tests prove it executes correctly against a live
 // Postgres INTERVAL column.
 

@@ -1,5 +1,5 @@
 // The `RelationPath` constructor is sealed against downstream fabrication.
-// Prior to Task 4's follow-up fix, `RelationPath::__new` was `pub`
+// Prior to the follow-up fix, `RelationPath::__new` was `pub`
 // (with `#[doc(hidden)]`), which let any downstream crate build a path
 // whose `source_column` / `target_table` fields carried SQL-injection
 // payloads — those strings then flowed straight into the

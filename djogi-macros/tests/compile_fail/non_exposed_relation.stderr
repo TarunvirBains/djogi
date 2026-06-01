@@ -1,0 +1,22 @@
+error[E0599]: no associated function or constant named `department` found for struct `EmpPublicFields<RootModel>` in the current scope
+  --> $DIR/non_exposed_relation.rs:30:33
+   |
+17 | #[model(table = "emps_t7_non_exposed_relation", no_default)]
+   | ------------------------------------------------------------ associated function or constant `department` not found for this struct
+...
+30 |     let _bad = EmpPublicFields::department();
+   |                                 ^^^^^^^^^^ associated function or constant not found in `EmpPublicFields<_>`
+   |
+note: if you're trying to build a new `EmpPublicFields<_>` consider using one of the following associated functions:
+      EmpPublicFields::<RootModel>::new
+      EmpPublicFields::<RootModel>::with_path
+      EmpPublicFields::default
+  --> $DIR/non_exposed_relation.rs:17:1
+   |
+17 | #[model(table = "emps_t7_non_exposed_relation", no_default)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

@@ -1,4 +1,4 @@
-// Cluster B5 (T14a) — `#[model(tree_edge = "...")]` value
+// `#[model(tree_edge = "...")]` value
 // must name a *self-FK* field, not a foreign-FK pointing at another model.
 //
 // The macro validates the column kind at expansion time: a column whose

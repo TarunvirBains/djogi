@@ -1,4 +1,4 @@
-# Adopter-crate isolation fixture for Cluster 8δ T7.4 (djogi#124).
+# Adopter-crate isolation fixture for `#[derive(Model)]` macro path-routing (djogi#124).
 #
 # This crate exists for ONE purpose: prove that the macro paths exercised
 # below emit code that resolves against `djogi` alone — no `sassi`,
@@ -13,7 +13,7 @@
 # as `[dev-dependencies]` so a few specialized lihaaf fixtures can
 # reference them directly:
 #
-#   - 8γ T6.10's `phase8_lookup_op_regex_lifted_to_basic_predicate.rs`
+#   - `lookup_op_regex_lifted_to_basic_predicate.rs`
 #     names `sassi::LookupOp` to lock the no-regex invariant.
 #   - JsonbSchema fixtures derive `serde::Serialize` / `Deserialize` on
 #     their schema structs.

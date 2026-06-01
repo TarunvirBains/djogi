@@ -1,4 +1,4 @@
-//! GH #227 Cluster 3 — duplicate custom scope in `visage_scopes(...)` is rejected.
+//! GH #227 — duplicate custom scope in `visage_scopes(...)` is rejected.
 use djogi::prelude::*;
 
 #[model(

@@ -26,7 +26,7 @@
 //! Q::Portable(...) ^ Q::Ilike(...) | Q::Negated(...)
 //! ```
 //! parses as `(Portable ^ Ilike) | Negated`. The lihaaf compile-pass
-//! fixture `phase8_q_algebra_xor_precedence.rs` (T6.11) locks the parse
+//! fixture `q_algebra_xor_precedence.rs` locks the parse
 //! at the type level; runtime tests
 //! `q_operator_precedence_*` in `query::q::tests` lock the resulting
 //! `Q::Compound` / `Q::Xor` shape.
@@ -87,7 +87,7 @@
 //! `feedback_no_regex_in_djogi.md` memory anchor. Lifting `Regex` /
 //! `IRegex` to `BasicPredicate` would require a Rust regex engine,
 //! which the framework forbids. Lihaaf compile-fail fixture
-//! `phase8_lookup_op_regex_lifted_to_basic_predicate.rs` (T6.10) locks
+//! `lookup_op_regex_lifted_to_basic_predicate.rs` locks
 //! the rule at the type level.
 //! # Portable provenance
 //! `Q::Portable(PortablePredicate<T>)` carries a [`crate::query::field::DjogiFieldProvenance`]
@@ -159,8 +159,8 @@ pub enum Q<T: Model> {
     /// variant to `Q::Portable(BasicPredicate::Field(_))` would require
     /// a Rust regex engine and is forbidden — see `decisions.md`
     /// row 107 and `feedback_no_regex_in_djogi.md`. Lihaaf compile-fail
-    /// fixture `phase8_lookup_op_regex_lifted_to_basic_predicate.rs`
-    /// (T6.10) locks the rule at the type level.
+    /// fixture `lookup_op_regex_lifted_to_basic_predicate.rs`
+    /// locks the rule at the type level.
     Regex(FieldRef<T, String>, String, /* case_sensitive */ bool),
 
     /// Escape hatch for typed-expression predicates. Subsumes FTS

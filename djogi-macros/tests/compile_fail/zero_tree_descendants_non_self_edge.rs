@@ -1,4 +1,4 @@
-// Cluster B5 (T14a) — `QuerySet::tree_descendants` requires
+// `QuerySet::tree_descendants` requires
 // a `RelationPath<T, T>` (a self-FK), not a foreign-FK relation.
 //
 // The compile-time guard rides on the `RelationPath<T, T>` parameter type
@@ -31,9 +31,9 @@ fn main() {
     // `RelationPath<NodeB5, NodeB5>`. The mismatch on the second type
     // parameter (`OwnerB5` vs `NodeB5`) surfaces as E0308.
     //
-    // Resolve `id` through the model's own `Pk` associated type — Phase
-    // 7-Zero-2 (T2) flipped the default from `HeerId` to `HeerIdDesc`,
-    // so hard-coding `<HeerId as PrimaryKey>::sentinel()` would also
+    // Resolve `id` through the model's own `Pk` associated type — the
+    // default PK is `HeerIdDesc`, not `HeerId`, so
+    // hard-coding `<HeerId as PrimaryKey>::sentinel()` would also
     // produce a SECOND unrelated `expected HeerIdDesc, found HeerId`
     // error and pollute the test signal. Going through the trait keeps
     // this fixture asserting *only* the `RelationPath<T, T>` mismatch.

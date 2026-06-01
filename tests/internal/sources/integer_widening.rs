@@ -5,7 +5,7 @@
 //
 // 1. **Compile pass.** Models with `i8`, `u8`, `u16`, `u32`, `u64` scalar
 //    fields expand without compiler errors (covered by the lihaaf fixture
-//    `c2_190_integer_widening.rs`).
+//    `integer_widening.rs`).
 //
 // 2. **Round-trip.** `Model::create` + `Model::get` round-trips boundary
 //    values for each narrow/unsigned type through the typed surface:

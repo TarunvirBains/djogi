@@ -1,4 +1,4 @@
-//! GH #227 Cluster A F2 — `protected(per_scope = { ... })` is scalar-only.
+//! GH #227 — `protected(per_scope = { ... })` is scalar-only.
 //!
 //! Relation fields already project through `expose(scope -> Peer)`; attaching a
 //! presentation codec to the relation slot itself must fail with a clear

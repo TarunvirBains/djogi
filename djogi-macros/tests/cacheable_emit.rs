@@ -528,7 +528,7 @@ fn djogi_enum_field_fallback_rejects_protected_and_same_sql_non_enum_fields() {
 
 /// `pk = None` skips Cacheable emission entirely. Asserting absence
 /// requires a separate lihaaf compile_fail fixture
-/// (`tests/compile_fail/t7_cacheable_skipped_for_pk_none.rs`)
+/// (`tests/compile_fail/cacheable_skipped_for_pk_none.rs`)
 /// because absence-of-impl is not directly probable at runtime.
 /// This stub names the asserted invariant for grep-discoverability.
 #[test]

@@ -1,0 +1,7 @@
+error: `#[field(generated = "")]` is not allowed — expression must be a non-empty SQL fragment
+  --> $DIR/generated_empty_expression.rs:14:25
+   |
+14 |     #[field(generated = "")]
+   |                         ^^
+
+error: aborting due to 1 previous error

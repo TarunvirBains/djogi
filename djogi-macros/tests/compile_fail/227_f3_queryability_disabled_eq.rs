@@ -1,4 +1,4 @@
-//! GH #227 Cluster B F3 — non-queryable presentation codecs must not leak the
+//! GH #227 — non-queryable presentation codecs must not leak the
 //! raw `FieldRef` predicate surface through `{Visage}Fields` accessors.
 //!
 //! `MaskString` is queryability-disabled, so `.eq(...)` must be absent on the

@@ -1,4 +1,4 @@
-// Cluster B5 (T14a) — `#[model(tree_edge = "...")]` value
+// `#[model(tree_edge = "...")]` value
 // must name an existing field on the struct.
 //
 // The macro validates the named column at expansion time: if the named

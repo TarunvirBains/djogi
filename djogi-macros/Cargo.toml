@@ -75,8 +75,8 @@ serde.workspace = true
 # serde above: lihaaf links the fixture binaries against the dev-deps
 # declared in djogi-macros' `[dev-dependencies]` table.
 serde_json.workspace = true
-# sassi — needed by Phase 8γ T6.10 lihaaf compile-fail fixture
-# (`phase8_lookup_op_regex_lifted_to_basic_predicate.rs`) which references
+# sassi — needed by the `lookup_op_regex_lifted_to_basic_predicate.rs`
+# compile-fail fixture which references
 # `sassi::LookupOp` directly to prove the no-regex-engine invariant
 # (`decisions.md` rows 107 + 108): sassi's `LookupOp` enum has no `Regex`
 # / `IRegex` variants, so the fixture build MUST fail. Use the same published
