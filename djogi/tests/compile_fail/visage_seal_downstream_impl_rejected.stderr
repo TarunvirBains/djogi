@@ -21,11 +21,11 @@ help: the following other types implement trait `djogi::__private::DjogiVisageSe
     | `PlainModelPublic`
     | `PlainModelSelfView`
 note: required by a bound in `DjogiVisage`
-   --> djogi/src/visage.rs:266:75
+   --> djogi/src/visage.rs:245:75
     |
-265 | pub trait DjogiVisage:
+244 | pub trait DjogiVisage:
     |           ----------- required by a bound in this trait
-266 |     crate::visage_boundary::DjogiVisageOf<<Self as DjogiVisage>::Model> + private::Sealed
+245 |     crate::visage_boundary::DjogiVisageOf<<Self as DjogiVisage>::Model> + private::Sealed
     |                                                                           ^^^^^^^^^^^^^^^ required by this bound in `DjogiVisage`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
