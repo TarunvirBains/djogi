@@ -1,4 +1,4 @@
-//! SQL emission for the Phase 7 migration engine — lowers a typed
+//! SQL emission for the migration engine — lowers a typed
 //! [`SchemaDelta`] into reviewable Postgres `up` / `down` statement
 //! pairs.
 //!
@@ -56,13 +56,10 @@
 //! [`SchemaOperation::DropForeignKey`] now carry the full
 //! [`crate::migrate::schema::ForeignKeySchema`] — target table,
 //! target column, and `on_delete` cascade — so forward and rollback
-//! SQL are both fully recoverable. Earlier T3 review rounds
-//! (round-1 B-3) fixed an inversion where the emitter silently
-//! lowered every FK as `ON DELETE RESTRICT`; round-2 A-1
-//! consolidated the inline-FK path on `ForeignKeySchema.on_delete`
-//! so all SQL emit sites read the same field. There is no longer a
-//! lossy / hand-edit fallback for FK ops; the migration round-trips
-//! cleanly.
+//! SQL are both fully recoverable. The inline-FK path reads the same
+//! field from `ForeignKeySchema.on_delete` as the standalone paths.
+//! There is no longer a lossy / hand-edit fallback for FK ops; the
+//! migration round-trips cleanly.
 //!
 //! # No regex
 //!
@@ -141,11 +138,7 @@ pub struct LossyRollbackWarning {
 /// full [`ForeignKeySchema`] through to
 /// [`emit_drop_foreign_key`], so the rollback recreates the
 /// constraint with the original target + cascade and never produces a
-/// lossy marker. Codex T3 round-2 review A-2 removed an earlier
-/// reserved variant that the emitter never produced — pre-publish
-/// stage, no compat shim, the variant is gone. A future shape that
-/// strips FK metadata before reaching the emitter would re-add the
-/// variant at that point with the same name.
+/// lossy marker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LossyRollbackKind {
     /// `DropColumn` — column shape and row data are gone.
@@ -199,10 +192,9 @@ pub enum SqlEmitError {
         /// differ.
         reason: String,
     },
-    /// A `PkTypeFlip` operation reached the standard SQL path. Phase
-    /// 7 owns these via T9's expand / contract orchestration; the
+    /// A `PkTypeFlip` operation reached the standard SQL path. The
     /// standard path must never lower one. Fail loudly so the
-    /// caller routes through T9.
+    /// caller routes through the PK-flip orchestration.
     PkTypeFlipMustRouteToT9 {
         /// Postgres table name carrying the flip.
         table: String,
@@ -341,7 +333,7 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
             variant,
             anchor,
         } => Ok(emit_add_enum_variant(enum_name, variant, anchor.as_ref())),
-        // Phase 8.5 Cluster 4 djogi#217 — `COMMENT ON TABLE` lowering.
+        // `COMMENT ON TABLE` lowering (djogi#217).
         // The composer owns setting-independent SQL string rendering
         // for the comment text.
         SchemaOperation::SetTableComment { table, from, to } => Ok(emit_set_table_comment(
@@ -413,7 +405,7 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
             })
         }
         SchemaOperation::PkTypeFlipMultiGroup(groups) => {
-            // Codex round-4 B-15 — the multi-parent variant. Same
+            // Multi-parent variant. Same
             // summary shape as the single-parent group, repeated
             // per cluster member; the executable SQL lives in the
             // stage-interleaved segment plan that
@@ -453,7 +445,7 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
                     ),
                 );
             }
-            // Cluster label = comma-joined parent_table names.
+            // Label = comma-joined parent_table names.
             let mut label = String::from("PkTypeFlipMultiGroup ");
             let names: Vec<&str> = groups.iter().map(|g| g.parent_table.as_str()).collect();
             label.push_str(&names.join(","));
@@ -526,7 +518,7 @@ fn try_emit_add_table(t: &TableSchema) -> Result<OperationSql, SqlEmitError> {
         up.push_str(",\n    ");
         up.push_str(&pk_clause);
     }
-    // Phase 7.5 PR 7: inline `EXCLUDE` constraints. EXCLUDE-on-
+    // Inline `EXCLUDE` constraints. EXCLUDE-on-
     // populated classifies as OfflineOnly, but a brand-new table
     // necessarily has zero rows — declaring the constraint inline
     // means Postgres registers it as part of the table create with no
@@ -550,11 +542,10 @@ fn try_emit_add_table(t: &TableSchema) -> Result<OperationSql, SqlEmitError> {
     }
     up.push(';');
 
-    // Phase 8.5 Cluster 4 djogi#217 — append `COMMENT ON TABLE …`
-    // immediately after the `CREATE TABLE` statement when the
-    // adopter declared `#[model(table_comment = "…")]`. The composer
-    // renders the text through a setting-independent SQL string
-    // literal helper so apostrophes and backslashes round-trip safely.
+    // Append `COMMENT ON TABLE …` immediately after the `CREATE TABLE`
+    // statement when the adopter declared `#[model(table_comment = "…")]`
+    // (djogi#217). The composer renders the text through a setting-independent
+    // SQL string literal helper so apostrophes and backslashes round-trip safely.
     if let Some(comment) = t.table_comment.as_deref() {
         up.push('\n');
         let _ = write!(
@@ -563,11 +554,11 @@ fn try_emit_add_table(t: &TableSchema) -> Result<OperationSql, SqlEmitError> {
             render_comment_literal(comment)
         );
     }
-    // Phase 8.5 Cluster 4 djogi#217 — append `COMMENT ON COLUMN …`
-    // for every column carrying `#[field(comment = "…")]`. Emission
-    // order matches column declaration order (the same order the
-    // CREATE TABLE column list above uses) so the resulting migration
-    // SQL is byte-stable across runs.
+    // Append `COMMENT ON COLUMN …` for every column carrying
+    // `#[field(comment = "…")]` (djogi#217). Emission order matches
+    // column declaration order (the same order the CREATE TABLE column
+    // list above uses) so the resulting migration SQL is byte-stable
+    // across runs.
     for col in &t.columns {
         if let Some(comment) = col.comment.as_deref() {
             up.push('\n');
@@ -645,12 +636,11 @@ fn emit_add_column(table: &str, col: &ColumnSchema) -> OperationSql {
     let _ = write!(up, "ALTER TABLE {qt} ADD COLUMN ");
     write_column_definition(&mut up, col, table);
     up.push(';');
-    // Phase 8.5 Cluster 4 djogi#217 — emit `COMMENT ON COLUMN …`
-    // immediately after `ADD COLUMN` when the descriptor carries a
-    // comment. The differ filters back-compat snapshots that
-    // load with `comment: None` so this path only fires when the
-    // adopter actually declared `#[field(comment = "…")]` on the
-    // new column.
+    // Emit `COMMENT ON COLUMN …` immediately after `ADD COLUMN` when
+    // the descriptor carries a comment (djogi#217). The differ filters
+    // back-compat snapshots that load with `comment: None` so this path
+    // only fires when the adopter actually declared `#[field(comment = "…")]`
+    // on the new column.
     if let Some(comment) = col.comment.as_deref() {
         up.push('\n');
         up.push_str(&render_comment_on_column(table, &col.name, Some(comment)));
@@ -838,16 +828,14 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
             }
             let down =
                 format!("ALTER TABLE {qt} ALTER COLUMN {qc} TYPE {from} USING {qc}::{from};");
-            // Lossy-rollback safety net (djogi#220 follow-up). When the
-            // forward step carries an adopter `USING (<expr>)`, the
-            // down side falls back to the default `<col>::<old_type>`
-            // cast — Postgres cannot derive an inverse of an arbitrary
-            // expression. If the forward expression discards
-            // information (TRIM, CASE → NULL, regex extraction,
-            // codec decode, ...) the down SQL silently emits as a
-            // structurally lossy rollback that returns equal-but-not-
-            // identical row values. Mark the warning so
-            // `LossyRollbackPolicy::Refuse` (the default) engages and
+            // Lossy-rollback safety net. When the forward step carries an
+            // adopter `USING (<expr>)` (djogi#220), the down side falls back to
+            // the default `<col>::<old_type>` cast — Postgres cannot derive an
+            // inverse of an arbitrary expression. If the forward expression
+            // discards information (TRIM, CASE → NULL, regex extraction, codec
+            // decode, ...) the down SQL silently emits as a structurally lossy
+            // rollback that returns equal-but-not-identical row values. Mark the
+            // warning so `LossyRollbackPolicy::Refuse` (the default) engages and
             // requires explicit operator opt-in to apply.
             let lossy = using.as_ref().map(|expr| LossyRollbackWarning {
                 kind: LossyRollbackKind::CustomCast,
@@ -867,13 +855,10 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
             // constraint-name slot deterministically.
             //
             // The variant carries both prior (`from`) and target (`to`)
-            // expressions so the down side can fully restore the
-            // pre-operation CHECK state — no lossy comment placeholder.
-            // GPT-5.5 review pinned the lossy-rollback gap: the previous
-            // `SetCheck(Option<String>)` rendered the drop arm as DROP
-            // up / comment-only down, which left the column
-            // unconstrained after rollback (visible whenever a type
-            // migration on a checked column was rolled back).
+            // expressions so the down side can fully restore the pre-operation
+            // CHECK state — no lossy comment placeholder. This ensures the
+            // column is properly constrained after rollback (visible whenever a
+            // type migration on a checked column was rolled back).
             let constraint = check_constraint_name(table, column);
             let qcons = quote_ident(&constraint);
             let (up, down, label) = match (from, to) {
@@ -1125,23 +1110,18 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
                  the differ filters no-op transitions"
             ),
         },
-        // Codex T22 BLOCK-3: identity-column transitions emit the
-        // proper `ALTER COLUMN ADD/DROP/SET GENERATED` syntax.
-        //
-        // Codex T22 round-3 BLOCK-2 + round-4 refinement: the None →
-        // Some(kind) transition additionally emits a setval follow-up
-        // to sync the new sequence to the existing row data. Without
-        // this, `ADD GENERATED ... AS IDENTITY` allocates a fresh
-        // sequence that starts at MIN_VALUE (default 1) regardless
-        // of existing rows — the next default-id INSERT collides
-        // with row 1 on a populated table.
+        // Identity-column transitions emit the proper `ALTER COLUMN
+        // ADD/DROP/SET GENERATED` syntax. The None → Some(kind)
+        // transition additionally emits a setval follow-up to sync the
+        // new sequence to the existing row data. Without this, `ADD
+        // GENERATED ... AS IDENTITY` allocates a fresh sequence that
+        // starts at MIN_VALUE (default 1) regardless of existing rows —
+        // the next default-id INSERT collides with row 1 on a populated
+        // table.
         //
         // The setval uses the three-arg form `setval(seq, val, false)`
         // (is_called = false), which sets the sequence so the NEXT
-        // call returns `val` rather than `val + 1`. This avoids the
-        // round-3 bug where `setval(seq, 0)` on an empty table failed
-        // with "value 0 is out of bounds for sequence ..." (default
-        // minvalue=1). With is_called=false:
+        // call returns `val` rather than `val + 1`. With is_called=false:
         //
         //   - Empty table: GREATEST(COALESCE(MAX, 0), 0) + 1 = 1.
         //     setval(seq, 1, false). Next call returns 1. ✓
@@ -1215,7 +1195,7 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
                 }
             }
         }
-        // Phase 8.5 djogi#217 — `COMMENT ON COLUMN` lowering.
+        // `COMMENT ON COLUMN` lowering (djogi#217).
         //
         // `COMMENT ON COLUMN` is its own top-level statement, not an
         // `ALTER TABLE … ALTER COLUMN` shape; routing it through
@@ -1263,9 +1243,7 @@ fn emit_drop_foreign_key(table: &str, column: &str, fk: &ForeignKeySchema) -> Op
     let up = format!("ALTER TABLE {qt} DROP CONSTRAINT {qcons};");
     // Down side reconstructs the FK from the carried schema — the
     // cascade discipline + target round-trip cleanly so rollback is
-    // structurally lossless. Codex T3 review B-3 fixed an earlier
-    // bug where the rollback was a SQL comment because `DropForeignKey`
-    // carried only `(table, column)`.
+    // structurally lossless.
     let down = render_add_fk(table, column, fk);
     OperationSql {
         label: format!("DropForeignKey {table}.{column}"),
@@ -1345,7 +1323,7 @@ fn emit_add_index(idx: &IndexSchema) -> OperationSql {
 
     // Defense-in-depth: PostgreSQL rejects `CREATE UNIQUE INDEX … USING
     // <non-btree>` server-side, so the macro's `validate_decl` rejects
-    // `unique(..., using = "<non-btree>")` at compile time (Phase 8.5 #83).
+    // `unique(..., using = "<non-btree>")` at compile time.
     // The check below catches any path that constructs a `UniqueIndex`
     // with a non-btree `index_type` outside the macro layer — directly
     // building an `IndexSchema`, an old on-disk snapshot from before the
@@ -1360,7 +1338,7 @@ fn emit_add_index(idx: &IndexSchema) -> OperationSql {
              The macro layer rejects this combination at compile time; an \
              IndexSchema reaching this emitter with a non-btree UniqueIndex \
              indicates either a stale snapshot or a direct IndexSchema \
-             construction bypassing the rule (Phase 8.5 #83).",
+             construction bypassing the rule.",
             name = idx.name,
             table = idx.table,
             ty = idx.index_type,
@@ -1713,9 +1691,7 @@ fn emit_add_enum_variant(
     // The differ resolves the anchor variant against the new
     // variant list, picking BEFORE when a post-anchor exists and
     // AFTER when only a pre-anchor exists, else None for tail
-    // appends. Codex T3 review B-2 fixed an earlier bug where the
-    // emitter unconditionally appended (no positional clause)
-    // regardless of where the differ placed the variant.
+    // appends.
     let up = match anchor {
         None => format!("ALTER TYPE {qname} ADD VALUE {lit};"),
         Some(EnumVariantAnchor {
@@ -1796,7 +1772,7 @@ fn emit_move_model_between_apps(model: &str, from_app: &str, to_app: &str) -> Op
 
 /// Emit `COMMENT ON TABLE <qt> IS E'<escaped-to>'` (or `IS NULL` when
 /// the comment is cleared), plus the symmetric down side restoring
-/// `from`. Phase 8.5 Cluster 4 (djogi#217).
+/// `from` (djogi#217).
 ///
 /// The differ filters identical pairs upstream, so `(None, None)` and
 /// `(Some(a), Some(b))` with `a == b` never reach this fn in practice.
@@ -1824,7 +1800,7 @@ fn emit_set_table_comment(table: &str, from: Option<&str>, to: Option<&str>) -> 
 }
 
 /// Emit reversible `ALTER TABLE ... SET/RESET (...)` storage-parameter
-/// metadata changes. Phase 8.5 Cluster 4 (djogi#218).
+/// metadata changes (djogi#218).
 #[allow(clippy::result_large_err)]
 fn emit_set_storage_params(
     table: &str,
@@ -2065,7 +2041,7 @@ fn render_storage_param_entries(entries: &[StorageParamEntry]) -> String {
 
 /// Emit reversible `ALTER TABLE ... SET TABLESPACE ...` metadata
 /// changes. `None` lowers to `pg_default`, Djogi's representation for
-/// "no explicit tablespace". Phase 8.5 Cluster 4 (djogi#219).
+/// "no explicit tablespace" (djogi#219).
 fn emit_set_tablespace(table: &str, from: Option<&str>, to: Option<&str>) -> OperationSql {
     OperationSql {
         label: format!("SetTablespace {table}"),
@@ -2085,7 +2061,7 @@ fn render_set_tablespace(table: &str, tablespace: Option<&str>) -> String {
 /// Shared between [`emit_alter_column`]'s `SetComment` arm and the
 /// inline emission that follows `CREATE TABLE` / `ADD COLUMN` for
 /// fields that ship with `#[field(comment = "…")]` set on initial
-/// creation. Phase 8.5 Cluster 4 (djogi#217).
+/// creation (djogi#217).
 fn render_comment_on_column(table: &str, column: &str, value: Option<&str>) -> String {
     let qt = quote_ident(table);
     let qc = quote_ident(column);
@@ -2105,7 +2081,7 @@ fn render_comment_on_column(table: &str, column: &str, value: Option<&str>) -> S
 /// apostrophes and backslashes before inlining adopter-provided comment
 /// text.
 ///
-/// **Scope.** Used by the `COMMENT ON` emission path (djogi#217) only.
+/// **Scope.** Used by the `COMMENT ON` emission path only.
 /// Every other adopter SQL path treats the value as raw SQL and does
 /// NOT escape — adopters writing `#[field(check = "…")]` are
 /// responsible for the SQL fragment's correctness themselves. The
@@ -2278,9 +2254,9 @@ fn unique_constraint_name(table: &str, column: &str) -> String {
 /// the `_fkey` suffix; we follow suit.
 ///
 /// `pub(crate)` so the runtime
-/// `DjogiContext::defer_constraints` validator (Phase 8.5 #169) can
+/// `DjogiContext::defer_constraints` validator can
 /// reach the same composition the migration emitter uses, keeping
-/// declarative-time and runtime constraint names in lockstep.
+/// declarative-time and runtime constraint names in lockstep (djogi#169).
 pub(crate) fn fk_constraint_name(table: &str, column: &str) -> String {
     truncate_constraint(format!("{table}_{column}_fkey"))
 }
@@ -2398,15 +2374,15 @@ fn write_column_definition(out: &mut String, col: &ColumnSchema, table: &str) {
     if !col.nullable {
         out.push_str(" NOT NULL");
     }
-    // Identity columns (Cluster E #86 fix) — `GENERATED BY DEFAULT AS
-    // IDENTITY` / `GENERATED ALWAYS AS IDENTITY` is part of the column
-    // definition, separate from both DEFAULT (a value expression) and
-    // computed-generated (an expression-derived value). Identity cannot
-    // coexist with DEFAULT on the same column (Postgres rejects), and
-    // cannot coexist with computed-generated either (mutually exclusive
-    // semantics — identity uses a sequence, computed uses an
-    // expression). The projection guarantees the mutual exclusion;
-    // this branch fires only when `identity.is_some()`.
+    // Identity columns — `GENERATED BY DEFAULT AS IDENTITY` / `GENERATED
+    // ALWAYS AS IDENTITY` is part of the column definition, separate from
+    // both DEFAULT (a value expression) and computed-generated
+    // (an expression-derived value). Identity cannot coexist with DEFAULT
+    // on the same column (Postgres rejects), and cannot coexist with
+    // computed-generated either (mutually exclusive semantics — identity
+    // uses a sequence, computed uses an expression). The projection
+    // guarantees the mutual exclusion; this branch fires only when
+    // `identity.is_some()`.
     if let Some(identity) = col.identity {
         out.push(' ');
         out.push_str(identity.sql_clause());
@@ -2446,15 +2422,11 @@ fn write_column_definition(out: &mut String, col: &ColumnSchema, table: &str) {
     if let Some(fk) = &col.foreign_key {
         // Cascade source-of-truth lives on `ForeignKeySchema.on_delete`
         // — the standalone `AddForeignKey` / `DropForeignKey` paths
-        // already read it from there. Codex T3 round-2 review A-1
-        // flagged that the inline-FK path was reading `ColumnSchema
-        // .on_delete` instead, splitting the SQL emitter across two
-        // sources for the same value. Both fields are populated from
-        // the same descriptor input today, but two read sites invite
-        // future drift; consolidating on `fk.on_delete` removes that
-        // hazard. The mirrored `ColumnSchema.on_delete` field stays
-        // for adopters that walk columns directly — only the SQL
-        // emitter no longer reads it.
+        // already read it from there. The inline-FK path reads the same
+        // field. Both fields are populated from the same descriptor input,
+        // and reading from the same source avoids drift. The mirrored
+        // `ColumnSchema.on_delete` field stays for adopters that walk
+        // columns directly — only the SQL emitter no longer reads it.
         //
         // Emit `CONSTRAINT <name> REFERENCES (...)` rather than a bare
         // `REFERENCES (...)` so the FK name matches the deterministic
@@ -2464,12 +2436,11 @@ fn write_column_definition(out: &mut String, col: &ColumnSchema, table: &str) {
         // TRUNCATES at 63 bytes for long names — whereas Djogi's
         // convention preserves a 54-byte stem and appends an 8-char
         // hash. Two non-matching names mean the runtime
-        // [`DjogiContext::defer_constraints`] validator (Phase 8.5
-        // #169) would happily approve a `SET CONSTRAINTS
-        // "<djogi_hashed_name>" DEFERRED` that Postgres rejects with
-        // `42704` (constraint does not exist). Explicit naming locks
-        // the emitter and the validator into lockstep for any name
-        // length. (GPT-5.5 xhigh BLOCK follow-up for djogi#169.)
+        // [`DjogiContext::defer_constraints`] validator would happily
+        // approve a `SET CONSTRAINTS "<djogi_hashed_name>" DEFERRED` that
+        // Postgres rejects with `42704` (constraint does not exist).
+        // Explicit naming locks the emitter and the validator into
+        // lockstep for any name length (djogi#169).
         let constraint = fk_constraint_name(table, &col.name);
         let qcons = quote_ident(&constraint);
         let qref_t = quote_ident(&fk.ref_table);
@@ -2923,17 +2894,14 @@ mod tests {
 
     #[test]
     fn add_table_inline_fk_propagates_cascade_kind() {
-        // Codex T3 round-2 review A-1: the inline-FK path inside
-        // `CREATE TABLE` must read the cascade from
-        // `ForeignKeySchema.on_delete` — the same source the
-        // standalone `AddForeignKey` / `DropForeignKey` paths use.
-        // Round-trip every variant. To exercise the precise contract,
-        // we leave `ColumnSchema.on_delete` set to something different
-        // from `ForeignKeySchema.on_delete` and assert that the FK's
-        // value wins. (Today's projection populates both fields from
-        // the same descriptor input; this test pins the SQL emitter
-        // to the FK-side source so a future descriptor change that
-        // splits the two cannot silently rewrite cascades.)
+        // The inline-FK path inside `CREATE TABLE` must read the cascade
+        // from `ForeignKeySchema.on_delete` — the same source the standalone
+        // `AddForeignKey` / `DropForeignKey` paths use. Round-trip every
+        // variant. To exercise the precise contract, we leave
+        // `ColumnSchema.on_delete` set to something different from
+        // `ForeignKeySchema.on_delete` and assert that the FK's value wins.
+        // This test pins the SQL emitter to the FK-side source so a future
+        // descriptor change that splits the two cannot silently rewrite cascades.
         for (cascade, expected) in [
             (OnDeleteSchema::Restrict, "ON DELETE RESTRICT"),
             (OnDeleteSchema::Cascade, "ON DELETE CASCADE"),
@@ -3048,18 +3016,16 @@ mod tests {
 
     #[test]
     fn add_table_inline_fk_names_constraint_explicitly_short_name() {
-        // GPT-5.5 xhigh BLOCK follow-up for djogi#169: the inline-FK
-        // path inside `CREATE TABLE` must emit `CONSTRAINT <name>
-        // REFERENCES ...` so the runtime
-        // `DjogiContext::defer_constraints` validator (which derives
-        // the expected name via [`fk_constraint_name`]) and the
-        // emitted DDL agree byte-for-byte. The short-name case is the
-        // simpler half of the pair below — the conventional
-        // `posts_user_id_fkey` fits inside Postgres' 63-byte identifier
-        // limit, so Djogi's name and Postgres' auto-name happen to
-        // agree. We still pin the explicit `CONSTRAINT ...` shape so a
-        // future emitter regression that drops the keyword cannot
-        // silently re-introduce the auto-naming reliance.
+        // The inline-FK path inside `CREATE TABLE` must emit `CONSTRAINT <name>
+        // REFERENCES ...` so the runtime `DjogiContext::defer_constraints`
+        // validator (which derives the expected name via [`fk_constraint_name`])
+        // and the emitted DDL agree byte-for-byte (djogi#169). The short-name
+        // case is the simpler half of the pair below — the conventional
+        // `posts_user_id_fkey` fits inside Postgres' 63-byte identifier limit,
+        // so Djogi's name and Postgres' auto-name happen to agree. We still pin
+        // the explicit `CONSTRAINT ...` shape so a future emitter regression
+        // that drops the keyword cannot silently re-introduce the auto-naming
+        // reliance.
         let fk_col = ColumnSchema {
             foreign_key: Some(ForeignKeySchema {
                 deferrable: true,
@@ -3101,15 +3067,13 @@ mod tests {
 
     #[test]
     fn add_table_inline_fk_uses_djogi_hashed_name_for_long_identifiers() {
-        // GPT-5.5 xhigh BLOCK regression for djogi#169: when the
-        // conventional name `<table>_<column>_fkey` exceeds Postgres'
-        // 63-byte identifier limit, Postgres' auto-naming TAIL-
-        // TRUNCATES (lopping bytes off the right) while Djogi's
-        // [`fk_constraint_name`] preserves a 54-byte stem and appends
-        // an 8-char hex digest. The two names differ, so an unnamed
-        // inline FK would name the constraint differently from what
-        // the runtime `defer_constraints` validator expects, and a
-        // `SET CONSTRAINTS "<djogi_hashed_name>" DEFERRED` would raise
+        // When the conventional name `<table>_<column>_fkey` exceeds Postgres'
+        // 63-byte identifier limit, Postgres' auto-naming TAIL-TRUNCATES
+        // (lopping bytes off the right) while Djogi's [`fk_constraint_name`]
+        // preserves a 54-byte stem and appends an 8-char hex digest (djogi#169).
+        // The two names differ, so an unnamed inline FK would name the constraint
+        // differently from what the runtime `defer_constraints` validator expects,
+        // and a `SET CONSTRAINTS "<djogi_hashed_name>" DEFERRED` would raise
         // SQLSTATE `42704` against Postgres' truncated name.
         //
         // Constraint-name math:
@@ -3172,8 +3136,8 @@ mod tests {
             sql.up
         );
 
-        // Cascade + deferrability behaviour must round-trip unchanged
-        // — the fix touches only the constraint-name slot.
+        // Cascade + deferrability must round-trip unchanged
+        // — only the constraint-name slot changes.
         assert!(
             sql.up
                 .contains("ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED"),
@@ -3752,7 +3716,7 @@ mod tests {
         // `SetCheck { from: Some(prior), to: None }`, and the SQL
         // emitter produces a single DROP CONSTRAINT statement on the
         // up side. The down side restores the prior CHECK via
-        // ADD CONSTRAINT — fully recoverable rollback (GPT-5.5 fix).
+        // ADD CONSTRAINT — fully recoverable rollback.
         let prior = "\"medium_count\" >= 0 AND \"medium_count\" <= 4294967295";
         let sql = emit_alter_column(
             "widgets",
@@ -3773,7 +3737,7 @@ mod tests {
             "drop CHECK must not also add a constraint on the up side: {}",
             sql.up
         );
-        // GPT-5.5 fix: down side restores the prior CHECK losslessly.
+        // Down side restores the prior CHECK losslessly.
         assert!(
             sql.down
                 .contains("ADD CONSTRAINT \"widgets_medium_count_check\""),
@@ -3890,8 +3854,7 @@ mod tests {
 
         // ── DOWN ordering: the composed down file walks ops in reverse,
         // so the rollback order is statements[2].down, [1].down, [0].down.
-        // GPT-5.5 fix: every step's down must restore the previous state.
-        // This is the central assertion the lossy-rollback bug was missing.
+        // Each step's down must restore the previous state.
 
         // statements[2] = add new CHECK; its rollback drops the new CHECK
         // (no prior to restore — the prior is restored by statements[0].down).
@@ -3913,7 +3876,7 @@ mod tests {
         );
 
         // statements[0] = drop original CHECK; rollback re-adds it with
-        // the original expression — the GPT-5.5 BLOCK fix in action.
+        // the original expression.
         let before_expr = before_check.expect("before_check should be Some for this helper");
         assert!(
             statements[0]
@@ -3958,17 +3921,11 @@ mod tests {
         );
     }
 
-    // ── GPT-5.5 BLOCK: CHECK rollback restoration (issue #105/#188) ──────
+    // ── CHECK rollback restoration (djogi#105 / djogi#188) ────────────
     //
-    // The previous IR's `SetCheck(Option<String>)` carried only the
-    // target check expression, so the down-side rollback for the DROP
-    // arm could only emit a comment ("prior CHECK not recoverable").
-    // For a type migration on a checked column, this left the column
-    // unconstrained after rollback even though the prior expression was
-    // structurally available in the differ. The refactor to
-    // `SetCheck { from, to }` carries both, so the down-side restores
-    // exactly. These tests pin that behaviour for the three lifecycle
-    // shapes the differ produces.
+    // The diff carries both prior and target check expressions so the
+    // down-side rollback can restore the prior CHECK exactly. These tests
+    // pin that behaviour for the three lifecycle shapes the differ produces.
 
     #[test]
     fn type_change_unchanged_check_down_restores_original_check() {
@@ -3987,7 +3944,6 @@ mod tests {
         // Type change where the CHECK expression also changes.
         // The critical assertion: the down-side restores the OLD
         // check (`4294967295`), not the new check (`18446744073709551615`).
-        // This is the exact case GPT-5.5 review flagged as BLOCK.
         let before_expr = "\"amount\" >= 0 AND \"amount\" <= 4294967295";
         let after_expr = "\"amount\" >= 0 AND \"amount\" <= 18446744073709551615";
         let before = applied_schema_with_amount_check("INTEGER", Some(before_expr));
@@ -4256,15 +4212,14 @@ mod tests {
         assert!(sql.up.contains("(\"name\")"));
     }
 
-    // ── SetIdentity (Codex T22 BLOCK-3) ──────────────────────────────────────
+    // ── SetIdentity ───────────────────────────────────────────────────────────
 
     #[test]
     fn alter_column_set_identity_add_emits_add_generated_clause() {
         // Pre-fix snapshot: identity = None. Fresh projection:
         // identity = Some(ByDefault). Differ emits ADD GENERATED
-        // followed by a setval that syncs the new sequence to
-        // MAX(id) + 1 — Codex T22 round-3 BLOCK-2: without this,
-        // populated tables collide on the next default-id INSERT.
+        // followed by a setval that syncs the new sequence to MAX(id) + 1
+        // (without this, populated tables collide on the next default-id INSERT).
         use crate::migrate::schema::IdentityKindSchema;
         let sql = emit_alter_column(
             "countries",
@@ -4365,8 +4320,8 @@ mod tests {
 
     #[test]
     fn add_foreign_key_propagates_cascade_kind() {
-        // Codex T3 review B-3: AddForeignKey must NOT silently rewrite
-        // the declared cascade as RESTRICT. Round-trip every variant.
+        // AddForeignKey must not silently rewrite the declared cascade as
+        // RESTRICT. Round-trip every variant.
         for (cascade, expected) in [
             (OnDeleteSchema::Restrict, "ON DELETE RESTRICT"),
             (OnDeleteSchema::Cascade, "ON DELETE CASCADE"),
@@ -4416,9 +4371,9 @@ mod tests {
 
     #[test]
     fn drop_foreign_key_rollback_recreates_constraint_with_cascade() {
-        // Codex T3 review B-3: DropForeignKey now carries the full
-        // ForeignKeySchema so the rollback recreates the FK with the
-        // original `ON DELETE ...` clause — no comment-only down side.
+        // DropForeignKey now carries the full ForeignKeySchema so the
+        // rollback recreates the FK with the original `ON DELETE ...`
+        // clause — no comment-only down side.
         let sql = emit_drop_foreign_key(
             "posts",
             "author_id",
@@ -4822,7 +4777,7 @@ mod tests {
         );
     }
 
-    // ── UniqueIndex btree-only invariant (Phase 8.5 #83) ──────────────
+    // ── UniqueIndex btree-only invariant ──────────────────────────────
     //
     // PostgreSQL rejects `CREATE UNIQUE INDEX … USING <non-btree>` server-side.
     // The macro layer rejects `unique(..., using = "<non-btree>")` at compile
@@ -4941,8 +4896,8 @@ mod tests {
 
     #[test]
     fn add_enum_variant_without_anchor_appends() {
-        // Codex T3 review B-2: when the differ supplies no anchor,
-        // emit a tail-append (no positional clause).
+        // When the differ supplies no anchor, emit a tail-append
+        // (no positional clause).
         let sql = emit_add_enum_variant("status", "archived", None);
         assert_eq!(sql.up, "ALTER TYPE \"status\" ADD VALUE 'archived';");
         // Postgres has no DROP VALUE — rollback is lossy.
@@ -4951,8 +4906,8 @@ mod tests {
 
     #[test]
     fn add_enum_variant_with_before_anchor_emits_before_clause() {
-        // Codex T3 review B-2: an anchor in `Before` direction must
-        // produce `ALTER TYPE ... ADD VALUE 'new' BEFORE 'anchor';`.
+        // An anchor in `Before` direction must produce
+        // `ALTER TYPE ... ADD VALUE 'new' BEFORE 'anchor';`.
         let anchor = EnumVariantAnchor {
             variant: "deleted".to_string(),
             kind: EnumVariantAnchorKind::Before,
@@ -5114,7 +5069,7 @@ mod tests {
         assert_eq!(truncate_constraint(short.clone()), short);
     }
 
-    // ── Phase 7.5 PR 7: EXCLUSION + stored-generated emission ─────────
+    // ── EXCLUSION + stored-generated emission ──────────────────────────
 
     use crate::migrate::schema::{
         ExclusionConstraintSchema, ExclusionElementSchema, GeneratedColumnSchema,

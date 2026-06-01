@@ -1,6 +1,6 @@
 //! `djogi migrations attune` — local-history reconciliation.
 //!
-//! # Scope (Phase 7 v3 §8 / T7 — OQ-04 amendment)
+//! # Scope (Phase 7 v3 §8 — OQ-04 amendment)
 //!
 //! `attune` operates on local migration history. Three modes:
 //!
@@ -22,8 +22,7 @@
 //! 3. **`AttuneMode::Squash { from, publish, app }`**: HISTORY REWRITE.
 //!    Coalesces every committed SQL file from `from` to HEAD into one
 //!    squashed file, deletes the originals, and removes the deleted
-//!    versions from the ledger. Per OQ-04 (Codex round-3 lens-auto-
-//!    resolved) plus the round-4 fixup for B-5 (single-bucket scope):
+//!    versions from the ledger. Per OQ-04 plus the fixup for B-5 (single-bucket scope):
 //!
 //!    - **Localhost-only.** Refuses to run when `DATABASE_URL` does
 //!      not resolve to the local machine — see
@@ -38,7 +37,7 @@
 //!      the remote `migrations` submodule. Without it, the rewrite
 //!      stays local — the operator can inspect the result, run the
 //!      test suite, and only then publish.
-//!    - **`--publish` is atomic: commit-then-push (round-2 A-1).**
+//!    - **`--publish` is atomic: commit-then-push.**
 //!      When `--publish` is set, attune treats the squash mutation as
 //!      one atomic step: it stages every change in the migrations
 //!      working tree (`git add -A`), creates a commit
@@ -66,7 +65,7 @@
 //! single-context architecture (the runner has a single pool today;
 //! `pool_for(database)` is a future seam).
 //!
-//! # Read-only dry-run contract (B-3 + Codex umbrella U-5)
+//! # Read-only dry-run contract (B-3 + U-5)
 //!
 //! Attune's read-only contract extends to the ledger table itself.
 //! Three paths are read-only and MUST NOT bootstrap
@@ -86,8 +85,7 @@
 //!
 //! Pre-U-5, Record / Squash bootstrapped the ledger up-front
 //! regardless of `--apply`, which silently created the table during
-//! a dry-run — an out-of-contract mutation that the umbrella round-2
-//! review caught. The fix gates the bootstrap behind `req.apply`.
+//! a dry-run — an out-of-contract mutation. The fix gates the bootstrap behind `req.apply`.
 //!
 //! # No regex
 //!
@@ -304,9 +302,8 @@ impl std::fmt::Display for AttuneDiagnostic {
                 f,
                 "[{}] ledger table `djogi_schema_migrations` does not exist in database \
                  `{database}`; ledger not bootstrapped — run `migrations apply` or \
-                 `attune --record --apply` first (Codex umbrella round-3 U-8: plain \
-                 `attune --record` without `--apply` is dry-run after U-5 and will not \
-                 bootstrap; the apply flag is load-bearing)",
+                 `attune --record --apply` first; plain `attune --record` without `--apply` \
+                 is dry-run after U-5 and will not bootstrap; the apply flag is load-bearing",
                 self.code(),
             ),
             AttuneDiagnostic::DryRunMutationsSkipped { mode } => write!(
@@ -394,8 +391,7 @@ pub enum AttuneError {
         stderr: String,
         status_code: Option<i32>,
     },
-    /// `git fetch` failed during target resolution (Codex umbrella
-    /// U-1). The local resolution failed; the fetch attempt also
+    /// `git fetch` failed during target resolution. The local resolution failed; the fetch attempt also
     /// failed (network, auth, missing remote, …). The captured stderr
     /// names the precise failure.
     GitFetchFailed {
@@ -605,11 +601,10 @@ impl std::error::Error for AttuneError {
             AttuneError::SqlReadFailed { source, .. } => Some(source),
             AttuneError::SqlWriteFailed { source, .. } => Some(source),
             AttuneError::SqlDeleteFailed { source, .. } => Some(source),
-            // Codex umbrella U-1: the new git-related variants do not
-            // wrap a `std::io::Error` we can return as a source — they
-            // wrap a captured stderr string from the child git
-            // process. The Display impl is the operator-actionable
-            // surface.
+            // The new git-related variants do not wrap a `std::io::Error`
+            // we can return as a source — they wrap a captured stderr string
+            // from the child git process. The Display impl is the
+            // operator-actionable surface.
             AttuneError::GitTargetResolveFailed { .. }
             | AttuneError::GitFetchFailed { .. }
             | AttuneError::GitUpdateSubmodulePointerFailed { .. } => None,
@@ -688,7 +683,7 @@ pub struct AttuneRequest<'a> {
     pub _guard: &'a WorkspaceGuard,
 }
 
-// ── DJOGI_ENV gate (Codex umbrella U-2) ───────────────────────────────────
+// ── DJOGI_ENV gate ───────────────────────────────────────────────────────
 
 /// Returns `Some(value)` when the `DJOGI_ENV` env var is set to a
 /// case-insensitive `"production"` byte sequence; `None` otherwise.
@@ -764,11 +759,10 @@ pub async fn attune(
     //
     // 1. `database_url` resolves to localhost.
     // 2. `Djogi.toml::profile != "production"`.
-    // 3. `Djogi.toml::[database].dev_mode == true` (Codex umbrella
-    //    U-2 — was documented but never read; now enforced).
-    // 4. `DJOGI_ENV` env var is NOT case-insensitive `"production"`
-    //    (Codex umbrella U-2 — env-var override for the deployment
-    //    environment; previously absent).
+    // 3. `Djogi.toml::[database].dev_mode == true` — was documented but
+    //    now enforced.
+    // 4. `DJOGI_ENV` env var is NOT case-insensitive `"production"` —
+    //    env-var override for the deployment environment.
     //
     // The order is gate-1 → gate-4 deliberately: failing the cheapest
     // checks first means an operator typo on URL or profile surfaces
@@ -807,20 +801,19 @@ pub async fn attune(
     // table when the operator only asked for a diff.
     let active_database = active_database_name(ctx).await?;
 
-    // Mode dispatch for ledger bootstrap (B-3 + Codex umbrella U-5):
+    // Mode dispatch for ledger bootstrap (B-3 + U-5):
     // DiffOnly is read-only and must NEVER create
     // `djogi_schema_migrations` on a fresh DB. Record + Squash bootstrap
     // ledger state up-front via an idempotent CREATE TABLE IF NOT EXISTS
     // — but ONLY when `--apply` is set. Without `--apply`, Record /
-    // Squash are dry-runs (Codex umbrella U-1) and the read-only
-    // contract extends to the ledger table itself: a dry-run on a
-    // fresh database must not create the ledger table as a side effect
-    // of the diff display. If we bootstrapped here unconditionally,
-    // `attune --record-ledger` (no --apply) on a fresh DB would still
-    // execute the CREATE TABLE — an out-of-contract mutation. So we
-    // probe `ledger_table_exists` for every dry-run path (DiffOnly,
-    // Record-without-apply, Squash-without-apply) and only bootstrap
-    // on the apply path.
+    // Squash are dry-runs and the read-only contract extends to the
+    // ledger table itself: a dry-run on a fresh database must not create
+    // the ledger table as a side effect of the diff display. If we
+    // bootstrapped here unconditionally, `attune --record-ledger` (no --apply)
+    // on a fresh DB would still execute the CREATE TABLE — an out-of-contract
+    // mutation. So we probe `ledger_table_exists` for every dry-run path
+    // (DiffOnly, Record-without-apply, Squash-without-apply) and only
+    // bootstrap on the apply path.
     let ledger_exists = match (&req.mode, req.apply) {
         // Dry-run paths — probe only.
         (AttuneMode::DiffOnly, _)
@@ -877,26 +870,24 @@ pub async fn attune(
     }
 
     let mut diagnostics: Vec<AttuneDiagnostic> = Vec::new();
-    // Codex umbrella U-5: `LedgerTableMissing` surfaces on EVERY
-    // dry-run path that observed a missing ledger table — DiffOnly
-    // always, plus Record / Squash without `--apply`. Pre-fix only
-    // DiffOnly emitted the diagnostic; an operator running
-    // `attune --record-ledger` (no --apply) on a fresh DB had no
-    // operator-facing hint that the diff was vacuous because the
-    // ledger had never been bootstrapped. The flag is the
-    // observed-emptiness signal, not the mode itself.
+    // `LedgerTableMissing` surfaces on EVERY dry-run path that observed
+    // a missing ledger table — DiffOnly always, plus Record / Squash
+    // without `--apply`. Pre-fix only DiffOnly emitted the diagnostic;
+    // an operator running `attune --record-ledger` (no --apply) on a fresh
+    // DB had no operator-facing hint that the diff was vacuous because the
+    // ledger had never been bootstrapped. The flag is the observed-emptiness
+    // signal, not the mode itself.
     if !ledger_exists {
         diagnostics.push(AttuneDiagnostic::LedgerTableMissing {
             database: active_database.clone(),
         });
     }
 
-    // Codex umbrella U-1: resolve the operator-supplied target (if any)
-    // before any DB / disk mutation. Resolution is read-only — local
-    // first, fetch + retry only when the local rev-parse failed. A
-    // resolution failure surfaces as a typed error BEFORE any mutation
-    // path runs so the operator-facing message names the missing
-    // target instead of a partial side effect.
+    // Resolve the operator-supplied target (if any) before any DB / disk
+    // mutation. Resolution is read-only — local first, fetch + retry only
+    // when the local rev-parse failed. A resolution failure surfaces as a
+    // typed error BEFORE any mutation path runs so the operator-facing
+    // message names the missing target instead of a partial side effect.
     let resolved_target = match req.target {
         Some(t) if !t.is_empty() => Some(resolve_git_target(req.workspace_root, t)?),
         _ => None,
@@ -912,43 +903,31 @@ pub async fn attune(
         diagnostics,
     };
 
-    // Codex umbrella U-1: dry-run gate. Mutations only happen when
-    // `--apply` is set. Without it, Record / Squash skip every
-    // ledger / disk mutation and the diff is the only output.
+    // Dry-run gate. Mutations only happen when `--apply` is set. Without
+    // it, Record / Squash skip every ledger / disk mutation and the diff
+    // is the only output.
     let apply = req.apply;
 
-    // Codex umbrella round-2 U-7: `--squash` clearly implies recording
-    // per `docs/spec/configuration.md` §15 ("parent-repo
-    // submodule-pointer changes are explicit via `--record` or options
-    // that clearly imply recording, such as `--squash`") and
-    // `docs/spec/migrations.md` §"migrations attune" ("a command mode
-    // clearly implies recording, such as `--squash`"). Pre-fix the
-    // implementation only honoured the explicit `req.record` flag, so
-    // an operator running `attune --squash --apply --target <ref>`
-    // saw the squash succeed but the parent's recorded submodule
-    // pointer stayed put — the spec said one thing, the code did
-    // another. This effective-record boolean closes the gap: a Squash
-    // mode with a resolved target writes the pointer regardless of
-    // whether `--record` was passed explicitly. The operator's
-    // explicit `--record` still works as before for Record / DiffOnly
-    // modes.
+    // `--squash` clearly implies recording per `docs/spec/configuration.md`
+    // §15 and `docs/spec/migrations.md` §"migrations attune". The
+    // effective-record boolean closes the gap: a Squash mode with a
+    // resolved target writes the pointer regardless of whether `--record`
+    // was passed explicitly. The operator's explicit `--record` still works
+    // as before for Record / DiffOnly modes.
     //
-    // The choice ((a) — auto-imply rather than (b) — strip the spec
-    // clause) was made deliberately: squash genuinely needs the parent
-    // pointer to track the rewritten history. After `--publish` lands
-    // the new HEAD on `origin`, the parent's recorded pointer would
-    // otherwise still reference a SHA the migrations submodule no
-    // longer carries — operator coherence would silently drift.
+    // Squash genuinely needs the parent pointer to track the rewritten
+    // history. After `--publish` lands the new HEAD on `origin`, the
+    // parent's recorded pointer would otherwise still reference a SHA the
+    // migrations submodule no longer carries.
     let effective_record = req.record || matches!(req.mode, AttuneMode::Squash { .. });
 
     match &req.mode {
         AttuneMode::DiffOnly => {
             entries.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
             report.entries = entries;
-            // Codex umbrella U-1 (--record without --apply on
-            // DiffOnly): surface the would-be pointer update as a
-            // structured diagnostic so the operator knows nothing
-            // was written.
+            // Surface the would-be pointer update as a structured
+            // diagnostic so the operator knows nothing was written when
+            // --record is passed without --apply.
             if !apply {
                 push_record_skipped(&mut report.diagnostics, &req, &resolved_target);
             }
@@ -969,9 +948,8 @@ pub async fn attune(
         AttuneMode::Record { reason } => {
             // Reuse the diff entries but split: every Unrecorded gets
             // an INSERT + flips to Recorded; Orphaned passes through
-            // unchanged. Per Codex umbrella U-1 the INSERT only fires
-            // when `--apply` is set; without it we surface the would-be
-            // entries without writing.
+            // unchanged. The INSERT only fires when `--apply` is set;
+            // without it we surface the would-be entries without writing.
             let mut out: Vec<AttuneEntry> = Vec::new();
             for entry in entries {
                 match entry.kind {
@@ -1038,22 +1016,20 @@ pub async fn attune(
             Ok(report)
         }
         AttuneMode::Squash { from, publish, app } => {
-            // Squash mutates BOTH the ledger and on-disk files. Per
-            // Codex umbrella U-1, mutation only happens when --apply
-            // is set; without it we report the would-be squash and
-            // exit clean.
+            // Squash mutates BOTH the ledger and on-disk files. Mutation
+            // only happens when --apply is set; without it we report the
+            // would-be squash and exit clean.
             if !apply {
                 entries.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
                 report.entries = entries;
                 report
                     .diagnostics
                     .push(AttuneDiagnostic::DryRunMutationsSkipped { mode: "Squash" });
-                // Codex umbrella round-2 U-7: surface the would-be
-                // parent-pointer skip on Squash dry-run too. Squash
-                // implies recording, so an operator running
-                // `attune --squash --target <ref>` (no --apply)
-                // should see "would record SHA X" alongside the
-                // dry-run mutations notice.
+                // Surface the would-be parent-pointer skip on Squash
+                // dry-run too. Squash implies recording, so an operator
+                // running `attune --squash --target <ref>` (no --apply)
+                // should see "would record SHA X" alongside the dry-run
+                // mutations notice.
                 if effective_record {
                     push_record_skipped(&mut report.diagnostics, &req, &resolved_target);
                 }
@@ -1070,12 +1046,11 @@ pub async fn attune(
                 entries,
             )
             .await?;
-            // Codex umbrella round-2 U-7: after a successful squash
-            // the parent submodule pointer is updated when a target
-            // was resolved — `--squash` implies `--record`, so we
-            // gate on `effective_record` rather than `req.record`.
-            // The operator no longer needs to type both flags; one
-            // does the work of two per the spec contract.
+            // After a successful squash the parent submodule pointer is
+            // updated when a target was resolved — `--squash` implies
+            // `--record`, so we gate on `effective_record` rather than
+            // `req.record`. The operator no longer needs to type both
+            // flags; one does the work of two per the spec contract.
             if effective_record && let Some(sha) = &resolved_target {
                 update_parent_submodule_pointer(req.workspace_root, sha)?;
                 report.parent_pointer_updated = true;
@@ -1096,12 +1071,11 @@ pub async fn attune(
 /// 1:1 — a missing down for a present up surfaces in compose's
 /// idempotency check, not here.
 ///
-/// **Single-database scope (B-2).** When `database_filter` is `Some`,
-/// only buckets whose `database` field matches the filter are included.
-/// `None` includes every bucket — used by unit tests that exercise the
-/// raw scan; the production `attune` entry point always passes a
-/// filter so it never inserts ledger rows for a database it isn't
-/// connected to.
+/// **Single-database scope.** When `database_filter` is `Some`, only
+/// buckets whose `database` field matches the filter are included. `None`
+/// includes every bucket — used by unit tests that exercise the raw scan;
+/// the production `attune` entry point always passes a filter so it never
+/// inserts ledger rows for a database it isn't connected to.
 fn scan_disk_filtered(
     workspace_root: &Path,
     database_filter: Option<&str>,
@@ -1122,9 +1096,9 @@ fn scan_disk(
 }
 
 /// Wrapper around [`scan_disk_filtered`] that scopes the scan to a
-/// single database. The B-2 fix routes every production attune call
-/// through this helper so the disk scan never returns rows whose
-/// `database` field disagrees with the connected context.
+/// single database. This routes every production attune call through this
+/// helper so the disk scan never returns rows whose `database` field
+/// disagrees with the connected context.
 fn scan_disk_for_database(
     workspace_root: &Path,
     database: &str,
@@ -1300,12 +1274,9 @@ async fn insert_recorded_row(
 /// and removes the corresponding ledger rows. Optionally pushes to
 /// the migrations submodule's remote when `publish = true`.
 ///
-/// **Single-bucket scope (B-5).** The squash predicate `versions >= from`
-/// is applied to EXACTLY ONE bucket — the bucket where `from` actually
-/// exists. The pre-B-5 implementation looped over every bucket in the
-/// workspace and applied the predicate to each, which collapsed
-/// unrelated bucket histories whose versions happened to sort after
-/// `from`. The new contract:
+/// **Single-bucket scope.** The squash predicate `versions >= from` is
+/// applied to EXACTLY ONE bucket — the bucket where `from` actually
+/// exists. The squash contract:
 ///
 /// - If `app_filter` is `Some(label)`, the squash is scoped to
 ///   `(active_db, label)`; if `from` is absent there it errors with
@@ -1318,7 +1289,7 @@ async fn insert_recorded_row(
 /// - If `from` exists in zero buckets, we refuse with
 ///   [`AttuneRefusal::SquashFromVersionNotFound`].
 ///
-/// **Retained-row checksum refresh (B-4).** After writing the squashed
+/// **Retained-row checksum refresh.** After writing the squashed
 /// SQL file, we recompute its `up` (and best-effort `down`) checksum
 /// and `UPDATE` the retained `from` ledger row's `checksum_up`,
 /// `checksum_down`, and `description` to match. The pre-B-4
@@ -1400,9 +1371,9 @@ async fn run_squash(
     report.mutated = true;
     report.squashed_to = Some(from.to_string());
 
-    // Round-2 A-1: when `publish` is set, the publisher commits every
-    // disk change made above and pushes to `origin` so a single
-    // `attune --publish` invocation lands the rewrite in the remote.
+    // When `publish` is set, the publisher commits every disk change
+    // made above and pushes to `origin` so a single `attune --publish`
+    // invocation lands the rewrite in the remote.
     if publish && report.mutated {
         run_git_commit_and_publish(workspace_root, from)?;
         report.published = true;
@@ -1542,14 +1513,14 @@ async fn delete_subsumed(
     Ok(())
 }
 
-/// B-4: refresh the retained `from` ledger row's checksum + description
-/// so it describes the post-squash file content, not the pre-squash
-/// file content. Without this, every subsequent verify or apply path
-/// would surface drift authored by squash itself.
+/// Refresh the retained `from` ledger row's checksum + description so it
+/// describes the post-squash file content, not the pre-squash file
+/// content. Without this, every subsequent verify or apply path would
+/// surface drift authored by squash itself.
 ///
-/// `combined_down` is `None` when no per-version down files existed
-/// or the retained down file is comment-only; the row's
-/// `checksum_down` is set to `NULL` in that case.
+/// `combined_down` is `None` when no per-version down files existed or the
+/// retained down file is comment-only; the row's `checksum_down` is set to
+/// `NULL` in that case.
 async fn refresh_retained_row(
     ctx: &mut DjogiContext,
     from: &str,
@@ -1595,15 +1566,15 @@ async fn refresh_retained_row(
 
 /// Stage every change in the migrations working tree, commit it with a
 /// canonical squash message, then push the current branch to `origin`.
-/// Round-2 A-1: the publisher's contract is "commit the squash mutation,
-/// then push to origin" — the operator does not run `git add` /
-/// `git commit` themselves between the squash mutation and the push.
+/// The publisher's contract is "commit the squash mutation, then push to
+/// origin" — the operator does not run `git add` / `git commit` themselves
+/// between the squash mutation and the push.
 ///
-/// Each step captures stderr so an operator-facing diagnostic carries
-/// the precise failure point. A failure anywhere in the chain surfaces
-/// as [`AttuneError::GitPublishFailed`] — the stderr prefix names the
-/// step that failed (`git add`, `git commit`, `git push`) so the
-/// operator can correct without re-running.
+/// Each step captures stderr so an operator-facing diagnostic carries the
+/// precise failure point. A failure anywhere in the chain surfaces as
+/// [`AttuneError::GitPublishFailed`] — the stderr prefix names the step
+/// that failed (`git add`, `git commit`, `git push`) so the operator can
+/// correct without re-running.
 fn run_git_commit_and_publish(workspace_root: &Path, from: &str) -> Result<(), AttuneError> {
     let migrations_root = super::target::migrations_root(workspace_root);
     let commit_msg = format!("djogi attune --squash from {from}");
@@ -1751,7 +1722,7 @@ impl OutputReadStdoutOrStderr for std::process::Output {
     }
 }
 
-// ── Codex umbrella U-1: target resolution + parent pointer write ─────────
+// ── Target resolution + parent pointer write ─────────────────────────────
 
 /// Resolve a Git target string against the migrations submodule.
 ///
@@ -2037,10 +2008,10 @@ mod tests {
         assert!(s2.contains("dev-only"));
     }
 
-    // ── Codex umbrella U-2: --squash gate trio ───────────────────────────
+    // ── --squash gate trio ───────────────────────────────────────────────
 
-    /// Both new gate refusals render an operator-actionable message
-    /// naming the field/env-var the operator must adjust to opt-in.
+    /// Gate refusals render an operator-actionable message naming the
+    /// field/env-var the operator must adjust to opt-in.
     #[test]
     fn u2_squash_dev_mode_off_message_names_field() {
         let r = AttuneRefusal::SquashDevModeOff;
@@ -2062,11 +2033,10 @@ mod tests {
         assert!(s.contains("production"), "must echo the value: {s}");
     }
 
-    // ── Codex umbrella U-1: dry-run diagnostics + git target shape ──────
+    // ── Dry-run diagnostics + git target shape ───────────────────────────
 
-    /// `DryRunMutationsSkipped` and the dry-run record diagnostics carry codes
-    /// that are stable across runs so operator-facing tooling can
-    /// branch on them without parsing the message body.
+    /// Dry-run diagnostic codes are stable across runs so operator-facing
+    /// tooling can branch on them without parsing the message body.
     #[test]
     fn u1_dry_run_diagnostic_codes_are_stable() {
         assert_eq!(
