@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.8] - 2026-06-01
+
+### Changed
+
+- docs: rewrote the README to be adopter-facing and capability-oriented — it now describes what ships as of this release rather than the build chronology, and all repository links are absolute so they resolve from the crates.io rendering
+- docs: `djogi-macros` and `djogi-cli` now publish distinct crates.io landing pages describing each crate's role, instead of sharing the workspace README
+- docs: removed dev-process scaffolding (phase/cluster references, review-round and model-finding provenance) from the published crate surface — source comments, doc-comments rendered on docs.rs, diagnostic strings, and `Cargo.toml` comments now read in timeless, behavior-oriented terms; internal test and compile-fixture names were likewise made descriptive
+
+## [0.1.0-alpha.7] - 2026-05-31
+
+### Added
+
+- feat(#370): adopter-linked CLI and `DescriptorProvider` boundary — adopters can drive `djogi` CLI subcommands against their own crate's models through a linked `DescriptorProvider`
+
 ## [0.1.0-alpha.6] - 2026-05-30
 
 ### Added
