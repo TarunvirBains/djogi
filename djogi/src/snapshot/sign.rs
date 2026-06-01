@@ -1,45 +1,37 @@
 //! HMAC-SHA256 sign + constant-time verify primitives for migration snapshots.
-//!
 //! # Threat model
-//!
 //! The signed object is `migrations/schema_snapshot.json` (and, in future
 //! tasks, the `djogi_ddl_audit` row payloads). The signature deters two
 //! attacker classes:
-//!
 //! 1. **Filesystem tamper.** An operator (or compromised CI cache) edits the
-//!    snapshot to suppress a drift warning or revert a schema change. The
-//!    differ would otherwise believe the edited file represents the
-//!    schema-of-record and silently mis-classify the next migration. With
-//!    signing enabled, the signature on the persisted file no longer
-//!    verifies and the differ refuses to trust the snapshot.
+//! snapshot to suppress a drift warning or revert a schema change. The
+//! differ would otherwise believe the edited file represents the
+//! schema-of-record and silently mis-classify the next migration. With
+//! signing enabled, the signature on the persisted file no longer
+//! verifies and the differ refuses to trust the snapshot.
 //! 2. **Timing side-channel.** A naive verify path that compares signature
-//!    bytes with `==` short-circuits on the first mismatching byte, leaking
-//!    one byte of secret per probe. We compute the full HMAC, then compare
-//!    via [`subtle::ConstantTimeEq`], so any two 32-byte signatures take the
-//!    same number of cycles to compare regardless of how many leading bytes
-//!    happen to agree.
-//!
+//! bytes with `==` short-circuits on the first mismatching byte, leaking
+//! one byte of secret per probe. We compute the full HMAC, then compare
+//! via [`subtle::ConstantTimeEq`], so any two 32-byte signatures take the
+//! same number of cycles to compare regardless of how many leading bytes
+//! happen to agree.
 //! # No-op key sentinel
-//!
 //! The framework supports unsigned snapshots — dev workflows, ephemeral CI,
 //! and any deployment that does not set `DJOGI_SNAPSHOT_SIGNING_KEY` should
 //! continue to work without ceremony. We encode "signing disabled" as the
 //! all-zeros key `[0u8; 32]`:
-//!
 //! - [`sign_snapshot`] short-circuits to `[0u8; 32]` — the signature is
-//!   never computed, and every snapshot persisted under the sentinel key
-//!   carries the same zero-byte signature.
+//! never computed, and every snapshot persisted under the sentinel key
+//! carries the same zero-byte signature.
 //! - [`verify_snapshot`] returns `true` for the exact pair `(zero_sig,
-//!   zero_key)` and `false` for any other shape. Crucially, when an
-//!   attacker submits a non-zero forged signature against the no-op key,
-//!   the comparison still routes through the constant-time path so the
-//!   bypass attempt does not leak timing information.
-//!
+//! zero_key)` and `false` for any other shape. Crucially, when an
+//! attacker submits a non-zero forged signature against the no-op key,
+//! the comparison still routes through the constant-time path so the
+//! bypass attempt does not leak timing information.
 //! Production deployments that care about integrity simply set
 //! `DJOGI_SNAPSHOT_SIGNING_KEY` to a random 32-byte hex value. The same
 //! key must round-trip to the verifier; key rotation is a future-task
 //! concern.
-//!
 //! See the parent module for the higher-level snapshot integrity story.
 
 use hmac::{Hmac, KeyInit, Mac};
@@ -68,13 +60,10 @@ type HmacSha256 = Hmac<Sha256>;
 pub(crate) static SIGNING_KEY_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Sign `json_bytes` with `key` using HMAC-SHA256.
-///
 /// Returns the 32-byte MAC over the input bytes. The caller is responsible
 /// for serialising the snapshot to a canonical byte form before calling
 /// (typically `serde_json::to_vec_pretty(&snapshot)`).
-///
 /// # No-op key sentinel
-///
 /// When `key == [0u8; 32]` (the "signing disabled" default), the function
 /// short-circuits to `[0u8; 32]` without invoking the HMAC primitive. This
 /// makes `DJOGI_SNAPSHOT_SIGNING_KEY` opt-in: dev and CI runs that don't
@@ -100,24 +89,19 @@ pub fn sign_snapshot(json_bytes: &[u8], key: &[u8; 32]) -> [u8; 32] {
 }
 
 /// Verify `signature` against HMAC-SHA256 of `json_bytes` under `key`.
-///
 /// Returns `true` if the signature is authentic, `false` otherwise.
-///
 /// # Constant-time comparison
-///
-/// The actual byte comparison routes through [`subtle::ConstantTimeEq`] —
+/// The actual byte comparison routes through [`subtle::ConstantTimeEq`]
 /// the function never short-circuits on a leading-byte mismatch and never
 /// uses `==` on signature bytes. This prevents timing-side-channel leaks
 /// of the secret signature material.
-///
 /// # No-op key sentinel
-///
 /// - When `key == [0u8; 32]` AND `signature == [0u8; 32]`, returns `true`
-///   (matches the [`sign_snapshot`] no-op path).
+/// (matches the [`sign_snapshot`] no-op path).
 /// - When `key == [0u8; 32]` AND `signature != [0u8; 32]`, the constant-time
-///   comparison still runs against the zero signature and returns `false`.
-///   An attacker forging a non-zero signature against the no-op key cannot
-///   short-circuit verification or leak timing information.
+/// comparison still runs against the zero signature and returns `false`.
+/// An attacker forging a non-zero signature against the no-op key cannot
+/// short-circuit verification or leak timing information.
 pub fn verify_snapshot(json_bytes: &[u8], signature: &[u8; 32], key: &[u8; 32]) -> bool {
     let expected = sign_snapshot(json_bytes, key);
     // `subtle::Choice` -> `bool` via `bool::from` keeps the comparison
@@ -128,14 +112,11 @@ pub fn verify_snapshot(json_bytes: &[u8], signature: &[u8; 32], key: &[u8; 32]) 
 
 /// Read `DJOGI_SNAPSHOT_SIGNING_KEY` from the environment and decode it as
 /// a 32-byte HMAC key.
-///
 /// The env var must be **exactly 64 hex characters**, lowercase or uppercase
 /// (`0`–`9`, `a`–`f`, `A`–`F`). Any other length or out-of-range byte yields
-/// a [`SnapshotKeyError`]. When the variable is unset, returns `Ok(None)` —
+/// a [`SnapshotKeyError`]. When the variable is unset, returns `Ok(None)`
 /// callers treat that as "use the no-op key sentinel".
-///
 /// # Implementation notes
-///
 /// Hex parsing is hand-rolled via a byte loop; per the djogi-wide rule
 /// (`feedback_no_regex_in_djogi.md`) and to avoid a transitive dependency
 /// on the `hex` crate for two dozen lines of decode logic. Match arms cover
@@ -187,7 +168,6 @@ fn decode_hex_nibble(byte: u8, idx: usize) -> Result<u8, SnapshotKeyError> {
 }
 
 /// Errors surfaced by [`load_signing_key_from_env`].
-///
 /// The variants are deliberately narrow — the failure modes are wrong-length
 /// input, a stray non-hex byte, and a non-UTF-8 env-var value. We hand-roll
 /// `Display` and `Error` rather than pulling `thiserror` in for three
@@ -205,7 +185,6 @@ pub enum SnapshotKeyError {
     /// the top of this module).
     InvalidHexByte { idx: usize, byte: u8 },
     /// `DJOGI_SNAPSHOT_SIGNING_KEY` is set but contains non-UTF-8 bytes.
-    ///
     /// Treating this as "no key set" would silently degrade signing to
     /// the no-op sentinel — a security regression. Surface as an error
     /// so the operator must explicitly fix the env var or unset it.
@@ -246,12 +225,10 @@ mod tests {
     /// Pinned HMAC-SHA256 test vector. Not an RFC-4231 case (those use
     /// variable-length keys; our API is fixed `[u8; 32]`); this vector is
     /// self-consistent and reproducible via:
-    ///
     /// ```sh
     /// printf 'Hi There' | openssl dgst -sha256 \
     ///     -mac HMAC -macopt hexkey:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b
     /// ```
-    ///
     /// The 32-byte key is twenty `0x0b` bytes (RFC-4231 vector 1's key
     /// material) zero-padded to 32 bytes. The data is `b"Hi There"`.
     /// Expected MAC pinned below.
@@ -265,7 +242,6 @@ mod tests {
         // Generated via the openssl one-liner in the doc comment above
         // and pinned here. Any future libraries swap that breaks HMAC
         // semantics will fail this test loudly.
-        //
         // Note: the canonical RFC-4231 Test Case 1 uses a 20-byte key
         // (only the leading 0x0b bytes). This fixture zero-pads that
         // key to 32 bytes — but the resulting MAC is IDENTICAL to the
@@ -451,7 +427,6 @@ mod tests {
     /// than silently degrading to the no-op key sentinel — otherwise a
     /// malformed env var (typo, accidental binary paste, injection)
     /// downgrades signing to a no-op without warning.
-    ///
     /// Test is Unix-gated because constructing a non-UTF-8 `OsString`
     /// requires `os::unix::ffi::OsStringExt::from_vec`. On Windows the
     /// equivalent shape (ill-formed UTF-16 in the environment block) is

@@ -1,29 +1,21 @@
-//! FTS query builder types — `FtsFieldRef` with `.matches()` and `.rank()`.
-//!
+//! FTS query builder types — `FtsFieldRef` with `.matches` and `.rank`.
 //! # What
-//!
 //! `FtsFieldRef` is the typed handle returned by a macro-generated
-//! `{Model}Fields::search()` accessor on models that declare
+//! `{Model}Fields::search` accessor on models that declare
 //! `#[model(fts = { ... })]`. It carries the tsvector column name and the
 //! Postgres text-search dictionary name baked in at codegen time, so call
 //! sites only supply the user-facing `TsQuery` value.
-//!
 //! Two operations are available:
-//!
 //! - `.matches(q)` — builds a `Condition` leaf that emits
-//!   `<col> @@ to_tsquery('<dict>', $n)` in the WHERE clause.
+//! `<col> @@ to_tsquery('<dict>', $n)` in the WHERE clause.
 //! - `.rank(q)` — builds an `Expr<f32>` that emits
-//!   `ts_rank(<col>, to_tsquery('<dict>', $n))` in ORDER BY / SELECT.
+//! `ts_rank(<col>, to_tsquery('<dict>', $n))` in ORDER BY / SELECT.
 //! - `.rank_cd(q)` — same but uses `ts_rank_cd` (cover-density).
-//!
 //! # Path routing
-//!
 //! All emitted type paths go through `::djogi::*`. Macro output that
 //! reaches this type does so via `::djogi::fts_query::FtsFieldRef`.
 //! User code can import it via `djogi::prelude::*` (re-exported there).
-//!
 //! # Usage example (user-facing)
-//!
 //! ```ignore
 //! use djogi::prelude::*;
 //!
@@ -38,9 +30,7 @@
 //!     .order_by(|b| b.search().rank(TsQuery::new("planet & earth")).desc())
 //!     .fetch_all(&mut ctx).await?;
 //! ```
-//!
 //! # Note on dictionary embedding
-//!
 //! The dictionary name in the emitted SQL is a literal (single-quoted),
 //! not a bind parameter, because it is a Postgres configuration name
 //! validated at macro parse time. It originates from
@@ -56,12 +46,10 @@ use crate::query::condition::Condition;
 use std::marker::PhantomData;
 
 /// Typed handle for a model's FTS column.
-///
-/// Returned by `{Model}Fields::search()` on models that declare
+/// Returned by `{Model}Fields::search` on models that declare
 /// `#[model(fts = { source = "...", dictionary = "..." })]`. Carry the
 /// validated tsvector column name and dictionary name as `&'static str`s
 /// baked in by the macro.
-///
 /// `Copy` — the struct is three static string pointers plus a phantom
 /// marker; cheap to pass by value.
 pub struct FtsFieldRef<M: Model> {
@@ -88,8 +76,7 @@ impl<M: Model> std::fmt::Debug for FtsFieldRef<M> {
 
 impl<M: Model> FtsFieldRef<M> {
     /// Construct an `FtsFieldRef`. This is the crate-private constructor
-    /// called by macro-generated code; user code uses `{Model}Fields::search()`.
-    ///
+    /// called by macro-generated code; user code uses `{Model}Fields::search`.
     /// The column and dictionary strings must have been validated at macro
     /// parse time via byte-level identifier checks (see
     /// `djogi_macros::model::attrs::FtsSpec::parse_from_list`). They are
@@ -106,7 +93,6 @@ impl<M: Model> FtsFieldRef<M> {
 
     /// Build a `Condition` leaf that emits
     /// `<column> @@ to_tsquery('<dictionary>', $n)`.
-    ///
     /// The query text is bound as a parameter; only the dictionary name
     /// is embedded literally (it was validated at macro parse time).
     pub fn matches(self, query: TsQuery) -> Condition {
@@ -119,10 +105,8 @@ impl<M: Model> FtsFieldRef<M> {
 
     /// Build an `Expr<f32>` that emits
     /// `ts_rank(<column>, to_tsquery('<dictionary>', $n))`.
-    ///
-    /// Use it in `.order_by(|b| b.search().rank(q).desc())` to sort by
+    /// Use it in `.order_by(|b| b.search.rank(q).desc)` to sort by
     /// relevance. Higher scores mean higher relevance.
-    ///
     /// Returns `Expr<f32>` — Postgres's `ts_rank` function returns a
     /// `float4` (which maps to Rust `f32`).
     pub fn rank(self, query: TsQuery) -> Expr<f32> {
@@ -135,7 +119,6 @@ impl<M: Model> FtsFieldRef<M> {
 
     /// Build an `Expr<f32>` that emits
     /// `ts_rank_cd(<column>, to_tsquery('<dictionary>', $n))`.
-    ///
     /// Uses the cover-density ranking algorithm, which weights proximity of
     /// matching terms more heavily than `ts_rank`. Useful when positional
     /// adjacency of search terms is relevant to relevance judgements.
@@ -150,7 +133,6 @@ impl<M: Model> FtsFieldRef<M> {
 
 /// Macro-support module — re-exports the `FtsFieldRef` constructor under a
 /// `#[doc(hidden)]` path that macro-emitted code uses.
-///
 /// Macro output calls `::djogi::fts_query::__macro_support::__make_fts_ref::<M>(col, dict)`;
 /// user code never needs this path. The indirection keeps the internal
 /// constructor (`__new`) visually separate from user-facing API while still
@@ -162,7 +144,6 @@ pub mod __macro_support {
     use crate::model::Model;
 
     /// Construct an `FtsFieldRef` for `column` on model `M`.
-    ///
     /// Called only from macro-emitted code. `column` must be a plain ASCII
     /// identifier; `dictionary` was validated at macro parse time. The
     /// `assert_plain_ident` call is a crate-internal runtime sanity check

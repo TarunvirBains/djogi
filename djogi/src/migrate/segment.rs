@@ -1,54 +1,45 @@
 //! Segment planning — partitions a lowered [`SchemaDelta`] into an
 //! ordered sequence of segments tagged transactional, non-transactional,
 //! or metadata-only.
-//!
 //! # Why segments
-//!
 //! Postgres lets the runner wrap a sequence of DDL statements in a
 //! single transaction so a failure mid-apply rolls back to a clean
 //! state. But a handful of operations cannot run inside a transaction
 //! at all — `CREATE INDEX CONCURRENTLY` is the canonical example, and
-//! Phase 7-Zero's `IndexSpec::requires_out_of_transaction` field
+//! 's `IndexSpec::requires_out_of_transaction` field
 //! captures the operator's intent at descriptor time. The segment
 //! planner laddered the lowered SQL into transactional batches with
 //! non-transactional segments between them; the runner T4 drives each
 //! segment with the matching execution mode.
-//!
 //! Metadata-only operations ([`SchemaOperation::RenameApp`],
 //! [`SchemaOperation::MoveModelBetweenApps`]) do not emit DDL — only
 //! folder moves + ledger UPDATEs. They live in their own segment
 //! kind so the runner dispatches them to the metadata path instead
 //! of the SQL path.
-//!
 //! # Profile-free
-//!
-//! Per Phase 7-Zero v3 §6.2 ("Profile-free"): the planner does NOT
+//! Per .2 ("Profile-free"): the planner does NOT
 //! gate on dev / prod / CI / any other profile. The same input
 //! produces the same plan everywhere. The only signal that drives
 //! transactional vs non-transactional classification is
 //! [`IndexSchema::requires_out_of_transaction`], which originates at
 //! descriptor declaration time and travels through the snapshot.
-//!
 //! # Ordering
-//!
 //! Within a plan, operations are ordered to satisfy dependency
 //! constraints:
-//!
 //! 1. `AddEnum` runs before any column that references the new type
-//!    (we do not emit cross-references in T3 — column types are raw
-//!    SQL — so this is a "be safe" ordering, not a strict requirement).
+//! (we do not emit cross-references in T3 — column types are raw
+//! SQL — so this is a "be safe" ordering, not a strict requirement).
 //! 2. `AddTable` runs before `AddForeignKey` referencing it.
 //! 3. `RenameTable` runs before any further mutation on the renamed
-//!    table.
+//! table.
 //! 4. `DropForeignKey` runs before `DropTable` so the table can drop
-//!    cleanly. The differ already groups FK drops with the column
-//!    they came from, so within a single delta this is mostly
-//!    automatic; the planner enforces it across the whole bucket.
+//! cleanly. The differ already groups FK drops with the column
+//! they came from, so within a single delta this is mostly
+//! automatic; the planner enforces it across the whole bucket.
 //! 5. `DropTable` runs before `DropEnum` whose values appeared only
-//!    in the dropped table.
+//! in the dropped table.
 //! 6. Index ops cluster after structural ops on the same table.
 //! 7. Metadata-only ops cluster at the end.
-//!
 //! The full ordering is implemented in [`order_operations`].
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -63,9 +54,8 @@ use super::schema::TableSchema;
 use super::sql::{OperationSql, SqlEmitError, lower_operation};
 
 /// Top-level migration plan for one bucket.
-///
 /// Holds the bucket identity, the differ's classification, and the
-/// ordered segment sequence. Empty plans (`segments.is_empty()`) are
+/// ordered segment sequence. Empty plans (`segments.is_empty`) are
 /// the common case for `Classification::NoOp` deltas; callers should
 /// treat an empty plan as "nothing to do".
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,7 +71,6 @@ pub struct MigrationPlan {
 }
 
 /// A run of operations sharing the same execution mode.
-///
 /// The runner walks `segments` in order, dispatching each segment to
 /// the matching execution path. Within a transactional segment the
 /// runner opens one transaction and executes every statement inside
@@ -135,20 +124,16 @@ impl Segment {
 }
 
 /// Plan a [`SchemaDelta`] into an ordered sequence of segments.
-///
 /// **Pure function.** No I/O; no env reads; no profile gating per
-/// Phase 7-Zero v3 §6.2. Same input always produces the same output.
-///
+/// .2. Same input always produces the same output.
 /// **Hard-error surfaces.** Returns the same errors as
 /// [`crate::migrate::sql::lower_delta`] — `Unsupported` and
 /// `PkTypeFlipMustRouteToT9` propagate up. The planner does not try
-/// to recover from a hard error; Phase 7's "fail loudly" stance
+/// to recover from a hard error; the "fail loudly" stance
 /// applies.
-///
 /// **No-op short-circuit.** A delta with `Classification::NoOp`
 /// returns a [`MigrationPlan`] with an empty `segments` vector. The
 /// runner short-circuits when it sees an empty plan.
-///
 /// `clippy::result_large_err` is silenced because [`SqlEmitError`]
 /// is a structural error type — see the matching note on
 /// [`crate::migrate::sql::lower_delta`].
@@ -167,11 +152,9 @@ pub fn plan_delta(delta: &SchemaDelta) -> Result<MigrationPlan, SqlEmitError> {
     // migration non-transactional, per 7-Zero §6.2 deterministic
     // A). Route to the dedicated multi-segment emitter and ignore
     // the standard per-operation path.
-    //
     // **Single-parent groups** (`PkTypeFlipGroup`) lower as
     // back-to-back 5-segment plans in input order — correct because
     // single-parent groups never reference partner shadow columns.
-    //
     // **Multi-parent groups** (`PkTypeFlipMultiGroup`) lower as ONE
     // stage-interleaved 5-segment plan — at each
     // stage, every member group's stage-N statements are emitted
@@ -222,12 +205,12 @@ pub fn plan_delta(delta: &SchemaDelta) -> Result<MigrationPlan, SqlEmitError> {
     }
 
     // Inject helper preludes in the same order that compose_up_text /
-    // compose_down_text emits them: numeric → date → tstz.  Building a
+    // compose_down_text emits them: numeric → date → tstz. Building a
     // prefix vector and prepending it in one step is critical; using
     // repeated `insert(0, …)` reverses the sequence — each new insert
     // pushes all prior entries down by one, so the last-inserted op ends
     // at index 0 and the first-inserted op ends at the back of the
-    // prefix.  The compose_up_text order is the canonical reference
+    // prefix. The compose_up_text order is the canonical reference
     // because it determines the on-disk SQL file that operators review.
     let mut helper_ops: Vec<OperationSql> = Vec::new();
     let mut helper_kinds: Vec<SegmentKind> = Vec::new();
@@ -283,17 +266,14 @@ pub fn plan_delta(delta: &SchemaDelta) -> Result<MigrationPlan, SqlEmitError> {
 }
 
 /// Classify a [`SchemaOperation`] into a [`SegmentKind`].
-///
 /// Decision rules (in order):
-///
 /// 1. [`SchemaOperation::RenameApp`] /
-///    [`SchemaOperation::MoveModelBetweenApps`] -> `MetadataOnly`.
+/// [`SchemaOperation::MoveModelBetweenApps`] -> `MetadataOnly`.
 /// 2. [`SchemaOperation::AddIndex`] /
-///    [`SchemaOperation::DropIndex`] whose
-///    `IndexSchema::requires_out_of_transaction == true` ->
-///    `NonTransactional`.
+/// [`SchemaOperation::DropIndex`] whose
+/// `IndexSchema::requires_out_of_transaction == true` ->
+/// `NonTransactional`.
 /// 3. Everything else -> `Transactional`.
-///
 /// `PkTypeFlip` and `Unsupported` would error out before reaching
 /// this fn (the planner calls `lower_operation` after this fn picks
 /// the kind, but `lower_operation` is what surfaces the error — so
@@ -315,31 +295,27 @@ pub(crate) fn classify_operation(op: &SchemaOperation) -> SegmentKind {
 }
 
 /// Re-order operations into a dependency-respecting sequence.
-///
 /// Stable sort by an integer "phase" — operations with lower phase
 /// numbers run first, ties preserve input order. This keeps the
 /// planner deterministic without an explicit dependency graph (the
 /// dependency graph is implicit in the phase ordering).
-///
 /// **Phases:**
-///
 /// | Phase | Operations |
 /// |-------|------------|
-/// |  0    | `AddEnum` |
-/// |  1    | `RenameTable` |
-/// |  2    | `AddTable` |
-/// |  3    | `AddColumn`, `RenameColumn`, `AlterColumn`, `AddForeignKey` |
-/// |  4    | `AddEnumVariant` |
-/// |  5    | `AddIndex` (transactional) |
-/// |  5    | `AddIndex` (non-transactional) — same phase as transactional; the segment classifier separates them |
-/// |  6    | `DropIndex` |
-/// |  7    | `DropForeignKey` |
-/// |  8    | `DropColumn` |
-/// |  9    | `DropTable` |
-/// | 10    | `DropEnum` |
-/// | 11    | `RenameApp`, `MoveModelBetweenApps` (metadata) |
-/// | 12    | `Unsupported`, `PkTypeFlip` (will error during lowering) |
-///
+/// | 0 | `AddEnum` |
+/// | 1 | `RenameTable` |
+/// | 2 | `AddTable` |
+/// | 3 | `AddColumn`, `RenameColumn`, `AlterColumn`, `AddForeignKey` |
+/// | 4 | `AddEnumVariant` |
+/// | 5 | `AddIndex` (transactional) |
+/// | 5 | `AddIndex` (non-transactional) — same phase as transactional; the segment classifier separates them |
+/// | 6 | `DropIndex` |
+/// | 7 | `DropForeignKey` |
+/// | 8 | `DropColumn` |
+/// | 9 | `DropTable` |
+/// | 10 | `DropEnum` |
+/// | 11 | `RenameApp`, `MoveModelBetweenApps` (metadata) |
+/// | 12 | `Unsupported`, `PkTypeFlip` (will error during lowering) |
 /// **Why `RenameTable` precedes `AddTable`.** A rename is always a
 /// "make existing table available under its new name" op. Once renames
 /// are applied, every subsequent op (including an `AddTable` whose
@@ -349,35 +325,32 @@ pub(crate) fn classify_operation(op: &SchemaOperation) -> SegmentKind {
 /// when a delta carried `RenameTable users → members` together with
 /// `AddTable comments` whose `comments.user_id REFERENCES "members"`,
 /// the toposort treated `"members"` as external (not in the AddTable
-/// batch) and the emitter wrote the `CREATE TABLE comments` —
+/// batch) and the emitter wrote the `CREATE TABLE comments`
 /// inlining `REFERENCES "members"` — BEFORE the rename ran. Postgres
 /// rejected with "relation does not exist". Hoisting `RenameTable`
 /// ahead of `AddTable` removes rename-awareness from the toposort
 /// entirely; the new name is just there by the time the inlining
 /// resolves.
-///
 /// The phasing keeps adds before drops, structural changes before
 /// index changes, and metadata at the end. Within a phase, input
 /// order is preserved — the differ already grouped per-table column
 /// changes together, and the planner does not break that grouping.
-///
-/// **Phase 2 — `AddTable` toposort.** The `CREATE TABLE` emitter
+/// **`AddTable` toposort.** The `CREATE TABLE` emitter
 /// inlines `REFERENCES` clauses for FK columns, so a table that
 /// references another table must be created AFTER its target.
 /// Within phase 2 the planner runs Kahn's algorithm over the
 /// FK-dependency graph (edges: `T1 -> T2` when `T1` has an inline FK
 /// pointing at `T2`) and emits tables in the resulting topo order
-/// instead of input / alphabetical order. **Cycles** (rare —
+/// instead of input / alphabetical order. **Cycles** (rare
 /// mutually-referencing tables) are broken by emitting every cycle
 /// member's `AddTable` *without* its inline FKs and following up
 /// with standalone `AddForeignKey` operations after the table batch.
-/// This matches the Phase 7-Zero v3 plan's "fail loudly when we
+/// This matches the plan's "fail loudly when we
 /// can't, but never silently produce DDL Postgres rejects" stance.
 /// The prior phase-only sort would emit cross-referencing tables in
 /// alphabetical order (because the differ feeds them via `BTreeMap`),
 /// causing Postgres to reject
 /// the migration with "relation does not exist".
-///
 /// Returned ops are owned because the cycle-breaking path needs to
 /// rewrite `AddTable` payloads (strip inline FKs) and synthesise new
 /// `AddForeignKey` ops; the slice-of-refs shape would not allow that.
@@ -391,7 +364,7 @@ fn order_operations(ops: &[SchemaOperation]) -> Vec<SchemaOperation> {
 
     // Split the sorted stream so we can reorder phase 2 (`AddTable`)
     // through the topo-sort. Other phases are already in deterministic
-    // order from the stable sort above. Phase 0 (`AddEnum`) and phase
+    // order from the stable sort above. (`AddEnum`) and phase
     // 1 (`RenameTable`) flow into `head` so renames apply before any
     // `CREATE TABLE` that may inline a `REFERENCES <renamed>` clause.
     let mut head: Vec<SchemaOperation> = Vec::with_capacity(tagged.len());
@@ -418,23 +391,19 @@ fn order_operations(ops: &[SchemaOperation]) -> Vec<SchemaOperation> {
 
 /// Topo-sort a batch of `AddTable` operations by their inline FK
 /// dependencies.
-///
 /// Returns `(ordered_tables, follow_up_fk_ops)`:
-///
 /// - `ordered_tables` — the input tables, ordered so each table
-///   emits AFTER every table its inline FKs reference. Tables with
-///   no inline FKs (and no reverse references from cycle-breaking)
-///   keep their alphabetical order from the input.
+/// emits AFTER every table its inline FKs reference. Tables with
+/// no inline FKs (and no reverse references from cycle-breaking)
+/// keep their alphabetical order from the input.
 /// - `follow_up_fk_ops` — `AddForeignKey` operations synthesised when
-///   a cycle was broken. Empty in the common acyclic case.
-///
+/// a cycle was broken. Empty in the common acyclic case.
 /// Algorithm: Kahn's. We build an adjacency map keyed by table name,
 /// with edges `dependent -> dependency`, plus reverse edges so we
 /// can decrement in-degrees. We pop tables with zero in-degree in
 /// **alphabetical order** for determinism (tied nodes in Kahn's
 /// algorithm are arbitrary; pinning to alphabetical keeps the same
 /// input always producing the same output).
-///
 /// When a cycle is detected (some tables remain with non-zero
 /// in-degree after processing all zero-in-degree starts), we break
 /// it surgically: every cycle-member table emits without its inline
@@ -444,16 +413,15 @@ fn order_operations(ops: &[SchemaOperation]) -> Vec<SchemaOperation> {
 /// happen to land in `tail` because they were starved of in-degree
 /// also emit in alphabetical order (a structural property of Kahn's
 /// when ties are broken alphabetically).
-///
 /// Ignored edges:
 /// - **Self-references.** A table whose FK points at itself is
-///   admissible Postgres DDL — the inline `REFERENCES same_table`
-///   is fine because the table exists by the time the constraint
-///   check runs. We drop these edges so they never trigger the
-///   cycle-breaker.
+/// admissible Postgres DDL — the inline `REFERENCES same_table`
+/// is fine because the table exists by the time the constraint
+/// check runs. We drop these edges so they never trigger the
+/// cycle-breaker.
 /// - **External references.** An FK pointing at a table NOT in this
-///   batch (e.g., a table that already exists in the live schema)
-///   cannot constrain ordering within the batch — drop the edge.
+/// batch (e.g., a table that already exists in the live schema)
+/// cannot constrain ordering within the batch — drop the edge.
 fn toposort_add_tables(tables: Vec<TableSchema>) -> (Vec<TableSchema>, Vec<SchemaOperation>) {
     if tables.is_empty() {
         return (Vec::new(), Vec::new());
@@ -818,11 +786,10 @@ mod tests {
     fn date_and_tstz_array_helpers_inject_before_table_in_compose_order() {
         // A table carrying both a DATE[] column and a TIMESTAMPTZ[] column
         // triggers both `requires_date_array_helper` and
-        // `requires_tstz_array_helper`.  `plan_delta` must inject the two
+        // `requires_tstz_array_helper`. `plan_delta` must inject the two
         // helper operations BEFORE the table DDL and in the same order that
         // `compose_up_text` / `compose_down_text` emit them (date first,
         // then tstz).
-        //
         // The prior `insert(0, …)` implementation reversed the order:
         // each insert pushes all previous entries down by one, so the
         // last-inserted helper (tstz) ended at index 0 and date ended at
@@ -1558,7 +1525,6 @@ mod tests {
         // hoisted to phase 1 (ahead of AddTable in phase 2), the
         // rename runs first; the inline `REFERENCES "members"` then
         // resolves at apply time.
-        //
         // The toposort still treats `"members"` as out-of-batch (it
         // is not in the AddTable set), so the FK is inlined in the
         // CREATE TABLE — exactly the path the bug originally broke.

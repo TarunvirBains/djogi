@@ -1,31 +1,26 @@
-//! `djogi live` — operator surface for Phase 7.5 live migrations.
-//!
+//! `djogi live` — operator surface for live migrations.
 //! Six subcommands materialise the operator-facing contract for the
 //! expand → backfill → flip → contract sequence the live-plan layer
 //! drives:
-//!
 //! - `live plan` — generate plan files for pending schema deltas
-//!   classified [`OnlineSafetyClassification::ExpandContract`](djogi::live_migrate::OnlineSafetyClassification::ExpandContract).
+//! classified [`OnlineSafetyClassification::ExpandContract`](djogi::live_migrate::OnlineSafetyClassification::ExpandContract).
 //! - `live show` — render plan-file metadata + persisted runtime state
-//!   side by side, plus the active hook snapshot at the current step.
+//! side by side, plus the active hook snapshot at the current step.
 //! - `live run` — drive the plan forward until the next operator gate,
-//!   refusing destructive work without `--allow-destructive`
-//!   `--justify "<reason>"`.
+//! refusing destructive work without `--allow-destructive`
+//! `--justify "<reason>"`.
 //! - `live resume` — pick up after an interruption; reads
-//!   `backfill_rows_done` from the row and continues at the same step.
+//! `backfill_rows_done` from the row and continues at the same step.
 //! - `live finalize` — execute remaining
-//!   [`StepKind::FinalizeConstraints`](djogi::live_migrate::StepKind::FinalizeConstraints)
-//!   /
-//!   [`StepKind::CleanupLegacyState`](djogi::live_migrate::StepKind::CleanupLegacyState)
-//!   steps, drop compatibility hooks, and promote the row to
-//!   [`PlanStatus::Complete`](djogi::live_migrate::PlanStatus::Complete).
+//! [`StepKind::FinalizeConstraints`](djogi::live_migrate::StepKind::FinalizeConstraints)
+//! /
+//! [`StepKind::CleanupLegacyState`](djogi::live_migrate::StepKind::CleanupLegacyState)
+//! steps, drop compatibility hooks, and promote the row to
+//! [`PlanStatus::Complete`](djogi::live_migrate::PlanStatus::Complete).
 //! - `live abandon` — terminal opt-out; gated on confirmation OR
-//!   `--force` plus a non-production `DJOGI_ENV`.
-//!
+//! `--force` plus a non-production `DJOGI_ENV`.
 //! # Exit codes
-//!
-//! Per v3 §3 of the Phase 7.5 plan:
-//!
+//! Per of the plan:
 //! | Code | Meaning |
 //! |------|---------|
 //! | 0 | Success — operator may invoke the next subcommand. |
@@ -34,16 +29,14 @@
 //! | 3 | Validation checkpoint failed — gate query disagreed. |
 //! | 4 | Plan-file checksum drift — the file was edited after start. |
 //! | 5 | Plan state conflicts with request (e.g. `run` on `complete`). |
-//!
 //! # Out of scope for T10
-//!
 //! - **Live-DB integration tests.** T12 owns end-to-end coverage; T10
-//!   ships clap parsing, helpers, and exit-code mapping.
+//! ships clap parsing, helpers, and exit-code mapping.
 //! - **`djogi_codec_recode(...)`** — still a placeholder per T8.
 //! - **`djogi_schema_migrations.justification` persistence.** Adding
-//!   the column requires a separate ALTER TABLE migration; T10 accepts
-//!   `--justify` and routes the value through to the runner, but the
-//!   actual column write lands in a follow-up phase.
+//! the column requires a separate ALTER TABLE migration; T10 accepts
+//! `--justify` and routes the value through to the runner, but the
+//! actual column write lands in a follow-up phase.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -70,7 +63,7 @@ pub enum LiveCmd {
     /// Generate plan file(s) for pending schema deltas classified
     /// `ExpandContract`. Refuses (exit 2) when the delta is
     /// `OfflineOnly`; reports "no live plan needed" (exit 0) when the
-    /// delta is fully `OnlineSafe` and Phase 7's regular runner can
+    /// delta is fully `OnlineSafe` and the regular runner can
     /// handle it directly.
     Plan {
         /// Optional explicit migration version to materialize.
@@ -107,7 +100,7 @@ pub enum LiveCmd {
         #[arg(long)]
         justify: Option<String>,
         /// Opt-in to running plans whose source migration was
-        /// hand-edited (per v3 §8 amendment). Always paired with
+        /// hand-edited (per amendment). Always paired with
         /// `--justify`.
         #[arg(long, default_value_t = false)]
         allow_raw_dangerous: bool,
@@ -165,7 +158,6 @@ pub enum LiveCmd {
     /// auto-advances past an operator gate (`CutoverReads` /
     /// `CutoverWrites` / `FinalizeConstraints` stay manual via
     /// `live run` / `live finalize`).
-    ///
     /// Exits cleanly on SIGTERM / SIGINT; per-plan failures inside the
     /// loop are logged and the daemon continues.
     Daemon {
@@ -196,7 +188,6 @@ pub enum LiveCmd {
 /// Errors raised by the `live` subcommand. Each variant carries a
 /// dedicated exit-code mapping; conversion lives in
 /// [`LiveCmdError::exit_code`].
-///
 /// `#[non_exhaustive]` so future failure modes (e.g. a daemon-mode
 /// claim conflict) can land without breaking downstream matches.
 #[derive(Debug, thiserror::Error)]
@@ -237,7 +228,7 @@ pub enum LiveCmdError {
 }
 
 impl LiveCmdError {
-    /// Map the error to the v3 §3 inline-decision exit code.
+    /// Map the error to the inline-decision exit code.
     pub fn exit_code(&self) -> i32 {
         match self {
             LiveCmdError::Runtime(_)
@@ -363,7 +354,7 @@ fn resolve_workspace(workspace: Option<PathBuf>) -> PathBuf {
 }
 
 /// Reject a `live run --allow-raw-dangerous` invocation that lacks a
-/// `--justify "<reason>"` value. The pairing rule comes from v3 §8
+/// `--justify "<reason>"` value. The pairing rule comes from
 /// (the amendment that introduced `--allow-raw-dangerous`).
 fn require_justify_for_dangerous(
     allow_raw_dangerous: bool,
@@ -405,7 +396,6 @@ fn justify_is_empty(justify: Option<&str>) -> bool {
 /// at least one step whose execution would emit destructive SQL but
 /// the operator did not pass BOTH `--allow-destructive` and a
 /// non-empty `--justify "<reason>"`.
-///
 /// The scan is conservative: when the plan's destructive steps all
 /// pre-date the row's `current_step_index`, the gate still fires. This
 /// is intentional — a re-run that resumes past a destructive step into
@@ -449,23 +439,19 @@ fn force_allowed_in_env() -> bool {
 
 /// Parse a humantime-style single-unit duration string into a
 /// [`std::time::Duration`]. Supported units (suffix character):
-///
-/// | Suffix | Meaning  | Multiplier |
+/// | Suffix | Meaning | Multiplier |
 /// |--------|----------|------------|
-/// | `s`    | seconds  | 1          |
-/// | `m`    | minutes  | 60         |
-/// | `h`    | hours    | 3600       |
-/// | `d`    | days     | 86_400     |
-///
+/// | `s` | seconds | 1 |
+/// | `m` | minutes | 60 |
+/// | `h` | hours | 3600 |
+/// | `d` | days | 86_400 |
 /// `min` is also accepted as an alias for `m` so operators familiar
 /// with `humantime`-style strings can write `10min`. The numeric prefix
 /// must be one or more ASCII digits; the unit is one of the suffixes
 /// above. Trailing whitespace is rejected — the input is the entire
 /// flag value.
-///
 /// Implementation note: no regex engine, no third-party humantime
 /// crate. Byte-level walk per project policy.
-///
 /// Returns the input echoed back inside the error string so operators
 /// see what they typed.
 fn parse_humantime_duration(s: &str) -> Result<std::time::Duration, String> {
@@ -587,16 +573,14 @@ async fn fetch_row(ctx: &mut DjogiContext, plan_id: HeerId) -> Result<LivePlanRo
 // ── live plan ─────────────────────────────────────────────────────────
 
 /// `djogi live plan` body.
-///
 /// Builds the descriptor projection, diffs against the persisted
 /// snapshots, and routes every `ExpandContract`-classified operation
 /// through [`djogi::live_migrate::dispatch_pattern`]. Emits a plan
 /// file plus a `djogi_live_plans` row per bucket that needed one.
-///
 /// Refuses with exit code 2 when the delta carries any `OfflineOnly`
 /// classification — the operator must hand-edit those rather than
 /// route through `live`. Reports "no live plan needed" with exit code
-/// 0 when every classification is `OnlineSafe` (Phase 7's regular
+/// 0 when every classification is `OnlineSafe` (the regular
 /// runner handles them directly).
 async fn plan_cmd(version: Option<&str>, workspace: Option<PathBuf>) -> Result<i32, LiveCmdError> {
     let workspace = resolve_workspace(workspace);
@@ -609,17 +593,14 @@ async fn plan_cmd(version: Option<&str>, workspace: Option<PathBuf>) -> Result<i
     // CLI shape; until the compose-side glue lands, the body refuses
     // with an actionable message instead of half-running and leaving
     // plan files behind.
-    //
     // When the engine lands, the body becomes:
-    //
-    //     1. project_from_inventory + load_snapshot per bucket
-    //     2. diff_bucket_maps → Vec<SchemaDelta>
-    //     3. classify_delta per bucket; route OfflineOnly through
-    //        [`refuse_offline_only`] (exit 2)
-    //     4. for each ExpandContract op: dispatch_pattern → Vec<Step>
-    //     5. write_plan + insert_row per bucket
-    //     6. print summary
-    //
+    // 1. project_from_inventory + load_snapshot per bucket
+    // 2. diff_bucket_maps → Vec<SchemaDelta>
+    // 3. classify_delta per bucket; route OfflineOnly through
+    // [`refuse_offline_only`] (exit 2)
+    // 4. for each ExpandContract op: dispatch_pattern → Vec<Step>
+    // 5. write_plan + insert_row per bucket
+    // 6. print summary
     // The `--version` filter narrows the bucket walk to a single
     // committed migration version, surfacing here once the engine
     // lands.
@@ -643,11 +624,10 @@ async fn plan_cmd(version: Option<&str>, workspace: Option<PathBuf>) -> Result<i
 /// `OfflineOnly` operation. Hoisted into a free function so the future
 /// `live plan` engine wires it in by importing this helper rather than
 /// re-deriving the message shape; the wider call surface here surfaces
-/// the variant in the public API for the `LiveCmdError::exit_code()`
+/// the variant in the public API for the `LiveCmdError::exit_code`
 /// contract (exit 2).
-///
 /// Returns [`LiveCmdError::ClassificationRefused`] which maps to exit
-/// code 2 per v3 §3 of the Phase 7.5 plan.
+/// code 2 per of the plan.
 pub fn refuse_offline_only(reason: impl Into<String>) -> LiveCmdError {
     LiveCmdError::ClassificationRefused(reason.into())
 }
@@ -725,7 +705,7 @@ async fn show_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32, 
 
 /// `djogi live run` body. Executes all steps in the plan starting
 /// from step 0. Pauses at the first OperatorGate step and records
-/// progress via checkpoint(). Refuses destructive steps without
+/// progress via checkpoint. Refuses destructive steps without
 /// `--allow-destructive --justify "<reason>"`.
 async fn run_cmd(
     plan_id_raw: &str,
@@ -762,7 +742,6 @@ async fn run_cmd(
     // state-conflict gates; the per-step execution loop (DDL emission,
     // gate pause / promote, transactional progress writes) is the
     // engine's job and lands in the same follow-up.
-    //
     // Execute the plan via the live-plan engine. The operator-supplied
     // `allow_destructive` / `justify` flow through to the engine-side
     // gate as well as the CLI pre-flight above (belt and suspenders).
@@ -811,7 +790,6 @@ async fn run_cmd(
 /// `djogi live resume` body. Same shape as `run`, but additionally
 /// refuses (exit 5) when the plan is at a validation / cutover /
 /// finalize gate — those need `live run` (or `live finalize`).
-///
 /// A resumed plan can reach a destructive cleanup step, so it carries
 /// the same `--allow-destructive` / `--justify` gate as `live run`:
 /// the CLI pre-flight pairs the two flags, and the engine enforces the
@@ -880,7 +858,6 @@ async fn resume_cmd(
 /// Only `Pending` and `Running` advance — `Paused` is the operator's
 /// explicit checkpoint state and requires `live resume` to re-enter
 /// the run loop. Every other state is a state conflict (exit 5).
-///
 /// `PlanStatus` is `#[non_exhaustive]`; the trailing wildcard arm
 /// classifies any future-added variant as a state conflict by default.
 /// That is the conservative choice — a new variant the CLI does not
@@ -914,7 +891,6 @@ fn assert_run_status_allows_progress(status: PlanStatus) -> Result<(), LiveCmdEr
 /// Resume is more restrictive than run — it only accepts `Running` or
 /// `Paused`. Operator gates (Validating / Cutover / Finalizing) need
 /// `live run` to push them past the gate; terminal states refuse.
-///
 /// `PlanStatus` is `#[non_exhaustive]`; the trailing wildcard arm
 /// classifies any future-added variant as a state conflict by default.
 fn assert_resume_status_allows_progress(status: PlanStatus) -> Result<(), LiveCmdError> {
@@ -950,7 +926,6 @@ fn assert_resume_status_allows_progress(status: PlanStatus) -> Result<(), LiveCm
 /// [`StepKind::CleanupLegacyState`](djogi::live_migrate::StepKind::CleanupLegacyState)
 /// step, drops compatibility hooks, and promotes the row to
 /// [`PlanStatus::Complete`].
-///
 /// Requires `--justify "<reason>"`; the cleanup phase is destructive by
 /// nature. The `live finalize` invocation is itself the operator's
 /// destructive opt-in, so it passes `allow_destructive = true` to the
@@ -1092,7 +1067,6 @@ async fn abandon_cmd(
 /// terminal state. `Complete`, `Abandoned`, and `Failed` are all
 /// terminal per the v3 plan §3 state machine; the rest (Pending,
 /// Running, Paused, Validating, Cutover, Finalizing) can be abandoned.
-///
 /// `Failed` is terminal: a failed plan documents the failure for the
 /// audit trail and should not be silently overwritten with `abandoned`
 /// by the CLI. Operators recovering from a failed plan generate a
@@ -1130,9 +1104,8 @@ fn assert_abandon_status(status: PlanStatus) -> Result<(), LiveCmdError> {
 /// flags and routes through [`run_daemon`]. The daemon's triple-gate
 /// (production env + localhost) fires inside `run_daemon`; this body
 /// only translates the result back to a CLI exit code.
-///
 /// Returns `0` on a clean SIGTERM / SIGINT shutdown ([`DaemonError::Shutdown`])
-/// — the daemon's only successful exit path. Production / localhost
+/// the daemon's only successful exit path. Production / localhost
 /// gate refusals map to [`LiveCmdError::ArgRefused`] (exit 1 — the
 /// gate fired before any side effect, but the operator-visible
 /// difference between "gate refused" and "ran but failed" is captured

@@ -1,7 +1,5 @@
 //! Full-text search types — `TsVector` and `TsQuery`.
-//!
 //! # What
-//!
 //! Two newtypes over `String` that map 1:1 to the Postgres `tsvector` and
 //! `tsquery` column types. Both implement `postgres_types::{ToSql, FromSql}`
 //! so they encode and decode transparently through the `tokio-postgres` driver.
@@ -11,24 +9,18 @@
 //! does ship). If those variants are not present in the linked version of
 //! `postgres-types`, the fallback path encodes both as `TEXT` with an explicit
 //! SQL cast at the query site.
-//!
 //! # Why not derive ToSql/FromSql from postgres-types?
-//!
 //! `postgres-types`'s derive macro targets composite types (Postgres
 //! `COMPOSITE`) and enums. For scalar newtypes we implement the traits by
 //! hand: delegate encoding to the inner `String` and provide the OID check
 //! against `TSVECTOR` / `TSQUERY`. The implementation is straightforward and
 //! gives us precise control over the `accepts` function and the `to_sql_checked`
 //! dispatch.
-//!
 //! # FTS query descriptor
-//!
 //! `FtsDescriptor` and `FtsSpec` are the runtime-descriptor types consumed by
-//! the migration differ (Phase 6). They are declared here alongside the
+//! the migration differ . They are declared here alongside the
 //! wire types so the full FTS story lives in one module.
-//!
 //! # Path routing
-//!
 //! These types are re-exported from `djogi::types::fts` and from the crate
 //! root (`djogi::TsVector`, `djogi::TsQuery`). Macro-emitted code routes
 //! through `::djogi::TsVector` / `::djogi::TsQuery` — it never imports
@@ -41,19 +33,15 @@ use std::error::Error;
 // ── TsVector ─────────────────────────────────────────────────────────────────
 
 /// A Postgres `tsvector` value.
-///
 /// Wraps a `String` in the `tsvector` text representation that Postgres
 /// produces and expects (e.g. `"'earth':2 'planet':1"`). The codec treats
 /// it as raw text and relies on Postgres to parse or produce the canonical
 /// `tsvector` form — the Rust side never parses the internal structure.
-///
 /// Typically comes from a `GENERATED ALWAYS AS (to_tsvector(...)) STORED`
 /// column or from an explicit `to_tsvector(...)` expression in a query.
 /// User code rarely constructs `TsVector` manually; it is the decoded type
 /// for `TSVECTOR` columns in `FromPgRow`.
-///
 /// # Encoding
-///
 /// Encodes as `TEXT` wire-type when the `postgres-types` version in use does
 /// not export a `TSVECTOR` OID constant. The cast to `tsvector` happens in
 /// the SQL expression emitted by the FTS query layer (`to_tsquery(...)` side)
@@ -63,7 +51,6 @@ pub struct TsVector(pub String);
 
 impl TsVector {
     /// Wrap a raw tsvector string without any validation.
-    ///
     /// The string is passed verbatim to Postgres; malformed tsvectors
     /// produce a runtime error from the driver, not a panic here.
     pub fn new(s: impl Into<String>) -> Self {
@@ -133,16 +120,13 @@ impl<'a> FromSql<'a> for TsVector {
 // ── TsQuery ──────────────────────────────────────────────────────────────────
 
 /// A Postgres `tsquery` value supplied by the application.
-///
 /// Wraps a query string in the operator syntax Postgres's `to_tsquery`
 /// and `plainto_tsquery` functions accept — ampersands (`&`) and pipes (`|`)
 /// for AND/OR, `!` for NOT, angle brackets for phrase queries, e.g.
 /// `"planet & earth"`. The framework passes the inner string as a bind
 /// parameter to `to_tsquery('<dictionary>', $n)` in the emitted SQL; the
 /// conversion from text to `tsquery` happens on the Postgres side.
-///
 /// # Constructing a query
-///
 /// ```rust
 /// use djogi::TsQuery;
 ///
@@ -155,9 +139,7 @@ impl<'a> FromSql<'a> for TsVector {
 /// // Phrase query (Postgres 9.6+)
 /// let q = TsQuery::new("'planet earth'");
 /// ```
-///
 /// # Dictionary handling
-///
 /// The dictionary name is supplied at the model level via
 /// `#[model(fts = { source = "...", dictionary = "english" })]`. The
 /// query layer combines the model's dictionary name with the `TsQuery`
@@ -234,16 +216,13 @@ impl<'a> FromSql<'a> for TsQuery {
 // ── Dictionary name validation ────────────────────────────────────────────────
 
 /// Validate a Postgres text-search dictionary name at macro parse time.
-///
 /// A valid dictionary name is a plain ASCII identifier: it starts with an
 /// ASCII letter or underscore, continues with ASCII letters, digits, or
 /// underscores, and is at most 63 bytes long (Postgres's `NAMEDATALEN - 1`
 /// cap). No regex engine is used — the rule is spelled out byte-by-byte per
 /// `feedback_no_regex_in_djogi`.
-///
-/// Returns `Ok(())` when the name is valid, `Err(description)` otherwise.
+/// Returns `Ok` when the name is valid, `Err(description)` otherwise.
 /// The error string is embedded directly into proc-macro diagnostic messages.
-///
 /// Dictionary names are embedded into SQL as `to_tsquery('<name>', $n)` with
 /// single-quote delimiters; the identifier constraint (letters, digits,
 /// underscores only, no quotes or special characters) ensures this is safe
@@ -274,7 +253,6 @@ pub fn validate_dictionary_name(name: &str) -> Result<(), String> {
 }
 
 /// Validate a column name for use in a `source = "col1, col2"` list.
-///
 /// Each individual column name in the source list must be a plain ASCII
 /// identifier (letter or underscore start, alphanumerics or underscores after,
 /// max 63 bytes). The same rules as [`validate_dictionary_name`] apply, since
@@ -306,7 +284,6 @@ pub fn validate_source_column(col: &str) -> Result<(), String> {
 
 /// Parse a comma-separated `source = "col1, col2"` string into a list of
 /// validated column names.
-///
 /// Leading/trailing whitespace around each name is stripped before
 /// validation. Returns the list of column names on success, or the first
 /// validation error encountered.
@@ -328,45 +305,38 @@ pub fn parse_source_columns(source: &str) -> Result<Vec<String>, String> {
 
 /// Runtime FTS configuration emitted into `ModelDescriptor` by
 /// `#[model(fts = { source = "...", dictionary = "..." })]`.
-///
-/// # Phase 6 — migration differ note
-///
+/// # migration differ note
 /// **Changing `dictionary` is a column-type alteration.** The GENERATED
 /// ALWAYS AS expression embeds the dictionary name literally:
-///
 /// ```sql
 /// search TSVECTOR GENERATED ALWAYS AS (
 ///     to_tsvector('<dictionary>', title || ' ' || body)
 /// ) STORED
 /// ```
-///
 /// Altering `dictionary` from, say, `"english"` to `"spanish"` requires
 /// dropping and recreating the generated column — it is not an in-place
-/// `ALTER COLUMN` operation. Phase 6's migration differ must treat a
+/// `ALTER COLUMN` operation. the migration differ must treat a
 /// `FtsDescriptor.dictionary` change the same way it treats a `FieldSqlType`
 /// change: as a column drop + re-add (with the appropriate data-migration
 /// opportunity). The `fts` field on `ModelDescriptor` appearing or
 /// disappearing likewise represents a generated column being added or
 /// removed.
-///
-/// # Phase 6 deferred items
-///
+/// # deferred items
 /// Full differ wiring (comparing two `FtsDescriptor` values and emitting
-/// `DROP COLUMN` + `ADD COLUMN`) is deferred to Phase 6. This struct
+/// `DROP COLUMN` + `ADD COLUMN`) is deferred to . This struct
 /// establishes the shape so the differ authors have a stable target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FtsDescriptor {
-    /// The generated column name. Defaults to `"search"`. Phase 8 will add
+    /// The generated column name. Defaults to `"search"`. will add
     /// support for custom names via `#[model(fts = { column = "..." })]`.
     pub column: &'static str,
     /// Comma-separated list of source column names, e.g. `"title, body"`.
-    /// Stored verbatim — Phase 6's differ can compare this to detect source
+    /// Stored verbatim — the differ can compare this to detect source
     /// list changes (which also require a column drop + re-add).
     pub source: &'static str,
     /// Postgres text-search configuration name, e.g. `"english"`.
-    ///
     /// **Changing this value is a column-type alteration.** See the struct-level
-    /// doc above for the reasoning. Phase 6's migration differ must treat a
+    /// doc above for the reasoning. the migration differ must treat a
     /// change here as equivalent to changing `FieldSqlType`.
     pub dictionary: &'static str,
 }
@@ -507,7 +477,7 @@ mod tests {
 
     #[test]
     fn fts_descriptor_dictionary_change_detected() {
-        // Demonstrates the alter-detection shape Phase 6 will consume:
+        // Demonstrates the alter-detection shape will consume:
         // two FtsDescriptors with different dictionaries are NOT equal,
         // so the differ can emit a column drop + re-add.
         let d1 = FtsDescriptor {

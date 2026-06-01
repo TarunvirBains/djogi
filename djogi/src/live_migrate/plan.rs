@@ -1,28 +1,22 @@
 //! Live migration plan structures — the typed step graph that `live`
 //! plans materialise into JSON on disk and into rows in
 //! [`crate::live_migrate::state::LivePlanRow`] in Postgres.
-//!
 //! # Plan-file vs runtime-state separation (§1 D2)
-//!
 //! Two artefacts back every live migration:
-//!
 //! 1. **The plan file** — an immutable JSON document on disk that
-//!    encodes the *definition* of the rollout: which steps run, in
-//!    which order, with which parameters. Generated once by T8's
-//!    pattern emitters, never edited after `djogi live run` opens it.
+//! encodes the *definition* of the rollout: which steps run, in
+//! which order, with which parameters. Generated once by T8's
+//! pattern emitters, never edited after `djogi live run` opens it.
 //! 2. **The DB row** — a mutable row in `djogi_live_plans` that tracks
-//!    the *runtime state*: where the operator is in the step graph,
-//!    backfill progress, last error, completion timestamp. Updated by
-//!    every checkpoint write.
-//!
-//! The split is the load-bearing safety invariant of Phase 7.5: a plan
+//! the *runtime state*: where the operator is in the step graph,
+//! backfill progress, last error, completion timestamp. Updated by
+//! every checkpoint write.
+//! The split is the load-bearing safety invariant of : a plan
 //! cannot diverge from its own definition. The DB row records the SHA-256
 //! of the file at first run; checksum mismatch on resume aborts the run
 //! with an actionable refusal ("plan file edited after start;
 //! re-generate or abandon and retry").
-//!
 //! # Step graph shape
-//!
 //! The step graph is a flat ordered list, not a DAG. Each step depends
 //! solely on the previous one having completed. Operator gates
 //! ([`StepKind::ValidateBackfill`], [`StepKind::CutoverReads`],
@@ -30,9 +24,7 @@
 //! operator-driven phases — the runner pauses and surfaces the gate;
 //! the operator drives the next-step transition explicitly via the CLI
 //! (T10).
-//!
 //! # Stability
-//!
 //! [`StepKind`], [`PlanClassification`], and [`StepParameters`] are
 //! [`#[non_exhaustive]`] so future patterns / classifications can land
 //! without a breaking change. Downstream `match` against these enums
@@ -48,7 +40,6 @@ use crate::types::HeerId;
 /// One step in a live migration plan. Each variant maps to one row in
 /// the on-disk plan file's `steps` array; the runner dispatches each
 /// step to the matching executor in T7+.
-///
 /// `#[non_exhaustive]` because the v3 plan §3 explicitly anticipates
 /// new step kinds landing in later phases (e.g. a future
 /// `RebuildIndexConcurrently` pattern). Adding a variant must not break
@@ -84,15 +75,14 @@ pub enum StepKind {
     /// added a parallel for. The terminal step in the standard
     /// expand → contract sequence.
     CleanupLegacyState,
-    /// v3 fallback for plans that compose Phase 7 reversible operations
+    /// v3 fallback for plans that compose reversible operations
     /// without wrapping them in an expand/contract shape. Used by
-    /// patterns whose work is one Phase 7 op surrounded by gates rather
+    /// patterns whose work is one op surrounded by gates rather
     /// than a full expand → backfill → flip → contract sequence.
     RunReversibleSchemaOp,
 }
 
 /// Single source of truth for `(StepKind, snake_case-label)` pairs.
-///
 /// `StepKind` derives `Serialize` / `Deserialize` with
 /// `#[serde(rename_all = "snake_case")]`, so plan-file serialisation
 /// routes through serde directly. This slice — paired with the
@@ -100,7 +90,6 @@ pub enum StepKind {
 /// test in the `tests` module — pins the canonical label for every
 /// variant so a variant rename in source can't silently change the
 /// persisted plan-file JSON.
-///
 /// Also the backing table for [`StepKind::as_db_str`], which the
 /// executor uses to write `djogi_live_plans.current_step` and the
 /// daemon's candidate filter matches against. The labels match the
@@ -124,7 +113,7 @@ const STEP_KIND_LABELS: &[(StepKind, &str)] = &[
 
 /// Compile-time exhaustiveness witness for `StepKind`. Adding a
 /// variant without extending the inner `match` fails to compile here.
-/// The block has no runtime effect — the value is `()` — but the
+/// The block has no runtime effect — the value is `` — but the
 /// exhaustive match enforces "every variant is named in source" so
 /// [`STEP_KIND_LABELS`] is forced to grow alongside.
 const _STEP_KIND_DRIFT_GUARD: () = {
@@ -150,7 +139,6 @@ impl StepKind {
     /// `djogi_live_plans.current_step` by the executor as it advances
     /// through the step graph, and matched by the daemon's candidate
     /// filter (`backfill_chunked` / `validate_backfill`).
-    ///
     /// Single source of truth: [`STEP_KIND_LABELS`]. The compile-time
     /// `_STEP_KIND_DRIFT_GUARD` block guarantees every variant has a row.
     pub fn as_db_str(self) -> &'static str {
@@ -168,7 +156,6 @@ impl StepKind {
 /// `FastLockDestructiveGuarded` is **not** a live-plan classification
 /// (the operator pulls the trigger directly via `--allow-destructive`),
 /// so the CHECK constraint omits it.
-///
 /// `#[non_exhaustive]` — future classifications that route through a
 /// live plan can land without a breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -180,7 +167,7 @@ pub enum PlanClassification {
     /// rollout through `live` for staging / dry-run reasons.
     OnlineSafe,
     /// The dominant classification. Cannot complete safely in a single
-    /// segment — Phase 7.5 generates a live plan and the operator
+    /// segment — generates a live plan and the operator
     /// drives the expand → backfill → flip → contract sequence.
     ExpandContract,
     /// Djogi refuses to emit SQL automatically. Operator is performing
@@ -193,8 +180,8 @@ impl From<OnlineSafetyClassification> for Option<PlanClassification> {
     /// Lossless mapping from the four-variant online-safety verdict
     /// down to the three-variant plan-file classification. The lone
     /// dropped variant — `FastLockDestructiveGuarded` — does not
-    /// route through Phase 7.5, so `None` is the correct
-    /// "no plan emitted; operator runs Phase 7 with
+    /// route through, so `None` is the correct
+    /// "no plan emitted; operator runs with
     /// `--allow-destructive`" signal.
     fn from(value: OnlineSafetyClassification) -> Self {
         match value {
@@ -222,7 +209,7 @@ const PLAN_CLASSIFICATION_LABELS: &[(PlanClassification, &str)] = &[
 
 /// Compile-time exhaustiveness witness. Adding a variant without
 /// extending the inner `match` fails to compile here. The block has
-/// no runtime effect — the value is `()` — but the exhaustive match
+/// no runtime effect — the value is `` — but the exhaustive match
 /// enforces "every variant is named in source" so
 /// [`PLAN_CLASSIFICATION_LABELS`] is forced to grow alongside.
 const _PLAN_CLASSIFICATION_DRIFT_GUARD: () = {
@@ -240,7 +227,6 @@ impl PlanClassification {
     /// String form used in the `djogi_live_plans.classification` CHECK
     /// constraint. Keep in lockstep with the SQL CHECK clause in
     /// [`crate::live_migrate::state::INSTALL_SQL`].
-    ///
     /// Single source of truth: [`PLAN_CLASSIFICATION_LABELS`]. Linear
     /// scan over a 3-element slice is microsecond-cheap and the
     /// drift-guard block above ensures every variant has a row.
@@ -266,7 +252,6 @@ impl PlanClassification {
 /// Per-step parameters. Each variant carries the smallest payload the
 /// matching executor needs; variant tags align with [`StepKind`] so the
 /// runner can pair `Step.kind` with `Step.parameters` by enum tag.
-///
 /// `#[non_exhaustive]` because T8's pattern emitters will refine which
 /// fields each variant carries. The serde tag is the kind name in
 /// `snake_case`; all internal field names follow the same convention so
@@ -308,9 +293,9 @@ pub enum StepParameters {
     FinalizeConstraints { sql_segments: Vec<String> },
     /// DDL fragments that drop the legacy column / index / table.
     CleanupLegacyState { sql_segments: Vec<String> },
-    /// v3 fallback — a Phase 7 reversible op packaged with its
+    /// v3 fallback — a reversible op packaged with its
     /// matching `down` so the live runner can dispatch it the same
-    /// way Phase 7's runner does.
+    /// way the runner does.
     RunReversibleSchemaOp { up_sql: String, down_sql: String },
 }
 
@@ -347,7 +332,7 @@ pub struct Step {
     /// `ordinal` after deserialization; gaps and duplicates are
     /// rejected by [`LivePlan::validate`].
     pub ordinal: u32,
-    /// Per-kind parameters. The variant tag MUST match `kind` —
+    /// Per-kind parameters. The variant tag MUST match `kind`
     /// see [`Step::is_consistent`].
     pub parameters: StepParameters,
 }
@@ -363,19 +348,16 @@ impl Step {
 
     /// Returns `true` iff this step's execution would emit destructive
     /// SQL (DROP COLUMN / DROP TABLE / DROP INDEX-style state removal).
-    ///
     /// Two variants qualify:
-    ///
     /// - [`StepKind::CleanupLegacyState`] — the canonical destructive
-    ///   step in every expand → contract sequence; drops the legacy
-    ///   column / table / index that the [`StepKind::ExpandSchema`] step
-    ///   parallelled.
+    /// step in every expand → contract sequence; drops the legacy
+    /// column / table / index that the [`StepKind::ExpandSchema`] step
+    /// parallelled.
     /// - [`StepKind::RunReversibleSchemaOp`] when its `up_sql` payload
-    ///   contains a token that materially drops state. The check walks
-    ///   the SQL byte-by-byte (no regex per project policy) and matches
-    ///   the conservative set of literal tokens — false positives lead
-    ///   to a `--justify` requirement, which is the safe direction.
-    ///
+    /// contains a token that materially drops state. The check walks
+    /// the SQL byte-by-byte (no regex per project policy) and matches
+    /// the conservative set of literal tokens — false positives lead
+    /// to a `--justify` requirement, which is the safe direction.
     /// All other step kinds are non-destructive — they either add state
     /// (ExpandSchema, FinalizeConstraints), gate on operator confirmation
     /// (ValidateBackfill / CutoverReads / CutoverWrites), or are pure
@@ -399,10 +381,8 @@ impl Step {
 /// `CONSTRAINT` / `SCHEMA` / `TYPE` / `VIEW` / `FUNCTION` / `TRIGGER`)
 /// and `TRUNCATE`. Whitespace between `DROP` and the kind keyword is one
 /// or more ASCII space / tab / newline / CR bytes.
-///
 /// The match requires a non-alphanumeric / non-underscore boundary on
 /// each side so identifiers like `do_drop_table` do not trigger.
-///
 /// No regex engine — per project policy, use byte-level checks.
 fn sql_contains_destructive_token(sql: &str) -> bool {
     const DROP_KIND_KEYWORDS: &[&[u8]] = &[
@@ -462,7 +442,7 @@ fn sql_contains_destructive_token(sql: &str) -> bool {
 }
 
 /// ASCII case-insensitive prefix match. Returns `true` if the first
-/// `kw.len()` bytes of `input` equal `kw` ignoring ASCII case. `kw` must
+/// `kw.len` bytes of `input` equal `kw` ignoring ASCII case. `kw` must
 /// be ASCII; `input` may be any byte slice.
 fn bytes_match_kw(input: &[u8], kw: &[u8]) -> bool {
     if input.len() < kw.len() {
@@ -495,8 +475,8 @@ pub struct PlanHeader {
     /// Subset of [`OnlineSafetyClassification`] — the v3 plan §3
     /// CHECK constraint accepts three values.
     pub classification: PlanClassification,
-    /// Phase 7 migration version that triggered this plan. Empty
-    /// string when the plan was generated outside the runner (rare —
+    /// Migration version that triggered this plan. Empty
+    /// string when the plan was generated outside the runner (rare
     /// e.g. an operator-authored runbook plan).
     pub originating_migration: String,
     /// Which of the three Djogi databases (`main`, `crud_log`,
@@ -521,14 +501,12 @@ pub struct LivePlan {
 impl LivePlan {
     /// Validate the in-memory plan. Returns [`PlanValidationError`] on
     /// any of:
-    ///
     /// - any step's `kind` disagrees with its `parameters` variant tag,
     /// - the step list is empty,
-    /// - ordinals don't form `0..steps.len()` exactly (gap or duplicate),
+    /// - ordinals don't form `0..steps.len` exactly (gap or duplicate),
     /// - the slug contains a byte that is not ASCII-alphanumeric or
-    ///   underscore (the on-disk filename derives directly from the
-    ///   slug, so non-portable bytes would corrupt the path).
-    ///
+    /// underscore (the on-disk filename derives directly from the
+    /// slug, so non-portable bytes would corrupt the path).
     /// Called by [`crate::live_migrate::plan_file::write_plan`] before
     /// the file is written and by
     /// [`crate::live_migrate::plan_file::read_plan`] after parsing.
@@ -592,7 +570,7 @@ pub enum PlanValidationError {
         parameters_kind: StepKind,
     },
     /// The step list's `ordinal` field skipped a number or duplicated
-    /// one — ordinals must form `0..steps.len()` exactly.
+    /// one — ordinals must form `0..steps.len` exactly.
     #[error("step at position {position}: expected ordinal {expected}, observed {observed}")]
     OrdinalGap {
         position: usize,
@@ -823,7 +801,7 @@ mod tests {
             Some(PlanClassification::OfflineOnly)
         );
         // The load-bearing case — fast-lock destructive does NOT get
-        // a live plan; the operator drives Phase 7 directly with
+        // a live plan; the operator drives directly with
         // `--allow-destructive`.
         assert_eq!(
             <Option<PlanClassification>>::from(
@@ -1033,7 +1011,7 @@ mod tests {
             };
             // Note: the comment case WILL trip the helper because we
             // don't strip SQL comments. That's the conservative choice
-            // — false positive forces a `--justify`, which is safe.
+            // false positive forces a `--justify`, which is safe.
             // Pin behaviour so future refactors notice.
             let observed = step.emits_destructive_sql();
             if sql.contains("DROP TABLE") || sql.contains("TRUNCATE") {

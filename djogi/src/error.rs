@@ -1,45 +1,39 @@
 //! The single error type returned by every framework CRUD operation.
-//!
 //! `DjogiError` wraps the sources of failure that can occur when a `Model`
 //! method runs: database driver errors, expected-row-count violations, and ID
 //! generation failures. Keeping one error type at the public API makes
 //! `?`-propagation ergonomic: user code calls `Post::get(&pool, id).await?`
 //! and gets a `DjogiError` without having to juggle per-subsystem errors.
-//!
 //! The variants correspond 1:1 to the failure modes the generated CRUD impls
 //! can produce:
 //! - `Db` — raw database/driver failures (network, constraints, SQL), wrapped
-//!   in [`DbError`] so Djogi does not expose `tokio_postgres` directly in its
-//!   public error surface.
-//! - `NotFound` — `.get()` / `.fetch_one()` saw zero rows; carries the
-//!   offending table name for observability.
-//! - `MultipleObjects` — `.fetch_one()` saw more than one row; carries the
-//!   table name plus the actual count observed.
+//! in [`DbError`] so Djogi does not expose `tokio_postgres` directly in its
+//! public error surface.
+//! - `NotFound` — `.get` / `.fetch_one` saw zero rows; carries the
+//! offending table name for observability.
+//! - `MultipleObjects` — `.fetch_one` saw more than one row; carries the
+//! table name plus the actual count observed.
 //! - `IdGeneration` — ID generation DB calls failed.
 //! - `RelationUnloaded` — a relation accessor (`ForeignKeyResolved::expect_resolved`
-//!   / `OneToOneFieldResolved::expect_resolved`) was invoked against a cache
-//!   that was never populated. Raised from the strict path where the caller
-//!   has asserted a `prefetch()` / `select_related()` happened upstream.
-//!
+//! / `OneToOneFieldResolved::expect_resolved`) was invoked against a cache
+//! that was never populated. Raised from the strict path where the caller
+//! has asserted a `prefetch` / `select_related` happened upstream.
 //! # `#[non_exhaustive]` on the enum *and* its struct variants
-//!
 //! Both `DjogiError` and its struct-form variants (`NotFound`,
 //! `MultipleObjects`) are marked `#[non_exhaustive]`. This is a deliberate
 //! forward-compatibility choice:
-//!
 //! - **Enum-level.** Downstream matches MUST include a wildcard arm, so
-//!   introducing a new variant in a future release is not a breaking change.
-//!   Djogi is pre-publish today, but Phase 2+ adds filter-layer errors (type
-//!   coercion, invalid operator) that will live here.
+//! introducing a new variant in a future release is not a breaking change.
+//! Djogi is pre-publish today, but + adds filter-layer errors (type
+//! coercion, invalid operator) that will live here.
 //! - **Variant-level.** Downstream destructuring patterns MUST use `..`, and
-//!   struct-expression *construction* from outside this crate is blocked —
-//!   that is exactly the desired shape for an error type. The only legitimate
-//!   construction sites are inside djogi and inside `#[model]`-expanded code
-//!   (which runs in user crates). The expanded code goes through the public
-//!   constructors below (`DjogiError::not_found`, `DjogiError::multiple_objects`),
-//!   matching the pattern established by `std::io::Error`, `hyper::Error`,
-//!   and similar well-designed error types.
-//!
+//! struct-expression *construction* from outside this crate is blocked
+//! that is exactly the desired shape for an error type. The only legitimate
+//! construction sites are inside djogi and inside `#[model]`-expanded code
+//! (which runs in user crates). The expanded code goes through the public
+//! constructors below (`DjogiError::not_found`, `DjogiError::multiple_objects`),
+//! matching the pattern established by `std::io::Error`, `hyper::Error`,
+//! and similar well-designed error types.
 //! The cost is one extra line of implementation (the constructor) and one
 //! extra pair of dots at downstream destructuring sites. The benefit is
 //! that adding a field to either struct variant is also non-breaking.
@@ -69,7 +63,6 @@ fn presentation_startup_error_summary(
 }
 
 /// Public wrapper for database-driver failures surfaced through Djogi.
-///
 /// Djogi stores the real `tokio_postgres::Error` when one exists, but also
 /// needs a local message path for framework-generated database/runtime misuse
 /// errors such as "commit called on a pool-backed context". Keeping that shape
@@ -157,7 +150,6 @@ impl From<tokio_postgres::Error> for DbError {
 }
 
 /// A newtype wrapping a boxed error for ID-generation failures.
-///
 /// The newtype wraps any boxed `Error + Send + Sync` so callers can supply
 /// HeeRanjID postgres-codec failures without this crate coupling to a specific
 /// upstream error type.
@@ -184,71 +176,63 @@ impl IdGenerationError {
 }
 
 /// The single error type returned by every Djogi CRUD operation.
-///
 /// Every fallible call site in djogi (`Model::create`, `QuerySet::fetch_all`,
 /// `transaction::atomic`, `DjogiContext::set_tenant`, every raw escape hatch,
 /// every spatial / FTS / JSONB helper) returns `Result<T, DjogiError>`. The
 /// crate-scoped [`crate::Result<T>`] alias spells exactly that — adopter code
 /// signs functions with `-> djogi::Result<T>` and uses `?` to propagate.
-///
 /// # Error taxonomy
-///
 /// `DjogiError` groups failures by where they originate, not by HTTP-style
 /// status code. The most common branches:
-///
 /// - **Database-driver errors** — [`Db`](DjogiError::Db) wraps every
-///   [`tokio_postgres::Error`] (network, constraints, syntax, auth) behind
-///   the [`DbError`] facade so this enum does not leak `tokio_postgres` types.
+/// [`tokio_postgres::Error`] (network, constraints, syntax, auth) behind
+/// the [`DbError`] facade so this enum does not leak `tokio_postgres` types.
 /// - **Expected-row-count violations** — [`NotFound`](DjogiError::NotFound)
-///   for zero rows from `Model::get` / `QuerySet::fetch_one`,
-///   [`MultipleObjects`](DjogiError::MultipleObjects) for >1 row from
-///   `fetch_one`. Both carry the offending table name.
+/// for zero rows from `Model::get` / `QuerySet::fetch_one`,
+/// [`MultipleObjects`](DjogiError::MultipleObjects) for >1 row from
+/// `fetch_one`. Both carry the offending table name.
 /// - **Concurrency / contention** — [`LockConflict`](DjogiError::LockConflict)
-///   for `40001` / `40P01` / `55P03` SQLSTATE classes (serialization
-///   failures, deadlocks, `NOWAIT` rejections),
-///   [`PoolTimeout`](DjogiError::PoolTimeout) for `deadpool` checkout
-///   exhaustion. Both classify as transient — see
-///   [`DjogiError::is_transient`].
+/// for `40001` / `40P01` / `55P03` SQLSTATE classes (serialization
+/// failures, deadlocks, `NOWAIT` rejections),
+/// [`PoolTimeout`](DjogiError::PoolTimeout) for `deadpool` checkout
+/// exhaustion. Both classify as transient — see
+/// [`DjogiError::is_transient`].
 /// - **Auth / RLS** — [`Auth`](DjogiError::Auth) wraps
-///   [`AuthError`](crate::auth::AuthError) for authentication / authorization
-///   failures from the auth substrate;
-///   [`SetRoleOutsideTransaction`](DjogiError::SetRoleOutsideTransaction)
-///   and [`InvalidRoleName`](DjogiError::InvalidRoleName) surface RLS-
-///   overlay misuse.
-/// - **Misuse / runtime invariants** —
-///   [`Validation`](DjogiError::Validation) for runtime argument validation
-///   failures,
-///   [`MissingIdempotencyKey`](DjogiError::MissingIdempotencyKey) for
-///   upsert-attribute gaps,
-///   [`StreamOutsideTransaction`](DjogiError::StreamOutsideTransaction) for
-///   cursor / `QuerySet::stream` outside `atomic`,
-///   [`UnsupportedAggregate`](DjogiError::UnsupportedAggregate) for IR /
-///   Postgres aggregate mismatches.
+/// [`AuthError`](crate::auth::AuthError) for authentication / authorization
+/// failures from the auth substrate;
+/// [`SetRoleOutsideTransaction`](DjogiError::SetRoleOutsideTransaction)
+/// and [`InvalidRoleName`](DjogiError::InvalidRoleName) surface RLS-
+/// overlay misuse.
+/// - **Misuse / runtime invariants**
+/// [`Validation`](DjogiError::Validation) for runtime argument validation
+/// failures,
+/// [`MissingIdempotencyKey`](DjogiError::MissingIdempotencyKey) for
+/// upsert-attribute gaps,
+/// [`StreamOutsideTransaction`](DjogiError::StreamOutsideTransaction) for
+/// cursor / `QuerySet::stream` outside `atomic`,
+/// [`UnsupportedAggregate`](DjogiError::UnsupportedAggregate) for IR /
+/// Postgres aggregate mismatches.
 /// - **Decode / serialization** — [`Decode`](DjogiError::Decode) for
-///   `FromPgRow` failures, [`Serde`](DjogiError::Serde) for outbox JSON
-///   serialization, [`Visage`](DjogiError::Visage) for visage-projection
-///   `TryFrom<&Model>` failures.
+/// `FromPgRow` failures, [`Serde`](DjogiError::Serde) for outbox JSON
+/// serialization, [`Visage`](DjogiError::Visage) for visage-projection
+/// `TryFrom<&Model>` failures.
 /// - **ID generation** — [`IdGeneration`](DjogiError::IdGeneration) wraps
-///   HeeRanjID-side codec failures.
+/// HeeRanjID-side codec failures.
 /// - **Aggregate lifecycle** — [`GoneAggregate`](DjogiError::GoneAggregate)
-///   for terminal "already gone" signals on a previously-observed
-///   aggregate;
-///   [`RelationUnloaded`](DjogiError::RelationUnloaded) for prefetch-cache
-///   misses on a strict-mode resolved-relation accessor.
+/// for terminal "already gone" signals on a previously-observed
+/// aggregate;
+/// [`RelationUnloaded`](DjogiError::RelationUnloaded) for prefetch-cache
+/// misses on a strict-mode resolved-relation accessor.
 /// - **Spatial** — [`Geo`](DjogiError::Geo) (gated on the `spatial` feature)
-///   wraps coordinate / EWKB codec errors.
-///
+/// wraps coordinate / EWKB codec errors.
 /// # Retry classification
-///
 /// [`DjogiError::is_transient`] returns `true` for `LockConflict`,
 /// `PoolTimeout`, and the small set of variants whose failures are expected
 /// to be retryable. The framework also recognises the SQLSTATE classes that
 /// indicate contention vs. other database failures — both classifications
 /// are intended for use in caller-side retry policies (see also
 /// [`retry_on_conflict`](crate::transaction::retry_on_conflict)).
-///
 /// # `#[non_exhaustive]`
-///
 /// Both `DjogiError` and its struct-form variants (`NotFound`,
 /// `MultipleObjects`, `RelationUnloaded`, `GoneAggregate`,
 /// `MissingIdempotencyKey`, `UnsupportedAggregate`, `PoolTimeout`,
@@ -257,17 +241,14 @@ impl IdGenerationError {
 /// MUST use `..` — adding a new variant or new field to a struct variant
 /// is therefore a non-breaking change. The cost is one extra wildcard arm
 /// at every match site; the benefit is the framework can grow new failure
-/// shapes (Phase 8 added a half-dozen) without breaking adopter code.
-///
+/// shapes (added a half-dozen) without breaking adopter code.
 /// Construction from outside this crate is also blocked by the variant-level
 /// `#[non_exhaustive]`. Use the public constructors
 /// (`DjogiError::not_found`, `DjogiError::multiple_objects`, etc.) when
 /// surfacing a Djogi-flavoured error from adopter code; this matches the
 /// pattern set by `std::io::Error`, `hyper::Error`, and similar
 /// well-designed error types.
-///
 /// # Why one error type
-///
 /// Every framework call returning `Result<T, DjogiError>` keeps `?`
 /// propagation ergonomic across CRUD, raw SQL, transactions, auth, and
 /// spatial/JSONB layers. Per-subsystem error types would force adopter
@@ -281,11 +262,9 @@ pub enum DjogiError {
     /// substrate. Wraps [`AuthError`](crate::auth::AuthError) so
     /// [`DjogiAuth::authenticate`](crate::auth::DjogiAuth::authenticate) and
     /// [`DjogiAuth::verify`](crate::auth::DjogiAuth::verify) failures flow
-    /// through `?` inside `atomic()`-managed operations without explicit
+    /// through `?` inside `atomic`-managed operations without explicit
     /// mapping.
-    ///
     /// # Transitivity
-    ///
     /// Because `AuthError` is `#[non_exhaustive]`, this variant also inherits
     /// that forward-compatibility contract at the `DjogiError` level: a
     /// `match` on `DjogiError::Auth(e)` that then matches on `e` must still
@@ -295,7 +274,7 @@ pub enum DjogiError {
 
     /// Geo/spatial error from the `spatial` feature — coordinate validation
     /// or EWKB codec failure. Wraps [`GeoError`](crate::geo::GeoError) so
-    /// spatial operations compose with `?` inside `atomic()`-managed
+    /// spatial operations compose with `?` inside `atomic`-managed
     /// operations without explicit mapping.
     #[cfg(feature = "spatial")]
     #[error("geo error: {0}")]
@@ -331,13 +310,12 @@ pub enum DjogiError {
     /// A relation accessor that requires an eagerly-loaded cache
     /// (`ForeignKeyResolved::expect_resolved` / `OneToOneFieldResolved::expect_resolved`)
     /// was invoked against a wrapper whose cache is empty. The caller
-    /// asserted a `prefetch()` / `select_related()` ran earlier but none
+    /// asserted a `prefetch` / `select_related` ran earlier but none
     /// did — this is a strict-mode user error, not a query failure.
-    ///
     /// `model` is the source model name (e.g. `"Vehicle"`), `field` is the
     /// relation field on that model (e.g. `"owner_id"`). Both are compile-time
     /// `&'static str`s — the macro fills them in from the struct definition
-    /// in Phase 3 Task 2. Until then, callers supply them at the call site.
+    /// in . Until then, callers supply them at the call site.
     #[error(
         "relation field `{field}` on `{model}` was not loaded — \
          use .prefetch() or .select_related() before .expect_resolved()"
@@ -348,7 +326,7 @@ pub enum DjogiError {
         field: &'static str,
     },
 
-    /// JSON serialization / deserialization failed. Raised by the Phase 4
+    /// JSON serialization / deserialization failed. Raised by the
     /// Task 6 transactional-outbox emitter when `serde_json::to_value`
     /// cannot lower a model row into a JSON document — typically because
     /// a user field's `Serialize` impl returned an error. Wraps the
@@ -359,15 +337,13 @@ pub enum DjogiError {
 
     /// Visage projection failure — raised when a `TryFrom<&Model>` impl on
     /// a generated visage cannot convert the row.
-    ///
     /// Known triggers include
     /// [`VisageError::UnresolvedRelation`](crate::visage::VisageError), raised
     /// when a relation-nesting visage is projected from a model whose
-    /// relation fields were not `prefetch()`-ed or `select_related()`-ed,
+    /// relation fields were not `prefetch`-ed or `select_related`-ed,
     /// and [`VisageError::PresentationCodec`](crate::visage::VisageError)
     /// from fallible protected-field presentation codecs.
-    ///
-    /// Phase 7-Zero-2 T9 introduces this variant so the visage-scoped
+    /// Introduces this variant so the visage-scoped
     /// reverse-FK / M2M accessors can flow a fallible peer-visage conversion
     /// through `?` without losing the VisageError structure. The
     /// `#[from]` shorthand on the inner type produces the
@@ -377,20 +353,18 @@ pub enum DjogiError {
     Visage(#[from] crate::visage::VisageError),
 
     /// A DDD-style aggregate was hard-deleted mid-operation,
-    /// invalidating any further work against its id. Phase 4 Task
+    /// invalidating any further work against its id. Task
     /// 7.7 introduces this variant as the canonical terminal signal
-    /// for "the aggregate you're operating on no longer exists" —
+    /// for "the aggregate you're operating on no longer exists"
     /// distinct from `NotFound` (which covers initial-lookup
     /// misses) in that the caller already observed the aggregate
     /// earlier in the same operation.
-    ///
     /// `model` is the owning model's `type_name` (same source as
     /// `MissingIdempotencyKey::model`). `id` is the PK rendered to
     /// a string (no generic parameter so the error type stays
     /// object-safe and usable across model boundaries). `reason` is
     /// a `&'static str` describing why the aggregate is gone (e.g.
     /// `"hard-deleted by admin"`, `"retention policy evicted"`).
-    ///
     /// Classified as **terminal** by
     /// [`DjogiError::is_transient`] — `retry_on_conflict` does not
     /// retry this variant because retrying against a deleted row
@@ -405,13 +379,11 @@ pub enum DjogiError {
 
     /// A column decode failure produced by
     /// [`FromPgRow::from_pg_row`](crate::pg::decode::FromPgRow::from_pg_row).
-    ///
     /// Raised when `tokio_postgres::Row::try_get` returns an error for a
     /// model field — for example, when the wire type at a given ordinal
     /// position cannot be converted to the expected Rust type. Preserves
-    /// the Phase 4 contract: every CRUD failure flows through
+    /// the contract: every CRUD failure flows through
     /// `DjogiError` rather than aborting the task via `panic!`.
-    ///
     /// The inner `String` carries the column name and the driver error
     /// so the caller can identify which field failed without inspecting
     /// the raw `tokio_postgres::Error`.
@@ -422,12 +394,11 @@ pub enum DjogiError {
     /// `idempotency_key` slot
     /// ([`create_or_find`](crate::model::Model) /
     /// `bulk_upsert_by_descriptor`) was invoked against a model
-    /// whose `#[model(...)]` attribute does not set the key. Phase 4
+    /// whose `#[model(...)]` attribute does not set the key.
     /// Task 7.5 introduces this variant as the runtime pointer at
     /// the attribute the caller needs to add.
-    ///
     /// `model` is the `type_name` from [`ModelDescriptor::type_name`]
-    /// — a `&'static str` the macro lifts directly from the struct
+    /// a `&'static str` the macro lifts directly from the struct
     /// identifier.
     #[error(
         "model '{model}' has no #[model(idempotency_key = \"...\")] declared; \
@@ -440,10 +411,9 @@ pub enum DjogiError {
     /// convenience method — the caller's request is well-typed at
     /// compile time but fails a runtime invariant (e.g.
     /// `bulk_upsert`'s `conflict_cols` naming a column that does not
-    /// exist on the model). Phase 4 Task 7d introduces this variant
+    /// exist on the model). Task 7d introduces this variant
     /// for `bulk_upsert`'s allow-list check; future phases may add
     /// more callers.
-    ///
     /// The inner `String` is a human-readable description of the
     /// failure. No `&'static str` because callers interpolate the
     /// offending column name / table name into the message.
@@ -453,16 +423,13 @@ pub enum DjogiError {
     /// A `FOR UPDATE NOWAIT` / `FOR UPDATE` request could not acquire
     /// its row lock, or a `SERIALIZABLE` / `REPEATABLE READ` transaction
     /// encountered a serialization failure, or Postgres detected a
-    /// deadlock and aborted one participant. Phase 4 Task 7 introduces
+    /// deadlock and aborted one participant. introduces
     /// this variant so the retry helper (`retry_on_conflict`) and the
     /// caller can branch on lock-contention vs other database errors.
-    ///
     /// Retryable SQLSTATE classes carried here:
-    ///
     /// - `40001` — `serialization_failure`
     /// - `40P01` — `deadlock_detected`
     /// - `55P03` — `lock_not_available` (`NOWAIT` rejection)
-    ///
     /// Other database failures — `unique_violation`,
     /// `foreign_key_violation`, connection drops — still flow through
     /// [`Db`](DjogiError::Db). The classifier
@@ -471,14 +438,12 @@ pub enum DjogiError {
     LockConflict(#[source] DbError),
 
     /// `QuerySet::stream` or `DjogiContext::raw_stream` was called on a
-    /// pool-backed context (i.e. outside an `atomic()` scope).
-    ///
+    /// pool-backed context (i.e. outside an `atomic` scope).
     /// Postgres named cursors are transaction-local — they require an open
     /// transaction to exist. Calling `stream` on a pool-backed context is a
     /// caller error that is detected at stream construction time, not at the
     /// first `poll_next`. This makes the error surface immediate and
     /// actionable rather than deferred to the first row consume.
-    ///
     /// Fix: wrap the stream consumer in
     /// `atomic(&mut ctx, |ctx| Box::pin(async move { … }))` so `ctx` is
     /// transaction-backed when `stream` is called.
@@ -486,15 +451,13 @@ pub enum DjogiError {
     StreamOutsideTransaction,
 
     /// A transaction-backed [`crate::DjogiContext`] was marked unsafe to
-    /// continue after a nested `atomic()` future was dropped before the
+    /// continue after a nested `atomic` future was dropped before the
     /// framework could run savepoint cleanup.
-    ///
     /// Rust `Drop` cannot await `ROLLBACK TO SAVEPOINT` / `RELEASE
     /// SAVEPOINT`, so the safe contract is fail-closed: framework-owned
     /// operations reject further work, `commit` rolls the outer transaction
     /// back instead of committing it, and the caller must retry the outer unit
     /// of work from a fresh transaction.
-    ///
     /// Classified as **terminal** by [`DjogiError::is_transient`] — retrying
     /// against the same poisoned context cannot make the transaction safe to
     /// commit.
@@ -510,23 +473,20 @@ pub enum DjogiError {
     },
 
     /// A transaction-backed raw SQL call attempted a session-scoped statement
-    /// that `atomic()` cannot safely scrub on commit/rollback.
-    ///
+    /// that `atomic` cannot safely scrub on commit/rollback.
     /// This variant is used by the raw SQL bypass harness to reject
     /// session-level control statements such as plain `SET`, `RESET`,
     /// `LISTEN`, `UNLISTEN`, `PREPARE`, `DEALLOCATE`, and `DISCARD` when the
-    /// context is already inside an `atomic()` transaction. Those statements
+    /// context is already inside an `atomic` transaction. Those statements
     /// either outlive the surrounding transaction entirely or invite callers
     /// to assume rollback will clean them up when Postgres semantics say
     /// otherwise.
-    ///
     /// `statement` is the canonical top-level keyword (`"SET"`, `"RESET"`,
     /// etc.) that triggered the refusal. The fix is structural: use a
     /// transaction-local form such as `SET LOCAL` / `SET CONSTRAINTS` /
     /// `SET TRANSACTION`, or run the session-scoped statement on a pool-backed
     /// context outside the transaction.
-    ///
-    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// Classified as **terminal** by [`DjogiError::is_transient`]
     /// retrying the same closure against the same SQL will fail the same way.
     #[error(
         "raw SQL statement {statement} is not allowed inside an atomic() transaction; \
@@ -542,23 +502,20 @@ pub enum DjogiError {
     /// A transaction-backed raw SQL call attempted to issue transaction-control
     /// SQL through the raw escape hatch instead of using Djogi's transaction
     /// lifecycle methods.
-    ///
     /// This variant is used by the raw SQL bypass harness (#306) to reject
     /// transaction-control statements such as `BEGIN`, `START TRANSACTION`,
     /// `COMMIT`, `ROLLBACK`, `END`, `ABORT`, `SAVEPOINT`, `RELEASE [SAVEPOINT]`,
     /// and `ROLLBACK [WORK|TRANSACTION] TO [SAVEPOINT]` when the context is
-    /// already inside an `atomic()` transaction. Those statements bypass
+    /// already inside an `atomic` transaction. Those statements bypass
     /// framework bookkeeping: raw COMMIT skips `on_commit` callback drain,
     /// raw ROLLBACK skips rollback cleanup and callback discard, and raw
     /// savepoint control desynchronizes `savepoint_depth`.
-    ///
     /// `statement` is the canonical top-level transaction-control keyword
     /// (`"BEGIN"`, `"COMMIT"`, etc.) that triggered the refusal. The fix is
-    /// structural: use Djogi's `atomic()` / `commit()` / `rollback()` API, or
+    /// structural: use Djogi's `atomic` / `commit` / `rollback` API, or
     /// run the transaction-control SQL on a pool-backed context outside any
-    /// `atomic()` scope.
-    ///
-    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// `atomic` scope.
+    /// Classified as **terminal** by [`DjogiError::is_transient`]
     /// retrying the same closure against the same SQL will fail the same way.
     #[error(
         "raw transaction-control statement {statement} is not allowed on a \
@@ -574,24 +531,20 @@ pub enum DjogiError {
 
     /// An aggregate's DISTINCT modifier combination is not supported by
     /// Postgres syntax or by Djogi's current IR.
-    ///
     /// # When this surfaces
-    ///
     /// Raised by the fetch-time legality check in
     /// [`crate::expr::sql::check_aggregate_legality`] for three value-aggregate
     /// cases that cannot be represented by the kind-state split alone:
-    ///
     /// - `COUNT(DISTINCT *)` — `COUNT(DISTINCT *)` is not valid SQL.
-    ///   Use `COUNT(DISTINCT col)` via [`crate::query::field::FieldRef::count`]
-    ///   instead.
-    /// - `STRING_AGG(DISTINCT col, sep)` without per-aggregate `ORDER BY` —
-    ///   Postgres requires an explicit ordering when DISTINCT is combined
-    ///   with `STRING_AGG`. Chain `.order_by(...)` on the aggregate to make
-    ///   the shape well-formed.
+    /// Use `COUNT(DISTINCT col)` via [`crate::query::field::FieldRef::count`]
+    /// instead.
+    /// - `STRING_AGG(DISTINCT col, sep)` without per-aggregate `ORDER BY`
+    /// Postgres requires an explicit ordering when DISTINCT is combined
+    /// with `STRING_AGG`. Chain `.order_by(...)` on the aggregate to make
+    /// the shape well-formed.
     /// - `COUNT(*) ORDER BY ...` — the `COUNT(*)` emitter has no argument
-    ///   slot to attach per-aggregate ordering to, so accepting the modifier
-    ///   would silently drop it.
-    ///
+    /// slot to attach per-aggregate ordering to, so accepting the modifier
+    /// would silently drop it.
     /// `op` is the aggregate function keyword (e.g. `"COUNT(*)"`,
     /// `"STRING_AGG"`). `reason` is a human-readable description of why
     /// the combination is rejected.
@@ -607,7 +560,6 @@ pub enum DjogiError {
 
     /// The emitted SELECT list contains two columns with the same alias;
     /// the decoder would read the wrong value for one of the columns.
-    ///
     /// This is a Djogi internal bug — a future API extension likely introduced
     /// a path that collides with a group-key column name or another aggregate
     /// alias. The check runs before any SQL is sent to Postgres so the
@@ -624,18 +576,15 @@ pub enum DjogiError {
     /// [`DjogiPoolBuilder::timeout`](crate::pg::pool::DjogiPoolBuilder::timeout)
     /// so callers can branch on saturation explicitly without inspecting
     /// the underlying `deadpool_postgres::PoolError`.
-    ///
     /// `phase` distinguishes the deadpool timeout type:
-    ///
     /// - `"wait"` — the pool is at `max_size` and no slot freed within the
-    ///   configured wait window. Tune `max_size` upward or stop holding
-    ///   connections across awaits unrelated to the database.
+    /// configured wait window. Tune `max_size` upward or stop holding
+    /// connections across awaits unrelated to the database.
     /// - `"create"` — `Manager::create` (opening a fresh socket) timed out.
-    ///   Network or DB-side problem, not pool sizing.
+    /// Network or DB-side problem, not pool sizing.
     /// - `"recycle"` — recycling an existing object on the checkout path
-    ///   timed out. Same root cause as `"create"` for `Verified`/`Clean`
-    ///   recycling methods that issue queries.
-    ///
+    /// timed out. Same root cause as `"create"` for `Verified`/`Clean`
+    /// recycling methods that issue queries.
     /// All three are saturation / slow-recovery signals: the right
     /// response is to back off and retry, not to fail the operation
     /// permanently. [`DjogiError::is_transient`] returns `true` for
@@ -643,7 +592,6 @@ pub enum DjogiError {
     /// `is_transient` (or its inverse `is_terminal`) treat pool
     /// timeouts as retryable rather than dead-lettering them as
     /// permanent business failures.
-    ///
     /// Note that djogi exposes two retry helpers with different
     /// policy: [`crate::transaction::retry_on_conflict`] retries
     /// immediately, while
@@ -666,17 +614,16 @@ pub enum DjogiError {
     },
 
     /// `DjogiContext::set_role` was invoked on a pool-backed context
-    /// rather than inside an `atomic()` transaction. Phase 8ε T9
+    /// rather than inside an `atomic` transaction.
     /// introduces this variant for the security-overlay row-level
     /// security helper: `SET LOCAL ROLE` is bound to the surrounding
     /// transaction and reverts at COMMIT/ROLLBACK, so calling it
-    /// outside a transaction would either fail outright or — worse —
+    /// outside a transaction would either fail outright or — worse
     /// leak the role onto the pooled connection where the next
     /// checkout-victim would inherit it. Surfacing this as a
     /// dedicated variant lets callers branch on the misuse without
     /// inspecting the underlying SQLSTATE.
-    ///
-    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// Classified as **terminal** by [`DjogiError::is_transient`]
     /// retrying the same closure cannot turn a pool-backed context
     /// into a transactional one.
     #[error(
@@ -686,20 +633,18 @@ pub enum DjogiError {
     SetRoleOutsideTransaction,
 
     /// `DjogiContext::set_role` was invoked with a role name that
-    /// fails the byte-level Postgres identifier check. Phase 8ε T9
+    /// fails the byte-level Postgres identifier check.
     /// introduces this variant so role-name validation surfaces
     /// before any SQL is sent — the framework refuses to interpolate
     /// an untrusted string into `SET LOCAL ROLE` even when the
     /// caller has already quoted it.
-    ///
     /// The accepted grammar is the standard Postgres unquoted
     /// identifier shape: an ASCII letter or underscore followed by
     /// ASCII alphanumerics or underscores, up to 63 bytes. Embedded
     /// quotes, control characters, and non-ASCII bytes are all
     /// rejected. The variant carries the offending name so log
     /// lines and error reports can identify what was rejected.
-    ///
-    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// Classified as **terminal** by [`DjogiError::is_transient`]
     /// a malformed role name is a programming error, not a
     /// race-condition.
     #[error(
@@ -709,7 +654,7 @@ pub enum DjogiError {
     )]
     InvalidRoleName(String),
 
-    /// A portable predicate could not be lowered to SQL. Phase 8eta PR2b
+    /// A portable predicate could not be lowered to SQL.
     /// installs the direct-`Q<T>` SQL walker; portable predicate leaves
     /// dispatch through [`crate::model::Model::__djogi_emit_field_predicate`]
     /// (overridden by PR2d's macro on every PK-backed `#[model]`-emitted
@@ -718,7 +663,6 @@ pub enum DjogiError {
     /// Sassi predicate variant — surface here as a typed
     /// [`crate::query::PortablePredicateError`] before the SQL ever
     /// touches the database.
-    ///
     /// Classified as **terminal** by [`DjogiError::is_transient`] — a
     /// portable-predicate lowering failure is a framework / model
     /// invariant violation, not a transient database condition.
@@ -730,13 +674,11 @@ pub enum DjogiError {
     /// A [`SetOpQuerySet`](crate::query::SetOpQuerySet) arm carried
     /// state that cannot ride through a Postgres set-operation
     /// subquery: registered prefetch paths, registered select_related
-    /// paths, a row-level lock, or a cache binding. Phase 8.5 Cluster
+    /// paths, a row-level lock, or a cache binding. Cluster
     /// 4B (issue #101) introduces this variant alongside the typed
     /// set-op surface (`.union(...)` / `.union_all(...)` /
     /// `.intersect(...)` / `.except(...)`).
-    ///
     /// # Why this is a typed error, not a silent drop
-    ///
     /// Quietly stripping `select_related` / `prefetch` registrations
     /// when an arm enters a set op would silently change the row
     /// shape the caller expected: `select_related` extends the
@@ -748,12 +690,10 @@ pub enum DjogiError {
     /// failure mode actionable. Locks (`FOR UPDATE`) inside a set-op
     /// subquery are rejected by Postgres at parse time anyway; we
     /// surface a higher-fidelity error before the round trip.
-    ///
     /// `side` identifies which arm tripped the check (`"left"` or
     /// `"right"`); `reason` is a short human-readable explanation
     /// that names the offending registration.
-    ///
-    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// Classified as **terminal** by [`DjogiError::is_transient`]
     /// the caller built an incompatible set-op shape; retrying the
     /// same call cannot turn a `.cache(...)`-bound arm into a
     /// cache-free one.
@@ -769,12 +709,10 @@ pub enum DjogiError {
 
     /// A [`SetOpQuerySet`](crate::query::SetOpQuerySet)'s outer
     /// `ORDER BY` carried an expression-form ordering term that
-    /// Postgres rejects on set-operation outer ordering. Phase 8.5
-    /// Cluster 4B (issue #101) introduces this variant alongside the
+    /// Postgres rejects on set-operation outer ordering.
+    /// (issue #101) introduces this variant alongside the
     /// typed set-op surface.
-    ///
     /// # Why this is a typed error, not a silent pass-through
-    ///
     /// Postgres set-operation `ORDER BY` only accepts output column
     /// names (or column position numbers) — arbitrary expressions are
     /// rejected at parse time. Today the only way to produce a
@@ -786,13 +724,11 @@ pub enum DjogiError {
     /// the offending operation. Djogi catches the case at SQL-build
     /// time and surfaces a higher-fidelity error before the round
     /// trip, naming the table and explaining the constraint.
-    ///
     /// `table` identifies the model whose set-op carries the
     /// incompatible ordering; `reason` is a short human-readable
     /// explanation that names the kind of ordering rejected and the
     /// recommended workaround.
-    ///
-    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// Classified as **terminal** by [`DjogiError::is_transient`]
     /// the caller built an incompatible set-op shape; retrying the
     /// same call cannot turn an expression-form ordering into a
     /// column-form one. The fix is at the call site.
@@ -805,10 +741,9 @@ pub enum DjogiError {
 
     /// `djogi::transaction::atomic_with(level, &mut tx_ctx, ...)` was
     /// invoked on a transaction-backed [`crate::DjogiContext`] — i.e.
-    /// inside an already-open `atomic()` scope. Phase 8.5 Cluster 4
+    /// inside an already-open `atomic` scope.
     /// (issue #168) introduces this variant alongside the typed
     /// [`crate::transaction::IsolationLevel`] surface.
-    ///
     /// Postgres pins the isolation level for the entire transaction at
     /// the outer `BEGIN`; `SAVEPOINT` does not open a sub-transaction
     /// with its own isolation knob, and `SET TRANSACTION ISOLATION
@@ -818,13 +753,11 @@ pub enum DjogiError {
     /// the SQL flies; the alternative would be a deferred SQLSTATE
     /// surprise that names neither the outer BEGIN nor the requested
     /// level.
-    ///
     /// The variant carries the [`crate::transaction::IsolationLevel`]
     /// the caller requested so log lines and error reports identify
     /// what was rejected. Use [`crate::transaction::atomic`] for
     /// nested scopes — the savepoint inherits the outermost
     /// transaction's isolation level.
-    ///
     /// Classified as **terminal** by [`DjogiError::is_transient`] — a
     /// nested-scope isolation request is a programming error, not a
     /// race condition. Retrying the same closure cannot turn a
@@ -836,7 +769,7 @@ pub enum DjogiError {
          atomic_with call outside the enclosing transaction"
     )]
     IsolationLevelOnNestedScope {
-        /// Isolation level the caller requested. `&'static`-like —
+        /// Isolation level the caller requested. `&'static`-like
         /// the enum is `Copy` so logging callers can read it without
         /// borrowing the variant.
         requested: crate::transaction::IsolationLevel,
@@ -844,18 +777,16 @@ pub enum DjogiError {
 
     /// `DjogiContext::defer_constraints` / `set_constraints_immediate`
     /// was invoked on a pool-backed context rather than inside an
-    /// `atomic()` transaction. Phase 8.5 Cluster 4 (issue #169)
+    /// `atomic` transaction. issue #169)
     /// introduces this variant alongside the typed
     /// [`crate::transaction::DeferScope`] surface.
-    ///
     /// `SET CONSTRAINTS` is transaction-scoped in Postgres — outside a
     /// transaction it would either fail outright or, on the
     /// implicit per-statement transaction surrounding a single
     /// statement, evaporate before any subsequent statement could
     /// observe the deferred state. Both outcomes are programming
     /// errors, so the framework refuses to issue the SQL.
-    ///
-    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// Classified as **terminal** by [`DjogiError::is_transient`]
     /// retrying cannot turn a pool-backed context into a
     /// transactional one. Wrap the call in
     /// [`crate::transaction::atomic`] to get a transaction scope.
@@ -869,9 +800,8 @@ pub enum DjogiError {
     /// `DjogiContext::defer_constraints` /
     /// `set_constraints_immediate` was called with a
     /// [`crate::transaction::DeferScope::Named`] payload that
-    /// referenced an unknown constraint. Phase 8.5 Cluster 4 (issue
+    /// referenced an unknown constraint. issue
     /// #169) introduces this variant.
-    ///
     /// "Unknown" means the constraint name was not found on any
     /// `#[derive(Model)]`-emitted [`crate::DeferrabilitySpec`]
     /// inventory entry. The lookup uses the conventional
@@ -879,14 +809,12 @@ pub enum DjogiError {
     /// truncated to Postgres' 63-byte identifier limit when
     /// necessary) for foreign-key constraints declared in
     /// adopter `#[model]` structs.
-    ///
     /// Surfacing the typo as a typed error before the SQL flies is
     /// the value-add over `ctx.raw_execute("SET CONSTRAINTS \"typo\"
     /// DEFERRED")`: Postgres would raise `42704
     /// (undefined_object)` for an unknown constraint, but only
     /// after a round trip and without naming the descriptor it
     /// should have come from.
-    ///
     /// The variant carries the offending name so log lines identify
     /// what was rejected. Classified as **terminal** by
     /// [`DjogiError::is_transient`] — retrying cannot turn an
@@ -902,21 +830,18 @@ pub enum DjogiError {
     /// [`crate::transaction::DeferScope::Named`] payload that
     /// referenced a constraint declared as
     /// non-deferrable (`#[field(deferrable = false)]`, the default).
-    /// Phase 8.5 Cluster 4 (issue #169) introduces this variant.
-    ///
+    /// Issue #169) introduces this variant.
     /// Postgres rejects `SET CONSTRAINTS <name> DEFERRED` on a
     /// non-deferrable constraint with SQLSTATE `0A000`
     /// (feature_not_supported). The framework checks the descriptor's
     /// [`crate::DeferrabilitySpec`] inventory and surfaces a typed
     /// error before the SQL flies — same value-add as
     /// [`Self::UnknownConstraintName`].
-    ///
     /// The fix is at the model declaration: declare the FK as
     /// `#[field(deferrable = true)]` (and optionally
     /// `initially_deferred = true` for `DEFERRABLE INITIALLY
     /// DEFERRED`). The constraint must be deferrable to participate
     /// in `SET CONSTRAINTS` at runtime.
-    ///
     /// Classified as **terminal** by [`DjogiError::is_transient`] — a
     /// non-deferrable constraint cannot be deferred at runtime
     /// regardless of how many retries.
@@ -931,24 +856,21 @@ pub enum DjogiError {
     /// `DjogiContext::defer_constraints` /
     /// `set_constraints_immediate` was called with
     /// [`crate::transaction::DeferScope::Named`] carrying an empty
-    /// slice. Phase 8.5 Cluster 4 (issue #169) — GPT-5.5 xhigh
+    /// slice. issue #169)
     /// follow-up fix.
-    ///
     /// `SET CONSTRAINTS <name list> DEFERRED|IMMEDIATE` requires at
     /// least one name; Postgres rejects the bare-comma grammar with
     /// SQLSTATE `42601` (syntax error). Composing the SQL from an
-    /// empty slice would produce `SET CONSTRAINTS  DEFERRED` — an
+    /// empty slice would produce `SET CONSTRAINTS DEFERRED` — an
     /// extra space + missing list. Reject before SQL composition so
     /// the caller gets a typed error naming the misuse rather than a
     /// deferred Postgres parse error.
-    ///
     /// The canonical fix is one of:
     /// - drop the `Named` wrapper and use [`DeferScope::All`](crate::transaction::DeferScope::All)
-    ///   if the intent is "every deferrable constraint";
+    /// if the intent is "every deferrable constraint";
     /// - skip the call entirely when the names slice is empty;
     /// - pass at least one valid constraint name.
-    ///
-    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// Classified as **terminal** by [`DjogiError::is_transient`]
     /// retrying with the same empty slice cannot succeed.
     #[error(
         "DeferScope::Named requires at least one constraint name; \
@@ -963,9 +885,8 @@ pub enum DjogiError {
     /// [`DjogiContext::set_constraints_immediate`] observed two
     /// [`crate::DeferrabilitySpec`] entries sharing the same
     /// `(model_type_name, field_name)` key but disagreeing on
-    /// `(deferrable, initially_deferred)`. Phase 8.5 Cluster 4 (issue
-    /// #169) — GPT-5.5 xhigh follow-up fix.
-    ///
+    /// `(deferrable, initially_deferred)`. issue
+    /// #169) — .
     /// `inventory::iter` order is not deterministic across builds.
     /// A silent last-writer-wins on a disagreeing duplicate would
     /// make the runtime validator non-deterministic — one build
@@ -974,16 +895,13 @@ pub enum DjogiError {
     /// projection-time [`ConflictingDeferrabilitySpec`] gate in
     /// `migrate::projection` so the framework fails closed at both
     /// schema-build time and transaction-control time.
-    ///
     /// Idempotent duplicates (same key, identical values) are
     /// accepted — they can arise from `inventory::submit!` chains
     /// across crates re-exporting the same model and carry no
     /// semantic disagreement.
-    ///
-    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// Classified as **terminal** by [`DjogiError::is_transient`]
     /// the conflict is a build-time inventory misconfiguration, not
     /// a race condition. Fix is at the model declaration.
-    ///
     /// [`ConflictingDeferrabilitySpec`]: crate::migrate::projection::ProjectionError::ConflictingDeferrabilitySpec
     #[error(
         "conflicting DeferrabilitySpec inventory entries for \
@@ -1009,9 +927,8 @@ pub enum DjogiError {
     /// [`DjogiContext::defer_constraints`] /
     /// [`DjogiContext::set_constraints_immediate`] observed a
     /// [`crate::DeferrabilitySpec`] whose `model_type_name` has no
-    /// matching [`crate::ModelDescriptor`] entry. Phase 8.5 Cluster
-    /// 4 (issue #169) — GPT-5.5 xhigh follow-up fix.
-    ///
+    /// matching [`crate::ModelDescriptor`] entry. Cluster
+    /// 4 (issue #169) — .
     /// The descriptor is the source of truth for `type_name →
     /// table_name`. A `DeferrabilitySpec` without a matching
     /// `ModelDescriptor` means the FK is not really registered, but
@@ -1020,13 +937,11 @@ pub enum DjogiError {
     /// `<expected_table>_<field>_fkey` would then surface as
     /// [`UnknownConstraintName`](Self::UnknownConstraintName)
     /// instead of the actual root cause (the missing descriptor).
-    ///
     /// `#[derive(Model)]` emits the descriptor + the deferrability
     /// spec side by side, so an orphan spec only fires under
     /// pathological partial-emission conditions — typically a
     /// hand-written `inventory::submit!` outside the macro.
-    ///
-    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// Classified as **terminal** by [`DjogiError::is_transient`]
     /// the cause is a build-time inventory misconfiguration.
     #[error(
         "orphan DeferrabilitySpec for {model_type_name}.{field_name}: \
@@ -1046,21 +961,18 @@ pub enum DjogiError {
     /// [`DjogiContext::defer_constraints`] /
     /// [`DjogiContext::set_constraints_immediate`] observed two
     /// distinct `(model_type_name, field_name)` pairs whose
-    /// conventional FK constraint names collide. Phase 8.5 Cluster
-    /// 4 (issue #169) — GPT-5.5 xhigh follow-up fix.
-    ///
+    /// conventional FK constraint names collide. Cluster
+    /// 4 (issue #169) — .
     /// The constraint-name convention is
     /// `<table>_<column>_fkey` (truncated to Postgres' 63-byte
     /// identifier limit). Truncation can produce collisions for
     /// long table or column names — and a collision means the
     /// runtime validator has no way to know which FK the adopter
     /// meant. Fail closed.
-    ///
     /// The fix at the model declaration is to shorten the offending
     /// table or column name, or to declare an explicit constraint
     /// name once that surface lands (out of scope for #169).
-    ///
-    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// Classified as **terminal** by [`DjogiError::is_transient`]
     /// the conflict is a build-time naming collision.
     #[error(
         "FK constraint name {constraint_name:?} collides across two \
@@ -1082,26 +994,23 @@ pub enum DjogiError {
         second_field: String,
     },
 
-    /// `QuerySet::merge_into` was invoked on a transaction-backed context. Phase 8.5 Cluster 3 (issue #173)
+    /// `QuerySet::merge_into` was invoked on a transaction-backed context. (issue #173)
     /// introduces this variant alongside the typed concurrent-reads
     /// helper.
-    ///
     /// A transaction owns one Postgres connection; cloning the
     /// context for concurrent reads would either hand out aliasing
     /// access to the same connection (Postgres protocol violation)
     /// or silently break the transaction boundary. Both are
     /// programming errors, so the framework refuses.
-    ///
     /// The correct shape for concurrent reads is on a pool-backed
     /// context: each clone gets a fresh pool checkout, the two
     /// contexts operate on independent connections, and
     /// `tokio::try_join!` over typed reads composes without an
     /// `E0499` mutable-borrow conflict.
-    ///
-    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// Classified as **terminal** by [`DjogiError::is_transient`]
     /// retrying cannot turn a transaction-backed context into a
     /// pool-backed one. Move the concurrent-reads block outside the
-    /// surrounding `atomic()`.
+    /// surrounding `atomic`.
     #[error(
         "clone_for_concurrent_reads requires a pool-backed DjogiContext; \
          transaction-backed contexts own a single connection that cannot \
@@ -1113,9 +1022,8 @@ pub enum DjogiError {
 
     /// `QuerySet::merge_into` observed a source queryset with state that
     /// cannot be safely represented in a `MERGE` statement: `prefetch`,
-    /// `select_related`, `cache`, `lock`, or `distinct`. Phase 8.5
+    /// `select_related`, `cache`, `lock`, or `distinct`.
     /// Issue #178.
-    ///
     /// Classified as **terminal** by [`DjogiError::is_transient`].
     #[error("merge source queryset on `{table}` is invalid: {reason}")]
     #[non_exhaustive]
@@ -1127,44 +1035,37 @@ pub enum DjogiError {
     /// `QuerySet::merge_into` observed an invalid branch configuration:
     /// unreachable branches (same-kind unconditional branch follows another),
     /// duplicate target columns in an update or insert action, or manual
-    /// `updated_at` assignment in an update action. Phase 8.5 Issue #178.
-    ///
+    /// `updated_at` assignment in an update action. Issue #178.
     /// Classified as **terminal** by [`DjogiError::is_transient`].
     #[error("merge branch on `{table}` is invalid: {reason}")]
     #[non_exhaustive]
     MergeBranchInvalid { table: &'static str, reason: String },
 
     /// `QuerySet::merge_into` was invoked without any `ON` conditions or
-    /// without any `WHEN` branches. Phase 8.5 Issue #178.
-    ///
+    /// without any `WHEN` branches. Issue #178.
     /// Classified as **terminal** by [`DjogiError::is_transient`].
     #[error("merge statement on `{table}` is invalid: {reason}")]
     #[non_exhaustive]
     MergeNoBranches { table: &'static str, reason: String },
 
     /// One or more presentation codecs failed startup validation.
-    ///
     /// Returned by
     /// [`validate_startup_inventory`](crate::presentation::validate_startup_inventory)
     /// when any [`PresentationCodecUsage`](crate::presentation::inventory::PresentationCodecUsage)
     /// entry's `validate_startup` hook returns an error.
-    ///
     /// This variant is the conversion target for pool-construction callers
     /// (`DjogiPool::connect`, `DjogiPool::from_database_config`,
     /// `DjogiPoolBuilder::build`) that call `validate_startup_inventory`
     /// before accepting traffic. Stage 3 of GH #227 wires those callers.
-    ///
     /// The inner `Vec` carries one
     /// [`PresentationStartupError`](crate::presentation::PresentationStartupError)
     /// per failing codec usage. Each entry names the `(model, field, scope,
     /// codec)` quadruple and the underlying error so operators can identify
     /// every misconfigured codec in one pass rather than discovering failures
     /// one at a time.
-    ///
     /// Classified as **terminal** by the framework — a codec with a missing
     /// or invalid key cannot serve traffic until the key is provided. The
     /// fix is an environment-variable or configuration change, not a retry.
-    ///
     /// `Display` includes the total count plus a concise summary of each
     /// failing usage so operator logs can point directly at the actionable
     /// `(model, field, scope, codec)` entry without requiring `Debug`.
@@ -1178,7 +1079,6 @@ pub enum DjogiError {
     /// Connected PostgreSQL server version is below Djogi's minimum supported
     /// version. Raised by [`check_postgres_version`](crate::pg::preflight::check_postgres_version)
     /// preflight when the detected major version is less than 18.
-    ///
     /// `detected_major` and `detected_minor` are the actual server version components.
     /// `minimum_major` is Djogi's minimum supported major version (always 18).
     #[error(
@@ -1200,8 +1100,7 @@ impl From<tokio_postgres::Error> for DjogiError {
     }
 }
 
-/// Phase 7-Zero-2 T9 — `Infallible` → `DjogiError` coercion.
-///
+/// `Infallible` → `DjogiError` coercion.
 /// `Infallible` has no inhabitants, so `match never {}` is exhaustive.
 /// The impl exists so macro-emitted chains that invoke
 /// `<Visage as TryFrom<&Model>>::try_from(row)?` propagate through `?`
@@ -1217,11 +1116,10 @@ impl From<std::convert::Infallible> for DjogiError {
 
 impl DjogiError {
     /// Construct a `NotFound` error with a table-name context.
-    ///
     /// This is the public escape hatch for `#[non_exhaustive]` on the
     /// `NotFound` variant: struct-expression construction is blocked outside
     /// this crate, so `#[model]`-expanded CRUD methods (which run in user
-    /// crates) call this constructor instead. Keep the signature stable —
+    /// crates) call this constructor instead. Keep the signature stable
     /// any future additional context fields must gain their own constructor
     /// or builder rather than changing this one.
     pub fn not_found(table: &'static str) -> Self {
@@ -1230,7 +1128,6 @@ impl DjogiError {
 
     /// Construct a `MultipleObjects` error with a table name and the number
     /// of rows actually observed.
-    ///
     /// Mirror of `not_found` — exists so that cross-crate callers (macro
     /// output, future filter-layer builders) can produce this variant
     /// without running into `#[non_exhaustive]`.
@@ -1240,10 +1137,9 @@ impl DjogiError {
 
     /// Construct a `RelationUnloaded` error naming the model and relation
     /// field that the caller asked to resolve without loading.
-    ///
     /// Exists for the same reason as `not_found` / `multiple_objects`: the
     /// `#[non_exhaustive]` attribute on the variant blocks struct-expression
-    /// construction outside this crate, so macro-expanded code and Phase 3+
+    /// construction outside this crate, so macro-expanded code and +
     /// relation wrappers go through this constructor instead.
     pub fn relation_unloaded(model: &'static str, field: &'static str) -> Self {
         DjogiError::RelationUnloaded { model, field }
@@ -1252,7 +1148,6 @@ impl DjogiError {
     /// Construct a `MissingIdempotencyKey` error naming the model
     /// whose `#[model(idempotency_key = "...")]` attribute was not
     /// declared.
-    ///
     /// Mirror of `not_found` / `multiple_objects` — exists so that
     /// cross-crate callers (macro output in user crates) can produce
     /// this variant despite `#[non_exhaustive]` blocking struct-
@@ -1262,7 +1157,6 @@ impl DjogiError {
     }
 
     /// Construct a `GoneAggregate` error.
-    ///
     /// Mirror of the other constructors — exists so that cross-crate
     /// callers can produce this `#[non_exhaustive]` variant. `id` is
     /// typically produced via `format!("{}", pk)` so the error is
@@ -1273,7 +1167,6 @@ impl DjogiError {
 
     /// Construct an `UnsupportedPostgresVersion` error with the detected
     /// server version and the framework's minimum supported major version.
-    ///
     /// Mirror of the other constructors — exists so that cross-crate callers
     /// (the `pg::preflight` module, CLI entry points) can produce this variant
     /// despite `#[non_exhaustive]` blocking struct-expression construction
@@ -1292,10 +1185,8 @@ impl DjogiError {
 
     /// Classify this error as **transient** (retrying the closure
     /// may succeed) or **terminal** (retrying will not help).
-    ///
     /// `retry_on_conflict` uses this predicate to decide whether to
     /// re-run its closure. The contract:
-    ///
     /// | Variant | Classification |
     /// |---------|----------------|
     /// | [`LockConflict`](Self::LockConflict) | transient |
@@ -1327,7 +1218,6 @@ impl DjogiError {
     /// | [`DuplicateConstraintName`](Self::DuplicateConstraintName) | terminal |
     /// | [`ConcurrentReadsRequirePoolContext`](Self::ConcurrentReadsRequirePoolContext) | terminal |
     /// | [`UnsupportedPostgresVersion`](Self::UnsupportedPostgresVersion) | terminal |
-    ///
     /// The Db row reflects the existing `is_lock_error`
     /// classifier: Postgres SQLSTATEs `40001` (serialization
     /// failure), `40P01` (deadlock detected), and `55P03`
@@ -1353,9 +1243,8 @@ impl DjogiError {
 
     /// Inverse of [`is_transient`](Self::is_transient) — returns
     /// `true` when retrying will not help.
-    ///
     /// Provided as a convenience for call sites that read more
-    /// naturally as `err.is_terminal()` than `!err.is_transient()`.
+    /// naturally as `err.is_terminal` than `!err.is_transient`.
     /// Same contract, inverted.
     pub fn is_terminal(&self) -> bool {
         !self.is_transient()
@@ -1363,18 +1252,15 @@ impl DjogiError {
 }
 
 /// Return `true` if the database error wraps a Postgres lock/serialization
-/// conflict — the class of failures that `retry_on_conflict()` is
+/// conflict — the class of failures that `retry_on_conflict` is
 /// willing to re-run the closure through.
-///
 /// Matches three SQLSTATEs:
-///
 /// - `40001` (`serialization_failure`) — the classic MVCC serialization
-///   error on `SERIALIZABLE`/`REPEATABLE READ` isolation.
+/// error on `SERIALIZABLE`/`REPEATABLE READ` isolation.
 /// - `40P01` (`deadlock_detected`) — Postgres detected a circular wait
-///   and aborted one of the participants.
+/// and aborted one of the participants.
 /// - `55P03` (`lock_not_available`) — a `NOWAIT` lock request could not
-///   acquire its lock immediately.
-///
+/// acquire its lock immediately.
 pub(crate) fn is_lock_error(e: &DbError) -> bool {
     use tokio_postgres::error::SqlState;
     e.code()
@@ -1576,7 +1462,7 @@ mod tests {
             DjogiError::InvalidRoleName("readonly".into()).is_terminal(),
             "InvalidRoleName must be terminal — a malformed role name is a programming error"
         );
-        // Phase 8.5 Cluster 4B (#101) — set-op outer ORDER BY rejection.
+        // #101) — set-op outer ORDER BY rejection.
         // An expression-form outer ordering cannot become a column-form
         // one by retrying; the fix is at the call site.
         assert!(
@@ -1624,10 +1510,10 @@ mod tests {
         );
     }
 
-    /// Phase 8ε T9.1 — `SetRoleOutsideTransaction` is a misuse signal,
+    /// 1 — `SetRoleOutsideTransaction` is a misuse signal,
     /// never retryable. Mirrors the `StreamOutsideTransaction`
     /// classification: the caller must restructure their code to wrap
-    /// the call in `atomic()`, not back off and retry.
+    /// the call in `atomic`, not back off and retry.
     #[test]
     fn set_role_outside_transaction_is_terminal() {
         let err = DjogiError::SetRoleOutsideTransaction;
@@ -1641,7 +1527,7 @@ mod tests {
         );
     }
 
-    /// Phase 8ε T9.1 — `InvalidRoleName` is a validation error;
+    /// 1 — `InvalidRoleName` is a validation error;
     /// retrying with the same string would fail again. The variant
     /// carries the offending name but the classification is fixed.
     #[test]
@@ -1651,7 +1537,7 @@ mod tests {
         assert!(!err.is_transient(), "InvalidRoleName must not be transient");
     }
 
-    /// Phase 8ε T9.1 — the `Display` formatter uses `{0:?}` to debug-
+    /// 1 — the `Display` formatter uses `{0:?}` to debug-
     /// quote the offending role name. This protects log lines from
     /// confusion when the input contains embedded quotes, semicolons,
     /// or other shell/SQL-loaded characters: the rendered form makes
@@ -1666,7 +1552,7 @@ mod tests {
         );
     }
 
-    /// Phase 8.5 #168 — `IsolationLevelOnNestedScope` is a programming
+    /// #168 — `IsolationLevelOnNestedScope` is a programming
     /// error. Postgres pins isolation at the outer BEGIN; retrying the
     /// same nested call cannot make Postgres reset isolation
     /// mid-transaction. The variant must classify as terminal so
@@ -1686,7 +1572,7 @@ mod tests {
         );
     }
 
-    /// Phase 8.5 #168 — `Display` for `IsolationLevelOnNestedScope`
+    /// #168 — `Display` for `IsolationLevelOnNestedScope`
     /// includes the requested isolation level so operators reading
     /// logs can identify what was rejected without consulting the
     /// stack trace.
@@ -1702,7 +1588,7 @@ mod tests {
         );
     }
 
-    /// Phase 8.5 #281 — a nested atomic cancellation poisons the parent
+    /// #281 — a nested atomic cancellation poisons the parent
     /// transaction. The only safe next step is rollback and retry from a fresh
     /// outer transaction, so generic retry classifiers must not treat the same
     /// context as reusable.
@@ -1718,7 +1604,7 @@ mod tests {
         );
     }
 
-    /// Phase 8.5 #282 — refusing a session-scoped raw statement inside an
+    /// #282 — refusing a session-scoped raw statement inside an
     /// existing transaction is a caller-structure error, not a transient
     /// runtime failure. Retrying the same closure against the same SQL will
     /// fail the same way.
@@ -1764,10 +1650,10 @@ mod tests {
         );
     }
 
-    /// Phase 8.5 #169 — `ConstraintModeOutsideTransaction` mirrors the
+    /// #169 — `ConstraintModeOutsideTransaction` mirrors the
     /// `SetRoleOutsideTransaction` classification: a caller invoking a
     /// transaction-scoped helper on a pool-backed context must
-    /// restructure their code to wrap the call in `atomic()`, not back
+    /// restructure their code to wrap the call in `atomic`, not back
     /// off and retry.
     #[test]
     fn constraint_mode_outside_transaction_is_terminal() {
@@ -1782,7 +1668,7 @@ mod tests {
         );
     }
 
-    /// Phase 8.5 #169 — `UnknownConstraintName` is a validation
+    /// #169 — `UnknownConstraintName` is a validation
     /// error; retry with the same string would fail again. The
     /// variant carries the offending name verbatim so log scrapers
     /// can identify what was rejected.
@@ -1798,7 +1684,7 @@ mod tests {
         );
     }
 
-    /// Phase 8.5 #169 — `ConstraintNotDeferrable` is terminal because
+    /// #169 — `ConstraintNotDeferrable` is terminal because
     /// a constraint declared non-deferrable cannot be deferred at
     /// runtime; the fix is at the model declaration. Verifies that
     /// the message names the offending constraint.
@@ -1818,9 +1704,9 @@ mod tests {
         );
     }
 
-    /// Phase 8.5 #173 — `ConcurrentReadsRequirePoolContext` is
+    /// #173 — `ConcurrentReadsRequirePoolContext` is
     /// terminal because the fix is structural (move outside
-    /// `atomic()`), not transient. Mirrors the
+    /// `atomic`), not transient. Mirrors the
     /// `SetRoleOutsideTransaction` shape.
     #[test]
     fn concurrent_reads_require_pool_context_is_terminal() {
@@ -1829,7 +1715,7 @@ mod tests {
         assert!(!err.is_transient());
     }
 
-    /// Phase 8.5 #169 (GPT-5.5 xhigh follow-up) —
+    /// #169 (
     /// `EmptyDeferConstraintsScope` is terminal because the empty
     /// slice is a programming error that retries cannot resolve.
     /// The message must mention `DeferScope::All` as the remediation
@@ -1852,7 +1738,7 @@ mod tests {
         );
     }
 
-    /// Phase 8.5 #169 (GPT-5.5 xhigh follow-up) —
+    /// #169 (
     /// `ConflictingDeferrabilitySpec` mirrors the projection-time
     /// gate at runtime. The fix is at the model declaration; retrying
     /// cannot resolve the underlying inventory disagreement.
@@ -1880,7 +1766,7 @@ mod tests {
         );
     }
 
-    /// Phase 8.5 #169 (GPT-5.5 xhigh follow-up) —
+    /// #169 (
     /// `OrphanDeferrabilitySpec` is terminal because the inventory
     /// shape is fixed at link time; no amount of retrying re-emits
     /// the missing `ModelDescriptor`.
@@ -1899,7 +1785,7 @@ mod tests {
         );
     }
 
-    /// Phase 8.5 #169 (GPT-5.5 xhigh follow-up) —
+    /// #169 (
     /// `DuplicateConstraintName` is terminal; the fix is at the
     /// model declaration, not at the retry site.
     #[test]

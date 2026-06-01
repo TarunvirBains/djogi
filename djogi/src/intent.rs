@@ -1,20 +1,15 @@
 //! `IntentFile` reader + precedence resolver.
-//!
 //! Adopters ship `.djogi/intent.json` at the workspace root carrying
 //! human-readable rationale for models and fields. The file is
 //! side-channel — its contents never reach the schema, migrations, or
 //! runtime; only `djogi docs` reads it, merging the rationale into the
 //! generated Markdown.
-//!
 //! Absent file ⇒ `Ok(None)` from [`load`]. I/O and parse errors are
 //! hard `Err`s so a typo doesn't silently disable rationale rendering.
-//!
 //! Resolver precedence ([`resolve_model_rationale`] /
 //! [`resolve_field_rationale`]): macro attribute wins, intent.json
 //! falls back.
-//!
 //! # Wire shape
-//!
 //! ```json
 //! {
 //!   "schema_url": "https://djogi.dev/schemas/v1/intent.json",
@@ -32,7 +27,6 @@
 //!   }
 //! }
 //! ```
-//!
 //! `models` and `fields` are `BTreeMap<String, _>` so docs rendering is
 //! byte-deterministic regardless of parse order.
 

@@ -1,5 +1,4 @@
 //! Window-only ranking functions for annotated querysets.
-//!
 //! `ROW_NUMBER`, `RANK`, and `DENSE_RANK` are window functions, not
 //! aggregates. Djogi models them separately from [`super::AggregateExpr`] so
 //! they cannot be used in aggregate-only terminals and so the generated SQL
@@ -14,12 +13,10 @@ use super::window::WindowSpec;
 /// One-shot comparison against an annotated window-function alias, lowered
 /// to an outer-`WHERE` predicate over a derived table by
 /// [`AnnotatedQuerySet::qualify`](crate::query::AnnotatedQuerySet::qualify).
-///
 /// PostgreSQL 18 has no `QUALIFY` clause, so a window-output filter has to
 /// be applied in an outer scope where the alias is in scope as a column
 /// reference. `QualifyCondition` captures that filter without ever
 /// emitting the literal `QUALIFY` token.
-///
 /// The value payload is typed: `BIGINT`-returning windows (`RowNumber`,
 /// `Rank`, `DenseRank`) produce an `i64` bind; `FLOAT8`-returning windows
 /// (`PercentRankWindow`, `CumeDistWindow`) produce an `f64` bind.
@@ -34,7 +31,6 @@ pub struct QualifyCondition {
 }
 
 /// The typed bind value carried by a [`QualifyCondition`].
-///
 /// `BIGINT` window functions (`ROW_NUMBER`, `RANK`, `DENSE_RANK`) store
 /// [`QualifyValue::Int`]; `FLOAT8` window functions (`PERCENT_RANK`,
 /// `CUME_DIST`) store [`QualifyValue::Float`]. The correct variant is chosen
@@ -51,7 +47,6 @@ pub(crate) enum QualifyValue {
 }
 
 /// Comparison operator family supported on window-output aliases.
-///
 /// Covers both `BIGINT`-returning windows (`RowNumber`, `Rank`, `DenseRank`)
 /// and `FLOAT8`-returning windows (`PercentRankWindow`, `CumeDistWindow`).
 /// The correct value type is carried separately in [`QualifyCondition`].
@@ -91,9 +86,7 @@ impl QualifyCondition {
 
 /// Build a `QualifyCondition` for `BIGINT`-returning window functions
 /// (`ROW_NUMBER`, `RANK`, `DENSE_RANK`).
-///
 /// # Panics
-///
 /// Panics when `alias` is `None`, i.e. when `.alias("…")` was not called
 /// before the comparison helper.
 fn build_qualify(alias: Option<&'static str>, op: QualifyOp, value: i64) -> QualifyCondition {
@@ -108,9 +101,7 @@ fn build_qualify(alias: Option<&'static str>, op: QualifyOp, value: i64) -> Qual
 
 /// Build a `QualifyCondition` for `FLOAT8`-returning window functions
 /// (`PERCENT_RANK`, `CUME_DIST`).
-///
 /// # Panics
-///
 /// Panics when `alias` is `None`, i.e. when `.alias("…")` was not called
 /// before the comparison helper.
 fn build_qualify_f64(alias: Option<&'static str>, op: QualifyOp, value: f64) -> QualifyCondition {
@@ -130,14 +121,12 @@ mod sealed_ranking {
 }
 
 /// Comparison helpers shared by every typed window-only ranking function.
-///
 /// `RowNumber`, `Rank`, and `DenseRank` all return `BIGINT`, so the typed
 /// `lt` / `lte` / `eq` / `gte` / `gt` lowering helpers are identical across
 /// the three types — only the underlying SQL keyword differs. This trait
 /// captures that shared surface as default methods so the per-type macro
 /// expansion is a 3-line `impl WindowRanking` rather than 5 × 3 = 15
 /// duplicate method bodies.
-///
 /// Sealed: only the `RowNumber` / `Rank` / `DenseRank` types in this module
 /// implement it.
 pub trait WindowRanking: sealed_ranking::Sealed {
@@ -260,28 +249,20 @@ macro_rules! define_window_rank_fn {
             }
 
             /// Add a `PARTITION BY` column to this window function.
-            ///
             /// # What
-            ///
             /// The column comes from a typed [`FieldRef`], so it has already
             /// passed Djogi's identifier validation path.
-            ///
             /// # Why
-            ///
             /// Partitioning restarts the row numbering or ranking per group,
             /// which is the common "top N per parent" shape.
-            ///
             /// # How
-            ///
             /// Call this once per partition key before `.alias(...)`.
-            ///
             /// ```ignore
             /// RowNumber::new()
             ///     .partition_by(fields.herd_id())
             ///     .order_by(fields.score().desc())
             ///     .alias("rank");
             /// ```
-            ///
             /// PR3: accepts `FieldRef<M, V>` or the post-flip root
             /// accessor return type `DjogiField<M, V>` through
             /// [`IntoSqlField`](crate::query::field::IntoSqlField).
@@ -297,32 +278,23 @@ macro_rules! define_window_rank_fn {
             }
 
             /// Add an `ORDER BY` term to this window function.
-            ///
             /// # What
-            ///
-            /// Accepts the [`OrderExpr`] produced by `FieldRef::asc()` or
-            /// `FieldRef::desc()` and stores its column and direction in the
+            /// Accepts the [`OrderExpr`] produced by `FieldRef::asc` or
+            /// `FieldRef::desc` and stores its column and direction in the
             /// window spec.
-            ///
             /// # Why
-            ///
             /// Ranking functions are only deterministic when the partition has
             /// an explicit order. Djogi keeps the order typed by reusing the
             /// same `OrderExpr` surface as `QuerySet::order_by`.
-            ///
             /// # How
-            ///
-            /// Pass `field.asc()` or `field.desc()`:
-            ///
+            /// Pass `field.asc` or `field.desc`:
             /// ```ignore
             /// Rank::new()
             ///     .partition_by(fields.herd_id())
             ///     .order_by(fields.score().desc())
             ///     .alias("rank");
             /// ```
-            ///
             /// # Panics
-            ///
             /// Panics if called with a spatial-distance ordering. The current
             /// [`WindowSpec`] stores column-name ordering terms, which is enough
             /// for typed ranking functions but not expression-backed spatial
@@ -334,32 +306,23 @@ macro_rules! define_window_rank_fn {
             }
 
             /// Set the output alias used by annotation decode and outer filters.
-            ///
             /// # What
-            ///
             /// The alias is emitted as `AS <alias>` in the inner annotated
             /// select and becomes the column referenced by
             /// [`AnnotatedQuerySet::qualify`](crate::query::AnnotatedQuerySet::qualify).
-            ///
             /// # Why
-            ///
             /// PostgreSQL 18 has no `QUALIFY` clause, so Djogi lowers
             /// `.qualify(...)` into `SELECT * FROM (<annotated select>) AS
             /// __djogi_q WHERE <alias predicate>`. A stable alias is required
             /// for that outer predicate and for row decoding.
-            ///
             /// # How
-            ///
             /// Pass a plain unquoted PostgreSQL identifier:
-            ///
             /// ```ignore
             /// DenseRank::new()
             ///     .order_by(fields.score().desc())
             ///     .alias("dense_rank");
             /// ```
-            ///
             /// # Panics
-            ///
             /// Panics when `alias` is empty, longer than PostgreSQL's usable
             /// identifier length, starts with an invalid byte, contains an
             /// invalid byte, or is a reserved PostgreSQL keyword. Also panics
@@ -367,7 +330,6 @@ macro_rules! define_window_rank_fn {
             /// prefix (e.g. `__djogi_q` would shadow the derived-table name
             /// used by qualify lowering; `__djogi_agg_N` would collide with
             /// the aggregate-tuple slot aliases used by row decode).
-            ///
             /// User-chosen aliases SHOULD also avoid colliding with the
             /// model's own column names — the outer `WHERE <alias>` would
             /// then reference the underlying column instead of the window
@@ -441,28 +403,22 @@ define_window_rank_fn!(RowNumber, "ROW_NUMBER", "rank");
 define_window_rank_fn!(Rank, "RANK", "rank");
 define_window_rank_fn!(DenseRank, "DENSE_RANK", "dense_rank");
 
-/// `PERCENT_RANK() OVER (...)` window-only annotation returning `f64`.
-///
-/// Cluster E T19. Zero-arg window function — the position of the
+/// `PERCENT_RANK OVER (...)` window-only annotation returning `f64`.
+/// T19. Zero-arg window function — the position of the
 /// current row as a fraction in `[0.0, 1.0]` within its partition,
 /// computed as `(rank - 1) / (total_rows - 1)`. First row is `0.0`;
 /// last is `1.0`. Ties share the same fraction.
-///
 /// # Distinct from PercentRank in [`crate::expr::AggregateExpr`]
-///
-/// The hypothetical-set form (`f.col().percent_rank_of(value)`,
-/// Cluster E T8) takes a literal value and answers "what fraction
+/// The hypothetical-set form (`f.col.percent_rank_of(value)`,
+/// T8) takes a literal value and answers "what fraction
 /// would this hypothetical value have if inserted?". This window form
-/// (`PercentRankWindow::new()` annotated on each row) gives every
+/// (`PercentRankWindow::new` annotated on each row) gives every
 /// returned row its actual fraction in the partition.
-///
 /// # Comparison helpers
-///
 /// `PERCENT_RANK` returns `f64`. Use `.lt(0.5)`, `.lte(0.9)`,
 /// `.gte(0.9)`, `.gt(0.0)`, or `.eq(1.0)` inside a
 /// [`.qualify(...)`](crate::query::AnnotatedQuerySet::qualify) closure
 /// to filter on the computed fraction:
-///
 /// ```ignore
 /// // Top half of each region by amount (ORDER BY amount DESC ⇒ rank 0 = highest).
 /// let rows = Sale::objects()
@@ -473,9 +429,7 @@ define_window_rank_fn!(DenseRank, "DENSE_RANK", "dense_rank");
 ///     .qualify(|w| w.lt(0.5))
 ///     .fetch_all(&mut ctx).await?;
 /// ```
-///
 /// The SQL shape is a derived table rather than `QUALIFY`:
-///
 /// ```sql
 /// SELECT * FROM (
 ///     SELECT t.id, ...,
@@ -485,9 +439,7 @@ define_window_rank_fn!(DenseRank, "DENSE_RANK", "dense_rank");
 /// ) AS __djogi_q
 /// WHERE amount_pct < $1
 /// ```
-///
 /// # Example
-///
 /// ```ignore
 /// let rows = Sale::objects()
 ///     .annotate(|f| PercentRankWindow::new()
@@ -504,26 +456,20 @@ pub struct PercentRankWindow {
     pub(crate) alias: Option<&'static str>,
 }
 
-/// `CUME_DIST() OVER (...)` window-only annotation returning `f64`.
-///
-/// Cluster E T19. Zero-arg window function — the cumulative
+/// `CUME_DIST OVER (...)` window-only annotation returning `f64`.
+/// T19. Zero-arg window function — the cumulative
 /// distribution: `(rows preceding or peer with current) / total_rows`
 /// in the partition. Result is in `(0.0, 1.0]`. First-position rows
 /// get `1/total`; last-position rows get `1.0`.
-///
 /// # Distinct from cume_dist_of in [`crate::expr::AggregateExpr`]
-///
-/// The hypothetical-set form (`f.col().cume_dist_of(value)`, Cluster
+/// The hypothetical-set form (`f.col.cume_dist_of(value)`, Cluster
 /// E T8) answers "what fraction would rank at-or-below this value?".
 /// This window form gives every row its actual cume-dist position in
 /// the partition.
-///
 /// # Comparison helpers
-///
 /// Same f64 qualify helpers as [`PercentRankWindow`] — `.lt(0.5)`,
 /// `.lte(0.9)`, `.gte(0.1)`, `.gt(0.0)`, and `.eq(1.0)` inside a
 /// [`.qualify(...)`](crate::query::AnnotatedQuerySet::qualify) closure.
-///
 /// ```ignore
 /// // Rows in the top 10 % by cumulative distribution.
 /// let rows = Sale::objects()
@@ -534,9 +480,7 @@ pub struct PercentRankWindow {
 ///     .qualify(|w| w.gte(0.9))
 ///     .fetch_all(&mut ctx).await?;
 /// ```
-///
 /// # Example
-///
 /// ```ignore
 /// let rows = Sale::objects()
 ///     .annotate(|f| CumeDistWindow::new()
@@ -580,7 +524,7 @@ macro_rules! impl_zero_arg_f64_window {
             }
 
             /// Add an `ORDER BY` term. Spatial-distance orderings
-            /// panic — pass a column `asc()` or `desc()`.
+            /// panic — pass a column `asc` or `desc`.
             #[must_use = "window functions are immutable builders - use the returned value"]
             pub fn order_by(mut self, order: OrderExpr) -> Self {
                 push_order_expr(&mut self.window, order);
@@ -611,7 +555,6 @@ macro_rules! impl_zero_arg_f64_window {
             }
 
             // ── f64 qualify helpers ─────────────────────────────────────────────
-            //
             // `PERCENT_RANK` and `CUME_DIST` both return `FLOAT8`. These
             // inherent helpers let callers write `.qualify(|w| w.lt(0.5))`
             // without importing any additional trait. Each delegates to
@@ -621,9 +564,7 @@ macro_rules! impl_zero_arg_f64_window {
 
             /// `<alias> < value` — outer `WHERE` predicate for this
             /// `FLOAT8`-returning window annotation.
-            ///
             /// # Example
-            ///
             /// ```ignore
             /// Sale::objects()
             ///     .annotate(|f| PercentRankWindow::new()
@@ -644,9 +585,7 @@ macro_rules! impl_zero_arg_f64_window {
             }
 
             /// `<alias> = value` — exact `FLOAT8` equality against the alias.
-            ///
             /// # Note on floating-point equality
-            ///
             /// `FLOAT8 = $1` has standard IEEE 754 precision caveats. This
             /// helper is reliable for the exact boundary values Postgres
             /// guarantees (`0.0` for the first `PERCENT_RANK` row, `1.0`
@@ -677,14 +616,11 @@ impl_zero_arg_f64_window!(PercentRankWindow, "PERCENT_RANK");
 impl_zero_arg_f64_window!(CumeDistWindow, "CUME_DIST");
 
 /// `NTILE(n) OVER (...)` window-only annotation returning `i32`.
-///
-/// Cluster E T19. Single-integer-arg window function — divides the
+/// T19. Single-integer-arg window function — divides the
 /// partition into `n` approximately-equal buckets and returns the
 /// bucket number (1..=n) of each row. Useful for quartile (n=4),
 /// quintile (n=5), or arbitrary equal-group bucketing.
-///
 /// # Example
-///
 /// ```ignore
 /// // Quartile salary placement per department
 /// let rows = Employee::objects()
@@ -694,7 +630,6 @@ impl_zero_arg_f64_window!(CumeDistWindow, "CUME_DIST");
 ///         .alias("salary_quartile"))
 ///     .fetch_all(&mut ctx).await?;
 /// ```
-///
 /// `n` is bound as a literal in the SQL; values must fit in `i32`.
 #[must_use = "window functions are lazy annotations - dropping one omits the column"]
 #[derive(Debug, Clone)]
@@ -764,21 +699,17 @@ impl NtileWindow {
 }
 
 /// Shared shape for column-argument window functions: `LEAD`, `LAG`,
-/// `FIRST_VALUE`, `LAST_VALUE`. Cluster E T18.
-///
+/// `FIRST_VALUE`, `LAST_VALUE`. T18.
 /// Each takes a column reference as the primary argument; `LEAD` /
 /// `LAG` additionally take an optional offset (default 1) and an
 /// optional default value (returned when the offset row is past the
 /// partition boundary).
-///
 /// All four return the column's own type at the typed surface;
 /// adopters decode into `V`. Today the typed wrapper around these
 /// stores the column name as a `&'static str` and the SQL emitter
 /// emits `<KEYWORD>(<col>) OVER (...)` (or
 /// `<KEYWORD>(<col>, <offset>, <default>) OVER (...)` for LEAD/LAG).
-///
 /// # Why a separate macro from the rank family
-///
 /// Rank-family windows (`ROW_NUMBER`, `RANK`, `DENSE_RANK`) take no
 /// arguments and return `i64`. Column-argument windows take one or
 /// more arguments and return the column's own type. Different
@@ -796,7 +727,7 @@ macro_rules! define_column_arg_window_fn {
         }
 
         impl<V> $type_name<V> {
-            /// Construct a window annotation reading from `target` —
+            /// Construct a window annotation reading from `target`
             /// the column whose value is reported per row by this
             /// window function. The typed wrapper carries `V` for
             /// row-decode at fetch time. PR3: accepts `FieldRef<M, V>`
@@ -869,15 +800,12 @@ define_column_arg_window_fn!(FirstValueWindow, "FIRST_VALUE");
 define_column_arg_window_fn!(LastValueWindow, "LAST_VALUE");
 
 /// `LEAD(col [, offset [, default]]) OVER (...)` window function.
-/// Cluster E T18.
-///
+/// T18.
 /// Returns the value of `col` from the row `offset` rows AFTER the
 /// current row in the partition (default offset is 1). When the
 /// computed row is past the partition's tail, returns `default` if
 /// supplied, else SQL NULL.
-///
 /// # Example
-///
 /// ```ignore
 /// // Compare each event to the next event in the same session
 /// let rows = Event::objects()
@@ -898,14 +826,11 @@ pub struct LeadWindow<V> {
 }
 
 /// `LAG(col [, offset [, default]]) OVER (...)` window function.
-/// Cluster E T18.
-///
+/// T18.
 /// Symmetric to [`LeadWindow`] — returns the value `offset` rows
 /// BEFORE the current row in the partition (default offset 1).
 /// Useful for "compare to previous" delta computations.
-///
 /// # Example
-///
 /// ```ignore
 /// // Compute revenue delta day-over-day
 /// let rows = Day::objects()
@@ -1015,14 +940,11 @@ macro_rules! impl_lead_lag {
 impl_lead_lag!(LeadWindow, "LEAD");
 impl_lead_lag!(LagWindow, "LAG");
 
-/// `NTH_VALUE(col, n) OVER (...)` window function. Cluster E T18.
-///
+/// `NTH_VALUE(col, n) OVER (...)` window function. T18.
 /// Returns the value of `col` from the `n`-th row of the window frame
 /// (1-indexed). When the frame has fewer than `n` rows, returns SQL
 /// NULL. Useful for "third-best per group" patterns.
-///
 /// # Example
-///
 /// ```ignore
 /// // Score of the third-highest entry per category
 /// let rows = Entry::objects()

@@ -1,23 +1,19 @@
 //! Spatial types for Djogi — gated behind the `spatial` feature flag.
-//!
 //! Enable with:
-//!
 //! ```toml
 //! djogi = { version = "…", features = ["spatial"] }
 //! ```
-//!
 //! # What is in this module
-//!
 //! - [`GeoPoint`] — a WGS-84 latitude/longitude coordinate, stored as
-//!   `GEOGRAPHY(Point, 4326)` in Postgres.
+//! `GEOGRAPHY(Point, 4326)` in Postgres.
 //! - [`LineString`] — an ordered sequence of two or more points, stored as
-//!   `GEOGRAPHY(LineString, 4326)`.
+//! `GEOGRAPHY(LineString, 4326)`.
 //! - [`Polygon`] — a closed ring (with optional holes), stored as
-//!   `GEOGRAPHY(Polygon, 4326)`.
+//! `GEOGRAPHY(Polygon, 4326)`.
 //! - [`MultiPoint`] — an unordered collection of one or more points, stored as
-//!   `GEOGRAPHY(MultiPoint, 4326)`.
+//! `GEOGRAPHY(MultiPoint, 4326)`.
 //! - [`MultiPolygon`] — a collection of one or more polygons, stored as
-//!   `GEOGRAPHY(MultiPolygon, 4326)`.
+//! `GEOGRAPHY(MultiPolygon, 4326)`.
 //! - [`GeographyValue`] — sealed trait implemented by all geometry types above.
 //! - [`GeoError`] — errors from coordinate validation and EWKB codec failures.
 
@@ -39,7 +35,6 @@ pub use polygon::Polygon;
 use thiserror::Error;
 
 /// Errors produced by the `geo` module.
-///
 /// All variants are `#[non_exhaustive]` at the enum level so callers must use
 /// a wildcard arm when matching — this preserves forward compatibility as new
 /// spatial types (and new error conditions) are added.
@@ -47,26 +42,22 @@ use thiserror::Error;
 #[non_exhaustive]
 pub enum GeoError {
     /// The latitude value is out of range or non-finite.
-    ///
     /// Valid latitude is any finite `f64` in `-90.0..=90.0`.
     #[error("invalid latitude {0}: must be finite and in -90.0..=90.0")]
     InvalidLatitude(f64),
 
     /// The longitude value is out of range or non-finite.
-    ///
     /// Valid longitude is any finite `f64` in `-180.0..=180.0`.
     #[error("invalid longitude {0}: must be finite and in -180.0..=180.0")]
     InvalidLongitude(f64),
 
     /// The EWKB buffer was structurally invalid.
-    ///
     /// The message describes the specific byte-level mismatch: wrong total
     /// length, unexpected endianness byte, or unrecognised geometry type word.
     #[error("malformed EWKB: {0}")]
     MalformedEwkb(String),
 
     /// The EWKB buffer decoded correctly but carried an SRID other than 4326.
-    ///
     /// Djogi only accepts WGS-84 geography (`SRID = 4326`). If a column was
     /// inserted with a different SRID, this error surfaces the actual SRID so
     /// the caller can diagnose the mismatch.
@@ -75,7 +66,6 @@ pub enum GeoError {
 
     /// A `LineString` was constructed with fewer than the required number of
     /// points.
-    ///
     /// `LineString` requires at least 2 distinct points. `got` is the number
     /// of points supplied; `need` is the minimum required.
     #[cfg(feature = "spatial")]
@@ -88,7 +78,6 @@ pub enum GeoError {
     },
 
     /// A `Polygon` ring failed validation.
-    ///
     /// The `reason` string describes the specific constraint that was violated:
     /// insufficient vertices, an unclosed ring, or a hole that fails the same
     /// constraints as the outer ring.
@@ -100,7 +89,6 @@ pub enum GeoError {
     },
 
     /// A `MultiPoint` was constructed with an empty point list.
-    ///
     /// `MultiPoint` requires at least one point.
     #[cfg(feature = "spatial")]
     #[error("invalid MultiPoint: {reason}")]
@@ -110,7 +98,6 @@ pub enum GeoError {
     },
 
     /// A `MultiPolygon` was constructed with an empty polygon list.
-    ///
     /// `MultiPolygon` requires at least one polygon.
     #[cfg(feature = "spatial")]
     #[error("invalid MultiPolygon: {reason}")]
@@ -120,7 +107,6 @@ pub enum GeoError {
     },
 
     /// A `MultiLineString` was constructed with an empty linestring list.
-    ///
     /// `MultiLineString` requires at least one `LineString`. Mirrors the
     /// non-empty invariant on `MultiPoint` and `MultiPolygon`.
     #[cfg(feature = "spatial")]
@@ -149,13 +135,11 @@ pub(crate) fn accepts_geography(ty: &postgres_types::Type) -> bool {
 
 /// Emit `ToSql` and `FromSql` impls for a geometry type that round-trips
 /// through `GEOGRAPHY(*, 4326)`.
-///
 /// Every Djogi geometry uses the identical codec pattern: write EWKB into the
 /// outbound `BytesMut` for `to_sql`, read EWKB via `from_ewkb_bytes` for
 /// `from_sql`, accept any column whose Postgres type name is `"geography"`.
 /// Spelling each one out by hand was ~30 lines per type × 5 types = 150
 /// duplicated lines; this macro collapses them into single-line invocations.
-///
 /// `$encode_into` is the path to a `pub(crate) fn(&Self, &mut impl BufMut)`
 /// that writes the EWKB representation directly into the bind buffer — no
 /// intermediate `Vec<u8>` allocation.
@@ -218,30 +202,24 @@ mod sealed_value {
 
 /// Sealed trait implemented by every Djogi geometry that maps to a
 /// `GEOGRAPHY(..., 4326)` column.
-///
 /// ## Purpose
-///
 /// Query APIs that accept "any geography value" are generic over this trait
 /// rather than enumerating concrete types. The seal prevents downstream crates
 /// from inventing geometries that the query layer does not know how to emit or
 /// decode. New geometry types ship via Djogi phases, not user code.
-///
 /// ## Wire format contract
-///
 /// Each implementor must round-trip through `GEOGRAPHY(<SUBTYPE>, 4326)` via
 /// EWKB encoding. The `GEO_TYPE_WORD` constant embeds both the SRID flag
 /// (`0x20000000`) and the base OGC geometry type number so the codec can
 /// dispatch on a single `u32` comparison.
-///
 /// ## Geometry type words
-///
-/// | Type          | Base | With SRID flag   |
+/// | Type | Base | With SRID flag |
 /// |---------------|------|------------------|
-/// | Point         |    1 | `0x20000001`     |
-/// | LineString    |    2 | `0x20000002`     |
-/// | Polygon       |    3 | `0x20000003`     |
-/// | MultiPoint    |    4 | `0x20000004`     |
-/// | MultiPolygon  |    6 | `0x20000006`     |
+/// | Point | 1 | `0x20000001` |
+/// | LineString | 2 | `0x20000002` |
+/// | Polygon | 3 | `0x20000003` |
+/// | MultiPoint | 4 | `0x20000004` |
+/// | MultiPolygon | 6 | `0x20000006` |
 #[cfg(feature = "spatial")]
 pub trait GeographyValue: sealed_value::Sealed {
     /// EWKB type word including the SRID flag (`0x20000000` ORed with the
@@ -255,7 +233,6 @@ pub trait GeographyValue: sealed_value::Sealed {
     fn to_ewkb_bytes(&self) -> Vec<u8>;
 
     /// Decode an EWKB buffer into `Self`.
-    ///
     /// Returns an error if the type word does not match `GEO_TYPE_WORD`,
     /// the SRID is not 4326, or the coordinate data is structurally invalid.
     fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError>
@@ -394,14 +371,11 @@ mod sealed_spatial_column_value {
 /// Sealed marker trait: this value type is valid as the Rust-side type
 /// of a SQL geography column referenced by a pair-tuple spatial
 /// annotation (e.g. [`crate::query::PairAreaOverlapRatio`]).
-///
 /// # Why a separate trait from [`GeographyValue`]
-///
 /// `GeographyValue` is implemented by concrete geometry types
 /// (`Polygon`, `GeoPoint`, …) and carries an EWKB encode/decode
 /// contract used by the scalar `Expr::area_of` / `area_of_intersection`
 /// constructors that bind already-known geometries as `bytea` literals.
-///
 /// `SpatialColumnValue` is for the *column-reference* case: the
 /// annotation only needs the column's static name; the actual value
 /// lives in the row and is materialised by Postgres. A column can be
@@ -410,22 +384,17 @@ mod sealed_spatial_column_value {
 /// doesn't satisfy `GeographyValue` (encoding a `None` to EWKB has no
 /// meaning at the type level — it would be a NULL value, which the
 /// scalar path handles via `bytea` NULL binds, not Rust-side encoding).
-///
 /// Splitting the bound keeps the scalar API's tight EWKB contract
 /// intact (every `GeographyValue` round-trips a concrete geometry)
-/// while letting the column-reference API accept nullable columns —
+/// while letting the column-reference API accept nullable columns
 /// the common case in adopter schemas where territory polygons may
 /// not yet be materialised for every row.
-///
 /// # Implementations
-///
 /// - Every `G: GeographyValue` (the bare-column case, e.g.
-///   `territory: Polygon`).
+/// `territory: Polygon`).
 /// - `Option<G>` for every `G: GeographyValue` (the nullable-column
-///   case, e.g. `territory: Option<Polygon>`).
-///
+/// case, e.g. `territory: Option<Polygon>`).
 /// # Sealing rationale
-///
 /// `Sealed` lives in [`sealed_spatial_column_value`], a `pub(crate)`
 /// module — downstream crates can name the trait as a bound but cannot
 /// add new impls. This matches the seal on `GeographyValue` and keeps

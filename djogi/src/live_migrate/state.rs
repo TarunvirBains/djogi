@@ -1,21 +1,16 @@
 //! `djogi_live_plans` — runtime state table for live migrations.
-//!
 //! Each row mirrors a single plan-file on disk. The plan file is the
 //! immutable definition (see [`crate::live_migrate::plan_file`]); the
 //! row in this table tracks the mutable runtime state — current step,
 //! backfill progress, last error, completion timestamps. Per the v3
 //! plan §1 D2 separation, the file holds the *what*, the row holds the
 //! *where*.
-//!
-//! # Multi-app + multi-database boundary (v3 §6.5)
-//!
+//! # Multi-app + multi-database boundary (.5)
 //! Live plans operate within one `(target_database, app_label)`
 //! bucket. Cross-app live plans are refused at compose time. The
 //! uniqueness invariant is on `(target_database, app_label, plan_id)`
-//! — the [`INSTALL_SQL`] DDL emits a matching unique index.
-//!
+//! the [`INSTALL_SQL`] DDL emits a matching unique index.
 //! # Daemon-mode claim columns
-//!
 //! `claimed_by_pid`, `claimed_by_host`, and `claimed_at` are owned by
 //! the daemon contract (see [`crate::live_migrate::daemon`]) rather
 //! than the plan contract. They are appended to the table by
@@ -25,9 +20,7 @@
 //! lifecycle (status / classification / step pointer) is unaffected
 //! by these columns; nothing outside the daemon poll loop reads or
 //! writes them.
-//!
 //! # Status and classification CHECK constraints
-//!
 //! The `status` and `classification` columns enforce a closed set of
 //! values via SQL CHECK. The Rust mirrors are [`PlanStatus`] and
 //! [`crate::live_migrate::plan::PlanClassification`]; their `as_db_str`
@@ -46,8 +39,7 @@ use crate::types::HeerId;
 
 /// DDL that idempotently installs the `djogi_live_plans` table plus
 /// the per-bucket lookup index.
-///
-/// Per v3 §6.5, every live plan is scoped to a single
+/// Per .5, every live plan is scoped to a single
 /// `(target_database, app_label)` bucket. `plan_id` is a HeerId, so
 /// the table-level `PRIMARY KEY` already prevents collisions
 /// regardless of bucket. The composite index
@@ -59,7 +51,6 @@ use crate::types::HeerId;
 /// without scanning. The `UNIQUE` qualifier is redundant as a
 /// uniqueness guarantee but documents the bucket-anchored access
 /// pattern.
-///
 /// Idempotent — safe to call on every runner invocation.
 pub const INSTALL_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS djogi_live_plans (
@@ -106,13 +97,11 @@ ALTER TABLE djogi_live_plans
 
 /// Lifecycle states for a live-plan row. Mirrors the SQL CHECK
 /// constraint on `djogi_live_plans.status` byte-for-byte.
-///
 /// State transitions are operator-driven via T10's CLI; the runner
 /// never auto-advances past an operator gate. `Failed`,
 /// `FailedTerminal`, and `Abandoned` are terminal — the runner refuses
 /// to advance past them. `FailedRetriable` indicates a transient
 /// failure that the daemon resume engine may automatically retry.
-///
 /// `#[non_exhaustive]` so future statuses (e.g. a `Quiesced` variant
 /// for the daemon-mode pause-and-claim path) can land without breaking
 /// downstream matches.
@@ -161,9 +150,8 @@ pub enum PlanStatus {
 }
 
 /// Single source of truth for `(PlanStatus, db-string)` pairs.
-///
-/// Both [`PlanStatus::as_db_str`] and [`PlanStatus::from_db_str`] —
-/// and the test that asserts INSTALL_SQL covers every variant —
+/// Both [`PlanStatus::as_db_str`] and [`PlanStatus::from_db_str`]
+/// and the test that asserts INSTALL_SQL covers every variant
 /// linear-scan this slice. The compile-time `_PLAN_STATUS_DRIFT_GUARD`
 /// block (an exhaustive match) is the guarantee that every variant
 /// lives in this table: adding a `PlanStatus` variant fails compile
@@ -187,7 +175,7 @@ const PLAN_STATUS_LABELS: &[(PlanStatus, &str)] = &[
 
 /// Compile-time exhaustiveness witness. Adding a `PlanStatus` variant
 /// without extending the inner `match` fails to compile here. The
-/// block has no runtime effect — the value is `()` — but the
+/// block has no runtime effect — the value is `` — but the
 /// exhaustive match enforces "every variant is named in source" so
 /// [`PLAN_STATUS_LABELS`] is forced to grow alongside (the test in
 /// the `tests` module asserts the slice covers every variant).
@@ -217,7 +205,6 @@ impl PlanStatus {
     /// lockstep with the CHECK constraint in [`INSTALL_SQL`] — the
     /// test in this module's `tests` block asserts every label
     /// appears verbatim.
-    ///
     /// Single source of truth: [`PLAN_STATUS_LABELS`]. Linear scan
     /// over an 11-element slice is microsecond-cheap and the
     /// drift-guard block above ensures every variant has a row.
@@ -242,7 +229,6 @@ impl PlanStatus {
 
 /// Owned shape of a `djogi_live_plans` row. Used by [`insert_row`] to
 /// stage a new plan and by [`fetch_row_by_id`] to read one back.
-///
 /// Mirrors the column list in [`INSTALL_SQL`] one-to-one. Time fields
 /// use [`time::OffsetDateTime`] per the project's no-`chrono` rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,7 +254,7 @@ pub struct LivePlanRow {
     pub last_progress_at: Option<OffsetDateTime>,
     pub completed_at: Option<OffsetDateTime>,
     pub last_error: Option<String>,
-    /// Phase 7 migration version that triggered this plan (the
+    /// Migration version that triggered this plan (the
     /// version string of the row in `djogi_schema_migrations`).
     pub originating_migration: String,
     pub target_database: String,
@@ -293,8 +279,7 @@ pub async fn install(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
 /// INSERT a fresh plan row in `pending` state. Refuses (via the
 /// underlying unique index) if a plan already exists in the same
 /// `(target_database, app_label)` bucket with the same `plan_id`.
-///
-/// The runner inserts this row OUTSIDE the migration's transaction —
+/// The runner inserts this row OUTSIDE the migration's transaction
 /// the row is the durable anchor for resume, not part of the migration's
 /// rollback semantics.
 pub async fn insert_row(ctx: &mut DjogiContext, row: &LivePlanRow) -> Result<(), DjogiError> {
@@ -414,8 +399,8 @@ fn row_to_live_plan_row(row: &tokio_postgres::Row) -> Result<LivePlanRow, DjogiE
 }
 
 /// Update a row's backfill progress. Sets `backfill_rows_done` and
-/// stamps `last_progress_at = now()`. Called by the chunked-backfill
-/// executor after each chunk commits — see v3 §3 line 413-419 for the
+/// stamps `last_progress_at = now`. Called by the chunked-backfill
+/// executor after each chunk commits — see line 413-419 for the
 /// "checkpoint write in same transaction as chunk" contract.
 pub async fn update_progress(
     ctx: &mut DjogiContext,
@@ -440,7 +425,6 @@ pub async fn update_progress(
 /// Writes both columns in one statement; called by the CLI runner as
 /// it advances through the step graph so resume points off the row's
 /// own pointer rather than re-deriving from log lines.
-///
 /// `current_step` is the [`crate::live_migrate::plan::StepKind`]'s
 /// snake_case label (per the serde rename) — the operator-facing
 /// status renderer can show it verbatim.
@@ -470,7 +454,7 @@ pub async fn update_step_index(
     Ok(())
 }
 
-/// Stamp the row's `completed_at` to `now()`. Called by `live finalize`
+/// Stamp the row's `completed_at` to `now`. Called by `live finalize`
 /// when the runner has executed every cleanup step and is about to
 /// promote the plan into [`PlanStatus::Complete`]. Status promotion
 /// itself flows through [`update_status`]; the two writes are not
@@ -545,14 +529,12 @@ pub async fn update_status_with_error(
 }
 
 /// Record a terminal or retriable failure on a plan row.
-///
 /// If `retriable` is `true`, the status transitions to
 /// [`PlanStatus::FailedRetriable`] — the daemon resume engine may
 /// automatically retry on the next poll cycle. If `retriable` is
 /// `false`, the status transitions to [`PlanStatus::FailedTerminal`]
 /// and no automatic retry is attempted; operator intervention is
 /// required.
-///
 /// Uses [`update_status_with_error`] internally so both the status and
 /// error message are persisted atomically in a single UPDATE.
 pub async fn record_failure(

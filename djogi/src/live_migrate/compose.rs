@@ -1,5 +1,4 @@
 //! Live-plan composition — helper functions and unit tests.
-//!
 //! This module defines the public entry points and data types used to
 //! generate live-migration plan files from schema descriptor drift.
 //! The compose pipeline diffs registered [`crate::descriptor::ModelDescriptor`]
@@ -14,7 +13,6 @@ use crate::live_migrate::plan_file::PlanFileError;
 // ── ComposeError ───────────────────────────────────────────────────────
 
 /// Errors raised by the compose pipeline.
-///
 /// Each variant maps to a single failure mode in the plan generation
 /// flow: schema diff, classification refusal, concurrency guard,
 /// I/O, serialisation, or database access. The enum is non-exhaustive
@@ -58,7 +56,6 @@ pub enum ComposeError {
 // ── ExtractResult ──────────────────────────────────────────────────────
 
 /// Outcome of inspecting a step list for backfill parameters.
-///
 /// Used by the runner to locate the [`StepKind::BackfillChunked`](
 /// crate::live_migrate::plan::StepKind::BackfillChunked) step in a plan
 /// and extract its table, predicate, column list, and batch size so
@@ -98,7 +95,7 @@ pub struct ComposeMeta {
     /// `Cargo.toml`, etc.). Used to resolve plan-file output paths
     /// relative to `migrations/<target_database>/live/`.
     pub workspace_root: std::path::PathBuf,
-    /// Phase 7 migration version that triggered this compose run.
+    /// Migration version that triggered this compose run.
     /// Recorded in the plan header's `originating_migration` field.
     pub originating_migration: String,
     /// Which of the three Djogi databases this plan targets
@@ -153,17 +150,14 @@ pub enum StepResult {
 // ── Public functions ───────────────────────────────────────────────────
 
 /// Compose live-migration plan files from schema descriptor drift.
-///
 /// Walks `descriptors`, diffs each against the snapshot at
 /// `snapshot_path`, classifies the resulting deltas, and emits plan
 /// files for any delta that routes through the live-plan pipeline
 /// (i.e., [`OnlineSafetyClassification::ExpandContract`](
 /// crate::migrate::OnlineSafetyClassification::ExpandContract)).
-///
 /// Returns a [`ComposeReport`] summarising what was written. Errors
 /// via [`ComposeError`] on diff failure, classification refusal, or
 /// I/O issues.
-///
 /// Refuses with [`ComposeError::ActivePlanExists`] when a non-terminal
 /// plan already owns the `(target_database, app_label)` bucket — the
 /// runtime ledger is the source of truth, and composing a second
@@ -277,7 +271,6 @@ pub async fn compose_live_plans(
 /// Inspect a plan's step list and extract backfill parameters if a
 /// [`StepKind::BackfillChunked`](crate::live_migrate::plan::StepKind::BackfillChunked)
 /// step is present.
-///
 /// Returns [`ExtractResult::Params`] with the table, filter predicate,
 /// column list, and batch size when the step is well-formed. Returns
 /// [`ExtractResult::NotBackfillChunked`] if no matching step exists,
@@ -299,7 +292,7 @@ pub fn extract_backfill_params(steps: &[crate::live_migrate::plan::Step]) -> Ext
                         filter: predicate_template.clone(),
                         // TODO: StepParameters::BackfillChunked doesn't have a
                         // columns field yet. Populate when the plan schema
-                        // gains per-column granularity (djogi#332).
+                        // gains per-column granularity.
                         columns: Vec::new(),
                         batch_size: *chunk_size as i64,
                     };
@@ -317,12 +310,10 @@ pub fn extract_backfill_params(steps: &[crate::live_migrate::plan::Step]) -> Ext
 }
 
 /// Verify that no live plan is currently active in the given bucket.
-///
 /// The bucket is identified by a single string key derived from the
 /// `(target_database, app_label)` pair. Format: `"target_db:app_label"`.
 /// If the bucket contains no colon, it is treated as an app_label with
 /// target_database defaulting to `"main"`.
-///
 /// If an active (non-terminal) plan row exists, returns
 /// [`ComposeError::ActivePlanExists`] to prevent concurrent live-plan
 /// execution on the same schema.
@@ -351,14 +342,11 @@ pub async fn check_no_active_plan(
 }
 
 /// Construct a minimal [`LivePlan`] skeleton from the supplied fields.
-///
 /// Populates the header with the given `plan_id`, `slug`, and
 /// `classification`. The step list is used verbatim. Originating-migration
 /// metadata is left at default values; the caller is responsible for
 /// filling them before persisting.
-///
 /// # Panics
-///
 /// Panics if `classification` is [`crate::migrate::OnlineSafetyClassification::FastLockDestructiveGuarded`],
 /// which does not route through the live-plan pipeline and should never
 /// reach this function.
@@ -390,7 +378,6 @@ pub fn build_skeleton_plan(
 }
 
 /// Sanitise an app label for use in file paths and database columns.
-///
 /// Replaces non-alphanumeric characters (except ASCII hyphen and
 /// underscore) with underscores. Collapses consecutive underscores to
 /// one. Strips leading and trailing underscores or hyphens. Lowercases

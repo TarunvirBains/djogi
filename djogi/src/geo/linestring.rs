@@ -1,12 +1,8 @@
 //! `LineString` — an ordered sequence of two or more `GeoPoint` values.
-//!
 //! Stored as `GEOGRAPHY(LineString, 4326)` in Postgres. The type enforces
 //! a minimum of two points at construction time; deserialization re-validates.
-//!
 //! # Wire format
-//!
 //! EWKB layout (little-endian, SRID 4326):
-//!
 //! ```text
 //! Offset  Size  Content
 //!      0     1  Endianness marker: 0x01 (little-endian)
@@ -23,22 +19,15 @@ use serde::{Deserialize, Serialize};
 use crate::geo::{GeoError, GeoPoint, ewkb};
 
 /// An ordered sequence of at least 2 `GeoPoint` values.
-///
 /// Stored as `GEOGRAPHY(LineString, 4326)` in Postgres.
-///
 /// # Invariant
-///
-/// `points.len() >= 2`. The constructor enforces this; deserialization
+/// `points.len >= 2`. The constructor enforces this; deserialization
 /// re-validates so a value in memory always satisfies the constraint.
-///
 /// # Display
-///
 /// `Display` emits `LINESTRING(<lon> <lat>, ...)` per the OGC WKT convention
 /// (longitude first within each coordinate pair).
-///
 /// # Serde
-///
-/// Serializes as a JSON array of `{"lat": f64, "lon": f64}` objects —
+/// Serializes as a JSON array of `{"lat": f64, "lon": f64}` objects
 /// the same shape that `GeoPoint` serializes to. Deserialization validates
 /// via `LineString::new`, so a list with fewer than two valid points yields a
 /// `serde` error.
@@ -49,7 +38,6 @@ pub struct LineString {
 
 impl LineString {
     /// Construct a `LineString` from a slice of points.
-    ///
     /// Returns `Err(GeoError::InvalidLineString)` if fewer than 2 points are
     /// supplied. Each `GeoPoint` is assumed to be valid (already constructed
     /// via `GeoPoint::new`).

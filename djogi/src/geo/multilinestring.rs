@@ -1,13 +1,9 @@
 //! `MultiLineString` — a collection of one or more `LineString` values.
-//!
 //! Stored as `GEOGRAPHY(MultiLineString, 4326)` in Postgres. The type enforces
 //! a minimum of one linestring at construction time; deserialization
 //! re-validates.
-//!
 //! # Wire format
-//!
 //! EWKB layout (little-endian, SRID 4326):
-//!
 //! ```text
 //! Offset  Size  Content
 //!      0     1  Endianness marker: 0x01 (little-endian)
@@ -17,7 +13,6 @@
 //!     13   var  Sub-linestrings: each is a headerless EWKB linestring —
 //!               [endian_byte(1), ls_type_word_no_srid(4), point_count(4), points...]
 //! ```
-//!
 //! Each sub-linestring carries its own endianness byte and type word
 //! (`0x00000002`, no SRID flag) but no SRID — the outer container holds it.
 //! Parallels the `MultiPoint` / `MultiPolygon` envelope discipline so a single
@@ -30,15 +25,10 @@ use serde::{Deserialize, Serialize};
 use crate::geo::{GeoError, LineString, ewkb};
 
 /// A collection of at least 1 `LineString`.
-///
 /// Stored as `GEOGRAPHY(MultiLineString, 4326)` in Postgres.
-///
 /// # Display
-///
 /// `Display` emits `MULTILINESTRING((<lon> <lat>, ...), ...)` per OGC WKT.
-///
 /// # Serde
-///
 /// Serializes as an array of linestrings (each linestring is itself an array
 /// of `{"lat": f64, "lon": f64}` objects). Deserialization validates via
 /// `MultiLineString::new`, so an empty array yields a `serde` error.
@@ -49,7 +39,6 @@ pub struct MultiLineString {
 
 impl MultiLineString {
     /// Construct a `MultiLineString` from a `Vec` of `LineString` values.
-    ///
     /// Returns `Err(GeoError::InvalidMultiLineString)` if `lines` is empty.
     pub fn new(lines: Vec<LineString>) -> Result<Self, GeoError> {
         if lines.is_empty() {

@@ -1,32 +1,24 @@
 //! Comparison methods on [`Expr<T>`] — the `Expr<bool>`-producing operations.
-//!
 //! # What
-//!
 //! Six methods — `eq`, `neq`, `gt`, `gte`, `lt`, `lte` — each consuming
 //! `self` and a right-hand-side operand that implements `Into<Expr<T>>`
 //! (so literals, other expressions, and field refs all interop). Each
 //! returns `Expr<bool>` by wrapping the two operands in
 //! [`crate::expr::node::ExprNode::Cmp`] with the matching [`CmpOp`].
-//!
 //! # Why `Into<Expr<T>>` on the RHS?
-//!
 //! The ergonomic target is:
-//!
 //! ```ignore
 //! f.balance().as_expr().lt(100i64)                // literal RHS
 //! f.balance().as_expr().lt(f.overdraft_limit().as_expr())  // field RHS
 //! f.balance().as_expr().lt(f.balance().as_expr() + Expr::literal(10))  // arithmetic RHS
 //! ```
-//!
 //! All three RHS forms are `Into<Expr<i64>>`: literals via the
 //! [`super::literal`] impls, `Expr<T>` via the reflexive `From<T> for T`,
 //! and arithmetic expressions because [`super::arithmetic`] returns
 //! `Expr<T>`. One generic bound covers every call site; no method
 //! overloads needed.
-//!
 //! # Why `Expr<bool>` and not `Condition`?
-//!
-//! The Phase 2 `FieldRef::eq` returns [`crate::query::condition::Condition`]
+//! The `FieldRef::eq` returns [`crate::query::condition::Condition`]
 //! directly — that surface is for literal-RHS filters built in closures.
 //! The expression IR is the path for field-vs-field / arithmetic /
 //! subquery predicates, so it stays on the `Expr<bool>` type until the
@@ -54,7 +46,6 @@ impl<T> Expr<T> {
     }
 
     /// `lhs = rhs` — SQL equality as an expression.
-    ///
     /// The returned `Expr<bool>` slots into
     /// [`crate::query::QuerySet::filter_expr`] via the
     /// [`crate::query::condition::Condition::Expr`] bridge, or into

@@ -1,48 +1,37 @@
 //! `QuerySet<T>` — the lazy query builder.
-//!
 //! # What
-//!
 //! [`QuerySet<T>`] accumulates filter conditions, ordering, distinct mode,
 //! and pagination (`limit` / `offset`) without hitting the database. Every
 //! builder method (`filter`, `exclude`, `order_by`, `limit`, `offset`,
 //! `distinct`, `distinct_on`) consumes `self` and returns `Self`, so a
 //! `QuerySet` is immutable-by-convention: composition never mutates an
 //! existing queryset in place.
-//!
-//! `T::objects()` (default method on the `Model` trait, added in Task 5)
+//! `T::objects` (default method on the `Model` trait, added in Task 5)
 //! constructs an empty `QuerySet<T>` — no filters, no ordering, no limit.
 //! This is the entry point for every query.
-//!
 //! # Why
-//!
 //! Terminal methods (Task 6 — `fetch_all`, `fetch_one`, `count`, `exists`,
 //! `first`, `update`, `delete`) are the **only** place SQL is generated or
 //! executed. Everything else is a cheap structural transformation: `Condition`
 //! trees shared across clones, small `Vec`s for ordering and distinct_on
 //! column lists, POD enums for distinct mode.
-//!
 //! Builder methods that append to accumulators (currently only `order_by`)
 //! follow Django-style semantics: calling `.order_by(...)` twice **appends**
 //! rather than replaces, so library code can add a stable tiebreaker without
 //! clobbering the caller's primary ordering. Replace semantics would force
 //! every caller to know every prior `order_by` call, which composes poorly.
-//!
 //! [`QuerySet::none`] is a structural short-circuit — `is_empty = true`
 //! causes every terminal method (Task 6) to return the empty result without
 //! a database round-trip. Useful for authorization branches
-//! (`if !can_read { return qs.none(); }`) that would otherwise hit the DB
+//! (`if !can_read { return qs.none; }`) that would otherwise hit the DB
 //! just to prove the obvious.
-//!
 //! # Variance
-//!
-//! `PhantomData<fn() -> T>` makes `QuerySet<T>` **covariant** in `T` and
+//! `PhantomData<fn -> T>` makes `QuerySet<T>` **covariant** in `T` and
 //! ensures `Send + Sync` regardless of `T`'s own markers (the queryset
 //! never owns or borrows a `T`, it merely tags which model the filters are
 //! aimed at). This matches `FieldRef<M, V>`'s variance so closures that
 //! take `T::Fields` and return `Condition` compose without lifetime gymnastics.
-//!
 //! # How (user surface)
-//!
 //! ```ignore
 //! use djogi::prelude::*;
 //!
@@ -68,7 +57,6 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 
 /// `DISTINCT` mode for a QuerySet.
-///
 /// `None` emits a plain `SELECT ...`. `Plain` emits `SELECT DISTINCT ...`.
 /// `On(cols)` emits `SELECT DISTINCT ON (col_a, col_b) ...` — the Postgres
 /// extension that keeps the first row per `(col_a, col_b)` tuple, where
@@ -88,9 +76,7 @@ pub enum DistinctMode {
 
 /// Type-erased binding from a [`QuerySet`] to a [`sassi::Punnu`] for the
 /// post-fetch cache hook.
-///
 /// # What
-///
 /// Implementors carry a concrete `sassi::Punnu<T>` and expose a single
 /// async [`CacheTarget::insert`] hook that the terminal methods call
 /// once per fetched row. The trait is `pub(crate)` because it exists
@@ -98,18 +84,14 @@ pub enum DistinctMode {
 /// [`QuerySet`] struct (`Punnu<T: Cacheable>` would otherwise force
 /// the bound onto every `impl<T: Model> QuerySet<T>` block via rustc's
 /// well-formedness check).
-///
 /// # Why a trait object, not `Option<Punnu<T>>`
-///
 /// See the doc on [`QuerySet::cache_target`] — the upshot is that
 /// naming `Punnu<T>` directly in the `QuerySet` field set would
 /// propagate `T: sassi::Cacheable` everywhere the struct is named.
 /// Type-erasing the handle through this trait keeps that bound
 /// localised to [`QuerySet::cache`], which is the only place it
 /// actually matters.
-///
 /// # Why async-fn-in-trait
-///
 /// `Punnu::insert` is async (it write-throughs to any attached L2
 /// backend), so the hook must be async too. The Send bound on the
 /// returned future matches the `+ Send` shape every QuerySet terminal
@@ -117,10 +99,9 @@ pub enum DistinctMode {
 /// multi-thread executor.
 pub(crate) trait CacheTarget<T>: Send + Sync {
     /// Insert one row into the bound Punnu. Returns a `+ Send` future
-    /// that resolves to `()` (errors are logged and swallowed inside
+    /// that resolves to `` (errors are logged and swallowed inside
     /// the implementor — see [`PunnuCacheTarget::insert`] — so the
     /// fetch terminal is never aborted by a cache-side failure).
-    ///
     /// Takes `&T` (not `T`) because the terminal still owns the
     /// fetched `Vec<T>` and returns it to the caller — the cache
     /// hook is a side-effect on a borrow, not a transfer of
@@ -131,7 +112,6 @@ pub(crate) trait CacheTarget<T>: Send + Sync {
     /// trait keeps the `T: Clone` bound off every terminal-method
     /// signature in `terminal.rs`, preserving the pre-T7.3 surface
     /// for adopters who never call `.cache(...)`.
-    ///
     /// `&self` (not `&mut`) because `Punnu::insert` does. Returning
     /// a boxed future keeps the trait object-safe.
     fn insert<'a>(
@@ -141,9 +121,7 @@ pub(crate) trait CacheTarget<T>: Send + Sync {
 }
 
 /// Concrete [`CacheTarget`] backed by a `sassi::Punnu<T>`.
-///
 /// # Why a wrapper, not a blanket impl on `Punnu<T>`
-///
 /// `Punnu<T>` lives in the sibling `sassi` crate; the orphan rule
 /// forbids implementing a djogi-owned trait on a sassi-owned type
 /// outside djogi without a wrapper. The wrapper is also where errors
@@ -177,12 +155,11 @@ impl<T: crate::types::Cacheable + Clone> CacheTarget<T> for PunnuCacheTarget<T> 
         let punnu = self.punnu.clone();
         let value = value.clone();
         Box::pin(async move {
-            // Per Cluster 8δ granular plan §3 commit T7.3 risk note
+            // Per granular plan §3 commit T7.3 risk note
             // (line 148): "Errors from `insert` (e.g.,
             // `InsertError::Conflict` under `OnConflict::Reject`)
             // MUST NOT abort the fetch; log via `tracing::warn!` and
             // continue. Do NOT add `?` to the insert."
-            //
             // The terminal contract is "fetch returned rows;
             // cache-side write-through is best-effort". A conflict
             // under `OnConflict::Reject`, an L2-backend
@@ -203,20 +180,17 @@ impl<T: crate::types::Cacheable + Clone> CacheTarget<T> for PunnuCacheTarget<T> 
 
 /// Lazy query builder. Nothing hits the database until a terminal method
 /// (added in Task 6) is called.
-///
 /// See the module-level documentation for design rationale, variance, and
 /// short-circuit semantics.
 pub struct QuerySet<T: Model> {
     /// Accumulated filter tree. Starts as
-    /// [`Q::always_true()`](crate::query::Q) — the vacuous identity
-    /// — and grows via AND as `filter` / `exclude` / `filter_struct` /
+    /// [`Q::always_true`](crate::query::Q) — the vacuous identity
+    /// and grows via AND as `filter` / `exclude` / `filter_struct` /
     /// `exclude_struct` are chained.
-    ///
     /// # Substrate
-    ///
-    /// As of Cluster 8γ Stage 2 (T6.9), the queryset's filter
+    /// As of (T6.9), the queryset's filter
     /// substrate is the [`Q<T>`](crate::query::Q) algebra rather than
-    /// the legacy [`Condition`] tree. Phase 8eta PR2b made SQL emission
+    /// the legacy [`Condition`] tree. made SQL emission
     /// walk `Q<T>` directly: legacy [`Condition`] payloads still
     /// round-trip as `Q::Condition(_)`, while trusted portable
     /// predicates stay as `Q::Portable(_)` and emit through the
@@ -228,8 +202,7 @@ pub struct QuerySet<T: Model> {
     /// not replace.
     pub(crate) ordering: Vec<OrderExpr>,
     /// `true` when user code explicitly called [`QuerySet::order_by`].
-    ///
-    /// `QuerySet::new()` may seed `ordering` from
+    /// `QuerySet::new` may seed `ordering` from
     /// [`Model::default_order_by`], especially for proxy models.
     /// Mutating terminals should reject only *explicit* `order_by(...)`
     /// tails, not model-default ordering.
@@ -245,12 +218,10 @@ pub struct QuerySet<T: Model> {
     // is `true`. For mutation terminals (`update`/`delete` families), this
     // short-circuit runs AFTER unsupported-state validation, matching the
     // validate-then-short-circuit contract in `insert_select.rs`.
-    // This is the point of `QuerySet::none()` — authorization / feature-flag
+    // This is the point of `QuerySet::none` — authorization / feature-flag
     // branches can short-circuit the DB round-trip without a special-cased
     // `if` at the call site.
-    //
     // Grep marker: TASK6:empty_contract
-    //
     /// Short-circuit flag — `true` means terminal methods return the
     /// empty result without a DB round-trip. Set only by
     /// [`QuerySet::none`].
@@ -280,36 +251,32 @@ pub struct QuerySet<T: Model> {
     /// path follow-up query — and combining them would leak that
     /// distinction into the type.
     pub(crate) select_related_paths: Vec<ErasedSelectRelated>,
-    /// Row-level lock mode — Phase 4 Task 7 shipped the `ForUpdate*`
-    /// family; djogi#104 added the `ForShare*` family. Default
+    /// Row-level lock mode — shipped the `ForUpdate*`
+    /// family; added the `ForShare*` family. Default
     /// [`LockMode::None`] emits no tail; non-default variants append
     /// `FOR UPDATE` / `FOR SHARE` (optionally `NOWAIT` / `SKIP LOCKED`)
     /// to the SELECT. See [`crate::query::lock`] for the full behaviour
     /// table and the pool-backed footgun note.
     pub(crate) lock: crate::query::lock::LockMode,
-    /// Optional Punnu binding — Cluster 8δ T7.3. When `Some(handle)`,
+    /// Optional Punnu binding — 3. When `Some(handle)`,
     /// every terminal method that produces user-facing rows
     /// (`fetch_all` / `first` / `fetch_one`) inserts each fetched row
     /// into the bound Punnu via [`sassi::Punnu::insert`] post-fetch,
     /// before returning the value to the caller. Identity-map
     /// semantics + the configured [`sassi::OnConflict`] policy from
     /// sassi apply.
-    ///
     /// # Why a type-erased handle, not `Option<Punnu<T>>` directly
-    ///
     /// `sassi::Punnu<T>` is defined `Punnu<T: Cacheable>`, so naming
     /// the type in a field of `QuerySet<T: Model>` would force
     /// `T: Cacheable` onto every existing `impl<T: Model> QuerySet<T>`
     /// block in the crate (the bound propagates structurally through
     /// rustc's well-formedness check). Type-erasing the binding
     /// through [`CacheTarget`] keeps the existing surface — every
-    /// non-cache builder, every terminal, every Clone / Debug impl —
+    /// non-cache builder, every terminal, every Clone / Debug impl
     /// unchanged for non-cacheable `T`. The bound `T: Cacheable` is
     /// applied only on the [`QuerySet::cache`](Self::cache) builder
     /// where it actually matters.
-    ///
     /// # Why `Arc`-cheap cloning
-    ///
     /// `sassi::Punnu<T>` is `Arc`-internal
     /// (`sassi-reference/sassi/src/punnu/pool.rs` lines 112–122 — the
     /// struct holds a single `Arc<PunnuInner<T>>` and `Clone` clones
@@ -317,9 +284,7 @@ pub struct QuerySet<T: Model> {
     /// clones a single `Arc<dyn ...>` handle. Binding a queryset to a
     /// Punnu therefore records "this QuerySet feeds that Punnu
     /// instance" rather than taking a snapshot of the pool's contents.
-    ///
     /// # Why outside the SQL emit path
-    ///
     /// The SQL emitter ([`crate::query::sql::build_select`] and
     /// friends) never reads this field. The cache modifier is purely
     /// additive: SQL output, query plan, and the lifetime of the
@@ -333,7 +298,6 @@ pub struct QuerySet<T: Model> {
 
 /// A queryset whose accumulated predicate tree has been proven reducible to
 /// Sassi's portable [`BasicPredicate`](sassi::BasicPredicate) algebra.
-///
 /// Constructed only by [`QuerySet::try_portable`]. The stored predicate is
 /// produced by a trusted borrow-walk over `Q<T>`; there is no public
 /// constructor accepting a raw Sassi predicate, so downstream code cannot
@@ -345,7 +309,6 @@ pub struct PortableQuerySet<T: Model> {
 }
 
 /// Cached terminal wrapper for a portable queryset.
-///
 /// The wrapper owns the database queryset and borrows the target Punnu only
 /// long enough to clone Sassi's cheap handle before delegating to the existing
 /// QuerySet terminal implementations.
@@ -455,7 +418,6 @@ impl<T: Model> PortableQuerySet<T> {
 impl<T: Model + crate::types::Cacheable + Clone> PortableQuerySet<T> {
     /// Bind a [`sassi::Punnu`] to the queryset so that rows returned by the
     /// next terminal call are mirrored into the Punnu's identity map.
-    ///
     /// The returned [`CachedPortableQuerySet`] borrows `punnu` only long
     /// enough to clone Sassi's cheap `Arc`-backed handle when the terminal
     /// fires; the queryset itself stays owned. Cache binding only applies
@@ -470,7 +432,6 @@ impl<T: Model + crate::types::Cacheable + Clone> PortableQuerySet<T> {
 impl<T: Model + crate::types::Cacheable + Clone> CachedPortableQuerySet<'_, T> {
     /// Run the queryset, return every matching row, and mirror the rows
     /// into the bound Punnu's identity map.
-    ///
     /// Cache binding happens at the moment of the terminal call: the
     /// captured `&Punnu<T>` is cloned into the queryset's cache target,
     /// and the existing [`QuerySet::fetch_all`] terminal pipeline upserts
@@ -514,7 +475,6 @@ impl<T: Model + crate::types::Cacheable + Clone> CachedPortableQuerySet<'_, T> {
     }
 
     /// Run the queryset and return the row count.
-    ///
     /// Cache binding is intentionally not applied — `COUNT(*)` returns no
     /// rows for the identity map to absorb. Adopters wanting both a count
     /// and the rows themselves should issue separate `fetch_all` and
@@ -538,7 +498,6 @@ where
     T: Model + crate::types::Cacheable + Clone + crate::pg::decode::FromPgRow,
 {
     /// Render the plain `SELECT` SQL for test assertions.
-    ///
     /// Mirrors [`QuerySet::render_select_sql_for_testing`] without forcing
     /// tests to unwrap the cache-bound wrapper.
     pub fn render_select_sql_for_testing(&self) -> Result<String, PortablePredicateError> {
@@ -552,9 +511,9 @@ impl<T: Model + crate::types::Cacheable + Clone> std::fmt::Debug for CachedPorta
     }
 }
 
-// Phase 8eta PR2b — manual `Clone` for `QuerySet<T>`. `Q<T>` itself
+// Manual `Clone` for `QuerySet<T>`. `Q<T>` itself
 // carries a manual `Clone` impl (no `T: Clone` propagation), so this
-// just delegates `condition.clone()` directly without lowering through
+// just delegates `condition.clone` directly without lowering through
 // `q_to_condition_ref`. The pre-PR2b lower-and-rewrap approach forced
 // every clone to flatten the trusted-portable wrapper into a legacy
 // `Condition` tree, which `BasicPredicate::Field(_)` could not survive
@@ -581,8 +540,8 @@ impl<T: Model> Clone for QuerySet<T> {
             select_related_paths: self.select_related_paths.clone(),
             // `LockMode` is `Copy` — bit-copy is trivial.
             lock: self.lock,
-            // Cluster 8δ T7.3: `Arc::clone` on the trait-object handle
-            // — the underlying `Punnu<T>` is `Arc`-internal so the bind
+            // 3: `Arc::clone` on the trait-object handle
+            // the underlying `Punnu<T>` is `Arc`-internal so the bind
             // semantics carry through every queryset clone. A clone of
             // a `.cache(&p)`-bound queryset still feeds the same `p`.
             cache_target: self.cache_target.clone(),
@@ -591,7 +550,7 @@ impl<T: Model> Clone for QuerySet<T> {
     }
 }
 
-// Phase 8eta PR2b — `Debug` impl uses the manual `Q<T>: Debug` walker
+// `Debug` impl uses the manual `Q<T>: Debug` walker
 // directly. Pre-PR2b the impl lowered through `q_to_condition_ref` to
 // avoid `T: Debug`; the new `Q<T>` manual `Debug` walker handles the
 // model-bound elision in one place, so this impl just forwards. SQL
@@ -601,7 +560,7 @@ impl<T: Model> Clone for QuerySet<T> {
 // retired bridge.
 impl<T: Model> std::fmt::Debug for QuerySet<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Cluster 8δ T7.3: `cache_target` is intentionally excluded
+        // 3: `cache_target` is intentionally excluded
         // from the Debug projection. The cache modifier is purely
         // additive on the post-fetch side (SQL output, query plan,
         // and every accumulator on the build path are byte-identical
@@ -629,7 +588,6 @@ where
     T: Model + crate::pg::decode::FromPgRow,
 {
     /// Render the plain `SELECT` SQL for test assertions.
-    ///
     /// Exposed only under the `testing` feature so integration tests can pin
     /// SQL-emitter invariants without coupling to the `Debug` projection.
     pub fn render_select_sql_for_testing(&self) -> Result<String, PortablePredicateError> {
@@ -645,8 +603,7 @@ impl<T: Model> Default for QuerySet<T> {
 
 /// AND-combine an arbitrary `IntoQ<T>` term onto an existing `Q<T>`
 /// substrate without flattening the existing structure.
-///
-/// Phase 8eta PR2b — replaces the pre-PR2b
+/// Replaces the pre-PR2b
 /// `and_condition_into_q(Q<T>, Condition) -> Q<T>` helper. The pre-PR2b
 /// helper lowered the existing `Q<T>` through `q_to_condition` and
 /// re-wrapped the combined result as `Q::Condition(_)`, which destroyed
@@ -654,7 +611,6 @@ impl<T: Model> Default for QuerySet<T> {
 /// new helper composes through `Q<T>: BitAnd<Q<T>>` so portable leaves
 /// stay reducible at the cache boundary (PR4) and `Q::Portable & Q::Portable`
 /// flattens through the trusted Sassi reducer.
-///
 /// `Q::Portable(PortablePredicate::True)` (the unfiltered identity)
 /// short-circuits to the addition unchanged so unfiltered querysets do
 /// not pick up a redundant `TRUE AND ...` wrapper.
@@ -702,19 +658,16 @@ fn is_q_vacuously_true<T: Model>(q: &Q<T>) -> bool {
 impl<T: Model> QuerySet<T> {
     /// Construct an empty QuerySet — or, for proxy models, one seeded
     /// with the proxy's `#[model(default_filter, default_order)]` state.
-    /// Prefer `T::objects()` at call sites — it is the idiomatic
+    /// Prefer `T::objects` at call sites — it is the idiomatic
     /// spelling and reads as "all objects of this model (before
     /// filtering)".
-    ///
-    /// # Proxy default-filter / default-order seeding (Phase 8β T3.4)
-    ///
+    /// # Proxy default-filter / default-order seeding (4)
     /// Reads [`Model::default_filter_condition`] and
     /// [`Model::default_order_by`] at construction time. Non-proxy
     /// models inherit the default trait impls (returns `None` /
-    /// `Vec::new()`) so the seeded queryset is structurally identical
+    /// `Vec::new`) so the seeded queryset is structurally identical
     /// to the pre-T3.4 surface; rustc inlines the `None` / empty `Vec`
     /// returns and folds the seeding step away on the hot path.
-    ///
     /// Proxy models override the trait methods via the macro, so the
     /// seeded queryset starts with the proxy's lowered SQL fragment
     /// already in `condition` and the proxy's ordering already in
@@ -726,10 +679,10 @@ impl<T: Model> QuerySet<T> {
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn new() -> Self {
         // Proxy default filter (8β T3.4) → Q<T> (8γ Stage 2 substrate flip).
-        // `T::default_filter_condition()` returns `Option<Condition>`; wrap
+        // `T::default_filter_condition` returns `Option<Condition>`; wrap
         // any returned condition in `Q::Condition(c)` so it round-trips
         // through the bridge with identical SQL. Non-proxy models return
-        // `None` → `Q::always_true()` (same vacuous-truth as the pre-flip
+        // `None` → `Q::always_true` (same vacuous-truth as the pre-flip
         // `Condition::True` default).
         let condition = T::default_filter_condition().map_or_else(Q::always_true, |c| {
             use crate::query::q::Q;
@@ -747,7 +700,7 @@ impl<T: Model> QuerySet<T> {
             prefetch_paths: Vec::new(),
             select_related_paths: Vec::new(),
             lock: crate::query::lock::LockMode::None,
-            // Cluster 8δ T7.3: opt-in. The default queryset has no
+            // 3: opt-in. The default queryset has no
             // cache binding; `.cache(&p)` (defined in a separate
             // `impl<T: Model + sassi::Cacheable>` block) sets this
             // to `Some(_)`.
@@ -757,12 +710,10 @@ impl<T: Model> QuerySet<T> {
     }
 
     /// Performs an `INNER JOIN LATERAL` against the provided `inner` queryset.
-    ///
     /// Returns a [`LateralQuerySet`] that evaluates to `(L, R)` tuples.
     /// Parent rows (`L`) are dropped from the result if the `inner`
     /// queryset returns no rows for that parent.
-    ///
-    /// Inside `inner`, you can use `OuterRef::as_lateral_outer_expr()` to
+    /// Inside `inner`, you can use `OuterRef::as_lateral_outer_expr` to
     /// refer to columns from this outer queryset.
     pub fn join_lateral<R: Model>(
         self,
@@ -776,12 +727,10 @@ impl<T: Model> QuerySet<T> {
     }
 
     /// Performs a `LEFT JOIN LATERAL` against the provided `inner` queryset.
-    ///
     /// Returns a [`LateralQuerySet`] that evaluates to `(L, Option<R>)` tuples.
     /// Parent rows (`L`) are preserved with `None` if the `inner`
     /// queryset returns no rows for that parent.
-    ///
-    /// Inside `inner`, you can use `OuterRef::as_lateral_outer_expr()` to
+    /// Inside `inner`, you can use `OuterRef::as_lateral_outer_expr` to
     /// refer to columns from this outer queryset.
     pub fn left_join_lateral<R: Model>(
         self,
@@ -796,16 +745,13 @@ impl<T: Model> QuerySet<T> {
 
     /// Structural empty QuerySet — every terminal method (Task 6) short-
     /// circuits to the empty result without touching the database.
-    ///
     /// Takes `self` as an instance transform (matching Django's
-    /// `queryset.none()` ergonomics) so `Post::objects().none()` compiles
+    /// `queryset.none` ergonomics) so `Post::objects.none` compiles
     /// and reads naturally. Any filters / ordering / limits already
     /// accumulated on `self` are discarded — the returned queryset is a
-    /// fresh [`QuerySet::new()`] with `is_empty = true`. From-scratch
-    /// construction is spelled `QuerySet::<T>::new().none()`.
-    ///
+    /// fresh [`QuerySet::new`] with `is_empty = true`. From-scratch
+    /// construction is spelled `QuerySet::<T>::new.none`.
     /// Useful for authorization / feature-flag branches:
-    ///
     /// ```ignore
     /// let qs = if user.is_authenticated {
     ///     Post::objects().filter(|f| f.published.eq(true))
@@ -815,7 +761,7 @@ impl<T: Model> QuerySet<T> {
     /// ```
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn none(self) -> Self {
-        // `self` is intentionally ignored — `.none()` is a structural reset,
+        // `self` is intentionally ignored — `.none` is a structural reset,
         // not a conjunction with existing filters. Returning a fresh empty-
         // flagged QuerySet keeps the semantics obvious: "no matter what was
         // chained before, this matches zero rows."
@@ -829,18 +775,15 @@ impl<T: Model> QuerySet<T> {
     /// already accumulated. The closure receives a default-constructed
     /// `T::Fields` (a ZST) and returns any [`IntoQ`](crate::query::IntoQ)
     /// predicate.
-    ///
     /// ```ignore
     /// Post::objects().filter(|f| f.published().eq(true))
     /// ```
-    ///
     /// Ordinary generated root fields now return Djogi-owned portable
-    /// predicates, so `f.col().eq(...)` / `icontains(...)` filters can pass the
+    /// predicates, so `f.col.eq(...)` / `icontains(...)` filters can pass the
     /// cache and refresh portability gates. PostgreSQL-specific predicates
     /// remain valid database filters through
     /// [`DjogiField::explicit_pg_predicate`](crate::query::field::DjogiField::explicit_pg_predicate)
     /// and are rejected by cache boundaries.
-    ///
     /// Use [`filter_struct`](Self::filter_struct) for closure-free dynamic
     /// builders, macro-generated `{Model}Filter` values, or direct `Q<T>`
     /// composition outside a field closure. Legacy raw [`Condition`] values
@@ -857,33 +800,27 @@ impl<T: Model> QuerySet<T> {
     }
 
     /// AND an expression-IR predicate onto the condition tree.
-    ///
     /// The closure receives a default-constructed `T::Fields` handle
     /// and must return an [`Expr<bool>`](crate::expr::Expr) — i.e. a
     /// comparison produced by the `eq` / `neq` / `gt` / `gte` / `lt` /
     /// `lte` methods on `Expr<T>`. The returned expression is wrapped
     /// in [`Condition::Expr`] and AND-ed onto `self.condition`; the
     /// SQL emitter walks the expression via
-    /// [`crate::expr::sql::emit_expr`] instead of the Phase 2
+    /// [`crate::expr::sql::emit_expr`] instead of the
     /// column-vs-literal leaf emitter.
-    ///
     /// # When to reach for `filter_expr` over `filter`
-    ///
-    /// [`QuerySet::filter`] (Phase 2) accepts predicates where the RHS
+    /// [`QuerySet::filter`] accepts predicates where the RHS
     /// is always a literal — `f.balance.lt(100i64)`. `filter_expr`
     /// generalises both sides: either operand can be a column ref, a
     /// literal, or an arithmetic expression. Use it for:
-    ///
     /// - Field-vs-field comparisons (`balance < overdraft_limit`).
     /// - Arithmetic predicates (`balance + pending_credit > 0`).
-    /// - Predicates that build on [`crate::expr::Expr`] composition —
-    ///   future tasks extend this surface with aggregates, subqueries,
-    ///   and `CASE` (Phase 4 Tasks 4/5).
-    ///
+    /// - Predicates that build on [`crate::expr::Expr`] composition
+    /// future tasks extend this surface with aggregates, subqueries,
+    /// and `CASE` (Tasks 4/5).
     /// The two methods compose: a queryset may have any mix of
     /// `filter` and `filter_expr` clauses, and every call is AND-ed
     /// onto the same tree.
-    ///
     /// ```ignore
     /// use djogi::prelude::*;
     ///
@@ -897,7 +834,7 @@ impl<T: Model> QuerySet<T> {
         F: FnOnce(T::Fields) -> crate::expr::Expr<bool>,
     {
         let expr = f(T::Fields::default());
-        // Phase 8eta PR2b: `IntoQ<T> for Expr<bool>` lifts to
+        // : `IntoQ<T> for Expr<bool>` lifts to
         // `Q::Expression(_)` so this method shares the same generalised
         // composition surface as `filter`. Kept as a distinct method
         // for readability — the type signature documents the intent
@@ -907,12 +844,10 @@ impl<T: Model> QuerySet<T> {
     }
 
     /// Add a typed filter closure **negated** (wrapped in SQL `NOT`), AND-ed
-    /// onto the existing tree. Equivalent to Django's `QuerySet.exclude()`.
-    ///
+    /// onto the existing tree. Equivalent to Django's `QuerySet.exclude`.
     /// ```ignore
     /// Post::objects().exclude(|f| f.title().eq("draft".to_string()))
     /// ```
-    ///
     /// See [`filter`](Self::filter) for the current portable-vs-SQL-only
     /// routing. Pure portable predicates are negated inside the trusted
     /// portable algebra so cache and refresh gates can still reduce them;
@@ -924,7 +859,7 @@ impl<T: Model> QuerySet<T> {
         P: crate::query::IntoQ<T>,
     {
         let added = f(T::Fields::default()).into_q();
-        // `exclude_struct`-style negation dispatch (Phase 8eta PR2b
+        // `exclude_struct`-style negation dispatch (
         // PR2 Step 4): if the returned `Q<T>` is purely portable, push
         // the negation into the trusted `PortablePredicate<T>` (so
         // `!Portable(p)` rides Sassi's `Not` and double-negation
@@ -940,7 +875,6 @@ impl<T: Model> QuerySet<T> {
     }
 
     /// AND a [`Q<T>`] predicate onto the condition tree.
-    ///
     /// Accepts any [`IntoQ<T>`] — `Q<T>` directly, a Djogi-owned
     /// [`PortablePredicate`](crate::query::PortablePredicate), an
     /// `Expr<bool>`, a legacy [`Condition`](crate::query::Condition), or a
@@ -949,24 +883,20 @@ impl<T: Model> QuerySet<T> {
     /// [`ModelFilter`](crate::query::ModelFilter)). Raw
     /// `sassi::BasicPredicate<T>` is deliberately excluded: it can pair a
     /// forged SQL column name with an unrelated Rust extractor.
-    ///
     /// Legacy `Condition` inputs still produce character-for-character SQL
     /// parity with the pre-Cluster-8γ `Condition` substrate. `{Model}Filter`
     /// inputs keep `FilterClause` as their single source of truth and lazily
     /// reconstruct portable Q leaves for conservative bool/string equality and
     /// membership clauses; unsupported fields, wrapped/optional shapes, value
     /// mismatches, and SQL-only operators fall back to `Q::Condition`.
-    ///
     /// Empty `{Model}Filter` bodies short-circuit — no AND-ing, no vacuous
     /// `TRUE` sub-tree. Single portable clauses remain a single Q leaf; single
     /// fallback clauses remain a plain `Condition::Leaf` inside
     /// `Q::Condition(_)`, so SQL emission avoids redundant parentheses.
-    ///
     /// This is the closure-free sibling of [`QuerySet::filter`]. Use this
     /// method from shell bindings, admin UIs, any dynamic assembler that can't
     /// write a `|f|` closure at compile time, and any new caller composing a
     /// `Q<T>` directly through the public algebra.
-    ///
     /// ```ignore
     /// // ModelFilter — closure-free
     /// let filter = PostFilter::new()
@@ -980,7 +910,7 @@ impl<T: Model> QuerySet<T> {
     /// ```
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn filter_struct<F: crate::query::IntoQ<T>>(mut self, filter: F) -> Self {
-        // Phase 8eta PR2b: AND the incoming `Q<T>` directly without
+        // : AND the incoming `Q<T>` directly without
         // round-tripping through `q_to_condition`. The vacuous-truth
         // short-circuit fires before `Q<T>::bitand` so an empty filter
         // (e.g. an unfiltered `{Model}Filter` body) does not pick up a
@@ -994,22 +924,18 @@ impl<T: Model> QuerySet<T> {
     }
 
     /// AND the **negation** of a [`Q<T>`] predicate onto the condition
-    /// tree. The struct-API counterpart of [`QuerySet::exclude`] —
+    /// tree. The struct-API counterpart of [`QuerySet::exclude`]
     /// the closure-free version of `.exclude(|f| ...)`.
-    ///
     /// Pure portable predicates are negated inside
     /// [`PortablePredicate`](crate::query::PortablePredicate), so Sassi can
     /// preserve Rust-side evaluability and simplify identities (`NOT TRUE`
     /// becomes false, `NOT FALSE` becomes true). Non-portable predicates are
     /// wrapped in `Q::Negated` and render as SQL `NOT (...)`.
-    ///
     /// Unlike [`QuerySet::filter_struct`], an empty filter is **not**
     /// short-circuited — `NOT TRUE` is `FALSE`, and silently dropping it would
     /// produce a different result set.
-    ///
     /// Sister method to [`QuerySet::filter_struct`]; the two compose
     /// freely:
-    ///
     /// ```ignore
     /// Post::objects()
     ///     .filter_struct(PostFilter::new().published(Lookup::Eq(true)))
@@ -1018,17 +944,15 @@ impl<T: Model> QuerySet<T> {
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn exclude_struct<F: crate::query::IntoQ<T>>(mut self, filter: F) -> Self {
         let q = filter.into_q();
-        // Phase 8eta PR2b — negation dispatch:
-        //
+        // Negation dispatch:
         // - Pure-portable `Q::Portable(p)`: push the negation into the
-        //   trusted predicate so the stored shape stays
-        //   `Q::Portable(!p)`. Sassi's `Not` reducer collapses double
-        //   negation in place, which keeps cache-boundary portability
-        //   gates from producing `Q::Negated(Q::Portable(_))` shells.
+        // trusted predicate so the stored shape stays
+        // `Q::Portable(!p)`. Sassi's `Not` reducer collapses double
+        // negation in place, which keeps cache-boundary portability
+        // gates from producing `Q::Negated(Q::Portable(_))` shells.
         // - Anything else: wrap as `Q::Negated(Box<Q<T>>)`. The SQL
-        //   emitter renders this as `NOT (...)`; cache-boundary
-        //   portability checks (PR4) can distinguish the two negations.
-        //
+        // emitter renders this as `NOT (...)`; cache-boundary
+        // portability checks (PR4) can distinguish the two negations.
         // No vacuous-truth short-circuit — `NOT TRUE` is `FALSE`, and
         // silently dropping it would change the result set.
         let negated = match q {
@@ -1043,10 +967,8 @@ impl<T: Model> QuerySet<T> {
     /// **append** to the existing ordering rather than replacing it, matching
     /// Django semantics: library code can add a stable tiebreaker without
     /// clobbering the caller's primary ordering.
-    ///
     /// The closure can return either a single `OrderExpr` or a
     /// `Vec<OrderExpr>` — the `Into<Vec<OrderExpr>>` bound bridges both.
-    ///
     /// ```ignore
     /// Post::objects().order_by(|f| f.view_count.desc())
     /// Post::objects().order_by(|f| vec![f.published.desc(), f.title.asc()])
@@ -1070,7 +992,6 @@ impl<T: Model> QuerySet<T> {
     }
 
     /// Reject SELECT-only read-tail modifiers on mutating terminals.
-    ///
     /// Bulk UPDATE / DELETE currently emit only `WHERE` state; allowing
     /// `limit`, `offset`, `distinct`, row locks, explicit `order_by`,
     /// `prefetch`, `select_related`, or `cache_target` would silently
@@ -1114,7 +1035,6 @@ impl<T: Model> QuerySet<T> {
     }
 
     /// Apply SQL `LIMIT n`. Replaces any prior `limit` value.
-    ///
     /// Takes `u64` at the API boundary so negative values are not
     /// representable — the builder can never be put into an invalid state.
     /// Internally stored as `Option<i64>` to match `tokio_postgres`'s BIGINT
@@ -1132,7 +1052,6 @@ impl<T: Model> QuerySet<T> {
     }
 
     /// Apply SQL `OFFSET n`. Replaces any prior `offset` value.
-    ///
     /// Takes `u64` for the same reason as [`QuerySet::limit`] — negative
     /// offsets are meaningless and now impossible to construct.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
@@ -1148,20 +1067,16 @@ impl<T: Model> QuerySet<T> {
     /// Append `FOR UPDATE` to the emitted SELECT — acquire an exclusive
     /// row-level lock on every selected row for the duration of the
     /// enclosing transaction.
-    ///
-    /// # Footgun — wrap in `atomic()`
-    ///
+    /// # Footgun — wrap in `atomic`
     /// A `FOR UPDATE` lock is scoped to the active transaction. A
     /// pool-backed context auto-commits each statement, so
-    /// `Post::objects().select_for_update().fetch_all(&mut pool_ctx)`
+    /// `Post::objects.select_for_update.fetch_all(&mut pool_ctx)`
     /// acquires the lock and releases it the instant the implicit
     /// transaction closes — **no mutual exclusion** against a concurrent
     /// writer between the fetch and the subsequent `save`. Every
     /// correctness-sensitive use of `select_for_update` MUST sit inside
-    /// an [`atomic()`](crate::transaction::atomic) scope.
-    ///
+    /// an [`atomic`](crate::transaction::atomic) scope.
     /// # Chaining with `nowait` / `skip_locked`
-    ///
     /// Use [`QuerySet::nowait`] or [`QuerySet::skip_locked`] AFTER
     /// `select_for_update` to pick the contention behaviour. Calling
     /// either without first calling `select_for_update` promotes the
@@ -1177,7 +1092,6 @@ impl<T: Model> QuerySet<T> {
     /// lock if available, else return immediately with Postgres
     /// SQLSTATE `55P03` (`lock_not_available`), which terminals
     /// classify as [`DjogiError::LockConflict`](crate::DjogiError::LockConflict).
-    ///
     /// Callable standalone (implies `select_for_update`). Combining
     /// with [`skip_locked`](QuerySet::skip_locked) — last call wins.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
@@ -1189,7 +1103,6 @@ impl<T: Model> QuerySet<T> {
     /// Promote the SELECT lock to `FOR UPDATE SKIP LOCKED` — silently
     /// skip rows locked by another session and return only the
     /// unlocked rows.
-    ///
     /// The idiomatic shape for work-queue consumers: multiple workers
     /// can pull jobs concurrently without blocking each other.
     /// Callable standalone (implies `select_for_update`). Combining
@@ -1205,7 +1118,6 @@ impl<T: Model> QuerySet<T> {
     /// duration of the enclosing transaction. Multiple concurrent
     /// readers may take the same `FOR SHARE` lock; writers (`UPDATE` /
     /// `DELETE`) block until the lock is released.
-    ///
     /// Use this when several sessions need to read-and-decide against
     /// the same row without any of them intending to write
     /// (e.g., two services verifying an account balance before routing
@@ -1213,21 +1125,17 @@ impl<T: Model> QuerySet<T> {
     /// reach for [`select_for_update`](QuerySet::select_for_update)
     /// instead — `FOR SHARE` does not protect against a peer reader
     /// upgrading to a writer.
-    ///
-    /// # Footgun — wrap in `atomic()`
-    ///
+    /// # Footgun — wrap in `atomic`
     /// A `FOR SHARE` lock is scoped to the active transaction. A
     /// pool-backed context auto-commits each statement, so
-    /// `Account::objects().select_for_share().fetch_one(&mut pool_ctx)`
+    /// `Account::objects.select_for_share.fetch_one(&mut pool_ctx)`
     /// acquires the lock and releases it the instant the implicit
     /// transaction closes — **no mutual exclusion** against a
     /// concurrent writer between the fetch and the subsequent decide
     /// step. Every correctness-sensitive use of `select_for_share`
-    /// MUST sit inside an [`atomic()`](crate::transaction::atomic)
+    /// MUST sit inside an [`atomic`](crate::transaction::atomic)
     /// scope.
-    ///
     /// # Chaining with contention variants
-    ///
     /// `select_for_share` only sets the base FOR SHARE mode. To pick
     /// up `NOWAIT` / `SKIP LOCKED` semantics, call the dedicated
     /// FOR SHARE methods [`for_share_nowait`](QuerySet::for_share_nowait)
@@ -1239,8 +1147,7 @@ impl<T: Model> QuerySet<T> {
     /// silently swaps the base lock back to FOR UPDATE, which is a
     /// footgun. Use the FOR SHARE-named modifiers when the base lock
     /// is FOR SHARE.
-    ///
-    /// djogi#104.
+    /// .
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn select_for_share(mut self) -> Self {
         self.lock = crate::query::lock::LockMode::ForShare;
@@ -1252,15 +1159,13 @@ impl<T: Model> QuerySet<T> {
     /// with Postgres SQLSTATE `55P03` (`lock_not_available`), which
     /// terminals classify as
     /// [`DjogiError::LockConflict`](crate::DjogiError::LockConflict).
-    ///
     /// Callable standalone (implies `select_for_share`). Combining
     /// with [`for_share_skip_locked`](QuerySet::for_share_skip_locked)
-    /// — last call wins.
-    ///
+    /// last call wins.
     /// See [`select_for_share`](QuerySet::select_for_share) for the
     /// pool-backed footgun and the rationale for keeping the FOR
     /// SHARE and FOR UPDATE contention modifiers on separate methods.
-    /// djogi#104.
+    /// .
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn for_share_nowait(mut self) -> Self {
         self.lock = crate::query::lock::LockMode::ForShareNowait;
@@ -1270,18 +1175,15 @@ impl<T: Model> QuerySet<T> {
     /// Set the SELECT lock to `FOR SHARE SKIP LOCKED` — silently skip
     /// rows currently locked exclusively by another session and return
     /// only the unlocked rows under a shared lock.
-    ///
     /// The FOR SHARE analogue of
     /// [`skip_locked`](QuerySet::skip_locked): useful for multi-reader
     /// scans that should make progress on the unlocked subset without
     /// blocking on rows another session is mid-write on.
-    ///
     /// Callable standalone (implies `select_for_share`). Combining
     /// with [`for_share_nowait`](QuerySet::for_share_nowait) — last
     /// call wins.
-    ///
     /// See [`select_for_share`](QuerySet::select_for_share) for the
-    /// pool-backed footgun. djogi#104.
+    /// pool-backed footgun. .
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn for_share_skip_locked(mut self) -> Self {
         self.lock = crate::query::lock::LockMode::ForShareSkipLocked;
@@ -1299,7 +1201,6 @@ impl<T: Model> QuerySet<T> {
     /// returns either a single [`FieldRef`] or a tuple of up to six
     /// `FieldRef`s; column order matters because Postgres uses the first row
     /// per `(cols...)` tuple according to the query's `ORDER BY`.
-    ///
     /// Overrides any prior `distinct`/`distinct_on`.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn distinct_on<F, R>(mut self, f: F) -> Self
@@ -1319,16 +1220,13 @@ impl<T: Model> QuerySet<T> {
     /// [`PrefetchedRow<T>`](crate::relation::PrefetchedRow) that exposes
     /// its resolved targets via
     /// [`PrefetchedRow::get`](crate::relation::PrefetchedRow::get).
-    ///
     /// Calling `.prefetch(path)` twice with the same path is idempotent
-    /// — the second registration is a no-op by `source_column` equality.
+    /// the second registration is a no-op by `source_column` equality.
     /// This matches the natural expectation ("I asked for the same
     /// relation twice; please don't run two queries") and makes
     /// composition-site chaining (library code + caller both registering
     /// the same prefetch) free of surprises.
-    ///
     /// # Why the bounds split across `Source::Pk` and `Target::Pk`
-    ///
     /// Prefetch stitches via a `LEFT JOIN` keyed on `Source::Pk`; the
     /// `IN (...)` bind needs `Source::Pk: Encode + Type`, and the
     /// HashMap that routes targets back to parents needs it `Eq + Hash
@@ -1336,13 +1234,11 @@ impl<T: Model> QuerySet<T> {
     /// NULL-probe in the stitching query, which goes through the raw-
     /// value path and does not require any `Target::Pk` bounds beyond
     /// what [`Model`] already guarantees.
-    ///
     /// `Target` itself picks up `FromRow + Clone + Unpin` so the loader
     /// can decode the `t.*` columns and mint a per-parent owned copy;
     /// see the header comment on
     /// [`crate::relation::prefetch`] for the rationale behind the Clone
     /// bound (not on `Model` itself, just on the prefetch path).
-    ///
     /// ```ignore
     /// let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
     ///     .filter(|f| f.make.eq("Toyota"))
@@ -1399,15 +1295,12 @@ impl<T: Model> QuerySet<T> {
     /// [`fetch_all_joined`](crate::query::QuerySet::fetch_all_joined),
     /// which returns `Vec<JoinedRow<T>>` exposing the joined target(s)
     /// via the same typed [`RelationPath`] the caller passed in.
-    ///
     /// Calling `.select_related(path)` twice with the same path is
     /// idempotent — the second registration is a no-op by
     /// [`RelationPath::source_column`] equality, matching the
     /// dedup rule on `prefetch`. No `Vec` spam, no duplicate join in
     /// the emitted SQL.
-    ///
     /// # Why the bounds on `Child`
-    ///
     /// The `select_related` emitter aliases every child column in the
     /// `SELECT` list under a `rel_{source_column}.{col}` prefix. The
     /// [`FromJoinedPgRow`](crate::pg::decode::FromJoinedPgRow) bound on
@@ -1416,21 +1309,17 @@ impl<T: Model> QuerySet<T> {
     /// sibling of `FromRow` that takes a prefix parameter. Without
     /// this bound the emitter would have no way to decode the
     /// child side of the join.
-    ///
     /// `Child: Send + Sync + 'static` is the erasure contract — the
     /// decoded child is boxed as `Box<dyn Any + Send + Sync>` so it can
     /// share storage with heterogeneous child types on a single
     /// queryset (`.select_related(owner).select_related(fuel_type)`).
-    ///
     /// # Multi-relation per queryset
-    ///
-    /// Multiple `.select_related(...)` calls on the same queryset stack —
+    /// Multiple `.select_related(...)` calls on the same queryset stack
     /// each produces its own `LEFT JOIN` with a `rel_{source_column}`
     /// alias. Aliases never collide because source columns are unique
     /// per parent model by construction. Multi-**hop** `select_related`
     /// (chained targets) is not supported: [`RelationPath`] only
     /// carries a single hop at the type level.
-    ///
     /// ```ignore
     /// let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
     ///     .filter(|f| f.make.eq("Tesla"))
@@ -1484,10 +1373,9 @@ impl<T: Model> QuerySet<T> {
     /// Structural emptiness check — `true` only for querysets built via
     /// [`QuerySet::none`]. Used by Task 6's terminal methods to short-
     /// circuit the DB round-trip.
-    ///
     /// `pub(crate)` because it is an implementation detail of the terminal
     /// methods, not user-facing API; users who need "does this queryset
-    /// actually match rows?" should call `.exists()`, which also runs
+    /// actually match rows?" should call `.exists`, which also runs
     /// the real SQL.
     pub(crate) fn is_empty(&self) -> bool {
         self.is_empty
@@ -1495,19 +1383,15 @@ impl<T: Model> QuerySet<T> {
 
     /// Group this queryset by one or more key columns, transitioning into
     /// [`crate::query::grouped::GroupedQuerySet<T, K>`].
-    ///
     /// The closure receives a default-constructed `T::Fields` handle and must
     /// return one `FieldRef<T, V>` (arity 1) or a tuple of `FieldRef`s (arity
     /// 2..=4) — any type that implements
     /// [`crate::query::grouped::IntoGroupKeyTuple`].
-    ///
     /// `GroupedQuerySet` has no terminals. Call `.annotate(...)` on the result
     /// to attach aggregate expressions and enter the terminal-bearing
     /// [`crate::query::grouped::GroupedAnnotatedQuerySet`] state. Premature
     /// `.fetch_all` on `GroupedQuerySet` is a compile error.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// let rows: Vec<(i64, i64)> = Txn::objects()
     ///     .group_by(|f| f.org_id())
@@ -1534,14 +1418,11 @@ impl<T: Model> QuerySet<T> {
     /// Enter grouped state with ROLLUP semantics. Emits
     /// `GROUP BY ROLLUP (<keys>)` — Postgres expands this to include all
     /// hierarchical subtotals and the grand total in one pass.
-    ///
     /// This is a convenience entry point equivalent to
     /// `.group_by(f)` followed by setting the grouping mode to
     /// `GroupingMode::Rollup`. Call `.annotate(...)` on the result to
     /// attach aggregate expressions.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Emits: GROUP BY ROLLUP (org_id)
     /// // Produces subtotals per org_id plus the grand total in one query.
@@ -1564,14 +1445,11 @@ impl<T: Model> QuerySet<T> {
     /// Enter grouped state with CUBE semantics. Emits
     /// `GROUP BY CUBE (<keys>)` — Postgres expands this to all 2^n subsets
     /// of the key columns, covering every possible grouping combination.
-    ///
     /// This is a convenience entry point equivalent to
     /// `.group_by(f)` followed by setting the grouping mode to
     /// `GroupingMode::Cube`. Call `.annotate(...)` on the result to
     /// attach aggregate expressions.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Emits: GROUP BY CUBE (org_id, region_id)
     /// // Produces subtotals for (org_id, region_id), (org_id), (region_id),
@@ -1596,18 +1474,14 @@ impl<T: Model> QuerySet<T> {
     /// that returns `[&'static str; N]` — each element becomes one
     /// single-column grouping set. Emits `GROUP BY GROUPING SETS ((col_a),
     /// (col_b), ...)`.
-    ///
-    /// The key type is `()` — there are no statically-typed key columns to
+    /// The key type is `` — there are no statically-typed key columns to
     /// decode because each row's "key" depends on which grouping set matched.
     /// Call `.annotate(...)` on the result to attach aggregate expressions;
     /// grouping-set column values are accessible via raw row access on the
     /// rows returned by `.fetch_all`.
-    ///
     /// Arity-1 per set (one column per set). Multi-column sets are a
     /// future extension.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Emits: GROUP BY GROUPING SETS ((org_id), (region))
     /// // Each result row is grouped by exactly one of the listed columns.
@@ -1637,16 +1511,13 @@ impl<T: Model> QuerySet<T> {
     }
 
     /// `GROUP BY GROUPING SETS (...)` — explicit multi-column sets,
-    /// one tuple of columns per set. Cluster E T11.
-    ///
-    /// Accepts a closure that returns `Vec<Vec<&'static str>>` —
+    /// one tuple of columns per set. T11.
+    /// Accepts a closure that returns `Vec<Vec<&'static str>>`
     /// outer Vec is the list of sets; inner Vec is the list of
     /// columns in each set. An empty inner Vec is the "grand total"
     /// set (no GROUP BY columns; one row aggregating all input).
-    ///
     /// Adopters extract column names from `T::Fields` accessors via
-    /// each `FieldRef`'s `.column()` method:
-    ///
+    /// each `FieldRef`'s `.column` method:
     /// ```ignore
     /// // Equivalent SQL:
     /// //   GROUP BY GROUPING SETS ((region, dept), (region), ())
@@ -1661,18 +1532,14 @@ impl<T: Model> QuerySet<T> {
     ///     .annotate(|f| f.amount().sum())
     ///     .fetch_all(&mut ctx).await?;
     /// ```
-    ///
     /// Use [`Self::group_by_sets`] for the simpler arity-1-per-set
     /// shape (one column per set, no nested tuples). Use
     /// [`Self::rollup`] / [`Self::cube`] for hierarchical subtotal
     /// patterns.
-    ///
     /// # Detecting subtotal rows
-    ///
     /// Pair with [`crate::query::field::FieldRef::grouping`] (T10)
     /// inside `.annotate(...)` to flag which dimensions were rolled
     /// up in each result row:
-    ///
     /// ```ignore
     /// .annotate(|f| (
     ///     f.amount().sum(),
@@ -1680,9 +1547,7 @@ impl<T: Model> QuerySet<T> {
     ///     f.dept().grouping(),
     /// ))
     /// ```
-    ///
     /// # Why `Vec<Vec<...>>` rather than typed tuple-of-tuples
-    ///
     /// A typed signature like `qs.grouping_sets((set1), (set2), ...)`
     /// would need a `IntoGroupingSets` trait implemented for tuples
     /// of varying inner arity — not expressible in stable Rust without
@@ -1707,8 +1572,7 @@ impl<T: Model> QuerySet<T> {
         }
     }
 
-    // ── Tree-recursive transitions (Phase 8-Zero Cluster B2 — T9) ───────────
-    //
+    // ── Tree-recursive transitions (— T9) ───────────
     // `tree_descendants` / `tree_ancestors` consume the queryset and
     // return a [`RecursiveQuerySet<T>`], which has its own filter /
     // ordering / search-mode builders and its own terminals. The
@@ -1724,14 +1588,12 @@ impl<T: Model> QuerySet<T> {
     /// chain reaches `root_id`. Returns a typed [`RecursiveQuerySet<T>`]
     /// that carries `tree_descendants` semantics (recursive term:
     /// `child.<edge_col> = parent.id`).
-    ///
     /// Works for **any** model `T` with at least one self-FK edge,
     /// without requiring `#[model(tree_edge = "...")]`. The caller
     /// supplies a typed [`RelationPath<T, T>`] picked from the
-    /// macro-emitted `{T}Related::<edge>()` accessor — the type-level
+    /// macro-emitted `{T}Related::<edge>` accessor — the type-level
     /// pinning means a `RelationPath<Vehicle, Vehicle>` cannot be
     /// passed where the queryset is over `Post`.
-    ///
     /// For models that declare `#[model(tree_edge = "...")]`, prefer
     /// the inherent sugar [`Model::tree_descendants`] which resolves
     /// the column from the descriptor automatically.
@@ -1758,7 +1620,6 @@ impl<T: Model> QuerySet<T> {
     /// the FK from `node_id` toward the root. Sibling of
     /// [`tree_descendants`](Self::tree_descendants) with the recursive
     /// term flipped to `parent.<edge_col> = child.id`.
-    ///
     /// Same descriptor / typed-path requirements as `tree_descendants`;
     /// the inherent sugar [`Model::tree_ancestors`] is the
     /// `tree_edge`-declared shortcut.
@@ -1781,38 +1642,29 @@ impl<T: Model> QuerySet<T> {
 
     /// Spatial LEFT JOIN GROUP BY: group rows by which region of `R` contains
     /// them.
-    ///
     /// Emits:
-    ///
     /// ```sql
     /// SELECT r.<pk-col> AS rk0, <aggregates>
     /// FROM <t-table> AS t
     /// LEFT JOIN <r-table> AS r ON ST_Contains(r.<r-geo-col>, t.<t-geo-col>)
     /// GROUP BY r.<pk-col>
     /// ```
-    ///
-    /// The `LEFT JOIN` gives users the unassigned bucket —
+    /// The `LEFT JOIN` gives users the unassigned bucket
     /// `RegionKey { region_pk: None }` — so rows that fall outside all known
     /// regions are visible in the result, not silently dropped (which an
     /// `INNER JOIN` would do).
-    ///
     /// ## Runtime warning
-    ///
     /// If `R` has no GiST index on its geography column, this method warns
     /// once per process via `tracing::warn!`. A spatial JOIN without a GiST
     /// index performs a full table scan on `R` for every row in `T`, scaling
     /// as O(|T| × |R|). Add `#[model(index = ...)]` on the region model's
     /// geography field or declare an `IndexSpec` with `IndexType::Gist`.
-    ///
     /// ## Type parameters
-    ///
     /// - `F` — closure that picks the geography column on `T`.
     /// - `G` — the concrete geography type (e.g. `GeoPoint`, `Polygon`).
     /// - `R` — the region model. Must have at least one `Geography`-typed field
-    ///   in its descriptor.
-    ///
+    /// in its descriptor.
     /// ## Panics
-    ///
     /// Panics at call time if `R`'s descriptor contains no
     /// `FieldSqlType::Geography` field. This is a programming error (missing
     /// geo column on the region model), not a runtime condition, so a panic is
@@ -1854,8 +1706,8 @@ impl<T: Model> QuerySet<T> {
         // is sealed so downstream code cannot smuggle hand-rolled column
         // strings; both implementers forward the validated column metadata
         // produced by `__make_field_ref`. Spatial group keys are not
-        // predicate boundaries — adopters keep `f.location()` direct
-        // without an `.explicit_pg_predicate()` step.
+        // predicate boundaries — adopters keep `f.location` direct
+        // without an `.explicit_pg_predicate` step.
         let t_geo_col = field(T::Fields::default()).into_sql_field().column();
 
         // ── Identify the region-side geo column ──────────────────────────────
@@ -1905,17 +1757,13 @@ impl<T: Model> QuerySet<T> {
         }
     }
 
-    /// Sugar for `group_by_region(..).annotate(|_| id_field.count_star())`.
-    ///
+    /// Sugar for `group_by_region(..).annotate(|_| id_field.count_star)`.
     /// Returns a `GroupedAnnotatedQuerySet` that counts rows per region
     /// (including an unassigned bucket for rows outside all regions).
-    ///
     /// The count aggregate is `COUNT(*)` on the data table alias `t`.
     /// Callers who need a different aggregate (e.g. `SUM(amount)`) use
     /// `group_by_region` directly and call `.annotate` themselves.
-    ///
     /// ## Type parameters
-    ///
     /// Same bounds as [`QuerySet::group_by_region`].
     #[cfg(feature = "spatial")]
     #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
@@ -1944,9 +1792,7 @@ impl<T: Model> QuerySet<T> {
 
     /// DBSCAN density-based clustering: group nearby points into clusters
     /// without specifying the number of clusters in advance.
-    ///
     /// Emits:
-    ///
     /// ```sql
     /// SELECT ST_ClusterDBSCAN(t.<col>::geometry, $eps, $minpoints) OVER () AS cluster_id,
     ///        <aggregates>
@@ -1954,13 +1800,10 @@ impl<T: Model> QuerySet<T> {
     /// [WHERE ...]
     /// GROUP BY cluster_id
     /// ```
-    ///
     /// `cluster_id = NULL` for noise points (isolated rows with fewer than
     /// `minpoints` neighbours within `eps`). With the default `min_points = 1`
     /// every row is a core point of its own cluster, so noise never appears.
-    ///
     /// # Filter ordering
-    ///
     /// SQL evaluates `WHERE` before window functions, so `.filter(...)` calls
     /// chained *before* `cluster_by_proximity` prune points **from the DBSCAN
     /// input** — the clustering sees only the survivors, which can produce
@@ -1968,18 +1811,14 @@ impl<T: Model> QuerySet<T> {
     /// after. Use `.having(...)` (evaluated after `GROUP BY cluster_id`) when
     /// you want to filter on aggregate output without changing which rows
     /// participate in the clustering.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// let counts = Store::objects()
     ///     .cluster_by_proximity(|f| f.location(), ClusterRadius::meters(500.0).min_points(3))
     ///     .annotate(|f| f.id.count_star())
     ///     .fetch_all(&mut ctx).await?;
     /// ```
-    ///
     /// # Type parameters
-    ///
     /// - `F` — closure that resolves the geography column from `T::Fields`.
     /// - `G` — concrete geography type (e.g. `GeoPoint`, `Polygon`).
     #[cfg(feature = "spatial")]
@@ -1996,8 +1835,8 @@ impl<T: Model> QuerySet<T> {
     {
         // PR3: accept legacy `FieldRef<T, G>` and the post-flip root
         // accessor return type `DjogiField<T, G>`. Spatial cluster keys
-        // are not predicate boundaries — `f.location()` stays direct
-        // without an `.explicit_pg_predicate()` step.
+        // are not predicate boundaries — `f.location` stays direct
+        // without an `.explicit_pg_predicate` step.
         let t_geo_col = field(T::Fields::default()).into_sql_field().column();
         let spec = crate::query::spatial_grouping::ClusterSpec {
             t_geo_col,
@@ -2015,42 +1854,33 @@ impl<T: Model> QuerySet<T> {
 
     /// Geohash grid bucketing: assign each row to a spatial cell of the
     /// chosen [`GeohashPrecision`] and group by that cell.
-    ///
     /// Emits:
-    ///
     /// ```sql
     /// SELECT ST_GeoHash(t.<col>::geometry, $precision) AS geohash, <aggregates>
     /// FROM <table> AS t
     /// [WHERE ...]
     /// GROUP BY geohash
     /// ```
-    ///
     /// Geohash strings are prefix-ordered: a `P5` key is a prefix of any
     /// `P6` key that falls in the same parent cell — coarser re-aggregation
     /// is possible via string truncation without re-querying. Nullable
     /// geography columns (`Option<G>`) bucket NULLs into `GeohashKey(None)`;
     /// non-nullable columns never produce `None`.
-    ///
     /// # Filter ordering
-    ///
     /// SQL evaluates `WHERE` before the `ST_GeoHash` projection, so
     /// `.filter(...)` calls chained *before* `bucket_by_cell` prune points
     /// **from the bucketing input** — only the survivors are assigned a
     /// geohash and aggregated. Use `.having(...)` (evaluated after
     /// `GROUP BY geohash`) when you want to filter on aggregate output
     /// without affecting which rows are bucketed.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// let heatmap = Store::objects()
     ///     .bucket_by_cell(|f| f.location(), GeohashPrecision::P5)
     ///     .annotate(|f| f.id.count_star())
     ///     .fetch_all(&mut ctx).await?;
     /// ```
-    ///
     /// # Type parameters
-    ///
     /// - `F` — closure that resolves the geography column from `T::Fields`.
     /// - `G` — concrete geography type (e.g. `GeoPoint`).
     #[cfg(feature = "spatial")]
@@ -2067,8 +1897,8 @@ impl<T: Model> QuerySet<T> {
     {
         // PR3: accept legacy `FieldRef<T, G>` and the post-flip root
         // accessor return type `DjogiField<T, G>`. Geohash bucket keys
-        // are not predicate boundaries — `f.location()` stays direct
-        // without an `.explicit_pg_predicate()` step.
+        // are not predicate boundaries — `f.location` stays direct
+        // without an `.explicit_pg_predicate` step.
         let t_geo_col = field(T::Fields::default()).into_sql_field().column();
         let spec = crate::query::spatial_grouping::GeohashSpec {
             t_geo_col,
@@ -2084,58 +1914,50 @@ impl<T: Model> QuerySet<T> {
     }
 }
 
-// Phase 8 §T2.3 — manual `.not_deleted()` helper for `SoftDeletable`
+// .3 — manual `.not_deleted` helper for `SoftDeletable`
 // models.
-//
 // **Spec lock (line 971, RESOLVED 2026-05-03, lens, locked):**
-// automatic default-filter composition is deferred to Phase 8γ T6
+// automatic default-filter composition is deferred to
 // once the `Q<T>` substrate lands. T2.3 ships only the manual helper
-// — adopters must call `.not_deleted()` explicitly on each
-// `objects()` chain that should exclude soft-deleted rows. 8γ will
+// adopters must call `.not_deleted` explicitly on each
+// `objects` chain that should exclude soft-deleted rows. 8γ will
 // replace this method with auto-composition under the new substrate.
-//
 // **Design notes:**
-//
 // 1. The bound is `M: crate::SoftDeletable` (re-exported through
-//    `crate::compose`). The trait already implies `M: Model` via its
-//    super-bound, so a separate `Model` bound is redundant.
-//
+// `crate::compose`). The trait already implies `M: Model` via its
+// super-bound, so a separate `Model` bound is redundant.
 // 2. The leaf is constructed by hand via [`Leaf::new`] (a
-//    crate-internal constructor) rather than going through
-//    [`FieldRef::is_null`]. Two reasons:
-//
-//    - The macro-generated `T::Fields` ZST does not expose a
-//      `deleted_at()` accessor on every model — only on those whose
-//      `#[model]` attribute injected the column. `SoftDeletable`-
-//      deriving models declare the column themselves (Path B), which
-//      means there's no compile-time guarantee that
-//      `T::Fields::default().deleted_at` exists at the type level.
-//    - The column name reads from `<M as SoftDeletable>::COLUMN`
-//      (defaults to `"deleted_at"`; T2.6 added the trait const).
-//      Reading via the trait surface lets a future column-override
-//      path (e.g. `#[model(soft_deletable(column = "trashed_at"))]`)
-//      flow through `.not_deleted()` automatically — the helper is
-//      not a hard-coded literal anymore.
-//
+// crate-internal constructor) rather than going through
+// [`FieldRef::is_null`]. Two reasons:
+// - The macro-generated `T::Fields` ZST does not expose a
+// `deleted_at` accessor on every model — only on those whose
+// `#[model]` attribute injected the column. `SoftDeletable`-
+// deriving models declare the column themselves (Path B), which
+// means there's no compile-time guarantee that
+// `T::Fields::default.deleted_at` exists at the type level.
+// - The column name reads from `<M as SoftDeletable>::COLUMN`
+// (defaults to `"deleted_at"`; T2.6 added the trait const).
+// Reading via the trait surface lets a future column-override
+// path (e.g. `#[model(soft_deletable(column = "trashed_at"))]`)
+// flow through `.not_deleted` automatically — the helper is
+// not a hard-coded literal anymore.
 // 3. The `'static` bound on `M` mirrors the bounds present on the
-//    other terminal-method impls below (`fetch_all`, `count`, etc.)
-//    — every `T::Fields::default()` call site already requires it,
-//    so adding the same bound here keeps the impl block coherent
-//    when chained.
+// other terminal-method impls below (`fetch_all`, `count`, etc.)
+// every `T::Fields::default` call site already requires it,
+// so adding the same bound here keeps the impl block coherent
+// when chained.
 impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
     /// Filter to rows where `deleted_at IS NULL` — the manual
     /// soft-delete exclusion helper.
-    ///
-    /// **Manual today; auto-composed in 8γ T6.** Phase 8α T2.6 ships
+    /// **Manual today; auto-composed in 8γ T6.** 6 ships
     /// this helper only; adopters who want soft-deleted rows excluded
-    /// must call `.not_deleted()` on every `objects()` chain. Phase
+    /// must call `.not_deleted` on every `objects` chain. Phase
     /// 8γ T6 will land automatic default-filter composition once the
     /// `Q<T>` substrate is in place — at which point this helper
     /// becomes redundant on the default code path. The method name
     /// will likely be retained as a no-op or as the explicit reverse
-    /// of an `_insecurely()` bypass; see spec line 971 for the
+    /// of an `_insecurely` bypass; see spec line 971 for the
     /// migration plan.
-    ///
     /// ```ignore
     /// // Soft-deletable model with the attribute on `#[model]`:
     /// #[model(table = "posts", soft_deletable)]
@@ -2159,19 +1981,18 @@ impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
         // `T::Fields` ZST and would also pin the column type at
         // compile time, defeating the convention-by-name model the
         // `SoftDeletable` trait uses for its getter).
-        //
-        // Phase 8α T2.6: read the column name through `<M as
+        // 6: read the column name through `<M as
         // SoftDeletable>::COLUMN` rather than a hard-coded `"deleted_at"`
         // string. The trait const defaults to `"deleted_at"` (canonical
         // case) but a future per-model rename can override the const
-        // at the `impl` level — `.not_deleted()` picks up the override
+        // at the `impl` level — `.not_deleted` picks up the override
         // automatically without changing this call site.
         let leaf = crate::query::condition::Leaf::new(
             <M as crate::SoftDeletable>::COLUMN,
             crate::query::condition::LookupOp::IsNull,
             crate::query::condition::FilterValue::Null,
         );
-        // Phase 8eta PR2b: route through the new `and_q_into_q` helper.
+        // : route through the new `and_q_into_q` helper.
         // `Condition` lifts to `Q::Condition(_)` via the sealed `IntoQ`
         // impl, preserving the legacy SQL emission shape this caller
         // depends on.
@@ -2180,8 +2001,7 @@ impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
     }
 }
 
-// ── Cluster 8δ T7.3 — `.cache(&punnu)` opt-in modifier ─────────────────────
-//
+// ── 3 — `.cache(&punnu)` opt-in modifier ─────────────────────
 // Bound `T: Model + sassi::Cacheable` is split into a dedicated impl
 // block for the same reason `not_deleted` lives in its own block: the
 // extra trait bound is opt-in. Models that don't go through
@@ -2189,7 +2009,6 @@ impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
 // `Cacheable` impl) keep the existing `impl<T: Model> QuerySet<T>`
 // surface unchanged — `.cache(...)` simply doesn't compile for them,
 // matching the spec contract that the cache modifier is opt-in.
-//
 // Why `crate::types::Cacheable` (not `sassi::Cacheable`) for the
 // bound: per `feedback_macro_path_routing.md`, code that names
 // trait paths routes through `crate::types` so a future sassi
@@ -2197,18 +2016,16 @@ impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
 // update one re-export instead of every `use sassi::Cacheable;`
 // site in the framework. The trait identity is the same — the
 // re-export at `djogi/src/types.rs` is `pub use sassi::cacheable::Cacheable;`
-// — so the bound resolves byte-identically.
-//
+// so the bound resolves byte-identically.
 // Spec anchors: §664 (`.cache(&punnu)` modifier; opt-in).
-// Phase 8 plan §374. Granular plan
+// Plan §374. Granular plan
 // `cluster-8delta-granular.md` §3 commit T7.3.
 impl<T: Model + crate::types::Cacheable + Clone> QuerySet<T> {
     /// Internal helper: stamp this QuerySet with a type-erased Punnu cache
     /// target so the next terminal method sends each materialised row
     /// through [`sassi::Punnu::insert`] before returning to the caller.
-    ///
     /// `pub(crate)` because the public adopter surface is [`QuerySet::cache`]
-    /// (Phase 8eta PR4), which gates entry through the trusted portable
+    /// , which gates entry through the trusted portable
     /// predicate reducer. `bind_cache` runs unconditionally with no gate, so
     /// only framework code that has already proven the queryset's predicate
     /// is portable (e.g. [`CachedPortableQuerySet`]'s terminal methods) may
@@ -2228,11 +2045,9 @@ impl<T: Model + crate::types::Cacheable + Clone> QuerySet<T> {
     /// Test-only mirror of [`bind_cache`](Self::bind_cache) — stamps
     /// a `cache_target` directly onto the QuerySet without going
     /// through the [`CachedPortableQuerySet`] terminal indirection.
-    ///
     /// # Why exposed under `feature = "testing"`
-    ///
     /// The public adopter path to a cache-bound queryset is
-    /// `.cache(&punnu)`, which returns a [`CachedPortableQuerySet`] —
+    /// `.cache(&punnu)`, which returns a [`CachedPortableQuerySet`]
     /// not a [`QuerySet`]. Adopters cannot, by design, construct a
     /// `QuerySet<T>` whose `cache_target` is `Some(_)` and then pass
     /// it to a set-op builder method like
@@ -2242,16 +2057,13 @@ impl<T: Model + crate::types::Cacheable + Clone> QuerySet<T> {
     /// rejects such an arm if it is ever constructed (forward
     /// compatibility, in case a future API exposes
     /// `bind_cache`-shaped surface publicly).
-    ///
-    /// The Phase 8.5 Cluster 4B (#101) test suite needs a way to
+    /// The #101) test suite needs a way to
     /// exercise that defensive branch from outside the crate. This
     /// helper is the supported test path: a `#[doc(hidden)]`,
     /// `feature = "testing"`-gated mirror that does exactly what
     /// `bind_cache` does. Adopters who do not opt into the `testing`
     /// feature never see it.
-    ///
     /// # Not part of the stable API
-    ///
     /// The `for_test` suffix and `#[doc(hidden)]` flag together
     /// communicate intent: this exists for in-tree fixture wiring, not
     /// adopter use. Production code should reach for the gated public
@@ -2266,14 +2078,12 @@ impl<T: Model + crate::types::Cacheable + Clone> QuerySet<T> {
 
     /// Bind this QuerySet to a [`sassi::Punnu`] cache, gated by the
     /// trusted portable-predicate reducer.
-    ///
     /// On success returns a [`CachedPortableQuerySet`] whose terminal methods
     /// (`fetch_all`, `fetch_one`, `first`, `count`) execute the underlying
     /// SQL and additionally feed every materialised row through
     /// [`sassi::Punnu::insert`] before handing the values back to the caller.
     /// Identity-map semantics + the configured [`sassi::OnConflict`] policy
     /// from sassi apply.
-    ///
     /// On failure returns the original QuerySet alongside a typed
     /// [`PortablePredicateError`] — no terminal work or cache binding has
     /// taken place. SQL-only predicates (`Q::Condition`, `Q::Ilike`,
@@ -2283,9 +2093,7 @@ impl<T: Model + crate::types::Cacheable + Clone> QuerySet<T> {
     /// [`QuerySet::none`] is treated as the portable false predicate and
     /// passes the gate even though its `is_empty` short-circuit means no
     /// row will ever be inserted.
-    ///
     /// # Bounds
-    ///
     /// `T: Clone` is required because the post-fetch hook runs after the
     /// terminal has materialised the `Vec<T>` for the caller — the cache
     /// target needs its own copy of each row to feed into `Punnu::insert`,
@@ -2294,27 +2102,21 @@ impl<T: Model + crate::types::Cacheable + Clone> QuerySet<T> {
     /// here. Every model that goes through `#[derive(Model)]` already has
     /// `#[derive(Clone)]` in the canonical recipe so this bound is satisfied
     /// by construction for every realistic adopter.
-    ///
     /// # Why opt-in
-    ///
     /// The cache hook is purely additive — SQL output, query plan, and the
     /// lifetime of the QuerySet are unchanged whether `.cache(...)` was
     /// called or not. Calling `.cache(&p)` records "this QuerySet feeds that
     /// Punnu instance"; not calling it preserves the uncached fetch
     /// behaviour exactly. Adopters who don't want a cache pay zero — neither
     /// in cycles nor in API surface.
-    ///
     /// # Why `&Punnu<T>` (not `Punnu<T>`)
-    ///
     /// `sassi::Punnu<T>` is `Arc`-internal — `Punnu::clone` clones a single
     /// `Arc<PunnuInner<T>>`. The builder takes the punnu by reference and
     /// clones internally so the call site reads as a binding ("feed THIS
     /// punnu") rather than a transfer ("hand over your punnu"). The cloned
     /// handle shares state with the caller's, matching the bind semantics
     /// the spec requires.
-    ///
     /// # Errors propagation
-    ///
     /// Per-row [`sassi::Punnu::insert`] errors (e.g.
     /// [`sassi::InsertError::Conflict`] under [`sassi::OnConflict::Reject`],
     /// or an L2-backend serialization failure) are logged via
@@ -2326,15 +2128,12 @@ impl<T: Model + crate::types::Cacheable + Clone> QuerySet<T> {
     /// would conflate "Postgres said something went wrong" with "the cache
     /// mirror disagreed" and break the spec's contract that the cache
     /// modifier is purely additive.
-    ///
     /// Predicate-portability errors travel through the `Result` return type,
     /// not through `tracing`, because they reflect a structural choice the
-    /// adopter must repair (rewrite the filter using portable predicates) —
+    /// adopter must repair (rewrite the filter using portable predicates)
     /// retrying the same queryset cannot turn a SQL-only predicate into a
     /// portable one.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// use djogi::cache::Punnu;
     /// use djogi::prelude::*;
@@ -2353,7 +2152,7 @@ impl<T: Model + crate::types::Cacheable + Clone> QuerySet<T> {
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     // `clippy::result_large_err` is silenced because the `Err` variant returns
     // ownership of `self` to the caller alongside the typed portability error
-    // — the recovery shape (retry with a portable filter, or fall through to
+    // the recovery shape (retry with a portable filter, or fall through to
     // ordinary SQL execution) requires the original queryset. Boxing would
     // force an allocation on every error path without changing what the
     // caller has to do with it; the established codebase idiom (see
@@ -2372,7 +2171,6 @@ impl<T: Model + crate::types::Cacheable + Clone> QuerySet<T> {
 }
 
 /// Private marker trait used to seal [`IntoDistinctColumns`].
-///
 /// Only types djogi itself blesses — `FieldRef` and tuples of
 /// `FieldRef` up to arity 6 — implement `Sealed`, and because the
 /// module is crate-private, downstream crates cannot add their own
@@ -2386,12 +2184,10 @@ mod distinct_seal {
 /// Bridge from closure return types to the `Vec<&'static str>` of column
 /// names that [`QuerySet::distinct_on`] stores. Implemented for
 /// [`FieldRef`] and tuples of `FieldRef`s up to arity 6.
-///
 /// Expanding beyond six requires adding another
 /// `impl_into_distinct_columns_tuple!` invocation below — the ceiling is
 /// deliberately low because `DISTINCT ON` with more than a handful of
 /// columns is a design smell, not a capacity limit Djogi cares to lift.
-///
 /// The trait is sealed via [`distinct_seal::Sealed`] — downstream code
 /// can name `IntoDistinctColumns` as a bound (so `distinct_on` callers
 /// can pass the ZST tuples returned by macro-generated field
@@ -2416,7 +2212,7 @@ impl<M: Model, V> IntoDistinctColumns for FieldRef<M, V> {
 // `DISTINCT ON` is a SQL-only emission boundary (no Punnu evaluator),
 // so the wrapper forwards its column metadata through the same sealed
 // trait. The bound stays sealed because both implementers route through
-// the validated `__make_field_ref` / `__make_djogi_field` constructors —
+// the validated `__make_field_ref` / `__make_djogi_field` constructors
 // downstream code cannot smuggle column strings through this interface.
 impl<M: Model, V> distinct_seal::Sealed for crate::query::field::DjogiField<M, V> {}
 impl<M: Model, V> IntoDistinctColumns for crate::query::field::DjogiField<M, V> {
@@ -2451,8 +2247,8 @@ impl_into_distinct_columns_tuple!(A, B, C, D, E, F);
 
 /// Generate `IntoDistinctColumns` (plus the sealed marker) for a tuple
 /// of `DjogiField`s. The tuple impls mirror the `FieldRef` set above so
-/// post-PR3 root closures can return `(f.col_a(), f.col_b(), ...)`
-/// directly without unwrapping each accessor through `__sql_field()`.
+/// post-PR3 root closures can return `(f.col_a, f.col_b, ...)`
+/// directly without unwrapping each accessor through `__sql_field`.
 /// Identifier safety stays sealed by the same mechanism — every
 /// `DjogiField` carries a column string the validator already accepted.
 macro_rules! impl_into_distinct_columns_djogi_tuple {
@@ -2478,32 +2274,28 @@ impl_into_distinct_columns_djogi_tuple!(A, B, C, D);
 impl_into_distinct_columns_djogi_tuple!(A, B, C, D, E);
 impl_into_distinct_columns_djogi_tuple!(A, B, C, D, E, F);
 
-// ── Cluster 8δ T8.4 — into_basic_predicate: conservative Q<T> → BasicPredicate<T> ─────
-//
+// ── 4 — into_basic_predicate: conservative Q<T> → BasicPredicate<T> ─────
 // Placed on `impl<T: Model> QuerySet<T>` (the base block) because extraction
 // is purely structural — it walks the Q<T> condition tree without any
 // DeltaSyncCacheable behaviour. The T8.3 stub lived in the
 // DeltaSyncCacheable-bounded block because it was a placeholder co-located
 // with refresh_into. T8.4 moves the real implementation to the correct bound.
-//
 // Visibility: `pub` — adopters who want to inspect whether a QuerySet is
 // reducible before calling refresh_into need to call this. It is not part of
 // the everyday filter API (that is QuerySet::filter / filter_struct), but it
 // is the intended entry point for advanced cache-integration code that needs
 // to pass a BasicPredicate filter to sassi.
-//
 // Implementation note — Q::Condition is always Unreducible:
-//   Legacy SQL-only payloads and macro-generated `{Model}Filter` inputs route
-//   through Q::Condition(_) to preserve byte-for-byte SQL parity. A freshly
-//   constructed QuerySet<T>::new() starts with Q::Portable(True). Ordinary
-//   closure filters whose field accessors return `PortablePredicate<T>` now
-//   preserve Q::Portable / Q::Compound / Q::Negated reducible forms, so PR4
-//   cache and refresh gates accept them.
-//
+// Legacy SQL-only payloads and macro-generated `{Model}Filter` inputs route
+// through Q::Condition(_) to preserve byte-for-byte SQL parity. A freshly
+// constructed QuerySet<T>::new starts with Q::Portable(True). Ordinary
+// closure filters whose field accessors return `PortablePredicate<T>` now
+// preserve Q::Portable / Q::Compound / Q::Negated reducible forms, so PR4
+// cache and refresh gates accept them.
 // Path-routing note (non-emitted code):
-//   Per `feedback_macro_path_routing.md`, path-routing governs macro-EMITTED
-//   code only. This impl block is non-emitted framework code; it may spell
-//   `sassi::BasicPredicate` directly.
+// Per `feedback_macro_path_routing.md`, path-routing governs macro-EMITTED
+// code only. This impl block is non-emitted framework code; it may spell
+// `sassi::BasicPredicate` directly.
 
 fn cache_invalid(kind: &'static str) -> PortablePredicateError {
     PortablePredicateError::CacheInvalidNode { kind }
@@ -2564,10 +2356,9 @@ fn validate_portable_sql_emit<T: crate::model::Model>(
 
 impl<T: crate::model::Model> QuerySet<T> {
     /// Validate that this queryset is safe to use as a Punnu cache boundary.
-    ///
     /// Ordinary SQL-only predicates remain valid for database execution, but
     /// cache and refresh paths must be reducible to Sassi's Rust-evaluable
-    /// predicate algebra. `QuerySet::none()` is treated as the portable
+    /// predicate algebra. `QuerySet::none` is treated as the portable
     /// false predicate rather than as an unfiltered query.
     pub fn is_portable(&self) -> Result<(), PortablePredicateError> {
         let portable_predicate = if self.is_empty {
@@ -2579,7 +2370,6 @@ impl<T: crate::model::Model> QuerySet<T> {
     }
 
     /// Convert this queryset into the portable cache-boundary wrapper.
-    ///
     /// On failure the original queryset is returned unchanged with the typed
     /// portability error; no terminal work or refresh task has started.
     // `clippy::result_large_err` allowed for the same reason as `cache`/
@@ -2606,7 +2396,6 @@ impl<T: crate::model::Model> QuerySet<T> {
     }
 
     /// Add a Djogi-trusted portable predicate closure to the query.
-    ///
     /// This is the cache-safe sibling of [`QuerySet::filter`]: the closure
     /// must return a sealed [`IntoPortablePredicate`](crate::query::IntoPortablePredicate)
     /// value, so SQL-only `Condition`, `Expr<bool>`, and raw Sassi predicates
@@ -2624,53 +2413,43 @@ impl<T: crate::model::Model> QuerySet<T> {
 
     /// Attempt to extract a [`sassi::BasicPredicate<T>`] from this QuerySet's
     /// filter tree.
-    ///
     /// Returns `Some(predicate)` when the entire `Q<T>` condition tree is
     /// reducible to a `BasicPredicate<T>`. Returns `None` and emits a
     /// `tracing::warn!` when any node is unreducible.
-    ///
     /// # Reducible variants
-    ///
     /// | Q variant | Reduces to |
     /// |---|---|
-    /// | `Q::Portable(p)` | `p.into_inner()` — the inner [`sassi::BasicPredicate<T>`] is cloned out of the borrow so the walker does not require `T: Clone` |
+    /// | `Q::Portable(p)` | `p.into_inner` — the inner [`sassi::BasicPredicate<T>`] is cloned out of the borrow so the walker does not require `T: Clone` |
     /// | `Q::Compound { And, all_reducible_parts }` | `BasicPredicate::And(parts)` |
     /// | `Q::Compound { Or, all_reducible_parts }` | `BasicPredicate::Or(parts)` |
     /// | `Q::Xor(left, right)` | `BasicPredicate::Xor(Box::new(reduced_left), Box::new(reduced_right))` |
     /// | `Q::Negated(reducible_inner)` | `BasicPredicate::Not(Box::new(reduced_inner))` — inner walked recursively, so `Q::Negated(Q::Compound{And, basics})` reduces too |
-    /// | `QuerySet::none()` (`is_empty == true`) | `BasicPredicate::False` |
-    ///
+    /// | `QuerySet::none` (`is_empty == true`) | `BasicPredicate::False` |
     /// # Unreducible variants (always → `None`)
-    ///
     /// `Q::Ilike`, `Q::JsonbPath`, `Q::Regex`, `Q::Expression`,
     /// `Q::Array`, `Q::Condition`.
-    ///
     /// `Q::Condition` covers SQL-only payloads, including generated
     /// `{Model}Filter` clauses that fall outside the conservative portable
     /// mapping. Direct `Q<T>`, `PortablePredicate<T>`, ordinary generated
     /// field-accessor closure filters, and portable generated filter clauses
-    /// stay reducible; a fresh `QuerySet::new()` (no filters) starts as
+    /// stay reducible; a fresh `QuerySet::new` (no filters) starts as
     /// `Q::Portable(True)` and is reducible.
-    ///
     /// # When to use this
-    ///
     /// This is the inspection-style sibling of [`QuerySet::try_portable`].
-    /// [`QuerySet::cache`] and [`QuerySet::refresh_into`] (Phase 8eta PR4)
+    /// [`QuerySet::cache`] and [`QuerySet::refresh_into`]
     /// take the `Result`-returning route through `try_portable` so
     /// non-portable querysets are rejected with a typed error before any
     /// terminal work or refresh subscription begins. Reach for
     /// `into_basic_predicate` when you want to inspect a queryset's
     /// reducibility without consuming it through the cache/refresh boundary
-    /// — for example in tests or framework-internal cache-integration code
+    /// for example in tests or framework-internal cache-integration code
     /// that already knows it owns the queryset.
-    ///
     /// # Visibility note
-    ///
     /// This is `pub` for testability and to give framework-internal cache-
     /// integration code a named entry point. It is **not** an inspection
     /// API: the method consumes `self`, so callers cannot "inspect first,
     /// then refresh_into" — the QuerySet is moved by either call.
-    /// `QuerySet::clone()` preserves the reducible shape after Phase
+    /// `QuerySet::clone` preserves the reducible shape after Phase
     /// 8eta PR2b because `Q<T>` has a manual clone implementation that
     /// does not lower through `q_to_condition_ref`. A cloned portable
     /// queryset may therefore be inspected or refreshed without losing
@@ -2707,24 +2486,21 @@ impl<T: crate::model::Model> QuerySet<T> {
     }
 }
 
-// ── Cluster 8δ T8.3 — delta-sync refresh subscription ────────────────────────
-//
+// ── 3 — delta-sync refresh subscription ────────────────────────
 // `refresh_into` lives in its own impl block (separate from the base
 // `impl<T: Model>` block and the `impl<T: Model + Cacheable + Clone>` cache
 // block) because it requires the stricter combined bound
 // `T: Model + DeltaSyncCacheable + Send + Sync + 'static`. Widening any
 // existing block's bound would cascade to methods that have no need of
 // `DeltaSyncCacheable`, breaking the clean opt-in layering.
-//
 // `into_basic_predicate` was previously stubbed here in T8.3 but has been
 // moved to `impl<T: Model> QuerySet<T>` in T8.4 — extraction is purely
 // structural (no DeltaSyncCacheable behaviour needed).
-//
 // Path-routing note (non-emitted code):
-//   Per `feedback_macro_path_routing.md`, path-routing governs macro-EMITTED
-//   code only. This impl block is non-emitted framework code; it may spell
-//   `sassi::Punnu`, `sassi::DeltaRefreshHandle`, `crate::auth::AuthContext`,
-//   `crate::pg::pool::DjogiPool`, and `sassi::BasicPredicate` directly.
+// Per `feedback_macro_path_routing.md`, path-routing governs macro-EMITTED
+// code only. This impl block is non-emitted framework code; it may spell
+// `sassi::Punnu`, `sassi::DeltaRefreshHandle`, `crate::auth::AuthContext`,
+// `crate::pg::pool::DjogiPool`, and `sassi::BasicPredicate` directly.
 impl<T> QuerySet<T>
 where
     T: crate::model::Model
@@ -2738,64 +2514,50 @@ where
     T::Id: tokio_postgres::types::ToSql + Sync,
 {
     /// Bind this QuerySet to a Punnu and start a delta-sync refresh subscription.
-    ///
     /// On success, the fetcher owns a clone of the pool, the AuthContext by
     /// value, and the QuerySet's trusted BasicPredicate filter. SQL-only
     /// predicates return `Err((self, PortablePredicateError))` before any
     /// subscription starts. The fetcher NEVER captures `&mut DjogiContext`.
-    ///
     /// # T8.5 — real SQL path
-    ///
     /// The fetcher's `fetch_delta` body now issues real SQL on every tick.
     /// Each tick acquires a fresh connection from the pool, constructs a
     /// `DjogiContext` with the captured `AuthContext` (auth-locked-to-
     /// subscription per spec §677), and runs
     /// `SELECT <columns> FROM <table> WHERE <watermark_col> >= $1
-    ///  [OR id IN ($2, …)] ORDER BY <watermark_col>` for delta ticks.
+    /// [OR id IN ($2, …)] ORDER BY <watermark_col>` for delta ticks.
     /// Full baseline ticks with a portable filter push that filter into SQL.
-    ///
     /// # T8.8 — refresh knobs (spec §674)
-    ///
     /// The returned `DeltaRefreshHandle<T>` exposes two adopter-facing knobs
     /// from sassi's native API — no djogi-side wrappers required:
-    ///
     /// - **`with_eviction_recovery(bool)`** — when enabled, LRU evictions of
-    ///   IDs this subscription has observed are passed to the fetcher as
-    ///   `DeltaQuery::recover_ids` on a later delta tick. Opt in via
-    ///   `handle.with_eviction_recovery(true)`.
-    ///
+    /// IDs this subscription has observed are passed to the fetcher as
+    /// `DeltaQuery::recover_ids` on a later delta tick. Opt in via
+    /// `handle.with_eviction_recovery(true)`.
     /// - **`with_periodic_full_refresh(Option<NonZeroUsize>)`** — schedule
-    ///   full (non-delta) refreshes every N ticks. `Some(n)` makes every nth
-    ///   scheduled tick use `since = None`. Opt in via
-    ///   `handle.with_periodic_full_refresh(NonZeroUsize::new(10))`.
-    ///
+    /// full (non-delta) refreshes every N ticks. `Some(n)` makes every nth
+    /// scheduled tick use `since = None`. Opt in via
+    /// `handle.with_periodic_full_refresh(NonZeroUsize::new(10))`.
     /// Both methods return `Self` for chaining:
-    ///
     /// ```text
     /// let handle = MyModel::objects()
     ///     .refresh_into(&punnu, pool, auth)?
     ///     .with_eviction_recovery(true)
     ///     .with_periodic_full_refresh(NonZeroUsize::new(10));
     /// ```
-    ///
     /// Additionally, the fetcher always monitors the Punnu event stream for
     /// LRU eviction events and emits a one-shot `tracing::warn!` on
     /// `djogi::cache` the first time an eviction is observed (spec §674
     /// Knob 1 — always-on, no adopter opt-in required).
-    ///
     /// # Portable filter gate and full-baseline pushdown
-    ///
-    /// `refresh_into` first runs `try_portable()`. Reducible predicates are
+    /// `refresh_into` first runs `try_portable`. Reducible predicates are
     /// carried as `BasicPredicate<T>`; SQL-only `Q<T>` arms are rejected. The
     /// fetcher pushes non-trivial portable filters into SQL only on full
     /// baseline ticks (`since == None` and no eviction-recovery ids). Delta
     /// ticks ignore the filter at SQL time so changed rows that transitioned
     /// out of the predicate can still be upserted or tombstoned correctly.
-    /// `QuerySet::none()` is preserved as a structural empty subscription:
+    /// `QuerySet::none` is preserved as a structural empty subscription:
     /// update ticks return empty deltas without querying the source table.
-    ///
     /// # Interval placeholder
-    ///
     /// The 30 s interval is a placeholder. T8.6 may add a builder for
     /// caller-supplied interval; see spec §672 review.
     // `clippy::result_large_err` is silenced for the same reason as
@@ -2830,12 +2592,11 @@ where
 {
     /// Construct a sassi delta-refresh subscription from a queryset whose
     /// portable-predicate gate has already passed.
-    ///
     /// Infallible sibling of [`QuerySet::refresh_into`] — the public
-    /// `QuerySet::refresh_into` runs `try_portable()` first and either
+    /// `QuerySet::refresh_into` runs `try_portable` first and either
     /// delegates here on success or returns `Err((self, err))` without
     /// touching the Punnu. Adopters who already hold a [`PortableQuerySet`]
-    /// (e.g. from an explicit `try_portable()` inspection) can call this
+    /// (e.g. from an explicit `try_portable` inspection) can call this
     /// directly to skip the redundant gate.
     pub fn refresh_into(
         self,
@@ -2867,7 +2628,7 @@ where
         // Capture the Punnu's event broadcast receiver before starting the
         // delta refresh. Each `refresh_into` call gets its own independent
         // receiver — per the `(Punnu, Subscription)` scope in spec §674 Knob 1.
-        // Events emitted BEFORE this line (e.g., earlier `punnu.insert()` calls)
+        // Events emitted BEFORE this line (e.g., earlier `punnu.insert` calls)
         // are not visible to this subscription's receiver; only events fired
         // from this point forward are observed. That is the correct contract:
         // the warn is meant to surface LRU pressure that occurs WHILE the
@@ -2881,7 +2642,7 @@ where
             lru_warn_issued: std::sync::atomic::AtomicBool::new(false),
             events_rx,
             // Pattern 2 outbox-tombstone watermark — first tick on an
-            // events-bearing model initialises it to wall-clock `now()`.
+            // events-bearing model initialises it to wall-clock `now`.
             outbox_watermark: std::sync::Mutex::new(None),
             _model: std::marker::PhantomData,
         };
@@ -2951,9 +2712,9 @@ mod tests {
         }
     }
 
-    // Cluster 8γ Stage 2 (T6.9): `qs.condition` is `Q<T>` post-flip.
+    // (T6.9): `qs.condition` is `Q<T>` post-flip.
     // Tests that pattern-match on the legacy `Condition` shape lower
-    // through the bridge first. After Phase 8eta PR2b this bridge is a
+    // through the bridge first. After this bridge is a
     // compatibility oracle for legacy parity, not the production SQL
     // emitter's input.
 
@@ -2973,8 +2734,8 @@ mod tests {
 
     #[test]
     fn none_marks_queryset_empty() {
-        // `none()` is an instance method: from-scratch construction goes
-        // through `new().none()`, but `qs.none()` also works and is the
+        // `none` is an instance method: from-scratch construction goes
+        // through `new.none`, but `qs.none` also works and is the
         // spelling documented at the module level.
         let qs: QuerySet<Fake> = QuerySet::<Fake>::new().none();
         assert!(qs.is_empty());
@@ -2983,7 +2744,7 @@ mod tests {
     #[test]
     fn none_discards_prior_filters() {
         use crate::query::condition::{FilterValue, Leaf};
-        // Any filters chained before `.none()` are structurally discarded —
+        // Any filters chained before `.none` are structurally discarded
         // the resulting queryset is always a clean empty-flagged state.
         let qs: QuerySet<Fake> = QuerySet::new()
             .filter(|_| Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true))))
@@ -3025,7 +2786,6 @@ mod tests {
     }
 
     // ── T6.7 — `IntoQ<T>` + `filter_struct(Q<T>)` + `exclude_struct(Q<T>)` ────
-    //
     // Locks the substrate-aware filter API: trusted `IntoQ<T>` impls
     // (Q<T> directly, PortablePredicate<T>, or `{Model}Filter`
     // through the macro-emitted bridge) compose at the `Q<T>` layer.
@@ -3055,7 +2815,7 @@ mod tests {
     fn filter_struct_q_negated_ands_onto_tree() {
         use crate::query::Q;
 
-        // Q::always_false() lowers to `Or(empty)` —
+        // Q::always_false lowers to `Or(empty)`
         // structurally non-vacuous, so it AND-s through.
         let q: Q<Fake> = Q::always_false();
         let qs: QuerySet<Fake> = QuerySet::new().filter_struct(q);
@@ -3121,7 +2881,7 @@ mod tests {
         let qs: QuerySet<Fake> = QuerySet::new();
         // Type-level: `qs.condition` is `Q<Fake>`, not `Condition`.
         let _: &crate::query::Q<Fake> = &qs.condition;
-        // Lowering round-trip: `Q::always_true()` lowers to `Condition::True`,
+        // Lowering round-trip: `Q::always_true` lowers to `Condition::True`,
         // preserving SQL parity with the pre-flip queryset.
         let lowered = crate::query::q::q_to_condition(qs.condition);
         assert!(matches!(lowered, Condition::True));
@@ -3147,28 +2907,26 @@ mod tests {
         assert_eq!(qs.limit, qs2.limit);
     }
 
-    // ── Phase 8β T3.4 — proxy default-filter / default-order seeding ─────
-    //
+    // ── 4 — proxy default-filter / default-order seeding ─────
     // A second hand-rolled `Model` impl that overrides the new trait
-    // methods so the `QuerySet::new()` seeding path can be exercised
+    // methods so the `QuerySet::new` seeding path can be exercised
     // without requiring the proc macro. The tests below assert that:
-    //
     // - A proxy-shaped model whose `default_filter_condition` returns
-    //   `Some(...)` seeds the queryset's `condition` field with that
-    //   value (not `Condition::True`).
+    // `Some(...)` seeds the queryset's `condition` field with that
+    // value (not `Condition::True`).
     // - A proxy-shaped model whose `default_order_by` returns a
-    //   non-empty `Vec<OrderExpr>` seeds the `ordering` field.
+    // non-empty `Vec<OrderExpr>` seeds the `ordering` field.
     // - User `.filter(...)` calls AND-compose with the seeded condition
-    //   (the proxy filter is the prefix no adopter call can drop).
+    // (the proxy filter is the prefix no adopter call can drop).
     // - User `.order_by(...)` calls APPEND to the seeded ordering
-    //   (matches the existing queryset-level append convention).
+    // (matches the existing queryset-level append convention).
     // - The non-proxy `Fake` model above remains structurally identical
-    //   to its pre-T3.4 shape — no `RawSql` leakage when the trait
-    //   default impls (`None` / `Vec::new()`) are used.
+    // to its pre-T3.4 shape — no `RawSql` leakage when the trait
+    // default impls (`None` / `Vec::new`) are used.
 
     /// A proxy-shaped model. The hand-rolled impl overrides
     /// `default_filter_condition` and `default_order_by`; everything
-    /// else mirrors `Fake`'s `unreachable!()` body.
+    /// else mirrors `Fake`'s `unreachable!` body.
     #[derive(Clone)]
     struct FakeProxy;
     impl crate::model::__sealed::Sealed for FakeProxy {}
@@ -3262,11 +3020,10 @@ mod tests {
         }
     }
 
-    /// `QuerySet::new()` seeds `condition` from
+    /// `QuerySet::new` seeds `condition` from
     /// `Model::default_filter_condition` when the proxy override
     /// returns `Some(...)`.
-    ///
-    /// Cluster 8γ Stage 2 (T6.9): `qs.condition` is `Q<T>` — lower
+    /// (T6.9): `qs.condition` is `Q<T>` — lower
     /// through the bridge to assert the legacy shape the SQL emitter
     /// actually sees.
     #[test]
@@ -3278,7 +3035,7 @@ mod tests {
         }
     }
 
-    /// `QuerySet::new()` seeds `ordering` from
+    /// `QuerySet::new` seeds `ordering` from
     /// `Model::default_order_by` when the proxy override returns a
     /// non-empty Vec.
     #[test]
@@ -3297,11 +3054,10 @@ mod tests {
         }
     }
 
-    /// User `.filter(...)` AND-composes with the seeded default filter —
+    /// User `.filter(...)` AND-composes with the seeded default filter
     /// the proxy condition stays as the prefix and the user's leaf is
-    /// appended via the standard `Condition::and()` flatten path.
-    ///
-    /// Cluster 8γ Stage 2 (T6.9): `qs.condition` is `Q<T>` — lower
+    /// appended via the standard `Condition::and` flatten path.
+    /// (T6.9): `qs.condition` is `Q<T>` — lower
     /// through the bridge so the assertion still inspects the shape
     /// the SQL emitter renders.
     #[test]
@@ -3319,7 +3075,7 @@ mod tests {
         }
     }
 
-    /// User `.order_by(...)` APPENDS to the seeded default ordering —
+    /// User `.order_by(...)` APPENDS to the seeded default ordering
     /// the proxy ordering stays as the prefix and the user's expression
     /// is pushed onto the end. Matches the existing queryset convention
     /// (`queryset.rs:25-28`).
@@ -3347,7 +3103,7 @@ mod tests {
     }
 
     /// Mutation read-tail guard must allow model/proxy default ordering.
-    /// Default ordering is seeded by `QuerySet::new()` and should not be
+    /// Default ordering is seeded by `QuerySet::new` and should not be
     /// treated as an explicit user-specified `order_by`.
     #[test]
     fn mutation_guard_allows_proxy_default_ordering() {
@@ -3460,15 +3216,14 @@ mod tests {
         }
     }
 
-    /// The non-proxy `Fake` model is structurally unchanged by T3.4 —
+    /// The non-proxy `Fake` model is structurally unchanged by T3.4
     /// `default_filter_condition` returns `None` (default impl) and
     /// `default_order_by` returns the empty `Vec`, so the seeded queryset
     /// is identical to the pre-T3.4 shape (`Condition::True` + empty
     /// ordering).
-    ///
-    /// Cluster 8γ Stage 2 (T6.9): the substrate is now `Q<T>`. For
-    /// `default_filter_condition() == None`, `QuerySet::new()` seeds
-    /// `Q::always_true()` (== `Q::Portable(True)`), which
+    /// (T6.9): the substrate is now `Q<T>`. For
+    /// `default_filter_condition == None`, `QuerySet::new` seeds
+    /// `Q::always_true` (== `Q::Portable(True)`), which
     /// the bridge lowers to the legacy `Condition::True` — preserving
     /// the pre-flip emission contract.
     #[test]
@@ -3482,22 +3237,19 @@ mod tests {
     }
 
     // ── T11: group_by_region / count_by_region type-dispatch tests ────────────
-    //
     // These tests confirm the entry-point signatures compile and return the
     // expected type shapes. The SQL emission shape is tested in sql.rs.
 
     // ── P1-2 once-warn counter test ───────────────────────────────────────────
-    //
     // Verifies that calling `group_by_region` against an unindexed region model
     // emits at most one `tracing::warn!` regardless of how many times the method
     // is called. The guard uses `std::sync::Once` which is process-wide; the
     // counter is captured with `tracing_test::traced_test` scoped to this test's
     // thread-local subscriber.
-    //
     // `ONCE` fires at most once per process run. `#[traced_test]` captures the
     // warn if it fires inside this test invocation and zero otherwise. The
     // assertion uses `<=` rather than `==` because test parallelism may cause
-    // another unindexed call (in a different test) to consume the `Once` first —
+    // another unindexed call (in a different test) to consume the `Once` first
     // the bound of at most one is still the invariant being checked.
 
     /// A region model with a geography field but NO GiST index — triggers the
@@ -3578,7 +3330,6 @@ mod tests {
 
     /// Verifies the once-warn guard: `group_by_region` must emit at most one
     /// `warn!` for an unindexed region model even when called multiple times.
-    ///
     /// A custom `tracing::Subscriber` counts `WARN`-level events from the
     /// `djogi::spatial` target. The `std::sync::Once` guard is process-wide,
     /// so the warn fires in whichever test invocation happens first;
@@ -3821,14 +3572,13 @@ mod tests {
     }
 
     // ── T8.4 — into_basic_predicate: conservative Q<T>→BasicPredicate<T> walk ──
-    //
     // These tests set `qs.condition` directly (via `pub(crate)` access) to
     // exercise every reducible and unreducible shape. The integration test
     // (`phase8_t8_4_basic_predicate_extraction.rs`) covers the externally
     // observable legacy-filter behavior (`Condition` path → None + warn,
     // unfiltered QuerySet → Some(True)).
 
-    /// A fresh `QuerySet::new()` starts as `Q::Portable(True)`.
+    /// A fresh `QuerySet::new` starts as `Q::Portable(True)`.
     /// `into_basic_predicate` must return `Some(BasicPredicate::True)`.
     #[test]
     fn into_basic_predicate_unfiltered_returns_true() {
@@ -3861,7 +3611,6 @@ mod tests {
 
     /// A QuerySet with `Q::Compound { And, [Portable(True), Portable(False)] }`
     /// reduces to `Some(BasicPredicate::And(vec![True, False]))`.
-    ///
     /// Verifies the Compound-And arm walks all parts and assembles the
     /// `BasicPredicate::And` aggregator.
     #[test]
@@ -3892,7 +3641,6 @@ mod tests {
 
     /// A QuerySet with `Q::Compound { Or, [Portable(True), Portable(False)] }`
     /// reduces to `Some(BasicPredicate::Or(vec![True, False]))`.
-    ///
     /// Verifies the Compound-Or arm.
     #[test]
     fn into_basic_predicate_compound_or_reduces() {
@@ -3912,7 +3660,6 @@ mod tests {
     }
 
     /// `Q::Negated(Q::Portable(p))` reduces to `Some(BasicPredicate::Not(Box::new(p)))`.
-    ///
     /// Verifies the Negated arm: pure-Basic inner wrapped in Not.
     #[test]
     fn into_basic_predicate_negated_portable_reduces() {
@@ -3954,7 +3701,7 @@ mod tests {
     }
 
     /// `Q::Condition(...)` is always Unreducible. Ordinary
-    /// `.filter(|f| f.col().eq(...))` closures and portable generated
+    /// `.filter(|f| f.col.eq(...))` closures and portable generated
     /// `{Model}Filter` clauses produce `Q::Portable`, but SQL-only generated
     /// filter clauses and any closure that hand-rolls a raw `Condition` still
     /// route through `Q::Condition(_)`. This test pins that SQL-only escape
@@ -4009,7 +3756,6 @@ mod tests {
     }
 
     // ── PR4 — portable cache/refresh gate API ─────────────────────────────────
-    //
     // These tests pin the new public-surface invariants introduced when
     // `QuerySet::cache` and `QuerySet::refresh_into` flipped to `Result`-
     // returning gates. The integration test `phase8eta_pr4_cache_refresh_gate`
@@ -4017,9 +3763,9 @@ mod tests {
     // structural reduction without a DB round-trip so regressions surface
     // even when the integration suite is skipped.
 
-    /// `QuerySet::none()` flips `is_empty = true`. Both `try_portable` and
+    /// `QuerySet::none` flips `is_empty = true`. Both `try_portable` and
     /// `is_portable` must accept it as a portable-false predicate so adopters
-    /// can short-circuit authorization branches through `.none().cache(...)`.
+    /// can short-circuit authorization branches through `.none.cache(...)`.
     #[test]
     fn try_portable_accepts_none_as_portable_false() {
         let qs: QuerySet<Fake> = QuerySet::new().none();
@@ -4031,8 +3777,8 @@ mod tests {
         assert!(portable.into_query_set().is_empty);
     }
 
-    /// `try_portable` on a fresh `QuerySet::new()` (Q::Portable(True))
-    /// reduces and the resulting `PortableQuerySet::predicate()` is True.
+    /// `try_portable` on a fresh `QuerySet::new` (Q::Portable(True))
+    /// reduces and the resulting `PortableQuerySet::predicate` is True.
     #[test]
     fn try_portable_unfiltered_yields_true_predicate() {
         let qs: QuerySet<Fake> = QuerySet::new();

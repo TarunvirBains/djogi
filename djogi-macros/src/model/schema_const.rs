@@ -1,8 +1,6 @@
 //! Emit a `pub const {MODEL}_SCHEMA: &str` per model.
-//!
 //! For every `#[derive(Model)]` input, emit one compile-time string
 //! constant that pretty-prints the model's shape:
-//!
 //! ```text
 //! pub const VEHICLE_SCHEMA: &str = "table: vehicles
 //! fields:
@@ -17,25 +15,18 @@
 //!   - owner_id -> Owner (FK)
 //! ";
 //! ```
-//!
 //! Adopters and tooling lift the const without going through the
 //! `inventory` runtime path — useful for agent ergonomics and
 //! `cargo expand` introspection.
-//!
 //! # Determinism
-//!
 //! Byte-deterministic against `ParsedModel`: framework fields render
 //! first in fixed order, user fields in declaration order, indexes in
 //! declaration order, relations alphabetically by source-field column.
-//!
 //! # Naming
-//!
-//! `{pascal_to_snake(name).to_uppercase()}_SCHEMA`:
-//!
+//! `{pascal_to_snake(name).to_uppercase}_SCHEMA`:
 //! - `Vehicle` → `VEHICLE_SCHEMA`
 //! - `OrgUser` → `ORG_USER_SCHEMA`
 //! - `HTTPSProxy` → `HTTPS_PROXY_SCHEMA`
-//!
 //! Adopters declaring their own `VEHICLE_SCHEMA` at the same scope
 //! see a Rust "duplicate definition" error — a feature, not a bug.
 
@@ -46,10 +37,9 @@ use quote::{ToTokens, format_ident, quote};
 use syn::ItemStruct;
 
 /// Emit the per-model `{MODEL}_SCHEMA: &str` const.
-///
 /// `struct_item` is the **post-injection** struct (framework fields
 /// already prepended by `inject::expand`). `field_attrs` aligns with
-/// `struct_item.fields.iter().skip(model_attrs.framework_field_count())`.
+/// `struct_item.fields.iter.skip(model_attrs.framework_field_count)`.
 pub fn emit(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
@@ -166,7 +156,7 @@ fn render_type(ty: &syn::Type) -> String {
     compact_type_string(&ty.to_token_stream().to_string())
 }
 
-/// Strip whitespace from `proc_macro2::TokenStream::to_string()` output
+/// Strip whitespace from `proc_macro2::TokenStream::to_string` output
 /// so `Option < String >` becomes `Option<String>`. Rust type spellings
 /// never contain word-on-word adjacency, so dropping every space is safe.
 fn compact_type_string(raw: &str) -> String {
@@ -222,7 +212,7 @@ fn collect_indexes(
 }
 
 /// Map a raw `#[field(on_delete = "...")]` attribute string to the SQL
-/// label `MODEL_SCHEMA` displays. `s.to_uppercase()` would have rendered
+/// label `MODEL_SCHEMA` displays. `s.to_uppercase` would have rendered
 /// `set_null` as `SET_NULL` (with underscore) instead of the proper SQL
 /// `SET NULL`, so adopters reading the schema would see a string that
 /// doesn't match the DDL Postgres applies.

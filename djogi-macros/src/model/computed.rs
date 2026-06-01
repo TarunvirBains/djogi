@@ -1,10 +1,8 @@
-//! Computed-field attribute parsing — Phase 8β T4.3.
-//!
+//! Computed-field attribute parsing — 3.
 //! Parses `#[computed(sql = "...")]` annotations on struct fields and
 //! captures the per-field metadata (`sql` source, return type, the
 //! optional `stored` keyword which is **always rejected** in v0.1.0
-//! with a deferral error pointing at Phase 8.5).
-//!
+//! with a deferral error pointing at).
 //! T4.3 captures syntactic state only — no Rust-side getter emission
 //! (T4.4) and no `{Model}Computed` ZST emission (T4.5). The parser
 //! runs alongside the existing `FieldAttrs::parse` walker so adopters
@@ -12,9 +10,7 @@
 //! same struct without macro-pipeline interference; the descriptor
 //! emitter (T4.5) cross-references computed names against regular
 //! field names for collision detection.
-//!
 //! # Field-level annotation, not struct-level
-//!
 //! Per the lens (`feedback_decision_priorities.md`, plan §7 #7
 //! resolved 2026-05-03): field-level annotation matches canonical
 //! Rust derive conventions (`#[serde(skip)]`, `#[doc = "..."]`) and
@@ -23,19 +19,15 @@
 //! (`#[derive(Model)] #[computed(name = ..., sql = ...)]`) would
 //! force adopters to repeat the field name in the attribute and
 //! split the computed declaration from its return type.
-//!
 //! # Stored variant (`#[computed(sql, stored)]`)
-//!
-//! Always rejected at parse time with an explicit Phase 8.5 deferral
+//! Always rejected at parse time with an explicit deferral
 //! message per `feedback_anchored_deferrals` — the migration differ
 //! has not yet accumulated long-running stability evidence post-
 //! publish, so generating column DDL from a computed attribute is
 //! out of scope for v0.1.0. Adopters who need stored computed
 //! columns ship a non-stored computed for now and revisit when the
 //! deferral lifts.
-//!
 //! # No regex
-//!
 //! Per `feedback_no_regex_in_djogi` — every parser path uses byte-
 //! level checks against `syn`-parsed tokens; the SQL fragment is
 //! captured verbatim as a `String` and emitted into the descriptor
@@ -47,7 +39,6 @@
 use syn::{Expr, Lit, Meta, MetaNameValue, Token, punctuated::Punctuated};
 
 /// One parsed `#[computed(sql = "...")]` annotation.
-///
 /// Captured at field-walk time alongside the regular `FieldAttrs`
 /// parser. The field's Rust type (`return_type`) is captured from the
 /// declared `syn::Field::ty` so T4.5 threads the type through the
@@ -67,16 +58,14 @@ pub struct ComputedAttr {
 /// annotation. Returns a vec of `(field_ident, ComputedAttr)` pairs in
 /// declared order — T4.5 emits the `{Model}Computed` accessors in this
 /// order so the descriptor entries and the ZST methods stay aligned.
-///
 /// Errors surface span-precise diagnostics on:
-///
-/// - The `stored` keyword (rejected with a Phase 8.5 deferral message).
+/// - The `stored` keyword (rejected with a deferral message).
 /// - Empty `sql = ""` (silent-no-op surface; rejected at parse time).
 /// - Unknown keys inside `#[computed(...)]` (e.g. `index = ...`).
 /// - The bare `#[computed]` form (without the required `sql = "..."`).
-/// - A field with both `#[computed(...)]` and `#[field(...)]` —
-///   computed fields are virtual and must not double up with regular
-///   field metadata.
+/// - A field with both `#[computed(...)]` and `#[field(...)]`
+/// computed fields are virtual and must not double up with regular
+/// field metadata.
 pub fn parse_computed_attrs(
     struct_item: &syn::ItemStruct,
 ) -> syn::Result<Vec<(syn::Ident, ComputedAttr)>> {
@@ -206,7 +195,7 @@ fn parse_computed_args(
                      e.g. `#[computed(sql = \"base_price * 2\")]`",
                 ));
             }
-            // Phase 8.5 issue #225 — `expose = "..."` / `expose(...)` is
+            // #225 — `expose = "..."` / `expose(...)` is
             // not accepted inside `#[computed(...)]`. The Path A draft
             // entertained an `expose` sub-key on the model-side
             // computed attribute; Path B (issue #231) reshapes visage
@@ -216,7 +205,6 @@ fn parse_computed_args(
             // virtual/stored column vs. visage-side projection-only
             // entry), and conflating them was exactly the conceptual
             // error the Path B reshape eliminated.
-            //
             // The diagnostic surfaces a span-anchored hard rejection
             // (Stage 2 of the deprecation flow — the Path A spec was
             // never adopted publicly so there is no compatibility
@@ -265,23 +253,20 @@ fn parse_computed_args(
 }
 
 // ── T4.4 — Rust-side getter emission (intentionally a no-op) ─────────────
-//
 // Earlier shapes of this task emitted one inherent method per
-// `#[computed(sql = "...")]` field with an `unimplemented!()` body so
+// `#[computed(sql = "...")]` field with an `unimplemented!` body so
 // adopters could "override the stub" with a hand-written
 // `pub fn total_price(&self) -> f64 { ... }`. That design rests on a
 // false premise: Rust does not allow two inherent methods with the
 // same name on the same type. Adding a second
 // `pub fn total_price(&self) -> f64 { self.base_price * ... }`
 // would be E0201 (duplicate definition), not a silent override.
-//
-// BLOCK-5 fix — the Rust-side getter emission is removed entirely.
+// The Rust-side getter emission is removed entirely.
 // The SQL-side path stays the canonical surface: adopters call
-// `Vehicle::computed().total_price()` for an `Expr<f64>` that composes
-// in `.annotate()` / `.filter_expr()` / `.order_by()`. For a Rust-side
+// `Vehicle::computed.total_price` for an `Expr<f64>` that composes
+// in `.annotate` / `.filter_expr` / `.order_by`. For a Rust-side
 // computation, adopters write a plain inherent method with any name
 // of their choosing — no macro-emitted boilerplate to override.
-//
 // Per the lens (`feedback_decision_priorities.md`, plan §7 #8 resolved
 // 2026-05-03): production stability + simple-to-use both apply; on
 // this decision the deciding consideration is that a home-grown
@@ -292,10 +277,10 @@ fn parse_computed_args(
 // Rust-side path to be wrong about, and adopters who need one author
 // it themselves with the semantics they actually want.
 
-/// Phase 8β BLOCK-5 — no-op (kept as a stable call point for the
+/// No-op (kept as a stable call point for the
 /// orchestrator in `model::mod`). Returns an empty token stream
 /// regardless of input. The previous shape emitted one
-/// `pub fn <field>(&self) -> <T> { unimplemented!() }` per computed
+/// `pub fn <field>(&self) -> <T> { unimplemented! }` per computed
 /// field, but that surface conflicted with hand-written getters under
 /// E0201 — Rust does not allow two inherent methods with the same
 /// name on the same type. The accompanying guide
@@ -308,36 +293,31 @@ pub fn emit_rust_getters(
 }
 
 // ── T4.5 — `{Model}Computed` ZST emission for SQL projection ─────────────
-//
 // Emits a ZST `{Model}Computed` whose accessors return
 // `Expr<V>` (where `V` is the computed field's Rust return type) so
-// adopters can use computed fields in `.annotate()`, `.filter_expr()`,
-// and `.order_by()` — the SQL-projectable half of T4. The ZST is
-// constructed via `Vehicle::computed()` (an inherent method we also
+// adopters can use computed fields in `.annotate`, `.filter_expr`,
+// and `.order_by` — the SQL-projectable half of T4. The ZST is
+// constructed via `Vehicle::computed` (an inherent method we also
 // emit on `#name`), giving adopters the call-site pattern:
-//
 // ```rust
-// Vehicle::objects()
-//     .filter_expr(|_| Vehicle::computed().total_price().gte(Expr::literal(100.0)))
-//     .fetch_all(ctx).await?;
+// Vehicle::objects
+// .filter_expr(|_| Vehicle::computed.total_price.gte(Expr::literal(100.0)))
+// .fetch_all(ctx).await?;
 // ```
-//
 // # Why a separate ZST rather than bundling into `T::Fields`
-//
 // Plan §7 #10 (resolved 2026-05-03) recommended bundling computed
 // accessors directly into `T::Fields` so the call site is
-// `f.total_price()` symmetrically with regular fields. That decision
+// `f.total_price` symmetrically with regular fields. That decision
 // requires extending `FieldRef` with an internal `Source` enum
 // (Column | RawSql), which is a substantial surface-area change
 // touching every method. T4.5 ships the simpler ZST split for
-// v0.1.0 — the call-site difference is `Vehicle::computed()
-// .total_price()` vs `f.total_price()`. Adopter ergonomics drift
+// v0.1.0 — the call-site difference is `Vehicle::computed
+// .total_price` vs `f.total_price`. Adopter ergonomics drift
 // slightly but the API surface stays narrow. T6's Q-Algebra refactor
 // is the natural place to bundle if real adopter feedback warrants.
 
 /// Emit the `{Model}Computed` ZST + its accessor methods + the
-/// `Vehicle::computed()` inherent constructor.
-///
+/// `Vehicle::computed` inherent constructor.
 /// Empty token stream when no computed fields are declared. Non-
 /// computed models pay zero emission cost.
 pub fn emit_computed_zst(
@@ -369,7 +349,7 @@ pub fn emit_computed_zst(
         })
         .collect();
     quote::quote! {
-        // {Model}Computed — Phase 8β T4.5 ZST holding one accessor per
+        // {Model}Computed — 5 ZST holding one accessor per
         // computed field. Default + Copy + Clone so adopters can
         // construct it without naming the type.
         #[derive(::core::default::Default, ::core::marker::Copy, ::core::clone::Clone, ::core::fmt::Debug)]
@@ -382,8 +362,8 @@ pub fn emit_computed_zst(
         impl #struct_name {
             // Adopter-facing constructor for the computed accessor ZST.
             // Returns the freshly-constructed ZST; the call site is
-            // `Vehicle::computed().total_price()` returning `Expr<f64>`.
-            #[doc = " Phase 8β T4.5 — accessor for the model's computed fields."]
+            // `Vehicle::computed.total_price` returning `Expr<f64>`.
+            #[doc = " Accessor for the model's computed fields."]
             #[doc = ""]
             #[doc = " Returns a `{Model}Computed` ZST whose methods return `Expr<V>`"]
             #[doc = " typed values suitable for `.annotate()`, `.filter_expr()`,"]
@@ -431,7 +411,7 @@ mod tests {
         assert_eq!(ty_str, "f64");
     }
 
-    /// `stored` flag rejected with a Phase 8.5 deferral message that
+    /// `stored` flag rejected with a deferral message that
     /// names the future phase explicitly per `feedback_anchored_deferrals`.
     #[test]
     fn rejects_computed_stored_keyword() {
@@ -500,7 +480,7 @@ mod tests {
         assert!(err.to_string().contains("unsupported key"));
     }
 
-    /// Phase 8.5 issue #225 — `expose = "..."` inside `#[computed]`
+    /// #225 — `expose = "..."` inside `#[computed]`
     /// is rejected with a remediation pointer to `#[derived(...)]`.
     /// Stage 2 (parse-time hard rejection): the Path A draft was
     /// never adopted publicly, so this ships without a deprecation
@@ -520,7 +500,7 @@ mod tests {
         assert!(msg.contains("visage-derived-fields"), "got: {msg}");
     }
 
-    /// Phase 8.5 issue #225 — `expose(...)` (list form) inside
+    /// #225 — `expose(...)` (list form) inside
     /// `#[computed]` is also rejected with the same remediation
     /// pointer. The list form might appear if an adopter copied the
     /// Path A `expose(public, admin)` shape from the earlier draft.
@@ -553,8 +533,8 @@ mod tests {
         assert!(err.to_string().contains("computed"));
     }
 
-    /// Phase 8β BLOCK-5 — `emit_rust_getters` is now a no-op. Earlier
-    /// shapes emitted `pub fn <field>(&self) -> <T> { unimplemented!() }`
+    /// `emit_rust_getters` is now a no-op. Earlier
+    /// shapes emitted `pub fn <field>(&self) -> <T> { unimplemented! }`
     /// stubs that conflicted with hand-written getters under E0201
     /// (Rust forbids duplicate inherent methods). The canonical
     /// Rust-side path is a plain inherent method written by the
@@ -578,7 +558,7 @@ mod tests {
         );
     }
 
-    /// Phase 8β BLOCK-5 — empty input still produces an empty token
+    /// Empty input still produces an empty token
     /// stream (regression guard for the no-op contract).
     #[test]
     fn empty_input_emits_empty_token_stream() {
@@ -588,7 +568,7 @@ mod tests {
     }
 
     /// T4.5 — `emit_computed_zst` emits the `{Model}Computed` ZST
-    /// plus accessor methods plus `Vehicle::computed()` constructor.
+    /// plus accessor methods plus `Vehicle::computed` constructor.
     /// Each accessor returns `Expr<V>` typed for the field's declared
     /// return type and routes through `Expr::__raw_sql_fragment`.
     #[test]

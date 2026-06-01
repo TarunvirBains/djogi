@@ -1,24 +1,18 @@
 //! PostgreSQL support-boundary preflight checks.
-//!
 //! # What
-//!
 //! Before any database-touching workflow (migration apply, db reset,
 //! db seed, status query, live migration, verify), Djogi verifies that
 //! the connected PostgreSQL server meets the framework's support
 //! boundary. Today that boundary is **PostgreSQL 18+** — see
 //! [`docs/spec/decisions.md`] for the design rationale.
-//!
 //! # Why a separate module
-//!
 //! The version check is a pool-level concern, not a migration-specific
 //! concern. Any code that checks out a connection from `DjogiPool`
 //! benefits from knowing the server meets the support floor. Placing
 //! the check beside the pool and connection modules keeps it
 //! discoverable and reusable without coupling it to the migration
 //! engine.
-//!
 //! # Extension point
-//!
 //! [`PreflightReport`] carries the parsed version number. Future
 //! preflight checks (required extensions, capability probes) can extend
 //! this struct without changing the call sites — callers that only care
@@ -28,14 +22,12 @@ use crate::pg::pool::DjogiPool;
 use crate::{DbError, DjogiError};
 
 /// Minimum PostgreSQL major version Djogi supports.
-///
 /// This is a framework-level constant, not an operator-tunable knob.
 /// Djogi targets PostgreSQL 18+ exclusively; earlier versions are
 /// untested and unsupported.
 pub const MINIMUM_PG_MAJOR: u32 = 18;
 
 /// Result of a successful preflight check.
-///
 /// Carries parsed version fields so callers can log or branch on the
 /// exact server version without re-querying. Future preflight checks
 /// (required extensions, advisory-lock capability, HeeRanjID function
@@ -52,7 +44,6 @@ pub struct PreflightReport {
 }
 
 /// Parse `server_version_num` into `(major, minor)`.
-///
 /// The format is `XXYYZZ`: `major = num / 10000`, `minor = (num %
 /// 10000) / 100`. For PG 10+, minor releases increment the `YY`
 /// digits (e.g. PG 18.3 = `180300`, PG 17.4 = `170400`). The `ZZ`
@@ -63,15 +54,12 @@ fn parse_version_num(num: u32) -> (u32, u32) {
 }
 
 /// Evaluate a parsed version number against the minimum requirement.
-///
 /// Returns a [`PreflightReport`] when the version meets the floor, or
 /// [`DjogiError::UnsupportedPostgresVersion`] when it does not. This
 /// is the testable core of [`check_postgres_version`] — separated so
 /// unit tests can exercise the full parse + compare + error-construction
 /// path without a live database connection.
-///
 /// # Hardening note
-///
 /// Added by Finding 5 resolution: the original plan tested only the
 /// comparison logic in isolation. This function lets tests verify the
 /// full error shape (correct `detected_major`, `detected_minor`,
@@ -97,28 +85,23 @@ fn evaluate_version(version_num: u32) -> Result<PreflightReport, DjogiError> {
 
 /// Check that the connected PostgreSQL server meets Djogi's minimum
 /// version requirement.
-///
 /// Checks out one connection from `pool`, queries
 /// `SHOW server_version_num`, and compares the major version against
 /// [`MINIMUM_PG_MAJOR`]. Returns a [`PreflightReport`] on success or
 /// [`DjogiError::UnsupportedPostgresVersion`] when the server is below
 /// the floor.
-///
 /// # When to call
-///
 /// Call once per top-level CLI command, immediately after pool
 /// construction and before the first SQL statement that could produce a
 /// confusing secondary failure. Do NOT call inside library functions
 /// that may be invoked multiple times per operation (e.g. inside
 /// `apply_plan` per migration) — the CLI entry point is the
 /// enforcement boundary.
-///
 /// # Errors
-///
 /// - [`DjogiError::UnsupportedPostgresVersion`] — server major version
-///   is below [`MINIMUM_PG_MAJOR`].
+/// is below [`MINIMUM_PG_MAJOR`].
 /// - [`DjogiError::Db`] — connection checkout or `SHOW` query failed
-///   (network, auth, etc.).
+/// (network, auth, etc.).
 pub async fn check_postgres_version(pool: &DjogiPool) -> Result<PreflightReport, DjogiError> {
     let version_num = query_server_version_num(pool).await?;
     evaluate_version(version_num)
@@ -126,7 +109,6 @@ pub async fn check_postgres_version(pool: &DjogiPool) -> Result<PreflightReport,
 
 /// Wire-level query: check out one connection, run
 /// `SHOW server_version_num`, parse the text result to `u32`.
-///
 /// Separated from [`evaluate_version`] so the comparison and
 /// error-construction logic can be unit-tested without a live database.
 #[allow(clippy::disallowed_methods)]
@@ -158,9 +140,9 @@ mod tests {
     // parse_version_num — arithmetic correctness
     // ---------------------------------------------------------------
     // All values use real PostgreSQL XXYY00 encoding:
-    //   XX = major (2 digits), YY = minor (2 digits), ZZ = 00 (release)
+    // XX = major (2 digits), YY = minor (2 digits), ZZ = 00 (release)
     // Examples from `pg_config --version` / `SHOW server_version_num`:
-    //   PG 18.0 → 180000, PG 18.3 → 180300, PG 17.4 → 170400
+    // PG 18.0 → 180000, PG 18.3 → 180300, PG 17.4 → 170400
 
     #[test]
     fn parse_version_num_pg18_0() {

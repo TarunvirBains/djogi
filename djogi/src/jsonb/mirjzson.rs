@@ -1,7 +1,5 @@
 //! `MirJzSON` — Djogi's raw JSONB escape hatch over Sassi `JSahibON`.
-//!
 //! # What
-//!
 //! [`MirJzSON`] is the explicit JSONB field type for genuinely *unschemed*
 //! JSON columns — payloads whose shape is owned by an external system, or
 //! whose schema evolves faster than the Rust model can track. Unlike
@@ -10,9 +8,7 @@
 //! value, which preserves object insertion order, distinguishes JSON
 //! `null` from absence, and exposes numeric carriers (`I64` / `U64` /
 //! `F64`) with cross-numeric equality softening.
-//!
 //! # Why a Djogi wrapper around `sassi::JSahibON`?
-//!
 //! Djogi's database codec, model gating, query construction, and SQL
 //! lowering all need to talk about a JSONB column that round-trips through
 //! Sassi's portable JSON value model. Importing `sassi::JSahibON` at every
@@ -20,41 +16,33 @@
 //! database storage boundary; a thin Djogi wrapper keeps the surface
 //! Djogi-owned while delegating value semantics (numeric carrier rules,
 //! object-equality contracts, JSON `null` semantics) entirely to Sassi.
-//!
 //! # Construction
-//!
 //! Three named construction routes; **no** `Default` impl. Djogi
 //! intentionally requires every `MirJzSON` to come from one of:
-//!
-//! - [`From<sassi::JSahibON>`](MirJzSON#impl-From<JSahibON>-for-MirJzSON) —
-//!   already-portable value, no validation needed.
+//! - [`From<sassi::JSahibON>`](MirJzSON#impl-From<JSahibON>-for-MirJzSON)
+//! already-portable value, no validation needed.
 //! - [`TryFrom<serde_json::Value>`](MirJzSON#impl-TryFrom<Value>-for-MirJzSON)
-//!   — fallible bridge through Sassi's `serde-json-bridge`; rejects
-//!   non-finite floats and `serde_json::Number` carriers outside Sassi's
-//!   supported range.
+//! fallible bridge through Sassi's `serde-json-bridge`; rejects
+//! non-finite floats and `serde_json::Number` carriers outside Sassi's
+//! supported range.
 //! - The Postgres `FromSql` impl — reads JSONB bytes off the wire,
-//!   projects to [`sassi::JSahibON`] via `serde_json::Value`.
-//!
+//! projects to [`sassi::JSahibON`] via `serde_json::Value`.
 //! There is intentionally no [`From<MirJzSON> for JSahibON`] — projection
 //! is named ([`as_jsahibon`](MirJzSON::as_jsahibon) /
 //! [`into_jsahibon`](MirJzSON::into_jsahibon)) so the
 //! database-to-portable boundary is visible at call sites.
-//!
 //! # Trait posture
-//!
 //! `MirJzSON` is **not** `PartialEq` / `Eq` / `Hash` / `PartialOrd`. Whole-
 //! value JSON predicates go through the explicit JSON predicate methods
-//! on `DjogiField<M, MirJzSON>::jsahibon()`, not through root
+//! on `DjogiField<M, MirJzSON>::jsahibon`, not through root
 //! `DjogiField::eq`. Removing the equality / ordering trait impls is
 //! deliberate: a `MirJzSON == MirJzSON` comparison at the model layer
-//! would silently disagree with `jsahibon().eq_json(_)` because Sassi's
+//! would silently disagree with `jsahibon.eq_json(_)` because Sassi's
 //! `JSahibON` equality folds across numeric carriers (`I64(1) ==
 //! U64(1) == F64(1.0)`) but Rust `PartialEq` on the wrapper would imply
 //! reflexivity over the literal `JSahibON` variant — diverging
 //! semantics for the same surface predicate.
-//!
 //! # Relationship to `Jsonb<T>`
-//!
 //! `Jsonb<T>` remains the typed-schema JSONB path: structural validation
 //! at decode, unknown-field preservation, typed `.path::<V>("a.b")`
 //! queries through `JsonbPathRef`. `MirJzSON` is the raw-JSONB sibling:
@@ -67,7 +55,6 @@ use bytes::BytesMut;
 use postgres_types::{FromSql, IsNull, ToSql, Type};
 
 /// Errors produced while decoding [`MirJzSON`] from external representations.
-///
 /// `MirJzSON`'s public construction routes (`TryFrom<serde_json::Value>`,
 /// `postgres_types::FromSql`) all funnel non-portable JSON content through
 /// this typed error rather than panicking. Callers receive a `MirJzSON` only
@@ -75,7 +62,6 @@ use postgres_types::{FromSql, IsNull, ToSql, Type};
 /// `JSahibON` value model — non-finite f64, `serde_json::Number` carriers
 /// outside the supported range, and structural decode failures all surface
 /// here.
-///
 /// Marked `#[non_exhaustive]` so future Sassi value-model evolutions
 /// (e.g. arbitrary-precision numeric carriers) can add variants without
 /// breaking downstream `match` blocks.
@@ -102,16 +88,13 @@ pub enum MirJzSONError {
 }
 
 /// Djogi's raw JSONB escape-hatch field type.
-///
 /// Wraps a Sassi [`sassi::JSahibON`] portable JSON value. See the
 /// module-level docs for the design rationale, construction routes, and
 /// the deliberately-absent `PartialEq` / `Hash` / `PartialOrd` posture.
-///
 /// # Layout
-///
 /// `MirJzSON` is `#[repr(transparent)]` around its single
 /// `portable: sassi::JSahibON` field. This is **load-bearing for the
-/// query path**: the `.jsahibon()` accessor lifts a
+/// query path**: the `.jsahibon` accessor lifts a
 /// `fn(&M) -> &MirJzSON` extractor into a
 /// `fn(&M) -> &sassi::JSahibON` extractor by transmuting the function
 /// pointer — sound only because the two reference types share a
@@ -119,9 +102,7 @@ pub enum MirJzSONError {
 /// guarantees this for the field's reference *and* for niche
 /// optimizations on `Option<MirJzSON>`, which is required for the
 /// optional-field builder.
-///
 /// # Example
-///
 /// ```ignore
 /// use djogi::prelude::*;
 /// use djogi::jsonb::MirJzSON;
@@ -140,7 +121,6 @@ pub struct MirJzSON {
 
 impl MirJzSON {
     /// Borrow the inner Sassi portable JSON value.
-    ///
     /// Named projection — the database-to-portable boundary is visible at
     /// the call site. Callers that need to walk the JSON tree directly
     /// (debug formatters, custom Punnu evaluators, downstream Sassi
@@ -150,7 +130,6 @@ impl MirJzSON {
     }
 
     /// Consume into the inner Sassi portable JSON value.
-    ///
     /// Mirror of [`as_jsahibon`](Self::as_jsahibon) for the by-value path.
     /// Useful when the caller owns the `MirJzSON` and wants to hand the
     /// `JSahibON` to a Sassi-side API (`Punnu::insert`, cache snapshot,
@@ -162,7 +141,6 @@ impl MirJzSON {
 
 impl From<sassi::JSahibON> for MirJzSON {
     /// Lift an already-portable `JSahibON` into [`MirJzSON`].
-    ///
     /// Infallible — the inner value already lives in Sassi's portable
     /// model, so no further validation is required. The wrapping is a
     /// zero-cost move; callers that want to keep the original Sassi
@@ -178,15 +156,12 @@ impl TryFrom<serde_json::Value> for MirJzSON {
 
     /// Project a `serde_json::Value` into [`MirJzSON`] through Sassi's
     /// `serde-json-bridge`.
-    ///
     /// Fails when:
-    ///
     /// - The input contains a non-finite `f64` (Sassi rejects `NaN` /
-    ///   `±Infinity` in its `JFiniteF64` carrier).
+    /// `±Infinity` in its `JFiniteF64` carrier).
     /// - A `serde_json::Number` cannot fit any of Sassi's `i64` / `u64` /
-    ///   finite `f64` carriers (arbitrary-precision number outside both
-    ///   signed and unsigned 64-bit ranges).
-    ///
+    /// finite `f64` carriers (arbitrary-precision number outside both
+    /// signed and unsigned 64-bit ranges).
     /// Both failure modes surface as [`MirJzSONError::UnsupportedJsonValue`]
     /// with Sassi's own diagnostic message forwarded verbatim — the error
     /// tracks Sassi's contract rather than translating across two surfaces.
@@ -200,12 +175,10 @@ impl TryFrom<serde_json::Value> for MirJzSON {
 impl From<MirJzSON> for serde_json::Value {
     /// Project a [`MirJzSON`] into `serde_json::Value` through Sassi's
     /// `serde-json-bridge`.
-    ///
     /// Total: every variant of Sassi's `JSahibON` value model maps onto
     /// a `serde_json::Value` (numeric carriers all round-trip into
     /// `serde_json::Number`; the finite-`f64` invariant guarantees
     /// `Number::from_f64` returns `Some` for the `F64` arm).
-    ///
     /// Useful for adopter code that needs to ship `MirJzSON` through a
     /// `serde_json`-native serialization path (HTTP responses, log
     /// payloads, etc.) without round-tripping through the Postgres codec.
@@ -215,19 +188,17 @@ impl From<MirJzSON> for serde_json::Value {
 }
 
 // ── Postgres JSONB codec ───────────────────────────────────────────────────
-//
 // `ToSql` / `FromSql` route through `serde_json::Value` because:
-//
 // 1. `tokio-postgres` already ships a vetted `serde_json::Value` codec
-//    behind its `with-serde_json-1` feature (already enabled in djogi's
-//    workspace `Cargo.toml`). Wiring `MirJzSON` through that codec
-//    inherits its battle-tested binary-JSONB framing (the leading
-//    `\x01` version byte, the UTF-8 payload validation).
+// behind its `with-serde_json-1` feature (already enabled in djogi's
+// workspace `Cargo.toml`). Wiring `MirJzSON` through that codec
+// inherits its battle-tested binary-JSONB framing (the leading
+// `\x01` version byte, the UTF-8 payload validation).
 // 2. Sassi's `serde-json-bridge` is the **single owner** of the
-//    `serde_json::Value <-> JSahibON` projection. Reimplementing the
-//    bridge inside Djogi's codec path would let the two definitions
-//    drift — Sassi could tighten numeric-range checks without Djogi
-//    learning of the change.
+// `serde_json::Value <-> JSahibON` projection. Reimplementing the
+// bridge inside Djogi's codec path would let the two definitions
+// drift — Sassi could tighten numeric-range checks without Djogi
+// learning of the change.
 
 impl ToSql for MirJzSON {
     fn to_sql(
@@ -265,7 +236,7 @@ impl<'a> FromSql<'a> for MirJzSON {
         // Step 2: project into Sassi's `JSahibON` value model. Non-
         // portable JSONB content (non-finite f64, out-of-range numeric
         // carriers) surfaces as a typed `MirJzSONError::UnsupportedJsonValue`
-        // — the codec never panics.
+        // the codec never panics.
         let portable = sassi::JSahibON::try_from(value).map_err(|err| {
             Box::new(MirJzSONError::UnsupportedJsonValue(err.to_string()))
                 as Box<dyn std::error::Error + Sync + Send>
@@ -328,12 +299,11 @@ mod tests {
     /// be projected onto any of Sassi's `i64` / `u64` / finite-`f64`
     /// carriers. With `arbitrary_precision` enabled on `serde_json`,
     /// numbers parse as strings and only fail conversion when their
-    /// magnitude exceeds `f64::MAX` — at which point `as_f64()` returns
+    /// magnitude exceeds `f64::MAX` — at which point `as_f64` returns
     /// `None` and the bridge surfaces a typed `UnsupportedJsonValue`.
-    ///
     /// Numbers that fit `f64` (even very large ones like `1e35`) are
     /// accepted as `JSahibON::F64`; that is documented Sassi semantics
-    /// — the rejection only fires when *every* numeric carrier is out of
+    /// the rejection only fires when *every* numeric carrier is out of
     /// range. The literal below has roughly `10^500`, well past `f64`'s
     /// 1.797e308 ceiling.
     #[test]

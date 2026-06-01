@@ -1,8 +1,6 @@
 //! On-disk plan file I/O — read, write, hash, and verify the JSON
 //! documents stored at `migrations/<target>/live/<plan_id>_<slug>.json`.
-//!
 //! # Immutability contract
-//!
 //! [`write_plan`] refuses to overwrite an existing plan file. Once a
 //! plan is committed to disk it is the immutable definition of the
 //! rollout; any change requires a new plan file with a fresh
@@ -10,16 +8,12 @@
 //! the file at write time; resume / finalize call sites use
 //! [`verify_checksum`] to assert the file is byte-identical before
 //! advancing the runner.
-//!
 //! # Checksum format
-//!
 //! All checksums in this module are `V1:<sha256-hex>` per the same
 //! convention used by [`crate::migrate::ledger`] for migration files.
 //! The leading `V1:` is a version prefix; bumping past it would require
 //! the runner to dual-verify both forms during the transition window.
-//!
 //! # No-regex rule
-//!
 //! Path / slug validation is byte-level only — see
 //! [`crate::live_migrate::plan::PlanValidationError::SlugByte`].
 
@@ -109,9 +103,8 @@ pub enum PlanFileError {
 }
 
 /// Resolve the on-disk path for a live plan.
-///
 /// Format: `<migrations_root>/<target_database>/live/<plan_id>_<slug>.json`.
-/// Per OQ-07 hybrid naming. `plan_id` is rendered as a decimal i64
+/// Per hybrid naming. `plan_id` is rendered as a decimal i64
 /// (the `Display` impl of [`crate::types::HeerId`]).
 pub fn plan_path(
     migrations_root: &Path,
@@ -128,7 +121,6 @@ pub fn plan_path(
 
 /// Serialise a [`LivePlan`] to disk and return the path it was
 /// written to.
-///
 /// Performs [`LivePlan::validate`] first; refuses to overwrite an
 /// existing file (immutability contract). Creates parent directories
 /// as needed (`migrations/<target>/live/`).
@@ -206,7 +198,6 @@ pub fn compute_checksum(plan_file_path: &Path) -> Result<String, PlanFileError> 
 /// Verify that the on-disk plan file's recomputed checksum matches
 /// `expected`. Used by the runner on every `djogi live run` /
 /// `resume` / `finalize` per §3 line 429-432 of the v3 plan.
-///
 /// `expected` must already be a well-formed `V1:<64-hex>` string; an
 /// otherwise-malformed value returns [`PlanFileError::MalformedChecksum`]
 /// rather than silently slipping through the byte compare.

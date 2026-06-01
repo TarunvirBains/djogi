@@ -1,5 +1,4 @@
 //! Replacement-column expand/contract pattern.
-//!
 //! Covers the "Change column type — requires rewrite" row of the v3
 //! plan §7 classification table. The descriptor change that triggers
 //! this pattern is an [`AlterColumn`](SchemaOperation::AlterColumn)
@@ -7,36 +6,32 @@
 //! types differ in storage shape (varchar widening within `Pg18`
 //! catalog-only paths classifies as `OnlineSafe` and never reaches
 //! this pattern).
-//!
 //! # Step graph
-//!
 //! 1. [`StepKind::ExpandSchema`] — `ALTER TABLE <t> ADD COLUMN
-//!    <c>_new <to> NULL`. Adds the shadow column the rewrite drains
-//!    into.
+//! <c>_new <to> NULL`. Adds the shadow column the rewrite drains
+//! into.
 //! 2. [`StepKind::BeginCompatibilityWindow`] — register the dual-
-//!    read / dual-write hooks that keep `<c>` and `<c>_new` aligned
-//!    across in-flight transactions.
+//! read / dual-write hooks that keep `<c>` and `<c>_new` aligned
+//! across in-flight transactions.
 //! 3. [`StepKind::BackfillChunked`] — copy `<c>` into `<c>_new`. The
-//!    predicate template emits a complete `UPDATE`-tail fragment of
-//!    the shape `SET <c>_new = <c>::<to-type> WHERE id IN (SELECT id
-//!    FROM <t> WHERE <c>_new IS NULL LIMIT $1)` — bounded to one
-//!    chunk via the `LIMIT $1` placeholder, idempotent because the
-//!    inner predicate self-cancels (once a row's shadow column is
-//!    populated, the chunk skips it).
+//! predicate template emits a complete `UPDATE`-tail fragment of
+//! the shape `SET <c>_new = <c>::<to-type> WHERE id IN (SELECT id
+//! FROM <t> WHERE <c>_new IS NULL LIMIT $1)` — bounded to one
+//! chunk via the `LIMIT $1` placeholder, idempotent because the
+//! inner predicate self-cancels (once a row's shadow column is
+//! populated, the chunk skips it).
 //! 4. [`StepKind::ValidateBackfill`] — operator gate; runner pauses
-//!    until `SELECT count(*) FROM <t> WHERE <c>_new IS NULL` returns
-//!    zero.
+//! until `SELECT count(*) FROM <t> WHERE <c>_new IS NULL` returns
+//! zero.
 //! 5. [`StepKind::CutoverReads`] — visage projection switches reads
-//!    to `<c>_new`.
+//! to `<c>_new`.
 //! 6. [`StepKind::CutoverWrites`] — writes target `<c>_new` only.
-//!    Dual-write hook turns off.
+//! Dual-write hook turns off.
 //! 7. [`StepKind::FinalizeConstraints`] — apply NOT NULL / CHECK on
-//!    `<c>_new` if the original column carried them.
+//! `<c>_new` if the original column carried them.
 //! 8. [`StepKind::CleanupLegacyState`] — `DROP COLUMN <c>` then
-//!    `RENAME COLUMN <c>_new TO <c>`.
-//!
+//! `RENAME COLUMN <c>_new TO <c>`.
 //! # Idempotency
-//!
 //! The chunk's WHERE predicate `<c>_new IS NULL` self-cancels — once
 //! a row's shadow column has a non-null value, the row falls out of
 //! the predicate forever and re-runs are a no-op. The `SET <c>_new =
@@ -58,11 +53,11 @@ impl Pattern for ReplacementColumn {
     const IDEMPOTENT_PREDICATE: bool = true;
 
     fn emit(op: &SchemaOperation, ctx: &PatternContext) -> Result<Vec<Step>, PatternError> {
-        // djogi#220 — belt-and-braces refusal when the adopter supplied
+        // belt-and-braces refusal when the adopter supplied
         // a `#[field(type_change_using = "<expr>")]` clause. The
         // classifier
         // ([`crate::live_migrate::classify::classify_column_change`])
-        // routes `using.is_some()` to `OfflineOnly` so this pattern
+        // routes `using.is_some` to `OfflineOnly` so this pattern
         // should never be dispatched in that case; the explicit refusal
         // below is a defense-in-depth guard. The shadow-column backfill
         // can only emit a plain SQL cast (`SET <shadow> = <col>::<to>`)
@@ -107,22 +102,20 @@ impl Pattern for ReplacementColumn {
         );
         // Backfill template: a complete UPDATE-tail fragment that the
         // runner concatenates onto `UPDATE <table> `. The shape is
-        //
-        //     SET <shadow> = <legacy>::<to-type>
-        //     WHERE id IN (SELECT id FROM <table>
-        //                  WHERE <shadow> IS NULL
-        //                  LIMIT $1)
-        //
+        // SET <shadow> = <legacy>::<to-type>
+        // WHERE id IN (SELECT id FROM <table>
+        // WHERE <shadow> IS NULL
+        // LIMIT $1)
         // - `SET <shadow> = <legacy>::<to-type>` is the conversion. A
-        //   plain SQL cast suffices for the shapes the classifier
-        //   routes here (binary-coercible widening was filtered out by
-        //   the classifier and never reaches this pattern; rewrites
-        //   that need a non-cast transform must classify as
-        //   OfflineOnly per the §7 amendment).
+        // plain SQL cast suffices for the shapes the classifier
+        // routes here (binary-coercible widening was filtered out by
+        // the classifier and never reaches this pattern; rewrites
+        // that need a non-cast transform must classify as
+        // OfflineOnly per the §7 amendment).
         // - The WHERE predicate `<shadow> IS NULL` is structurally
-        //   idempotent: once a row converges, it falls out forever.
+        // idempotent: once a row converges, it falls out forever.
         // - `LIMIT $1` bounds the row count to one chunk; `$1` is the
-        //   only placeholder the runner binds.
+        // only placeholder the runner binds.
         let backfill_predicate = format!(
             "SET {shadow_q} = {col_q}::{ty} WHERE id IN (SELECT id FROM {tbl} WHERE {shadow_q} IS NULL LIMIT $1)",
             shadow_q = quote_ident(&shadow),
@@ -326,7 +319,7 @@ mod tests {
     fn backfill_template_concatenates_into_valid_update_statement() {
         // End-to-end check: the runner builds the chunk SQL by
         // concatenating "UPDATE <table> " with the predicate template.
-        // The result must be a valid Postgres UPDATE statement —
+        // The result must be a valid Postgres UPDATE statement
         // specifically, it must contain `UPDATE`, `SET`, `WHERE`, and
         // a `LIMIT $1` somewhere after the SET.
         let steps = ReplacementColumn::emit(&op(), &ctx()).unwrap();
@@ -387,7 +380,7 @@ mod tests {
 
     #[test]
     fn rejects_change_type_with_adopter_using() {
-        // djogi#220 — adopter-supplied `using` forces the offline path.
+        // adopter-supplied `using` forces the offline path.
         // The classifier
         // ([`crate::live_migrate::classify::classify_column_change`])
         // routes this case to `OfflineOnly` so the dispatcher never

@@ -1,30 +1,26 @@
 //! `djogi::primary_key!` declarative-style macro.
-//!
 //! Adopters declare a custom PK type in ~4 lines. The macro emits:
-//!
 //! - the `pub struct <Name>(<Inner>);` newtype with a standard derive set
-//!   (`Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
-//!   `Hash`, `serde::Serialize`, `serde::Deserialize`). `PartialOrd` /
-//!   `Ord` are required by Cluster 8δ T7.2's auto-emitted
-//!   `Cacheable::Id` bound (`Hash + Eq + Clone + Ord + Send + Sync +
-//!   'static` — `sassi-reference/sassi/src/cacheable.rs:60`); serde
-//!   derives keep the newtype usable as a transparent envelope wrapper
-//!   in adopter-side JSON I/O without reaching for an explicit
-//!   `serde` dep;
+//! (`Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
+//! `Hash`, `serde::Serialize`, `serde::Deserialize`). `PartialOrd` /
+//! `Ord` are required by 2's auto-emitted
+//! `Cacheable::Id` bound (`Hash + Eq + Clone + Ord + Send + Sync +
+//! 'static` — `sassi-reference/sassi/src/cacheable.rs:60`); serde
+//! derives keep the newtype usable as a transparent envelope wrapper
+//! in adopter-side JSON I/O without reaching for an explicit
+//! `serde` dep;
 //! - `impl ::djogi::primary_key::PrimaryKey for <Name>` with
-//!   `KIND = PkType::Custom(CustomPrimaryKeyKind { .. })`, `SQL_TYPE`, and
-//!   `DEFAULT_SQL` populated from the declaration attributes;
+//! `KIND = PkType::Custom(CustomPrimaryKeyKind { .. })`, `SQL_TYPE`, and
+//! `DEFAULT_SQL` populated from the declaration attributes;
 //! - `ToSql` / `FromSql` delegation to the inner type — the newtype
-//!   encodes on the wire exactly as `<Inner>` does;
+//! encodes on the wire exactly as `<Inner>` does;
 //! - `impl PrimaryKeyDbGen for <Name>` when `bulk_sql = "..."` is present
-//!   — `generate_many` executes `bulk_sql` with the batch count as `$1`
-//!   and decodes each row's first column as the inner type;
+//! `generate_many` executes `bulk_sql` with the batch count as `$1`
+//! and decodes each row's first column as the inner type;
 //! - `impl PrimaryKeyClientGen for <Name>` when `generate = |...| expr`
-//!   is present — the emitted body calls the closure expression once per
-//!   invocation and wraps the result in the newtype.
-//!
+//! is present — the emitted body calls the closure expression once per
+//! invocation and wraps the result in the newtype.
 //! # Grammar
-//!
 //! ```ignore
 //! djogi::primary_key! {
 //!     pub struct MyAppId(i64);
@@ -35,11 +31,9 @@
 //!     // generate = || some_client_side_id_generator();
 //! }
 //! ```
-//!
 //! `sql_type` and `default_sql` are required. `bulk_sql` is required for
 //! DB-backed generators (it is what `generate_many` calls). `generate`
 //! opts the type into client-side generation.
-//!
 //! See `docs/spec/primary-keys.md` §3.5b for the user-facing prose and
 //! the "when do I reach for this?" decision tree.
 
@@ -49,7 +43,6 @@ use syn::parse::{Parse, ParseStream};
 use syn::{Expr, Ident, LitStr, Token, Type, Visibility};
 
 /// Parsed `djogi::primary_key! { ... }` invocation.
-///
 /// The declaration is semicolon-separated — `struct Name(Inner);` first,
 /// then `key = value;` attribute pairs in any order. Each attribute key
 /// may appear at most once.
@@ -175,20 +168,18 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // `PrimaryKeyDbGen`, so every flavor of `primary_key!` must produce
     // that impl. The body picks a per-batch allocation strategy from the
     // attrs that were actually supplied:
-    //
-    //   * `bulk_sql` present  → run the user's SQL, bind `$1 = count::i32`,
-    //                           length-check the result.
-    //   * `generate` present  → loop `PrimaryKeyClientGen::generate_client`
-    //                           once per row; zero DB round-trips.
-    //   * otherwise           → synthesise
-    //                           `SELECT <default_sql> FROM generate_series(1, $1)`
-    //                           so the column DEFAULT's generator runs N
-    //                           times in one query. Adopters whose
-    //                           `default_sql` is a constant literal will
-    //                           get N duplicate ids at runtime; they need
-    //                           to supply `bulk_sql` or `generate` for
-    //                           real `bulk_create` traffic.
-    //
+    // * `bulk_sql` present → run the user's SQL, bind `$1 = count::i32`,
+    // length-check the result.
+    // * `generate` present → loop `PrimaryKeyClientGen::generate_client`
+    // once per row; zero DB round-trips.
+    // * otherwise → synthesise
+    // `SELECT <default_sql> FROM generate_series(1, $1)`
+    // so the column DEFAULT's generator runs N
+    // times in one query. Adopters whose
+    // `default_sql` is a constant literal will
+    // get N duplicate ids at runtime; they need
+    // to supply `bulk_sql` or `generate` for
+    // real `bulk_create` traffic.
     // `generate(ctx)` funnels through `generate_many(ctx, 1)` in all three
     // shapes so there is one code path to audit per flavor, not two.
     let bulk_sql_body = if let Some(sql) = bulk_sql.as_ref() {
@@ -216,7 +207,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
         }
     } else if generate.is_some() {
         quote! {
-            // Client-gen loop: `generate_client()` wraps the `generate = |...|`
+            // Client-gen loop: `generate_client` wraps the `generate = |...|`
             // expression and produces a single value per call. No DB traffic
             // from the helper macro's side.
             let mut out: ::std::vec::Vec<Self> = ::std::vec::Vec::with_capacity(n);
@@ -292,7 +283,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
 
     // Client-backed generator. The `generate = |…| expr` attribute carries
     // a callable expression — typically a closure or a fn item. We call it
-    // once per `generate_client()` invocation and wrap the result.
+    // once per `generate_client` invocation and wrap the result.
     let client_gen_impl = generate.as_ref().map(|expr| {
         quote! {
             impl ::djogi::primary_key::PrimaryKeyClientGen for #name {
@@ -310,7 +301,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
             ::std::marker::Copy,
             ::std::cmp::PartialEq,
             ::std::cmp::Eq,
-            // Cluster 8δ T7.2 — `Cacheable::Id: Hash + Eq + Clone + Ord + Send +
+            // 2 — `Cacheable::Id: Hash + Eq + Clone + Ord + Send +
             // Sync + 'static` (`sassi-reference/sassi/src/cacheable.rs:60`). The
             // auto-emitted `impl Cacheable for {Model}` from `#[derive(Model)]`
             // sets `type Id = <user PK type>`, so the PK must satisfy `Ord` for
@@ -357,8 +348,8 @@ pub fn expand(input: TokenStream) -> TokenStream {
                 ::std::option::Option::Some(#default_sql);
 
             fn sentinel() -> Self {
-                // Defer to the inner type's `Default` — `i64::default() == 0`,
-                // `uuid::Uuid::default() == nil`. Matches the "zero value"
+                // Defer to the inner type's `Default` — `i64::default == 0`,
+                // `uuid::Uuid::default == nil`. Matches the "zero value"
                 // contract the built-in `PrimaryKey::sentinel` impls uphold.
                 Self(<#inner as ::std::default::Default>::default())
             }
@@ -370,7 +361,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
 
         // `impl Default` lets adopter code use the custom PK type as an
         // ambient field on a `#[model]` struct. The macro-emitted model
-        // `Default` impl assigns `Default::default()` to every user field;
+        // `Default` impl assigns `Default::default` to every user field;
         // custom PKs must honour that contract.
         impl ::std::default::Default for #name {
             fn default() -> Self {
@@ -404,15 +395,14 @@ pub fn expand(input: TokenStream) -> TokenStream {
         // `i64`, `uuid::Uuid`, `HeerId`, and `RanjId` already implement it;
         // adopter inners without an impl surface a clean bound error at the
         // filter call site.
-        //
-        // djogi#161 — `jsonb_sql_cast` ALSO delegates to the inner type so
+        // `jsonb_sql_cast` ALSO delegates to the inner type so
         // `JsonbPathRef<_, Self>` emits the same typed Postgres cast the
         // inner SQL value type would emit. Pre-fix the custom PK wrapper
-        // inherited the default body, which walks `type_name::<Self>()`
+        // inherited the default body, which walks `type_name::<Self>`
         // through the cast table. The adopter's PK type name is never in
         // the table, so JSONB path comparisons silently fell back to text
         // (`'10' < '9'` because text ordering is lexicographic). Adopter-
-        // supplied `sql_type` is intentionally NOT used as the cast text —
+        // supplied `sql_type` is intentionally NOT used as the cast text
         // it is SQL text that may be a domain, alias, or wrong value; the
         // typed cast must come from the inner Rust type's
         // `IntoFilterValue` impl through the `JsonbSqlCast` enum.

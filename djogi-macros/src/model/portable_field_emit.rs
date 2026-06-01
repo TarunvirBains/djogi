@@ -1,6 +1,5 @@
 //! Shared field metadata for portable SQL emission.
-//!
-//! Phase 8eta PR2d — both `model::stubs` (root accessor emission and the
+//! Both `model::stubs` (root accessor emission and the
 //! SQL-only path-aware `{Model}SqlFields` view) and `model::crud` (the
 //! macro-generated `Model::__djogi_emit_field_predicate` override) need
 //! the same per-field facts: column name, declared Rust type, whether
@@ -10,15 +9,12 @@
 //! silently emit a portable arm that bound the wrong concrete payload
 //! type and surface as `ValueTypeMismatch` instead of as a clean
 //! `UnsupportedFieldType`.
-//!
 //! The single source of truth lives here. [`build`] returns a vector of
 //! [`PortableFieldEmitInfo`] entries aligned positionally with
 //! `struct_item.fields` (i.e. framework fields followed by user fields)
 //! after `inject::expand` has run. Both stubs.rs and crud.rs walk the
 //! same vector and read the same facts.
-//!
 //! # Classification rules
-//!
 //! Every field is sorted into a [`PortableFieldKind`] by inspecting its
 //! declared Rust type after stripping a single `Option<>` and any
 //! `Tracked<>` layers (matching `descriptor::expand`'s
@@ -40,9 +36,7 @@
 //! fields also classify as [`Unsupported`] at macro time because the model
 //! macro cannot observe sibling derives; their SQL lowering is admitted later
 //! through the explicit runtime codec registered by `#[derive(DjogiEnum)]`.
-//!
 //! # Why this is not a Sassi-side concern
-//!
 //! Sassi's `Field<T, V>` works for any `V: PartialEq + Send + Sync +
 //! 'static`; SQL emission requires `V: postgres_types::ToSql + Clone +
 //! Send + Sync + 'static`. The macro is the only place that knows both
@@ -59,29 +53,26 @@ use crate::model::attrs::{
 };
 
 /// Categorisation of one model field for portable SQL lowering.
-///
 /// The variants split into three groups:
-///
 /// 1. **Portable scalar leaves** — [`Scalar`], [`String`], [`Bool`].
-///    Get specific `(field, op)` arms emitted by `crud.rs` for the
-///    operators their `DjogiField` surface exposes.
+/// Get specific `(field, op)` arms emitted by `crud.rs` for the
+/// operators their `DjogiField` surface exposes.
 /// 2. **Portable optional leaves** — [`OptionScalar`], [`OptionString`],
-///    [`OptionBool`]. Same as above plus null-test arms and option-aware
-///    eq/neq/in/not_in arm bodies that try `Option<U>` first and fall
-///    back to the inner `U` (matching `DjogiField::eq(None|Some(_))`
-///    versus `DjogiField::some().eq(_)`).
+/// [`OptionBool`]. Same as above plus null-test arms and option-aware
+/// eq/neq/in/not_in arm bodies that try `Option<U>` first and fall
+/// back to the inner `U` (matching `DjogiField::eq(None|Some(_))`
+/// versus `DjogiField::some.eq(_)`).
 /// 3. **Portable root relation leaves** — [`RelationOrVisage`] and
-///    [`OptionRelationOrVisage`]. These cover FK/O2O physical columns
-///    only; dotted relation traversal stays on the SQL-only field view.
+/// [`OptionRelationOrVisage`]. These cover FK/O2O physical columns
+/// only; dotted relation traversal stays on the SQL-only field view.
 /// 4. **SQL-only / non-portable kinds** — [`Jsonb`], [`Array`],
-///    [`Spatial`], [`FtsComputed`], [`Unsupported`]. Get a single catch-all
-///    `(field, _) => UnsupportedFieldType { field }` arm. The portable
-///    cache/refresh boundary already rejects the constructed predicate
-///    upstream of SQL emission for every `Q::Portable` payload that
-///    would mention these fields, so emitting the typed error is
-///    belt-and-braces against a future macro addition that mistakenly
-///    wrapped one of them in `DjogiField`.
-///
+/// [`Spatial`], [`FtsComputed`], [`Unsupported`]. Get a single catch-all
+/// `(field, _) => UnsupportedFieldType { field }` arm. The portable
+/// cache/refresh boundary already rejects the constructed predicate
+/// upstream of SQL emission for every `Q::Portable` payload that
+/// would mention these fields, so emitting the typed error is
+/// belt-and-braces against a future macro addition that mistakenly
+/// wrapped one of them in `DjogiField`.
 /// [`Scalar`]: PortableFieldKind::Scalar
 /// [`String`]: PortableFieldKind::String
 /// [`Bool`]: PortableFieldKind::Bool
@@ -111,13 +102,11 @@ pub enum PortableFieldKind {
     Bool,
     /// `Option<U>` where `U` is itself [`Scalar`] — adds null-test arms
     /// and option-aware eq/neq/in/not_in dispatch.
-    ///
     /// [`Scalar`]: PortableFieldKind::Scalar
     OptionScalar,
     /// `Option<String>` — same as [`OptionScalar`] but the inner type is
     /// `String`. Pattern arms are not generated because Sassi's
     /// `PresentField<T, String>` does not expose them in 8eta.
-    ///
     /// [`OptionScalar`]: PortableFieldKind::OptionScalar
     OptionString,
     /// `Option<bool>` — null tests plus eq/neq/in/not_in.
@@ -125,7 +114,7 @@ pub enum PortableFieldKind {
     /// `Vec<T>` for Djogi-supported one-dimensional Postgres array columns
     /// whose element type has Rust/Punnu/PostgreSQL equality parity.
     /// Equality and membership are portable; array-specific operators remain
-    /// SQL-only through `explicit_pg_predicate()`. Float and `Interval`
+    /// SQL-only through `explicit_pg_predicate`. Float and `Interval`
     /// arrays do not classify here.
     Array,
     /// `Option<Vec<T>>` for Djogi-supported one-dimensional Postgres array
@@ -133,7 +122,7 @@ pub enum PortableFieldKind {
     /// tests, equality, and membership are portable.
     OptionArray,
     /// `Jsonb<T>` / `Option<Jsonb<T>>` — SQL-only in 8eta. Routes
-    /// through `explicit_pg_predicate()` for database-specific
+    /// through `explicit_pg_predicate` for database-specific
     /// predicates; portable arms emit
     /// `UnsupportedFieldType { field }`.
     Jsonb,
@@ -162,7 +151,6 @@ impl PortableFieldKind {
     /// `true` when the macro should emit specific `(field, op)` arms
     /// for this kind. SQL-only / non-portable kinds get a single
     /// catch-all arm instead.
-    ///
     /// The introspection helpers ([`Self::is_portable_leaf`],
     /// [`Self::is_optional`], [`Self::supports_string_patterns`],
     /// [`Self::supports_ordering`]) are public so future callers
@@ -227,7 +215,6 @@ impl PortableFieldKind {
 }
 
 /// Per-field metadata consumed by both stubs.rs and crud.rs.
-///
 /// One entry per post-injection struct field. Indexes line up
 /// positionally with `struct_item.fields` so the metadata vector and
 /// the field iterator can be zipped without re-deriving. Framework
@@ -247,12 +234,11 @@ pub struct PortableFieldEmitInfo {
     /// when `field_kind` is an `Option*` variant.
     pub rust_type: Type,
     /// `Some(U)` for `Option<U>` fields where `U` is portable. The
-    /// macro uses this for the `.some()` payload arm — the
+    /// macro uses this for the `.some` payload arm — the
     /// `PresentField<T, U>` surface returns `BasicPredicate`s carrying
     /// `U`, not `Option<U>`, so the macro arm tries `Option<U>` first
     /// (direct Option access) and falls back to `U` (PresentField
     /// access) before returning `ValueTypeMismatch`.
-    ///
     /// `None` for non-Option fields and for `Option<NonPortable>`
     /// where the inner type is not in the portable scalar/string/bool
     /// set.
@@ -263,7 +249,6 @@ pub struct PortableFieldEmitInfo {
     pub field_kind: PortableFieldKind,
     /// `true` when the original declared `rust_type` was wrapped in
     /// `Tracked<…>` (e.g. `Tracked<Option<U>>`, `Tracked<String>`).
-    ///
     /// `Tracked<U>` (non-`Option`) fields keep `rust_type =
     /// Tracked<U>`, so the existing scalar arms emit
     /// `emit_value::<M, Tracked<U>>` and the runtime `value_as::<Tracked<U>>`
@@ -281,16 +266,14 @@ pub struct PortableFieldEmitInfo {
 }
 
 /// Build the per-field metadata vector for a model.
-///
 /// `struct_item` MUST be the post-`inject::expand` struct (framework
 /// fields prepended). `field_attrs` aligns positionally with the
 /// user-declared portion of `struct_item.fields[3..]` for
 /// non-`pk = None` models — i.e. there are exactly
-/// `struct_item.fields.len() - 3` user fields and they line up with
+/// `struct_item.fields.len - 3` user fields and they line up with
 /// `field_attrs`. For `pk = None` models the metadata is empty
 /// (matches `crud::expand`'s gate — no `Model` impl, no portable
 /// arms).
-///
 /// The framework field at index 0 is `id` for non-`pk = None` models;
 /// indices 1 and 2 are `created_at` / `updated_at`. All three are
 /// classified by `rust_type` (the macro caller's `model_attrs.pk`
@@ -363,32 +346,28 @@ pub fn build(
 }
 
 /// Classify a single field's Rust type into a [`PortableFieldKind`].
-///
 /// `field_attrs` is `Some(_)` for user fields and `None` for the three
 /// framework fields injected at the front of the struct.
-///
 /// Order matters:
-///
 /// 1. `#[field(protected(...))]` short-circuits to
-///    [`PortableFieldKind::Unsupported`] regardless of the underlying
-///    Rust type — protected codecs change the bound shape between
-///    plaintext (Punnu) and ciphertext (SQL), which 8eta has not
-///    parity-tested.
+/// [`PortableFieldKind::Unsupported`] regardless of the underlying
+/// Rust type — protected codecs change the bound shape between
+/// plaintext (Punnu) and ciphertext (SQL), which 8eta has not
+/// parity-tested.
 /// 2. Strip a single `Tracked<...>` layer; the SQL bind operates on
-///    the inner type and the macro emission should follow.
+/// the inner type and the macro emission should follow.
 /// 3. Strip a single `Option<...>` layer and remember whether one was
-///    stripped. The inner type drives the kind; the option flag turns
-///    [`Scalar`]/[`String`]/[`Bool`] into their `Option*` siblings.
+/// stripped. The inner type drives the kind; the option flag turns
+/// [`Scalar`]/[`String`]/[`Bool`] into their `Option*` siblings.
 /// 4. `ForeignKey<T>` / `OneToOneField<T>` root columns lower to
-///    [`PortableFieldKind::RelationOrVisage`] or
-///    [`PortableFieldKind::OptionRelationOrVisage`]. This is physical
-///    column equality/membership only; relation traversal remains
-///    SQL-only.
+/// [`PortableFieldKind::RelationOrVisage`] or
+/// [`PortableFieldKind::OptionRelationOrVisage`]. This is physical
+/// column equality/membership only; relation traversal remains
+/// SQL-only.
 /// 5. Match the inner type's last path segment against the curated
-///    portable-scalar set; fall through to [`Unsupported`] for
-///    anything else (including user enums, custom newtypes, and any
-///    multi-segment path Djogi has not parity-tested).
-///
+/// portable-scalar set; fall through to [`Unsupported`] for
+/// anything else (including user enums, custom newtypes, and any
+/// multi-segment path Djogi has not parity-tested).
 /// [`Scalar`]: PortableFieldKind::Scalar
 /// [`String`]: PortableFieldKind::String
 /// [`Bool`]: PortableFieldKind::Bool
@@ -441,7 +420,6 @@ fn classify(ty: &Type, field_attrs: Option<&FieldAttrs>) -> (PortableFieldKind, 
 }
 
 /// Classify a fully-stripped (no `Option<>`, no `Tracked<>`) type.
-///
 /// Inspects the last segment of the type's path. Match arms intentionally
 /// list the *last segment ident only* so adopters who write
 /// fully-qualified spellings (`djogi::types::HeerId`,

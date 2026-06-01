@@ -1,14 +1,11 @@
-//! Concrete `Publisher` implementations — Phase 5 Task 11.5.
-//!
+//! Concrete `Publisher` implementations — .
 //! # Available publishers
-//!
 //! | Publisher | Feature flag | Status |
 //! |-----------|-------------|--------|
 //! | [`NotifyPublisher`] | `outbox` (always included) | Fully implemented |
-//! | `RedisPublisher` | `outbox-redis` | Stub — `unimplemented!()` |
-//! | `KafkaPublisher` | `outbox-kafka` | Stub — `unimplemented!()` |
-//! | `NatsPublisher` | `outbox-nats` | Stub — `unimplemented!()` |
-//!
+//! | `RedisPublisher` | `outbox-redis` | Stub — `unimplemented!` |
+//! | `KafkaPublisher` | `outbox-kafka` | Stub — `unimplemented!` |
+//! | `NatsPublisher` | `outbox-nats` | Stub — `unimplemented!` |
 //! Full Redis/Kafka/NATS integrations (including the provider crate deps) ship
 //! in a future task once the provider dependency matrix is decided. The stubs
 //! guarantee the feature flags compile today and give the relay binary a

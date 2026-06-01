@@ -1,5 +1,4 @@
 //! Crate-private SQL identifier validation.
-//!
 //! This module is the single source of truth for identifier validation
 //! across every djogi SQL emitter. Any macro-emitted `&'static str` that
 //! eventually lands inside an `SqlAccumulator::push_sql` call — a relation
@@ -7,22 +6,19 @@
 //! field descriptor's `name` — goes through [`assert_plain_ident`] first so
 //! broken macro emissions and hostile downstream bypass attempts produce
 //! a framework-bug panic instead of malformed SQL.
-//!
 //! The validator enforces the Postgres unquoted-identifier contract:
-//!
 //! 1. Non-empty.
 //! 2. Length ≤ 63 bytes (`NAMEDATALEN - 1`), so Rust-level and
-//!    Postgres-level identifier identity cannot diverge through
-//!    server-side truncation.
+//! Postgres-level identifier identity cannot diverge through
+//! server-side truncation.
 //! 3. First byte is an ASCII letter or underscore; every remaining
-//!    byte is ASCII alphanumeric or underscore. Djogi additionally
-//!    rejects the `$` byte that Postgres tolerates in unquoted
-//!    identifiers, to keep the class trivial to reason about.
-//!    (Implementation is pure `u8::is_ascii_alphabetic` /
-//!    `u8::is_ascii_alphanumeric` — no regex engine, no dependency.)
+//! byte is ASCII alphanumeric or underscore. Djogi additionally
+//! rejects the `$` byte that Postgres tolerates in unquoted
+//! identifiers, to keep the class trivial to reason about.
+//! (Implementation is pure `u8::is_ascii_alphabetic` /
+//! `u8::is_ascii_alphanumeric` — no regex engine, no dependency.)
 //! 4. Not a reserved Postgres keyword (case-insensitive; catcode `R`
-//!    in `pg_get_keywords()` as of Postgres 18).
-//!
+//! in `pg_get_keywords` as of Postgres 18).
 //! Callers that emit literals from `#[derive(Model)]` are the intended
 //! audience; the panic messages read as framework bugs or bypass attempts.
 
@@ -34,7 +30,6 @@
 pub(crate) const MAX_IDENT_LEN: usize = 63;
 
 /// Framework-reserved identifier prefix.
-///
 /// Djogi reserves identifiers beginning with `__djogi_` (two leading
 /// underscores + ASCII-case-insensitive `djogi` + underscore) for
 /// framework-internal use — recursive CTE names (`__djogi_tree`,
@@ -43,7 +38,6 @@ pub(crate) const MAX_IDENT_LEN: usize = 63;
 /// (`__djogi_agg_N`, `__djogi_parent_id`, `__djogi_search_seq`,
 /// `__djogi_edge_label`), and macro scratch identifiers. See
 /// `docs/spec/reserved-identifiers.md` for the inventory and rationale.
-///
 /// User-supplied identifiers — window aliases, FTS dictionary names,
 /// closure-model column accessors, outbox table names, runtime enum
 /// types — must not enter this namespace, since the framework can
@@ -58,7 +52,6 @@ pub(crate) const MAX_IDENT_LEN: usize = 63;
 pub(crate) const RESERVED_DJOGI_PREFIX: &[u8] = b"__djogi_";
 
 /// Const-stable check for the [`RESERVED_DJOGI_PREFIX`] namespace.
-///
 /// Equivalent to a case-insensitive `bytes.starts_with("__djogi_")`
 /// over the alphabetic segment, but written with const-stable indexing
 /// primitives so it can fire from [`const_assert_user_supplied_ident`]
@@ -82,7 +75,7 @@ pub(crate) const fn starts_with_reserved_djogi_prefix(bytes: &[u8]) -> bool {
     true
 }
 
-/// Postgres fully-reserved keywords (catcode `R` in `pg_get_keywords()`
+/// Postgres fully-reserved keywords (catcode `R` in `pg_get_keywords`
 /// as of Postgres 18). These cannot be used as identifiers unless
 /// quoted, so emitting them unquoted into `SELECT`, `FROM`, or
 /// `LEFT JOIN` produces a parse error — turning a hostile downstream
@@ -172,13 +165,11 @@ const RESERVED_KEYWORDS: &[&str] = &[
 ];
 
 /// Compile-time-evaluable identifier check.
-///
 /// Mirrors the four rules in [`assert_plain_ident`] but implemented
 /// with exclusively const-stable primitives so the result can panic
 /// during `const` evaluation — notably inside `inventory::submit!` on
 /// the reverse-relation registry path, where the macro must produce a
 /// `static` initializer.
-///
 /// `role` is the same label used by [`assert_plain_ident`] so panic
 /// messages stay identical whether the check fires at const-eval or
 /// runtime. Keyword lookup is a const-time linear scan of the sorted
@@ -215,7 +206,7 @@ pub(crate) const fn const_assert_plain_ident(value: &'static str, role: &'static
     );
     // Const-friendly indexed byte scan — `for` over a slice works in
     // const fn on current stable but requires indexing, not iteration
-    // adapters like `all` / `iter().skip(1)`.
+    // adapters like `all` / `iter.skip(1)`.
     let mut i = 1;
     while i < bytes.len() {
         let byte = bytes[i];
@@ -257,7 +248,6 @@ pub(crate) const fn const_assert_plain_ident(value: &'static str, role: &'static
 }
 
 /// Compile-time-evaluable validator for user-supplied identifiers.
-///
 /// Adds the framework-reserved-prefix block from
 /// [`check_user_supplied_ident`] to [`const_assert_plain_ident`]. Use
 /// this for macro arguments that originate in adopter code and are
@@ -276,7 +266,6 @@ pub(crate) const fn const_assert_user_supplied_ident(value: &'static str, role: 
 }
 
 /// Const-stable case-insensitive byte-slice comparison.
-///
 /// Works on ASCII-only inputs — every caller here has already
 /// passed the alphanumeric-or-underscore byte check in
 /// [`const_assert_plain_ident`]. Equivalent to
@@ -310,7 +299,6 @@ const fn const_eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
 
 /// Why a single rule failed when [`check_plain_ident`] (or its
 /// user-supplied twin [`check_user_supplied_ident`]) returns `Err`.
-///
 /// Each variant carries enough payload that the caller can render its
 /// preferred error shape (`DjogiError`, `String`, panic message)
 /// without re-walking the bytes. `Reserved` and `ReservedDjogiPrefix`
@@ -341,13 +329,11 @@ pub(crate) enum IdentError {
 /// `Result`-returning twin of [`assert_plain_ident`]. Returns an
 /// [`IdentError`] describing which rule failed; the caller maps it
 /// onto its preferred error type.
-///
 /// `check_reserved` toggles the reserved-keyword lookup. Macro-time
 /// callers and SQL-emission paths set it to `true`; runtime-helper
 /// callers (where wrapping in a `DO`-block makes reserved words like
 /// `interval` legal) pass `false`.
-///
-/// Cluster 4 absorbed six near-duplicate inline validators (outbox /
+/// Absorbed six near-duplicate inline validators (outbox /
 /// context / fts dictionary / fts source column / jsonb path) that
 /// each re-encoded these rules; this function is the single source of
 /// truth.
@@ -369,7 +355,7 @@ pub(crate) fn check_plain_ident(value: &str, check_reserved: bool) -> Result<(),
         }
     }
     if check_reserved {
-        // Stack-allocated lowercase for the reserved-keyword lookup —
+        // Stack-allocated lowercase for the reserved-keyword lookup
         // mirrors the buffer in `assert_plain_ident`.
         let mut lower_buf = [0u8; MAX_IDENT_LEN + 1];
         let len = bytes.len();
@@ -387,17 +373,14 @@ pub(crate) fn check_plain_ident(value: &str, check_reserved: bool) -> Result<(),
 /// Validate a macro-emitted identifier against the Postgres unquoted-
 /// identifier contract. Panics on the first rule violation. See the
 /// module-level doc for the four rules.
-///
 /// `role` labels the identifier in the panic message (e.g.
 /// `"source_column"`, `"table_name"`, `"field_name"`); it is the hook
 /// an on-call engineer follows back to the failing emission site.
-///
 /// Panic (rather than `Result`) is appropriate because reaching the
 /// helper with a bad identifier indicates either a broken proc-macro
 /// emission or a downstream caller deliberately bypassing the macro-
 /// support seal — both are framework-bug or misuse cases that the
 /// caller cannot recover from.
-///
 /// Runtime twin of [`const_assert_plain_ident`]; keeping two entry
 /// points (rather than having the runtime path just call the const
 /// fn) lets the runtime variant emit richer `{value:?}`-interpolated
@@ -433,7 +416,7 @@ pub(crate) fn assert_plain_ident(value: &'static str, role: &'static str) {
         );
     }
     // Stack-allocated lowercase for the reserved-keyword lookup. The length
-    // check above bounded `value.len()` ≤ 63, so a 64-byte buffer is always
+    // check above bounded `value.len` ≤ 63, so a 64-byte buffer is always
     // sufficient and this path allocates nothing on the heap. Every byte is
     // ASCII alnum or `_` at this point, so `std::str::from_utf8` on the
     // lowercased slice is infallible.
@@ -452,14 +435,12 @@ pub(crate) fn assert_plain_ident(value: &'static str, role: &'static str) {
 }
 
 /// Fallible validator for user-supplied identifiers.
-///
 /// This is the user-facing twin of [`check_plain_ident`]. It enforces
 /// every rule [`check_plain_ident`] enforces (non-empty, ≤ 63 bytes,
 /// ASCII letter or underscore first, ASCII alphanumeric or underscore
 /// after, optional reserved-keyword block) AND additionally rejects
 /// names that start with the framework-reserved [`RESERVED_DJOGI_PREFIX`]
 /// (`__djogi_`, ASCII-case-insensitive).
-///
 /// Use this at every surface where adopters can hand the framework an
 /// SQL identifier — window-function aliases, FTS dictionary / source
 /// column names, [`crate::query::closure::ClosureModel`] column
@@ -468,10 +449,8 @@ pub(crate) fn assert_plain_ident(value: &'static str, role: &'static str) {
 /// framework constructs from already-validated inputs (e.g. the
 /// `<table>_outbox` companion table name) where the prefix rule is
 /// transitively enforced upstream.
-///
 /// `check_reserved` toggles the Postgres-keyword block in the same
 /// shape as [`check_plain_ident`].
-///
 /// On failure, the prefix rejection precedes the byte-shape rejections
 /// so a name like `__djogi_select` reports the more actionable
 /// `ReservedDjogiPrefix` error rather than a Postgres-keyword error
@@ -489,7 +468,6 @@ pub(crate) fn check_user_supplied_ident(
 /// Panicking validator for user-supplied identifiers carried as
 /// `&'static str` — typically window-function aliases the adopter
 /// passes to [`crate::expr::RowNumber::alias`] and friends.
-///
 /// Combines [`assert_plain_ident`]'s four-rule contract with the
 /// framework-reserved-prefix block from
 /// [`check_user_supplied_ident`]. Call this at boundaries where the
@@ -497,7 +475,6 @@ pub(crate) fn check_user_supplied_ident(
 /// the failure mode is best surfaced as a panic (typed-builder API,
 /// where the typed alias is known at compile-time and a typo is the
 /// only realistic failure path).
-///
 /// `role` labels the identifier in the panic message — same convention
 /// as [`assert_plain_ident`] — so an on-call engineer can map the
 /// panic back to the offending API surface.
@@ -517,11 +494,10 @@ pub(crate) fn assert_user_supplied_ident(value: &'static str, role: &'static str
 /// [`assert_plain_ident`] under `cfg(debug_assertions)` and to nothing
 /// in release builds, so the check runs in tests and `cargo run` but
 /// contributes zero overhead to a production `--release` binary.
-///
 /// Intended for hot paths that accept a `&'static str` from a source
 /// the compiler cannot structurally seal — notably the per-row loops
 /// in `relation::prefetch` and `relation::select_related` that read
-/// `descriptor().fields[].name`. Sealing the `Model` trait stops a
+/// `descriptor.fields[].name`. Sealing the `Model` trait stops a
 /// hand-rolled `impl Model` from reaching that code, but a hostile
 /// `#[derive(Model)]`-equivalent macro in a downstream crate could
 /// still feed the framework a malformed field name; the debug assert

@@ -1,26 +1,20 @@
 //! `select_related` — single-hop `LEFT JOIN` emission + `JoinedRow<T>`
 //! stitching.
-//!
 //! # What
-//!
 //! Consumed by
 //! [`QuerySet::fetch_all_joined`](crate::query::QuerySet::fetch_all_joined).
 //! For each registered path on the queryset, the select_related emitter:
-//!
 //! 1. Appends a `LEFT JOIN {target_table} rel_{source_column}
-//!    ON {parent_table}.{source_column} = rel_{source_column}.id` clause
-//!    to the main query.
+//! ON {parent_table}.{source_column} = rel_{source_column}.id` clause
+//! to the main query.
 //! 2. Extends the `SELECT` list with one entry per child column,
-//!    aliased as `rel_{source_column}.{col} AS "rel_{source_column}.{col}"`
-//!    so the result set carries both sides with no column-name
-//!    collisions.
-//!
+//! aliased as `rel_{source_column}.{col} AS "rel_{source_column}.{col}"`
+//! so the result set carries both sides with no column-name
+//! collisions.
 //! After the query runs, the terminal walks each row and decodes the
 //! parent plus every registered child from the aliased columns,
 //! packaging them into `JoinedRow<T>`.
-//!
 //! # Why aliased child columns (not `SELECT t.*`)
-//!
 //! A prefix-aware decoder looks columns up by the exact alias name — `try_get("id")`
 //! finds the first column named `id`, which would be ambiguous the
 //! moment both parent and child tables contribute an `id`. Aliasing
@@ -29,15 +23,12 @@
 //! name in the result set and lets the
 //! [`FromJoinedPgRow`](crate::pg::decode::FromJoinedPgRow)
 //! decoder use the `"{prefix}{column}"` shape without collision.
-//!
 //! The quoted-dot alias matches the table-qualified form Postgres would
 //! emit if you projected `SELECT t.*` with a named prefix, so the
 //! aliases read naturally in raw SQL logs: a reviewer scanning
 //! pg_stat_statements sees `"rel_owner_id.id"` and recognises the
 //! origin immediately.
-//!
 //! # Why LEFT JOIN (always)
-//!
 //! Even for NOT-NULL FKs, the select_related emitter uses `LEFT JOIN`
 //! so an orphan FK (the referenced row has been deleted since insert,
 //! bypassing the `RESTRICT` / `CASCADE` policy via raw SQL) produces
@@ -46,22 +37,19 @@
 //! the caller's mental model that `select_related` is a
 //! performance-only eager-load — the set of matching parent rows must
 //! match what `fetch_all` would have returned on the same queryset.
-//!
 //! `INNER JOIN` is a valid future optimisation for confirmed-non-null
 //! columns, but that opt-in lives behind a `.select_related_strict(...)`
-//! surface (Phase 4) rather than silently changing the default's
+//! surface rather than silently changing the default's
 //! semantics.
-//!
 //! # T2 scope
-//!
 //! - Single-hop only — no chained `select_related(path_a.path_b)`. Multi-hop
-//!   decode lands in T4.
+//! decode lands in T4.
 //! - Multi-relation-per-queryset **is** supported (multiple
-//!   `.select_related(...)` calls accumulate into a `Vec<ErasedSelectRelated>`,
-//!   each producing its own aliased `LEFT JOIN`).
+//! `.select_related(...)` calls accumulate into a `Vec<ErasedSelectRelated>`,
+//! each producing its own aliased `LEFT JOIN`).
 //! - No join-time filtering — filters still target the parent table.
 //! - `.select_related(...)` + `.prefetch(...)` can coexist on the same
-//!   queryset; the terminal honours both.
+//! queryset; the terminal honours both.
 
 use crate::DjogiError;
 use crate::context::ContextInner;
@@ -76,7 +64,6 @@ use tokio_postgres::Row as PgRow;
 /// Decoder function type for a single child column in the select_related
 /// path. One monomorphised `fn` per `(Parent, Child)` pair — same erasure
 /// strategy Task 4's prefetch loader uses.
-///
 /// Returns `Some(Box<Child>)` when the child row materialised, or
 /// `None` on a LEFT JOIN miss. The probe for miss-vs-hit uses
 /// `tokio_postgres::Row::try_get::<i64>(id_alias)` on the child's `id`
@@ -91,13 +78,11 @@ pub(crate) type JoinDecoderFn =
 /// `Child` and stored as a plain `fn` pointer on
 /// [`ErasedSelectRelated`] so the emitter can read the child's
 /// declared column list without naming the concrete type.
-///
-/// Delegates to `<Child as Model>::descriptor()` via [`child_descriptor`].
+/// Delegates to `<Child as Model>::descriptor` via [`child_descriptor`].
 pub(crate) type ChildDescriptorFn = fn() -> &'static crate::descriptor::ModelDescriptor;
 
 /// A single registered select_related path on a
 /// [`QuerySet<T>`](crate::query::QuerySet).
-///
 /// Built by
 /// [`QuerySet::select_related`](crate::query::QuerySet::select_related)
 /// from a typed [`RelationPath<Source, Child>`]. The emitter carries
@@ -133,7 +118,7 @@ pub(crate) struct ErasedSelectRelated {
     pub child_descriptor: ChildDescriptorFn,
 }
 
-/// Monomorphised accessor for `<Child as Model>::descriptor()`. Stored
+/// Monomorphised accessor for `<Child as Model>::descriptor`. Stored
 /// as a plain `fn` pointer on [`ErasedSelectRelated`] so the emitter
 /// can read the child's declared column list without naming the
 /// concrete type.
@@ -155,16 +140,13 @@ impl std::fmt::Debug for ErasedSelectRelated {
 }
 
 /// Monomorphised join decoder for a concrete `Child`.
-///
 /// Probes the child `id` column (under the prefixed alias) for NULL to
 /// distinguish LEFT JOIN misses (NULL child columns end-to-end) from live
-/// child rows. The probe uses `row.try_get::<Option<i64>>(id_alias)` —
+/// child rows. The probe uses `row.try_get::<Option<i64>>(id_alias)`
 /// a `None` result indicates a LEFT JOIN miss (NULL FK or orphan target).
-///
 /// This works for `HeerId`-keyed models (BIGINT) and is the standard
 /// T2 probe. T4 will generalise this to other PK types via the
 /// `FromPgRow` trait's column-index probing.
-///
 /// Returns `Ok(None)` on miss so the caller can omit the child from
 /// the row's relation map; returns `Ok(Some(box))` on hit; propagates
 /// decode errors on decode failure. A missing `{prefix}id` column
@@ -206,14 +188,12 @@ where
 
 /// Append the `LEFT JOIN` clauses for every registered select_related
 /// path to `acc`.
-///
 /// Emits one `LEFT JOIN {child_table} rel_{source_column} ON
 /// {parent_table}.{source_column} = rel_{source_column}.id` per path.
 /// The aliases (`rel_{source_column}`) are unique per parent column
 /// by construction — the macro-emitted `{Model}Related` builders
 /// pin one path per source column, and the queryset's dedup check
 /// ensures no duplicate registrations.
-///
 /// All identifiers are `&'static str` literals (baked by the
 /// `#[model]` macro), so `push_sql(...)` is safe without quoting.
 pub(crate) fn push_joins<T: Model>(acc: &mut SqlAccumulator, paths: &[ErasedSelectRelated]) {
@@ -234,21 +214,17 @@ pub(crate) fn push_joins<T: Model>(acc: &mut SqlAccumulator, paths: &[ErasedSele
 
 /// Build the SELECT column list for a queryset with registered
 /// select_related paths.
-///
 /// Returns a pre-rendered string of the form:
-///
 /// ```text
 /// parent_table.*, rel_col_a.id AS "rel_col_a.id", rel_col_a.name AS "rel_col_a.name", …
 /// ```
-///
 /// The parent columns come through unqualified (their column name
 /// surfaces in the result set as just `"id"`, `"make"`, …). Each
 /// joined child's columns are aliased as `"rel_{source_column}.{col}"`
-/// — the embedded dot matches the shape Postgres uses internally for
+/// the embedded dot matches the shape Postgres uses internally for
 /// table-qualified projections and gives the
 /// [`FromJoinedPgRow`](crate::pg::decode::FromJoinedPgRow)
 /// decoder a stable, collision-free lookup key.
-///
 /// The returned `String` is pushed onto the builder verbatim — no
 /// user-supplied data reaches this path, only `&'static str`
 /// literals from the descriptor and from the registered path.
@@ -288,7 +264,6 @@ pub(crate) fn select_columns<T: Model>(paths: &[ErasedSelectRelated]) -> String 
 
 /// Decode every registered select_related child from one joined row
 /// and package the result into a `JoinedRow<T>`.
-///
 /// Each path contributes one entry to the `relations` map, keyed by
 /// `source_column` (matching
 /// [`PrefetchedRow`](crate::relation::PrefetchedRow)'s key convention).
@@ -296,7 +271,6 @@ pub(crate) fn select_columns<T: Model>(paths: &[ErasedSelectRelated]) -> String 
 /// `Ok(None)` — skip the map insert so
 /// [`JoinedRow::get`](crate::relation::JoinedRow::get) returns `None`
 /// for that path.
-///
 /// `FromJoinedPgRow::from_joined_pg_row(row, "")` decodes the parent
 /// with the empty prefix — similar in spirit to what `FromPgRow::from_pg_row`
 /// reads for a bare-columns row, but reusing the same trait across
@@ -319,7 +293,6 @@ pub(crate) fn decode_joined_row<T: Model + FromJoinedPgRow>(
 
 /// Terminal-layer helper that runs the select_related decode over
 /// every row returned by the main query.
-///
 /// Short-circuits on an empty row set — no decoder is invoked, no
 /// prefetch fan-out happens. Kept separate from the SQL-emission
 /// helpers so the emitter can be unit-tested in isolation from the
@@ -339,7 +312,6 @@ where
 }
 
 /// Erased-prefetch stitcher used by the `fetch_all_joined` terminal.
-///
 /// This is a thin bridge between the prefetch loader (which works on
 /// `Vec<T>` + parent PKs) and the `JoinedRow<T>` wrapper type. The
 /// terminal calls this when `.select_related(...)` and `.prefetch(...)`
@@ -348,7 +320,6 @@ where
 /// entries use, so a single call to
 /// [`JoinedRow::get`](crate::relation::JoinedRow::get) on a merged
 /// row resolves either path transparently.
-///
 /// Kept separate from [`apply_select_related`] to preserve the
 /// one-concern-per-function split: JOIN decoding here, prefetch
 /// stitching over there. The terminal orchestrates both.
@@ -371,11 +342,10 @@ where
     // Fan out each prefetch loader, same shape as
     // `relation::prefetch::apply_prefetches` — we duplicate the
     // orchestration here (rather than reusing that function) because
-    // the stitcher writes into `JoinedRow::relations_mut()`, not the
+    // the stitcher writes into `JoinedRow::relations_mut`, not the
     // `PrefetchedRow::relations` field, and `PrefetchedRow` is a
     // distinct wrapper type whose conversion into `JoinedRow` would
     // cost more than the 20-line fan-out.
-    //
     // One fresh cloned PK list per loader — each loader consumes its
     // input by downcasting out of the box, so reusing a single `Vec`
     // across loaders would break on the first downcast. The per-loader
@@ -397,7 +367,7 @@ where
         .await?;
 
         // Zip aligned results into per-row relation maps. Same
-        // `take()`-per-slot pattern the prefetch stitcher uses —
+        // `take`-per-slot pattern the prefetch stitcher uses
         // each boxed target moves into exactly one row.
         for (jr, slot) in joined.iter_mut().zip(aligned) {
             if let Some(child_box) = slot {

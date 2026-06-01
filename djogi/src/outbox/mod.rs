@@ -1,5 +1,4 @@
-//! Transactional outbox — Phase 4 Task 6 (write side) + Phase 5 Task 11.5 (worker side).
-//!
+//! Transactional outbox — (write side) + (worker side).
 //! Models annotated with `#[model(events)]` emit one outbox row into
 //! `{table}_outbox` on every successful `create`, `save`, `delete`,
 //! `update_returning_pair`, or `delete_returning` performed through a
@@ -8,62 +7,49 @@
 //! atomically with the primary write — no separate "event publisher" fan-out is
 //! required at the write side. A downstream poller / CDC consumer drains
 //! `{table}_outbox` asynchronously.
-//!
-//! # PG18 OLD/NEW RETURNING and the outbox (djogi#180)
-//!
+//! # PG18 OLD/NEW RETURNING and the outbox
 //! `Model::update_returning_pair` and `QuerySet::execute_returning_pairs`
 //! expose both the pre- and post-update row snapshots to the **caller**, but
 //! the outbox **still emits a single `Save` row** with the DB-returned
 //! post-image (`pair.new`) as the payload, after `outbox_exclude` filtering.
-//! This matches the `save()` outbox contract — no diff-shaped `{ old, new }`
+//! This matches the `save` outbox contract — no diff-shaped `{ old, new }`
 //! payload is emitted in v1.
-//!
 //! Rationale: the existing outbox schema (`action` + single `payload` column)
 //! cannot represent a diff without a breaking schema change. Downstream
 //! consumers that currently process `Save` payloads would break if the payload
 //! shape changed silently. A diff-outbox schema requires a separate plan
 //! (migration, new action type, worker shape change, and publisher review).
-//!
 //! `Model::delete_returning` similarly emits a single `Delete` row with the
-//! DB-returned pre-delete snapshot as the payload — identical to `delete()`
+//! DB-returned pre-delete snapshot as the payload — identical to `delete`
 //! but using the authoritative DB snapshot rather than the consumed `self`.
-//!
 //! # Module layout
-//!
 //! - `mod.rs` (this file) — write side: `emit_event`, `OutboxAction`, payload shaping.
-//!   All Phase 4 exports are unchanged.
+//! All exports are unchanged.
 //! - `worker` — claim-pending, mark-published/failed, recover-stale. Feature-gated
-//!   on the `outbox` cargo feature.
+//! on the `outbox` cargo feature.
 //! - `publisher` — `Publisher` trait + `PublishError` enum. Feature-gated on `outbox`.
 //! - `publishers` — concrete publisher implementations. `NotifyPublisher` is always
-//!   available under `outbox`; Redis/Kafka/NATS ship behind their own sub-feature flags.
-//!
+//! available under `outbox`; Redis/Kafka/NATS ship behind their own sub-feature flags.
 //! # Why this lives here (not inside the macro body)
-//!
 //! The macro emits a **one-line call** into this module after every
 //! successful CRUD:
-//!
 //! ```ignore
 //! if Self::descriptor().has_outbox {
 //!     ::djogi::outbox::emit_event(ctx, &row, ::djogi::outbox::OutboxAction::Create).await?;
 //! }
 //! ```
-//!
 //! Keeping the payload shaping + dispatch out of the macro has three
 //! benefits:
-//!
 //! 1. **Easier to audit.** Reviewers read plain Rust rather than a
-//!    `quote! { ... }` block to understand payload exclusion, bind
-//!    layout, and error flow.
+//! `quote! { ... }` block to understand payload exclusion, bind
+//! layout, and error flow.
 //! 2. **One place to evolve.** Later-phase additions (encrypted payload
-//!    fields, tenant partitioning, per-action `rationale` columns) land
-//!    here without touching the macro.
+//! fields, tenant partitioning, per-action `rationale` columns) land
+//! here without touching the macro.
 //! 3. **Unit-testable.** `emit_event` is a plain async function; its
-//!    payload-shaping helper is testable without bringing up a proc-macro
-//!    harness.
-//!
-//! # How it composes with `atomic()`
-//!
+//! payload-shaping helper is testable without bringing up a proc-macro
+//! harness.
+//! # How it composes with `atomic`
 //! The emitter takes `&mut DjogiContext` and dispatches via the same
 //! `__inner_mut_for_macros` pattern the macro CRUD uses. A pool-backed
 //! context writes outside any transaction; a transaction-backed context
@@ -71,23 +57,19 @@
 //! scope removes both the primary row and its outbox companion — the
 //! "transactional" in *transactional outbox* is Postgres' own ACID
 //! guarantee, not a framework-level two-phase dance.
-//!
 //! # Payload filtering
-//!
 //! `emit_event` serializes the row via `serde_json::to_value` and then
-//! walks `T::descriptor().fields` to strip keys whose
+//! walks `T::descriptor.fields` to strip keys whose
 //! [`FieldDescriptor::outbox_exclude`] flag is set. The exclusion is
 //! key-based (not index-based) so that even if serde's field order
 //! drifts, the filter stays correct.
-//!
-//! # DDL side-channel (Phase 7 handoff — deferred)
-//!
+//! # DDL side-channel (handoff — deferred)
 //! The eventual plan is for the macro to write a DDL stub to
 //! `target/djogi_outbox/{table}_outbox.sql` at build time so the Phase
 //! 7 migration differ can consume it. **That emission is not shipped
 //! today** — this module ships only the runtime payload/insert path.
-//! Phase 4 integration tests hand-write the matching DDL in
-//! `tests/integration/migrations/phase4/*.sql`; Phase 6 / Phase 7 will
+//! Integration tests hand-write the matching DDL in
+//! `tests/integration/migrations/phase4/*.sql`; / will
 //! land the macro-side side-channel and retire those hand-written
 //! fixtures.
 
@@ -112,7 +94,7 @@ pub use publisher::{PublishError, Publisher};
 pub use worker::OutboxRow;
 
 // ---------------------------------------------------------------------------
-// Write-side implementation (Phase 4 Task 6) — always compiled.
+// Write-side implementation — always compiled.
 // ---------------------------------------------------------------------------
 
 use crate::DjogiError;
@@ -130,7 +112,6 @@ const BULK_SAVE_INSERT_MAX_BINDS: usize = 30_000;
 const BULK_SAVE_INSERT_ROWS_PER_CHUNK: usize = BULK_SAVE_INSERT_MAX_BINDS / 3;
 
 /// The three CRUD operations a model can emit an outbox row for.
-///
 /// Stored as a `TEXT` column so downstream consumers (Python, TS, SQL
 /// dashboards) do not need Postgres enum-to-enum bindings. Lowercase
 /// ASCII to match the informal convention used by CDC tools like
@@ -166,26 +147,20 @@ impl OutboxAction {
 }
 
 /// Emit a transactional outbox row for `row` through `ctx`.
-///
 /// Called from macro-generated CRUD bodies exactly when
-/// `T::descriptor().has_outbox` is `true` — i.e. the model opted into
+/// `T::descriptor.has_outbox` is `true` — i.e. the model opted into
 /// `#[model(events)]`. The caller holds the responsibility of gating
 /// the call: `emit_event` itself always writes, so it must not be
 /// invoked for non-events models.
-///
 /// # Error flow
-///
 /// - `serde_json::to_value` failure → `DjogiError::Serde`.
 /// - Database execute failure → `DjogiError::Pg`.
-///
 /// Both are propagated verbatim so the calling CRUD method's `?`
 /// rolls the transaction back on any failure.
-///
 /// # Payload shape
-///
 /// `serde_json::to_value(row)` produces a `Value::Object` keyed by
 /// the struct's field names (serde's default `rename_all`). The
-/// filter walks `T::descriptor().fields` and removes any key whose
+/// filter walks `T::descriptor.fields` and removes any key whose
 /// `outbox_exclude` flag is set, so the emitted JSONB carries only
 /// the columns the model author deemed safe to share. Non-object
 /// outputs (e.g. a user who derived `Serialize` for a tuple struct)
@@ -219,7 +194,7 @@ where
 
     // Synchronous in-process publisher hook for `crate::notify`
     // subscribers — fires `pg_notify('djogi_<table>', '{kind,id}')`
-    // in the same transaction. Distinct from Phase 5's
+    // in the same transaction. Distinct from the
     // `NotifyPublisher`, which carries full JSONB payloads on
     // user-named channels for downstream relay. The `check_plain_ident`
     // pass guards against a malicious macro fork smuggling an invalid
@@ -251,7 +226,6 @@ where
 
 /// Emit one `Save` outbox row per entry in `rows` using a single batched
 /// `INSERT ... VALUES (...), (...), ...` statement.
-///
 /// This is used by bulk `execute_returning_pairs` to preserve per-row outbox
 /// semantics without issuing one INSERT round-trip per updated row.
 pub async fn emit_save_events_batch<T: Model + Serialize>(
@@ -345,10 +319,9 @@ fn insert_sql(outbox_table: &str) -> String {
 
 /// Serialize `row` into a JSON object, then strip any keys the
 /// descriptor marks `outbox_exclude`.
-///
 /// Separated from `emit_event` so the filter semantics are unit-
 /// testable without a database. Accepts `&ModelDescriptor` rather
-/// than re-fetching via `T::descriptor()` so the test callers can
+/// than re-fetching via `T::descriptor` so the test callers can
 /// pass a minimal fixture descriptor.
 fn build_payload<T: Serialize>(
     row: &T,
@@ -368,7 +341,7 @@ fn build_payload<T: Serialize>(
 #[cfg(test)]
 mod tests {
     //! Payload-shaping tests — `emit_event` itself needs a live DB and
-    //! is covered by the Phase 4 integration suite. The filter logic
+    //! is covered by the integration suite. The filter logic
     //! is pure and lives here.
 
     use super::*;
@@ -380,9 +353,8 @@ mod tests {
         // Build a descriptor whose fields match the serde output of the
         // test payload. Columns listed in `exclusions` are flagged
         // `outbox_exclude = true`; all others are `false`. A `&[]`
-        // `exclusions` slice yields a descriptor with no exclusions —
+        // `exclusions` slice yields a descriptor with no exclusions
         // the identity case.
-        //
         // We use static `FieldDescriptor` slices so the returned
         // `ModelDescriptor` can borrow them with `'static` lifetimes.
         static FIELDS: &[FieldDescriptor] = &[

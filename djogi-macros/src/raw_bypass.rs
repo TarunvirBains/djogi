@@ -1,5 +1,4 @@
 //! Implementation of the raw SQL bypass attribute macro.
-//!
 //! The macro deliberately does one thing: inject the hidden raw-access
 //! extension traits into the decorated scope. The verbose public attribute
 //! name lives in `lib.rs` because proc-macro entry points must be exported

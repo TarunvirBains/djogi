@@ -1,49 +1,41 @@
-//! Online-safety classification engine — Phase 7.5 T5.
-//!
+//! Online-safety classification engine — .
 //! Walks a [`SchemaOperation`] (or a delta-worth of them) and assigns
 //! each one an [`OnlineSafetyClassification`] verdict per the §7
 //! classification table in
 //! `docs/superpowers/plans/2026-04-23-phase7-5-live-migrations-and-protected-data-v3.md`.
-//!
 //! # Boundary contract (§6.5)
-//!
 //! - **PK-flip routing is exclusive.** When a delta carries
-//!   [`SchemaOperation::PkTypeFlipGroup`] or
-//!   [`SchemaOperation::PkTypeFlipMultiGroup`], that operation is
-//!   already routed through Phase 7's
-//!   [`crate::migrate::diff::Classification::PkTypeFlip`] cascade
-//!   emitter family (`migrate::pk_flip`). The classifier short-circuits
-//!   those entries — they appear in [`classify_delta`]'s output as
-//!   skipped (filtered out) so live-plan callers never see them.
+//! [`SchemaOperation::PkTypeFlipGroup`] or
+//! [`SchemaOperation::PkTypeFlipMultiGroup`], that operation is
+//! already routed through the
+//! [`crate::migrate::diff::Classification::PkTypeFlip`] cascade
+//! emitter family (`migrate::pk_flip`). The classifier short-circuits
+//! those entries — they appear in [`classify_delta`]'s output as
+//! skipped (filtered out) so live-plan callers never see them.
 //! - **Logging-profile short-circuit.** Per §6.5 of the v3 plan, the
-//!   classifier inspects [`ClassifyContext::logging_profile`] and the
-//!   [`ClassifyContext::target_database`] field to decide whether to
-//!   route through Phase 7.5 at all. Event-log databases never live-
-//!   plan; crud-log databases under `light` / `balanced` never live-
-//!   plan; only `strict_audit` crud-log + the application database
-//!   reach the per-operation classifier.
-//!
+//! classifier inspects [`ClassifyContext::logging_profile`] and the
+//! [`ClassifyContext::target_database`] field to decide whether to
+//! route through at all. Event-log databases never live-
+//! plan; crud-log databases under `light` / `balanced` never live-
+//! plan; only `strict_audit` crud-log + the application database
+//! reach the per-operation classifier.
 //! # Determinism
-//!
 //! Classification is pure: same inputs → same output, no `pg_catalog`
 //! reads, no host-variable behaviour. Every dispatch arm cites the
 //! §7 table row it maps to in a doc comment so the table stays
 //! reviewable against this code.
-//!
 //! # Aggregation
-//!
 //! [`classify_delta`] performs the cross-operation aggregation §7
 //! requires:
-//!
 //! - Per-table `AddForeignKey` counts — 4+ FK additions to a single
-//!   table (configurable via [`ClassifyContext::multi_fk_threshold`])
-//!   escalate every entry on that table to `ExpandContract`.
+//! table (configurable via [`ClassifyContext::multi_fk_threshold`])
+//! escalate every entry on that table to `ExpandContract`.
 //! - Inbound FK counts on a `DropTable` — when 4+ existing FKs
-//!   reference the table being dropped, the drop escalates to
-//!   `ExpandContract` (multi-step DROP CONSTRAINT staging). Inbound
-//!   FK counts must be supplied via [`ClassifyContext::inbound_fk_counts`]
-//!   because the drop op alone does not carry the foreign-key graph;
-//!   compose passes the count from the live snapshot.
+//! reference the table being dropped, the drop escalates to
+//! `ExpandContract` (multi-step DROP CONSTRAINT staging). Inbound
+//! FK counts must be supplied via [`ClassifyContext::inbound_fk_counts`]
+//! because the drop op alone does not carry the foreign-key graph;
+//! compose passes the count from the live snapshot.
 
 use crate::descriptor::DefaultVolatility;
 use crate::live_migrate::LoggingProfile;
@@ -56,7 +48,6 @@ use std::collections::BTreeMap;
 
 /// Ambient context the classifier consults that is not carried by a
 /// single [`SchemaOperation`].
-///
 /// Constructed by the compose pipeline once per `(database, app)`
 /// bucket and threaded into every classification call so the same
 /// configuration drives every operation in the delta.
@@ -82,20 +73,19 @@ pub struct ClassifyContext<'a> {
 
     /// Logging profile in scope for the bucket being classified.
     /// Drives the §6.5 three-DB short-circuit:
-    ///
     /// - Event-log database — never live-plans regardless of profile;
-    ///   the classifier reports every operation as `OnlineSafe` so
-    ///   compose routes the delta directly through Phase 7.
+    /// the classifier reports every operation as `OnlineSafe` so
+    /// compose routes the delta directly through .
     /// - Crud-log database under [`LoggingProfile::Light`] /
-    ///   [`LoggingProfile::Balanced`] — same direct route; brief
-    ///   `AccessExclusiveLock` windows on crud-log mirror tables are
-    ///   acceptable because the audit contract degrades gracefully.
-    /// - Crud-log database under [`LoggingProfile::StrictAudit`] —
-    ///   fail-closed semantics make audit-table locks block
-    ///   application writes, so populated crud-log mirrors classify
-    ///   the same way as the application database.
+    /// [`LoggingProfile::Balanced`] — same direct route; brief
+    /// `AccessExclusiveLock` windows on crud-log mirror tables are
+    /// acceptable because the audit contract degrades gracefully.
+    /// - Crud-log database under [`LoggingProfile::StrictAudit`]
+    /// fail-closed semantics make audit-table locks block
+    /// application writes, so populated crud-log mirrors classify
+    /// the same way as the application database.
     /// - Application database — full classifier walk regardless of
-    ///   profile.
+    /// profile.
     pub logging_profile: LoggingProfile,
 
     /// Which of the three databases the delta targets. Drives the
@@ -115,8 +105,7 @@ pub struct ClassifyContext<'a> {
     /// the override before falling through to the static volatility
     /// table — letting adopters fast-path columns whose default
     /// expression Djogi could not classify deterministically.
-    ///
-    /// Spec: §3 / §820 of the Phase 7.5 v3 plan. Populated by compose
+    /// Spec: §3 / §820 of the v3 plan. Populated by compose
     /// from `FieldDescriptor::default_volatility_override` (T3, PR 1).
     pub default_volatility_overrides: &'a BTreeMap<(String, String), DefaultVolatility>,
 }
@@ -140,10 +129,9 @@ impl<'a> ClassifyContext<'a> {
     }
 }
 
-/// Which of the three Djogi databases the delta is targeting. Phase 7
+/// Which of the three Djogi databases the delta is targeting.
 /// keeps three connection pools (application data, CRUD audit log,
 /// event log) and the classifier's §6.5 short-circuit varies per pool.
-///
 /// `#[non_exhaustive]` so future targets (e.g. a separate vector-store
 /// database) can be added without breaking downstream matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,10 +148,9 @@ pub enum TargetDatabase {
 }
 
 /// Classify a single [`SchemaOperation`] against the §7 table.
-///
 /// **Pre-condition.** The caller has already filtered out
 /// [`SchemaOperation::PkTypeFlipGroup`] / `PkTypeFlipMultiGroup`
-/// operations — those are routed through Phase 7's `pk_flip`
+/// operations — those are routed through the `pk_flip`
 /// emitter family and never reach this classifier per the §6.5
 /// boundary contract. The function still has match arms for those
 /// variants (returning [`OnlineSafetyClassification::OfflineOnly`]
@@ -182,7 +169,7 @@ pub fn classify_operation(
     // §6.5 short-circuit. Event-log target never live-plans; crud-log
     // under non-strict profiles never live-plans either. The classifier
     // returns `OnlineSafe` so the runner applies the operation
-    // directly via Phase 7's regular path.
+    // directly via the regular path.
     if !classifier_applies(ctx) {
         return OnlineSafetyClassification::OnlineSafe;
     }
@@ -279,18 +266,18 @@ pub fn classify_operation(
             OnlineSafetyClassification::OnlineSafe
         }
 
-        // Phase 8.5 djogi#217 — `COMMENT ON TABLE <t> IS '<text>'` /
+        // Djogi#217 — `COMMENT ON TABLE <t> IS '<text>'` /
         // `IS NULL` is a catalog-only write against `pg_description`.
         // No row touch, no lock window beyond the brief catalog update.
         // OnlineSafe regardless of from/to direction.
         SchemaOperation::SetTableComment { .. } => OnlineSafetyClassification::OnlineSafe,
 
-        // Phase 8.5 djogi#218 — table storage-parameter metadata
+        // Djogi#218 — table storage-parameter metadata
         // changes are catalog reloption updates; they do not rewrite
         // existing rows.
         SchemaOperation::SetStorageParams { .. } => OnlineSafetyClassification::OnlineSafe,
 
-        // Phase 8.5 djogi#219 — `ALTER TABLE ... SET TABLESPACE`
+        // Djogi#219 — `ALTER TABLE ... SET TABLESPACE`
         // rewrites the table's physical file and takes an ACCESS
         // EXCLUSIVE lock, so live planning must treat it as offline.
         SchemaOperation::SetTablespace { .. } => OnlineSafetyClassification::OfflineOnly,
@@ -314,16 +301,14 @@ pub fn classify_operation(
 
 /// Walk a delta's operations, applying per-operation classification
 /// plus cross-operation aggregation rules from §7:
-///
-/// - PK-flip groups are filtered out (routed through Phase 7 directly).
+/// - PK-flip groups are filtered out (routed through directly).
 /// - 4+ FK additions to a single table escalate every addition on
-///   that table to `ExpandContract`.
+/// that table to `ExpandContract`.
 /// - 4+ inbound FK references on a `DropTable` escalate that drop to
-///   `ExpandContract`.
-///
+/// `ExpandContract`.
 /// Returns `(operation, classification)` pairs in input order. The
 /// caller decides what to do with each verdict — the live-plan layer
-/// keys off `ExpandContract`; the regular Phase 7 runner consumes the
+/// keys off `ExpandContract`; the regular runner consumes the
 /// other variants.
 pub fn classify_delta(
     ops: &[SchemaOperation],
@@ -351,7 +336,7 @@ pub fn classify_delta(
 
     let mut out: Vec<(SchemaOperation, OnlineSafetyClassification)> = Vec::with_capacity(ops.len());
     for op in ops {
-        // Skip PK-flip groups — Phase 7 territory. The standalone
+        // Skip PK-flip groups — territory. The standalone
         // `PkTypeFlip` variant survives only for unit-test fixtures
         // (production deltas always carry `PkTypeFlipGroup` after the
         // bucket-walk finalisation) — also filter it for safety.
@@ -392,7 +377,7 @@ fn is_pk_type_flip_operation(op: &SchemaOperation) -> bool {
 /// `true` iff the classifier should run on operations targeting this
 /// `(target_database, logging_profile)` pair. `false` triggers the
 /// §6.5 short-circuit — every operation classifies as `OnlineSafe`
-/// and routes through Phase 7 directly.
+/// and routes through directly.
 fn classifier_applies(ctx: &ClassifyContext<'_>) -> bool {
     match ctx.target_database {
         TargetDatabase::Application => true,
@@ -403,15 +388,13 @@ fn classifier_applies(ctx: &ClassifyContext<'_>) -> bool {
 
 /// §7: "Add nullable column" → OnlineSafe iff there is no default;
 /// nullability is orthogonal to the volatility classification.
-///
-/// A nullable add with a volatile default (`gen_random_uuid()` /
-/// `random()` / `clock_timestamp()`) still requires the 3-step
+/// A nullable add with a volatile default (`gen_random_uuid` /
+/// `random` / `clock_timestamp`) still requires the 3-step
 /// ExpandContract pattern: Pg18's catalog-only fast-path is gated on
 /// the default being non-volatile, and Postgres evaluates the default
 /// once-per-row at backfill time regardless of the column's NULL
 /// permission. Both the nullable and non-nullable cases therefore route
 /// through the same volatility/override pipeline.
-///
 /// Volatility resolution order (§820): adopter override per
 /// [`ClassifyContext::default_volatility_overrides`] takes precedence
 /// over the static `pg_volatility.rs` lookup, so known-safe UDFs
@@ -493,8 +476,7 @@ fn classify_column_change(
         ColumnChange::SetDefault(_) => OnlineSafetyClassification::OnlineSafe,
 
         // §7: "Change column type" — multiple sub-cases.
-        //
-        // djogi#220 — `using.is_some()` signals "this is a non-default
+        // `using.is_some` signals "this is a non-default
         // cast"; the live-plan shadow-column pattern can only emit a
         // plain SQL cast (`<col>::<to>`) and cannot replicate an
         // adopter-supplied expression in the backfill UPDATE. Route
@@ -504,8 +486,7 @@ fn classify_column_change(
         // belt-and-braces refusal as a defense-in-depth check (see
         // `dispatch_pattern` and the `replacement_column` /
         // `codec_transition` emitters).
-        //
-        // When `using.is_none()` the lock window is governed by the
+        // When `using.is_none` the lock window is governed by the
         // cast pair alone and the existing pair-based dispatch
         // applies.
         ColumnChange::ChangeType { using: Some(_), .. } => OnlineSafetyClassification::OfflineOnly,
@@ -568,14 +549,14 @@ fn classify_column_change(
 
         // Identity-column transitions: `ALTER COLUMN ADD GENERATED ... AS IDENTITY`
         // is catalog-only
-        // — Postgres allocates the sequence, no row rewrite. The
+        // Postgres allocates the sequence, no row rewrite. The
         // sequence's start value is set after MAX(c) for existing rows
         // automatically. Same for DROP IDENTITY (catalog-only) and
         // SET GENERATED kind change (catalog-only). All three route to
         // OnlineSafe.
         ColumnChange::SetIdentity { .. } => OnlineSafetyClassification::OnlineSafe,
 
-        // Phase 8.5 djogi#217 — `COMMENT ON COLUMN <t>.<c> IS '<text>'`
+        // Djogi#217 — `COMMENT ON COLUMN <t>.<c> IS '<text>'`
         // / `IS NULL` is a catalog-only write against `pg_description`.
         // No row touch, no lock window beyond the brief catalog update.
         // OnlineSafe regardless of from/to direction.
@@ -586,25 +567,24 @@ fn classify_column_change(
 }
 
 /// §7: "Change column type" routing.
-///
 /// - Identical types → OnlineSafe (no-op alter).
 /// - Pg18 binary-coercible same storage (`varchar(n)` → `varchar(m)`
-///   with m >= n; `text` ↔ `varchar(n)` for n large enough) →
-///   OnlineSafe.
+/// with m >= n; `text` ↔ `varchar(n)` for n large enough) →
+/// OnlineSafe.
 /// - Widening without rewrite (`int4` → `int8`, `int2` → `int4`) →
-///   OnlineSafe.
+/// OnlineSafe.
 /// - Known narrowing pairs (BIGINT → INT4, varchar(N) → varchar(M)
-///   with M < N, TEXT → varchar(N), NUMERIC precision/scale loss) →
-///   OfflineOnly. Narrowing risks truncation / overflow at the row
-///   level; without an explicit `#[field(version, transform = ...)]`
-///   signal the classifier cannot prove the conversion is lossless,
-///   so it refuses the live path. When the transform field lands in a
-///   later phase, this routing refines to ExpandContract when the
-///   transform is present.
+/// with M < N, TEXT → varchar(N), NUMERIC precision/scale loss) →
+/// OfflineOnly. Narrowing risks truncation / overflow at the row
+/// level; without an explicit `#[field(version, transform = ...)]`
+/// signal the classifier cannot prove the conversion is lossless,
+/// so it refuses the live path. When the transform field lands in a
+/// later phase, this routing refines to ExpandContract when the
+/// transform is present.
 /// - Other / unknown type changes (ENUM rename, JSONB shape change,
-///   foreign-type swaps) → ExpandContract via shadow-column pattern.
-///   These cases require backfill and operator gates regardless of
-///   direction.
+/// foreign-type swaps) → ExpandContract via shadow-column pattern.
+/// These cases require backfill and operator gates regardless of
+/// direction.
 fn classify_type_change(from: &str, to: &str) -> OnlineSafetyClassification {
     if from == to {
         return OnlineSafetyClassification::OnlineSafe;
@@ -619,18 +599,15 @@ fn classify_type_change(from: &str, to: &str) -> OnlineSafetyClassification {
 }
 
 /// `true` when `from → to` is a known narrowing / truncating pair.
-///
 /// Recognised cases per §7:
-///
 /// - Integer narrowing: BIGINT → INT4, BIGINT → SMALLINT, INT4 →
-///   SMALLINT (overflow risk).
+/// SMALLINT (overflow risk).
 /// - varchar-length narrowing: `varchar(N)` → `varchar(M)` with
-///   `M < N` (truncation risk).
+/// `M < N` (truncation risk).
 /// - text → `varchar(N)` (truncation risk, regardless of N).
 /// - NUMERIC narrowing: `numeric(p1, s1)` → `numeric(p2, s2)` with
-///   `p2 < p1` or `s2 < s1` (precision / scale loss).
-///
-/// Pairs the classifier cannot recognise as narrowing fall through —
+/// `p2 < p1` or `s2 < s1` (precision / scale loss).
+/// Pairs the classifier cannot recognise as narrowing fall through
 /// the caller then routes them via the regular ExpandContract path.
 fn is_narrowing_or_truncating(from: &str, to: &str) -> bool {
     let f = from.trim().to_ascii_lowercase();
@@ -712,7 +689,6 @@ fn canonical_int_width(name: &str) -> Option<u8> {
 }
 
 /// Postgres NUMERIC type modifier.
-///
 /// `numeric(p)` is normalised to `Bounded { precision: p, scale: 0 }`
 /// per Postgres semantics — an omitted scale means scale-zero, not
 /// "scale unknown". Bare `numeric` is `Unbounded`.
@@ -757,7 +733,6 @@ fn parse_numeric_params(t: &str) -> Option<NumericTypmod> {
 
 /// `true` when `from → to` is a Pg18 binary-coercible widening — no
 /// table rewrite required.
-///
 /// Recognises the common cases the spec calls out: integer widening
 /// (`int2` → `int4` / `int8`; `int4` → `int8`) and varchar-length
 /// widening / text broadening. Other type pairs return `false` so the
@@ -803,7 +778,6 @@ fn is_binary_coercible_widening(from: &str, to: &str) -> bool {
 /// Parse a `varchar` / `character varying` / `char` / `character` type
 /// string into `(kind, optional length)`. Returns `None` for non-
 /// varchar-family types.
-///
 /// `kind` is the canonical name (`"varchar"` for `varchar` or
 /// `character varying`; `"char"` for `char` or `character`). The
 /// length is `None` when no parenthesised length is present.
@@ -836,7 +810,6 @@ fn parse_varchar(t: &str) -> Option<(&'static str, Option<u32>)> {
 
 /// §7: "Add FK on tables ≤ threshold rows" → OnlineSafe; above
 /// threshold (or unknown row count) → ExpandContract.
-///
 /// Multi-FK aggregation (4+ FKs on one table) is layered on top by
 /// [`classify_delta`].
 fn classify_fk_addition(ctx: &ClassifyContext<'_>) -> OnlineSafetyClassification {
@@ -848,7 +821,6 @@ fn classify_fk_addition(ctx: &ClassifyContext<'_>) -> OnlineSafetyClassification
 /// additions (line 815), and FK validation (line 816). Each routes
 /// through the same `validation_threshold_rows` knob so adopters get a
 /// single tunable on `Djogi.toml`.
-///
 /// Returns [`OnlineSafetyClassification::OnlineSafe`] iff
 /// `estimated_rows` is known and at-or-below the threshold; otherwise
 /// [`OnlineSafetyClassification::ExpandContract`]. Unknown row count
@@ -865,7 +837,6 @@ fn classify_validation_against_threshold(ctx: &ClassifyContext<'_>) -> OnlineSaf
 }
 
 /// §7: "Add index" routing.
-///
 /// Unique indexes (`UniqueConstraint` / `UniqueIndex`) ALWAYS route
 /// through `ExpandContract` regardless of the `concurrently` flag.
 /// The §7 rollout for "add unique constraint to populated table" is a
@@ -874,19 +845,16 @@ fn classify_validation_against_threshold(ctx: &ClassifyContext<'_>) -> OnlineSaf
 /// promotes it. Concurrency is required for the build but not
 /// sufficient on its own — the operator-driven 2-step gate is what
 /// `ExpandContract` represents.
-///
 /// Non-unique indexes:
-///
 /// - `concurrently = true` → `OnlineSafe` (`CREATE INDEX CONCURRENTLY`
-///   runs outside a transaction and does not block writes).
+/// runs outside a transaction and does not block writes).
 /// - `concurrently = false`, `estimated_rows == Some(0)` → `OnlineSafe`
-///   (PR 7 empty-table fast-path: zero-row tables hold the
-///   AccessExclusiveLock for an instant; the build is structurally
-///   trivial).
+/// (PR 7 empty-table fast-path: zero-row tables hold the
+/// AccessExclusiveLock for an instant; the build is structurally
+/// trivial).
 /// - `concurrently = false`, populated or unknown → `ExpandContract`.
-///   On a populated table the lock holds for the duration of the
-///   build; unknown-row-count takes the conservative path.
-///
+/// On a populated table the lock holds for the duration of the
+/// build; unknown-row-count takes the conservative path.
 /// Hash indexes without concurrent are refused at compose time (a
 /// separate validation entry point handles the refusal — out of T5
 /// scope).
@@ -1071,7 +1039,7 @@ mod tests {
 
     fn ctx_app(estimated: Option<u64>) -> (BTreeMap<String, u32>, ClassifyContext<'static>) {
         // SAFETY: leak the inbound + override maps for tests so the
-        // lifetimes fit ClassifyContext<'static>. Tests only —
+        // lifetimes fit ClassifyContext<'static>. Tests only
         // production code constructs a freshly borrowed context per
         // call.
         let inbound: &'static BTreeMap<String, u32> = Box::leak(Box::new(BTreeMap::new()));
@@ -1163,7 +1131,7 @@ mod tests {
             table: "users".to_string(),
             column: non_null_column("created_at", Some("now()")),
         };
-        // `now()` is STABLE — Pg18 catalog-only fast-path applies.
+        // `now` is STABLE — Pg18 catalog-only fast-path applies.
         assert_eq!(
             classify_operation(&op, &ctx),
             OnlineSafetyClassification::OnlineSafe
@@ -1177,7 +1145,7 @@ mod tests {
             table: "users".to_string(),
             column: non_null_column("token", Some("gen_random_uuid()")),
         };
-        // `gen_random_uuid()` is VOLATILE — 3-step pattern required.
+        // `gen_random_uuid` is VOLATILE — 3-step pattern required.
         assert_eq!(
             classify_operation(&op, &ctx),
             OnlineSafetyClassification::ExpandContract
@@ -1186,7 +1154,7 @@ mod tests {
 
     #[test]
     fn add_nullable_column_with_random_default_is_expand_contract() {
-        // Spec-correctness: `ADD COLUMN <nullable> DEFAULT random()`
+        // Spec-correctness: `ADD COLUMN <nullable> DEFAULT random`
         // STILL requires the 3-step ExpandContract pattern. Pg18's
         // catalog-only fast-path is gated on the default being
         // non-volatile; the column's NULL permission does not change
@@ -1233,7 +1201,7 @@ mod tests {
     #[test]
     fn add_nullable_column_with_stable_default_is_online_safe() {
         // Confirms the pipeline handles the non-volatile case for
-        // nullable columns too — `now()` is STABLE, catalog-only
+        // nullable columns too — `now` is STABLE, catalog-only
         // fast-path still applies.
         let (_unused, ctx) = ctx_app(Some(0));
         let op = SchemaOperation::AddColumn {
@@ -1466,14 +1434,13 @@ mod tests {
 
     #[test]
     fn type_change_with_adopter_using_is_offline_only() {
-        // djogi#220 — adopter-supplied `using` signals "this is a
+        // adopter-supplied `using` signals "this is a
         // non-default cast"; the live-plan shadow-column pattern can
         // only emit a plain SQL cast in its backfill and cannot
         // replicate an adopter expression. Route to OfflineOnly
         // regardless of the cast pair.
-        //
         // INTEGER → BIGINT without `using` would classify OnlineSafe
-        // (benign widening), so the `using.is_some()` arm is the only
+        // (benign widening), so the `using.is_some` arm is the only
         // thing producing OfflineOnly here.
         let (_unused, ctx) = ctx_app(Some(0));
         let op = SchemaOperation::AlterColumn {
@@ -1552,7 +1519,7 @@ mod tests {
     fn numeric_scale_addition_preserving_integer_digits_is_widening() {
         // Postgres: `numeric(10)` ≡ `numeric(10, 0)` (10 integer
         // digits, 0 fractional). `numeric(10, 0) -> numeric(12, 2)`
-        // keeps the same 10 integer digits and adds 2 fractional —
+        // keeps the same 10 integer digits and adds 2 fractional
         // strictly widening, must NOT classify as narrowing.
         let (_unused, ctx) = ctx_app(Some(0));
         let op = SchemaOperation::AlterColumn {
@@ -1650,7 +1617,7 @@ mod tests {
     #[test]
     fn unknown_type_change_remains_expand_contract() {
         // ENUM rename / JSONB shape change / other unknown type pair
-        // — not a known narrowing or widening, so the conservative
+        // not a known narrowing or widening, so the conservative
         // ExpandContract path applies.
         let (_unused, ctx) = ctx_app(Some(0));
         let op = SchemaOperation::AlterColumn {
@@ -1913,7 +1880,7 @@ mod tests {
             default_volatility_overrides: overrides,
         };
         // Without short-circuit this would be ExpandContract; the
-        // §6.5 rule routes event-log targets directly to Phase 7.
+        // §6.5 rule routes event-log targets directly to .
         let op = SchemaOperation::AddColumn {
             table: "events".to_string(),
             column: non_null_column("required", None),
@@ -1970,7 +1937,7 @@ mod tests {
             column: "old".to_string(),
         };
         // Non-strict crud-log: short-circuit reports OnlineSafe so
-        // Phase 7 applies the drop directly (no live plan, no
+        // Applies the drop directly (no live plan, no
         // FastLockDestructiveGuarded gate from this layer).
         assert_eq!(
             classify_operation(&op, &ctx),
@@ -2108,7 +2075,6 @@ mod tests {
 
     #[test]
     fn set_check_drop_is_online_safe_regardless_of_prior() {
-        // GPT-5.5 review redesign: SetCheck now carries `from` so
         // rollback restores the prior CHECK. The classifier still
         // routes purely on `to` — a pure DROP (to = None) is
         // catalog-only regardless of whether `from` is Some or None.
@@ -2131,7 +2097,7 @@ mod tests {
     fn default_volatility_override_stable_routes_to_online_safe() {
         // Build a context whose override map asserts the default is
         // STABLE. Without the override the static table classifies
-        // `gen_random_uuid()` as VOLATILE → ExpandContract.
+        // `gen_random_uuid` as VOLATILE → ExpandContract.
         let inbound: &'static BTreeMap<String, u32> = Box::leak(Box::new(BTreeMap::new()));
         let mut overrides_map: BTreeMap<(String, String), DefaultVolatility> = BTreeMap::new();
         overrides_map.insert(
@@ -2191,7 +2157,7 @@ mod tests {
     #[test]
     fn default_volatility_override_absent_falls_through_to_static_table() {
         // No entry in the override map → static `pg_volatility.rs`
-        // table classifies `gen_random_uuid()` as VOLATILE →
+        // table classifies `gen_random_uuid` as VOLATILE →
         // ExpandContract.
         let (_unused, ctx) = ctx_app(Some(0));
         let op = SchemaOperation::AddColumn {
@@ -2209,8 +2175,8 @@ mod tests {
         // A misuse caller bypassing classify_delta and dispatching a
         // PK-flip op directly through classify_operation must get a
         // refused-classification verdict — not OnlineSafe — so the
-        // Phase 7 runner refuses to apply rather than silently
-        // fast-applying. PK-flip routing is Phase 7's exclusive
+        // Runner refuses to apply rather than silently
+        // fast-applying. PK-flip routing is the exclusive
         // territory.
         use crate::migrate::diff::{PkFlipDirection, PkFlipJoinTableOption, PkTypeFlipGroup};
         use crate::migrate::schema::PkKindSchema;
@@ -2293,7 +2259,7 @@ mod tests {
         }
     }
 
-    // ── Phase 7.5 PR 7: EXCLUSION + stored-generated classification ──
+    // ── PR 7: EXCLUSION + stored-generated classification ──
 
     fn exclusion(name: &str) -> ExclusionConstraintSchema {
         ExclusionConstraintSchema {

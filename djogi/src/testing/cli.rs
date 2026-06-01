@@ -1,6 +1,5 @@
 //! Shared helpers for CLI integration tests under
 //! `djogi-cli/tests/internal/`.
-//!
 //! These functions back the integration tests that spawn the compiled
 //! `djogi` binary as a subprocess (`djogi verify`, `djogi analyze`, …)
 //! and seed a per-test database via `#[djogi_test]`. Before this module
@@ -8,19 +7,15 @@
 //! same four helpers; centralising them here lets each test file focus
 //! on the scenario under test and keeps the binary-locating, workspace
 //! provisioning, and `Djogi.toml`-writing logic in one auditable place.
-//!
 //! # Surface visibility
-//!
 //! Gated behind `cfg(any(test, feature = "testing"))` (matching the
 //! existing convention used by other `testing`-feature surfaces in this
 //! crate). Adopter integration test crates that consume these helpers
 //! must enable djogi's `testing` feature on their dev dependency on
 //! `djogi`.
-//!
 //! # Raw access
-//!
 //! [`current_database`] uses [`crate::__bypass::RawAccessExt::raw_scalar`]
-//! to issue `SELECT current_database()` against the per-test
+//! to issue `SELECT current_database` against the per-test
 //! [`crate::DjogiContext`]. The use is internal to djogi (no `raw_*`
 //! method appears at the call site outside this crate), so adopter test
 //! files do not need a `#[deliberately_bypass_convention_with_raw_sql]`
@@ -36,14 +31,11 @@ use crate::DjogiContext;
 
 /// Walk from the running test executable to the workspace's compiled
 /// `djogi` binary.
-///
 /// Test binaries live at `target/<profile>/deps/<test_name>-<hash>`; the
 /// CLI binary lives at `target/<profile>/djogi`. We walk up one level
 /// (drop the test-binary file) to reach `deps/`, then up another level to
 /// reach `<profile>/`, then join `djogi`.
-///
 /// # Why the `option_env!` branch is structurally retained
-///
 /// Cargo only sets `CARGO_BIN_EXE_<name>` for integration tests in the
 /// same package as the matching `[[bin]]`. In today's `djogi-cli`
 /// tests this helper is compiled by the `djogi` crate, so the env-var
@@ -67,13 +59,12 @@ pub fn djogi_binary_path() -> PathBuf {
     profile_dir.join("djogi")
 }
 
-/// Resolve the connected test context's `current_database()` so callers
+/// Resolve the connected test context's `current_database` so callers
 /// can splice the per-test database name into a fixture `Djogi.toml`
 /// URL.
-///
-/// Issues a single `SELECT current_database()::text` against `ctx` via
-/// the in-crate raw escape hatch. The cast to `text` is deliberate —
-/// `current_database()` returns a `name`, and decoding `name` directly
+/// Issues a single `SELECT current_database::text` against `ctx` via
+/// the in-crate raw escape hatch. The cast to `text` is deliberate
+/// `current_database` returns a `name`, and decoding `name` directly
 /// into Rust's `String` is fragile across `tokio_postgres` versions.
 pub async fn current_database(ctx: &mut DjogiContext) -> String {
     ctx.raw_scalar::<String>("SELECT current_database()::text", &[])
@@ -82,12 +73,10 @@ pub async fn current_database(ctx: &mut DjogiContext) -> String {
 }
 
 /// Build a unique temporary workspace directory and return its path.
-///
 /// The directory is named `djogi-{tag}-{nanos-since-epoch}-{counter}`
 /// under the platform's temp dir, where `counter` is a process-local
 /// monotonic value. The combination of nanos + counter keeps every
 /// invocation distinct even under heavy parallel test scheduling.
-///
 /// Callers should pass a `tag` that incorporates both their test-suite
 /// identity (e.g. `t9-7-verify`) and the per-case discriminator
 /// (e.g. `clean`, `mismatch`). The full string lands verbatim in the
@@ -108,7 +97,6 @@ pub fn temp_workspace(tag: &str) -> PathBuf {
 
 /// Write a minimal `Djogi.toml` in `workspace` whose `database.url`
 /// points at the supplied per-test URL.
-///
 /// The CLI subcommands these tests drive (`djogi verify`,
 /// `djogi analyze`, …) read this file via
 /// `DjogiConfig::load_from_workspace`. The `[server]` block is required

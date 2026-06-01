@@ -1,20 +1,17 @@
 //! `OneToOneField<T>` — a unique-constrained singular relation.
-//!
 //! Reuses the `ForeignKey<T>` runtime wire-shape exactly. The
 //! difference lives in descriptor metadata (the `RelationKind::OneToOne`
-//! flag Phase 3 Task 2 records) and in the DDL the migration layer
-//! emits in Phase 6 (`UNIQUE` on the relation column plus the reverse
+//! flag records) and in the DDL the migration layer
+//! emits in (`UNIQUE` on the relation column plus the reverse
 //! side of the relation generating a singular accessor rather than a
 //! `Vec<T>`). Runtime CRUD behavior is identical to `ForeignKey`.
-//!
 //! # Why a newtype rather than a type alias
-//!
 //! A type alias (`type OneToOneField<T> = ForeignKey<T>`) would be
 //! shorter but would collapse the two at every use site — the macro
 //! could not distinguish `OneToOneField<T>` from `ForeignKey<T>` when
 //! scanning struct fields, and the public API could not evolve the
 //! two shapes independently (e.g. if we later give `OneToOneField`
-//! a distinct `reverse()` singular accessor). The newtype keeps the
+//! a distinct `reverse` singular accessor). The newtype keeps the
 //! identities separate at compile time with a single field of
 //! overhead (the inner `ForeignKey<T>` is the only runtime state).
 
@@ -24,7 +21,6 @@ use bytes::BytesMut;
 use postgres_types::{FromSql, IsNull, ToSql, Type};
 
 /// Unique-constrained 1:1 relation field.
-///
 /// Public API of a thin newtype over [`ForeignKey<T>`] — same encode,
 /// same decode, same `fetch` / `resolved` shape. See the module-level
 /// docs for the rationale.
@@ -159,9 +155,8 @@ where
 // ---------------------------------------------------------------------------
 // Filter-API integration — forward to the wrapped `ForeignKey<T>`.
 // ---------------------------------------------------------------------------
-//
 // Mirror `ForeignKey<T>: IntoFilterValue` so that reverse-O2O accessors
-// (Phase 3 Task 7) can emit the same `.eq(OneToOneField::new(pk))`
+// can emit the same `.eq(OneToOneField::new(pk))`
 // closure body the reverse-FK macro uses. The wrapped `ForeignKey<T>`
 // already carries the projection into `FilterValue` through its PK type.
 
@@ -174,9 +169,9 @@ where
     }
 
     /// Delegate JSONB path LHS cast metadata to the target PK type
-    /// (djogi#161). Same rationale as the `ForeignKey<T>` override —
+    /// . Same rationale as the `ForeignKey<T>` override
     /// without this, `JsonbPathRef::<M, OneToOneField<T>>` falls back
-    /// to text comparison because `type_name::<OneToOneField<T>>()`
+    /// to text comparison because `type_name::<OneToOneField<T>>`
     /// is not in the built-in cast table.
     fn jsonb_sql_cast() -> Option<crate::jsonb::JsonbSqlCast> {
         <T::Pk as crate::query::field::IntoFilterValue>::jsonb_sql_cast()
@@ -220,12 +215,10 @@ where
 // ---------------------------------------------------------------------------
 
 /// Post-eager-load variant of [`OneToOneField<T>`].
-///
-/// Produced by `prefetch()` / `select_related()`, never constructed by
+/// Produced by `prefetch` / `select_related`, never constructed by
 /// user code. The `Option<Box<T>>` lives inside the wrapped
 /// [`ForeignKeyResolved<T>`]; `expect_resolved` forwards through with
 /// the same "strict mode" semantics.
-///
 /// `Clone` and `Debug` are hand-rolled rather than derived so the bounds
 /// match the inner `ForeignKeyResolved<T>` precisely (`T::Pk: Clone` +
 /// `T: Clone` for Clone; `T::Pk: Debug` + `T: Debug` for Debug). A
@@ -384,7 +377,7 @@ mod tests {
 
     #[test]
     fn one_to_one_field_resolved_expect_resolved_ok_on_present() {
-        // Parity with `foreign_key_resolved_expect_resolved_ok_on_present` —
+        // Parity with `foreign_key_resolved_expect_resolved_ok_on_present`
         // confirms the newtype forwards the `Ok(&T)` branch through the
         // inner `ForeignKeyResolved<T>` without altering semantics.
         let r: OneToOneFieldResolved<Dummy> =
@@ -396,7 +389,7 @@ mod tests {
     #[test]
     fn one_to_one_field_resolved_clone() {
         // Exercise the manual `Clone` impl on `OneToOneFieldResolved<T>`.
-        // Both original and clone must keep the cached child reachable —
+        // Both original and clone must keep the cached child reachable
         // a bug that dropped the `Box<T>` on clone would show up here.
         let r: OneToOneFieldResolved<Dummy> =
             OneToOneFieldResolved::new(HeerId::from_i64(5).unwrap(), Some(Dummy));
@@ -408,7 +401,7 @@ mod tests {
 
     #[test]
     fn one_to_one_field_resolved_key_borrow() {
-        // `key()` returns `&T::Pk` — a borrow, not an owned clone.
+        // `key` returns `&T::Pk` — a borrow, not an owned clone.
         // Confirm the borrow matches the stored value.
         let pk = HeerId::from_i64(123).unwrap();
         let r: OneToOneFieldResolved<Dummy> = OneToOneFieldResolved::new(pk, None);

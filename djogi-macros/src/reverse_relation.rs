@@ -1,21 +1,15 @@
 //! Function-like macros for reverse-relation accessors.
-//!
 //! # What
-//!
-//! This module hosts the expansion logic for the two Phase 3 Task 7
+//! This module hosts the expansion logic for the two
 //! reverse-accessor macros:
-//!
 //! - [`reverse_one_to_many`] — reverse of a forward `ForeignKey<Target>`,
-//!   returns `Vec<Source>`.
+//! returns `Vec<Source>`.
 //! - [`reverse_one_to_one`] — reverse of a forward `OneToOneField<Target>`
-//!   (or a `ForeignKey<Target>` + `UNIQUE` pair), returns `Option<Source>`.
-//!
+//! (or a `ForeignKey<Target>` + `UNIQUE` pair), returns `Option<Source>`.
 //! The third Task 7 macro — `many_to_many!` — is **not** implemented
 //! here; it ships in a later commit once the `ManyToMany<Target>` trait
 //! (Task 6) is finalized.
-//!
 //! # Why function-like and not derive
-//!
 //! A reverse accessor lives on the **opposite** side of the relation
 //! from where the FK column is declared. A `#[derive(Model)]` on
 //! `Vehicle` (the FK source) has no way to emit a method on `Owner`:
@@ -26,18 +20,13 @@
 //! type-defining crate OR the trait-defining crate — letting
 //! downstream FK-using crates declare reverse accessors against
 //! upstream parent types.
-//!
 //! Invocation form is declarative — one line per reverse direction:
-//!
 //! ```ignore
 //! djogi::reverse_one_to_many!(Owner, cars -> Vehicle by owner_id);
 //! djogi::reverse_one_to_one!(User, profile -> Profile by user_id);
 //! ```
-//!
 //! # How (emitted shape)
-//!
 //! For `reverse_one_to_many!(Target, method -> Source by via_column)`:
-//!
 //! ```ignore
 //! pub trait TargetMethodReverseRelation {
 //!     fn method<'ctx>(
@@ -71,21 +60,17 @@
 //!     }
 //! }
 //! ```
-//!
 //! `reverse_one_to_one!` emits an almost-identical shape with two
 //! differences: return type is `Result<Option<Source>, DjogiError>` and
 //! the terminal is `.first(ctx)` instead of `.fetch_all(ctx)`.
-//!
 //! # Trait-based emission (GH issue #39)
-//!
-//! Phase 7.5 PR 5 switched the emission shape from `impl Target { ... }`
+//! PR 5 switched the emission shape from `impl Target { ... }`
 //! (inherent impl, subject to Rust's E0116 coherence rule) to
 //! `pub trait TargetMethodReverseRelation { ... }` plus
 //! `impl TargetMethodReverseRelation for Target { ... }`. The trait
 //! impl is allowed in the trait-defining crate even when `Target` lives
 //! upstream, lifting the cross-crate constraint that pre-#39 emission
 //! carried.
-//!
 //! The naming convention is `{Receiver}{Method-pascal}ReverseRelation`
 //! for the model-scoped accessor, and
 //! `{Receiver}{Scope-pascal}{Method-pascal}VisageReverseRelation` for
@@ -94,29 +79,23 @@
 //! invoked at module scope (the canonical form), the trait is visible
 //! to call sites in the same module without an explicit `use`. Cross-
 //! module / cross-crate consumers add `use ...::TargetMethodReverseRelation;`
-//! at the top of files that call `.method()` on the receiver.
-//!
+//! at the top of files that call `.method` on the receiver.
 //! # Terminology note (source vs target)
-//!
 //! The macro invocation reads `ReceivingType, method -> ReturnedType by
 //! via_column`. In this module:
-//!
 //! - `receiver_type` — the type the accessor method is attached to.
-//!   Corresponds to the first positional argument in the invocation
-//!   and to the `source` field in the `ReverseRelationMarker` (because
-//!   Phase 4.5 reads "this model is the source of the reverse
-//!   accessor").
+//! Corresponds to the first positional argument in the invocation
+//! and to the `source` field in the `ReverseRelationMarker` (because
+//! reads "this model is the source of the reverse
+//! accessor").
 //! - `returned_type` — the model the accessor queries. Corresponds to
-//!   the arrow's right-hand side and to the `target` field in the
-//!   `ReverseRelationMarker`.
-//!
+//! the arrow's right-hand side and to the `target` field in the
+//! `ReverseRelationMarker`.
 //! The `source` / `target` field names in `ReverseRelationMarker`
-//! match Phase 4.5's projection-generator vocabulary, not the
+//! match 's projection-generator vocabulary, not the
 //! forward-FK vocabulary where "source" means the FK-carrying row.
 //! Keep the two terminologies distinct when reading.
-//!
 //! # Path routing
-//!
 //! All emitted type references route through `::djogi::*` rather than
 //! reaching into `heeranjid` / `time` / `uuid` / `tokio_postgres` directly. Macro
 //! output compiles in the user's crate, which depends only on `djogi`;
@@ -130,13 +109,10 @@ use syn::{Ident, Path, Result, Token};
 
 /// Parsed form of
 /// `reverse_one_to_many!(Receiver, method -> Returned by via [, expose(scope -> PeerVisage)...])`.
-///
 /// Shared between both reverse-accessor macros; the only difference is
 /// the terminal (`.fetch_all` vs `.first`) and the return type
 /// (`Vec<Returned>` vs `Option<Returned>`), so parsing is identical.
-///
-/// # Phase 7-Zero-2 T9 — `expose(scope -> PeerVisage)` clauses
-///
+/// # `expose(scope -> PeerVisage)` clauses
 /// Zero or more `expose(scope -> PeerVisage)` entries may appear after
 /// the required `... by via_column` segment, each separated by a comma.
 /// Each entry asks the macro to emit an additional inherent method on
@@ -144,7 +120,6 @@ use syn::{Ident, Path, Result, Token};
 /// `Vec<PeerVisage>` (or `Option<PeerVisage>` for the O2O variant). The
 /// method delegates to the model-scoped accessor under the hood and
 /// converts each fetched row via `<PeerVisage as TryFrom<&Returned>>::try_from`.
-///
 /// When no `expose(...)` clauses are supplied the emitter behaves exactly
 /// like the pre-T9 form: one method on the receiver model, no visage
 /// surface. The clause is additive — the model-scoped accessor is always
@@ -165,7 +140,6 @@ pub struct ReverseRelationInput {
 }
 
 /// One `expose(scope -> PeerVisage)` entry on a reverse relation.
-///
 /// The `scope` is an identifier naming the built-in visage scope
 /// (`public` / `self_view` / `admin` / `export`). The receiver's
 /// matching visage (`{Receiver}{Suffix}` with `Suffix` derived from
@@ -255,16 +229,15 @@ impl Parse for ReverseRelationInput {
 /// `RelationKind` marker discriminator.
 #[derive(Clone, Copy)]
 enum AccessorKind {
-    /// `reverse_one_to_many!` — `.fetch_all()` → `Vec<Returned>`, marker
+    /// `reverse_one_to_many!` — `.fetch_all` → `Vec<Returned>`, marker
     /// kind `FK`.
     OneToMany,
-    /// `reverse_one_to_one!` — `.first()` → `Option<Returned>`, marker
+    /// `reverse_one_to_one!` — `.first` → `Option<Returned>`, marker
     /// kind `O2O`.
     OneToOne,
 }
 
 /// Shared expansion for both reverse-accessor macros.
-///
 /// Splitting the kind into a parameter keeps the parsed-input handling
 /// DRY and lets a reader compare the two macros by diffing their thin
 /// `reverse_one_to_many`/`reverse_one_to_one` wrappers in `lib.rs`.
@@ -279,7 +252,6 @@ pub fn expand(input: TokenStream, kind: AccessorKindOpaque) -> TokenStream {
 /// Opaque newtype wrapping [`AccessorKind`] so the `lib.rs` entry
 /// points can parameterize the expansion without needing to import
 /// the private enum.
-///
 /// `lib.rs` constructs values of this type via the associated helper
 /// constants [`AccessorKindOpaque::ONE_TO_MANY`] /
 /// [`AccessorKindOpaque::ONE_TO_ONE`] — those are the only supported
@@ -311,7 +283,7 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
     let returned_lit = returned_type.to_string();
     let via_lit = via_column.to_string();
 
-    // `{Returned}Fields::{via_column}()` is the typed field handle the
+    // `{Returned}Fields::{via_column}` is the typed field handle the
     // emitted closure invokes. `format_ident!` with the raw string
     // preserves raw-ident (`r#type`) prefixes if present; the user's
     // macro invocation sees the exact identifier they wrote.
@@ -320,7 +292,6 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
     // Per-kind variations: terminal, return-type inner shape,
     // RelationKind marker variant, and the relation-wrapper
     // constructor used inside the filter closure.
-    //
     // `wrapper_ctor` names the exact type the `FieldRef::eq(value)`
     // closure receives. For reverse-FK, the forward column is
     // `ForeignKey<Receiver>`; for reverse-O2O, the forward column is
@@ -351,7 +322,7 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
     };
 
     // Doc strings assembled once so the emitted `impl` has human-readable
-    // documentation on the accessor method. Phase 4.5 and the admin UI
+    // documentation on the accessor method. and the admin UI
     // render model method docs; keeping them informative here pays off
     // at every downstream surface.
     let method_doc = match kind {
@@ -377,26 +348,24 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
     };
 
     // The generated trait + impl:
-    //
     // * `'ctx` scopes both the `&self` receiver borrow and the
-    //   `&mut DjogiContext` parameter's borrow, and ties both into the
-    //   returned future's lifetime. The context threads through to
-    //   `QuerySet::fetch_all(ctx)` (or `.first(ctx)` for O2O) which
-    //   pattern-matches on the inner pool / transaction variant at the
-    //   query dispatch boundary — see the `djogi::context` module for the
-    //   inline-match rationale.
+    // `&mut DjogiContext` parameter's borrow, and ties both into the
+    // returned future's lifetime. The context threads through to
+    // `QuerySet::fetch_all(ctx)` (or `.first(ctx)` for O2O) which
+    // pattern-matches on the inner pool / transaction variant at the
+    // query dispatch boundary — see the `djogi::context` module for the
+    // inline-match rationale.
     // * The `<Self as Model>::Pk` where-clause is dropped entirely.
-    //   `Model::Pk` already carries `Clone + Send + Sync + 'static` on
-    //   the trait itself (see `djogi/src/model.rs`); `'static: 'ctx` so
-    //   the outlive requirement is implied, `Clone` is the only extra
-    //   capability the closure uses and it is already satisfied for
-    //   every `Model` implementer.
+    // `Model::Pk` already carries `Clone + Send + Sync + 'static` on
+    // the trait itself (see `djogi/src/model.rs`); `'static: 'ctx` so
+    // the outlive requirement is implied, `Clone` is the only extra
+    // capability the closure uses and it is already satisfied for
+    // every `Model` implementer.
     // * The `+ Send` on the returned `impl Future` IS necessary — the
-    //   auto-trait bound on an opaque return type is not inherited
-    //   from the inner `async move` block, so callers that need to
-    //   `.await` the future on a multi-threaded executor still require
-    //   the explicit annotation.
-    //
+    // auto-trait bound on an opaque return type is not inherited
+    // from the inner `async move` block, so callers that need to
+    // `.await` the future on a multi-threaded executor still require
+    // the explicit annotation.
     // GH issue #39 — emission shape switched from inherent `impl
     // Receiver { ... }` to a per-relation trait + trait-impl. Inherent
     // impls are subject to Rust's coherence rule (E0116) and must live
@@ -406,7 +375,6 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
     // need EITHER the type-defining crate OR the trait-defining crate
     // to host them, so the FK-using crate can declare the reverse
     // accessor next to its own model.
-    //
     // Naming: `{Receiver}{Method-pascal}ReverseRelation`. The trait is
     // public so adopters can `use {crate}::{Trait}` to bring the method
     // into scope at the call site. Method-name → PascalCase via the
@@ -472,7 +440,7 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
             }
         }
 
-        // Inventory marker — Phase 4.5's projection generator and the
+        // Inventory marker — 's projection generator and the
         // `validate_relation_accessor_collisions` cross-kind collision
         // gate (closed by GH #158) walk these records to discover every
         // registered reverse accessor. The marker's `source` field is
@@ -484,7 +452,6 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
         // time — a downstream crate cannot submit a fabricated marker
         // carrying SQL metacharacters or the reserved `__djogi_*`
         // namespace through the inventory slice.
-        //
         // Note: rustc catches the same-suffix accessor-name clash
         // (two `reverse_one_to_*!` invocations agreeing on the
         // `{Receiver}{Method-pascal}ReverseRelation` trait name) at
@@ -503,20 +470,17 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
         }
     };
 
-    // Phase 7-Zero-2 T9 — visage-scoped reverse accessors.
-    //
+    // Visage-scoped reverse accessors.
     // For every `expose(scope -> PeerVisage)` clause, emit an additional
     // inherent method on `{Receiver}{Suffix}` (the receiver's visage at
     // that scope) that delegates to the model-scoped accessor above and
     // converts each fetched row through `<PeerVisage as TryFrom<&Returned>>::try_from`.
-    //
     // The method is named the same as the model-scoped accessor — the
     // user never sees two different names for the same relation — and
     // differs only in the scope it lives on and the element type of the
     // returned collection. Boundary semantics fall out naturally: no
     // `expose(...)` clause → no method emitted → `no method named ...`
     // at the call site.
-    //
     // The receiver-visage ident is computed by appending the
     // scope-specific suffix to the receiver ident. The mapping mirrors
     // `djogi-macros/src/model/visages.rs::SCOPES` — keep these two
@@ -545,27 +509,24 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
             let receiver_visage = format_ident!("{receiver_type}{suffix}");
             let peer = &exposure.peer;
 
-            // Phase 7-Zero-2 T13a — visage-scoped reverse accessors
+            // Visage-scoped reverse accessors
             // return a narrowed `VisageQuerySet<Peer>` synchronously
             // instead of awaiting a `Vec<Peer>` / `Option<Peer>` over
             // a full-model SELECT and projecting in Rust. Two payoffs:
-            //
             // 1. SQL-level SELECT narrowing — the queryset bakes in the
-            //    peer visage's `columns` slice, so emitted SQL projects
-            //    only exposed columns. Fewer wire bytes, smaller heap
-            //    fetches, possible index-only scans.
+            // peer visage's `columns` slice, so emitted SQL projects
+            // only exposed columns. Fewer wire bytes, smaller heap
+            // fetches, possible index-only scans.
             // 2. Lazy composition — callers can append `.filter(...)`,
-            //    `.order_by(...)`, `.limit(n)`, `.count(ctx)`,
-            //    `.exists(ctx)`, or `.stream(ctx)` on top of the reverse
-            //    accessor instead of materialising every reverse row.
-            //
+            // `.order_by(...)`, `.limit(n)`, `.count(ctx)`,
+            // `.exists(ctx)`, or `.stream(ctx)` on top of the reverse
+            // accessor instead of materialising every reverse row.
             // The FK predicate is built via the source model's typed
-            // `Model::Fields` accessor (`{Returned}Fields::{filter_method}()`)
+            // `Model::Fields` accessor (`{Returned}Fields::{filter_method}`)
             // so column-name typos are compile errors at macro-emission
             // time, not runtime SQL bugs. The resulting `Condition`
             // hands off to the visage's hidden
             // `__filter_with_initial_condition` constructor.
-            //
             // OneToMany returns `VisageQuerySet<Peer>` and the caller
             // chains `.fetch_all(ctx)`. OneToOne also returns
             // `VisageQuerySet<Peer>` — the caller chains `.first(ctx)`
@@ -669,8 +630,7 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
                         // FK column name would surface as a compile
                         // error here (`no method named 'foo' on type ...
                         // {Returned}Fields`), not a runtime SQL bug.
-                        //
-                        // Phase 8eta PR3: `Model::Fields` accessors return
+                        // : `Model::Fields` accessors return
                         // `DjogiField<M, V>` after the macro flip, so the
                         // FK predicate routes the wrapper through
                         // `IntoSqlField::into_sql_field` to recover the

@@ -1,5 +1,4 @@
 //! Three-step volatile-default add pattern.
-//!
 //! Covers the "Add column with Postgres-VOLATILE default" row of the
 //! v3 plan §7 classification table. The classifier resolves the
 //! default expression's volatility via
@@ -8,51 +7,45 @@
 //! conservatively) routes here. Stable / immutable defaults stay
 //! `OnlineSafe` via the Pg18 catalog-only fast path and never reach
 //! this pattern.
-//!
 //! # Operation shape
-//!
 //! Accepts [`AddColumn`](SchemaOperation::AddColumn) whose
 //! [`ColumnSchema::default_sql`](crate::migrate::schema::ColumnSchema::default_sql)
 //! is `Some(_)`. The classifier strips off the volatility check
 //! before dispatch — the pattern itself does not re-classify the
 //! default expression.
-//!
 //! # Step graph
-//!
 //! 1. [`StepKind::ExpandSchema`] — `ALTER TABLE <t> ADD COLUMN <c>
-//!    <type> NULL` (no `DEFAULT` clause yet — the volatile fragment
-//!    cannot land in catalog metadata without rewriting every row).
+//! <type> NULL` (no `DEFAULT` clause yet — the volatile fragment
+//! cannot land in catalog metadata without rewriting every row).
 //! 2. [`StepKind::BeginCompatibilityWindow`] — install a `BEFORE
-//!    INSERT` trigger that runs the volatile expression for new
-//!    rows. Existing rows still see `NULL` until the backfill
-//!    catches up; the dual-write hook flags the column as
-//!    transitionally nullable.
+//! INSERT` trigger that runs the volatile expression for new
+//! rows. Existing rows still see `NULL` until the backfill
+//! catches up; the dual-write hook flags the column as
+//! transitionally nullable.
 //! 3. [`StepKind::BackfillChunked`] — populate the column for
-//!    existing rows. The pattern emits a complete UPDATE-tail
-//!    fragment of the shape
-//!
+//! existing rows. The pattern emits a complete UPDATE-tail
+//! fragment of the shape
 //!    ```sql
 //!    SET <col> = <default-expression>
 //!    WHERE id IN (SELECT id FROM <table>
 //!                 WHERE <col> IS NULL
 //!                 LIMIT $1)
-//!    ```
-//!
-//!    The default expression evaluates per-row inside the chunk
-//!    transaction — the volatility we are staging around is precisely
-//!    the reason the column had to be added without an inline
-//!    DEFAULT. The `<col> IS NULL` inner predicate self-cancels so
-//!    chunk re-runs on the same range are no-ops; `LIMIT $1` bounds
-//!    the row count to one chunk.
+//! ```
+//! The default expression evaluates per-row inside the chunk
+//! transaction — the volatility we are staging around is precisely
+//! the reason the column had to be added without an inline
+//! DEFAULT. The `<col> IS NULL` inner predicate self-cancels so
+//! chunk re-runs on the same range are no-ops; `LIMIT $1` bounds
+//! the row count to one chunk.
 //! 4. [`StepKind::ValidateBackfill`] — operator gate; runner pauses
-//!    until `SELECT count(*) FROM <t> WHERE <col> IS NULL` returns
-//!    zero.
+//! until `SELECT count(*) FROM <t> WHERE <col> IS NULL` returns
+//! zero.
 //! 5. [`StepKind::FinalizeConstraints`] — `ALTER TABLE <t> ALTER
-//!    COLUMN <c> SET DEFAULT <expr>` then `ALTER TABLE <t> ALTER
-//!    COLUMN <c> SET NOT NULL`.
+//! COLUMN <c> SET DEFAULT <expr>` then `ALTER TABLE <t> ALTER
+//! COLUMN <c> SET NOT NULL`.
 //! 6. [`StepKind::CleanupLegacyState`] — `DROP TRIGGER ... ON <t>`
-//!    (the `BEFORE INSERT` trigger is no longer needed once the
-//!    column carries the default).
+//! (the `BEFORE INSERT` trigger is no longer needed once the
+//! column carries the default).
 
 use super::{Pattern, PatternContext, PatternError};
 use crate::live_migrate::plan::{Step, StepKind, StepParameters};
@@ -95,7 +88,7 @@ impl Pattern for ThreeStepDefault {
         );
         // Backfill template: complete UPDATE-tail. The default
         // expression is interpolated as raw SQL (it is the very
-        // expression Phase 7 verified as syntactically well-formed
+        // expression verified as syntactically well-formed
         // before the live plan was composed) so per-row evaluation
         // produces fresh values for each populated row. LIMIT $1 is
         // the only placeholder the runner binds.

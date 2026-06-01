@@ -1,25 +1,20 @@
 //! `RelationPath<Source, Target>` — the typed zero-sized handle that
 //! names a relation from one model to another at the type level.
-//!
 //! Produced exclusively by the macro-emitted `{Source}Related` accessor
 //! struct. User code receives a `RelationPath<Vehicle, Owner>` from
-//! `VehicleRelated::owner()` and hands it to a future
+//! `VehicleRelated::owner` and hands it to a future
 //! `QuerySet::prefetch(...)` / `QuerySet::select_related(...)` call
-//! (Phase 3 Tasks 4 + 5). The path is a ZST — all information is carried
+//! (Tasks 4 + 5). The path is a ZST — all information is carried
 //! at the type level plus three `&'static str` / discriminant fields for
 //! use by the SQL emitters.
-//!
 //! # Why the `Source` / `Target` generics
-//!
 //! The compile-time source/target pinning means `prefetch` / `select_related`
 //! cannot be called with a relation path from the wrong model: a
 //! `RelationPath<Vehicle, Owner>` only matches `QuerySet<Vehicle>`. Attempting
 //! to use it on `QuerySet<Post>` fails at the type level, long before any SQL
 //! would be emitted. This is the feature — relations are a place where
 //! mismatched targets are a nasty silent source of wrong results.
-//!
 //! # Sealed constructor
-//!
 //! [`RelationPath::new`] is `pub(crate)` — the type cannot be constructed from
 //! downstream crates. Proc-macro-emitted `{Source}Related` methods reach it via
 //! the `#[doc(hidden)] pub` helper [`__private::__make_relation_path`] in
@@ -28,7 +23,6 @@
 //! `djogi-macros` can emit user-crate code that calls it; it is not part of
 //! the stable public API and its name carries the framework-internal
 //! double-underscore convention.
-//!
 //! The seal closes the SQL-injection vector that existed while `__new` was
 //! `pub` with `#[doc(hidden)]`: downstream code could previously fabricate a
 //! `RelationPath` whose `source_column` / `target_table` strings contained
@@ -39,9 +33,7 @@
 //! unquoted-identifier grammar plus reserved-keyword rejection), no value
 //! of `RelationPath` can carry an injection payload or a malformed
 //! identifier that would reach SQL emission.
-//!
-//! # Phase 3 scope
-//!
+//! # scope
 //! `RelationKind` lists `ForeignKey` and `OneToOne` — the two relation
 //! shapes landed by Tasks 1 + 2. Task 7 adds a `ManyToMany` variant; the
 //! enum is `#[non_exhaustive]` so growing it is non-breaking for downstream
@@ -51,15 +43,13 @@ use crate::model::Model;
 use std::marker::PhantomData;
 
 /// Cardinality discriminator for a [`RelationPath`].
-///
 /// The downstream prefetch / select_related SQL planner reads this to
 /// pick the right strategy: `ForeignKey` and `OneToOne` both run a
 /// single-row-per-parent join, but `OneToOne`'s uniqueness constraint
 /// lets the emitter elide a `DISTINCT` that `ForeignKey` may need.
 /// Future `ManyToMany` variants take a completely different path
 /// (`JOIN` through the through-model).
-///
-/// `#[non_exhaustive]` so Phase 3 Task 7's `ManyToMany` variant lands
+/// `#[non_exhaustive]` so 's `ManyToMany` variant lands
 /// without breaking any consumer that already matches on the enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -75,22 +65,18 @@ pub enum RelationKind {
 }
 
 /// Typed handle describing "the relation on `Source` that points at `Target`".
-///
 /// Produced by the macro-emitted `{Source}Related` accessor struct; never
 /// constructed by user code. A `RelationPath<Vehicle, Owner>` carries:
-///
 /// - `source_column` — the column on `Source`'s table that stores the
-///   target's primary key (e.g. `"owner_id"`);
-/// - `target_table` — `Target::table_name()` at macro-expansion time;
+/// target's primary key (e.g. `"owner_id"`);
+/// - `target_table` — `Target::table_name` at macro-expansion time;
 /// - `kind` — whether the relation is a `ForeignKey` or `OneToOne`.
-///
 /// The struct is a ZST plus three `&'static` members and one enum
 /// discriminant; it costs a handful of bytes to pass around and a free
-/// type-level proof that `Source` and `Target` line up. Phase 3 Tasks
+/// type-level proof that `Source` and `Target` line up. Tasks
 /// 4 + 5 (`prefetch` / `select_related`) consume these handles.
-///
-/// Phase 3 does not yet expose Getters for the `Source`/`Target` markers
-/// — the type-level proof is all that downstream code needs. If a later
+/// Does not yet expose Getters for the `Source`/`Target` markers
+/// the type-level proof is all that downstream code needs. If a later
 /// phase grows a reflective API over the marker, it should add explicit
 /// type-level accessors here rather than expose the `PhantomData` field
 /// directly.
@@ -99,7 +85,7 @@ pub struct RelationPath<Source: Model, Target: Model> {
     pub(crate) source_column: &'static str,
     pub(crate) target_table: &'static str,
     pub(crate) kind: RelationKind,
-    // `PhantomData<fn() -> (Source, Target)>` — covariant in both generics
+    // `PhantomData<fn -> (Source, Target)>` — covariant in both generics
     // without implying ownership of a Source or Target value. Matches the
     // variance choice in `ForeignKey<T>` / `OneToOneField<T>` and keeps
     // `RelationPath` `Send`/`Sync` regardless of the model types' own
@@ -109,15 +95,13 @@ pub struct RelationPath<Source: Model, Target: Model> {
 
 impl<Source: Model, Target: Model> RelationPath<Source, Target> {
     /// Construct a relation path. Crate-private — downstream code goes through
-    /// the macro-emitted `{Source}Related::relation_name()` accessor, which
+    /// the macro-emitted `{Source}Related::relation_name` accessor, which
     /// reaches this constructor via
     /// [`__private::__make_relation_path`](super::__private::__make_relation_path)
     /// after validating the identifier strings.
-    ///
     /// The seal prevents the SQL-injection fabrication vector documented on
     /// the module header: arbitrary `&'static str` inputs can no longer reach
     /// the SQL emitter via a downstream-constructed `RelationPath`.
-    ///
     /// `const fn` so the macro helper can call this in `const` contexts if a
     /// later phase needs `const`-promoted relation paths; matches the ZST
     /// nature of the struct.
@@ -135,14 +119,14 @@ impl<Source: Model, Target: Model> RelationPath<Source, Target> {
     }
 
     /// Name of the column on `Source`'s table that holds `Target`'s PK.
-    /// Used by the prefetch / select_related SQL emitters (Phase 3 Tasks
+    /// Used by the prefetch / select_related SQL emitters (Tasks
     /// 4 + 5) to name the join condition's left-hand side.
     #[inline]
     pub fn source_column(&self) -> &'static str {
         self.source_column
     }
 
-    /// `Target::table_name()`, snapshotted at macro expansion time.
+    /// `Target::table_name`, snapshotted at macro expansion time.
     /// The SQL emitters use this as the join condition's right-hand-side
     /// table.
     #[inline]
@@ -236,7 +220,7 @@ mod tests {
 
     #[test]
     fn relation_path_one_to_one_kind_round_trips() {
-        // OneToOne paths are the other variant Phase 3 Task 2 ships —
+        // OneToOne paths are the other variant ships
         // pin the discriminant so Task 7's `ManyToMany` addition
         // doesn't accidentally renumber the existing variants.
         let p: RelationPath<Src, Dst> = RelationPath::new("dst_id", "dsts", RelationKind::OneToOne);

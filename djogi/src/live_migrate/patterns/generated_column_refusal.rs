@@ -1,8 +1,6 @@
 //! Documentation-only marker — `generated_column_replacement` does
 //! not ship as a pattern.
-//!
 //! # Why this module exists
-//!
 //! A reader scanning the [`patterns`](super) directory might
 //! reasonably expect a `generated_column_replacement.rs` next to
 //! [`replacement_column`](super::replacement_column) — the obvious
@@ -13,9 +11,7 @@
 //! table" to
 //! [`OnlineSafetyClassification::OfflineOnly`](crate::migrate::OnlineSafetyClassification::OfflineOnly)
 //! rather than ExpandContract.
-//!
 //! # The reasoning
-//!
 //! Adding a stored generated column rewrites the table under
 //! `AccessExclusiveLock` — Postgres evaluates the generation
 //! expression for every row and writes the result to disk before
@@ -23,18 +19,15 @@
 //! shadow-column pattern is meant to avoid, so a "shadow generated
 //! column + swap" approach offers no relief: the row rewrite still
 //! happens, just in a column with a different name.
-//!
 //! Operators with an online-rollout requirement remodel the column
 //! away from `STORED GENERATED` entirely (e.g. into a regular column
 //! populated by an application trigger or a materialised value), at
-//! which point the change classifies as a "Change column type —
+//! which point the change classifies as a "Change column type
 //! requires rewrite" and routes through
 //! [`replacement_column`](super::replacement_column) instead. The
 //! v3 plan documents this reroute in the "remodel away from STORED-
 //! generated" amendment note on the same row.
-//!
 //! # No `Pattern` impl
-//!
 //! This module is intentionally empty of types and functions. It
 //! exists as a breadcrumb so the [`patterns`](super) directory
 //! listing carries a record of the deliberate omission, and so a

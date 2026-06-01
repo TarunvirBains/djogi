@@ -1,13 +1,10 @@
 //! Protected-field codec transition pattern.
-//!
 //! Covers the "Codec transition (same decoded type)" row of the v3
 //! plan §7 classification table. Triggered when a protected field's
 //! `FieldCodec` rotates (e.g. AES-256-GCM key rotation, encoding
-//! change) and `FieldCodec::classify_transition::<Other>()` reports
+//! change) and `FieldCodec::classify_transition::<Other>` reports
 //! the transition rewrites ciphertext.
-//!
 //! # Operation shape
-//!
 //! Until a dedicated `CodecChange` variant lands on
 //! [`SchemaOperation`], this pattern accepts an
 //! [`AlterColumn`](SchemaOperation::AlterColumn) carrying
@@ -19,36 +16,34 @@
 //! dual-write hook performs (`encode_new(decode_old(value))` rather
 //! than a SQL cast). The runner consumes the same plan-file shape
 //! either way.
-//!
 //! # Step graph
-//!
 //! 1. [`StepKind::ExpandSchema`] — `ALTER TABLE <t> ADD COLUMN
-//!    <c>_new BYTEA NULL`. The shadow column lands as `BYTEA` so
-//!    the codec can swap encoding shapes (the `to` codec ID lives in
-//!    the descriptor, not in the column type). The `_new` suffix
-//!    matches the convention pinned by
-//!    [`replacement_column`](super::replacement_column) and the
-//!    runtime hook parser at
-//!    [`crate::live_migrate::hooks`] — every shadow-column-style
-//!    pattern uses the same suffix so the parser can derive
-//!    `shadow_column` from a hook ID alone.
+//! <c>_new BYTEA NULL`. The shadow column lands as `BYTEA` so
+//! the codec can swap encoding shapes (the `to` codec ID lives in
+//! the descriptor, not in the column type). The `_new` suffix
+//! matches the convention pinned by
+//! [`replacement_column`](super::replacement_column) and the
+//! runtime hook parser at
+//! [`crate::live_migrate::hooks`] — every shadow-column-style
+//! pattern uses the same suffix so the parser can derive
+//! `shadow_column` from a hook ID alone.
 //! 2. [`StepKind::BeginCompatibilityWindow`] — register the dual-
-//!    read / dual-write hooks. The hook IDs include the old + new
-//!    codec identifiers so the runtime layer can route encode /
-//!    decode calls to the right codec implementation per row.
+//! read / dual-write hooks. The hook IDs include the old + new
+//! codec identifiers so the runtime layer can route encode /
+//! decode calls to the right codec implementation per row.
 //! 3. [`StepKind::BackfillChunked`] — copy `<c>` into `<c>_new`
-//!    re-encoded under the new codec. The predicate `WHERE
-//!    <c>_new IS NULL` is structurally idempotent — once a row
-//!    is re-encoded the chunk skips it on subsequent passes.
+//! re-encoded under the new codec. The predicate `WHERE
+//! <c>_new IS NULL` is structurally idempotent — once a row
+//! is re-encoded the chunk skips it on subsequent passes.
 //! 4. [`StepKind::ValidateBackfill`] — operator gate; runner pauses
-//!    until `SELECT count(*) FROM <t> WHERE <c>_new IS NULL`
-//!    returns zero.
+//! until `SELECT count(*) FROM <t> WHERE <c>_new IS NULL`
+//! returns zero.
 //! 5. [`StepKind::CutoverReads`] — visage projection switches reads
-//!    onto the new codec.
+//! onto the new codec.
 //! 6. [`StepKind::CutoverWrites`] — writes target the new codec
-//!    only.
+//! only.
 //! 7. [`StepKind::CleanupLegacyState`] — `DROP COLUMN <c>` then
-//!    `RENAME COLUMN <c>_new TO <c>`.
+//! `RENAME COLUMN <c>_new TO <c>`.
 
 use super::{Pattern, PatternContext, PatternError};
 use crate::live_migrate::plan::{Step, StepKind, StepParameters};
@@ -63,11 +58,11 @@ impl Pattern for CodecTransition {
     const IDEMPOTENT_PREDICATE: bool = true;
 
     fn emit(op: &SchemaOperation, ctx: &PatternContext) -> Result<Vec<Step>, PatternError> {
-        // djogi#220 — belt-and-braces refusal when the adopter supplied
+        // belt-and-braces refusal when the adopter supplied
         // a `#[field(type_change_using = "<expr>")]` clause. The
         // classifier
         // ([`crate::live_migrate::classify::classify_column_change`])
-        // routes `using.is_some()` to `OfflineOnly`, so this pattern
+        // routes `using.is_some` to `OfflineOnly`, so this pattern
         // should never be dispatched in that case. Like
         // [`super::replacement_column`], the codec_transition backfill
         // cannot replicate a custom USING body — the conversion is
@@ -94,11 +89,11 @@ impl Pattern for CodecTransition {
             SchemaOperation::AlterColumn {
                 table,
                 column,
-                // djogi#220 — codec transitions key off (from, to)
+                // codec transitions key off (from, to)
                 // only; the adopter USING expression does not
                 // influence shadow-column staging. The
-                // `using.is_some()` arm is refused above, so binding
-                // with `..` here is correct for the `using.is_none()`
+                // `using.is_some` arm is refused above, so binding
+                // with `..` here is correct for the `using.is_none`
                 // remainder.
                 change: ColumnChange::ChangeType { from, to, .. },
             } => (table, column, from, to),
@@ -382,7 +377,7 @@ mod tests {
 
     #[test]
     fn rejects_change_type_with_adopter_using() {
-        // djogi#220 — adopter-supplied `using` forces the offline path
+        // adopter-supplied `using` forces the offline path
         // for codec transitions too. While the codec_transition
         // dispatcher route is currently unreachable (the
         // ChangeType→pattern dispatcher routes every non-using

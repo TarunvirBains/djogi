@@ -1,32 +1,25 @@
-//! Proxy-model attribute parsing and SQL lowering — Phase 8β T3.
-//!
+//! Proxy-model attribute parsing and SQL lowering
 //! Holds parsers and the SQL-lowering pass for the three `#[model(...)]`
 //! keys that opt a model into proxy semantics:
-//!
 //! - `proxy_for = ParentType` — bare-identifier path naming the parent
-//!   model (whose table this proxy shares).
+//! model (whose table this proxy shares).
 //! - `default_order = [(field, dir), ...]` — list of `(ident, OrderDir)`
-//!   pairs declaring the default ordering applied to every
-//!   `QuerySet<ProxyModel>` on construction.
+//! pairs declaring the default ordering applied to every
+//! `QuerySet<ProxyModel>` on construction.
 //! - `default_filter = |f| ...` — closure expression lowered to a SQL
-//!   fragment and AND-composed into every `QuerySet<ProxyModel>` via the
-//!   `Model::default_filter_condition` override.
-//!
+//! fragment and AND-composed into every `QuerySet<ProxyModel>` via the
+//! `Model::default_filter_condition` override.
 //! Parsing: `proxy_for`, `default_order`, `default_filter` attribute keys
 //! parsed from `#[model(...)]`. Cross-attribute validation rejects orphan
 //! `default_order`/`default_filter` without `proxy_for`.
-//!
 //! SQL lowering: `lower_default_filter_to_sql` walks the closure body via
 //! recursive descent over `syn::Expr` and lowers recognised patterns
 //! (eq/neq/null/range/literal and/or chains) to a SQL fragment string.
 //! Unrecognised patterns surface a span-precise compile error.
-//!
 //! QuerySet wiring: the lowered SQL fragment feeds into
-//! `Model::default_filter_condition` which `QuerySet::new()` AND-composes
+//! `Model::default_filter_condition` which `QuerySet::new` AND-composes
 //! with any user-supplied filter at queryset construction time.
-//!
 //! # Identifier validation
-//!
 //! Per `feedback_no_regex_in_djogi` — no regex engine, no regex notation
 //! in this module's text. The `proxy_for` identifier validator uses the
 //! same byte-level rules as
@@ -35,9 +28,7 @@
 //! Postgres unquoted-identifier cap. Validation runs at parse time so
 //! the lihaaf compile-fail fixtures get span-precise diagnostics
 //! before any expansion code runs.
-//!
 //! # Why bare-identifier `proxy_for` (not string-literal)?
-//!
 //! Per the lens (`feedback_decision_priorities.md`), bare-identifier
 //! catches typos at compile time — the path either resolves to a
 //! declared type or rustc emits an unresolved-type error at the
@@ -51,7 +42,6 @@
 use syn::{Expr, ExprClosure};
 
 /// Order direction for one entry in `#[model(default_order = [...])]`.
-///
 /// Mirrors the SQL-side `ASC` / `DESC` modifier without coupling to any
 /// `OrderExpr` runtime type at parse time — T3.4 lowers `OrderDir` into
 /// the canonical `crate::query::OrderExpr` value when emitting the
@@ -66,21 +56,17 @@ pub enum OrderDir {
 }
 
 /// Validates a `proxy_for` parent-type identifier.
-///
-/// The plan-side rule (`cluster-8beta-granular.md` §T3.2) and djogi's
+/// The plan-side rule (`cluster-8beta-granular.md`.2) and djogi's
 /// no-regex policy both apply here. The byte-level grammar:
-///
 /// 1. Non-empty.
 /// 2. ≤ 63 bytes (Postgres `NAMEDATALEN - 1`).
 /// 3. First byte is an ASCII letter (uppercase or lowercase) or
-///    underscore.
+/// underscore.
 /// 4. Every remaining byte is ASCII alphanumeric or underscore.
-///
 /// Spelled out in plain English per `feedback_no_regex_in_djogi`. The
 /// byte-level implementation mirrors `check_ident` in
 /// `djogi-macros/src/ident.rs` so the safety contract stays in sync
 /// with the column / table validators.
-///
 /// Returns `Err` with a span-precise diagnostic on the offending span
 /// when the identifier shape is wrong.
 pub fn validate_proxy_for_ident(ident: &syn::Ident) -> syn::Result<()> {
@@ -133,13 +119,11 @@ pub fn validate_proxy_for_ident(ident: &syn::Ident) -> syn::Result<()> {
 }
 
 /// Parse a `default_order = [(field, Asc), (field2, Desc), ...]` list.
-///
 /// Each list entry is a tuple expression `(ident, dir_ident)` where
 /// `dir_ident` is the bare identifier `Asc` or `Desc`. The list itself
 /// must be non-empty (an empty `default_order = []` would silently emit
 /// no override — surface that as a parse error rather than letting the
 /// adopter wonder why their default ordering disappeared).
-///
 /// Runs at parse time. Field-existence validation (i.e. "does the
 /// model actually have a field named `name`?") is deferred to the
 /// descriptor emitter at T3.3 / T3.4 because the user-field list is
@@ -216,11 +200,9 @@ pub fn parse_default_order_list(expr: &syn::Expr) -> syn::Result<Vec<(syn::Ident
 }
 
 /// Parse a `default_filter = |f| <expr>` closure value.
-///
 /// At T3.2 we validate only the shape: the value must be a single-input
 /// closure expression. The closure body is captured verbatim for T3.3 to
 /// walk via recursive descent and lower to SQL.
-///
 /// We accept any closure with exactly one input — the descriptor
 /// emitter (T3.3) cross-checks that the input binding matches the
 /// model's `{Model}Fields` accessor pattern and that the body uses only
@@ -246,7 +228,6 @@ pub fn parse_default_filter_closure(expr: &syn::Expr) -> syn::Result<ExprClosure
 }
 
 /// Helper — extract a single-segment ident from an `Expr::Path`.
-///
 /// Used by the tuple-element parsers in `parse_default_order_list` to
 /// pull the field-name and direction-name idents out of a `(name, Asc)`
 /// tuple expression. Multi-segment paths and non-path expressions are
@@ -417,49 +398,37 @@ mod tests {
 }
 
 // ── T3.3 — SQL lowering for the captured `default_filter` closure ─────────
-//
 // Recognises a closed grammar of accessor-based predicates against the
 // `{Model}Fields` binding and lowers each into a SQL fragment string that
 // becomes the `&'static str` value of `ModelDescriptor.default_filter_sql`.
-//
 // # Why a closed grammar (not a full Rust expression walker)
-//
 // Per the lens (`feedback_decision_priorities.md`, `feedback_no_regex_in_djogi.md`)
-// and v3 plan §T3.3 §7 #3 (resolved 2026-05-03): inline-only literal RHS
+// and v3 plan.3 §7 #3 (resolved 2026-05-03): inline-only literal RHS
 // for v0.1.0. The macro recognises a small, explicit grammar and returns
 // span-precise errors for anything outside it. The grammar:
-//
 // ```text
-// pred  := <field>.<op>(<lit>)
-//        | <field>.<op>(<lit>, <lit>)               // for `between`
-//        | <field>.<unary_op>()                     // for `is_null`/`is_not_null`
-//        | <pred>.and_with(<pred>)                  // explicit AND
-//        | <pred>.or_with(<pred>)                   // explicit OR
-//        | (<pred>)
-//
-// field := <fbind>.<column_ident>                   // `f.active`, etc.
-//
-// op    := eq | neq | gt | gte | lt | lte
-//        | is_null | is_not_null | between
-//
-// lit   := bool_lit | int_lit | float_lit | string_lit | null_kw
+// pred := <field>.<op>(<lit>)
+// | <field>.<op>(<lit>, <lit>) // for `between`
+// | <field>.<unary_op> // for `is_null`/`is_not_null`
+// | <pred>.and_with(<pred>) // explicit AND
+// | <pred>.or_with(<pred>) // explicit OR
+// | (<pred>)
+// field := <fbind>.<column_ident> // `f.active`, etc.
+// op := eq | neq | gt | gte | lt | lte
+// | is_null | is_not_null | between
+// lit := bool_lit | int_lit | float_lit | string_lit | null_kw
 // ```
-//
 // Anything else — runtime variable references, unrecognised method names,
 // arithmetic, function calls — is rejected with a span-precise error
 // pointing the adopter at the offending node.
-//
 // # Why no `IN (...)` / `LIKE` / regex in the grammar
-//
 // `In` would require a list-literal lowering and bind-encoded values.
 // `Like` shapes carry a wildcard convention that's better reasoned about
 // at typed call sites than via raw SQL fragments. Both can be added in a
 // later phase once the macro pipeline has grown an `Expr<T>`-typed
 // closure walker (T6 cluster 8γ); v0.1.0 ships the equality/range/null
 // surface adopters most often want for proxy default filters.
-//
 // # Output format
-//
 // A single SQL fragment string suitable for splicing into a WHERE clause
 // after AND-composition with user filters. The fragment is parens-wrapped
 // at every emission site by the runtime composer (T3.4) — the lowered
@@ -468,21 +437,18 @@ mod tests {
 // keep operator precedence stable across user filter composition.
 
 /// Lower a parsed `default_filter` closure body to a SQL fragment.
-///
 /// Walks the closure's body via match-and-recurse over the grammar
 /// described above. The closure's single-input binding — the user's
 /// `{Model}Fields` accessor name (conventionally `f`) — is captured at
 /// entry so the walker can verify every field reference goes through it.
-///
 /// Returns the SQL fragment string suitable for embedding as a
 /// `&'static str` literal in the emitted descriptor. Returns an error
 /// with a span-precise diagnostic when:
-///
 /// - The closure body uses a runtime-bound (non-literal) RHS.
 /// - The accessor binding is mis-spelled or shadowed.
 /// - An unrecognised method name appears in the predicate position.
 /// - A literal value type is outside the supported set
-///   (`bool`/integer/float/string/`null`).
+/// (`bool`/integer/float/string/`null`).
 pub fn lower_default_filter_to_sql(closure: &ExprClosure) -> syn::Result<String> {
     // The single input pattern must be a simple ident — the binding the
     // walker uses to recognise field-accessor expressions.
@@ -709,21 +675,18 @@ fn lower_field_accessor(expr: &Expr, f_binding: &syn::Ident) -> syn::Result<Stri
 }
 
 /// Lower a literal argument to its SQL fragment form.
-///
 /// Accepts: bool, integer, float, string, the bare `null` ident.
 /// Rejects every other expression shape (variable references, function
 /// calls, arithmetic, etc.) with a span-precise diagnostic — that's the
-/// "no runtime-bound values" rule from v3 line 250 / §7 resolution #3.
-///
+/// "no runtime-bound values" rule from / §7 resolution #3.
 /// # String escaping
-///
 /// String literals are rendered as Postgres single-quoted form with
 /// embedded single quotes doubled: `O'Brien` becomes `'O''Brien'`. Per
 /// the no-regex policy and `feedback_decision_priorities.md`, this is a
 /// byte-level scan rather than a fancy escaping helper. ASCII-only
 /// strings are accepted; non-ASCII bytes (which would still be valid
 /// UTF-8 in Postgres but require careful encoding) emit an error
-/// pointing the adopter at a manual `default_filter_condition()` impl.
+/// pointing the adopter at a manual `default_filter_condition` impl.
 /// Conservative for v0.1.0 — broaden if production use cases warrant.
 fn lower_literal_arg(expr: &Expr) -> syn::Result<String> {
     match expr {
@@ -775,7 +738,6 @@ fn lower_literal_arg(expr: &Expr) -> syn::Result<String> {
 
 /// Escape a Rust string for embedding as a single-quoted Postgres string
 /// literal. Doubles embedded single quotes; rejects non-ASCII bytes.
-///
 /// Returns the formatted SQL fragment (`'foo'`, `'O''Brien'`) on success
 /// or a plain-English error message on failure (the caller wraps it in
 /// a `syn::Error` with a span pointing at the offending literal).

@@ -1,49 +1,43 @@
 //! Chunked backfill execution for live-plan
 //! [`StepKind::BackfillChunked`](crate::live_migrate::plan::StepKind::BackfillChunked)
 //! steps.
-//!
 //! # Per-chunk transaction shape
-//!
 //! Each chunk runs as its own Postgres transaction. Inside that
 //! transaction the runner does three things and commits all three
 //! together:
-//!
 //! 1. `SET LOCAL "djogi.live_migrate.suppress_events" = '1'` — the
-//!    session-scoped flag that the future
-//!    `#[model(events)]` outbox writer (wired in a later task)
-//!    consults before queuing an outbox row. The default is "events
-//!    suppressed during a backfill chunk". The module's public entry
-//!    points [`execute_backfill`] and [`resume_backfill`] expose an
-//!    `emit_events: bool` parameter; when the caller passes `true`
-//!    the runner skips the `SET LOCAL` so downstream hooks behave
-//!    normally. This is an advanced, low-level Rust API — exercised
-//!    today primarily by the test suite — and not part of the stable
-//!    high-level adopter contract. There is no high-level opt-in
-//!    surface yet: no `--emit-events` CLI flag on `djogi live run` /
-//!    `resume`, no `#[migration(emit_events_during_backfill)]`
-//!    proc-macro attribute (no `#[migration]` macro exists at all
-//!    today), and the parameter is not surfaced through any derive
-//!    or other attribute path. A high-level adopter-facing opt-in is
-//!    deferred to a future task; for adopter-driven backfills routed
-//!    through the CLI / derive contract, suppression is always-on
-//!    until that surface lands.
+//! session-scoped flag that the future
+//! `#[model(events)]` outbox writer (wired in a later task)
+//! consults before queuing an outbox row. The default is "events
+//! suppressed during a backfill chunk". The module's public entry
+//! points [`execute_backfill`] and [`resume_backfill`] expose an
+//! `emit_events: bool` parameter; when the caller passes `true`
+//! the runner skips the `SET LOCAL` so downstream hooks behave
+//! normally. This is an advanced, low-level Rust API — exercised
+//! today primarily by the test suite — and not part of the stable
+//! high-level adopter contract. There is no high-level opt-in
+//! surface yet: no `--emit-events` CLI flag on `djogi live run` /
+//! `resume`, no `#[migration(emit_events_during_backfill)]`
+//! proc-macro attribute (no `#[migration]` macro exists at all
+//! today), and the parameter is not surfaced through any derive
+//! or other attribute path. A high-level adopter-facing opt-in is
+//! deferred to a future task; for adopter-driven backfills routed
+//! through the CLI / derive contract, suppression is always-on
+//! until that surface lands.
 //! 2. The pattern's `UPDATE … WHERE <idempotent-predicate> LIMIT $1
-//!    RETURNING <pk>` query — the actual transformation. Bound count
-//!    is the chunk size; the predicate is supplied by the pattern
-//!    emitter and is required to be idempotent (re-running the same
-//!    predicate against an already-backfilled subrange must produce
-//!    no observable change).
+//! RETURNING <pk>` query — the actual transformation. Bound count
+//! is the chunk size; the predicate is supplied by the pattern
+//! emitter and is required to be idempotent (re-running the same
+//! predicate against an already-backfilled subrange must produce
+//! no observable change).
 //! 3. `UPDATE djogi_live_plans SET backfill_rows_done = …,
-//!    last_progress_at = now() WHERE plan_id = $1` — the progress
-//!    write.
-//!
+//! last_progress_at = now WHERE plan_id = $1` — the progress
+//! write.
 //! Steps 2 and 3 are committed together. A crash between them would
 //! otherwise replay the chunk on resume and double-apply non-idempotent
 //! transforms; pinning both writes to the same transaction makes the
 //! resume contract safe by construction. See v3 plan §3 lines 411-419.
-//!
 //! # Idempotent predicate contract
-//!
 //! The pattern's `WHERE` clause must be idempotent: re-running the same
 //! chunk predicate against an already-backfilled subrange must produce
 //! no observable change. Patterns that cannot satisfy this classify as
@@ -53,10 +47,8 @@
 //! drives chunks to exhaustion; the idempotency promise is what makes a
 //! transient crash between two transactions a replay no-op rather than
 //! a double-apply.
-//!
 //! # Predicate template contract
-//!
-//! `predicate_template` is an SQL fragment the pattern emitter built —
+//! `predicate_template` is an SQL fragment the pattern emitter built
 //! everything from `SET …` through the trailing `RETURNING …` clause,
 //! exclusive of the leading `UPDATE <table>`. The runner concatenates
 //! `UPDATE <table> ` with the template verbatim and binds `chunk_size`
@@ -65,9 +57,7 @@
 //! runner does not try to splice a `LIMIT` if one is missing. The
 //! pattern emitter owns the SQL; the runner owns transaction shape and
 //! resume.
-//!
 //! # Resume
-//!
 //! [`resume_backfill`] reads `backfill_rows_done` from
 //! `djogi_live_plans`, then drives chunks forward until the predicate
 //! exhausts. The per-chunk transaction shape is identical to
@@ -119,7 +109,6 @@ pub struct BackfillChunk {
 }
 
 /// Errors raised by [`execute_backfill`] / [`resume_backfill`].
-///
 /// `#[non_exhaustive]` so future failure modes (e.g. statement-timeout
 /// classification, advisory-lock contention) can land without breaking
 /// downstream matches.
@@ -134,7 +123,7 @@ pub enum BackfillError {
 
     /// The plan row exists but its current status is not `Running`.
     /// Backfill execution requires the plan to already be in `running`
-    /// — the operator gates step transitions through the CLI
+    /// the operator gates step transitions through the CLI
     /// (`djogi live run` / `djogi live resume`); the runner refuses to
     /// auto-promote into `running` on the operator's behalf.
     #[error("plan {0} not in running state (status: {1})")]
@@ -234,17 +223,14 @@ fn validate_table_ident(table: &str) -> Result<(), BackfillError> {
 /// would unbound the chunk) or a stray placeholder (which the runner
 /// would not bind) is caught up front rather than producing a runtime
 /// "unbound parameter" error mid-run.
-///
 /// The check is a byte-level scan over the template (no regex per
 /// CLAUDE.md). The walker treats `$<digit>` as a placeholder token:
-///
 /// - `$1` is the only accepted placeholder. Anything else (`$2`, `$3`,
-///   `$10`, …) is an unbound parameter and rejected.
+/// `$10`, …) is an unbound parameter and rejected.
 /// - `$<non-digit>` is left alone. Postgres dollar-quoted string
-///   literals (`$tag$ … $tag$`) and other non-placeholder uses of `$`
-///   live in this branch; the runner does not try to parse Postgres
-///   string-literal syntax beyond this point.
-///
+/// literals (`$tag$ … $tag$`) and other non-placeholder uses of `$`
+/// live in this branch; the runner does not try to parse Postgres
+/// string-literal syntax beyond this point.
 /// The `LIMIT $1` substring must appear at least once.
 fn validate_predicate_template(template: &str) -> Result<(), BackfillError> {
     if !template.contains("LIMIT $1") {
@@ -295,7 +281,6 @@ fn validate_predicate_template(template: &str) -> Result<(), BackfillError> {
 /// real-world backfill approaches `2^63` rows, but defensive saturation
 /// at the persisted boundary costs nothing and keeps the in-memory and
 /// on-disk values aligned.
-///
 /// Lifted into a free function purely so the unit tests can pin its
 /// edge cases without spinning up a `DjogiContext`.
 pub(crate) fn compute_rows_done_total(rows_already: u64, rows_just_added: u64) -> u64 {
@@ -314,33 +299,28 @@ pub(crate) fn compute_rows_done_total(rows_already: u64, rows_just_added: u64) -
 /// step to completion via repeated chunks. Starts at
 /// `backfill_rows_done = 0` (initial run) — see [`resume_backfill`] for
 /// the resume entry point.
-///
 /// Each chunk:
-///
 /// 1. Opens a fresh transaction on the application connection (via
-///    [`atomic`]).
+/// [`atomic`]).
 /// 2. `SET LOCAL "djogi.live_migrate.suppress_events" = '1'` unless
-///    `emit_events` is `true`.
+/// `emit_events` is `true`.
 /// 3. Runs `UPDATE <table> <predicate_template>` with `chunk_size`
-///    bound to `$1`.
+/// bound to `$1`.
 /// 4. Counts the affected rows.
 /// 5. Updates `djogi_live_plans.backfill_rows_done` and
-///    `last_progress_at` in the SAME transaction.
+/// `last_progress_at` in the SAME transaction.
 /// 6. Commits.
-///
 /// Loops while `rows_affected == chunk_size`. When `rows_affected <
 /// chunk_size` the predicate has exhausted and the runner transitions
 /// the plan to [`PlanStatus::Validating`] before returning.
-///
 /// # Preconditions
-///
 /// - `ctx` must be pool-backed (i.e. not already inside a transaction).
-///   Each chunk opens its own transaction; nesting inside an outer
-///   transaction would defeat the per-chunk commit boundary.
+/// Each chunk opens its own transaction; nesting inside an outer
+/// transaction would defeat the per-chunk commit boundary.
 /// - The plan referenced by `plan_id` must exist in
-///   `djogi_live_plans` and be in [`PlanStatus::Running`]. The
-///   operator's CLI promotes the plan into `Running` via `djogi live
-///   run`; the runner does not auto-promote.
+/// `djogi_live_plans` and be in [`PlanStatus::Running`]. The
+/// operator's CLI promotes the plan into `Running` via `djogi live
+/// run`; the runner does not auto-promote.
 pub async fn execute_backfill(
     ctx: &mut DjogiContext,
     plan_id: HeerId,
@@ -365,7 +345,6 @@ pub async fn execute_backfill(
 /// `backfill_rows_done` from `djogi_live_plans`, then drives chunks
 /// forward until the predicate exhausts. The per-chunk transaction
 /// shape is identical to [`execute_backfill`].
-///
 /// Resume is idempotent over the predicate contract: if the previous
 /// run committed N rows and crashed before writing `N + 1`, this
 /// function reads `backfill_rows_done = N` and continues; if the
@@ -482,27 +461,25 @@ async fn drive_chunks(
 
         if outcome.rows_affected == 0 && ordinal == 1 {
             // First chunk reports zero rows. Two legitimate sub-cases:
-            //
             // 1. Initial run, predicate matched nothing on entry — the
-            //    table was empty or already backfilled. Treat as
-            //    immediate exhaustion. The `run_one_chunk` closure
-            //    already promoted the plan to `Validating` inside the
-            //    same transaction (it observed `rows_affected <
-            //    chunk_size`), so the on-disk row is consistent with
-            //    the in-memory `chunks` we are about to return.
-            //
+            // table was empty or already backfilled. Treat as
+            // immediate exhaustion. The `run_one_chunk` closure
+            // already promoted the plan to `Validating` inside the
+            // same transaction (it observed `rows_affected <
+            // chunk_size`), so the on-disk row is consistent with
+            // the in-memory `chunks` we are about to return.
             // 2. Resume after crash: a prior run committed the last
-            //    chunk's UPDATE + progress row but crashed before the
-            //    status promotion landed. On resume, the predicate
-            //    yields 0 rows on the FIRST chunk (because the prior
-            //    run already drained the table) but `starting_rows_done
-            //    > 0` records the progress that survived. The runner
-            //    must NOT fire `PredicateStuck` in this case — the
-            //    closure idempotently re-promotes status to
-            //    `Validating` and we exit cleanly. Without this branch
-            //    a crash between the last chunk's commit and the
-            //    historical out-of-transaction status update would
-            //    leave the plan permanently stuck on resume.
+            // chunk's UPDATE + progress row but crashed before the
+            // status promotion landed. On resume, the predicate
+            // yields 0 rows on the FIRST chunk (because the prior
+            // run already drained the table) but `starting_rows_done
+            // > 0` records the progress that survived. The runner
+            // must NOT fire `PredicateStuck` in this case — the
+            // closure idempotently re-promotes status to
+            // `Validating` and we exit cleanly. Without this branch
+            // a crash between the last chunk's commit and the
+            // historical out-of-transaction status update would
+            // leave the plan permanently stuck on resume.
             break;
         }
         if outcome.rows_affected == 0 {
@@ -526,7 +503,7 @@ async fn drive_chunks(
     Ok(chunks)
 }
 
-/// One chunk's worth of work, all inside a single `atomic()` scope so
+/// One chunk's worth of work, all inside a single `atomic` scope so
 /// the chunk's `UPDATE`, the progress write, AND (when this chunk
 /// exhausts the predicate) the `Running → Validating` status
 /// promotion commit together. Pinning all three writes to the same
@@ -567,7 +544,7 @@ async fn run_one_chunk(
 
             let new_rows_done_u64 = compute_rows_done_total(prior_rows_done, rows_affected);
             // `compute_rows_done_total` already saturates at
-            // `i64::MAX as u64`, so the cast cannot lose precision —
+            // `i64::MAX as u64`, so the cast cannot lose precision
             // BIGINT range is the in-memory ceiling by construction.
             let new_rows_done_i64 = i64::try_from(new_rows_done_u64).unwrap_or(i64::MAX);
             state::update_progress(

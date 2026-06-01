@@ -1,17 +1,13 @@
 //! Emit a per-visage queryset entry point and narrow `FromPgRow` impl.
-//!
 //! For each visage `V` produced by [`super::visages::expand`], this
 //! emitter generates:
-//!
 //! 1. An `impl V { pub fn filter(...) -> VisageQuerySet<V>; ... }`
-//!    block whose entry methods build a [`VisageQuerySet<V>`] over the
-//!    source model's table with the visage's *narrowed* column list.
+//! block whose entry methods build a [`VisageQuerySet<V>`] over the
+//! source model's table with the visage's *narrowed* column list.
 //! 2. An `impl FromPgRow for V` block that decodes a row positionally
-//!    from the same narrowed column list, in the same order — so the
-//!    SELECT projection and the row decoder agree by construction.
-//!
+//! from the same narrowed column list, in the same order — so the
+//! SELECT projection and the row decoder agree by construction.
 //! # Why the entry methods live on the visage type, not on `QuerySet`
-//!
 //! `QuerySet<T: Model>` carries a `T: Model` bound that visages cannot
 //! satisfy (visages are projections, not tables). Re-using the model
 //! queryset would force every helper on `QuerySet<T>` (`prefetch`,
@@ -20,23 +16,18 @@
 //! time a new visage-only feature lands. Sibling type
 //! [`VisageQuerySet<V>`] keeps the read-only path narrow and the model
 //! path unchanged.
-//!
 //! # Read-only surface — no `bulk_create` / `save` / `delete`
-//!
 //! The compile-time enforcement that visages reject writes falls out of
 //! method absence: this emitter does not emit `bulk_create` / `save` /
 //! `delete` on `V`, and `VisageQuerySet<V>` only exposes read terminals
 //! (`fetch_all`, `fetch_one`, `first`, `count`, `exists`).
-//!
 //! # Relation-embed visages are skipped
-//!
 //! A visage that embeds a peer projection (`expose(scope -> Peer)` on a
 //! relation field) does not map to a flat column list on the source
 //! table — the SELECT would need a JOIN or a follow-up query. The
 //! emitter falls back to a no-op for any visage whose field set contains
 //! a relation entry; the visage struct still exists and the conversion
 //! impls still work, but `V::filter(...)` is not emitted.
-//!
 //! [`VisageQuerySet<V>`]: ::djogi::query::VisageQuerySet
 
 use crate::model::attrs::{FieldAttrs, PkStrategy};
@@ -49,7 +40,6 @@ use syn::Ident;
 
 /// Emit the per-visage queryset entry block + the visage's narrow
 /// `FromPgRow` impl.
-///
 /// The caller (`visages.rs::emit_projection_for_scope`) passes the
 /// already-classified scope plus the source struct's user-field
 /// attribute list. This emitter mirrors the same scope gate the visage
@@ -66,7 +56,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
     let source_name_str = source.to_string();
 
     // `pk = None` models do not impl `Model`; their visages have no
-    // queryset entry to wire because `Model::table_name()` is the
+    // queryset entry to wire because `Model::table_name` is the
     // source of truth for the SQL table and is not available. The
     // visage struct + conversion impls still emit through the other
     // pipeline; this emitter just elides its block.
@@ -81,7 +71,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
         .zip(field_attrs.iter())
         .collect();
 
-    // Phase 8.5 #231 — projection entries are the single source of
+    // #231 — projection entries are the single source of
     // truth for the visage's SELECT column shape and FromPgRow ordinal
     // decode. The helper returns one tuple per ordinal position:
     // `(name_or_alias, is_derived, sql_fragment_or_column_name)`. The
@@ -104,7 +94,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
             return TokenStream::new();
         }
         // Otherwise: fall through with no entries; the queryset will
-        // still emit `SELECT  FROM table` which Postgres rejects but
+        // still emit `SELECT FROM table` which Postgres rejects but
         // also will never be reached since the empty case is rare and
         // primarily a `pk = None` shape (already gated above). Defer
         // for now and keep code simple — emit empty-entries no-op.
@@ -142,7 +132,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
     let n_cols = columns.len();
     let fields_ident = format_ident!("{visage_ident}Fields");
 
-    // Phase 8.5 #231 — derived entries decode via the same `decode_at`
+    // #231 — derived entries decode via the same `decode_at`
     // helper as columns. The position carries the alias name on the
     // wire; the decoder's debug-build name guard compares
     // `COLUMNS[i]` against the wire column name, both of which equal
@@ -153,7 +143,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
     // debug-build name guard the model-side `FromPgRow` emitter uses.
     // Visages keep the framework columns at fixed ordinals (0/1/2) and
     // append the scope-included scalar user fields in declaration order
-    // — this list must match the visage struct's field order, which the
+    // this list must match the visage struct's field order, which the
     // sibling `visages::emit_projection_for_scope` builds via the same
     // scope gate.
     let mut decode_assignments: Vec<TokenStream> = Vec::new();
@@ -200,7 +190,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
         idx += 1;
     }
 
-    // Phase 8.5 #231 — derived entries follow the scalar user columns
+    // #231 — derived entries follow the scalar user columns
     // in the ordinal order. Each entry's `name` becomes the wire
     // column name (the SELECT alias) and the position decoder reads
     // it positionally as the entry's `ty`. The decode-name guard runs
@@ -231,8 +221,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
             // visage's baked projection list and a vacuous root condition.
             // All public entry methods delegate here so the construction
             // path is written exactly once.
-            //
-            // Phase 8.5 #231 — the queryset carries a rendered
+            // #231 — the queryset carries a rendered
             // `projection_list: &'static str` so derived entries'
             // `(<sql>) AS <alias>` fragments splice into the SELECT
             // slot without any runtime walk over `PROJECTIONS`. The
@@ -248,14 +237,11 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
             /// Build a [`VisageQuerySet`] over the source model's table
             /// with this visage's narrowed column projection, AND-ing
             /// the closure's returned predicate onto the queryset's root.
-            ///
             /// The closure may return any
             /// [`IntoQ<Source>`](::djogi::query::IntoQ) payload: a legacy
             /// `Condition`, a portable or mixed predicate wrapper, or a
             /// pre-built `Q<Source>`.
-            ///
             /// See also: [`QuerySet::filter`](::djogi::query::QuerySet::filter)
-            ///
             /// [`VisageQuerySet`]: ::djogi::query::VisageQuerySet
             #[must_use = "querysets are lazy — dropping one silently omits the query"]
             pub fn filter<__DjogiF, __DjogiP>(
@@ -270,7 +256,6 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
             }
 
             /// Append an ordering expression to a fresh visage queryset.
-            ///
             /// Equivalent to `V::filter(|_| Condition::True).order_by(...)`.
             #[must_use = "querysets are lazy — dropping one silently omits the query"]
             pub fn order_by<__DjogiF, __DjogiO>(
@@ -299,15 +284,12 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
             /// Internal seam — build a [`VisageQuerySet`] over the source
             /// model's table with this visage's narrowed column projection
             /// and the supplied predicate as the queryset's root.
-            ///
             /// Used by macro-emitted reverse-FK and M2M visage accessors.
             /// The visage's baked-in `columns` slice ensures the emitted
             /// SELECT stays narrowed to the visage's exposed columns.
-            ///
             /// `#[doc(hidden)]` — adopter code should reach the visage
             /// query surface through [`Self::filter`], [`Self::order_by`],
             /// [`Self::limit`], and [`Self::offset`].
-            ///
             /// [`VisageQuerySet`]: ::djogi::query::VisageQuerySet
             #[doc(hidden)]
             #[must_use = "querysets are lazy — dropping one silently omits the query"]
@@ -322,7 +304,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
         }
 
         impl ::djogi::__private::pg::FromPgRow for #visage_ident {
-            // Phase 8.5 #231 — `COLUMNS` carries the alias at every
+            // #231 — `COLUMNS` carries the alias at every
             // ordinal position (column name for column entries, derived
             // `name` for derived entries). The visage's
             // `FromPgRow::COLUMN_LIST` is the rendered `PROJECTION_LIST`,
@@ -426,7 +408,7 @@ fn lookup_per_scope_codec<'a>(
         .and_then(|spec| spec.per_scope.iter().find(|entry| entry.scope == scope))
 }
 
-/// Emit `::std::any::type_name::<CodecTy>()` for a codec type path.
+/// Emit `::std::any::type_name::<CodecTy>` for a codec type path.
 fn codec_runtime_type_name_tokens(path: &syn::Path) -> TokenStream {
     quote! { ::std::any::type_name::<#path>() }
 }

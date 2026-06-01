@@ -1,5 +1,4 @@
 //! Live-plan execution engine.
-//!
 //! Reads a [`LivePlan`] from disk, executes each step sequentially,
 //! and tracks progress in the `djogi_live_plans` ledger via the
 //! state helpers from [`super::state`].
@@ -53,10 +52,8 @@ pub struct ExecutionContext<'a> {
 // ── Public functions ─────────────────────────────────────────────────────
 
 /// Run a live plan from the given path.
-///
 /// Loads the plan, then executes each step sequentially starting from
 /// `start_index`. Progress is tracked in the `djogi_live_plans` ledger.
-///
 /// Before the step loop, the destructive-step gate is enforced: if the
 /// plan contains any DROP / TRUNCATE-class step (per
 /// [`LivePlan::has_destructive_steps`]), execution is refused with
@@ -65,20 +62,17 @@ pub struct ExecutionContext<'a> {
 /// This makes the engine the authoritative enforcement point so no call
 /// path (run / resume / finalize) can execute a destructive step without
 /// the operator opt-in.
-///
 /// Returns [`StepResult::Completed`] when all steps finish,
 /// [`StepResult::Partial`] if a backfill was interrupted,
 /// or [`StepResult::Paused`] if an operator gate was reached. On natural
 /// completion the ledger row is promoted to
 /// [`super::state::PlanStatus::Complete`] and `completed_at` is stamped.
-///
 /// # Errors
-///
 /// - [`ExecutorError::DestructiveGateRefused`] when the plan has a
-///   destructive step and the gate was not satisfied.
+/// destructive step and the gate was not satisfied.
 /// - [`ExecutorError::Db`] when a ledger write fails.
 /// - [`ExecutorError::StepFailed`] / [`ExecutorError::Io`] /
-///   [`ExecutorError::PlanFile`] when a step or the plan file fails.
+/// [`ExecutorError::PlanFile`] when a step or the plan file fails.
 pub async fn run_plan(
     ctx: &mut DjogiContext,
     plan_path: std::path::PathBuf,
@@ -209,7 +203,6 @@ pub async fn run_plan(
 }
 
 /// Execute a single step based on its kind.
-///
 /// Dispatches to the appropriate handler for each [`StepKind`].
 /// Non-destructive steps execute immediately; destructive or gated
 /// steps may return early with [`StepResult::Paused`].
@@ -235,11 +228,9 @@ pub async fn execute_step(exec: ExecutionContext<'_>) -> Result<StepResult, Exec
 }
 
 /// Execute a chunked backfill step.
-///
 /// Processes rows in batches of `chunk_size`, committing each batch
 /// as a separate transaction. Progress is tracked via the ledger so
 /// the backfill can be resumed after interruption.
-///
 /// Returns [`StepResult::Completed`] when all rows are processed,
 /// [`StepResult::Partial`] with progress counters if interrupted.
 pub async fn execute_backfill_step(
@@ -296,7 +287,6 @@ pub async fn execute_backfill_step(
 }
 
 /// Execute a DDL step (ExpandSchema, FinalizeConstraints, etc.).
-///
 /// Runs each SQL segment within a single transaction. On failure,
 /// the entire step is rolled back and recorded via [`super::state::record_failure`].
 pub async fn execute_ddl_step(exec: ExecutionContext<'_>) -> Result<StepResult, ExecutorError> {
@@ -332,7 +322,6 @@ pub async fn execute_ddl_step(exec: ExecutionContext<'_>) -> Result<StepResult, 
 }
 
 /// Handle an operator gate step (ValidateBackfill, CutoverReads, CutoverWrites).
-///
 /// Pauses execution and returns [`StepResult::Paused`]. The operator
 /// must explicitly resume via the CLI before the next step executes.
 pub async fn handle_operator_gate(exec: ExecutionContext<'_>) -> Result<StepResult, ExecutorError> {

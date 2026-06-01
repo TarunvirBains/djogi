@@ -1,15 +1,12 @@
 //! `Model::materialize_closure` — populate a transitive-closure table for
-//! a self-referential model. Phase 8-Zero Cluster B4 (T13b).
-//!
+//! a self-referential model. (T13b).
 //! # What
-//!
 //! A *closure table* stores `(source, ancestor, depth, path_count)` triples
 //! pre-computed from a self-referential edge graph. It is the production-
 //! scale answer for tree queries: an indexed lookup beats a recursive CTE
 //! by orders of magnitude once the source table has more than a handful
 //! of rows. Every adopter doing tree queries at non-trivial scale needs
 //! it; without a framework helper, every adopter hand-rolls the walker.
-//!
 //! [`Model::materialize_closure`](crate::model::Model::materialize_closure)
 //! ships the helper. Adopters declare a closure model with the same five
 //! columns the helper writes (`source`, `ancestor`, `depth`, `path_count`,
@@ -17,9 +14,7 @@
 //! [`ClosureModel`] trait to surface the column names, and call
 //! `T::materialize_closure::<MyClosure>(ctx, opts).await?` to (re)populate
 //! the table.
-//!
 //! # SQL shape
-//!
 //! ```sql
 //! WITH inserted AS (
 //!     INSERT INTO <closure_table> (
@@ -69,52 +64,47 @@
 //!        COUNT(DISTINCT <source_col>) AS sources_visited
 //! FROM inserted;
 //! ```
-//!
 //! ## Design notes baked into the SQL
-//!
 //! - **Direction is ANCESTORS.** The closure table walks *up* from each
-//!   source row to its transitive ancestors. The named driver for this
-//!   helper is kinship / pedigree analysis, where the "every ancestor of
-//!   every source row" frame is the natural shape.
+//! source row to its transitive ancestors. The named driver for this
+//! helper is kinship / pedigree analysis, where the "every ancestor of
+//! every source row" frame is the natural shape.
 //! - **Single recursive reference + `CROSS JOIN LATERAL VALUES`.**
-//!   Postgres rejects recursive CTEs whose recursive term references
-//!   the CTE name more than once. Multi-edge models (e.g.
-//!   `mother_id` + `father_id` on an animal model) therefore enumerate
-//!   self-FK edges via a `CROSS JOIN LATERAL (VALUES …) AS step(pid,
-//!   label)` clause that fans every edge column out into its own
-//!   row pair — every distinct edge-sequence path still surfaces as
-//!   its own CTE row, then the outer `GROUP BY` collapses
-//!   `(source, ancestor, depth)` triples while surfacing the count as
-//!   `path_count`. This preserves Wright-style multiplicity: an
-//!   ancestor reachable by two distinct edge sequences shows up with
-//!   `path_count = 2`. NULL-valued edge columns get filtered by the
-//!   inner `JOIN T p ON p.id = step.pid` (NULL = anything is unknown).
+//! Postgres rejects recursive CTEs whose recursive term references
+//! the CTE name more than once. Multi-edge models (e.g.
+//! `mother_id` + `father_id` on an animal model) therefore enumerate
+//! self-FK edges via a `CROSS JOIN LATERAL (VALUES …) AS step(pid,
+//! label)` clause that fans every edge column out into its own
+//! row pair — every distinct edge-sequence path still surfaces as
+//! its own CTE row, then the outer `GROUP BY` collapses
+//! `(source, ancestor, depth)` triples while surfacing the count as
+//! `path_count`. This preserves Wright-style multiplicity: an
+//! ancestor reachable by two distinct edge sequences shows up with
+//! `path_count = 2`. NULL-valued edge columns get filtered by the
+//! inner `JOIN T p ON p.id = step.pid` (NULL = anything is unknown).
 //! - **Cycle column is `cycle_path`** (not `path`) so it does not
-//!   collide with our user-visible edge-name accumulator.
+//! collide with our user-visible edge-name accumulator.
 //! - **`ON CONFLICT … DO UPDATE` replaces, it does not add.** Each
-//!   helper invocation walks the current graph from scratch via the
-//!   recursive CTE, so EXCLUDED's `path_count` is already the correct
-//!   total of distinct paths between every `(source, ancestor, depth)`
-//!   triple in the present graph state. The pre-existing closure row's
-//!   value is the previous (possibly stale) total; replacing it with
-//!   EXCLUDED keeps the closure aligned with whatever lives in the
-//!   source table now. Re-running the helper twice in a row is therefore
-//!   idempotent — the second run computes the same totals and writes
-//!   them on top of themselves. An `additive` merge would double on
-//!   straight rerun and over-count on every incremental rerun (because
-//!   the recursive walk re-derives existing paths on top of new ones),
-//!   so it is wrong on every callsite that matters.
+//! helper invocation walks the current graph from scratch via the
+//! recursive CTE, so EXCLUDED's `path_count` is already the correct
+//! total of distinct paths between every `(source, ancestor, depth)`
+//! triple in the present graph state. The pre-existing closure row's
+//! value is the previous (possibly stale) total; replacing it with
+//! EXCLUDED keeps the closure aligned with whatever lives in the
+//! source table now. Re-running the helper twice in a row is therefore
+//! idempotent — the second run computes the same totals and writes
+//! them on top of themselves. An `additive` merge would double on
+//! straight rerun and over-count on every incremental rerun (because
+//! the recursive walk re-derives existing paths on top of new ones),
+//! so it is wrong on every callsite that matters.
 //! - **`RETURNING <source_col>`** plus the outer `COUNT` /
-//!   `COUNT(DISTINCT)` lets the helper report both `rows_written`
-//!   (unique `(source, ancestor, depth)` triples touched) and
-//!   `sources_visited` (distinct source rows whose ancestors were
-//!   walked) in a single round trip — no second query against the
-//!   closure table.
-//!
+//! `COUNT(DISTINCT)` lets the helper report both `rows_written`
+//! (unique `(source, ancestor, depth)` triples touched) and
+//! `sources_visited` (distinct source rows whose ancestors were
+//! walked) in a single round trip — no second query against the
+//! closure table.
 //! ## Required closure-table schema
-//!
 //! Adopters must create the closure table with at least:
-//!
 //! ```sql
 //! CREATE TABLE <closure_table> (
 //!     id           BIGINT PRIMARY KEY DEFAULT heerid_next(),
@@ -127,7 +117,6 @@
 //!     UNIQUE (<source>, <ancestor>, <depth>)
 //! );
 //! ```
-//!
 //! `<path_count>` does not need a column-level `DEFAULT` — every row
 //! the helper writes carries an explicit `COUNT(*)` value. Adopters
 //! who add `DEFAULT 1` get the same runtime behavior but introduce a
@@ -135,7 +124,6 @@
 //! framework's migration projection does not synthesize column
 //! defaults for user-declared fields, so the descriptor would carry
 //! `default = None` against a live `DEFAULT 1` schema).
-//!
 //! The `UNIQUE (<source>, <ancestor>, <depth>)` constraint is **load-
 //! bearing** — `ON CONFLICT (...)` requires an exact match against a
 //! unique constraint. The helper validates the column-name identifiers
@@ -158,12 +146,10 @@ use std::future::Future;
 /// Builder-bag of options that govern one
 /// [`Model::materialize_closure`](crate::model::Model::materialize_closure)
 /// call.
-///
 /// Constructed via [`Default::default`] and tuned with the four setter
-/// methods. A `Default::default()`-bag walks every source row to its
+/// methods. A `Default::default`-bag walks every source row to its
 /// natural depth — the right baseline for the initial population of a
 /// closure table.
-///
 /// `Pk` is the source-model's primary-key Rust type; the parametric
 /// shape avoids forcing every caller through a `Box<dyn ToSql>`
 /// anti-pattern just to bound the `roots` Vec across `T::Pk` values
@@ -184,24 +170,22 @@ pub struct MaterializeClosureOptions<Pk: ToSql + Sync + Send + 'static> {
     /// Passing an empty `Some(vec![])` is equivalent to "no work to
     /// do" — the anchor `WHERE` evaluates to `FALSE` and the helper
     /// returns a zeroed [`MaterializeClosureReport`].
-    ///
     /// Pre-1.0 we ship the simplest shape that closes the contract:
     /// a `Vec<T::Pk>` of source ids. A predicate-tree shape (composing
     /// arbitrary `Condition` expressions) is a post-publish addition
-    /// — Wright kinship use cases want "rebuild closure for these
+    /// Wright kinship use cases want "rebuild closure for these
     /// specific newly-added animals" which the Vec form covers
     /// directly.
     pub roots: Option<Vec<Pk>>,
 }
 
 /// `Default` impl that does *not* require `Pk: Default`.
-///
 /// `#[derive(Default)]` on a generic struct requires every type
 /// parameter to itself implement `Default`. The actual fields
 /// (`Option<u32>` and `Option<Vec<Pk>>`) both default to `None`
 /// without ever needing a `Pk` value, so a hand-written impl side-
 /// steps the unnecessary bound and lets adopters use
-/// `MaterializeClosureOptions::<HeerId>::default()` directly.
+/// `MaterializeClosureOptions::<HeerId>::default` directly.
 impl<Pk: ToSql + Sync + Send + 'static> Default for MaterializeClosureOptions<Pk> {
     fn default() -> Self {
         Self {
@@ -227,7 +211,6 @@ impl<Pk: ToSql + Sync + Send + 'static> MaterializeClosureOptions<Pk> {
 
 /// Summary of one [`Model::materialize_closure`](crate::model::Model::materialize_closure)
 /// call.
-///
 /// Computed in the helper's single round trip via
 /// `RETURNING <source_col>` plus an outer `COUNT` / `COUNT(DISTINCT)`
 /// CTE wrap, so reporting these counters costs nothing extra — no
@@ -241,9 +224,9 @@ pub struct MaterializeClosureReport {
     /// `RETURNING` for both branches).
     pub rows_written: u64,
     /// Number of distinct source rows whose ancestor chain was walked
-    /// — equivalent to the size of the anchor's row set after the
+    /// equivalent to the size of the anchor's row set after the
     /// `roots` predicate filter. Useful as a sanity check when
-    /// `roots: Some(ids)` was passed: the count should equal `ids.len()`
+    /// `roots: Some(ids)` was passed: the count should equal `ids.len`
     /// minus any ids that did not exist in the source table.
     pub sources_visited: usize,
 }
@@ -251,17 +234,13 @@ pub struct MaterializeClosureReport {
 /// Marker trait that closure-model structs implement to surface the
 /// column names the [`Model::materialize_closure`](crate::model::Model::materialize_closure)
 /// SQL emitter needs.
-///
 /// # What it surfaces
-///
 /// Four columns the closure table must carry — the helper never
 /// reaches inside the closure model to discover these because
 /// macro-side wiring (`#[model(closure_for = T)]`) is out of scope
 /// for B4. The trait shape is the runtime-stable contract a future
 /// `closure_for` attribute would generate.
-///
 /// # Identifier validation
-///
 /// Every column name returned by this trait is identifier-validated
 /// at helper-call time via [`crate::ident::check_user_supplied_ident`]:
 /// ASCII alphabetic / underscore first byte, ASCII alphanumeric /
@@ -270,9 +249,7 @@ pub struct MaterializeClosureReport {
 /// bad identifier surfaces as [`DjogiError::Validation`] before any
 /// SQL is built — adopters cannot accidentally smuggle SQL through
 /// the column-name accessors or shadow framework-internal aliases.
-///
 /// # `Source = T` binding
-///
 /// The associated `Source` type pins the closure model to its source
 /// model at the type level. `T::materialize_closure::<C>` accepts only
 /// closure models whose `C::Source = T` — wrong-source closure tables
@@ -311,7 +288,6 @@ pub trait ClosureModel: Model {
 }
 
 /// Build the closure SQL for `T` and `C` and execute it against `ctx`.
-///
 /// Routed through here (rather than the
 /// [`Model::materialize_closure`](crate::model::Model::materialize_closure)
 /// default method body) so the heavy SQL-building logic lives in one
@@ -331,7 +307,7 @@ where
         // Empty-roots short-circuit. `roots: Some(vec![])` means
         // "walk closure for no source rows" — we honour that by
         // returning a zeroed report rather than emitting `WHERE id
-        // IN ()` which Postgres rejects as a syntax error. Doing
+        // IN ` which Postgres rejects as a syntax error. Doing
         // this before identifier validation is intentional: even a
         // mis-configured closure model with bad column names
         // shouldn't fail when the caller asked for no work.
@@ -369,7 +345,7 @@ where
         // `BIGINT` (`i64`); the helper widens `rows_written` to `u64`
         // (always non-negative — `COUNT` cannot return negative
         // values) and narrows `sources_visited` to `usize` for ease
-        // of comparison with the caller's `roots.len()`.
+        // of comparison with the caller's `roots.len`.
         let row = ctx.query_one(&sql, &params).await?;
         let rows_written: i64 = try_get_scalar::<i64>(&row, 0)?;
         let sources_visited: i64 = try_get_scalar::<i64>(&row, 1)?;
@@ -383,7 +359,6 @@ where
 /// Validate that the closure-model `C`'s four column-name accessors
 /// and table name satisfy the Postgres unquoted-identifier contract
 /// AND the framework-reserved `__djogi_` prefix block.
-///
 /// Called by [`materialize_closure_impl`] and by
 /// [`crate::query::joined::JoinedQuerySet::left_join_closure_pair`]
 /// terminal paths — every code path that splices a closure model's
@@ -391,7 +366,6 @@ where
 /// these names through this gate first. Without it a typo, hostile
 /// override, or hand-rolled `impl ClosureModel` could smuggle raw SQL
 /// fragments through the `push_sql` sites the closure emitters call.
-///
 /// `check_user_supplied_ident(value, true)` enforces the four-rule
 /// contract (Postgres unquoted-identifier shape, ≤ 63 bytes, not a
 /// reserved keyword, not in the `__djogi_` framework-reserved prefix
@@ -399,9 +373,7 @@ where
 /// for the policy that places adopter-provided closure accessor
 /// strings under the "user-supplied identifier" contract — same as
 /// window aliases, FTS dictionary names, and outbox table names.
-///
 /// # Errors
-///
 /// Returns [`DjogiError::Validation`] for the first failing identifier,
 /// labelled with the role (`"closure table"`, `"source_column"`,
 /// `"ancestor_column"`, `"depth_column"`, `"path_count_column"`) and
@@ -431,19 +403,16 @@ pub(crate) fn validate_closure_metadata_idents<C: ClosureModel>() -> Result<(), 
 /// connection. Returns the populated [`SqlAccumulator`] so unit tests
 /// can assert on the emitted SQL shape and bind count without a live
 /// database.
-///
 /// # Bind ordering
-///
-/// 1. `roots` ids (when `Some(ids)` with non-empty `ids`) —
-///    one bind slot per id, in caller-supplied order.
+/// 1. `roots` ids (when `Some(ids)` with non-empty `ids`)
+/// one bind slot per id, in caller-supplied order.
 /// 2. `max_depth` — one bind slot total, attached to the WHERE on
-///    the consolidated single recursive SELECT. Bound as `i32` to
-///    match `closure.depth` (INTEGER / int4); `tokio_postgres`
-///    requires exact bind/column type match. Edge count does not
-///    affect this — every self-FK edge fans out through one
-///    `CROSS JOIN LATERAL VALUES` clause, not per-edge UNION ALL
-///    branches.
-///
+/// the consolidated single recursive SELECT. Bound as `i32` to
+/// match `closure.depth` (INTEGER / int4); `tokio_postgres`
+/// requires exact bind/column type match. Edge count does not
+/// affect this — every self-FK edge fans out through one
+/// `CROSS JOIN LATERAL VALUES` clause, not per-edge UNION ALL
+/// branches.
 /// `tokio_postgres` re-receives bind values in the order the helper
 /// pushes them; downstream readers should not assume `$1` is always
 /// `max_depth` etc. The bind count returned by
@@ -458,13 +427,12 @@ where
 {
     let mut acc = SqlAccumulator::new("");
 
-    // ── Outer CTE wrap: WITH inserted AS ( INSERT ... RETURNING ... ) ───
-    //
+    // ── Outer CTE wrap: WITH inserted AS (INSERT ... RETURNING ...) ───
     // Wrapping the INSERT inside a CTE lets the outer SELECT compute
     // both `rows_written` and `sources_visited` from the RETURNING
     // result set in one round trip. Without the wrap we would have
     // to either (a) issue a second query against the closure table,
-    // or (b) pull all RETURNING rows back to Rust and count there —
+    // or (b) pull all RETURNING rows back to Rust and count there
     // both worse than letting Postgres's aggregate planner do it.
     acc.push_sql("WITH inserted AS (INSERT INTO ");
     acc.push_sql(C::table());
@@ -479,7 +447,6 @@ where
     acc.push_sql(") ");
 
     // ── Recursive CTE: __djogi_closure ──────────────────────────────────
-    //
     // Column shape `(source_id, ancestor_id, depth, path)` — distinct
     // from the B2 / B3 `__djogi_tree` CTE's `(depth, path, <T cols>)`.
     // The closure table only ever needs the source id, the ancestor
@@ -488,7 +455,6 @@ where
     acc.push_sql("WITH RECURSIVE __djogi_closure (source_id, ancestor_id, depth, path) AS (");
 
     // ── Anchor: every source row is its own ancestor at depth 0 ─────────
-    //
     // `s.id, s.id, 0, ARRAY[]::text[]` — the closure table records
     // self-pairs at depth 0 (Wright-style: `path_count = 1` for the
     // identity path). The anchor's `WHERE` either selects every
@@ -523,16 +489,13 @@ where
     }
 
     // ── UNION ALL — single recursive term, all self-FK edges fanned out ──
-    //
     // Walks ANCESTORS direction. The closure CTE only carries
     // `(source_id, ancestor_id, depth, path)` — it does NOT carry the
     // self-FK columns of `T`. So to step from "current ancestor" to
     // "ancestor's parent", we join the source table twice: first to
     // resolve the current `ancestor_id` back to its full row (`a`),
     // then to follow `a.<edge_col>` up to the next ancestor (`p`).
-    //
     // `p.id` becomes the new `ancestor_id` for the next layer.
-    //
     // **Single recursive reference invariant.** Postgres restricts
     // recursive CTEs to ONE self-reference in the recursive term
     // (rejecting both "non-recursive term contains a recursive
@@ -559,7 +522,7 @@ where
             acc.push_sql(", ");
         }
         acc.push_sql("(a.");
-        // `edge` came from `descriptor.self_fk_columns()` which
+        // `edge` came from `descriptor.self_fk_columns` which
         // surfaces the field name verbatim — already
         // identifier-validated at macro emission.
         acc.push_sql(edge);
@@ -584,21 +547,18 @@ where
         acc.push_bind(n_i32);
     }
 
-    // ── ) CYCLE source_id, ancestor_id SET is_cycle USING cycle_path ────
-    //
+    // ──) CYCLE source_id, ancestor_id SET is_cycle USING cycle_path ────
     // **Two-column** cycle key — closure walks from N source rows
     // simultaneously, so the cycle-detection key is the
     // `(source, ancestor)` pair, not just `ancestor`. A cycle is
     // "this source revisited this ancestor"; reaching the same
     // ancestor from a *different* source is correct closure
     // expansion, not a cycle.
-    //
     // `cycle_path` (not `path`) frees `path` for our user-visible
     // edge-name accumulator — same contract as B3's CTE rename.
     acc.push_sql(") CYCLE source_id, ancestor_id SET is_cycle USING cycle_path");
 
     // ── Outer SELECT: GROUP BY (source_id, ancestor_id, depth) ──────────
-    //
     // `COUNT(*)` collapses the per-path rows the recursive term
     // emitted into one row per `(source, ancestor, depth)` triple,
     // surfacing the path multiplicity as `path_count`. Wright
@@ -614,7 +574,6 @@ where
     );
 
     // ── ON CONFLICT (...) DO UPDATE SET <col> = EXCLUDED.<col> ──────────
-    //
     // Replace, not add. Each `materialize_closure` invocation walks the
     // current graph from scratch via the recursive CTE, so EXCLUDED's
     // `path_count` is already the *correct, current* total of distinct
@@ -622,7 +581,6 @@ where
     // present graph state. The pre-existing closure row's value is the
     // previous (possibly stale) total; replacing it with EXCLUDED keeps
     // the closure aligned with whatever is in the source table now.
-    //
     // Additive merge would be wrong on every callsite that matters: a
     // straight rerun would double, an incremental rerun (after new edges
     // are added in the source table) would over-count because the
@@ -630,7 +588,6 @@ where
     // ones. The `additive` shape only makes sense when the closure is
     // updated by some external partial-write process that hands djogi
     // a delta — that is not djogi's design.
-    //
     // The unique constraint `(source, ancestor, depth)` is required on
     // the closure table — see module docs.
     acc.push_sql(" ON CONFLICT (");
@@ -660,7 +617,6 @@ mod tests {
     //! the emitted SQL or a count of bind slots. No live database is
     //! reached here; integration tests against a real Postgres live
     //! in B5.
-    //!
     //! `MiniTree` is the same stub model the recursive-CTE tests use,
     //! reusing its `Model` + `FromPgRow` impls would create a circular
     //! `cfg(test)` dependency — instead we declare a fresh stub here
@@ -929,7 +885,7 @@ mod tests {
         }
     }
 
-    /// Build a minimal `FieldDescriptor` for a self-FK column —
+    /// Build a minimal `FieldDescriptor` for a self-FK column
     /// the closure builder reads `name`, `relation_kind`, and
     /// `is_self_fk`; everything else is defaulted via
     /// [`field_descriptor`].
@@ -1067,7 +1023,7 @@ mod tests {
     #[test]
     fn on_conflict_clause_replaces_path_count() {
         // ON CONFLICT (...) DO UPDATE SET path_count = EXCLUDED.path_count
-        // — replace, not add. Each invocation walks the current graph
+        // replace, not add. Each invocation walks the current graph
         // from scratch via the recursive CTE, so EXCLUDED's path_count
         // is already the correct total. Additive merge would double on
         // straight rerun and over-count on incremental rerun.
@@ -1232,7 +1188,7 @@ mod tests {
     #[test]
     fn empty_edges_descriptor_reports_zero_count() {
         // Sanity: a descriptor with no self-FK fields reports
-        // `self_fk_count() == 0`. Exercised in the impl path via
+        // `self_fk_count == 0`. Exercised in the impl path via
         // `materialize_closure_impl` (which errors on this case);
         // here we pin the descriptor-level invariant the impl
         // relies on.

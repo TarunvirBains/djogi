@@ -1,9 +1,7 @@
-//! `djogi migrations` subcommand glue — Phase 7 T6.
-//!
+//! `djogi migrations` subcommand glue
 //! Two leaves: `compose` and `status`. Both flow through the public
 //! `djogi::migrate` API. Compose acquires the workspace file lock for
 //! the duration of the call; status is read-only and does not.
-//!
 //! The CLI surface here is intentionally thin — all the real logic
 //! lives in the library so integration tests can exercise it without
 //! spawning subprocesses.
@@ -31,7 +29,6 @@ use crate::{PartialApplyResolutionCli, RepairSubcommand};
 // ── Replay plan deserialization ──────────────────────────────────────────
 
 /// Local mirror of `StoredReplayPlan` (pub(crate) in the library).
-///
 /// The committed replay plan JSON written by `compose` at
 /// `migrations/<database>/<app>/<version>.plan.json`. This struct
 /// allows the CLI to parse it and construct a proper [`MigrationPlan`]
@@ -87,7 +84,6 @@ const CLI_REPLAY_PLAN_FORMAT_VERSION: &str = "1";
 
 /// Load the committed replay plan from disk and convert to a
 /// [`djogi::migrate::MigrationPlan`]. Returns `(plan, checksum_up, checksum_down)`.
-///
 /// Falls back to reading the up/down SQL files and constructing a
 /// single-segment transactional plan when the replay plan JSON is
 /// absent or invalid. This mirrors the reset.rs fallback path.
@@ -274,14 +270,12 @@ fn resolve_workspace(workspace: Option<PathBuf>) -> PathBuf {
 
 /// Walk the on-disk `migrations/<database>/<app>/` tree and return the
 /// set of buckets that already have a `schema_snapshot.json` file.
-///
 /// Compose's `snapshots` map must include the OLD bucket of any
 /// renamed app — and that bucket is guaranteed to be absent from the
 /// current `models` inventory because the `#[app(renamed_from =
 /// "old")]` annotation lives on the NEW app. Walking disk directly
 /// recovers those orphaned snapshots so the differ sees both sides of
 /// a rename.
-///
 /// Each entry maps to a [`djogi::migrate::projection::BucketKey`]
 /// using the inverse of [`djogi::migrate::app_dirname`] (synthetic
 /// `_global_` directory → empty-string label).
@@ -387,7 +381,6 @@ pub fn compose_cmd(
 /// point sources both from `inventory::iter` and `AppRegistry::all`,
 /// which are global state and thus not directly addressable from a
 /// unit test).
-///
 /// Acquires the workspace lock, walks the on-disk migration tree to
 /// recover orphaned snapshots (renamed-from buckets), and
 /// invokes [`djogi::migrate::compose`].
@@ -466,7 +459,7 @@ fn compose_with_inputs(
         now,
         _guard: &guard,
         pk_flip_join_table_option,
-        // Production: always run Phase 0 auto-emit. The flag is a
+        // Production: always run auto-emit. The flag is a
         // test-only escape hatch for unit tests that exercise
         // compose's lower-level write/rollback machinery in
         // isolation; the CLI / production path always goes through
@@ -475,7 +468,7 @@ fn compose_with_inputs(
     };
     match compose(req) {
         Ok(report) => {
-            // Track 0: surface auto-emitted Phase 0 bootstraps before
+            // : surface auto-emitted bootstraps before
             // the regular composed buckets so the operator sees the
             // bootstrap context before the per-bucket changes.
             for emit in &report.emitted_phase_zero {
@@ -513,7 +506,7 @@ fn compose_with_inputs(
         }
         Err(ComposeError::NothingToCompose) => {
             println!("nothing to compose — model state matches snapshot for every bucket");
-            // Per the v3 §3 inline-decisions: nothing-to-compose is
+            // Per the inline-decisions: nothing-to-compose is
             // not an error. The status command is the one that
             // signals out-of-sync state via exit code.
             ExitCode::from(0)
@@ -531,7 +524,6 @@ fn compose_with_inputs(
 }
 
 /// `djogi migrations status` entry point.
-///
 /// Read-only — does not acquire the workspace lock. Reads the
 /// migration ledger from the active database via
 /// [`djogi::context::DjogiContext`].
@@ -555,7 +547,6 @@ pub fn status_cmd(workspace: Option<PathBuf>) -> ExitCode {
 }
 
 /// Async body of [`status_cmd`]. Returns the desired exit code.
-///
 /// The resolved `workspace` path feeds
 /// [`djogi::config::DjogiConfig::load_from_workspace`] so a
 /// `--workspace /custom/path` actually reads `/<custom>/Djogi.toml`
@@ -614,17 +605,15 @@ async fn run_status(workspace: &Path) -> i32 {
 /// Outcome of [`connect_and_check`] — connecting a pool and running the
 /// Postgres-version preflight, with the support-boundary refusal kept
 /// distinct from ordinary runtime failures.
-///
 /// The three arms drive different exit codes at the call site:
-///
 /// - [`ContextOutcome::Ready`] — pool connected and PG ≥ 18; proceed.
 /// - [`ContextOutcome::UnsupportedVersion`] — PG < 18. The caller renders
-///   the support-boundary message via
-///   [`crate::print_support_boundary_error`] and exits `2` (refusal: the
-///   operator must upgrade Postgres; retrying changes nothing).
+/// the support-boundary message via
+/// [`crate::print_support_boundary_error`] and exits `2` (refusal: the
+/// operator must upgrade Postgres; retrying changes nothing).
 /// - [`ContextOutcome::RuntimeError`] — pool connect failed, the preflight
-///   query errored, or any other non-version `DjogiError`. The caller
-///   prints the message and exits `1` (transient: CI may retry).
+/// query errored, or any other non-version `DjogiError`. The caller
+/// prints the message and exits `1` (transient: CI may retry).
 // The `Ready` variant holds a `DjogiContext` (large — it wraps a
 // `DjogiPool`), while the other two variants are small (`DjogiError` /
 // `String`). Boxing `Ready` would add a heap allocation on the success
@@ -647,7 +636,6 @@ enum ContextOutcome {
 
 /// Connect a pool from `url` and run the Postgres-version preflight,
 /// returning a typed [`ContextOutcome`].
-///
 /// Splits the support-boundary refusal (PG < 18, exit `2`) from runtime
 /// failures (connect / query errors, exit `1`) so each call site can map
 /// the outcome onto the documented exit-code matrix. Connects via the
@@ -670,24 +658,21 @@ async fn connect_and_check(url: &str) -> ContextOutcome {
 }
 
 /// Resolve the connection URL for a single migration-bucket database.
-///
 /// Verify routes each bucket to the pool for its `database` component.
 /// The mapping mirrors Djogi's three-database architecture:
-///
 /// - `"main"` ([`djogi::apps::AppDescriptor::GLOBAL_DATABASE`]) always uses
-///   the app URL verbatim. We do NOT derive it by splicing `"main"` into
-///   the path, because the operator's app URL may carry a path component
-///   that is not literally named `main` (e.g. `…/myapp_prod`); deriving
-///   would target a database that does not exist.
+/// the app URL verbatim. We do NOT derive it by splicing `"main"` into
+/// the path, because the operator's app URL may carry a path component
+/// that is not literally named `main` (e.g. `…/myapp_prod`); deriving
+/// would target a database that does not exist.
 /// - `"crud_log"` / `"event_log"` prefer the explicit
-///   [`djogi::config::DatabaseConfig::crud_log_url`] /
-///   [`event_log_url`](djogi::config::DatabaseConfig::event_log_url) when
-///   set to a non-empty value, matching how the audit / event pools are
-///   resolved elsewhere.
+/// [`djogi::config::DatabaseConfig::crud_log_url`] /
+/// [`event_log_url`](djogi::config::DatabaseConfig::event_log_url) when
+/// set to a non-empty value, matching how the audit / event pools are
+/// resolved elsewhere.
 /// - Any other database name (and the log databases when their explicit
-///   URL is absent) is derived by splicing the name into the app URL's
-///   path component via [`djogi::migrate::derive_per_database_url`].
-///
+/// URL is absent) is derived by splicing the name into the app URL's
+/// path component via [`djogi::migrate::derive_per_database_url`].
 /// Returns `None` when derivation fails (the app URL has no recognisable
 /// path component); the caller surfaces that as a runtime error for the
 /// affected bucket.
@@ -713,7 +698,6 @@ fn resolve_bucket_url(db_config: &djogi::config::DatabaseConfig, database: &str)
 }
 
 /// `djogi migrations apply` entry point.
-///
 /// Discovers pending JSON files under `target/djogi_pending/`, loads the
 /// committed replay plan for each, and drives [`djogi::migrate::apply_plan`]
 /// through the library runner with full crash recovery via the ledger state
@@ -901,7 +885,6 @@ enum ApplyResult {
 }
 
 /// Scan `target/djogi_pending/` for pending JSON files.
-///
 /// Returns a list of `(path, database, app)` tuples sorted by file
 /// name so the apply order is deterministic. Each path points to a
 /// valid JSON file that was discovered on disk.
@@ -962,12 +945,10 @@ fn discover_pending_plans(workspace: &Path) -> Vec<(PathBuf, String, String)> {
 }
 
 /// Apply a single pending migration.
-///
 /// Loads the pending JSON to recover bucket and version, checks the
 /// ledger state machine for crash recovery, loads the committed replay
 /// plan (or falls back to a single-segment plan from the SQL file), and
 /// drives [`djogi::migrate::apply_plan`].
-///
 /// Uses the bypass attribute because deleting failed ledger rows requires
 /// raw SQL that is not exposed through the public typed API.
 // apply_one_pending carries 9 arguments because it sits at the bridge
@@ -1132,7 +1113,6 @@ async fn check_ledger_state(ctx: &mut djogi::context::DjogiContext, version: &st
 }
 
 /// Map a [`RunnerError`] to an exit code.
-///
 /// All runner errors map to exit code 1 (apply failure). Exit code 2
 /// is reserved for user-facing refusals that happen before the runner
 /// is invoked.
@@ -1167,26 +1147,22 @@ fn reconstruct_snapshot_path(workspace: &Path, bucket: &djogi::migrate::BucketKe
 }
 
 /// `djogi migrations attune` entry point.
-///
 /// Mode selection (per CLI flags):
-///
 /// | `--record-ledger` | `--squash` | resolved mode |
 /// |-----------|-----------|---------------|
 /// | false | false | [`AttuneMode::DiffOnly`] (read-only diff) |
-/// | true  | false | [`AttuneMode::Record`] |
-/// | false | true  | [`AttuneMode::Squash { from, publish, app }`] |
-/// | true  | true  | rejected by clap (`conflicts_with`) |
-///
+/// | true | false | [`AttuneMode::Record`] |
+/// | false | true | [`AttuneMode::Squash { from, publish, app }`] |
+/// | true | true | rejected by clap (`conflicts_with`) |
 /// Argument semantics:
 /// - `target` is an optional positional Git target (commit / tag /
-///   branch). When supplied, attune resolves it (local first, fetch
-///   on miss) before any DB / disk mutation.
+/// branch). When supplied, attune resolves it (local first, fetch
+/// on miss) before any DB / disk mutation.
 /// - `apply` gates DB / disk mutation. Without it, every mode is a
-///   dry-run.
+/// dry-run.
 /// - `record` controls the parent repo's recorded submodule pointer
-///   (separate from `record_ledger`, which controls the
-///   `djogi_schema_migrations` ledger inserts).
-///
+/// (separate from `record_ledger`, which controls the
+/// `djogi_schema_migrations` ledger inserts).
 /// `--squash` requires `--from <ver>`; an absent `from` while
 /// `--squash` is set surfaces as a CLI error before any work happens.
 // The CLI dispatch carries 11 inputs because the attune surface is
@@ -1338,7 +1314,7 @@ async fn run_attune(
                 }
             }
             // Surface structured diagnostics — today this carries the
-            // B-3 LedgerTableMissing notice when DiffOnly runs on a
+            // LedgerTableMissing notice when DiffOnly runs on a
             // fresh database.
             for diag in &report.diagnostics {
                 println!("  diagnostic: {diag}");
@@ -1366,16 +1342,14 @@ async fn run_attune(
 
 /// Map an [`AttuneError`] variant onto the documented exit-code
 /// matrix (`docs/spec/configuration.md` §14):
-///
 /// - Refusal variants → exit code `2` ("operator must intervene;
-///   nothing happened"). Today every refusal flows through
-///   [`AttuneError::Refused`]; the localhost gate, the dev-profile
-///   gate, the missing-version refusal, and the ambiguous-version
-///   refusal are all reachable through that variant.
-/// - Runtime variants → exit code `1` ("we tried; something broke" —
-///   filesystem scan, ledger query, SQL read/write/delete, git
-///   publish). CI may safely retry these.
-///
+/// nothing happened"). Today every refusal flows through
+/// [`AttuneError::Refused`]; the localhost gate, the dev-profile
+/// gate, the missing-version refusal, and the ambiguous-version
+/// refusal are all reachable through that variant.
+/// - Runtime variants → exit code `1` ("we tried; something broke"
+/// filesystem scan, ledger query, SQL read/write/delete, git
+/// publish). CI may safely retry these.
 /// Pulled out as a free function so unit tests can pin every variant
 /// without spinning a Tokio runtime. Operators rely on the 1-vs-2
 /// distinction to tell "refused before any side effect" from "ran and
@@ -1396,11 +1370,9 @@ fn attune_error_exit_code(err: &AttuneError) -> i32 {
 }
 
 /// `djogi migrations verify` entry point.
-///
 /// Read-only — does not acquire the workspace lock. Reads the live
 /// Postgres catalog via [`djogi::context::DjogiContext`] and compares
 /// against the projected schema from the descriptor inventory.
-///
 /// Exit codes: 0 on success (no error-level diagnostics), 1 on runtime
 /// error (config / network / SQL / projection), 2 on refusal
 /// (below PG 18).
@@ -1427,36 +1399,33 @@ pub fn verify_cmd(
 }
 
 /// Async body of [`verify_cmd`]. Returns the desired exit code.
-///
 /// Verify is multi-database aware: each `(database, app)` bucket is routed
 /// to the pool for its `database` component via [`resolve_bucket_url`], and
 /// the per-database context is connected lazily and cached so a database
 /// with several app buckets connects once. The bucket set is the UNION of
 /// the inventory projection and the on-disk snapshot tree, so an orphaned
 /// snapshot (a removed app's snapshot still on disk) is verified and
-/// surfaces drift rather than being silently skipped (FBB-2 / Class D).
-///
+/// surfaces drift rather than being silently skipped .
 /// Exit codes:
 /// - `0` — every bucket verified with no error-severity diagnostic.
 /// - `1` — at least one runtime failure (pool / snapshot / verify error)
-///   or at least one bucket reported an error-severity diagnostic.
+/// or at least one bucket reported an error-severity diagnostic.
 /// - `2` — the server is below the minimum supported Postgres version
-///   (a server-global refusal: verify returns immediately).
+/// (a server-global refusal: verify returns immediately).
 async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict: bool) -> i32 {
     use djogi::config::DjogiConfig;
 
     // 0. Zero-descriptor refusal (§5.6 / REQ-370-8). `verify` refuses with
-    //    the dual-cause diagnostic + exit 2 ONLY when there are NEITHER
-    //    descriptors NOR on-disk snapshots — the genuinely unusable state
-    //    (a standalone binary with nothing to verify against). When
-    //    snapshots exist, verify DEGRADES to snapshot-only (the union below
-    //    enumerates the disk buckets), so we must not refuse here.
-    //
-    //    Guard on `provider.models().is_empty()` rather than the projected
-    //    `bucket_set`: projection always seeds the synthetic global bucket
-    //    (`(main, "")`), so the bucket set is never empty and is the wrong
-    //    signal for "no descriptors". This is the same guard the
-    //    compose/schema/docs gates in `lib.rs` use.
+    // the dual-cause diagnostic + exit 2 ONLY when there are NEITHER
+    // descriptors NOR on-disk snapshots — the genuinely unusable state
+    // (a standalone binary with nothing to verify against). When
+    // snapshots exist, verify DEGRADES to snapshot-only (the union below
+    // enumerates the disk buckets), so we must not refuse here.
+    // Guard on `provider.models.is_empty` rather than the projected
+    // `bucket_set`: projection always seeds the synthetic global bucket
+    // (`(main, "")`), so the bucket set is never empty and is the wrong
+    // signal for "no descriptors". This is the same guard the
+    // compose/schema/docs gates in `lib.rs` use.
     if provider.models().is_empty() && discover_snapshot_buckets_on_disk(workspace).is_empty() {
         crate::print_zero_descriptor_diagnostic("migrations verify");
         return 2;
@@ -1481,10 +1450,10 @@ async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict:
     };
 
     // 3. Build the bucket set as the UNION of the inventory projection and
-    //    the on-disk snapshot tree (FBB-2 / Class D). An orphaned snapshot
-    //    — a removed app whose snapshot still sits on disk — is absent from
-    //    `models` but present on disk; without the union it would never be
-    //    verified and out-of-band drift would go unreported.
+    // the on-disk snapshot tree . An orphaned snapshot
+    // a removed app whose snapshot still sits on disk — is absent from
+    // `models` but present on disk; without the union it would never be
+    // verified and out-of-band drift would go unreported.
     let mut bucket_set: std::collections::BTreeSet<djogi::migrate::BucketKey> =
         models.keys().cloned().collect();
     for bucket in discover_snapshot_buckets_on_disk(workspace) {
@@ -1507,11 +1476,11 @@ async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict:
     };
 
     // 5. Pre-compute the set of databases that have at least one INVENTORY
-    //    bucket with non-empty models. Orphan-only databases (snapshots on
-    //    disk but no registered models) are excluded — `unwrap_or(false)`
-    //    treats a disk-only bucket as model-less. This gates D699 inside
-    //    `verify_bucket`: an orphan-only database has no live tables to
-    //    miss, so D601 is the actionable signal instead.
+    // bucket with non-empty models. Orphan-only databases (snapshots on
+    // disk but no registered models) are excluded — `unwrap_or(false)`
+    // treats a disk-only bucket as model-less. This gates D699 inside
+    // `verify_bucket`: an orphan-only database has no live tables to
+    // miss, so D601 is the actionable signal instead.
     let database_has_models: std::collections::HashSet<String> = bucket_set
         .iter()
         .filter(|b| {
@@ -1524,10 +1493,10 @@ async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict:
         .collect();
 
     // 6. Per-database context cache + dedup sets. Contexts are connected
-    //    lazily (only for databases that have a bucket needing a live read)
-    //    and reused across that database's app buckets. `seen_ledger_databases`
-    //    ensures the ledger-lifecycle diagnostics (D621/D622/D699) are
-    //    emitted once per database, not once per app bucket.
+    // lazily (only for databases that have a bucket needing a live read)
+    // and reused across that database's app buckets. `seen_ledger_databases`
+    // ensures the ledger-lifecycle diagnostics (D621/D622/D699) are
+    // emitted once per database, not once per app bucket.
     let mut contexts: std::collections::BTreeMap<String, djogi::context::DjogiContext> =
         std::collections::BTreeMap::new();
     let mut seen_ledger_databases = std::collections::HashSet::<String>::new();
@@ -1552,8 +1521,8 @@ async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict:
         };
 
         // b. Connect (lazily, once per distinct database). PG < 18 is a
-        //    server-global refusal — there is no point continuing to other
-        //    buckets, so we return 2 immediately.
+        // server-global refusal — there is no point continuing to other
+        // buckets, so we return 2 immediately.
         if !contexts.contains_key(&bucket.database) {
             match connect_and_check(&url).await {
                 ContextOutcome::Ready(ctx) => {
@@ -1575,9 +1544,9 @@ async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict:
         }
 
         // c. Load the snapshot. A missing snapshot for a bucket that HAS
-        //    registered models is a hard error (exit 1) — the operator must
-        //    record a baseline; a missing snapshot for a model-less bucket
-        //    is informational.
+        // registered models is a hard error (exit 1) — the operator must
+        // record a baseline; a missing snapshot for a model-less bucket
+        // is informational.
         let snap_path = snapshot_path(workspace, bucket);
         let snapshot = match load_snapshot(&snap_path) {
             Ok(s) => s,
@@ -1622,9 +1591,9 @@ async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict:
         };
 
         // d. Compute ledger-emission flags. The ledger is shared per
-        //    database; emit its lifecycle diagnostics once per database
-        //    (the first bucket of each database that reaches this point),
-        //    and only for databases that actually have registered models.
+        // database; emit its lifecycle diagnostics once per database
+        // (the first bucket of each database that reaches this point),
+        // and only for databases that actually have registered models.
         let db_has_models = database_has_models.contains(&bucket.database);
         let emit_ledger = db_has_models && seen_ledger_databases.insert(bucket.database.clone());
 
@@ -1671,13 +1640,11 @@ async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict:
 }
 
 /// Render a [`VerifyReport`] to a vector of output lines.
-///
 /// Format: one line per diagnostic with severity prefix, code, location,
 /// and message. Summary line at the end. Output is deterministic because
 /// `report.diagnostics` is already sorted by `(code, location)`.
-///
 /// Returns the lines instead of printing directly so the rendering is unit-
-/// testable (FBB-1); the caller iterates the returned vector and prints each
+/// testable ; the caller iterates the returned vector and prints each
 /// line. Blank separator lines are returned as empty strings.
 fn render_verify_report(report: &VerifyReport, bucket: &BucketKey) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
@@ -1780,7 +1747,6 @@ impl From<PartialApplyResolutionCli> for PartialApplyResolution {
 }
 
 /// `djogi migrations repair <subcommand>` entry point.
-///
 /// Routes each subcommand to its glue function. The glue functions own
 /// the runtime / config / pool / lock / report-render lifecycle; this
 /// router only destructures the parsed clap variant.
@@ -1866,20 +1832,18 @@ fn render_repair_report(report: &RepairReport) {
 }
 
 /// Map a [`RepairError`] onto the CLI exit-code contract.
-///
 /// `RepairError` is NOT `#[non_exhaustive]`, so this match is
 /// **exhaustive with NO `_ =>` wildcard** by deliberate design: a future
 /// variant breaks compilation here, forcing a conscious exit-code
 /// classification rather than silently bucketing an unclassified error.
-///
 /// Classification rule — when a new variant is added, classify it the
 /// same way:
 /// - **Exit 1 (retryable):** variants wrapping a transient I/O /
-///   connection / pool / SQL failure (a `source: DjogiError`, snapshot
-///   filesystem I/O, or advisory-lock contention). A retry may succeed.
+/// connection / pool / SQL failure (a `source: DjogiError`, snapshot
+/// filesystem I/O, or advisory-lock contention). A retry may succeed.
 /// - **Exit 2 (refusal):** structural refusals and ledger-logic guards
-///   that require operator intervention. A blind retry hits the same
-///   refusal.
+/// that require operator intervention. A blind retry hits the same
+/// refusal.
 fn repair_error_exit_code(err: &RepairError) -> i32 {
     match err {
         // ── Exit 1: transient I/O / connection / pool / SQL failures.
@@ -1918,7 +1882,6 @@ fn repair_error_exit_code(err: &RepairError) -> i32 {
 /// Resolve the database name for bucket construction. Uses the explicit
 /// `--database` flag if provided, otherwise defaults to `"main"` (the
 /// global database name — see [`djogi::apps::AppDescriptor::GLOBAL_DATABASE`]).
-///
 /// `_config` is threaded so this single helper can grow a config-driven
 /// default database (should `DjogiConfig` gain one) without changing
 /// every call site.
@@ -1929,7 +1892,6 @@ fn resolve_database(database: Option<&str>, _config: &djogi::config::DjogiConfig
 /// Compute the `V1:`-prefixed checksum of a committed up SQL file on disk,
 /// using the canonical fragment-level domain (strips the composed-file
 /// header and label comments, matching what compose stores in the ledger).
-///
 /// The naive whole-file checksum is WRONG here: compose stores checksums
 /// computed over the [`djogi::migrate::OperationSql`] fragments only,
 /// without the rendered file's `-- Djogi composed migration — up` header
@@ -1938,7 +1900,6 @@ fn resolve_database(database: Option<&str>, _config: &djogi::config::DjogiConfig
 /// would write a checksum that immediately re-drifts. Delegating to
 /// [`djogi::migrate::compute_committed_sql_checksum`] keeps the CLI's
 /// recompute path in the same domain as compose.
-///
 /// Returns the underlying [`std::io::Error`] unchanged so the caller can
 /// surface a missing/unreadable up file as a retryable I/O error.
 fn compute_checksum_up_from_disk(
@@ -1959,7 +1920,6 @@ fn compute_checksum_up_from_disk(
 /// using the same fragment-level domain as compose (see
 /// [`compute_checksum_up_from_disk`] for why the whole-file checksum is
 /// wrong).
-///
 /// Returns `Ok(None)` when the file is absent
 /// ([`std::io::ErrorKind::NotFound`]) or when the file contains only SQL
 /// comments — both map onto compose's `NULL` `checksum_down` sentinel for
@@ -1981,7 +1941,6 @@ fn compute_checksum_down_from_disk(
 }
 
 /// `djogi migrations repair checksum-drift` entry point.
-///
 /// Updates the `checksum_up` / `checksum_down` columns of an
 /// already-applied ledger row after its committed SQL was edited. When
 /// `--checksum-up` / `--checksum-down` are omitted, the checksums are
@@ -2139,7 +2098,6 @@ async fn run_repair_checksum_drift(
 }
 
 /// `djogi migrations repair partial-apply` entry point.
-///
 /// Resolves a partial-apply ledger row by rewriting its status to
 /// `rolled_back`, `faked`, or `applied`. No SQL executes — only the
 /// ledger row is mutated.
@@ -2252,7 +2210,6 @@ async fn run_repair_partial_apply(
 }
 
 /// `djogi migrations repair resume-partial` entry point.
-///
 /// Resumes an interrupted non-transactional apply by loading the
 /// committed `<version>.plan.json` and replaying its remaining steps.
 /// Loads the committed plan directly (no CLI-level checksum pre-gate);
@@ -2373,7 +2330,6 @@ async fn run_repair_resume_partial(
 
 /// Load the committed `<version>.plan.json` for `resume-partial` without
 /// the CLI-level checksum pre-gate.
-///
 /// [`repair_resume_partial_apply`] validates the plan against the ledger
 /// row internally (`PlanVersionMismatch` / `PlanChecksumMismatch`), so
 /// re-gating here with a hand-rolled whole-file checksum would be both
@@ -2382,7 +2338,6 @@ async fn run_repair_resume_partial(
 /// [`load_replay_plan_from_disk`] (a pending-apply helper that DOES
 /// checksum-gate) — it reuses only that function's `CliReplay*`
 /// deserialization + segment-conversion shape.
-///
 /// Returns a human-readable error string on a missing/unparseable plan
 /// file or a format-version mismatch. A missing plan file maps to exit 2
 /// at the call site (the committed plan is a precondition of resume).
@@ -2427,7 +2382,6 @@ fn load_committed_plan_for_resume(
 }
 
 /// `djogi migrations repair snapshot-rebuild` entry point.
-///
 /// Rebuilds a bucket's schema snapshot by walking the ledger and
 /// re-projecting from live database state. When `--snapshot-path` is
 /// omitted, the path is derived from
@@ -2542,7 +2496,6 @@ async fn run_repair_snapshot_rebuild(
 // ── baseline command ──────────────────────────────────────────────────────
 
 /// `djogi migrations baseline` entry point.
-///
 /// Establishes a baseline ledger row + snapshot for an existing
 /// database adopted under Djogi's migration ledger. The schema already
 /// exists, so `compose` + `apply` cannot run against the populated
@@ -2550,11 +2503,9 @@ async fn run_repair_snapshot_rebuild(
 /// catalog into a single `baseline` ledger row (no SQL runs against
 /// user tables) and persists the projected snapshot as the canonical
 /// baseline so future migrations diff against the real DB state.
-///
 /// `--reason` is required and must be non-empty — it is recorded in the
 /// ledger row's `partial_apply_note` for the audit trail. An empty
 /// reason is a refusal (exit 2) caught before any DB work.
-///
 /// Exit codes: `0` success, `1` runtime error (config / pool / projection
 /// failure), `2` refusal (empty `--reason`, unresolvable database URL,
 /// duplicate version collision, snapshot-persist failure after ledger
@@ -2599,14 +2550,13 @@ pub fn baseline_cmd(
 }
 
 /// Async body of [`baseline_cmd`]. Returns the desired exit code.
-///
 /// Resolves the per-database URL BEFORE connecting (a `--database
 /// crud_log` / `event_log` baseline targets a different bucket's ledger
 /// than the app DB), connects + runs the PG-version preflight via
 /// [`connect_and_check`], acquires the workspace file lock, then drives
 /// [`baseline_plan`]. The runner projects the live schema itself and
 /// computes the baseline checksum from that projection, so the
-/// `RunnerCtx` is constructed with `snapshot: None` (B-11 requires the
+/// `RunnerCtx` is constructed with `snapshot: None` (requires the
 /// caller NOT supply a snapshot) and an empty `checksum_up` (the
 /// baseline path never reads it).
 async fn run_baseline(
@@ -2675,7 +2625,7 @@ async fn run_baseline(
         // this field is not read on the baseline code path.
         checksum_up: String::new(),
         checksum_down: None,
-        // baseline_plan refuses a caller-supplied snapshot (B-11) — it
+        // baseline_plan refuses a caller-supplied snapshot — it
         // projects the live DB itself. Leave this None; the projection
         // is persisted to `snapshot_path` below.
         snapshot: None,
@@ -2715,7 +2665,6 @@ async fn run_baseline(
 
 /// Map a [`RunnerError`] produced by [`baseline_plan`] onto the CLI
 /// exit-code contract.
-///
 /// The flat [`runner_error_exit_code`] (always `1`) is wrong for
 /// baseline: a duplicate-version collision is a refusal the operator
 /// must resolve by choosing a new version, and a blind retry hits the
@@ -2723,7 +2672,6 @@ async fn run_baseline(
 /// `migrations apply` doc-contract ("re-running reports
 /// `VersionAlreadyApplied` (exit 2)") and the `repair` family's
 /// [`repair_error_exit_code`] convention.
-///
 /// `RunnerError` is `#[non_exhaustive]`, so the wildcard arm is
 /// load-bearing: any variant NOT named below defaults to exit `1`
 /// (transient — a retry may succeed). That is the safe default for the
@@ -2736,24 +2684,23 @@ fn baseline_error_exit_code(err: &RunnerError) -> i32 {
     match err {
         // ── Exit 2: refusals — the operator must intervene; a blind
         // retry hits the same condition.
-        //
         // - A duplicate version (terminal or non-terminal) means the
-        //   chosen baseline version is already taken; pick another.
+        // chosen baseline version is already taken; pick another.
         // - A caller-supplied snapshot is a programming error in the
-        //   wiring (the CLI always passes `snapshot: None`), surfaced
-        //   as a structural refusal rather than a retryable fault.
+        // wiring (the CLI always passes `snapshot: None`), surfaced
+        // as a structural refusal rather than a retryable fault.
         // - An out-of-order rejection is a policy refusal identical to
-        //   the apply path's.
+        // the apply path's.
         // - AdvisoryUnlockReturnedFalse is a session-pinning correctness
-        //   failure (PG returned false for pg_advisory_unlock); it is not
-        //   transient — matches the repair family's exit-2 treatment.
+        // failure (PG returned false for pg_advisory_unlock); it is not
+        // transient — matches the repair family's exit-2 treatment.
         // - SnapshotPersistFailed in the baseline path is a post-ledger
-        //   failure: baseline_inner inserts the terminal ledger row BEFORE
-        //   writing the snapshot. A retry with the same version therefore
-        //   hits VersionAlreadyApplied (exit 2) before it can write the
-        //   snapshot. Exit 1 (retryable) would give false hope; exit 2
-        //   signals that operator intervention is needed (run
-        //   `repair snapshot-rebuild` or choose a new version).
+        // failure: baseline_inner inserts the terminal ledger row BEFORE
+        // writing the snapshot. A retry with the same version therefore
+        // hits VersionAlreadyApplied (exit 2) before it can write the
+        // snapshot. Exit 1 (retryable) would give false hope; exit 2
+        // signals that operator intervention is needed (run
+        // `repair snapshot-rebuild` or choose a new version).
         RunnerError::VersionAlreadyApplied { .. }
         | RunnerError::VersionCollisionNonTerminal { .. }
         | RunnerError::BaselineSnapshotShouldNotBeProvided
@@ -2793,13 +2740,13 @@ mod tests {
     fn b1_discover_snapshot_buckets_picks_up_renamed_from_app() {
         let work = temp_workspace("b1_discover");
         // Lay down a `migrations/main/billing/schema_snapshot.json`
-        // — the OLD app's snapshot. The current model inventory
+        // the OLD app's snapshot. The current model inventory
         // would NOT have this bucket because the app moved to
         // `invoicing` via `#[app(renamed_from = "billing")]`.
         let billing_dir = work.join("migrations/main/billing");
         fs::create_dir_all(&billing_dir).unwrap();
         fs::write(billing_dir.join("schema_snapshot.json"), "{}").unwrap();
-        // A second bucket — the global one for the same database —
+        // A second bucket — the global one for the same database
         // exists too. Exercise the multi-bucket walk.
         let global_dir = work.join("migrations/main/_global_");
         fs::create_dir_all(&global_dir).unwrap();
@@ -2894,7 +2841,6 @@ mod tests {
     /// only loaded snapshots for inventory-known buckets, the differ
     /// would never see billing's snapshot and the compose would exit
     /// `NothingToCompose` (no DROP, no SQL written).
-    ///
     /// End-to-end regression guard.
     #[test]
     fn b1_round2_compose_consumes_discovered_orphan_snapshot() {
@@ -3301,8 +3247,7 @@ mod tests {
         );
     }
 
-    // ── render_verify_report (FBB-1) ─────────────────────────────────────
-    //
+    // ── render_verify_report ─────────────────────────────────────
     // `render_verify_report` returns `Vec<String>` so the rendering is
     // assertable without capturing stdout. Each test pins the exact lines
     // the operator sees for one report shape.

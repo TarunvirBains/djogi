@@ -1,15 +1,11 @@
 //! `PgConnection` — a deadpool-managed Postgres connection with a per-connection
 //! statement cache.
-//!
 //! # What
-//!
 //! `PgConnection` wraps a `deadpool_postgres::Object` (a checked-out pool
 //! connection) and delegates statement caching to `deadpool_postgres`'s own
 //! built-in [`deadpool_postgres::StatementCache`] via
 //! [`deadpool_postgres::ClientWrapper::prepare_cached`].
-//!
 //! # Statement cache
-//!
 //! `deadpool_postgres::ClientWrapper` owns a `StatementCache` that lives with
 //! the underlying connection — not with each checkout. When the same
 //! `ClientWrapper` is checked out a second time (after being returned to the
@@ -17,26 +13,19 @@
 //! the connection due to a recycle failure (connection closed / I/O error), the
 //! old `ClientWrapper` and its `StatementCache` are discarded and a fresh one is
 //! allocated — exactly the invalidation semantics RQ-2 requires.
-//!
 //! `Object` implements `Deref<Target = ClientWrapper>`, so calling
 //! `self.obj.prepare_cached(sql)` goes through `ClientWrapper::prepare_cached`.
-//!
 //! # TODO(phase 5-one): bound cache size + LRU eviction
-//!
-//! The `StatementCache` is currently unbounded. Phase 5-One should cap it and
+//! The `StatementCache` is currently unbounded. -One should cap it and
 //! apply LRU eviction to prevent memory growth on schemas with very many
 //! distinct query shapes.
-//!
 //! # Transaction handling
-//!
 //! A `PgConnection` with an active transaction is represented by a
 //! `ContextInner::Transaction(PgConnection)` in `DjogiContext`. The `BEGIN` /
 //! `COMMIT` / `ROLLBACK` commands are issued via `batch_execute` on the inner
 //! `Object`. `SAVEPOINT` / `RELEASE SAVEPOINT` / `ROLLBACK TO SAVEPOINT` for
-//! nested `atomic()` scopes also go through `batch_execute`.
-//!
+//! nested `atomic` scopes also go through `batch_execute`.
 //! # `Send + !Sync`
-//!
 //! `tokio_postgres::Client` (and therefore `deadpool_postgres::Object`) is `Send`
 //! but not `Sync`. `PgConnection` inherits these bounds — the same contract
 //! as other async Postgres wrappers that encapsulate a network connection.
@@ -48,11 +37,10 @@ use tokio_postgres::{Row, Statement};
 
 /// A checked-out Postgres connection from the pool, with a per-connection
 /// statement cache.
-///
 /// The cache is owned by the underlying `deadpool_postgres::ClientWrapper`, not
 /// by this checkout wrapper. The same `ClientWrapper` may be checked out
 /// multiple times; its `StatementCache` accumulates entries across all checkouts.
-/// When deadpool recycles the connection (e.g. I/O error, `is_closed()` true),
+/// When deadpool recycles the connection (e.g. I/O error, `is_closed` true),
 /// the `ClientWrapper` is dropped and a new one created — clearing the cache
 /// automatically. See the module-level docs for the full cache lifecycle.
 pub struct PgConnection {
@@ -64,7 +52,6 @@ pub struct PgConnection {
 #[allow(clippy::disallowed_methods)]
 impl PgConnection {
     /// Wrap a `deadpool_postgres::Object` in a `PgConnection`.
-    ///
     /// No per-checkout cache is allocated — statement caching is delegated to
     /// the `StatementCache` embedded in the underlying `ClientWrapper`.
     pub fn new(obj: Object) -> Self {
@@ -72,12 +59,10 @@ impl PgConnection {
     }
 
     /// Detach this connection from its pool instead of returning it.
-    ///
     /// Consumes `self`, calls `deadpool_postgres::Object::take` to remove the
-    /// underlying `ClientWrapper` from the pool's tracker, and drops it —
+    /// underlying `ClientWrapper` from the pool's tracker, and drops it
     /// closing the `tokio_postgres::Client` and the underlying socket. The
     /// pool will create a fresh physical connection on the next demand.
-    ///
     /// This is the dirty-exit branch of [`crate::context::PoolConnGuard`],
     /// the parallel of [`crate::pg::pool::DjogiPool::with_client`]'s
     /// `WithClientGuard` discard. See `WithClientGuard` for the underlying
@@ -92,11 +77,9 @@ impl PgConnection {
     }
 
     /// Detach this connection from its pool without consuming `self`.
-    ///
     /// Extracts the `Object`, removes it from the pool's tracker via
     /// `Object::take`, and drops the underlying connection. The struct is left
     /// in a vacant state (`obj: None`). Subsequent method calls will panic.
-    ///
     /// Used by [`crate::context::pinned_ctx::OwnedPinnedCtx`] which only has
     /// `&mut self` in its `Drop` impl (GH #331).
     pub(crate) fn detach_mut(&mut self) {
@@ -113,7 +96,6 @@ impl PgConnection {
     }
 
     /// Prepare `sql` if not already cached; return a clone of the statement.
-    ///
     /// Delegates to `deadpool_postgres::ClientWrapper::prepare_cached`, which
     /// checks the connection-local `StatementCache` before issuing a prepare
     /// round-trip. The cache entry lives for the lifetime of the underlying
@@ -137,7 +119,6 @@ impl PgConnection {
     }
 
     /// Execute a parameterised query and return all rows.
-    ///
     /// Prepares `sql` (or retrieves from cache), then calls
     /// `tokio_postgres::Client::query` with the provided parameters.
     pub async fn query(
@@ -199,7 +180,6 @@ impl PgConnection {
 // ---------------------------------------------------------------------------
 
 /// Convert a `tokio_postgres::Error` into a `DjogiError`.
-///
 /// Routes through [`crate::error::map_pg_err`], which classifies retryable
 /// SQLSTATEs into `DjogiError::LockConflict` and everything else into
 /// `DjogiError::Db`.

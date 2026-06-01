@@ -1,57 +1,44 @@
 //! Streaming / cursor terminals for [`QuerySet<T>`] and [`DjogiContext`].
-//!
 //! # What
-//!
 //! This module adds two streaming terminals:
-//!
 //! - [`ModelCursorStream`] — returned by `QuerySet::stream` and
-//!   `QuerySet::stream_with_fetch_size`. Yields `Result<T, DjogiError>`
-//!   where `T: FromPgRow`. Rows are decoded as they arrive.
+//! `QuerySet::stream_with_fetch_size`. Yields `Result<T, DjogiError>`
+//! where `T: FromPgRow`. Rows are decoded as they arrive.
 //! - [`RawCursorStream`] — returned by `DjogiContext::raw_stream` and
-//!   `DjogiContext::raw_stream_with_fetch_size`. Yields
-//!   `Result<tokio_postgres::Row, DjogiError>`. The caller decodes rows
-//!   themselves.
-//!
-//! Both terminals require an active `atomic()` scope (Postgres named
+//! `DjogiContext::raw_stream_with_fetch_size`. Yields
+//! `Result<tokio_postgres::Row, DjogiError>`. The caller decodes rows
+//! themselves.
+//! Both terminals require an active `atomic` scope (Postgres named
 //! cursors are transaction-local). Constructing a stream outside a
 //! transaction surfaces [`DjogiError::StreamOutsideTransaction`] at
 //! construction time.
-//!
 //! # Implementation: `futures::stream::unfold`
-//!
-//! Manual `Stream` impls that build a fresh `next_row()` future on each
+//! Manual `Stream` impls that build a fresh `next_row` future on each
 //! `poll_next` do not work: the future is discarded on `Poll::Pending`, so
 //! no progress accumulates between polls and `FETCH` round trips never
 //! complete. Storing the future inside the stream struct works, but the
 //! future borrows `driver.conn` mutably and cannot be expressed safely
 //! without pinning scaffolding.
-//!
 //! Instead, both streams wrap `futures::stream::unfold` over the `CursorDriver`.
 //! `unfold` internally stores the driver and the async state-machine
 //! generated from the closure, drives it to completion across polls, and
 //! yields items as they become ready. The outer `ModelCursorStream` /
 //! `RawCursorStream` own a pinned-boxed stream and forward `poll_next`
 //! through it.
-//!
 //! # Transaction invariant
-//!
 //! Both stream constructors verify the context's `ContextInner` is
 //! `Transaction`. Pool-backed contexts return
 //! [`DjogiError::StreamOutsideTransaction`] immediately.
-//!
 //! # Fetch size
-//!
 //! Default: `1000` rows per `FETCH` round trip. Override via
 //! `stream_with_fetch_size` / `raw_stream_with_fetch_size`.
-//!
 //! # Lifecycle
-//!
 //! 1. `DECLARE djogi_cur_<uuid> CURSOR FOR <sql>` at construction.
 //! 2. On each `poll_next`: yield from buffer, or `FETCH <n>` to refill.
 //! 3. When `FETCH` returns fewer rows than `fetch_size`: cursor exhausted.
 //! 4. `CLOSE <name>` issued after the last row is yielded.
 //! 5. Transaction rollback auto-closes the cursor server-side; the next
-//!    `FETCH` / `CLOSE` surfaces a `DjogiError::Db`.
+//! `FETCH` / `CLOSE` surfaces a `DjogiError::Db`.
 
 use crate::context::{ContextInner, DjogiContext};
 use crate::error::DjogiError;
@@ -72,11 +59,9 @@ pub const DEFAULT_FETCH_SIZE: u32 = 1000;
 // ---------------------------------------------------------------------------
 
 /// Low-level cursor-backed row driver.
-///
 /// Drives the `FETCH` / `CLOSE` lifecycle against the Postgres connection.
 /// Yields raw `tokio_postgres::Row` values; the typed model stream wraps
 /// this and applies `FromPgRow` decoding.
-///
 /// `'ctx` ties the driver to the `DjogiContext` from which the connection
 /// was borrowed. The caller holds `&'ctx mut PgConnection` exclusively for
 /// the duration of the stream.
@@ -102,7 +87,6 @@ impl<'ctx> CursorDriver<'ctx> {
     }
 
     /// Fetch one row from the driver, if available.
-    ///
     /// Issues `FETCH` when the buffer is empty and the cursor is not yet
     /// exhausted. Returns `None` after closing the cursor. Returns
     /// `Some(Err)` on a Postgres error.
@@ -151,16 +135,12 @@ impl<'ctx> CursorDriver<'ctx> {
 // ---------------------------------------------------------------------------
 
 /// A [`Stream`] over `T: FromPgRow` backed by a Postgres named cursor.
-///
 /// Created by [`crate::query::queryset::QuerySet::stream`] and
 /// `QuerySet::stream_with_fetch_size`.
-///
 /// Rows are decoded on the fly via `T::from_pg_row(&row)` as they are
 /// yielded from the internal buffer. At most `fetch_size` raw
 /// `tokio_postgres::Row`s are held in the buffer at any time.
-///
 /// # Lifetime
-///
 /// `'ctx` ties this stream to the `&'ctx mut DjogiContext` it was created
 /// from. The stream holds a mutable borrow on the context's underlying
 /// `PgConnection` for its entire lifetime; the context cannot be used for
@@ -201,12 +181,9 @@ impl<'ctx, T> Stream for ModelCursorStream<'ctx, T> {
 // ---------------------------------------------------------------------------
 
 /// A [`Stream`] over raw `tokio_postgres::Row` backed by a Postgres named cursor.
-///
 /// Created by [`DjogiContext::raw_stream`] and `raw_stream_with_fetch_size`.
-///
 /// Yields `Result<tokio_postgres::Row, DjogiError>`. The caller decodes rows
 /// themselves using `Row::get` or a custom `FromPgRow` impl.
-///
 /// Same lifecycle and transaction constraints as [`ModelCursorStream`].
 pub struct RawCursorStream<'ctx> {
     inner: Pin<Box<dyn Stream<Item = Result<Row, DjogiError>> + Send + 'ctx>>,
@@ -240,13 +217,10 @@ impl<'ctx> Stream for RawCursorStream<'ctx> {
 // ---------------------------------------------------------------------------
 
 /// Construct a [`ModelCursorStream`] for the given SQL + binds.
-///
 /// Called by the `QuerySet::stream` terminal in `terminal.rs`. Verifies the
 /// context is transaction-backed (cursors require a transaction) and issues
 /// `DECLARE … CURSOR FOR …` before returning.
-///
 /// # Errors
-///
 /// - [`DjogiError::StreamOutsideTransaction`] — context is pool-backed.
 /// - [`DjogiError::Db`] — `DECLARE` statement failed.
 pub async fn build_model_stream<'ctx, T: FromPgRow + Send + 'ctx>(
@@ -262,7 +236,6 @@ pub async fn build_model_stream<'ctx, T: FromPgRow + Send + 'ctx>(
 }
 
 /// Construct a [`RawCursorStream`] for the given SQL + binds.
-///
 /// Called by `DjogiContext::raw_stream` in `context.rs`. Same transaction
 /// invariant and error surface as [`build_model_stream`].
 pub async fn build_raw_stream<'ctx>(
@@ -278,7 +251,6 @@ pub async fn build_raw_stream<'ctx>(
 }
 
 /// Extract the `PgConnection` from a transaction-backed context.
-///
 /// Returns `Err(DjogiError::StreamOutsideTransaction)` when the context is
 /// pool-backed. Both `build_model_stream` and `build_raw_stream` call this.
 fn require_transaction(ctx: &mut DjogiContext) -> Result<&mut PgConnection, DjogiError> {

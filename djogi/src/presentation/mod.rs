@@ -1,21 +1,16 @@
 //! Per-scope presentation codecs for protected fields.
-//!
 //! This module provides the runtime trait surface for the
 //! `#[field(protected(per_scope = { ... }))]` presentation-codec feature
 //! (GH #227). A presentation codec transforms a model's stored field value
 //! at visage-projection time — after at-rest decode and before the visage
 //! is serialized or returned to the caller.
-//!
 //! # Core concept
-//!
 //! For every protected scalar field with a `per_scope` block, the `#[model]`
 //! macro generates per-scope `From<&Model>` / `TryFrom<&Model>` impls that
 //! call the selected codec's `present` / `try_present` method. The result
 //! becomes the visage struct's field value for that scope. The storage-truth
 //! model field is unaffected.
-//!
 //! # Traits
-//!
 //! | Trait | When to implement |
 //! |-------|------------------|
 //! | [`PresentationCodecInfo<Input>`] | Always — declares `Output`, `REVERSIBILITY`, `QUERYABILITY`, and startup validation |
@@ -25,26 +20,21 @@
 //! | [`ReversibleTryPresentationCodec<Input>`] | Fallible + reversible |
 //! | [`PresentationQueryCodec<Input>`] | Predicates against presented values |
 //! | [`PresentationOrderCodec<Input>`] | Ordering against presented values |
-//!
 //! # Security defaults
-//!
 //! - [`Reversibility`] defaults to [`Reversibility::OneWay`].
 //! - [`Queryability`] defaults to [`Queryability::Disabled`].
 //! - Query and order accessors on generated visage fields are only available
-//!   when the codec implements [`PresentationQueryCodec`] /
-//!   [`PresentationOrderCodec`].
-//! - Source-model `Model::objects()` accessors remain privileged; the
-//!   presentation codec does not restrict storage-truth queries.
-//!
+//! when the codec implements [`PresentationQueryCodec`] /
+//! [`PresentationOrderCodec`].
+//! - Source-model `Model::objects` accessors remain privileged; the
+//! presentation codec does not restrict storage-truth queries.
 //! # Startup validation
-//!
 //! Call [`validate_startup_inventory`] before serving traffic.
 //! This function iterates the linked-at-call-time
 //! [`PresentationCodecUsage`](inventory::PresentationCodecUsage) inventory in the
 //! current binary and validates each entry's codec startup contract.
 //! Keyed codecs (e.g. [`builtins::HmacSha256HexString`]) validate their
 //! environment-variable key during this pass.
-//!
 //! Only model crates compiled and linked into the running binary can contribute
 //! startup work. If a crate that defines `protected(per_scope = ...)` models is
 //! not linked, its presentation usages are absent from inventory and are not
@@ -52,9 +42,7 @@
 //! automatically (Stage 3). Apps that construct visages without a pool must call
 //! it explicitly, and test binaries should include a linked test model when
 //! asserting startup-failure paths.
-//!
 //! # Example — adopter-defined codec
-//!
 //! ```ignore
 //! use djogi::presentation::{PresentationCodecInfo, PresentationCodec, Reversibility, Queryability};
 //!
@@ -84,15 +72,12 @@ pub mod inventory;
 pub mod query;
 
 /// Whether a presentation codec is reversible.
-///
 /// A codec is [`Reversible`](Self::Reversible) when the transform can be
 /// undone — i.e. it implements
 /// [`ReversiblePresentationCodec`] or [`ReversibleTryPresentationCodec`].
 /// [`OneWay`](Self::OneWay) transforms cannot be reversed (e.g. masking,
 /// hashing).
-///
 /// # Security note
-///
 /// Reversibility does **not** imply queryability. A reversible token may
 /// still be non-queryable. See [`Queryability`].
 #[non_exhaustive]
@@ -100,7 +85,6 @@ pub mod query;
 pub enum Reversibility {
     /// The presentation transform is one-way (e.g. masking, hashing). The
     /// original value cannot be recovered from the presented output.
-    ///
     /// This is the default for [`PresentationCodecInfo`].
     #[default]
     OneWay,
@@ -112,23 +96,18 @@ pub enum Reversibility {
 }
 
 /// Whether a presentation codec exposes predicate or ordering access.
-///
 /// The generated visage query/order accessors for a protected field are
 /// governed by this enum, which a codec sets via
 /// [`PresentationCodecInfo::QUERYABILITY`]. The default is
 /// [`Disabled`](Self::Disabled), which suppresses all query/order access
 /// on the visage's presentation-gated field.
-///
 /// # Security note
-///
 /// Enabling predicate or order access grants adopter callers the ability to
 /// probe field values through the generated accessor. Ensure the codec
 /// provides appropriate transform-level protection before enabling
-/// queryability. Source-model `Model::objects()` always retains storage-level
+/// queryability. Source-model `Model::objects` always retains storage-level
 /// query access regardless of this setting.
-///
 /// # Relation to reversibility
-///
 /// Queryability and reversibility are independent axes. A reversible codec
 /// may have `Disabled` queryability. A one-way codec (such as a HMAC blind
 /// index) may have `PredicateOnly` queryability.
@@ -150,17 +129,14 @@ pub enum Queryability {
 }
 
 /// Startup error variants for presentation codec validation.
-///
 /// Returned by [`validate_startup_inventory`] when one or more
 /// codec registrations fail their startup check. Every keyed or
 /// environment-variable-dependent codec should implement
 /// [`PresentationCodecInfo::validate_startup`] to surface its failure
 /// as one of these variants.
-///
 /// # Display and Error
-///
 /// `PresentationStartupError` implements both [`std::fmt::Display`] and
-/// [`std::error::Error`]. Display messages never log key material —
+/// [`std::error::Error`]. Display messages never log key material
 /// only environment-variable names and structural information.
 #[non_exhaustive]
 #[derive(Debug)]
@@ -199,7 +175,6 @@ pub enum PresentationStartupError {
     /// exclusively lowercase hex characters (`a`–`f`) so that a case-change
     /// in the env-var is treated as a rejected key rather than a silent
     /// same-key re-entry.
-    ///
     /// Unlike snapshot signing's mixed-case parser, presentation HMAC v1
     /// enforces lowercase-only: accepting `AABB...` and `aabb...` as
     /// equivalent would allow a case-only env-var change to look like a
@@ -310,13 +285,11 @@ impl std::error::Error for PresentationStartupError {
 
 /// Error returned by built-in keyed presentation codecs when called
 /// without a validated key.
-///
 /// Keyed built-ins (e.g. [`builtins::HmacSha256HexString`]) use a
 /// [`OnceLock`](std::sync::OnceLock)-backed cache for their key. When
 /// the per-value `try_present` path is called and the cache is empty
 /// (startup validation was bypassed), they return this error rather than
 /// panicking or reading the environment.
-///
 /// This error is mapped to
 /// [`VisageError::PresentationCodec`](crate::visage::VisageError::PresentationCodec)
 /// by generated `TryFrom<&Model>` impls so the failure surfaces as
@@ -352,22 +325,17 @@ impl std::fmt::Display for BuiltInPresentationError {
 impl std::error::Error for BuiltInPresentationError {}
 
 /// Core metadata trait for a presentation codec.
-///
 /// Every codec type must implement `PresentationCodecInfo<Input>` to
 /// declare its output type and metadata. The codec then additionally
 /// implements either [`PresentationCodec<Input>`] (infallible) or
 /// [`TryPresentationCodec<Input>`] (fallible).
-///
 /// # Output type bounds
-///
 /// The `Output` associated type must implement `Clone + Debug + Serialize +
 /// DeserializeOwned + 'static`. These are the bounds required by generated
 /// visage structs, which unconditionally derive `Clone`, `Debug`,
 /// `serde::Serialize`, and `serde::Deserialize`. Codec types whose output
 /// does not satisfy these bounds will fail at the macro's trait-check step.
-///
 /// # Dual implementation
-///
 /// A single codec type may implement both [`PresentationCodec<Input>`] and
 /// [`TryPresentationCodec<Input>`] for the same `Input`. When it does,
 /// both implementations must share `PresentationCodecInfo<Input>::Output`,
@@ -376,13 +344,11 @@ impl std::error::Error for BuiltInPresentationError {}
 /// the Rust type level because the associated type lives on this one trait.
 pub trait PresentationCodecInfo<Input>: Send + Sync + 'static {
     /// The type produced by this codec's presentation transform.
-    ///
     /// Must implement `Clone + Debug + Serialize + DeserializeOwned + 'static`
     /// to satisfy the bounds generated visage structs place on their fields.
     type Output: Clone + std::fmt::Debug + serde::Serialize + serde::de::DeserializeOwned + 'static;
 
     /// Reversibility of this codec's transform.
-    ///
     /// Defaults to [`Reversibility::OneWay`]. Override to
     /// [`Reversibility::Reversible`] and implement
     /// [`ReversiblePresentationCodec`] / [`ReversibleTryPresentationCodec`]
@@ -390,7 +356,6 @@ pub trait PresentationCodecInfo<Input>: Send + Sync + 'static {
     const REVERSIBILITY: Reversibility = Reversibility::OneWay;
 
     /// Queryability of this codec's transform.
-    ///
     /// Defaults to [`Queryability::Disabled`]. Override to enable generated
     /// visage field accessors for predicates / ordering. Enabling
     /// queryability grants callers the ability to probe field values through
@@ -398,16 +363,12 @@ pub trait PresentationCodecInfo<Input>: Send + Sync + 'static {
     const QUERYABILITY: Queryability = Queryability::Disabled;
 
     /// Validate that the codec is properly configured for request-time use.
-    ///
     /// Called during [`validate_startup_inventory`] (which is invoked by
-    /// `DjogiPool::connect` / `DjogiPoolBuilder::build`). Return `Ok(())`
+    /// `DjogiPool::connect` / `DjogiPoolBuilder::build`). Return `Ok`
     /// if the codec is ready, or a [`PresentationStartupError`] if not.
-    ///
-    /// The default implementation returns `Ok(())` — override for codecs
+    /// The default implementation returns `Ok` — override for codecs
     /// that require environment-variable keys or other external resources.
-    ///
     /// # Retry semantics
-    ///
     /// This function must be retryable: a failed validation attempt must not
     /// poison a later attempt that occurs after the environment is fixed.
     fn validate_startup() -> Result<(), PresentationStartupError> {
@@ -416,16 +377,13 @@ pub trait PresentationCodecInfo<Input>: Send + Sync + 'static {
 }
 
 /// Infallible presentation codec.
-///
 /// Implement this trait when the presentation transform is total (cannot
 /// fail). The `#[field(protected(per_scope = { scope = { presentation_codec
 /// = YourCodec } }))]` attribute key selects this path.
-///
 /// For transforms that can fail (e.g. because a key has not been loaded),
 /// implement [`TryPresentationCodec`] instead.
 pub trait PresentationCodec<Input>: PresentationCodecInfo<Input> {
     /// Transform `value` into the codec's output type.
-    ///
     /// Must be total — no panics, no environment reads, no I/O. Keyed
     /// transforms must pre-cache their key via [`PresentationCodecInfo::validate_startup`]
     /// and use [`TryPresentationCodec`] if the key may be absent.
@@ -433,24 +391,20 @@ pub trait PresentationCodec<Input>: PresentationCodecInfo<Input> {
 }
 
 /// Fallible presentation codec.
-///
 /// Implement this trait when the presentation transform can fail — for
 /// example, because a key has not been loaded (startup validation was
 /// bypassed) or because the input is malformed. The `#[field(protected(per_scope
 /// = { scope = { try_presentation_codec = YourCodec } }))]` attribute key
 /// selects this path.
-///
 /// Generated `TryFrom<&Model>` impls map `Self::Error` to
 /// [`VisageError::PresentationCodec`](crate::visage::VisageError::PresentationCodec).
 pub trait TryPresentationCodec<Input>: PresentationCodecInfo<Input> {
     /// The error type returned when `try_present` fails.
-    ///
     /// Must implement `std::error::Error + Send + Sync + 'static` so
     /// it can be boxed into `VisageError::PresentationCodec::source`.
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Attempt to transform `value` into the codec's output type.
-    ///
     /// Errors are mapped to
     /// [`VisageError::PresentationCodec`](crate::visage::VisageError::PresentationCodec)
     /// by generated projection code. Must not panic — panic-free is the
@@ -462,22 +416,18 @@ pub trait TryPresentationCodec<Input>: PresentationCodecInfo<Input> {
 
 /// Infallible presentation codec that additionally supports reversing the
 /// transform.
-///
 /// Implementing this trait (on top of [`PresentationCodec<Input>`]) does
 /// not automatically enable queryability — that requires additionally
 /// implementing [`PresentationQueryCodec`] / [`PresentationOrderCodec`].
 pub trait ReversiblePresentationCodec<Input>: PresentationCodec<Input> {
     /// Error type for the reverse operation.
-    ///
     /// A reverse operation is often fallible even if the forward transform
     /// is not, because the output space may not be injective into the input
     /// space.
     type ReverseError: std::error::Error + Send + Sync + 'static;
 
     /// Attempt to reverse `value` back to the input type.
-    ///
     /// # Correctness invariant
-    ///
     /// For any `input`, `try_reverse(&Self::present(input))` must return
     /// `Ok(original)` where `original == *input`. Violating this invariant
     /// produces incorrect data round-trips.
@@ -488,7 +438,6 @@ pub trait ReversiblePresentationCodec<Input>: PresentationCodec<Input> {
 
 /// Fallible presentation codec that additionally supports reversing the
 /// transform.
-///
 /// Implementing this trait (on top of [`TryPresentationCodec<Input>`]) does
 /// not automatically enable queryability.
 pub trait ReversibleTryPresentationCodec<Input>: TryPresentationCodec<Input> {
@@ -503,36 +452,29 @@ pub trait ReversibleTryPresentationCodec<Input>: TryPresentationCodec<Input> {
 
 /// Walk the linked-at-call-time [`PresentationCodecUsage`](inventory::PresentationCodecUsage)
 /// inventory and invoke each usage's `validate_startup` function.
-///
-/// Returns `Ok(())` if all usages validate successfully. Returns
+/// Returns `Ok` if all usages validate successfully. Returns
 /// `Err(errors)` containing **all** failures collected (not short-circuiting)
 /// so the caller can report every broken codec configuration in a single
 /// startup message.
-///
 /// # Startup contract
-///
 /// `DjogiPool::connect`, `DjogiPool::from_database_config`, and
 /// `DjogiPoolBuilder::build` call this function before returning a pool.
 /// Apps that construct visages without a pool must call it explicitly
 /// during startup.
-///
 /// # Per-value bypass behavior
-///
 /// If startup validation is skipped, keyed built-in codecs (e.g.
 /// [`builtins::HmacSha256HexString`]) return
 /// [`BuiltInPresentationError::KeyNotValidated`] from their `try_present`
 /// path, which generated code maps to
 /// [`VisageError::PresentationCodec`](crate::visage::VisageError::PresentationCodec).
 /// No panics occur regardless of startup state.
-///
 /// # Plugin / deferred-load architectures
-///
 /// Call this function **after** loading any crates that use `#[model]` with
 /// `per_scope` presentation blocks. Startup validation only sees entries in the
 /// linked binary, so if a model crate is not linked its usages will be missing.
 /// For harnesses that assert validation failures, define or link a model with at
 /// least one keyed `PresentationCodecUsage` before calling
-/// `validate_startup_inventory()`.
+/// `validate_startup_inventory`.
 pub fn validate_startup_inventory() -> Result<(), Vec<PresentationStartupError>> {
     let errors: Vec<PresentationStartupError> =
         ::inventory::iter::<inventory::PresentationCodecUsage>
@@ -563,7 +505,7 @@ mod tests {
 
     /// `validate_startup_inventory` with an empty inventory (no `#[model]`
     /// structs with `per_scope` blocks are linked into the test binary)
-    /// must return `Ok(())`.
+    /// must return `Ok`.
     #[test]
     fn validate_startup_inventory_empty_inventory_returns_ok() {
         // The test binary does not link any model crates with per_scope blocks,
@@ -680,7 +622,7 @@ mod tests {
         let e = BuiltInPresentationError::KeyNotValidated {
             env: "DJOGI_PRESENTATION_HMAC_KEY",
         };
-        // Exercise the Error trait — source() must return None for this variant.
+        // Exercise the Error trait — source must return None for this variant.
         let dyn_err: &dyn std::error::Error = &e;
         assert!(dyn_err.source().is_none());
     }

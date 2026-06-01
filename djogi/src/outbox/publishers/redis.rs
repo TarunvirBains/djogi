@@ -1,6 +1,5 @@
-//! Redis publisher stub — Phase 5 Task 11.5.
-//!
-//! Gated on the `outbox-redis` feature flag. The actual integration —
+//! Redis publisher stub — .
+//! Gated on the `outbox-redis` feature flag. The actual integration
 //! including adding `redis` as a workspace dependency — ships in a future
 //! task once the provider dependency matrix is decided. Today this file
 //! provides a type-checked placeholder so the feature flag compiles and
@@ -11,7 +10,6 @@ use crate::outbox::worker::OutboxRow;
 use async_trait::async_trait;
 
 /// Delivers outbox rows to a Redis channel (stub — not yet implemented).
-///
 /// Enable with `djogi = { features = ["outbox-redis"] }`. The full
 /// implementation ships once the `redis` crate dependency is added to the
 /// workspace.

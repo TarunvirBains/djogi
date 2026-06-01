@@ -1,53 +1,42 @@
 //! Generates `impl djogi::model::Model for T` — the five CRUD methods.
-//!
 //! # What
-//!
 //! For every `#[model]`-annotated struct this module emits:
-//!
 //! ```ignore
 //! impl ::djogi::model::Model for Post {
-//!     type Pk = ::djogi::types::HeerId;
+//! type Pk = ::djogi::types::HeerId;
 //!
-//!     fn table_name() -> &'static str { "posts" }
-//!     fn pk_value(&self) -> &Self::Pk { &self.id }
-//!     fn descriptor() -> &'static ::djogi::ModelDescriptor { ... }
+//! fn table_name -> &'static str { "posts" }
+//! fn pk_value(&self) -> &Self::Pk { &self.id }
+//! fn descriptor -> &'static ::djogi::ModelDescriptor { ... }
 //!
-//!     fn get(ctx, id) -> impl Future<Output = Result<Self, DjogiError>> + Send { ... }
-//!     fn create(ctx, value) -> impl Future<Output = Result<Self, DjogiError>> + Send { ... }
-//!     fn save<'ctx>(&'ctx mut self, ctx: &'ctx mut DjogiContext)
-//!         -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx { ... }
-//!     fn delete(self, ctx) -> impl Future<Output = Result<(), DjogiError>> + Send { ... }
-//!     fn refresh_from_db<'ctx>(&'ctx self, ctx: &'ctx mut DjogiContext)
-//!         -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx { ... }
+//! fn get(ctx, id) -> impl Future<Output = Result<Self, DjogiError>> + Send { ... }
+//! fn create(ctx, value) -> impl Future<Output = Result<Self, DjogiError>> + Send { ... }
+//! fn save<'ctx>(&'ctx mut self, ctx: &'ctx mut DjogiContext)
+//! -> impl Future<Output = Result<, DjogiError>> + Send + 'ctx { ... }
+//! fn delete(self, ctx) -> impl Future<Output = Result<, DjogiError>> + Send { ... }
+//! fn refresh_from_db<'ctx>(&'ctx self, ctx: &'ctx mut DjogiContext)
+//! -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx { ... }
 //! }
 //! ```
-//!
 //! # Why `&mut DjogiContext`
-//!
-//! Phase 4 v3's Q1 resolution settled on "each method takes `&mut DjogiContext`".
+//! V3's Q1 resolution settled on "each method takes `&mut DjogiContext`".
 //! The context carries either a pool or an active transaction and pattern-matches
 //! on the variant at each query dispatch boundary in the generated body (via
-//! `::djogi::context::DjogiContext::inner_mut`). This unifies the call site —
+//! `::djogi::context::DjogiContext::inner_mut`). This unifies the call site
 //! the same `Post::create(&mut ctx, post)` works whether `ctx` is pool-backed
-//! or inside an `atomic()` transaction scope.
-//!
+//! or inside an `atomic` transaction scope.
 //! # Why the `'ctx` lifetime on `save` / `refresh_from_db`
-//!
 //! `save` and `refresh_from_db` take `&self` and `&mut DjogiContext`. Both
 //! borrows must outlive the returned future (RPITIT elision), so the method
 //! introduces an explicit `'ctx` and ties both receivers plus the returned
 //! future to it. `get`, `create`, and `delete` consume their `Self` / receive
 //! by value, so they don't need the lifetime annotation — the returned future
 //! only borrows from `ctx`, whose lifetime is inferred.
-//!
 //! # Why `+ Send` on the Future
-//!
 //! The returned `Future` carries `+ Send` explicitly because tokio's
 //! multi-threaded runtime requires futures to be `Send` across `.await` points.
 //! `&mut DjogiContext` is `Send` because the context only holds `Send` data.
-//!
 //! # Path routing through `::djogi::__private`
-//!
 //! Macro-generated code runs in the user's crate, which only has `djogi` as a
 //! direct dependency. Direct paths like `::tokio_postgres::...` or
 //! `::inventory::iter` would fail with E0433 unless the user explicitly added
@@ -55,46 +44,38 @@
 //! `::djogi::__private::pg`, `::djogi::__private::inventory`, and
 //! `::djogi::types`. This is the same convention established in Task 5
 //! (`from_row.rs`) and Task 6 (`descriptor.rs`).
-//!
 //! # `inventory::iter` — no parentheses
-//!
 //! `::djogi::__private::inventory::iter::<T>` is a zero-sized type that
-//! implements `IntoIterator`. It is NOT a function — calling it with `()` is a
-//! type error. Use `.into_iter()` on the ZST directly, which Task 6 and the
+//! implements `IntoIterator`. It is NOT a function — calling it with `` is a
+//! type error. Use `.into_iter` on the ZST directly, which Task 6 and the
 //! Task 6 integration test already validate.
-//!
 //! # SQL conventions
-//!
 //! - Column name == Rust field name (snake_case). This matches the injection
-//!   convention in `inject.rs` and the `FromRow` impl in `from_row.rs`.
+//! convention in `inject.rs` and the `FromRow` impl in `from_row.rs`.
 //! - `create` omits `id`, `created_at`, and `updated_at` from the `INSERT`
-//!   columns — the Postgres defaults (`heerid_next()`, `now()`) populate them.
-//!   `RETURNING *` sends the full row back so the returned `Self` has all
-//!   fields populated from the database.
-//! - `save` sets all user fields plus `updated_at = now()`. Only user fields
-//!   are written — `id` and `created_at` are immutable after creation.
+//! columns — the Postgres defaults (`heerid_next`, `now`) populate them.
+//! `RETURNING *` sends the full row back so the returned `Self` has all
+//! fields populated from the database.
+//! - `save` sets all user fields plus `updated_at = now`. Only user fields
+//! are written — `id` and `created_at` are immutable after creation.
 //! - `delete` consumes `self` to prevent accidental use of a stale handle.
 //! - `save` and `refresh_from_db` take `&self` and borrow `self` directly
-//!   across the async block — Rust 2024 RPITIT captures `&self`'s lifetime
-//!   into the returned future, so no clone-capture is needed. `Model: Send
-//!   + Sync` → `&Self: Send`, which keeps the returned future Send-bound.
-//!
+//! across the async block — Rust 2024 RPITIT captures `&self`'s lifetime
+//! into the returned future, so no clone-capture is needed. `Model: Send
+//! + Sync` → `&Self: Send`, which keeps the returned future Send-bound.
 //! # `pk = None` special case
-//!
 //! Models with `#[model(pk = None)]` have no framework-injected `id` field
-//! and declare their own primary key (possibly composite). Phase 1 does NOT
+//! and declare their own primary key (possibly composite). does NOT
 //! emit `impl Model for T` for these — the `Model` trait's `type Pk` requires
-//! `postgres_types::ToSql`, which `()` does not implement, and choosing
+//! `postgres_types::ToSql`, which `` does not implement, and choosing
 //! any other dummy type would misrepresent the model's actual key shape.
-//!
 //! Everything else (struct injection, `Default` impl, `FromRow`, descriptor
 //! registration, Fields/Filter stubs) is still emitted for pk=none models,
 //! so users can serialize, use struct-update syntax, and iterate descriptors.
-//! They just can't call `::create`, `::get`, `.save()`, `.delete()`, or
-//! `.refresh_from_db()`.
-//!
+//! They just can't call `::create`, `::get`, `.save`, `.delete`, or
+//! `.refresh_from_db`.
 //! A future phase will introduce a separate trait or code path for
-//! composite/user-managed PK models. Phase 1 deliberately excludes them
+//! composite/user-managed PK models. deliberately excludes them
 //! from `impl Model` rather than shipping a shim that lies about the key.
 
 use proc_macro2::TokenStream;
@@ -148,18 +129,16 @@ fn build_old_new_returning_suffix(all_cols: &[&str], include_new: bool) -> Strin
 }
 
 /// Generate the full `impl Model for T` block.
-///
 /// Called from `mod.rs` after `inject::expand` has mutated `struct_item`, so
 /// the field list already includes `id`, `created_at`, and `updated_at` at the
 /// front.
-///
 /// `portable_field_info` is the shared per-field metadata vector built by
 /// [`super::portable_field_emit::build`] in `mod.rs`. It is threaded
 /// through here so the emitted `Model::__djogi_emit_field_predicate`
 /// override agrees with `stubs::expand`'s `{Model}Fields` /
 /// `{Model}SqlFields` accessor emission on column names, declared Rust
 /// types, and the portable-kind classification. Re-deriving any of those
-/// facts in `crud.rs` would let the override and the accessors drift —
+/// facts in `crud.rs` would let the override and the accessors drift
 /// the metadata is the single source of truth.
 pub fn expand(
     struct_item: &ItemStruct,
@@ -167,14 +146,14 @@ pub fn expand(
     field_attrs: &[FieldAttrs],
     portable_field_info: &[PortableFieldEmitInfo],
 ) -> TokenStream {
-    // pk = None skips Model impl in Phase 1 — Task 8 adds a composite-PK-
+    // pk = None skips Model impl in Task 8 adds a composite-PK-
     // aware version. The other macro outputs (struct, Default, FromRow,
     // descriptor, Fields/Filter stubs) are still emitted by other modules.
     if matches!(model_attrs.pk, PkStrategy::None) {
         return TokenStream::new();
     }
 
-    // Phase 4 Task 6 — `#[model(table = "...", events)]` opts the model
+    // `#[model(table = "...", events)]` opts the model
     // into transactional outbox emission. We inline the outbox call at
     // macro-expansion time (not via a runtime `if has_outbox` branch)
     // so non-events models do not carry the `serde::Serialize` bound
@@ -330,7 +309,7 @@ pub fn expand(
     let table = &model_attrs.table;
 
     // -------------------------------------------------------------------------
-    // Associated Pk type and pk_value() body — vary by PK strategy.
+    // Associated Pk type and pk_value body — vary by PK strategy.
     // (pk = None is handled by the early return above.)
     // -------------------------------------------------------------------------
     let (pk_type_tokens, pk_value_body) = match &model_attrs.pk {
@@ -370,7 +349,7 @@ pub fn expand(
 
     // Returns true when a `syn::Type` is `Tracked<…>` (or any fully-qualified
     // spelling: `djogi::Tracked<…>`, `::djogi::Tracked<…>`,
-    // `djogi::prelude::Tracked<…>`). Detection is by last-segment ident only —
+    // `djogi::prelude::Tracked<…>`). Detection is by last-segment ident only
     // the same approach used for `ForeignKey` detection in `attrs.rs`.
     // A user-defined type literally named `Tracked` would shadow this; that
     // trade-off matches the existing ForeignKey convention and is acceptable.
@@ -393,13 +372,11 @@ pub fn expand(
     // `from_row.rs` byte-for-byte so the `SELECT {column_list}` and
     // `RETURNING {column_list}` SQL below is decoded positionally by
     // `FromPgRow::from_pg_row`.
-    //
     // Replaces the historical `SELECT *` / `RETURNING *` spelling — that
     // shape leaked DDL column order into the decode path and would
     // mis-decode against migrations that happen to list user columns
-    // before framework columns (Phase 4's `accounts` fixture is the
+    // before framework columns (the `accounts` fixture is the
     // canonical example).
-    //
     // Strips raw-identifier prefixes (`r#type` -> `type`) to match the
     // convention already used in `stubs.rs` / `descriptor.rs` /
     // `from_row.rs`.
@@ -420,9 +397,8 @@ pub fn expand(
     // `create` SQL: INSERT with user fields only; DB handles the framework
     // columns via column defaults. `RETURNING {column_list}` brings back the
     // full row in canonical order for ordinal decode.
-    //
     // For zero-user-field models we must use `DEFAULT VALUES` — empty parens
-    // `()` are invalid SQL and `INSERT ... () VALUES ()` is rejected by
+    // `` are invalid SQL and `INSERT ... VALUES ` is rejected by
     // Postgres. `DEFAULT VALUES` is standard SQL and Postgres-supported.
     // -------------------------------------------------------------------------
     let insert_sql = if n_user == 0 {
@@ -438,7 +414,6 @@ pub fn expand(
     };
     // Create params: one &(dyn ToSql + Sync) per user field, in order.
     // Used to build the __params vec in the create body.
-    //
     // For widened types (i8/u8 → i16, u16 → i32, u32 → i64, u64 → Decimal),
     // `create_param_tokens` returns a pre-declaration (`let __bind_N: WideType
     // = widen(value.field)`) and a slice entry (`&__bind_N as …`). The
@@ -461,56 +436,46 @@ pub fn expand(
 
     // -------------------------------------------------------------------------
     // `save` — dirty-aware SqlAccumulator-based SET emission (Task 2).
-    //
-    // The save() body now builds the SET list at runtime using SqlAccumulator
+    // The save body now builds the SET list at runtime using SqlAccumulator
     // so it can conditionally include or skip Tracked<T> fields depending on
-    // their `is_dirty()` flag. Non-Tracked fields are unconditional (always
+    // their `is_dirty` flag. Non-Tracked fields are unconditional (always
     // emitted).
-    //
     // Two shapes are emitted per user field at macro-expansion time:
-    //
     // 1. Tracked field — runtime-conditional:
-    //      if self.<field>.is_dirty() {
-    //          if __first { __first = false; } else { __acc.push_sql(", "); }
-    //          __acc.push_sql("<col> = ");
-    //          __acc.push_bind((*self.<field>).clone());
-    //      }
-    //
+    // if self.<field>.is_dirty {
+    // if __first { __first = false; } else { __acc.push_sql(", "); }
+    // __acc.push_sql("<col> = ");
+    // __acc.push_bind((*self.<field>).clone);
+    // }
     // 2. Non-Tracked field — always emitted (behavioral regression guard):
-    //      if __first { __first = false; } else { __acc.push_sql(", "); }
-    //      __acc.push_sql("<col> = ");
-    //      __acc.push_bind(self.<field>.clone());
-    //
+    // if __first { __first = false; } else { __acc.push_sql(", "); }
+    // __acc.push_sql("<col> = ");
+    // __acc.push_bind(self.<field>.clone);
     // After the user-field loop:
-    //      if !__first { __acc.push_sql(", "); }   // comma if any user col emitted
-    //      __acc.push_sql("updated_at = now()");   // always present
-    //
+    // if !__first { __acc.push_sql(", "); } // comma if any user col emitted
+    // __acc.push_sql("updated_at = now"); // always present
     // If ALL Tracked fields are clean AND there are no non-Tracked fields,
-    // the SQL is `UPDATE t SET updated_at = now() WHERE id = $1 RETURNING …`
-    // — no leading comma, valid Postgres.
-    //
-    // Using Postgres `now()` (not a client-side `OffsetDateTime::now_utc()`
+    // the SQL is `UPDATE t SET updated_at = now WHERE id = $1 RETURNING …`
+    // no leading comma, valid Postgres.
+    // Using Postgres `now` (not a client-side `OffsetDateTime::now_utc`
     // bound) keeps the timestamp source consistent with the column's
-    // `DEFAULT now()` on INSERT: all writes use the same server clock, so
+    // `DEFAULT now` on INSERT: all writes use the same server clock, so
     // `created_at <= updated_at` always holds across clients with drifted clocks.
     // -------------------------------------------------------------------------
 
     // -------------------------------------------------------------------------
     // Task 3 — version field detection for optimistic locking.
-    //
     // Find the single `#[field(version)]`-annotated user field (validated
     // to exist at most once, with type i32 or i64, by `mod.rs`'s
     // `validate_version_fields`). When present:
-    //
     // - SET: append `{col} = {col} + 1` (unconditional, after user cols).
-    //   The version field is EXCLUDED from the dirty-aware user-field loop
-    //   below — it always gets its special `col + 1` fragment regardless of
-    //   dirty state.
+    // The version field is EXCLUDED from the dirty-aware user-field loop
+    // below — it always gets its special `col + 1` fragment regardless of
+    // dirty state.
     // - WHERE: append `AND {col} = $n` binding the current in-memory value.
-    //   This is the optimistic-lock predicate: if another writer bumped the
-    //   version, the WHERE won't match and Postgres returns 0 rows.
+    // This is the optimistic-lock predicate: if another writer bumped the
+    // version, the WHERE won't match and Postgres returns 0 rows.
     // - Zero rows → `DjogiError::LockConflict`.
-    //
     // When absent (no version field): current behavior (no change).
     // -------------------------------------------------------------------------
     let version_field_info: Option<(syn::Ident, String)> =
@@ -542,7 +507,7 @@ pub fn expand(
             let nullable = is_nullable(ty);
             if is_tracked(ty) {
                 // Tracked<T>: emit only when dirty.
-                // `(*self.<f>).clone()` gives the inner `T` via Deref.
+                // `(*self.<f>).clone` gives the inner `T` via Deref.
                 // Pass tracked=false because we've already extracted T;
                 // `push_bind_tokens` sees T, not Tracked<T>.
                 let inner_expr = quote! { (*self.#f).clone() };
@@ -556,28 +521,25 @@ pub fn expand(
                 })
             } else if is_tracked_inner(ty) {
                 // Option<Tracked<T>>: emitted unconditionally on every save.
-                //
                 // `is_tracked(ty)` is false (the outermost type is `Option`,
                 // not `Tracked`), but `is_tracked_inner(ty)` is true because
                 // the inner type after Option-stripping is `Tracked<T>`.
-                //
-                // **Why unconditional**: checking `is_dirty()` on the inner
+                // **Why unconditional**: checking `is_dirty` on the inner
                 // Tracked<T> misses two transitions that change the field value:
-                //   1. None  → Some(clean_value)  — inner is not dirty, but the
-                //      column must change from NULL to the new value.
-                //   2. Some(_) → None             — the Option evaluates to None
-                //      so `as_ref().map(|t| t.is_dirty()).unwrap_or(false)`
-                //      returns false, but the column must be NULLed.
+                // 1. None → Some(clean_value) — inner is not dirty, but the
+                // column must change from NULL to the new value.
+                // 2. Some(_) → None — the Option evaluates to None
+                // so `as_ref.map(|t| t.is_dirty).unwrap_or(false)`
+                // returns false, but the column must be NULLed.
                 // Emitting unconditionally is always correct at the cost of one
                 // extra bind slot when neither transition has occurred. For full
                 // dirty-tracking of optional fields, prefer `Tracked<Option<T>>`
                 // (Tracked is the outer wrapper; it detects any assignment to the
                 // field, including None ↔ Some transitions).
-                //
-                // Inner expr: `as_ref().map(|__t| (**__t).clone())` → `Option<T>`.
-                // Two dereferences in `(**__t).clone()`:
-                //   - First `*`: `&Tracked<T>` → `Tracked<T>` (reference deref)
-                //   - Second `*`: `Tracked<T>` → `T` (via `Tracked: Deref<Target=T>`)
+                // Inner expr: `as_ref.map(|__t| (**__t).clone)` → `Option<T>`.
+                // Two dereferences in `(**__t).clone`:
+                // - First `*`: `&Tracked<T>` → `Tracked<T>` (reference deref)
+                // - Second `*`: `Tracked<T>` → `T` (via `Tracked: Deref<Target=T>`)
                 // `push_bind_tokens` receives `Option<T>` (nullable=true,
                 // tracked=false), correctly applying widening (if any).
                 let inner_expr = quote! { self.#f.as_ref().map(|__t| (**__t).clone()) };
@@ -592,7 +554,7 @@ pub fn expand(
             } else {
                 // Non-Tracked: unconditional — behavioral regression guard for
                 // models that do not opt into dirty tracking.
-                // `self.#f.clone()` may be T or Option<T>; tracked=false.
+                // `self.#f.clone` may be T or Option<T>; tracked=false.
                 let field_expr = quote! { self.#f.clone() };
                 let push_stmt = push_bind_tokens(&kind, nullable, false, field_expr);
                 Some(quote! {
@@ -606,14 +568,13 @@ pub fn expand(
         })
         .collect();
 
-    // After save() rehydrates self via RETURNING, walk every Tracked field
-    // and call mark_clean(). `Tracked::new(T)` already constructs with dirty=false
+    // After save rehydrates self via RETURNING, walk every Tracked field
+    // and call mark_clean. `Tracked::new(T)` already constructs with dirty=false
     // so this is defensive — but required by the Task 2 contract so that future
     // in-place rehydration changes cannot silently break the invariant.
-    //
     // Two shapes:
-    // - `Tracked<T>`: `self.#f.mark_clean()`
-    // - `Option<Tracked<T>>`: `if let Some(ref mut __t) = self.#f { __t.mark_clean(); }`
+    // - `Tracked<T>`: `self.#f.mark_clean`
+    // - `Option<Tracked<T>>`: `if let Some(ref mut __t) = self.#f { __t.mark_clean; }`
     let mark_clean_fragments: Vec<TokenStream> = user_fields
         .iter()
         .zip(user_field_types.iter())
@@ -623,7 +584,7 @@ pub fn expand(
             } else if is_tracked_inner(ty) {
                 // Option<Tracked<T>>: mark clean if Some.
                 // `ref mut __t` borrows the inner Tracked<T> in place;
-                // `mark_clean()` takes `&mut self`.
+                // `mark_clean` takes `&mut self`.
                 Some(quote! {
                     if let ::std::option::Option::Some(ref mut __t) = self.#f {
                         __t.mark_clean();
@@ -638,7 +599,7 @@ pub fn expand(
     // Static prefix for the save accumulator. We begin the SET clause body here.
     // The save accumulator prefix. The WHERE + RETURNING suffix is appended
     // dynamically in the save body once we know how many bind slots the SET
-    // list consumed (i.e., `__acc.bind_count() + 1` gives the id's `$n`).
+    // list consumed (i.e., `__acc.bind_count + 1` gives the id's `$n`).
     let save_acc_prefix = format!("UPDATE {table} SET ");
 
     // -------------------------------------------------------------------------
@@ -692,7 +653,7 @@ pub fn expand(
     };
 
     // -------------------------------------------------------------------------
-    // `descriptor()` — looks up the ModelDescriptor emitted by descriptor.rs.
+    // `descriptor` — looks up the ModelDescriptor emitted by descriptor.rs.
     // `inventory::iter::<T>` is a ZST implementing IntoIterator — no parens.
     // -------------------------------------------------------------------------
     let descriptor_impl = quote! {
@@ -706,25 +667,21 @@ pub fn expand(
 
     // -------------------------------------------------------------------------
     // Proxy default-filter / default-order overrides.
-    //
     // For proxy models (`#[model(proxy_for = Parent, default_filter = |f| ...,
     // default_order = [(field, Asc|Desc), ...])]`), emit overrides for
     // `Model::default_filter_condition` and `Model::default_order_by` so
     // every freshly constructed `QuerySet<Self>` starts with the proxy's
     // state already AND-composed / appended.
-    //
     // Non-proxy models emit nothing here — the trait's default impls
-    // (`None` / empty `Vec`) inline to a no-op at every `QuerySet::new()`
+    // (`None` / empty `Vec`) inline to a no-op at every `QuerySet::new`
     // call site. Zero-cost for the common case per the lens (`feedback_
     // decision_priorities.md`).
-    //
     // The default-filter override threads the lowered SQL fragment from
     // T3.3 through `Condition::__from_raw_sql_fragment` — the
     // `#[doc(hidden)]` constructor that wraps the `pub(crate)`
     // `Condition::RawSql` variant. The fragment is `&'static str`,
     // baked at expand time, so no allocation runs at queryset
     // construction.
-    //
     // The default-order override emits a `Vec::with_capacity(N)` followed
     // by `.push(OrderExpr::Column { ... })` per parsed `(field, Asc|Desc)`
     // tuple. NULL position defaults to `NullsOrder::Default` (matching
@@ -787,27 +744,23 @@ pub fn expand(
     };
 
     // -------------------------------------------------------------------------
-    // Cluster 8δ T8.6 — `__delta_should_tombstone` override for soft-deletable
+    // 6 — `__delta_should_tombstone` override for soft-deletable
     // models.
-    //
     // The delta-sync fetcher in `djogi::query::refresh` calls
-    // `item.__delta_should_tombstone()` to decide whether to route a fetched
+    // `item.__delta_should_tombstone` to decide whether to route a fetched
     // row to the tombstones set (evict from Punnu) or to the live-items list
     // (upsert into Punnu). The `Model` trait carries a default impl that
     // always returns `false`, so non-soft-deletable models pay zero overhead
     // (the vtable slot folds to a constant in practice).
-    //
     // For `#[model(soft_deletable)]` models we emit an override that forwards
-    // to `<Self as ::djogi::SoftDeletable>::deleted_at(self).is_some()`. The
+    // to `<Self as ::djogi::SoftDeletable>::deleted_at(self).is_some`. The
     // override lives in the same `impl Model for Self` block emitted here (in
     // `crud.rs`) because:
-    //
     // 1. This is the only place the full `impl Model for T` block is assembled
-    //    — adding it in `soft_deletable.rs` would require a second `impl Model`
-    //    block on the same type, which Rust rejects.
+    // adding it in `soft_deletable.rs` would require a second `impl Model`
+    // block on the same type, which Rust rejects.
     // 2. `model_attrs.soft_deletable` is already read by T2.6 path-routing (see
-    //    `soft_deletable::expand`) so reading it here adds zero new state.
-    //
+    // `soft_deletable::expand`) so reading it here adds zero new state.
     // Path routing: `::djogi::SoftDeletable` follows the macro-path-routing
     // convention (`feedback_macro_path_routing.md`) — public re-export path,
     // no `__private` indirection needed because the trait is not sealed via a
@@ -826,16 +779,13 @@ pub fn expand(
 
     // -------------------------------------------------------------------------
     // `Model::__djogi_emit_field_predicate` override.
-    //
     // Generates the `(field_name, LookupOp)` -> SQL emission dispatch
     // for every PK-backed model. The emitted body matches on
-    // `(field.field_name(), field.op())`, dispatches to the hidden
+    // `(field.field_name, field.op)`, dispatches to the hidden
     // `::djogi::__private::query::portable_emit::*` helpers for portable
     // field kinds, and falls through to typed `PortablePredicateError`
     // variants for anything else.
-    //
     // # Why match `(field_name, op)` rather than `field_name` alone
-    //
     // Each portable field has a small set of supported operators
     // (Eq/Neq/In/NotIn for every kind, plus ordering for scalars,
     // string-pattern arms for `String`, null-test arms for `Option<U>`).
@@ -843,9 +793,7 @@ pub fn expand(
     // payload type — Sassi's `FieldPredicate::value` is type-erased as
     // `Arc<dyn Any + Send + Sync>` and the macro is the only place
     // that knows the user's declared Rust `V` type.
-    //
     // # Why per-field wildcard arms are mandatory
-    //
     // `LookupOp` is `#[non_exhaustive]` and the macro output expands
     // in adopter crates. An exhaustive match would force every
     // adopter to recompile when sassi adds a new `LookupOp` variant.
@@ -853,11 +801,9 @@ pub fn expand(
     // UnsupportedLookup { field, op }` catch-all so future operators
     // surface as typed errors rather than as downstream compilation
     // failures.
-    //
     // # Final unknown-field arm
-    //
     // After every known portable arm, a single `(name, _) =>
-    // UnsupportedField { field: name }` arm catches anything else —
+    // UnsupportedField { field: name }` arm catches anything else
     // SQL-only fields, relation/visage paths, computed-FTS columns,
     // `Jsonb`/`Vec`/spatial wrappers, and user types whose portable
     // parity has not been validated. The portable cache/refresh
@@ -865,9 +811,7 @@ pub fn expand(
     // these fields; the typed runtime error here is belt-and-braces
     // for any future macro path that ends up wrapping one in a
     // `DjogiField`.
-    //
     // # Path routing
-    //
     // The override spells Sassi inspection types through
     // `::djogi::types::*` (per `feedback_macro_path_routing.md`),
     // emit helpers through `::djogi::__private::query::portable_emit::*`,
@@ -877,28 +821,23 @@ pub fn expand(
     let emit_field_predicate_override = emit_djogi_emit_field_predicate(name, portable_field_info);
 
     // -------------------------------------------------------------------------
-    // Auto-tenant wiring (Phase 5.5 Task 10 + Task 11).
-    //
-    // Emitted only for tenant-keyed models. When `ctx.auth()` carries a
+    // Auto-tenant wiring (Task 10 + Task 11).
+    // Emitted only for tenant-keyed models. When `ctx.auth` carries a
     // `tenant_id`, this snippet calls `ctx.__ensure_tenant_set_for_macros`
     // (the public shim over `ensure_tenant_set`) before any SQL runs.
-    //
     // Task 11 extends this: when `auth` is present but `tenant_id` is `None`,
     // a `tracing::warn!` fires (the "silent cross-tenant leak" footgun) unless
-    // `ctx.__tenant_scope_suppressed_for_macros()` is `true`. Callers that
-    // deliberately want cross-tenant queries call `ctx.with_no_tenant_scope()`
-    // or `ctx.set_no_tenant_scope()` to suppress the warn.
-    //
-    // Borrow split: `ctx.auth()` borrows `ctx` immutably; we clone the
+    // `ctx.__tenant_scope_suppressed_for_macros` is `true`. Callers that
+    // deliberately want cross-tenant queries call `ctx.with_no_tenant_scope`
+    // or `ctx.set_no_tenant_scope` to suppress the warn.
+    // Borrow split: `ctx.auth` borrows `ctx` immutably; we clone the
     // `String` before the immutable borrow drops so `ctx.ensure_tenant_set`
     // can take `&mut ctx` without a simultaneous immutable borrow. The
-    // `__djogi_auth_present` bool also captures the `is_some()` result
+    // `__djogi_auth_present` bool also captures the `is_some` result
     // before the clone so no second borrow is needed in the `None` arm.
-    //
     // Path routing: bare `Option` paths are spelled `::std::option::Option::*`
     // per the `feedback_macro_path_routing` convention; temp bindings are
     // prefixed `__djogi_` to avoid colliding with user-chosen field names.
-    //
     // Tracing path: `::tracing::warn!` is used bare here. The `tracing` crate
     // is a workspace dependency of `djogi` and is re-exported via
     // `::djogi::__private::tracing`. Macro-emitted code in user crates cannot
@@ -912,7 +851,7 @@ pub fn expand(
         let model_name_str = table.as_str();
         quote! {
             // No auth attached → hands-off. The explicit-`set_tenant`
-            // flow (Phase 5 tenancy pattern, admin tooling, test
+            // flow (tenancy pattern, admin tooling, test
             // harnesses) must not have its GUC clobbered by the auto-
             // wiring. Only auth-bound contexts participate.
             if ctx.auth().is_some() {
@@ -926,7 +865,7 @@ pub fn expand(
                         // Auth present but carries no tenant_id. Clear any
                         // previously auth-applied tenant scope so
                         // subsequent queries don't leak under the stale
-                        // GUC (Phase 5.5 phase-boundary fixup — see
+                        // GUC (phase-boundary fixup — see
                         // djogi/src/query/terminal.rs auto_set_tenant for
                         // the full rationale).
                         if ctx.applied_tenant_id().is_some() {
@@ -985,26 +924,23 @@ pub fn expand(
         }
     };
 
-    // Phase 4 Task 7.6 — detect `#[field(sequence_within = "parent_col")]`.
-    //
+    // detect `#[field(sequence_within = "parent_col")]`.
     // `field_attrs[i]` maps 1:1 to `user_fields[i]` because both skip
     // the framework columns at the front. At most one field may
     // declare the attribute today (multi-scope sequencing is future
     // work); a `compile_error!` token fires when users violate that.
-    //
     // When set, the generated `create` body preempts the main INSERT
     // with a counter upsert against the companion table
     // `<table>_seq_<parent_col>` (hand-written by the caller today;
-    // the DDL side-channel emission is DEFERRED per the Phase 4 Task
+    // the DDL side-channel emission is DEFERRED per the Task
     // 6 outbox deferral pattern). The upsert returns the next seq
     // value which is then assigned to the sequence field on `value`
     // before the row INSERT emits. Rollback of the caller's
-    // `atomic()` scope cleans both the counter increment and the
+    // `atomic` scope cleans both the counter increment and the
     // main row.
-    //
     // The parent field must be shaped `ForeignKey<T>` where
     // `T::Pk = HeerId` — the macro binds
-    // `value.<parent>.key().as_i64()` to a `BIGINT parent_id`
+    // `value.<parent>.key.as_i64` to a `BIGINT parent_id`
     // column. RanjId and Serial parents are a future extension
     // (companion-table shape + bind path must change in lockstep).
     let seq_within_fields: Vec<(usize, &str)> = field_attrs
@@ -1013,11 +949,11 @@ pub fn expand(
         .filter_map(|(i, fa)| fa.sequence_within.as_deref().map(|s| (i, s)))
         .collect();
     // `value` must be mutable when any of the following participates:
-    //   - `sequence_within` (assigns the counter back into the seq field)
-    //   - `#[model(hooks)]` (`before_create(&mut value, ctx)`)
-    //   - `#[model(auditable)]` (T2.4 — `value.__djogi_auditable_populate(ctx)`
-    //     mutates `created_by` in place when auth is present and the field
-    //     is currently None)
+    // - `sequence_within` (assigns the counter back into the seq field)
+    // - `#[model(hooks)]` (`before_create(&mut value, ctx)`)
+    // - `#[model(auditable)]` (T2.4 — `value.__djogi_auditable_populate(ctx)`
+    // mutates `created_by` in place when auth is present and the field
+    // is currently None)
     // A single shared flag keeps the binding choice explicit.
     let value_must_be_mut =
         !seq_within_fields.is_empty() || model_attrs.hooks || model_attrs.auditable;
@@ -1047,8 +983,8 @@ pub fn expand(
             let preamble = quote! {
                 // Counter upsert — same ctx as the main INSERT so a
                 // rollback cleans the increment alongside the row.
-                // `ForeignKey::key()` returns the parent's Pk
-                // (HeerId for the supported case); `.as_i64()` binds
+                // `ForeignKey::key` returns the parent's Pk
+                // (HeerId for the supported case); `.as_i64` binds
                 // to the companion table's `parent_id BIGINT`
                 // column. Uses the public-but-hidden ctx helper so
                 // macro-emitted code can dispatch through either Pool
@@ -1074,13 +1010,11 @@ pub fn expand(
         };
 
     // Hook dispatch wrapping the INSERT.
-    //
     // When `#[model(hooks)]` is set, `before_create(&mut value, ctx)` runs
     // before the INSERT (may mutate the in-memory value or abort the whole
     // operation by returning Err) and `after_create(&row, ctx)` runs after
     // the outbox write (hook sequence:
     // before_create -> INSERT -> outbox -> after_create -> on_commit drain).
-    //
     // For non-hooks models both branches collapse to empty `TokenStream`
     // (no `quote!` invocation) so opt-out paths emit zero codegen — T1.8
     // verifies this with `cargo asm`. The dispatch itself routes through
@@ -1127,15 +1061,13 @@ pub fn expand(
     };
 
     // Composition populator for `#[model(auditable)]`.
-    //
     // When the flag is set, the model emitter also produced an inherent
     // `__djogi_auditable_populate(&mut self, ctx: &mut DjogiContext)`
     // method (see `compose::auditable::expand`). Call it BEFORE the user
     // `before_create` hook so user code can inspect or override the
     // populated `created_by` value (spec line 990). The populator
-    // contains an `if self.created_by.is_none()` guard so a user-set
+    // contains an `if self.created_by.is_none` guard so a user-set
     // value at construction time is never clobbered (spec line 1062).
-    //
     // Models without `auditable` emit empty TokenStream — zero
     // dispatch overhead at the create path and the inherent method is
     // never emitted.
@@ -1156,13 +1088,13 @@ pub fn expand(
             // `before_create` hook so user hooks can inspect/override
             // the populated `created_by` value. Per spec line 1032 the
             // canonical sequence is:
-            //   #auto_set_tenant
-            //   #create_value_binding
-            //   #auditable_populate     ← here (T2.4)
-            //   #before_create_call     ← T1.4
-            //   #sequence_upsert_preamble  ← T1 BLOCK-1 fix (982bee2)
-            //   ... INSERT, outbox, after_create ...
-            // Empty TokenStream when `#[model(auditable)]` is absent —
+            // #auto_set_tenant
+            // #create_value_binding
+            // #auditable_populate ← here (T2.4)
+            // #before_create_call ← T1.4
+            // #sequence_upsert_preamble ← T1
+            // ... INSERT, outbox, after_create ...
+            // Empty TokenStream when `#[model(auditable)]` is absent
             // zero codegen for opt-out models.
             #auditable_populate
             // before_create fires before ANY DB write on
@@ -1173,7 +1105,7 @@ pub fn expand(
             // an aborted create would still increment the per-parent
             // counter, leaking sequence numbers on validation failure.
             // Returning Err short-circuits via `?` — no upsert, no
-            // INSERT, no outbox row, surrounding atomic() rolls back
+            // INSERT, no outbox row, surrounding atomic rolls back
             // through standard error propagation.
             #before_create_call
             // Counter upsert (if `#[field(sequence_within = ...)]` is
@@ -1190,7 +1122,7 @@ pub fn expand(
             ];
             let __raw_row = ctx.__query_one_for_macros(#insert_sql, __params).await?;
             let row = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
-            // Phase 4 Task 6 — outbox emission (no-op for non-events models).
+            // outbox emission (no-op for non-events models).
             // Runs in the same ctx so a transactional caller gets the
             // outbox row committed/rolled back atomically with `row`.
             #emit_outbox_create
@@ -1205,24 +1137,20 @@ pub fn expand(
 
     // -------------------------------------------------------------------------
     // Task 3 — version-aware save body fragments.
-    //
     // Two shapes depending on whether a version field exists:
-    //
     // A. No version field (current behavior, preserved): after user-field
-    //    fragments, append `updated_at = now()` and WHERE `id = $n`.
-    //    Use `__query_one_for_macros` (errors on zero rows).
-    //
-    // B. Version field present: append `updated_at = now(), {ver_col} = {ver_col} + 1`
-    //    and WHERE `id = $n AND {ver_col} = $m` binding the current in-memory
-    //    version. Use `__query_opt_for_macros` and map `None` →
-    //    `DjogiError::LockConflict`. `DjogiError::LockConflict` wraps a
-    //    `DbError::other(...)` message-only error — no Postgres SQLSTATE
-    //    comes from a zero-row UPDATE (Postgres returns 0 rows without an
-    //    error code when the WHERE clause matches nothing).
+    // fragments, append `updated_at = now` and WHERE `id = $n`.
+    // Use `__query_one_for_macros` (errors on zero rows).
+    // B. Version field present: append `updated_at = now, {ver_col} = {ver_col} + 1`
+    // and WHERE `id = $n AND {ver_col} = $m` binding the current in-memory
+    // version. Use `__query_opt_for_macros` and map `None` →
+    // `DjogiError::LockConflict`. `DjogiError::LockConflict` wraps a
+    // `DbError::other(...)` message-only error — no Postgres SQLSTATE
+    // comes from a zero-row UPDATE (Postgres returns 0 rows without an
+    // error code when the WHERE clause matches nothing).
     // -------------------------------------------------------------------------
 
     // Hook dispatch wrapping the UPDATE.
-    //
     // When `#[model(hooks)]` is set, `before_save(self, ctx)` runs before
     // the UPDATE composes (may mutate `*self` or abort the whole operation
     // by returning Err) and `after_save(&*self, ctx)` runs after the
@@ -1230,17 +1158,15 @@ pub fn expand(
     // observes server-side defaults, triggers, and any DB-bumped column
     // values (hook sequence:
     // before_save -> UPDATE -> outbox -> after_save -> on_commit drain).
-    //
     // Critical placement notes:
-    // - `save()` works directly on `&mut self`; unlike `create()` there is
-    //   no local `value` binding. Pass `self` (re-borrow `&mut self`) into
-    //   `before_save` and `&*self` (immutable re-borrow after rehydration)
-    //   into `after_save`.
+    // - `save` works directly on `&mut self`; unlike `create` there is
+    // no local `value` binding. Pass `self` (re-borrow `&mut self`) into
+    // `before_save` and `&*self` (immutable re-borrow after rehydration)
+    // into `after_save`.
     // - In Shape B (version-aware), `after_save` MUST be placed inside the
-    //   `Some(__raw_row)` success branch — the `None` arm returns
-    //   `LockConflict` early and `after_save` would observe stale state
-    //   that was never written to the DB.
-    //
+    // `Some(__raw_row)` success branch — the `None` arm returns
+    // `LockConflict` early and `after_save` would observe stale state
+    // that was never written to the DB.
     // For non-hooks models both branches collapse to empty `TokenStream`
     // (no `quote!` invocation) so opt-out paths emit zero codegen — T1.8
     // verifies this with `cargo asm`.
@@ -1297,7 +1223,7 @@ pub fn expand(
                 // is in scope (so the hook can read tenant context) but
                 // before the UPDATE composes its SET clause. Returning Err
                 // short-circuits via `?` — no UPDATE, no outbox row,
-                // surrounding atomic() rolls back via standard error
+                // surrounding atomic rolls back via standard error
                 // propagation.
                 #before_save_call
                 // Build the SET clause dynamically. Tracked<T> fields are only
@@ -1308,7 +1234,7 @@ pub fn expand(
                 {
                     let mut __first = true;
                     #(#save_set_fragments)*
-                    // `updated_at = now()` always present. Comma if any user col fired.
+                    // `updated_at = now` always present. Comma if any user col fired.
                     if !__first { __acc.push_sql(", "); }
                     __acc.push_sql("updated_at = now()");
                     // Version counter — always incremented, not dirty-gated.
@@ -1338,7 +1264,7 @@ pub fn expand(
                         // from_pg_row already constructs Tracked::new (dirty=false),
                         // but the explicit walk is required by the Task 2 contract.
                         #(#mark_clean_fragments)*
-                        // Phase 4 Task 6 — outbox after DB-refreshed rehydration.
+                        // outbox after DB-refreshed rehydration.
                         #emit_outbox_save
                         // after_save runs AFTER the outbox
                         // emission AND after `*self = row` rehydration so
@@ -1348,7 +1274,7 @@ pub fn expand(
                         // value"). MUST stay inside the success arm — the
                         // None branch (LockConflict) skips after_save.
                         #after_save_call
-                        // Cluster 8δ T7.5 — enqueue on_commit cache
+                        // 5 — enqueue on_commit cache
                         // invalidation. The callback is captured by value
                         // so it does not need to borrow ctx after the SQL
                         // completes. The `if let Some(...)` gate skips
@@ -1356,11 +1282,10 @@ pub fn expand(
                         // no-cache context). Pool-backed contexts log a
                         // warn and drop the callback — no special-case
                         // needed here.
-                        //
                         // L2 backend errors are logged explicitly at
                         // `warn!` level (not `error!`): L1 is still
                         // correctly invalidated; only L2 distribution
-                        // failed. Returning Ok(()) keeps the substrate
+                        // failed. Returning Ok keeps the substrate
                         // from treating this as a transaction-level
                         // failure.
                         if let ::std::option::Option::Some(__punnu) =
@@ -1415,7 +1340,7 @@ pub fn expand(
                 // is in scope (so the hook can read tenant context) but
                 // before the UPDATE composes its SET clause. Returning Err
                 // short-circuits via `?` — no UPDATE, no outbox row,
-                // surrounding atomic() rolls back via standard error
+                // surrounding atomic rolls back via standard error
                 // propagation.
                 #before_save_call
                 // Build the SET clause dynamically. Tracked<T> fields are only
@@ -1426,7 +1351,7 @@ pub fn expand(
                 {
                     let mut __first = true;
                     #(#save_set_fragments)*
-                    // `updated_at = now()` is always appended. If any user column
+                    // `updated_at = now` is always appended. If any user column
                     // was emitted above, we need a leading comma; otherwise it is
                     // the first (and only) assignment.
                     if !__first { __acc.push_sql(", "); }
@@ -1448,11 +1373,11 @@ pub fn expand(
                 let __raw_row = ctx.__query_one_for_macros(&__sql, &__params).await?;
                 let row: Self = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
                 *self = row;
-                // After `*self = row`, walk every Tracked field and call mark_clean().
+                // After `*self = row`, walk every Tracked field and call mark_clean.
                 // `from_pg_row` uses `Tracked::new(T)` which already starts clean,
                 // so this is defensive — but required by the Task 2 contract.
                 #(#mark_clean_fragments)*
-                // Phase 4 Task 6 — outbox payload must reflect the DB-refreshed
+                // outbox payload must reflect the DB-refreshed
                 // values (triggers, column defaults), so emission runs AFTER the
                 // `*self = row` rehydration. No-op for non-events models.
                 #emit_outbox_save
@@ -1461,7 +1386,7 @@ pub fn expand(
                 // server-side defaults, triggers, and any DB-bumped column
                 // values (hook sequence).
                 #after_save_call
-                // Cluster 8δ T7.5 — enqueue on_commit cache invalidation.
+                // 5 — enqueue on_commit cache invalidation.
                 // Captured by value; pool-backed contexts warn + drop.
                 // L2 backend errors are logged at `warn!` level — L1 is
                 // still correctly invalidated; only L2 distribution
@@ -1492,7 +1417,6 @@ pub fn expand(
     };
 
     // Hook dispatch wrapping the DELETE.
-    //
     // When `#[model(hooks)]` is set, `before_delete(&mut self, ctx)` runs
     // before the DELETE composes (may mutate the in-memory snapshot or
     // abort the whole operation by returning Err) and
@@ -1500,21 +1424,19 @@ pub fn expand(
     // hook can observe both the pre-delete snapshot AND the just-written
     // outbox row (hook sequence:
     // before_delete -> DELETE -> outbox -> after_delete -> on_commit drain).
-    //
     // Critical placement notes:
     // - `delete(self, ctx)` consumes `self`. To pass `&mut self` to
-    //   `before_delete`, the impl signature emits `mut self` instead of
-    //   `self` when hooks are enabled (Rust forbids shadowing the `self`
-    //   keyword with `let mut self = self;`, but `mut self` as a function
-    //   binding pattern is permitted and matches the trait declaration).
-    //   The `mut` binding is emitted ONLY when `hooks` is true so non-hook
-    //   models keep the original `self` binding and do not trip clippy's
-    //   `unused_mut` lint.
+    // `before_delete`, the impl signature emits `mut self` instead of
+    // `self` when hooks are enabled (Rust forbids shadowing the `self`
+    // keyword with `let mut self = self;`, but `mut self` as a function
+    // binding pattern is permitted and matches the trait declaration).
+    // The `mut` binding is emitted ONLY when `hooks` is true so non-hook
+    // models keep the original `self` binding and do not trip clippy's
+    // `unused_mut` lint.
     // - `after_delete` takes `&self` (immutable re-borrow of the same
-    //   consumed-but-still-in-scope value). The DB row is gone; the
-    //   outbox row carries the canonical snapshot. v3 §D1 fixes the
-    //   after-hook receiver as `&self`, not `&mut self`.
-    //
+    // consumed-but-still-in-scope value). The DB row is gone; the
+    // outbox row carries the canonical snapshot. v3 §D1 fixes the
+    // after-hook receiver as `&self`, not `&mut self`.
     // For non-hooks models both branches collapse to empty `TokenStream`
     // (no `quote!` invocation) so opt-out paths emit zero codegen — T1.8
     // verifies this with `cargo asm`.
@@ -1573,7 +1495,7 @@ pub fn expand(
             // D3 step 1: before_delete fires before the
             // DELETE composes its parameter slice. Returning Err short-
             // circuits via `?` — no DELETE, no outbox row, surrounding
-            // atomic() rolls back through standard error propagation.
+            // atomic rolls back through standard error propagation.
             #before_delete_call
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #owned_pk_param,
@@ -1591,7 +1513,7 @@ pub fn expand(
             // fires). Order is load-bearing: an audit sink consuming
             // outbox sees the row before after_delete's body runs.
             #after_delete_call
-            // Cluster 8δ T7.5 — enqueue on_commit cache invalidation.
+            // 5 — enqueue on_commit cache invalidation.
             // Captured by value; pool-backed contexts warn + drop.
             // L2 backend errors are logged at `warn!` level — L1 is
             // still correctly invalidated; only L2 distribution
@@ -1621,25 +1543,22 @@ pub fn expand(
     };
 
     // ── update_returning_pair / delete_returning bodies ──
-    //
     // Both methods are emitted for every pk-backed `#[model]` struct alongside
     // the existing five CRUD methods. The trait provides default
-    // `unreachable!()` bodies so hand-rolled test Fake models need not change.
-    //
+    // `unreachable!` bodies so hand-rolled test Fake models need not change.
     // SQL construction:
     // - The RETURNING suffix is baked at macro-expansion time using the
-    //   already-built `column_list` slice (`framework_cols + user_col_names`),
-    //   mirroring `save()` / `delete()` which also bake their SQL at expansion.
+    // already-built `column_list` slice (`framework_cols + user_col_names`),
+    // mirroring `save` / `delete` which also bake their SQL at expansion.
     // - Projection aliases use short ordinal aliases (`o{idx}` / `n{idx}`) to
-    //   avoid PostgreSQL identifier-limit truncation, matching runtime builders.
+    // avoid PostgreSQL identifier-limit truncation, matching runtime builders.
     // - `FromJoinedPgRow` with prefix `"__djogi_old__"` / `"__djogi_new__"`
-    //   decodes the two sides.
-    //
+    // decodes the two sides.
     // Hook / outbox / cache sequencing:
     // - `update_returning_pair`: before_save → UPDATE RETURNING → decode pair
-    //   → outbox(pair.new) → after_save(pair.new) → on_commit cache.
-    // - `delete_returning`:      before_delete → DELETE RETURNING → decode deleted
-    //   → outbox(self) → after_delete(self) → on_commit cache.
+    // → outbox(pair.new) → after_save(pair.new) → on_commit cache.
+    // - `delete_returning`: before_delete → DELETE RETURNING → decode deleted
+    // → outbox(self) → after_delete(self) → on_commit cache.
     // Old snapshot comes from DB `OLD`; hook/outbox keep any
     // `before_delete` mutations on the in-memory instance.
 
@@ -1763,14 +1682,14 @@ pub fn expand(
     };
 
     // update_returning_pair body — non-versioned shape (Shape A).
-    // Mirrors save() Shape A but decodes pair instead of rehydrating self.
+    // Mirrors save Shape A but decodes pair instead of rehydrating self.
     let update_returning_pair_body_shape_a = quote! {
         async move {
             // `mut self` so before_save can take `&mut self`.
             #snapshot_auth_state_before_auto_set
             #auto_set_tenant
             #before_urp_call
-            // Build the SET clause — same logic as save() Shape A.
+            // Build the SET clause — same logic as save Shape A.
             let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#save_acc_prefix);
             {
                 let mut __first = true;
@@ -1794,11 +1713,11 @@ pub fn expand(
                         &__raw_row, "__djogi_new__",
                     )?;
                     let __pair = ::djogi::query::ReturningPair { old: __old, new: __new };
-                    // Outbox: post-image only (pair.new), same outbox schema as save().
+                    // Outbox: post-image only (pair.new), same outbox schema as save.
                     #emit_outbox_returning_save?;
                     // Hooks: after_save receives pair.new (DB truth, not stale self).
                     #after_urp_call
-                    // Cache invalidation: invalidate pair.new.id (same as save()).
+                    // Cache invalidation: invalidate pair.new.id (same as save).
                     if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
                         let __id_for_cache = ::core::clone::Clone::clone(&__pair.new.id);
                         ctx.on_commit(move || async move {
@@ -1829,7 +1748,7 @@ pub fn expand(
     };
 
     // update_returning_pair body — versioned shape (Shape B).
-    // Mirrors save() Shape B: version predicate in WHERE, query_opt, LockConflict.
+    // Mirrors save Shape B: version predicate in WHERE, query_opt, LockConflict.
     let update_returning_pair_body = if let Some((ver_ident, ver_col)) = &version_field_info {
         let ver_set = format!(", {ver_col} = {ver_col} + 1");
         let ver_where = format!(" AND {ver_col} = ");
@@ -1920,8 +1839,8 @@ pub fn expand(
     };
 
     // delete_returning body.
-    // Mirrors delete() but adds RETURNING WITH (OLD AS __djogi_old) and
-    // returns the DB-returned snapshot instead of ().
+    // Mirrors delete but adds RETURNING WITH (OLD AS __djogi_old) and
+    // returns the DB-returned snapshot instead of .
     let delete_returning_body = quote! {
         async move {
             #snapshot_auth_state_before_auto_set
@@ -1988,22 +1907,19 @@ pub fn expand(
 
     // -------------------------------------------------------------------------
     // `create_with_id` — HeerId-only inherent method (form pre-generation).
-    //
-    // Emitted as a separate `impl` block only for HeerId models.  It is an
-    // *inherent* method (not a trait method), so `pub async fn` is correct —
+    // Emitted as a separate `impl` block only for HeerId models. It is an
+    // *inherent* method (not a trait method), so `pub async fn` is correct
     // no `impl Future + Send` RPITIT wrapper is needed; the compiler infers
     // `+ Send` from the executor's bound.
-    //
     // SQL: INSERT INTO {table} (id, {user_cols}) VALUES ($1, $2..$n+1)
-    //      ON CONFLICT (id) DO NOTHING RETURNING *
-    //
-    // DONE_WITH_CONCERNS (Phase 1 limitation): when the conflict fires,
+    // ON CONFLICT (id) DO NOTHING RETURNING *
+    // DONE_WITH_CONCERNS (limitation): when the conflict fires,
     // `ON CONFLICT DO NOTHING` suppresses the INSERT and RETURNING * returns
-    // no rows.  Rather than issue a follow-up SELECT (which would consume the
+    // no rows. Rather than issue a follow-up SELECT (which would consume the
     // executor, making transaction callers awkward), the method returns the
     // caller-supplied `value` with `id` overwritten to the pre-generated id.
     // The id is guaranteed correct; other fields reflect the *second* caller's
-    // input rather than the first-inserted row.  A later phase will add a
+    // input rather than the first-inserted row. A later phase will add a
     // `get_or_create` helper that does a proper fetch-on-conflict under an
     // explicit transaction boundary.
     // -------------------------------------------------------------------------
@@ -2026,18 +1942,16 @@ pub fn expand(
         quote! {
             impl #impl_generics #name #ty_generics #where_clause {
                 /// Insert a row using a pre-generated `HeerId`.
-                ///
                 /// Intended for the **form pre-generation pattern**: the application
                 /// allocates an ID before the user submits a form (e.g. to embed it in
-                /// a URL), then passes that same ID on submit.  The underlying SQL uses
+                /// a URL), then passes that same ID on submit. The underlying SQL uses
                 /// `ON CONFLICT (id) DO NOTHING` so that duplicate submits do not
                 /// produce a constraint-violation error.
-                ///
-                /// **Phase 1 limitation** — on conflict (the row already exists) the
+                /// **limitation** — on conflict (the row already exists) the
                 /// `RETURNING *` clause returns no rows and this method falls back to
                 /// returning the caller-supplied `value` with its `id` field set to the
-                /// pre-generated id.  The id is correct; other fields reflect the
-                /// second caller's input rather than the originally-inserted data.  A
+                /// pre-generated id. The id is correct; other fields reflect the
+                /// second caller's input rather than the originally-inserted data. A
                 /// later phase will add a proper `get_or_create` helper that fetches the
                 /// existing row when a conflict fires.
                 pub async fn create_with_id(
@@ -2072,19 +1986,17 @@ pub fn expand(
     };
 
     // -------------------------------------------------------------------------
-    // Phase 4 Task 7d — bulk methods (bulk_create / bulk_update / bulk_upsert).
-    //
+    // Task 7d — bulk methods (bulk_create / bulk_update / bulk_upsert).
     // Emitted as a separate inherent `impl` block. Scope: the three
     // Contract Decision #7 methods that operate on `Vec<Self>` or a
     // list of primary keys. `in_bulk` (PK-keyed fetch) stays on
     // `QuerySet<T>` — it is read-only and needs no per-model field
     // knowledge.
-    //
     // Zero-user-field edge case: `bulk_create` / `bulk_upsert` require
     // at least one user column. Emitting the placeholder "(.push_bind
-    // nothing)" tuple produces `()` in SQL which Postgres rejects. We
-    // emit a compile-time `unimplemented!()` body for those models —
-    // callers can still use `create()` row-by-row.
+    // nothing)" tuple produces `` in SQL which Postgres rejects. We
+    // emit a compile-time `unimplemented!` body for those models
+    // callers can still use `create` row-by-row.
     // -------------------------------------------------------------------------
     let bulk_insert_col_list = if n_user == 0 {
         String::new()
@@ -2097,7 +2009,7 @@ pub fn expand(
     };
 
     // For `bulk_upsert`'s ON CONFLICT DO UPDATE SET — every user col
-    // plus `updated_at = now()`. If the conflict key is itself a user
+    // plus `updated_at = now`. If the conflict key is itself a user
     // col, EXCLUDED.col is that same incoming value, so leaving it in
     // the SET list is semantically a no-op. Postgres accepts it.
     let bulk_upsert_set_list = if n_user == 0 {
@@ -2130,15 +2042,14 @@ pub fn expand(
     // Per-row bind tokens for bulk_create / bulk_upsert's VALUES tail.
     // Uses SqlAccumulator::push_bind for each field — emits a positional
     // `$n` placeholder and stores the bind value by move (fields come from
-    // `rows.into_iter()` so each row is owned). Rows are comma-separated
+    // `rows.into_iter` so each row is owned). Rows are comma-separated
     // via push_sql(", ") between iterations.
-    //
     // Zero-user-field branch never reaches this — n_user >= 1 gated by
     // the per-method body.
     // Per-row bind tokens for bulk_create / bulk_upsert's VALUES tail.
     // Uses per-field `push_bind_tokens` so widened types (u8/u16/u64/…)
     // emit the appropriate widening call before `__acc.push_bind`. Rows
-    // come from `rows.into_iter()` so each `row` is an owned value;
+    // come from `rows.into_iter` so each `row` is an owned value;
     // `row.#field` moves the field out of the row, which is fine since
     // each row is consumed once per iteration.
     let per_row_binds: TokenStream = if n_user == 0 {
@@ -2203,7 +2114,7 @@ pub fn expand(
         quote! {}
     };
 
-    // bulk_update's id bind — HeerId needs `.as_i64()` on each element,
+    // bulk_update's id bind — HeerId needs `.as_i64` on each element,
     // RanjId / Serial bind directly. We route through `DjogiField::in_`
     // which takes `IntoIterator<Item = V>` where
     // `V: PartialEq + ToSql + Clone + Send + Sync + 'static`. HeerId /
@@ -2213,7 +2124,6 @@ pub fn expand(
     // portable `.in_(ids)` produces a `PortablePredicate<Self>` that
     // `QuerySet::filter` accepts via `IntoQ<Self>` like every other
     // root predicate.
-    //
     // `Self::Pk` is already the right type at macro expansion time
     // (see `pk_type_tokens` above), so we can forward `ids` verbatim
     // into `.in_(ids)`.
@@ -2221,13 +2131,12 @@ pub fn expand(
         // Pathological case: no user fields to update + `updated_at`
         // bumped via the existing `.update` emitter's implicit
         // handling. We still emit a usable `bulk_update` — it just
-        // compiles down to an `UPDATE ... SET updated_at = now()`
+        // compiles down to an `UPDATE ... SET updated_at = now`
         // across the id list.
         quote! {
             /// Bulk-update every row whose primary key is in `ids`.
-            ///
             /// Equivalent to
-            /// `Self::objects().filter(|f| f.id().in_(ids)).update(closure).execute(ctx)`.
+            /// `Self::objects.filter(|f| f.id.in_(ids)).update(closure).execute(ctx)`.
             /// This method is sugar for the common "update these
             /// specific rows" pattern without the caller spelling out
             /// the filter chain.
@@ -2251,13 +2160,11 @@ pub fn expand(
     } else {
         quote! {
             /// Bulk-update every row whose primary key is in `ids`.
-            ///
             /// One `UPDATE` round trip emitting
-            /// `UPDATE <table> SET <assignments>, updated_at = now() WHERE id IN (...)`.
+            /// `UPDATE <table> SET <assignments>, updated_at = now WHERE id IN (...)`.
             /// Empty `ids` short-circuits to `Ok(0)` without SQL.
-            ///
             /// Equivalent to the explicit chain
-            /// `Self::objects().filter(|f| f.id().in_(ids)).update(closure).execute(ctx)`;
+            /// `Self::objects.filter(|f| f.id.in_(ids)).update(closure).execute(ctx)`;
             /// this method is sugar for the common "update these
             /// specific rows" pattern.
             pub async fn bulk_update<F, A>(
@@ -2286,8 +2193,7 @@ pub fn expand(
     // emitters so the bulk_create path can reference it — TokenStream
     // interpolation is single-use but re-cloning the same source
     // definition keeps the emitted shapes byte-identical.
-    //
-    // HeerId needs `.as_i64()` to encode as BIGINT; RanjId and i32 bind
+    // HeerId needs `.as_i64` to encode as BIGINT; RanjId and i32 bind
     // as-is. Custom PKs delegate ToSql to the inner type, so `row.id`
     // binds directly — the macro-emitted impl handles the wire
     // encoding.
@@ -2333,25 +2239,21 @@ pub fn expand(
         }
     };
 
-    // Phase 7-Zero-2 T5 — `bulk_create` dispatches on `pk_kind`.
-    //
+    // `bulk_create` dispatches on `pk_kind`.
     // Pre-T5 emission inserted rows with per-row `DEFAULT` for `id`,
-    // which forced Postgres to invoke `heerid_next()` / `ranjid_next()`
+    // which forced Postgres to invoke `heerid_next` / `ranjid_next`
     // / custom `default_sql` once per row — N separate allocations per
     // batch. Post-T5, every PK kind that implements `PrimaryKeyDbGen`
     // pre-allocates the full batch of ids in **one** round-trip through
     // `<T as PrimaryKeyDbGen>::generate_many(ctx, n)` and then issues
     // the INSERT with explicit `id` values.
-    //
     // `Serial` (`i32`) deliberately does not implement
     // `PrimaryKeyDbGen` — its sequence is per-row by construction, and
     // there is no bulk allocator to call. Serial models keep the
     // pre-T5 per-row-`DEFAULT` path; the generic dispatch arm is
     // unreachable for them.
-    //
     // `None` is handled by the early return at the top of `expand`, so
     // we never reach this block.
-    //
     // Every PK except Serial takes the pre-allocation path. The
     // upsert-shaped SQL (explicit `id` column + id-first per-row binds)
     // was already emitted for `bulk_upsert`; we reuse the same
@@ -2361,10 +2263,9 @@ pub fn expand(
     let bulk_create_impl = if n_user == 0 {
         quote! {
             /// Not supported for zero-user-field models.
-            ///
             /// A table with no non-framework columns cannot be bulk-
-            /// inserted — the emitted SQL would be `INSERT INTO t ()
-            /// VALUES ()` which Postgres rejects. Row-by-row
+            /// inserted — the emitted SQL would be `INSERT INTO t
+            /// VALUES ` which Postgres rejects. Row-by-row
             /// [`create`](::djogi::model::Model::create) still works
             /// via the column's `DEFAULT`s.
             #[doc(hidden)]
@@ -2386,16 +2287,14 @@ pub fn expand(
         quote! {
             /// Bulk-insert every row in `rows` and return the rehydrated
             /// results.
-            ///
             /// `pk = Serial` models insert with per-row `DEFAULT` on
             /// `id` — Postgres advances the backing sequence once per
             /// row, exactly as row-by-row [`create`] does. There is no
             /// bulk-allocation path for `Serial` because the sequence
             /// is owned by the database and has no `generate_many`
             /// primitive.
-            ///
-            /// Empty `rows` short-circuits to `Ok(Vec::new())` without
-            /// SQL — an empty `VALUES ()` clause is invalid Postgres.
+            /// Empty `rows` short-circuits to `Ok(Vec::new)` without
+            /// SQL — an empty `VALUES ` clause is invalid Postgres.
             pub async fn bulk_create(
                 ctx: &mut ::djogi::context::DjogiContext,
                 rows: ::std::vec::Vec<Self>,
@@ -2436,7 +2335,6 @@ pub fn expand(
         quote! {
             /// Bulk-insert every row in `rows` and return the rehydrated
             /// results.
-            ///
             /// Two round trips per call: one
             /// `<Self::Pk as PrimaryKeyDbGen>::generate_many(ctx, n)`
             /// to pre-allocate every row's primary key, followed by the
@@ -2447,21 +2345,17 @@ pub fn expand(
             /// `generate_ids` / `generate_ranjids` / custom `bulk_sql`
             /// invocation — a hard scalability win on tables larger
             /// than a few hundred rows.
-            ///
             /// Caller-supplied `row.id` values are overwritten by the
             /// pre-allocated ids. Row-by-row [`create`] is the
             /// escape hatch when a specific id must be preserved;
             /// [`bulk_upsert`] also preserves caller-supplied ids by
             /// construction.
-            ///
-            /// Empty `rows` short-circuits to `Ok(Vec::new())` without
-            /// SQL — an empty `VALUES ()` clause is invalid Postgres.
-            ///
+            /// Empty `rows` short-circuits to `Ok(Vec::new)` without
+            /// SQL — an empty `VALUES ` clause is invalid Postgres.
             /// Postgres caps bound parameters at 65_535. With `N` user
             /// columns per model plus the `id` column, the effective
             /// cap is `65_535 / (N + 1)` rows per call. Chunk larger
             /// batches at the call site.
-            ///
             /// When the model has `#[model(events)]`, outbox rows are
             /// written per inserted row **after** rehydration (so the
             /// outbox payload reflects DB-truth column defaults and
@@ -2485,7 +2379,7 @@ pub fn expand(
                     __n,
                 ).await?;
                 // Length-check before the zip. Built-ins uphold the
-                // `len() == n` contract by construction, but custom PKs
+                // `len == n` contract by construction, but custom PKs
                 // drive the batch via user-supplied SQL (or a synthesised
                 // `SELECT … FROM generate_series(1, $1)` when only
                 // `default_sql` is set), and either can legally return
@@ -2530,7 +2424,6 @@ pub fn expand(
     let bulk_upsert_impl = if n_user == 0 {
         quote! {
             /// Not supported for zero-user-field models.
-            ///
             /// See [`bulk_create`] for the rationale — upsert emits
             /// the same `INSERT INTO t (...) VALUES (...)` prefix
             /// which is empty-clause-invalid for zero-user-field
@@ -2557,25 +2450,21 @@ pub fn expand(
 
         quote! {
             /// Bulk-upsert — `INSERT ... ON CONFLICT (<cols>) DO UPDATE SET ...`.
-            ///
             /// Inserts every row in `rows`; on conflict against the
             /// `conflict_cols` key, updates every user field plus
-            /// `updated_at = now()` with the incoming values
-            /// (`EXCLUDED.*`). Returns the rehydrated rows —
+            /// `updated_at = now` with the incoming values
+            /// (`EXCLUDED.*`). Returns the rehydrated rows
             /// `RETURNING <column_list>` emits one row per input
             /// regardless of whether it was inserted or updated.
-            ///
             /// `conflict_cols` must reference real columns of this
             /// model (framework or user). Unknown names return
             /// [`DjogiError::Validation`] without a round trip — this
             /// closes the SQL-injection vector from arbitrary
             /// `&'static str` input.
-            ///
-            /// Empty `rows` short-circuits to `Ok(Vec::new())` without
+            /// Empty `rows` short-circuits to `Ok(Vec::new)` without
             /// SQL. Empty `conflict_cols` returns
-            /// [`DjogiError::Validation`] — `ON CONFLICT ()` is
+            /// [`DjogiError::Validation`] — `ON CONFLICT ` is
             /// invalid SQL.
-            ///
             /// Callers upserting with pre-allocated primary keys must
             /// call `<HeerId as djogi::primary_key::PrimaryKeyDbGen>::generate_many(&mut ctx, n)`
             /// up front — row.id is inserted verbatim, no column default fires.
@@ -2648,19 +2537,16 @@ pub fn expand(
     };
 
     // -------------------------------------------------------------------------
-    // Phase 4 Task 7.5 — idempotency_key consumer wiring.
-    //
+    // idempotency_key consumer wiring.
     // `create_or_find` + `bulk_upsert_by_descriptor` are emitted for
     // every model. When `#[model(idempotency_key = "col")]` is set
     // they produce real upsert-on-idempotency-key semantics; when the
     // attribute is absent, they produce stub bodies that return
     // `DjogiError::MissingIdempotencyKey` at runtime — pointing
     // callers at the attribute they need to add.
-    //
     // The attribute value is validated in `attrs.rs` to be a plain
     // ASCII identifier, so embedding `#idempotency_key` into the SQL
     // is safe (no quote injection surface).
-    //
     // Zero-user-field models emit the stub even when the attribute is
     // set — the underlying bulk_upsert / create SQL is not emittable
     // for zero-user-field models, so consumer wiring cannot deliver
@@ -2702,15 +2588,13 @@ pub fn expand(
             };
 
             // ── Bind shims for the INSERT params ────────────────────────────
-            //
             // Route every user field through `create_param_tokens` so widened
             // types (i8/u8 → i16, u16 → i32, u32 → i64, u64 → Decimal) get
             // the correct SQL wire type. Previously the insert params were
             // built as a direct `&[&(dyn ToSql + Sync)]` slice, bypassing the
             // shims that `create` / `create_with_id` / bulk paths use — this
             // caused silent type-mismatch failures for models with narrow or
-            // unsigned integer fields (djogi#GPT-5.5 BLOCK 1).
-            //
+            // unsigned integer fields (djogi#.
             // Mirrors the pattern in the `create_body` section above: each
             // widened field gets a named `let __bind_N: WideType = …` pre-
             // declaration, and the slice entry references that binding. Direct
@@ -2731,7 +2615,6 @@ pub fn expand(
                     .unzip();
 
             // ── Bind shim for the fallback SELECT key param ──────────────────
-            //
             // The fallback SELECT after an ON CONFLICT hit binds the idempotency
             // key value as `$1`. If the key field is a widened type, the old
             // direct `&row.#key_ident as &(dyn ToSql + Sync)` would fail or
@@ -2765,15 +2648,13 @@ pub fn expand(
                 /// Idempotent create — insert a row keyed off the
                 /// descriptor's `idempotency_key` attribute, or
                 /// return the existing row when the key conflicts.
-                ///
                 /// Shape:
                 /// `INSERT INTO <table> (<user-cols>) VALUES ($1,...)
-                ///  ON CONFLICT (<key>) DO NOTHING RETURNING <column_list>`.
+                /// ON CONFLICT (<key>) DO NOTHING RETURNING <column_list>`.
                 /// On empty RETURNING (the "key already existed"
                 /// branch) the method re-SELECTs the existing row by
                 /// `<key> = row.<key>` and returns `(existing, false)`.
                 /// New rows return `(inserted, true)`.
-                ///
                 /// When the model does **not** declare
                 /// `#[model(idempotency_key = "...")]`, this method
                 /// emits [`DjogiError::MissingIdempotencyKey`] at
@@ -2782,9 +2663,8 @@ pub fn expand(
                 /// method behind a cfg flag) keeps the API shape
                 /// uniform across models and surfaces the missing
                 /// attribute eagerly when a consumer expects it.
-                ///
                 /// When `#[model(events)]` is also set, only the
-                /// **newly-inserted** branch emits an outbox row —
+                /// **newly-inserted** branch emits an outbox row
                 /// the "found existing" branch reflects no state
                 /// change.
                 pub async fn create_or_find(
@@ -2833,7 +2713,6 @@ pub fn expand(
 
                 /// Bulk-upsert keyed off the descriptor's
                 /// `idempotency_key` attribute.
-                ///
                 /// Thin wrapper over [`bulk_upsert`] that passes the
                 /// declared idempotency-key column as the sole ON
                 /// CONFLICT target. Returns
@@ -2854,7 +2733,6 @@ pub fn expand(
             quote! {
                 /// Idempotent create — requires
                 /// `#[model(idempotency_key = "...")]` on the model.
-                ///
                 /// Emits [`DjogiError::MissingIdempotencyKey`] at
                 /// runtime for models that haven't declared the
                 /// attribute. See the variant's rustdoc for the
@@ -2870,7 +2748,6 @@ pub fn expand(
 
                 /// Bulk-upsert by descriptor — requires
                 /// `#[model(idempotency_key = "...")]`.
-                ///
                 /// Same stub semantics as
                 /// [`create_or_find`]: runtime error pointing at
                 /// the missing attribute.
@@ -2896,56 +2773,43 @@ pub fn expand(
     };
 
     // -------------------------------------------------------------------------
-    // Phase 5 Task 10 — `_insecurely()` suffix methods.
-    //
+    // `_insecurely` suffix methods.
     // Emitted ONLY when `#[model(tenant_key = "...")]` is declared. For every
     // other model this block is empty — no inherent methods, no associated
     // items, no compile-time surface at all.
-    //
     // ## Bypass mechanism
-    //
     // RLS is enforced at the Postgres level via a `CREATE POLICY ... USING`
     // expression that checks `col = current_setting('app.tenant_id', true)::T`.
     // Issuing `SET LOCAL row_security = off` inside a transaction disables that
-    // check for the duration of the transaction. Outside `atomic()` `SET LOCAL`
+    // check for the duration of the transaction. Outside `atomic` `SET LOCAL`
     // silently no-ops (Postgres emits a WARNING but accepts the statement), so
-    // the bypass only takes effect when the caller wraps the call in `atomic()`.
-    //
+    // the bypass only takes effect when the caller wraps the call in `atomic`.
     // ## `#[track_caller]` + caller capture
-    //
     // For async methods we use the "sync wrapper returns impl Future" pattern:
-    //
-    //   #[track_caller]
-    //   pub fn method_insecurely(...) -> impl Future<...> {
-    //       let __caller = ::std::panic::Location::caller();
-    //       async move {
-    //           ::djogi::__private::tracing::warn!(..., caller = %__caller, ...);
-    //           ...
-    //       }
-    //   }
-    //
-    // `Location::caller()` is resolved in the sync preamble so it reflects the
+    // #[track_caller]
+    // pub fn method_insecurely(...) -> impl Future<...> {
+    // let __caller = ::std::panic::Location::caller;
+    // async move {
+    // ::djogi::__private::tracing::warn!(..., caller = %__caller, ...);
+    // ...
+    // }
+    // }
+    // `Location::caller` is resolved in the sync preamble so it reflects the
     // user's call site, not an internal async-block location. The outer `fn`
     // carries `#[track_caller]` so Rust traces through it during resolution.
-    //
     // ## `objects_insecurely` (sync)
-    //
-    // Returns `Self::objects()` — an unexecuted lazy QuerySet. The bypass
+    // Returns `Self::objects` — an unexecuted lazy QuerySet. The bypass
     // (`SET LOCAL row_security = off`) cannot be issued here because there is no
     // context at queryset-construction time; it fires later when a terminal
     // method (`.fetch_all(ctx)`, etc.) runs. The caller must issue
     // `ctx.raw_execute("SET LOCAL row_security = off", &[]).await?` inside an
-    // `atomic()` scope before calling the terminal method. This limitation is
+    // `atomic` scope before calling the terminal method. This limitation is
     // documented in the method's rustdoc.
-    //
     // ## Path routing
-    //
-    // `tracing::warn!` routes through `::djogi::__private::tracing::warn!` —
+    // `tracing::warn!` routes through `::djogi::__private::tracing::warn!`
     // same convention as `inventory`, `postgres_types`, and `futures` in this
     // file.
-    //
     // ## `bulk_update_insecurely` bound divergence vs `bulk_update`
-    //
     // `bulk_update` is a plain `async fn` where the compiler infers Send / 'ctx
     // on the captured closure. `bulk_update_insecurely` cannot use `async fn`
     // because `#[track_caller]` does not reflect the user's call site across
@@ -2968,15 +2832,12 @@ pub fn expand(
         let bulk_create_insecurely_body = if n_user == 0 {
             quote! {
                 /// Not supported for zero-user-field models.
-                ///
                 /// A zero-user-field table has no non-framework columns — emitting
-                /// `INSERT INTO t () VALUES ()` is invalid SQL. Use
+                /// `INSERT INTO t VALUES ` is invalid SQL. Use
                 /// [`create_insecurely`] row-by-row instead.
-                ///
                 /// The `_insecurely` suffix means RLS tenant isolation is bypassed.
-                /// Bypass only takes effect inside [`atomic()`](::djogi::transaction::atomic);
+                /// Bypass only takes effect inside [`atomic`](::djogi::transaction::atomic);
                 /// on a pool-backed context the call still executes but RLS remains active.
-                ///
                 /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn bulk_create_insecurely(
@@ -3002,19 +2863,15 @@ pub fn expand(
         } else {
             quote! {
                 /// Bulk-insert rows, bypassing the RLS tenant predicate.
-                ///
                 /// One `INSERT` round trip; framework columns are populated
                 /// by column defaults. The RLS bypass is issued via
                 /// `SET LOCAL row_security = off` before the insert.
-                ///
                 /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// [`atomic`](::djogi::transaction::atomic).** On a pool-backed
                 /// context the statement still executes but RLS remains active
                 /// because `SET LOCAL` is a no-op outside a transaction.
-                ///
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted on every call.
-                ///
                 /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn bulk_create_insecurely<'ctx>(
@@ -3062,13 +2919,10 @@ pub fn expand(
         let bulk_upsert_insecurely_body = if n_user == 0 {
             quote! {
                 /// Not supported for zero-user-field models.
-                ///
                 /// See [`bulk_create_insecurely`] for the rationale.
-                ///
                 /// The `_insecurely` suffix means RLS tenant isolation is bypassed.
-                /// Bypass only takes effect inside [`atomic()`](::djogi::transaction::atomic);
+                /// Bypass only takes effect inside [`atomic`](::djogi::transaction::atomic);
                 /// on a pool-backed context the call still executes but RLS remains active.
-                ///
                 /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[doc(hidden)]
                 #[track_caller]
@@ -3138,17 +2992,13 @@ pub fn expand(
 
             quote! {
                 /// Bulk-upsert rows, bypassing the RLS tenant predicate.
-                ///
                 /// Identical to [`bulk_upsert`] but issues
                 /// `SET LOCAL row_security = off` before the statement.
-                ///
                 /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// [`atomic`](::djogi::transaction::atomic).** On a pool-backed
                 /// context the statement still executes but RLS remains active.
-                ///
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted on every call.
-                ///
                 /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn bulk_upsert_insecurely<'ctx>(
@@ -3222,18 +3072,14 @@ pub fn expand(
         quote! {
             impl #impl_generics #name #ty_generics #where_clause {
                 /// Fetch a single row by primary key, bypassing the RLS tenant predicate.
-                ///
                 /// Issues `SET LOCAL row_security = off` before the SELECT to
                 /// lift the per-row policy for this statement.
-                ///
                 /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// [`atomic`](::djogi::transaction::atomic).** On a pool-backed
                 /// context the call still executes but RLS remains active because
                 /// `SET LOCAL` is a no-op outside a transaction.
-                ///
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted on every call to aid audit trails.
-                ///
                 /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn get_insecurely<'ctx>(
@@ -3256,19 +3102,15 @@ pub fn expand(
                 }
 
                 /// Insert a new row, bypassing the RLS `WITH CHECK` tenant predicate.
-                ///
                 /// Issues `SET LOCAL row_security = off` before the INSERT so the
                 /// `WITH CHECK` clause on the policy is not evaluated — the row is
                 /// written regardless of whether its tenant-key field matches
                 /// `app.tenant_id`.
-                ///
                 /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// [`atomic`](::djogi::transaction::atomic).** On a pool-backed
                 /// context the call still executes but RLS remains active.
-                ///
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted on every call.
-                ///
                 /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn create_insecurely<'ctx>(
@@ -3291,18 +3133,14 @@ pub fn expand(
                 }
 
                 /// Save (UPDATE) this row, bypassing the RLS tenant predicate.
-                ///
                 /// Issues `SET LOCAL row_security = off` before the UPDATE so both
                 /// the `USING` (row visibility) and `WITH CHECK` (write restriction)
                 /// clauses are lifted for this statement.
-                ///
                 /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// [`atomic`](::djogi::transaction::atomic).** On a pool-backed
                 /// context the call still executes but RLS remains active.
-                ///
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted on every call.
-                ///
                 /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn save_insecurely<'ctx>(
@@ -3325,17 +3163,13 @@ pub fn expand(
                 }
 
                 /// Delete this row, bypassing the RLS tenant predicate.
-                ///
                 /// Issues `SET LOCAL row_security = off` before the DELETE so the
                 /// `USING` clause on the policy is lifted for this statement.
-                ///
                 /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// [`atomic`](::djogi::transaction::atomic).** On a pool-backed
                 /// context the call still executes but RLS remains active.
-                ///
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted on every call.
-                ///
                 /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn delete_insecurely<'ctx>(
@@ -3359,17 +3193,13 @@ pub fn expand(
 
                 /// Delete this row and return the pre-delete snapshot,
                 /// bypassing the RLS tenant predicate.
-                ///
                 /// Issues `SET LOCAL row_security = off` before the DELETE so the
                 /// policy's `USING` clause is lifted for this statement.
-                ///
                 /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// [`atomic`](::djogi::transaction::atomic).** On a pool-backed
                 /// context the call still executes but RLS remains active.
-                ///
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted on every call.
-                ///
                 /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn delete_returning_insecurely<'ctx>(
@@ -3398,18 +3228,14 @@ pub fn expand(
 
                 /// Update this row and return old/new snapshots, bypassing the
                 /// RLS tenant predicate.
-                ///
                 /// Issues `SET LOCAL row_security = off` before the UPDATE so both
                 /// the `USING` (row visibility) and `WITH CHECK` (write restriction)
                 /// clauses are lifted for this statement.
-                ///
                 /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// [`atomic`](::djogi::transaction::atomic).** On a pool-backed
                 /// context the call still executes but RLS remains active.
-                ///
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted on every call.
-                ///
                 /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn update_returning_pair_insecurely<'ctx>(
@@ -3440,20 +3266,16 @@ pub fn expand(
                 }
 
                 /// Return a lazy `QuerySet<Self>` without any tenant predicate.
-                ///
                 /// This method itself is synchronous — it just constructs the
                 /// queryset; no SQL is issued until a terminal method (`.fetch_all`,
                 /// `.fetch_one`, etc.) is called.
-                ///
                 /// **The `SET LOCAL row_security = off` bypass cannot be issued
                 /// here** because there is no `DjogiContext` at queryset-construction
                 /// time. To bypass RLS on the fetch, the caller must issue
                 /// `ctx.raw_execute("SET LOCAL row_security = off", &[]).await?`
-                /// inside an `atomic()` scope _before_ calling the terminal method.
-                ///
+                /// inside an `atomic` scope _before_ calling the terminal method.
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted synchronously when the queryset is constructed.
-                ///
                 /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn objects_insecurely() -> ::djogi::query::QuerySet<Self> {
@@ -3467,28 +3289,21 @@ pub fn expand(
                 }
 
                 /// Bulk-update rows by primary key, bypassing the RLS tenant predicate.
-                ///
                 /// Issues `SET LOCAL row_security = off` before the UPDATE so the
                 /// policy's `USING` clause does not filter the target rows.
-                ///
                 /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// [`atomic`](::djogi::transaction::atomic).** On a pool-backed
                 /// context the call still executes but RLS remains active.
-                ///
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted on every call.
-                ///
                 /// **Audit**: every bypass call site is grep-able via `_insecurely`.
-                ///
                 /// # Type-parameter bounds
-                ///
                 /// The `F: Send + 'ctx` bound is tighter than [`bulk_update`]'s
                 /// because the sync-wrapper + `#[track_caller]` pattern requires
                 /// `impl Future + Send + 'ctx` as the return type, which in turn
                 /// requires every value captured into the future to satisfy it.
                 /// `A` is only the return type of `F` — it never lives inside the
                 /// future — so it keeps its unbounded shape.
-                ///
                 /// `bulk_update`'s `async fn` surface infers bounds implicitly — we
                 /// cannot use `async fn` here because `#[track_caller]` would not
                 /// reflect the user's call site.
@@ -3539,9 +3354,9 @@ pub fn expand(
         // Satisfy the `Model: __sealed::Sealed` supertrait. The sealed
         // module is `#[doc(hidden)] pub`, so downstream hand-rolled
         // `impl Model for T` without an accompanying `impl Sealed`
-        // fails to compile — closing the hostile-Model vector Codex
-        // flagged on de42874 (malicious `table_name()` /
-        // `descriptor().fields[].name` strings flowing into the SQL
+        // fails to compile — closing the hostile-Model vector
+        // flagged on de42874 (malicious `table_name` /
+        // `descriptor.fields[].name` strings flowing into the SQL
         // emitter). The macro is the only supported emitter of both
         // impls.
         impl #impl_generics ::djogi::model::__sealed::Sealed for #name #ty_generics #where_clause {}
@@ -3550,7 +3365,7 @@ pub fn expand(
             type Pk = #pk_type_tokens;
 
             // Typed field handles — the ZST generated alongside this impl by
-            // `stubs::expand` (Phase 1) / `fields::expand` (Phase 2 Task 4).
+            // `stubs::expand` / `fields::expand` .
             // Its `Default` impl lets `QuerySet::filter` construct the handle
             // inside the closure without the caller naming the type.
             type Fields = #fields_name;
@@ -3650,7 +3465,7 @@ pub fn expand(
             // Bulk save-style on_commit cache invalidation hook.
             #emit_bulk_on_save_cache_invalidation_override
 
-            // Cluster 8δ T8.6 — soft-deletable tombstone signal.
+            // 6 — soft-deletable tombstone signal.
             // Emitted only for `#[model(soft_deletable)]` models; non-soft-deletable
             // models inherit the `Model` trait's default `false` impl.
             #delta_should_tombstone_override
@@ -3669,21 +3484,18 @@ pub fn expand(
 }
 
 // ── `Model::__djogi_emit_field_predicate` emission ──────────────────────
-//
 // The helper is split out of `expand` so `expand`'s body stays focused on
 // CRUD emission. Inputs are the model's struct ident + the shared
 // portable-field metadata vector built by
 // `super::portable_field_emit::build`.
 
 /// Build the `Model::__djogi_emit_field_predicate` override block.
-///
 /// Returns an empty token stream when `portable_field_info` is empty
 /// (e.g., `pk = None` models — the early return in [`expand`] handles
 /// those, but the helper stays defensive in case the caller threads
 /// an empty slice for any reason). The empty-vec branch falls through
 /// to the trait's default impl in `crate::model`, which returns
 /// `PortablePredicateError::UnsupportedModel`.
-///
 /// The emitted match has one or more arms per known portable field
 /// (Eq / Neq / Gt / Gte / Lt / Lte / Between / In / NotIn / IsNull /
 /// IsNotNull / pattern family, depending on `field_kind`), one
@@ -3880,11 +3692,10 @@ fn emit_djogi_emit_field_predicate(
 /// Emit the equality / list arms for a portable scalar-shaped field
 /// (used by `Scalar`, `Bool`, `String`, and as the inner-payload
 /// fallback for `Option*` kinds via [`option_arms`]).
-///
 /// `ordering = true` adds `Gt` / `Gte` / `Lt` / `Lte` / `Between`
 /// arms; `false` skips them (used for `Bool` and `String` whose
 /// portable surfaces don't expose ordering — `String` only gets
-/// ordering through `explicit_pg_predicate()` because Postgres text
+/// ordering through `explicit_pg_predicate` because Postgres text
 /// collation differs from Rust byte ordering, and `bool` has no
 /// natural ordering at all).
 fn scalar_arms(
@@ -3958,7 +3769,6 @@ fn scalar_arms(
 }
 
 /// Emit the LIKE/ILIKE family arms for a non-Option `String` field.
-///
 /// Sassi's `Field<T, String>` exposes the case-sensitive `Contains` /
 /// `StartsWith` / `EndsWith` ops AND the ASCII-stable case-insensitive
 /// `IContains` / `IStartsWith` / `IEndsWith` / `IExact` ops. Each
@@ -4030,25 +3840,20 @@ fn string_pattern_arms(_model_name: &syn::Ident, column: &str) -> Vec<TokenStrea
 }
 
 /// Emit arms for a portable `Option<U>` field.
-///
 /// Each arm tries the `Option<U>` payload shape first (matching
 /// `DjogiField::eq(Some|None)` / direct `.in_([Some, None])` calls),
-/// then falls back to the inner `U` (matching `.some().eq(_)` /
-/// `.some().in_([_])` calls via `DjogiPresentField`). If neither shape
+/// then falls back to the inner `U` (matching `.some.eq(_)` /
+/// `.some.in_([_])` calls via `DjogiPresentField`). If neither shape
 /// matches, the arm returns `ValueTypeMismatch` rather than panicking.
-///
 /// `IsNull` / `IsNotNull` arms use the helper-side `emit_null` shape
-/// directly because Sassi carries an inert `Arc<()>` payload for them
+/// directly because Sassi carries an inert `Arc<>` payload for them
 /// and `emit_null` does not consume `field`.
-///
 /// Direct `Option<U>` ordering returns `UnsupportedLookup` because
 /// Rust's `Option` ordering (`None < Some(_)`) does not match SQL
 /// three-valued NULL semantics. Inner-`U` ordering (`PresentField`
 /// payloads) is supported when `supports_ordering = true` (i.e. the
 /// kind is `OptionScalar`).
-///
 /// # Tracked-wrapped fields
-///
 /// `tracked_wrapped = true` indicates the original Rust column type was
 /// `Tracked<Option<U>>` (or `Tracked<Option<String>>` /
 /// `Tracked<Option<bool>>`). The `IntoPortableFieldValue<Tracked<V>> for V`
@@ -4058,11 +3863,11 @@ fn string_pattern_arms(_model_name: &syn::Ident, column: &str) -> Vec<TokenStrea
 /// this dispatch is `Tracked<Option<U>>` rather than the bare
 /// `Option<U>` the original arm chain expected. We prepend a
 /// Tracked-aware fallback that downcasts to `Tracked<Option<U>>`
-/// (or `Tracked<U>` for the `.some()`-style payload, which today is
+/// (or `Tracked<U>` for the `.some`-style payload, which today is
 /// unreachable from the public API but kept symmetric for future
 /// surface additions) and forwards through the same `emit_option_*`
 /// helpers using `Deref::deref` to project the inner reference.
-/// Without this fallback every `f.tracked_optional().eq(Some(v))` /
+/// Without this fallback every `f.tracked_optional.eq(Some(v))` /
 /// `.neq(_)` / `.in_([_])` / `.not_in([_])` call against a
 /// `Tracked<Option<U>>` column lands on `ValueTypeMismatch` at runtime.
 fn option_arms(
@@ -4212,7 +4017,7 @@ fn option_arms(
     };
 
     // Eq — Tracked<Option<U>> / Tracked<U> first (when Tracked-wrapped),
-    // then direct Option<U>, then inner U via `.some()`.
+    // then direct Option<U>, then inner U via `.some`.
     out.push(quote! {
         (#column, ::djogi::types::LookupOp::Eq) => {
             #tracked_eq_prelude
@@ -4332,7 +4137,7 @@ fn option_arms(
         },
     });
 
-    // IsNull / IsNotNull — inert `()` payload.
+    // IsNull / IsNotNull — inert `` payload.
     out.push(quote! {
         (#column, ::djogi::types::LookupOp::IsNull) =>
             ::djogi::__private::query::portable_emit::emit_null(acc, ctx, #column, true),
@@ -4344,17 +4149,16 @@ fn option_arms(
 
     if supports_ordering {
         // Ordering arms — only meaningful for the inner `U` payload
-        // (i.e. predicates built via `.some().gt(_)` / `.gte(_)` /
+        // (i.e. predicates built via `.some.gt(_)` / `.gte(_)` /
         // `.lt(_)` / `.lte(_)` / `.between(_, _)`). Direct
         // `Option<U>` ordering is rejected at the `DjogiField` level
         // (no method exposed) and surfaces here as
         // `UnsupportedLookup` if a caller somehow constructs it.
-        //
-        // For Tracked-wrapped fields the same `.some()` surface is
+        // For Tracked-wrapped fields the same `.some` surface is
         // unreachable today (`Tracked<Option<U>>` does not implement
         // the `DjogiField<M, Option<U>>::some` extension), but a
         // Tracked-aware preamble keeps the dispatch symmetric: a
-        // future API addition that exposes `.some()` for Tracked
+        // future API addition that exposes `.some` for Tracked
         // fields will route through the same arms without a second
         // macro change.
         // Tracked-aware ordering preludes capture the downcast result and

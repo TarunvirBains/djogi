@@ -1,46 +1,38 @@
-//! `#[djogi::trait_impl]` attribute macro — Phase 8β T5.2 + T5.3.
-//!
+//! `#[djogi::trait_impl]` attribute macro — 2 + T5.3.
 //! Wraps a trait `impl` block with a sibling `inventory::submit!`
-//! registration so cross-cutting consumers (`Sassi::all_impl::<dyn T>()`,
+//! registration so cross-cutting consumers (`Sassi::all_impl::<dyn T>`,
 //! T5.4 + 8δ T7) can iterate every model that implements a given
 //! trait without naming each model in the consumer's path.
-//!
 //! Emits the impl block verbatim plus a sibling `inventory::submit!`
 //! `TraitRegistration` and a type-erased caster that uses the safe
 //! `Arc<dyn Any>` → `Arc<Self>` → `Arc<dyn Trait>` carrier pattern
 //! (no `transmute`) so consumers can downcast registry entries back to
 //! the concrete trait object.
-//!
 //! # Why a separate attribute macro
-//!
 //! Adopters writing `impl Searchable for Vehicle { ... }` register
 //! with one attribute prefix:
-//!
 //! ```ignore
 //! #[djogi::trait_impl]
 //! impl Searchable for Vehicle {
 //!     fn searchable_columns(&self) -> &[&'static str] { &["title"] }
 //! }
 //! ```
-//!
 //! No additional code at the impl block; the macro emits a
 //! `inventory::submit!(TraitRegistration { ... })` alongside the
 //! unchanged impl block. The impl block reaches rustc verbatim so
 //! adopter-side compile errors (e.g. wrong method signature) point
 //! at the adopter's own code, not at the macro expansion.
-//!
 //! # What we accept
-//!
 //! - Trait impls only — `impl Trait for Type { ... }`. Inherent
-//!   `impl Type { ... }` rejected.
+//! `impl Type { ... }` rejected.
 //! - Concrete (non-generic) impls only — `impl<T> Trait for Vec<T>`
-//!   rejected. Generic impls would require parameter substitution
-//!   for the `TypeId::of` lookup at registration time, which is
-//!   deferred to a future phase per `feedback_anchored_deferrals`.
+//! rejected. Generic impls would require parameter substitution
+//! for the `TypeId::of` lookup at registration time, which is
+//! deferred to a future phase per `feedback_anchored_deferrals`.
 //! - Single-segment `Self` types — `impl Trait for Vehicle` works,
-//!   `impl Trait for crate::module::Vehicle` works (path resolved
-//!   verbatim), `impl Trait for some_fn()::Vehicle` rejected (not a
-//!   nameable type at parse time).
+//! `impl Trait for crate::module::Vehicle` works (path resolved
+//! verbatim), `impl Trait for some_fn::Vehicle` rejected (not a
+//! nameable type at parse time).
 
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
@@ -129,21 +121,18 @@ fn try_expand(item: TokenStream) -> syn::Result<TokenStream> {
 
     // Safe type-erased caster body — avoid `transmute` entirely:
     // the path is
-    //
-    //   1. `Arc<dyn Any + Send + Sync>` → `Arc<Self>`     via `Arc::downcast`
-    //   2. `Arc<Self>`                  → `Arc<dyn Trait>` via unsizing coercion
-    //   3. Box the `Arc<dyn Trait>` in a per-(Model, Trait) carrier
-    //      struct that itself is `Send + Sync + 'static` (so it
-    //      satisfies `Any + Send + Sync`).
-    //   4. Erase the carrier back to `Arc<dyn Any + Send + Sync>` for
-    //      the registry's wire type.
-    //
+    // 1. `Arc<dyn Any + Send + Sync>` → `Arc<Self>` via `Arc::downcast`
+    // 2. `Arc<Self>` → `Arc<dyn Trait>` via unsizing coercion
+    // 3. Box the `Arc<dyn Trait>` in a per-(Model, Trait) carrier
+    // struct that itself is `Send + Sync + 'static` (so it
+    // satisfies `Any + Send + Sync`).
+    // 4. Erase the carrier back to `Arc<dyn Any + Send + Sync>` for
+    // the registry's wire type.
     // The consuming side (`Sassi::all_impl::<dyn T>` — T5.4 + 8δ T7)
     // performs the symmetric downcast: `Arc<dyn Any>` →
     // `Arc<TraitImplCarrier<dyn T>>` via `Arc::downcast`, then
     // unwraps the inner `Arc<dyn T>` from the carrier's `into_arc`
     // method. No `transmute` at any point in the chain.
-    //
     // The carrier struct is emitted per impl site so multiple
     // `#[djogi::trait_impl]` blocks in the same module do not
     // collide on a shared type name. The `__djogi_trait_obj_*`
@@ -192,7 +181,7 @@ fn try_expand(item: TokenStream) -> syn::Result<TokenStream> {
             // Step 1 — downcast the erased Arc to `Arc<Self>`.
             // `Arc::downcast` on `Arc<dyn Any + Send + Sync>` returns
             // `Result<Arc<T>, Arc<dyn Any + Send + Sync>>` when `T:
-            // Any + Send + Sync` — we discard the `Err` arm via `.ok()`.
+            // Any + Send + Sync` — we discard the `Err` arm via `.ok`.
             let arc_model: ::std::sync::Arc<#self_ty> =
                 match ::std::sync::Arc::clone(any).downcast::<#self_ty>() {
                     ::core::result::Result::Ok(arc) => arc,

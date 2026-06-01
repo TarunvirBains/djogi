@@ -1,5 +1,4 @@
 //! Daemon-mode resume for live migrations.
-//!
 //! Long-running poll loop that scans `djogi_live_plans` for stale rows
 //! whose current step is [`StepKind::BackfillChunked`] or
 //! [`StepKind::ValidateBackfill`], claims them via Postgres advisory
@@ -10,48 +9,40 @@
 //! `live resume`: it picks up plans whose chunk loop was interrupted
 //! mid-stream (host crash, container eviction, network partition) and
 //! finishes the backfill without operator intervention.
-//!
 //! # What the daemon will and will not advance
-//!
 //! The daemon's responsibility ends at the first operator gate.
 //! Specifically:
-//!
 //! - Auto-resumes [`StepKind::BackfillChunked`] (chunk-loop
-//!   continuation; idempotent by the pattern's `WHERE` predicate
-//!   contract).
+//! continuation; idempotent by the pattern's `WHERE` predicate
+//! contract).
 //! - Auto-resumes [`StepKind::ValidateBackfill`] only as a re-runnable
-//!   gate query — the daemon does NOT auto-promote the plan past the
-//!   validation gate; that decision stays with the operator via
-//!   `live run`.
+//! gate query — the daemon does NOT auto-promote the plan past the
+//! validation gate; that decision stays with the operator via
+//! `live run`.
 //! - Refuses to advance through [`StepKind::CutoverReads`],
-//!   [`StepKind::CutoverWrites`], and [`StepKind::FinalizeConstraints`].
-//!   Those gates are operator-only (`live run` / `live finalize`); the
-//!   daemon would have no way to confirm the production application's
-//!   read / write traffic has been re-routed before flipping the
-//!   cutover, and an automated finalize would side-step the operator
-//!   review of the post-backfill state. Any plan whose `current_step`
-//!   has advanced into a cutover / finalize gate is invisible to the
-//!   daemon's candidate filter.
+//! [`StepKind::CutoverWrites`], and [`StepKind::FinalizeConstraints`].
+//! Those gates are operator-only (`live run` / `live finalize`); the
+//! daemon would have no way to confirm the production application's
+//! read / write traffic has been re-routed before flipping the
+//! cutover, and an automated finalize would side-step the operator
+//! review of the post-backfill state. Any plan whose `current_step`
+//! has advanced into a cutover / finalize gate is invisible to the
+//! daemon's candidate filter.
 //! - Refuses to auto-resume [`PlanStatus::Paused`] plans. `Paused` is
-//!   the operator's checkpoint state — the daemon never overrides an
-//!   explicit operator pause.
-//!
+//! the operator's checkpoint state — the daemon never overrides an
+//! explicit operator pause.
 //! # Triple-gate
-//!
 //! Mirrors `db reset` semantics. A daemon invocation refuses to start
 //! when:
-//!
 //! 1. `DJOGI_ENV` is set to `production` (case-insensitive). The daemon
-//!    is not approved for production deployments in the v1 surface;
-//!    operator-driven `live resume` remains the sole production
-//!    surface.
+//! is not approved for production deployments in the v1 surface;
+//! operator-driven `live resume` remains the sole production
+//! surface.
 //! 2. The application database URL does not resolve to localhost AND
-//!    the operator did not pass `--allow-non-localhost`. Mirrors the
-//!    seed / reset gate so a misconfigured `DATABASE_URL` cannot have
-//!    the daemon hammering a remote production box.
-//!
+//! the operator did not pass `--allow-non-localhost`. Mirrors the
+//! seed / reset gate so a misconfigured `DATABASE_URL` cannot have
+//! the daemon hammering a remote production box.
 //! # Coordination
-//!
 //! Two daemons may legitimately race on the same plan (failover to a
 //! new host while the original daemon is still draining). The poll
 //! loop coordinates via a per-plan Postgres advisory lock keyed off the
@@ -60,7 +51,6 @@
 //! cycle. The lock is a session-scoped advisory lock, so it auto-
 //! releases on connection close — a daemon that crashes mid-chunk does
 //! not leave a stuck claim on the row.
-//!
 //! [`StepKind::BackfillChunked`]: crate::live_migrate::plan::StepKind::BackfillChunked
 //! [`StepKind::ValidateBackfill`]: crate::live_migrate::plan::StepKind::ValidateBackfill
 //! [`StepKind::CutoverReads`]: crate::live_migrate::plan::StepKind::CutoverReads
@@ -81,7 +71,6 @@ use crate::pg::pool::DjogiPool;
 
 /// Configuration for the daemon poll loop. Built by the CLI from
 /// operator flags and threaded into [`run_daemon`].
-///
 /// `host` and `pid` are written to the row's `claimed_by_*` columns so
 /// operators inspecting `djogi_live_plans` can identify which daemon
 /// instance is driving each plan. They are diagnostic only — the
@@ -93,7 +82,7 @@ pub struct DaemonConfig {
     /// plan §8 amendment.
     pub poll_interval: Duration,
     /// A row is treated as a daemon candidate when its
-    /// `last_progress_at` is older than `now() - claim_stale_after`,
+    /// `last_progress_at` is older than `now - claim_stale_after`,
     /// OR `claimed_by_pid IS NULL`. Default 10 minutes.
     pub claim_stale_after: Duration,
     /// Refuse non-localhost connections unless this flag is set. The
@@ -126,7 +115,6 @@ impl DaemonConfig {
     /// flag set so the daemon only ever runs against localhost.
     /// `host` and `pid` are read from the running process; tests that
     /// need a deterministic shape construct the struct directly.
-    ///
     /// The caller supplies the application `database_url` because the
     /// daemon's localhost gate evaluates against the same URL the
     /// surrounding [`DjogiContext`] was built from — passing it
@@ -157,7 +145,6 @@ fn hostname_or_unknown() -> String {
 // ── Errors ────────────────────────────────────────────────────────────
 
 /// Errors raised by [`run_daemon`].
-///
 /// `#[non_exhaustive]` so future failure modes (e.g. a multi-host
 /// coordination conflict beyond per-row advisory locks) can land
 /// without breaking downstream matches.
@@ -185,7 +172,7 @@ pub enum DaemonError {
     #[error(transparent)]
     Database(#[from] DjogiError),
     /// SIGTERM / SIGINT received; the loop exited cleanly. Surfaced as
-    /// an `Err` rather than `Ok(())` so callers can distinguish
+    /// an `Err` rather than `Ok` so callers can distinguish
     /// "completed naturally" from "terminated by signal" — the daemon
     /// never completes naturally; the only successful exit is via
     /// signal.
@@ -205,32 +192,27 @@ impl From<DbError> for DaemonError {
 /// is in the daemon's auto-resume set AND whose
 /// `(last_progress_at, claimed_by_pid)` shape marks the row as both
 /// stale AND eligible-to-claim.
-///
 /// The `INTERVAL '1 second' * $1` form lets us pass the stale-claim
 /// threshold as a `BIGINT` parameter (number of seconds) rather than
 /// formatting an interval literal — the parameter binder cannot bind
 /// a `Duration` directly, but seconds-as-i64 round-trips cleanly.
-///
 /// The candidate filter is two AND-ed predicates:
-///
 /// 1. **Eligible step / status.** `status = 'running'` AND
-///    `current_step IN ('backfill_chunked', 'validate_backfill')`.
-///    Pending plans are operator-promoted via `live run`; Paused
-///    plans are explicit operator checkpoints; terminal states
-///    (Complete / Abandoned / Failed) are never auto-resumed.
+/// `current_step IN ('backfill_chunked', 'validate_backfill')`.
+/// Pending plans are operator-promoted via `live run`; Paused
+/// plans are explicit operator checkpoints; terminal states
+/// (Complete / Abandoned / Failed) are never auto-resumed.
 /// 2. **Stale (or never-progressed) AND free-to-claim.** The row must
-///    be stale — `last_progress_at < now() - $1::interval OR
-///    last_progress_at IS NULL` (a row that has never recorded
-///    progress is treated as stale by definition). The row must also
-///    be free to claim — `claimed_by_pid IS NULL OR claimed_by_pid =
-///    $2`: unclaimed, OR already claimed by THIS daemon (so a
-///    restarted daemon process can re-claim its own previous work
-///    rather than waiting for the stale threshold).
-///
+/// be stale — `last_progress_at < now - $1::interval OR
+/// last_progress_at IS NULL` (a row that has never recorded
+/// progress is treated as stale by definition). The row must also
+/// be free to claim — `claimed_by_pid IS NULL OR claimed_by_pid =
+/// $2`: unclaimed, OR already claimed by THIS daemon (so a
+/// restarted daemon process can re-claim its own previous work
+/// rather than waiting for the stale threshold).
 /// `$2` binds the running daemon's PID — passing it explicitly keeps
 /// the predicate self-contained without smuggling state through the
 /// SQL session.
-///
 /// The query is documented as a constant so tests can assert its
 /// shape without reaching into private internals.
 const CANDIDATE_QUERY_SQL: &str = "\
@@ -246,10 +228,9 @@ WHERE status = 'running' \
   )";
 
 /// Update statement that records a successful claim. Sets `claimed_by_pid`,
-/// `claimed_by_host`, and `claimed_at = now()` for the row identified by
+/// `claimed_by_host`, and `claimed_at = now` for the row identified by
 /// the bucket key. Issued only after the corresponding advisory lock
 /// has been acquired.
-///
 /// The `WHERE` clause re-asserts the same status / step filter the
 /// candidate query uses (`status = 'running'` AND `current_step IN
 /// (...)`) so a row that was paused / abandoned / advanced between the
@@ -278,7 +259,6 @@ WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
 /// [`DaemonError::Shutdown`] when SIGTERM / SIGINT is received and
 /// returns the typed error for any unrecoverable failure (e.g. the
 /// triple-gate refusal happens here, before the loop starts).
-///
 /// Per-plan failures inside the loop are logged via `tracing::warn!`
 /// and the loop continues — a single misbehaving plan does not halt
 /// the daemon's other work.
@@ -355,18 +335,16 @@ pub async fn run_daemon(ctx: &mut DjogiContext, config: DaemonConfig) -> Result<
 /// Apply the production-env + production-profile + localhost gates.
 /// Lifted into a free function so unit tests can exercise every refusal
 /// path without running the full poll loop.
-///
 /// Three independent refusals fire here:
-///
 /// 1. `DJOGI_ENV` set to `production` (case-insensitive).
 /// 2. `DjogiConfig::profile` set to the literal lowercase
-///    `"production"` — mirrors the predicate `db reset` and
-///    `db cleanup-test-dbs` use so every long-running destructive
-///    surface follows the same rule. Strict lowercase match: a typo
-///    (`"Production"`, `"PROD"`) falls back to the safe-for-dev
-///    default rather than silently flipping the gate.
+/// `"production"` — mirrors the predicate `db reset` and
+/// `db cleanup-test-dbs` use so every long-running destructive
+/// surface follows the same rule. Strict lowercase match: a typo
+/// (`"Production"`, `"PROD"`) falls back to the safe-for-dev
+/// default rather than silently flipping the gate.
 /// 3. Application URL is not localhost AND `--allow-non-localhost`
-///    was not passed.
+/// was not passed.
 fn enforce_environment_gates(config: &DaemonConfig) -> Result<(), DaemonError> {
     if production_env_set() {
         return Err(DaemonError::Production);
@@ -499,7 +477,6 @@ async fn read_candidates(
 
 /// Try to claim, drive, and release one candidate. Each phase logs
 /// independently so the operator can pinpoint where a plan got stuck.
-///
 /// `pool` is the daemon's shared pool handle (cloned once per poll in
 /// [`poll_once`]). It is threaded down to the backfill resume so the
 /// chunk loop runs on a fresh pool-backed context rather than the
@@ -560,7 +537,6 @@ async fn drive_under_lock(
     // gate query the daemon does NOT advance through — it merely verifies
     // the gate query still parses against the live database. Operator
     // promotion past the gate stays with `live run`.
-    //
     // The backfill resume runs on `pool` (a fresh pool-backed context),
     // NOT the pinned `ctx`: each chunk opens its own transaction and
     // cannot nest inside the advisory-lock connection. The claim /
@@ -606,14 +582,12 @@ async fn drive_under_lock(
 /// Drive a `backfill_chunked` candidate via the same
 /// [`crate::live_migrate::backfill::resume_backfill`] entry point the
 /// CLI's `live resume` calls.
-///
 /// Runs on a FRESH pool-backed context built from `pool` — NOT the
 /// daemon's advisory-lock pinned (connection-backed) context. The
 /// chunk loop opens its own per-chunk transaction via `atomic(pool, ..)`
 /// and therefore requires a pool to draw connections from; the pinned
 /// connection is reserved for the session-scoped advisory lock. See
 /// CLASS B.
-///
 /// On a backfill failure, records the failure on the plan row via
 /// [`crate::live_migrate::state::record_failure`] (retriable) so the
 /// failure is visible to `live show` and the daemon does not silently
@@ -779,7 +753,6 @@ async fn release_advisory_lock(ctx: &mut PinnedCtx<'_>, lock_key: i64) {
 /// UPDATE the `claimed_by_*` columns to reflect the current daemon's
 /// ownership. Issued after the advisory lock is acquired so concurrent
 /// daemons cannot stomp each other's claim metadata.
-///
 /// Returns `true` when the row was claimed (1 row affected) and `false`
 /// when the row was pre-empted between the candidate SELECT and this
 /// UPDATE — i.e. an operator paused / abandoned the plan, or the
@@ -962,7 +935,7 @@ mod tests {
 
     #[test]
     fn candidate_query_self_pid_is_or_escape_hatch() {
-        // The candidate predicate is (own_pid OR (unclaimed AND stale)) —
+        // The candidate predicate is (own_pid OR (unclaimed AND stale))
         // own-pid reclaim bypasses the stale threshold so a restarted
         // daemon picks its prior claims up immediately, while
         // other-daemon claims are skipped until they expire.

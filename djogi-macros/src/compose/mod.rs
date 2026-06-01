@@ -1,5 +1,4 @@
-//! Composition macros — Phase 8 §T2.
-//!
+//! Composition macros —.
 //! This module groups the composition surfaces. T2.4 pivoted the
 //! `Auditable` opt-in from a derive macro to the `#[model(auditable)]`
 //! attribute (spec line 1037, locked 2026-05-03); T2.6 (2026-05-04)
@@ -8,30 +7,24 @@
 //! that drove T2.4 — both opt-ins now route through the model
 //! attribute. `#[derive(Auditable)]` and `#[derive(SoftDeletable)]`
 //! are removed from the v3 surface.
-//!
 //! Each submodule exposes a single `expand(model_ident, model_attrs)`
 //! entry point called from `model::expand_inner`. Both functions
 //! return an empty `TokenStream` when their respective opt-in flag is
 //! absent so opt-out models pay zero macro-output overhead.
-//!
 //! # Path-routing convention
-//!
 //! Every macro emitted from this module routes the trait impl through
 //! the public re-export `::djogi::Auditable` / `::djogi::SoftDeletable`
-//! — **not** through `::djogi::__private::*`. The two composition
+//! **not** through `::djogi::__private::*`. The two composition
 //! traits are convention-sealed (doc only — see
 //! [`djogi::compose`] module docs); a sealed-supertrait route would
 //! require `__private::compose::Sealed` plumbing, which T2.1
 //! deliberately did not ship. See `feedback_macro_path_routing.md` for
 //! the full routing rule.
-//!
 //! # Composition with `#[model(hooks)]` (T1)
-//!
 //! `#[model(auditable)]` / `#[model(soft_deletable)]` and
 //! `#[model(hooks)]` compose orthogonally. The composition populator
 //! runs BEFORE any user `ModelHooks::before_create`, so user hooks can
 //! inspect or override the populated `created_by` value. Adopter usage:
-//!
 //! ```rust,ignore
 //! use djogi::prelude::*;
 //!

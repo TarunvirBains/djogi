@@ -1,21 +1,15 @@
-//! Reference outbox relay binary — Phase 5 Task 11.5.
-//!
+//! Reference outbox relay binary — .
 //! Polls one or more outbox tables, claims pending rows, publishes them via a
 //! configured [`Publisher`], and marks them published or failed. Stale
 //! `processing` rows (abandoned by crashed workers) are recovered back to
 //! `pending` on each iteration.
-//!
 //! # Compile requirements
-//!
 //! This binary requires `features = ["outbox"]` — see `required-features` in
 //! `djogi/Cargo.toml`. It is built with:
-//!
 //! ```shell
 //! cargo build -p djogi --features outbox --bin djogi-outbox-relay
 //! ```
-//!
 //! # Configuration
-//!
 //! | Env var | Default | Description |
 //! |---------|---------|-------------|
 //! | `DATABASE_URL` | required | Postgres connection URL |
@@ -23,20 +17,16 @@
 //! | `OUTBOX_BATCH_SIZE` | `32` | Rows to claim per table per iteration |
 //! | `OUTBOX_CHANNEL_PREFIX` | `djogi_outbox_` | NOTIFY channel prefix |
 //! | `OUTBOX_POLL_MS` | `500` | Milliseconds between poll iterations |
-//!
 //! # Runtime behaviour
-//!
 //! Each iteration:
 //! 1. For every configured outbox table, opens an atomic scope and claims a
-//!    batch of pending rows.
+//! batch of pending rows.
 //! 2. Publishes each row via the configured publisher.
 //! 3. Marks each row published (success) or failed (error).
 //! 4. After the atomic scope, calls `recover_stale` outside any transaction
-//!    to reset rows whose leases have expired.
+//! to reset rows whose leases have expired.
 //! 5. Sleeps for `OUTBOX_POLL_MS` before the next iteration.
-//!
 //! # Note on long-running loop
-//!
 //! This binary is intentionally a reference implementation. Production
 //! deployments may want to replace the fixed `OUTBOX_POLL_MS` sleep with an
 //! adaptive strategy (e.g. exponential backoff when no rows are found,
@@ -87,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // One NotifyPublisher per outbox table so the NOTIFY channel encodes the
     // source table in its name. Listeners can subscribe to `{channel_prefix}
     // {table}` and receive only the rows from that outbox. This matches the
-    // Phase 5 plan's per-table routing intent.
+    // Plan's per-table routing intent.
     let publishers: std::collections::HashMap<String, std::sync::Arc<NotifyPublisher>> =
         outbox_tables
             .iter()

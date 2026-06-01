@@ -1,9 +1,7 @@
 //! Portable predicate SQL emission — error type, emit context, walker, and
 //! the hidden `emit::*` helper surface PR2d's macro override consumes.
-//!
 //! # Why a hidden public module?
-//!
-//! Phase 8eta PR2b installs a direct-`Q<T>` SQL walker that emits portable
+//! Installs a direct-`Q<T>` SQL walker that emits portable
 //! predicates without first lowering them to `Condition`. The default
 //! [`Model::__djogi_emit_field_predicate`](crate::model::Model::__djogi_emit_field_predicate)
 //! hook lives on the public `Model` trait, and PR2d's macro override expands
@@ -12,18 +10,14 @@
 //! does not pollute `cargo doc`. `#[doc(hidden)] pub mod portable;` plus the
 //! `::djogi::__private::query::*` macro routing path satisfies both
 //! constraints.
-//!
 //! # PR2b scope
-//!
 //! - Add `emit_portable_predicate` — the borrow-walker that drives
-//!   `Q::Portable` SQL emission for the direct walker in `query::sql`.
+//! `Q::Portable` SQL emission for the direct walker in `query::sql`.
 //! - Add the hidden `emit::*` helper module that PR2d's macro override
-//!   consumes for value / pair / list / null / option / pattern lowering.
-//!   The helpers are crate-public (`pub mod emit`) so the macro-emitted
-//!   impl can name them through `::djogi::__private::query::portable_emit::*`.
-//!
+//! consumes for value / pair / list / null / option / pattern lowering.
+//! The helpers are crate-public (`pub mod emit`) so the macro-emitted
+//! impl can name them through `::djogi::__private::query::portable_emit::*`.
 //! # The Model hook contract
-//!
 //! Every model gets a default `__djogi_emit_field_predicate` (defined in
 //! `crate::model`) that returns `PortablePredicateError::UnsupportedModel`.
 //! PR2d will override this on macro-emitted `impl Model for {Model}` blocks
@@ -38,7 +32,6 @@ use sassi::BasicPredicate;
 use std::any::TypeId;
 
 /// Typed error returned by the portable SQL lowering pipeline.
-///
 /// PR2a defines the variants; PR2b's direct-`Q<T>` walker plumbs them into
 /// `DjogiError` through `query/terminal.rs` / `query/update.rs`. PR2c adds
 /// regression coverage for cache-invalid manual-`Condition` ingress.
@@ -51,7 +44,7 @@ pub enum PortablePredicateError {
     /// `__djogi_emit_field_predicate` hook.
     #[error("model does not support portable SQL lowering: {model}")]
     UnsupportedModel {
-        /// `core::any::type_name::<Self>()` of the receiver model.
+        /// `core::any::type_name::<Self>` of the receiver model.
         model: &'static str,
     },
 
@@ -78,7 +71,7 @@ pub enum PortablePredicateError {
 
     /// The captured operand value's runtime type did not match any payload
     /// shape the macro arm knew about. PR2d's generated arms emit this
-    /// instead of panicking when `FieldPredicate::value_as::<V>()` returns
+    /// instead of panicking when `FieldPredicate::value_as::<V>` returns
     /// `None`.
     #[error("field {field} lookup {op:?} had an unexpected payload type")]
     ValueTypeMismatch {
@@ -107,7 +100,7 @@ pub enum PortablePredicateError {
     LateralOuterRefOutOfScope {
         /// The referenced column.
         column: &'static str,
-        /// The source model diagnostic name (`type_name::<M>()`).
+        /// The source model diagnostic name (`type_name::<M>`).
         source_model: &'static str,
     },
 
@@ -121,7 +114,7 @@ pub enum PortablePredicateError {
     LateralOuterRefModelMismatch {
         /// The referenced column.
         column: &'static str,
-        /// Source outer-ref model (`type_name::<M>()`).
+        /// Source outer-ref model (`type_name::<M>`).
         source_model: &'static str,
         /// Expected lateral outer model for the active join.
         expected_model: &'static str,
@@ -150,22 +143,19 @@ pub enum PortablePredicateError {
 
     /// A Sassi `LookupOp::Json` predicate reached the SQL emitter without
     /// trusted Djogi provenance.
-    ///
     /// Djogi requires every JSON predicate to be constructed through
     /// [`DjogiField<M, MirJzSON>::jsahibon`] (or its `Option<MirJzSON>`
     /// sibling) so the column name routes through Djogi's identifier
     /// validator and the predicate carries a [`DjogiFieldProvenance`]
-    /// stamp. Raw `sassi::Field::new("payload", _).jsahibon()...`
+    /// stamp. Raw `sassi::Field::new("payload", _).jsahibon...`
     /// predicates lack the stamp and would smuggle a caller-supplied
     /// `&'static str` past Djogi's identifier gate; lowering them is a
     /// hard refusal.
-    ///
     /// Adopters who hit this error are reaching into Sassi directly for
     /// JSON predicate construction — re-route through
-    /// `DjogiField<M, MirJzSON>::jsahibon()` to fix.
-    ///
+    /// `DjogiField<M, MirJzSON>::jsahibon` to fix.
     /// [`DjogiField<M, MirJzSON>::jsahibon`]:
-    ///     crate::query::mirjzson::DjogiJSahibONFieldRef
+    /// crate::query::mirjzson::DjogiJSahibONFieldRef
     /// [`DjogiFieldProvenance`]: crate::query::field::DjogiFieldProvenance
     #[error(
         "field {field} JSON predicate lacks Djogi trusted provenance — \
@@ -179,14 +169,12 @@ pub enum PortablePredicateError {
 }
 
 /// SQL-emission context threaded through the direct-`Q<T>` walker.
-///
 /// `SqlEmitContext` carries the parent-table qualifier so portable
 /// root-field predicates emitted under `build_select_joined` qualify their
 /// columns as `<table>.<column>` while the same predicate emitted under
 /// `build_select` stays unqualified. Generated portable arms always pass a
 /// bare physical column name; the qualifier is added by
 /// [`SqlEmitContext::push_column`].
-///
 /// The struct is `#[doc(hidden)]` because it appears in the public `Model`
 /// trait signature for the `__djogi_emit_field_predicate` hook (so the
 /// default impl in `crate::model` and PR2d's macro override both spell it
@@ -199,7 +187,7 @@ pub struct SqlEmitContext {
 }
 
 /// Lateral-inner emission scope metadata. Used to validate
-/// `OuterRef::as_lateral_outer_expr()` nodes at SQL-build time.
+/// `OuterRef::as_lateral_outer_expr` nodes at SQL-build time.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LateralOuterScope {
     pub(crate) alias: &'static str,
@@ -209,20 +197,17 @@ pub(crate) struct LateralOuterScope {
 
 /// Trust marker threaded through SQL emission to gate `LookupOp::Json`
 /// lowering against forged Sassi JSON predicates.
-///
 /// # Why this exists
-///
 /// JSON predicates are unusual among `BasicPredicate<T>` leaves: their
 /// SQL emission bypasses the macro-emitted `Model::__djogi_emit_field_predicate`
 /// dispatcher (whose generated arms statically validate column names
 /// against the model's field table) and routes directly to
-/// [`emit_jsahibon_predicate`]. That helper reads `fp.field_name()` —
+/// [`emit_jsahibon_predicate`]. That helper reads `fp.field_name`
 /// the Sassi-side caller-supplied `&'static str` — and emits it as a
 /// SQL column reference. If a raw `sassi::Field::<T, JSahibON>::new("col", _)`
 /// predicate reached the helper, the column name would never have
 /// passed Djogi's identifier validator and the SQL would target a
 /// column the Djogi field surface never blessed.
-///
 /// `PortablePredicate<T>` is the sealed wrapper that establishes
 /// trusted Djogi provenance: its crate-private constructors
 /// ([`PortablePredicate::from_djogi_field`],
@@ -230,31 +215,28 @@ pub(crate) struct LateralOuterScope {
 /// and the operator overloads in [`crate::query::predicate`] only mint
 /// JSON leaves through [`crate::query::mirjzson::wrap_predicate`], which
 /// captures the column from Djogi's identifier-validated
-/// `DjogiField::__sql_field()` route.
-///
+/// `DjogiField::__sql_field` route.
 /// # How trust propagates
-///
 /// - [`emit_portable_predicate`] passes [`JsonTrust::Trusted`]
-///   unconditionally — `PortablePredicate<T>` is the trusted-construction
-///   boundary; every JSON leaf inside has Djogi provenance.
+/// unconditionally — `PortablePredicate<T>` is the trusted-construction
+/// boundary; every JSON leaf inside has Djogi provenance.
 /// - Callers that extracted a bare [`BasicPredicate<T>`] from a
-///   [`PortablePredicate<T>`]-rooted path (e.g.
-///   [`crate::query::QuerySet::is_portable`] /
-///   [`crate::query::QuerySet::try_portable`] reduce a `Q::Portable`-only
-///   tree via `try_reduce_q_ref_to_basic`; the refresh fetcher stores
-///   the reduced `Option<BasicPredicate<T>>` and rebroadcasts it on
-///   full-baseline ticks) also pass [`JsonTrust::Trusted`].
+/// [`PortablePredicate<T>`]-rooted path (e.g.
+/// [`crate::query::QuerySet::is_portable`] /
+/// [`crate::query::QuerySet::try_portable`] reduce a `Q::Portable`-only
+/// tree via `try_reduce_q_ref_to_basic`; the refresh fetcher stores
+/// the reduced `Option<BasicPredicate<T>>` and rebroadcasts it on
+/// full-baseline ticks) also pass [`JsonTrust::Trusted`].
 /// - Recursive [`emit_basic_predicate`] calls (under `And` / `Or` /
-///   `Not` / `Xor`) propagate the caller's trust unchanged. The
-///   recursive walker never gains trust mid-walk — a forged JSON leaf
-///   nested inside an `And` still surfaces `UntrustedJsonPredicate`.
+/// `Not` / `Xor`) propagate the caller's trust unchanged. The
+/// recursive walker never gains trust mid-walk — a forged JSON leaf
+/// nested inside an `And` still surfaces `UntrustedJsonPredicate`.
 /// - Any other entry point — and in particular the unit-test path that
-///   constructs a raw `sassi::Field::new("forged", _).jsahibon()...`
-///   predicate directly — passes [`JsonTrust::Untrusted`]. The first
-///   JSON leaf returns
-///   [`PortablePredicateError::UntrustedJsonPredicate`] instead of
-///   dispatching to [`emit_jsahibon_predicate`].
-///
+/// constructs a raw `sassi::Field::new("forged", _).jsahibon...`
+/// predicate directly — passes [`JsonTrust::Untrusted`]. The first
+/// JSON leaf returns
+/// [`PortablePredicateError::UntrustedJsonPredicate`] instead of
+/// dispatching to [`emit_jsahibon_predicate`].
 /// Non-JSON field leaves are unaffected by this flag — their dispatch
 /// routes through `Model::__djogi_emit_field_predicate`, whose
 /// macro-emitted arm matrix is gated by statically-validated column
@@ -270,8 +252,7 @@ pub(crate) enum JsonTrust {
     /// Predicate has unknown provenance — raw Sassi or otherwise.
     /// `LookupOp::Json` leaves surface
     /// [`PortablePredicateError::UntrustedJsonPredicate`].
-    ///
-    /// No non-test production code path constructs this variant —
+    /// No non-test production code path constructs this variant
     /// every caller of [`emit_basic_predicate`] originates at a
     /// `PortablePredicate<T>` boundary (`emit_portable_predicate`) or
     /// extracts from a `try_portable`-gated `Q::Portable` tree
@@ -327,14 +308,13 @@ impl SqlEmitContext {
 
     /// Push a column reference into the accumulator with the appropriate
     /// qualifier.
-    ///
     /// - Plain column names (no `.`): pre-qualified as
-    ///   `<parent_table>.<column>` when the context is joined; emitted bare
-    ///   otherwise.
+    /// `<parent_table>.<column>` when the context is joined; emitted bare
+    /// otherwise.
     /// - Dotted/path columns (`rel.field`): emitted as-is. This is a
-    ///   defensive guard for SQL-only condition paths that already carry a
-    ///   qualified column; portable root-field arms must never pass a
-    ///   dotted column because relation traversal is not portable.
+    /// defensive guard for SQL-only condition paths that already carry a
+    /// qualified column; portable root-field arms must never pass a
+    /// dotted column because relation traversal is not portable.
     #[doc(hidden)]
     pub fn push_column(self, acc: &mut SqlAccumulator, column: &'static str) {
         if column.contains('.') {
@@ -364,11 +344,10 @@ impl SqlEmitContext {
     }
 
     /// Context for entering a subquery body from an outer expression.
-    ///
     /// A subquery's own root fields belong to its `FROM` table, not to the
     /// caller's joined alias, so parent-table qualification must be reset.
     /// Lateral metadata is preserved so nested subqueries inside a lateral
-    /// inner query can still validate `OuterRef::as_lateral_outer_expr()`.
+    /// inner query can still validate `OuterRef::as_lateral_outer_expr`.
     #[doc(hidden)]
     pub(crate) const fn subquery_body(self) -> Self {
         Self {
@@ -379,31 +358,24 @@ impl SqlEmitContext {
 }
 
 /// Walk a [`PortablePredicate<T>`] by reference and emit SQL into `acc`.
-///
-/// Phase 8eta PR2b — the direct-`Q<T>` SQL walker (`query::sql::emit_q`)
+/// The direct-`Q<T>` SQL walker (`query::sql::emit_q`)
 /// delegates `Q::Portable(_)` arms here so trusted-portable predicates
 /// emit through `Model::__djogi_emit_field_predicate` (PR2d's macro
 /// override) without first lowering to `Condition`.
-///
 /// # Vacuous identities
-///
 /// `BasicPredicate::True` and `BasicPredicate::False` emit literal
-/// `TRUE` / `FALSE` directly — no model hook call. Phase 8eta PR2b's
-/// `Q::always_true()` / `Q::always_false()` rely on this so unfiltered
+/// `TRUE` / `FALSE` directly — no model hook call. 's
+/// `Q::always_true` / `Q::always_false` rely on this so unfiltered
 /// querysets stay SQL-emittable on hand-written `Model` test fixtures
 /// where `__djogi_emit_field_predicate`'s default returns
 /// `UnsupportedModel`.
-///
 /// # Compound nodes
-///
 /// `And(parts)` / `Or(parts)` emit `(p1 AND p2 AND ...)` / `(p1 OR p2
 /// OR ...)`. Empty `And(vec![])` is the vacuous-truth identity (renders
 /// `TRUE`); empty `Or(vec![])` is vacuous-falsehood (renders `FALSE`).
 /// `Not(inner)` emits `NOT (...)` and `Xor(a, b)` emits the general
 /// truth-table identity `((NOT a) AND b) OR (a AND (NOT b))`.
-///
 /// # Future Sassi variants
-///
 /// `BasicPredicate<T>` is `#[non_exhaustive]`; the wildcard arm returns
 /// `PortablePredicateError::UnsupportedPredicateKind` rather than
 /// panicking so a future Sassi variant added between Djogi releases
@@ -429,7 +401,6 @@ pub(crate) fn emit_portable_predicate<T: Model>(
 /// `Xor` walk through this without going back through `PortablePredicate`
 /// (which carries provenance metadata that does not change the SQL
 /// shape).
-///
 /// `trust` is the caller's [`JsonTrust`] marker (see that type for the
 /// threat model and propagation rules). Recursive calls under
 /// composite arms forward the same value unchanged — a forged JSON
@@ -459,9 +430,8 @@ pub(crate) fn emit_basic_predicate<T: Model>(
             // emitter under `emit_jsahibon_predicate` is the only valid
             // lowering route — see `query::mirjzson` for the
             // construction-side contract.
-            //
             // Trusted provenance is enforced here: an untrusted caller
-            // (raw `sassi::Field::new(...).jsahibon()` predicate that did
+            // (raw `sassi::Field::new(...).jsahibon` predicate that did
             // not transit `PortablePredicate<T>`) surfaces
             // `UntrustedJsonPredicate` rather than emitting SQL that
             // would target a never-validated column. See `JsonTrust`
@@ -539,24 +509,22 @@ pub(crate) fn emit_basic_predicate<T: Model>(
 }
 
 // ── MirJzSON / JSahibON predicate SQL emission ────────────────────────────
-//
 // Djogi-owned SQL lowering for `LookupOp::Json` leaves. Called from
 // `emit_basic_predicate` when the dispatched `FieldPredicate<T>` carries
 // `op == LookupOp::Json`. The contract:
-//
 // 1. Every leaf emits a two-valued SQL boolean (`TRUE` or `FALSE`) before
-//    composition under `NOT`, `XOR`, `AND`, `OR`. SQL `NULL` never leaks
-//    out of a leaf — `COALESCE(_, FALSE)` and `CASE WHEN ... ELSE FALSE
-//    END` wrappers are mandatory.
-// 2. Missing path / type mismatch / SQL NULL → `FALSE` (except `missing()`
-//    which is `TRUE`).
+// composition under `NOT`, `XOR`, `AND`, `OR`. SQL `NULL` never leaks
+// out of a leaf — `COALESCE(_, FALSE)` and `CASE WHEN ... ELSE FALSE
+// END` wrappers are mandatory.
+// 2. Missing path / type mismatch / SQL NULL → `FALSE` (except `missing`
+// which is `TRUE`).
 // 3. JSON `null` and SQL `NULL` are kept distinct.
 // 4. Key predicates guard `jsonb_typeof(j) = 'object'`.
 // 5. Array predicates guard `jsonb_typeof(j) = 'array'`.
 // 6. Numeric comparisons preflight `jsonb_typeof(j) = 'number'` and bind
-//    `u64` through `rust_decimal::Decimal` (never through `as i64`).
+// `u64` through `rust_decimal::Decimal` (never through `as i64`).
 // 7. All paths / keys / scalar operands / JSON operands / lengths are
-//    bound parameters. No path/key interpolation.
+// bound parameters. No path/key interpolation.
 
 use crate::types::FieldPredicate;
 use sassi::JSahibON;
@@ -565,26 +533,23 @@ use sassi::predicate::{
 };
 
 /// Emit a `LookupOp::Json` leaf as SQL.
-///
 /// The function is the **single** SQL-lowering entry point for JSON
 /// predicates. The caller (always [`emit_basic_predicate`]) has
 /// already enforced the [`JsonTrust::Trusted`] precondition; this
 /// helper assumes its `fp` originated from a Djogi-trusted
 /// `PortablePredicate<T>`-rooted path. It:
-///
-/// 1. Downcasts `fp.value_as::<JSahibONPredicateBody>()`. A `None`
-///    return indicates either a future Sassi schema change that
-///    invalidated the `Arc<JSahibONPredicateBody>` payload contract
-///    or an internal Djogi bug — surfaces as
-///    [`PortablePredicateError::UntrustedJsonPredicate`] rather than a
-///    panic for the same defense-in-depth reason the body trust check
-///    lives upstream.
+/// 1. Downcasts `fp.value_as::<JSahibONPredicateBody>`. A `None`
+/// return indicates either a future Sassi schema change that
+/// invalidated the `Arc<JSahibONPredicateBody>` payload contract
+/// or an internal Djogi bug — surfaces as
+/// [`PortablePredicateError::UntrustedJsonPredicate`] rather than a
+/// panic for the same defense-in-depth reason the body trust check
+/// lives upstream.
 /// 2. Dispatches on the body variant, walking the
-///    [`JSahibONPredicateBody`] tree from `sassi::predicate::jsahibon`.
-///    Each arm emits the guarded two-valued SQL shape documented in
-///    [`docs/spec/mirjzson-jsonb-integration.md`][spec] under the
-///    "SQL Mapping" section.
-///
+/// [`JSahibONPredicateBody`] tree from `sassi::predicate::jsahibon`.
+/// Each arm emits the guarded two-valued SQL shape documented in
+/// [`docs/spec/mirjzson-jsonb-integration.md`][spec] under the
+/// "SQL Mapping" section.
 /// [spec]: ../../docs/spec/mirjzson-jsonb-integration.md
 fn emit_jsahibon_predicate<T: Model>(
     acc: &mut SqlAccumulator,
@@ -614,7 +579,6 @@ fn emit_jsahibon_predicate<T: Model>(
 /// path predicates per the spec — `path = []` binds an empty
 /// `text[]::text[]` and Postgres's `#>` operator returns the column
 /// itself.
-///
 /// `path` is bound as a `Vec<String>` parameter — every segment is a
 /// bound value, never interpolated into SQL. This is the path-
 /// smuggling defence: even if a caller somehow constructed a
@@ -629,9 +593,9 @@ fn push_j_expression(
     acc.push_sql("(");
     ctx.push_column(acc, column);
     acc.push_sql(" #> ");
-    // `path.segments()` returns `&[String]`; cloning into an owned `Vec` is
+    // `path.segments` returns `&[String]`; cloning into an owned `Vec` is
     // the canonical bind shape for postgres-types' `Vec<String>` -> `text[]`
-    // codec. `to_vec()` is the idiomatic spelling per clippy's
+    // codec. `to_vec` is the idiomatic spelling per clippy's
     // `iter_cloned_collect` lint.
     let segments: Vec<String> = path.segments().to_vec();
     acc.push_bind(segments);
@@ -750,10 +714,9 @@ fn push_bool_bind(
 }
 
 /// Map a Sassi `JCompareOp` to its SQL token (with surrounding spaces).
-///
 /// `JCompareOp` is `#[non_exhaustive]`. The match below covers every
 /// v0.1 variant; future additions land in the wildcard arm with `=`
-/// (rather than `unreachable!`) and surface as a SQL miscompilation —
+/// (rather than `unreachable!`) and surface as a SQL miscompilation
 /// which gets caught by integration tests immediately. The defensive
 /// wildcard is preferable to a panic because the caller (a Djogi-
 /// trusted builder) cannot have routed an unknown op through this
@@ -776,7 +739,6 @@ fn compare_op_token(op: JCompareOp) -> &'static str {
 }
 
 /// Map a [`JTypeKind`] to the literal `jsonb_typeof` result text.
-///
 /// `jsonb_typeof(jsonb)` returns one of `'object'`, `'array'`,
 /// `'string'`, `'number'`, `'boolean'`, `'null'`. Sassi's `JTypeKind`
 /// collapses the three numeric carriers under `Number`; the mapping
@@ -988,17 +950,16 @@ fn emit_jsahibon_body(
 }
 
 /// Emit a `ScalarCompare` JSON predicate. Per the spec:
-///
 /// - Numeric kinds emit `CASE WHEN jsonb_typeof = 'number' THEN
-///   (j #>> '{}')::numeric <op> $operand ELSE FALSE END` so the cast
-///   is preflighted and the operand is bound through `Decimal` (never
-///   `as i64`).
+/// (j #>> '{}')::numeric <op> $operand ELSE FALSE END` so the cast
+/// is preflighted and the operand is bound through `Decimal` (never
+/// `as i64`).
 /// - String kind emits `COALESCE(jsonb_typeof = 'string' AND
-///   (j #>> '{}')::text <op> $operand, FALSE)`. The op set Sassi
-///   permits for strings is `Eq` / `Neq` — ordering is excluded by
-///   `JOrderedScalar`.
+/// (j #>> '{}')::text <op> $operand, FALSE)`. The op set Sassi
+/// permits for strings is `Eq` / `Neq` — ordering is excluded by
+/// `JOrderedScalar`.
 /// - Boolean kind emits the analogous shape with
-///   `jsonb_typeof = 'boolean'` and a `boolean` bind.
+/// `jsonb_typeof = 'boolean'` and a `boolean` bind.
 fn emit_scalar_compare(
     acc: &mut SqlAccumulator,
     column: &'static str,
@@ -1073,7 +1034,7 @@ fn emit_scalar_compare(
 }
 
 /// Emit a `ScalarIn` JSON predicate. Per the spec, missing/type-
-/// mismatch returns `FALSE` BEFORE the empty-list identity fires —
+/// mismatch returns `FALSE` BEFORE the empty-list identity fires
 /// so `not_in([])` on a non-string column returns `FALSE`, not `TRUE`.
 fn emit_scalar_in(
     acc: &mut SqlAccumulator,
@@ -1097,11 +1058,9 @@ fn emit_scalar_in(
     // list still emits the guard — Sassi's evaluator returns `FALSE`
     // on empty `in_` after the kind guard, and `FALSE` after the
     // kind guard for empty `not_in`. The shape:
-    //
-    //   CASE WHEN <kind guard> THEN
-    //     <extracted scalar> [NOT] IN ($1, $2, ...)
-    //   ELSE FALSE END
-    //
+    // CASE WHEN <kind guard> THEN
+    // <extracted scalar> [NOT] IN ($1, $2, ...)
+    // ELSE FALSE END
     // ...where the empty `(?, ?, ?)` arm short-circuits to `FALSE`
     // (or in the `NotIn` case, to `TRUE` inside the kind-guard).
 
@@ -1239,11 +1198,10 @@ fn emit_scalar_between(
 /// `Model::__djogi_emit_field_predicate` override. Adopter code never
 /// names anything in here directly; the macro routes calls through
 /// `::djogi::__private::query::portable_emit::*` (see `lib.rs`).
-///
 /// Each helper writes the column reference via
 /// [`SqlEmitContext::push_column`], dispatches the operator token, and
 /// calls `acc.push_bind(_)` on cloned operand values pulled out of the
-/// type-erased Sassi `FieldPredicate::value_as<V>()` payload. Type
+/// type-erased Sassi `FieldPredicate::value_as<V>` payload. Type
 /// mismatches return `PortablePredicateError::ValueTypeMismatch` instead
 /// of panicking, so a future macro emission bug surfaces as a typed
 /// error rather than a runtime crash.
@@ -1273,9 +1231,8 @@ pub mod emit {
 
     /// Emit a `column op $n` predicate for a value pulled out of the
     /// `FieldPredicate`'s type-erased payload.
-    ///
     /// `op_sql` is the binary operator token (with surrounding spaces)
-    /// — e.g. `" = "`, `" <> "`, `" > "`. The helper clones the captured
+    /// e.g. `" = "`, `" <> "`, `" > "`. The helper clones the captured
     /// value once into `push_bind`; the macro arm guarantees `V`
     /// matches the field's Rust type.
     #[doc(hidden)]
@@ -1388,7 +1345,6 @@ pub mod emit {
 
     /// Attempt runtime-registered custom scalar lowering for fields the
     /// model macro could not classify statically.
-    ///
     /// Today this is intentionally limited to `#[derive(DjogiEnum)]` codecs.
     /// Unknown adopter newtypes still return `UnsupportedFieldType`; the
     /// fallback only succeeds when the field descriptor's custom SQL type and
@@ -1687,11 +1643,10 @@ pub mod emit {
         Ok(())
     }
 
-    /// Emit list membership for `Option<V>::some()` predicates.
-    ///
+    /// Emit list membership for `Option<V>::some` predicates.
     /// This is intentionally distinct from [`emit_list`]: Sassi's
     /// `PresentField<T, V>` treats `None` as `false` for every comparison,
-    /// so `some().not_in([])` is `column IS NOT NULL`, not the scalar-list
+    /// so `some.not_in([])` is `column IS NOT NULL`, not the scalar-list
     /// identity `TRUE`.
     #[doc(hidden)]
     pub fn emit_present_list<V>(
@@ -1744,7 +1699,6 @@ pub mod emit {
     /// `ILIKE` / `LIKE` with `ESCAPE '\\'`; `IExact` lowers to
     /// `COLLATE "C" ILIKE` to match the ASCII-stable case-insensitive
     /// equality semantics PR1's Sassi evaluator implements.
-    ///
     /// The captured `String` value is escaped via [`escape_like`] so
     /// literal `%`, `_`, and `\\` in user input do not act as
     /// wildcards. Substring / prefix / suffix wrappers (`%foo%`,
@@ -1820,7 +1774,7 @@ pub mod emit {
 
     /// Emit `column IS NULL` or `column IS NOT NULL`. No `FieldPredicate`
     /// payload is consumed — Sassi's null-check ops carry an inert
-    /// `()` operand.
+    /// `` operand.
     #[doc(hidden)]
     pub fn emit_null(
         acc: &mut SqlAccumulator,
@@ -1865,7 +1819,7 @@ pub mod emit {
     }
 
     /// Direct `Option<V>` inequality.
-    /// `neq(Some(v))` lowers to `(column IS NULL OR column <> $n)` —
+    /// `neq(Some(v))` lowers to `(column IS NULL OR column <> $n)`
     /// matching Rust's `Some(_) != None`.
     /// `neq(None)` lowers to `column IS NOT NULL`.
     #[doc(hidden)]
@@ -1899,20 +1853,17 @@ pub mod emit {
     /// Direct `Option<V>` list membership. Splits the input into
     /// `Some(_)` and `None` partitions and emits the full-shape SQL
     /// from the v3 plan PR2 Step 6 table:
-    ///
     /// - `in_([])` -> `FALSE`
     /// - `in_([None])` -> `column IS NULL`
     /// - `in_([Some(v1), Some(v2)])` -> `column IN ($n, $m)`
     /// - `in_([None, Some(v)])` -> `(column IS NULL OR column IN ($n))`
-    ///
     /// And the negated dual:
-    ///
     /// - `not_in([])` -> `TRUE`
     /// - `not_in([None])` -> `column IS NOT NULL`
     /// - `not_in([Some(v1), Some(v2)])`
-    ///   -> `(column IS NULL OR column NOT IN ($n, $m))`
+    /// -> `(column IS NULL OR column NOT IN ($n, $m))`
     /// - `not_in([None, Some(v)])`
-    ///   -> `(column IS NOT NULL AND column NOT IN ($n))`
+    /// -> `(column IS NOT NULL AND column NOT IN ($n))`
     #[doc(hidden)]
     pub fn emit_option_in<V>(
         acc: &mut SqlAccumulator,
@@ -2074,7 +2025,7 @@ mod tests {
         let mut acc = SqlAccumulator::new("");
         SqlEmitContext::joined("posts").push_column(&mut acc, "author.name");
         let (sql, _) = acc.into_parts();
-        // Joined context does NOT prepend `posts.` to a dotted column —
+        // Joined context does NOT prepend `posts.` to a dotted column
         // the column already carries its own qualifier (legacy/SQL-only).
         assert_eq!(sql, "author.name");
     }
@@ -2098,19 +2049,16 @@ mod tests {
     }
 
     // ── PR2d helper-level SQL lowering tests ──────────────────────────────
-    //
     // The helpers under `emit::*` are called by macro-emitted
     // `Model::__djogi_emit_field_predicate` arms. The unit tests here
     // exercise the helper signatures directly so PR2d's macro emission
     // and the helpers stay in lock-step on:
-    //
     // - Optional field equality / inequality / list shapes (the v3
-    //   plan PR2 Step 6 truth table).
+    // plan PR2 Step 6 truth table).
     // - Empty / non-empty list emission for non-Option scalars.
     // - String-pattern LIKE escape + ASCII-stable case-folding parity.
     // - Joined-select parent-table qualification through
-    //   `SqlEmitContext::joined`.
-    //
+    // `SqlEmitContext::joined`.
     // The tests construct `FieldPredicate<TestModel>` instances via
     // sassi's `Field<T, V>` builder methods, mirroring what
     // `DjogiField` does internally. No live database is required.
@@ -2124,7 +2072,6 @@ mod tests {
     // for descriptor lookup. The trait default's unsupported-model
     // error never fires because the helpers never call back through
     // `__djogi_emit_field_predicate`.
-    //
     // `active` / `maybe_year` are referenced through the typed Sassi
     // extractors below but the struct's borrow path is not exercised in
     // every test arm; suppress the dead-code lint to keep the test
@@ -2676,7 +2623,7 @@ mod tests {
     #[test]
     fn emit_value_under_joined_context_qualifies_column() {
         // Mirrors what `build_select_joined` will do once PR2b's
-        // direct-Q walker threads `SqlEmitContext::joined(T::table_name())`
+        // direct-Q walker threads `SqlEmitContext::joined(T::table_name)`
         // into expression subqueries / joined-select WHERE emission.
         let f = SassiField::<TestModel, i32>::new("score", |m| &m.score);
         let pred = unwrap_field_pred(f.eq(42));
@@ -2732,7 +2679,6 @@ mod tests {
     }
 
     // ── Defensive SqlEmitContext::joined("parent").push_column(rel.field) ──
-    //
     // Already covered by `dotted_column_is_emitted_as_is_under_joined`
     // above. This test repeats the exact assertion the dispatch
     // requires so the named test is easy to find by phase prefix:
@@ -2751,13 +2697,11 @@ mod tests {
     }
 
     // ── #195: forged raw Sassi `LookupOp::Json` rejection ─────────────────
-    //
     // Spec at `docs/spec/mirjzson-jsonb-integration.md` §"Trusted Portable
     // Construction" and §"Tests": "Forged standalone Sassi `LookupOp::Json`
     // predicates without Djogi provenance are rejected by Djogi lowering."
-    //
     // These tests construct a `BasicPredicate<TestModel>` directly via the
-    // raw Sassi `sassi::Field<T, JSahibON>::new(...).jsahibon()` builder —
+    // raw Sassi `sassi::Field<T, JSahibON>::new(...).jsahibon` builder
     // bypassing Djogi's [`crate::query::mirjzson::DjogiField<M, MirJzSON>::
     // jsahibon`] trusted-construction surface. The body downcasts
     // correctly to a real `JSahibONPredicateBody` (because Sassi's own

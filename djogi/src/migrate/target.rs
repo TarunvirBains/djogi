@@ -1,22 +1,17 @@
-//! Filesystem layout helpers for the Phase 7 migration tree.
-//!
+//! Filesystem layout helpers for the migration tree.
 //! T6 owns this module. Two responsibilities:
-//!
 //! 1. **Path resolution.** Map a `(database, app)` [`BucketKey`] to
-//!    the canonical on-disk paths for that bucket — committed
-//!    migration files under `migrations/<database>/<app>/`, the
-//!    snapshot at `migrations/<database>/<app>/schema_snapshot.json`,
-//!    and the pending JSON staging file at
-//!    `target/djogi_pending/<database>/<app>.json`.
-//!
+//! the canonical on-disk paths for that bucket — committed
+//! migration files under `migrations/<database>/<app>/`, the
+//! snapshot at `migrations/<database>/<app>/schema_snapshot.json`,
+//! and the pending JSON staging file at
+//! `target/djogi_pending/<database>/<app>.json`.
 //! 2. **Filesystem scanning.** For the build.rs three-way match and
-//!    the D004 (folder drift) diagnostic, walk the on-disk
-//!    `migrations/` tree and report which `(database, app)` pairs
-//!    actually exist as directories. Compared against the snapshot's
-//!    `registered_apps` to surface orphaned / missing folders.
-//!
+//! the D004 (folder drift) diagnostic, walk the on-disk
+//! `migrations/` tree and report which `(database, app)` pairs
+//! actually exist as directories. Compared against the snapshot's
+//! `registered_apps` to surface orphaned / missing folders.
 //! # Workspace layout (frozen)
-//!
 //! ```text
 //! <workspace-root>/
 //! ├── migrations/                              committed; git submodule
@@ -38,16 +33,13 @@
 //!         └── crud_log/
 //!             └── audit.json
 //! ```
-//!
 //! The synthetic global bucket (empty-string app label) lives at
 //! `<database>/_global_/` on disk so file-system tooling does not have
 //! to handle empty-string directory names. The path-resolution
 //! helpers in this module map `BucketKey { app: "" }` to that
 //! directory — the empty-string label remains the canonical in-memory
 //! identity.
-//!
 //! # No regex
-//!
 //! Per the project-wide no-regex rule, the directory-listing scan
 //! uses byte-level checks against `DirEntry::file_name`. The accepted
 //! identifier grammar is the same as Postgres's: ASCII letter or
@@ -82,7 +74,6 @@ pub const PENDING_DIR: &str = "djogi_pending";
 pub const GLOBAL_BUCKET_DIRNAME: &str = "_global_";
 
 /// Filename of the per-bucket committed snapshot.
-///
 /// Mirrors the path called out in
 /// [`crate::migrate::schema::AppliedSchema`] docs.
 pub const SNAPSHOT_FILENAME: &str = "schema_snapshot.json";
@@ -95,7 +86,6 @@ pub const SNAPSHOT_FILENAME: &str = "schema_snapshot.json";
 pub const MODELS_INVENTORY_FILENAME: &str = "djogi_models.json";
 
 /// Convert a [`BucketKey`] app label to its on-disk directory name.
-///
 /// The synthetic global bucket (empty label) maps to
 /// [`GLOBAL_BUCKET_DIRNAME`]; every other label is used verbatim.
 /// Identifier validity is the responsibility of the projection layer
@@ -131,14 +121,13 @@ pub fn database_dir(workspace_root: &Path, database: &str) -> PathBuf {
 }
 
 /// Resolve the per-bucket directory under `migrations/<database>/`.
-///
 /// `bucket.app` is mapped through [`app_dirname`] so the synthetic
 /// global bucket lands at `migrations/<database>/_global_/`.
 pub fn bucket_dir(workspace_root: &Path, bucket: &BucketKey) -> PathBuf {
     database_dir(workspace_root, &bucket.database).join(app_dirname(&bucket.app))
 }
 
-/// Resolve the canonical snapshot path for a bucket —
+/// Resolve the canonical snapshot path for a bucket
 /// `migrations/<database>/<app>/schema_snapshot.json`.
 pub fn snapshot_path(workspace_root: &Path, bucket: &BucketKey) -> PathBuf {
     bucket_dir(workspace_root, bucket).join(SNAPSHOT_FILENAME)
@@ -154,7 +143,7 @@ pub fn pending_database_dir(workspace_root: &Path, database: &str) -> PathBuf {
     pending_root(workspace_root).join(database)
 }
 
-/// Resolve the per-bucket pending JSON path —
+/// Resolve the per-bucket pending JSON path
 /// `target/djogi_pending/<database>/<app>.json`. The app component
 /// uses the same global-bucket mapping as the snapshot path.
 pub fn pending_json_path(workspace_root: &Path, bucket: &BucketKey) -> PathBuf {
@@ -163,7 +152,6 @@ pub fn pending_json_path(workspace_root: &Path, bucket: &BucketKey) -> PathBuf {
 }
 
 /// One `(database, app)` pair discovered on disk by [`scan_filesystem`].
-///
 /// Apps come back with the in-memory label form (empty string for
 /// the global bucket); consumers comparing against the snapshot's
 /// `registered_apps` list use the in-memory form on both sides.
@@ -175,16 +163,13 @@ pub struct FilesystemBucket {
 
 /// Walk `migrations/` and return every `(database, app)` pair that
 /// has a directory on disk.
-///
 /// **Read-only.** Never creates, deletes, or modifies any path.
 /// Returns an empty set when `migrations/` does not exist (the typical
 /// state of a fresh project before the first compose).
-///
 /// **Filtering.** Hidden directories (those whose name starts with
 /// `b'.'`) are skipped. Files at any level are skipped. Non-UTF-8
 /// directory names are skipped silently — they cannot match an
 /// in-memory app label, which the projection layer enforces as ASCII.
-///
 /// **No regex.** The byte-level `is_acceptable_dir_name` filter is
 /// the only sanity check applied to directory names; we leave full
 /// identifier validation to the projection layer that owns the
@@ -255,27 +240,23 @@ fn scan_filesystem_filtered(
 
 /// Walk every up-side `.sdjql` file under `migrations/<database>/<app>/`
 /// and return per-bucket `version → path` maps.
-///
 /// `database_filter`:
 /// - `Some(name)` — only buckets whose `database` matches are included.
 /// - `None` — every bucket discovered by [`scan_filesystem`] is included.
-///
 /// Filtering rules (shared by every consumer of this helper):
 /// - Down-side files (suffix `.down.sdjql`) are skipped — the up-side
-///   filename is the canonical version identifier.
+/// filename is the canonical version identifier.
 /// - Files whose stem does not match the `V<14-digit>__<slug>` /
-///   `V<14-digit>` grammar (per [`recover_version_from_stem`]) are
-///   silently skipped.
+/// `V<14-digit>` grammar (per [`recover_version_from_stem`]) are
+/// silently skipped.
 /// - Buckets containing zero up-side migrations are absent from the
-///   returned map (the per-bucket inner map is only created on first
-///   insert).
-///
+/// returned map (the per-bucket inner map is only created on first
+/// insert).
 /// **Legacy rejection.** Schema migration files with a `.sql` extension
 /// (up or down side) are rejected with `io::ErrorKind::InvalidData` and
 /// a diagnostic naming the file and version. Duplicate same-version
 /// artifacts (e.g., `V1__x.sql` + `V1__x.sdjql`) produce a duplicate
 /// diagnostic before single-file legacy rejection.
-///
 /// Returns `io::Error` directly so each caller can wrap it in a
 /// crate-local error variant (`AttuneError::FilesystemScanFailed`,
 /// `ResetError::MigrationScanFailed`, etc.).
@@ -381,7 +362,6 @@ pub fn scan_filesystem_with_files(
 /// the version is `V20260425010203__add_users` itself when the slug
 /// is canonical, but for tests / edge cases we accept the bare prefix
 /// `V20260425010203` too.
-///
 /// Implementation: walk a `V` followed by ASCII digits, then optional
 /// `__<slug>`. The leading prefix produced by [`super::naming::version_prefix`]
 /// is `V<14 ASCII digits>` so the deterministic case is straightforward.
@@ -411,7 +391,6 @@ pub(super) fn recover_version_from_stem(stem: &str) -> Option<String> {
 /// [`u8::is_ascii_alphabetic`], every subsequent byte is `b'_'` or
 /// [`u8::is_ascii_alphanumeric`], and the total length is at most
 /// 63 bytes (Postgres identifier limit).
-///
 /// No regex. The filter is intentionally conservative — anything
 /// that fails this check is presumed to be an unrelated directory
 /// (`.git`, `target`, hand-written README folder, etc.) and is

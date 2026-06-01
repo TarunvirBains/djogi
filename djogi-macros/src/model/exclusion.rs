@@ -1,11 +1,8 @@
-//! `#[model(exclusion(...))]` grammar — Phase 7.5 PR 7 task 2.
-//!
+//! `#[model(exclusion(...))]` grammar — PR 7 task 2.
 //! Parses model-level `EXCLUDE` constraint declarations and lowers them
 //! to `ExclusionConstraintSpec` token-stream literals that land in the
 //! `#[model]`-emitted descriptor.
-//!
 //! # Grammar (per PR 7 plan, §macro surface)
-//!
 //! ```ignore
 //! #[model(
 //!     table = "bookings",
@@ -20,20 +17,15 @@
 //!     exclusion(name = "...", using = "btree", elements = ["..."])
 //! )]
 //! ```
-//!
 //! Multiple `exclusion(...)` entries per model are collected into a `Vec`
 //! and de-duplicated by name at parse time.
-//!
 //! # Why a hand-rolled parser
-//!
 //! Same reason as the `indexes(...)` parser sibling: `where` is a Rust
 //! keyword and only `Ident::parse_any` accepts it as a key. The remaining
 //! grammar (string literals, bool literals, string-array elements) could
 //! ride a smaller darling derive, but unifying all keys behind one
 //! `ParseStream` walk keeps the diagnostics shape consistent.
-//!
 //! # Element decomposition
-//!
 //! Each entry in `elements = [...]` is a string literal of shape
 //! `"<expr> WITH <op>"`. The macro splits byte-level on the literal
 //! `" WITH "` (uppercase, single space on each side) — exactly two
@@ -94,9 +86,8 @@ pub struct ExclusionElementDecl {
 // Parse entry point
 // ---------------------------------------------------------------------------
 
-/// Parse one `Meta::List` of shape `exclusion(name = "...", ...)` —
+/// Parse one `Meta::List` of shape `exclusion(name = "...", ...)`
 /// returns the populated [`ExclusionDecl`].
-///
 /// Caller (`ModelAttrs::parse`) accumulates the per-model Vec and runs
 /// duplicate-name detection across the whole list.
 pub fn parse_exclusion_meta_list(list: &MetaList) -> syn::Result<ExclusionDecl> {
@@ -395,7 +386,6 @@ fn validate_constraint_name(s: &str, span: Span) -> syn::Result<()> {
 }
 
 /// Reject duplicate `name` values across a model's exclusion list.
-///
 /// Caller passes the freshly-parsed Vec; collision diagnostics span on
 /// the second occurrence's `head_span` so the user lands on the
 /// duplicate, not on the first valid declaration.
@@ -422,26 +412,22 @@ pub fn validate_unique_names(decls: &[ExclusionDecl]) -> syn::Result<()> {
 /// Lower one [`ExclusionDecl`] into an `ExclusionConstraintSpec`
 /// struct-literal token stream. The descriptor emitter wraps the per-decl
 /// streams in a `&[ ... ]` slice literal.
-///
-/// # Extension dependency auto-derivation (djogi#148)
-///
+/// # Extension dependency auto-derivation
 /// The emitter sets the spec's `extension_dependency` slot via
 /// [`derive_extension_dependency`]:
-///
 /// * `using = "gist"` exclusions whose element list contains at least
-///   one btree comparison operator (`=`, `<>`, `<`, `<=`, `>`, `>=`)
-///   resolve to `Some("btree_gist")`. The canonical scheduling shape
-///   `EXCLUDE USING gist (room_id WITH =, period WITH &&)` matches —
-///   the `=` element needs the btree_gist operator class for `=` on
-///   btree-only types inside a GiST index.
+/// one btree comparison operator (`=`, `<>`, `<`, `<=`, `>`, `>=`)
+/// resolve to `Some("btree_gist")`. The canonical scheduling shape
+/// `EXCLUDE USING gist (room_id WITH =, period WITH &&)` matches
+/// the `=` element needs the btree_gist operator class for `=` on
+/// btree-only types inside a GiST index.
 /// * Every other shape resolves to `None`. Pure-range exclusions
-///   (`elements = ["period WITH &&"]`) keep `None` because stock GiST
-///   handles range overlap natively. `using = "btree"` exclusions also
-///   resolve to `None` — btree EXCLUDEs are uncommon but never need
-///   btree_gist (the extension only matters for GiST indexes).
-///
+/// (`elements = ["period WITH &&"]`) keep `None` because stock GiST
+/// handles range overlap natively. `using = "btree"` exclusions also
+/// resolve to `None` — btree EXCLUDEs are uncommon but never need
+/// btree_gist (the extension only matters for GiST indexes).
 /// Adopters never see this slot in the macro grammar; it is purely
-/// machinery for the Phase 0 bootstrap composer to aggregate the
+/// machinery for the bootstrap composer to aggregate the
 /// per-database extension install list.
 pub fn emit_exclusion_spec_tokens(decl: &ExclusionDecl) -> TokenStream {
     let name = decl.name.as_str();
@@ -490,13 +476,10 @@ pub fn emit_exclusion_spec_tokens(decl: &ExclusionDecl) -> TokenStream {
 
 /// Map an [`ExclusionDecl`] to the Postgres extension name that must be
 /// installed before the constraint can be created.
-///
 /// Returns `Some("btree_gist")` when `using = "gist"` AND the element
 /// list contains at least one btree comparison operator
 /// (`=`, `<>`, `<`, `<=`, `>`, `>=`). Returns `None` otherwise.
-///
 /// # Why the heuristic
-///
 /// `btree_gist` provides GiST operator class support for btree-only
 /// types (`int2`, `int4`, `int8`, `text`, `date`, ...) — without it, a
 /// GiST index cannot accept `=` / `<>` / `<` / `<=` / `>` / `>=` on
@@ -504,15 +487,12 @@ pub fn emit_exclusion_spec_tokens(decl: &ExclusionDecl) -> TokenStream {
 /// exclusion combines `WITH =` on a category column (e.g. `room_id`,
 /// `tenant_id`) with `WITH &&` on a range column (e.g. `period`,
 /// `daterange`) — that is the canonical pattern this rule targets.
-///
 /// Pure-range exclusions (`elements = ["period WITH &&"]`) and
 /// geometric exclusions on PostGIS columns work with stock GiST and
-/// keep `None`. `using = "btree"` exclusions also keep `None` —
+/// keep `None`. `using = "btree"` exclusions also keep `None`
 /// btree_gist only adds GiST operator classes; a btree-method EXCLUDE
 /// works without any extension.
-///
 /// # No regex
-///
 /// Per the Djogi-wide no-regex policy, the match is a direct slice
 /// comparison against a sorted-const operator allowlist.
 fn derive_extension_dependency(decl: &ExclusionDecl) -> Option<&'static str> {
@@ -532,7 +512,6 @@ fn derive_extension_dependency(decl: &ExclusionDecl) -> Option<&'static str> {
 /// `true` for the btree-comparison operators that require `btree_gist`
 /// when used as the `WITH` operator inside a GiST EXCLUDE. Sorted const
 /// slice consulted via `binary_search` per the no-regex policy.
-///
 /// The list matches Postgres's `btree_gist` operator class coverage:
 /// the six standard btree comparison operators. Other GiST operators
 /// (range `&&`, geometric `~`, `<<`, `>>`, `-|-`, etc.) ship with stock
@@ -723,7 +702,7 @@ mod tests {
         assert!(err.to_string().contains("non-empty"));
     }
 
-    // ── djogi#148 — btree_gist extension-dependency derivation ──────────
+    // ── — btree_gist extension-dependency derivation ──────────
 
     #[test]
     fn derive_btree_gist_for_gist_with_equality_operator() {

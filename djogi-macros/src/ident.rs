@@ -1,16 +1,13 @@
 //! Macro-time validator for user-declared column identifiers.
-//!
 //! The `#[model]` macro emits `COLUMN_LIST` — an unquoted comma-join of
 //! every column name — into `SELECT` and `RETURNING` clauses. For that
 //! emission to be safe, every column name must satisfy the Postgres
 //! unquoted-identifier contract:
-//!
 //! 1. Non-empty.
 //! 2. Length ≤ 63 bytes (`NAMEDATALEN - 1`).
 //! 3. First byte is an ASCII letter or underscore; every remaining byte
-//!    is ASCII alphanumeric or underscore.
+//! is ASCII alphanumeric or underscore.
 //! 4. Not a reserved Postgres keyword (case-insensitive).
-//!
 //! The `#[model]` macro used to reserve only `id` / `created_at` /
 //! `updated_at` and accepted any other field name verbatim. A user field
 //! like `r#select` (raw Rust keyword escape) stripped to `select` and
@@ -18,23 +15,18 @@
 //! hits the same class of breakage. Validating here — at macro expansion
 //! time — turns that silent footgun into a targeted `syn::Error`
 //! pointing at the offending field.
-//!
 //! # Why validate here AND at runtime?
-//!
 //! `djogi/src/ident.rs` carries the runtime validator — `assert_plain_ident`
 //! and `const_assert_plain_ident` — that fires on macro-emitted
 //! identifiers reaching `SqlAccumulator::push_sql`. The runtime path
 //! catches broken macro emissions or downstream bypass attempts
 //! (framework bugs) and panics with an operator-facing message.
-//!
 //! This macro-time validator catches the dual problem: the *user-facing*
 //! case where a valid Rust identifier names an unusable SQL column.
 //! Running it in the macro means the compiler reports the problem at the
 //! field's source span in the user's code, not as a runtime panic buried
 //! in SQL emission.
-//!
 //! # Framework-reserved `__djogi_` prefix
-//!
 //! In addition to the four byte-shape rules, this validator rejects
 //! identifiers that enter djogi's reserved namespace (`__djogi_*`).
 //! That namespace is used for framework-internal recursive CTE names,
@@ -45,18 +37,14 @@
 //! runtime helpers in `djogi/src/ident.rs::check_user_supplied_ident` /
 //! `assert_user_supplied_ident`. See `docs/spec/reserved-identifiers.md`
 //! for the inventory.
-//!
 //! # No regex
-//!
 //! Per the project-wide rule in `CLAUDE.md` / `docs/spec/decisions.md`,
 //! no regex engine is used. The byte-level checks below are pure
 //! `u8::is_ascii_alphabetic` / `u8::is_ascii_alphanumeric` + sorted
 //! const-slice `binary_search` for the reserved-keyword lookup.
-//!
 //! # Keyword list scope
-//!
 //! The list tracks Postgres 18 **fully-reserved** keywords (catcode `R`
-//! in `pg_get_keywords()`). Non-reserved and "reserved (can be function
+//! in `pg_get_keywords`). Non-reserved and "reserved (can be function
 //! or type)" keywords are accepted unquoted by the server and therefore
 //! accepted here. The sorting invariant is pinned by
 //! [`reserved_keywords_is_sorted_and_lowercase`] in the unit tests.
@@ -68,7 +56,6 @@ use syn::spanned::Spanned;
 const MAX_IDENT_LEN: usize = 63;
 
 /// Framework-reserved identifier prefix.
-///
 /// Mirrors `RESERVED_DJOGI_PREFIX` in `djogi/src/ident.rs`; keep the
 /// two in sync (the rule is the same on both sides of the macro
 /// boundary). The match is ASCII-case-insensitive because Postgres
@@ -90,7 +77,6 @@ fn starts_with_reserved_djogi_prefix(bytes: &[u8]) -> bool {
 /// Postgres 18 fully-reserved keywords (catcode `R`). Lowercase,
 /// sorted — `binary_search` depends on both. Mirrors the list in
 /// `djogi/src/ident.rs::RESERVED_KEYWORDS`; keep the two in sync.
-///
 /// Authoritative source: Appendix C (SQL Key Words) of the Postgres
 /// 18 manual — entries where the "PostgreSQL" column reads
 /// "reserved".
@@ -177,12 +163,10 @@ const RESERVED_KEYWORDS: &[&str] = &[
 
 /// Validate that every user-declared field on the `struct_item` has a
 /// column name that satisfies the Postgres unquoted-identifier contract.
-///
 /// `struct_item` is the pre-injection struct — framework fields (`id`,
 /// `created_at`, `updated_at`) have not been added yet, so every named
 /// field corresponds to a user declaration whose span is what a
 /// rust-analyzer / compiler diagnostic should underline.
-///
 /// The check strips the `r#` raw-identifier prefix so `r#type` -> `type`,
 /// matching the column-name convention the emitter itself uses. This
 /// closes the `r#select` gap: the Rust parser accepts `r#select` as a
@@ -208,7 +192,6 @@ pub fn validate_field_column_names(struct_item: &syn::ItemStruct) -> syn::Result
 
 /// Run the four-rule validator on a single column name and report a
 /// `syn::Error` at the given span on the first rule violation.
-///
 /// Factored out so the unit tests (and any future callers — projection
 /// aliases, renamed_from targets, etc.) can exercise the classifier
 /// without constructing a full `ItemStruct`.
@@ -217,8 +200,8 @@ pub fn check_one(column: &str, span: proc_macro2::Span) -> syn::Result<()> {
 }
 
 /// Run the same four-rule validator on a `#[model(table = "...")]`
-/// value. Phase 7-Zero-2 T13b's `OuterRef::as_qualified_expr` pushes
-/// `Model::table_name()` directly into emitted SQL as `<table>.<col>`;
+/// value. 's `OuterRef::as_qualified_expr` pushes
+/// `Model::table_name` directly into emitted SQL as `<table>.<col>`;
 /// every historical `FROM <table>` emission does the same. Without
 /// parse-time validation, a hostile `table = "foo; DROP TABLE x; --"`
 /// would smuggle arbitrary SQL into rendered output. Reusing the
@@ -230,26 +213,22 @@ pub fn check_table_name(table: &str, span: proc_macro2::Span) -> syn::Result<()>
 }
 
 /// Run the byte-shape validator on a `#[field(domain = "...")]` value
-/// — Phase 8.5 djogi#216 Piece A.
-///
+/// Piece A.
 /// Domain names are Postgres SQL type identifiers (`CREATE DOMAIN
 /// <name> AS <base>`); the macro emits them verbatim into the column-
 /// type slot of generated DDL. The validation is the byte-shape subset
 /// of [`check_table_name`] / [`check_one`]:
-///
 /// 1. Non-empty.
 /// 2. Length ≤ 63 bytes (`NAMEDATALEN - 1`).
 /// 3. First byte is an ASCII letter or underscore; every remaining byte
-///    is ASCII alphanumeric or underscore.
-///
+/// is ASCII alphanumeric or underscore.
 /// The reserved-keyword check and the framework-reserved `__djogi_`
 /// prefix check are intentionally NOT applied: domain identifiers are
 /// SQL type names, not column / table identifiers, and `domain = "text"`
 /// is a legitimate (if confusing) Postgres declaration. The
 /// `__djogi_` prefix likewise has no SQL-namespace collision risk on a
 /// domain name because djogi never emits its own domain identifiers
-/// — Piece A only references adopter-managed domains.
-///
+/// Piece A only references adopter-managed domains.
 /// Schema-qualified names (`"public.positive_amount"`) are rejected by
 /// the byte-shape rule (the `.` is not an ASCII alnum / underscore
 /// byte) and are out of Piece A scope. Adopters needing them fall back
@@ -586,7 +565,7 @@ mod tests {
     #[test]
     fn reserved_djogi_prefix_constant_matches_runtime_constant() {
         // The macro-time and runtime constants must agree byte-for-byte
-        // — they encode the same public stability contract documented
+        // they encode the same public stability contract documented
         // in `docs/spec/reserved-identifiers.md`. A drift here would
         // produce a class of identifiers that pass macro expansion
         // but blow up at runtime (or vice versa).
@@ -594,8 +573,7 @@ mod tests {
         assert_eq!(RESERVED_DJOGI_PREFIX.len(), 8);
     }
 
-    // ── djogi#216 Piece A — `check_domain_name` validator ──────────────────
-    //
+    // ── Piece A — `check_domain_name` validator ──────────────────
     // Domain names follow the byte-shape subset of the column-name
     // validator: non-empty, ≤63 bytes, ASCII-letter-or-underscore
     // first, ASCII-alphanumeric-or-underscore after. The

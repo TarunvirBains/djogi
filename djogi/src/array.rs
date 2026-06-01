@@ -1,34 +1,26 @@
 //! Array column operator helpers — `contains`, `contained_by`, `overlap`, `len`.
-//!
 //! # What
-//!
 //! This module defines the condition variants for Postgres array operators and
-//! the `len()` expression. The actual `FieldRef<M, Vec<V>>` methods are in
+//! the `len` expression. The actual `FieldRef<M, Vec<V>>` methods are in
 //! [`crate::query::field`]; this module provides the condition payload types
 //! that those methods construct.
-//!
 //! # SQL operators
-//!
-//! | Method         | SQL                      | Meaning                                |
+//! | Method | SQL | Meaning |
 //! |----------------|--------------------------|----------------------------------------|
-//! | `contains`     | `col @> $1`              | column contains all values in the array |
-//! | `contained_by` | `col <@ $1`              | column values are all in the argument   |
-//! | `overlap`      | `col && $1`              | column and argument share at least one element |
-//! | `len`          | `array_length(col, 1)`   | number of elements (1-dimensional arrays only) |
-//!
+//! | `contains` | `col @> $1` | column contains all values in the array |
+//! | `contained_by` | `col <@ $1` | column values are all in the argument |
+//! | `overlap` | `col && $1` | column and argument share at least one element |
+//! | `len` | `array_length(col, 1)` | number of elements (1-dimensional arrays only) |
 //! Djogi arrays are always 1-dimensional; the `array_length` call is hardcoded
 //! to dimension 1. Multi-dimensional arrays are not a supported field type.
-//!
 //! # No GIN index emission
-//!
 //! These operators benefit from GIN indexes, but GIN index emission is
-//! deferred to Phase 7. The operators work correctly without an index — Postgres
+//! deferred to . The operators work correctly without an index — Postgres
 //! falls back to a sequential scan.
 
 use crate::query::condition::FilterValue;
 
 /// Payload for `col @> $1` (array contains).
-///
 /// The `values` vector is the RHS array to bind as a Postgres array parameter.
 /// Every element must be the same Rust type as the column's element type
 /// (enforced at construction time by the typed `FieldRef<M, Vec<V>>` API).

@@ -1,21 +1,17 @@
 //! Bind and decode helpers for narrow / unsigned integer fields.
-//!
 //! # What
-//!
 //! `tokio-postgres` (via `postgres-types`) does not implement `ToSql` /
 //! `FromSql` for `u8`, `u16`, `u64`. For `i8` and `u32`, it does have
 //! impls, but they map to the *wrong* Postgres types for djogi's column
 //! definitions (`i8 → postgres "char"`, `u32 → OID`). djogi models these
 //! five types with different SQL carriers:
-//!
-//! | Rust type | SQL carrier         | Wire type (bind) | Wire type (decode) |
+//! | Rust type | SQL carrier | Wire type (bind) | Wire type (decode) |
 //! |-----------|---------------------|------------------|--------------------|
-//! | `i8`      | `SMALLINT`          | `i16`            | `i16 → i8`         |
-//! | `u8`      | `SMALLINT`          | `i16`            | `i16 → u8`         |
-//! | `u16`     | `INTEGER`           | `i32`            | `i32 → u16`        |
-//! | `u32`     | `BIGINT`            | `i64`            | `i64 → u32`        |
-//! | `u64`     | `NUMERIC`           | `Decimal`        | `Decimal → u64`    |
-//!
+//! | `i8` | `SMALLINT` | `i16` | `i16 → i8` |
+//! | `u8` | `SMALLINT` | `i16` | `i16 → u8` |
+//! | `u16` | `INTEGER` | `i32` | `i32 → u16` |
+//! | `u32` | `BIGINT` | `i64` | `i64 → u32` |
+//! | `u64` | `NUMERIC` | `Decimal` | `Decimal → u64` |
 //! This module provides token-stream helpers consumed by `crud.rs` and
 //! `from_row.rs` to emit these shims without duplicating the logic at
 //! every bind / decode site.
@@ -27,14 +23,12 @@ use syn::Type;
 use super::attrs::unwrap_schema_type;
 
 /// How a Rust field type binds to tokio-postgres for CRUD operations.
-///
 /// Determined by [`bind_kind`] from the raw (possibly `Option<>`/`Tracked<>`
 /// -wrapped) field type. The variants carry the widening conversion needed
 /// before a bind, or signal that no conversion is required.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BindKind {
     /// The Rust type implements `ToSql` for the correct Postgres type directly.
-    ///
     /// All standard types (`i16`, `i32`, `i64`, `f32`, `f64`, `bool`,
     /// `String`, `DateTime`, `Decimal`, `Uuid`, `HeerId`, etc.) and their
     /// `Vec<T>` / `Option<T>` / `Tracked<T>` combinations land here.
@@ -50,7 +44,6 @@ pub enum BindKind {
 }
 
 /// Determine the bind kind for a field type (including `Option<T>` / `Tracked<T>` wrappers).
-///
 /// Strips `Option<T>` and `Tracked<T>` wrappers via [`unwrap_schema_type`]
 /// before checking the inner type. The nullability information from `Option`
 /// is NOT carried in `BindKind`; callers that need it should call
@@ -71,7 +64,6 @@ pub fn bind_kind(ty: &Type) -> BindKind {
 }
 
 /// Whether a field type is `Option<T>` at the outermost level (after stripping `Tracked`).
-///
 /// Used to pick the correct widening expression for nullable widened fields.
 pub fn is_nullable(ty: &Type) -> bool {
     let (_inner, nullable) = unwrap_schema_type(ty);
@@ -98,17 +90,14 @@ pub fn is_tracked_inner(ty: &Type) -> bool {
 }
 
 /// Emit `push_bind(...)` tokens for a `SqlAccumulator` bind site.
-///
 /// `field_expr` is the token stream that evaluates to the field's Rust value
-/// — an **owned** value of the field's declared Rust type (e.g. `row.count`
-/// in bulk paths, `self.count.clone()` in the save path, etc.).
-///
+/// an **owned** value of the field's declared Rust type (e.g. `row.count`
+/// in bulk paths, `self.count.clone` in the save path, etc.).
 /// `tracked` indicates whether the field type is `Tracked<T>` (or
 /// `Option<Tracked<T>>`). For widened types inside `Tracked`, the emitted
-/// code extracts the inner value via `(*field_expr).clone()` before widening.
+/// code extracts the inner value via `(*field_expr).clone` before widening.
 /// For direct types, `Tracked<T>` implements `ToSql where T: ToSql`, so no
 /// extraction is needed.
-///
 /// For widened types the emitted tokens perform the widening conversion before
 /// calling `push_bind`. For direct types the field expression is passed
 /// through unchanged.
@@ -125,19 +114,18 @@ pub fn push_bind_tokens(
 
     // For widened types, extract the inner value from Tracked first.
     let effective = if tracked && !nullable {
-        // Tracked<T>: `(*field_expr).clone()` applies `Tracked`'s Deref impl
+        // Tracked<T>: `(*field_expr).clone` applies `Tracked`'s Deref impl
         // (`Tracked<T>: Deref<Target=T>`) to reach the inner `T`, then clones it.
         // `field_expr` is an owned `Tracked<T>`, so one deref suffices.
         quote! { (*#field_expr).clone() }
     } else if tracked && nullable {
         // Option<Tracked<T>>: extract `Option<T>` by mapping through two derefs.
-        //
-        // `field_expr.as_ref()` → `Option<&Tracked<T>>`.
+        // `field_expr.as_ref` → `Option<&Tracked<T>>`.
         // In the closure `__t: &Tracked<T>`:
-        //   - `*__t`  → `Tracked<T>` (deref the `&` reference)
-        //   - `**__t` → `T` (deref via `Tracked<T>: Deref<Target=T>`)
-        // Using `(*__t).clone()` would clone `Tracked<T>` (wrong);
-        // `(**__t).clone()` clones the inner `T` (correct).
+        // - `*__t` → `Tracked<T>` (deref the `&` reference)
+        // - `**__t` → `T` (deref via `Tracked<T>: Deref<Target=T>`)
+        // Using `(*__t).clone` would clone `Tracked<T>` (wrong);
+        // `(**__t).clone` clones the inner `T` (correct).
         quote! { #field_expr.as_ref().map(|__t| (**__t).clone()) }
     } else {
         field_expr
@@ -186,25 +174,20 @@ pub fn push_bind_tokens(
 
 /// Emit a widened-temporary declaration + slice-entry token pair for the
 /// `create` / `create_with_id` `&[&(dyn ToSql + Sync)]` params slice.
-///
 /// The `create` path builds a `&[&(dyn ToSql + Sync)]` slice before the
 /// INSERT. Because borrows in slice items must outlive the slice expression
 /// itself, widened temporaries must be declared as named `let` bindings
 /// **before** the slice literal.
-///
 /// Returns `(pre_decl, entry)` where:
-///
 /// - `pre_decl` — a `let __bind_<slot>: WideType = widen(val);` statement,
-///   or the empty token stream for direct types.
+/// or the empty token stream for direct types.
 /// - `entry` — `&__bind_<slot> as &(dyn ToSql + Sync)` for widened types,
-///   or `&(val_expr) as &(dyn ToSql + Sync)` for direct types.
-///
+/// or `&(val_expr) as &(dyn ToSql + Sync)` for direct types.
 /// `slot` is the zero-based index of the field in the user-field list,
 /// used to generate a unique local binding name that does not clash across
 /// fields.
-///
 /// `val_expr` evaluates to an **owned** copy of the field value (e.g.
-/// `value.count` or `value.count.clone()`).
+/// `value.count` or `value.count.clone`).
 pub fn create_param_tokens(
     kind: &BindKind,
     nullable: bool,
@@ -216,20 +199,18 @@ pub fn create_param_tokens(
     let bind_name: syn::Ident = syn::Ident::new(&bind_name_str, proc_macro2::Span::call_site());
 
     // Expr to extract the field value, unwrapping Tracked<T> if needed.
-    //
     // `tracked=true, nullable=false` — `Tracked<T>`: one deref via Tracked's
-    // `Deref<Target=T>` impl gives the inner `T`. `(*val_expr).clone()` works
+    // `Deref<Target=T>` impl gives the inner `T`. `(*val_expr).clone` works
     // because `val_expr` is an owned `Tracked<T>` value, not a reference.
-    //
     // `tracked=true, nullable=true` — `Option<Tracked<T>>`: two derefs are needed.
-    // `.as_ref()` gives `Option<&Tracked<T>>`; in the closure `__t: &Tracked<T>`:
-    //   - `*__t`  = `Tracked<T>` (deref the `&` reference — first deref)
-    //   - `**__t` = `T`          (via `Tracked<T>: Deref<Target=T>` — second deref)
-    // `(*__t).clone()` would clone `Tracked<T>` (wrong — the widening
+    // `.as_ref` gives `Option<&Tracked<T>>`; in the closure `__t: &Tracked<T>`:
+    // - `*__t` = `Tracked<T>` (deref the `&` reference — first deref)
+    // - `**__t` = `T` (via `Tracked<T>: Deref<Target=T>` — second deref)
+    // `(*__t).clone` would clone `Tracked<T>` (wrong — the widening
     // conversion then fails: e.g. `i32::from(Tracked<u16>)` is not implemented);
-    // `(**__t).clone()` clones the inner `T` (correct).
+    // `(**__t).clone` clones the inner `T` (correct).
     let extract = if tracked && !nullable {
-        // Tracked<T>: (*value.field).clone() → T
+        // Tracked<T>: (*value.field).clone → T
         quote! { (*#val_expr).clone() }
     } else if tracked && nullable {
         // Option<Tracked<T>>: map through to get Option<T>.
@@ -308,20 +289,16 @@ pub fn create_param_tokens(
 }
 
 /// Emit the decode tokens for a single field in `FromPgRow::from_pg_row`.
-///
 /// For direct types, delegates to `::djogi::__private::pg::decode_at::<_>`
 /// (the existing helper). For widened types, delegates to the appropriate
 /// `decode_narrowed` / `decode_u64_from_decimal` variant — all live in
 /// `::djogi::__private::pg`.
-///
 /// The `tracked` flag controls whether the decoded value is wrapped in
 /// `::djogi::Tracked::new(...)`:
-///
 /// - `tracked=false, nullable=false` → value directly (e.g. `u8`)
-/// - `tracked=false, nullable=true`  → `Option<T>` (e.g. `Option<u8>`)
-/// - `tracked=true,  nullable=false` → `Tracked::new(value)` (e.g. `Tracked<u8>`)
-/// - `tracked=true,  nullable=true`  → `option.map(Tracked::new)` (e.g. `Option<Tracked<u8>>`)
-///
+/// - `tracked=false, nullable=true` → `Option<T>` (e.g. `Option<u8>`)
+/// - `tracked=true, nullable=false` → `Tracked::new(value)` (e.g. `Tracked<u8>`)
+/// - `tracked=true, nullable=true` → `option.map(Tracked::new)` (e.g. `Option<Tracked<u8>>`)
 /// `col_name` is a `&'static str` literal baked at macro time;
 /// `col_idx` is the ordinal position in the SELECT column list.
 pub fn decode_field_tokens(
@@ -397,12 +374,10 @@ pub fn decode_field_tokens(
 }
 
 /// Emit decode tokens for the `FromJoinedPgRow` name-based path.
-///
 /// `FromJoinedPgRow` decodes columns by `"{prefix}{col_name}"` strings rather
 /// than by ordinal index. For widened types, delegates to the appropriate
 /// `decode_narrowed_by_name` / `decode_u64_from_decimal_by_name` variant.
 /// For direct types, uses `row.try_get::<_, _>(col_name_expr)` as before.
-///
 /// `col_name_expr` is a token stream that evaluates to `&str` — typically
 /// `&format!("{}{}", prefix, "col_name")` or similar.
 pub fn decode_joined_field_tokens(
@@ -461,16 +436,14 @@ pub fn decode_joined_field_tokens(
 }
 
 /// Emit the `rust_source_type` token for a specific Rust type string.
-///
 /// Unlike [`rust_source_type_tokens`], this function discriminates between
 /// `i8` and `u8` (both widen to `i16` but carry different `RustSourceType`
 /// variants for the CHECK projection).
-///
 /// `Decimal` / `rust_decimal::Decimal` returns `Some(RustSourceType::Decimal)`
-/// even though the bind/decode path is `BindKind::Direct` (no shim) —
+/// even though the bind/decode path is `BindKind::Direct` (no shim)
 /// the discriminator is read by the projection layer to emit a
 /// structural CHECK enforcing rust_decimal's 96-bit-mantissa / scale-≤-28
-/// representable range. djogi#188.
+/// representable range. .
 pub fn rust_source_type_tokens_for_type(ty: &Type) -> TokenStream {
     let (inner, _nullable) = unwrap_schema_type(ty);
     let s = quote::quote!(#inner).to_string().replace(' ', "");
@@ -481,7 +454,7 @@ pub fn rust_source_type_tokens_for_type(ty: &Type) -> TokenStream {
         "u16" => quote! { ::std::option::Option::Some(::djogi::RustSourceType::U16) },
         "u32" => quote! { ::std::option::Option::Some(::djogi::RustSourceType::U32) },
         "u64" => quote! { ::std::option::Option::Some(::djogi::RustSourceType::U64) },
-        // djogi#188 — adopter `Decimal` columns project a structural CHECK
+        // adopter `Decimal` columns project a structural CHECK
         // bounded by `rust_decimal::Decimal`'s 96-bit mantissa + scale ≤ 28.
         // No shim is emitted (rust_decimal has a native postgres-types impl);
         // the discriminator only steers the projection layer.

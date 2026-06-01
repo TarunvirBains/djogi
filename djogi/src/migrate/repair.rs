@@ -1,8 +1,6 @@
 //! Migration repair — operator-confirmed fixes for ledger drift,
 //! partial applies, and missing snapshots.
-//!
 //! # Why repair lives in its own module
-//!
 //! [`super::runner`] applies migrations forward. [`super::verify`]
 //! reads the live database and reports drift. Neither mutates anything
 //! when something is wrong — the operator decides whether the
@@ -10,56 +8,45 @@
 //! ledger / snapshot, and every entry point requires an explicit
 //! [`RepairConfirmation`] witness so an absent-mindedly-flipped
 //! `bool true` cannot trigger a destructive update.
-//!
 //! # Confirmation witness
-//!
-//! Every repair takes [`RepairConfirmation::OperatorAcknowledged`] —
+//! Every repair takes [`RepairConfirmation::OperatorAcknowledged`]
 //! a single-variant enum whose only constructor is the variant name
 //! itself. That makes the call site loud:
-//!
 //! ```ignore
 //! repair_checksum_drift(
-//!     &mut ctx,
-//!     &guard,
-//!     &bucket,
-//!     "V20260425010203__add_users",
-//!     &fresh_checksum,
-//!     None,
-//!     RepairConfirmation::OperatorAcknowledged,
+//! &mut ctx,
+//! &guard,
+//! &bucket,
+//! "V20260425010203__add_users",
+//! &fresh_checksum,
+//! None,
+//! RepairConfirmation::OperatorAcknowledged,
 //! ).await?;
 //! ```
-//!
-//! No `Default::default()` lands here, no `bool` flips, no implicit
+//! No `Default::default` lands here, no `bool` flips, no implicit
 //! coercion. The operator has to *type out* the variant name.
-//!
 //! # Why a witness instead of an `unsafe fn`?
-//!
 //! `unsafe` in Rust signals memory-safety obligations. Repair's
 //! danger is operational, not memory-related — using `unsafe`
 //! conflates two unrelated risk classes. The witness pattern keeps
 //! `unsafe` available for actual unsafe code while still forcing the
 //! caller to type out a destructive intent.
-//!
 //! # Workspace lock
-//!
 //! Each repair entry point takes `&super::guard::WorkspaceGuard` for
 //! the same reason [`super::runner::apply_plan`] does — the file lock
 //! must be held for the entire repair so a concurrent `apply` /
 //! `verify` cannot race with the ledger mutation.
-//!
-//! # Three repair flows (Phase 7 v3 §8)
-//!
+//! # Three repair flows
 //! 1. [`repair_checksum_drift`] — ledger row's `checksum_up` no longer
-//!    matches the migration file's content. Repair updates the row to
-//!    the freshly-computed checksum.
+//! matches the migration file's content. Repair updates the row to
+//! the freshly-computed checksum.
 //! 2. [`repair_partial_apply`] — non-transactional apply crashed
-//!    mid-segment. Repair rewrites the row's status / progress to
-//!    one of `RolledBack` / `Faked` / `Applied` based on the
-//!    operator's resolution choice.
+//! mid-segment. Repair rewrites the row's status / progress to
+//! one of `RolledBack` / `Faked` / `Applied` based on the
+//! operator's resolution choice.
 //! 3. [`repair_snapshot_rebuild`] — snapshot file is missing or
-//!    corrupt. Repair walks the ledger and re-projects the cumulative
-//!    schema, then writes the new snapshot.
-//!
+//! corrupt. Repair walks the ledger and re-projects the cumulative
+//! schema, then writes the new snapshot.
 //! All three return a [`RepairReport`] documenting exactly what
 //! changed, so the operator can audit (and replay-via-shell-history
 //! when needed).
@@ -87,25 +74,20 @@ use super::snapshot::{SnapshotError, save_snapshot};
 // ── Confirmation witness ──────────────────────────────────────────────────
 
 /// Operator confirmation witness for destructive repair operations.
-///
 /// **Single-variant enum, single name.** The only way to construct
 /// `RepairConfirmation` is to name the variant explicitly:
-///
 /// ```ignore
 /// RepairConfirmation::OperatorAcknowledged
 /// ```
-///
-/// There is no `Default` impl, no `From<bool>`, no `try_from` —
+/// There is no `Default` impl, no `From<bool>`, no `try_from`
 /// any code that wants to call a repair function has to spell out
 /// "yes, do the destructive thing" at the call site. This is the
-/// witness pattern recommended by the Phase 7 v3 plan §8 for
+/// witness pattern recommended by the v3 plan §8 for
 /// repair-class operations.
-///
 /// # Why a single-variant enum
-///
 /// A struct-with-private-fields would also work, but an enum reads
 /// more naturally at the call site (`RepairConfirmation::OperatorAcknowledged`
-/// vs. `RepairConfirmation::operator_acknowledged()`) and gives us
+/// vs. `RepairConfirmation::operator_acknowledged`) and gives us
 /// room to add an explicit `OperatorAcknowledgedWithReason { reason
 /// String }` variant later without breaking callers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,7 +101,6 @@ pub enum RepairConfirmation {
 // ── RepairReport ──────────────────────────────────────────────────────────
 
 /// Result of a successful repair invocation.
-///
 /// Each repair surfaces exactly what it touched so the operator can
 /// audit the change. `actions_taken` is a free-form log; `ledger_changes`
 /// and `snapshot_changes` carry structured records.
@@ -184,7 +165,6 @@ pub enum RepairError {
     /// this branch is reserved for future expansions (e.g.
     /// `OperatorAcknowledgedWithReason`) where we may want to require
     /// a richer consent record.
-    ///
     /// Kept on the public surface so the caller can match on it
     /// without a wildcard arm — adding another variant in the future
     /// remains semver-additive.
@@ -332,7 +312,6 @@ pub enum RepairError {
     /// the repair mutation completed successfully. The lock was not held
     /// on the physical session that called the unlock, indicating a
     /// session-pinning correctness failure.
-    ///
     /// This variant fires ONLY when the repair mutation itself succeeded.
     /// If both the mutation and the release fail, the original mutation
     /// error is returned and the unlock failure is logged via
@@ -354,7 +333,6 @@ pub enum RepairError {
     /// different count of non-transactional statements than the
     /// ledger row recorded from the original apply. Replaying would
     /// either over-count or under-count, so the repair refuses.
-    ///
     /// Note: `version` is `String` to match the existing RepairError
     /// convention (all other variants use `version: String`).
     ResumePlanShapeMismatch {
@@ -367,7 +345,6 @@ pub enum RepairError {
     /// equal the materialized plan's non-transactional statement count.
     /// After all replay steps complete, this invariant must hold; a
     /// mismatch indicates the replay loop diverged from the plan.
-    ///
     /// Note: `version` is `String` to match the existing RepairError
     /// convention (all other variants use `version: String`).
     ReplayPlanShapeMismatch {
@@ -564,7 +541,6 @@ impl std::error::Error for RepairError {
 // ── Advisory-lock helpers for repair ─────────────────────────────────────
 
 /// Acquire the per-bucket advisory lock on the pinned context.
-///
 /// Wraps [`runner::acquire_advisory_lock`] and maps the `RunnerError`
 /// variants into their `RepairError` counterparts so callers can use
 /// the repair error type uniformly.
@@ -603,10 +579,9 @@ async fn acquire_advisory_lock_repair(
 }
 
 /// Reconcile a repair mutation result with the advisory lock release bool.
-///
-/// - Success + true  → Ok (lock properly released)
+/// - Success + true → Ok (lock properly released)
 /// - Success + false → `RepairError::AdvisoryUnlockReturnedFalse`
-/// - Failure + _     → the original error (false is already logged)
+/// - Failure + _ → the original error (false is already logged)
 // RepairError is a large enum by design. Async callers return it through
 // boxed futures so clippy does not flag them; this sync helper also returns
 // it and needs the suppression. Same rationale as reset.rs / compose.rs.
@@ -626,37 +601,31 @@ fn handle_repair_release<T>(
 // ── Public entry points ───────────────────────────────────────────────────
 
 /// Repair a checksum-drift between the stored ledger row and
-/// freshly-computed checksums (B-9).
-///
+/// freshly-computed checksums.
 /// **Both `checksum_up` and `checksum_down` are repaired in one
 /// call.** The previous arrangement only repaired `checksum_up`,
 /// which left `checksum_down` stale when both up and down SQL
 /// changed. The fix takes both as parameters and writes them in a
 /// single UPDATE — repair-as-one-shot, so a partial repair cannot
 /// happen at the ledger level either.
-///
 /// `new_checksum_down` is `Option<&str>`. Pass `None` when the
 /// migration has no rollback SQL (`down` is a SQL-comment placeholder
 /// and the original ledger row carries `checksum_down = NULL`).
-///
 /// **Operator confirmation required.** The caller must pass
 /// [`RepairConfirmation::OperatorAcknowledged`]; any other value
 /// (in future) is rejected with [`RepairError::InsufficientConfirmation`].
-///
 /// **Format validation runs first.** Both new checksums must pass
 /// [`validate_checksum_format`] before any UPDATE; a malformed
 /// replacement would corrupt the row.
-///
 /// **Append-only invariant respected.** This UPDATE rewrites the
-/// `checksum_up` and `checksum_down` fields on the existing row —
+/// `checksum_up` and `checksum_down` fields on the existing row
 /// the only sanctioned post-write mutations aside from the rename /
 /// progress paths. The original `applied_at` and `applied_by` are
 /// preserved so the audit trail still anchors to the original apply.
-///
 /// **Caller supplies the bucket.** The advisory-lock key is derived
 /// from `bucket` — the same `(database, app)` pair the runner used
 /// when it applied the migration. Deriving the bucket from
-/// `SELECT current_database()` inside repair was wrong: the runner
+/// `SELECT current_database` inside repair was wrong: the runner
 /// stores the logical database name from `plan.bucket.database`, not
 /// the physical database name from the connected session (GH #274).
 pub async fn repair_checksum_drift(
@@ -708,7 +677,6 @@ pub async fn repair_checksum_drift(
 }
 
 /// Core checksum-drift repair on an already-pinned context.
-///
 /// The ledger row is loaded INSIDE the advisory-lock window to eliminate
 /// the TOCTOU race between reading `checksum_up` / `checksum_down` and
 /// writing the updated values (GH #274).
@@ -813,18 +781,13 @@ pub enum PartialApplyResolution {
 }
 
 /// Repair a partial-apply state on a non-transactional migration.
-///
 /// **Operator confirmation required.**
-///
 /// `note` is preserved into `partial_apply_note` so the audit trail
 /// records why the resolution was chosen.
-///
 /// `resolution` selects the new state. See [`PartialApplyResolution`].
-///
 /// Returns [`RepairError::InvalidResolution`] when the row is not in
 /// a state that admits the chosen resolution (e.g. trying to resume a
 /// row that is already `applied`).
-///
 /// **Caller supplies the bucket.** See [`repair_checksum_drift`] for
 /// the rationale — same `(database, app)` requirement (GH #274).
 pub async fn repair_partial_apply(
@@ -852,7 +815,6 @@ pub async fn repair_partial_apply(
 }
 
 /// Core partial-apply repair on an already-pinned context.
-///
 /// The ledger row is loaded and status-validated INSIDE the advisory-lock
 /// window to eliminate the TOCTOU race between the status read and the
 /// status UPDATE (GH #274).
@@ -954,31 +916,26 @@ async fn repair_partial_apply_pinned(
 
 /// Resume a partial-apply by re-running the remaining
 /// non-transactional segment statements from
-/// `applied_steps_count + 1` (B-10).
-///
+/// `applied_steps_count + 1`.
 /// **The third partial-apply repair flow.** [`repair_partial_apply`]
 /// covers the rollback / fake routes; this function covers the
 /// resume route. The operator hands in the ORIGINAL plan that the
 /// crashed apply consumed — repair re-verifies the plan's `version`
 /// and `checksum_up` against the ledger row before re-running any
 /// SQL.
-///
 /// **Operator confirmation required.**
-///
 /// **Safety checks.** Before any SQL runs, the function verifies:
-///
 /// - `plan.version` (derived from the supplied `version` argument)
-///   matches the ledger row's `version`. (We also accept that the
-///   caller passes the ledger version directly; this argument is
-///   the resume-target.)
+/// matches the ledger row's `version`. (We also accept that the
+/// caller passes the ledger version directly; this argument is
+/// the resume-target.)
 /// - `plan`'s recomputed `checksum_up` matches the ledger row's
-///   `checksum_up`. A mismatch means a different plan than the one
-///   originally applied is being supplied — refusing to run is the
-///   only safe option.
+/// `checksum_up`. A mismatch means a different plan than the one
+/// originally applied is being supplied — refusing to run is the
+/// only safe option.
 /// - The ledger row's status is `failed` AND `total_steps` is set
-///   AND `applied_steps_count < total_steps`. Anything else has
-///   nothing to resume.
-///
+/// AND `applied_steps_count < total_steps`. Anything else has
+/// nothing to resume.
 /// **What it runs.** The non-transactional segment(s) in plan order.
 /// Each statement is executed via Djogi's internal batch executor
 /// (auto-commit).
@@ -1013,7 +970,6 @@ pub async fn repair_resume_partial_apply(
 }
 
 /// Core resume-partial-apply logic on an already-pinned context.
-///
 /// Uses the acquire → body → release → reconcile pattern so that every
 /// error path after lock acquisition — including the row load, validation,
 /// and each step execution — releases the advisory lock exactly once via
@@ -1028,7 +984,7 @@ async fn repair_resume_pinned(
 ) -> Result<RepairReport, RepairError> {
     acquire_advisory_lock_repair(ctx, bucket, lock_key).await?;
 
-    // All work — row load, validation, step execution, and finalise —
+    // All work — row load, validation, step execution, and finalise
     // runs inside `repair_resume_body`. Any `?`/early-return there
     // surfaces as the `result` below; the lock release always follows.
     let result = repair_resume_body(ctx, version, plan, bucket).await;
@@ -1042,7 +998,6 @@ async fn repair_resume_pinned(
 }
 
 /// Body of the resume-partial-apply logic, called inside the advisory lock.
-///
 /// All `?` and early returns propagate to [`repair_resume_pinned`], which
 /// unconditionally releases the lock after this function returns (whether
 /// `Ok` or `Err`). This function must NOT call `release_advisory_lock`.
@@ -1319,9 +1274,8 @@ async fn lookup_ledger_id_by_version(
 }
 
 /// Rebuild the on-disk snapshot for a `(database, app)` bucket from
-/// the LIVE database catalog (B-12).
-///
-/// **Always re-projects from live.** Codex review (B-12) flagged
+/// the LIVE database catalog.
+/// **Always re-projects from live.**
 /// that the previous arrangement let the operator hand in any
 /// `AppliedSchema` and the rebuild would write it verbatim — there
 /// was no validation that the supplied snapshot matched what the
@@ -1329,13 +1283,10 @@ async fn lookup_ledger_id_by_version(
 /// the operator supplies the bucket and the destination path; repair
 /// projects the live database itself and writes that. The supplied
 /// projection channel has been removed entirely.
-///
 /// **Operator confirmation required.**
-///
 /// **What the operator gets back.** [`RepairReport`] documents the
 /// path that was written and the projection's table count so the
 /// operator can confirm the rebuild matches expectations.
-///
 /// **Bootstrap policy.** This function does NOT bootstrap the
 /// ledger. The ledger is required for the rebuild's "applied row
 /// count" advisory; if the ledger is missing the rebuild still
@@ -1372,12 +1323,11 @@ async fn repair_snapshot_rebuild_pinned(
     // Always re-project from live. The verify-side helper is the
     // single source of truth for the live-DB projection so verify and
     // baseline / repair-rebuild agree by construction.
-    //
-    // Bucket-scoped (Codex round-2 B-11): the projection only
+    // Bucket-scoped (
     // captures tables that belong to this bucket's app, so an app's
     // rebuild does not pick up another app's tables.
     // `None` snapshot fallback (#370): repair projects the live DB to
-    // rebuild the snapshot, so it has no on-disk snapshot to scope from —
+    // rebuild the snapshot, so it has no on-disk snapshot to scope from
     // inventory-driven scoping only, behavior unchanged.
     let projected = super::verify::live_schema_for_repair(ctx, bucket, None)
         .await
@@ -1464,7 +1414,6 @@ async fn repair_snapshot_rebuild_pinned(
 /// [`RepairError::VersionNotFound`] when the row is absent so the
 /// caller can distinguish "no such version" from a generic database
 /// error.
-///
 /// Delegates to [`ledger::load_full_row_by_version`] — the 14-column
 /// SELECT and try_get cascade live in ledger.rs to avoid triplication
 /// across runner / repair / verify (cluster-2 simplify Finding 3).
@@ -1597,7 +1546,7 @@ mod tests {
         }
     }
 
-    // ── compute_plan_checksum_up (B-10) ──────────────────────────────────
+    // ── compute_plan_checksum_up ──────────────────────────────────
 
     #[test]
     fn compute_plan_checksum_up_matches_runner_path() {
@@ -1629,7 +1578,7 @@ mod tests {
         );
     }
 
-    // ── B-9 rendered messages ────────────────────────────────────────────
+    // ── rendered messages ────────────────────────────────────────────
 
     #[test]
     fn plan_checksum_mismatch_message_names_versions() {
@@ -1715,7 +1664,7 @@ mod tests {
         );
     }
 
-    /// `ensure_row_matches_bucket_app` returns `Ok(())` when `row.app_label`
+    /// `ensure_row_matches_bucket_app` returns `Ok` when `row.app_label`
     /// and `bucket.app` are equal.
     #[test]
     fn ensure_row_matches_bucket_app_ok_when_apps_agree() {

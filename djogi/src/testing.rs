@@ -1,40 +1,32 @@
 //! Test-harness runtime helpers for `#[djogi_test]`.
-//!
 //! This module provides the per-test-database lifecycle machinery used by the
 //! `#[djogi_test]` proc-macro attribute:
-//!
 //! 1. Connect to the admin database (via `DATABASE_URL`).
 //! 2. Create a fresh `djogi_test_<uuid>` database.
-//! 3. Run the Phase 0 bootstrap migration via
-//!    [`crate::migrate::bootstrap::run_phase_zero`] — installs HeeRanjID
-//!    schema, seeds the default node, sets the `heer.node_id` and
-//!    `heer.ranj_node_id` GUCs (HeerId and RanjId generators read
-//!    separate session variables), and creates any extensions
-//!    requested via the `#[djogi_test(extensions = [...])]` attribute
-//!    argument.
+//! 3. Run the bootstrap migration via
+//! [`crate::migrate::bootstrap::run_phase_zero`] — installs HeeRanjID
+//! schema, seeds the default node, sets the `heer.node_id` and
+//! `heer.ranj_node_id` GUCs (HeerId and RanjId generators read
+//! separate session variables), and creates any extensions
+//! requested via the `#[djogi_test(extensions = [...])]` attribute
+//! argument.
 //! 4. Return a `DjogiContext` backed by a pool pointed at the new database.
 //! 5. Drop the database via `teardown_test_db` — called explicitly by the
-//!    macro-generated wrapper, both on normal return and after a caught panic.
-//!
+//! macro-generated wrapper, both on normal return and after a caught panic.
 //! # Substrate
-//!
 //! Internals use `tokio_postgres` directly (no sqlx) and route the
 //! HeeRanjID + extension install through
 //! [`crate::migrate::bootstrap`] — the same module the
-//! `migrations compose` auto-emit path uses to write Phase 0 to disk
-//! and the production `db reset` path replays. Track 0 strategic
+//! `migrations compose` auto-emit path uses to write to disk
+//! and the production `db reset` path replays. strategic
 //! lockdown: the test harness has NO parallel install path; every test
 //! exercises the same bootstrap code adopters hit.
-//!
 //! # Database name format
-//!
 //! Each test gets `djogi_test_<uuid-simple>` — 32 hex characters, no
 //! hyphens, fully lowercase. The name is always under 63 bytes (Postgres
 //! identifier length limit), is safe as a double-quoted identifier, and
 //! contains only ASCII alphanumeric characters plus the `djogi_test_` prefix.
-//!
 //! # Extension name validation
-//!
 //! Extension names flow from Rust source (attribute arguments) into SQL as
 //! quoted identifiers. To keep that path safe even when the attribute is
 //! written by hand, `setup_test_db_with_extensions` rejects any name that
@@ -44,17 +36,13 @@
 //! every real extension on PGXN and `contrib/`. Per the Djogi-wide no-regex
 //! rule (`docs/spec/decisions.md`), the validator is implemented with
 //! stdlib byte primitives only.
-//!
 //! # Teardown approach
-//!
 //! The macro-generated wrapper uses `futures::FutureExt::catch_unwind` to
 //! intercept panics from the test body, then calls `teardown_test_db` as an
 //! ordinary `async` function before resuming the panic. This avoids the
 //! "block_on called from async context" panic that a Drop impl would face
 //! inside a running Tokio runtime.
-//!
 //! # Usage
-//!
 //! This module is always compiled (it depends only on crates that are already
 //! in the djogi runtime dep-graph: tokio-postgres, heeranjid, uuid). Only call
 //! its functions from test code — the runtime overhead of importing this module
@@ -72,8 +60,7 @@
 pub mod cli;
 
 /// Error returned by the per-visage `assert_derived_parity` inherent
-/// method emitted by `#[model]` — Phase 8.5 issue #231.
-///
+/// method emitted by `#[model]` — #231.
 /// The sync per-visage method compares **only** the derived fields
 /// between two pre-constructed visages of the same type and returns
 /// `DerivedParityError::Drift { visage, field }` on the first
@@ -83,7 +70,6 @@ pub mod cli;
 /// high-precision timestamp regardless of any derived drift, and
 /// the helper exists to test the SQL/Rust expression pair, not
 /// transport.
-///
 /// The error type is named `DerivedParityError` (not
 /// `DbComputedParityError`) because parity is a property of *both*
 /// sides — the SQL-evaluated value and the Rust-evaluated value
@@ -93,7 +79,6 @@ pub mod cli;
 /// mark errors describing Postgres-side outputs specifically; the
 /// parity-helper error straddles both sides, so it lands under
 /// `Derived*`.
-///
 /// `#[non_exhaustive]` is intentional — future helper variants that
 /// fetch and compare in one call may add their own variants without
 /// breaking existing match arms.
@@ -116,16 +101,14 @@ pub enum DerivedParityError {
 
     /// The async [`assert_derived_parity_fetched`] convenience helper
     /// failed during the fetch step.
-    ///
     /// Wraps the underlying [`DjogiError`] — typically
     /// [`DjogiError::Db`] (database / IO surface) or
     /// [`DjogiError::Visage`] (a derived row-decode failure such as
     /// [`crate::visage::VisageError::DbComputedNullForNonOptional`] or
     /// [`crate::visage::VisageError::DbComputedTypeMismatch`]). The
     /// `#[source]` annotation surfaces the inner error in
-    /// `std::error::Error::source()` so test runners that walk
-    /// `Error::source()` get the full cause chain.
-    ///
+    /// `std::error::Error::source` so test runners that walk
+    /// `Error::source` get the full cause chain.
     /// Only produced by the async helper; the sync per-visage
     /// `assert_derived_parity` inherent method (and the
     /// [`DerivedParity`] trait impl backing it) never returns this
@@ -139,30 +122,24 @@ pub enum DerivedParityError {
 }
 
 /// Generic parity-comparison trait backing the per-visage
-/// `assert_derived_parity` inherent method — Phase 8.5 issue #231.
-///
+/// `assert_derived_parity` inherent method — #231.
 /// The `#[model]` macro emits two parallel surfaces for every
 /// generated visage that has at least one derived entry in its scope:
-///
 /// 1. An **inherent** `pub fn assert_derived_parity` method on the
-///    visage struct. This is the ergonomic call-site:
-///    `visage.assert_derived_parity(&other)` resolves to the
-///    inherent method directly, no trait import required.
+/// visage struct. This is the ergonomic call-site:
+/// `visage.assert_derived_parity(&other)` resolves to the
+/// inherent method directly, no trait import required.
 /// 2. A **trait impl** `impl DerivedParity for {Visage}` with an
-///    identical body. The trait method is reachable from generic
-///    code — any helper bounded `where V: DerivedParity` can call
-///    `v.assert_derived_parity(&other)` against an unknown visage
-///    type.
-///
+/// identical body. The trait method is reachable from generic
+/// code — any helper bounded `where V: DerivedParity` can call
+/// `v.assert_derived_parity(&other)` against an unknown visage
+/// type.
 /// Both surfaces share the same body and the same `where Ty:
 /// PartialEq` bound per distinct derived type (so the diagnostic
 /// for [`E_DJG_VDF_016`] surfaces at the impl block, not at the
 /// inner `!=` site).
-///
 /// [E_DJG_VDF_016]: https://github.com/tarunvir/djogi/blob/main/docs/spec/visage-derived-fields.md#error-taxonomy
-///
 /// # Seal
-///
 /// `DerivedParity` is **sealed** — only macro-emitted visages may
 /// satisfy it. Adopter crates cannot implement the trait directly
 /// because the seal supertrait `__private::DerivedParitySealed`
@@ -171,16 +148,12 @@ pub enum DerivedParityError {
 /// `DjogiVisageOf<Self::Model>` supertrait: the trait promise is
 /// "this is a macro-emitted projection-aware parity check," and a
 /// hand-written impl would defeat the contract.
-///
 /// # Sync surface
-///
 /// `DerivedParity` is intentionally **synchronous** — the
 /// comparison itself is in-memory. The async convenience that
 /// fetches a visage and then delegates to this trait lives at
 /// [`assert_derived_parity_fetched`].
-///
 /// # Visages without derived fields
-///
 /// Visages with **zero** derived entries in their scope do not get
 /// either the inherent method or the trait impl — there is nothing
 /// derived to compare, and a no-op impl would obscure that. The
@@ -190,9 +163,7 @@ pub trait DerivedParity: private::DerivedParitySealed {
     /// `Err(DerivedParityError::Drift { ... })` on the first
     /// mismatched derived field; framework columns and storage
     /// columns are never compared.
-    ///
     /// # Errors
-    ///
     /// Returns `Err(DerivedParityError::Drift)` on first mismatch.
     /// Never returns `DerivedParityError::Fetch` — that variant is
     /// reserved for the async fetching helper
@@ -201,13 +172,11 @@ pub trait DerivedParity: private::DerivedParitySealed {
 }
 
 /// Sealed seal-only module for [`DerivedParity`].
-///
 /// Re-exported through [`::djogi::__private::DerivedParitySealed`]
-/// (Phase 8.5 #231 reconciliation) so macro-emitted code can
+/// (#231 reconciliation) so macro-emitted code can
 /// satisfy the seal without naming `djogi::testing::private`
 /// directly. Adopter code never touches this module; the
 /// `#[doc(hidden)]` keeps it off the published rustdoc surface.
-///
 /// [`::djogi::__private::DerivedParitySealed`]: crate::__private::DerivedParitySealed
 #[doc(hidden)]
 pub mod private {
@@ -220,17 +189,14 @@ pub mod private {
 
 /// Async convenience helper that fetches a visage via the caller's
 /// closure and then delegates to its [`DerivedParity::assert_derived_parity`]
-/// impl — Phase 8.5 issue #231.
-///
+/// impl — #231.
 /// This is the recommended shape for integration tests that want to
 /// assert in-memory ↔ from-DB parity in one call. The fetch step is
 /// async; the comparison is sync (no IO re-introduced); errors from
 /// either side surface as [`DerivedParityError`].
-///
 /// # Why a closure for the fetch
-///
 /// `VisageQuerySet` is the canonical fetch path, but its entry
-/// methods (`V::filter(|f| f.id().eq(pk))`) are emitted as **inherent
+/// methods (`V::filter(|f| f.id.eq(pk))`) are emitted as **inherent
 /// methods on each visage type** — they are not part of the
 /// [`crate::DjogiVisage`] trait. A generic free helper cannot name
 /// those entry points directly without lifting them into a trait,
@@ -240,28 +206,22 @@ pub mod private {
 /// `V::limit(1).fetch_one(ctx)`, or even a hand-rolled fetch — and
 /// the helper handles the await + error-mapping + delegation
 /// uniformly.
-///
 /// # Generic bounds
-///
 /// - `V: DerivedParity` — the visage carries the trait impl
-///   (macro-emitted automatically when the visage has at least one
-///   derived field in scope).
-/// - `Fetch: FnOnce() -> Fut` — the fetch closure produces the
-///   `Future` lazily; the helper drives the await internally.
+/// (macro-emitted automatically when the visage has at least one
+/// derived field in scope).
+/// - `Fetch: FnOnce -> Fut` — the fetch closure produces the
+/// `Future` lazily; the helper drives the await internally.
 /// - `Fut: Future<Output = crate::Result<V>>` — `crate::Result<V>`
-///   is the canonical `Result<V, DjogiError>` alias; the closure
-///   propagates `DjogiError` directly and the helper lifts it into
-///   [`DerivedParityError::Fetch`].
-///
+/// is the canonical `Result<V, DjogiError>` alias; the closure
+/// propagates `DjogiError` directly and the helper lifts it into
+/// [`DerivedParityError::Fetch`].
 /// # Errors
-///
 /// - [`DerivedParityError::Fetch`] when the fetch closure's future
-///   yields `Err`.
+/// yields `Err`.
 /// - [`DerivedParityError::Drift`] when the in-memory and fetched
-///   visages disagree on any derived field.
-///
+/// visages disagree on any derived field.
 /// # Recommended usage
-///
 /// ```no_run
 /// use djogi::prelude::*;
 /// use djogi::testing::{DerivedParity, assert_derived_parity_fetched};
@@ -277,7 +237,6 @@ pub mod private {
 /// assert_derived_parity_fetched(in_memory, || fetch_one(ctx)).await
 /// # }
 /// ```
-///
 /// See [`DerivedParity`] for the sync per-visage method this helper
 /// delegates to.
 pub async fn assert_derived_parity_fetched<V, Fetch, Fut>(
@@ -310,7 +269,6 @@ use tokio_postgres::NoTls;
 use uuid::Uuid;
 
 /// Cleanup token returned by `setup_test_db`.
-///
 /// Carries the information needed to drop the per-test database. Passed to
 /// `teardown_test_db` by the macro-generated wrapper. Not a RAII guard — the
 /// cleanup is explicit and async so it runs cleanly inside the Tokio test
@@ -325,7 +283,6 @@ pub struct TestDbCleanup {
 
 impl TestDbCleanup {
     /// The per-test database name — ASCII alphanumeric + underscore.
-    ///
     /// Tests that need to open their own [`DjogiPool`] against the
     /// per-test database (rather than reusing the one inside
     /// [`DjogiContext`]) combine this with [`Self::test_url`] to build
@@ -339,7 +296,6 @@ impl TestDbCleanup {
     }
 
     /// Build a Postgres URL pointing at the per-test database.
-    ///
     /// Substitutes [`Self::db_name`] for the admin URL's path
     /// component. Equivalent to the URL the harness used internally
     /// to open the [`DjogiPool`] backing the returned `DjogiContext`.
@@ -349,17 +305,13 @@ impl TestDbCleanup {
 }
 
 /// Set up a fresh per-test database and return the cleanup token + context.
-///
 /// Convenience wrapper over [`setup_test_db_with_extensions`] for callers
 /// that do not need any extra Postgres extensions beyond the HeeRanjID
 /// schema. Equivalent to passing an empty extensions slice.
-///
 /// Called by macro-generated code from `#[djogi_test]`-annotated tests that
 /// omit the `extensions = [...]` argument. Also available for direct use
 /// from hand-written test harnesses that do not go through the attribute.
-///
 /// # Errors
-///
 /// Returns `DjogiError::Db` on all setup failures.
 pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError> {
     setup_test_db_with_extensions(&[]).await
@@ -367,50 +319,42 @@ pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError
 
 /// Set up a fresh per-test database, provision extra extensions, and return
 /// the cleanup token + context.
-///
 /// Called by macro-generated code from `#[djogi_test(extensions = [...])]`
 /// tests. Also available for direct use from hand-written test harnesses.
-///
-/// # Steps (Track 0 — bootstrap-routed)
-///
+/// # Steps (— bootstrap-routed)
 /// 1. Read `DATABASE_URL` from the environment (same convention as
-///    sqlx::test).
+/// sqlx::test).
 /// 2. Connect to the admin database via `tokio_postgres`.
 /// 3. Generate a unique database name `djogi_test_<uuid-simple>` and
-///    issue `CREATE DATABASE`.
+/// issue `CREATE DATABASE`.
 /// 4. Connect to the new database via `tokio_postgres`.
 /// 5. Run [`crate::migrate::bootstrap::run_phase_zero`] against the
-///    new connection. This is the SAME bootstrap surface
-///    `migrations compose` writes to disk and `db reset` replays —
-///    no parallel install path. Phase 0 installs HeeRanjID, every
-///    requested extension, and seeds both the `heer.node_id` and
-///    `heer.ranj_node_id` GUCs at both the database (`ALTER DATABASE`)
-///    and session (`SET`) levels.
+/// new connection. This is the SAME bootstrap surface
+/// `migrations compose` writes to disk and `db reset` replays
+/// no parallel install path. installs HeeRanjID, every
+/// requested extension, and seeds both the `heer.node_id` and
+/// `heer.ranj_node_id` GUCs at both the database (`ALTER DATABASE`)
+/// and session (`SET`) levels.
 /// 6. Open a `DjogiPool` (deadpool-postgres) and return it as a
-///    `DjogiContext`.
-///
+/// `DjogiContext`.
 /// # Strategic lockdown invariant
-///
 /// Pre-Track-0, this function had its own SQL-by-hand install path
 /// for HeeRanjID + extensions + node-id GUC. That meant `#[djogi_test]`
 /// was the ONLY surface that exercised bootstrap; the production CLI
-/// / `db reset` paths were uncovered. Track 0 closes that gap by
+/// / `db reset` paths were uncovered. closes that gap by
 /// routing every test through `bootstrap::run_phase_zero` — the same
 /// code path adopters hit. There is exactly ONE bootstrap path now.
-///
 /// # Errors
-///
 /// Returns `DjogiError::Db` on all setup failures. Failure modes that
 /// mention the offending extension by name:
-///
 /// - The extension name does not match the identifier rule (handled
-///   in Rust before any SQL is sent — the validator is shared between
-///   this module and `bootstrap`).
-/// - The Postgres server rejects `CREATE EXTENSION IF NOT EXISTS` —
-///   for example, when the named extension is not installed on the
-///   server (missing `.control` file). The original `tokio_postgres::Error`
-///   is preserved in the `DjogiError::Db` source chain so the adopter
-///   can see the full server message.
+/// in Rust before any SQL is sent — the validator is shared between
+/// this module and `bootstrap`).
+/// - The Postgres server rejects `CREATE EXTENSION IF NOT EXISTS`
+/// for example, when the named extension is not installed on the
+/// server (missing `.control` file). The original `tokio_postgres::Error`
+/// is preserved in the `DjogiError::Db` source chain so the adopter
+/// can see the full server message.
 pub async fn setup_test_db_with_extensions(
     extensions: &[&str],
 ) -> Result<(TestDbCleanup, DjogiContext), DjogiError> {
@@ -456,11 +400,11 @@ pub async fn setup_test_db_with_extensions(
     // Build the per-test database URL by replacing the database component.
     let test_url = replace_db_in_url(&database_url, &db_name)?;
 
-    // Drop the admin client — Phase 0 runs against the per-test DB,
+    // Drop the admin client — runs against the per-test DB,
     // not the admin DB.
     drop(admin_client);
 
-    // Connect to the fresh database for Phase 0 bootstrap.
+    // Connect to the fresh database for bootstrap.
     let (test_client, test_conn) = tokio_postgres::connect(&test_url, NoTls)
         .await
         .map_err(|e| DjogiError::Db(DbError::other(format!("test DB connect failed: {e}"))))?;
@@ -471,10 +415,10 @@ pub async fn setup_test_db_with_extensions(
         }
     });
 
-    // Track 0: route through `bootstrap::run_phase_zero` — the SAME
+    // : route through `bootstrap::run_phase_zero` — the SAME
     // bootstrap surface adopters hit via `migrations compose` +
     // `migrations apply` + `db reset`. This is the strategic lockdown
-    // — no parallel install path lives in `testing` anymore.
+    // no parallel install path lives in `testing` anymore.
     let extension_set: std::collections::BTreeSet<String> =
         extensions.iter().map(|s| s.to_string()).collect();
     crate::migrate::bootstrap::run_phase_zero(
@@ -487,7 +431,7 @@ pub async fn setup_test_db_with_extensions(
     .map_err(|e| DjogiError::Db(DbError::other(format!("phase 0 bootstrap failed: {e}"))))?;
 
     // The setup client is dropped here — the connection driver task
-    // will finish. Phase 0's `ALTER DATABASE ... SET heer.node_id`
+    // will finish. the `ALTER DATABASE ... SET heer.node_id`
     // and the matching `heer.ranj_node_id` write persist for every
     // NEW connection the DjogiPool opens.
     drop(test_client);
@@ -505,7 +449,6 @@ pub async fn setup_test_db_with_extensions(
 }
 
 /// Drop the per-test database created by `setup_test_db`.
-///
 /// Called by macro-generated code after the test body returns — whether
 /// normally or via a caught panic.
 pub async fn teardown_test_db(cleanup: TestDbCleanup) {
@@ -535,12 +478,10 @@ pub async fn teardown_test_db(cleanup: TestDbCleanup) {
 }
 
 /// Cluster-wide non-superuser role used by RLS-backed integration tests.
-///
 /// Postgres roles are cluster-scoped (not per-database); the same role is
 /// reused across every per-test database. The idempotent CREATE/ALTER
 /// pattern in [`connect_test_db_as_non_superuser`] keeps the role's
 /// attribute shape consistent across runs.
-///
 /// The literal name is shaped like a Postgres unquoted identifier so the
 /// SQL emitter can rely on the standard double-quoting path
 /// ([`quoted`]) without special-casing it.
@@ -549,9 +490,8 @@ pub const TEST_NON_SUPERUSER_ROLE: &str = "djogi_test_user";
 // djogi-allow-secret: the URL shape in the following rustdoc is a doc-shaped
 // illustration of a local-cluster non-superuser, not a real credential.
 /// Password literal for [`TEST_NON_SUPERUSER_ROLE`].
-///
 /// Bound at compile time and only ever used inside the local test cluster
-/// — the URL emitted by `connect_test_db_as_non_superuser` follows the
+/// the URL emitted by `connect_test_db_as_non_superuser` follows the
 /// shape `postgres://djogi_test_user:djogi_test_user@<host>/<per-test-db>`,
 /// which `pg_hba.conf` for development clusters typically accepts via
 /// `trust` or `md5`. The shared helpers (`quoted`, `sql_string_literal`)
@@ -562,7 +502,6 @@ pub const TEST_NON_SUPERUSER_PASSWORD: &str = "djogi_test_user";
 /// Open a [`DjogiContext`] backed by a pool that authenticates as a
 /// non-superuser cluster role on the per-test database carried by
 /// `cleanup`.
-///
 /// This is the integration-test escape hatch for RLS-backed coverage:
 /// the default `djogi_test` harness opens its pool as the connecting
 /// role from `DATABASE_URL`, which in local and CI clusters is
@@ -575,27 +514,23 @@ pub const TEST_NON_SUPERUSER_PASSWORD: &str = "djogi_test_user";
 /// [`TEST_NON_SUPERUSER_ROLE`] — a `LOGIN NOSUPERUSER NOCREATEDB
 /// NOCREATEROLE NOREPLICATION NOBYPASSRLS` role — so RLS is
 /// observable end-to-end through the typed surface.
-///
 /// # Lifecycle
-///
 /// 1. Connect to the admin database via `cleanup`'s admin URL.
 /// 2. Idempotently `CREATE ROLE …` (or `ALTER ROLE …` if it pre-exists)
-///    so attributes always match the intended shape, even if a previous
-///    process drifted them.
+/// so attributes always match the intended shape, even if a previous
+/// process drifted them.
 /// 3. Reconnect to the per-test database (same admin URL with the path
-///    component swapped to `cleanup.db_name()`) and grant the role
-///    access to every existing object in `public`:
-///    - `GRANT CONNECT ON DATABASE …`
-///    - `GRANT USAGE ON SCHEMA public`
-///    - `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public`
-///    - `GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public`
-///    - `GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public`
+/// component swapped to `cleanup.db_name`) and grant the role
+/// access to every existing object in `public`:
+/// - `GRANT CONNECT ON DATABASE …`
+/// - `GRANT USAGE ON SCHEMA public`
+/// - `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public`
+/// - `GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public`
+/// - `GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public`
 /// 4. Build a non-superuser URL pointing at the same per-test database
-///    and open a fresh [`DjogiPool`].
+/// and open a fresh [`DjogiPool`].
 /// 5. Wrap the pool in a new [`DjogiContext::from_pool`] and return it.
-///
 /// # Ordering requirement
-///
 /// The grants in step 3 only cover objects that already exist when they
 /// run. Callers MUST invoke this helper **after** schema and seed setup
 /// has finished on the admin context — typically after
@@ -605,20 +540,16 @@ pub const TEST_NON_SUPERUSER_PASSWORD: &str = "djogi_test_user";
 /// helper returns leaves the non-superuser without privilege on those
 /// objects (a regression test framework can add them, but the new
 /// objects need their own GRANT round).
-///
 /// # Returned context
-///
 /// The returned [`DjogiContext`] has its **own** `Arc<sassi::Sassi>`
 /// registry (built from the global `inventory` walk in
 /// [`DjogiContext::from_pool`]). Cache and refresh tests should use
-/// `non_super_ctx.punnu::<T>()` and `non_super_ctx.share_pool()` so the
-/// cache target and the fetcher pool share a consistent ancestry —
+/// `non_super_ctx.punnu::<T>` and `non_super_ctx.share_pool` so the
+/// cache target and the fetcher pool share a consistent ancestry
 /// crossing punnus between the admin and non-superuser contexts is
 /// allowed at the type level but loses the lifecycle invariants the
 /// per-context cluster guard pins.
-///
 /// # Errors
-///
 /// Returns [`DjogiError::Db`] when the admin connection fails, when
 /// any of the role-management or grant statements fail, or when the
 /// derived non-superuser URL cannot be parsed back into a pool.
@@ -723,7 +654,6 @@ pub async fn connect_test_db_as_non_superuser(
 /// are swapped for the non-superuser test role + the per-test database
 /// name, while preserving the original URL's host, port, and non-identity
 /// query parameters.
-///
 /// The `admin_url` is parsed via the same byte-level scheme the rest of
 /// the testing substrate uses (`postgres://` or `postgresql://`,
 /// optional `user[:pass]@` userinfo, host[:port], `/database`, optional
@@ -731,9 +661,7 @@ pub async fn connect_test_db_as_non_superuser(
 /// `djogi_test_user:djogi_test_user`; the path component is replaced with
 /// `db_name`; and query parameters that would override the authenticated
 /// user, password, or database (`user`, `password`, `dbname`) are rejected.
-///
 /// # Errors
-///
 /// Returns [`DjogiError::Db`] when `admin_url` lacks the `postgres://`
 /// or `postgresql://` scheme, when it lacks a `/database` path component
 /// (the same shape `replace_db_in_url` rejects), or when its query string
@@ -861,14 +789,12 @@ fn hex_value(byte: u8) -> Option<u8> {
 }
 
 /// Quote a Postgres string literal for embedding in a DDL statement.
-///
 /// Postgres uses single-quoted string literals with `''` as the embedded
 /// single-quote escape. This helper mirrors [`quoted`] (which handles
 /// identifier double-quoting) for the literal side: most call sites pass
 /// controlled constants, but emitting the escape here keeps the call
 /// sites uniform and future-proof if those constants ever broaden to
 /// include `'` bytes.
-///
 /// `E'...'` is intentionally not used — backslash escapes are off by
 /// default on modern Postgres (`standard_conforming_strings = on`),
 /// so the single-quote-doubling escape is sufficient and keeps the
@@ -890,14 +816,11 @@ fn sql_string_literal(value: &str) -> String {
 
 /// List every database whose name matches the `djogi_test_*` prefix that is
 /// still present on the cluster connected to via `admin_url`.
-///
 /// Read-only counterpart of [`cleanup_orphaned_test_databases`]. Used by
 /// `djogi db cleanup-test-dbs --dry-run` to surface candidates without
 /// dropping. The candidate set comes straight from `pg_database` — no
 /// filesystem scan, no regex — and is returned in lexicographic order.
-///
 /// # Errors
-///
 /// Returns [`DjogiError::Db`] when the admin connection itself fails or
 /// the `pg_database` query fails.
 pub async fn list_orphaned_test_databases(admin_url: &str) -> Result<Vec<String>, DjogiError> {
@@ -941,34 +864,26 @@ pub async fn list_orphaned_test_databases(admin_url: &str) -> Result<Vec<String>
 
 /// Drop every database whose name matches the `djogi_test_*` prefix that is
 /// still present on the cluster connected to via `admin_url`.
-///
 /// Orphaned test databases accumulate when test processes are killed before
 /// `teardown_test_db` can run (e.g. `cargo test` killed mid-run via Ctrl+C,
 /// CI timeout, OOM). This helper provides a sweep for that common case.
-///
 /// **Scope.** Queries `pg_database` for `datname LIKE 'djogi\_test\_%' ESCAPE '\'`
 /// (the underscores are escaped because `_` is a single-character LIKE
 /// wildcard) and issues `DROP DATABASE … WITH (FORCE)` for each. The
 /// `WITH (FORCE)` clause
 /// (Postgres 13+; required by Djogi's ≥ Postgres 18 target) terminates any
 /// lingering connections before dropping.
-///
 /// **No filesystem scan.** The cleanup is driven entirely from `pg_database`
-/// — no directory listing, no regex.
-///
+/// no directory listing, no regex.
 /// Returns the **lexicographically sorted names** of databases that were
 /// successfully dropped. A failure to drop an individual database is logged
 /// via `eprintln!` and that name is omitted from the returned vector
-/// (best-effort, non-fatal). Callers wanting the count call `.len()`.
-///
+/// (best-effort, non-fatal). Callers wanting the count call `.len`.
 /// # Errors
-///
 /// Returns `DjogiError::Db` when the admin connection itself fails or the
 /// `pg_database` query fails. Per-database DROP failures are not propagated
-/// — the caller sees the successful subset and can retry if needed.
-///
+/// the caller sees the successful subset and can retry if needed.
 /// # Note — not tested at unit level
-///
 /// This function requires a live Postgres cluster. Unit-level testing would
 /// require a live connection; that coverage belongs in an integration test.
 /// Added but untested at unit level — a future integration-test pass should
@@ -987,7 +902,7 @@ pub async fn cleanup_orphaned_test_databases(admin_url: &str) -> Result<Vec<Stri
     // Query pg_database for every `djogi_test_*` database. The `_`
     // byte is a single-character wildcard in `LIKE`, so the prefix
     // matcher must escape the literal underscores via `ESCAPE '\'`
-    // — otherwise a database named e.g. `djogiXtestY<anything>`
+    // otherwise a database named e.g. `djogiXtestY<anything>`
     // would match the pattern and be considered an orphaned test DB.
     let rows = client
         .query(
@@ -1030,7 +945,6 @@ pub async fn cleanup_orphaned_test_databases(admin_url: &str) -> Result<Vec<Stri
 }
 
 /// Double-quote a Postgres identifier for embedding in SQL.
-///
 /// Wraps `ident` in double quotes and escapes any embedded `"` byte
 /// by doubling it, matching Postgres's identifier-quoting rules.
 /// Defense-in-depth: while most call sites pass identifiers that are
@@ -1057,14 +971,11 @@ fn quoted(ident: &str) -> String {
 
 /// Validate that `name` is a plain Postgres identifier safe to interpolate
 /// into a `CREATE EXTENSION IF NOT EXISTS "<name>"` statement.
-///
 /// Rules (byte-level, no regex per the Djogi-wide no-regex policy):
-///
 /// - Length between 1 and 63 bytes inclusive (Postgres `NAMEDATALEN` minus
-///   the trailing `NUL`).
+/// the trailing `NUL`).
 /// - First byte is an ASCII letter (upper- or lower-case) or underscore.
 /// - Every subsequent byte is an ASCII letter, digit, or underscore.
-///
 /// All real-world extension names on PGXN and in `contrib/` (`postgis`,
 /// `pg_trgm`, `pgcrypto`, `uuid-ossp` — wait, that last one contains a
 /// hyphen, but it is itself aliased to `"uuid-ossp"` double-quoted) match
@@ -1108,7 +1019,6 @@ fn validate_extension_name(name: &str) -> Result<(), DjogiError> {
 }
 
 /// Replace the database name component in a Postgres connection URL.
-///
 /// Delegates to [`crate::migrate::reset::replace_db_in_url`] (the canonical
 /// implementation) and wraps the `Option` return in a `DjogiError` so the
 /// caller can use `?`.
@@ -1121,49 +1031,42 @@ fn replace_db_in_url(url: &str, new_db: &str) -> Result<String, DjogiError> {
     })
 }
 
-/// Phase 7 T10 — auto-materialise the supplied descriptors on the
+/// Auto-materialise the supplied descriptors on the
 /// per-test database (closes issue #18).
-///
 /// Called by macro-generated code from
 /// `#[djogi_test(sync_models = [Type1, Type2, ...])]` after
 /// [`setup_test_db_with_extensions`] returns. The macro lowers each
-/// `Type` to `<Type as ::djogi::Model>::descriptor()`, so the
+/// `Type` to `<Type as ::djogi::Model>::descriptor`, so the
 /// descriptors arrive here with full `&'static` lifetimes from the
 /// `inventory` collectors.
-///
 /// # What this does
-///
 /// 1. Walks `descriptors`, derives the `(database, app)` bucket each
-///    one belongs in (resolved via [`AppRegistry::all`]).
+/// one belongs in (resolved via [`AppRegistry::all`]).
 /// 2. Projects the descriptors into per-bucket [`AppliedSchema`]
-///    values via [`project_from_iters`] — same projection layer that
-///    production migrations and `compose` use, so any new field type
-///    or index annotation propagates automatically.
+/// values via [`project_from_iters`] — same projection layer that
+/// production migrations and `compose` use, so any new field type
+/// or index annotation propagates automatically.
 /// 3. Diffs the projection against an empty per-bucket map via
-///    [`diff_bucket_maps`] — every operation is therefore additive
-///    (`AddTable`, `AddIndex`, `AddEnum`, `AddForeignKey`).
+/// [`diff_bucket_maps`] — every operation is therefore additive
+/// (`AddTable`, `AddIndex`, `AddEnum`, `AddForeignKey`).
 /// 4. Validates that every FK target table is also present in the
-///    same `sync_models` set — a missing target produces a clear
-///    runtime error naming the referencing column AND the missing
-///    target. Macro-time detection is impossible (only type paths are
-///    visible; descriptors are runtime data).
+/// same `sync_models` set — a missing target produces a clear
+/// runtime error naming the referencing column AND the missing
+/// target. Macro-time detection is impossible (only type paths are
+/// visible; descriptors are runtime data).
 /// 5. Asserts the delta is additive only. If the differ ever
-///    produces a destructive op against an empty target the
-///    invariant is broken — error rather than silently executing it.
+/// produces a destructive op against an empty target the
+/// invariant is broken — error rather than silently executing it.
 /// 6. Plans each per-bucket delta via [`plan_delta`] (T3's segment
-///    planner), then executes every statement via
-///    [`DjogiContext::raw_ddl`] in segment + statement order.
-///
+/// planner), then executes every statement via
+/// [`DjogiContext::raw_ddl`] in segment + statement order.
 /// # No advisory lock, no ledger
-///
 /// Per the v3 plan rationale: per-test databases are ephemeral and
 /// have no concurrent writers, so the `apply` orchestration layer
 /// (T4 — advisory lock + ledger insertion + snapshot persistence) is
 /// intentionally bypassed. The composition primitives (T1 + T2 + T3)
 /// remain shared with production.
-///
 /// # Pre-flight registry gate (GH #158)
-///
 /// Before step 1 the helper invokes
 /// [`crate::relation::registry::validate_global_relation_accessor_registry`]
 /// to catch cross-kind reverse / M2M accessor collisions that rustc
@@ -1172,26 +1075,21 @@ fn replace_db_in_url(url: &str, new_db: &str) -> Result<String, DjogiError> {
 /// downstream "ambiguous method call" call site — the gate runs whether
 /// or not the offending models happen to be in the `sync_models = [...]`
 /// set, since the underlying inventory is link-time-global.
-///
 /// # Bucket ordering
-///
 /// Buckets are walked in [`BucketKey`] order
 /// (`(database, app)` pair, alphabetically). A multi-bucket
 /// `sync_models` call therefore applies its DDL in a deterministic,
 /// reproducible order across runs.
-///
 /// # Errors
-///
 /// Returns [`DjogiError::Db`] for:
 /// - Projection failures (unknown app label, duplicate type name,
-///   cross-database FK).
+/// cross-database FK).
 /// - SQL emission errors from the migration engine
-///   (`Unsupported`, `PkTypeFlipMustRouteToT9` — neither should occur
-///   on an empty-target diff in practice).
+/// (`Unsupported`, `PkTypeFlipMustRouteToT9` — neither should occur
+/// on an empty-target diff in practice).
 /// - FK-to-missing-model violations.
 /// - Invariant-violation classification (any non-additive op).
 /// - Statement-execution failures from `ctx.raw_ddl`.
-///
 /// All paths preserve the per-test DB drop in the macro-generated
 /// wrapper: `sync_models` failures bubble out as `Err`, the macro's
 /// `.expect("djogi_test: failed to sync_models on per-test database")`
@@ -1208,9 +1106,8 @@ pub async fn sync_models(
     Ok(())
 }
 
-/// Install the narrow trigger fixture used by the phase4 `save()` integration
+/// Install the narrow trigger fixture used by the phase4 `save` integration
 /// test.
-///
 /// This is intentionally not a general-purpose SQL fixture loader. The test
 /// body needs to prove that `Model::save` rehydrates trigger-mutated fields
 /// through `UPDATE ... RETURNING *`, but creating a Postgres trigger is schema
@@ -1239,7 +1136,6 @@ pub async fn install_accounts_balance_increment_trigger_for_test(
 }
 
 /// Install a presentation HMAC key for tests that exercise HMAC codecs.
-///
 /// Sets `DJOGI_PRESENTATION_HMAC_KEY` to the given hex string and calls
 /// [`validate_startup_inventory`](crate::presentation::validate_startup_inventory)
 /// to prime the key cache. Call this only from a harness that also keeps
@@ -1247,15 +1143,11 @@ pub async fn install_accounts_balance_increment_trigger_for_test(
 /// otherwise satisfies the platform-specific stronger requirement); a
 /// mutex that only serializes `DJOGI_PRESENTATION_HMAC_KEY` is not enough
 /// by itself.
-///
 /// # Panics
-///
 /// Panics if `key` fails startup validation (wrong length, non-lowercase,
 /// non-hex characters, etc.). This is intentional: a malformed test key
 /// is a test bug, not a runtime condition the caller should handle.
-///
 /// # Safety
-///
 /// The `set_var` call is in an `unsafe` block because the process
 /// environment is shared global state. Callers must ensure there are no
 /// concurrent environment reads or writes process-wide while this function
@@ -1276,7 +1168,6 @@ pub unsafe fn install_presentation_hmac_key_for_testing(key: &str) {
 }
 
 /// Minimal outbox row shape used by integration tests.
-///
 /// Runtime outbox tables are framework-owned tables, not ordinary
 /// `#[model]` tables: they carry `id` and `created_at`, but intentionally do
 /// not carry the usual `updated_at` framework column. Tests that need to
@@ -1365,7 +1256,6 @@ pub async fn clear_outbox_for_test(ctx: &mut DjogiContext, table: &str) -> Resul
 
 /// Build the additive [`MigrationPlan`]s [`sync_models`] would execute
 /// for `descriptors`, without touching any database.
-///
 /// Steps 0–5 of [`sync_models`]: relation-accessor registry gate,
 /// pre-flight FK check, projection, empty-source diff, additive-only
 /// invariant check, and per-bucket `plan_delta` lowering. Returns one
@@ -1373,16 +1263,13 @@ pub async fn clear_outbox_for_test(ctx: &mut DjogiContext, table: &str) -> Resul
 /// `descriptors` slice returns an empty vec (matching `sync_models`'s
 /// zero-DDL no-op contract); the registry gate is also skipped in that
 /// case because no schema would be produced anyway.
-///
 /// Used by [`sync_models`] itself and by parity tests that need to
 /// compare the additive sync plan against the production migration
 /// runner — surfacing the plans as data is what lets a test feed
 /// the same `MigrationPlan` to both `sync_models`'s `execute_plan`
 /// and `migrate::apply_plan`, proving the two execution wrappers
 /// produce identical schema state.
-///
 /// # Pre-flight registry gate (GH #158)
-///
 /// Step 0 invokes
 /// [`crate::relation::registry::validate_global_relation_accessor_registry`]
 /// before any descriptor work. The gate catches cross-kind reverse /
@@ -1401,21 +1288,21 @@ pub fn build_sync_plans(
     }
 
     // ── Step 0 — relation-accessor registry gate (GH #158). Walks the
-    //              link-time-collected `ReverseRelationMarker` inventory
-    //              and surfaces any cross-kind `(source, name)` pair
-    //              that rustc cannot catch (the colliding macros emit
-    //              different trait suffixes, so both compile cleanly).
-    //              Run before the per-descriptor work so a hostile
-    //              registry never reaches the differ / planner; the
-    //              error names every offending pair in one pass.
+    // link-time-collected `ReverseRelationMarker` inventory
+    // and surfaces any cross-kind `(source, name)` pair
+    // that rustc cannot catch (the colliding macros emit
+    // different trait suffixes, so both compile cleanly).
+    // Run before the per-descriptor work so a hostile
+    // registry never reaches the differ / planner; the
+    // error names every offending pair in one pass.
     wrap_relation_registry_for_sync_models(
         crate::relation::registry::validate_global_relation_accessor_registry(),
     )?;
 
     // ── Step 1 — pre-flight: every FK target named on a descriptor
-    //              must also be in the supplied list. Macro-time
-    //              detection is impossible because only type paths
-    //              are visible; descriptors are runtime data.
+    // must also be in the supplied list. Macro-time
+    // detection is impossible because only type paths
+    // are visible; descriptors are runtime data.
     let supplied_type_names: BTreeSet<&'static str> =
         descriptors.iter().map(|d| d.type_name).collect();
     for d in descriptors {
@@ -1423,7 +1310,7 @@ pub fn build_sync_plans(
             if f.relation_kind.is_none() {
                 continue;
             }
-            // A field with a relation_kind MUST carry a target_type_name —
+            // A field with a relation_kind MUST carry a target_type_name
             // both ForeignKey and OneToOne point at a concrete model type.
             // A None here signals a broken macro emission rather than a
             // legitimate "no target" case; surface it explicitly so the
@@ -1451,14 +1338,13 @@ pub fn build_sync_plans(
     }
 
     // ── Step 2 — project the supplied descriptors. Enums are
-    //              global, so feed the full inventory; the projection
-    //              attaches them to every bucket that holds a model.
-    //              Apps come from `AppRegistry::all` so model app
-    //              labels resolve to their declared database target.
-    //
-    //              `generated_at` does not influence DDL emission;
-    //              the schema's timestamp is informational. Pin it to
-    //              `rfc3339_now_seconds` for parity with production.
+    // global, so feed the full inventory; the projection
+    // attaches them to every bucket that holds a model.
+    // Apps come from `AppRegistry::all` so model app
+    // labels resolve to their declared database target.
+    // `generated_at` does not influence DDL emission;
+    // the schema's timestamp is informational. Pin it to
+    // `rfc3339_now_seconds` for parity with production.
     let target = project_from_iters(
         descriptors.iter().copied(),
         inventory::iter::<EnumDescriptor>(),
@@ -1472,15 +1358,15 @@ pub fn build_sync_plans(
     })?;
 
     // ── Step 3 — empty-source diff. Build a `before` map mirroring
-    //              the target map's bucket keys; each `before` value
-    //              is a fresh empty `AppliedSchema`. The differ then
-    //              emits one `AppliedSchema` per bucket, all additive.
+    // the target map's bucket keys; each `before` value
+    // is a fresh empty `AppliedSchema`. The differ then
+    // emits one `AppliedSchema` per bucket, all additive.
     let before: BTreeMap<BucketKey, AppliedSchema> = target
         .keys()
         .map(|bucket| (bucket.clone(), empty_applied_schema()))
         .collect();
 
-    // B-4r: differ now returns Result. The PK-flip cascade-depth
+    // Differ now returns Result. The PK-flip cascade-depth
     // contract can fail here even though `sync_models` only ever
     // produces additive deltas (empty before-schema), because the
     // differ runs the closure unconditionally — the empty-target
@@ -1490,9 +1376,9 @@ pub fn build_sync_plans(
         .map_err(|e| DjogiError::Db(DbError::other(format!("sync_models differ failed: {e}"))))?;
 
     // ── Step 4 — invariant + classification check. The empty-target
-    //              path can only produce `Additive` or `NoOp`
-    //              (buckets with zero models). Anything else is a
-    //              broken invariant in the differ.
+    // path can only produce `Additive` or `NoOp`
+    // (buckets with zero models). Anything else is a
+    // broken invariant in the differ.
     for delta in &deltas {
         match delta.classification {
             Classification::NoOp | Classification::Additive => {}
@@ -1519,9 +1405,9 @@ pub fn build_sync_plans(
     }
 
     // ── Step 5 — lower each non-NoOp delta to a plan. Bucket order
-    //              is the natural BTreeMap order (alphabetic by
-    //              `(database, app)`), so multi-bucket runs are
-    //              deterministic.
+    // is the natural BTreeMap order (alphabetic by
+    // `(database, app)`), so multi-bucket runs are
+    // deterministic.
     let mut plans = Vec::new();
     for delta in &deltas {
         if matches!(delta.classification, Classification::NoOp) {
@@ -1544,7 +1430,7 @@ pub fn build_sync_plans(
 /// `sync_models` use for every other failure mode. Extracted so unit
 /// tests can drive the wrapping path with a synthetic registry error
 /// without polluting the link-time-collected
-/// [`crate::relation::registry::ReverseRelationMarker`] inventory —
+/// [`crate::relation::registry::ReverseRelationMarker`] inventory
 /// `inventory::submit!` from a test would persist for every other test
 /// in the same binary.
 fn wrap_relation_registry_for_sync_models(
@@ -1561,7 +1447,6 @@ fn wrap_relation_registry_for_sync_models(
 
 /// Build a fresh, empty [`AppliedSchema`] suitable as the "before"
 /// state in `sync_models`'s empty-target diff.
-///
 /// The shape mirrors what [`project_from_iters`] produces for a
 /// bucket with zero models — empty `models`, `enums`, `indexes`,
 /// `registered_apps`. The differ keys equality off all observable
@@ -1582,11 +1467,9 @@ fn empty_applied_schema() -> AppliedSchema {
 
 /// Returns `true` for every [`SchemaOperation`] variant that the
 /// empty-target path can legitimately produce.
-///
 /// Additive ops on an empty `before` schema:
 /// - `AddTable`, `AddColumn`, `AddIndex`, `AddEnum`, `AddEnumVariant`,
-///   `AddForeignKey`.
-///
+/// `AddForeignKey`.
 /// Anything else (drops, renames, alters, app moves, PK flips) is
 /// structurally impossible from an empty `before` and signals a
 /// broken differ invariant.
@@ -1640,7 +1523,6 @@ fn additive_op_label(op: &SchemaOperation) -> &'static str {
 /// connection, no advisory lock, no ledger updates — this is the
 /// per-test path; production migrations route through the runner
 /// (T4) for the same composition output.
-///
 /// `MetadataOnly` segments are skipped entirely — they exist for the
 /// production runner's folder-rename / app-move bookkeeping and have
 /// no DDL to execute. Empty-target diffs cannot produce them, but the
@@ -1761,7 +1643,6 @@ mod tests {
     }
 
     // ── sync_models invariants ──────────────────────────────────────
-    //
     // These tests pin the empty-target additive-only contract without
     // touching a live database. The invariant guard sits between the
     // differ and the SQL emitter, so we exercise it by walking
@@ -1819,7 +1700,7 @@ mod tests {
     fn is_additive_op_classifies_add_variants_as_additive() {
         // Every `Add*` variant of `SchemaOperation` is additive on an
         // empty-target diff. The synthetic table we build is a stand-in
-        // — `is_additive_op` only inspects the variant tag.
+        // `is_additive_op` only inspects the variant tag.
         let t = synthetic_table("widgets");
         assert!(is_additive_op(&SchemaOperation::AddTable(t)));
         assert!(is_additive_op(&SchemaOperation::AddEnum(
@@ -2118,7 +1999,7 @@ mod tests {
     #[test]
     fn wrap_relation_registry_for_sync_models_passes_ok_through() {
         // The clean-registry path must not perturb the existing
-        // `Result<(), DjogiError>` flow — `Ok(())` in, `Ok(())` out,
+        // `Result<, DjogiError>` flow — `Ok` in, `Ok` out,
         // no string formatting, no allocation.
         super::wrap_relation_registry_for_sync_models(Ok(()))
             .expect("Ok input must propagate unchanged");

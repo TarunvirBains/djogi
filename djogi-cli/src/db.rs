@@ -1,31 +1,24 @@
-//! `djogi db` and `djogi docs` subcommand glue — Phase 7 T8.
-//!
+//! `djogi db` and `djogi docs` subcommand glue
 //! Three leaves:
-//!
 //! - `db reset` — drops, recreates, and replays committed migrations
-//!   for the application database. Triple-gated (localhost +
-//!   non-production profile + explicit `--yes`) per the v3 §8 brief.
+//! for the application database. Triple-gated (localhost +
+//! non-production profile + explicit `--yes`) per the brief.
 //! - `db seed` — runs operator-authored SQL fixtures from
-//!   `seeds/<database>/`. Localhost-or-`--allow-non-localhost`.
+//! `seeds/<database>/`. Localhost-or-`--allow-non-localhost`.
 //! - `docs` — renders per-model markdown reference pages from the
-//!   descriptor inventory.
-//!
+//! descriptor inventory.
 //! All three flow through public APIs in `djogi::migrate` (or
 //! `::config`) so integration tests can exercise the underlying logic
 //! without spawning subprocesses.
-//!
 //! # Exit codes
-//!
 //! Every subcommand in this module obeys a uniform three-value matrix
 //! so shell integrations can distinguish "operation refused" from
 //! "operation failed":
-//!
 //! | Code | Meaning |
 //! |------|---------|
-//! | `0`  | Success — the command completed and any post-state was applied. |
-//! | `1`  | Error — config load failure, network, SQL, or any other underlying runtime failure. |
-//! | `2`  | Refusal — either a policy gate (localhost, production profile, missing `--yes`, …) blocked execution before any side effect, OR clap-style argument validation rejected the invocation (missing flag, mutually exclusive flags). |
-//!
+//! | `0` | Success — the command completed and any post-state was applied. |
+//! | `1` | Error — config load failure, network, SQL, or any other underlying runtime failure. |
+//! | `2` | Refusal — either a policy gate (localhost, production profile, missing `--yes`, …) blocked execution before any side effect, OR clap-style argument validation rejected the invocation (missing flag, mutually exclusive flags). |
 //! Exit code `2` deliberately bundles policy refusals and
 //! argument-validation errors. Clap's default behaviour is to return
 //! `2` for unknown / malformed flags; manual `2` returns in
@@ -56,7 +49,7 @@ fn resolve_workspace(workspace: Option<PathBuf>) -> PathBuf {
 
 /// Build a Tokio current-thread runtime for the synchronous CLI
 /// surface. Reused by `db reset` and `db seed` — both need to drive
-/// async library calls from a sync `fn main()` shape.
+/// async library calls from a sync `fn main` shape.
 fn build_runtime(label: &str) -> Result<tokio::runtime::Runtime, ExitCode> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -70,14 +63,12 @@ fn build_runtime(label: &str) -> Result<tokio::runtime::Runtime, ExitCode> {
 // ── db reset ──────────────────────────────────────────────────────────────
 
 /// `djogi db reset` entry point.
-///
-/// `yes`: when `true`, the function does NOT prompt the operator —
+/// `yes`: when `true`, the function does NOT prompt the operator
 /// the request flows straight into [`reset_app_database`]. When
 /// `false`, the function prints a y/N prompt to stderr and reads
 /// stdin; only an explicit `y` / `yes` answer (case-insensitive)
 /// proceeds. Any other input refuses with the standard
 /// `ResetRefusal::NotConfirmed` exit code.
-///
 /// `maintenance_database` defaults to `"postgres"` — the conventional
 /// administrative DB present on every cluster — when the operator
 /// supplies nothing more specific.
@@ -134,7 +125,6 @@ pub fn reset_cmd(
 }
 
 /// Async body of [`reset_cmd`]. Returns the desired exit code.
-///
 /// **Audit pool wire-up (issue #118).** The `db reset` replay path
 /// passes its `RunnerCtx` through to `apply_plan`, which writes a
 /// `djogi_ddl_audit` row per executed segment when given a
@@ -143,7 +133,6 @@ pub fn reset_cmd(
 /// env, `[database].crud_log_url`, then derive `crud_log` from
 /// `database.url`) and constructs the pool via
 /// [`djogi::migrate::build_audit_pool`].
-///
 /// Audit pool construction is **best-effort**: a missing
 /// `Djogi.toml::database.url` path component, an unreachable audit DB,
 /// or a self-audit refusal degrades to `audit_pool = None` with a
@@ -160,7 +149,6 @@ async fn run_reset(
 ) -> i32 {
     // Version preflight — verify PostgreSQL >= 18 on the target cluster
     // before any destructive work.
-    //
     // Connect to the MAINTENANCE database, not the application database,
     // because db reset drops the application database — it may not exist
     // at preflight time. Both databases are on the same cluster and
@@ -218,17 +206,14 @@ async fn run_reset(
 
 /// Best-effort audit-pool construction for the `db reset` replay path
 /// (issue #118).
-///
 /// Returns `Some(pool)` when the operator's environment / `Djogi.toml`
 /// resolves to an audit DB URL and the pool can be constructed from
 /// that URL. Returns `None` (with a `tracing::warn!`) on any of:
-///
 /// - URL resolution failure (no path component to splice; no
-///   `CRUD_LOG_URL` / `[database].crud_log_url` override; self-audit
-///   refusal because `database.url` already ends in `/crud_log`).
+/// `CRUD_LOG_URL` / `[database].crud_log_url` override; self-audit
+/// refusal because `database.url` already ends in `/crud_log`).
 /// - Syntactically invalid pool configuration or immediate pool
-///   construction failure.
-///
+/// construction failure.
 /// **Why best-effort.** The audit overlay is a defence-in-depth
 /// mechanism: an audit row exists so a future `db reset` cannot erase
 /// the migration history. Refusing the destructive `db reset` over an
@@ -239,7 +224,6 @@ async fn run_reset(
 /// `INSERT` fails is logged + skipped without rolling back the
 /// committed app DDL (see [`super::audit`]'s
 /// `record_ddl_audit_for_plan` doc).
-///
 /// **Operator visibility.** Degradation paths detected before replay
 /// print a warning to stderr and also emit a `tracing::warn!` with the
 /// offending URL (when known). A syntactically valid but unreachable
@@ -361,7 +345,6 @@ pub fn seed_cmd(
 }
 
 /// Async body of [`seed_cmd`]. Returns the desired exit code.
-///
 /// **Per-database routing.** The `--database <name>` flag selects
 /// BOTH the `seeds/<name>/` directory the runner walks AND the
 /// connection URL the SQL fires against. The
@@ -383,8 +366,6 @@ async fn run_seed(
     // URL. The result is the connection target AND the URL the
     // localhost gate inside `run_seeds` evaluates against — both
     // gate and SQL execution stay on the same database.
-    //
-    // Codex round-2 A-6: surface the malformed-URL case via the
     // typed `SeedError::MalformedApplicationUrl` variant rather than
     // a bare `eprintln!`. The variant was previously dead — the CLI
     // now constructs it explicitly so the error path is operator-
@@ -470,26 +451,22 @@ fn print_seed_report(report: &SeedReport) {
 /// `djogi_test_<uuid>` databases left behind by `#[djogi_test]` runs
 /// killed by SIGKILL / OOM / panic-after-spawn before
 /// [`djogi::testing::teardown_test_db`] could fire.
-///
 /// Triple-gated identical to `db reset`:
-///
 /// 1. **Localhost.** `DjogiConfig::database.url` MUST resolve to
-///    `127.0.0.1` / `localhost` / `[::1]`, unless the operator passed
-///    `--allow-non-localhost` to override (parity with `db seed`'s
-///    lighter gate — sometimes operators run a remote dev cluster).
+/// `127.0.0.1` / `localhost` / `[::1]`, unless the operator passed
+/// `--allow-non-localhost` to override (parity with `db seed`'s
+/// lighter gate — sometimes operators run a remote dev cluster).
 /// 2. **Non-production.** `Djogi.toml::profile` MUST NOT equal
-///    `"production"`. Mirrors `db reset`'s second gate so the same
-///    rules govern any operation that issues `DROP DATABASE`.
+/// `"production"`. Mirrors `db reset`'s second gate so the same
+/// rules govern any operation that issues `DROP DATABASE`.
 /// 3. **Confirmation.** `--yes` is required, unless `--dry-run` is
-///    passed. `--dry-run` lists candidates without dropping; no
-///    confirmation needed because no side effect occurs.
-///
+/// passed. `--dry-run` lists candidates without dropping; no
+/// confirmation needed because no side effect occurs.
 /// `maintenance_database` defaults to `"postgres"` — the conventional
 /// administrative DB present on every cluster — and is spliced into
 /// `database.url`'s path component to produce the admin connection
 /// URL (the application database itself can't drop other databases on
 /// the same cluster).
-///
 /// Exit codes match the `db` matrix at the top of this module: `0` on
 /// success, `1` on runtime / SQL / connect failure, `2` on gate
 /// refusal (non-localhost without override, production profile,
@@ -660,7 +637,6 @@ fn is_valid_pg_identifier(name: &str) -> bool {
 // ── docs ──────────────────────────────────────────────────────────────────
 
 /// `djogi docs` entry point.
-///
 /// `output` defaults to `target/djogi-docs/` under the workspace. The
 /// per-model files are written into `<output>/<app>/<Model>.md` and a
 /// top-level `<output>/README.md` indexes them.
@@ -677,7 +653,7 @@ pub fn docs_cmd(
     }
     let workspace = resolve_workspace(workspace);
     let output = output.unwrap_or_else(|| workspace.join("target").join("djogi-docs"));
-    // Cluster 8ζ T12.4 — load `<workspace>/.djogi/intent.json` if
+    // 4 — load `<workspace>/.djogi/intent.json` if
     // present. Absent file → `Ok(None)`, which `generate_docs_with_provider`
     // treats as "no intent merge"; a malformed file fails the
     // command with a clear error before any docs files are

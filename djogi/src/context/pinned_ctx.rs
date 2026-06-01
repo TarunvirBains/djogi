@@ -1,7 +1,6 @@
 use super::DjogiContext;
 
 /// Guard for a pool-backed pinned migration context.
-///
 /// Owns a transaction-backed `DjogiContext` that was created by checking out
 /// one connection from the parent's pool. On drop, if [`mark_clean`](Self::mark_clean)
 /// was not called, the underlying connection is **detached** from the pool
@@ -19,7 +18,6 @@ impl OwnedPinnedCtx {
     }
 
     /// Mark this session as clean (advisory lock released).
-    ///
     /// When called before drop, the underlying connection is returned to the
     /// pool normally instead of being detached. This is the happy path for
     /// migrations that complete successfully and release their locks.
@@ -57,7 +55,6 @@ impl std::ops::DerefMut for OwnedPinnedCtx {
 }
 
 /// Return type of [`DjogiContext::pin_for_migration`](super::DjogiContext::pin_for_migration).
-///
 /// Derefs to `&mut DjogiContext` so callers can pass it to any
 /// function that accepts `&mut PinnedCtx<'_>`. When the migration
 /// entry point drops the `PinnedCtx`, the `Owned` variant's
@@ -65,9 +62,7 @@ impl std::ops::DerefMut for OwnedPinnedCtx {
 /// [`mark_clean`](OwnedPinnedCtx::mark_clean) was not called, the
 /// underlying connection is detached from the pool to prevent session
 /// poisoning (GH #331).
-///
 /// # Structural invariant
-///
 /// The enum variants are `pub(crate)` (Rust does not support independent
 /// variant visibility — they inherit the enum's visibility). Construction
 /// is restricted to this module tree by convention and code review. Only
@@ -106,7 +101,6 @@ impl<'a> std::ops::DerefMut for PinnedCtx<'a> {
 
 impl<'a> PinnedCtx<'a> {
     /// Mark this pinned context as clean for pool return.
-    ///
     /// Only effective on `Owned` variant — marks the internal guard so that
     /// `Drop` returns the connection to the pool instead of detaching it.
     /// No-op on `Borrowed` (the borrowed context's lifecycle is managed by
@@ -123,14 +117,12 @@ mod tests {
     use crate::pg::pool::DjogiPool;
 
     /// When a pool-backed `PinnedCtx::Owned` is dropped without calling
-    /// `mark_clean()`, the underlying connection must be **detached from
+    /// `mark_clean`, the underlying connection must be **detached from
     /// the pool** (closing the socket) rather than returned to it.
-    ///
     /// Without this guarantee, async cancellation that drops a pinned
     /// context after acquiring an advisory lock returns the poisoned
     /// connection to the pool, where a subsequent checkout inherits the
     /// stale lock and gains false mutual exclusion. GH #331.
-    ///
     /// **Verification via backend PID comparison.** `pg_try_advisory_lock($k)`
     /// returns true when the SAME session already holds that lock (idempotent
     /// no-op), so a "lock succeeds" probe cannot distinguish a recycled
@@ -138,7 +130,6 @@ mod tests {
     /// PID of the pinned connection against the PID of the next pool checkout
     /// is the only reliable way to prove detachment: different PIDs mean the
     /// old physical connection was closed, not recycled.
-    ///
     /// **Expected result BEFORE fix:** FAIL (assertion fails because both
     /// checkouts return the SAME PID — the connection WAS recycled).
     /// **Expected result AFTER fix:** PASS (different PIDs prove detachment).
@@ -180,8 +171,8 @@ mod tests {
             .expect("pg_backend_pid column should be decodable as i32");
 
         // 6. Acquire a session-level advisory lock to prove the connection
-        //    is in a non-default state. The key is a fixed constant unique
-        //    to this test (will not collide with runner-derived keys).
+        // is in a non-default state. The key is a fixed constant unique
+        // to this test (will not collide with runner-derived keys).
         let _lock_row = pinned
             .query_one(
                 "SELECT pg_try_advisory_lock($1)",
@@ -190,8 +181,8 @@ mod tests {
             .await
             .expect("advisory lock acquisition should succeed");
 
-        // 7. Drop the pinned context WITHOUT mark_clean().
-        //    This simulates async cancellation dropping the future mid-flight.
+        // 7. Drop the pinned context WITHOUT mark_clean.
+        // This simulates async cancellation dropping the future mid-flight.
         drop(pinned);
 
         // Small yield to allow the connection to be returned/detached and
@@ -214,7 +205,7 @@ mod tests {
             .expect("pg_backend_pid column should be decodable as i32");
 
         // 10. Assert different PIDs — proves the old connection was detached
-        //     (closed), not recycled back into the pool with stale state.
+        // (closed), not recycled back into the pool with stale state.
         assert_ne!(
             old_pid, new_pid,
             "BUG (GH #331): dropping PinnedCtx::Owned without mark_clean() \

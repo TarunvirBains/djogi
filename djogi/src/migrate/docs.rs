@@ -1,45 +1,36 @@
-//! Markdown documentation generation — Phase 7 v3 §8 / T8.
-//!
+//! Markdown documentation generation — / T8.
 //! `djogi docs` renders a per-model reference page from the global
 //! [`crate::descriptor::ModelDescriptor`] inventory. Each model's
 //! generated page lists table identity, the field set with SQL types
 //! and nullability, declared indexes, foreign-key edges, and any
 //! per-field rationale.
-//!
 //! # Output layout
-//!
 //! ```text
 //! <output_root>/
 //! ├── README.md                 — index page + per-app summaries
 //! └── <app>/                    — one directory per registered app
 //!     └── <ModelName>.md        — one file per model
 //! ```
-//!
 //! The synthetic global bucket (model registered with no `app = X`)
 //! lives under `<output_root>/_global_/<ModelName>.md`; the directory
 //! token mirrors [`crate::migrate::target::GLOBAL_BUCKET_DIRNAME`] for
 //! filesystem-tooling consistency.
-//!
 //! # Determinism
-//!
 //! Two invocations against the same descriptor inventory MUST produce
 //! byte-identical output. The renderer therefore:
-//!
 //! - Iterates the descriptor inventory through a sorted `BTreeMap`
-//!   keyed by `(app_directory, type_name)`. The natural
-//!   `inventory::iter` order is registration order, which is
-//!   inherently non-deterministic across compilation runs — sorting
-//!   reproducibly resolves that.
+//! keyed by `(app_directory, type_name)`. The natural
+//! `inventory::iter` order is registration order, which is
+//! inherently non-deterministic across compilation runs — sorting
+//! reproducibly resolves that.
 //! - Sorts per-model field lists in their declaration order
-//!   (preserved by the macro so user-source ordering survives) but
-//!   leaves index lists in declaration order too.
+//! (preserved by the macro so user-source ordering survives) but
+//! leaves index lists in declaration order too.
 //! - Embeds no timestamps, no version strings (other than the
-//!   per-page heading content sourced from descriptors), and no
-//!   environment-derived data. The output is purely a function of
-//!   the descriptor input.
-//!
+//! per-page heading content sourced from descriptors), and no
+//! environment-derived data. The output is purely a function of
+//! the descriptor input.
 //! # No regex
-//!
 //! Identifier comparison and filename derivation use byte-level
 //! checks. The accepted filename grammar mirrors the Postgres
 //! identifier rules used elsewhere in the migrate substrate
@@ -103,7 +94,6 @@ pub struct DocsReport {
 /// `output_root`. Delegates through [`generate_docs_with_provider`] using
 /// [`crate::migrate::InventoryDescriptorProvider`] so there is a single
 /// docs path and today's behavior is preserved.
-///
 /// When `intent` is `Some`, per-model/field rationale from
 /// `<workspace>/.djogi/intent.json` merges into the Markdown with
 /// "macro attr wins, intent.json fallback" precedence (see
@@ -121,33 +111,23 @@ pub fn generate_docs(
 
 /// Render the descriptor pages from an injected [`DescriptorProvider`]
 /// (#370).
-///
 /// # What
-///
 /// The injectable sibling of [`generate_docs`]: it renders the models
-/// from `p.models()` instead of walking the global
+/// from `p.models` instead of walking the global
 /// `inventory::iter::<ModelDescriptor>`.
-///
 /// # Why
-///
 /// `djogi docs` (the CLI command) calls this with the provider threaded
 /// from `run_with_provider`, so an adopter-linked binary documents *its*
 /// models. The standalone binary passes [`InventoryDescriptorProvider`]
 /// and reproduces today's behavior.
-///
 /// # How
-///
 /// Delegates to [`render_inventory`] — the same slice renderer
-/// [`generate_docs`] uses — after snapshotting `p.models()` into an
+/// [`generate_docs`] uses — after snapshotting `p.models` into an
 /// owned slice. `intent` follows the same "macro attr wins,
 /// intent.json fallback" merge rule as [`generate_docs`].
-///
 /// # Errors
-///
 /// [`DocsError::Io`] on any filesystem failure under `output_root`.
-///
 /// # Example
-///
 /// ```no_run
 /// use std::path::Path;
 /// use djogi::migrate::{generate_docs_with_provider, InventoryDescriptorProvider};
@@ -167,11 +147,9 @@ pub fn generate_docs_with_provider(
 
 /// Render an explicit `&[&ModelDescriptor]` slice — used by tests and
 /// by future tools that want to render a curated subset.
-///
 /// **Determinism.** The slice is internally sorted by
 /// `(app_directory, type_name)` before rendering so the output is
 /// byte-stable regardless of the input ordering.
-///
 /// `intent` follows the same merge rule as [`generate_docs`].
 pub fn render_inventory(
     descriptors: &[&ModelDescriptor],
@@ -268,7 +246,6 @@ pub fn render_inventory(
 // ── Rendering ─────────────────────────────────────────────────────────────
 
 /// Render a single model's reference page as Markdown.
-///
 /// `intent` follows the merge rule documented on [`generate_docs`]:
 /// when `Some(file)`, per-model and per-field rationale flow from
 /// `<workspace>/.djogi/intent.json` with "macro attr wins" precedence.
@@ -315,7 +292,7 @@ pub fn render_model_page(
 
     // Field table — the `Default` column reflects projection-side
     // policy: only the PK row carries a default expression (the
-    // `heerid_next()` / `heerid_next_desc()` / etc. supplied by
+    // `heerid_next` / `heerid_next_desc` / etc. supplied by
     // `migrate::projection`); every other column renders an em-dash
     // because `FieldDescriptor` doesn't carry adopter-declared defaults.
     s.push_str("\n## Fields\n\n");
@@ -489,17 +466,15 @@ fn display_index_target(target: &IndexTarget) -> String {
 }
 
 /// Compose the per-field "Default" cell.
-///
 /// The descriptor surface intentionally does NOT carry a per-column
-/// default-SQL string — Phase 1 / Phase 5 chose to push the
-/// PK-default expansion (`heerid_next()`, `heerid_next_desc()`, …)
+/// default-SQL string — / chose to push the
+/// PK-default expansion (`heerid_next`, `heerid_next_desc`, …)
 /// down into the projection layer instead so the snapshot stays the
 /// single source of truth for `default_sql`. The renderer mirrors
 /// that policy here: the `id` column's default is derived from the
 /// model's [`PkType`] via
 /// [`super::projection::pk_default_sql`], and every other field
 /// renders as an em-dash (`—`) for "no descriptor-side default".
-///
 /// Limitation: only the PK column's default surfaces today.
 /// Non-PK adopter-declared defaults need a `default_sql` slot on
 /// `FieldDescriptor` that the macro doesn't currently populate, so
@@ -518,7 +493,6 @@ fn render_field_default(f: &FieldDescriptor, parent: &ModelDescriptor) -> String
 /// Compose the per-field "notes" cell — primary surface for the
 /// flags that don't get their own column. Empty cells render as a
 /// single space so the markdown table stays aligned.
-///
 /// `field_intent` is the per-field entry from `intent.json`, when
 /// present. Resolution runs through [`crate::intent::resolve_field_rationale`]
 /// so the macro attr wins over intent.json — same precedence rule
@@ -711,7 +685,7 @@ mod tests {
     }
 
     /// The `Default` column surfaces the PK column's
-    /// `heerid_next_desc()` (or whichever PK kind the model declares)
+    /// `heerid_next_desc` (or whichever PK kind the model declares)
     /// and an em-dash for every other field.
     #[test]
     fn render_model_page_default_column_renders_pk_default_and_em_dash() {
@@ -733,7 +707,7 @@ mod tests {
             "non-PK rows must render Default as em-dash; got:\n{email_row}",
         );
 
-        // A `PkType::HeerId` model emits `heerid_next()` (ascending
+        // A `PkType::HeerId` model emits `heerid_next` (ascending
         // variant — projection-side parity).
         let post = fixture_global_post();
         let body = render_model_page(&post, None);

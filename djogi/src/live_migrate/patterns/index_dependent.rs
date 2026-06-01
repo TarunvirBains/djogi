@@ -1,32 +1,26 @@
 //! Index-dependent staged rollout pattern.
-//!
 //! Covers the "Add index" row of the v3 plan §7 classification table
 //! when the index lacks `concurrently = true`. The classifier
 //! escalates the operation to `ExpandContract`; this pattern emits
 //! the staged plan that rebuilds the index `CONCURRENTLY` and gates
 //! on `pg_index.indvalid` before declaring the rollout complete.
-//!
 //! # Operation shape
-//!
 //! Accepts [`AddIndex`](SchemaOperation::AddIndex) with any
 //! [`requires_out_of_transaction`](crate::migrate::schema::IndexSchema::requires_out_of_transaction)
 //! value — the pattern always emits `CONCURRENTLY` regardless. The
-//! input flag drives Phase 7's segment planner; once the operation
+//! input flag drives the segment planner; once the operation
 //! has reached this pattern the live-plan is committed to the
 //! concurrent-build path.
-//!
 //! # Step graph
-//!
 //! 1. [`StepKind::ExpandSchema`] — `CREATE INDEX CONCURRENTLY <name>
-//!    ON <table> (...)`. Runs outside any transaction; the runner's
-//!    out-of-transaction segment lane handles dispatch.
+//! ON <table> (...)`. Runs outside any transaction; the runner's
+//! out-of-transaction segment lane handles dispatch.
 //! 2. [`StepKind::ValidateBackfill`] — operator gate; runner pauses
-//!    until `SELECT indvalid FROM pg_index WHERE indexrelid =
-//!    '<name>'::regclass` returns `t`. A `false` result signals the
-//!    concurrent build failed midway and the index must be dropped
-//!    and re-created (the runner surfaces an actionable refusal in
-//!    that case).
-//!
+//! until `SELECT indvalid FROM pg_index WHERE indexrelid =
+//! '<name>'::regclass` returns `t`. A `false` result signals the
+//! concurrent build failed midway and the index must be dropped
+//! and re-created (the runner surfaces an actionable refusal in
+//! that case).
 //! No backfill is needed — Postgres builds the index asynchronously
 //! and `indvalid = true` is the canonical "ready for queries" signal.
 //! [`Pattern::IDEMPOTENT_PREDICATE`] is `false` for this pattern

@@ -1,44 +1,37 @@
-//! `#[model(indexes(...))]` grammar — Phase 7-Zero v3 T3.
-//!
+//! `#[model(indexes(...))]` grammar
 //! Parses the model-level index declaration grammar documented in
 //! `docs/superpowers/plans/2026-04-22-phase7-zero-indexing-v3.md` §5 and
 //! lowers it to `IndexSpec` token-stream literals that land in the
 //! `#[model]`-emitted descriptor.
-//!
 //! # Parser implementation — hand-rolled, not darling
-//!
 //! Plan D4 originally described this parser as a `darling::FromMeta` path
-//! (matching the Phase 1 `ModelAttrs` pattern). Three §5 constructs sit
+//! (matching the `ModelAttrs` pattern). Three §5 constructs sit
 //! outside darling's derive grammar:
-//!
 //! 1. `where = "..."` uses a Rust keyword as a key — darling's derive
-//!    reduces to `syn::Path`, which rejects keywords. Only
-//!    `syn::ext::IdentExt::parse_any` accepts the keyword.
+//! reduces to `syn::Path`, which rejects keywords. Only
+//! `syn::ext::IdentExt::parse_any` accepts the keyword.
 //! 2. The per-column record literal
-//!    `(col = ident, opclass = "…", order = desc, nulls = first)` is a
-//!    tuple / paren expression, not an attribute meta list. Darling has
-//!    no built-in decoder for it.
+//! `(col = ident, opclass = "…", order = desc, nulls = first)` is a
+//! tuple / paren expression, not an attribute meta list. Darling has
+//! no built-in decoder for it.
 //! 3. The mixed `fields = [ident, (col = …)]` list interleaves two
-//!    different shapes whose common supertype is `syn::Expr`.
-//!
+//! different shapes whose common supertype is `syn::Expr`.
 //! Rather than fight darling's macro machinery — or bolt on three
 //! `FromMeta` impls whose body is a hand-rolled `syn::Expr` walk anyway
-//! — the whole parser lives here as a `syn::ParseStream` walk over the
+//! the whole parser lives here as a `syn::ParseStream` walk over the
 //! inner token stream. Error spans stay precise; the plan will be
 //! amended in T5's docstring pass to reflect this deviation.
-//!
 //! # Pipeline
-//!
 //! 1. `ModelAttrs::parse` extracts the `indexes(...)` `Meta::List` and
-//!    hands it to [`parse_indexes_meta_list`], which produces
-//!    `Vec<ModelIndexDecl>`.
+//! hands it to [`parse_indexes_meta_list`], which produces
+//! `Vec<ModelIndexDecl>`.
 //! 2. `descriptor::expand` consumes the Vec, calls
-//!    [`emit_index_spec_tokens`] to lower each decl into an `IndexSpec`
-//!    struct-literal token stream, and appends the result to the spatial
-//!    GiST indexes already emitted by the descriptor module.
+//! [`emit_index_spec_tokens`] to lower each decl into an `IndexSpec`
+//! struct-literal token stream, and appends the result to the spatial
+//! GiST indexes already emitted by the descriptor module.
 //! 3. The final `indexes: &[IndexSpec { … }, …]` slice is emitted in a
-//!    deterministic (alphabetised-by-name) order so minor reorderings in
-//!    the user's source do not produce spurious migration diffs.
+//! deterministic (alphabetised-by-name) order so minor reorderings in
+//! the user's source do not produce spurious migration diffs.
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
@@ -60,7 +53,6 @@ use syn::{
 #[derive(Debug, Clone)]
 pub struct ModelIndexDecl {
     /// `true` for `unique(...)` declarations; `false` for `index(...)`.
-    ///
     /// Drives the [`crate::djogi::descriptor::IndexKind`] that lowering
     /// emits — non-unique stays `NonUnique`, unique maps to
     /// `UniqueConstraint` unless a feature forces unique-index form
@@ -97,7 +89,7 @@ pub enum FieldColSpec {
     Simple(String),
     /// Record form `(col = ident, opclass = "…", order = asc|desc,
     /// nulls = first|last|default)`. Every record field after `col` is
-    /// optional and defaults to the corresponding `simple()` value.
+    /// optional and defaults to the corresponding `simple` value.
     Record {
         col: String,
         opclass: Option<String>,
@@ -124,7 +116,6 @@ pub enum IndexNullsOrder {
 // ---------------------------------------------------------------------------
 
 /// Parse the `Meta::List` passed as `indexes(...)` inside `#[model(...)]`.
-///
 /// Returns the Vec of `ModelIndexDecl` in source order. Caller validates
 /// downstream rules that depend on struct-field knowledge (unknown column
 /// names, name collisions) during the lowering step.
@@ -350,7 +341,7 @@ fn parse_fields_array(value: &Expr) -> syn::Result<Vec<FieldColSpec>> {
 fn parse_field_col_spec(elem: &Expr) -> syn::Result<FieldColSpec> {
     match elem {
         // `ident` — bare column reference, shorthand for
-        // IndexColumnSpec::simple(ident). `unraw()` normalises raw idents
+        // IndexColumnSpec::simple(ident). `unraw` normalises raw idents
         // (`r#where`, `r#type`) into their keyword spelling so the
         // downstream comparison against `declared_columns` — which also
         // strips `r#` — succeeds.
@@ -552,7 +543,7 @@ pub struct LoweringCtx<'a> {
     /// `fields` / `include` refers to a real field.
     pub declared_columns: &'a [String],
     /// Names generated implicitly by other parts of the macro (today,
-    /// the Phase 6 spatial `<table>_<col>_gix` indexes). Rejecting
+    /// the spatial `<table>_<col>_gix` indexes). Rejecting
     /// user-supplied names that collide prevents silent override.
     pub reserved_generated_names: &'a [String],
 }
@@ -565,9 +556,7 @@ pub struct LoweringCtx<'a> {
 /// selects the name stem); they **must** agree or the emitted
 /// `IndexSpec` would carry a constraint-shaped name against an
 /// index-shaped kind (or vice versa).
-///
 /// # Escalation triggers
-///
 /// | Feature | Reason |
 /// |---------|--------|
 /// | `where = "..."` | Postgres constraints have no partial-predicate form. |
@@ -577,9 +566,7 @@ pub struct LoweringCtx<'a> {
 /// | `concurrently = true` | `ADD CONSTRAINT` has no concurrent form. |
 /// | `opclass = "..."` (top-level) | Opclass is index-element syntax; it is not valid in the table-constraint column list. |
 /// | Per-column `opclass`, `order = desc`, or `nulls = first\|last` | Same reason — these modifiers are only valid inside `CREATE INDEX … USING … (col modifier…)`, not in `UNIQUE (col, …)`. |
-///
 /// # Out of scope here — rejected at validation
-///
 /// A non-btree `using = "<method>"` on `unique(...)` is rejected by
 /// [`validate_decl`] **before** lowering reaches this predicate
 /// (PostgreSQL unique indexes are btree-only; `ALTER TABLE … ADD
@@ -691,7 +678,7 @@ pub fn emit_index_spec_tokens(
         }
     };
 
-    // Generated name (Phase 7-Zero v3 naming, T4 will replace this with
+    // Generated name (naming, T4 will replace this with
     // the shared `djogi::descriptor::index_name` helper once that lands).
     let generated_name = body
         .name
@@ -792,8 +779,7 @@ fn validate_decl(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> syn::Result<()
     let body = &decl.body;
     let span = decl.head_span;
 
-    // Phase 8.5 #83 — PostgreSQL unique indexes are btree-only.
-    //
+    // #83 — PostgreSQL unique indexes are btree-only.
     // `CREATE UNIQUE INDEX … USING <method>` is rejected by PostgreSQL for
     // every non-btree access method (gin / gist / brin / spgist / hash);
     // `ALTER TABLE … ADD CONSTRAINT … UNIQUE` has no `USING` clause at all
@@ -802,7 +788,6 @@ fn validate_decl(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> syn::Result<()
     // emitting `CREATE UNIQUE INDEX … USING gist` (or similar) would compile
     // a model whose generated migration SQL fails at apply with PG's
     // "access method does not support unique indexes" error.
-    //
     // Hash is included in the rejection set: hash is non-btree, and a
     // unique hash index has the same impossibility as a unique gin / gist /
     // brin / spgist index. The original §5 Q3 hash-only carve-out (Phase
@@ -825,7 +810,6 @@ fn validate_decl(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> syn::Result<()
     }
 
     // §5 Q3 — `using = "hash"` + (multi-column | expr | where | include) → error.
-    //
     // Hash + unique is already covered by the btree-only rule above; the
     // remaining hash-incompatible combinations stay as separate diagnostics
     // because their root cause is hash's own structural limitations (no
@@ -981,17 +965,15 @@ fn validate_index_name_shape(s: &str, span: Span) -> syn::Result<()> {
 /// both places. Unit tests on both sides assert byte-for-byte parity
 /// against a small cross-crate matrix so drift between the two
 /// implementations is caught immediately.
-///
 /// Logic kept deliberately identical to §6.4 + D5 in the v3 plan:
-///
 /// - `NonUnique` / `UniqueConstraint` / `UniqueIndex` stems → `_idx` /
-///   `_key` / `_uidx`.
+/// `_key` / `_uidx`.
 /// - Expression targets render with the literal `expr` body; column
-///   lists render as underscore-joined column names in declaration
-///   order.
+/// lists render as underscore-joined column names in declaration
+/// order.
 /// - When the naïve name exceeds 63 bytes, truncate the stem to 55
-///   bytes and append `_<8-char hex digest>` of the pre-truncation
-///   name (SipHash-1-3 low 32 bits).
+/// bytes and append `_<8-char hex digest>` of the pre-truncation
+/// name (SipHash-1-3 low 32 bits).
 fn generate_index_name(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> String {
     let table = ctx.table_name;
     let body = &decl.body;
@@ -1527,8 +1509,7 @@ mod tests {
     /// method gets the same diagnostic, naming the rejected method and
     /// pointing the user at the three resolutions (use `btree`, omit
     /// `using`, or drop `unique`).
-    ///
-    /// Pre-Phase 8.5, the macro silently escalated `unique(... using =
+    /// Pre-, the macro silently escalated `unique(... using =
     /// "gist")` to `UniqueIndex` and emitted `CREATE UNIQUE INDEX … USING
     /// gist`, which PostgreSQL rejects at migration apply. The fix is to
     /// reject at the macro layer so the model never compiles.

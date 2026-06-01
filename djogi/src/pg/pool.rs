@@ -1,51 +1,43 @@
 //! `DjogiPool` — the framework's Postgres connection pool.
-//!
 //! # What
-//!
 //! `DjogiPool` wraps a `deadpool_postgres::Pool` and is the single way Djogi
 //! checks out a Postgres connection. The type is `Clone` (the inner pool is
 //! `Arc`-backed) and `Send + Sync`, so a `DjogiPool` can be shared across
 //! tasks without external wrapping.
-//!
 //! # Why a public ergonomic surface
-//!
 //! `DjogiPool::connect(url)` is fine for development, but production
 //! services need three things on top:
-//!
 //! 1. **Tunable size and timeout.** The default `max_size = 5` is fine
-//!    for development; production sizes the pool against expected
-//!    concurrent database-touching tasks and bounds the wait for a slot
-//!    so saturated pools fail fast.
+//! for development; production sizes the pool against expected
+//! concurrent database-touching tasks and bounds the wait for a slot
+//! so saturated pools fail fast.
 //! 2. **A per-physical-connection setup hook.** `SET heer.node_id`,
-//!    `SET application_name`, `SET statement_timeout` belong on every
-//!    fresh connection; running them on every checkout would conflict
-//!    with [`DjogiContext::set_tenant`](crate::context::DjogiContext::set_tenant)'s
-//!    transaction-local `set_config('app.tenant_id', $1, true)`.
+//! `SET application_name`, `SET statement_timeout` belong on every
+//! fresh connection; running them on every checkout would conflict
+//! with [`DjogiContext::set_tenant`](crate::context::DjogiContext::set_tenant)'s
+//! transaction-local `set_config('app.tenant_id', $1, true)`.
 //! 3. **A raw-client escape hatch.** `COPY`, server-side cursors,
-//!    `CREATE EXTENSION`, and third-party crates that take a
-//!    `&tokio_postgres::Client` cannot route through `DjogiContext`.
-//!    The raw-driver bypass is dirty-by-default: a closure that
-//!    returns `Err`, panics, or is cancelled detaches the connection
-//!    from the pool so a poisoned session (open transaction,
-//!    uncommitted `SET ROLE`, advisory lock) cannot leak to the next
-//!    checkout. Adopter code reaches the bypass through the sealed
-//!    [`RawPoolAccessExt::raw_with_client`](crate::__bypass::RawPoolAccessExt)
-//!    trait; the inherent `DjogiPool::with_client` method is
-//!    `pub(crate)` and used only by internal substrate. See the
-//!    [raw SQL escape hatches spec](crate::__bypass) for the broader
-//!    contract.
-//!
+//! `CREATE EXTENSION`, and third-party crates that take a
+//! `&tokio_postgres::Client` cannot route through `DjogiContext`.
+//! The raw-driver bypass is dirty-by-default: a closure that
+//! returns `Err`, panics, or is cancelled detaches the connection
+//! from the pool so a poisoned session (open transaction,
+//! uncommitted `SET ROLE`, advisory lock) cannot leak to the next
+//! checkout. Adopter code reaches the bypass through the sealed
+//! [`RawPoolAccessExt::raw_with_client`](crate::__bypass::RawPoolAccessExt)
+//! trait; the inherent `DjogiPool::with_client` method is
+//! `pub(crate)` and used only by internal substrate. See the
+//! [raw SQL escape hatches spec](crate::__bypass) for the broader
+//! contract.
 //! [`DjogiPool::builder`] (`.max_size`, `.timeout`, `.post_connect`) covers
 //! the first two; the raw-driver bypass is reached via
 //! [`RawPoolAccessExt::raw_with_client`](crate::__bypass::RawPoolAccessExt).
 //! `connect(url)` is preserved as sugar for
-//! `DjogiPool::builder(url).build().await`. COPY, server-side cursors,
+//! `DjogiPool::builder(url).build.await`. COPY, server-side cursors,
 //! and other direct-driver protocol operations intentionally remain behind
 //! the explicit [`RawPoolAccessExt::raw_with_client`](crate::__bypass::RawPoolAccessExt)
 //! bypass rather than a separate typed wrapper.
-//!
 //! # Where the `post_connect` hook fits in deadpool's lifecycle
-//!
 //! The hook is wired through deadpool's `PoolBuilder::post_create`, which
 //! fires only after `Manager::create` materialises a new physical
 //! connection — i.e. on initial pool fill, after a recycle failure that
@@ -69,7 +61,6 @@ use std::time::Duration;
 use tokio_postgres::NoTls;
 
 /// Per-process monotonic counter for [`DjogiPool::pool_id`].
-///
 /// Allocated lazily by [`next_pool_id`]; starts at 1 so a freshly-zeroed
 /// `pool_id` is recognisably "uninitialised" if it ever surfaces in a
 /// debug print.
@@ -85,7 +76,6 @@ pub(crate) fn next_pool_id() -> u64 {
 }
 
 /// Default `max_size` when the caller does not override it.
-///
 /// Five matches the original Phase-1 hard-coded value and keeps every
 /// existing test/callsite that uses [`DjogiPool::connect`] running against
 /// the same pool size as before. Production deployments override this
@@ -95,23 +85,19 @@ pub(crate) fn next_pool_id() -> u64 {
 pub const DEFAULT_MAX_SIZE: usize = 5;
 
 /// Environment-variable name read by [`DjogiPool::from_database_config`].
-///
 /// When set to a positive integer, it overrides `[database].max_connections`
 /// from `Djogi.toml` and the builder default — i.e. it sits at the top of
 /// the resolution chain (env > Djogi.toml > builder default).
-///
 /// Empty / unparseable / `0` values fall through to the next layer rather
 /// than zeroing the pool — a typo must not silently disable the database.
 pub const ENV_DATABASE_MAX_CONNECTIONS: &str = "DJOGI_DATABASE_MAX_CONNECTIONS";
 
 /// Boxed future returned by closures handed to the raw-driver bypass
-/// — both `RawPoolAccessExt::raw_with_client` (the adopter-facing path)
+/// both `RawPoolAccessExt::raw_with_client` (the adopter-facing path)
 /// and the internal `DjogiPool::with_client` (`pub(crate)`) it dispatches
 /// to.
-///
 /// Exposed at module scope so adopters can spell the lifetime explicitly
 /// when factoring a closure body into a named function:
-///
 /// ```ignore
 /// use djogi::__bypass::RawPoolAccessExt as _;
 ///
@@ -128,7 +114,6 @@ pub const ENV_DATABASE_MAX_CONNECTIONS: &str = "DJOGI_DATABASE_MAX_CONNECTIONS";
 ///
 /// pool.raw_with_client(install_extension).await?;
 /// ```
-///
 /// Adopters that already use inline `Box::pin(async move { ... })` blocks
 /// rarely need to spell this alias themselves — the existential `Future`
 /// produced by an `async` block satisfies the bound directly. The alias
@@ -138,8 +123,7 @@ pub const ENV_DATABASE_MAX_CONNECTIONS: &str = "DJOGI_DATABASE_MAX_CONNECTIONS";
 pub type ClientFuture<'a, R> = Pin<Box<dyn Future<Output = Result<R, DjogiError>> + Send + 'a>>;
 
 /// Public alias for a `post_connect` closure's returned future.
-///
-/// Mirrors [`ClientFuture`] but pins the result type to `()`, since
+/// Mirrors [`ClientFuture`] but pins the result type to ``, since
 /// `post_connect` runs setup-only SQL and has no return value beyond
 /// "succeeded" or "failed".
 pub type PostConnectFuture<'a> = ClientFuture<'a, ()>;
@@ -151,7 +135,6 @@ type PostConnectFn =
     Arc<dyn for<'a> Fn(&'a mut tokio_postgres::Client) -> PostConnectFuture<'a> + Send + Sync>;
 
 /// The framework's Postgres connection pool.
-///
 /// Wraps `deadpool_postgres::Pool` with a Djogi-specific constructor.
 /// `Clone` is free — the underlying pool is `Arc`-backed, so a clone bumps
 /// a refcount rather than copying the pool state.
@@ -169,7 +152,6 @@ pub struct DjogiPool {
     /// pool — notably the NOTIFY listener, which can't subscribe to
     /// `tokio_postgres::AsyncMessage` on a pooled connection — can issue
     /// a fresh `tokio_postgres::connect` against the same URL.
-    ///
     /// `None` for pools that adopt a pre-built `deadpool_postgres::Pool`
     /// without exposing a URL (e.g. the audit-side pool in
     /// `migrate/runner.rs`). NOTIFY listener spawn against a URL-less
@@ -179,7 +161,7 @@ pub struct DjogiPool {
     /// Per-process unique identity, copied verbatim on `Clone`, so cloned
     /// handles share an id (and any per-pool keyed state — listener
     /// registry, future statement caches) while freshly-built pools get
-    /// fresh ids. `&pool.inner as *const _` is NOT a stable identity —
+    /// fresh ids. `&pool.inner as *const _` is NOT a stable identity
     /// `deadpool_postgres::Pool` is Arc-shaped, so cloning a `DjogiPool`
     /// produces a new outer struct address while the inner allocation is
     /// shared. The notify registry needs share-on-clone semantics, hence
@@ -197,7 +179,6 @@ impl std::fmt::Debug for DjogiPool {
 }
 
 /// Snapshot of a [`DjogiPool`]'s counters.
-///
 /// Returned by [`DjogiPool::status`]. Wraps the deadpool-postgres status so
 /// adopters depend on Djogi's surface, not the underlying pool crate.
 #[derive(Debug, Clone, Copy)]
@@ -229,16 +210,12 @@ impl DjogiPoolStatus {
 impl DjogiPool {
     /// Build a `DjogiPool` from a Postgres connection URL using framework
     /// defaults.
-    ///
-    /// Equivalent to `DjogiPool::builder(url).build().await`. Defaults:
-    ///
+    /// Equivalent to `DjogiPool::builder(url).build.await`. Defaults:
     /// - `max_size` = [`DEFAULT_MAX_SIZE`] (5)
     /// - no wait timeout (callers block until a slot is available)
     /// - no `post_connect` hook
-    ///
     /// For tunable size, timeouts, or per-physical-connection setup use
     /// [`DjogiPool::builder`] instead.
-    ///
     /// ```ignore
     /// let pool = djogi::pg::pool::DjogiPool::connect(&database_url).await?;
     /// let mut ctx = djogi::DjogiContext::from_pool(pool);
@@ -248,13 +225,10 @@ impl DjogiPool {
     }
 
     /// Start configuring a `DjogiPool` against the given Postgres URL.
-    ///
     /// The URL format is the standard Postgres connection string, e.g.
     /// `postgres://user:pass@localhost:5432/dbname`.
-    ///
     /// The returned [`DjogiPoolBuilder`] exposes `.max_size`, `.timeout`,
-    /// and `.post_connect`, finalised by `.build().await`.
-    ///
+    /// and `.post_connect`, finalised by `.build.await`.
     /// ```ignore
     /// let pool = DjogiPool::builder("postgres://localhost/app")
     ///     .max_size(20)
@@ -269,40 +243,31 @@ impl DjogiPool {
     /// Build a `DjogiPool` from a loaded
     /// [`DatabaseConfig`](crate::config::DatabaseConfig) applying the
     /// standard env > Djogi.toml > builder-default precedence.
-    ///
     /// The resolution chain for `max_size` is:
-    ///
     /// 1. The `DJOGI_DATABASE_MAX_CONNECTIONS` environment variable
-    ///    ([`ENV_DATABASE_MAX_CONNECTIONS`]), if set and parseable as a
-    ///    positive integer. Wins over everything.
+    /// ([`ENV_DATABASE_MAX_CONNECTIONS`]), if set and parseable as a
+    /// positive integer. Wins over everything.
     /// 2. `[database].max_connections` from the loaded config, if non-zero.
     /// 3. Builder default ([`DEFAULT_MAX_SIZE`]).
-    ///
     /// `database.url` from the loaded config supplies the URL. Note that
     /// [`DjogiConfig::load`](crate::config::DjogiConfig::load) already lifts
     /// the `DATABASE_URL` env var into `database.url`, so the URL
     /// resolution chain is handled at the config layer — this method
     /// only owns the `max_size` chain.
-    ///
     /// Callers that want to override the URL specifically (without going
     /// through `DjogiConfig::load`) should use [`DjogiPool::builder`]
     /// directly.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// let cfg = djogi::DjogiConfig::load()?;
     /// let pool = djogi::pg::pool::DjogiPool::from_database_config(&cfg.database).await?;
     /// ```
-    ///
     /// # No `post_connect` hook is attached
-    ///
     /// `from_database_config` is the config-driven entry point — it does
     /// not register a [`DjogiPoolBuilder::post_connect`] hook. Adopters
     /// that need a hook should chain through [`DjogiPool::builder`] and
     /// merge the env / config resolution into their own builder
     /// invocation, e.g.:
-    ///
     /// ```ignore
     /// let cfg = djogi::DjogiConfig::load()?;
     /// let mut b = djogi::pg::pool::DjogiPool::builder(&cfg.database.url);
@@ -328,13 +293,11 @@ impl DjogiPool {
     }
 
     /// Return a snapshot of the pool's counters.
-    ///
     /// The returned [`DjogiPoolStatus`] carries `max_size` (configured
     /// upper bound), `size` (physical connections opened), and
     /// `available` (idle connections ready for checkout). The call is a
     /// cheap snapshot read — it does not lock the pool or block on
     /// in-flight checkouts.
-    ///
     /// ```ignore
     /// let status = pool.status();
     /// tracing::info!(
@@ -350,7 +313,6 @@ impl DjogiPool {
     }
 
     /// Acquire a `PgConnection` from the pool.
-    ///
     /// The returned `PgConnection` holds the connection for the caller's
     /// lifetime and returns it to the pool on drop. If the pool has no idle
     /// connections and is at max capacity, this waits until one is available
@@ -364,26 +326,21 @@ impl DjogiPool {
 
     /// Borrow a raw `tokio_postgres::Client` for the duration of a
     /// closure.
-    ///
     /// # When to reach for this
-    ///
     /// `with_client` is the explicit escape hatch for operations that
     /// **cannot** route through [`DjogiContext`](crate::context::DjogiContext):
-    ///
     /// - `COPY FROM STDIN` / `COPY TO STDOUT` and other binary-protocol
-    ///   features that need direct driver access.
+    /// features that need direct driver access.
     /// - Server-side cursors that streaming consumers drive via the
-    ///   driver API rather than through `QuerySet::stream`.
+    /// driver API rather than through `QuerySet::stream`.
     /// - `CREATE EXTENSION` and other DDL that runs once at cold-start
-    ///   migration time, before any model context exists.
+    /// migration time, before any model context exists.
     /// - Bridging into third-party crates that take a
-    ///   `&tokio_postgres::Client` directly (rare since Track 0
-    ///   collapsed the HeeRanjID + extension install path through
-    ///   `djogi::migrate::bootstrap::run_phase_zero`, which itself
-    ///   takes a generic client).
-    ///
+    /// `&tokio_postgres::Client` directly (rare since
+    /// collapsed the HeeRanjID + extension install path through
+    /// `djogi::migrate::bootstrap::run_phase_zero`, which itself
+    /// takes a generic client).
     /// # When NOT to reach for this
-    ///
     /// **`with_client` is NOT for raw `SELECT` queries.** Adopter code
     /// that needs a raw query should use
     /// [`DjogiContext::raw_query`](crate::context::DjogiContext::raw_query) /
@@ -393,38 +350,32 @@ impl DjogiPool {
     /// [`atomic`](crate::transaction::atomic) scopes (so the raw query
     /// participates in the same transaction as the surrounding model
     /// operations).
-    ///
     /// # Connection lifecycle — clean exit returns, dirty exit detaches
-    ///
     /// The connection is checked out before the closure runs. The
     /// outcome path determines what happens to it on the way out:
-    ///
     /// - **Clean exit (`Ok`).** The `Object` drops normally and
-    ///   deadpool returns the connection to the pool. The next
-    ///   checkout reuses the same physical connection.
+    /// deadpool returns the connection to the pool. The next
+    /// checkout reuses the same physical connection.
     /// - **Dirty exit (`Err`, panic, future cancellation).** The
-    ///   `Object` is detached via `deadpool::managed::Object::take`,
-    ///   which removes it from the pool's tracker; the underlying
-    ///   `ClientWrapper` is dropped immediately, closing the
-    ///   `tokio_postgres::Client` and the underlying socket. The
-    ///   pool will create a fresh physical connection on the next
-    ///   demand. This is the safe-by-default semantic — the closure
-    ///   cannot leak a poisoned session (open transaction,
-    ///   uncommitted `SET ROLE`, advisory lock, half-finished `COPY`
-    ///   protocol stream) into the next checkout.
-    ///
+    /// `Object` is detached via `deadpool::managed::Object::take`,
+    /// which removes it from the pool's tracker; the underlying
+    /// `ClientWrapper` is dropped immediately, closing the
+    /// `tokio_postgres::Client` and the underlying socket. The
+    /// pool will create a fresh physical connection on the next
+    /// demand. This is the safe-by-default semantic — the closure
+    /// cannot leak a poisoned session (open transaction,
+    /// uncommitted `SET ROLE`, advisory lock, half-finished `COPY`
+    /// protocol stream) into the next checkout.
     /// The dirty-exit detach is important because Djogi's pool runs
     /// `deadpool_postgres::RecyclingMethod::Fast`, which only checks
-    /// `is_closed()` on return — it does NOT run `ROLLBACK`,
+    /// `is_closed` on return — it does NOT run `ROLLBACK`,
     /// `RESET ALL`, or `DISCARD ALL`. Without the dirty-exit detach
     /// here, an `Err`/panic during a `BEGIN` block or a `SET ROLE`
     /// would silently hand the next request a backend with the wrong
     /// role/transaction state. The trade-off is one extra physical
     /// connection per dirty exit, which is the right cost to pay for
     /// the safety guarantee.
-    ///
     /// # Session-affecting commands
-    ///
     /// Even on the **clean-exit path**, session-level state set inside
     /// the closure (`SET ROLE`, `SET search_path`, advisory locks,
     /// prepared statements outside the statement cache) leaves the
@@ -435,9 +386,7 @@ impl DjogiPool {
     /// does NOT issue `DISCARD ALL` on return — that is a deliberate
     /// trade-off (recycler latency cost vs cleanliness) inherited
     /// from `deadpool_postgres`'s default `RecyclingMethod::Fast`.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// pool.with_client(|client| {
     ///     Box::pin(async move {
@@ -490,7 +439,6 @@ impl DjogiPool {
 
 /// RAII guard around a checked-out deadpool `Object` for the duration of
 /// a [`DjogiPool::with_client`] call.
-///
 /// The guard is **dirty-by-default**: only an explicit `committed = true`
 /// flip (set after the closure returns `Ok`) lets the connection return
 /// to the pool. Any other exit path — closure `Err`, panic during the
@@ -498,9 +446,8 @@ impl DjogiPool {
 /// before completion — leaves `committed = false` and the `Drop` impl
 /// detaches the `Object` from the pool, dropping the underlying client
 /// and forcing a fresh physical connection on the next demand.
-///
 /// This is the only way to make `with_client` safe given Djogi's
-/// `RecyclingMethod::Fast` recycler, which only checks `is_closed()` and
+/// `RecyclingMethod::Fast` recycler, which only checks `is_closed` and
 /// does NOT issue `ROLLBACK` / `RESET ALL` / `DISCARD ALL`. Without the
 /// dirty-exit detach a closure that starts a transaction or runs `SET
 /// ROLE` / `SET search_path` / an advisory lock and then errors or
@@ -546,9 +493,8 @@ impl Drop for WithClientGuard {
 // ---------------------------------------------------------------------------
 
 /// Builder for [`DjogiPool`].
-///
 /// Construct via [`DjogiPool::builder`]. Every field has a sensible default;
-/// `.build().await` finalises into a usable pool.
+/// `.build.await` finalises into a usable pool.
 pub struct DjogiPoolBuilder {
     url: String,
     max_size: usize,
@@ -569,26 +515,21 @@ impl DjogiPoolBuilder {
     }
 
     /// Set the maximum number of connections the pool will hold.
-    ///
     /// `max_size` is the hard cap on physical connections. Once the pool
     /// has handed out `max_size` connections, additional `get` requests
     /// queue until a checkout is returned (or the wait timeout fires, if
     /// configured via [`Self::timeout`]).
-    ///
     /// Default: [`DEFAULT_MAX_SIZE`].
-    ///
     /// `value` must be `>= 1`. Passing `0` would build a pool whose
-    /// internal semaphore has zero permits, so every `pool.get()` would
+    /// internal semaphore has zero permits, so every `pool.get` would
     /// block forever (or until the wait timeout fires). The check runs
     /// in [`Self::build`] so the failure surfaces at construction time
     /// with a clear error rather than as a mysterious hang at first
     /// query.
-    ///
     /// Sizing guidance: pick `max_size` to match your service's expected
     /// concurrent database-touching tasks, NOT your CPU count. A web
     /// server handling 200 concurrent requests that each issue 2-3
     /// sequential queries needs roughly 30-50 connections, not 8.
-    ///
     /// ```ignore
     /// let pool = djogi::pg::pool::DjogiPool::builder(&database_url)
     ///     .max_size(20)
@@ -603,17 +544,14 @@ impl DjogiPoolBuilder {
     /// Set the maximum time `pool.get` (and the implicit get inside every
     /// terminal query) will wait for a slot before returning
     /// [`DjogiError::PoolTimeout`].
-    ///
     /// Default: no timeout — callers wait indefinitely. Production
     /// services typically pick a budget in the 1-10 second range so a
     /// saturated pool fails fast instead of accumulating unbounded queue
     /// depth.
-    ///
     /// This sets deadpool's `wait` timeout (waiting for a free slot). The
     /// `create` and `recycle` timeouts are independent and not exposed
     /// through this builder; they default to "no timeout" and are managed
     /// by deadpool internally.
-    ///
     /// ```ignore
     /// let pool = djogi::pg::pool::DjogiPool::builder(&database_url)
     ///     .max_size(20)
@@ -628,10 +566,8 @@ impl DjogiPoolBuilder {
 
     /// Register a closure that runs on every freshly-created physical
     /// connection.
-    ///
     /// The closure receives `&mut tokio_postgres::Client` and may issue
     /// any setup SQL it needs:
-    ///
     /// ```ignore
     /// use std::pin::Pin;
     ///
@@ -644,16 +580,13 @@ impl DjogiPoolBuilder {
     ///     .build()
     ///     .await?;
     /// ```
-    ///
     /// # Lifecycle (per-physical-connection, not per-checkout)
-    ///
     /// The hook fires **once per physical connection**, immediately after
     /// `Manager::create` returns a freshly-opened socket. It does NOT
     /// fire on the per-checkout path that reuses an existing physical
     /// connection. This is the correct semantic for one-time setup like
     /// `SET heer.node_id` (HeeRanjID's id-generation salt) or
     /// `SET application_name`.
-    ///
     /// Lowering: the closure is wrapped into a deadpool
     /// `Hook::async_fn(...)` and attached to the pool builder via
     /// `PoolBuilder::post_create`. The deadpool docs are explicit that
@@ -665,19 +598,15 @@ impl DjogiPoolBuilder {
     /// transaction-local `set_config('app.tenant_id', $1, true)` that
     /// [`DjogiContext::set_tenant`](crate::context::DjogiContext::set_tenant)
     /// already issues at the start of every tenant-scoped transaction.
-    ///
     /// # Errors
-    ///
     /// If the closure returns `Err`, the underlying `Manager::create` is
     /// considered failed: deadpool discards the connection and the
-    /// originating `pool.get()` (or terminal query) returns the error
+    /// originating `pool.get` (or terminal query) returns the error
     /// wrapped in [`DjogiError`]. The hook can return `Err` to abort
     /// startup when a required GUC fails to apply. The implementation
     /// prefixes hook failures with `post_connect:` so caller logs can
     /// distinguish setup failures from ordinary checkout failures.
-    ///
     /// # Sharing the closure
-    ///
     /// The boxed closure is kept behind an `Arc`, so a single hook is
     /// shared across all physical connections without per-create
     /// allocation. The hook bound is `Send + Sync + 'static` because
@@ -694,11 +623,9 @@ impl DjogiPoolBuilder {
     }
 
     /// Finalise the builder into a usable [`DjogiPool`].
-    ///
     /// This constructs the deadpool pool eagerly — the `tokio` runtime
     /// must be available when `build` is awaited. The pool itself opens
     /// connections lazily on first checkout.
-    ///
     /// ```ignore
     /// let pool = djogi::pg::pool::DjogiPool::builder(&database_url)
     ///     .max_size(10)
@@ -710,9 +637,7 @@ impl DjogiPoolBuilder {
     ///     .build()
     ///     .await?;
     /// ```
-    ///
     /// # Errors
-    ///
     /// Returns [`DjogiError::Validation`] if `max_size` is `0` (a
     /// zero-permit pool would hang every `get` call forever). Returns
     /// [`DjogiError::Db`] if the underlying `deadpool` config fails to
@@ -741,7 +666,7 @@ impl DjogiPoolBuilder {
         });
         cfg.pool = Some(PoolConfig::new(self.max_size));
 
-        // `cfg.builder()` returns the deadpool `PoolBuilder`. We finish it
+        // `cfg.builder` returns the deadpool `PoolBuilder`. We finish it
         // off ourselves so we can attach `wait_timeout` — the high-level
         // `cfg.create_pool` does not expose it.
         let mut pool_builder = cfg.builder(NoTls).map_err(|e| {
@@ -758,9 +683,8 @@ impl DjogiPoolBuilder {
         if let Some(hook) = self.post_connect {
             // Wrap the user closure into deadpool's `Hook::async_fn` shape.
             // `Manager::Type` for `deadpool_postgres::Manager` is
-            // `ClientWrapper`, which derefs to `tokio_postgres::Client` —
+            // `ClientWrapper`, which derefs to `tokio_postgres::Client`
             // so `&mut wrapper` coerces to `&mut Client` via deref-mut.
-            //
             // `Hook::async_fn` requires `Sync + Send + 'static`, hence the
             // `Arc` clone-into-the-future pattern: the outer `move`
             // closure (called by deadpool per create) clones the Arc into
@@ -812,18 +736,14 @@ impl std::fmt::Debug for DjogiPoolBuilder {
 
 /// Resolve the effective `max_size` for a [`DjogiPool`] from a loaded
 /// [`DatabaseConfig`](crate::config::DatabaseConfig).
-///
 /// Reading order (highest priority first):
-///
 /// 1. `DJOGI_DATABASE_MAX_CONNECTIONS` env var.
 /// 2. `[database].max_connections` from the config.
 /// 3. `None` — caller falls back to the builder default
-///    ([`DEFAULT_MAX_SIZE`]).
-///
+/// ([`DEFAULT_MAX_SIZE`]).
 /// Returning `None` rather than `Some(DEFAULT_MAX_SIZE)` lets the caller
 /// distinguish "use whatever the builder defaults to today" from "use
 /// exactly 5".
-///
 /// Zero / empty / unparseable values at any layer fall through — a typo
 /// must not silently zero the pool.
 pub fn resolve_max_connections(cfg: &crate::config::DatabaseConfig) -> Option<usize> {
@@ -907,7 +827,7 @@ mod tests {
             .await
             .expect("builder should accept max_size and timeout");
         let dbg = format!("{pool:?}");
-        // `Pool::status()` exposes `max_size` — the Debug impl includes it.
+        // `Pool::status` exposes `max_size` — the Debug impl includes it.
         assert!(
             dbg.contains("max_size: 7"),
             "Debug output should reflect max_size, got: {dbg}"

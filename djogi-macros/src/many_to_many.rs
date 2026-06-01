@@ -1,37 +1,31 @@
 //! `many_to_many!` — declarative stamp-out of one direction of a M2M
 //! relation.
-//!
 //! # What
-//!
 //! A function-like macro that emits, for a single direction of a
 //! many-to-many relationship:
-//!
 //! 1. `impl ::djogi::relation::ManyToMany<Target> for Source` with the
-//!    associated `Through` type, the `RELATION` const, the `this_fk` /
-//!    `that_fk` accessors, and the three async method bodies
-//!    (`related` / `add_related` / `remove_related`) matching the
-//!    trait contract (see [`djogi::relation::many_to_many`]).
+//! associated `Through` type, the `RELATION` const, the `this_fk` /
+//! `that_fk` accessors, and the three async method bodies
+//! (`related` / `add_related` / `remove_related`) matching the
+//! trait contract (see [`djogi::relation::many_to_many`]).
 //! 2. A per-relation trait `pub trait {Source}{Method-pascal}ManyToManyRelation`
-//!    plus `impl {Trait} for {Source}` carrying
-//!    `pub async fn <relation>(&self, ctx) -> Vec<Target>`, so users write
-//!    the ergonomic `person.groups(&mut ctx).await` instead of the fully-
-//!    qualified trait call. The accessor delegates straight to
-//!    `<Self as ManyToMany<Target>>::related` — no independent query logic
-//!    — keeping the trait body the single source of truth.
-//!
-//!    Trait-based emission (vs an inherent `impl Source { ... }` block)
-//!    is what allows the macro to be invoked in a downstream crate when
-//!    the source model lives upstream — see GH issue #39 for the
-//!    coherence-rule (E0116) rationale, also documented in
-//!    `reverse_relation.rs`.
+//! plus `impl {Trait} for {Source}` carrying
+//! `pub async fn <relation>(&self, ctx) -> Vec<Target>`, so users write
+//! the ergonomic `person.groups(&mut ctx).await` instead of the fully-
+//! qualified trait call. The accessor delegates straight to
+//! `<Self as ManyToMany<Target>>::related` — no independent query logic
+//! keeping the trait body the single source of truth.
+//! Trait-based emission (vs an inherent `impl Source { ... }` block)
+//! is what allows the macro to be invoked in a downstream crate when
+//! the source model lives upstream — see GH issue #39 for the
+//! coherence-rule (E0116) rationale, also documented in
+//! `reverse_relation.rs`.
 //! 3. An `inventory::submit!` block registering a
-//!    [`djogi::relation::registry::ReverseRelationMarker`] with
-//!    `RelationKind::M2M` so Phase 4.5's projection generator can walk
-//!    every declared M2M direction in the same pass it walks
-//!    reverse-FK / reverse-O2O accessors.
-//!
+//! [`djogi::relation::registry::ReverseRelationMarker`] with
+//! `RelationKind::M2M` so 's projection generator can walk
+//! every declared M2M direction in the same pass it walks
+//! reverse-FK / reverse-O2O accessors.
 //! # Why one direction per invocation
-//!
 //! M2M relationships are symmetric at the data layer (the junction row
 //! carries both FK columns) but asymmetric at the type layer: each
 //! direction picks its own relation name, return type, and trait impl.
@@ -41,7 +35,6 @@
 //! explicit-over-implicit stance). One call per direction keeps the
 //! user in control of each accessor's name and return type
 //! independently — symmetric invocations read as symmetric prose:
-//!
 //! ```ignore
 //! many_to_many!(Person, Group, through = PersonGroup,
 //!               this_fk = person_id, that_fk = group_id,
@@ -50,11 +43,8 @@
 //!               this_fk = group_id,  that_fk = person_id,
 //!               relation = "members");
 //! ```
-//!
 //! # How (emitted shape)
-//!
 //! For `many_to_many!(Source, Target, through = Through, this_fk = a_id, that_fk = b_id, relation = "name");`:
-//!
 //! ```ignore
 //! impl ::djogi::relation::ManyToMany<Target> for Source {
 //!     type Through = Through;
@@ -127,56 +117,49 @@
 //!                             target: "Target", via: "a_id" }
 //! }
 //! ```
-//!
 //! The body shape mirrors `many_to_many_hand_impl.rs` exactly — that
 //! compile-pass fixture pins the hand-written reference impl, and the
-//! macro output matches it byte-for-byte (modulo `pk_value()` vs `id`
+//! macro output matches it byte-for-byte (modulo `pk_value` vs `id`
 //! to stay PK-kind agnostic).
-//!
 //! # Seal
-//!
 //! The identifier inputs (`this_fk`, `that_fk`, `relation`) are parsed
 //! as `syn::Ident` / `syn::LitStr`, so the Rust tokenizer constrains
 //! them to valid ident shapes at parse time. They flow into emitted
 //! code in three positions:
-//!
 //! - As Rust identifiers on the `{Through}Fields` handle
-//!   (e.g. `f.a_id()` / `f.b_id()`) — validated by rustc at macro
-//!   expansion time; a typo produces `no method named ... found`.
+//! (e.g. `f.a_id` / `f.b_id`) — validated by rustc at macro
+//! expansion time; a typo produces `no method named ... found`.
 //! - As Rust struct-literal field names inside `add_related`'s
-//!   junction construction — same rustc validation.
-//! - As `&'static str` values returned by `RELATION` / `this_fk()` /
-//!   `that_fk()`. All three are routed through
-//!   [`djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident`]
-//!   at const-eval time; `relation` and `this_fk` additionally flow
-//!   through the inventory marker constructor. That panic fires before
-//!   the marker reaches the inventory slice, so any hostile or
-//!   `__djogi_*`-reserved string turns into a compile error pointing at
-//!   the macro invocation.
-//!
+//! junction construction — same rustc validation.
+//! - As `&'static str` values returned by `RELATION` / `this_fk` /
+//! `that_fk`. All three are routed through
+//! [`djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident`]
+//! at const-eval time; `relation` and `this_fk` additionally flow
+//! through the inventory marker constructor. That panic fires before
+//! the marker reaches the inventory slice, so any hostile or
+//! `__djogi_*`-reserved string turns into a compile error pointing at
+//! the macro invocation.
 //! The `relation` string is also validated through the same const
 //! path — it names both a Rust method on `Source` and a registry
 //! `name` field, so the unquoted-identifier rule (letter / underscore
 //! start, alphanumeric-or-underscore continuation, ≤ 63 bytes, not a
 //! reserved Postgres keyword) is required for both positions.
-//!
 //! # Where
-//!
 //! - [`djogi::relation::many_to_many::ManyToMany`] — the trait this
-//!   macro impls.
+//! macro impls.
 //! - [`djogi::relation::registry::ReverseRelationMarker`] — the
-//!   inventory record submitted.
+//! inventory record submitted.
 //! - `djogi-macros/tests/compile_pass/many_to_many_macro.rs` — the
-//!   end-to-end macro fixture that pins the emission shape.
-//! - `djogi-macros/tests/compile_fail/many_to_many_collision.rs` —
-//!   same-suffix collision fixture; two `many_to_many!` invocations
-//!   producing the same `(Source, relation)` pair emit the same
-//!   `…ManyToManyRelation` trait twice and trip rustc's E0428 / E0119
-//!   duplicate-definition errors. Cross-suffix collisions (M2M vs
-//!   reverse-FK / reverse-O2O on the same accessor name) emit
-//!   different trait names and slip past rustc; the
-//!   [`djogi::relation::registry::validate_relation_accessor_collisions`]
-//!   gate covers that case (GH issue #158).
+//! end-to-end macro fixture that pins the emission shape.
+//! - `djogi-macros/tests/compile_fail/many_to_many_collision.rs`
+//! same-suffix collision fixture; two `many_to_many!` invocations
+//! producing the same `(Source, relation)` pair emit the same
+//! `…ManyToManyRelation` trait twice and trip rustc's E0428 / E0119
+//! duplicate-definition errors. Cross-suffix collisions (M2M vs
+//! reverse-FK / reverse-O2O on the same accessor name) emit
+//! different trait names and slip past rustc; the
+//! [`djogi::relation::registry::validate_relation_accessor_collisions`]
+//! gate covers that case (GH issue #158).
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -184,10 +167,8 @@ use syn::parse::{Parse, ParseStream};
 use syn::{Ident, LitStr, Path, Result, Token};
 
 /// Parsed form of a `many_to_many!` invocation.
-///
 /// The invocation is position-for-positional-argument keyword-for-keyword-
 /// argument, mirroring the trait's associated items:
-///
 /// ```ignore
 /// many_to_many!(
 ///     Source, Target,
@@ -197,14 +178,11 @@ use syn::{Ident, LitStr, Path, Result, Token};
 ///     relation = "accessor_name"
 /// );
 /// ```
-///
 /// Both positional types are required first; the four keyword
 /// arguments can appear in any order after. Each keyword is consumed
 /// once — duplicates produce a parse error so a late-bound mistaken
 /// override cannot silently pick the wrong value.
-///
-/// # Phase 7-Zero-2 T9 — `expose(scope -> PeerVisage)` clauses
-///
+/// # `expose(scope -> PeerVisage)` clauses
 /// Zero or more `expose(scope -> PeerVisage)` entries may appear
 /// alongside the keyword arguments (comma-separated like the keywords).
 /// Each clause asks the emitter to stamp an additional inherent method
@@ -235,7 +213,6 @@ struct ManyToManyInput {
 }
 
 /// One `expose(scope -> PeerVisage)` entry on a M2M relation.
-///
 /// `scope` selects which of the four built-in visage scopes
 /// (`public` / `self_view` / `admin` / `export`) gets a stamped-out
 /// accessor. `peer` is the peer visage path returned from that
@@ -395,7 +372,6 @@ impl Parse for ManyToManyInput {
 
 /// Expand a `many_to_many!` invocation into the trait impl, the named
 /// accessor, and the inventory marker.
-///
 /// The emission intentionally mirrors `many_to_many_hand_impl.rs`'s
 /// body shape — that fixture is the canonical hand-written form, and
 /// keeping macro and hand-written output byte-for-byte congruent
@@ -457,7 +433,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // Const-time guard for every user-supplied identifier string the
     // macro bakes into SQL-facing associated items. `relation` and
     // `this_fk` already flow through the inventory marker constructor,
-    // but `that_fk` only appears in `ManyToMany::that_fk()`. Emitting
+    // but `that_fk` only appears in `ManyToMany::that_fk`. Emitting
     // one explicit const guard here keeps the three inputs under the
     // same stricter Postgres-identifier seal.
     let identifier_guard = quote! {
@@ -498,14 +474,13 @@ pub fn expand(input: TokenStream) -> TokenStream {
     );
 
     // Trait impl body: mirrors `many_to_many_hand_impl.rs` down to the
-    // fetch-then-get projection in `related`. Using `pk_value()` rather
-    // than reaching into `self.id` keeps the macro PK-kind agnostic —
+    // fetch-then-get projection in `related`. Using `pk_value` rather
+    // than reaching into `self.id` keeps the macro PK-kind agnostic
     // a model with `pk = RanjId` or `pk = Serial` feeds through
     // the same expansion without a per-PK branch here.
-    //
     // Each method takes `&'ctx mut DjogiContext`. The `related` body threads
     // the same `&mut ctx` through two sequential calls (one to
-    // `Through::objects().fetch_all(ctx)`, then a loop of `Target::get(ctx,
+    // `Through::objects.fetch_all(ctx)`, then a loop of `Target::get(ctx,
     // ...)`); `ctx` re-borrow is automatic because each inner call takes
     // `&mut DjogiContext`. Under the hood every call pattern-matches on the
     // context's inner variant at the query dispatch boundary (see `djogi::context`).
@@ -622,8 +597,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // here; the query logic stays in the `ManyToMany` trait body where
     // the hand-impl fixture and the macro share a single source of
     // truth.
-    //
-    // GH issue #39 (Cluster E#1) — emission shape switched from
+    // GH issue #39 — emission shape switched from
     // inherent `impl Source { fn relation(...) }` to per-relation trait
     // + trait-impl, mirroring the reverse_one_to_many!/_one! conversion.
     // Inherent impls are subject to E0116 (coherence rule) which
@@ -632,7 +606,6 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // to host them, so a downstream crate that owns the through model
     // and the m2m macro invocation can declare the accessor against
     // an upstream source type.
-    //
     // The return-type annotation is `impl Future + Send + 'ctx` — mirrors
     // `reverse_one_to_many!`'s shape. The `+ Send` is load-bearing
     // here: opaque async return types do not inherit Send-ness from
@@ -693,16 +666,14 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // const identifier validator at the registry boundary. `that_fk` is
     // validated by `identifier_guard` above because it is not persisted
     // in the marker record.
-    //
     // `via` carries the `this_fk` column (not `that_fk`) because
-    // Phase 4.5's projection generator walks the registry to discover
+    // 's projection generator walks the registry to discover
     // "how do I reach this accessor from the source?", and the answer
     // is "filter the through table on `this_fk == source.pk`". The
     // `that_fk` column is discoverable by inspecting the through
     // model's descriptor; recording only `this_fk` in the marker
     // avoids duplicating schema info already carried by the
     // `ModelDescriptor`.
-    //
     // GH issue #158 — the registry's
     // `validate_relation_accessor_collisions` walker also consumes
     // these markers to detect cross-suffix collisions rustc cannot
@@ -725,8 +696,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
         }
     };
 
-    // Phase 7-Zero-2 T9 — visage-scoped M2M accessors.
-    //
+    // Visage-scoped M2M accessors.
     // For every `expose(scope -> PeerVisage)` clause, emit a per-scope
     // trait `pub trait {Source}{Scope-pascal}{Method-pascal}ManyToManyVisageRelation`
     // plus `impl {Trait} for {Source}{Suffix}` (the source's visage at
@@ -737,7 +707,6 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // on `{Source}{Suffix}`) lifts the same coherence-rule constraint
     // GH issue #39 fixed for the model-scoped accessor — see the
     // module-level docs above for the full rationale.
-    //
     // The three-way guard the plan asks for (source visage + through
     // visage + peer visage all admit projection at the named scope) is
     // enforced via a zero-runtime existence probe in the emitted body:
@@ -746,7 +715,6 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // at the named scope, but the conversion itself never runs. The
     // queryset returns `VisageQuerySet<PeerVisage>` lazily; callers
     // chain `.fetch_all(ctx)` / `.first(ctx)` / `.count(ctx)` etc.
-    //
     // Conservative choice: if the peer or through visage is missing,
     // the emitted body fails to compile with a clean `no method named`
     // or `trait TryFrom<&...> is not implemented` error at the
@@ -810,7 +778,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
                 scope_lit = scope_lit,
             );
 
-            // GH issue #39 (Cluster E#1) — visage-scoped m2m accessors
+            // GH issue #39 — visage-scoped m2m accessors
             // carry the same coherence-rule constraint as the model-
             // scoped one. `{Source}{Suffix}` lives in the source's
             // crate; an inherent impl in a downstream crate fails
@@ -848,7 +816,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
                         // `TryFrom<&Through>` bound fails to resolve and
                         // the macro call site sees a clean diagnostic.
                         // The `as T: TryFrom<...>` bound never executes
-                        // — only the type-existence check matters.
+                        // only the type-existence check matters.
                         fn __djogi_through_visage_exists<T>() where
                             T: for<'__a> ::std::convert::TryFrom<&'__a #through_type>
                         {}
@@ -861,23 +829,21 @@ pub fn expand(input: TokenStream) -> TokenStream {
                         // FK predicate as a bind parameter.
                         let pk = ::std::clone::Clone::clone(&self.id);
 
-                        // Phase 7-Zero-2 T13b — build the EXISTS
-                        // correlated subquery via Phase 4's typed
+                        // Build the EXISTS
+                        // correlated subquery via the typed
                         // surface so the predicate stays type-checked
                         // end-to-end:
-                        //
-                        //   EXISTS (
-                        //     SELECT 1 FROM <through_table>
-                        //     WHERE <this_fk>     = $source_pk
-                        //       AND <that_fk>     = <target_table>.id
-                        //   )
-                        //
+                        // EXISTS (
+                        // SELECT 1 FROM <through_table>
+                        // WHERE <this_fk> = $source_pk
+                        // AND <that_fk> = <target_table>.id
+                        // )
                         // The correlated `<target_table>.id` reference
                         // uses `OuterRef::as_qualified_expr` (rather
                         // than `as_expr`) because the inner through
                         // table also has an `id` column — bare `id`
                         // would raise `42702 column reference is
-                        // ambiguous`. The qualifier is `M::table_name()`,
+                        // ambiguous`. The qualifier is `M::table_name`,
                         // which Djogi validates at `#[model]` expansion.
                         let __djogi_inner = <#through_type as ::djogi::model::Model>::objects()
                             .filter(move |f| {

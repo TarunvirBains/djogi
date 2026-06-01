@@ -1,35 +1,30 @@
 //! Relation field types and (later) relation-aware query extensions.
-//!
-//! Phase 3 Task 1 lands the runtime wrappers only:
-//!
+//! Lands the runtime wrappers only:
 //! - [`ForeignKey<T>`] / [`ForeignKeyResolved<T>`] — many-to-one.
-//! - [`OneToOneField<T>`] / [`OneToOneFieldResolved<T>`] —
-//!   unique-constrained singular relation.
-//! - [`OnDelete`] — cascade enum emitted into DDL by Phase 6's
-//!   migration layer.
-//!
-//! Later Phase 3 tasks extend this module with:
-//!
+//! - [`OneToOneField<T>`] / [`OneToOneFieldResolved<T>`]
+//! unique-constrained singular relation.
+//! - [`OnDelete`] — cascade enum emitted into DDL by the
+//! migration layer.
+//! Later tasks extend this module with:
 //! - `path.rs` / `RelationPath<Source, Target>` — typed ZST relation
-//!   handle produced by `{Source}Related::relation_name()` for prefetch
-//!   / select_related (Task 2).
+//! handle produced by `{Source}Related::relation_name` for prefetch
+//! / select_related (Task 2).
 //! - `prefetch.rs` / `PrefetchedRow<T>` — post-prefetch wrapper + its
-//!   two-query stitching loader (Task 4).
+//! two-query stitching loader (Task 4).
 //! - `joined_row.rs` / `JoinedRow<T>` — post-select_related wrapper
-//!   returned by `fetch_all_joined` (Task 5).
+//! returned by `fetch_all_joined` (Task 5).
 //! - `select_related.rs` — single-hop LEFT JOIN SQL emission + joined-
-//!   row stitching glue (Task 5).
+//! row stitching glue (Task 5).
 //! - `many_to_many.rs` / `ManyToMany<Target>` trait + through-model
-//!   plumbing (Task 6).
+//! plumbing (Task 6).
 //! - `registry.rs` — inventory-based registry of reverse / M2M
-//!   accessors emitted by `reverse_one_to_many!`,
-//!   `reverse_one_to_one!`, and the future `many_to_many!` macro
-//!   (Task 7). `registry::RelationKind` is a distinct enum from
-//!   `path::RelationKind` — the former discriminates macro-emitted
-//!   accessor *kinds* (FK / O2O / M2M), the latter discriminates
-//!   field-level relation *shapes* (ForeignKey / OneToOne).
-//!
-//! See `docs/guide/relations.md` (Phase 3 Task 8) for the user-facing
+//! accessors emitted by `reverse_one_to_many!`,
+//! `reverse_one_to_one!`, and the future `many_to_many!` macro
+//! (Task 7). `registry::RelationKind` is a distinct enum from
+//! `path::RelationKind` — the former discriminates macro-emitted
+//! accessor *kinds* (FK / O2O / M2M), the latter discriminates
+//! field-level relation *shapes* (ForeignKey / OneToOne).
+//! See `docs/guide/relations.md` for the user-facing
 //! guide once later tasks land.
 
 pub mod foreign_key;
@@ -51,13 +46,11 @@ pub use path::{RelationKind, RelationPath};
 pub use prefetch::PrefetchedRow;
 
 /// Macro-only entry points. **Not** part of the stable public API.
-///
 /// `djogi-macros` emits calls into this module from user-crate code that
 /// `#[derive(Model)]` expands — the items here are `pub` only so cross-crate
 /// codegen can reach them. The double-underscore prefix and `#[doc(hidden)]`
 /// marker signal to tooling and reviewers that downstream code must not
 /// call these directly; the macro is the sole supported caller.
-///
 /// The seal exists to close the SQL-injection vector that was reachable when
 /// [`RelationPath`]'s constructor was `pub`: a downstream caller could
 /// previously fabricate a path whose identifier strings carried SQL
@@ -81,9 +74,8 @@ pub mod __macro_support {
 
     /// Construct a [`RelationPath<Source, Target>`] from macro-emitted
     /// identifier strings. The only supported caller is the
-    /// `{Source}Related::relation_name()` method that `#[derive(Model)]`
+    /// `{Source}Related::relation_name` method that `#[derive(Model)]`
     /// emits in the user's crate.
-    ///
     /// Panics if `source_column` or `target_table` violates any rule in
     /// [`crate::ident::assert_plain_ident`]: empty, over 63 bytes,
     /// leading digit, a non-identifier byte, or a reserved Postgres

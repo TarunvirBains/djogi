@@ -1,22 +1,16 @@
 //! Shared case-conversion helpers for proc macros.
-//!
 //! # What
-//!
 //! Both `#[derive(DjogiEnum)]` and `#[derive(JsonbSchema)]` need to apply
 //! `rename_all` rules to Rust identifiers. This module centralises the
 //! [`RenameAll`] enum and its byte-level conversion functions so neither
 //! derive duplicates them.
-//!
 //! # Why shared
-//!
 //! `DjogiEnum` maps PascalCase variant names to Postgres wire strings.
 //! `JsonbSchema` maps snake_case field names to JSON object keys when a
 //! container-level `#[serde(rename_all = "...")]` attribute is present.
 //! Both operations use the same 7 case values and the same conversion
 //! functions — pulling them into one place eliminates drift.
-//!
 //! # No regex
-//!
 //! All conversions use byte-level predicates (`u8::is_ascii_uppercase`,
 //! etc.) and no regex-engine dependency per `feedback_no_regex_in_djogi`.
 
@@ -42,7 +36,6 @@ pub(crate) enum RenameAll {
 
 impl RenameAll {
     /// Parse a string literal value into a [`RenameAll`] variant.
-    ///
     /// Returns a [`syn::Error`] if the string is not one of the seven
     /// supported values. The `span` is attached to the error so the
     /// compiler diagnostic points at the attribute token.
@@ -67,11 +60,9 @@ impl RenameAll {
     }
 
     /// Apply this case conversion to a **PascalCase** Rust identifier.
-    ///
     /// Used by `DjogiEnum` which always receives PascalCase variant names
     /// (`InMaintenance`, `Active`, etc.). If you have a snake_case identifier
     /// (struct field names), use [`RenameAll::apply_to_field`] instead.
-    ///
     /// Input must be a valid Rust identifier (ASCII). Non-ASCII input has
     /// undefined behaviour — out-of-scope per `feedback_no_regex_in_djogi`.
     pub(crate) fn apply(self, name: &str) -> String {
@@ -97,21 +88,17 @@ impl RenameAll {
     }
 
     /// Apply this case conversion to a **snake_case** Rust struct field name.
-    ///
     /// Used by `JsonbSchema` container-level `#[serde(rename_all = "...")]`
     /// where the input is always a snake_case field identifier
     /// (`engine_type`, `weight_kg`, etc.).
-    ///
     /// The rules differ from [`RenameAll::apply`] for `camelCase` and
     /// `PascalCase`:
     /// - `camelCase`: `engine_type` → `engineType` (via `snake_to_camel`)
     /// - `PascalCase`: `engine_type` → `EngineType` (via `snake_to_pascal`)
-    ///
     /// All other rules (`snake_case`, `SCREAMING_SNAKE_CASE`, `lowercase`,
     /// `UPPERCASE`, `kebab-case`) produce the same output for snake_case input
     /// as they do for PascalCase input — the byte-level operations are neutral
     /// to the boundary style.
-    ///
     /// Input must be a valid Rust identifier (ASCII). Non-ASCII input has
     /// undefined behaviour — out-of-scope per `feedback_no_regex_in_djogi`.
     pub(crate) fn apply_to_field(self, name: &str) -> String {
@@ -142,20 +129,16 @@ impl RenameAll {
 // ---------------------------------------------------------------------------
 
 /// Convert `PascalCase` or `snake_case` → `snake_case`.
-///
 /// Inserts `_` before each uppercase letter that is either preceded by a
 /// lowercase letter (standard camel boundary, e.g. `fooBar` → `foo_bar`) or
 /// followed by a lowercase letter (trailing letter of an all-caps run that
 /// starts a new word, e.g. `XMLParser` → `xml_parser`, `HTTPSProxy` →
 /// `https_proxy`).
-///
 /// For an already-`snake_case` identifier (lowercase letters and underscores
 /// only), this is a no-op: no uppercase letters are present, so no underscores
 /// are inserted.
-///
 /// The leading letter of the identifier never gets a leading underscore
 /// regardless of what comes after it.
-///
 /// Pure byte-level — no regex, no regex notation. Handles only ASCII as
 /// documented in the module-level note.
 pub(crate) fn pascal_to_snake(name: &str) -> String {
@@ -179,7 +162,6 @@ pub(crate) fn pascal_to_snake(name: &str) -> String {
 }
 
 /// Convert `PascalCase` → `camelCase`.
-///
 /// Lowercase only the first byte; leave the rest unchanged.
 pub(crate) fn pascal_to_camel(name: &str) -> String {
     let mut chars = name.chars();
@@ -193,16 +175,13 @@ pub(crate) fn pascal_to_camel(name: &str) -> String {
 }
 
 /// Convert `snake_case` → `camelCase`.
-///
 /// Splits on `_`, capitalises the first letter of each word after the first,
 /// then concatenates. The first word stays lowercase.
-///
 /// Examples:
 /// - `engine_type` → `engineType`
 /// - `weight_kg` → `weightKg`
 /// - `foo` → `foo` (no underscores, no change)
 /// - `already_lower` → `alreadyLower`
-///
 /// Pure byte-level — no regex.
 pub(crate) fn snake_to_camel(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
@@ -221,7 +200,6 @@ pub(crate) fn snake_to_camel(name: &str) -> String {
 }
 
 /// Convert `snake_case` → `PascalCase`.
-///
 /// Splits on `_`, capitalises the first letter of every word, concatenates.
 /// Used by `JsonbSchema` when `rename_all = "PascalCase"` is set on a struct
 /// whose fields are in snake_case.
@@ -335,7 +313,7 @@ mod tests {
 
     #[test]
     fn rename_all_apply_camel_case_from_pascal() {
-        // DjogiEnum calls apply() with PascalCase variant names.
+        // DjogiEnum calls apply with PascalCase variant names.
         assert_eq!(RenameAll::CamelCase.apply("InMaintenance"), "inMaintenance");
         assert_eq!(RenameAll::CamelCase.apply("Active"), "active");
     }

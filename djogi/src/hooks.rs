@@ -1,42 +1,33 @@
 //! Lifecycle hooks for `Model` CRUD operations.
-//!
-//! Six methods, each defaulted to a no-op that returns `Ok(())`. Adopters
+//! Six methods, each defaulted to a no-op that returns `Ok`. Adopters
 //! `impl ModelHooks for MyModel` selectively — methods they don't override
 //! stay no-op.
-//!
 //! T1.2 adds the sealed [`HasHooks`] marker trait that the macro layer
 //! emits in T1.3 (`#[model(hooks)]`) to gate monomorphic dispatch in
 //! T1.4–T1.6. Until the macro layer lands, `HasHooks` has zero impls and
 //! [`ModelHooks`] remains the public adopter trait — nothing dispatches
 //! against either yet.
-//!
 //! # Async-fn-in-trait via `impl Future + Send`
-//!
-//! Each method returns `impl Future<Output = Result<(), DjogiError>> + Send`
+//! Each method returns `impl Future<Output = Result<, DjogiError>> + Send`
 //! rather than going through `BoxFuture` / `Pin<Box<...>>` / the
 //! `async-trait` macro. The default body desugars to a state machine the
 //! compiler elides at call sites that keep the no-op default — there is no
 //! heap allocation, no virtual dispatch, and no `'static` escape on `Self`.
 //! T1.8 verifies the zero-overhead claim with `cargo asm`.
-//!
 //! # Receiver shape
-//!
 //! `before_*` methods take `&mut self` so the hook body can mutate the
 //! model before it is written to the database (e.g. setting `created_by`,
 //! normalising a slug). `after_*` methods take `&self` because the row is
 //! already persisted — there is nothing to mutate that the database would
 //! pick up. Every method takes `&mut DjogiContext` so the hook body
 //! inherits the surrounding tenant scope, [`AuthContext`], and the
-//! `on_commit` queue (Phase 8 §D1).
-//!
+//! `on_commit` queue (§D1).
 //! # Sequencing and error semantics
-//!
 //! The CRUD callers wire hooks into the canonical
-//! `before → DB → outbox → after → on_commit drain` sequence (Phase 8 §D3).
+//! `before → DB → outbox → after → on_commit drain` sequence (§D3).
 //! Returning `Err` from any hook aborts the operation: the surrounding
 //! transaction (if one is open) rolls back via the standard `?` propagation
-//! path, and no `after_*` hook fires for an aborted operation (Phase 8 §D4).
-//!
+//! path, and no `after_*` hook fires for an aborted operation (§D4).
 //! [`AuthContext`]: crate::auth::AuthContext
 
 use crate::{DjogiContext, DjogiError};
@@ -44,20 +35,17 @@ use std::future::Future;
 
 /// Lifecycle hooks an adopter implements for a `Model` to participate in
 /// CRUD-time side effects.
-///
-/// All six methods default to a no-op that returns `Ok(())`. Adopters
+/// All six methods default to a no-op that returns `Ok`. Adopters
 /// override only the methods they care about — the rest stay no-op and
 /// remain zero-cost at the call site. See the module-level docs for the
 /// `before → DB → outbox → after → on_commit drain` sequence and the
 /// `Err`-aborts-operation contract.
-///
 /// `Send` is required on every returned future because Djogi's CRUD
 /// terminals are themselves `Send` futures driven by the multi-threaded
 /// Tokio runtime — a hook future that is not `Send` would refuse to compile
 /// at the call site rather than at the trait definition.
 pub trait ModelHooks: Sized {
     /// Fired before a row is inserted into the database.
-    ///
     /// `&mut self` lets the body mutate the model — typical uses set
     /// audit columns (`created_by`, `created_at` overrides) or normalise
     /// derived fields (slug, search vector source) before the INSERT
@@ -72,7 +60,6 @@ pub trait ModelHooks: Sized {
 
     /// Fired after a row is successfully inserted, BEFORE the surrounding
     /// transaction commits.
-    ///
     /// `&self` because the row is already persisted — mutations here
     /// would not round-trip back to the database. Use `on_commit`
     /// callbacks (queued via the `ctx`) for side effects that should fire
@@ -85,8 +72,7 @@ pub trait ModelHooks: Sized {
         async { Ok(()) }
     }
 
-    /// Fired before a row is updated by `save()`.
-    ///
+    /// Fired before a row is updated by `save`.
     /// Mirrors [`before_create`](Self::before_create) for the update path.
     /// Typical uses bump `updated_by`, refresh derived columns, or run a
     /// validation pass that depends on the in-memory state of `self`.
@@ -109,7 +95,6 @@ pub trait ModelHooks: Sized {
     }
 
     /// Fired before a row is deleted.
-    ///
     /// `&mut self` is preserved for symmetry with the other `before_*`
     /// methods even though most delete-time hooks read state rather than
     /// write it — the receiver shape stays uniform across the trait so
@@ -136,7 +121,6 @@ pub trait ModelHooks: Sized {
 
 /// Sealed marker trait — the type-level gate the `#[model(hooks)]` macro
 /// (T1.3) emits to opt a model into hook dispatch.
-///
 /// `HasHooks` carries no methods, no associated types, and no lifetime
 /// parameters: it is purely a witness that lets the CRUD terminals
 /// (T1.4–T1.6) branch monomorphically between the no-op fast path and the
@@ -144,9 +128,7 @@ pub trait ModelHooks: Sized {
 /// `<M as HasHooks>::…` call sites collapse to dead code that LLVM
 /// removes regardless of LTO settings (T1.8 verifies this with
 /// `cargo asm`).
-///
 /// # Sealed via `private::Sealed`
-///
 /// The supertrait `private::Sealed` lives in a module-private inner
 /// module so adopter code working only against the public surface
 /// (`djogi::hooks::HasHooks`, `djogi::ModelHooks`) cannot name the seal
@@ -154,7 +136,6 @@ pub trait ModelHooks: Sized {
 /// path. The single emitter is the `#[model(hooks)]` proc macro, which
 /// routes through `::djogi::__private::hooks::Sealed` (re-exported below)
 /// per the macro-path-routing convention.
-///
 /// **Seal-by-convention caveat.** Both `::djogi::__private::hooks::Sealed`
 /// and `::djogi::hooks::__seal::Sealed` re-export the same supertrait, so
 /// the `Sealed` trait is reachable cross-crate by name through either
@@ -180,7 +161,6 @@ mod private {
 }
 
 /// Macro-callable re-exports.
-///
 /// The `#[model(hooks)]` proc macro (T1.3) emits paths through
 /// `::djogi::__private::hooks::*` — never `::djogi::hooks::__seal::*`
 /// directly — so that this module is the single coupling point between
@@ -189,12 +169,11 @@ mod private {
 /// any symbol in this module.
 #[doc(hidden)]
 pub mod __seal {
-    /// Const-witness seal. The macro evaluates `<() as MarkerSeal>::SEAL`
+    /// Const-witness seal. The macro evaluates `< as MarkerSeal>::SEAL`
     /// (a const, not a value-construction) inside the generated impl
-    /// block as a compile-time assertion that `djogi` is reachable —
+    /// block as a compile-time assertion that `djogi` is reachable
     /// the trait is implemented for every `T`, so the const always
     /// resolves, but only macro-emitted code reaches for it.
-    ///
     /// The point is not to gate compilation on the const itself — it is
     /// to give the macro a stable, name-routed handle into `djogi` that
     /// future T1.3 work can extend (e.g. with debug-mode assertions about
@@ -217,19 +196,16 @@ pub mod __seal {
 #[cfg(test)]
 mod tests {
     //! Runtime tests for the `ModelHooks` trait.
-    //!
     //! Each test runs against a fresh per-test Postgres database via
     //! `#[djogi_test]`. The `DjogiContext` is the real one CRUD terminals
     //! receive, so a passing test here proves both that the trait compiles
     //! and that the awaited futures behave: the default body returns
-    //! `Ok(())`, an override can mutate `self` through `before_create`, and
+    //! `Ok`, an override can mutate `self` through `before_create`, and
     //! an override returning `Err(DjogiError::Validation(_))` round-trips
     //! the variant without coercion.
-    //!
     //! Behavioural integration with the CRUD terminals (the
     //! `before → DB → outbox → after → on_commit drain` sequence) lands in
     //! T1.7; these tests cover the trait surface in isolation.
-    //!
     //! The crate root carries `#[cfg(test)] extern crate self as djogi;`
     //! so the absolute `::djogi::*` paths emitted by `#[djogi_test]` resolve
     //! to the current crate when the macro is used from inside the `djogi`
@@ -239,7 +215,7 @@ mod tests {
     use djogi_macros::djogi_test;
 
     /// Test 1: every defaulted method on an empty `impl ModelHooks for T`
-    /// awaits to `Ok(())`.
+    /// awaits to `Ok`.
     #[djogi_test]
     async fn default_impl_is_no_op(mut ctx: DjogiContext) {
         struct Empty;

@@ -1,7 +1,6 @@
 //! Internal schema model — the in-memory representation that
-//! `schema_snapshot.json` round-trips through and that the Phase 7
+//! `schema_snapshot.json` round-trips through and that the
 //! differ (T2) compares against.
-//!
 //! The descriptor types in [`crate::descriptor`] use `&'static`
 //! slices everywhere because they are populated at compile time via
 //! `inventory::submit!`. Snapshot types are owned (`String`,
@@ -12,23 +11,18 @@
 //! the single boundary that translates static-lifetime constants into
 //! owned data, and any future descriptor field that should land in
 //! the snapshot extends both shapes deliberately.
-//!
 //! # Determinism
-//!
 //! Serialization is deterministic so that `git diff schema_snapshot.json`
 //! is reviewable. Determinism rules:
-//!
 //! - Maps use `BTreeMap` (alphabetical key order on serialize).
 //! - Vectors are sorted by stable identity (table name, index name,
-//!   app label) at projection time, before any serde call.
+//! app label) at projection time, before any serde call.
 //! - Struct fields are declared in alphabetical order so serde
-//!   emits them alphabetically.
+//! emits them alphabetically.
 //! - Enum variants and their inner shapes are stable — adding a new
-//!   variant is a snapshot-format change requiring a `format_version`
-//!   bump.
-//!
+//! variant is a snapshot-format change requiring a `format_version`
+//! bump.
 //! # `format_version` policy
-//!
 //! Bump only on breaking shape changes; additive fields do not bump.
 //! The current value is `"1"`. The loader rejects any other value
 //! with a clear upgrade message — see
@@ -38,36 +32,32 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// The current snapshot format version.
-///
 /// Loaders compare against this exact string. A snapshot whose
 /// `format_version` is not equal to this value is rejected with an
 /// error directing the operator to upgrade Djogi or check out an
 /// older revision.
-///
 /// **Bump policy.** Every snapshot struct carries
 /// `#[serde(deny_unknown_fields)]`. That guard rejects **unknown**
 /// fields on the loader side — it does **not** error on missing
 /// ones. As a result, two distinct change classes have different
 /// bump requirements:
-///
 /// 1. **Additive fields with `#[serde(default)]`** — do NOT bump.
-///    Older snapshots written without the new field deserialize
-///    against the new shape because the default supplies the value;
-///    nothing the loader doesn't recognise appears on the wire.
-///    Examples in this module: `TableSchema::exclusion_constraints`,
-///    `ColumnSchema::generated`, `ColumnSchema::identity`,
-///    `ForeignKeySchema::deferrable`,
-///    `ForeignKeySchema::initially_deferred`. Phase 8.5 Cluster 4
-///    (djogi#217 / #218 / #219) lands
-///    `TableSchema::table_comment`, `TableSchema::storage_params`,
-///    `TableSchema::tablespace`, and `ColumnSchema::comment` under
-///    this same rule.
+/// Older snapshots written without the new field deserialize
+/// against the new shape because the default supplies the value;
+/// nothing the loader doesn't recognise appears on the wire.
+/// Examples in this module: `TableSchema::exclusion_constraints`,
+/// `ColumnSchema::generated`, `ColumnSchema::identity`,
+/// `ForeignKeySchema::deferrable`,
+/// `ForeignKeySchema::initially_deferred`.
+/// (#218 / #219) lands
+/// `TableSchema::table_comment`, `TableSchema::storage_params`,
+/// `TableSchema::tablespace`, and `ColumnSchema::comment` under
+/// this same rule.
 /// 2. **Renames, removals, and variant reshapes** — DO bump. Older
-///    loaders accept different field names / shapes than the new
-///    loader, and there is no defaulting that bridges the gap; the
-///    `format_version` is the explicit incompatibility signal so a
-///    parallel-read compatibility window can be planned.
-///
+/// loaders accept different field names / shapes than the new
+/// loader, and there is no defaulting that bridges the gap; the
+/// `format_version` is the explicit incompatibility signal so a
+/// parallel-read compatibility window can be planned.
 /// A future version migration would land via a dedicated phase with
 /// a parallel-read compatibility window.
 pub const SNAPSHOT_FORMAT_VERSION: &str = "1";
@@ -75,17 +65,15 @@ pub const SNAPSHOT_FORMAT_VERSION: &str = "1";
 /// Top-level snapshot — the committed source of truth for what the
 /// schema looks like as of the last successful `djogi migrations
 /// apply` for a given `(target, app)` pair.
-///
 /// Stored on disk at `migrations/<target>/<app>/schema_snapshot.json`.
 /// One file per `(target, app)`; the synthetic global bucket lives
 /// at `<target>/<empty-string-label>/`.
-///
 /// The fields are declared alphabetically so serde emits them in
 /// alphabetical order — see the module-level "Determinism" docs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppliedSchema {
-    /// Djogi version that wrote this snapshot. Informational only —
+    /// Djogi version that wrote this snapshot. Informational only
     /// the loader does not gate on it. Useful for forensics when a
     /// snapshot looks wrong.
     pub djogi_version: String,
@@ -147,7 +135,7 @@ pub struct TableSchema {
     /// `#[model(fts = { source = "...", dictionary = "..." })]`.
     /// Snapshot is the single place the differ reads to detect
     /// dictionary changes (which require a generated-column rebuild
-    /// — see [`crate::fts::FtsDescriptor`] notes).
+    /// see [`crate::fts::FtsDescriptor`] notes).
     pub fts: Option<FtsSchema>,
 
     /// `true` when the table is a `#[model(table = "...", through)]`
@@ -178,14 +166,14 @@ pub struct TableSchema {
     pub renamed_from: Option<String>,
 
     /// `true` when the table has a `#[model(tenant_key = "col")]`
-    /// declared and Phase 5 RLS policy generation should fire. The
+    /// declared and RLS policy generation should fire. The
     /// column itself is one of the entries in `columns`; this flag
     /// is the differ's signal that the policy DDL accompanies the
     /// table DDL.
     pub rls_enabled: bool,
 
-    /// `#[model(storage_params = "key=val, ...")]` value when set —
-    /// Phase 8.5 djogi#218. Lowered to `ALTER TABLE <t> SET
+    /// `#[model(storage_params = "key=val, ...")]` value when set
+    /// Djogi#218. Lowered to `ALTER TABLE <t> SET
     /// (key=val, ...)` by the migration composer after table creation;
     /// the differ surfaces value changes via
     /// [`crate::migrate::diff::SchemaOperation::SetStorageParams`].
@@ -194,15 +182,14 @@ pub struct TableSchema {
 
     /// Postgres table name. Redundant with the `models` map key
     /// but stored explicitly so a `TableSchema` value is
-    /// self-contained (e.g. when iterating `applied.models.values()`).
+    /// self-contained (e.g. when iterating `applied.models.values`).
     pub table: String,
 
-    /// `#[model(table_comment = "…")]` value when set — Phase 8.5
-    /// djogi#217. Lowered to `COMMENT ON TABLE <t> IS '<text>'` by
+    /// `#[model(table_comment = "…")]` value when set
+    /// . Lowered to `COMMENT ON TABLE <t> IS '<text>'` by
     /// the migration composer after `CREATE TABLE`; the differ
     /// surfaces value changes via
     /// [`crate::migrate::diff::SchemaOperation::SetTableComment`].
-    ///
     /// `#[serde(default)]` keeps snapshots predating this field
     /// round-tripping cleanly — older snapshots load as `None` and
     /// the differ then sees the projected `Some(…)` as a new comment
@@ -210,8 +197,8 @@ pub struct TableSchema {
     #[serde(default)]
     pub table_comment: Option<String>,
 
-    /// `#[model(tablespace = "<name>")]` value when set — Phase 8.5
-    /// djogi#219. Lowered to `ALTER TABLE <t> SET TABLESPACE <name>`.
+    /// `#[model(tablespace = "<name>")]` value when set
+    /// . Lowered to `ALTER TABLE <t> SET TABLESPACE <name>`.
     /// `None` means the database default tablespace.
     #[serde(default)]
     pub tablespace: Option<String>,
@@ -222,7 +209,6 @@ pub struct TableSchema {
 }
 
 /// Per-column snapshot.
-///
 /// **PartialEq exclusion.** `PartialEq` / `Eq` are implemented manually
 /// below to exclude the transient [`ColumnSchema::type_change_using`]
 /// slot — see that field's doc for the full rationale. Every other
@@ -236,14 +222,13 @@ pub struct ColumnSchema {
     /// `None` for the common case.
     pub check: Option<String>,
 
-    /// `#[field(comment = "<text>")]` value when set — Phase 8.5
-    /// djogi#217. Lowered to `COMMENT ON COLUMN <t>.<c> IS
+    /// `#[field(comment = "<text>")]` value when set
+    /// . Lowered to `COMMENT ON COLUMN <t>.<c> IS
     /// '<text>'` by the migration composer immediately after the
     /// column appears in either `CREATE TABLE` (initial creation)
     /// or `ADD COLUMN` (later addition); the differ surfaces value
     /// changes via
     /// [`crate::migrate::diff::ColumnChange::SetComment`].
-    ///
     /// `#[serde(default)]` keeps snapshots predating this field
     /// round-tripping cleanly. `None` is the common case.
     #[serde(default)]
@@ -251,7 +236,7 @@ pub struct ColumnSchema {
 
     /// `DEFAULT` expression — raw SQL. Empty `None` denotes no
     /// default. For PK columns with a server-generated default
-    /// (`heerid_next()`, `gen_random_uuid()`, ...), this is set
+    /// (`heerid_next`, `gen_random_uuid`, ...), this is set
     /// from the descriptor's PK kind via the projection.
     pub default_sql: Option<String>,
 
@@ -272,12 +257,10 @@ pub struct ColumnSchema {
     /// (`GENERATED ALWAYS AS (<expr>) STORED`); this slot models
     /// auto-incrementing identity columns whose value comes from a
     /// sequence rather than an expression.
-    ///
     /// Set by the projection for `pk = Serial` models (the id column
     /// gets `Some(IdentityKindSchema::ByDefault)`). FK columns
     /// referencing a Serial PK stay `None` — sequence ownership lives
     /// on the parent's PK column, not its references.
-    ///
     /// `#[serde(default)]` so snapshots predating this field round-trip
     /// cleanly. Snapshots from before the IDENTITY-emitting fix (#86)
     /// still load; the differ emits the proper
@@ -308,10 +291,9 @@ pub struct ColumnSchema {
     pub nullable: bool,
 
     /// Cascade discipline when the column carries an FK relation.
-    /// Always `Some(_)` when `foreign_key.is_some()`. The
+    /// Always `Some(_)` when `foreign_key.is_some`. The
     /// projection fills the `Restrict` default when the descriptor
     /// declares no explicit cascade.
-    ///
     /// **Substrate-mirror field — not consumed by the SQL emitter.**
     /// T3's SQL emitter reads [`ForeignKeySchema::on_delete`]
     /// (the conceptual home for cascade) for both inline and
@@ -358,22 +340,20 @@ pub struct ColumnSchema {
     pub unique: bool,
 
     /// Adopter-supplied `#[field(type_change_using = "<sql expr>")]`
-    /// USING clause for non-default-cast column type changes — Phase 8.5
-    /// Cluster 4 djogi#220.
-    ///
+    /// USING clause for non-default-cast column type changes
+    /// Djogi#220.
     /// **Transit only.** This slot is populated by the projection from
     /// the descriptor, **read by the differ's column-walk in
     /// [`crate::migrate::diff`] (`emit_alter_column`) to populate
     /// `ColumnChange::ChangeType::using`** on the
     /// emitted operation, and never persisted to the on-disk snapshot
-    /// — `#[serde(skip)]` excludes the field from both serialize and
+    /// `#[serde(skip)]` excludes the field from both serialize and
     /// deserialize. The transient design makes the attribute behave
     /// as a one-time directive: an adopter who leaves
     /// `#[field(type_change_using = "...")]` on a field after the
     /// migration applies produces no phantom diff, because the loaded
     /// snapshot always carries `None` here while the freshly-projected
     /// schema carries the live attribute value.
-    ///
     /// **Excluded from `PartialEq`.** See the manual
     /// `impl PartialEq for ColumnSchema` below for the rationale and
     /// the maintenance contract. The slot is exempt from structural
@@ -387,7 +367,6 @@ pub struct ColumnSchema {
 
 /// Manual equality for [`ColumnSchema`] that excludes the transient
 /// [`ColumnSchema::type_change_using`] slot.
-///
 /// **Why manual.** Adopters declare `#[field(type_change_using = "...")]`
 /// as a one-time migration directive — it tells the SQL emitter which
 /// `USING (<expr>)` clause to append to an `ALTER COLUMN … TYPE`
@@ -396,24 +375,21 @@ pub struct ColumnSchema {
 /// and report inequality whenever the descriptor carries the
 /// attribute. That false-positive ripples into every comparison
 /// pathway that reaches `ColumnSchema::eq`:
-///
 /// 1. `diff_schemas`'s top-level `if before == after` short-circuit
-///    would skip the NoOp return; the differ would walk every column
-///    even when nothing structural changed.
+/// would skip the NoOp return; the differ would walk every column
+/// even when nothing structural changed.
 /// 2. `diff_columns_in_table`'s `if bc == ac { continue; }` per-column
-///    skip would not fire, dragging every column through
-///    `emit_alter_column` for no structural reason.
+/// skip would not fire, dragging every column through
+/// `emit_alter_column` for no structural reason.
 /// 3. `build_match::schema_equiv`'s `a.models == b.models` recursion
-///    compares `ColumnSchema` directly; a `models == pending` mismatch
-///    here would route the three-way drift classifier to
-///    `Outcome4PendingInvalid` (a spurious "pending JSON is stale"
-///    warning) whenever an adopter had a `type_change_using`
-///    attribute live in source after composing.
-///
+/// compares `ColumnSchema` directly; a `models == pending` mismatch
+/// here would route the three-way drift classifier to
+/// `Outcome4PendingInvalid` (a spurious "pending JSON is stale"
+/// warning) whenever an adopter had a `type_change_using`
+/// attribute live in source after composing.
 /// All three pathways are user-visible. Excluding the field from
 /// equality at the type level keeps every downstream consumer correct
 /// without each one having to remember to mask the slot.
-///
 /// **Maintenance.** Every other field must remain in the impl. Adding
 /// a new persistent field to `ColumnSchema` requires extending this
 /// impl in the same change so equality stays in sync with the struct.
@@ -430,7 +406,6 @@ impl PartialEq for ColumnSchema {
         // through. Field order mirrors the struct definition so the
         // diff between this impl and the struct definition stays
         // legible.
-        //
         // `type_change_using` is bound on both sides with the `_`
         // pattern to acknowledge the field exists while documenting
         // that it is deliberately excluded from equality (see this
@@ -508,14 +483,12 @@ impl PartialEq for ColumnSchema {
 impl Eq for ColumnSchema {}
 
 /// Foreign-key declaration on a column.
-///
 /// The `on_delete` field is the FK's authoritative cascade discipline.
 /// [`ColumnSchema::on_delete`] mirrors it so adopters can still ask the
 /// column what its cascade is without traversing the FK, but the
 /// snapshot's source of truth for the cascade lives here — the
 /// projection populates both fields from the same descriptor input,
 /// and the differ / SQL emitter read this one when lowering FK ops.
-///
 /// **Deferrability.** `deferrable` /
 /// `initially_deferred` reproduce Postgres' two-axis FK
 /// deferrability model: a constraint can be `DEFERRABLE` or `NOT
@@ -604,15 +577,13 @@ pub enum RelationKindSchema {
 
 /// `GENERATED ALWAYS AS (<expr>) STORED` declaration on a column.
 /// Mirrors [`crate::descriptor::GeneratedColumnSpec`] in owned form.
-///
 /// Pg18 only supports `STORED`; `stored = false` is reserved for the
 /// future Pg19+ `VIRTUAL` variant and is rejected by the macro today.
 /// `GENERATED ... AS IDENTITY` flavor — identity-column declaration.
-///
 /// `ByDefault` means INSERTs that supply an explicit `id` are honored
 /// (Postgres' typical lookup-table pattern). `Always` means INSERTs
 /// that supply an explicit `id` are rejected unless the caller uses
-/// `OVERRIDING SYSTEM VALUE`. Cluster E ships `ByDefault` for
+/// `OVERRIDING SYSTEM VALUE`. ships `ByDefault` for
 /// `pk = Serial` since lookup-table seeding often supplies fixed IDs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IdentityKindSchema {
@@ -641,14 +612,13 @@ pub struct GeneratedColumnSchema {
     /// SQL expression evaluated to produce the column value. Emitted
     /// verbatim inside `GENERATED ALWAYS AS (<expression>) STORED`.
     pub expression: String,
-    /// `true` emits `STORED`. The macro currently rejects `false` —
+    /// `true` emits `STORED`. The macro currently rejects `false`
     /// the field exists so future Pg19+ `VIRTUAL` columns round-trip
     /// cleanly without a snapshot-format bump.
     pub stored: bool,
 }
 
 /// Per-column member of an [`ExclusionConstraintSchema`].
-///
 /// One entry per `<expr> WITH <op>` clause inside the `EXCLUDE`
 /// constraint body. `EXCLUDE USING gist (room_id WITH =, period WITH &&)`
 /// decomposes into two entries.
@@ -664,7 +634,6 @@ pub struct ExclusionElementSchema {
 
 /// Table-level `EXCLUDE` constraint declaration. Mirrors
 /// [`crate::descriptor::ExclusionConstraintSpec`] in owned form.
-///
 /// Adding an `EXCLUDE` constraint to a populated table classifies as
 /// [`OnlineSafetyClassification::OfflineOnly`] — Postgres 18 has no
 /// `NOT VALID` for `EXCLUDE`, so two-phase staging is structurally
@@ -685,14 +654,12 @@ pub struct ExclusionConstraintSchema {
     /// Postgres extension name (e.g. `"btree_gist"`) that must be
     /// installed before the migration runs. `None` for stock GiST
     /// exclusions that only use range / geometric operators.
-    ///
     /// The macro auto-derives `Some("btree_gist")` for `using = "gist"`
     /// exclusions whose element list contains at least one btree
     /// comparison operator (`=`, `<>`, `<`, `<=`, `>`, `>=`) — see
     /// [`crate::descriptor::ExclusionConstraintSpec::extension_dependency`].
     /// The bootstrap composer reads this slot to aggregate the per-
-    /// database extension install list (djogi#148).
-    ///
+    /// database extension install list.
     /// `#[serde(default)]` so snapshots predating this field round-
     /// trip cleanly — older snapshots load as `None`; the differ then
     /// sees the projected `Some("btree_gist")` as a drop+add of the
@@ -717,8 +684,7 @@ pub struct ExclusionConstraintSchema {
 }
 
 /// Standalone named `NOT NULL` table constraint payload for the PG18
-/// DDL-only temporal-constraints lane (djogi#150).
-///
+/// DDL-only temporal-constraints lane.
 /// This shape is intentionally separate from [`ColumnSchema`] so the
 /// migration core can lower explicit `ALTER TABLE ... ADD CONSTRAINT
 /// ... NOT NULL <col>` statements without widening the descriptor /
@@ -735,8 +701,7 @@ pub struct NamedNotNullConstraintSchema {
 }
 
 /// Standalone PostgreSQL 18 temporal primary-key payload
-/// (`... WITHOUT OVERLAPS`) for djogi#150.
-///
+/// (`... WITHOUT OVERLAPS`) for .
 /// Stored separately from [`PrimaryKeySchema`] so this DDL-only lane
 /// can add the explicit migration lowering without widening the
 /// snapshot / descriptor contract in the same patch.
@@ -758,8 +723,7 @@ pub struct TemporalPrimaryKeyConstraintSchema {
 
 /// Standalone PostgreSQL 18 temporal foreign-key payload
 /// (`FOREIGN KEY (..., PERIOD ...) REFERENCES ... (..., PERIOD ...)`)
-/// for djogi#150.
-///
+/// for .
 /// The shape models the explicit migration DDL directly: one or more
 /// equality columns plus one PERIOD column on each side. PostgreSQL 18
 /// temporal PERIOD FKs do not use the ordinary FK `ON DELETE` action
@@ -858,16 +822,14 @@ pub enum IndexTargetSchema {
 
 /// Index uniqueness discipline. Mirrors
 /// [`crate::descriptor::IndexKind`].
-///
 /// # Invariant — unique-bearing variants are btree-only
-///
 /// Both [`IndexKindSchema::UniqueConstraint`] and [`IndexKindSchema::UniqueIndex`]
 /// require [`IndexSchema::index_type`] to be [`IndexTypeSchema::BTree`].
 /// PostgreSQL rejects `CREATE UNIQUE INDEX … USING <non-btree>` and
 /// `ALTER TABLE … ADD CONSTRAINT … UNIQUE` has no `USING` clause — both
 /// paths are implicitly btree-backed. The macro layer enforces this by
 /// rejecting `unique(..., using = "<non-btree>")` at compile time
-/// (Phase 8.5 #83); the snapshot serialiser and migration SQL emitter
+/// (#83); the snapshot serialiser and migration SQL emitter
 /// rely on it as a precondition, since violating it produces invalid
 /// generated DDL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -971,16 +933,16 @@ pub struct PrimaryKeySchema {
 /// Concrete PK strategy. Mirrors [`crate::descriptor::PkType`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PkKindSchema {
-    /// 64-bit time-ordered, ascending — `BIGINT DEFAULT heerid_next()`.
+    /// 64-bit time-ordered, ascending — `BIGINT DEFAULT heerid_next`.
     HeerId,
     /// 64-bit recency-biased — most-recent-first BTree scans without
     /// a secondary descending index. `BIGINT DEFAULT
-    /// heerid_next_desc()`.
+    /// heerid_next_desc`.
     HeerIdRecencyBiased,
-    /// 128-bit UUIDv8 ascending — `UUID DEFAULT ranjid_next()`.
+    /// 128-bit UUIDv8 ascending — `UUID DEFAULT ranjid_next`.
     RanjId,
     /// 128-bit UUIDv8 recency-biased — `UUID DEFAULT
-    /// ranjid_next_desc()`.
+    /// ranjid_next_desc`.
     RanjIdRecencyBiased,
     /// Postgres `IDENTITY` integer — for lookup / reference tables.
     Serial,
@@ -1025,41 +987,33 @@ pub struct EnumSchema {
 }
 
 /// Online-safety classification for a migration segment — the
-/// frozen Phase 7 ↔ Phase 7.5 boundary contract. Every column-level
+/// frozen ↔ boundary contract. Every column-level
 /// or constraint-level migration operation that reaches the segment
 /// planner is tagged with exactly one of the four variants below.
-///
 /// # Boundary contract (§6.5)
-///
 /// `OnlineSafetyClassification` and the
 /// `SchemaOperation::PkTypeFlipGroup` /
 /// `SchemaOperation::PkTypeFlipMultiGroup` cascade routes are
 /// **mutually exclusive**. A primary-key type flip is orchestrated
-/// natively by Phase 7's `migrate::pk_flip` emitter family — when a
+/// natively by the `migrate::pk_flip` emitter family — when a
 /// delta carries a PK-flip group, the classifier short-circuits
 /// because that operation is already routed through its dedicated
 /// path. `OnlineSafetyClassification::ExpandContract` therefore never
 /// overlaps with PK-flip work; PK flips sit architecturally below the
 /// live-plan layer.
-///
 /// # Consumption boundary
-///
-/// Phase 7.5's `live_migrate` module consumes **only**
+/// 's `live_migrate` module consumes **only**
 /// `OnlineSafetyClassification::ExpandContract` — the variant whose
 /// handoff marker is the spec term `RequiresLivePlan`. The other
-/// three variants stay inside Phase 7:
-///
+/// three variants stay inside :
 /// - `OnlineSafe` is applied directly by the runner.
 /// - `FastLockDestructiveGuarded` is gated on `--allow-destructive`
-///   and applied directly; no live plan is generated.
+/// and applied directly; no live plan is generated.
 /// - `OfflineOnly` is refused outright; the operator must
-///   acknowledge downtime or perform manual handling.
-///
+/// acknowledge downtime or perform manual handling.
 /// `OfflineOnly` and `FastLockDestructiveGuarded` are
 /// operator-acknowledgement branches, **not** live-plan branches.
-///
 /// # Naming
-///
 /// This enum answers a different question than
 /// [`crate::migrate::diff::Classification`]:
 /// `OnlineSafetyClassification` tags a single migration *operation*
@@ -1069,9 +1023,7 @@ pub struct EnumSchema {
 /// `Lossy` / `Unsupported{reason}` / `PkTypeFlip{...}`). The two live
 /// at different granularities on `SchemaDelta` and the rename
 /// guarantees that `use` lines and match arms cannot mix them up.
-///
 /// # Stability
-///
 /// Marked `#[non_exhaustive]` so future online-safety categories can
 /// land without a breaking change. Downstream `match` against this
 /// enum from outside the `djogi` crate must include a wildcard arm
@@ -1085,10 +1037,10 @@ pub enum OnlineSafetyClassification {
     OnlineSafe,
     /// Completes inside the Pg18 fast-path lock window but destroys
     /// data or invalidates dependents (DROP COLUMN, DROP INDEX of a
-    /// referenced index, etc.). Phase 7 gates application behind
+    /// referenced index, etc.). gates application behind
     /// `--allow-destructive`; no live plan is generated.
     FastLockDestructiveGuarded,
-    /// Cannot complete safely in a single segment — Phase 7.5
+    /// Cannot complete safely in a single segment
     /// generates a live plan and the operator drives the
     /// expand → backfill → flip → contract sequence. The handoff
     /// marker for this variant is the spec term `RequiresLivePlan`,
@@ -1102,16 +1054,15 @@ pub enum OnlineSafetyClassification {
 
 #[cfg(test)]
 mod column_schema_type_change_using_tests {
-    //! djogi#220 — `ColumnSchema::type_change_using` is a transient
+    //! `ColumnSchema::type_change_using` is a transient
     //! projection-only slot. These tests pin the three properties that
     //! make the design correct end-to-end:
-    //!
     //! 1. Serde drops the slot on serialize (`#[serde(skip)]`).
     //! 2. Serde supplies the default `None` on deserialize.
     //! 3. The manual `PartialEq` impl excludes the slot from equality
-    //!    so a freshly-projected `Some(...)` compares equal to a
-    //!    loaded snapshot's `None` (zero phantom-diff cost when an
-    //!    adopter leaves the attribute on the field after applying).
+    //! so a freshly-projected `Some(...)` compares equal to a
+    //! loaded snapshot's `None` (zero phantom-diff cost when an
+    //! adopter leaves the attribute on the field after applying).
 
     use super::ColumnSchema;
 
@@ -1184,9 +1135,9 @@ mod column_schema_type_change_using_tests {
     fn type_change_using_is_dropped_on_serialize() {
         // The persisted snapshot must never carry `type_change_using`.
         // Round-tripping through serde_json:
-        //   1. serialize a column with `Some(expr)` → JSON
-        //   2. inspect the JSON — must NOT contain the key
-        //   3. deserialize the JSON back → `None`
+        // 1. serialize a column with `Some(expr)` → JSON
+        // 2. inspect the JSON — must NOT contain the key
+        // 3. deserialize the JSON back → `None`
         let with_using = ColumnSchema {
             type_change_using: Some("kind::uuid".to_string()),
             ..base_column("kind")
@@ -1208,7 +1159,7 @@ mod column_schema_type_change_using_tests {
         // Snapshots predating this field (or written after it landed)
         // never carry the key. Loading them must yield `None`
         // structurally — confirms the `#[serde(default)]` slot has a
-        // working Default::default() and the loader does not reject
+        // working Default::default and the loader does not reject
         // the absence under `deny_unknown_fields`.
         let json = serde_json::to_string(&base_column("kind")).expect("serialize");
         let loaded: ColumnSchema = serde_json::from_str(&json).expect("deserialize");
@@ -1242,7 +1193,7 @@ mod online_safety_classification_tests {
     /// Boundary contract (§6.5): only `ExpandContract` is the
     /// live-plan handoff variant. The other three are
     /// operator-acknowledgement / direct-apply branches that stay in
-    /// Phase 7 — the live-plan layer must never accept them.
+    /// The live-plan layer must never accept them.
     #[test]
     fn only_expand_contract_routes_to_live_plan() {
         let routes_to_live_plan = |c: OnlineSafetyClassification| -> bool {

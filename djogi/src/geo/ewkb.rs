@@ -1,7 +1,5 @@
 //! EWKB encode and decode helpers for all Djogi geography types.
-//!
 //! # Point wire format (25 bytes)
-//!
 //! ```text
 //! Offset  Size  Content
 //!      0     1  Endianness marker: 0x01 (little-endian)
@@ -10,16 +8,11 @@
 //!      9     8  X (longitude), f64 LE
 //!     17     8  Y (latitude),  f64 LE
 //! ```
-//!
 //! # LineString wire format
-//!
 //! `[endian(1), type_word 0x20000002 LE(4), srid(4), num_points u32 LE(4), points(16*n)]`
-//!
 //! # Polygon wire format
-//!
 //! `[endian(1), type_word 0x20000003 LE(4), srid(4), num_rings u32 LE(4), rings...]`
 //! Each ring: `[num_points u32 LE(4), points(16*n)]`.
-//!
 //! This module depends only on `bytes::BufMut` (for the `*_into` encoders
 //! that write directly into the `tokio_postgres` bind buffer) and `std`.
 //! It does not pull in `postgres_types`, `serde`, or any higher-level
@@ -81,7 +74,6 @@ fn push_outer_header<B: BufMut + ?Sized>(buf: &mut B, type_bytes: [u8; 4]) {
 
 /// Validate the outer EWKB header and return the byte offset just after the
 /// SRID (i.e., the first byte of payload after the 9-byte header).
-///
 /// Checks: endian byte, type word, SRID 4326.
 fn read_outer_header(bytes: &[u8], expected_type: [u8; 4]) -> Result<usize, GeoError> {
     if bytes.len() < 9 {
@@ -157,11 +149,9 @@ fn read_coord_pair(bytes: &[u8], pos: usize) -> Result<(f64, f64, usize), GeoErr
 // ── GeoPoint codec ────────────────────────────────────────────────────────────
 
 /// Encode a `GeoPoint` as a 25-byte EWKB representation directly into `buf`.
-///
 /// The caller is responsible for supplying valid, finite coordinates.
 /// This function does not re-validate coordinate ranges — that is
 /// [`GeoPoint::new`](super::GeoPoint::new)'s responsibility.
-///
 /// Writes into any `BufMut` (e.g. `Vec<u8>` for the convenience wrapper,
 /// `BytesMut` for the `ToSql` codec path) to avoid the intermediate
 /// allocation a `Vec<u8>`-returning encoder would force.
@@ -171,15 +161,13 @@ pub(crate) fn encode_point_into<B: BufMut + ?Sized>(p: &super::GeoPoint, buf: &m
 }
 
 /// Decode a 25-byte EWKB buffer into `(lon, lat)`.
-///
 /// Validation is applied at every fixed position:
-///
 /// - Buffer must be exactly 25 bytes.
 /// - Byte 0 must be `0x01` (little-endian marker).
 /// - Bytes 1..5 must equal the Point-with-SRID type word `[0x01, 0x00, 0x00, 0x20]`.
 /// - Bytes 5..9 must encode SRID 4326; if the SRID parses but is not 4326,
-///   `GeoError::UnexpectedSrid` carries the actual integer value so callers
-///   can produce a meaningful message.
+/// `GeoError::UnexpectedSrid` carries the actual integer value so callers
+/// can produce a meaningful message.
 /// - Bytes 9..17 are the X (longitude) `f64`.
 /// - Bytes 17..25 are the Y (latitude) `f64`.
 pub(crate) fn decode_point(bytes: &[u8]) -> Result<(f64, f64), GeoError> {
@@ -261,7 +249,6 @@ pub(crate) fn decode_polygon(bytes: &[u8]) -> Result<super::Polygon, GeoError> {
 /// Decode the `[ring_count, rings...]` body of a polygon, starting at `pos`
 /// (which points to the first byte of `ring_count`). Returns the decoded
 /// `Polygon` and the byte offset immediately after it.
-///
 /// `err_label` names the enclosing geometry for error messages so a malformed
 /// `MultiPolygon` sub-polygon and a malformed top-level `Polygon` produce
 /// distinguishable diagnostics.
@@ -296,10 +283,9 @@ fn decode_polygon_body(
 // ── MultiPoint codec ──────────────────────────────────────────────────────────
 
 /// Encode a `MultiPoint` as an EWKB buffer for `GEOGRAPHY(MultiPoint, 4326)`.
-///
 /// Each sub-point is encoded as a headerless EWKB point:
 /// `[endian_byte(1), point_type_no_srid(4), lon_f64_LE(8), lat_f64_LE(8)]`
-/// — 21 bytes per sub-point. The SRID is carried only by the outer envelope.
+/// 21 bytes per sub-point. The SRID is carried only by the outer envelope.
 pub(crate) fn encode_multipoint_into<B: BufMut + ?Sized>(mp: &super::MultiPoint, buf: &mut B) {
     push_outer_header(buf, TYPE_MULTIPOINT);
     buf.put_slice(&(mp.points.len() as u32).to_le_bytes());
@@ -360,10 +346,9 @@ pub(crate) fn decode_multipoint(bytes: &[u8]) -> Result<super::MultiPoint, GeoEr
 
 /// Encode a `MultiLineString` as an EWKB buffer for
 /// `GEOGRAPHY(MultiLineString, 4326)`.
-///
 /// Each sub-linestring is encoded as a headerless EWKB linestring:
 /// `[endian_byte(1), ls_type_no_srid(4), point_count(4), points...]`
-/// — 9 bytes of header + 16 bytes per coord pair. The SRID is carried only by
+/// 9 bytes of header + 16 bytes per coord pair. The SRID is carried only by
 /// the outer envelope.
 pub(crate) fn encode_multilinestring_into<B: BufMut + ?Sized>(
     mls: &super::MultiLineString,
@@ -446,7 +431,6 @@ pub(crate) fn decode_multilinestring(bytes: &[u8]) -> Result<super::MultiLineStr
 // ── MultiPolygon codec ────────────────────────────────────────────────────────
 
 /// Encode a `MultiPolygon` as an EWKB buffer for `GEOGRAPHY(MultiPolygon, 4326)`.
-///
 /// Each sub-polygon is encoded as a headerless EWKB polygon:
 /// `[endian_byte(1), poly_type_no_srid(4), ring_count(4), rings...]`
 /// The SRID is carried only by the outer envelope.

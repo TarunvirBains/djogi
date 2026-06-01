@@ -1,24 +1,19 @@
 //! Inventory structs for the presentation-codec system.
-//!
 //! This module defines the presentation-codec record types used for
 //! runtime startup validation and audit/debug visibility.
-//!
 //! ## Record types
-//!
 //! - [`ProtectedPresentationScopeMetadata`] — per-scope metadata inside a
-//!   field's presentation declaration. One entry per `(field, scope)` pair
-//!   declared in `protected(per_scope = { ... })`.
+//! field's presentation declaration. One entry per `(field, scope)` pair
+//! declared in `protected(per_scope = { ... })`.
 //! - [`ProtectedPresentationFieldMetadata`] — per-field aggregate carrying
-//!   a static slice of scope entries. This is a Stage-facing shape for richer
-//!   introspection tooling; startup validation currently consumes
-//!   `PresentationCodecUsage` entries directly.
+//! a static slice of scope entries. This is a Stage-facing shape for richer
+//! introspection tooling; startup validation currently consumes
+//! `PresentationCodecUsage` entries directly.
 //! - [`PresentationCodecUsage`] — one submission per `(model, field, scope,
-//!   codec)` usage. Consumed by [`super::validate_startup_inventory`] to call
-//!   each codec's [`validate_startup`](super::PresentationCodecInfo::validate_startup)
-//!   before the framework accepts traffic.
-//!
+//! codec)` usage. Consumed by [`super::validate_startup_inventory`] to call
+//! each codec's [`validate_startup`](super::PresentationCodecInfo::validate_startup)
+//! before the framework accepts traffic.
 //! ## Design note
-//!
 //! All structs are `Copy` (enforced by the `Copy` derive) so macro-emitted
 //! `inventory::submit!` blocks and static slice initializers can embed values
 //! without ownership complexity. `#[non_exhaustive]` on the structs allows
@@ -28,24 +23,19 @@
 use crate::presentation::{PresentationStartupError, Queryability, Reversibility};
 
 /// Per-scope presentation metadata for a single protected field.
-///
 /// Emitted by `#[model]` for every `(field, scope)` entry inside a
 /// `protected(per_scope = { ... })` block. Aggregated into a static slice
 /// inside [`ProtectedPresentationFieldMetadata`].
-///
 /// # Audit and debug use only
-///
 /// This struct is **not** consulted at runtime to decide presentation
 /// behavior — that is driven by the trait-dispatch paths in generated
 /// `From<&Model>` / `TryFrom<&Model>` impls. The inventory record
 /// supports tooling (audit logs, `djogi docs`, future CLI introspection)
 /// that needs to enumerate which codec is active for which field/scope.
-///
 /// # Invariants
-///
 /// - `scope` matches one of the model's declared scope keys.
 /// - `codec_path` is a Rust type path to the codec implementing
-///   [`PresentationCodecInfo`](super::PresentationCodecInfo).
+/// [`PresentationCodecInfo`](super::PresentationCodecInfo).
 /// - `reversible` and `queryability` reflect the codec's trait constants.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -71,13 +61,10 @@ pub struct ProtectedPresentationScopeMetadata {
 impl ProtectedPresentationScopeMetadata {
     /// Construct a `ProtectedPresentationScopeMetadata` from macro-emitted
     /// code.
-    ///
     /// All parameters map 1:1 to the public fields. This constructor exists
     /// because the struct is `#[non_exhaustive]` — struct-expression
     /// construction outside this crate is blocked by the attribute.
-    ///
     /// # Note
-    ///
     /// This is a `#[doc(hidden)]` constructor intended exclusively for
     /// `#[model]`-emitted code. Downstream adoption of this constructor
     /// from outside generated macro output is outside the public contract.
@@ -100,21 +87,16 @@ impl ProtectedPresentationScopeMetadata {
 }
 
 /// Per-field inventory record for protected presentation behavior.
-///
 /// The `scopes` slice holds one
 /// [`ProtectedPresentationScopeMetadata`] entry per scope entry in the
 /// `protected(per_scope = { ... })` block.
-///
 /// # Inventory semantics
-///
 /// `ProtectedPresentationFieldMetadata` is a per-field aggregate for future
 /// tooling. Stage 4+ does not currently emit this type with
 /// `inventory::submit!`, so startup validation iterates
 /// `inventory::iter::<PresentationCodecUsage>` instead. The public record still
 /// exists for future extensions and richer tooling.
-///
 /// # Separate from `FieldDescriptor`
-///
 /// This struct intentionally does NOT attach to `FieldDescriptor` or
 /// `ModelDescriptor`. Presentation metadata is runtime-only and does not
 /// affect SQL DDL — attaching it to the migration differ's descriptor
@@ -135,7 +117,6 @@ pub struct ProtectedPresentationFieldMetadata {
 impl ProtectedPresentationFieldMetadata {
     /// Construct a `ProtectedPresentationFieldMetadata` from generated or
     /// macro-emitted code.
-    ///
     /// This constructor exists because the struct is `#[non_exhaustive]`.
     /// See [`ProtectedPresentationScopeMetadata::const_new`] for the
     /// scope-level equivalent.
@@ -154,31 +135,24 @@ impl ProtectedPresentationFieldMetadata {
 }
 
 /// Per-usage inventory record consumed by startup validation.
-///
 /// Emitted by `#[model]` for each concrete `(model, field, scope, codec)`
 /// usage in a `protected(per_scope = { ... })` block. Startup validation
 /// walks all `PresentationCodecUsage` entries via
 /// `inventory::iter::<PresentationCodecUsage>` and calls
 /// `validate_startup` on each one.
-///
 /// ## Startup contract
-///
 /// `DjogiPool::connect`, `DjogiPool::from_database_config`, and
 /// `DjogiPoolBuilder::build` call
 /// [`validate_startup_inventory`](super::validate_startup_inventory) before
 /// returning a pool. Any codec that needs environment-variable keying (e.g.
 /// [`HmacSha256HexString`](super::builtins::HmacSha256HexString)) validates
 /// its key here before any request traffic is served.
-///
 /// ## Type-name functions
-///
 /// `input_type_name` and `output_type_name` are function pointers (not
-/// `&'static str` directly) so `std::any::type_name::<T>()` can be called
+/// `&'static str` directly) so `std::any::type_name::<T>` can be called
 /// lazily without materializing the string at construction time. This
 /// avoids needing const-eval for type-name strings at macro expansion time.
-///
 /// ## Security note
-///
 /// The inventory record is **not** consulted at per-request presentation
 /// time. Generated `From<&Model>` / `TryFrom<&Model>` impls call the
 /// codec trait methods directly. The inventory record supports startup
@@ -197,23 +171,21 @@ pub struct PresentationCodecUsage {
     /// Whether this usage involves a fallible codec (`TryPresentationCodec`).
     pub fallible: bool,
     /// Returns the Rust type name of the codec's input type. Evaluated
-    /// lazily via `std::any::type_name::<Input>()`.
+    /// lazily via `std::any::type_name::<Input>`.
     pub input_type_name: fn() -> &'static str,
     /// Returns the Rust type name of the codec's output type. Evaluated
-    /// lazily via `std::any::type_name::<Output>()`.
+    /// lazily via `std::any::type_name::<Output>`.
     pub output_type_name: fn() -> &'static str,
-    /// Calls `<Codec as PresentationCodecInfo<Input>>::validate_startup()`.
-    /// Returns `Ok(())` when the codec is ready, or a
+    /// Calls `<Codec as PresentationCodecInfo<Input>>::validate_startup`.
+    /// Returns `Ok` when the codec is ready, or a
     /// [`PresentationStartupError`] variant describing the failure.
     pub validate_startup: fn() -> Result<(), PresentationStartupError>,
 }
 
 impl PresentationCodecUsage {
     /// Construct a `PresentationCodecUsage` from macro-emitted code.
-    ///
     /// Each parameter maps 1:1 to the public fields. This constructor
     /// exists because the struct is `#[non_exhaustive]`.
-    ///
     /// The 8-parameter signature is intentional: the struct carries 8 fields,
     /// all of which are required by macro-emitted `inventory::submit!` blocks.
     /// A builder pattern would add complexity for a `#[doc(hidden)]`

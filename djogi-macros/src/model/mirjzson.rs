@@ -1,6 +1,5 @@
-//! Macro-time gating for [`MirJzSON`](djogi::jsonb::MirJzSON) fields —
-//! Phase 8.5 issue #195.
-//!
+//! Macro-time gating for [`MirJzSON`](djogi::jsonb::MirJzSON) fields
+//! #195.
 //! `MirJzSON` is Djogi's raw / unschemed JSONB column type, the sibling
 //! of [`Jsonb<T>`](djogi::jsonb::Jsonb). It exists precisely for the
 //! cases where a payload's schema lives somewhere other than the Rust
@@ -9,47 +8,41 @@
 //! reaches for `MirJzSON` they are stepping off the typed-schema
 //! invariant `Jsonb<T>` carries — that step deserves a deliberate,
 //! recorded justification.
-//!
 //! This module owns the macro-side enforcement of that contract:
-//!
 //! - Every `MirJzSON` and `Option<MirJzSON>` field MUST carry
-//!   `#[mirjzson(justification = "...")]`. A missing attribute fails
-//!   at expand time with a span-precise error.
+//! `#[mirjzson(justification = "...")]`. A missing attribute fails
+//! at expand time with a span-precise error.
 //! - The justification literal must be present, non-empty, and not a
-//!   placeholder token (`TODO`, `TBD`, `FIXME`, `...`, `none`, etc.).
-//!   The denylist is small and ASCII case-insensitive; a minimum
-//!   length of 12 trimmed bytes weeds out one-word non-answers.
+//! placeholder token (`TODO`, `TBD`, `FIXME`, `...`, `none`, etc.).
+//! The denylist is small and ASCII case-insensitive; a minimum
+//! length of 12 trimmed bytes weeds out one-word non-answers.
 //! - The attribute is consumed by the macro before the struct is
-//!   re-emitted, mirroring how `#[field(...)]` and `#[computed(...)]`
-//!   are stripped — rustc has no notion of `mirjzson` as a helper
-//!   attribute on the `#[model]` attribute macro, so leaving it in
-//!   place produces an `unknown attribute` rustc error rather than the
-//!   typed diagnostic this module emits.
+//! re-emitted, mirroring how `#[field(...)]` and `#[computed(...)]`
+//! are stripped — rustc has no notion of `mirjzson` as a helper
+//! attribute on the `#[model]` attribute macro, so leaving it in
+//! place produces an `unknown attribute` rustc error rather than the
+//! typed diagnostic this module emits.
 //! - `#[mirjzson(...)]` on a non-`MirJzSON` field is rejected at
-//!   expand time with a span at the misplaced attribute.
+//! expand time with a span at the misplaced attribute.
 //! - `Jsonb<T>` (the typed-schema sibling) is **not** subject to this
-//!   gate. The typed schema IS the justification.
-//!
+//! gate. The typed schema IS the justification.
 //! # No regex
-//!
 //! Per `feedback_no_regex_in_djogi.md`: detection uses byte-level
 //! checks (`str::eq_ignore_ascii_case`, `str::trim`, last-segment
 //! ident comparison) and a sorted const placeholder slice with
-//! `iter().any(...)`. No `regex` engine, no regex notation in
+//! `iter.any(...)`. No `regex` engine, no regex notation in
 //! diagnostics.
 
 use syn::{Expr, ExprLit, Lit, LitStr, Meta, MetaNameValue, Token, punctuated::Punctuated};
 
 /// A single parsed `#[mirjzson(justification = "...")]` annotation.
-///
 /// Captured only for fields whose declared Rust type is `MirJzSON` or
 /// `Option<MirJzSON>` (last-segment match — covers bare, `djogi::`,
 /// `djogi::jsonb::`, `crate::`, `super::`, and `::djogi::*` path forms
 /// uniformly).
-///
 /// The `justification` field is stored verbatim after validation. v0.1
 /// consumers only need to know the attribute is present and well-formed
-/// — the value is available here so future surfaces (descriptor
+/// the value is available here so future surfaces (descriptor
 /// emission, doc generation, model reflection) can read it without
 /// re-parsing. `dead_code` is allowed at the struct level so adding a
 /// new consumer downstream does not require touching this declaration.
@@ -63,24 +56,20 @@ pub struct MirJzSONAttr {
 }
 
 /// Walk a struct's fields and validate the MirJzSON gate.
-///
 /// Returns the validated `(field_ident, MirJzSONAttr)` pairs in
 /// declared order so future consumers (descriptor emission, doc
 /// generation) can read the justification without re-parsing.
-///
 /// Errors with a span-precise diagnostic on:
-///
 /// - A `MirJzSON` / `Option<MirJzSON>` field without a
-///   `#[mirjzson(...)]` attribute.
+/// `#[mirjzson(...)]` attribute.
 /// - A `#[mirjzson(...)]` attribute on a field whose type is not
-///   `MirJzSON` / `Option<MirJzSON>`.
+/// `MirJzSON` / `Option<MirJzSON>`.
 /// - A missing, malformed, or placeholder `justification` value
-///   (see [`validate_justification`]).
+/// (see [`validate_justification`]).
 /// - A duplicate `#[mirjzson(...)]` attribute on the same field.
 /// - The bare `#[mirjzson]` form (no argument list).
 /// - Any key other than `justification` inside the argument list.
-///
-/// Returns `Ok(Vec::new())` for structs that declare no `MirJzSON`
+/// Returns `Ok(Vec::new)` for structs that declare no `MirJzSON`
 /// fields and carry no stray `#[mirjzson(...)]` attributes.
 pub fn parse_mirjzson_attrs(
     struct_item: &syn::ItemStruct,
@@ -103,7 +92,7 @@ pub fn parse_mirjzson_attrs(
 
             // Reject when the attribute lands on a field whose declared
             // Rust type is NOT `MirJzSON` / `Option<MirJzSON>`. The
-            // attribute is a `MirJzSON` gate, not a generic JSONB knob —
+            // attribute is a `MirJzSON` gate, not a generic JSONB knob
             // `Jsonb<T>` has its typed schema as the justification, and
             // any other type has no MirJzSON semantics to gate.
             if !is_mirjzson_typed {
@@ -233,13 +222,11 @@ fn parse_mirjzson_args(
 }
 
 /// Lowercase-ASCII placeholder tokens that fail the justification gate.
-///
 /// Kept short, deterministic, and easy to extend. The matcher uses
 /// [`str::eq_ignore_ascii_case`] against the WHOLE trimmed value, so
 /// adopters who write a real explanation that happens to CONTAIN one
 /// of these tokens (e.g. "TODO is the wrong word here, payload is...")
 /// still pass.
-///
 /// Slice held sorted by hand for human readability; ordering does not
 /// affect correctness since the matcher is linear-search-with-equality.
 const PLACEHOLDER_JUSTIFICATIONS: &[&str] = &[
@@ -286,7 +273,6 @@ const PLACEHOLDER_JUSTIFICATIONS: &[&str] = &[
 
 /// Minimum trimmed byte length for a justification. Anything shorter is
 /// effectively single-word and fails the "specific reason" bar.
-///
 /// Chosen by hand to admit "external SDK." (12 bytes) — a borderline
 /// honest answer — while excluding "external" (8 bytes), "tbd later"
 /// (9 bytes), and similar placeholders that slip past the denylist.
@@ -294,17 +280,14 @@ const MIN_JUSTIFICATION_BYTES: usize = 12;
 
 /// Verify a justification value is present, non-empty, and not a
 /// placeholder.
-///
 /// Steps (in order):
-///
 /// 1. Trim leading/trailing ASCII whitespace.
 /// 2. Reject empty-after-trim with `"justification is empty"`.
 /// 3. Reject the trimmed value if it matches one of
-///    [`PLACEHOLDER_JUSTIFICATIONS`] under ASCII case-insensitive
-///    comparison.
+/// [`PLACEHOLDER_JUSTIFICATIONS`] under ASCII case-insensitive
+/// comparison.
 /// 4. Reject when the trimmed length is below
-///    [`MIN_JUSTIFICATION_BYTES`] with a "too short" message.
-///
+/// [`MIN_JUSTIFICATION_BYTES`] with a "too short" message.
 /// Errors carry the `lit_str` span so the diagnostic underlines the
 /// adopter's literal, not the enclosing attribute.
 fn validate_justification(lit_str: &LitStr, value: &str) -> syn::Result<()> {
@@ -348,13 +331,11 @@ fn validate_justification(lit_str: &LitStr, value: &str) -> syn::Result<()> {
 
 /// `true` when `ty` is `MirJzSON` or `Option<MirJzSON>` in any of the
 /// accepted path forms.
-///
 /// Mirrors the last-segment matcher used by [`super::attrs::detect_relation`]
 /// and the `Jsonb<T>` recognizer in
 /// [`super::attrs::rust_type_to_sql`]: a path is recognised by its last
 /// segment ident (`MirJzSON`) regardless of leading prefix
 /// (`djogi::`, `djogi::jsonb::`, `crate::`, `super::`, `::djogi::*`).
-///
 /// `Option<…>` is stripped exactly once via
 /// [`super::attrs::unwrap_option`] before the inner check runs, so
 /// `Option<MirJzSON>` and `MirJzSON` both succeed; `Vec<MirJzSON>`,

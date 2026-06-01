@@ -1,29 +1,23 @@
 //! Emit `{Visage}Fields`, `{Visage}Filter`, and the `DjogiVisageOf<SourceModel>`
 //! seal impl for a single visage.
-//!
 //! # Design
-//!
 //! `{Visage}Fields` is a state-carrying struct that threads a SQL-alias path
 //! prefix through traversal chains:
-//!
 //! ```ignore
 //! pub struct UserPublicFields<RootModel = User> {
 //!     pub __djogi_path: Option<&'static str>,
 //!     pub __djogi_root: PhantomData<fn() -> RootModel>,
 //! }
 //! ```
-//!
-//! - Root construction: `UserPublicFields::default()` sets `__djogi_path = None`
-//!   and defaults `RootModel = User`.
+//! - Root construction: `UserPublicFields::default` sets `__djogi_path = None`
+//! and defaults `RootModel = User`.
 //! - Traversal construction: `UserPublicFields::with_path("owner")` sets
-//!   `__djogi_path = Some("owner")` so the peer's scalar accessors produce
-//!   `FieldRef`s whose column path is `"owner.{column}"`.
+//! `__djogi_path = Some("owner")` so the peer's scalar accessors produce
+//! `FieldRef`s whose column path is `"owner.{column}"`.
 //! - Traversal typing: `UserPublicFields<Post>` means "the peer visage fields
-//!   for `User`, but predicates built from them still target the owning
-//!   `Post` root model."
-//!
+//! for `User`, but predicates built from them still target the owning
+//! `Post` root model."
 //! Accessors are `&self` methods so the path state is available inside every call:
-//!
 //! ```ignore
 //! impl UserPublicFields {
 //!     pub fn display_name(&self) -> FieldRef<User, String> {
@@ -34,35 +28,26 @@
 //!     }
 //! }
 //! ```
-//!
 //! Protected scalar fields that route through a per-scope presentation codec
 //! still use the same path-threading, but their accessors return
 //! `PresentationFieldRef<Source, Codec, StorageTy>` so predicate / ordering
 //! methods are gated by the codec traits instead of leaking the raw
 //! `FieldRef` surface.
-//!
 //! # Optional-FK accessor shape
-//!
 //! A relation-form entry on a nullable FK / O2O field emits an accessor
 //! returning [`OptionalRelationRef<PeerFields>`]. The wrapper's `map_filter(|a| …)`
 //! combinator emits `author_id IS NOT NULL AND <inner>` so the nullability
 //! is honoured at the SQL level.
-//!
 //! Required FKs (non-`Option`) keep the plain `PeerFields` return type.
-//!
 //! # `FieldRef<RootModel, V>` over `FieldRef<Visage, V>`
-//!
 //! Visages do not impl `Model` (they are projections, not tables). Accessors
-//! are typed on the **owning root model** — e.g. `UserPublicFields<Post>::name()`
+//! are typed on the **owning root model** — e.g. `UserPublicFields<Post>::name`
 //! yields `FieldRef<Post, String>` — and the visage ↔ source-model pairing
 //! is tracked separately via `DjogiVisageOf<M>`.
-//!
 //! # Non-exposed fields are absent by construction
-//!
 //! Referencing a non-exposed field in a closure fails at compile time with
 //! a "no method named …" error. That is the compile-time enforcement that
 //! makes the visage a genuine data-access boundary.
-//!
 //! [`OptionalRelationRef<PeerFields>`]: ::djogi::query::OptionalRelationRef
 
 use crate::model::attrs::PkStrategy;
@@ -180,7 +165,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
             // FK) or `OptionalRelationRef<{PeerVisage}Fields>` (optional
             // FK / O2O).
             ScopeMembership::RelationEmbed { exposure, nullable } => {
-                // After Phase 8eta PR3 the path-aware peer fields handle
+                // After the path-aware peer fields handle
                 // depends on the exposure shape: full-peer
                 // (`expose(scope -> Department)`) routes through
                 // `{Department}SqlFields` because root `{Department}Fields`
@@ -329,9 +314,8 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
         impl #fields_ident {
             /// Construct a root-scope `Fields` handle targeting the source
             /// model directly.
-            ///
             /// This inherent method preserves the pre-generic
-            /// `{Visage}Fields::default()` call shape for root-scope code.
+            /// `{Visage}Fields::default` call shape for root-scope code.
             #[inline]
             pub fn default() -> Self {
                 Self::new()

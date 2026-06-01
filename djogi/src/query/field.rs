@@ -1,40 +1,33 @@
 //! Typed column handles — the API surface every filter closure interacts with.
-//!
 //! # What
-//!
 //! `FieldRef<M, V>` is the handle returned by macro-generated `{Model}Fields`
 //! methods (Task 4). It carries only a `'static` column name plus phantom
 //! type parameters that tie it to a specific `Model` (`M`) and a specific
 //! SQL-bindable value type (`V`). Each method call (`.eq`, `.gte`, etc.)
 //! consumes the ref (by value — it's `Copy`) and a value, returning a
 //! `Condition::Leaf` that slots into the `QuerySet<T>` filter tree.
-//!
 //! # Why
-//!
 //! - **Type safety.** `M` binds a ref to one model, so mixing
-//!   `UserFields.id()` with a `Post`-targeted QuerySet is a compile error,
-//!   not a runtime SQL error. `V` binds the lookup's RHS to the column's
-//!   Rust type, so `view_count.eq("hello")` fails at the field-argument
-//!   conversion bound — again at compile time.
+//! `UserFields.id` with a `Post`-targeted QuerySet is a compile error,
+//! not a runtime SQL error. `V` binds the lookup's RHS to the column's
+//! Rust type, so `view_count.eq("hello")` fails at the field-argument
+//! conversion bound — again at compile time.
 //! - **Zero runtime cost.** `FieldRef` is two phantom markers plus a
-//!   `&'static str`; the whole struct is `Copy` and disappears after the
-//!   leaf is built. No boxing, no reflection, no string formatting.
+//! `&'static str`; the whole struct is `Copy` and disappears after the
+//! leaf is built. No boxing, no reflection, no string formatting.
 //! - **String-only lookups are gated.** Methods like `contains`/
-//!   `starts_with`/`regex` live in an `impl<M: Model> FieldRef<M, String>`
-//!   block so calling `age.contains(...)` yields a helpful "no method named
-//!   `contains` on `FieldRef<M, i64>`" error — the type system is the
-//!   documentation.
-//!
+//! `starts_with`/`regex` live in an `impl<M: Model> FieldRef<M, String>`
+//! block so calling `age.contains(...)` yields a helpful "no method named
+//! `contains` on `FieldRef<M, i64>`" error — the type system is the
+//! documentation.
 //! # How (user surface)
-//!
 //! ```ignore
 //! use djogi::prelude::*;
 //!
-//! let qs = Post::objects().filter(|f| {
-//!     f.published().eq(true) & f.view_count().gte(100)
+//! let qs = Post::objects.filter(|f| {
+//! f.published.eq(true) & f.view_count.gte(100)
 //! });
 //! ```
-//!
 //! Use `&` / `|` / `!` for composition — both portable
 //! [`PortablePredicate`](crate::query::PortablePredicate) and SQL-only
 //! [`Condition`](crate::query::internal::Condition) honor the operator
@@ -44,13 +37,10 @@
 //! `.or(...)` method-chain forms; negation stays on the unary `!` operator
 //! and the associated function
 //! [`Condition::not`](crate::query::internal::Condition::not).
-//!
 //! Users never call `FieldRef::new` directly — the macro stamps it for each
 //! column. The `#[doc(hidden)]` constructor exists so macro output compiles,
 //! not for hand-written code.
-//!
 //! # Where
-//!
 //! - `Condition` / `Leaf` / `FilterValue` / `LookupOp` — `query::condition`.
 //! - `{Model}Fields` generation — `djogi-macros/src/model/fields.rs` (Task 4).
 //! - `Model::Fields` associated type — `djogi/src/model.rs`.
@@ -63,13 +53,11 @@ use crate::tracked::Tracked;
 use std::marker::PhantomData;
 
 /// Typed reference to a model column.
-///
 /// Produced by macro-generated `{Model}Fields` methods and consumed by
 /// lookup methods (`eq`, `gte`, `contains`, …) to build `Condition::Leaf`
 /// nodes. `Copy + 'static` because closures move it freely and the column
 /// name is always a literal baked into the macro output.
-///
-/// The `PhantomData<fn() -> M>` / `PhantomData<fn() -> V>` markers ensure
+/// The `PhantomData<fn -> M>` / `PhantomData<fn -> V>` markers ensure
 /// `FieldRef` is `Send + Sync` even when `M` or `V` are not — the ref never
 /// owns or borrows a value of either type, it merely tags the column.
 pub struct FieldRef<M: Model, V> {
@@ -119,20 +107,17 @@ impl<M: Model, V> FieldRef<M, V> {
     /// [`Expr<V>`](crate::expr::Expr) — the entry point for
     /// field-vs-field comparisons, arithmetic composition, and (in
     /// later tasks) aggregates / subqueries / CASE.
-    ///
     /// # Why a named method and not an `Into` impl?
-    ///
     /// `FieldRef` already has typed lookup methods (`eq`, `neq`, …)
     /// that return [`Condition`] directly for the literal-RHS case.
     /// An `impl<M, V> From<FieldRef<M, V>> for Expr<V>` would make
     /// every `FieldRef` transparently coerce into `Expr<V>`, which is
     /// fine in isolation but would collide with future `Into` impls
     /// (for example, the `IntoAssignments` / `IntoDistinctColumns`
-    /// bridges the Phase 2 API already ships). Keeping the promotion
-    /// explicit — call sites read `f.balance.as_expr().lt(f.overdraft_limit.as_expr())` —
+    /// bridges the API already ships). Keeping the promotion
+    /// explicit — call sites read `f.balance.as_expr.lt(f.overdraft_limit.as_expr)`
     /// also matches the Django / SeaORM idiom users are porting
     /// queries from.
-    ///
     /// The `column` string has already been validated by
     /// [`crate::ident::assert_plain_ident`] at construction (see
     /// [`__macro_support::__make_field_ref`]); the SQL emitter in
@@ -147,14 +132,12 @@ impl<M: Model, V> FieldRef<M, V> {
 }
 
 /// Macro-only entry points. **Not** part of the stable public API.
-///
 /// `djogi-macros` emits calls into this module from user-crate code
 /// that `#[derive(Model)]` expands — the items here are `pub` only so
 /// cross-crate codegen can reach them. The double-underscore prefix
 /// and `#[doc(hidden)]` marker signal to tooling and reviewers that
 /// downstream code must not call these directly; the macro is the
 /// sole supported caller.
-///
 /// The seal closes the same identifier-smuggling vector that
 /// [`crate::relation::__macro_support`] closes for `RelationPath`:
 /// `FieldRef::new` was `pub` before this seal, which let a hostile
@@ -173,21 +156,16 @@ pub mod __macro_support {
 
     /// Construct a [`FieldRef<M, V>`] from a macro-emitted column name,
     /// with an optional SQL alias path prefix.
-    ///
     /// - `prefix = None` — plain column reference, e.g. `"name"`.
     /// - `prefix = Some("department")` + `column = "name"` → produces a
-    ///   `FieldRef` whose column string is `"department.name"`.
-    ///
+    /// `FieldRef` whose column string is `"department.name"`.
     /// The only supported caller is the `{Model}Fields` / `{Visage}Fields`
     /// accessor emitted by `#[derive(Model)]` in the user's crate.
-    ///
     /// Panics if `column` (or `prefix`, when `Some`) violates any rule in
     /// [`crate::ident::assert_plain_ident`]: empty, over 63 bytes,
     /// leading digit, a non-identifier byte, or a reserved Postgres
     /// keyword.
-    ///
     /// # Composed-path interning
-    ///
     /// When `prefix` is `Some`, runtime path composition produces a
     /// `String`; Djogi's emission contract demands `&'static str`. The
     /// first `(prefix, column)` pair `Box::leak`s the composite; every
@@ -353,25 +331,20 @@ pub mod __macro_support {
     }
 }
 
-// ── Phase 8eta PR2a — DjogiField root field wrapper ─────────────────────────
-//
+// ── DjogiField root field wrapper ─────────────────────────
 // `DjogiField<M, V>` is the root field wrapper that PR3 will flip the
 // `{Model}Fields` macro accessors over to. It carries both halves Djogi
 // needs:
-//
 // - `portable: sassi::Field<M, V>` — the in-memory predicate accessor
-//   `PunnuScope::filter_basic` evaluates against `&M`.
+// `PunnuScope::filter_basic` evaluates against `&M`.
 // - `sql: FieldRef<M, V>` — the path-aware SQL handle the existing emitter
-//   already understands.
-//
+// already understands.
 // PR2a is deliberately **additive**: the type and its methods exist, but
 // nothing in the framework constructs `DjogiField` values yet. PR3 flips
 // the generated root accessors; PR2b/PR2d wire SQL emission; PR4 hooks the
 // cache boundary. Splitting this way keeps every PR independently
 // compilable.
-//
 // # Why not just expose raw `sassi::Field<M, V>`?
-//
 // Two reasons. First, `sassi::Field::new("any_string", arbitrary_extractor)`
 // is `pub` — downstream code can construct a `Field` whose name doesn't
 // match any real column on `M`. Routing every Djogi root predicate through
@@ -382,10 +355,9 @@ pub mod __macro_support {
 // Exposing Sassi fields directly would silently flip those semantics on
 // adopters porting between in-memory and SQL filters. `DjogiField` keeps
 // the existing Djogi spelling and routes case-sensitive matching through
-// explicit `contains_case_sensitive` / `explicit_pg_predicate()` opt-ins.
+// explicit `contains_case_sensitive` / `explicit_pg_predicate` opt-ins.
 
 /// Trusted-construction marker for portable predicates.
-///
 /// Constructed only by `DjogiField` / `DjogiPresentField` predicate methods
 /// inside this module. Carrying the marker as an argument to
 /// [`PortablePredicate::from_djogi_field`] makes the trusted-provenance
@@ -393,13 +365,12 @@ pub mod __macro_support {
 /// accidentally imports `sassi::BasicPredicate` and tries to wrap it would
 /// have to construct a `DjogiFieldProvenance` first, which is unreachable
 /// outside this module.
-///
 /// The struct deliberately has a private field so even crate-internal code
 /// outside `crate::query::field` cannot fabricate an instance.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
 pub struct DjogiFieldProvenance {
-    // Private field — only `mint_provenance()` can populate it.
+    // Private field — only `mint_provenance` can populate it.
     _seal: (),
 }
 
@@ -415,8 +386,7 @@ impl DjogiFieldProvenance {
     }
 
     /// Mint a provenance marker for the MirJzSON JSON predicate builder
-    /// (`query::mirjzson::DjogiField<M, MirJzSON>::jsahibon()`).
-    ///
+    /// (`query::mirjzson::DjogiField<M, MirJzSON>::jsahibon`).
     /// `pub(crate)` so the sibling `query::mirjzson` module can reach
     /// it; crate-internal code outside `query::*` cannot reach the
     /// constructor because `DjogiFieldProvenance`'s only field is
@@ -431,41 +401,33 @@ impl DjogiFieldProvenance {
 /// Marker trait for value types whose direct portable ordering methods
 /// (`gt`/`gte`/`lt`/`lte`/`between`) are exposed on
 /// [`DjogiField<M, V>`](DjogiField).
-///
 /// # What and why
-///
 /// Djogi exposes ordering only on types whose Rust ordering matches the
 /// SQL ordering Djogi emits. Implementing the trait is the explicit opt-in
-/// — PR2a populates it for the safe scalar types Djogi already binds
+/// PR2a populates it for the safe scalar types Djogi already binds
 /// through `IntoFilterValue` (signed integers + Decimal + HeerId/RanjId
 /// families), and adopter newtypes that satisfy the bind/clone bounds can
 /// add an impl per type.
-///
 /// # Deliberate exclusions
-///
 /// - **`String`**: Postgres text ordering depends on the database's
-///   collation, which doesn't match Rust's byte-lexicographic `Ord`.
-///   Adopters who want database-locale text ordering reach for
-///   `explicit_pg_predicate().gt(...)` until a future phase pins
-///   collation-aware portable ordering.
+/// collation, which doesn't match Rust's byte-lexicographic `Ord`.
+/// Adopters who want database-locale text ordering reach for
+/// `explicit_pg_predicate.gt(...)` until a future phase pins
+/// collation-aware portable ordering.
 /// - **`f32` / `f64`**: SQL `NULLS FIRST/LAST` and IEEE-754 NaN ordering
-///   diverge from Rust's `PartialOrd` semantics. A future phase may add a
-///   collation-pinned float ordering with explicit NaN handling.
+/// diverge from Rust's `PartialOrd` semantics. A future phase may add a
+/// collation-pinned float ordering with explicit NaN handling.
 /// - **`Option<U>`**: Rust's `Option` ordering (`None < Some(_)`) doesn't
-///   match SQL three-valued NULL semantics. Callers use `.some().gt(v)`
-///   instead.
+/// match SQL three-valued NULL semantics. Callers use `.some.gt(v)`
+/// instead.
 /// - **No blanket impl**: a `impl<T: PartialOrd + ToSql + …>` would
-///   silently include `Option<U>` and any future foreign type.
-///
+/// silently include `Option<U>` and any future foreign type.
 /// # Adopter extension
-///
 /// Custom scalar types that bind through `postgres_types::ToSql` and whose
 /// Rust `Ord` matches the SQL ordering Djogi emits can opt in:
-///
 /// ```ignore
 /// impl djogi::query::DjogiPortableOrd for MyType {}
 /// ```
-///
 /// `MyType` must already satisfy `PartialOrd + postgres_types::ToSql + Clone +
 /// Send + Sync + 'static`. If it does not satisfy the bind/clone surface,
 /// PR2d's generated SQL lowering returns `UnsupportedFieldType`.
@@ -477,7 +439,6 @@ pub trait DjogiPortableOrd:
 /// Marker trait for value types whose direct portable equality methods
 /// (`eq`/`neq`/`in_`/`not_in`) are exposed on
 /// [`DjogiField<M, V>`](DjogiField).
-///
 /// Equality is only portable when Rust `PartialEq` agrees with the SQL
 /// equality operator Djogi emits. `Interval` is deliberately excluded:
 /// PostgreSQL `INTERVAL =` linearizes months/days/microseconds before
@@ -492,32 +453,30 @@ pub trait DjogiPortableEq:
 // Explicit impls for built-in scalar types whose Rust ordering matches the
 // SQL ordering Djogi emits. PR2a opts these in; PR3 populates the
 // generated `DjogiField` ordering callsites once macros flip.
-//
 // Coverage rationale per type:
 // - Signed integers `i8`/`i16`/`i32`/`i64`: Postgres int2/int4/int8 ordering
-//   is numeric and matches Rust `Ord`. `i8` directly satisfies
-//   `postgres_types::ToSql` (binds as int2 with range-checked widening).
+// is numeric and matches Rust `Ord`. `i8` directly satisfies
+// `postgres_types::ToSql` (binds as int2 with range-checked widening).
 // - `u32`: directly satisfies `postgres_types::ToSql` (binds as `oid`).
-//   `u8` / `u16` do not have shipped `ToSql` impls, so they cannot enter
-//   `DjogiPortableOrd`'s `ToSql` supertrait; adopters who model fields
-//   as `u8` / `u16` widen at the column type or reach the legacy
-//   `IntoFilterValue` widening through `FieldRef` / `explicit_pg_predicate`.
+// `u8` / `u16` do not have shipped `ToSql` impls, so they cannot enter
+// `DjogiPortableOrd`'s `ToSql` supertrait; adopters who model fields
+// as `u8` / `u16` widen at the column type or reach the legacy
+// `IntoFilterValue` widening through `FieldRef` / `explicit_pg_predicate`.
 // - `time::OffsetDateTime` / `time::Date`: monotone numeric encoding under
-//   Postgres' `timestamptz` / `date`.
+// Postgres' `timestamptz` / `date`.
 // - `uuid::Uuid`: byte-lexicographic and matches Rust `Ord`.
 // - Primary-key types: covered by the sealed `PrimaryKey` blanket below.
-//   Built-in HeerId / RanjId families remain portable because their Rust
-//   equality matches their Postgres bigint / uuid equality; custom
-//   `primary_key!` newtypes inherit their inner scalar equality semantics.
+// Built-in HeerId / RanjId families remain portable because their Rust
+// equality matches their Postgres bigint / uuid equality; custom
+// `primary_key!` newtypes inherit their inner scalar equality semantics.
 // - `rust_decimal::Decimal`: numeric ordering under Postgres `numeric`.
-//
 // Deliberately omitted: `bool` (no ordering callers), `String`, `f32`,
 // `f64`, `Option<U>`, `u8`, `u16`, `u64`. See trait docs. `u64` is not
 // `postgres_types::ToSql` and so cannot satisfy the `DjogiPortableOrd`
 // supertrait bounds today — the `IntoFilterValue for u64` impl above
 // routes through `rust_decimal::Decimal` for the SQL bind side, but
 // the portable-ord trait requires the Rust type bind directly. When
-// djogi#190 wires per-field bind shims, a `u64` portable-ord becomes
+// wires per-field bind shims, a `u64` portable-ord becomes
 // reachable via the same chained-widening route Decimal already has.
 
 impl DjogiPortableOrd for i8 {}
@@ -545,7 +504,7 @@ impl DjogiPortableEq for time::OffsetDateTime {}
 impl DjogiPortableEq for time::Date {}
 impl DjogiPortableEq for uuid::Uuid {}
 impl DjogiPortableEq for rust_decimal::Decimal {}
-// djogi#213 — network family. Rust structural `PartialEq` on these
+// network family. Rust structural `PartialEq` on these
 // types DOES agree byte-for-byte with Postgres `=` (unlike `Interval`,
 // whose Postgres `=` linearizes months/days). However, the network
 // types are deliberately NOT routed through `DjogiPortableEq` /
@@ -585,7 +544,6 @@ impl<V> DjogiPortableEq for Tracked<V> where V: DjogiPortableEq {}
 
 /// Marker for array element types whose `Vec<T>` equality has been
 /// parity-checked between Rust/Punnu and PostgreSQL.
-///
 /// `IntoArrayFilterValue` is intentionally wider: it also contains
 /// SQL-bindable array element types whose scalar equality is not portable
 /// enough for Punnu-backed predicates, notably floats. Keep this marker
@@ -616,35 +574,30 @@ where
 }
 
 /// Djogi root field wrapper.
-///
 /// Carries the Sassi `Field<M, V>` (used by Punnu in-memory evaluation) and
 /// the Djogi `FieldRef<M, V>` (used by SQL emission) so one root accessor
 /// can compose portable predicates and database queries from the same
 /// closure shape.
-///
 /// PR2a defines the type and its method surface. PR3 will flip macro-
 /// generated `{Model}Fields` accessors from `FieldRef` over to `DjogiField`.
 /// Until that flip, `DjogiField` is reachable through the public re-export
 /// in [`crate::query`](crate::query) but is not the return type of any
 /// generated accessor.
-///
 /// # Method semantics
-///
-/// | Method family            | Receiver                       | Returns                      |
+/// | Method family | Receiver | Returns |
 /// |--------------------------|--------------------------------|------------------------------|
-/// | `eq`, `neq`              | `DjogiField<M, V>` where `V: DjogiPortableEq` | `PortablePredicate<M>` |
-/// | `gt`/`gte`/`lt`/`lte`    | `DjogiField<M, V>` where `V: DjogiPortableOrd` | `PortablePredicate<M>` |
-/// | `between`                | `DjogiField<M, V>` where `V: DjogiPortableOrd` | `PortablePredicate<M>` |
-/// | `in_`/`not_in`           | `DjogiField<M, V>` where `V: DjogiPortableEq` | `PortablePredicate<M>` |
-/// | `is_null`/`is_not_null`  | `DjogiField<M, Option<U>>`     | `PortablePredicate<M>`       |
-/// | `some()`                 | `DjogiField<M, Option<U>>`     | `DjogiPresentField<M, U>`    |
-/// | `contains`/`icontains`   | `DjogiField<M, String>`        | `PortablePredicate<M>` (ASCII-stable case-insensitive) |
-/// | `starts_with`/`ends_with`| `DjogiField<M, String>`        | `PortablePredicate<M>` (ASCII-stable case-insensitive) |
-/// | `*_case_sensitive` family| `DjogiField<M, String>`        | `PortablePredicate<M>`       |
-/// | `iexact`                 | `DjogiField<M, String>`        | `PortablePredicate<M>`       |
-/// | `explicit_pg_predicate()`| `DjogiField<M, V>`             | `ExplicitPgPredicateField<M, V>` |
-/// | non-predicate SQL helpers| `DjogiField<M, V>`             | forwarded to `FieldRef`      |
-///
+/// | `eq`, `neq` | `DjogiField<M, V>` where `V: DjogiPortableEq` | `PortablePredicate<M>` |
+/// | `gt`/`gte`/`lt`/`lte` | `DjogiField<M, V>` where `V: DjogiPortableOrd` | `PortablePredicate<M>` |
+/// | `between` | `DjogiField<M, V>` where `V: DjogiPortableOrd` | `PortablePredicate<M>` |
+/// | `in_`/`not_in` | `DjogiField<M, V>` where `V: DjogiPortableEq` | `PortablePredicate<M>` |
+/// | `is_null`/`is_not_null` | `DjogiField<M, Option<U>>` | `PortablePredicate<M>` |
+/// | `some` | `DjogiField<M, Option<U>>` | `DjogiPresentField<M, U>` |
+/// | `contains`/`icontains` | `DjogiField<M, String>` | `PortablePredicate<M>` (ASCII-stable case-insensitive) |
+/// | `starts_with`/`ends_with`| `DjogiField<M, String>` | `PortablePredicate<M>` (ASCII-stable case-insensitive) |
+/// | `*_case_sensitive` family| `DjogiField<M, String>` | `PortablePredicate<M>` |
+/// | `iexact` | `DjogiField<M, String>` | `PortablePredicate<M>` |
+/// | `explicit_pg_predicate`| `DjogiField<M, V>` | `ExplicitPgPredicateField<M, V>` |
+/// | non-predicate SQL helpers| `DjogiField<M, V>` | forwarded to `FieldRef` |
 /// PostgreSQL-specific predicates (regex, JSONB path, FTS, spatial, array
 /// operators, expression-producing predicates) are reached through
 /// [`DjogiField::explicit_pg_predicate`] and return ordinary
@@ -658,26 +611,22 @@ pub struct DjogiField<M: Model, V> {
     /// the model macro at `#[model]` expansion time. Duplicates the same
     /// pointer that lives inside `portable` (Sassi keeps that field
     /// `pub(crate)` in its own crate, so we cannot read it from here).
-    ///
-    /// Needed by the MirJzSON `.jsahibon()` lift path
+    /// Needed by the MirJzSON `.jsahibon` lift path
     /// (`crate::query::mirjzson::DjogiField<M, MirJzSON>::jsahibon`): the
     /// lift transmutes this pointer to `fn(&M) -> &sassi::JSahibON` under
     /// `MirJzSON`'s `#[repr(transparent)]` invariant, then constructs a
     /// fresh `sassi::Field<M, JSahibON>` so Sassi's typed predicate
     /// builder chain can take over.
-    ///
     /// `pub(crate)` so the broader query module can read it without
     /// exposing the raw pointer in the public API.
     pub(crate) extractor: fn(&M) -> &V,
 }
 
 /// Optional-value present-only predicate view.
-///
 /// Returned by [`DjogiField::some`] on `DjogiField<M, Option<U>>`. Exposes
 /// the same `eq`/`neq`/`in_`/`not_in`/`gt`/`gte`/`lt`/`lte`/`between`
 /// surface as `DjogiField<M, U>`, but every predicate evaluates `None` as
 /// `false` and emits SQL that excludes NULL rows.
-///
 /// PR2a defines the type so portable optional comparisons compose through
 /// the Djogi `&`/`|` operators rather than dropping back to raw Sassi
 /// predicates. PR2b/PR2d add the matching SQL emission.
@@ -687,21 +636,18 @@ pub struct DjogiPresentField<M: Model, V> {
 }
 
 /// PostgreSQL-specific predicate view of a root field.
-///
 /// Returned by [`DjogiField::explicit_pg_predicate`]. Exposes the existing
-/// `FieldRef` predicate surface that is **not** portable to Punnu —
+/// `FieldRef` predicate surface that is **not** portable to Punnu
 /// regex/iregex, database-locale string pattern predicates, JSONB path /
 /// typed predicates, array operators, all current spatial/PostGIS
 /// predicates, and expression-only predicate chains. The wrapper deliberately
 /// returns ordinary `Condition` / `Expr<bool>` values (not
 /// `PortablePredicate<M>`) so cache and refresh boundaries reject them
 /// through PR4's portability gate.
-///
-/// The `explicit_pg_predicate()` name was chosen over `.sql()` / `.db()` /
-/// `.pg()` because adopters reading `f.title().contains("rust")` should not
+/// The `explicit_pg_predicate` name was chosen over `.sql` / `.db` /
+/// `.pg` because adopters reading `f.title.contains("rust")` should not
 /// infer that ordinary database queries require a route — only PostgreSQL-
 /// specific semantics do.
-///
 /// PR2a forwards the existing `FieldRef` predicate surface. PR3 widens the
 /// set as the macro flip reveals additional methods.
 pub struct ExplicitPgPredicateField<M: Model, V> {
@@ -764,13 +710,11 @@ impl<M: Model, V> std::fmt::Debug for ExplicitPgPredicateField<M, V> {
 
 impl<M: Model, V> DjogiField<M, V> {
     /// Return the underlying portable `sassi::Field<M, V>`.
-    ///
     /// **Crate-private internal accessor.** Direct Sassi `Field` string
     /// methods have case-sensitive semantics that don't match Djogi's
     /// portable ASCII-stable case-insensitive contract. The framework's
     /// SQL emitter and in-crate test helpers use this accessor; adopter
     /// code should compose through `DjogiField` methods instead.
-    ///
     /// PR2d's macro-emitted `Model::__djogi_emit_field_predicate` overrides
     /// receive a `&FieldPredicate<Self>` directly and never unpack a
     /// `DjogiField`, so this accessor stays `pub(crate)` rather than `pub`
@@ -781,13 +725,11 @@ impl<M: Model, V> DjogiField<M, V> {
     }
 
     /// Return the underlying SQL `FieldRef<M, V>`.
-    ///
     /// **Crate-private internal accessor.** The wrapper exposes
     /// non-predicate SQL helpers (`as_expr`, ordering, aggregates, etc.)
     /// directly through forwarded methods on `DjogiField`; adopters do
     /// not need to reach for the inner ref. Only PR2b's in-crate SQL
     /// walker and in-crate test helpers consume this accessor.
-    ///
     /// PR2d's macro-emitted overrides spell columns through bare `&'static`
     /// names threaded into the helper signatures (`emit_value::<M, V>(acc,
     /// ctx, "column", "=", field)`); they never reach for `__sql_field` to
@@ -798,25 +740,22 @@ impl<M: Model, V> DjogiField<M, V> {
     }
 
     /// Enter the PostgreSQL-specific predicate surface for this root field.
-    ///
     /// Predicates produced through this view (regex, ILIKE database-locale
     /// patterns, JSONB path, FTS, spatial, array operators, expression
     /// predicates) emit valid SQL but are rejected by Djogi cache and
     /// refresh boundaries because they cannot be evaluated in Punnu.
-    ///
     /// This is the **only** root-field route to PostgreSQL-specific
     /// predicate methods — direct names like `regex` / JSONB path / etc.
     /// are not exposed on `DjogiField` itself. Adopters reading
-    /// `f.title().contains("rust")` get the portable ASCII-stable case-
+    /// `f.title.contains("rust")` get the portable ASCII-stable case-
     /// insensitive contains; database-locale `ILIKE` lives on
-    /// `f.title().explicit_pg_predicate().contains("é")`.
+    /// `f.title.explicit_pg_predicate.contains("é")`.
     #[must_use = "ExplicitPgPredicateField is lazy — drop it and the predicate is omitted"]
     pub fn explicit_pg_predicate(self) -> ExplicitPgPredicateField<M, V> {
         ExplicitPgPredicateField { sql: self.sql }
     }
 
     // ── Non-predicate SQL helpers — forward directly to FieldRef ────────────
-    //
     // These helpers are SQL-only by nature and don't enter the portable
     // predicate boundary. Forwarding lets adopters stay on `DjogiField`
     // for the entire chain rather than threading `FieldRef` back out.
@@ -860,8 +799,7 @@ impl<M: Model, V: IntoFilterValue> DjogiField<M, V> {
     }
 
     /// Copy from another field in the same query scope — sugar for
-    /// `self.set_field(other.into_sql_field())`.
-    ///
+    /// `self.set_field(other.into_sql_field)`.
     /// `other` follows Djogi's sealed SQL-field conversion path so
     /// callers can pass any supported SQL-handle type (`FieldRef`
     /// or `DjogiField`) without manually extracting raw handles.
@@ -879,7 +817,6 @@ where
     V: IntoFilterValue + crate::expr::arithmetic::Numeric + Into<crate::expr::Expr<V>>,
 {
     /// Forwarded arithmetic assignment: `SET col = col + amount`.
-    ///
     /// See [`FieldRef::increment`] for semantics.
     #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
     pub fn increment(self, amount: V) -> crate::query::update::UpdateAssignment {
@@ -887,7 +824,6 @@ where
     }
 
     /// Forwarded arithmetic assignment: `SET col = col - amount`.
-    ///
     /// See [`FieldRef::decrement`] for semantics.
     #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
     pub fn decrement(self, amount: V) -> crate::query::update::UpdateAssignment {
@@ -895,10 +831,9 @@ where
     }
 }
 
-// Phase 8.5 Cluster 4B (djogi#106) — INSERT...SELECT column mapping.
-//
+// Djogi#106) — INSERT...SELECT column mapping.
 // The macro-emitted `{Model}Fields` accessors return `DjogiField<M, V>`
-// after Phase 8eta PR3, so the typed INSERT...SELECT column-mapping
+// after, so the typed INSERT...SELECT column-mapping
 // builder must surface here in addition to the underlying `FieldRef`
 // impl (`FieldRef::copy_from` / `FieldRef::as_insert_source` in
 // `query::insert_select`). The forwarding pattern mirrors
@@ -909,7 +844,6 @@ impl<M: Model, V> DjogiField<M, V> {
     /// `INSERT INTO ... SELECT ...` statement — see
     /// [`FieldRef::copy_from`](crate::query::field::FieldRef::copy_from)
     /// for the full contract and the source/target identity guarantee.
-    ///
     /// `V` must match between target and source — the type system pins
     /// the column types in lockstep at compile time. `S` is pinned by
     /// the source operand and propagated onto the returned column
@@ -917,22 +851,20 @@ impl<M: Model, V> DjogiField<M, V> {
     /// enclosing `QuerySet<S>::insert_into` receiver, so a mismatched
     /// source identity is rejected by the type system at the closure
     /// boundary.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// use djogi::prelude::*;
     ///
-    /// CompletedOrder::objects()
-    ///     .filter(|f| f.completed_at().lt(cutoff))
-    ///     .insert_into::<OrderArchive, _, _>(|target, source| vec![
-    ///         target.original_id().copy_from(source.id().as_insert_source()),
-    ///         target.title().copy_from(source.title().as_insert_source()),
-    ///         target.completed_at().copy_from(source.completed_at().as_insert_source()),
-    ///         target.status().copy_from(InsertSelectSource::literal("ARCHIVED".to_string())),
-    ///     ])
-    ///     .execute(&mut ctx)
-    ///     .await?;
+    /// CompletedOrder::objects
+    /// .filter(|f| f.completed_at.lt(cutoff))
+    /// .insert_into::<OrderArchive, _, _>(|target, source| vec![
+    /// target.original_id.copy_from(source.id.as_insert_source),
+    /// target.title.copy_from(source.title.as_insert_source),
+    /// target.completed_at.copy_from(source.completed_at.as_insert_source),
+    /// target.status.copy_from(InsertSelectSource::literal("ARCHIVED".to_string)),
+    /// ])
+    /// .execute(&mut ctx)
+    /// .await?;
     /// ```
     #[must_use = "column mappings are lazy — drop one and the INSERT silently omits the column"]
     pub fn copy_from<S: Model>(
@@ -946,15 +878,12 @@ impl<M: Model, V> DjogiField<M, V> {
     /// [`InsertSelectSource<M, V>`](crate::query::insert_select::InsertSelectSource)
     /// for use inside [`copy_from`](DjogiField::copy_from) on a
     /// target-side field.
-    ///
     /// Mirrors [`FieldRef::as_insert_source`] — see that method for the
     /// full contract and the source/target identity guarantee.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// .insert_into::<OrderArchive, _, _>(|target, source| vec![
-    ///     target.original_id().copy_from(source.id().as_insert_source()),
+    /// target.original_id.copy_from(source.id.as_insert_source),
     /// ])
     /// ```
     #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
@@ -1011,7 +940,7 @@ impl<M: Model, V> DjogiField<M, V> {
     /// `GROUPING(column)` — see
     /// [`FieldRef::grouping`](crate::query::FieldRef::grouping).
     /// Returns a metadata-kind aggregate: chaining modifier methods
-    /// (`.distinct()` / `.filter(...)` / `.order_by(...)` / `.over(...)`)
+    /// (`.distinct` / `.filter(...)` / `.order_by(...)` / `.over(...)`)
     /// is a compile error because `AggregateExpr<i32, MetadataAgg>` does
     /// not implement those modifiers.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
@@ -1180,11 +1109,10 @@ impl<M: Model, V: crate::expr::arithmetic::Numeric> DjogiField<M, V> {
 
     /// `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY column)` — continuous
     /// percentile. Returns an ordered-set-kind aggregate; chaining
-    /// `.distinct()` / `.over(...)` / `.order_by(...)` is a compile
+    /// `.distinct` / `.over(...)` / `.order_by(...)` is a compile
     /// error because only [`OrderedSetAgg`](crate::expr::OrderedSetAgg)
     /// modifiers (`.filter(...)`, `.within_group_order_by(...)`) are
     /// legal.
-    ///
     /// See [`FieldRef::percentile_cont`](crate::query::FieldRef::percentile_cont)
     /// for the full surface.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
@@ -1211,7 +1139,6 @@ impl<M: Model, V: IntoFilterValue> DjogiField<M, V> {
 
     /// `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY column)` — discrete
     /// percentile. Returns an ordered-set-kind aggregate.
-    ///
     /// See [`FieldRef::percentile_disc`](crate::query::FieldRef::percentile_disc).
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn percentile_disc(
@@ -1221,9 +1148,8 @@ impl<M: Model, V: IntoFilterValue> DjogiField<M, V> {
         self.sql.percentile_disc(p)
     }
 
-    /// `MODE() WITHIN GROUP (ORDER BY column)` — most common value.
+    /// `MODE WITHIN GROUP (ORDER BY column)` — most common value.
     /// Returns an ordered-set-kind aggregate.
-    ///
     /// See [`FieldRef::mode`](crate::query::FieldRef::mode).
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn mode(self) -> crate::expr::AggregateExpr<V, crate::expr::aggregate::OrderedSetAgg> {
@@ -1232,11 +1158,10 @@ impl<M: Model, V: IntoFilterValue> DjogiField<M, V> {
 
     /// `RANK(value) WITHIN GROUP (ORDER BY column)` — hypothetical-set
     /// rank. Returns a hypothetical-set-kind aggregate; chaining
-    /// `.distinct()` / `.over(...)` / `.order_by(...)` is a compile
+    /// `.distinct` / `.over(...)` / `.order_by(...)` is a compile
     /// error because only [`HypotheticalSetAgg`](crate::expr::HypotheticalSetAgg)
     /// modifiers (`.filter(...)`, `.within_group_order_by(...)`) are
     /// legal.
-    ///
     /// See [`FieldRef::rank_of`](crate::query::FieldRef::rank_of).
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn rank_of(
@@ -1297,7 +1222,6 @@ impl<M: Model, V: crate::expr::aggregate::IntegerColumn> DjogiField<M, V> {
 }
 
 // ── DjogiField — equality and membership predicates ────────────────────────
-//
 // Bounds match the Sassi `Field<T, V>::eq/neq/in_/not_in` impls plus the
 // Djogi SQL bind requirement, but only for types explicitly opted into
 // `DjogiPortableEq`. SQL equality for some Postgres-native values can differ
@@ -1329,10 +1253,9 @@ where
     }
 
     /// `column IN (v1, …)`. Portable.
-    ///
     /// An empty list lowers to SQL `FALSE` and Punnu `false`. Generic over
     /// any `IntoIterator<Item = V>` so callers can pass `Vec<V>`,
-    /// `&[V]::iter().copied()`, or a custom range without preallocating.
+    /// `&[V]::iter.copied`, or a custom range without preallocating.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
     pub fn in_<I, P>(self, values: I) -> PortablePredicate<M>
     where
@@ -1349,7 +1272,6 @@ where
     }
 
     /// `column NOT IN (v1, …)`. Portable.
-    ///
     /// An empty list lowers to SQL `TRUE` and Punnu `true`.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
     pub fn not_in<I, P>(self, values: I) -> PortablePredicate<M>
@@ -1368,7 +1290,6 @@ where
 }
 
 // ── DjogiField — SQL-only Interval equality/membership ────────────────────
-//
 // PostgreSQL `INTERVAL =` linearizes months as 30 days and days as 24 hours
 // before comparing. `crate::Interval` deliberately keeps structural
 // `PartialEq`, so these methods must remain valid SQL predicates without being
@@ -1376,7 +1297,6 @@ where
 
 impl<M: Model> DjogiField<M, crate::Interval> {
     /// Forwarded arithmetic assignment: `SET col = col + amount`.
-    ///
     /// See [`FieldRef::increment`] for semantics.
     #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
     pub fn increment(self, amount: crate::Interval) -> crate::query::update::UpdateAssignment {
@@ -1384,7 +1304,6 @@ impl<M: Model> DjogiField<M, crate::Interval> {
     }
 
     /// Forwarded arithmetic assignment: `SET col = col - amount`.
-    ///
     /// See [`FieldRef::decrement`] for semantics.
     #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
     pub fn decrement(self, amount: crate::Interval) -> crate::query::update::UpdateAssignment {
@@ -1424,8 +1343,7 @@ impl<M: Model> DjogiField<M, crate::Interval> {
 
 impl<M: Model> DjogiField<M, Option<crate::Interval>> {
     /// Nullable `INTERVAL` equality using PostgreSQL `INTERVAL` equality.
-    ///
-    /// `NULL` rows follow SQL three-valued logic. Use `is_null()` for an
+    /// `NULL` rows follow SQL three-valued logic. Use `is_null` for an
     /// explicit NULL predicate.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn eq(self, value: crate::Interval) -> Condition {
@@ -1457,8 +1375,7 @@ impl<M: Model> DjogiField<M, Option<crate::Interval>> {
     }
 }
 
-// ── DjogiField — SQL-only network family (djogi#213) ──────────────────────
-//
+// ── DjogiField — SQL-only network family ──────────────────────
 // `INET`, `CIDR`, and `MACADDR` columns route through SQL-only DjogiField
 // methods for the same reason `Interval` does (see the bound-trait comment
 // above): the proc macro classifier in `djogi-macros` is feature-blind, so
@@ -1787,12 +1704,11 @@ impl<M: Model> DjogiPresentField<M, crate::MacAddr> {
 }
 
 // ── DjogiField — ordering predicates (DjogiPortableOrd opt-in) ────────────
-//
 // Ordering is exposed only on types that opted into `DjogiPortableOrd`. The
 // trait is sealed by absence of a blanket impl + the explicit per-type list
 // above, which is what keeps `Option<U>` and unsupported foreign scalars
 // out. Adopters that need `String` / `f32` / `f64` ordering reach for
-// `explicit_pg_predicate().gt(...)` until a future phase pins
+// `explicit_pg_predicate.gt(...)` until a future phase pins
 // collation/NaN parity.
 
 impl<M: Model, V> DjogiField<M, V>
@@ -1855,10 +1771,9 @@ where
 }
 
 // ── DjogiField — Option<U> predicates ──────────────────────────────────────
-//
 // Null tests apply on every `Option<U>` regardless of `U`'s bind/clone
-// surface. `some()` returns the present-only view that exposes ordinary
-// value comparisons. Direct ordering on `Option<U>` is **not** exposed —
+// surface. `some` returns the present-only view that exposes ordinary
+// value comparisons. Direct ordering on `Option<U>` is **not** exposed
 // Rust `Option` ordering doesn't match SQL three-valued NULL semantics.
 
 impl<M: Model, U: Send + Sync + 'static> DjogiField<M, Option<U>> {
@@ -1877,8 +1792,7 @@ impl<M: Model, U: Send + Sync + 'static> DjogiField<M, Option<U>> {
     }
 
     /// Enter the present-only predicate view.
-    ///
-    /// `some().eq(v)` evaluates `Some(v)` and emits SQL `column = $1` —
+    /// `some.eq(v)` evaluates `Some(v)` and emits SQL `column = $1`
     /// `None` evaluates to `false` in Punnu and SQL `NULL` excludes the
     /// row through three-valued logic.
     pub fn some(self) -> DjogiPresentField<M, U> {
@@ -1898,19 +1812,17 @@ impl<M: Model, U: Send + Sync + 'static> DjogiField<M, Option<U>> {
 }
 
 // ── DjogiField<M, String> — portable string predicates ─────────────────────
-//
 // These mirror existing `FieldRef<M, String>` predicate names so adopter
 // code keeps reading the same way. The SEMANTICS are pinned by the v3 plan:
 // portable case-insensitive predicates use ASCII-stable folding (matches
 // sassi PR1's `icontains`/`istarts_with`/`iends_with`/`iexact` evaluators),
 // portable case-sensitive predicates spell their case-sensitivity
 // explicitly. Database-locale Unicode folding (existing `FieldRef::contains`
-// behaviour) lives only on `explicit_pg_predicate()`.
+// behaviour) lives only on `explicit_pg_predicate`.
 
 impl<M: Model> DjogiField<M, String> {
     /// Case-insensitive substring match (ASCII-stable). Portable.
-    ///
-    /// Use [`explicit_pg_predicate().contains`](ExplicitPgPredicateField::contains)
+    /// Use [`explicit_pg_predicate.contains`](ExplicitPgPredicateField::contains)
     /// for database-locale `ILIKE` semantics.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
     pub fn contains(self, needle: &str) -> PortablePredicate<M> {
@@ -1951,8 +1863,7 @@ impl<M: Model> DjogiField<M, String> {
     }
 
     /// Case-sensitive substring match. Portable.
-    ///
-    /// New explicit name introduced by Phase 8eta — adopters opt into the
+    /// New explicit name introduced by — adopters opt into the
     /// case-sensitive shape rather than getting it implicitly. Sassi's
     /// `Field::contains` is case-sensitive; this method threads that
     /// through.
@@ -1977,11 +1888,10 @@ impl<M: Model> DjogiField<M, String> {
     }
 
     /// Case-insensitive equality (ASCII-stable). Portable.
-    ///
     /// Maps to the Sassi `iexact` operator and lowers to a no-wildcard
     /// `COLLATE "C" ILIKE` comparison in SQL. Database-locale equality
     /// remains available through
-    /// [`explicit_pg_predicate().iexact`](ExplicitPgPredicateField::iexact)
+    /// [`explicit_pg_predicate.iexact`](ExplicitPgPredicateField::iexact)
     /// once PR3 widens the explicit-PG surface.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
     pub fn iexact(self, value: &str) -> PortablePredicate<M> {
@@ -1996,36 +1906,30 @@ impl<M: Model> DjogiField<M, String> {
     }
 
     /// Trigram similarity score expression — `similarity(col, $pattern)`.
-    ///
-    /// Returns an `Expr<f64>` that evaluates the `pg_trgm` `similarity()`
+    /// Returns an `Expr<f64>` that evaluates the `pg_trgm` `similarity`
     /// function per row. Compose with the `Expr<T>` comparison API inside
     /// `filter_expr` to apply a per-query numeric threshold:
-    ///
     /// ```ignore
     /// qs.filter_expr(|f| {
-    ///     f.bio().trgm_similarity("query").gte(Expr::literal(0.3_f64))
+    /// f.bio.trgm_similarity("query").gte(Expr::literal(0.3_f64))
     /// })
     /// ```
-    ///
     /// **Index acceleration:** the function-form predicate emitted by
     /// `trgm_similarity(...).gte(...)` is **not** accelerated by
     /// `gin_trgm_ops` / `gist_trgm_ops` — those opclasses target the `%`
     /// operator family, not arbitrary `similarity(...)` >= comparisons.
     /// For index-accelerated trgm scans, use
     /// [`ExplicitPgPredicateField::trgm_similar_to`] via
-    /// `f.col().explicit_pg_predicate().trgm_similar_to(pattern)` (the
+    /// `f.col.explicit_pg_predicate.trgm_similar_to(pattern)` (the
     /// threshold for that path is the session GUC
     /// `pg_trgm.similarity_threshold`, default `0.3`).
-    ///
     /// **Future work:** using `Expr<f64>` as an `order_by` target or as
     /// an `annotate` payload requires generic `Expr<T>` integration on
     /// `OrderExpr` and `AnnotationSlot`, which is not yet implemented.
     /// See `docs/guide/trgm.md` for the current limitations and the
     /// tracked follow-up.
-    ///
     /// Requires the `pg_trgm` Postgres extension. Enable with
     /// `djogi = { features = ["trgm"] }`.
-    ///
     /// See [`FieldRef::trgm_similarity`] for full documentation.
     #[cfg(feature = "trgm")]
     #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
@@ -2055,7 +1959,6 @@ impl<M: Model> DjogiField<M, bool> {
 }
 
 // ── DjogiPresentField — present-only predicates ────────────────────────────
-//
 // Mirrors the Sassi `PresentField<T, V>` surface. Every method evaluates
 // `None` as `false` in Punnu and emits SQL that excludes NULL rows through
 // three-valued logic.
@@ -2264,7 +2167,6 @@ where
 }
 
 // ── ExplicitPgPredicateField — PostgreSQL-specific surface ─────────────────
-//
 // PR2a forwards the existing `FieldRef` PostgreSQL-specific predicate
 // methods. Coverage matches what `FieldRef` already exposes for the
 // receiver type — the goal in PR2a is API completeness so PR3 can flip the
@@ -2273,7 +2175,6 @@ where
 
 impl<M: Model, V> ExplicitPgPredicateField<M, V> {
     /// Crate-private column-name accessor.
-    ///
     /// Consumed by the MirJzSON SQL-only entry point
     /// (`query::mirjzson::ExplicitPgPredicateField<M, MirJzSON>::mirjzson`)
     /// when constructing `MirJzSONFieldRef<M>` — the future
@@ -2289,7 +2190,6 @@ impl<M: Model, V> ExplicitPgPredicateField<M, V> {
 
     /// `column = value` — equality through database-locale comparison
     /// rules. Forwarded from [`FieldRef::eq`].
-    ///
     /// In PR2a this returns the same SQL shape as the portable `eq`, but
     /// keeping the route explicit lets PR3 preserve the cache-invalid
     /// rejection path for adopters who reach for this method
@@ -2372,7 +2272,6 @@ impl<M: Model, V> ExplicitPgPredicateField<M, V> {
 
 impl<M: Model, V> ExplicitPgPredicateField<M, V> {
     /// `column IN (v1, …)`. Forwarded from [`FieldRef::in_list`].
-    ///
     /// Named `in_list` to match the `FieldRef` naming convention rather
     /// than `in_` — the explicit-PG view is intentionally close to the
     /// existing SQL surface.
@@ -2417,7 +2316,6 @@ impl<M: Model, V> ExplicitPgPredicateField<M, V> {
 impl<M: Model> ExplicitPgPredicateField<M, String> {
     /// Case-insensitive substring match through Postgres `ILIKE` and the
     /// database's text collation. Forwarded from [`FieldRef::contains`].
-    ///
     /// Distinct from `DjogiField::contains` (ASCII-stable, portable).
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn contains(self, value: impl Into<String>) -> Condition {
@@ -2469,24 +2367,19 @@ impl<M: Model> ExplicitPgPredicateField<M, String> {
     }
 
     /// Trigram similarity predicate — `<col> % $pattern`.
-    ///
     /// Compiles to the `%` operator, which is the indexable strategy
     /// member of the `gin_trgm_ops` and `gist_trgm_ops` opclasses — a
     /// GIN or GiST index built with one of those opclasses accelerates
     /// the predicate.
-    ///
     /// **Threshold:** the threshold for `%` is the session GUC
     /// `pg_trgm.similarity_threshold` (Postgres default `0.3`). For a
     /// per-query numeric threshold use
     /// [`DjogiField::trgm_similarity`] inside `filter_expr` — that form
     /// is NOT index-accelerated by the trgm opclasses.
-    ///
     /// The pattern is a positional bind parameter — no user text is
     /// interpolated into SQL.
-    ///
     /// Requires the `pg_trgm` Postgres extension. Enable with
     /// `djogi = { features = ["trgm"] }`.
-    ///
     /// See [`FieldRef::trgm_similar_to`] for full documentation.
     #[cfg(feature = "trgm")]
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
@@ -2883,13 +2776,10 @@ impl<M: crate::model::Model> DjogiField<M, crate::geo::MultiPolygon> {
 }
 
 // ── IntoSqlField — sealed conversion to FieldRef for SQL helper APIs ─────────
-//
 // PR3 needs `FieldRef`-shaped SQL helper APIs (spatial group/cluster keys,
 // aggregate column probes, etc.) to accept either of:
-//
 // - the legacy `FieldRef<M, V>` directly, or
 // - the new generated root accessor return type `DjogiField<M, V>`.
-//
 // `IntoSqlField<M, V>` is the sealed bridge that adapts both into a
 // `FieldRef<M, V>`. Sealing the trait at the module boundary keeps
 // downstream crates from injecting their own column strings — the trait is
@@ -2899,7 +2789,6 @@ impl<M: crate::model::Model> DjogiField<M, crate::geo::MultiPolygon> {
 // satisfy it. Identifier-smuggling stays closed because the only
 // implementations forward the validated column string from one of those
 // two types.
-//
 // The trait deliberately does not accept tuples or other compound shapes:
 // downstream APIs that need a fan-out (DISTINCT ON, GROUP BY, …) reach
 // for `IntoDistinctColumns` / `IntoGroupKeyTuple` instead.
@@ -2909,24 +2798,20 @@ mod sql_field_seal {
 }
 
 /// Sealed conversion from a typed root field handle into a SQL `FieldRef`.
-///
 /// Implemented for:
-///
 /// - [`FieldRef<M, V>`] — legacy SQL-only handle. Returns the receiver
-///   unchanged.
-/// - [`DjogiField<M, V>`] — Phase 8eta root accessor return type. Returns
-///   the wrapped SQL `FieldRef` so the SQL helper sees the same column
-///   metadata it always has.
-///
+/// unchanged.
+/// - [`DjogiField<M, V>`] — root accessor return type. Returns
+/// the wrapped SQL `FieldRef` so the SQL helper sees the same column
+/// metadata it always has.
 /// Use this trait as a bound on SQL helper signatures (spatial group/cluster
 /// keys, single-column probes for aggregate emission helpers, etc.) so root
-/// accessors can flow through without an explicit `.explicit_pg_predicate()`
-/// /  `__sql_field()` step. The bound is sealed, so downstream crates cannot
+/// accessors can flow through without an explicit `.explicit_pg_predicate`
+/// / `__sql_field` step. The bound is sealed, so downstream crates cannot
 /// add hostile impls that would smuggle arbitrary column strings into
 /// SQL emission sites — the only way to reach a `FieldRef<M, V>` here is
 /// through a value already produced by the validated `__make_field_ref` /
 /// `__make_djogi_field` constructors.
-///
 /// The trait deliberately covers single columns only: helpers that fan
 /// out into a column tuple (`DISTINCT ON`, `GROUP BY`) reach for
 /// [`crate::query::queryset::IntoDistinctColumns`] /
@@ -2956,7 +2841,6 @@ impl<M: Model, V> IntoSqlField<M, V> for DjogiField<M, V> {
 }
 
 // ── Macro-construction support ─────────────────────────────────────────────
-//
 // `__make_djogi_field` is the single entry point macro-emitted code uses to
 // stamp a `DjogiField<M, V>` for one column. PR3 routes every generated
 // `{Model}Fields` accessor through this function, so the trusted-construction
@@ -2965,7 +2849,6 @@ impl<M: Model, V> IntoSqlField<M, V> for DjogiField<M, V> {
 #[doc(hidden)]
 pub mod djogi_field_macro_support {
     //! Macro-only entry points for `DjogiField` construction.
-    //!
     //! Same conventions as [`super::__macro_support`]: items are `pub` so
     //! cross-crate macro emission can reach them; the double-underscore
     //! prefix and `#[doc(hidden)]` marker signal that downstream code must
@@ -2975,27 +2858,23 @@ pub mod djogi_field_macro_support {
     use crate::model::Model;
 
     /// Construct a [`DjogiField<M, V>`] for one root column.
-    ///
     /// `column` is the bare physical column name (no relation/path prefix
-    /// — relation/visage traversal is SQL-only and uses a different
+    /// relation/visage traversal is SQL-only and uses a different
     /// constructor in PR3). `extract` is the `fn(&M) -> &V` pointer that
     /// the macro stamps from the model's struct definition.
-    ///
     /// The function:
-    ///
     /// - Validates `column` through the same identifier gate
-    ///   [`__make_field_ref`] uses, rejecting reserved keywords / metadata
-    ///   bytes / over-long names at construction time.
+    /// [`__make_field_ref`] uses, rejecting reserved keywords / metadata
+    /// bytes / over-long names at construction time.
     /// - Constructs a `sassi::Field<M, V>` with the same `column` string
-    ///   so portable predicates and SQL emission target the same column
-    ///   name by construction.
+    /// so portable predicates and SQL emission target the same column
+    /// name by construction.
     /// - Constructs a `FieldRef<M, V>` through the same intern path the
-    ///   shipped macro already uses.
-    ///
+    /// shipped macro already uses.
     /// **Function pointer, not closure.** `extract: fn(&M) -> &V` keeps
     /// `DjogiField` `Copy` without captured state; computed/projected
     /// values that need captured state are non-portable in 8eta and reach
-    /// the database through `explicit_pg_predicate()` or a generated
+    /// the database through `explicit_pg_predicate` or a generated
     /// SQL-only handle.
     #[doc(hidden)]
     pub fn __make_djogi_field<M, V>(column: &'static str, extract: fn(&M) -> &V) -> DjogiField<M, V>
@@ -3013,36 +2892,31 @@ pub mod djogi_field_macro_support {
 }
 
 /// Type-level bridge from user value types to `FilterValue`.
-///
 /// Implementing this trait on `V` enables `FieldRef<M, V>::eq(v)` /
 /// `.gte(v)` / etc. No Serde, no reflection — each bindable SQL type
 /// gets one impl and maps to exactly one `FilterValue` variant.
-///
 /// External crates cannot add new `FilterValue` variants, so extending
 /// this trait for user-defined types means wrapping them in one of the
 /// shipped variants (typically `String` for JSONB-friendly types).
-///
 /// # Two distinct responsibilities
-///
 /// 1. **Bind-value conversion** — [`into_filter_value`](Self::into_filter_value)
-///    maps a Rust value to a typed [`FilterValue`] discriminant for the
-///    SQL bind site. This is the universal direction: every implementor
-///    must define it.
-///
-/// 2. **JSONB path LHS cast selection** —
-///    [`jsonb_sql_cast`](Self::jsonb_sql_cast) returns the typed
-///    [`JsonbSqlCast`](crate::jsonb::JsonbSqlCast) that
-///    [`JsonbPathRef<M, Self>`](crate::jsonb::JsonbPathRef) applies to
-///    the text-extracted LHS before comparing against the bind. The
-///    default body walks a built-in lookup table keyed by
-///    `std::any::type_name::<Self>()`; that covers every primitive Rust
-///    type djogi ships an impl for. **Wrapper implementors (custom PK
-///    newtypes from `primary_key!`, `ForeignKey<T>`, `OneToOneField<T>`,
-///    and any other inner-type-delegating shape) MUST override
-///    `jsonb_sql_cast` to delegate to the inner SQL value type's impl.**
-///    Otherwise the default lookup misses the wrapper's `type_name` and
-///    JSONB path comparisons silently fall back to text — `'10' < '9'`
-///    because text ordering is lexicographic.
+/// maps a Rust value to a typed [`FilterValue`] discriminant for the
+/// SQL bind site. This is the universal direction: every implementor
+/// must define it.
+/// 2. **JSONB path LHS cast selection**
+/// [`jsonb_sql_cast`](Self::jsonb_sql_cast) returns the typed
+/// [`JsonbSqlCast`](crate::jsonb::JsonbSqlCast) that
+/// [`JsonbPathRef<M, Self>`](crate::jsonb::JsonbPathRef) applies to
+/// the text-extracted LHS before comparing against the bind. The
+/// default body walks a built-in lookup table keyed by
+/// `std::any::type_name::<Self>`; that covers every primitive Rust
+/// type djogi ships an impl for. **Wrapper implementors (custom PK
+/// newtypes from `primary_key!`, `ForeignKey<T>`, `OneToOneField<T>`,
+/// and any other inner-type-delegating shape) MUST override
+/// `jsonb_sql_cast` to delegate to the inner SQL value type's impl.**
+/// Otherwise the default lookup misses the wrapper's `type_name` and
+/// JSONB path comparisons silently fall back to text — `'10' < '9'`
+/// because text ordering is lexicographic.
 pub trait IntoFilterValue {
     /// Convert `self` into the typed [`FilterValue`] discriminant the
     /// SQL bind site accepts.
@@ -3051,25 +2925,21 @@ pub trait IntoFilterValue {
     /// Return the typed Postgres cast applied to the JSONB path LHS
     /// when this type appears as the value generic of
     /// [`JsonbPathRef<M, Self>`](crate::jsonb::JsonbPathRef).
-    ///
     /// The default body resolves the type's `std::any::type_name`
     /// through djogi's built-in cast table. This covers every primitive
     /// the framework ships an `IntoFilterValue` impl for (integers,
     /// floats, bool, temporal, UUID, Decimal, Interval, HeerId/RanjId
     /// family, INET/CIDR/MACADDR under the `network` feature).
-    ///
     /// **Wrapper types MUST override this method** to delegate to their
     /// inner SQL value type's `jsonb_sql_cast` — otherwise the wrapper's
     /// own `type_name` falls through to `None` and JSONB path
     /// comparisons against the wrapper silently use text comparison.
     /// Examples in this crate:
-    ///
     /// - [`primary_key!`](crate::primary_key!)-emitted custom PK newtypes
-    ///   delegate to the inner Rust type the macro declared (e.g.
-    ///   `LocalI64Id(i64)` delegates to `i64`).
+    /// delegate to the inner Rust type the macro declared (e.g.
+    /// `LocalI64Id(i64)` delegates to `i64`).
     /// - [`ForeignKey<T>`](crate::ForeignKey) delegates to `T::Pk`.
     /// - [`OneToOneField<T>`](crate::OneToOneField) delegates to `T::Pk`.
-    ///
     /// Returns `None` for `String` / `&str` (text extraction already
     /// produces text — no cast needed) and for any type not in the
     /// table. Adopters defining a custom scalar type for a JSONB path
@@ -3084,32 +2954,27 @@ pub trait IntoFilterValue {
 }
 
 /// Convert a lookup argument into the SQL bind value for a specific field type.
-///
 /// `IntoFilterValue` answers "can this value become a SQL bind?" while this
 /// trait answers "can this value be used against this field's declared type?".
 /// That distinction lets `FieldRef<M, String>::eq("x")`,
 /// `FieldRef<M, Option<i16>>::lte(1970_i16)`, and
 /// `FieldRef<M, Tracked<String>>::eq("x")` compile without allowing
 /// unrelated mismatches such as `FieldRef<M, i32>::eq("x")`.
-///
 /// # Shipped impls
-///
 /// - `impl<V: IntoFilterValue> IntoFieldFilterValue<V> for V` — the blanket
-///   that keeps every existing `field.eq(v)` call site compiling (passing
-///   the column's declared `V` directly).
+/// that keeps every existing `field.eq(v)` call site compiling (passing
+/// the column's declared `V` directly).
 /// - `IntoFieldFilterValue<String> for &str` — accept `&str` literals against
-///   `String` columns (issue #167).
+/// `String` columns (issue #167).
 /// - `impl<V: IntoFilterValue> IntoFieldFilterValue<Option<V>> for V` and
-///   `IntoFieldFilterValue<Option<String>> for &str` — pass the inner scalar
-///   against a nullable column; NULL rows are excluded by SQL three-valued
-///   logic at emission time (issue #107).
+/// `IntoFieldFilterValue<Option<String>> for &str` — pass the inner scalar
+/// against a nullable column; NULL rows are excluded by SQL three-valued
+/// logic at emission time (issue #107).
 /// - `impl<V: IntoFilterValue> IntoFieldFilterValue<Tracked<V>> for V` and
-///   `IntoFieldFilterValue<Tracked<String>> for &str` — pass the inner value
-///   against a `Tracked<V>` column; dirty-flag state is irrelevant on the
-///   SQL bind path (issue #166).
-///
+/// `IntoFieldFilterValue<Tracked<String>> for &str` — pass the inner value
+/// against a `Tracked<V>` column; dirty-flag state is irrelevant on the
+/// SQL bind path (issue #166).
 /// # Why not blanket `Into<FilterValue>`?
-///
 /// A bare `Into<FilterValue>` bound on `eq` would silently widen every typed
 /// `FieldRef<M, V>::eq` call to accept any SQL-bindable value, dropping the
 /// column-type check at the API boundary. The `FieldValue` type parameter
@@ -3118,7 +2983,6 @@ pub trait IntoFilterValue {
 /// which is intentionally not impl'd).
 pub trait IntoFieldFilterValue<FieldValue> {
     /// Convert `self` into the SQL bind value the field's lookup leaf carries.
-    ///
     /// The returned [`FilterValue`] feeds the typed Postgres bind site in
     /// `query::sql`. Implementors must return a variant whose runtime type
     /// matches what the column's emitter expects (e.g. `FilterValue::String`
@@ -3172,34 +3036,30 @@ impl IntoFieldFilterValue<Tracked<String>> for &str {
 }
 
 /// Convert an argument into the value type Sassi evaluates for portable fields.
-///
 /// Portable predicates need a real `V` for `sassi::Field<M, V>`, not just a
 /// SQL bind. These impls keep the public lookup ergonomics aligned with the SQL
 /// surface while preserving the field's declared type for in-memory predicate
 /// evaluation. Mirrors [`IntoFieldFilterValue`] one impl at a time — the SQL
 /// emitter and Punnu agree on which forms reach each field type.
-///
 /// # Shipped impls
-///
 /// - `impl<V> IntoPortableFieldValue<V> for V` — the identity blanket: any
-///   value type can stand in as its own portable form (so existing
-///   `field.eq(v)` call sites continue to compile against `DjogiField<M, V>`).
+/// value type can stand in as its own portable form (so existing
+/// `field.eq(v)` call sites continue to compile against `DjogiField<M, V>`).
 /// - `IntoPortableFieldValue<String> for &str` — wraps `&str` in `String`
-///   for portable equality against String columns (issue #167).
+/// for portable equality against String columns (issue #167).
 /// - `impl<V> IntoPortableFieldValue<Option<V>> for V` and
-///   `IntoPortableFieldValue<Option<String>> for &str` — wrap the inner value
-///   in `Some(_)` for portable comparison against nullable columns. Sassi's
-///   `Field<M, Option<V>>::eq(Some(v))` evaluates `None` rows as false,
-///   matching SQL three-valued logic (issue #107).
+/// `IntoPortableFieldValue<Option<String>> for &str` — wrap the inner value
+/// in `Some(_)` for portable comparison against nullable columns. Sassi's
+/// `Field<M, Option<V>>::eq(Some(v))` evaluates `None` rows as false,
+/// matching SQL three-valued logic (issue #107).
 /// - `impl<V> IntoPortableFieldValue<Tracked<V>> for V` and
-///   `IntoPortableFieldValue<Tracked<String>> for &str` — wrap the inner
-///   value in `Tracked::new(_)` (always clean). [`Tracked<T>`]'s
-///   `PartialEq` / `PartialOrd` / `Ord` / `Hash` ignore the dirty flag, so
-///   comparing a freshly-constructed `Tracked` against a loaded row's
-///   `Tracked` reduces to comparing inner `T` values (issue #166).
+/// `IntoPortableFieldValue<Tracked<String>> for &str` — wrap the inner
+/// value in `Tracked::new(_)` (always clean). [`Tracked<T>`]'s
+/// `PartialEq` / `PartialOrd` / `Ord` / `Hash` ignore the dirty flag, so
+/// comparing a freshly-constructed `Tracked` against a loaded row's
+/// `Tracked` reduces to comparing inner `T` values (issue #166).
 pub trait IntoPortableFieldValue<FieldValue> {
     /// Convert `self` into the field's declared portable value type.
-    ///
     /// The returned value flows into Sassi's `Field<M, FieldValue>::eq` /
     /// `.gt` / `.in_` / etc. as the right-hand-side operand. Implementors
     /// must produce a value whose [`PartialEq`] / [`PartialOrd`] / [`Hash`]
@@ -3245,7 +3105,7 @@ impl IntoPortableFieldValue<Tracked<String>> for &str {
 }
 
 // One impl per SQL-bindable type Djogi ships with. New types (e.g. Decimal
-// in Phase 5) extend both `FilterValue` and this trait in lockstep.
+// in) extend both `FilterValue` and this trait in lockstep.
 impl IntoFilterValue for String {
     fn into_filter_value(self) -> FilterValue {
         FilterValue::String(self)
@@ -3271,28 +3131,26 @@ impl IntoFilterValue for i64 {
         FilterValue::I64(self)
     }
 }
-// Narrow integer widening (Phase 7-Zero-2 polish, GH issue #29; `u64`
-// arm added under djogi#186 / Phase 8.5 v3 Cluster 2).
-//
+// Narrow integer widening (polish, GH issue #29; `u64`
+// arm added under v3 ).
 // Postgres has no native unsigned-integer types and no `i8`. Adopters
 // who model fields as `u8` / `u16` / `u32` / `i8` (port numbers, small
 // counts, signed-byte audio samples, etc.) need to compare against
 // those values without manually upcasting. Each narrow type widens to
 // the smallest signed Postgres type that fits its full range:
-//
-// - `i8`  → `I16`     (smallint)        — i8 fits in int2 directly.
-// - `u8`  → `I16`     (smallint)        — u8 max 255 fits in int2's 32_767.
-// - `u16` → `I32`     (integer)         — u16 max 65_535 exceeds i16's 32_767.
-// - `u32` → `I64`     (bigint)          — u32 max ~4.3B exceeds i32's ~2.1B.
-// - `u64` → `Decimal` (bare NUMERIC)     — u64 max ~18.4 quintillion exceeds
-//                                         i64 max ~9.2 quintillion, so signed
-//                                         widening loses the upper half. The
-//                                         lossless route is `rust_decimal::Decimal`,
-//                                         which Postgres `NUMERIC` accepts. The
-//                                         column-side type-derived CHECK from
-//                                         djogi#190 enforces both range bounds
-//                                         and integrality (`col = trunc(col)`)
-//                                         on the bare NUMERIC column.
+// - `i8` → `I16` (smallint) — i8 fits in int2 directly.
+// - `u8` → `I16` (smallint) — u8 max 255 fits in int2's 32_767.
+// - `u16` → `I32` (integer) — u16 max 65_535 exceeds i16's 32_767.
+// - `u32` → `I64` (bigint) — u32 max ~4.3B exceeds i32's ~2.1B.
+// - `u64` → `Decimal` (bare NUMERIC) — u64 max ~18.4 quintillion exceeds
+// i64 max ~9.2 quintillion, so signed
+// widening loses the upper half. The
+// lossless route is `rust_decimal::Decimal`,
+// which Postgres `NUMERIC` accepts. The
+// column-side type-derived CHECK from
+// enforces both range bounds
+// and integrality (`col = trunc(col)`)
+// on the bare NUMERIC column.
 impl IntoFilterValue for i8 {
     fn into_filter_value(self) -> FilterValue {
         FilterValue::I16(i16::from(self))
@@ -3317,7 +3175,7 @@ impl IntoFilterValue for u64 {
     fn into_filter_value(self) -> FilterValue {
         // `Decimal::from(u64)` is infallible (u64::MAX < Decimal::MAX,
         // since Decimal is 96-bit mantissa). Round-trips exactly back
-        // to u64 via the column-side decode path that djogi#190 will
+        // to u64 via the column-side decode path that will
         // wire when narrow / unsigned column support lands.
         FilterValue::Decimal(rust_decimal::Decimal::from(self))
     }
@@ -3395,7 +3253,7 @@ where
         T::into_range_filter_value(self)
     }
 }
-// djogi#213 — network family. `IntoFilterValue` is feature-gated to
+// network family. `IntoFilterValue` is feature-gated to
 // match the FilterValue carrier variants. Equality on these types is
 // structural in Rust AND in Postgres (INET / CIDR / MACADDR `=` compare
 // bytes), so they ride the `DjogiPortableEq` path without an SQL-only
@@ -3542,7 +3400,6 @@ impl<M: Model, V> FieldRef<M, V> {
 // preallocated `Vec<V>`. Split into its own impl block so the generic bound
 // on the list payload is visible at the call site; no functional difference
 // versus folding them into the block above.
-//
 // Accepting `IntoIterator` matters at scale — callers building 10k+-element
 // `IN (...)` filters (batch imports, bulk soft-deletes) can pipe directly
 // from a `Range`, a `Map`, or a DB cursor without a preallocated Vec. `Vec<V>`
@@ -3585,10 +3442,9 @@ impl<M: Model, V> FieldRef<M, V> {
 }
 
 // ── String-only lookups ───────────────────────────────────────────────────
-//
 // Gated on `V = String` via a separate impl block. The methods accept
 // `impl Into<String>` so callers can pass `&str`, `String`, or `Cow<str>`
-// without an extra `.to_string()`. Non-string columns do not resolve these
+// without an extra `.to_string`. Non-string columns do not resolve these
 // methods — the compiler reports "no method named `contains` on
 // `FieldRef<M, i64>`", which is exactly the desired user experience.
 impl<M: Model> FieldRef<M, String> {
@@ -3643,19 +3499,16 @@ impl<M: Model> FieldRef<M, String> {
 
     /// Filter rows where the column matches `value` under Postgres's
     /// POSIX regex operator (`column ~ $1`, case-sensitive).
-    ///
     /// `value` is a Postgres POSIX regex pattern — *not* a PCRE pattern,
     /// and *not* a Rust regex pattern. The match is performed entirely
     /// server-side; Djogi does not link a Rust regex engine, and the
     /// `regex` rule in `docs/spec/decisions.md` deliberately carves out
     /// Postgres-side `~` / `~*` because the operator is a Postgres
     /// feature exposed through the typed query API.
-    ///
     /// For literal-substring matching, prefer
     /// [`contains`](Self::contains) — it escapes `%`, `_`, and `\` for
     /// you. Reach for `regex` only when the predicate genuinely needs
     /// alternation, anchors, or character classes.
-    ///
     /// Postgres POSIX regex syntax is documented in the Postgres manual
     /// (§ "Pattern Matching", "POSIX Regular Expressions"). It differs
     /// from PCRE in several places (anchoring, lookaround support,
@@ -3683,76 +3536,60 @@ impl<M: Model> FieldRef<M, String> {
 }
 
 // ── pg_trgm — trigram similarity lookups (gated on `trgm` feature) ──────────
-//
 // Implementation on `FieldRef<M, String>` (the SQL-only handle). The public
 // surface is forwarded from:
-//   - `ExplicitPgPredicateField<M, String>::trgm_similar_to` — predicate
-//     compiling to the `%` operator (`WHERE <col> % $n`). Reached via
-//     `f.col().explicit_pg_predicate().trgm_similar_to(pattern)`. Index-
-//     accelerated by `gin_trgm_ops` / `gist_trgm_ops`. Threshold is the
-//     session GUC `pg_trgm.similarity_threshold`.
-//   - `DjogiField<M, String>::trgm_similarity` — score expression
-//     (`similarity(col, $n)`). Reached via `f.col().trgm_similarity(pattern)`
-//     in `filter_expr` closures for per-query numeric thresholds. NOT
-//     accelerated by the trgm opclasses (function-form predicate, not
-//     operator).
-//
-// The pattern always rides through `push_bind` as a positional parameter —
+// - `ExplicitPgPredicateField<M, String>::trgm_similar_to` — predicate
+// compiling to the `%` operator (`WHERE <col> % $n`). Reached via
+// `f.col.explicit_pg_predicate.trgm_similar_to(pattern)`. Index-
+// accelerated by `gin_trgm_ops` / `gist_trgm_ops`. Threshold is the
+// session GUC `pg_trgm.similarity_threshold`.
+// - `DjogiField<M, String>::trgm_similarity` — score expression
+// (`similarity(col, $n)`). Reached via `f.col.trgm_similarity(pattern)`
+// in `filter_expr` closures for per-query numeric thresholds. NOT
+// accelerated by the trgm opclasses (function-form predicate, not
+// operator).
+// The pattern always rides through `push_bind` as a positional parameter
 // no user text is interpolated into SQL.
 #[cfg(feature = "trgm")]
 impl<M: Model> FieldRef<M, String> {
     /// Trigram similarity predicate — `<col> % $pattern`.
-    ///
     /// **Adopters:** reach this via
-    /// `f.col().explicit_pg_predicate().trgm_similar_to(pattern)` (the same
+    /// `f.col.explicit_pg_predicate.trgm_similar_to(pattern)` (the same
     /// path as `regex`/`iregex`). This `FieldRef` method is the
     /// implementation target; `ExplicitPgPredicateField` forwards to it.
-    ///
     /// Returns a `Condition` that filters rows where the column value is
     /// trigram-similar to `pattern` under Postgres's `%` operator. The
     /// `%` operator is the indexable strategy member of the
     /// `gin_trgm_ops` and `gist_trgm_ops` opclasses, so a GIN or GiST
     /// index built with one of those opclasses accelerates this
     /// predicate.
-    ///
     /// # Threshold
-    ///
     /// The threshold for `%` is the session GUC
     /// `pg_trgm.similarity_threshold` (Postgres default `0.3`). Override
     /// per-session with `SET pg_trgm.similarity_threshold = 0.4;` or
     /// per-transaction with `SET LOCAL ...` inside a `BEGIN`/`COMMIT`
     /// block.
-    ///
     /// For a per-query numeric threshold without touching the GUC, use
     /// [`Self::trgm_similarity`] inside `filter_expr` with the
     /// `Expr<T>` comparison API. That form is NOT accelerated by the
     /// trgm opclasses.
-    ///
     /// # Extension requirement
-    ///
     /// Requires `pg_trgm` installed in the target Postgres database:
-    ///
     /// ```sql
     /// CREATE EXTENSION IF NOT EXISTS pg_trgm;
     /// ```
-    ///
     /// Djogi's migration runner installs `pg_trgm` automatically through
-    /// the Phase 0 bootstrap migration when any index in the descriptor
+    /// the bootstrap migration when any index in the descriptor
     /// inventory declares `extension_dependency: Some("pg_trgm")`. See
-    /// `docs/guide/trgm.md` for the per-app vs Phase 0 split.
-    ///
+    /// `docs/guide/trgm.md` for the per-app vs split.
     /// # Index acceleration
-    ///
     /// Declare a GIN index with `gin_trgm_ops` opclass for high read
     /// throughput; GiST with `gist_trgm_ops` for queries that also use
     /// the `<->` distance operator (not yet exposed at the typed surface).
     /// Without a trgm-opclass index, the `%` operator falls back to a
     /// sequential scan with per-row similarity computation.
-    ///
     /// # SQL shape
-    ///
     /// Emits: `<col> % $1`
-    ///
     /// The `pattern` value is a positional bind parameter — never
     /// interpolated into SQL.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
@@ -3765,50 +3602,38 @@ impl<M: Model> FieldRef<M, String> {
         ))
     }
 
-    /// Trigram similarity score expression —
+    /// Trigram similarity score expression
     /// `similarity(col, $pattern)`.
-    ///
-    /// **Adopters:** reach this via `f.col().trgm_similarity(pattern)` directly
+    /// **Adopters:** reach this via `f.col.trgm_similarity(pattern)` directly
     /// on the `DjogiField` returned by generated `{Model}Fields` accessors.
     /// This `FieldRef` method is the implementation target that both
     /// `DjogiField::trgm_similarity` and direct `FieldRef` callsites forward to.
-    ///
     /// Returns an `Expr<f64>` that Postgres evaluates per row as the
-    /// `similarity()` value (`[0.0, 1.0]`) between the column and the
+    /// `similarity` value (`[0.0, 1.0]`) between the column and the
     /// supplied pattern. Compose with the `Expr<T>` comparison API
     /// inside `filter_expr` to apply a per-query numeric threshold:
-    ///
     /// ```ignore
     /// qs.filter_expr(|f| {
-    ///     f.bio().trgm_similarity("query").gte(Expr::literal(0.3_f64))
+    /// f.bio.trgm_similarity("query").gte(Expr::literal(0.3_f64))
     /// })
     /// ```
-    ///
     /// # Index acceleration
-    ///
     /// The function-form predicate emitted by `trgm_similarity(...).gte(...)`
     /// is **not** accelerated by `gin_trgm_ops` / `gist_trgm_ops` — those
     /// opclasses target the operator family (`%`, `<%`, `<<%`, `<->`,
     /// `<<->`, `<<<->`, `=`), not arbitrary `similarity(...)` comparisons.
     /// For index-accelerated trgm scans, use [`Self::trgm_similar_to`].
-    ///
     /// # Future work
-    ///
     /// Using `Expr<f64>` as an `order_by` target or as an `annotate`
     /// payload requires generic `Expr<T>` integration on `OrderExpr`
     /// and `AnnotationSlot`, which is not yet implemented. The same
     /// gap affects `TsRank` / `TsRankCd` in the FTS feature and any
     /// future score-producing expression. See `docs/guide/trgm.md`
     /// for the documented limitations and the tracked follow-up.
-    ///
     /// # Extension requirement
-    ///
     /// Requires `pg_trgm` installed in the target Postgres database.
-    ///
     /// # SQL shape
-    ///
     /// Emits: `similarity(<col>, $1)`
-    ///
     /// The `pattern` value is a positional bind parameter — never
     /// interpolated into SQL.
     #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
@@ -3821,7 +3646,6 @@ impl<M: Model> FieldRef<M, String> {
 }
 
 // ── NULL checks ───────────────────────────────────────────────────────────
-//
 // Apply to every `FieldRef` regardless of `V` — nullability is a
 // column-level property, not a value-level one. Nullable columns in user
 // structs are declared `Option<T>` and the macro still emits a
@@ -3829,7 +3653,6 @@ impl<M: Model> FieldRef<M, String> {
 // methods give the explicit NULL path.
 impl<M: Model, V> FieldRef<M, V> {
     /// `column IS NULL`.
-    ///
     /// **Applicability:** available on every `FieldRef<M, V>` regardless of
     /// whether the underlying column is declared `NOT NULL` in the schema.
     /// This is intentional — Postgres can produce a NULL for any column
@@ -3843,7 +3666,6 @@ impl<M: Model, V> FieldRef<M, V> {
     }
 
     /// `column IS NOT NULL`.
-    ///
     /// **Applicability:** available on every `FieldRef<M, V>` regardless of
     /// whether the underlying column is declared `NOT NULL` in the schema.
     /// This is intentional — Postgres can produce a NULL for any column
@@ -3863,10 +3685,8 @@ impl<M: Model, V> FieldRef<M, V> {
 }
 
 // ── Array field operators ─────────────────────────────────────────────────
-//
 // Available on `FieldRef<M, Vec<V>>` for element types Djogi supports as
 // Postgres array columns: `Vec<String>`, `Vec<i32>`, `Vec<i64>`, `Vec<bool>`.
-//
 // The sealed trait `IntoArrayFilterValue` maps each supported element type to
 // its matching `FilterValue::Array*` variant. The sealed impl block prevents
 // downstream crates from implementing the trait for unsupported types.
@@ -3892,13 +3712,10 @@ mod array_sealed {
 
 /// Converts a `Vec<V>` element type into the matching [`FilterValue::Array*`]
 /// variant for use in array operator conditions.
-///
 /// Sealed so that only the Djogi-blessed array element types can be used with
 /// the array operator methods on `FieldRef<M, Vec<V>>`. Downstream code cannot
 /// implement this trait.
-///
 /// # Supported element types
-///
 /// | Rust type | Postgres column type |
 /// |---|---|
 /// | `String` | `TEXT[]` |
@@ -3916,7 +3733,6 @@ mod array_sealed {
 /// | [`RanjId`](crate::types::RanjId) | `UUID[]` |
 /// | [`HeerIdDesc`](crate::types::HeerIdDesc) / [`HeerIdRecencyBiased`](crate::types::HeerIdRecencyBiased) | `BIGINT[]` |
 /// | [`RanjIdDesc`](crate::types::RanjIdDesc) / [`RanjIdRecencyBiased`](crate::types::RanjIdRecencyBiased) | `UUID[]` |
-///
 /// For adopter-defined newtype or enum element types, see the
 /// [array guide](https://github.com/TarunvirBains/djogi/blob/main/docs/guide/arrays.md)
 /// for the `DjogiSqlType` extension path.
@@ -4005,10 +3821,8 @@ impl IntoArrayFilterValue for crate::types::RanjIdDesc {
 
 impl<M: Model, V: IntoArrayFilterValue + Clone + 'static> FieldRef<M, Vec<V>> {
     /// `column @> $1` — array contains.
-    ///
     /// Returns rows where every element in `values` also appears in the column.
     /// Maps to the Postgres `@>` (contains) array operator.
-    ///
     /// Djogi arrays are always 1-dimensional; multi-dimensional arrays are not
     /// a supported field type.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
@@ -4020,7 +3834,6 @@ impl<M: Model, V: IntoArrayFilterValue + Clone + 'static> FieldRef<M, Vec<V>> {
     }
 
     /// `column <@ $1` — contained by.
-    ///
     /// Returns rows where every element in the column also appears in `values`.
     /// Maps to the Postgres `<@` (contained by) array operator.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
@@ -4032,7 +3845,6 @@ impl<M: Model, V: IntoArrayFilterValue + Clone + 'static> FieldRef<M, Vec<V>> {
     }
 
     /// `column && $1` — overlap (at least one element in common).
-    ///
     /// Returns rows where the column and `values` share at least one element.
     /// Maps to the Postgres `&&` array overlap operator.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
@@ -4044,11 +3856,9 @@ impl<M: Model, V: IntoArrayFilterValue + Clone + 'static> FieldRef<M, Vec<V>> {
     }
 
     /// `array_length(column, 1)` — number of elements in the 1-dimensional array.
-    ///
     /// Returns an [`Expr<i32>`](crate::expr::Expr) that slots into the
-    /// expression IR so `.len().gt(3)` composes with the existing `Cmp`
-    /// machinery (Phase 4 expression IR).
-    ///
+    /// expression IR so `.len.gt(3)` composes with the existing `Cmp`
+    /// machinery (expression IR).
     /// The dimension argument is hardcoded to `1`. Djogi arrays are always
     /// 1-dimensional; multi-dimensional arrays are not a supported field type.
     #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
@@ -4072,7 +3882,6 @@ where
     }
 
     /// `column @> value` — range contains an element.
-    ///
     /// PostgreSQL-specific; root model fields expose this through
     /// [`DjogiField::explicit_pg_predicate`].
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
@@ -4146,7 +3955,6 @@ where
 }
 
 // ── JSONB flat-path entry point ───────────────────────────────────────────
-//
 // `.path::<V>("a.b.c")` on a `FieldRef<M, Jsonb<T>>` produces a
 // `JsonbPathRef<M, V>` that exposes the same comparison surface
 // (`eq`, `gt`, etc.) as a plain `FieldRef<M, V>`, but emits
@@ -4154,28 +3962,21 @@ where
 
 impl<M: Model, T> FieldRef<M, Jsonb<T>> {
     /// Navigate to a sub-field of this JSONB column via a dot-separated path.
-    ///
     /// Returns a [`JsonbPathRef<M, V>`](crate::jsonb::JsonbPathRef) that supports
     /// the same comparison surface as `FieldRef<M, V>`: `eq`, `neq`, `gt`,
     /// `gte`, `lt`, `lte`, `in_list`, `is_null`, `is_not_null`.
-    ///
     /// # Path format
-    ///
     /// Dot-separated segments. Each segment must be non-empty, begin with an
     /// ASCII letter or underscore, contain only ASCII alphanumerics or
     /// underscores, and be at most 63 bytes long.
-    ///
     /// # SQL emission
-    ///
     /// `specs.path::<i32>("engine.cylinders")` emits
     /// `(specs->'engine'->>'cylinders')::int` on the LHS of the comparison.
-    ///
     /// # Example
-    ///
     /// ```ignore
-    /// Post::objects()
-    ///     .filter(|f| f.specs().path::<i32>("engine.cylinders").gt(4))
-    ///     .fetch_all(&mut ctx).await?
+    /// Post::objects
+    /// .filter(|f| f.specs.path::<i32>("engine.cylinders").gt(4))
+    /// .fetch_all(&mut ctx).await?
     /// ```
     #[must_use = "JsonbPathRef is lazy — dropping one silently omits the filter"]
     pub fn path<V>(self, dotted: &'static str) -> crate::jsonb::JsonbPathRef<M, V> {
@@ -4183,26 +3984,21 @@ impl<M: Model, T> FieldRef<M, Jsonb<T>> {
     }
 
     /// Enter the compile-time typed path tree for this JSONB column.
-    ///
     /// Returns `T::Path<M>` — the derive-generated tree that provides one
     /// method per field of `T`. Scalar fields return a
     /// [`JsonbPathRef<M, V>`](crate::jsonb::JsonbPathRef) ready for
     /// comparison; nested fields return the nested type's `Path<M>`.
-    ///
     /// `T` must implement [`JsonbSchema`](crate::jsonb::JsonbSchema) (done
     /// by adding `#[derive(JsonbSchema)]` to the schema struct). If `T`
     /// does not implement `JsonbSchema` the compiler reports a trait-bound
     /// error at the `#[derive(Model)]` site.
-    ///
     /// The flat [`path`](Self::path) escape hatch remains available when you
     /// need dynamic paths or types outside the cast-matrix allowlist.
-    ///
     /// # Example
-    ///
     /// ```ignore
-    /// Vehicle::objects()
-    ///     .filter(|f| f.specs().typed().engine.cylinders.gt(4))
-    ///     .fetch_all(&mut ctx).await?
+    /// Vehicle::objects
+    /// .filter(|f| f.specs.typed.engine.cylinders.gt(4))
+    /// .fetch_all(&mut ctx).await?
     /// ```
     #[must_use = "typed path handles are lazy — dropping one silently omits the filter"]
     pub fn typed(self) -> T::Path<M>
@@ -4213,17 +4009,15 @@ impl<M: Model, T> FieldRef<M, Jsonb<T>> {
     }
 }
 
-/// `path()` is also available on nullable JSONB columns (`Option<Jsonb<T>>`).
+/// `path` is also available on nullable JSONB columns (`Option<Jsonb<T>>`).
 /// The SQL expression navigates into the column as if it were non-null; when
 /// the column IS NULL the Postgres JSONB path operators themselves return NULL,
 /// so comparisons naturally exclude NULL rows — consistent with SQL's
 /// three-valued logic.
 impl<M: Model, T> FieldRef<M, Option<Jsonb<T>>> {
     /// Navigate to a sub-field of this nullable JSONB column.
-    ///
     /// Rows where the column IS NULL are excluded by the comparison (SQL NULL
     /// semantics), which is the expected behavior for optional JSONB fields.
-    ///
     /// See [`FieldRef<M, Jsonb<T>>::path`] for the full documentation.
     #[must_use = "JsonbPathRef is lazy — dropping one silently omits the filter"]
     pub fn path<V>(self, dotted: &'static str) -> crate::jsonb::JsonbPathRef<M, V> {
@@ -4231,9 +4025,8 @@ impl<M: Model, T> FieldRef<M, Option<Jsonb<T>>> {
     }
 
     /// Enter the compile-time typed path tree for this nullable JSONB column.
-    ///
     /// Rows where the column IS NULL are excluded by comparisons (SQL NULL
-    /// semantics). Otherwise identical to the non-nullable variant —
+    /// semantics). Otherwise identical to the non-nullable variant
     /// see [`FieldRef<M, Jsonb<T>>::typed`].
     #[must_use = "typed path handles are lazy — dropping one silently omits the filter"]
     pub fn typed(self) -> T::Path<M>
@@ -4244,8 +4037,7 @@ impl<M: Model, T> FieldRef<M, Option<Jsonb<T>>> {
     }
 }
 
-// ── Spatial operators on GeoPoint fields (Phase 6 `spatial` feature) ────────
-//
+// ── Spatial operators on GeoPoint fields (`spatial` feature) ────────
 // Gated on `#[cfg(feature = "spatial")]`. Available only on
 // `FieldRef<M, GeoPoint>`, so calling `.within_km(...)` on a non-spatial
 // column yields a helpful "no method named `within_km`" compile error — the
@@ -4256,30 +4048,23 @@ impl<M: Model, T> FieldRef<M, Option<Jsonb<T>>> {
 impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
     /// Filter rows where this geography column is within `km` kilometers of
     /// `center`.
-    ///
     /// # SQL emission
-    ///
     /// Emits `ST_DWithin(<col>, ST_Point($lon, $lat)::geography, $r)` where:
-    ///
     /// - `$lon` and `$lat` are the longitude and latitude of `center` bound
-    ///   as parameters.
+    /// as parameters.
     /// - `$r` is `km * 1000.0` (the radius in meters) bound as a parameter.
-    ///
     /// The radius is converted from kilometers to meters internally so the bind
     /// type matches `ST_DWithin`'s `GEOGRAPHY` distance-in-meters signature.
-    ///
     /// All three values flow through `push_bind` — no string interpolation of
     /// user-supplied data.
-    ///
     /// # Example
-    ///
     /// ```ignore
-    /// Place::objects()
-    ///     .filter(|p| p.location().within_km(
-    ///         GeoPoint::new(37.7749, -122.4194).unwrap(),
-    ///         50.0,  // km
-    ///     ))
-    ///     .fetch_all(&mut ctx).await?
+    /// Place::objects
+    /// .filter(|p| p.location.within_km(
+    /// GeoPoint::new(37.7749, -122.4194).unwrap,
+    /// 50.0, // km
+    /// ))
+    /// .fetch_all(&mut ctx).await?
     /// ```
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn within_km(self, center: crate::geo::GeoPoint, km: f64) -> Condition {
@@ -4296,40 +4081,32 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
 
     /// Order rows by ascending distance from `center`, with the model's primary
     /// key appended as a deterministic tiebreaker.
-    ///
     /// # Why the tiebreak?
-    ///
     /// Without the tiebreak, equidistant rows return in arbitrary Postgres order
-    /// — flaky tests and inconsistent pagination cursors. The primary-key
+    /// flaky tests and inconsistent pagination cursors. The primary-key
     /// tiebreak is always appended unconditionally. Callers who chain additional
     /// `.order_by(...)` calls get their keys appended after the tiebreak.
-    ///
     /// # SQL emission
-    ///
     /// Emits two comma-separated ORDER BY terms:
     /// ```sql
     /// ST_Distance(<col>, ST_Point($lon, $lat)::geography) ASC, id ASC
     /// ```
-    ///
     /// `$lon` and `$lat` are bound as parameters. The `id` column name is
-    /// the model's primary key — captured from `M::descriptor().pk_column()`
+    /// the model's primary key — captured from `M::descriptor.pk_column`
     /// at call time.
-    ///
     /// # Example
-    ///
     /// ```ignore
-    /// Place::objects()
-    ///     .order_by(|p| p.location().order_by_distance(
-    ///         GeoPoint::new(37.7749, -122.4194).unwrap()
-    ///     ))
-    ///     .fetch_all(&mut ctx).await?
+    /// Place::objects
+    /// .order_by(|p| p.location.order_by_distance(
+    /// GeoPoint::new(37.7749, -122.4194).unwrap
+    /// ))
+    /// .fetch_all(&mut ctx).await?
     /// ```
     #[must_use = "order expressions are inert until passed to `order_by`"]
     pub fn order_by_distance(self, center: crate::geo::GeoPoint) -> crate::query::order::OrderExpr {
         // Get the PK column from the descriptor. For all standard PK types
         // (HeerId, RanjId, Serial) this is "id".
-        //
-        // The `unwrap_or(self.column())` fallback path is defensive-only and
+        // The `unwrap_or(self.column)` fallback path is defensive-only and
         // unreachable from the public API: `FieldRef<M, GeoPoint>` requires
         // `M: Model`, and `#[model(pk = None)]` models do not receive a
         // `Model` impl from the macro (only `pk = None` with no ordering
@@ -4344,26 +4121,23 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
 }
 
 // ── Spatial operators on Option<GeoPoint> fields (#16 closure) ──────────────
-//
 // Mirrors the `FieldRef<M, GeoPoint>` block above for the nullable
 // variant. Adopters who model location as `Option<GeoPoint>` (the
 // natural Rust shape for "may not be located yet") can call the same
 // `.within_km` / `.order_by_distance` methods directly:
-//
 // - `within_km` gates the spatial predicate behind a sibling
-//   `IS NOT NULL` check, AND-combined with the existing
-//   `ST_DWithin(...)` predicate. Postgres also drops NULL-geo rows
-//   via three-valued logic on `ST_DWithin` (NULL ⇒ false in WHERE),
-//   but the explicit guard makes the contract loud at the emission
-//   layer and matches the issue's "raw SQL with hand-written IS NOT
-//   NULL" workaround pattern adopters were using.
+// `IS NOT NULL` check, AND-combined with the existing
+// `ST_DWithin(...)` predicate. Postgres also drops NULL-geo rows
+// via three-valued logic on `ST_DWithin` (NULL ⇒ false in WHERE),
+// but the explicit guard makes the contract loud at the emission
+// layer and matches the issue's "raw SQL with hand-written IS NOT
+// NULL" workaround pattern adopters were using.
 // - `order_by_distance` delegates directly to the non-Option impl.
-//   Postgres's default `NULL` handling for ASC ordering is `NULLS
-//   LAST`, so NULL-geo rows already sink to the end of the result
-//   without needing an explicit `NULLS LAST` clause. PK tiebreak
-//   still applies after distance for deterministic equidistant
-//   ordering.
-//
+// Postgres's default `NULL` handling for ASC ordering is `NULLS
+// LAST`, so NULL-geo rows already sink to the end of the result
+// without needing an explicit `NULLS LAST` clause. PK tiebreak
+// still applies after distance for deterministic equidistant
+// ordering.
 // SQL parity with the non-nullable variant means callers can swap
 // `GeoPoint` for `Option<GeoPoint>` at the schema level without
 // changing the query call sites — exactly the ergonomic the issue
@@ -4375,9 +4149,7 @@ impl<M: crate::model::Model> FieldRef<M, ::std::option::Option<crate::geo::GeoPo
     /// `km` kilometers of `center`. Rows whose column is NULL are
     /// excluded by an explicit `IS NOT NULL` guard AND-combined
     /// with the underlying `ST_DWithin(...)` predicate.
-    ///
     /// SQL: `<col> IS NOT NULL AND ST_DWithin(<col>, ST_Point($lon, $lat)::geography, $r)`.
-    ///
     /// See [`FieldRef<M, GeoPoint>::within_km`] for the non-nullable
     /// variant and the parameter-binding details — the inner
     /// `ST_DWithin` shape is identical.
@@ -4399,7 +4171,6 @@ impl<M: crate::model::Model> FieldRef<M, ::std::option::Option<crate::geo::GeoPo
     /// handling (`NULLS LAST` is the documented default — no explicit
     /// clause emitted). PK tiebreak still applies after distance for
     /// deterministic equidistant ordering.
-    ///
     /// SQL:
     /// ```sql
     /// ST_Distance(<col>, ST_Point($lon, $lat)::geography) ASC, id ASC
@@ -4412,14 +4183,12 @@ impl<M: crate::model::Model> FieldRef<M, ::std::option::Option<crate::geo::GeoPo
 }
 
 // ── Spatial shape predicates on any GeographyValue field (T9) ────────────────
-//
 // Gated on `#[cfg(feature = "spatial")]`. Generic over `G: GeographyValue` so
 // the methods are available on `FieldRef<M, Polygon>`, `FieldRef<M, LineString>`,
 // `FieldRef<M, GeoPoint>`, etc. The `other` argument is also generic (`O:
 // GeographyValue`) so callers may test across geometry types — for example,
 // `FieldRef<M, Polygon>::intersects(some_linestring)` is valid because both
 // `Polygon` and `LineString` implement `GeographyValue`.
-//
 // Note: `.within_km` remains in the `impl<M: Model> FieldRef<M, GeoPoint>`
 // block above — it is radius-based and specific to `GeoPoint`. The shape-based
 // `.within(&geom)` below lives here (generic receiver) and routes to the
@@ -4428,20 +4197,16 @@ impl<M: crate::model::Model> FieldRef<M, ::std::option::Option<crate::geo::GeoPo
 #[cfg(feature = "spatial")]
 impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     /// Filter rows where this geography column entirely contains `other`.
-    ///
     /// # SQL emission
-    ///
     /// Emits `ST_Contains(<col>, $1::geography)` where `$1` is the EWKB
     /// encoding of `other`. The EWKB bytes flow through `push_bind` — no
     /// string interpolation of user-supplied data.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Find delivery zones that fully contain the customer's neighbourhood.
-    /// DeliveryZone::objects()
-    ///     .filter(|z| z.area().contains(&neighbourhood_polygon))
-    ///     .fetch_all(&mut ctx).await?
+    /// DeliveryZone::objects
+    /// .filter(|z| z.area.contains(&neighbourhood_polygon))
+    /// .fetch_all(&mut ctx).await?
     /// ```
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn contains<O: crate::geo::GeographyValue>(
@@ -4460,19 +4225,15 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
 
     /// Filter rows where this geography column intersects `other` (shares at
     /// least one point).
-    ///
     /// # SQL emission
-    ///
     /// Emits `ST_Intersects(<col>, $1::geography)` where `$1` is the EWKB
     /// encoding of `other`.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Find routes that cross the construction zone.
-    /// Route::objects()
-    ///     .filter(|r| r.path().intersects(&construction_zone))
-    ///     .fetch_all(&mut ctx).await?
+    /// Route::objects
+    /// .filter(|r| r.path.intersects(&construction_zone))
+    /// .fetch_all(&mut ctx).await?
     /// ```
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn intersects<O: crate::geo::GeographyValue>(
@@ -4491,19 +4252,15 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
 
     /// Filter rows where this geography column touches `other` — the geometries
     /// share boundary points but no interior points (touch but do not overlap).
-    ///
     /// # SQL emission
-    ///
     /// Emits `ST_Touches(<col>, $1::geography)` where `$1` is the EWKB
     /// encoding of `other`.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Find parcels adjacent to (touching) the road boundary.
-    /// Parcel::objects()
-    ///     .filter(|p| p.boundary().touches(&road_line))
-    ///     .fetch_all(&mut ctx).await?
+    /// Parcel::objects
+    /// .filter(|p| p.boundary.touches(&road_line))
+    /// .fetch_all(&mut ctx).await?
     /// ```
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn touches<O: crate::geo::GeographyValue>(
@@ -4521,24 +4278,19 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     }
 
     /// Filter rows where this geography column is entirely within `other`.
-    ///
-    /// This is the shape-based `within` — distinct from Phase 6's radius-based
+    /// This is the shape-based `within` — distinct from the radius-based
     /// `.within_km(center, km)` on `FieldRef<M, GeoPoint>`. The two methods
     /// live on different receivers and do not collide.
-    ///
     /// # SQL emission
-    ///
     /// Emits `ST_Within(<col>, $1::geography)` where `$1` is the EWKB
     /// encoding of `other`. Internally routes to `SpatialExpr::WithinShape`
     /// to avoid the variant-name collision with the radius-based `Within`.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Find deliveries whose drop-off point falls inside a coverage polygon.
-    /// Delivery::objects()
-    ///     .filter(|d| d.drop_off().within(&coverage_polygon))
-    ///     .fetch_all(&mut ctx).await?
+    /// Delivery::objects
+    /// .filter(|d| d.drop_off.within(&coverage_polygon))
+    /// .fetch_all(&mut ctx).await?
     /// ```
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn within<O: crate::geo::GeographyValue>(
@@ -4557,12 +4309,10 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
 }
 
 // ── T10: bounded_by (any GeographyValue) + distance_to (GeoPoint-only) ──────
-//
 // `.bounded_by` is generic over `G: GeographyValue` — a bbox prefilter makes
 // sense for any geography column (polygon coverage zones, linestring routes,
 // point locations, etc.). The four coordinate arguments follow the GeoPoint
 // (lat, lon) convention; emission swaps to Postgres (x=lon, y=lat) order.
-//
 // `.distance_to` is specific to `FieldRef<M, GeoPoint>` because
 // `ST_Distance` applied to a non-point geometry (e.g. a Polygon) returns the
 // minimum boundary distance, which is a different semantic. Keeping it on the
@@ -4573,23 +4323,19 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
 impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     /// Emits a GiST-indexed bounding-box prefilter:
     /// `ST_MakeEnvelope($min_lon, $min_lat, $max_lon, $max_lat, 4326)::geography && <col>`
-    ///
     /// The `&&` operator lets Postgres use a GiST spatial index for a cheap
     /// first pass before expensive `ST_*` predicates. Combine with a shape
     /// predicate for best performance:
-    ///
     /// ```ignore
     /// // Fast bbox prefilter, then exact intersection.
-    /// Delivery::objects()
-    ///     .filter(|f| f.area().bounded_by(37.0, -123.0, 38.0, -122.0))
-    ///     .filter(|f| f.area().intersects(&zone))
-    ///     .fetch_all(&mut ctx).await?
+    /// Delivery::objects
+    /// .filter(|f| f.area.bounded_by(37.0, -123.0, 38.0, -122.0))
+    /// .filter(|f| f.area.intersects(&zone))
+    /// .fetch_all(&mut ctx).await?
     /// ```
-    ///
     /// Argument order matches the `GeoPoint` (lat, lon) convention:
     /// `min_lat`, `min_lon`, `max_lat`, `max_lon`. The emission swaps to
     /// Postgres's (x, y) = (lon, lat) order internally.
-    ///
     /// All four coordinate values flow through `push_bind` — no string
     /// interpolation of user-supplied data.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
@@ -4613,11 +4359,10 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
 }
 
 // Convex_hull spatial aggregate
-//
 // `ST_ConvexHull(ST_Collect(<col>::geometry))::geography` folds a per-group
 // set of geographies into the smallest convex polygon enclosing them. Mirrors
 // the shape of the existing `count_by_region` / `cluster_by_proximity` / etc.
-// spatial aggregates from Phase 6.5 — sits on `FieldRef<M, G: GeographyValue>`
+// spatial aggregates from — sits on `FieldRef<M, G: GeographyValue>`
 // so it is callable from the same field-closure context. The outer
 // `::geography` cast on the emit side is required for the typed `Polygon`
 // decode.
@@ -4629,9 +4374,7 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     /// encloses every non-null geometry value in the group, cast back to
     /// `geography` so the typed `Polygon` decode in `fetch_all` accepts
     /// the column.
-    ///
     /// # Why an aggregate
-    ///
     /// PostGIS does not ship a one-shot convex-hull aggregate. The
     /// canonical pattern is `ST_ConvexHull(ST_Collect(...))` where
     /// `ST_Collect` is the actual aggregate (folding the per-row geometries
@@ -4639,42 +4382,33 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     /// wrapper applied to the collected set. This method emits the fused
     /// form with an outer `::geography` cast; the typed surface presents
     /// it as a single [`AggregateExpr<Polygon>`].
-    ///
     /// # Composition
-    ///
     /// Use it inside `GroupedQuerySet::annotate(...)` like any other
     /// aggregate — typically alongside a per-group key from
-    /// `QuerySet::group_by(|f| f.herd_id())`:
-    ///
+    /// `QuerySet::group_by(|f| f.herd_id)`:
     /// ```ignore
     /// // Per-herd territory hulls — feeds the mating-pairs territory-overlap
     /// // scoring in the elephant-tracker demo.
-    /// let hulls: Vec<(i64, Polygon)> = Elephant::objects()
-    ///     .group_by(|f| f.herd_id())
-    ///     .annotate(|f| f.location().convex_hull())
-    ///     .fetch_all(&mut ctx).await?;
+    /// let hulls: Vec<(i64, Polygon)> = Elephant::objects
+    /// .group_by(|f| f.herd_id)
+    /// .annotate(|f| f.location.convex_hull)
+    /// .fetch_all(&mut ctx).await?;
     /// ```
-    ///
     /// # Return type
-    ///
     /// Pinned to `AggregateExpr<Polygon>` because the typical multi-point
     /// input always yields a `Polygon`. Degenerate inputs (a single point,
     /// or two collinear points) yield `Point` / `LineString` respectively;
     /// callers feeding such inputs see a runtime EWKB-decode error and
     /// should bind a stricter input set or use `ctx.raw_scalar` with an
     /// untyped JSON / WKT decode path.
-    ///
     /// # Where
-    ///
     /// - [`crate::expr::node::AggOp::SpatialConvexHull`] — IR variant
-    ///   that the typed surface stores inside the `AggregateExpr` envelope.
+    /// that the typed surface stores inside the `AggregateExpr` envelope.
     /// - [`crate::query::QuerySet::group_by`] — produces the
-    ///   `GroupedQuerySet` that consumes this aggregate via `.annotate(...)`.
-    ///
+    /// `GroupedQuerySet` that consumes this aggregate via `.annotate(...)`.
     /// # Modifier composition
-    ///
     /// Routes through the `Aggregate` envelope so all modifiers
-    /// (`.distinct()` / `.filter()` / `.over()` / `.order_by()`)
+    /// (`.distinct` / `.filter` / `.over` / `.order_by`)
     /// compose uniformly with the rest of the spatial aggregate
     /// family. The wrapped emission shape
     /// `ST_ConvexHull(ST_Collect(...) FILTER (...) OVER (...))::geography`
@@ -4697,46 +4431,36 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
 
     /// `ST_Centroid(ST_Collect(<col>))::geography` — per-group centroid of
     /// the collected point geometries. Returns `AggregateExpr<GeoPoint>`.
-    ///
     /// # SQL emission
-    ///
     /// ```sql
     /// ST_Centroid(ST_Collect(<col>::geometry))::geography
     /// ```
-    ///
     /// The `::geometry` inner cast matches the same cast discipline as
     /// the geometry-only shape predicates and `convex_hull` — `ST_Collect`
     /// requires `geometry` arguments and has no `geography` overload. The
     /// outer `::geography` cast keeps the round-trip on the geography
     /// substrate so the result decodes into `GeoPoint`.
-    ///
     /// # Composition
-    ///
     /// Used inside `GroupedQuerySet::annotate(...)` alongside other
     /// aggregates:
-    ///
     /// ```ignore
     /// // Per-cluster centroid + count over a DBSCAN clustering — the
     /// // shape that backs the cluster_sightings demo's typed retrofit.
-    /// let clusters: Vec<(ClusterId, GeoPoint, i64)> = Sighting::objects()
-    ///     .cluster_by_proximity(
-    ///         |f| f.location(),
-    ///         ClusterRadius::meters(50_000.0).min_points(3),
-    ///     )
-    ///     .annotate(|f| (f.location().centroid(), f.id().count_star()))
-    ///     .fetch_all(&mut ctx).await?;
+    /// let clusters: Vec<(ClusterId, GeoPoint, i64)> = Sighting::objects
+    /// .cluster_by_proximity(
+    /// |f| f.location,
+    /// ClusterRadius::meters(50_000.0).min_points(3),
+    /// )
+    /// .annotate(|f| (f.location.centroid, f.id.count_star))
+    /// .fetch_all(&mut ctx).await?;
     /// ```
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups (or all-NULL inputs) produce SQL NULL; the typed
     /// surface decodes that as a runtime error on the non-`Option`
     /// surface. Wrap `Out = Option<GeoPoint>` at the call site if your
     /// dataset has known empty groups, or use a `FILTER (WHERE ...)`
     /// guard.
-    ///
     /// # Why a typed aggregate, not raw SQL
-    ///
     /// Adopters wanting a per-group centroid had to drop to
     /// `ctx.raw_rows("... ST_Centroid(ST_Collect(loc))::geography ...")`
     /// before this method — losing the typed annotate composition with
@@ -4758,34 +4482,26 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
 
     /// `ST_Collect(<col>)::geography` — per-group multi-point collection.
     /// Returns `AggregateExpr<MultiPoint>`.
-    ///
     /// # SQL emission
-    ///
     /// ```sql
     /// ST_Collect(<col>::geometry)::geography
     /// ```
-    ///
     /// Same cast discipline as [`Self::centroid`] — inner `::geometry`
     /// for `ST_Collect`'s input, outer `::geography` for round-trip.
-    ///
     /// # Composition
-    ///
     /// Useful when a downstream Rust-side computation needs every
     /// contributing point of a group as a single multi-geometry value.
     /// For density-based clustering plus per-cluster point dump:
-    ///
     /// ```ignore
-    /// let clusters: Vec<(ClusterId, MultiPoint)> = Sighting::objects()
-    ///     .cluster_by_proximity(
-    ///         |f| f.location(),
-    ///         ClusterRadius::meters(50_000.0).min_points(3),
-    ///     )
-    ///     .annotate(|f| f.location().collect())
-    ///     .fetch_all(&mut ctx).await?;
+    /// let clusters: Vec<(ClusterId, MultiPoint)> = Sighting::objects
+    /// .cluster_by_proximity(
+    /// |f| f.location,
+    /// ClusterRadius::meters(50_000.0).min_points(3),
+    /// )
+    /// .annotate(|f| f.location.collect)
+    /// .fetch_all(&mut ctx).await?;
     /// ```
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups produce SQL NULL — same caveat as [`Self::centroid`].
     #[cfg(feature = "spatial")]
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
@@ -4799,33 +4515,25 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
 
     /// `ST_Extent(<col>::geometry)::geometry::geography` — per-group 2D
     /// bounding-box aggregate, returned as a four-vertex Polygon.
-    ///
     /// # SQL emission
-    ///
     /// ```sql
     /// ST_Extent(<col>::geometry)::geometry::geography
     /// ```
-    ///
     /// `ST_Extent` returns Postgres' `box2d` type (a flat
     /// `(minx, miny, maxx, maxy)` quadruple) which has no direct
     /// `geography` cast. The two-step `::geometry::geography` cast chain
     /// projects the box into a four-vertex rectangular Polygon and moves
     /// it onto the geography substrate so the typed surface decodes
     /// into [`crate::geo::Polygon`].
-    ///
     /// # Composition
-    ///
     /// Use as the bounding-box per group:
-    ///
     /// ```ignore
-    /// let bboxes: Vec<(i64, Polygon)> = Sighting::objects()
-    ///     .group_by(|f| f.cluster_id())
-    ///     .annotate(|f| f.location().extent())
-    ///     .fetch_all(&mut ctx).await?;
+    /// let bboxes: Vec<(i64, Polygon)> = Sighting::objects
+    /// .group_by(|f| f.cluster_id)
+    /// .annotate(|f| f.location.extent)
+    /// .fetch_all(&mut ctx).await?;
     /// ```
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups produce SQL NULL — wrap `Out = Option<Polygon>` at
     /// the call site for datasets with known empty groups.
     #[cfg(feature = "spatial")]
@@ -4840,31 +4548,24 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
 
     /// `ST_3DExtent(<col>::geometry)::geometry::geography` — per-group
     /// 3D bounding-box aggregate, projected to its 2D footprint Polygon.
-    ///
     /// # SQL emission
-    ///
     /// ```sql
     /// ST_3DExtent(<col>::geometry)::geometry::geography
     /// ```
-    ///
     /// Identical cast chain to [`Self::extent`] — `ST_3DExtent` returns
     /// `box3d`, neither of which casts directly to `geography`. The
     /// geometry-side cast projects the 3D box to a 2D rectangular
     /// Polygon (the footprint at the box's z-mid plane); the
     /// geography-side cast keeps the value on the geography substrate
     /// so the typed surface decodes into [`crate::geo::Polygon`].
-    ///
     /// # Why a 2D return for a 3D aggregate
-    ///
     /// Djogi's geography surface is 2D-only — `GeoPoint` has no
     /// elevation, [`crate::geo::Polygon`] has no Z dimension. Adopters
     /// with true 3D data should reach for `ctx.raw_scalar` against the
     /// `box3d` type directly. This typed surface gives the 2D footprint
     /// of a 3D bounding box, which is what most callers want when
     /// rendering on a 2D map.
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups produce SQL NULL — same caveat as [`Self::extent`].
     #[cfg(feature = "spatial")]
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
@@ -4877,61 +4578,49 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     }
 }
 
-// ── union() — region-merging aggregate, polygon-shaped fields only ──────────
-//
+// ── union — region-merging aggregate, polygon-shaped fields only ──────────
 // `ST_Union` produces a MultiPolygon for polygonal inputs; for point
 // inputs it would yield a MultiPoint instead, breaking the typed
 // `AggregateExpr<MultiPolygon>` decode. Restricting the receiver to
 // `Polygon` / `MultiPolygon` fields keeps the typed surface sound;
 // adopters wanting union semantics on points use the existing
-// `collect()` (T12), which produces a MultiPoint.
+// `collect` (T12), which produces a MultiPoint.
 #[cfg(feature = "spatial")]
 impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// `ST_Union(<col>::geometry)::geography` — per-group region-merging
     /// aggregate. Folds a per-group set of polygons into a single
     /// MultiPolygon by merging shared edges.
-    ///
     /// # SQL emission
-    ///
     /// ```sql
     /// ST_Union(<col>::geometry)::geography
     /// ```
-    ///
     /// Same cast discipline as the rest of the PostGIS aggregate
     /// family — inner `::geometry` for `ST_Union`'s argument, outer
     /// `::geography` for the typed-decode round-trip.
-    ///
     /// # vs. [`Self::collect`] (when available) and [`Self::convex_hull`]
-    ///
     /// - `ST_Union` *merges* overlapping/touching polygons, eliminating
-    ///   shared edges — output area is the union of input areas.
+    /// shared edges — output area is the union of input areas.
     /// - `ST_Collect` (T12, available on points) builds a multi-geometry
-    ///   without merging — output is the bag of inputs.
+    /// without merging — output is the bag of inputs.
     /// - `ST_ConvexHull(ST_Collect(...))` returns the smallest convex
-    ///   polygon enclosing all inputs — strictly larger than the union
-    ///   for non-convex shapes.
-    ///
+    /// polygon enclosing all inputs — strictly larger than the union
+    /// for non-convex shapes.
     /// # Composition
-    ///
     /// ```ignore
     /// // Merge per-region polygons into a single MultiPolygon per herd.
-    /// let territories: Vec<(HerdId, MultiPolygon)> = Range::objects()
-    ///     .group_by(|f| f.herd_id())
-    ///     .annotate(|f| f.boundary().union())
-    ///     .fetch_all(&mut ctx).await?;
+    /// let territories: Vec<(HerdId, MultiPolygon)> = Range::objects
+    /// .group_by(|f| f.herd_id)
+    /// .annotate(|f| f.boundary.union)
+    /// .fetch_all(&mut ctx).await?;
     /// ```
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups produce SQL NULL — wrap `Out = Option<MultiPolygon>`
     /// at the call site for datasets with known empty groups.
-    ///
     /// # Memory characteristics
-    ///
-    /// `ST_Union` sorts inputs and merges along a shared edge tree —
+    /// `ST_Union` sorts inputs and merges along a shared edge tree
     /// efficient for moderate group sizes but memory-intensive for very
     /// large inputs. For terabyte-scale datasets, prefer the algorithm
-    /// in `mem_union()` (a future Cluster E task) which uses pairwise
+    /// in `mem_union` (a future task) which uses pairwise
     /// merging with bounded working memory.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn union(self) -> crate::expr::AggregateExpr<crate::geo::MultiPolygon> {
@@ -4945,15 +4634,11 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// `ST_Collect(<col>::geometry)::geography` — per-group polygon
     /// aggregate that produces a single MultiPolygon. Portable
     /// fallback for `ST_PolygonAgg`.
-    ///
     /// # SQL emission
-    ///
     /// ```sql
     /// ST_Collect(<col>::geometry)::geography
     /// ```
-    ///
     /// # Why a fallback emission
-    ///
     /// `ST_PolygonAgg` is PostGIS 3.5+; Djogi's documented PostGIS
     /// floor is 3.x (see `docs/guide/spatial.md`). Emitting
     /// `ST_Collect` keeps the typed surface working on every Djogi-
@@ -4961,25 +4646,19 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// MultiPolygon for polygon-typed inputs. If Djogi ever raises
     /// the floor, only the emitter arm changes — the typed surface
     /// stays identical.
-    ///
     /// # vs. [`Self::union`]
-    ///
-    /// - `polygon_agg()` collects polygons into a MultiPolygon
-    ///   without merging — output is the bag of inputs.
-    /// - `union()` merges overlapping/touching polygons — output is
-    ///   the geometric union.
-    ///
+    /// - `polygon_agg` collects polygons into a MultiPolygon
+    /// without merging — output is the bag of inputs.
+    /// - `union` merges overlapping/touching polygons — output is
+    /// the geometric union.
     /// # Composition
-    ///
     /// ```ignore
-    /// let regions: Vec<(HerdId, MultiPolygon)> = Range::objects()
-    ///     .group_by(|f| f.herd_id())
-    ///     .annotate(|f| f.boundary().polygon_agg())
-    ///     .fetch_all(&mut ctx).await?;
+    /// let regions: Vec<(HerdId, MultiPolygon)> = Range::objects
+    /// .group_by(|f| f.herd_id)
+    /// .annotate(|f| f.boundary.polygon_agg)
+    /// .fetch_all(&mut ctx).await?;
     /// ```
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups produce SQL NULL.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn polygon_agg(self) -> crate::expr::AggregateExpr<crate::geo::MultiPolygon> {
@@ -4993,43 +4672,33 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// `ST_ClusterIntersecting(<col>::geometry)::geography[]` — per-
     /// group clustering aggregate that groups mutually-intersecting
     /// input polygons into per-cluster collections.
-    ///
     /// # SQL emission
-    ///
     /// ```sql
     /// ST_ClusterIntersecting(<col>::geometry)::geography[]
     /// ```
-    ///
     /// # Return type
-    ///
     /// PostGIS returns a `geometry[]` array — one element per cluster.
     /// The trailing `::geography[]` cast moves the array's element
     /// type onto the geography substrate so the typed surface decodes
     /// into `Vec<MultiPolygon>`. Each `MultiPolygon` element holds
     /// the polygons that mutually intersect; non-intersecting polygons
     /// land in their own single-element clusters.
-    ///
     /// # Aggregate vs window-function clustering
-    ///
     /// Unlike the existing `cluster_by_proximity` (a window function
-    /// that adds a per-row cluster id), `cluster_intersecting()` is a
+    /// that adds a per-row cluster id), `cluster_intersecting` is a
     /// true aggregate — one row out per (group, cluster) pair after
     /// the array is `unnest`ed at the call site. The aggregate form
     /// suits per-group folding (e.g. \"all overlapping ranges per
     /// herd\") whereas the window form suits per-row tagging.
-    ///
     /// # Composition
-    ///
     /// ```ignore
     /// // Per-herd intersecting territory clusters.
-    /// let clusters: Vec<(HerdId, Vec<MultiPolygon>)> = Range::objects()
-    ///     .group_by(|f| f.herd_id())
-    ///     .annotate(|f| f.boundary().cluster_intersecting())
-    ///     .fetch_all(&mut ctx).await?;
+    /// let clusters: Vec<(HerdId, Vec<MultiPolygon>)> = Range::objects
+    /// .group_by(|f| f.herd_id)
+    /// .annotate(|f| f.boundary.cluster_intersecting)
+    /// .fetch_all(&mut ctx).await?;
     /// ```
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups produce SQL NULL — wrap
     /// `Out = Option<Vec<MultiPolygon>>` for groups that may be empty.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
@@ -5044,36 +4713,27 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// `ST_ClusterWithin(<col>::geometry, $1)::geography[]` — per-
     /// group clustering aggregate that groups input polygons within
     /// `distance` meters of each other.
-    ///
     /// # SQL emission
-    ///
     /// ```sql
     /// ST_ClusterWithin(<col>::geometry, $n)::geography[]
     /// ```
-    ///
     /// `distance` is bound as a positional parameter — no string
     /// interpolation of user-supplied data.
-    ///
     /// # vs. [`Self::cluster_intersecting`]
-    ///
-    /// - `cluster_intersecting()` clusters geometries that *touch
-    ///   or overlap*.
+    /// - `cluster_intersecting` clusters geometries that *touch
+    /// or overlap*.
     /// - `cluster_within(d)` clusters geometries within `d` meters
-    ///   of each other — the threshold is configurable, so adopters
-    ///   can tune cluster granularity per use case.
-    ///
+    /// of each other — the threshold is configurable, so adopters
+    /// can tune cluster granularity per use case.
     /// # Composition
-    ///
     /// ```ignore
     /// // Cluster nearby territories within 10 km.
-    /// let clusters: Vec<(HerdId, Vec<MultiPolygon>)> = Range::objects()
-    ///     .group_by(|f| f.herd_id())
-    ///     .annotate(|f| f.boundary().cluster_within(10_000.0))
-    ///     .fetch_all(&mut ctx).await?;
+    /// let clusters: Vec<(HerdId, Vec<MultiPolygon>)> = Range::objects
+    /// .group_by(|f| f.herd_id)
+    /// .annotate(|f| f.boundary.cluster_within(10_000.0))
+    /// .fetch_all(&mut ctx).await?;
     /// ```
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups produce SQL NULL — same caveat as
     /// [`Self::cluster_intersecting`].
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
@@ -5090,42 +4750,32 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
 
     /// `ST_MemUnion(<col>::geometry)::geography` — memory-friendly
     /// pairwise-merge variant of [`Self::union`].
-    ///
     /// # SQL emission
-    ///
     /// ```sql
     /// ST_MemUnion(<col>::geometry)::geography
     /// ```
-    ///
     /// # vs. [`Self::union`]
-    ///
     /// Both fold polygonal inputs into a single MultiPolygon by
     /// merging shared edges — same input / output shape, different
     /// algorithm:
-    ///
-    /// - `union()` (`ST_Union`) sorts inputs and merges along a
-    ///   shared edge tree. Faster for moderate group sizes; memory-
-    ///   intensive for very large input sets because the entire input
-    ///   must fit in working memory.
-    /// - `mem_union()` (`ST_MemUnion`) runs a pairwise merge with
-    ///   bounded working memory. Slower per-row but handles
-    ///   terabyte-scale inputs without spilling.
-    ///
-    /// Pick `mem_union()` when input size exceeds working memory; pick
-    /// `union()` for the common case.
-    ///
+    /// - `union` (`ST_Union`) sorts inputs and merges along a
+    /// shared edge tree. Faster for moderate group sizes; memory-
+    /// intensive for very large input sets because the entire input
+    /// must fit in working memory.
+    /// - `mem_union` (`ST_MemUnion`) runs a pairwise merge with
+    /// bounded working memory. Slower per-row but handles
+    /// terabyte-scale inputs without spilling.
+    /// Pick `mem_union` when input size exceeds working memory; pick
+    /// `union` for the common case.
     /// # Composition
-    ///
     /// ```ignore
     /// // Memory-friendly union over a very large input set.
-    /// let merged: Vec<(HerdId, MultiPolygon)> = Range::objects()
-    ///     .group_by(|f| f.herd_id())
-    ///     .annotate(|f| f.boundary().mem_union())
-    ///     .fetch_all(&mut ctx).await?;
+    /// let merged: Vec<(HerdId, MultiPolygon)> = Range::objects
+    /// .group_by(|f| f.herd_id)
+    /// .annotate(|f| f.boundary.mem_union)
+    /// .fetch_all(&mut ctx).await?;
     /// ```
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups produce SQL NULL — same caveat as [`Self::union`].
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn mem_union(self) -> crate::expr::AggregateExpr<crate::geo::MultiPolygon> {
@@ -5141,15 +4791,11 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
 impl<M: crate::model::Model> FieldRef<M, crate::geo::LineString> {
     /// `ST_Polygonize(<col>::geometry)::geography` — builds polygons
     /// from a per-group set of LineString segments.
-    ///
     /// # SQL emission
-    ///
     /// ```sql
     /// ST_Polygonize(<col>::geometry)::geography
     /// ```
-    ///
     /// # Return type
-    ///
     /// PostGIS returns a GeometryCollection at the geometry level;
     /// the trailing `::geography` cast keeps the value on the
     /// geography substrate for the typed `MultiPolygon` decode. Works
@@ -5158,27 +4804,21 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::LineString> {
     /// rows). Pathological inputs (LineStrings that don't form closed
     /// rings) yield a degenerate output that may fail the typed EWKB
     /// decode at the call site.
-    ///
     /// # LineString-only receiver
-    ///
-    /// `polygonize()` only makes sense for input LineStrings — the
+    /// `polygonize` only makes sense for input LineStrings — the
     /// algorithm walks edge endpoints to find closed rings. Other
     /// geography shapes (Point, Polygon, MultiPolygon) would produce
     /// undefined output. The receiver-type gate enforces this at the
     /// impl-block level.
-    ///
     /// # Composition
-    ///
     /// ```ignore
     /// // Per-region polygons assembled from per-edge LineString rows.
-    /// let regions: Vec<(RegionId, MultiPolygon)> = Edge::objects()
-    ///     .group_by(|f| f.region_id())
-    ///     .annotate(|f| f.geometry().polygonize())
-    ///     .fetch_all(&mut ctx).await?;
+    /// let regions: Vec<(RegionId, MultiPolygon)> = Edge::objects
+    /// .group_by(|f| f.region_id)
+    /// .annotate(|f| f.geometry.polygonize)
+    /// .fetch_all(&mut ctx).await?;
     /// ```
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups produce SQL NULL.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn polygonize(self) -> crate::expr::AggregateExpr<crate::geo::MultiPolygon> {
@@ -5192,45 +4832,34 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::LineString> {
     /// `ST_LineAgg(<col>::geometry)::geography` — per-group
     /// `MultiLineString` builder. Collects per-row `LineString` values
     /// into a single `MultiLineString`.
-    ///
     /// # SQL emission
-    ///
     /// ```sql
     /// ST_LineAgg(<col>::geometry)::geography
     /// ```
-    ///
     /// Inner `::geometry` cast feeds PostGIS's geometry-only
     /// `ST_LineAgg`; outer `::geography` cast moves the result back to
     /// the geography substrate so the typed `MultiLineString` decode
     /// works.
-    ///
-    /// # Sibling: `make_line()` vs `line_agg()`
-    ///
+    /// # Sibling: `make_line` vs `line_agg`
     /// - [`FieldRef<M, GeoPoint>::make_line`] takes per-row **points**
-    ///   and joins them into a single `LineString`. Use when each row
-    ///   contributes one vertex.
+    /// and joins them into a single `LineString`. Use when each row
+    /// contributes one vertex.
     /// - This method takes per-row **LineStrings** and collects them
-    ///   into a `MultiLineString`. Use when each row already carries a
-    ///   path (GPS sub-tracks per device, route segments per leg, etc.)
-    ///   and the per-group output should be the parallel multi-shape.
-    ///
+    /// into a `MultiLineString`. Use when each row already carries a
+    /// path (GPS sub-tracks per device, route segments per leg, etc.)
+    /// and the per-group output should be the parallel multi-shape.
     /// # Composition
-    ///
     /// ```ignore
     /// // Per-route MultiLineString of all logged sub-tracks
-    /// let multi_tracks: Vec<(RouteId, MultiLineString)> = SubTrack::objects()
-    ///     .group_by(|f| f.route_id())
-    ///     .annotate(|f| f.path().line_agg())
-    ///     .fetch_all(&mut ctx).await?;
+    /// let multi_tracks: Vec<(RouteId, MultiLineString)> = SubTrack::objects
+    /// .group_by(|f| f.route_id)
+    /// .annotate(|f| f.path.line_agg)
+    /// .fetch_all(&mut ctx).await?;
     /// ```
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups produce SQL NULL — wrap `Out = Option<MultiLineString>`
     /// at the call site if your dataset has known empty groups.
-    ///
     /// # PostGIS version
-    ///
     /// `ST_LineAgg` is PostgreSQL 17+ / PostGIS 3.5+. Djogi targets
     /// PG 18 + PostGIS 3.5 so the canonical keyword is the safe choice.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
@@ -5306,34 +4935,26 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
     /// builder. Connects per-row points into a single LineString in row
     /// order, or per-aggregate ORDER BY order when `.order_by(field)`
     /// is chained.
-    ///
     /// # SQL emission
-    ///
     /// ```sql
     /// ST_MakeLine(<col>::geometry)::geography
     /// ```
-    ///
     /// # Order-sensitivity
-    ///
     /// Unlike most aggregates where row order is incidental, the
     /// resulting LineString's *vertex sequence* directly reflects
     /// input row order. This aggregate naturally consumes T1's
     /// `.order_by(field)` modifier — the per-aggregate ORDER BY
     /// clause lands inside the `ST_MakeLine` parens to control vertex
     /// sequence at the aggregate level (not the result-set level).
-    ///
     /// # Composition — GPS track example
-    ///
     /// ```ignore
     /// // Per-trip GPS track ordered by timestamp.
-    /// let tracks: Vec<(TripId, LineString)> = Sample::objects()
-    ///     .group_by(|f| f.trip_id())
-    ///     .annotate(|f| f.position().make_line().order_by(f.recorded_at()))
-    ///     .fetch_all(&mut ctx).await?;
+    /// let tracks: Vec<(TripId, LineString)> = Sample::objects
+    /// .group_by(|f| f.trip_id)
+    /// .annotate(|f| f.position.make_line.order_by(f.recorded_at))
+    /// .fetch_all(&mut ctx).await?;
     /// ```
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups (or all-NULL inputs) produce SQL NULL. PostGIS
     /// `ST_MakeLine` requires at least 2 input points; the typed
     /// surface decodes a too-short result as a runtime EWKB error.
@@ -5350,23 +4971,19 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
 
     /// Emits `ST_Distance(<col>, ST_Point($lon, $lat)::geography)` — returns
     /// great-circle distance in meters from `<col>` to `center`.
-    ///
     /// Composes with `.filter`, `.annotate`, and `.order_by`:
-    ///
     /// ```ignore
-    /// let center = GeoPoint::new(37.7749, -122.4194).unwrap();
+    /// let center = GeoPoint::new(37.7749, -122.4194).unwrap;
     ///
     /// // Filter by distance threshold.
-    /// Store::objects()
-    ///     .filter(|f| f.location().distance_to(&center).lt(5000.0))
-    ///     .fetch_all(&mut ctx).await?
+    /// Store::objects
+    /// .filter(|f| f.location.distance_to(&center).lt(5000.0))
+    /// .fetch_all(&mut ctx).await?
     /// ```
-    ///
     /// This wraps the existing `SpatialExpr::Distance` IR variant that was
-    /// added in Phase 6 but previously only used by the `.order_by_distance`
+    /// added in but previously only used by the `.order_by_distance`
     /// shortcut. T10 exposes it as a first-class expression method so it
     /// composes cleanly anywhere an `Expr<f64>` is accepted.
-    ///
     /// Bind order: `$1 = center.lon`, `$2 = center.lat`.
     #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
     pub fn distance_to(self, center: &crate::geo::GeoPoint) -> crate::expr::Expr<f64> {
@@ -5380,15 +4997,12 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
 }
 
 // ── Fluent combinators on Condition ───────────────────────────────────────
-//
 // `Condition::and(a, b)` / `::or(a, b)` are the associative constructors in
 // `query::condition`. `.and_with` / `.or_with` are the method-chain forms
 // that read left-to-right in a filter closure:
-//
 // ```ignore
-// f.title().eq("x").and_with(f.view_count().gte(100))
+// f.title.eq("x").and_with(f.view_count.gte(100))
 // ```
-//
 // Named `*_with` (rather than `.and` / `.or`) to avoid colliding with
 // `bool::and` / `bool::or` if a future Condition impl adopts those names
 // for short-circuit semantics.
@@ -5408,62 +5022,49 @@ impl Condition {
     }
 }
 
-// ── Phase 7-Zero-2 T8: forward traversal over an optional FK / O2O ──────
-//
+// ── : forward traversal over an optional FK / O2O ──────
 // `OptionalRelationRef<V>` is the return type of the macro-emitted accessor
 // for a nullable relation field (`Option<ForeignKey<T>>` /
 // `Option<OneToOneField<T>>`) on a visage-scoped `{Visage}Fields` struct.
 // It keeps the nullability honest at the type level: the caller cannot
 // reach into the peer's `Fields` without first opting in to the SQL
 // IS-NOT-NULL guard through [`OptionalRelationRef::map_filter`].
-//
 // # Design rationale — why a wrapper type (not `Option<Fields>`)?
-//
 // Returning `Option<PeerFields>` would force the macro to embed a runtime
-// branch in emitted code (`if self.path.is_some() { Some(PeerFields { … }) }
+// branch in emitted code (`if self.path.is_some { Some(PeerFields { … }) }
 // else { None }`). But at filter-build time the FK column may be NULL
 // on zero rows, some rows, or every row — the `Option` lens lives in the
 // result set, not in the filter tree. The correct shape is "compose a
 // condition as if the FK is set, but guard the whole thing with
 // `author_id IS NOT NULL`". That's exactly what `map_filter` emits.
-//
 // The nullability marker also drives the boundary symbol inspection that
 // later tasks (T9 / T10) will use to reject mixing a required-FK accessor
 // with an optional-FK accessor under the same visage scope.
 
 /// Traversal handle for an optional forward relation (`Option<ForeignKey<T>>` or
 /// `Option<OneToOneField<T>>`) from a visage-scoped `{Visage}Fields`.
-///
 /// # Why `OptionalRelationRef<V>` over `Option<V>`?
-///
 /// The nullability lives in the row shape, not in the filter tree. A
 /// filter closure may compose a condition that "would" apply if the FK
 /// is set — `OptionalRelationRef::map_filter` lifts that closure into a
 /// `Condition` that first asserts the FK is non-NULL, then AND-s the
 /// inner closure's output. The caller never sees `None` — the SQL guard
 /// is automatic.
-///
 /// # SQL shape
-///
-/// `map_filter(|a| a.name().eq("Ada"))` on a wrapper over the `author_id`
+/// `map_filter(|a| a.name.eq("Ada"))` on a wrapper over the `author_id`
 /// FK emits:
-///
 /// ```sql
 /// author_id IS NOT NULL AND author.name = $1
 /// ```
-///
 /// The `author_id IS NOT NULL` clause keeps SQL three-valued logic
 /// aligned with Rust's `Option` semantics: rows where the FK is NULL
 /// are excluded from the match set, matching the user-level mental model
 /// of "filter over author when author is set".
-///
 /// # Use from macro-emitted code only
-///
 /// Constructed through [`__macro_support::__make_optional_relation_ref`].
 /// The field `fk_column` is the owning side's FK column (e.g.
 /// `"author_id"`), and `peer_fields` is the path-threaded peer `Fields`
 /// handle returned by the macro's traversal accessor.
-///
 /// Ordinary peer-field traversal stays on [`map_filter`](Self::map_filter),
 /// which preserves the legacy [`Condition`] return shape. When the peer
 /// closure yields a broader query predicate (`Q<M>`, a codec-gated
@@ -5478,14 +5079,11 @@ pub struct OptionalRelationRef<V> {
 impl<V> OptionalRelationRef<V> {
     /// Compose a legacy-`Condition` predicate that applies to the peer
     /// only when the FK is non-NULL.
-    ///
     /// The `f` closure receives the peer `Fields` handle by value (it's
     /// `Copy` on the macro-emitted shape) and returns a legacy
     /// [`Condition`]. The returned predicate is equivalent to
     /// `Condition::and(fk IS NOT NULL, f(peer_fields))`.
-    ///
     /// # Consuming `self`
-    ///
     /// `map_filter` consumes the wrapper by value. `V: Clone` lets the
     /// closure receive an owned handle without forcing the wrapper's
     /// owner to pre-clone. For the `{Visage}Fields` case the peer handle
@@ -5507,7 +5105,6 @@ impl<V> OptionalRelationRef<V> {
 
     /// Compose a root-typed query predicate that applies to the peer
     /// only when the FK is non-NULL.
-    ///
     /// This is the generalized sibling of [`map_filter`](Self::map_filter):
     /// the inner closure may return any
     /// [`IntoQ`](crate::query::IntoQ) payload over the owning root model.
@@ -5516,9 +5113,8 @@ impl<V> OptionalRelationRef<V> {
     /// `PresentationFieldRef::eq(...) -> Q<RootModel>`), or when you want to
     /// compose a mixed [`Predicate`](crate::query::Predicate) tree in the
     /// closure.
-    ///
     /// The returned `Q<M>` is equivalent to
-    /// `Q::Condition(fk IS NOT NULL) & f(peer_fields).into_q()`.
+    /// `Q::Condition(fk IS NOT NULL) & f(peer_fields).into_q`.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
     pub fn map_predicate<M, F, P>(self, f: F) -> crate::query::Q<M>
     where
@@ -5591,7 +5187,6 @@ pub mod optional_relation_support {
     /// `__make_optional_relation_ref("author_id", UserPublicFields::with_path("author"))`
     /// for a `#[field(expose(public -> UserPublic))]` on
     /// `author: Option<ForeignKey<User>>`.
-    ///
     /// `fk_column` is validated against [`assert_plain_ident`] before
     /// storage; the `peer_fields` is passed through by value (the
     /// macro already routed the peer's path through the shared
@@ -5620,7 +5215,6 @@ mod tests {
     // `FieldRef`'s generics at compile time. Real integration tests against
     // Postgres live in `tests/integration/`; this file's unit tests cover
     // the `FieldRef` API in isolation.
-    //
     // `manual_async_fn` is allowed because the `Model` trait signature uses
     // `-> impl Future + Send` explicitly (RPITIT) to match the stable form
     // real `#[model]`-generated impls emit. Converting to `async fn` would
@@ -5926,9 +5520,9 @@ mod tests {
     /// FIX_BEFORE_BETA-4: the new
     /// `impl<M, U> DjogiField<M, Option<U>> where U: DjogiPortableOrd`
     /// block routes `gt` / `gte` / `lt` / `lte` / `between` through the
-    /// present-field surface (`self.some().gt(value)` and friends).
+    /// present-field surface (`self.some.gt(value)` and friends).
     /// The resulting `PortablePredicate` must carry the inner-`U` payload
-    /// (matching `DjogiField<M, Option<U>>::some().gt(value)`) and the
+    /// (matching `DjogiField<M, Option<U>>::some.gt(value)`) and the
     /// underlying Sassi op — anything else means the routing is wrong
     /// and the runtime emit will fail with `ValueTypeMismatch` because
     /// `option_arms`'s ordering arms downcast to `U`, not `Option<U>`.
@@ -5981,7 +5575,7 @@ mod tests {
                 assert_eq!(field.field_name(), "maybe_age");
                 assert_eq!(field.op(), sassi::LookupOp::Between);
                 // `option_arms`'s Between branch under `supports_ordering`
-                // calls `emit_pair::<M, U>` which downcasts as `(U, U)` —
+                // calls `emit_pair::<M, U>` which downcasts as `(U, U)`
                 // confirm the payload matches the contract.
                 assert_eq!(field.value_as::<(i64, i64)>(), Some(&(10_i64, 20_i64)));
                 assert!(field.value_as::<(Option<i64>, Option<i64>)>().is_none());
@@ -6015,7 +5609,7 @@ mod tests {
                 assert_eq!(field.field_name(), "tagline");
                 assert_eq!(field.op(), sassi::LookupOp::Eq);
                 // `IntoPortableFieldValue<Option<String>> for &str` (issue
-                // #167) wraps `"hello"` as `Some("hello".to_owned())` for
+                // #167) wraps `"hello"` as `Some("hello".to_owned)` for
                 // the Sassi payload, so the direct Option<String> downcast
                 // matches.
                 assert_eq!(
@@ -6803,15 +6397,14 @@ mod distance_tests {
 
     // Convex_hull typed surface tests
 
-    /// `FieldRef<M, GeoPoint>::convex_hull()` must produce an
+    /// `FieldRef<M, GeoPoint>::convex_hull` must produce an
     /// `AggregateExpr<Polygon>` whose underlying node is the
     /// `AggOp::SpatialConvexHull` aggregate IR variant. The typed
     /// return is a compile-time assertion; the runtime check pins the
     /// stored field column.
-    ///
     /// ConvexHull migrated from `ExprNode::Spatial(SpatialExpr::ConvexHull{..})`
     /// to a proper `AggOp::SpatialConvexHull` so AggregateExpr modifiers
-    /// (`.distinct()` / `.filter()` / `.over()` / `.order_by()`)
+    /// (`.distinct` / `.filter` / `.over` / `.order_by`)
     /// compose uniformly with the rest of the aggregate family.
     #[cfg(feature = "spatial")]
     #[test]
@@ -6880,7 +6473,7 @@ mod distance_tests {
         );
     }
 
-    /// `.distinct()` on convex_hull lands inside ST_Collect (the actual
+    /// `.distinct` on convex_hull lands inside ST_Collect (the actual
     /// aggregate). Regression guard: before the AggOp migration this
     /// modifier silently no-op'd because AggregateExpr modifiers only
     /// mutate ExprNode::Aggregate.
@@ -6900,7 +6493,7 @@ mod distance_tests {
     }
 
     /// `.filter(...)` on convex_hull places FILTER inside the wrapper,
-    /// attached to ST_Collect. Cluster E round-5 BLOCK-2 closure
+    /// attached to ST_Collect.
     /// regression — pre-migration this modifier silently no-op'd.
     #[cfg(feature = "spatial")]
     #[test]
@@ -7023,10 +6616,8 @@ mod distance_tests {
         // FILTER (WHERE ...) must attach to the inner ST_Collect aggregate,
         // BEFORE the outer ST_Centroid wrapper and the ::geography cast.
         // Postgres rejects FILTER after a cast.
-        //
         // Correct shape:
-        //   ST_Centroid(ST_Collect(<col>::geometry) FILTER (WHERE <cond>))::geography
-        //
+        // ST_Centroid(ST_Collect(<col>::geometry) FILTER (WHERE <cond>))::geography
         // ST_Centroid is a scalar wrapper, not an aggregate; FILTER
         // attaches to ST_Collect (the actual aggregate).
         use crate::expr::Expr;
@@ -7067,17 +6658,14 @@ mod distance_tests {
     #[test]
     fn centroid_with_over_in_annotate_path_places_over_on_inner_collect() {
         // When a spatial aggregate is emitted through the windowed-annotate
-        // path (the default `OVER ()` for ungrouped annotate, or an explicit
+        // path (the default `OVER ` for ungrouped annotate, or an explicit
         // `.over(|w| ...)` window spec), the OVER clause must attach to the
         // *aggregate*, not to a scalar wrapper.
-        //
         // For centroid, ST_Collect IS the aggregate; ST_Centroid is
         // a scalar function that wraps the collected geometry set.
         // OVER must fall inside ST_Centroid, attached to ST_Collect:
-        //
-        //   correct: ST_Centroid(ST_Collect(<col>::geometry) OVER (...))::geography
-        //   wrong:   (ST_Centroid(ST_Collect(<col>::geometry)) OVER (...))::geography
-        //
+        // correct: ST_Centroid(ST_Collect(<col>::geometry) OVER (...))::geography
+        // wrong: (ST_Centroid(ST_Collect(<col>::geometry)) OVER (...))::geography
         // The wrong shape attaches OVER to the ST_Centroid scalar
         // call, which Postgres rejects with "OVER specified, but
         // ST_Centroid is not a window function nor an aggregate
@@ -7099,9 +6687,9 @@ mod distance_tests {
     #[cfg(feature = "spatial")]
     #[test]
     fn collect_with_over_in_annotate_path_places_over_inside_geography_cast() {
-        // Unwrapped spatial — `loc.collect()` has no scalar wrapper,
+        // Unwrapped spatial — `loc.collect` has no scalar wrapper,
         // so OVER and cast attach the canonical aggregate-with-OVER
-        // way: `(AGG(...) OVER ())::cast`.
+        // way: `(AGG(...) OVER )::cast`.
         use crate::pg::accumulator::SqlAccumulator;
         let loc: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
         let agg = loc.collect();
@@ -7204,9 +6792,8 @@ mod distance_tests {
         // It routes through the same `AggOp::SpatialConvexHull` envelope
         // as centroid, so the wrapped OVER splice (place OVER inside the
         // wrapper, not around the whole expression) applies uniformly.
-        //
-        //   correct: ST_ConvexHull(ST_Collect(<col>::geometry) OVER (...))::geography
-        //   wrong:   ST_ConvexHull(ST_Collect(<col>::geometry))::geography OVER (...)
+        // correct: ST_ConvexHull(ST_Collect(<col>::geometry) OVER (...))::geography
+        // wrong: ST_ConvexHull(ST_Collect(<col>::geometry))::geography OVER (...)
         use crate::pg::accumulator::SqlAccumulator;
         let loc: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
         let agg = loc.convex_hull();
@@ -7356,7 +6943,7 @@ mod distance_tests {
     fn extent_with_filter_attaches_to_inner_aggregate_before_cast() {
         // FILTER must precede the cast chain.
         // Correct shape:
-        //   (ST_Extent(<col>::geometry) FILTER (WHERE <cond>))::geometry::geography
+        // (ST_Extent(<col>::geometry) FILTER (WHERE <cond>))::geometry::geography
         use crate::expr::Expr;
         use crate::pg::accumulator::SqlAccumulator;
         let loc: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
@@ -7560,7 +7147,7 @@ mod distance_tests {
     #[cfg(feature = "spatial")]
     #[test]
     fn cluster_within_emits_st_clusterwithin_with_distance_bound() {
-        // Distance binds as a parameter, not inlined into SQL text —
+        // Distance binds as a parameter, not inlined into SQL text
         // verifies no string interpolation of user-supplied data.
         use crate::geo::Polygon as PolygonTy;
         use crate::pg::accumulator::SqlAccumulator;
@@ -7740,7 +7327,7 @@ mod distance_tests {
     fn line_agg_with_filter_attaches_before_cast() {
         // FILTER must precede the ::geography cast.
         // Correct shape:
-        //   (ST_LineAgg(<col>::geometry) FILTER (WHERE <cond>))::geography
+        // (ST_LineAgg(<col>::geometry) FILTER (WHERE <cond>))::geography
         use crate::expr::Expr;
         use crate::geo::LineString;
         use crate::pg::accumulator::SqlAccumulator;
@@ -7833,7 +7420,7 @@ mod distance_tests {
         panic!("expected Div(Spatial(AreaOfIntersection), Spatial(Area))");
     }
 
-    // Narrow-integer IntoFilterValue widening (Phase 7-Zero-2 polish,
+    // Narrow-integer IntoFilterValue widening (polish,
     // GH issue #29). Each narrow type widens to the smallest signed
     // FilterValue variant that fits its full range. Mirrors the
     // sql_cast_for_type table in `jsonb::path`.
@@ -7890,7 +7477,7 @@ mod distance_tests {
 
     #[test]
     fn into_filter_value_u64_widens_to_decimal() {
-        // djogi#186 (Phase 8.5 v3 Cluster 2) — `u64` was previously
+        // (v3 ) — `u64` was previously
         // omitted from `IntoFilterValue` because `u64::MAX > i64::MAX`
         // makes the simple signed widening unsound. The fix uses
         // `rust_decimal::Decimal`, which Postgres bare `NUMERIC`

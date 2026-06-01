@@ -1,23 +1,17 @@
 //! `migrations status` rendering — T6's read-only status command.
-//!
 //! Walks the migration ledger, groups by `app_label`, sorts by
 //! `applied_at` ASC within an app, and renders an operator-facing
-//! table. Implements the v3 §3 + §6 amendment exit-code matrix:
-//!
+//! table. Implements the + §6 amendment exit-code matrix:
 //! - All applied → exit 0.
 //! - Any pending / failed → exit 1.
 //! - Unknown `app_label` (D010 inline warning) → exit 1.
-//!
 //! # Read-only
-//!
 //! Status NEVER acquires the workspace file lock and never writes to
 //! the database. The lock-free contract is per the v3 file-lock
 //! contract. Concurrent compose / apply invocations may race the read
-//! — that is acceptable: status is informational, and an interleaved
+//! that is acceptable: status is informational, and an interleaved
 //! mutation produces a snapshot of the ledger as of the read instant.
-//!
 //! # Pure rendering
-//!
 //! [`render`] is a pure function from `(ledger rows, registered apps)`
 //! to a [`StatusReport`] holding owned strings. The CLI surface
 //! prints the report; tests assert on the report shape directly so
@@ -55,19 +49,17 @@ impl StatusReport {
 }
 
 /// Render the status report.
-///
 /// `rows` is the result of [`super::ledger::select_all`]; the order
 /// is already `(app_label ASC, applied_at ASC, id ASC)`. The render
 /// function groups into a `BTreeMap` defensively so it remains
 /// correct when a future caller passes unsorted data — the extra
 /// pass is cheap and keeps the function independent of the caller's
 /// sort guarantee.
-///
 /// `registered_apps` is the union of every label currently present
 /// in [`crate::apps::AppRegistry::all`]. A row whose `app_label`
 /// doesn't appear in this set surfaces as a D010 warning inline.
 /// The synthetic global bucket (`""`) is always considered registered
-/// — every project carries it implicitly.
+/// every project carries it implicitly.
 pub fn render(rows: &[LedgerSummaryRow], registered_apps: &[String]) -> StatusReport {
     let mut registered: std::collections::BTreeSet<&str> =
         registered_apps.iter().map(String::as_str).collect();
@@ -150,22 +142,18 @@ pub fn render(rows: &[LedgerSummaryRow], registered_apps: &[String]) -> StatusRe
 }
 
 /// Render the T9 PK-flip warning lines for a pending migration plan.
-///
 /// **Inputs.** The caller passes the [`MigrationPlan`] returned by
 /// [`super::segment::plan_delta`]. When the plan classifies as
 /// `PkTypeFlip`, this fn returns the operator-facing warning lines:
-///
 /// - The exact PoNR sentence for every flip plan — see
-///   [`POINT_OF_NO_RETURN_WARNING`] for the verbatim byte string.
-/// - `"⚠ Partitioned-table cutover is seconds-to-minutes class —
-///   benchmark in staging first"` when any segment in the plan
-///   carries a partitioned-cutover label
-///   (`PkFlipPartitionedCutover`).
-///
+/// [`POINT_OF_NO_RETURN_WARNING`] for the verbatim byte string.
+/// - `"⚠ Partitioned-table cutover is seconds-to-minutes class
+/// benchmark in staging first"` when any segment in the plan
+/// carries a partitioned-cutover label
+/// (`PkFlipPartitionedCutover`).
 /// Non-flip plans return an empty `Vec`. The warnings are
 /// pre-formatted strings ready to print; the CLI prepends them to
 /// the regular status output for the affected pending plan.
-///
 /// The PoNR sentence wording is contractual — operators cite it in
 /// runbooks. The unit test `point_of_no_return_warning_byte_exact`
 /// asserts the exact bytes so review-driven wording drift produces a
@@ -196,7 +184,6 @@ pub fn render_pending_plan_warnings(plan: &MigrationPlan) -> Vec<String> {
 
 /// Query the live database for any `INVALID` indexes and render an
 /// operator-facing warning line per index found.
-///
 /// **Scope.** Postgres marks an index `pg_index.indisvalid = false`
 /// when a `CREATE INDEX CONCURRENTLY` was interrupted (operator
 /// cancel, deadlock-cancel, crash, or constraint violation). Such
@@ -205,17 +192,14 @@ pub fn render_pending_plan_warnings(plan: &MigrationPlan) -> Vec<String> {
 /// will collide on the index name. They are forensic litter from
 /// failed concurrent index builds and the operator must explicitly
 /// `REINDEX INDEX CONCURRENTLY` or `DROP INDEX` + recreate.
-///
 /// **Output shape.** One line per invalid index, format:
 /// `"⚠ INVALID index detected: <schema>.<index> on <table> — likely
 /// an interrupted CREATE INDEX CONCURRENTLY. Run \`REINDEX INDEX
 /// CONCURRENTLY <schema>.<index>\` or DROP and recreate."`
-///
 /// The warning is unconditional (not just for pending PK-flips):
 /// invalid indexes can come from any interrupted concurrent build,
 /// not only flips. Status surfacing is the operator-visible signal
 /// the catalog still carries the broken entry.
-///
 /// **Read-only.** No DDL is issued; only `pg_index` / `pg_class` /
 /// `pg_namespace` SELECTs.
 pub async fn render_invalid_index_warnings(
@@ -245,13 +229,11 @@ pub async fn render_invalid_index_warnings(
 /// Prefix of the D010 inline warning emitted when a ledger row
 /// references an `app_label` that is no longer in the `AppRegistry`.
 /// The full line is `format!("{D010_PREFIX}{app}…")`.
-///
 /// Pinned as a constant so byte-equality tests and operator runbooks
 /// can assert on the exact wording without parsing the formatted line.
 pub const D010_PREFIX: &str = "  D010: ledger references app \"";
 
 /// Produce the full D010 warning line for a given `app` label.
-///
 /// Format: `D010_PREFIX + app + suffix`. The suffix is frozen;
 /// change here only if the operator docs / runbooks are updated
 /// in lockstep.
@@ -264,7 +246,6 @@ pub fn format_d010(app: &str) -> String {
 
 /// Prefix of the INVALID-index advisory line emitted by
 /// [`render_invalid_index_warnings`].
-///
 /// Pinned for the same reason as [`D010_PREFIX`] — operator dashboards
 /// may grep for this string.
 pub const INVALID_INDEX_PREFIX: &str = "\u{26a0} INVALID index detected: ";
@@ -284,7 +265,6 @@ pub fn format_invalid_index(schema: &str, index: &str, table: &str) -> String {
 /// runbooks and operator dashboards cite this sentence verbatim, so
 /// any change here MUST be paired with a v3 plan amendment AND the
 /// `point_of_no_return_warning_byte_exact` regression test update.
-///
 /// The leading codepoint is U+26A0 (warning sign) followed by U+0020.
 /// The em dash between "commits" and "reverse" is U+2014.
 pub const POINT_OF_NO_RETURN_WARNING: &str =
@@ -551,7 +531,6 @@ mod tests {
         // amendment AND this fixture update; we assert EVERY byte
         // (not just the first three) of the constant so silent
         // rephrasing — even a one-character typo — fails loud.
-        //
         // The expected sequence below is hand-typed: U+26A0 (warning
         // sign, 0xE2 0x9A 0xA0), space, ASCII letters of "POINT OF NO
         // RETURN after this cutover commits", space, U+2014 (em dash,

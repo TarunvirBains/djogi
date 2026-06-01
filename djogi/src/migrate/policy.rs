@@ -1,32 +1,25 @@
 //! Out-of-order policy + multi-DB guardrails for the migration runner.
-//!
-//! # Scope (Phase 7 v3 §8 / T7)
-//!
+//! # Scope (/ T7)
 //! Two responsibilities:
-//!
 //! 1. **Out-of-order detection / enforcement.** A migration applies
-//!    *out-of-order* when its `version` string lexically precedes some
-//!    already-applied migration's version inside the same
-//!    `(database, app)` bucket — practically, an operator picked up a
-//!    feature-branch migration after main shipped a later one. The
-//!    runner detects the conflict at apply time, sets the ledger row's
-//!    `out_of_order_flag = TRUE`, and then either:
-//!
-//!    - **Allows with diagnostic** (local/dev default): proceeds, emits
-//!      a `tracing::warn!` naming the conflicting peer.
-//!    - **Rejects** (CI/prod default): refuses the apply with a typed
-//!      error before any DDL runs.
-//!    - **Allows with explicit override**: proceeds and records the
-//!      operator-supplied reason in `partial_apply_note`.
-//!
+//! *out-of-order* when its `version` string lexically precedes some
+//! already-applied migration's version inside the same
+//! `(database, app)` bucket — practically, an operator picked up a
+//! feature-branch migration after main shipped a later one. The
+//! runner detects the conflict at apply time, sets the ledger row's
+//! `out_of_order_flag = TRUE`, and then either:
+//! - **Allows with diagnostic** (local/dev default): proceeds, emits
+//! a `tracing::warn!` naming the conflicting peer.
+//! - **Rejects** (CI/prod default): refuses the apply with a typed
+//! error before any DDL runs.
+//! - **Allows with explicit override**: proceeds and records the
+//! operator-supplied reason in `partial_apply_note`.
 //! 2. **Localhost detection** for `attune --squash`. Squash is a hard
-//!    history rewrite (deletes / coalesces local migration files +
-//!    ledger rows) and is gated on `DATABASE_URL` resolving to the
-//!    local machine. The localhost predicate here is the same byte-
-//!    level scanner the `attune.rs` module uses.
-//!
+//! history rewrite (deletes / coalesces local migration files +
+//! ledger rows) and is gated on `DATABASE_URL` resolving to the
+//! local machine. The localhost predicate here is the same byte-
+//! level scanner the `attune.rs` module uses.
 //! # No regex
-//!
 //! Per the Djogi-wide no-regex rule, every parser in this module is a
 //! byte-level forward scan. The libpq parameter parser walks tokens
 //! separated by single spaces and stops on the first `host=` / `=`
@@ -40,7 +33,6 @@ use crate::config::DjogiConfig;
 
 /// Operator-facing policy for an apply that detects an out-of-order
 /// migration version.
-///
 /// Production stability is the default lens: CI / prod environments
 /// reject; development environments allow with a loud warning. The
 /// explicit-override path lets an operator unblock dev iteration when
@@ -62,7 +54,7 @@ pub enum OutOfOrderPolicy {
     AllowExplicit {
         /// Operator-supplied rationale; non-empty by convention. The
         /// runner does not enforce non-emptiness so dev iterations
-        /// can pass `String::new()`, but production callers should
+        /// can pass `String::new`, but production callers should
         /// always set a real string.
         override_reason: String,
     },
@@ -72,18 +64,15 @@ impl OutOfOrderPolicy {
     /// Resolve the default policy from a [`DjogiConfig`]. Production
     /// profile and CI environments default to `Reject`; everything
     /// else defaults to `AllowWithDiagnostic`.
-    ///
     /// **Detection rules:**
-    ///
-    /// - `config.is_production()` is the highest-precedence signal. A
-    ///   `Djogi.toml` with `profile = "production"` always picks
-    ///   `Reject`.
+    /// - `config.is_production` is the highest-precedence signal. A
+    /// `Djogi.toml` with `profile = "production"` always picks
+    /// `Reject`.
     /// - Otherwise, `CI` env var equal to `"true"` (case-insensitive
-    ///   ASCII compare) selects `Reject`. CI runners universally set
-    ///   `CI=true`; the case-insensitive form catches the few that
-    ///   set `CI=TRUE` or `CI=True`.
+    /// ASCII compare) selects `Reject`. CI runners universally set
+    /// `CI=true`; the case-insensitive form catches the few that
+    /// set `CI=TRUE` or `CI=True`.
     /// - Otherwise: `AllowWithDiagnostic`.
-    ///
     /// The function takes a `&DjogiConfig` rather than reading the
     /// global so tests can pin a deterministic config without env
     /// var contention.
@@ -123,7 +112,6 @@ impl OutOfOrderPolicy {
 /// matches `"true"` (case-insensitive). Used by
 /// [`OutOfOrderPolicy::default_for_config`] to flip the default policy
 /// to `Reject` on CI runners.
-///
 /// Implementation note: explicit ASCII comparison rather than
 /// `to_lowercase` so we never allocate. `b'T'.eq_ignore_ascii_case(&b't')`
 /// is the per-byte primitive.
@@ -136,7 +124,6 @@ fn ci_env_set() -> bool {
 
 /// Byte-level ASCII case-insensitive equality. Both inputs must be
 /// ASCII; non-ASCII bytes compare verbatim. No allocation.
-///
 /// Promoted to `pub(crate)` so sibling modules (e.g.
 /// `attune::djogi_env_is_production`) can reuse the primitive without
 /// duplicating the loop.
@@ -156,7 +143,6 @@ pub(crate) fn ascii_eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
 
 /// Allowlist of hostnames that count as "localhost" for the purposes
 /// of `attune --squash`'s safety gate. Sorted for `binary_search`.
-///
 /// **The empty string is intentionally listed.** A libpq connection
 /// string with no `host=` parameter (or a URL with no host component)
 /// defaults to a Unix-domain socket against the local machine — which
@@ -165,18 +151,15 @@ const LOCALHOST_ALLOWLIST: &[&str] = &["", "127.0.0.1", "::1", "localhost"];
 
 /// Returns `true` when the supplied connection string resolves to the
 /// local machine. Recognises both forms:
-///
 /// - libpq parameter form: `host=localhost user=foo dbname=bar`
 /// - URL form: `postgres://[user[:pass]@]host[:port][/db]` (and the
-///   `postgresql://` alias)
-///
+/// `postgresql://` alias)
 /// The host extraction is byte-level — explicit forward scans, no
 /// regex. Comparisons against [`LOCALHOST_ALLOWLIST`] use binary
 /// search; addresses in the IPv4 `127.0.0.0/8` loopback range (e.g.
 /// `127.5.10.20`) match via the byte-level [`is_ipv4_loopback_range`]
 /// helper that walks the four octets without parsing into a numeric
 /// type.
-///
 /// **Used by `attune --squash`, `db reset`, and `db seed`.** The
 /// squash path refuses to run when this returns `false`, so a
 /// misconfigured DATABASE_URL pointing at a shared dev server cannot
@@ -187,7 +170,6 @@ pub fn is_localhost_connection(conn: &str) -> bool {
     if LOCALHOST_ALLOWLIST.binary_search(&host).is_ok() {
         return true;
     }
-    // Codex umbrella PARTIAL: extend the loopback recognition to the
     // entire `127.0.0.0/8` range so an operator running a Postgres on
     // `127.5.10.20` (a perfectly valid loopback address per RFC 5735)
     // is recognised as localhost. Allowlist is sorted + binary-searched
@@ -196,12 +178,10 @@ pub fn is_localhost_connection(conn: &str) -> bool {
     is_ipv4_loopback_range(host)
 }
 
-/// Codex umbrella PARTIAL: returns `true` when `host` is an IPv4
 /// dotted-quad whose first octet is `127`. The remaining three
 /// octets must each be one to three ASCII decimal digits in the 0..=255
 /// range; anything else (non-digit byte, octet out of range, wrong
 /// number of dots) returns `false`.
-///
 /// **No regex.** The walk is a four-octet forward scan — split on `.`,
 /// confirm each segment is decimal, parse via accumulator, range-check.
 /// `127.0.0.1` is in [`LOCALHOST_ALLOWLIST`] (the binary-search path
@@ -312,21 +292,19 @@ fn extract_url_host(body: &str) -> &str {
     }
 }
 
-/// Extract the host from a libpq parameter string —
+/// Extract the host from a libpq parameter string
 /// `key=value key=value …` separated by ASCII whitespace. Returns the
 /// value of the *last* `host=` key (libpq's documented "last wins"
 /// semantics).
-///
 /// **Whitespace tolerance.** Per libpq's documented connection-string
 /// grammar, a keyword/value pair may have ASCII whitespace surrounding
-/// the `=` separator: `host = prod`, `host  =  prod`, `host=  prod`,
-/// and `host  =prod` all assign value `prod` to key `host`. The
+/// the `=` separator: `host = prod`, `host = prod`, `host= prod`,
+/// and `host =prod` all assign value `prod` to key `host`. The
 /// previous parser only accepted the no-space form `host=prod` and
 /// silently produced an empty host for any other shape — that empty
 /// host then collated to localhost via the allowlist, which is exactly
-/// the bug B-1 closed: a remote DATABASE_URL with whitespace-padded
+/// the bug closed: a remote DATABASE_URL with whitespace-padded
 /// `=` falsely passed the localhost gate.
-///
 /// Quoting is supported in BOTH the single-quoted form (a value
 /// surrounded by ASCII apostrophe bytes) and the double-quoted form
 /// (a value surrounded by ASCII double-quote bytes) per the libpq
@@ -334,12 +312,10 @@ fn extract_url_host(body: &str) -> &str {
 /// unescaped matching quote byte, with `\` escaping the following
 /// byte. Outside a quoted form, the value runs until the next ASCII
 /// whitespace byte. Round-2 A-2 added the double-quoted variant; the
-/// single-quoted path was wired up by B-1.
-///
+/// single-quoted path was wired up by .
 /// Empty input → empty host (the allowlist treats that as localhost
 /// since libpq defaults to a Unix-domain socket).
-///
-/// **Empty-host edge case (round-2 A-2 documentation).** A pathological
+/// **Empty-host edge case (.** A pathological
 /// input like `host= dbname=test` follows libpq's actual grammar:
 /// libpq skips whitespace after `=` and then reads the value up to the
 /// next whitespace byte, which means the next token (`dbname=test`)
@@ -347,7 +323,7 @@ fn extract_url_host(body: &str) -> &str {
 /// verbatim. The result is a non-localhost host string for ambiguous
 /// input, which is the safe-bias direction for the localhost gate:
 /// the gate refuses, and the squash refuses to run rather than
-/// guessing localhost. We leave this behaviour untouched on purpose —
+/// guessing localhost. We leave this behaviour untouched on purpose
 /// changing it would diverge from libpq and would loosen the gate.
 fn extract_libpq_host(s: &str) -> &str {
     let bytes = s.as_bytes();
@@ -370,7 +346,7 @@ fn extract_libpq_host(s: &str) -> &str {
         }
         let key_end = i;
         // Skip whitespace BETWEEN the key and the `=` (libpq tolerates
-        // `host = prod` and `host  =  prod`).
+        // `host = prod` and `host = prod`).
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
@@ -380,7 +356,7 @@ fn extract_libpq_host(s: &str) -> &str {
             continue;
         }
         i += 1; // consume '='
-        // Skip whitespace AFTER the `=` (libpq tolerates `host=  prod`
+        // Skip whitespace AFTER the `=` (libpq tolerates `host= prod`
         // and `host = prod`).
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
@@ -444,7 +420,7 @@ mod tests {
     use super::*;
     use crate::config::DjogiConfig;
 
-    /// Construct a [`DjogiConfig`] with a specific profile field —
+    /// Construct a [`DjogiConfig`] with a specific profile field
     /// shared helper for the policy default tests.
     fn cfg_with_profile(profile: &str) -> DjogiConfig {
         DjogiConfig {
@@ -529,7 +505,6 @@ mod tests {
         // is intentionally narrow — we only flip on the literal
         // `"true"` (case-insensitive) value. `CI=1` falls through to
         // the dev default.
-        //
         // The narrow form is the safer default because it puts the
         // burden of opting-in on the operator: an unfamiliar value
         // never silently produces production-grade rejection. Setting
@@ -750,7 +725,7 @@ mod tests {
         assert!(is_localhost_connection("host='localhost' dbname=test"));
     }
 
-    // ── B-1 regression: whitespace-padded `=` in libpq form ──────────────
+    // ── regression: whitespace-padded `=` in libpq form ──────────────
 
     /// Padded `host = prod` must extract `prod`, not the empty string.
     /// The empty-string case previously short-circuited through the
@@ -786,7 +761,7 @@ mod tests {
 
     #[test]
     fn extract_host_libpq_padded_equals_remote_hostname() {
-        // The full B-1 trigger: `host = prod.example.com` previously
+        // The full trigger: `host = prod.example.com` previously
         // returned `""` and `is_localhost_connection` treated `""` as
         // localhost (Unix-socket convention). Verify the parser now
         // returns the full hostname so the squash gate refuses.
@@ -817,7 +792,7 @@ mod tests {
         assert!(is_localhost_connection("host=  ::1 dbname=test"));
     }
 
-    // ── Round-2 A-2: double-quoted libpq values ──────────────────────────
+    // ── Round-2 double-quoted libpq values ──────────────────────────
 
     /// `host="hostname"` must extract `hostname` — without the double
     /// quotes, exactly as the single-quoted form does. The pre-A-2
@@ -851,7 +826,7 @@ mod tests {
     }
 
     /// `is_localhost_connection` must recognise double-quoted localhost
-    /// the same way it recognises the single-quoted form (B-1 covered
+    /// the same way it recognises the single-quoted form (covered
     /// the single-quoted path; A-2 closes the double-quoted gap).
     #[test]
     fn is_localhost_connection_libpq_double_quoted_localhost() {
@@ -866,7 +841,6 @@ mod tests {
     /// does NOT terminate the quoted region. The parser tracks each
     /// backslash plus the next byte as a 2-byte unit, so a `\"`
     /// inside `"..."` keeps the value open through the inner `"`.
-    ///
     /// Important: because `extract_libpq_host` returns a `&str` slice
     /// of the original input, the captured value preserves the raw
     /// bytes including the backslash escape. It does NOT unescape
@@ -912,7 +886,7 @@ mod tests {
         assert!(!is_localhost_connection("host= dbname=test"));
     }
 
-    // ── Codex umbrella PARTIAL: 127.0.0.0/8 IPv4 loopback range ──────────
+    // ── 0.0.0/8 IPv4 loopback range ──────────
 
     /// Every host in the IPv4 loopback range (`127.0.0.0/8` per
     /// RFC 5735) must be recognised as localhost. The allowlist

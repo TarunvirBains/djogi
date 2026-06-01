@@ -1,80 +1,66 @@
 //! `djogi migrations attune` — local-history reconciliation.
-//!
-//! # Scope (Phase 7 v3 §8 — OQ-04 amendment)
-//!
+//! # Scope (— amendment)
 //! `attune` operates on local migration history. Three modes:
-//!
 //! 1. **Default (`AttuneMode::DiffOnly`)**: read-only diff between
-//!    on-disk SQL files and the ledger. Reports SQL files present on
-//!    disk but absent from the ledger ("unrecorded"), and ledger rows
-//!    whose corresponding SQL file is missing on disk ("orphaned").
-//!    Acquires the workspace file lock to take a consistent snapshot
-//!    but never writes.
-//!
+//! on-disk SQL files and the ledger. Reports SQL files present on
+//! disk but absent from the ledger ("unrecorded"), and ledger rows
+//! whose corresponding SQL file is missing on disk ("orphaned").
+//! Acquires the workspace file lock to take a consistent snapshot
+//! but never writes.
 //! 2. **`AttuneMode::Record`**: walks the same drift report and
-//!    INSERTs ledger rows for every unrecorded SQL file, with
-//!    `status = 'applied'` and a `partial_apply_note` recording the
-//!    operator-supplied reason. **Does NOT execute the SQL** — `Record`
-//!    is the operator asserting "these migrations were already applied
-//!    out-of-band". Distinct from `fake_apply_plan` because `Record`
-//!    walks every unrecorded SQL file in the bucket in one go.
-//!
+//! INSERTs ledger rows for every unrecorded SQL file, with
+//! `status = 'applied'` and a `partial_apply_note` recording the
+//! operator-supplied reason. **Does NOT execute the SQL** — `Record`
+//! is the operator asserting "these migrations were already applied
+//! out-of-band". Distinct from `fake_apply_plan` because `Record`
+//! walks every unrecorded SQL file in the bucket in one go.
 //! 3. **`AttuneMode::Squash { from, publish, app }`**: HISTORY REWRITE.
-//!    Coalesces every committed SQL file from `from` to HEAD into one
-//!    squashed file, deletes the originals, and removes the deleted
-//!    versions from the ledger. Per OQ-04 plus the fixup for B-5 (single-bucket scope):
-//!
-//!    - **Localhost-only.** Refuses to run when `DATABASE_URL` does
-//!      not resolve to the local machine — see
-//!      [`crate::migrate::policy::is_localhost_connection`]. A typo in
-//!      the URL pointing at staging cannot rewrite history that other
-//!      developers also pull from.
-//!    - **Dev-profile-only.** Refuses to run when
-//!      `Djogi.toml::profile = "production"`. Production environments
-//!      have a hard line against destructive history rewrites.
-//!    - **Local-only by default.** The `--publish` flag must be
-//!      explicitly passed for the squashed history to be pushed to
-//!      the remote `migrations` submodule. Without it, the rewrite
-//!      stays local — the operator can inspect the result, run the
-//!      test suite, and only then publish.
-//!    - **`--publish` is atomic: commit-then-push.**
-//!      When `--publish` is set, attune treats the squash mutation as
-//!      one atomic step: it stages every change in the migrations
-//!      working tree (`git add -A`), creates a commit
-//!      (`djogi attune --squash from <from>`), then pushes the current
-//!      branch to `origin`. The operator does NOT need to commit the
-//!      mutation themselves — the publisher's contract is "commit the
-//!      squash mutation, then push to origin". This matches v3 §6's
-//!      "destructive history rewrite" framing: the squash mutation +
-//!      the publish are one indivisible operation. Without `--publish`
-//!      the operator owns the commit cycle as before.
-//!
+//! Coalesces every committed SQL file from `from` to HEAD into one
+//! squashed file, deletes the originals, and removes the deleted
+//! versions from the ledger. Per plus the fixup for (single-bucket scope):
+//! - **Localhost-only.** Refuses to run when `DATABASE_URL` does
+//! not resolve to the local machine — see
+//! [`crate::migrate::policy::is_localhost_connection`]. A typo in
+//! the URL pointing at staging cannot rewrite history that other
+//! developers also pull from.
+//! - **Dev-profile-only.** Refuses to run when
+//! `Djogi.toml::profile = "production"`. Production environments
+//! have a hard line against destructive history rewrites.
+//! - **Local-only by default.** The `--publish` flag must be
+//! explicitly passed for the squashed history to be pushed to
+//! the remote `migrations` submodule. Without it, the rewrite
+//! stays local — the operator can inspect the result, run the
+//! test suite, and only then publish.
+//! - **`--publish` is atomic: commit-then-push.**
+//! When `--publish` is set, attune treats the squash mutation as
+//! one atomic step: it stages every change in the migrations
+//! working tree (`git add -A`), creates a commit
+//! (`djogi attune --squash from <from>`), then pushes the current
+//! branch to `origin`. The operator does NOT need to commit the
+//! mutation themselves — the publisher's contract is "commit the
+//! squash mutation, then push to origin". This matches 's
+//! "destructive history rewrite" framing: the squash mutation +
+//! the publish are one indivisible operation. Without `--publish`
+//! the operator owns the commit cycle as before.
 //! # File-lock contract
-//!
 //! Every mode acquires the workspace [`super::guard::WorkspaceGuard`]
 //! before touching any path. Concurrent compose / apply / repair
 //! invocations cannot interleave with attune.
-//!
-//! # Database scope (B-2)
-//!
+//! # Database scope
 //! Each attune invocation is bound to ONE database — the active
-//! `DjogiContext`'s `current_database()`. The disk scan is filtered
+//! `DjogiContext`'s `current_database`. The disk scan is filtered
 //! to `migrations/<active_db>/...` and ledger queries run against the
 //! connected pool. Multi-database workspaces require running attune
 //! once per database; this is intentional and matches the existing
 //! single-context architecture (the runner has a single pool today;
 //! `pool_for(database)` is a future seam).
-//!
-//! # Read-only dry-run contract (B-3 + U-5)
-//!
+//! # Read-only dry-run contract
 //! Attune's read-only contract extends to the ledger table itself.
 //! Three paths are read-only and MUST NOT bootstrap
 //! `djogi_schema_migrations`:
-//!
 //! - `AttuneMode::DiffOnly` (any value of `apply`)
 //! - `AttuneMode::Record { .. }` with `apply == false`
 //! - `AttuneMode::Squash { .. }` with `apply == false`
-//!
 //! On a fresh database where the ledger does not exist yet, every
 //! read-only path probes `pg_class` instead of calling
 //! [`super::ledger::bootstrap`]; the returned report carries an
@@ -82,13 +68,10 @@
 //! stays absent. The operator must run `apply` or `attune --record
 //! --apply` (or `baseline`) to bootstrap. Only Record / Squash with
 //! `--apply` call `ledger::bootstrap`.
-//!
-//! Pre-U-5, Record / Squash bootstrapped the ledger up-front
+//! , Record / Squash bootstrapped the ledger up-front
 //! regardless of `--apply`, which silently created the table during
 //! a dry-run — an out-of-contract mutation. The fix gates the bootstrap behind `req.apply`.
-//!
 //! # No regex
-//!
 //! Per the Djogi-wide no-regex rule, the SQL filename detection uses
 //! byte-level prefix / suffix checks against the [`super::naming`]
 //! module's emitted shapes. A "version" is recovered via
@@ -137,19 +120,17 @@ pub enum AttuneMode {
     /// concatenation of subsumed downs in reverse). Deletes the
     /// originals from disk AND the ledger. Localhost + dev-profile
     /// gated.
-    ///
     /// **`publish`** is the second gate: when `false`, the rewrite
     /// stays local. When `true`, attune shells out to
     /// `git -C <migrations_root> push` to publish. Default is
     /// `false`; a missing `--publish` flag NEVER auto-publishes.
-    ///
     /// **`app`** narrows the squash to a single bucket within the
-    /// connected database (B-5). When `None`, the bucket is auto-
+    /// connected database. When `None`, the bucket is auto-
     /// detected: if exactly one bucket contains `from`, that bucket
     /// is the squash target. If `from` exists in MULTIPLE buckets,
     /// auto-detection refuses with
     /// [`AttuneRefusal::SquashFromVersionAmbiguous`] and the operator
-    /// must re-run with an explicit `app`. The pre-B-5 implementation
+    /// must re-run with an explicit `app`. The pre-implementation
     /// applied the `versions >= from` predicate to every bucket in the
     /// workspace, which collapsed unrelated bucket histories — a
     /// destructive, non-recoverable side effect.
@@ -258,9 +239,8 @@ pub enum AttuneDiagnostic {
     /// WITHOUT `--apply` — does NOT bootstrap the ledger. The
     /// operator must run `apply` or
     /// `attune --record --apply` first.
-    ///
     /// The `database` field is the active connection's
-    /// `current_database()` so a multi-database workspace's diagnostic
+    /// `current_database` so a multi-database workspace's diagnostic
     /// is unambiguous.
     LedgerTableMissing { database: String },
     /// A Record or Squash mode was invoked without `--apply`. The
@@ -426,7 +406,7 @@ pub enum AttuneRefusal {
     /// `Squash` mode was invoked but `Djogi.toml::[database].dev_mode`
     /// is `false`. Per `docs/spec/configuration.md` §14 the squash
     /// gate is the conjunction of three conditions: localhost,
-    /// `dev_mode = true`, and `DJOGI_ENV != "production"`. Pre-umbrella
+    /// `dev_mode = true`, and `DJOGI_ENV != "production"`.
     /// the `dev_mode` half was documented but never read; this variant
     /// surfaces a refusal that names the field the operator must flip
     /// to opt-in to local history rewrites.
@@ -441,15 +421,14 @@ pub enum AttuneRefusal {
     /// shells in and runs `attune --squash`.
     SquashEnvIsProduction { env_value: String },
     /// `Squash --from` named a version that does not exist on disk in
-    /// any bucket scoped to the connected database (B-5). The squash
+    /// any bucket scoped to the connected database. The squash
     /// refuses rather than silently no-op because the version argument
     /// is load-bearing for an audit trail.
     SquashFromVersionNotFound { version: String },
     /// `Squash --from` named a version that exists in MULTIPLE
-    /// buckets within the connected database (B-5). Squash refuses to
+    /// buckets within the connected database. Squash refuses to
     /// silently pick one because each bucket's history is independent;
     /// the operator must disambiguate via `--app <app_label>`.
-    ///
     /// The `buckets` field carries `(database, app)` pairs in
     /// `database/app` rendering form so the error message lists every
     /// candidate.
@@ -630,11 +609,10 @@ pub struct AttuneRequest<'a> {
     /// profile. Read only for [`AttuneMode::Squash`]; ignored by
     /// `DiffOnly` and `Record`.
     pub dev_mode: bool,
-    /// Optional Git target to attune the local migration history to —
+    /// Optional Git target to attune the local migration history to
     /// a local or remote commit / tag / branch (per
     /// `docs/spec/configuration.md` §14). When `None`, attune
     /// reconciles against the current on-disk state.
-    ///
     /// **Resolution order.** The target string is resolved first
     /// against the local migrations submodule (`git rev-parse <target>`).
     /// If that fails, attune fetches every configured remote
@@ -642,7 +620,6 @@ pub struct AttuneRequest<'a> {
     /// resolves locally never triggers a fetch — operators who deliberately
     /// kept their submodule offline can still attune to a known-local
     /// SHA.
-    ///
     /// **No regex.** The target string is passed verbatim to
     /// `git rev-parse`; Djogi never parses it.
     pub target: Option<&'a str>,
@@ -663,7 +640,6 @@ pub struct AttuneRequest<'a> {
     /// prints the would-be parent pointer update without touching the
     /// parent index. Without `--apply`, the parent pointer is NEVER
     /// mutated regardless of `--record`.
-    ///
     /// `--squash` implies recording per
     /// `docs/spec/configuration.md` §15 and `docs/spec/migrations.md`
     /// §"migrations attune". The runtime computes an
@@ -687,13 +663,11 @@ pub struct AttuneRequest<'a> {
 
 /// Returns `Some(value)` when the `DJOGI_ENV` env var is set to a
 /// case-insensitive `"production"` byte sequence; `None` otherwise.
-///
 /// **Why a separate helper.** The squash gate refuses in this
 /// case. Pulling the comparison into a free function keeps the
 /// gate's intent obvious at the call site and gives unit tests a
 /// stable surface to pin the case-insensitive ASCII compare without
 /// allocating a `to_lowercase` String.
-///
 /// **No regex.** Delegates to [`super::policy::ascii_eq_ignore_case`] so the
 /// byte-level comparison lives in one place. The env-var payload is read once,
 /// compared, and dropped.
@@ -708,13 +682,12 @@ fn djogi_env_is_production() -> Option<String> {
 
 /// Push the variant-correct `DryRun*RecordSkipped` diagnostic for a
 /// dry-run that would have updated the parent submodule pointer.
-///
 /// Centralises the routing rule the three dry-run paths (DiffOnly,
 /// Record, Squash) all need:
 /// - explicit `--record` → `DryRunRecordSkipped` (causal prose names
-///   the flag);
+/// the flag);
 /// - `--squash`-implied recording → `DryRunSquashRecordSkipped`
-///   (neutral prose);
+/// (neutral prose);
 /// - any other mode without a resolved target → no-op.
 fn push_record_skipped(
     diagnostics: &mut Vec<AttuneDiagnostic>,
@@ -738,12 +711,10 @@ fn push_record_skipped(
 // ── Public entry point ────────────────────────────────────────────────────
 
 /// Run `attune` against the workspace.
-///
 /// **Witness-typed lock.** The `_guard: &WorkspaceGuard` parameter is
 /// the same witness pattern as [`super::runner::apply_plan`]. The
 /// caller proves it acquired the workspace lock before invoking
 /// attune; the runner trusts the witness without re-acquiring.
-///
 /// **No SQL execution.** Attune never runs user DDL. `Record` mode
 /// inserts ledger rows; `Squash` mode rewrites files + the ledger.
 /// `DiffOnly` mode is read-only.
@@ -756,14 +727,12 @@ pub async fn attune(
     // §14 the gate is the conjunction of FOUR conditions, all enforced
     // here in deterministic order so an operator-facing refusal is
     // single-cause and reproducible:
-    //
     // 1. `database_url` resolves to localhost.
     // 2. `Djogi.toml::profile != "production"`.
     // 3. `Djogi.toml::[database].dev_mode == true` — was documented but
-    //    now enforced.
-    // 4. `DJOGI_ENV` env var is NOT case-insensitive `"production"` —
-    //    env-var override for the deployment environment.
-    //
+    // now enforced.
+    // 4. `DJOGI_ENV` env var is NOT case-insensitive `"production"`
+    // env-var override for the deployment environment.
     // The order is gate-1 → gate-4 deliberately: failing the cheapest
     // checks first means an operator typo on URL or profile surfaces
     // before the more nuanced env-var probe.
@@ -793,19 +762,18 @@ pub async fn attune(
     // matches THIS context's database. The CLI orchestrator runs
     // attune once per database; this guarantees an attune invocation
     // never inserts ledger rows for a database it isn't actually
-    // connected to (B-2).
-    //
-    // Reading `current_database()` does not require the ledger table,
+    // connected to.
+    // Reading `current_database` does not require the ledger table,
     // so we issue it BEFORE the bootstrap dispatch below — DiffOnly's
-    // read-only contract (B-3) hinges on us not creating the ledger
+    // read-only contract hinges on us not creating the ledger
     // table when the operator only asked for a diff.
     let active_database = active_database_name(ctx).await?;
 
-    // Mode dispatch for ledger bootstrap (B-3 + U-5):
+    // Mode dispatch for ledger bootstrap:
     // DiffOnly is read-only and must NEVER create
     // `djogi_schema_migrations` on a fresh DB. Record + Squash bootstrap
     // ledger state up-front via an idempotent CREATE TABLE IF NOT EXISTS
-    // — but ONLY when `--apply` is set. Without `--apply`, Record /
+    // but ONLY when `--apply` is set. Without `--apply`, Record /
     // Squash are dry-runs and the read-only contract extends to the
     // ledger table itself: a dry-run on a fresh database must not create
     // the ledger table as a side effect of the diff display. If we
@@ -829,7 +797,7 @@ pub async fn attune(
     };
 
     // Walk disk + ledger. Disk scan is filtered to ONLY the active
-    // database's bucket directories (B-2): if `migrations/main/...`
+    // database's bucket directories: if `migrations/main/...`
     // and `migrations/crud_log/...` both exist on disk but the
     // operator's context is connected to `main`, only `main`'s tree
     // is in scope. Multi-database attune requires per-database
@@ -914,7 +882,6 @@ pub async fn attune(
     // resolved target writes the pointer regardless of whether `--record`
     // was passed explicitly. The operator's explicit `--record` still works
     // as before for Record / DiffOnly modes.
-    //
     // Squash genuinely needs the parent pointer to track the rewritten
     // history. After `--publish` lands the new HEAD on `origin`, the
     // parent's recorded pointer would otherwise still reference a SHA the
@@ -1064,13 +1031,11 @@ pub async fn attune(
 
 /// Walk `migrations/<database>/<app>/` and return every up-SQL file's
 /// `(version → path)` map, keyed by bucket.
-///
 /// **Up files only.** A migration directory contains both up and down
 /// SQL files; the up file is the canonical artifact (and its presence
 /// is what `attune --record` recovers from). The down file is paired
 /// 1:1 — a missing down for a present up surfaces in compose's
 /// idempotency check, not here.
-///
 /// **Single-database scope.** When `database_filter` is `Some`, only
 /// buckets whose `database` field matches the filter are included. `None`
 /// includes every bucket — used by unit tests that exercise the raw scan;
@@ -1086,7 +1051,7 @@ fn scan_disk_filtered(
 
 /// Wrapper around [`scan_disk_filtered`] that includes every bucket
 /// regardless of database. Retained for unit tests that pre-date the
-/// B-2 single-database scope; production callers use
+/// Single-database scope; production callers use
 /// [`scan_disk_for_database`].
 #[cfg(test)]
 fn scan_disk(
@@ -1133,10 +1098,10 @@ async fn scan_ledger(
     // bucket from which the runner derived the row. For T7 we treat
     // the active connection as a single database; the bucket
     // identity reduces to `(database, app_label)`. The `database`
-    // argument is the active connection's `current_database()` —
+    // argument is the active connection's `current_database`
     // resolved once at the top of `attune` so DiffOnly never bootstraps
-    // the ledger (B-3) and so multi-database workspaces require a
-    // fresh attune invocation per database (B-2).
+    // the ledger and so multi-database workspaces require a
+    // fresh attune invocation per database.
 
     let mut out: BTreeMap<BucketKey, BTreeMap<String, LedgerStatus>> = BTreeMap::new();
     for row in &rows {
@@ -1165,7 +1130,7 @@ async fn scan_ledger(
     Ok(out)
 }
 
-/// Read the active database's name from `current_database()`. Used to
+/// Read the active database's name from `current_database`. Used to
 /// stamp the bucket identity on ledger rows when reading them back.
 /// The active database IS the bucket database for T7's single-pool
 /// arrangement; the helper exists so a future multi-pool shape can
@@ -1182,7 +1147,7 @@ async fn active_database_name(ctx: &mut DjogiContext) -> Result<String, AttuneEr
 }
 
 /// Probe `pg_class` for the `djogi_schema_migrations` table without
-/// creating it. Used by [`AttuneMode::DiffOnly`] (B-3) so a fresh
+/// creating it. Used by [`AttuneMode::DiffOnly`] so a fresh
 /// database stays read-only — the prior implementation called
 /// `ledger::bootstrap` unconditionally, which silently created the
 /// ledger table and broke the read-only contract.
@@ -1273,26 +1238,23 @@ async fn insert_recorded_row(
 /// `from` to HEAD into a single squashed file, deletes the originals,
 /// and removes the corresponding ledger rows. Optionally pushes to
 /// the migrations submodule's remote when `publish = true`.
-///
 /// **Single-bucket scope.** The squash predicate `versions >= from` is
 /// applied to EXACTLY ONE bucket — the bucket where `from` actually
 /// exists. The squash contract:
-///
 /// - If `app_filter` is `Some(label)`, the squash is scoped to
-///   `(active_db, label)`; if `from` is absent there it errors with
-///   [`AttuneRefusal::SquashFromVersionNotFound`].
+/// `(active_db, label)`; if `from` is absent there it errors with
+/// [`AttuneRefusal::SquashFromVersionNotFound`].
 /// - If `app_filter` is `None` and `from` exists in exactly one bucket,
-///   that bucket is the target.
+/// that bucket is the target.
 /// - If `app_filter` is `None` and `from` exists in multiple buckets,
-///   we refuse with [`AttuneRefusal::SquashFromVersionAmbiguous`] and
-///   require the operator to disambiguate.
+/// we refuse with [`AttuneRefusal::SquashFromVersionAmbiguous`] and
+/// require the operator to disambiguate.
 /// - If `from` exists in zero buckets, we refuse with
-///   [`AttuneRefusal::SquashFromVersionNotFound`].
-///
+/// [`AttuneRefusal::SquashFromVersionNotFound`].
 /// **Retained-row checksum refresh.** After writing the squashed
 /// SQL file, we recompute its `up` (and best-effort `down`) checksum
 /// and `UPDATE` the retained `from` ledger row's `checksum_up`,
-/// `checksum_down`, and `description` to match. The pre-B-4
+/// `checksum_down`, and `description` to match. The pre-
 /// implementation left the retained row's checksum describing the
 /// PRE-squash file content — every subsequent verify or apply path
 /// would surface drift authored by squash itself.
@@ -1517,7 +1479,6 @@ async fn delete_subsumed(
 /// describes the post-squash file content, not the pre-squash file
 /// content. Without this, every subsequent verify or apply path would
 /// surface drift authored by squash itself.
-///
 /// `combined_down` is `None` when no per-version down files existed or the
 /// retained down file is comment-only; the row's `checksum_down` is set to
 /// `NULL` in that case.
@@ -1569,7 +1530,6 @@ async fn refresh_retained_row(
 /// The publisher's contract is "commit the squash mutation, then push to
 /// origin" — the operator does not run `git add` / `git commit` themselves
 /// between the squash mutation and the push.
-///
 /// Each step captures stderr so an operator-facing diagnostic carries the
 /// precise failure point. A failure anywhere in the chain surfaces as
 /// [`AttuneError::GitPublishFailed`] — the stderr prefix names the step
@@ -1725,21 +1685,18 @@ impl OutputReadStdoutOrStderr for std::process::Output {
 // ── Target resolution + parent pointer write ─────────────────────────────
 
 /// Resolve a Git target string against the migrations submodule.
-///
 /// Tries `git -C <migrations_root> rev-parse <target>^{commit}` first;
 /// on failure falls back to `git fetch --all` then retries the
 /// rev-parse. The `^{commit}` peel ensures the result is a concrete
 /// commit SHA — operators who pass tag names get the SHA the tag
 /// points at, not the tag object's SHA.
-///
 /// Returns the lowercase 40-char SHA on success.
-///
 /// **No regex.** The target string is passed verbatim to git; we
 /// never parse it. The captured stdout is trimmed only.
 fn resolve_git_target(workspace_root: &Path, target: &str) -> Result<String, AttuneError> {
     let migrations_root = super::target::migrations_root(workspace_root);
 
-    // Local rev-parse first. The `^{commit}` peel is critical —
+    // Local rev-parse first. The `^{commit}` peel is critical
     // `git rev-parse v1.2.3` on a tag returns the tag-object SHA, but
     // `git rev-parse v1.2.3^{commit}` returns the underlying commit
     // SHA, which is what the parent submodule pointer needs.
@@ -1774,7 +1731,7 @@ fn resolve_git_target(workspace_root: &Path, target: &str) -> Result<String, Att
         })?;
     if !fetch.status.success() {
         // Distinguish "no remote configured" (an arguably-clean state
-        // — the operator may want a local-only attune) from "fetch
+        // the operator may want a local-only attune) from "fetch
         // tried and failed" (network / auth / ref-spec problem).
         // `git fetch --all` exits 0 when no remotes exist, so any
         // non-zero status here is a real fetch failure.
@@ -1808,16 +1765,13 @@ fn resolve_git_target(workspace_root: &Path, target: &str) -> Result<String, Att
 }
 
 /// Update the parent repo's recorded submodule pointer to `new_sha`.
-///
 /// Walks `git update-index --cacheinfo 160000,<sha>,<path>` against
 /// the parent repo (the workspace root) so the next parent-side
 /// `git diff --staged` shows the submodule pointer move. The 160000
 /// mode is git's gitlink-mode marker for submodules; the path is
 /// `migrations` (the submodule directory name on disk).
-///
 /// **No regex.** The new SHA is interpolated as-is into the cacheinfo
 /// argument; nothing else is parsed.
-///
 /// **Failure modes.** The most common is the parent repo having
 /// uncommitted staged changes to the submodule path that conflict
 /// with the intended pointer write. The captured stderr surfaces the

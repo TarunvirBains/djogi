@@ -1,12 +1,8 @@
 //! `MultiPoint` — an unordered collection of one or more `GeoPoint` values.
-//!
 //! Stored as `GEOGRAPHY(MultiPoint, 4326)` in Postgres. The type enforces a
 //! minimum of one point at construction time; deserialization re-validates.
-//!
 //! # Wire format
-//!
 //! EWKB layout (little-endian, SRID 4326):
-//!
 //! ```text
 //! Offset  Size  Content
 //!      0     1  Endianness marker: 0x01 (little-endian)
@@ -16,7 +12,6 @@
 //!     13  21*n  Sub-points: each is a headerless EWKB point —
 //!               [endian_byte(1), point_type_word_no_srid(4), lon_f64_LE(8), lat_f64_LE(8)]
 //! ```
-//!
 //! Each sub-point carries its own endianness byte and type word (`0x00000001`,
 //! no SRID flag) but no SRID — the outer container holds the SRID for the
 //! whole collection.
@@ -28,15 +23,10 @@ use serde::{Deserialize, Serialize};
 use crate::geo::{GeoError, GeoPoint, ewkb};
 
 /// An unordered collection of at least 1 `GeoPoint`.
-///
 /// Stored as `GEOGRAPHY(MultiPoint, 4326)` in Postgres.
-///
 /// # Display
-///
 /// `Display` emits `MULTIPOINT((<lon> <lat>), ...)` per OGC WKT.
-///
 /// # Serde
-///
 /// Serializes as a JSON array of `{"lat": f64, "lon": f64}` objects.
 /// Deserialization validates via `MultiPoint::new`, so an empty array yields a
 /// `serde` error.
@@ -47,7 +37,6 @@ pub struct MultiPoint {
 
 impl MultiPoint {
     /// Construct a `MultiPoint` from a slice of points.
-    ///
     /// Returns `Err(GeoError::InvalidMultiPoint)` if `points` is empty.
     pub fn new(points: &[GeoPoint]) -> Result<Self, GeoError> {
         if points.is_empty() {

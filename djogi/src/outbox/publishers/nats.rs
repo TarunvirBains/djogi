@@ -1,6 +1,5 @@
-//! NATS publisher stub — Phase 5 Task 11.5.
-//!
-//! Gated on the `outbox-nats` feature flag. The actual integration —
+//! NATS publisher stub — .
+//! Gated on the `outbox-nats` feature flag. The actual integration
 //! including adding `async-nats` as a workspace dependency — ships in a
 //! future task once the provider dependency matrix is decided. Today this
 //! file provides a type-checked placeholder so the feature flag compiles
@@ -11,7 +10,6 @@ use crate::outbox::worker::OutboxRow;
 use async_trait::async_trait;
 
 /// Delivers outbox rows to a NATS subject (stub — not yet implemented).
-///
 /// Enable with `djogi = { features = ["outbox-nats"] }`. The full
 /// implementation ships once the `async-nats` workspace dep is added.
 pub struct NatsPublisher;

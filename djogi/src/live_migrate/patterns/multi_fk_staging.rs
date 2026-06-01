@@ -1,5 +1,4 @@
 //! Multi-FK staging pattern.
-//!
 //! Covers the "Add 4+ FKs to a single table in one bucket diff" row
 //! of the v3 plan §7 classification table. The classifier's per-table
 //! FK addition counter escalates the bucket entry to ExpandContract;
@@ -8,26 +7,21 @@
 //! `VALIDATE` runs under `ShareUpdateExclusiveLock`, so interleaving
 //! the steps keeps the lock window per-FK rather than across the
 //! whole bucket.
-//!
 //! # Operation shape
-//!
 //! Accepts [`AddTable`](SchemaOperation::AddTable). The pattern walks
 //! [`TableSchema::columns`](crate::migrate::schema::TableSchema::columns)
-//! for entries with `foreign_key.is_some()` and emits two steps per
+//! for entries with `foreign_key.is_some` and emits two steps per
 //! FK: an `ADD CONSTRAINT … NOT VALID` expand step and a `VALIDATE
 //! CONSTRAINT` validate step. Tables with fewer FKs than
 //! [`PatternContext::multi_fk_threshold`] are routed elsewhere by
 //! the classifier and refused here as
 //! [`PatternError::CannotEmit`].
-//!
 //! # Step graph (4 FKs = 8 steps)
-//!
 //! - Ordinal 0 : `ALTER TABLE … ADD CONSTRAINT fk1 … NOT VALID`
 //! - Ordinal 1 : `ALTER TABLE … VALIDATE CONSTRAINT fk1`
 //! - Ordinal 2 : `ALTER TABLE … ADD CONSTRAINT fk2 … NOT VALID`
 //! - Ordinal 3 : `ALTER TABLE … VALIDATE CONSTRAINT fk2`
 //! - …
-//!
 //! No backfill is emitted — the FK addition validates existing rows
 //! in place. [`Pattern::IDEMPOTENT_PREDICATE`] is `false`.
 
@@ -75,7 +69,7 @@ impl Pattern for MultiFkStaging {
         let mut steps = Vec::with_capacity(fk_columns.len() * 2);
         let mut ordinal: u32 = 0;
         for col in &fk_columns {
-            // Safe: we filtered on `foreign_key.is_some()` above, so the
+            // Safe: we filtered on `foreign_key.is_some` above, so the
             // unwrap-via-match cannot reach the None arm.
             let fk = match col.foreign_key.as_ref() {
                 Some(fk) => fk,
@@ -278,7 +272,7 @@ mod tests {
             let StepParameters::ExpandSchema { sql_segments } = &step.parameters else {
                 panic!("expected ExpandSchema");
             };
-            // Each SQL fragment carries the per-FK constraint name —
+            // Each SQL fragment carries the per-FK constraint name
             // collect them and assert they're all distinct.
             let sql = &sql_segments[0];
             let needle = "CONSTRAINT \"";

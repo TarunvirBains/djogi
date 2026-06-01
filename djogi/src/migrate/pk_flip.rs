@@ -1,8 +1,6 @@
 //! PK-type-flip migration SQL emission and segment planning — T9 of
-//! the Phase 7 v3 plan.
-//!
+//! the v3 plan.
 //! # What this module owns
-//!
 //! Lowering of [`SchemaOperation::PkTypeFlipGroup`] into the
 //! multi-segment [`MigrationPlan`] required by the HeeRanjID
 //! `asc-to-desc` playbook. Each emitted SQL statement matches the
@@ -11,63 +9,54 @@
 //! and this module emits SQL parameterised by per-group state, so
 //! the two are NOT byte-identical. The regression net is split
 //! into two layers:
-//!
-//!   * **Emitter-output drift detector** — fixtures under
-//!     `fixtures/pk_flip_emitter_output_section_*.sql` capture the
-//!     CURRENT emitter's whitespace-normalised output for the
-//!     canonical worked examples. Tests under
-//!     `tests::whole_plan_byte_equality_section_*` and
-//!     `tests::emitter_output_drift_check_section_*` assert the
-//!     emitter's output equals these fixtures byte-for-byte after
-//!     normalisation. ANY emitter change without a paired fixture
-//!     update fails loud.
-//!   * **Playbook structural anchors** — tests under
-//!     `tests::fixture_section_*_carries_every_playbook_anchor_substring`
-//!     walk each fixture and assert the presence of every
-//!     load-bearing playbook substring (specific
-//!     `CALL heeranjid_bulk_backfill(...)` / `ALTER TABLE ... SET
-//!     NOT NULL` / `CREATE UNIQUE INDEX CONCURRENTLY` shapes). If
-//!     the playbook adds or removes a step, that test must be
-//!     updated. The two-sided invariant catches both emitter
-//!     drift AND playbook drift.
-//!
+//! * **Emitter-output drift detector** — fixtures under
+//! `fixtures/pk_flip_emitter_output_section_*.sql` capture the
+//! CURRENT emitter's whitespace-normalised output for the
+//! canonical worked examples. Tests under
+//! `tests::whole_plan_byte_equality_section_*` and
+//! `tests::emitter_output_drift_check_section_*` assert the
+//! emitter's output equals these fixtures byte-for-byte after
+//! normalisation. ANY emitter change without a paired fixture
+//! update fails loud.
+//! * **Playbook structural anchors** — tests under
+//! `tests::fixture_section_*_carries_every_playbook_anchor_substring`
+//! walk each fixture and assert the presence of every
+//! load-bearing playbook substring (specific
+//! `CALL heeranjid_bulk_backfill(...)` / `ALTER TABLE ... SET
+//! NOT NULL` / `CREATE UNIQUE INDEX CONCURRENTLY` shapes). If
+//! the playbook adds or removes a step, that test must be
+//! updated. The two-sided invariant catches both emitter
+//! drift AND playbook drift.
 //! The playbook lives at
 //! `../HeeRanjID/docs/migrations/asc-to-desc.md`. Where this module
 //! and the playbook disagree on a load-bearing rule, the playbook
 //! wins.
-//!
 //! # Plan shape (single-table flip — playbook §3)
-//!
-//! | Segment | Kind            | Statements                                                              |
+//! | Segment | Kind | Statements |
 //! |---------|-----------------|-------------------------------------------------------------------------|
-//! |   1     | Transactional   | `ALTER TABLE … ADD COLUMN id_desc bigint;` + autofill trigger install   |
-//! |   2     | NonTransactional| `CALL heeranjid_bulk_backfill(...)` (per child) + verification SELECT   |
-//! |   3     | NonTransactional| `CREATE UNIQUE INDEX CONCURRENTLY idx_<tbl>_id_desc ON <tbl> (id_desc);`|
-//! |   4     | Transactional   | NOT NULL proof: `CHECK (... NOT NULL) NOT VALID; VALIDATE; SET NOT NULL`|
-//! |   5     | Transactional   | Cutover: drop old PK, promote new index, drop trigger, rename column    |
-//!
+//! | 1 | Transactional | `ALTER TABLE … ADD COLUMN id_desc bigint;` + autofill trigger install |
+//! | 2 | NonTransactional| `CALL heeranjid_bulk_backfill(...)` (per child) + verification SELECT |
+//! | 3 | NonTransactional| `CREATE UNIQUE INDEX CONCURRENTLY idx_<tbl>_id_desc ON <tbl> (id_desc);`|
+//! | 4 | Transactional | NOT NULL proof: `CHECK (... NOT NULL) NOT VALID; VALIDATE; SET NOT NULL`|
+//! | 5 | Transactional | Cutover: drop old PK, promote new index, drop trigger, rename column |
 //! Parent + child / multi-level / self-FK / join / cycle /
 //! partitioned variations extend this base shape per playbook §4 / §6
 //! / §7 / §8 / §9. **The cutover (segment 5) is always one atomic
 //! Postgres transaction across parent + every child** — that is the
 //! atomicity invariant the playbook calls out as load-bearing.
-//!
 //! # Reverse direction (Desc → Asc)
-//!
 //! Reverse migrations mirror the forward shape and substitute every
 //! occurrence of `_desc` shadow naming with `_asc`, every flip-fn
 //! invocation (`heerid_to_desc` / `ranjid_to_desc`) with its
 //! symmetric (`heerid_to_asc` / `ranjid_to_asc`), and every
-//! generator default (`heerid_next_desc()` / `ranjid_next_desc()`)
-//! with the ascending variant (`heerid_next()` / `ranjid_next()`).
+//! generator default (`heerid_next_desc` / `ranjid_next_desc`)
+//! with the ascending variant (`heerid_next` / `ranjid_next`).
 //! The structural transactions and segment ordering remain identical
 //! so the reverse path is reviewable side-by-side with the forward
 //! path. We document the mirroring decision here in plain English
 //! rather than via any pattern-matching shorthand — this codebase
 //! contains no regex.
-//!
 //! # Rollback boundary (point of no return)
-//!
 //! The cutover transaction (segment 5) is the **point of no return**.
 //! Once it commits the old `id` column, its DEFAULT, and the autofill
 //! trigger are gone; rollback requires a fresh inverse migration
@@ -75,13 +64,10 @@
 //! cutover again). We mark segment 5's first OperationSql with a
 //! [`LossyRollbackKind::PkTypeFlipPostCutover`] warning so the
 //! runner / `migrations status` surface the boundary loudly.
-//!
 //! Segments 1 — 4 carry a clean inverse (drop the shadow column,
 //! drop the trigger, drop the CHECK constraint, drop the unique
 //! index); their `down` SQL reverses cleanly without data loss.
-//!
 //! # Determinism
-//!
 //! The lowered SQL is byte-stable across runs given the same
 //! [`PkTypeFlipGroup`] input. Sub-collections inside the group
 //! (children, self-FK columns, join tables, cycles) are pre-sorted
@@ -137,18 +123,15 @@ impl std::error::Error for PkFlipError {}
 
 /// Lower a [`PkTypeFlipGroup`] into the multi-segment migration plan
 /// per the HeeRanjID playbook.
-///
 /// **Whole-migration kind.** The plan returned is always
-/// non-transactional overall (per Phase 7-Zero v3 §6.2 deterministic
+/// non-transactional overall (per .2 deterministic
 /// A): segment classifications alternate Transactional / NonTransactional
 /// as the playbook requires, but the migration as a whole is recorded
 /// as `non_transactional` in the ledger because at least one segment
 /// runs outside a Postgres transaction (the backfill `CALL` and the
 /// `CREATE INDEX CONCURRENTLY`).
-///
 /// **Bucket** — the caller supplies the bucket; the emitter writes
 /// it onto the resulting plan verbatim.
-///
 /// **Determinism** — the SQL is byte-stable across runs. See the
 /// module doc for sub-collection ordering rules.
 pub fn lower_pk_flip_group(
@@ -188,7 +171,6 @@ fn validate_group(group: &PkTypeFlipGroup) -> Result<(), PkFlipError> {
 }
 
 /// Build the segment list for a single [`PkTypeFlipGroup`].
-///
 /// Public-in-crate so the segment planner can splice this directly
 /// into a multi-bucket plan when the caller is composing a delta
 /// that mixes a flip with non-flip ops in OTHER buckets (the same
@@ -204,7 +186,7 @@ pub(crate) fn build_segments(group: &PkTypeFlipGroup) -> Result<Vec<Segment>, Pk
     // Segment 1 — preparation (transactional). One transaction
     // installs the parent's shadow column + autofill trigger plus
     // every child's shadow column and trigger. Child NOT-VALID FK
-    // statements pointing at `parent(id_desc)` cannot land here —
+    // statements pointing at `parent(id_desc)` cannot land here
     // Postgres requires the target column to carry a unique
     // constraint at constraint-creation time, even with NOT VALID.
     // Those FK statements are emitted in segment 3b after the
@@ -277,7 +259,6 @@ pub(crate) fn build_segments(group: &PkTypeFlipGroup) -> Result<Vec<Segment>, Pk
 }
 
 /// Build the segment list for a [`SchemaOperation::PkTypeFlipMultiGroup`].
-///
 /// **Stage interleaving — playbook §7 line 327.** Where
 /// [`build_segments`] produces a 5-segment plan for ONE parent, this
 /// fn produces a 5-segment plan for the WHOLE cluster — at each
@@ -291,20 +272,17 @@ pub(crate) fn build_segments(group: &PkTypeFlipGroup) -> Result<Vec<Segment>, Pk
 /// etc. — by the time stage 3b emits `... FOREIGN KEY (book_id_desc)
 /// REFERENCES jt_books(id_desc)` AND `... FOREIGN KEY (tag_id_desc)
 /// REFERENCES jt_tags(id_desc)`, both `id_desc` columns exist.
-///
 /// **Cutover atomicity.** All groups' cutover statements concatenate
 /// into ONE [`OperationSql`] in ONE transactional segment — the
 /// runner wraps the whole concatenated body in a single Postgres
 /// transaction. This is the playbook §7 "single mega-transaction"
 /// shape: drop every old FK, promote every parent's PK, finalise
 /// every join table, all atomically.
-///
 /// **Empty-cluster guard.** Defensive: a zero-member multi-group
 /// is structurally impossible (the merger only emits MultiGroup
 /// when the cluster has 2+ members) but we still return an empty
 /// segment vec rather than panicking — failing loudly on this
 /// unreachable path would obscure real bugs in the merger.
-///
 /// **Partitioned member.** Currently the multi-parent merger does
 /// not consider partitioned parents — playbook §9 single-parent
 /// partitioned flips remain on the back-to-back path. A cluster
@@ -496,23 +474,23 @@ pub(crate) fn build_segments_multi(
     if groups.iter().any(|g| !g.cycles.is_empty()) {
         cut_up.push_str("SET CONSTRAINTS ALL DEFERRED;\n");
     }
-    // Phase 1 across all members.
+    // Across all members.
     for g in groups {
         cutover_phase_drop_old_fks(g, &mut cut_up);
     }
-    // Phase 2 across all members. After this loop every parent's
+    // Across all members. After this loop every parent's
     // `id_desc` has been renamed to `id`, so phase 4's
     // `REFERENCES <partner>(id)` resolves cleanly for every
     // partner targeting any cluster member.
     for g in groups {
         cutover_phase_promote_parent(g, &mut cut_up);
     }
-    // Phase 3 across all members (each member's children
+    // Across all members (each member's children
     // reference its own renamed `id`).
     for g in groups {
         cutover_phase_finalise_children(g, &mut cut_up);
     }
-    // Phase 4 across all members. Only the winner has non-empty
+    // Across all members. Only the winner has non-empty
     // `join_tables` after the merger; the loser's phase 4 no-ops.
     // This is where the structural fix shines: phase 4's `ADD
     // CONSTRAINT (... REFERENCES partner(id))` resolves because
@@ -553,8 +531,7 @@ pub(crate) fn build_segments_multi(
 /// cascade emitters used by [`build_segments`] so a partitioned
 /// parent that ALSO has children, self-FK, join tables, or cycle
 /// peers gets the full cutover orchestration in one plan.
-///
-/// **Composition (B-4).** The partitioned variant re-uses
+/// **Composition.** The partitioned variant re-uses
 /// `emit_preparation` (children/self-FK/join shadow columns +
 /// triggers), `emit_backfill_statements` (per-table CALLs / DO
 /// blocks for children/self-FK/join/cycles), `emit_verification_statements`
@@ -563,7 +540,6 @@ pub(crate) fn build_segments_multi(
 /// adds the partitioned-parent-specific extras for the parent table
 /// itself (parent-level UNIQUE placeholder + per-leaf
 /// CONCURRENTLY + ATTACH PARTITION expanded by the runner).
-///
 /// **Cutover.** The atomic cutover transaction touches the
 /// partitioned parent (using `ADD PRIMARY KEY (partition_key,
 /// id_desc)` because `USING INDEX` is illegal on a partitioned
@@ -573,11 +549,11 @@ fn build_segments_partitioned(
     part: &super::diff::PkFlipPartitionedMeta,
 ) -> Vec<Segment> {
     // 1. Preparation: parent-level shadow column + multi-pair
-    //    trigger via partitioned emitter, plus children/self-FK/join
-    //    shadow columns + triggers via the cascade preparation
-    //    emitter. The partitioned-parent shadow column propagates
-    //    automatically to every leaf via the shared parent storage
-    //    layout (PG13+).
+    // trigger via partitioned emitter, plus children/self-FK/join
+    // shadow columns + triggers via the cascade preparation
+    // emitter. The partitioned-parent shadow column propagates
+    // automatically to every leaf via the shared parent storage
+    // layout (PG13+).
     let mut prep_op = emit_partitioned_preparation(group, part);
     let cascade_prep = emit_preparation_children_only(group);
     if !cascade_prep.up.is_empty() {
@@ -586,25 +562,25 @@ fn build_segments_partitioned(
     }
 
     // 2. Backfill: per-leaf CALLs for the parent (placeholder
-    //    expanded by the runner) + per-table CALLs for every cascade
-    //    member.
+    // expanded by the runner) + per-table CALLs for every cascade
+    // member.
     let mut backfill_stmts: Vec<OperationSql> = Vec::new();
     backfill_stmts.push(emit_partitioned_backfill_only(group, part));
     let cascade_bf = emit_backfill_statements_cascade_only(group);
     backfill_stmts.extend(cascade_bf);
 
     // 3. Verification — runner short-circuits via PkFlipVerify
-    //    labels.  Parent verification + cascade verification merged.
+    // labels. Parent verification + cascade verification merged.
     let mut verify_stmts: Vec<OperationSql> = Vec::new();
     verify_stmts.push(emit_partitioned_verify(group));
     let cascade_verify = emit_verification_statements_cascade_only(group);
     verify_stmts.extend(cascade_verify);
 
     // 4. Concurrent indexes — parent UNIQUE placeholder (per-leaf
-    //    expansion at apply time) + cascade member indexes. Self-FK
-    //    columns on the partitioned parent take their own
-    //    partitioned-aware path because `CREATE INDEX CONCURRENTLY`
-    //    is rejected directly on partitioned parents.
+    // expansion at apply time) + cascade member indexes. Self-FK
+    // columns on the partitioned parent take their own
+    // partitioned-aware path because `CREATE INDEX CONCURRENTLY`
+    // is rejected directly on partitioned parents.
     let mut index_stmts: Vec<OperationSql> = Vec::new();
     index_stmts.push(emit_partitioned_indexes(group, part));
     index_stmts.extend(emit_partitioned_self_fk_indexes(group));
@@ -612,16 +588,16 @@ fn build_segments_partitioned(
     index_stmts.extend(cascade_idx);
 
     // 5. Child FK creation (NOT VALID + VALIDATE) — same as the
-    //    non-partitioned cascade flow.
+    // non-partitioned cascade flow.
     let fk_stmts = emit_child_fk_statements(group);
 
     // 6. NOT NULL proof — parent + non-nullable children.
     let nn_op = emit_not_null_proof(group);
 
     // 7. Cutover — partitioned parent + cascade finalisation in ONE
-    //    transactional segment. The runner wraps the whole segment
-    //    in a single Postgres tx; the body below is the statement
-    //    list only.
+    // transactional segment. The runner wraps the whole segment
+    // in a single Postgres tx; the body below is the statement
+    // list only.
     let cutover_op = emit_partitioned_cutover_with_cascade(group, part);
 
     let mut segments: Vec<Segment> = vec![
@@ -721,7 +697,7 @@ fn emit_partitioned_cutover_with_cascade(
     cutover_phase_drop_old_fks(group, &mut up);
 
     // 2. Promote the partitioned parent. ADD PRIMARY KEY (...) form
-    //    because USING INDEX is illegal on a partitioned parent.
+    // because USING INDEX is illegal on a partitioned parent.
     let _ = writeln!(
         up,
         "ALTER TABLE {parent} DROP CONSTRAINT {parent}_pkey;",
@@ -765,11 +741,11 @@ fn emit_partitioned_cutover_with_cascade(
     );
 
     // 3. Self-FK column rename + constraint re-add. Mirrors the
-    //    non-partitioned `cutover_phase_promote_parent` self-FK
-    //    cleanup block — DROP segment-3b shadow constraint BEFORE
-    //    rename (otherwise it survives under its `_desc_fkey` name
-    //    on the renamed column, doubling the FK count) and preserve
-    //    per-FK deferrability via `render_deferrable_clause`.
+    // non-partitioned `cutover_phase_promote_parent` self-FK
+    // cleanup block — DROP segment-3b shadow constraint BEFORE
+    // rename (otherwise it survives under its `_desc_fkey` name
+    // on the renamed column, doubling the FK count) and preserve
+    // per-FK deferrability via `render_deferrable_clause`.
     if let Some(self_fk) = &group.self_fk {
         for col in &self_fk.fk_columns {
             let _ = writeln!(
@@ -811,15 +787,15 @@ fn emit_partitioned_cutover_with_cascade(
     }
 
     // 4. Finalise every child. Mirrors `cutover_phase_finalise_children`:
-    //    DROP segment-3b shadow constraint BEFORE rename (else two FKs
-    //    end up on the renamed column under different names) and
-    //    preserve per-FK deferrability.
+    // DROP segment-3b shadow constraint BEFORE rename (else two FKs
+    // end up on the renamed column under different names) and
+    // preserve per-FK deferrability.
     cutover_phase_finalise_children(group, &mut up);
 
     // 5. Finalise every join table. Mirrors
-    //    `cutover_phase_finalise_join_tables`: DROP segment-3b shadow
-    //    constraint BEFORE rename and preserve per-pair deferrability
-    //    (Option A cross-flipping uses partner-side flags).
+    // `cutover_phase_finalise_join_tables`: DROP segment-3b shadow
+    // constraint BEFORE rename and preserve per-pair deferrability
+    // (Option A cross-flipping uses partner-side flags).
     cutover_phase_finalise_join_tables(group, &mut up);
 
     OperationSql {
@@ -894,7 +870,6 @@ fn parent_family(group: &PkTypeFlipGroup) -> PkFlipFamily {
 }
 
 /// Forward flip-fn name for the family + direction.
-///
 /// AscToDesc uses `heerid_to_desc` / `ranjid_to_desc`; DescToAsc
 /// uses `heerid_to_asc` / `ranjid_to_asc`. The autofill trigger SQL
 /// embeds this fn in its body.
@@ -922,7 +897,7 @@ fn next_fn_name(family: PkFlipFamily, direction: PkFlipDirection) -> &'static st
 /// procedure dispatches on this string. The procedure exposes only
 /// the desc direction; for reverse migrations the procedure calls
 /// would use a parallel `_to_asc` procedure that the playbook
-/// promises ships alongside. For Phase 7 T9 we always emit the
+/// promises ships alongside. For we always emit the
 /// `'heer'` / `'ranj'` literal and rely on the procedure's flip-fn
 /// dispatch — the desc-only procedure satisfies the asc→desc path
 /// (the headline T9 case); the reverse path is unblocked by the
@@ -964,7 +939,6 @@ fn render_on_delete(od: OnDeleteSchema) -> &'static str {
 /// helper exactly so `pg_dump` against a database where the runner
 /// installed the trigger via the helper produces SQL byte-equal to
 /// what this emitter produces — important for snapshot diffing.
-///
 /// Pairs is `&[(src_col, dst_col)]`. The function name follows
 /// `zzz_<table>_autofill_desc` per the playbook's "load-bearing
 /// `zzz_` prefix" convention.
@@ -1145,7 +1119,7 @@ fn emit_preparation_with_mode(group: &PkTypeFlipGroup, mode: EmitMode) -> Operat
 
     // Join tables — shadow column + trigger. Same FK-deferral
     // reasoning as children above; the FK lands in segment 3b.
-    // B-12: Option A + cross-flipping installs both pairs through
+    // Option A + cross-flipping installs both pairs through
     // one multi-pair trigger; Option B installs only this group's
     // parent pair.
     for jt in &group.join_tables {
@@ -1206,8 +1180,7 @@ fn emit_preparation_with_mode(group: &PkTypeFlipGroup, mode: EmitMode) -> Operat
 }
 
 /// One FK column the planner needs to orchestrate on a join table.
-///
-/// Drives B-12: under [`PkFlipJoinTableOption::OptionA`] a join
+/// Drives under [`PkFlipJoinTableOption::OptionA`] a join
 /// table whose `fk_to_partner_column` is `Some(_)` (cross-flipping
 /// case, both parents migrating in the same delta) yields TWO
 /// pairs from [`jt_shadow_pairs`] — the parent's FK column and the
@@ -1216,19 +1189,17 @@ fn emit_preparation_with_mode(group: &PkTypeFlipGroup, mode: EmitMode) -> Operat
 /// cutover) installs the full shadow-column orchestration for both
 /// columns inside this group's transaction window. That is the
 /// playbook §7 "single mega-transaction" shape.
-///
 /// Under [`PkFlipJoinTableOption::OptionB`] the function yields
 /// ONLY the parent's pair — the partner column waits for the
 /// partner parent's flip group to handle it sequentially. Smaller
 /// transaction windows, easier to abort, intermediate state where
 /// one shadow exists without the other is tolerated by the
 /// trigger setup. That is the playbook §7 "sequential" shape.
-///
 /// When `fk_to_partner_column` is `None` (single-parent join, or
 /// the cross-flipping case where the differ's
 /// `apply_pk_flip_join_table_option` second pass already
 /// transferred ownership to the winner under Option A), the
-/// function yields the parent pair regardless of the option —
+/// function yields the parent pair regardless of the option
 /// there is no partner to flip at all.
 struct JoinTableShadowPair<'a> {
     col: &'a str,
@@ -1382,7 +1353,7 @@ fn emit_backfill_and_verification(group: &PkTypeFlipGroup) -> OperationSql {
         );
     }
 
-    // Join tables — same backfill + invariant. B-12: walk every
+    // Join tables — same backfill + invariant. walk every
     // shadow pair this group is responsible for under the active
     // option (Option A + cross-flipping → both pairs; Option B or
     // single-parent → parent pair only).
@@ -1440,14 +1411,12 @@ fn emit_backfill_and_verification(group: &PkTypeFlipGroup) -> OperationSql {
 /// protocol wraps multiple statements in an implicit transaction;
 /// the procedure's internal `COMMIT` then fires `2D000 invalid
 /// transaction termination` per the playbook's "must not be wrapped
-/// in pool.begin()" warning.
-///
+/// in pool.begin" warning.
 /// **Forward direction (Asc → Desc).** The HeeRanjID procedure
 /// `heeranjid_bulk_backfill` ships with a `'heer'` / `'ranj'`
 /// `kind` parameter that dispatches to `heerid_to_desc` /
 /// `ranjid_to_desc` server-side. Forward backfills emit one CALL
 /// per `(table, src_col, dst_col)` tuple.
-///
 /// **Reverse direction (Desc → Asc).** The shipped procedure does
 /// NOT cover this — its `kind` switch only handles the desc flip
 /// primitives. Rather than depend on an unreleased
@@ -1516,7 +1485,7 @@ fn emit_backfill_statements_with_mode(
     }
 
     for jt in &group.join_tables {
-        // B-12: per-pair backfill. Option A + cross-flipping issues
+        // Per-pair backfill. Option A + cross-flipping issues
         // two CALLs per join table (one per FK column); Option B
         // issues one (this group's parent column).
         for pair in jt_shadow_pairs(jt, group) {
@@ -1541,7 +1510,6 @@ fn emit_backfill_statements_with_mode(
 }
 
 /// Pick the right backfill body for `(family, direction)`.
-///
 /// AscToDesc → forward CALL into the shipped HeeRanjID procedure.
 /// DescToAsc → hand-rolled DO block (the procedure ships only the
 /// desc direction; see [`emit_reverse_backfill`] for the loop body).
@@ -1570,16 +1538,13 @@ fn emit_backfill_body(
 /// Hand-rolled DO block mirroring `heeranjid_bulk_backfill`'s
 /// two-loop pattern but using the asc-direction flip primitives
 /// (`heerid_to_asc` / `ranjid_to_asc`).
-///
 /// Loop 1 — fast path with `FOR UPDATE SKIP LOCKED`. Fires
 /// `lock_timeout = '30s'` per batch (SET LOCAL is transaction-scoped
 /// so it must be reissued after every COMMIT).
 /// Loop 2 — cleanup pass without SKIP LOCKED to drain rows that were
 /// always locked by a long-running concurrent transaction.
-///
 /// Both loops filter `WHERE <dst> IS NULL AND <src> IS NOT NULL` so
 /// nullable FK shadows skip rows where the source is itself NULL.
-///
 /// The DO block carries its own COMMITs because LOOP-with-COMMIT in
 /// PL/pgSQL is allowed only inside procedures or DO blocks at the
 /// top level. The runner dispatches this block through the internal batch
@@ -1731,7 +1696,7 @@ fn emit_verification_statements_with_mode(
         }
     }
 
-    // Join tables — same shape as nullable child. B-12: per-pair
+    // Join tables — same shape as nullable child. per-pair
     // verification. Option A + cross-flipping verifies both
     // shadow columns; Option B verifies only the parent's.
     for jt in &group.join_tables {
@@ -1770,8 +1735,8 @@ fn emit_child_fk_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
     // Self-FK constraints — per-FK deferrability. The cycle path forces
     // deferrable + initially_deferred
     // upstream in the differ; descriptor-declared deferrable FKs
-    // round-trip through the per-FK arrays. Pre-B-16 the gate was
-    // `!group.cycles.is_empty()` and silently downgraded
+    // round-trip through the per-FK arrays. Pre-the gate was
+    // `!group.cycles.is_empty` and silently downgraded
     // descriptor-deferrable self-FKs to non-deferrable.
     if let Some(self_fk) = &group.self_fk {
         for (i, col) in self_fk.fk_columns.iter().enumerate() {
@@ -1869,11 +1834,11 @@ fn emit_child_fk_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
     }
 
     for jt in &group.join_tables {
-        // B-12: emit segment-3b NOT VALID FK + VALIDATE per pair.
+        // Emit segment-3b NOT VALID FK + VALIDATE per pair.
         // The parent column references THIS group's parent's
         // `id_desc` shadow; the partner column (Option A cross-
         // flipping) references the PARTNER table's `id_desc` shadow
-        // — that shadow exists because under Option A the partner
+        // that shadow exists because under Option A the partner
         // group also runs and `id_desc` lands in partner segment 1.
         for pair in jt_shadow_pairs(jt, group) {
             let dst = format!("{}{}", pair.col, SHADOW_SUFFIX);
@@ -1888,7 +1853,7 @@ fn emit_child_fk_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
                      is Some",
                 )
             };
-            // B-16: per-FK deferrability on segment-3b NOT VALID
+            // Per-FK deferrability on segment-3b NOT VALID
             // FK creation. The parent-side and partner-side carry
             // their own flags (the differ populates them from the
             // `ForeignKeySchema.deferrable` /
@@ -2031,7 +1996,7 @@ fn emit_concurrent_index_statements_with_mode(
     }
 
     for jt in &group.join_tables {
-        // B-12: per-pair concurrent index. Option A + cross-
+        // Per-pair concurrent index. Option A + cross-
         // flipping issues two CREATE INDEX CONCURRENTLY (one per
         // FK column); Option B issues one (the parent's column).
         for pair in jt_shadow_pairs(jt, group) {
@@ -2132,7 +2097,7 @@ fn emit_concurrent_indexes(group: &PkTypeFlipGroup) -> OperationSql {
     }
 
     // Join tables — index on each FK shadow this group owns.
-    // B-12: Option A + cross-flipping creates indexes on both
+    // Option A + cross-flipping creates indexes on both
     // FK shadows; Option B / single-parent indexes only the
     // parent's shadow.
     for jt in &group.join_tables {
@@ -2319,22 +2284,19 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
 }
 
 // ── Cutover phases (composable for single + multi-parent paths) ──────────
-//
 // The cutover is a four-phase orchestration:
-//
-//   1. drop EVERY old FK pointing at the parent (children + join
-//      tables + self-FK).
-//   2. promote the parent — drop old PK, swap shadow → live, drop
-//      old `id`, drop trigger / function, RENAME shadow → `id`.
-//      Self-FK columns get the same drop / rename treatment.
-//   3. finalise every child — drop old FK column, drop trigger /
-//      function, RENAME shadow column → live name, ADD CONSTRAINT
-//      pointing at the parent's new (post-rename) `id`.
-//   4. finalise every join table this group owns — drop old FK
-//      columns, drop trigger / function, RENAME shadow columns,
-//      ADD CONSTRAINT for every pair pointing at the (post-rename)
-//      parent / partner `id` columns.
-//
+// 1. drop EVERY old FK pointing at the parent (children + join
+// tables + self-FK).
+// 2. promote the parent — drop old PK, swap shadow → live, drop
+// old `id`, drop trigger / function, RENAME shadow → `id`.
+// Self-FK columns get the same drop / rename treatment.
+// 3. finalise every child — drop old FK column, drop trigger /
+// function, RENAME shadow column → live name, ADD CONSTRAINT
+// pointing at the parent's new (post-rename) `id`.
+// 4. finalise every join table this group owns — drop old FK
+// columns, drop trigger / function, RENAME shadow columns,
+// ADD CONSTRAINT for every pair pointing at the (post-rename)
+// parent / partner `id` columns.
 // Single-parent path composes them in order. Multi-parent path
 // emits phase 1 across all members, then phase 2 across all members,
 // etc. — required because phase 4's
@@ -2364,14 +2326,14 @@ fn cutover_add_fk_constraint(
     );
 }
 
-/// Phase 1: drop every old FK pointing at the parent.
+/// : drop every old FK pointing at the parent.
 fn cutover_phase_drop_old_fks(group: &PkTypeFlipGroup, up: &mut String) {
     let parent = group.parent_table.as_str();
     for child in &group.children {
         cutover_drop_constraint(up, &child.table, &child.fk_constraint_name);
     }
     for jt in &group.join_tables {
-        // B-12: drop EVERY FK on the join table this group owns.
+        // Drop EVERY FK on the join table this group owns.
         // Option A + cross-flipping drops both partner FKs (the
         // multi-group merger gives the winner ownership of the
         // join table); Option B / single-parent drops only the
@@ -2389,7 +2351,7 @@ fn cutover_phase_drop_old_fks(group: &PkTypeFlipGroup, up: &mut String) {
     }
 }
 
-/// Phase 2: promote the parent — swap shadow PK to live PK.
+/// : promote the parent — swap shadow PK to live PK.
 fn cutover_phase_promote_parent(group: &PkTypeFlipGroup, up: &mut String) {
     let parent = group.parent_table.as_str();
     let p_family = parent_family(group);
@@ -2467,7 +2429,7 @@ fn cutover_phase_promote_parent(group: &PkTypeFlipGroup, up: &mut String) {
         }
         // Re-add self-FK constraints with original names pointing at
         // the now-renamed shadow column (which is now the live `id`).
-        // B-16: each self-FK preserves its declared deferrability —
+        // Each self-FK preserves its declared deferrability
         // cycle path forces `(true, true)`, plain self-FKs use
         // descriptor-side flags (default `(false, false)`).
         for (i, (col, cons)) in self_fk
@@ -2489,10 +2451,9 @@ fn cutover_phase_promote_parent(group: &PkTypeFlipGroup, up: &mut String) {
     }
 }
 
-/// Phase 3: finalise every child — drop old FK column, drop the
+/// : finalise every child — drop old FK column, drop the
 /// `_desc_fkey` shadow constraint that segment 3b VALIDATEd, rename
 /// shadow → live, ADD CONSTRAINT pointing at the parent's new `id`.
-///
 /// **Why drop the `_desc_fkey` constraint before re-adding the
 /// canonical `_fkey`.** Segment 3b emitted the NOT VALID FK as
 /// `<table>_<col>_desc_fkey` (named after the shadow column) and
@@ -2507,8 +2468,7 @@ fn cutover_phase_promote_parent(group: &PkTypeFlipGroup, up: &mut String) {
 /// confuses `\d` output, and breaks any test that counts FKs by
 /// table. Dropping the `_desc_fkey` here keeps the post-cutover
 /// schema clean.
-///
-/// **B-16 deferrability.** When the source FK was declared
+/// **deferrability.** When the source FK was declared
 /// `DEFERRABLE [INITIALLY DEFERRED|IMMEDIATE]`, the recreated FK
 /// preserves the deferrable property by appending the matching
 /// clause. Cycle peers force `deferrable = true, initially_deferred
@@ -2567,7 +2527,6 @@ fn cutover_phase_finalise_children(group: &PkTypeFlipGroup, up: &mut String) {
 
 /// Render the trailing `DEFERRABLE [INITIALLY DEFERRED|IMMEDIATE]`
 /// clause for an FK ADD CONSTRAINT statement.
-///
 /// Returns the empty string when the FK is non-deferrable
 /// (Postgres' default), `" DEFERRABLE INITIALLY IMMEDIATE"` for
 /// `deferrable = true, initially_deferred = false`, or
@@ -2575,7 +2534,6 @@ fn cutover_phase_finalise_children(group: &PkTypeFlipGroup, up: &mut String) {
 /// initially_deferred = true`. The leading space lets callers
 /// concatenate the result onto a `... <cascade>{clause}`
 /// substring without a join helper.
-///
 /// Single source of truth for
 /// the deferrability clause across cutover phase 3 (children),
 /// phase 2 (self-FK re-add), and phase 4 (join-table re-add).
@@ -2588,7 +2546,7 @@ fn render_deferrable_clause(deferrable: bool, initially_deferred: bool) -> &'sta
     }
 }
 
-/// Phase 4: finalise every join table this group owns. Under
+/// : finalise every join table this group owns. Under
 /// Option A + cross-flipping in a multi-parent cluster this fires
 /// only on the winner; the loser's `join_tables` list is empty
 /// after the merger transferred ownership, so this no-ops there.
@@ -2643,7 +2601,7 @@ fn cutover_phase_finalise_join_tables(group: &PkTypeFlipGroup, up: &mut String) 
             // alongside the partner column. The multi-parent
             // emitter ensures this runs AFTER every member's
             // phase 2, so the partner's `id` column is already
-            // post-rename. B-16: per-FK deferrability — parent-
+            // post-rename. per-FK deferrability — parent-
             // side and partner-side carry their own flags.
             let is_parent_side = pair.col == jt.fk_to_parent_column.as_str();
             let target_parent = if is_parent_side {
@@ -2793,12 +2751,11 @@ fn emit_partitioned_preparation(
 }
 
 /// Emit the partitioned-parent backfill step ONLY (no verification).
-///
 /// The verification SELECT lives in a sibling [`emit_partitioned_verify`]
 /// step so the runner's transactional-segment short-circuit picks it up
 /// and halts on count > 0 via [`super::runner::RunnerError::PkFlipVerificationFailed`].
 /// Bundling the SELECT into the backfill step would route it through
-/// the non-returning internal batch path and discard the count silently (B-7).
+/// the non-returning internal batch path and discard the count silently.
 fn emit_partitioned_backfill_only(
     group: &PkTypeFlipGroup,
     _part: &super::diff::PkFlipPartitionedMeta,
@@ -2919,7 +2876,6 @@ fn emit_partitioned_indexes(
 /// emits one `CREATE INDEX CONCURRENTLY <leaf>_<col>_desc_idx
 /// ON <leaf> (<col>_desc)` plus matching `ATTACH PARTITION` per
 /// leaf.
-///
 /// Returns an empty vec when the group has no self-FK or when the
 /// parent is not partitioned (caller should not call us in those
 /// cases, but the guard is defensive).
@@ -2972,7 +2928,7 @@ fn emit_partitioned_self_fk_indexes(group: &PkTypeFlipGroup) -> Vec<OperationSql
 
 // `emit_partitioned_cutover` (the parent-only cutover for a
 // partitioned flip without cascade members) was folded into
-// [`emit_partitioned_cutover_with_cascade`] as part of B-4. The
+// [`emit_partitioned_cutover_with_cascade`] as part of . The
 // composed emitter handles both the cascade-empty and
 // cascade-populated cases — when `group.children`, `self_fk`,
 // `join_tables`, and `cycles` are all empty the body matches the
@@ -3459,7 +3415,7 @@ mod tests {
         // runner's `run_transactional_segment` wraps every statement
         // in a single Postgres tx already. Embedding our own pair
         // here would double-wrap and produce `WARNING: there is
-        // already a transaction in progress` (B-9).
+        // already a transaction in progress`.
         assert!(
             !n.contains("BEGIN;"),
             "cutover body must not carry BEGIN; got: {n}"
@@ -3644,7 +3600,7 @@ mod tests {
             fk_nullable: true,
             fk_unique: false,
             family: PkFlipFamily::Heer,
-            // B-13: real differ output marks cycle peers as
+            // Real differ output marks cycle peers as
             // first-class children with cycle_flag = true.
             cycle_flag: true,
         });
@@ -3673,7 +3629,7 @@ mod tests {
             },
         });
         let segments = build_segments(&group).expect("build_segments");
-        // B-7 split: segments are [prep, backfill, verify, index,
+        // Split: segments are [prep, backfill, verify, index,
         // not_null_proof, cutover]. The verification SELECT is its
         // own `PkFlipVerify` segment so the runner's transactional
         // dispatcher halts on count > 0.
@@ -3689,7 +3645,7 @@ mod tests {
             "partitioned cutover body must not carry BEGIN (B-9); got: {n}"
         );
         // Verify segment carries the PkFlipVerify label so the runner
-        // intercepts via the count-assert short-circuit (B-7).
+        // intercepts via the count-assert short-circuit.
         let verify_stmt = &segments[2].statements[0];
         assert!(
             verify_stmt.label.starts_with("PkFlipVerify "),
@@ -3717,7 +3673,6 @@ mod tests {
         // shadow column that prep never created, and the autofill
         // trigger never populated the self-FK shadow value, so the
         // cutover RENAME produced NULLs in the renamed column.
-        //
         // The fix mirrors the non-partitioned `emit_preparation_with_mode`
         // parent block: build a `self_pairs` vec containing
         // `(id, id_desc)` plus one entry per self-FK column, emit
@@ -3774,7 +3729,7 @@ mod tests {
         // (`CREATE INDEX <idx> ON ONLY <parent> (<col>_desc)` plus per-leaf
         // `CONCURRENTLY` + `ATTACH PARTITION` at apply time). Prior approach
         // `CREATE INDEX CONCURRENTLY idx_<parent>_<col>_desc
-        //  ON <parent> (<col>_desc)` directly against the partitioned
+        // ON <parent> (<col>_desc)` directly against the partitioned
         // parent, which Postgres rejects with
         // "cannot create index on partitioned table … concurrently".
         let mut group = synth_group_single_table();
@@ -3869,15 +3824,15 @@ mod tests {
     #[test]
     fn end_to_end_diff_to_plan_emits_six_segments_with_verification() {
         // Single-table flip emits SIX segments:
-        //   1. preparation (Transactional)
-        //   2. backfill CALL(s) (NonTransactional)
-        //   3. verification halt point (Transactional — runner
-        //      intercepts each `PkFlipVerify` statement as a count-
-        //      assert; halts on non-zero count with
-        //      RunnerError::PkFlipVerificationFailed)
-        //   4. concurrent UNIQUE INDEX (NonTransactional)
-        //   5. NOT NULL proof (Transactional)
-        //   6. cutover (Transactional — POINT OF NO RETURN)
+        // 1. preparation (Transactional)
+        // 2. backfill CALL(s) (NonTransactional)
+        // 3. verification halt point (Transactional — runner
+        // intercepts each `PkFlipVerify` statement as a count-
+        // assert; halts on non-zero count with
+        // RunnerError::PkFlipVerificationFailed)
+        // 4. concurrent UNIQUE INDEX (NonTransactional)
+        // 5. NOT NULL proof (Transactional)
+        // 6. cutover (Transactional — POINT OF NO RETURN)
         let mut before = empty_schema();
         before.models.insert(
             "authors".to_string(),
@@ -3937,8 +3892,7 @@ mod tests {
         };
     }
 
-    // ── B-5: whole-plan whitespace-normalised byte-equality ──────────
-    //
+    // ── whole-plan whitespace-normalised byte-equality ──────────
     // These regressions concatenate every statement in every segment
     // of the lowered plan, normalise whitespace (collapse runs of
     // ASCII whitespace to a single space, drop empty lines, trim),
@@ -3948,13 +3902,11 @@ mod tests {
     // diff embedded in the test output. Operators or reviewers
     // changing the emitter MUST update the matching fixture in the
     // same commit.
-    //
     // Whitespace normalisation rule (no regex):
-    //   - Walk bytes left-to-right.
-    //   - Replace any run of ASCII whitespace (space, tab, CR, LF)
-    //     with exactly one space.
-    //   - Trim the result.
-    //
+    // - Walk bytes left-to-right.
+    // - Replace any run of ASCII whitespace (space, tab, CR, LF)
+    // with exactly one space.
+    // - Trim the result.
     // The helper `whitespace_normalize` defined above implements the
     // rule.
 
@@ -3995,20 +3947,17 @@ mod tests {
     /// even when the new emitter output happens to byte-match the
     /// fixture (which would be impossible — the emitter generated
     /// the fixture in the first place).
-    ///
     /// **Provenance.** Generated by the dumper helper below from
     /// the current emitter; the playbook §3 (lines 75–193 of
     /// asc-to-desc.md) covers the SAME logical recipe but with
     /// human prose, code-block formatting, and a worked-example
     /// table named `tbl` — the fixture matches the playbook's
     /// statement set semantically, not byte-for-byte.
-    ///
     /// **Drift detector — playbook side.** A separate test below
     /// (`fixture_section_3_carries_every_playbook_anchor_substring`)
     /// walks the fixture and asserts the presence of every
     /// load-bearing playbook statement substring. If the playbook
     /// adds or removes a step, that test must be updated.
-    ///
     /// **Drift detector — emitter side.** The byte-equality test
     /// (`whole_plan_byte_equality_section_3_forward`) asserts the
     /// emitter's output equals the fixture exactly. Any emitter
@@ -4017,12 +3966,10 @@ mod tests {
         include_str!("fixtures/pk_flip_emitter_output_section_3.sql");
 
     // ── Fixture regeneration helper ──────────────────────────────────
-    //
     // Run with `DJOGI_DUMP_PK_FLIP_FIXTURES=1 cargo test -p djogi
     // --lib pk_flip::tests::dump_pk_flip_fixtures` to overwrite every
     // playbook fixture with the current emitter's output. Off by
     // default so the regression tests above stay deterministic.
-    //
     // **WARNING — PLAYBOOK DRIFT.** The dumper writes the EMITTER's
     // output, NOT the playbook's. After re-dumping, the operator
     // MUST re-read `asc-to-desc.md` for the section in question and
@@ -4127,7 +4074,7 @@ mod tests {
             whole_plan_normalised(&plan_7),
         );
 
-        // §8 cycle. B-13: cycle peer must be a first-class child
+        // §8 cycle. cycle peer must be a first-class child
         // (`cycle_flag = true`) so the segment plan creates the
         // shadow column / trigger / index / FK on `b.a_id_desc`.
         // The fixture dumper now mirrors what the real differ
@@ -4139,7 +4086,7 @@ mod tests {
             fk_column: "a_id".to_string(),
             fk_constraint_name: "b_a_id_fkey".to_string(),
             on_delete: OnDeleteSchema::Restrict,
-            // B-16: cycle peer carries deferrable + initially_deferred.
+            // Cycle peer carries deferrable + initially_deferred.
             fk_deferrable: true,
             fk_initially_deferred: true,
             fk_nullable: true,
@@ -4310,7 +4257,7 @@ mod tests {
             fk_nullable: true,
             fk_unique: false,
             family: PkFlipFamily::Heer,
-            // B-13: real differ output marks cycle peers as
+            // Real differ output marks cycle peers as
             // first-class children with cycle_flag = true.
             cycle_flag: true,
         });
@@ -4331,7 +4278,7 @@ mod tests {
     /// §9 partitioned fixture (forward direction). The fixture
     /// captures the placeholder-bearing emitter output (operators
     /// applying through the runner see the placeholder expanded at
-    /// apply time via pg_inherits — see runner B-2).
+    /// apply time via pg_inherits — see runner).
     const EMITTER_OUTPUT_SECTION_9_NORMALIZED: &str =
         include_str!("fixtures/pk_flip_emitter_output_section_9.sql");
 
@@ -4353,8 +4300,7 @@ mod tests {
         );
     }
 
-    // ── B-5r playbook-anchor drift detectors ─────────────────────────────
-    //
+    // ── playbook-anchor drift detectors ─────────────────────────────
     // These tests walk each fixture's bytes and assert that every
     // load-bearing playbook statement is present. They catch fixture
     // drift FROM the playbook independently of the emitter — if a
@@ -4362,9 +4308,8 @@ mod tests {
     // breaking emitter change, the byte-equality test passes (because
     // emitter and fixture are now in sync) but THESE tests fail
     // (because the fixture lost a playbook-required statement).
-    //
     // The fixtures are anchored to:
-    //   `HeeRanjID-reference/docs/migrations/asc-to-desc.md`
+    // `HeeRanjID-reference/docs/migrations/asc-to-desc.md`
     // §3 (lines 75–193), §4 (196–256), §6 (269–323), §7 (327–353),
     // §8 (356–379), §9 (383–492).
 
@@ -4469,8 +4414,8 @@ mod tests {
             fx.contains("heerid_to_asc(NEW.id)"),
             "reverse fixture must call heerid_to_asc in trigger body",
         );
-        // The new column DEFAULT after cutover must be `heerid_next()`
-        // — the asc generator. The fixture must NOT contain
+        // The new column DEFAULT after cutover must be `heerid_next`
+        // the asc generator. The fixture must NOT contain
         // `heerid_next_desc` outside an inline-comment block.
         assert!(
             fx.contains("SET DEFAULT heerid_next()"),
@@ -4644,23 +4589,20 @@ mod tests {
     }
 
     // ── Canonical playbook fixtures ──────────────────────────────────
-    //
     // Fixtures cover the EMITTER (`pk_flip_emitter_output_section_*.sql`)
     // plus anchor-substring tests vs the playbook. Separate verbatim-canonical
     // fixtures lock the PLAYBOOK against silent edits. This test set
     // closes that gap.
-    //
     // **Provenance.** Each `playbook_canonical_section_*.sql`
     // fixture is a verbatim copy of the corresponding SQL code
     // fence in `HeeRanjID-reference/docs/migrations/asc-to-desc.md`
-    // — the cutover block where the playbook section has one
+    // the cutover block where the playbook section has one
     // (sections 3, 4, 6, 9), or the load-bearing FK creation
     // block where it doesn't (section 8's deferrable cycle FK
     // pair). Section 7 is intentionally absent — its SQL content
     // is a Rust `install_autofill_trigger_for_table` invocation,
     // not a SQL block, so there's nothing to lock at the
     // SQL-byte level.
-    //
     // **Two-sided invariant.** The earlier
     // `fixture_section_*_carries_every_playbook_anchor_substring`
     // tests catch the case where the playbook prose changes a
@@ -4671,13 +4613,12 @@ mod tests {
     // from what the playbook actually says — a regression that
     // would slip past the substring anchors because both sides
     // agree on the (wrong) text.
-    //
     // **Path probe + skip.** The playbook .md file is NOT
     // distributed with the djogi crate — it lives in the sibling
     // `HeeRanjID-reference` repo (or at the workspace root via a
     // symlink, per the project memory rule). When the test runs
     // in an environment without that file, the test skips
-    // gracefully with a clear `eprintln!` rather than failing —
+    // gracefully with a clear `eprintln!` rather than failing
     // CI environments that haven't set up the symlink should
     // not block the build, but the test is informative when the
     // playbook IS present (typical local dev flow).
@@ -4685,14 +4626,12 @@ mod tests {
     /// Resolve the path to `asc-to-desc.md` relative to
     /// `CARGO_MANIFEST_DIR` (the djogi crate). Tries two well-
     /// known locations:
-    ///
-    ///   1. `<workspace>/HeeRanjID-reference/docs/migrations/asc-to-desc.md`
-    ///      — the symlink at the project root (per project
-    ///      memory rule).
-    ///   2. `<workspace>/../HeeRanjID/docs/migrations/asc-to-desc.md`
-    ///      — the sibling-workspace layout (per CLAUDE.md
-    ///      "Workspace Layout" section).
-    ///
+    /// 1. `<workspace>/HeeRanjID-reference/docs/migrations/asc-to-desc.md`
+    /// the symlink at the project root (per project
+    /// memory rule).
+    /// 2. `<workspace>/../HeeRanjID/docs/migrations/asc-to-desc.md`
+    /// the sibling-workspace layout (per CLAUDE.md
+    /// "Workspace Layout" section).
     /// Returns `None` if neither path resolves to an existing
     /// file. Caller skips the test with a clear message.
     fn locate_playbook_md() -> Option<std::path::PathBuf> {
@@ -4839,7 +4778,7 @@ mod tests {
             return;
         };
         let md = std::fs::read_to_string(&md_path).expect("read playbook");
-        // §9.7 partitioned-parent cutover code fence body —
+        // §9.7 partitioned-parent cutover code fence body
         // lines 459–477 inclusive.
         assert_canonical_section(
             "§9 partitioned cutover",
