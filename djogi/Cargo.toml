@@ -149,7 +149,7 @@ heeranjid.workspace = true
 # (`serde`, `runtime-tokio`) stay enabled.
 # `serde-json-bridge` enables `TryFrom<serde_json::Value> for JSahibON`
 # and the round-trip `From<JSahibON> for serde_json::Value` impls Djogi
-# routes its `MirJzSON` codec through (Phase 8.5 #195). Sassi owns the
+# routes its `MirJzSON` codec through (#195). Sassi owns the
 # numeric carrier-selection rules and the structural-equality contract;
 # Djogi never reimplements them.
 sassi = { version = "0.1.0-beta.3", features = ["watermark-time", "serde-json-bridge"] }
@@ -274,33 +274,33 @@ path = "../tests/pin/raw_pool_access_pin.rs"
 harness = true
 
 [[test]]
-name = "phase1_model"
-path = "../tests/integration/phase1_model.rs"
+name = "model"
+path = "../tests/integration/model.rs"
 harness = true
 
 [[test]]
-name = "phase1_from_joined_debug_guard"
-path = "../tests/internal/phase1_from_joined_debug_guard.rs"
+name = "from_joined_debug_guard"
+path = "../tests/internal/from_joined_debug_guard.rs"
 harness = true
 
 [[test]]
-name = "phase2_queryset"
-path = "../tests/integration/phase2_queryset.rs"
+name = "queryset"
+path = "../tests/integration/queryset.rs"
 harness = true
 
 [[test]]
-name = "phase3_relations"
-path = "../tests/integration/phase3_relations.rs"
+name = "relations"
+path = "../tests/integration/relations.rs"
 harness = true
 
 [[test]]
-name = "phase4_transactions_expressions"
-path = "../tests/integration/phase4_transactions_expressions.rs"
+name = "transactions_expressions"
+path = "../tests/integration/transactions_expressions.rs"
 harness = true
 
 [[test]]
-name = "phase4_5_visages"
-path = "../tests/integration/phase4_5_visages.rs"
+name = "visages"
+path = "../tests/integration/visages.rs"
 harness = true
 
 [[test]]
@@ -309,113 +309,113 @@ path = "../tests/integration/djogi_test_smoke.rs"
 harness = true
 
 [[test]]
-name = "phase5_zero_from_pg_row"
-path = "../tests/integration/phase5_zero_from_pg_row.rs"
+name = "zero_from_pg_row"
+path = "../tests/integration/zero_from_pg_row.rs"
 harness = true
 
 [[test]]
-name = "phase5_zero_prefetch_non_bigint_pk"
-path = "../tests/integration/phase5_zero_prefetch_non_bigint_pk.rs"
+name = "zero_prefetch_non_bigint_pk"
+path = "../tests/integration/zero_prefetch_non_bigint_pk.rs"
 harness = true
 
 [[test]]
-name = "phase5_zero_from_joined_pg_row"
-path = "../tests/integration/phase5_zero_from_joined_pg_row.rs"
+name = "zero_from_joined_pg_row"
+path = "../tests/integration/zero_from_joined_pg_row.rs"
 harness = true
 
 [[test]]
-name = "phase5_postgres_native"
-path = "../tests/integration/phase5_postgres_native.rs"
+name = "postgres_native"
+path = "../tests/integration/postgres_native.rs"
 harness = true
 
 [[test]]
-name = "phase5_streaming"
-path = "../tests/integration/phase5_streaming.rs"
+name = "streaming"
+path = "../tests/integration/streaming.rs"
 harness = true
 
 [[test]]
-name = "phase5_fts"
-path = "../tests/integration/phase5_fts.rs"
+name = "fts"
+path = "../tests/integration/fts.rs"
 harness = true
 
 [[test]]
-name = "phase5_5_auth"
-path = "../tests/integration/phase5_5_auth.rs"
+name = "auth"
+path = "../tests/integration/auth.rs"
 harness = true
 
 [[test]]
-name = "phase5_5_auth_hook_restore"
-path = "../tests/internal/phase5_5_auth_hook_restore.rs"
+name = "auth_hook_restore"
+path = "../tests/internal/auth_hook_restore.rs"
 harness = true
 
 [[test]]
-name = "phase6_spatial"
-path = "../tests/integration/phase6_spatial.rs"
+name = "spatial"
+path = "../tests/integration/spatial.rs"
 harness = true
 required-features = ["spatial"]
 
 [[test]]
-name = "phase6_5_aggregates"
-path = "../tests/integration/phase6_5_aggregates.rs"
+name = "aggregates"
+path = "../tests/integration/aggregates.rs"
 harness = true
 
 [[test]]
-name = "phase8_5_aggregate_simple_statistics_88"
-path = "../tests/integration/phase8_5_aggregate_simple_statistics_88.rs"
+name = "aggregate_simple_statistics_88"
+path = "../tests/integration/aggregate_simple_statistics_88.rs"
 harness = true
 
 [[test]]
-name = "phase8_5_aggregate_ordered_hypothetical_88"
-path = "../tests/integration/phase8_5_aggregate_ordered_hypothetical_88.rs"
+name = "aggregate_ordered_hypothetical_88"
+path = "../tests/integration/aggregate_ordered_hypothetical_88.rs"
 harness = true
 
 [[test]]
-name = "phase6_5_spatial_polish"
-path = "../tests/integration/phase6_5_spatial_polish.rs"
+name = "spatial_polish"
+path = "../tests/integration/spatial_polish.rs"
 harness = true
 required-features = ["spatial"]
 
 [[test]]
-name = "phase7_zero_indexes_live"
-path = "../tests/internal/phase7_zero_indexes_live.rs"
+name = "zero_indexes_live"
+path = "../tests/internal/zero_indexes_live.rs"
 harness = true
 
 [[test]]
-name = "phase7_zero_apps"
-path = "../tests/integration/phase7_zero_apps.rs"
+name = "zero_apps"
+path = "../tests/integration/zero_apps.rs"
 harness = true
 
 [[test]]
-name = "phase7_zero2_primary_key_generate"
-path = "../tests/integration/phase7_zero2_primary_key_generate.rs"
+name = "zero2_primary_key_generate"
+path = "../tests/integration/zero2_primary_key_generate.rs"
 harness = true
 
 [[test]]
-name = "phase7_zero2_custom_pk_live"
-path = "../tests/integration/phase7_zero2_custom_pk_live.rs"
+name = "zero2_custom_pk_live"
+path = "../tests/integration/zero2_custom_pk_live.rs"
 harness = true
 
 [[test]]
-name = "phase7_zero2_ambient_pk_live"
-path = "../tests/integration/phase7_zero2_ambient_pk_live.rs"
+name = "zero2_ambient_pk_live"
+path = "../tests/integration/zero2_ambient_pk_live.rs"
 harness = true
 
 [[test]]
-name = "phase7_zero2_bulk_allocation_live"
-path = "../tests/integration/phase7_zero2_bulk_allocation_live.rs"
+name = "zero2_bulk_allocation_live"
+path = "../tests/integration/zero2_bulk_allocation_live.rs"
 harness = true
 
 [[test]]
-name = "phase7_zero2_visage_traversal_live"
-path = "../tests/integration/phase7_zero2_visage_traversal_live.rs"
+name = "zero2_visage_traversal_live"
+path = "../tests/integration/zero2_visage_traversal_live.rs"
 harness = true
 
 [[test]]
-name = "phase7_zero2_visage_traversal_shape"
-path = "../tests/internal/phase7_zero2_visage_traversal_shape.rs"
+name = "zero2_visage_traversal_shape"
+path = "../tests/internal/zero2_visage_traversal_shape.rs"
 harness = true
 
-# Phase 8eta PR3 — `QuerySet::filter` SQL parity through the post-flip
+# PR3 — `QuerySet::filter` SQL parity through the post-flip
 # root accessor surface. Pins simple equality, AND composition,
 # `exclude` negation, portable string `contains` (`COLLATE "C" ILIKE`),
 # `explicit_pg_predicate().regex` (legacy `Condition` arm of `Q<T>`),
@@ -423,246 +423,246 @@ harness = true
 # database. Verification target: `cargo test -p djogi
 # queryset_filter_preservation`.
 [[test]]
-name = "phase8eta_queryset_filter_preservation"
-path = "../tests/internal/phase8eta_queryset_filter_preservation.rs"
+name = "queryset_filter_preservation"
+path = "../tests/internal/queryset_filter_preservation.rs"
 harness = true
 
 [[test]]
-name = "phase7_zero2_select_narrowing_live"
-path = "../tests/integration/phase7_zero2_select_narrowing_live.rs"
+name = "zero2_select_narrowing_live"
+path = "../tests/integration/zero2_select_narrowing_live.rs"
 harness = true
 
 [[test]]
-name = "phase7_zero2_ensure_enum_type_live"
-path = "../tests/integration/phase7_zero2_ensure_enum_type_live.rs"
+name = "zero2_ensure_enum_type_live"
+path = "../tests/integration/zero2_ensure_enum_type_live.rs"
 harness = true
 
 [[test]]
-name = "phase7_zero2_ensure_enum_type_catalog_live"
-path = "../tests/internal/phase7_zero2_ensure_enum_type_catalog_live.rs"
+name = "zero2_ensure_enum_type_catalog_live"
+path = "../tests/internal/zero2_ensure_enum_type_catalog_live.rs"
 harness = true
 
 [[test]]
-name = "phase7_t4_runner_live"
-path = "../tests/internal/phase7_t4_runner_live.rs"
+name = "t4_runner_live"
+path = "../tests/internal/t4_runner_live.rs"
 harness = true
 
 [[test]]
-name = "phase7_t5_repair_verify_live"
-path = "../tests/internal/phase7_t5_repair_verify_live.rs"
+name = "t5_repair_verify_live"
+path = "../tests/internal/t5_repair_verify_live.rs"
 harness = true
 
 [[test]]
-name = "phase7_t6_build_warning_agreement"
-path = "../tests/integration/phase7_t6_build_warning_agreement.rs"
+name = "t6_build_warning_agreement"
+path = "../tests/integration/t6_build_warning_agreement.rs"
 harness = true
 
 [[test]]
-name = "phase7_t6_filesystem_scan"
-path = "../tests/integration/phase7_t6_filesystem_scan.rs"
+name = "t6_filesystem_scan"
+path = "../tests/integration/t6_filesystem_scan.rs"
 harness = true
 
 [[test]]
-name = "phase7_t7_policy_attune_live"
-path = "../tests/internal/phase7_t7_policy_attune_live.rs"
+name = "t7_policy_attune_live"
+path = "../tests/internal/t7_policy_attune_live.rs"
 harness = true
 
 [[test]]
-name = "phase7_t8_seed_docs_live"
-path = "../tests/internal/phase7_t8_seed_docs_live.rs"
+name = "t8_seed_docs_live"
+path = "../tests/internal/t8_seed_docs_live.rs"
 harness = true
 
 [[test]]
-name = "phase7_t9_pk_flip_live"
-path = "../tests/internal/phase7_t9_pk_flip_live.rs"
+name = "t9_pk_flip_live"
+path = "../tests/internal/t9_pk_flip_live.rs"
 harness = true
 
 [[test]]
-name = "phase7_t10_sync_models_live"
-path = "../tests/integration/phase7_t10_sync_models_live.rs"
+name = "t10_sync_models_live"
+path = "../tests/integration/t10_sync_models_live.rs"
 harness = true
 
 [[test]]
-name = "phase7_t10_sync_models_catalog_live"
-path = "../tests/internal/phase7_t10_sync_models_catalog_live.rs"
+name = "t10_sync_models_catalog_live"
+path = "../tests/internal/t10_sync_models_catalog_live.rs"
 harness = true
 
 [[test]]
-name = "phase7_t10_sync_models_parity"
-path = "../tests/internal/phase7_t10_sync_models_parity.rs"
+name = "t10_sync_models_parity"
+path = "../tests/internal/t10_sync_models_parity.rs"
 harness = true
 
 [[test]]
-name = "phase7_5_backfill_live"
-path = "../tests/internal/phase7_5_backfill_live.rs"
+name = "backfill_live"
+path = "../tests/internal/backfill_live.rs"
 harness = true
 
 [[test]]
-name = "phase7_5_pr7_exclusion_generated_live"
-path = "../tests/internal/phase7_5_pr7_exclusion_generated_live.rs"
+name = "pr7_exclusion_generated_live"
+path = "../tests/internal/pr7_exclusion_generated_live.rs"
 harness = true
 
 [[test]]
-name = "phase7_5_t111_rls_fk_tenant_key_live"
-path = "../tests/internal/phase7_5_t111_rls_fk_tenant_key_live.rs"
+name = "t111_rls_fk_tenant_key_live"
+path = "../tests/internal/t111_rls_fk_tenant_key_live.rs"
 harness = true
 
 [[test]]
-name = "phase8_zero_materialize_closure_live"
-path = "../tests/integration/phase8_zero_materialize_closure_live.rs"
+name = "zero_materialize_closure_live"
+path = "../tests/integration/zero_materialize_closure_live.rs"
 harness = true
 
 [[test]]
-name = "phase8_zero_pool_bench"
-path = "../tests/internal/phase8_zero_pool_bench.rs"
+name = "zero_pool_bench"
+path = "../tests/internal/zero_pool_bench.rs"
 harness = true
 
 [[test]]
-name = "phase8_zero_pool_live"
-path = "../tests/internal/phase8_zero_pool_live.rs"
+name = "zero_pool_live"
+path = "../tests/internal/zero_pool_live.rs"
 harness = true
 
 [[test]]
-name = "phase8_zero_tree_query_bench"
-path = "../tests/integration/phase8_zero_tree_query_bench.rs"
+name = "zero_tree_query_bench"
+path = "../tests/integration/zero_tree_query_bench.rs"
 harness = true
 
 [[test]]
-name = "phase8_zero_tree_query_live"
-path = "../tests/integration/phase8_zero_tree_query_live.rs"
+name = "zero_tree_query_live"
+path = "../tests/integration/zero_tree_query_live.rs"
 harness = true
 
 [[test]]
-name = "phase8_zero_tree_query_rls_live"
-path = "../tests/internal/phase8_zero_tree_query_rls_live.rs"
+name = "zero_tree_query_rls_live"
+path = "../tests/internal/zero_tree_query_rls_live.rs"
 harness = true
 
 [[test]]
-name = "phase8_zero_cluster_c_spatial_live"
-path = "../tests/integration/phase8_zero_cluster_c_spatial_live.rs"
+name = "zero_cluster_c_spatial_live"
+path = "../tests/integration/zero_cluster_c_spatial_live.rs"
 harness = true
 required-features = ["spatial"]
 
 [[test]]
-name = "phase8_zero_cluster_c_spatial_scalar_live"
-path = "../tests/internal/phase8_zero_cluster_c_spatial_scalar_live.rs"
+name = "zero_cluster_c_spatial_scalar_live"
+path = "../tests/internal/zero_cluster_c_spatial_scalar_live.rs"
 harness = true
 required-features = ["spatial"]
 
 [[test]]
-name = "phase8_zero_cluster_c_window_live"
-path = "../tests/integration/phase8_zero_cluster_c_window_live.rs"
+name = "zero_cluster_c_window_live"
+path = "../tests/integration/zero_cluster_c_window_live.rs"
 harness = true
 
 [[test]]
-name = "phase8_zero_cluster_c_bench"
-path = "../tests/internal/phase8_zero_cluster_c_bench.rs"
+name = "zero_cluster_c_bench"
+path = "../tests/internal/zero_cluster_c_bench.rs"
 harness = true
 
 [[test]]
-name = "phase8_hooks_create"
-path = "../tests/integration/phase8_hooks_create.rs"
+name = "hooks_create"
+path = "../tests/integration/hooks_create.rs"
 harness = true
 
 [[test]]
-name = "phase8_hooks_save"
-path = "../tests/integration/phase8_hooks_save.rs"
+name = "hooks_save"
+path = "../tests/integration/hooks_save.rs"
 harness = true
 
 [[test]]
-name = "phase8_hooks_delete"
-path = "../tests/integration/phase8_hooks_delete.rs"
+name = "hooks_delete"
+path = "../tests/integration/hooks_delete.rs"
 harness = true
 
 [[test]]
-name = "phase8_hooks_canonical_sequence"
-path = "../tests/integration/phase8_hooks_canonical_sequence.rs"
+name = "hooks_canonical_sequence"
+path = "../tests/integration/hooks_canonical_sequence.rs"
 harness = true
 
 [[test]]
-name = "phase8_hooks_dispatch_overhead"
-path = "../tests/integration/phase8_hooks_dispatch_overhead.rs"
+name = "hooks_dispatch_overhead"
+path = "../tests/integration/hooks_dispatch_overhead.rs"
 harness = true
 
 [[test]]
-name = "phase8_compose_auditable"
-path = "../tests/integration/phase8_compose_auditable.rs"
+name = "compose_auditable"
+path = "../tests/integration/compose_auditable.rs"
 harness = true
 
 [[test]]
-name = "phase8_compose_softdeletable"
-path = "../tests/integration/phase8_compose_softdeletable.rs"
+name = "compose_softdeletable"
+path = "../tests/integration/compose_softdeletable.rs"
 harness = true
 
 [[test]]
-name = "phase8_compose_descriptor"
-path = "../tests/integration/phase8_compose_descriptor.rs"
+name = "compose_descriptor"
+path = "../tests/integration/compose_descriptor.rs"
 harness = true
 
 [[test]]
-name = "phase8_compose_migration"
-path = "../tests/integration/phase8_compose_migration.rs"
+name = "compose_migration"
+path = "../tests/integration/compose_migration.rs"
 harness = true
 
 [[test]]
-name = "phase8_on_commit_pool_warn"
-path = "../tests/internal/phase8_on_commit_pool_warn.rs"
+name = "on_commit_pool_warn"
+path = "../tests/internal/on_commit_pool_warn.rs"
 harness = true
 
 [[test]]
-name = "phase8_zero_phase_zero_emit"
-path = "../tests/integration/phase8_zero_phase_zero_emit.rs"
+name = "zero_phase_zero_emit"
+path = "../tests/integration/zero_phase_zero_emit.rs"
 harness = true
 
 [[test]]
-name = "phase8_zero_db_reset_replays_phase_zero"
-path = "../tests/internal/phase8_zero_db_reset_replays_phase_zero.rs"
+name = "zero_db_reset_replays_phase_zero"
+path = "../tests/internal/zero_db_reset_replays_phase_zero.rs"
 harness = true
 
-# Phase 8.5 Cluster 2 issue #118 — production CLI dispatch wires the
+# Cluster 2 issue #118 — production CLI dispatch wires the
 # audit pool from `crud_log_url` into the `db reset` replay path.
 [[test]]
-name = "phase8_5_c2_118_reset_writes_audit_rows"
-path = "../tests/internal/phase8_5_c2_118_reset_writes_audit_rows.rs"
+name = "c2_118_reset_writes_audit_rows"
+path = "../tests/internal/c2_118_reset_writes_audit_rows.rs"
 harness = true
 
-# Phase 8.5 Cluster 2 issue #123 — pool-backed context atomic scopes
+# Cluster 2 issue #123 — pool-backed context atomic scopes
 # share the parent Sassi registry instead of rebuilding on every transaction.
 [[test]]
-name = "phase8_5_c2_123_atomic_context_sassi"
-path = "../tests/integration/phase8_5_c2_123_atomic_context_sassi.rs"
+name = "c2_123_atomic_context_sassi"
+path = "../tests/integration/c2_123_atomic_context_sassi.rs"
 harness = true
 
-# Phase 8.5 Cluster 2 issue #129 — non-superuser test pool for
+# Cluster 2 issue #129 — non-superuser test pool for
 # RLS-backed integration tests. Internal because the fixture installs
 # RLS policy DDL through Djogi's raw SQL bypass; ordinary integration
 # tests must stay raw-free.
 [[test]]
-name = "phase8_5_c2_129_non_superuser_rls"
-path = "../tests/internal/phase8_5_c2_129_non_superuser_rls.rs"
+name = "c2_129_non_superuser_rls"
+path = "../tests/internal/c2_129_non_superuser_rls.rs"
 harness = true
 
-# Phase 8.5 Cluster 2 issue #162 — pool-path raw SQL escape hatches must
+# Cluster 2 issue #162 — pool-path raw SQL escape hatches must
 # detach the connection on Err / cancellation, mirroring DjogiPool::with_client.
 # Internal because the fixture exercises raw_execute through the bypass
 # attribute to prove the dirty-by-default lifecycle.
 [[test]]
-name = "phase8_5_c2_162_raw_dirty_semantics"
-path = "../tests/internal/phase8_5_c2_162_raw_dirty_semantics.rs"
+name = "c2_162_raw_dirty_semantics"
+path = "../tests/internal/c2_162_raw_dirty_semantics.rs"
 harness = true
 
-# Phase 8.5 Cluster 2 issue #187 — temporal year-bounds CHECK projection
+# Cluster 2 issue #187 — temporal year-bounds CHECK projection
 # for `time::Date` / `time::OffsetDateTime` columns. Internal because the
 # OOB-rejection assertions construct DATE/TIMESTAMP literals at years
 # outside the `time` crate's default ±9999 range, which the typed Rust
 # surface cannot produce. Exercises `raw_execute` through the bypass
 # attribute to prove the CHECK rejects external OOB writes.
 [[test]]
-name = "phase8_5_c2_187_temporal_year_check"
-path = "../tests/internal/phase8_5_c2_187_temporal_year_check.rs"
+name = "c2_187_temporal_year_check"
+path = "../tests/internal/c2_187_temporal_year_check.rs"
 harness = true
 
-# Phase 8.5 Cluster 2 — narrow/unsigned integer type-derived CHECK (closes #190, #186).
+# Cluster 2 — narrow/unsigned integer type-derived CHECK (closes #190, #186).
 # Round-trips boundary values for i8/u8/u16/u32/u64 through the typed surface and
 # verifies OOB rejection via type-derived CHECK constraints. OOB-rejection assertions
 # use `raw_execute` through the bypass attribute (values unreachable via the typed
@@ -671,11 +671,11 @@ harness = true
 # moved from NUMERIC(20,0) to bare NUMERIC to prevent silent rounding of fractional
 # inputs before CHECK evaluation.
 [[test]]
-name = "phase8_5_c2_190_integer_widening"
-path = "../tests/internal/phase8_5_c2_190_integer_widening.rs"
+name = "c2_190_integer_widening"
+path = "../tests/internal/c2_190_integer_widening.rs"
 harness = true
 
-# Phase 8.5 Cluster 2 — adopter `#[field(check)]` (#105) and Decimal
+# Cluster 2 — adopter `#[field(check)]` (#105) and Decimal
 # structural CHECK projection (#188). Exercises:
 #   - Decimal round-trip across the rust_decimal representable range.
 #   - Raw-NUMERIC OOB rejection for scale > 28 and coefficient > 2^96 - 1.
@@ -687,11 +687,11 @@ harness = true
 # OOB-rejection cases need raw_execute because rust_decimal cannot construct
 # values outside its representable range and u32 cannot exceed u32::MAX.
 [[test]]
-name = "phase8_5_c2_105_188_check_decimal"
-path = "../tests/internal/phase8_5_c2_105_188_check_decimal.rs"
+name = "c2_105_188_check_decimal"
+path = "../tests/internal/c2_105_188_check_decimal.rs"
 harness = true
 
-# Phase 8.5 Cluster 2 — opt-in HeerId / RanjId structural CHECK (#189).
+# Cluster 2 — opt-in HeerId / RanjId structural CHECK (#189).
 # Verifies the default-off baseline (no CHECK on a HeerId / RanjId model
 # without opt-in), catalog assertions for the model-wide `#[model(strict_ids)]`
 # opt-in on both HeerId and RanjId PKs, the field-level
@@ -704,11 +704,11 @@ harness = true
 # construct them. Round-trip tests exercise the valid path through the
 # typed surface only.
 [[test]]
-name = "phase8_5_c2_189_strict_id_check"
-path = "../tests/internal/phase8_5_c2_189_strict_id_check.rs"
+name = "c2_189_strict_id_check"
+path = "../tests/internal/c2_189_strict_id_check.rs"
 harness = true
 
-# Phase 8.5 G0 — Decimal representability CHECK rejects PostgreSQL
+# G0 — Decimal representability CHECK rejects PostgreSQL
 # NUMERIC special values (`NaN`, `Infinity`, `-Infinity`) on the scalar
 # Decimal column, the NUMRANGE endpoint checks, and the
 # `__djogi_numeric_array_is_rust_decimal_v1` helper. The rejection path
@@ -717,11 +717,11 @@ harness = true
 # carries no non-finite states. The finite-value accept-path checks
 # inside the same fixture run through the typed surface only.
 [[test]]
-name = "phase8_5_g0_decimal_special_values"
-path = "../tests/internal/phase8_5_g0_decimal_special_values.rs"
+name = "g0_decimal_special_values"
+path = "../tests/internal/g0_decimal_special_values.rs"
 harness = true
 
-# Phase 8.5 G0 — Temporal representability CHECK rejects PostgreSQL
+# G0 — Temporal representability CHECK rejects PostgreSQL
 # DATE / TIMESTAMPTZ special values (`+infinity`, `-infinity`) on
 # scalar `time::Date` / `time::OffsetDateTime` columns and on the
 # DATERANGE / TSTZRANGE endpoint checks. The rejection path is
@@ -730,50 +730,50 @@ harness = true
 # no non-finite states. The finite-value accept-path checks inside
 # the same fixture run through the typed surface only.
 [[test]]
-name = "phase8_5_g0_temporal_infinity"
-path = "../tests/internal/phase8_5_g0_temporal_infinity.rs"
+name = "g0_temporal_infinity"
+path = "../tests/internal/g0_temporal_infinity.rs"
 harness = true
 
-# Phase 8.5 Cluster 3 issue #110 — round-2 dogfood discovery across six
+# Cluster 3 issue #110 — round-2 dogfood discovery across six
 # typed-surface categories. Each scenario uses `#[djogi_test]` and the
 # typed surface only; gaps surface as compile-fail callsites that are
 # documented inline as `// GAP(...)` markers and routed to GH issues.
 [[test]]
-name = "phase8_5_c3_110_dogfood_round2"
-path = "../tests/integration/phase8_5_c3_110_dogfood_round2.rs"
+name = "c3_110_dogfood_round2"
+path = "../tests/integration/c3_110_dogfood_round2.rs"
 harness = true
 
-# Phase 8.5 predicate ergonomics — closes #107 (Option scalar comparisons),
+# Predicate ergonomics — closes #107 (Option scalar comparisons),
 # #109 (Condition ergonomics — operators + ConditionExt), #166 (Tracked<T>
 # field lookups), and #167 (&str ergonomics for String fields). The fixture
 # exercises one row each through DjogiField portable predicates and
 # `explicit_pg_predicate()` Condition composition.
 [[test]]
-name = "phase8_5_predicate_ergonomics"
-path = "../tests/integration/phase8_5_predicate_ergonomics.rs"
+name = "predicate_ergonomics"
+path = "../tests/integration/predicate_ergonomics.rs"
 harness = true
 
-# Phase 8.5 issue #231 — derived visage row-decode errors.
+# Issue #231 — derived visage row-decode errors.
 # Verifies DB-computed NULL and SQL/Rust type mismatch on derived
 # projection entries surface as DjogiError::Visage(...) rather than
 # generic row-decode errors.
 [[test]]
-name = "phase8_5_visage_derived_decode_errors"
-path = "../tests/integration/phase8_5_visage_derived_decode_errors.rs"
+name = "visage_derived_decode_errors"
+path = "../tests/integration/visage_derived_decode_errors.rs"
 harness = true
 
-# Phase 8.5 issue #231 reconciliation — happy-path read-time
+# Issue #231 reconciliation — happy-path read-time
 # projection coverage + parity helper exercise (sync + async). Pairs
 # with the merged decode-errors test: this one covers SUCCESS paths
 # end-to-end through `VisageQuerySet`, the sync per-visage
 # `assert_derived_parity` inherent method, and the additive async
 # `assert_derived_parity_fetched` convenience helper.
 [[test]]
-name = "phase8_5_visage_derived_projection"
-path = "../tests/integration/phase8_5_visage_derived_projection.rs"
+name = "visage_derived_projection"
+path = "../tests/integration/visage_derived_projection.rs"
 harness = true
 
-# Phase 8.5 Cluster 4 (#168) — typed isolation-level surface.
+# Cluster 4 (#168) — typed isolation-level surface.
 # Verifies `atomic_with(IsolationLevel::{ReadCommitted, RepeatableRead,
 # Serializable}, ...)` opens a Postgres transaction at the requested
 # level, mirrors `atomic`'s commit/rollback semantics, rejects nested-
@@ -781,11 +781,11 @@ harness = true
 # `DjogiError::IsolationLevelOnNestedScope`, and composes with
 # `retry_on_conflict`.
 [[test]]
-name = "phase8_5_c4_168_isolation_level"
-path = "../tests/internal/phase8_5_c4_168_isolation_level.rs"
+name = "c4_168_isolation_level"
+path = "../tests/internal/c4_168_isolation_level.rs"
 harness = true
 
-# Phase 8.5 Cluster 4 (#169) — typed deferred-constraints surface.
+# Cluster 4 (#169) — typed deferred-constraints surface.
 # Verifies `DjogiContext::defer_constraints(DeferScope::All)` and
 # `defer_constraints(DeferScope::Named(&[...]))` against a model
 # carrying a `DEFERRABLE INITIALLY DEFERRED` self-FK, plus the
@@ -793,11 +793,11 @@ harness = true
 # `UnknownConstraintName` typed validation, and the pool-backed
 # `ConstraintModeOutsideTransaction` rejection.
 [[test]]
-name = "phase8_5_c4_169_defer_constraints"
-path = "../tests/integration/phase8_5_c4_169_defer_constraints.rs"
+name = "c4_169_defer_constraints"
+path = "../tests/integration/c4_169_defer_constraints.rs"
 harness = true
 
-# Phase 8.5 Cluster 3 (#173) — typed concurrent-reads helper.
+# Cluster 3 (#173) — typed concurrent-reads helper.
 # Verifies `DjogiContext::clone_for_concurrent_reads` allocates an
 # independent pool-backed context that shares the parent's
 # Sassi/Punnu registry + auth state, enabling `tokio::try_join!`
@@ -805,11 +805,11 @@ harness = true
 # transaction-backed rejection path surfaces
 # `DjogiError::ConcurrentReadsRequirePoolContext`.
 [[test]]
-name = "phase8_5_c4_173_concurrent_reads"
-path = "../tests/integration/phase8_5_c4_173_concurrent_reads.rs"
+name = "c4_173_concurrent_reads"
+path = "../tests/integration/c4_173_concurrent_reads.rs"
 harness = true
 
-# Phase 8.5 Cluster 4B (#101) — typed set operations: SQL-shape pins.
+# Cluster 4B (#101) — typed set operations: SQL-shape pins.
 # Verifies `.union(...)` / `.union_all(...)` / `.intersect(...)` /
 # `.except(...)` emit correct Postgres SQL with parenthesised arms,
 # per-arm modifier preservation, outer ORDER BY / LIMIT / OFFSET
@@ -819,18 +819,18 @@ harness = true
 # `__sql_for_test` and `__count_sql_for_test` hidden hooks, plus the
 # `feature = "testing"`-gated `render_set_op_sql_for_testing` mirror.
 [[test]]
-name = "phase8_5_c4b_set_op_sql_shape"
-path = "../tests/internal/phase8_5_c4b_set_op_sql_shape.rs"
+name = "c4b_set_op_sql_shape"
+path = "../tests/internal/c4b_set_op_sql_shape.rs"
 harness = true
 required-features = ["testing"]
 
 [[test]]
-name = "phase8_5_c4b_lateral_sql_shape"
-path = "../tests/internal/phase8_5_c4b_lateral_sql_shape.rs"
+name = "c4b_lateral_sql_shape"
+path = "../tests/internal/c4b_lateral_sql_shape.rs"
 harness = true
 required-features = ["testing"]
 
-# Phase 8.5 Cluster 4 (djogi#220 + djogi#221) — DDL metadata SQL shape pins.
+# Cluster 4 (djogi#220 + djogi#221) — DDL metadata SQL shape pins.
 #
 # Internal test pinning the two DDL gaps closed by Cluster 4:
 #
@@ -848,11 +848,11 @@ required-features = ["testing"]
 # and the whitespace variant is covered by lihaaf compile_fail fixtures
 # (`djogi-macros/tests/compile_fail/c4_220_*`).
 [[test]]
-name = "phase8_5_c4_220_221_ddl_sql_shape"
-path = "../tests/internal/phase8_5_c4_220_221_ddl_sql_shape.rs"
+name = "c4_220_221_ddl_sql_shape"
+path = "../tests/internal/c4_220_221_ddl_sql_shape.rs"
 harness = true
 
-# Phase 8.5 Cluster 4B (#101) — typed set operations: live Postgres
+# Cluster 4B (#101) — typed set operations: live Postgres
 # behavior. Pairs with the SQL-shape test by proving each operator
 # (UNION / UNION ALL / INTERSECT / EXCEPT) produces the row sets
 # Postgres semantics promise, outer ORDER BY/LIMIT/OFFSET applies to
@@ -860,65 +860,65 @@ harness = true
 # chains evaluate left-associatively, and incompatible arm state
 # surfaces as a typed `DjogiError::SetOpArmInvalid`.
 [[test]]
-name = "phase8_5_c4b_set_op_live"
-path = "../tests/integration/phase8_5_c4b_set_op_live.rs"
+name = "c4b_set_op_live"
+path = "../tests/integration/c4b_set_op_live.rs"
 harness = true
 
 [[test]]
-name = "phase8_5_c4b_lateral_join_live"
-path = "../tests/integration/phase8_5_c4b_lateral_join_live.rs"
+name = "c4b_lateral_join_live"
+path = "../tests/integration/c4b_lateral_join_live.rs"
 harness = true
 
-# Phase 8.5 Cluster 4B issue #106 — typed INSERT...SELECT live coverage.
+# Cluster 4B issue #106 — typed INSERT...SELECT live coverage.
 # Pins the row-copy round trip end-to-end against a real database:
 # projection alignment, framework-column defaults, WHERE composition,
 # ORDER BY + LIMIT chunking, the none() short-circuit, and the v0.1
 # validation rejections (empty mapping, duplicate columns, distinct).
 [[test]]
-name = "phase8_5_c4b_insert_select"
-path = "../tests/integration/phase8_5_c4b_insert_select.rs"
+name = "c4b_insert_select"
+path = "../tests/integration/c4b_insert_select.rs"
 harness = true
 
-# Phase 8.5 issue #178 — typed MERGE INTO live coverage.
+# Issue #178 — typed MERGE INTO live coverage.
 # Pins basic upsert, BY SOURCE actions, convenience update-changed logic,
 # and validation rejections against a real database.
 [[test]]
-name = "phase8_5_c4b_merge"
-path = "../tests/integration/phase8_5_c4b_merge.rs"
+name = "c4b_merge"
+path = "../tests/integration/c4b_merge.rs"
 harness = true
 
 [[test]]
-name = "phase8_5_c4b_values_join_live"
-path = "../tests/integration/phase8_5_c4b_values_join_live.rs"
+name = "c4b_values_join_live"
+path = "../tests/integration/c4b_values_join_live.rs"
 harness = true
 
-# Phase 8.5 djogi#299 — typed CROSS JOIN VALUES live coverage.
+# Djogi#299 — typed CROSS JOIN VALUES live coverage.
 # Pins the Cartesian product round trip end-to-end against a real database:
 # basic 2×2 product, empty-VALUES short-circuit, none()-queryset short-circuit,
 # count() product cardinality, model-side WHERE filter reduction,
 # exists() truth, and the .distinct() incompatible-state rejection.
 [[test]]
-name = "phase8_5_c4b_values_crossjoin_live"
-path = "../tests/integration/phase8_5_c4b_values_crossjoin_live.rs"
+name = "c4b_values_crossjoin_live"
+path = "../tests/integration/c4b_values_crossjoin_live.rs"
 harness = true
 
 [[test]]
-name = "phase8_5_c4b_insert_select_projection_order"
-path = "../tests/internal/phase8_5_c4b_insert_select_projection_order.rs"
+name = "c4b_insert_select_projection_order"
+path = "../tests/internal/c4b_insert_select_projection_order.rs"
 harness = true
 
-# Phase 8.5 Cluster 4A (#85 T27) — Wright F-coefficient correctness
+# Cluster 4A (#85 T27) — Wright F-coefficient correctness
 # fixture for the typed pair-tuple closure self-join surface. Pins five
 # known reference matings (unrelated, parent×child, full siblings, half
 # siblings, first cousins) plus a multi-path-multiplicity case so the
 # pair-tuple terminal + PairClosureKinshipSum aggregate cannot regress
 # the values the demo's retrofitted Step 3 exposes.
 [[test]]
-name = "phase8_5_c4a_mating_pairs_correctness"
-path = "../tests/integration/phase8_5_c4a_mating_pairs_correctness.rs"
+name = "c4a_mating_pairs_correctness"
+path = "../tests/integration/c4a_mating_pairs_correctness.rs"
 harness = true
 
-# Phase 8.5 Cluster 4A follow-up — pair-only annotation rejection on the
+# Cluster 4A follow-up — pair-only annotation rejection on the
 # single-Model + grouped annotate paths. Verifies the
 # `requires_pair_tuple_scope()` signal added in the cluster-A follow-up
 # is consulted by both `QuerySet::annotate(...).fetch_all` and the
@@ -926,34 +926,34 @@ harness = true
 # instead of a Postgres `42P01 missing FROM-clause` error at execute
 # time. Requires `spatial` for `PairAreaOverlapRatio`.
 [[test]]
-name = "phase8_5_c4a_pair_only_annotation_rejection"
-path = "../tests/integration/phase8_5_c4a_pair_only_annotation_rejection.rs"
+name = "c4a_pair_only_annotation_rejection"
+path = "../tests/integration/c4a_pair_only_annotation_rejection.rs"
 harness = true
 required-features = ["spatial"]
 
-# Phase 8.5 Cluster 4A follow-up — live PostGIS validation for
+# Cluster 4A follow-up — live PostGIS validation for
 # `PairAreaOverlapRatio<L, R>`. Closes the loop between the unit-level
 # SQL-shape tests and the end-to-end PostGIS arithmetic by seeding
 # controlled polygon geometries and asserting the decoded `f64` ratios
 # match the documented behaviour: 1.0 on coincident polygons, 0.0 on
 # disjoint, in (0, 1) on partial overlap, 0.0 on NULL geography.
 [[test]]
-name = "phase8_5_c4a_pair_area_overlap_ratio_live"
-path = "../tests/integration/phase8_5_c4a_pair_area_overlap_ratio_live.rs"
+name = "c4a_pair_area_overlap_ratio_live"
+path = "../tests/integration/c4a_pair_area_overlap_ratio_live.rs"
 harness = true
 required-features = ["spatial"]
 
-# Phase 8.5 Cluster F (#92) — row-shape PostGIS aggregate terminals.
+# Cluster F (#92) — row-shape PostGIS aggregate terminals.
 # Exercises `QuerySet::as_mvt`, `AnnotatedQuerySet::as_mvt`, and
 # `QuerySet::as_geobuf` end-to-end against live PostGIS with geography
 # model columns cast to geometry in the row-aggregate inner SELECT.
 [[test]]
-name = "phase8_5_c4f_row_aggregate_mvt_live"
-path = "../tests/integration/phase8_5_c4f_row_aggregate_mvt_live.rs"
+name = "c4f_row_aggregate_mvt_live"
+path = "../tests/integration/c4f_row_aggregate_mvt_live.rs"
 harness = true
 required-features = ["spatial"]
 
-# Phase 8.5 Cluster 4 (djogi#212) — INTERVAL typed-surface round-trip.
+# Cluster 4 (djogi#212) — INTERVAL typed-surface round-trip.
 # Pins descriptor projection, wire-format round-trip across mixed,
 # independent (months_only / days_only / microseconds_only), and
 # negative-component values, plus nullable `Option<Interval>` columns,
@@ -961,11 +961,11 @@ required-features = ["spatial"]
 # microseconds), and runtime filter + bulk-update execution through the
 # typed query surface — all through djogi's typed surface (no `raw_*` calls).
 [[test]]
-name = "phase8_5_c4_212_interval"
-path = "../tests/integration/phase8_5_c4_212_interval.rs"
+name = "c4_212_interval"
+path = "../tests/integration/c4_212_interval.rs"
 harness = true
 
-# Phase 8.5 G0 (djogi#215 substrate) — live Range<T> codec
+# G0 (djogi#215 substrate) — live Range<T> codec
 # coverage. Pins round-trip of `Range<i32>` / `Range<DateTime>` /
 # `Range<Decimal>` columns through `Model::create` → `RETURNING *` →
 # `FromPgRow` against a live Postgres database, including discrete
@@ -978,23 +978,23 @@ harness = true
 # the wire codec against hand-crafted bytes; this file closes the loop
 # end-to-end through Postgres.
 [[test]]
-name = "phase8_5_g0_range"
-path = "../tests/integration/phase8_5_g0_range.rs"
+name = "g0_range"
+path = "../tests/integration/g0_range.rs"
 harness = true
 
-# Phase 8.5 Cluster 4 (djogi#213) — typed network surface (INET / CIDR /
+# Cluster 4 (djogi#213) — typed network surface (INET / CIDR /
 # MACADDR) round-trip. Pins descriptor projection, IPv4/IPv6 wire-format
 # round-trip, nullable composition, construction-time CIDR validation,
 # and runtime filter + bulk-update execution through the typed query
 # surface — all through djogi's typed surface (no `raw_*` calls).
 # Requires the `network` feature flag.
 [[test]]
-name = "phase8_5_c4_213_network"
-path = "../tests/integration/phase8_5_c4_213_network.rs"
+name = "c4_213_network"
+path = "../tests/integration/c4_213_network.rs"
 harness = true
 required-features = ["network"]
 
-# Phase 8.5 Cluster 4 (djogi#216) Piece A — live test for the
+# Cluster 4 (djogi#216) Piece A — live test for the
 # `#[field(domain = "<name>")]` reference to an adopter-managed Postgres
 # domain. Pins the descriptor projection of `FieldSqlType::Domain { name,
 # base }`, the bare-name Display contract emitted by the migration composer,
@@ -1007,134 +1007,134 @@ required-features = ["network"]
 # domain via `raw_ddl` in the setup is the legitimate adopter-side gap
 # djogi#216 documents (Piece B / `CREATE DOMAIN` emission is deferred).
 [[test]]
-name = "phase8_5_c4_216_domain_live"
-path = "../tests/internal/phase8_5_c4_216_domain_live.rs"
+name = "c4_216_domain_live"
+path = "../tests/internal/c4_216_domain_live.rs"
 harness = true
 
 
 [[test]]
-name = "phase8_trait_impl_registry"
-path = "../tests/integration/phase8_trait_impl_registry.rs"
+name = "trait_impl_registry"
+path = "../tests/integration/trait_impl_registry.rs"
 harness = true
 
-# ── Phase 8ε T9.7 — set_role + snapshot signing + djogi verify ──────────────
+# ── T9.7 — set_role + snapshot signing + djogi verify ──────────────
 # Each test file is registered as its own integration target so the
 # verification command (`cargo test -p djogi --test <name>`) targets a
-# single file at a time, mirroring the pattern Phase 7 / Phase 8α use.
+# single file at a time, mirroring the pattern / use.
 
 [[test]]
-name = "phase8_set_role_transaction_scoped"
-path = "../tests/internal/phase8_set_role_transaction_scoped.rs"
+name = "set_role_transaction_scoped"
+path = "../tests/internal/set_role_transaction_scoped.rs"
 harness = true
 
 [[test]]
-name = "phase8_set_role_set_tenant_ordering"
-path = "../tests/internal/phase8_set_role_set_tenant_ordering.rs"
+name = "set_role_set_tenant_ordering"
+path = "../tests/internal/set_role_set_tenant_ordering.rs"
 harness = true
 
 [[test]]
-name = "phase8_snapshot_signing_roundtrip"
-path = "../tests/integration/phase8_snapshot_signing_roundtrip.rs"
+name = "snapshot_signing_roundtrip"
+path = "../tests/integration/snapshot_signing_roundtrip.rs"
 harness = true
 
-# ── Phase 8δ T7.3 — cache modifier integration ───────────────────────────────
+# ── T7.3 — cache modifier integration ───────────────────────────────
 
 [[test]]
-name = "phase8_t7_3_cache_modifier"
-path = "../tests/integration/phase8_t7_3_cache_modifier.rs"
+name = "t7_3_cache_modifier"
+path = "../tests/integration/t7_3_cache_modifier.rs"
 harness = true
 # The SQL parity assertion in this target uses QuerySet's test-only SQL
 # renderer, which is intentionally exposed through `feature = "testing"` for
 # integration-test crates.
 required-features = ["testing"]
 
-# ── Phase 8δ T7.4 — punnu boot registration ─────────────────────────────────
+# ── T7.4 — punnu boot registration ─────────────────────────────────
 
 [[test]]
-name = "phase8_t7_4_punnu_boot_registration"
-path = "../tests/integration/phase8_t7_4_punnu_boot_registration.rs"
+name = "t7_4_punnu_boot_registration"
+path = "../tests/integration/t7_4_punnu_boot_registration.rs"
 harness = true
 
-# ── Phase 8δ T7.5 — on_commit cache invalidation hooks ──────────────────────
+# ── T7.5 — on_commit cache invalidation hooks ──────────────────────
 
 [[test]]
-name = "phase8_t7_5_cache_invalidation"
-path = "../tests/integration/phase8_t7_5_cache_invalidation.rs"
+name = "t7_5_cache_invalidation"
+path = "../tests/integration/t7_5_cache_invalidation.rs"
 harness = true
 
-# ── Phase 8δ T7.6 — cross-context guard ─────────────────────────────────────
+# ── T7.6 — cross-context guard ─────────────────────────────────────
 
 [[test]]
-name = "phase8_t7_6_cross_context_guard"
-path = "../tests/integration/phase8_t7_6_cross_context_guard.rs"
+name = "t7_6_cross_context_guard"
+path = "../tests/integration/t7_6_cross_context_guard.rs"
 harness = true
 
-# ── Phase 8δ T8.4 — into_basic_predicate: Q<T>→BasicPredicate<T> extraction ──
+# ── T8.4 — into_basic_predicate: Q<T>→BasicPredicate<T> extraction ──
 
 [[test]]
-name = "phase8_t8_4_basic_predicate_extraction"
-path = "../tests/integration/phase8_t8_4_basic_predicate_extraction.rs"
+name = "t8_4_basic_predicate_extraction"
+path = "../tests/integration/t8_4_basic_predicate_extraction.rs"
 harness = true
 
-# ── Phase 8δ T8.5 — DjogiDeltaFetcher::fetch_delta real SQL path ─────────────
+# ── T8.5 — DjogiDeltaFetcher::fetch_delta real SQL path ─────────────
 
 [[test]]
-name = "phase8_t8_5_fetcher_tick"
-path = "../tests/integration/phase8_t8_5_fetcher_tick.rs"
+name = "t8_5_fetcher_tick"
+path = "../tests/integration/t8_5_fetcher_tick.rs"
 harness = true
 
-# ── Phase 8δ T8.6 — SoftDeletable-derived tombstones in delta fetcher ─────────
+# ── T8.6 — SoftDeletable-derived tombstones in delta fetcher ─────────
 
 [[test]]
-name = "phase8_t8_6_softdelete_tombstones"
-path = "../tests/integration/phase8_t8_6_softdelete_tombstones.rs"
+name = "t8_6_softdelete_tombstones"
+path = "../tests/integration/t8_6_softdelete_tombstones.rs"
 harness = true
 
-# ── Phase 8δ T8.7 — outbox-derived tombstones (Pattern 2) in delta fetcher ────
+# ── T8.7 — outbox-derived tombstones (Pattern 2) in delta fetcher ────
 
 [[test]]
-name = "phase8_t8_7_outbox_tombstones"
-path = "../tests/integration/phase8_t8_7_outbox_tombstones.rs"
+name = "t8_7_outbox_tombstones"
+path = "../tests/integration/t8_7_outbox_tombstones.rs"
 harness = true
 
-# ── Phase 8δ T8.8 — DeltaRefreshHandle knobs: LRU warn + recovery + periodic ──
+# ── T8.8 — DeltaRefreshHandle knobs: LRU warn + recovery + periodic ──
 
 [[test]]
-name = "phase8_t8_8_refresh_knobs"
-path = "../tests/integration/phase8_t8_8_refresh_knobs.rs"
+name = "t8_8_refresh_knobs"
+path = "../tests/integration/t8_8_refresh_knobs.rs"
 harness = true
 
-# ── Phase 8δ T8.9 — tokio::spawn handle lifetime test ───────────────────────
+# ── T8.9 — tokio::spawn handle lifetime test ───────────────────────
 
 [[test]]
-name = "phase8_t8_9_refresh_lifetime"
-path = "../tests/integration/phase8_t8_9_refresh_lifetime.rs"
+name = "t8_9_refresh_lifetime"
+path = "../tests/integration/t8_9_refresh_lifetime.rs"
 harness = true
 
-# ── Phase 8δ T8.10 — cluster-exit integration: auth-locked + e2e happy-path ──
+# ── T8.10 — cluster-exit integration: auth-locked + e2e happy-path ──
 
 [[test]]
-name = "phase8_t8_10_refresh_e2e"
-path = "../tests/integration/phase8_t8_10_refresh_e2e.rs"
+name = "t8_10_refresh_e2e"
+path = "../tests/integration/t8_10_refresh_e2e.rs"
 harness = true
 
-# ── Phase 8eta PR4 — portable cache/refresh gate ────────────────────────────
+# ── PR4 — portable cache/refresh gate ────────────────────────────
 
 [[test]]
-name = "phase8eta_pr4_cache_refresh_gate"
-path = "../tests/integration/phase8eta_pr4_cache_refresh_gate.rs"
+name = "pr4_cache_refresh_gate"
+path = "../tests/integration/pr4_cache_refresh_gate.rs"
 harness = true
 
 [[test]]
-name = "phase8_t11_notify_roundtrip"
-path = "../tests/integration/phase8_t11_notify_roundtrip.rs"
+name = "t11_notify_roundtrip"
+path = "../tests/integration/t11_notify_roundtrip.rs"
 harness = true
 # `subscribe::<M>` and the publisher hook in `emit_event` only compile
 # under `feature = "notify"`; without this gate the test fails to
 # compile under the default workspace test invocation.
 required-features = ["notify"]
 
-# Phase 8.5 issue #147 — pg_trgm typed surface: SQL shape pins.
+# Issue #147 — pg_trgm typed surface: SQL shape pins.
 # Verifies `trgm_similar_to` emits `<col> % $1` (the indexable `%` operator
 # form; threshold is the session GUC `pg_trgm.similarity_threshold`, not a
 # per-call bind), that `trgm_similarity` emits `similarity(<col>, $1)` as a
@@ -1144,12 +1144,12 @@ required-features = ["notify"]
 # `extension_dependency = "pg_trgm"`. No live database required — assertions
 # run against the SQL builder.
 [[test]]
-name = "phase8_5_trgm_sql_shape"
-path = "../tests/internal/phase8_5_trgm_sql_shape.rs"
+name = "trgm_sql_shape"
+path = "../tests/internal/trgm_sql_shape.rs"
 harness = true
 required-features = ["trgm"]
 
-# Phase 8.5 issue #83 — macro-path integration coverage for PK
+# Issue #83 — macro-path integration coverage for PK
 # no-id-index and field-level index synthesis.
 #
 # Closes the gap identified in the strict-swe BLOCK-1 sweep: the
@@ -1162,8 +1162,8 @@ required-features = ["trgm"]
 # Assertions are via `project_from_inventory()` (typed projection
 # surface) per the CLAUDE.md no-raw-escape-hatches rule.
 [[test]]
-name = "phase85_pk_index_coverage"
-path = "../tests/integration/phase85_pk_index_coverage.rs"
+name = "pk_index_coverage"
+path = "../tests/integration/pk_index_coverage.rs"
 harness = true
 
 # GH #227 — presentation-codec acceptance test.
