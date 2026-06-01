@@ -492,7 +492,7 @@ pub mod __macro_support {
 mod tests {
     //! Emitter shape tests — each construct renders the expected SQL
     //! tokens. Live DB coverage is in
-    //! `tests/integration/phase4_transactions_expressions.rs`.
+    //! `tests/integration/transactions_expressions.rs`.
 
     use super::*;
     use crate::Expr;

@@ -75,7 +75,7 @@ use std::convert::Infallible;
 /// pass through [`VisageQuerySet`](crate::query::VisageQuerySet)
 /// (in `# fn _fetch(...)` framing — the SQL execution is not run
 /// at doctest time; the integration test
-/// `phase8_5_visage_derived_projection.rs` exercises the live
+/// `visage_derived_projection.rs` exercises the live
 /// round-trip against Postgres), and one pass through the parity
 /// helper.
 /// ```no_run
@@ -148,7 +148,7 @@ use std::convert::Infallible;
 /// // and requires a real DB; the doctest carries it in a `no_run`
 /// // framing alongside the parity helper to show the full workflow
 /// // — the live integration test under
-/// // `tests/integration/phase8_5_visage_derived_projection.rs`
+/// // `tests/integration/visage_derived_projection.rs`
 /// // executes the same shape against Postgres.
 /// # async fn _fetch_workflow(
 /// #     ctx: &mut DjogiContext,
@@ -182,7 +182,7 @@ use std::convert::Infallible;
 /// # }
 /// ```
 /// See also: the integration test
-/// `tests/integration/phase8_5_visage_derived_projection.rs` for
+/// `tests/integration/visage_derived_projection.rs` for
 /// the end-to-end live round-trip, and
 /// [`crate::testing::assert_derived_parity_fetched`] for the
 /// async convenience helper.

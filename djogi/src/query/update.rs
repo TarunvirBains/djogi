@@ -653,7 +653,7 @@ impl<T: Model> QuerySet<T> {
 #[cfg(test)]
 mod tests {
     //! Unit tests for the builder surface — no SQL, no executor. Live
-    //! DB coverage is in `tests/integration/phase2_queryset.rs`.
+    //! DB coverage is in `tests/integration/queryset.rs`.
     //! We reach through the `FieldRef` API to build assignments so the
     //! `pub(crate)` fields on `UpdateAssignment` never leak into the
     //! test module's observed surface (same pattern as the Task 8

@@ -2118,7 +2118,7 @@ mod tests {
     // byte the production gate accepts or rejects is exactly what
     // these tests assert against. The DB-touch arms (pool-vs-tx
     // discriminant, end-to-end SET LOCAL ROLE round-trip) live in
-    // `tests/integration/phase8_set_role_transaction_scoped.rs`
+    // `tests/internal/set_role_transaction_scoped.rs`
     // exercising those here would just shadow the integration suite.
     // -------------------------------------------------------------------------
 
@@ -2186,7 +2186,7 @@ mod tests {
         // allowed bytes (lowercase letters, digits, underscores, an
         // underscore-led prefix segment). The validation gate must
         // pass; the end-to-end SET LOCAL ROLE round-trip is covered
-        // by `tests/integration/phase8_set_role_transaction_scoped.rs`.
+        // by `tests/internal/set_role_transaction_scoped.rs`.
         assert!(super::validate_role_name("app_readonly_role").is_ok());
         assert!(super::validate_role_name("_internal").is_ok());
         assert!(super::validate_role_name("role1").is_ok());
@@ -2198,7 +2198,7 @@ mod tests {
     // `set_constraints_immediate` for both `DeferScope::All` and
     // `DeferScope::Named`. They are no-DB tests because the
     // composition is deterministic and the live-PG round-trip is
-    // covered by `tests/integration/phase8_5_c4_169_defer_constraints.rs`.
+    // covered by `tests/integration/defer_constraints.rs`.
     // -------------------------------------------------------------------------
 
     #[test]

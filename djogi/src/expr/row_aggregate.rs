@@ -267,7 +267,7 @@ pub(crate) fn build_geobuf_aggregate(
 mod tests {
     //! Unit-level tests for row-aggregate IR + emission shape. The full
     //! live PostGIS round trip lives in
-    //! `tests/integration/phase8_5_c4f_row_aggregate_mvt_live.rs`.
+    //! `tests/integration/row_aggregate_mvt_live.rs`.
 
     use super::*;
     use crate::expr::node::ExprNode;

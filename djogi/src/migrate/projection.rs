@@ -3523,7 +3523,7 @@ mod tests {
     // The three substrate fixes shipped with T10 (framework-col
     // defaults, FK column SQL type substitution, `Jsonb<T>` recognition
     // in the macros' `rust_type_to_sql`) only had indirect coverage
-    // through the live `phase7_t10_sync_models_live.rs` integration
+    // through the live `sync_models_live.rs` integration
     // suite. The
     // PARTIAL) — the rules now have direct unit tests so a regression
     // surfaces here without needing a Postgres-backed run.
@@ -6126,7 +6126,7 @@ mod tests {
     /// that re-introduces `indexed: true` in any of the five PK strategy
     /// arms). Macro-layer regression detection requires the
     /// `#[djogi_test(sync_models = [...])]` integration test in
-    /// `tests/integration/phase85_pk_index_coverage.rs`.
+    /// `tests/integration/pk_index_coverage.rs`.
     #[test]
     fn framework_pk_does_not_synthesize_id_idx_on_fresh_addtable() {
         // Shape mirrors the post-fix `framework_field_descriptor`
@@ -6240,8 +6240,8 @@ mod tests {
     /// test covers the happy-path *creation* branch.
     /// For macro-layer coverage (full descriptor → `sync_models` →
     /// live DDL pipeline), see the integration test
-    /// `phase85_field_index_emitted` in
-    /// `tests/integration/phase85_pk_index_coverage.rs`.
+    /// `field_index_emitted_macro_path` in
+    /// `tests/integration/pk_index_coverage.rs`.
     #[test]
     fn field_indexed_true_synthesises_one_canonical_index_in_global() {
         static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {

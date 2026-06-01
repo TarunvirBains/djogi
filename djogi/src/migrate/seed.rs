@@ -964,7 +964,7 @@ mod tests {
         // has no public constructor outside the live driver. The
         // variant exists so the seed runner can name the failing
         // column without collapsing to `LedgerWrite`. The integration
-        // test in `tests/integration/phase7_t8_seed_docs_live.rs`
+        // test in `tests/internal/seed_docs_live.rs`
         // exercises the live path; here we exercise the matchability
         // of the variant: a `LedgerWrite` and a `LedgerDecode` over
         // the same underlying mishap discriminate at the type level.

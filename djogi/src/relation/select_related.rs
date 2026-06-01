@@ -383,7 +383,7 @@ where
 mod tests {
     //! Emitter unit tests — assert on the generated SQL without touching
     //! a real DB. Live-Postgres coverage lives in
-    //! `tests/integration/phase3_relations.rs`.
+    //! `tests/integration/relations.rs`.
 
     use super::*;
     use crate::descriptor::{

@@ -916,7 +916,7 @@ impl<S: Model> QuerySet<S> {
 #[cfg(test)]
 mod tests {
     //! Unit tests for the builder surface — no SQL, no executor. Live
-    //! DB coverage is in `tests/integration/phase8_5_c4b_insert_select.rs`.
+    //! DB coverage is in `tests/integration/insert_select.rs`.
     //! We reach through the `FieldRef` API to build column mappings so
     //! the `pub(crate)` fields on [`InsertSelectColumn`] never leak
     //! into the test module's observed surface (same pattern as the

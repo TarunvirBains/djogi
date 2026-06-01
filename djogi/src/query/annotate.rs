@@ -1536,7 +1536,7 @@ mod tests {
     // through `fetch_all`) to stay fast and database-free.
     // Live qualify coverage (non-colliding aliases exercising the derived-table
     // outer-WHERE shape through `fetch_all`) is provided by the integration
-    // test `tests/integration/phase8_zero_cluster_c_window_live.rs` — that
+    // test `tests/integration/window_live.rs` — that
     // file uses `"rank"` / `"dense_rank"` aliases that do not collide with
     // model columns, so it exercises the qualify-lowering path, not the
     // collision-detection path.

@@ -137,7 +137,7 @@ impl<V> CaseBuilder<V> {
 mod tests {
     //! Emitter shape tests — assert the SQL tokens produced for a
     //! single-arm CASE and a multi-arm CASE. Live DB coverage lives
-    //! in `tests/integration/phase4_transactions_expressions.rs`.
+    //! in `tests/integration/transactions_expressions.rs`.
     //! The tests reach `FieldRef::new` via its `pub(crate)` constructor
     //! expr lives in the same crate, so direct construction is fine.
     //! Column strings satisfy `assert_plain_ident`.

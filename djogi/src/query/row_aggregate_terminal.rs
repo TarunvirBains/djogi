@@ -565,7 +565,7 @@ fn inner_columns_for<T: FromPgRow>() -> Vec<&'static str> {
 mod tests {
     //! Unit-level tests for the row-aggregate terminal SQL shape.
     //! Live PostGIS round-trip behaviour lives in
-    //! `tests/integration/phase8_5_c4f_row_aggregate_mvt_live.rs`.
+    //! `tests/integration/row_aggregate_mvt_live.rs`.
 
     use super::*;
     use crate::descriptor::{

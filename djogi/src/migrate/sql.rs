@@ -5274,7 +5274,7 @@ mod tests {
         // differing only on the generated expression, run
         // `diff_schemas`, lower to `OperationSql`, and pin the
         // emitted SQL shape. Mirrors the integration-level test in
-        // `tests/internal/sources/phase7_5_pr7_exclusion_generated_live.rs`
+        // `tests/internal/sources/exclusion_generated_live.rs`
         // but DB-free.
         use crate::migrate::schema::{
             AppliedSchema, GeneratedColumnSchema, PkKindSchema, PrimaryKeySchema, TableSchema,

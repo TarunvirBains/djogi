@@ -3574,7 +3574,7 @@ mod tests {
     // ── T8.4 — into_basic_predicate: conservative Q<T>→BasicPredicate<T> walk ──
     // These tests set `qs.condition` directly (via `pub(crate)` access) to
     // exercise every reducible and unreducible shape. The integration test
-    // (`phase8_t8_4_basic_predicate_extraction.rs`) covers the externally
+    // (`basic_predicate_extraction.rs`) covers the externally
     // observable legacy-filter behavior (`Condition` path → None + warn,
     // unfiltered QuerySet → Some(True)).
 

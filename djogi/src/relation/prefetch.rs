@@ -592,7 +592,7 @@ where
 
 // ---------------------------------------------------------------------------
 // Unit tests — exercise the wrapper in isolation. Live-Postgres integration
-// coverage lives in `tests/integration/phase3_relations.rs`.
+// coverage lives in `tests/integration/relations.rs`.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]

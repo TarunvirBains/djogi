@@ -2846,7 +2846,7 @@ mod tests {
     //! touching a real database. These tests verify the shape of the output
     //! (token order, placeholder count) for each `Condition` / `QuerySet`
     //! state the emitter handles. Actual bind values are validated by the
-    //! integration tests in `tests/integration/phase2_queryset.rs`.
+    //! integration tests in `tests/integration/queryset.rs`.
     //! We reach into the emitter using a minimal local `Model` impl (mirrors
     //! the `Fake` model used in `query::field`'s tests) so that unit tests
     //! remain independent of `#[model]` macro expansion.
