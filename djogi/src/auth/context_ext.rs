@@ -23,7 +23,7 @@ fn warn_auth_bypass(auth: &AuthContext, method: &'static str) {
 
 impl DjogiContext {
     /// Attach an [`AuthContext`] to this context (consuming builder).
-    /// When `auth.tenant_id.is_some` AND the next CRUD/QuerySet operation
+    /// When `auth.tenant_id.is_some()` AND the next CRUD/QuerySet operation
     /// targets a tenant-keyed model (per `ModelDescriptor::tenant_key`), the
     /// auto-`set_tenant` integration calls [`Self::ensure_tenant_set`]
     /// transparently.
@@ -75,7 +75,7 @@ impl DjogiContext {
     }
 
     /// Explicitly opt out of the "cross-tenant context" warn emitted when
-    /// `auth.tenant_id.is_none` on a tenant-keyed model (consuming builder).
+    /// `auth.tenant_id.is_none()` on a tenant-keyed model (consuming builder).
     /// ```ignore
     /// let ctx = DjogiContext::from_pool(pool).with_no_tenant_scope();
     /// ```
@@ -103,10 +103,10 @@ impl DjogiContext {
     /// [`Self::set_tenant`] to re-issue `SET LOCAL`.
     /// Invoked by the auto-tenant integration before every CRUD dispatch on
     /// a tenant-keyed model when
-    /// `ctx.auth.and_then(|a| a.tenant_id.as_ref)` is `Some`.
+    /// `ctx.auth().and_then(|a| a.tenant_id.as_ref())` is `Some`.
     /// **Why the per-tenant comparison, not a plain `tenant_set` bool:**
     /// `SET LOCAL app.tenant_id = 'org_a'` persists for the lifetime of the
-    /// open transaction. If auth changes inside one `atomic` scope from
+    /// open transaction. If auth changes inside one `atomic()` scope from
     /// `org_a` to `org_b`, a bool short-circuit would leave queries running
     /// under `org_a` — a silent cross-tenant read. Comparing against
     /// `applied_tenant_id` forces a re-issue of `SET LOCAL` whenever the
