@@ -9,7 +9,7 @@ authors.workspace = true
 rust-version.workspace = true
 description = "CLI for the Djogi framework — migrations, shell, db reset, status"
 documentation = "https://docs.rs/djogi-cli"
-readme = "../ReadMe.MD"
+readme = "README.md"
 keywords = ["djogi", "cli", "migrate", "orm"]
 categories = ["command-line-utilities", "database"]
 

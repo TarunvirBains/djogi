@@ -9,7 +9,7 @@ authors.workspace = true
 rust-version.workspace = true
 description = "Proc macros for the Djogi framework — derive(Model), field attributes, descriptor emission"
 documentation = "https://docs.rs/djogi-macros"
-readme = "../ReadMe.MD"
+readme = "README.md"
 keywords = ["djogi", "proc-macro", "derive", "model", "orm"]
 categories = ["database", "development-tools::procedural-macro-helpers"]
 
